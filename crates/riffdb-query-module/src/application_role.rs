@@ -725,6 +725,9 @@ fn compile_application_role_inner(
                 BindingMode::InitOrMutate => {
                     &[RowPolicyOperationV1::Create, RowPolicyOperationV1::Update]
                 }
+                BindingMode::ObserveOrInitialize => {
+                    &[RowPolicyOperationV1::Create, RowPolicyOperationV1::Update]
+                }
                 BindingMode::Delete => &[RowPolicyOperationV1::Delete],
             };
             for operation in operations {

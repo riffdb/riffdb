@@ -181,6 +181,25 @@ contract BulkRowsRecovery version 1 {
     }
     return Written {}
   }
+  bulk command DecideRows {
+    input request_id: uuid
+    input rows: list<Row, 1..8>
+    idempotency_key request_id
+    for row in rows {
+      observe_or_initialize Row(row.tenant_id, row.row_id) as stored initialize {
+        value: 0,
+      }
+      decide stored {
+        when stored.value == row.value => no_effect
+        when stored.value >= 0 => apply {
+          set stored.value = row.value
+          emit RowWritten { row_id: row.row_id, value: stored.value }
+        }
+        else => reject NegativeCurrentValue { row_id: row.row_id }
+      }
+    }
+    return Written {}
+  }
   bulk command InitSharedItems {
     input request_id: uuid
     input tenant_id: uuid
@@ -414,6 +433,8 @@ impl BulkRowsDatabase {
     fn from_path(path: PathBuf, scratch: Option<ScratchDir>) -> Self {
         let compiled =
             compile_contract_source(BULK_ROWS_SOURCE).expect("bulk recovery contract compiles");
+        riffdb_contract_ir::ContractBundle::decode(compiled.canonical_bytes())
+            .expect("bulk recovery bundle round trips");
         let checked_bundle = ValidatedContractBundle::from_compiler_bundle(compiled)
             .expect("bulk recovery bundle passes catalog validation");
         let row_entity_type = checked_bundle
@@ -569,6 +590,85 @@ impl BulkRowsDatabase {
                                 i64::try_from(ordinal + 1).expect("bounded row ordinal"),
                             ),
                         ),
+                    ],
+                ))
+            })
+            .collect::<Vec<_>>();
+        let input = input_record(
+            plan.input().record(),
+            [
+                (
+                    "request_id",
+                    CanonicalValue::Uuid(uuid_bytes(input_request_seed)),
+                ),
+                (
+                    "rows",
+                    CanonicalValue::List(CanonicalList::new(rows).expect("bounded row list")),
+                ),
+            ],
+        );
+        let caller_key = canonical_uuid_text(input_request_seed);
+        self.prepare_command(
+            ports,
+            plan,
+            input,
+            &caller_key,
+            digest_seed,
+            admission_request_seed,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_decision_put(
+        &self,
+        ports: &RedbOperationalPorts,
+        row_ids: &[[u8; 16]],
+        input_request_seed: u8,
+        digest_seed: u8,
+        admission_request_seed: u8,
+    ) -> CommandExecutionPreparation {
+        let values = (1..=row_ids.len())
+            .map(|ordinal| i64::try_from(ordinal).expect("bounded row ordinal"))
+            .collect::<Vec<_>>();
+        self.prepare_decision_put_with_values(
+            ports,
+            row_ids,
+            &values,
+            input_request_seed,
+            digest_seed,
+            admission_request_seed,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_decision_put_with_values(
+        &self,
+        ports: &RedbOperationalPorts,
+        row_ids: &[[u8; 16]],
+        values: &[i64],
+        input_request_seed: u8,
+        digest_seed: u8,
+        admission_request_seed: u8,
+    ) -> CommandExecutionPreparation {
+        assert_eq!(row_ids.len(), values.len());
+        let plan = self.command_plan("DecideRows");
+        let row_schema = self
+            .checked_bundle
+            .bundle()
+            .schema()
+            .entity(self.row_entity_type)
+            .expect("Row schema")
+            .record();
+        let rows = row_ids
+            .iter()
+            .zip(values)
+            .map(|(row_id, value)| {
+                CanonicalValue::Record(input_record(
+                    row_schema,
+                    [
+                        ("tenant_id", CanonicalValue::Uuid(ORGANIZATION_ID)),
+                        ("row_id", CanonicalValue::Uuid(*row_id)),
+                        ("value", CanonicalValue::I64(*value)),
                     ],
                 ))
             })
@@ -964,7 +1064,7 @@ impl BulkRowsDatabase {
             .unwrap_or_else(|| panic!("{name} command plan"))
     }
 
-    fn row_target(&self, row_id: [u8; 16]) -> riffdb_storage_api::EntityTarget {
+    pub(crate) fn row_target(&self, row_id: [u8; 16]) -> riffdb_storage_api::EntityTarget {
         let mut key = EntityKeyBuilder::new(self.row_entity_type);
         key.push_uuid(&ORGANIZATION_ID)
             .expect("tenant key component");

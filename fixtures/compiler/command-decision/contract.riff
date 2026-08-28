@@ -1,0 +1,43 @@
+contract CommandDecisionFixture version 1 {
+  entity State {
+    key (organization_id: uuid, state_id: uuid)
+    field active: bool
+    field revision: u64
+  }
+
+  entity Change {
+    key (organization_id: uuid, state_id: uuid, change_id: uuid)
+    field recorded: bool
+  }
+
+  aggregate States {
+    root State
+    child Change
+    partition_by organization_id
+    conflict_key (organization_id, state_id)
+  }
+
+  command ApplyState {
+    input request_id: uuid
+    input organization_id: uuid
+    input state_id: uuid
+    input change_id: uuid
+    idempotency_key request_id
+
+    observe_or_initialize State(organization_id, state_id) as state initialize {
+      active: false,
+      revision: 0,
+    }
+    decide state {
+      when state.active == false => apply {
+        create Change(organization_id, state_id, change_id) as change else ChangeExists {}
+        set state.active = true
+        set state.revision = state.revision + 1
+        set change.recorded = true
+      }
+      when state.active == true => no_effect
+      else => reject StateConflict { state_id: state_id }
+    }
+    return Applied {}
+  }
+}

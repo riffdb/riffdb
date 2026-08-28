@@ -517,6 +517,16 @@ fn allocate_command_symbols(
         .bulk_iteration
         .as_ref()
         .map_or(&[][..], |iteration| iteration.value.bindings.as_slice());
+    let decisions = command
+        .decisions
+        .iter()
+        .chain(
+            command
+                .bulk_iteration
+                .iter()
+                .flat_map(|iteration| iteration.value.decisions.iter()),
+        )
+        .collect::<Vec<_>>();
     for binding in command.bindings.iter().chain(collection_bindings) {
         let binding_name = binding.value.name();
         binding_names.insert(binding_name, diagnostics);
@@ -531,6 +541,42 @@ fn allocate_command_symbols(
                 CompilerDiagnostic::new(CompilerDiagnosticCode::DuplicateName, binding_name.span)
                     .with_related_span(*value_span),
             );
+        }
+    }
+    for decision in &decisions {
+        let deferred_name = &decision.value.binding.binding;
+        binding_names.insert(deferred_name, diagnostics);
+        for action in decision
+            .value
+            .when_arms
+            .iter()
+            .map(|arm| &arm.value.action.value)
+            .chain(std::iter::once(&decision.value.else_action.value))
+        {
+            if let riffdb_contract_syntax::ast::DecisionAction::Apply { bindings, .. } = action {
+                for binding in bindings {
+                    let binding_name = binding.value.name();
+                    binding_names.insert(binding_name, diagnostics);
+                    if let Some(input_span) = inputs.names.get(&binding_name.value) {
+                        diagnostics.push(
+                            CompilerDiagnostic::new(
+                                CompilerDiagnosticCode::DuplicateName,
+                                binding_name.span,
+                            )
+                            .with_related_span(*input_span),
+                        );
+                    }
+                    if let Some(value_span) = service_values.names.get(&binding_name.value) {
+                        diagnostics.push(
+                            CompilerDiagnostic::new(
+                                CompilerDiagnosticCode::DuplicateName,
+                                binding_name.span,
+                            )
+                            .with_related_span(*value_span),
+                        );
+                    }
+                }
+            }
         }
     }
     let mut requirement_names = NameCollector::default();
@@ -571,6 +617,47 @@ fn allocate_command_symbols(
             outcome_occurrences.push(&cascade_failure.value);
         }
     }
+    for decision in &decisions {
+        for action in decision
+            .value
+            .when_arms
+            .iter()
+            .map(|arm| &arm.value.action.value)
+            .chain(std::iter::once(&decision.value.else_action.value))
+        {
+            match action {
+                riffdb_contract_syntax::ast::DecisionAction::Apply { bindings, .. } => {
+                    for binding in bindings {
+                        if let Some(failure) = binding.value.failure() {
+                            rejection_names
+                                .entry(failure.value.name.value.clone())
+                                .or_insert(failure.value.name.span);
+                            outcome_occurrences.push(&failure.value);
+                        }
+                        if let Some(failure) = binding.value.restriction_failure() {
+                            rejection_names
+                                .entry(failure.value.name.value.clone())
+                                .or_insert(failure.value.name.span);
+                            outcome_occurrences.push(&failure.value);
+                        }
+                        if let Some(failure) = binding.value.cascade_failure() {
+                            rejection_names
+                                .entry(failure.value.name.value.clone())
+                                .or_insert(failure.value.name.span);
+                            outcome_occurrences.push(&failure.value);
+                        }
+                    }
+                }
+                riffdb_contract_syntax::ast::DecisionAction::Reject(outcome) => {
+                    rejection_names
+                        .entry(outcome.value.name.value.clone())
+                        .or_insert(outcome.value.name.span);
+                    outcome_occurrences.push(&outcome.value);
+                }
+                riffdb_contract_syntax::ast::DecisionAction::NoEffect => {}
+            }
+        }
+    }
     for requirement in command.requirements.iter().chain(collection_requirements) {
         let rejection = &requirement.value.rejection;
         rejection_names
@@ -582,7 +669,27 @@ fn allocate_command_symbols(
         .bulk_iteration
         .as_ref()
         .map_or(&[][..], |iteration| iteration.value.effects.as_slice());
-    for effect in command.effects.iter().chain(collection_effects) {
+    let decision_effects = decisions.iter().flat_map(|decision| {
+        decision
+            .value
+            .when_arms
+            .iter()
+            .map(|arm| &arm.value.action.value)
+            .chain(std::iter::once(&decision.value.else_action.value))
+            .flat_map(|action| match action {
+                riffdb_contract_syntax::ast::DecisionAction::Apply { effects, .. } => {
+                    effects.iter().collect::<Vec<_>>()
+                }
+                riffdb_contract_syntax::ast::DecisionAction::NoEffect
+                | riffdb_contract_syntax::ast::DecisionAction::Reject(_) => Vec::new(),
+            })
+    });
+    for effect in command
+        .effects
+        .iter()
+        .chain(collection_effects)
+        .chain(decision_effects)
+    {
         let rejections = match &effect.value {
             riffdb_contract_syntax::ast::Effect::WorkflowTransition(transition) => {
                 vec![&transition.stale, &transition.illegal]

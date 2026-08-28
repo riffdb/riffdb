@@ -58,6 +58,12 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   presentation.
 - There is no general SQL surface, arbitrary transaction callback, analytical
   join engine, distributed transaction, replication, failover, or consensus.
+- Compiler-sealed command decisions support bounded branch-local entity field
+  assignments, embeddings, creates, and durable events. Workflow transition
+  and lease instructions retain their existing dedicated command forms and are
+  rejected inside a decision arm; no-effect never runs either form. Decisions
+  are not general branching, per-item partial outcomes, callbacks, or dynamic
+  transaction programs.
 - Runtime-selectable page sizes use either plain `Limit` (the full 1..=499
   domain) or the query-only `Limit<MAX>` refinement. Bounded limits do not
   refine offsets, byte budgets, contract integers, full-population aggregate

@@ -12,7 +12,7 @@ child claim command conflict_key contract count create date decimal
 default delete duration_seconds else emit entity enum event
 exhausted exists expire expired expires_at fact false fence fencing_token field
 from frontier i64 idempotency_key illegal import in include index input invalid
-initialize init_or_mutate invariant is key lease list measure module money mutate not null on optional
+initialize init_or_mutate observe_or_initialize decide apply no_effect reject invariant is key lease list measure module money mutate not null on optional
 owner partition_by policy presence principal projection query read reference
 release renew require return revision root row service set source stale
 state state_machine string sum text_key timestamp to

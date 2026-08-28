@@ -11,8 +11,9 @@ use std::error::Error;
 use std::fmt;
 
 use riffdb_contract_ir::{
-    BindingId, BindingMode, CommandPlan, ContractBundle, DeleteCheckModeV1, ExecutionClass,
-    Instruction, ObjectConstruction, RecordSchema, RootValidationReadId, SchemaIr, ValueType,
+    BindingId, BindingMode, BindingPlan, CommandDecisionActionV1, CommandDecisionPlanV1,
+    CommandPlan, ContractBundle, DeleteCheckModeV1, ExecutionClass, Instruction,
+    ObjectConstruction, RecordSchema, RootValidationReadId, SchemaIr, ValueType,
     WorkflowLeaseOperation,
 };
 use riffdb_invariant::{
@@ -191,6 +192,9 @@ pub fn execute_command(
 ) -> Result<ExecutionResult, ExecutionFault> {
     let plan = validate_execution_identity(bundle, snapshot, context)?;
     validate_record_exact(bundle.schema(), plan.input().record(), input)?;
+    if plan.requires_ir_v18() {
+        return execute_decision_command(bundle, plan, input, snapshot, context, budget);
+    }
     if plan.collection_expansion().is_some() {
         return execute_collection_command(bundle, plan, input, snapshot, context, budget);
     }
@@ -289,6 +293,7 @@ pub fn execute_command(
                     )?;
                 }
             }
+            (BindingMode::ObserveOrInitialize, _) => return Err(ExecutionFault::Integrity),
         }
     }
 
@@ -923,6 +928,1348 @@ pub fn execute_command(
     Err(ExecutionFault::Integrity)
 }
 
+fn execute_decision_command(
+    bundle: &ContractBundle,
+    plan: &CommandPlan,
+    input: &CanonicalRecord,
+    snapshot: &ReadSnapshot,
+    context: &TransactionContext,
+    budget: EvaluationBudget,
+) -> Result<ExecutionResult, ExecutionFault> {
+    if plan.collection_expansion().is_some() {
+        return execute_collection_decision_command(bundle, plan, input, snapshot, context, budget);
+    }
+
+    let mut evaluator = ExpressionEvaluator::new(plan.expressions());
+    validate_snapshot_targets(plan, input, snapshot, context, &mut evaluator)?;
+    let branch_bindings = decision_branch_bindings(plan);
+    let mut records = vec![None; plan.bindings().len()];
+
+    for (index, (binding, observation)) in
+        plan.bindings().iter().zip(snapshot.bindings()).enumerate()
+    {
+        if branch_bindings.contains(&binding.id()) {
+            continue;
+        }
+        if !materialize_ordinary_decision_binding(
+            bundle,
+            plan,
+            input,
+            context,
+            &mut evaluator,
+            &mut records,
+            index,
+            binding,
+            observation,
+        )? {
+            let values = RuntimeValues {
+                schema: bundle.schema(),
+                plan,
+                input,
+                records: &records,
+                roots: &[],
+                tx_time: context.tx_time(),
+                service_values: context.service_values(),
+            };
+            let mut evaluation = evaluator.batch(&values);
+            let outcome = construct_outcome(
+                binding.failure().ok_or(ExecutionFault::Integrity)?,
+                &mut evaluation,
+            )?;
+            return finish_declared(plan, snapshot, budget, outcome, vec![], vec![], vec![]);
+        }
+    }
+
+    let mut roots = Vec::with_capacity(plan.root_validation_reads().len());
+    for (read, observation) in plan
+        .root_validation_reads()
+        .iter()
+        .zip(snapshot.root_validations())
+    {
+        let EntityObservation::Present(record) = observation else {
+            return Err(ExecutionFault::Integrity);
+        };
+        let entity = bundle
+            .schema()
+            .entity(read.entity_type())
+            .ok_or(ExecutionFault::Integrity)?;
+        roots.push(Some(materialize_entity_record(
+            bundle.schema(),
+            entity.record(),
+            entity.primary_key_fields(),
+            read.key_schema(),
+            record.target(),
+            record.fields(),
+        )?));
+    }
+
+    let mut selected_mutable = BTreeSet::new();
+    let mut events = Vec::new();
+    let mut embedding_writes = Vec::new();
+    for decision in plan.decisions() {
+        if decision.collection_local() {
+            return Err(ExecutionFault::Integrity);
+        }
+        let action = select_ordinary_decision_action(
+            bundle,
+            plan,
+            input,
+            context,
+            &records,
+            &roots,
+            &mut evaluator,
+            decision,
+        )?;
+        match action {
+            CommandDecisionActionV1::NoEffect => {}
+            CommandDecisionActionV1::Reject(reject) => {
+                let values = RuntimeValues {
+                    schema: bundle.schema(),
+                    plan,
+                    input,
+                    records: &records,
+                    roots: &roots,
+                    tx_time: context.tx_time(),
+                    service_values: context.service_values(),
+                };
+                let mut evaluation = evaluator.batch(&values);
+                let outcome = construct_outcome(reject, &mut evaluation)?;
+                return finish_declared(plan, snapshot, budget, outcome, vec![], vec![], vec![]);
+            }
+            CommandDecisionActionV1::Apply {
+                bindings,
+                instructions,
+            } => {
+                selected_mutable.insert(decision.binding());
+                for binding_id in bindings {
+                    let index = binding_id.get() as usize;
+                    let binding = plan
+                        .bindings()
+                        .get(index)
+                        .ok_or(ExecutionFault::Integrity)?;
+                    let observation = snapshot
+                        .bindings()
+                        .get(index)
+                        .ok_or(ExecutionFault::Integrity)?;
+                    if !materialize_ordinary_decision_binding(
+                        bundle,
+                        plan,
+                        input,
+                        context,
+                        &mut evaluator,
+                        &mut records,
+                        index,
+                        binding,
+                        observation,
+                    )? {
+                        let values = RuntimeValues {
+                            schema: bundle.schema(),
+                            plan,
+                            input,
+                            records: &records,
+                            roots: &roots,
+                            tx_time: context.tx_time(),
+                            service_values: context.service_values(),
+                        };
+                        let mut evaluation = evaluator.batch(&values);
+                        let outcome = construct_outcome(
+                            binding.failure().ok_or(ExecutionFault::Integrity)?,
+                            &mut evaluation,
+                        )?;
+                        return finish_declared(
+                            plan,
+                            snapshot,
+                            budget,
+                            outcome,
+                            vec![],
+                            vec![],
+                            vec![],
+                        );
+                    }
+                    if binding.mode() != BindingMode::Read {
+                        selected_mutable.insert(*binding_id);
+                    }
+                }
+                execute_ordinary_decision_effects(
+                    bundle,
+                    plan,
+                    input,
+                    snapshot,
+                    context,
+                    &mut evaluator,
+                    &mut records,
+                    &roots,
+                    instructions,
+                    &mut events,
+                    &mut embedding_writes,
+                )?;
+            }
+        }
+    }
+
+    let outcome = match evaluate_decision_common_suffix(
+        bundle,
+        plan,
+        input,
+        snapshot,
+        context,
+        budget,
+        &records,
+        &roots,
+        &mut evaluator,
+    )? {
+        DecisionCommonSuffix::Success(outcome) => outcome,
+        DecisionCommonSuffix::Rejected(result) => return Ok(*result),
+    };
+    let mut mutations = selected_mutable
+        .into_iter()
+        .map(|binding_id| {
+            let index = binding_id.get() as usize;
+            collection_binding_mutation(
+                bundle,
+                plan,
+                plan.bindings()
+                    .get(index)
+                    .ok_or(ExecutionFault::Integrity)?,
+                snapshot
+                    .bindings()
+                    .get(index)
+                    .ok_or(ExecutionFault::Integrity)?,
+                records
+                    .get(index)
+                    .and_then(Option::as_ref)
+                    .ok_or(ExecutionFault::Integrity)?,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    mutations.sort_unstable_by_key(|mutation| mutation_order_key(mutation.target()));
+    finish_declared(
+        plan,
+        snapshot,
+        budget,
+        outcome,
+        mutations,
+        events,
+        embedding_writes,
+    )
+}
+
+fn decision_branch_bindings(plan: &CommandPlan) -> BTreeSet<BindingId> {
+    plan.decisions()
+        .iter()
+        .flat_map(|decision| {
+            decision
+                .when_arms()
+                .iter()
+                .map(|arm| arm.action())
+                .chain(std::iter::once(decision.else_action()))
+        })
+        .flat_map(CommandDecisionActionV1::bindings)
+        .copied()
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn materialize_ordinary_decision_binding(
+    bundle: &ContractBundle,
+    plan: &CommandPlan,
+    input: &CanonicalRecord,
+    context: &TransactionContext,
+    evaluator: &mut ExpressionEvaluator<'_>,
+    records: &mut [Option<CanonicalRecord>],
+    index: usize,
+    binding: &BindingPlan,
+    observation: &EntityObservation,
+) -> Result<bool, ExecutionFault> {
+    match (binding.mode(), observation) {
+        (
+            BindingMode::Read | BindingMode::Mutate | BindingMode::Delete,
+            EntityObservation::Absent(_),
+        )
+        | (BindingMode::Create, EntityObservation::Present(_)) => return Ok(false),
+        (
+            BindingMode::Read
+            | BindingMode::Mutate
+            | BindingMode::InitOrMutate
+            | BindingMode::ObserveOrInitialize
+            | BindingMode::Delete,
+            EntityObservation::Present(record),
+        ) => {
+            let entity = bundle
+                .schema()
+                .entity(binding.entity_type())
+                .ok_or(ExecutionFault::Integrity)?;
+            records[index] = Some(materialize_entity_record(
+                bundle.schema(),
+                entity.record(),
+                entity.primary_key_fields(),
+                binding.key_schema(),
+                record.target(),
+                record.fields(),
+            )?);
+        }
+        (
+            BindingMode::Create | BindingMode::InitOrMutate | BindingMode::ObserveOrInitialize,
+            EntityObservation::Absent(target),
+        ) => {
+            let entity = bundle
+                .schema()
+                .entity(binding.entity_type())
+                .ok_or(ExecutionFault::Integrity)?;
+            records[index] = Some(initialize_create_record(
+                entity.record(),
+                entity.primary_key_fields(),
+                binding.key_schema(),
+                target,
+            )?);
+            for initialized in binding.initializer() {
+                let value = {
+                    let values = RuntimeValues {
+                        schema: bundle.schema(),
+                        plan,
+                        input,
+                        records,
+                        roots: &[],
+                        tx_time: context.tx_time(),
+                        service_values: context.service_values(),
+                    };
+                    evaluator
+                        .batch(&values)
+                        .evaluate(initialized.expression())?
+                };
+                set_working_field(
+                    bundle.schema(),
+                    plan,
+                    records,
+                    binding.id(),
+                    initialized.field_id(),
+                    value,
+                )?;
+            }
+        }
+    }
+    Ok(true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn select_ordinary_decision_action<'decision>(
+    bundle: &ContractBundle,
+    plan: &CommandPlan,
+    input: &CanonicalRecord,
+    context: &TransactionContext,
+    records: &[Option<CanonicalRecord>],
+    roots: &[Option<CanonicalRecord>],
+    evaluator: &mut ExpressionEvaluator<'_>,
+    decision: &'decision CommandDecisionPlanV1,
+) -> Result<&'decision CommandDecisionActionV1, ExecutionFault> {
+    for arm in decision.when_arms() {
+        let values = RuntimeValues {
+            schema: bundle.schema(),
+            plan,
+            input,
+            records,
+            roots,
+            tx_time: context.tx_time(),
+            service_values: context.service_values(),
+        };
+        if evaluator
+            .batch(&values)
+            .evaluate_predicate(arm.predicate())?
+        {
+            return Ok(arm.action());
+        }
+    }
+    Ok(decision.else_action())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_ordinary_decision_effects(
+    bundle: &ContractBundle,
+    plan: &CommandPlan,
+    input: &CanonicalRecord,
+    snapshot: &ReadSnapshot,
+    context: &TransactionContext,
+    evaluator: &mut ExpressionEvaluator<'_>,
+    records: &mut [Option<CanonicalRecord>],
+    roots: &[Option<CanonicalRecord>],
+    instructions: &[Instruction],
+    events: &mut Vec<EventIntent>,
+    embedding_writes: &mut Vec<EmbeddingWriteIntentV1>,
+) -> Result<(), ExecutionFault> {
+    for instruction in instructions {
+        match instruction {
+            Instruction::SetField {
+                binding,
+                field,
+                value,
+            } => {
+                let value = {
+                    let values = RuntimeValues {
+                        schema: bundle.schema(),
+                        plan,
+                        input,
+                        records,
+                        roots,
+                        tx_time: context.tx_time(),
+                        service_values: context.service_values(),
+                    };
+                    evaluator.batch(&values).evaluate(*value)?
+                };
+                set_working_field(bundle.schema(), plan, records, *binding, *field, value)?;
+            }
+            Instruction::SetEmbedding {
+                binding,
+                field,
+                value,
+                model_identity,
+                model_version,
+            } => {
+                let (value, model_identity, model_version) = {
+                    let values = RuntimeValues {
+                        schema: bundle.schema(),
+                        plan,
+                        input,
+                        records,
+                        roots,
+                        tx_time: context.tx_time(),
+                        service_values: context.service_values(),
+                    };
+                    let mut evaluation = evaluator.batch(&values);
+                    (
+                        evaluation.evaluate(*value)?,
+                        evaluation.evaluate(*model_identity)?,
+                        evaluation.evaluate(*model_version)?,
+                    )
+                };
+                let target = snapshot
+                    .bindings()
+                    .get(binding.get() as usize)
+                    .map(EntityObservation::target)
+                    .ok_or(ExecutionFault::Integrity)?;
+                embedding_writes.push(embedding_write_intent(
+                    bundle.schema(),
+                    plan,
+                    target,
+                    *binding,
+                    *field,
+                    model_identity,
+                    model_version,
+                )?);
+                set_working_field(bundle.schema(), plan, records, *binding, *field, value)?;
+            }
+            Instruction::EmitEvent(event) => {
+                let payload = {
+                    let values = RuntimeValues {
+                        schema: bundle.schema(),
+                        plan,
+                        input,
+                        records,
+                        roots,
+                        tx_time: context.tx_time(),
+                        service_values: context.service_values(),
+                    };
+                    let mut evaluation = evaluator.batch(&values);
+                    construct_record(event.payload(), &mut evaluation)?
+                };
+                events.push(event_intent(bundle, context, event.event_type(), payload)?);
+            }
+            Instruction::Require { .. }
+            | Instruction::WorkflowTransition { .. }
+            | Instruction::WorkflowLease { .. }
+            | Instruction::Return(_) => return Err(ExecutionFault::Integrity),
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+enum DecisionCommonSuffix {
+    Success(DeclaredOutcome),
+    Rejected(Box<ExecutionResult>),
+}
+
+#[allow(clippy::too_many_arguments)]
+fn evaluate_decision_common_suffix(
+    bundle: &ContractBundle,
+    plan: &CommandPlan,
+    input: &CanonicalRecord,
+    snapshot: &ReadSnapshot,
+    context: &TransactionContext,
+    budget: EvaluationBudget,
+    records: &[Option<CanonicalRecord>],
+    roots: &[Option<CanonicalRecord>],
+    evaluator: &mut ExpressionEvaluator<'_>,
+) -> Result<DecisionCommonSuffix, ExecutionFault> {
+    for instruction in plan.instructions() {
+        let values = RuntimeValues {
+            schema: bundle.schema(),
+            plan,
+            input,
+            records,
+            roots,
+            tx_time: context.tx_time(),
+            service_values: context.service_values(),
+        };
+        let mut evaluation = evaluator.batch(&values);
+        match instruction {
+            Instruction::Require {
+                predicate, reject, ..
+            } => {
+                if !evaluation.evaluate_predicate(*predicate)? {
+                    let outcome = construct_outcome(reject, &mut evaluation)?;
+                    let result =
+                        finish_declared(plan, snapshot, budget, outcome, vec![], vec![], vec![])?;
+                    return Ok(DecisionCommonSuffix::Rejected(Box::new(result)));
+                }
+            }
+            Instruction::Return(outcome) => {
+                return construct_outcome(outcome, &mut evaluation)
+                    .map(DecisionCommonSuffix::Success);
+            }
+            Instruction::SetField { .. }
+            | Instruction::SetEmbedding { .. }
+            | Instruction::EmitEvent(_)
+            | Instruction::WorkflowTransition { .. }
+            | Instruction::WorkflowLease { .. } => return Err(ExecutionFault::Integrity),
+        }
+    }
+    Err(ExecutionFault::Integrity)
+}
+
+fn execute_collection_decision_command(
+    bundle: &ContractBundle,
+    plan: &CommandPlan,
+    input: &CanonicalRecord,
+    snapshot: &ReadSnapshot,
+    context: &TransactionContext,
+    budget: EvaluationBudget,
+) -> Result<ExecutionResult, ExecutionFault> {
+    let expansion = plan
+        .collection_expansion()
+        .ok_or(ExecutionFault::Integrity)?;
+    let CanonicalValue::List(elements) =
+        record_field(input, expansion.input_field()).ok_or(ExecutionFault::Integrity)?
+    else {
+        return Err(ExecutionFault::Integrity);
+    };
+    if let Some(maximum) = expansion.maximum_aggregate_element_bytes() {
+        let observed = elements
+            .values()
+            .iter()
+            .try_fold(0usize, |total, element| {
+                total
+                    .checked_add(
+                        encode_canonical_value(element)
+                            .map_err(map_canonical_codec_error)?
+                            .len(),
+                    )
+                    .ok_or(ExecutionFault::ResourceLimit)
+            })?;
+        if observed > maximum {
+            return Err(ExecutionFault::ResourceLimit);
+        }
+    }
+    let facts =
+        derive_input_command_facts(plan, input.clone()).map_err(map_prepared_evaluation_error)?;
+    validate_collection_decision_snapshot(plan, snapshot, context, &facts)?;
+
+    let first_binding = expansion.first_binding().get() as usize;
+    let binding_end = first_binding
+        .checked_add(expansion.binding_count())
+        .ok_or(ExecutionFault::ResourceLimit)?;
+    if binding_end != plan.bindings().len() {
+        return Err(ExecutionFault::Integrity);
+    }
+
+    let branch_bindings = decision_branch_bindings(plan);
+    let mut evaluator = ExpressionEvaluator::new(plan.expressions());
+    let mut records = vec![None; plan.bindings().len()];
+    let mut roots = vec![None; plan.root_validation_reads().len()];
+    for (slot, observation) in snapshot.bindings().iter().enumerate() {
+        if facts.binding_element_ordinals().get(slot) != Some(&None) {
+            continue;
+        }
+        let index = facts.binding_plan_indices()[slot] as usize;
+        let binding = plan
+            .bindings()
+            .get(index)
+            .ok_or(ExecutionFault::Integrity)?;
+        if branch_bindings.contains(&binding.id()) {
+            continue;
+        }
+        if !materialize_ordinary_decision_binding(
+            bundle,
+            plan,
+            input,
+            context,
+            &mut evaluator,
+            &mut records,
+            index,
+            binding,
+            observation,
+        )? {
+            let values = RuntimeValues {
+                schema: bundle.schema(),
+                plan,
+                input,
+                records: &records,
+                roots: &roots,
+                tx_time: context.tx_time(),
+                service_values: context.service_values(),
+            };
+            let mut evaluation = evaluator.batch(&values);
+            let outcome = construct_outcome(
+                binding.failure().ok_or(ExecutionFault::Integrity)?,
+                &mut evaluation,
+            )?;
+            return finish_declared(plan, snapshot, budget, outcome, vec![], vec![], vec![]);
+        }
+    }
+    materialize_collection_roots(bundle, plan, snapshot, &facts, None, &mut roots)?;
+
+    let mut mutations = Vec::new();
+    let mut events = Vec::new();
+    let mut embedding_writes = Vec::new();
+    let mut selected_shared = BTreeSet::new();
+    for decision in plan
+        .decisions()
+        .iter()
+        .filter(|decision| !decision.collection_local())
+    {
+        let action = select_ordinary_decision_action(
+            bundle,
+            plan,
+            input,
+            context,
+            &records,
+            &roots,
+            &mut evaluator,
+            decision,
+        )?;
+        let instructions = match handle_collection_decision_action(
+            bundle,
+            plan,
+            input,
+            snapshot,
+            context,
+            budget,
+            &facts,
+            &mut evaluator,
+            &mut records,
+            &roots,
+            None,
+            decision,
+            action,
+            &mut selected_shared,
+        )? {
+            DecisionActionExecution::Effects(instructions) => instructions,
+            DecisionActionExecution::Terminal(result) => return Ok(*result),
+        };
+        execute_collection_decision_effects(
+            bundle,
+            plan,
+            input,
+            snapshot,
+            context,
+            &facts,
+            &mut evaluator,
+            &mut records,
+            &roots,
+            None,
+            instructions,
+            &mut events,
+            &mut embedding_writes,
+        )?;
+    }
+
+    for (element_index, element) in elements.values().iter().enumerate() {
+        let ordinal = u16::try_from(element_index).map_err(|_| ExecutionFault::ResourceLimit)?;
+        records[first_binding..binding_end].fill(None);
+        for (slot, observation) in snapshot.bindings().iter().enumerate() {
+            if facts.binding_element_ordinals().get(slot) != Some(&Some(ordinal)) {
+                continue;
+            }
+            let index = facts.binding_plan_indices()[slot] as usize;
+            let binding = plan
+                .bindings()
+                .get(index)
+                .ok_or(ExecutionFault::Integrity)?;
+            if branch_bindings.contains(&binding.id()) {
+                continue;
+            }
+            if !materialize_collection_decision_binding(
+                bundle,
+                plan,
+                input,
+                context,
+                element,
+                &mut evaluator,
+                &mut records,
+                index,
+                binding,
+                observation,
+            )? {
+                let values = CollectionRuntimeValues::new(
+                    bundle.schema(),
+                    plan,
+                    input,
+                    &records,
+                    &roots,
+                    context,
+                    element,
+                );
+                let mut evaluation = evaluator.batch(&values);
+                let outcome = construct_outcome(
+                    binding.failure().ok_or(ExecutionFault::Integrity)?,
+                    &mut evaluation,
+                )?;
+                return finish_declared(plan, snapshot, budget, outcome, vec![], vec![], vec![]);
+            }
+        }
+        materialize_collection_roots(bundle, plan, snapshot, &facts, Some(ordinal), &mut roots)?;
+
+        let mut selected_local = BTreeSet::new();
+        for decision in plan
+            .decisions()
+            .iter()
+            .filter(|decision| decision.collection_local())
+        {
+            let action = select_collection_decision_action(
+                bundle,
+                plan,
+                input,
+                context,
+                element,
+                &records,
+                &roots,
+                &mut evaluator,
+                decision,
+            )?;
+            let instructions = match handle_collection_decision_action(
+                bundle,
+                plan,
+                input,
+                snapshot,
+                context,
+                budget,
+                &facts,
+                &mut evaluator,
+                &mut records,
+                &roots,
+                Some((ordinal, element)),
+                decision,
+                action,
+                &mut selected_local,
+            )? {
+                DecisionActionExecution::Effects(instructions) => instructions,
+                DecisionActionExecution::Terminal(result) => return Ok(*result),
+            };
+            execute_collection_decision_effects(
+                bundle,
+                plan,
+                input,
+                snapshot,
+                context,
+                &facts,
+                &mut evaluator,
+                &mut records,
+                &roots,
+                Some((ordinal, element)),
+                instructions,
+                &mut events,
+                &mut embedding_writes,
+            )?;
+        }
+        for binding_id in selected_local {
+            let slot = collection_binding_slot(&facts, binding_id, Some(ordinal))?;
+            let index = binding_id.get() as usize;
+            mutations.push(collection_binding_mutation(
+                bundle,
+                plan,
+                plan.bindings()
+                    .get(index)
+                    .ok_or(ExecutionFault::Integrity)?,
+                snapshot
+                    .bindings()
+                    .get(slot)
+                    .ok_or(ExecutionFault::Integrity)?,
+                records
+                    .get(index)
+                    .and_then(Option::as_ref)
+                    .ok_or(ExecutionFault::Integrity)?,
+            )?);
+        }
+    }
+
+    records[first_binding..binding_end].fill(None);
+    for binding_id in selected_shared {
+        let slot = collection_binding_slot(&facts, binding_id, None)?;
+        let index = binding_id.get() as usize;
+        mutations.push(collection_binding_mutation(
+            bundle,
+            plan,
+            plan.bindings()
+                .get(index)
+                .ok_or(ExecutionFault::Integrity)?,
+            snapshot
+                .bindings()
+                .get(slot)
+                .ok_or(ExecutionFault::Integrity)?,
+            records
+                .get(index)
+                .and_then(Option::as_ref)
+                .ok_or(ExecutionFault::Integrity)?,
+        )?);
+    }
+    mutations.sort_unstable_by_key(|mutation| mutation_order_key(mutation.target()));
+    if mutations
+        .windows(2)
+        .any(|pair| pair[0].target() == pair[1].target())
+    {
+        return Err(ExecutionFault::Integrity);
+    }
+    let outcome = match evaluate_decision_common_suffix(
+        bundle,
+        plan,
+        input,
+        snapshot,
+        context,
+        budget,
+        &records,
+        &roots,
+        &mut evaluator,
+    )? {
+        DecisionCommonSuffix::Success(outcome) => outcome,
+        DecisionCommonSuffix::Rejected(result) => return Ok(*result),
+    };
+    finish_declared(
+        plan,
+        snapshot,
+        budget,
+        outcome,
+        mutations,
+        events,
+        embedding_writes,
+    )
+}
+
+fn validate_collection_decision_snapshot(
+    plan: &CommandPlan,
+    snapshot: &ReadSnapshot,
+    context: &TransactionContext,
+    facts: &InputDerivedCommandFacts,
+) -> Result<(), ExecutionFault> {
+    if facts.partition_key() != context.partition_key()
+        || facts.binding_entity_keys().len() != snapshot.bindings().len()
+        || facts.root_validation_entity_keys().len() != snapshot.root_validations().len()
+        || snapshot.ranges().len() != delete_range_count(plan, facts)?
+    {
+        return Err(ExecutionFault::Integrity);
+    }
+    for ((index, key), observation) in facts
+        .binding_plan_indices()
+        .iter()
+        .zip(facts.binding_entity_keys())
+        .zip(snapshot.bindings())
+    {
+        let binding = plan
+            .bindings()
+            .get(*index as usize)
+            .ok_or(ExecutionFault::Integrity)?;
+        if observation.target().entity_type_id() != binding.entity_type()
+            || observation.target().key() != key
+        {
+            return Err(ExecutionFault::Integrity);
+        }
+    }
+    for ((index, key), observation) in facts
+        .root_validation_plan_indices()
+        .iter()
+        .zip(facts.root_validation_entity_keys())
+        .zip(snapshot.root_validations())
+    {
+        let read = plan
+            .root_validation_reads()
+            .get(*index as usize)
+            .ok_or(ExecutionFault::Integrity)?;
+        if observation.target().entity_type_id() != read.entity_type()
+            || observation.target().key() != key
+        {
+            return Err(ExecutionFault::Integrity);
+        }
+    }
+    Ok(())
+}
+
+fn collection_binding_slot(
+    facts: &InputDerivedCommandFacts,
+    binding: BindingId,
+    ordinal: Option<u16>,
+) -> Result<usize, ExecutionFault> {
+    facts
+        .binding_plan_indices()
+        .iter()
+        .zip(facts.binding_element_ordinals())
+        .position(|(index, element)| {
+            *index as usize == binding.get() as usize && *element == ordinal
+        })
+        .ok_or(ExecutionFault::Integrity)
+}
+
+fn materialize_collection_roots(
+    bundle: &ContractBundle,
+    plan: &CommandPlan,
+    snapshot: &ReadSnapshot,
+    facts: &InputDerivedCommandFacts,
+    ordinal: Option<u16>,
+    roots: &mut [Option<CanonicalRecord>],
+) -> Result<(), ExecutionFault> {
+    for (slot, observation) in snapshot.root_validations().iter().enumerate() {
+        if facts.root_validation_element_ordinals().get(slot) != Some(&ordinal) {
+            continue;
+        }
+        let index = facts.root_validation_plan_indices()[slot] as usize;
+        let read = plan
+            .root_validation_reads()
+            .get(index)
+            .ok_or(ExecutionFault::Integrity)?;
+        let EntityObservation::Present(record) = observation else {
+            return Err(ExecutionFault::Integrity);
+        };
+        let entity = bundle
+            .schema()
+            .entity(read.entity_type())
+            .ok_or(ExecutionFault::Integrity)?;
+        roots[index] = Some(materialize_entity_record(
+            bundle.schema(),
+            entity.record(),
+            entity.primary_key_fields(),
+            read.key_schema(),
+            record.target(),
+            record.fields(),
+        )?);
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn materialize_collection_decision_binding(
+    bundle: &ContractBundle,
+    plan: &CommandPlan,
+    input: &CanonicalRecord,
+    context: &TransactionContext,
+    element: &CanonicalValue,
+    evaluator: &mut ExpressionEvaluator<'_>,
+    records: &mut [Option<CanonicalRecord>],
+    index: usize,
+    binding: &BindingPlan,
+    observation: &EntityObservation,
+) -> Result<bool, ExecutionFault> {
+    match (binding.mode(), observation) {
+        (
+            BindingMode::Read | BindingMode::Mutate | BindingMode::Delete,
+            EntityObservation::Absent(_),
+        )
+        | (BindingMode::Create, EntityObservation::Present(_)) => return Ok(false),
+        (
+            BindingMode::Read
+            | BindingMode::Mutate
+            | BindingMode::InitOrMutate
+            | BindingMode::ObserveOrInitialize
+            | BindingMode::Delete,
+            EntityObservation::Present(record),
+        ) => {
+            let entity = bundle
+                .schema()
+                .entity(binding.entity_type())
+                .ok_or(ExecutionFault::Integrity)?;
+            records[index] = Some(materialize_entity_record(
+                bundle.schema(),
+                entity.record(),
+                entity.primary_key_fields(),
+                binding.key_schema(),
+                record.target(),
+                record.fields(),
+            )?);
+        }
+        (
+            BindingMode::Create | BindingMode::InitOrMutate | BindingMode::ObserveOrInitialize,
+            EntityObservation::Absent(target),
+        ) => {
+            let entity = bundle
+                .schema()
+                .entity(binding.entity_type())
+                .ok_or(ExecutionFault::Integrity)?;
+            records[index] = Some(initialize_create_record(
+                entity.record(),
+                entity.primary_key_fields(),
+                binding.key_schema(),
+                target,
+            )?);
+            for initialized in binding.initializer() {
+                let value = {
+                    let values = CollectionRuntimeValues::new(
+                        bundle.schema(),
+                        plan,
+                        input,
+                        records,
+                        &[],
+                        context,
+                        element,
+                    );
+                    evaluator
+                        .batch(&values)
+                        .evaluate(initialized.expression())?
+                };
+                set_working_field(
+                    bundle.schema(),
+                    plan,
+                    records,
+                    binding.id(),
+                    initialized.field_id(),
+                    value,
+                )?;
+            }
+        }
+    }
+    Ok(true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn select_collection_decision_action<'decision>(
+    bundle: &ContractBundle,
+    plan: &CommandPlan,
+    input: &CanonicalRecord,
+    context: &TransactionContext,
+    element: &CanonicalValue,
+    records: &[Option<CanonicalRecord>],
+    roots: &[Option<CanonicalRecord>],
+    evaluator: &mut ExpressionEvaluator<'_>,
+    decision: &'decision CommandDecisionPlanV1,
+) -> Result<&'decision CommandDecisionActionV1, ExecutionFault> {
+    for arm in decision.when_arms() {
+        let values = CollectionRuntimeValues::new(
+            bundle.schema(),
+            plan,
+            input,
+            records,
+            roots,
+            context,
+            element,
+        );
+        if evaluator
+            .batch(&values)
+            .evaluate_predicate(arm.predicate())?
+        {
+            return Ok(arm.action());
+        }
+    }
+    Ok(decision.else_action())
+}
+
+enum DecisionActionExecution<'action> {
+    Effects(&'action [Instruction]),
+    Terminal(Box<ExecutionResult>),
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_collection_decision_action<'action>(
+    bundle: &ContractBundle,
+    plan: &CommandPlan,
+    input: &CanonicalRecord,
+    snapshot: &ReadSnapshot,
+    context: &TransactionContext,
+    budget: EvaluationBudget,
+    facts: &InputDerivedCommandFacts,
+    evaluator: &mut ExpressionEvaluator<'_>,
+    records: &mut [Option<CanonicalRecord>],
+    roots: &[Option<CanonicalRecord>],
+    element: Option<(u16, &CanonicalValue)>,
+    decision: &CommandDecisionPlanV1,
+    action: &'action CommandDecisionActionV1,
+    selected: &mut BTreeSet<BindingId>,
+) -> Result<DecisionActionExecution<'action>, ExecutionFault> {
+    match action {
+        CommandDecisionActionV1::NoEffect => Ok(DecisionActionExecution::Effects(&[])),
+        CommandDecisionActionV1::Reject(reject) => {
+            let outcome = match element {
+                Some((_, element)) => {
+                    let values = CollectionRuntimeValues::new(
+                        bundle.schema(),
+                        plan,
+                        input,
+                        records,
+                        roots,
+                        context,
+                        element,
+                    );
+                    construct_outcome(reject, &mut evaluator.batch(&values))?
+                }
+                None => {
+                    let values = RuntimeValues {
+                        schema: bundle.schema(),
+                        plan,
+                        input,
+                        records,
+                        roots,
+                        tx_time: context.tx_time(),
+                        service_values: context.service_values(),
+                    };
+                    construct_outcome(reject, &mut evaluator.batch(&values))?
+                }
+            };
+            finish_declared(plan, snapshot, budget, outcome, vec![], vec![], vec![])
+                .map(Box::new)
+                .map(DecisionActionExecution::Terminal)
+        }
+        CommandDecisionActionV1::Apply {
+            bindings,
+            instructions,
+        } => {
+            selected.insert(decision.binding());
+            for binding_id in bindings {
+                let index = binding_id.get() as usize;
+                let binding = plan
+                    .bindings()
+                    .get(index)
+                    .ok_or(ExecutionFault::Integrity)?;
+                let ordinal = element.map(|(ordinal, _)| ordinal);
+                let slot = collection_binding_slot(facts, *binding_id, ordinal)?;
+                let observation = snapshot
+                    .bindings()
+                    .get(slot)
+                    .ok_or(ExecutionFault::Integrity)?;
+                let materialized = match element {
+                    Some((_, element)) => materialize_collection_decision_binding(
+                        bundle,
+                        plan,
+                        input,
+                        context,
+                        element,
+                        evaluator,
+                        records,
+                        index,
+                        binding,
+                        observation,
+                    )?,
+                    None => materialize_ordinary_decision_binding(
+                        bundle,
+                        plan,
+                        input,
+                        context,
+                        evaluator,
+                        records,
+                        index,
+                        binding,
+                        observation,
+                    )?,
+                };
+                if !materialized {
+                    let failure = binding.failure().ok_or(ExecutionFault::Integrity)?;
+                    let outcome = match element {
+                        Some((_, element)) => {
+                            let values = CollectionRuntimeValues::new(
+                                bundle.schema(),
+                                plan,
+                                input,
+                                records,
+                                roots,
+                                context,
+                                element,
+                            );
+                            construct_outcome(failure, &mut evaluator.batch(&values))?
+                        }
+                        None => {
+                            let values = RuntimeValues {
+                                schema: bundle.schema(),
+                                plan,
+                                input,
+                                records,
+                                roots,
+                                tx_time: context.tx_time(),
+                                service_values: context.service_values(),
+                            };
+                            construct_outcome(failure, &mut evaluator.batch(&values))?
+                        }
+                    };
+                    return finish_declared(
+                        plan,
+                        snapshot,
+                        budget,
+                        outcome,
+                        vec![],
+                        vec![],
+                        vec![],
+                    )
+                    .map(Box::new)
+                    .map(DecisionActionExecution::Terminal);
+                }
+                if binding.mode() != BindingMode::Read {
+                    selected.insert(*binding_id);
+                }
+            }
+            Ok(DecisionActionExecution::Effects(instructions))
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_collection_decision_effects(
+    bundle: &ContractBundle,
+    plan: &CommandPlan,
+    input: &CanonicalRecord,
+    snapshot: &ReadSnapshot,
+    context: &TransactionContext,
+    facts: &InputDerivedCommandFacts,
+    evaluator: &mut ExpressionEvaluator<'_>,
+    records: &mut [Option<CanonicalRecord>],
+    roots: &[Option<CanonicalRecord>],
+    element: Option<(u16, &CanonicalValue)>,
+    instructions: &[Instruction],
+    events: &mut Vec<EventIntent>,
+    embedding_writes: &mut Vec<EmbeddingWriteIntentV1>,
+) -> Result<(), ExecutionFault> {
+    for instruction in instructions {
+        match instruction {
+            Instruction::SetField {
+                binding,
+                field,
+                value,
+            } => {
+                let value = match element {
+                    Some((_, element)) => {
+                        let values = CollectionRuntimeValues::new(
+                            bundle.schema(),
+                            plan,
+                            input,
+                            records,
+                            roots,
+                            context,
+                            element,
+                        );
+                        evaluator.batch(&values).evaluate(*value)?
+                    }
+                    None => {
+                        let values = RuntimeValues {
+                            schema: bundle.schema(),
+                            plan,
+                            input,
+                            records,
+                            roots,
+                            tx_time: context.tx_time(),
+                            service_values: context.service_values(),
+                        };
+                        evaluator.batch(&values).evaluate(*value)?
+                    }
+                };
+                set_working_field(bundle.schema(), plan, records, *binding, *field, value)?;
+            }
+            Instruction::SetEmbedding {
+                binding,
+                field,
+                value,
+                model_identity,
+                model_version,
+            } => {
+                let evaluated = match element {
+                    Some((_, element)) => {
+                        let values = CollectionRuntimeValues::new(
+                            bundle.schema(),
+                            plan,
+                            input,
+                            records,
+                            roots,
+                            context,
+                            element,
+                        );
+                        let mut evaluation = evaluator.batch(&values);
+                        (
+                            evaluation.evaluate(*value)?,
+                            evaluation.evaluate(*model_identity)?,
+                            evaluation.evaluate(*model_version)?,
+                        )
+                    }
+                    None => {
+                        let values = RuntimeValues {
+                            schema: bundle.schema(),
+                            plan,
+                            input,
+                            records,
+                            roots,
+                            tx_time: context.tx_time(),
+                            service_values: context.service_values(),
+                        };
+                        let mut evaluation = evaluator.batch(&values);
+                        (
+                            evaluation.evaluate(*value)?,
+                            evaluation.evaluate(*model_identity)?,
+                            evaluation.evaluate(*model_version)?,
+                        )
+                    }
+                };
+                let ordinal = element.map(|(ordinal, _)| ordinal);
+                let slot = collection_binding_slot(facts, *binding, ordinal)?;
+                let target = snapshot
+                    .bindings()
+                    .get(slot)
+                    .map(EntityObservation::target)
+                    .ok_or(ExecutionFault::Integrity)?;
+                embedding_writes.push(embedding_write_intent(
+                    bundle.schema(),
+                    plan,
+                    target,
+                    *binding,
+                    *field,
+                    evaluated.1,
+                    evaluated.2,
+                )?);
+                set_working_field(
+                    bundle.schema(),
+                    plan,
+                    records,
+                    *binding,
+                    *field,
+                    evaluated.0,
+                )?;
+            }
+            Instruction::EmitEvent(event) => {
+                let payload = match element {
+                    Some((_, element)) => {
+                        let values = CollectionRuntimeValues::new(
+                            bundle.schema(),
+                            plan,
+                            input,
+                            records,
+                            roots,
+                            context,
+                            element,
+                        );
+                        construct_record(event.payload(), &mut evaluator.batch(&values))?
+                    }
+                    None => {
+                        let values = RuntimeValues {
+                            schema: bundle.schema(),
+                            plan,
+                            input,
+                            records,
+                            roots,
+                            tx_time: context.tx_time(),
+                            service_values: context.service_values(),
+                        };
+                        construct_record(event.payload(), &mut evaluator.batch(&values))?
+                    }
+                };
+                events.push(event_intent(bundle, context, event.event_type(), payload)?);
+            }
+            Instruction::Require { .. }
+            | Instruction::WorkflowTransition { .. }
+            | Instruction::WorkflowLease { .. }
+            | Instruction::Return(_) => return Err(ExecutionFault::Integrity),
+        }
+    }
+    Ok(())
+}
+
 fn execute_collection_command(
     bundle: &ContractBundle,
     plan: &CommandPlan,
@@ -1132,6 +2479,7 @@ fn execute_collection_command(
                     )?;
                 }
             }
+            (BindingMode::ObserveOrInitialize, _) => return Err(ExecutionFault::Integrity),
         }
     }
     if records[..first_binding].iter().any(Option::is_none) {
@@ -1320,6 +2668,9 @@ fn execute_collection_command(
                             value,
                         )?;
                     }
+                }
+                (BindingMode::ObserveOrInitialize, _) => {
+                    return Err(ExecutionFault::Integrity);
                 }
             }
         }
@@ -1757,15 +3108,17 @@ fn collection_binding_mutation(
     .map_err(map_storage_value_error)?;
     match (binding.mode(), observation) {
         (BindingMode::Create, EntityObservation::Absent(_))
-        | (BindingMode::InitOrMutate, EntityObservation::Absent(_)) => {
-            Ok(EntityMutation::Create(image))
-        }
-        (BindingMode::Mutate | BindingMode::InitOrMutate, EntityObservation::Present(record)) => {
-            Ok(EntityMutation::Replace {
-                expected_version: record.entity_version(),
-                post_image: image,
-            })
-        }
+        | (
+            BindingMode::InitOrMutate | BindingMode::ObserveOrInitialize,
+            EntityObservation::Absent(_),
+        ) => Ok(EntityMutation::Create(image)),
+        (
+            BindingMode::Mutate | BindingMode::InitOrMutate | BindingMode::ObserveOrInitialize,
+            EntityObservation::Present(record),
+        ) => Ok(EntityMutation::Replace {
+            expected_version: record.entity_version(),
+            post_image: image,
+        }),
         (BindingMode::Delete, EntityObservation::Present(record)) => Ok(EntityMutation::Delete {
             expected_version: record.entity_version(),
             prior_image: image,
@@ -2269,7 +3622,10 @@ fn set_working_field(
         .ok_or(ExecutionFault::Integrity)?;
     if !matches!(
         binding.mode(),
-        BindingMode::Mutate | BindingMode::Create | BindingMode::InitOrMutate
+        BindingMode::Mutate
+            | BindingMode::Create
+            | BindingMode::InitOrMutate
+            | BindingMode::ObserveOrInitialize
     ) {
         return Err(ExecutionFault::Integrity);
     }
@@ -2383,6 +3739,7 @@ fn push_mutations(
                     post_image: image,
                 }
             }
+            (BindingMode::ObserveOrInitialize, _) => return Err(ExecutionFault::Integrity),
             (BindingMode::Delete, EntityObservation::Present(record)) => {
                 let check = plan
                     .delete_checks()

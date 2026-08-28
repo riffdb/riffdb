@@ -86,6 +86,7 @@ pub(crate) fn analyze_locality(
                 BindingMode::Create
                     | BindingMode::Mutate
                     | BindingMode::InitOrMutate
+                    | BindingMode::ObserveOrInitialize
                     | BindingMode::Delete
             ) {
                 if let Some(expected) = mutation_aggregate {

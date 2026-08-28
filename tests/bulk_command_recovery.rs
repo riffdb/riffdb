@@ -30,6 +30,8 @@ const ROW_IDS: [[u8; 16]; 4] = [[0x61; 16], [0x62; 16], [0x63; 16], [0x64; 16]];
 enum Operation {
     Put,
     InitializedPut,
+    DecisionApply,
+    DecisionNoEffect,
     Delete,
     Consume,
 }
@@ -39,6 +41,8 @@ impl Operation {
         match self {
             Self::Put => "put",
             Self::InitializedPut => "initialized-put",
+            Self::DecisionApply => "decision-apply",
+            Self::DecisionNoEffect => "decision-no-effect",
             Self::Delete => "delete",
             Self::Consume => "consume",
         }
@@ -48,6 +52,8 @@ impl Operation {
         match self {
             Self::Put => 0xa1,
             Self::InitializedPut => 0xa4,
+            Self::DecisionApply => 0xa5,
+            Self::DecisionNoEffect => 0xa6,
             Self::Delete => 0xa2,
             Self::Consume => 0xa3,
         }
@@ -57,6 +63,8 @@ impl Operation {
         match self {
             Self::Put => 0xb1,
             Self::InitializedPut => 0xb4,
+            Self::DecisionApply => 0xb5,
+            Self::DecisionNoEffect => 0xb6,
             Self::Delete => 0xb2,
             Self::Consume => 0xb3,
         }
@@ -102,6 +110,8 @@ fn collection_create_and_delete_are_complete_or_absent_across_process_crash() {
         Operation::Delete,
         Operation::Put,
         Operation::InitializedPut,
+        Operation::DecisionApply,
+        Operation::DecisionNoEffect,
         Operation::Consume,
     ] {
         for phase in [CrashPhase::BeforeCommit, CrashPhase::AfterCommit] {
@@ -345,10 +355,22 @@ fn bulk_command_recovery_child() {
 fn run_crash_case(operation: Operation, phase: CrashPhase) {
     let label = format!("{}-{}", operation.label(), phase.label());
     let database = BulkRowsDatabase::create(&label);
-    if matches!(operation, Operation::Delete | Operation::Consume) {
-        let outcome = execute_healthy(&database, Operation::Put, 0x91, 0xe1, 0xf1, 0x81);
+    if matches!(
+        operation,
+        Operation::Delete | Operation::Consume | Operation::DecisionNoEffect
+    ) {
+        let seed_operation = if operation == Operation::DecisionNoEffect {
+            Operation::DecisionApply
+        } else {
+            Operation::Put
+        };
+        let outcome = execute_healthy(&database, seed_operation, 0x91, 0xe1, 0xf1, 0x81);
         let ports = database.open();
-        database.assert_rows_present(&ports, &ROW_IDS, true);
+        if operation == Operation::DecisionNoEffect {
+            assert_decision_rows_present(&database, &ports, true);
+        } else {
+            database.assert_rows_present(&ports, &ROW_IDS, true);
+        }
         database.assert_commit_graph(&ports, outcome.stored_outcome(), ROW_IDS.len());
         assert!(
             ports
@@ -377,11 +399,18 @@ fn run_crash_case(operation: Operation, phase: CrashPhase) {
     let durable_visibility = phase == CrashPhase::AfterCommit;
     let expected_present = match operation {
         Operation::Put | Operation::InitializedPut => durable_visibility,
+        Operation::DecisionApply => durable_visibility,
+        Operation::DecisionNoEffect => true,
         Operation::Delete => !durable_visibility,
         Operation::Consume => true,
     };
     if operation == Operation::Consume {
         database.assert_child_present(&ports, ROW_IDS[0], ROW_IDS[0], !durable_visibility);
+    } else if matches!(
+        operation,
+        Operation::DecisionApply | Operation::DecisionNoEffect
+    ) {
+        assert_decision_rows_present(&database, &ports, expected_present);
     } else {
         database.assert_rows_present(&ports, &ROW_IDS, expected_present);
     }
@@ -423,6 +452,16 @@ fn run_crash_case(operation: Operation, phase: CrashPhase) {
     if operation == Operation::Consume {
         database.assert_child_present(&ports, ROW_IDS[0], ROW_IDS[0], false);
         database.assert_commit_graph(&ports, replay.stored_outcome(), 0);
+    } else if matches!(
+        operation,
+        Operation::DecisionApply | Operation::DecisionNoEffect
+    ) {
+        assert_decision_rows_present(&database, &ports, true);
+        database.assert_commit_graph(
+            &ports,
+            replay.stored_outcome(),
+            usize::from(operation == Operation::DecisionApply) * ROW_IDS.len(),
+        );
     } else {
         database.assert_rows_present(
             &ports,
@@ -432,7 +471,10 @@ fn run_crash_case(operation: Operation, phase: CrashPhase) {
         database.assert_commit_graph(&ports, replay.stored_outcome(), ROW_IDS.len());
     }
     let expected_sequence = match operation {
-        Operation::Put | Operation::InitializedPut => CommitSequence::first(),
+        Operation::Put | Operation::InitializedPut | Operation::DecisionApply => {
+            CommitSequence::first()
+        }
+        Operation::DecisionNoEffect => CommitSequence::new(2).expect("second sequence"),
         Operation::Delete => CommitSequence::new(2).expect("second sequence"),
         Operation::Consume => CommitSequence::new(2).expect("second sequence"),
     };
@@ -460,6 +502,9 @@ fn execute_healthy(
             digest_seed,
             admission_seed,
         ),
+        Operation::DecisionApply | Operation::DecisionNoEffect => {
+            database.prepare_decision_put(&ports, &ROW_IDS, input_seed, digest_seed, admission_seed)
+        }
         Operation::Delete => {
             database.prepare_delete(&ports, &ROW_IDS, input_seed, digest_seed, admission_seed)
         }
@@ -525,6 +570,13 @@ fn preparation(
             operation.digest_seed(),
             admission_seed,
         ),
+        Operation::DecisionApply | Operation::DecisionNoEffect => database.prepare_decision_put(
+            ports,
+            &ROW_IDS,
+            operation.input_seed(),
+            operation.digest_seed(),
+            admission_seed,
+        ),
         Operation::Delete => database.prepare_delete(
             ports,
             &ROW_IDS,
@@ -549,10 +601,30 @@ fn parse_mode(mode: &str) -> (Operation, CrashPhase) {
         "put-after" => (Operation::Put, CrashPhase::AfterCommit),
         "initialized-put-before" => (Operation::InitializedPut, CrashPhase::BeforeCommit),
         "initialized-put-after" => (Operation::InitializedPut, CrashPhase::AfterCommit),
+        "decision-apply-before" => (Operation::DecisionApply, CrashPhase::BeforeCommit),
+        "decision-apply-after" => (Operation::DecisionApply, CrashPhase::AfterCommit),
+        "decision-no-effect-before" => (Operation::DecisionNoEffect, CrashPhase::BeforeCommit),
+        "decision-no-effect-after" => (Operation::DecisionNoEffect, CrashPhase::AfterCommit),
         "delete-before" => (Operation::Delete, CrashPhase::BeforeCommit),
         "delete-after" => (Operation::Delete, CrashPhase::AfterCommit),
         "consume-before" => (Operation::Consume, CrashPhase::BeforeCommit),
         "consume-after" => (Operation::Consume, CrashPhase::AfterCommit),
         _ => panic!("unknown bulk recovery child mode"),
+    }
+}
+
+fn assert_decision_rows_present(
+    database: &BulkRowsDatabase,
+    ports: &riffdb_storage_redb::RedbOperationalPorts,
+    expected: bool,
+) {
+    for row in ROW_IDS {
+        assert_eq!(
+            ports
+                .read_entity(&database.row_target(row))
+                .expect("read decision recovery row")
+                .is_some(),
+            expected
+        );
     }
 }

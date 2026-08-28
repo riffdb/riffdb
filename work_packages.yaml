@@ -2025,6 +2025,22 @@ work_packages:
     scale: Arms, depth, bindings, targets, expressions, bytes, effects, indexes, and collection
       elements are statically bounded; compiler proof is per plan and introduces no scan, dynamic
       graph, cross-partition work, or population-sized state.
+  closure:
+    status: complete
+    completed_at: "2026-08-27"
+    requirements_satisfied: [BLK-046, BLK-047, BLK-048, BLK-049, BLK-051,
+      BLK-053, BLK-054, BLK-055, DSL-001, DSL-002, DSL-003, DSL-004, DSL-005,
+      DSL-006, DSL-007, DSL-008, DSL-009, DSL-010, DSL-011, DSL-012, SAFE-004,
+      SAFE-005]
+    evidence: Contract grammar, typed AST/HIR, path-sensitive analysis, role derivation, maximum-arm
+      cost proof, canonical V18 IR and bundle encoding, format registry, version topology, editor
+      artifacts, old-reader refusal, byte-exact fixtures, source-spanned negative corpus, and
+      compiler/generated-reference gates are green. Branch-local creates, field writes, embeddings,
+      durable events, no-effect, and typed rejection lower to one finite sealed decision program.
+    known_limitations: Workflow transition and lease instructions remain in their existing dedicated
+      command forms and are source-spanned rejections inside decision arms. The decision construct
+      intentionally exposes no general branch, callback, origin value, or per-item partial outcome.
+    follow_ups: [WP-717, WP-718]
   human_review_triggers: *id001
 - id: WP-717
   name: Atomic command-decision runtime policy and recovery
@@ -2086,6 +2102,23 @@ work_packages:
     scale: One bounded decision and selected arm execute per target beneath existing finite retry,
       graph, index, byte, collection, and partition bounds with no scan, task per row, dynamic target
       discovery, or cross-partition transaction.
+  closure:
+    status: complete
+    completed_at: "2026-08-27"
+    requirements_satisfied: [BLK-046, BLK-048, BLK-049, BLK-050, BLK-051,
+      BLK-052, BLK-053, BLK-054, BLK-056, TXN-010, TXN-011, TXN-012, TXN-013,
+      PERF-004, PERF-005, SAFE-004, SAFE-005]
+    evidence: The deterministic runtime materializes absent and present deferred records, selects
+      ordered arms, constructs only selected graphs, and discards the complete graph on rejection.
+      Coordinator validation replays V18 evaluation once against exact evidence, policy covers
+      absent-create and present-update no-effect states, and redb concurrency proves stale apply to
+      no-effect reselection plus whole-command bulk rejection. The 1/9/19/100 runtime corpus and
+      before/after-commit redb recovery cover apply, mixed, all-no-effect, events, durable outcomes,
+      provenance, sequences, and exact replay. All package acceptance and recovery_full gates pass.
+    known_limitations: Influential snapshot acquisition conservatively retains the compiler-sealed
+      union of branch observations; this can cause a safe extra bounded retry when an unselected
+      branch-local observation changes, but cannot admit a stale choice or repeated proof per row.
+    follow_ups: [WP-718]
   human_review_triggers: *id001
 - id: WP-718
   name: Command-decision generated compatibility and external acceptance
@@ -2137,6 +2170,22 @@ work_packages:
       guarantee opt-out.
     scale: Acceptance uses bounded generic corpora and value-free receipts; generation and transport
       add no per-row proof, unbounded allocation, dynamic program, or external population state.
+  closure:
+    status: complete_without_external_receipt
+    completed_at: "2026-08-27"
+    requirements_satisfied: [BLK-046, BLK-049, BLK-051, BLK-052, BLK-054,
+      BLK-055, BLK-056, DRV-007, DRV-008, DRV-012, DRV-014, SAFE-004,
+      SAFE-005, PERF-004, PERF-005]
+    evidence: Generated Rust, Go, TypeScript, Python, and MCP conformance proves callers see only
+      named command inputs and outcomes, never arm, origin, transaction, target, predicate, or
+      policy selectors. The remote four-language driver corpus, canonical V18 fixture, generated
+      freshness, topology, handbook, workspace Clippy, recovery, and generic redb lifecycle corpus
+      are green. The workspace test command reaches only the pre-existing unrelated riffdb-sim
+      dirty-shutdown oracle failure.
+    known_limitations: BLK-057 remains open until an owning external repository records one
+      value-free real-consumer apply/ignore/reject receipt. RiffDB contains no external schema,
+      route, adapter, or framework vocabulary and does not claim that external acceptance early.
+    follow_ups: []
   human_review_triggers: *id001
 - id: WP-719
   name: Admission-head service floor provider negotiation and cursor identity

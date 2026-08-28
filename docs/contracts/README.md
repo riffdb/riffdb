@@ -61,6 +61,41 @@ ceilings remain unchanged. This is a sealed exact-key transition, not a generic
 upsert: there are no caller-selected conflict targets, conditional arms,
 callbacks, raw predicates, or last-write-wins behavior.
 
+## Compiler-sealed decisions
+
+Use `observe_or_initialize` plus its immediately following `decide` when the
+same named command must atomically choose between applying a finite graph,
+accepting an exact no-effect transition, or rejecting the whole command:
+
+```riff
+observe_or_initialize TupleState(organization_id, tuple_key) as state
+  initialize { active: false, revision: 0 }
+decide state {
+  when state.active == expected_active => apply {
+    set state.active = requested_active
+    set state.revision = state.revision + 1
+  }
+  when state.active == requested_active => no_effect
+  else => reject StateConflict { tuple_key: tuple_key }
+}
+```
+
+Arms are ordered, the first true `when` wins, and the mandatory `else` makes
+selection total. An `apply` finalizes the deferred row as exactly one create or
+revision-checked replace and executes only that arm's compiler-known suffix.
+`no_effect` emits no entity, index, event, outbox, workflow, or changelog
+effect. `reject` discards every provisional effect from the ordinary or bulk
+command and persists its declared whole-command outcome.
+
+The caller cannot select or observe an arm or absence/presence origin. RiffDB
+authorizes the union of all arms before reading state, then enforces the exact
+selected create/update row policy transaction-current. One through eight
+`when` arms are allowed; nested decisions, callbacks, dynamic targets,
+caller-selected predicates, and general branching are not. Bulk decisions use
+the existing element, aggregate-byte, graph, index-work, retry, and
+single-partition limits. Static effect cost is the maximum arm plus real union
+overhead, while runtime constructs and charges only the selected graph.
+
 ## Source bounds
 
 | Input | Inclusive limit |

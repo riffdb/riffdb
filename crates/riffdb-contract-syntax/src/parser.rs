@@ -7,7 +7,8 @@ use crate::diagnostic::{SyntaxDiagnostic, SyntaxDiagnosticCode, SyntaxDiagnostic
 use crate::grammar;
 use crate::lexer::{SpannedToken, Token, lex};
 use crate::limits::{
-    MAX_AST_NODES, MAX_DECLARATION_ITEMS, MAX_EXPECTED_TOKENS, MAX_LIST_ITEMS, MAX_NESTING_DEPTH,
+    MAX_AST_NODES, MAX_COMMAND_DECISION_ARMS, MAX_DECLARATION_ITEMS, MAX_EXPECTED_TOKENS,
+    MAX_LIST_ITEMS, MAX_NESTING_DEPTH,
 };
 use crate::span::{Span, Spanned};
 
@@ -888,6 +889,11 @@ const EXPECTED_TOKEN_NAMES: &[&str] = &[
     "mutate",
     "create",
     "init_or_mutate",
+    "observe_or_initialize",
+    "decide",
+    "apply",
+    "no_effect",
+    "reject",
     "initialize",
     "as",
     "else",
@@ -917,6 +923,7 @@ const EXPECTED_TOKEN_NAMES: &[&str] = &[
     ")",
     "<=",
     ">=",
+    "=>",
     "==",
     "!=",
     "&&",
@@ -1192,6 +1199,7 @@ impl NodeCounter {
             .saturating_add(command.service_values.len())
             .saturating_add(usize::from(command.idempotency.is_some()))
             .saturating_add(command.bindings.len())
+            .saturating_add(command.decisions.len())
             .saturating_add(usize::from(command.bulk_iteration.is_some()))
             .saturating_add(command.requirements.len())
             .saturating_add(command.effects.len())
@@ -1226,6 +1234,9 @@ impl NodeCounter {
                 }
             }
         }
+        for decision in &command.decisions {
+            self.command_decision(decision)?;
+        }
         if let Some(iteration) = &command.bulk_iteration {
             self.add(3, iteration.span)?;
             self.name(&iteration.value.element)?;
@@ -1234,6 +1245,7 @@ impl NodeCounter {
                 .value
                 .bindings
                 .len()
+                .saturating_add(iteration.value.decisions.len())
                 .saturating_add(iteration.value.requirements.len())
                 .saturating_add(iteration.value.effects.len());
             self.collection(items, MAX_DECLARATION_ITEMS, iteration.span)?;
@@ -1248,6 +1260,9 @@ impl NodeCounter {
                         self.initialized_entity_binding(entity, binding.span)?;
                     }
                 }
+            }
+            for decision in &iteration.value.decisions {
+                self.command_decision(decision)?;
             }
             for requirement in &iteration.value.requirements {
                 self.add(2, requirement.span)?;
@@ -1270,6 +1285,60 @@ impl NodeCounter {
         }
         self.add(2, command.return_clause.span)?;
         self.outcome(&command.return_clause.value.outcome)
+    }
+
+    fn command_decision(
+        &mut self,
+        decision: &Spanned<CommandDecision>,
+    ) -> Result<(), SyntaxDiagnostic> {
+        self.add(4, decision.span)?;
+        self.initialized_entity_binding(&decision.value.binding, decision.span)?;
+        self.name(&decision.value.subject)?;
+        self.collection(
+            decision.value.when_arms.len(),
+            MAX_COMMAND_DECISION_ARMS,
+            decision.span,
+        )?;
+        for arm in &decision.value.when_arms {
+            self.add(2, arm.span)?;
+            self.expression(&arm.value.predicate)?;
+            self.decision_action(&arm.value.action)?;
+        }
+        self.decision_action(&decision.value.else_action)
+    }
+
+    fn decision_action(
+        &mut self,
+        action: &Spanned<DecisionAction>,
+    ) -> Result<(), SyntaxDiagnostic> {
+        self.add(1, action.span)?;
+        match &action.value {
+            DecisionAction::Apply { bindings, effects } => {
+                self.collection(
+                    bindings.len().saturating_add(effects.len()),
+                    MAX_DECLARATION_ITEMS,
+                    action.span,
+                )?;
+                for binding in bindings {
+                    self.add(2, binding.span)?;
+                    match &binding.value {
+                        Binding::Read(entity)
+                        | Binding::Mutate(entity)
+                        | Binding::Create(entity)
+                        | Binding::Delete(entity) => self.entity_binding(entity, binding.span)?,
+                        Binding::InitOrMutate(entity) => {
+                            self.initialized_entity_binding(entity, binding.span)?;
+                        }
+                    }
+                }
+                for effect in effects {
+                    self.effect(effect)?;
+                }
+                Ok(())
+            }
+            DecisionAction::NoEffect => Ok(()),
+            DecisionAction::Reject(outcome) => self.outcome(outcome),
+        }
     }
 
     fn effect(&mut self, effect: &Spanned<Effect>) -> Result<(), SyntaxDiagnostic> {

@@ -3,12 +3,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use riffdb_contract_ir::{BindingId, BindingMode, ExpressionKind, ValueTypeTag};
+use riffdb_contract_syntax::Span;
 use riffdb_types::FieldId;
 
 use crate::diagnostic::{CompilerDiagnostic, CompilerDiagnosticCode, CompilerDiagnostics};
 use crate::hir::{
-    HirBinding, HirCommand, HirEffect, HirExpressionRoot, HirObjectField, HirOutcome,
-    HirWorkflowLeaseOperation, TypedContractHir,
+    HirBinding, HirCommand, HirDecisionAction, HirEffect, HirExpressionRoot, HirObjectField,
+    HirOutcome, HirWorkflowLeaseOperation, TypedContractHir,
 };
 use crate::locality::command_expression_fingerprint;
 
@@ -98,6 +99,41 @@ fn validate_command(
     command: &HirCommand,
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) {
+    if !command.decisions.is_empty() {
+        for effect in &command.effects {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidMutation,
+                effect_span(effect),
+            ));
+        }
+        let branch_bindings = command
+            .decisions
+            .iter()
+            .flat_map(|decision| {
+                decision
+                    .when_arms
+                    .iter()
+                    .map(|arm| &arm.action)
+                    .chain(std::iter::once(&decision.else_action))
+            })
+            .flat_map(|action| match action {
+                HirDecisionAction::Apply { bindings, .. } => bindings.as_slice(),
+                HirDecisionAction::NoEffect { .. } | HirDecisionAction::Reject(_) => &[],
+            })
+            .copied()
+            .collect::<BTreeSet<_>>();
+        for binding in command.bindings.iter().filter(|binding| {
+            !matches!(
+                binding.mode,
+                BindingMode::Read | BindingMode::ObserveOrInitialize
+            ) && !branch_bindings.contains(&binding.id)
+        }) {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidBinding,
+                binding.span,
+            ));
+        }
+    }
     validate_ordinary_delete_shape(hir, command, diagnostics);
     let mut cascade_bindings = command.bindings.iter().filter(|binding| {
         hir.entity(binding.entity_id).is_some_and(|entity| {
@@ -168,7 +204,7 @@ fn validate_command(
             let key_fields = entity.key_field_set();
             let initialized_fields = if matches!(
                 binding.mode,
-                BindingMode::Create | BindingMode::InitOrMutate
+                BindingMode::Create | BindingMode::InitOrMutate | BindingMode::ObserveOrInitialize
             ) {
                 entity
                     .fields
@@ -188,7 +224,7 @@ fn validate_command(
             };
             let required_create_fields = if matches!(
                 binding.mode,
-                BindingMode::Create | BindingMode::InitOrMutate
+                BindingMode::Create | BindingMode::InitOrMutate | BindingMode::ObserveOrInitialize
             ) {
                 entity
                     .fields
@@ -420,35 +456,94 @@ fn validate_command(
     for binding in command.bindings.iter().filter(|binding| {
         matches!(
             binding.mode,
-            BindingMode::Mutate | BindingMode::InitOrMutate
+            BindingMode::Mutate | BindingMode::InitOrMutate | BindingMode::ObserveOrInitialize
         )
     }) {
         let lease_protected = hir
             .workflows
             .iter()
             .any(|workflow| workflow.entity_id == binding.entity_id && workflow.lease.is_some());
-        let has_fence = command.effects.iter().any(|effect| {
-            matches!(
-                effect,
-                HirEffect::WorkflowLease {
-                    binding: lease_binding,
-                    ..
-                } if *lease_binding == binding.id
-            )
-        });
-        if lease_protected && !has_fence {
+        let all_paths_fence = command_effect_paths(command)
+            .into_iter()
+            .filter(|path| path.active_bindings.contains(&binding.id))
+            .all(|path| {
+                path.effects.iter().any(|effect| {
+                    matches!(
+                        effect,
+                        HirEffect::WorkflowLease {
+                            binding: lease_binding,
+                            ..
+                        } if *lease_binding == binding.id
+                    )
+                })
+            });
+        if lease_protected && !all_paths_fence {
             diagnostics.push(CompilerDiagnostic::new(
                 CompilerDiagnosticCode::InvalidWorkflowLease,
                 binding.span,
             ));
         }
     }
+    let branch_bindings = command
+        .decisions
+        .iter()
+        .flat_map(|decision| {
+            decision
+                .when_arms
+                .iter()
+                .map(|arm| &arm.action)
+                .chain(std::iter::once(&decision.else_action))
+        })
+        .flat_map(|action| match action {
+            HirDecisionAction::Apply { bindings, .. } => bindings.clone(),
+            HirDecisionAction::NoEffect { .. } | HirDecisionAction::Reject(_) => Vec::new(),
+        })
+        .collect::<BTreeSet<_>>();
+    for decision in &command.decisions {
+        let mut predicate_spans = BTreeMap::new();
+        for arm in &decision.when_arms {
+            let fingerprint =
+                command_expression_fingerprint(&command.expressions, arm.predicate.id);
+            if let Some(first_span) = predicate_spans.insert(fingerprint, arm.predicate.span) {
+                diagnostics.push(
+                    CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::InvalidExpression,
+                        arm.predicate.span,
+                    )
+                    .with_related_span(first_span),
+                );
+            }
+            validate_create_reads(command, &states, &arm.predicate, diagnostics);
+            influential_roots.push(&arm.predicate);
+            analyze_decision_action(
+                command,
+                &states,
+                decision.binding,
+                &arm.action,
+                &command.success,
+                &mut influential_roots,
+                &mut outcomes,
+                diagnostics,
+            );
+        }
+        analyze_decision_action(
+            command,
+            &states,
+            decision.binding,
+            &decision.else_action,
+            &command.success,
+            &mut influential_roots,
+            &mut outcomes,
+            diagnostics,
+        );
+    }
     validate_create_object_reads(command, &states, &command.success.fields, diagnostics);
     influential_roots.extend(command.success.fields.iter().map(|field| &field.value));
     outcomes.push(&command.success);
 
-    for state in states.values() {
+    for (binding_id, state) in &states {
         if matches!(state.mode, BindingMode::Create | BindingMode::InitOrMutate)
+            && !branch_bindings.contains(binding_id)
             && !state
                 .required_create_fields
                 .is_subset(&state.initialized_fields)
@@ -462,6 +557,168 @@ fn validate_command(
     validate_outcome_shapes(&outcomes, diagnostics);
     validate_secret_flows(hir, command, &outcomes, diagnostics);
     validate_secret_taint(secret_input, command, &influential_roots, diagnostics);
+}
+
+fn effect_span(effect: &HirEffect) -> Span {
+    match effect {
+        HirEffect::Set { target_span, .. } | HirEffect::Embed { target_span, .. } => *target_span,
+        HirEffect::Emit { event_span, .. } => *event_span,
+        HirEffect::WorkflowTransition {
+            transition_span, ..
+        } => *transition_span,
+        HirEffect::WorkflowLease { lease_span, .. } => *lease_span,
+    }
+}
+
+fn decision_effects(command: &HirCommand) -> Vec<&HirEffect> {
+    command
+        .decisions
+        .iter()
+        .flat_map(|decision| {
+            decision
+                .when_arms
+                .iter()
+                .map(|arm| &arm.action)
+                .chain(std::iter::once(&decision.else_action))
+        })
+        .flat_map(|action| match action {
+            HirDecisionAction::Apply { effects, .. } => effects.iter().collect::<Vec<_>>(),
+            HirDecisionAction::NoEffect { .. } | HirDecisionAction::Reject(_) => Vec::new(),
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn analyze_decision_action<'a>(
+    command: &'a HirCommand,
+    base_states: &BTreeMap<BindingId, BindingState>,
+    decision_binding: BindingId,
+    action: &'a HirDecisionAction,
+    success: &'a HirOutcome,
+    influential_roots: &mut Vec<&'a HirExpressionRoot>,
+    outcomes: &mut Vec<&'a HirOutcome>,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    match action {
+        HirDecisionAction::NoEffect { .. } => {
+            validate_create_object_reads(command, base_states, &success.fields, diagnostics);
+        }
+        HirDecisionAction::Reject(outcome) => {
+            validate_create_object_reads(command, base_states, &outcome.fields, diagnostics);
+            influential_roots.extend(outcome.fields.iter().map(|field| &field.value));
+            outcomes.push(outcome);
+        }
+        HirDecisionAction::Apply {
+            bindings, effects, ..
+        } => {
+            let mut states = base_states.clone();
+            let mut written = BTreeSet::new();
+            for effect in effects {
+                match effect {
+                    HirEffect::Set {
+                        target_span,
+                        binding,
+                        field,
+                        value,
+                        ..
+                    } => {
+                        let Some(state) = states.get(binding) else {
+                            diagnostics.push(CompilerDiagnostic::new(
+                                CompilerDiagnosticCode::UnknownName,
+                                *target_span,
+                            ));
+                            continue;
+                        };
+                        if matches!(state.mode, BindingMode::Read | BindingMode::Delete)
+                            || state.key_fields.contains(field)
+                            || !written.insert((*binding, *field))
+                        {
+                            diagnostics.push(CompilerDiagnostic::new(
+                                CompilerDiagnosticCode::InvalidMutation,
+                                *target_span,
+                            ));
+                            continue;
+                        }
+                        validate_create_reads(command, &states, value, diagnostics);
+                        influential_roots.push(value);
+                        states
+                            .get_mut(binding)
+                            .expect("decision binding state exists")
+                            .initialized_fields
+                            .insert(*field);
+                    }
+                    HirEffect::Embed {
+                        target_span,
+                        binding,
+                        field,
+                        value,
+                        model_identity,
+                        model_version,
+                    } => {
+                        let Some(state) = states.get(binding) else {
+                            diagnostics.push(CompilerDiagnostic::new(
+                                CompilerDiagnosticCode::UnknownName,
+                                *target_span,
+                            ));
+                            continue;
+                        };
+                        if matches!(state.mode, BindingMode::Read | BindingMode::Delete)
+                            || state.key_fields.contains(field)
+                            || !written.insert((*binding, *field))
+                        {
+                            diagnostics.push(CompilerDiagnostic::new(
+                                CompilerDiagnosticCode::InvalidMutation,
+                                *target_span,
+                            ));
+                            continue;
+                        }
+                        for root in [value, model_identity, model_version] {
+                            validate_create_reads(command, &states, root, diagnostics);
+                            influential_roots.push(root);
+                        }
+                        states
+                            .get_mut(binding)
+                            .expect("decision binding state exists")
+                            .initialized_fields
+                            .insert(*field);
+                    }
+                    HirEffect::Emit { fields, .. } => {
+                        validate_create_object_reads(command, &states, fields, diagnostics);
+                        influential_roots.extend(fields.iter().map(|field| &field.value));
+                    }
+                    HirEffect::WorkflowTransition {
+                        transition_span, ..
+                    } => {
+                        diagnostics.push(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::InvalidWorkflowTransition,
+                            *transition_span,
+                        ));
+                    }
+                    HirEffect::WorkflowLease { lease_span, .. } => {
+                        diagnostics.push(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::InvalidWorkflowLease,
+                            *lease_span,
+                        ));
+                    }
+                }
+            }
+            let mut required = bindings.clone();
+            required.push(decision_binding);
+            for binding in required {
+                if states.get(&binding).is_some_and(|state| {
+                    !state
+                        .required_create_fields
+                        .is_subset(&state.initialized_fields)
+                }) {
+                    diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::InvalidCreation,
+                        success.span,
+                    ));
+                }
+            }
+            validate_create_object_reads(command, &states, &success.fields, diagnostics);
+        }
+    }
 }
 
 fn validate_ordinary_delete_shape(
@@ -582,7 +839,7 @@ fn validate_secret_flows(
     outcomes: &[&HirOutcome],
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) {
-    for effect in &command.effects {
+    for effect in command.effects.iter().chain(decision_effects(command)) {
         match effect {
             HirEffect::Set {
                 target_span,
@@ -785,82 +1042,49 @@ fn validate_unique_conflicts(
     command: &HirCommand,
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) {
-    let assignments = command
-        .effects
-        .iter()
-        .filter_map(|effect| match effect {
-            HirEffect::Set {
-                binding,
-                field,
-                value,
-                ..
-            } => Some(((*binding, *field), value)),
-            HirEffect::Embed {
-                binding,
-                field,
-                value,
-                ..
-            } => Some(((*binding, *field), value)),
-            HirEffect::Emit { .. } => None,
-            HirEffect::WorkflowTransition { .. } | HirEffect::WorkflowLease { .. } => None,
-        })
-        .collect::<BTreeMap<_, _>>();
-    for binding in command.bindings.iter().filter(|binding| {
-        matches!(
-            binding.mode,
-            BindingMode::Create | BindingMode::Mutate | BindingMode::InitOrMutate
-        )
-    }) {
-        let Some(entity) = hir.entity(binding.entity_id) else {
-            continue;
-        };
-        for unique in entity.indexes.iter().filter(|index| index.unique) {
-            let changes = matches!(
-                binding.mode,
-                BindingMode::Create | BindingMode::InitOrMutate
-            ) || unique
-                .fields
-                .iter()
-                .any(|field| assignments.contains_key(&(binding.id, field.0)));
-            if !changes {
+    for path in command_effect_paths(command) {
+        let assignments = effect_assignments(&path.effects);
+        for binding in command.bindings.iter().filter(|binding| {
+            path.active_bindings.contains(&binding.id)
+                && matches!(
+                    binding.mode,
+                    BindingMode::Create
+                        | BindingMode::Mutate
+                        | BindingMode::InitOrMutate
+                        | BindingMode::ObserveOrInitialize
+                )
+        }) {
+            let Some(entity) = hir.entity(binding.entity_id) else {
                 continue;
-            }
-            let values = unique
-                .fields
-                .iter()
-                .map(|field| {
-                    assignments
-                        .get(&(binding.id, field.0))
-                        .copied()
-                        .or_else(|| {
-                            binding
-                                .initializer
-                                .iter()
-                                .find(|initialized| initialized.id == field.0)
-                                .map(|initialized| &initialized.value)
-                        })
-                        .or_else(|| {
-                            entity
-                                .key_fields
-                                .iter()
-                                .position(|key| *key == field.0)
-                                .and_then(|position| binding.arguments.get(position))
-                        })
-                })
-                .collect::<Option<Vec<_>>>();
-            let input_computable = values.is_some_and(|values| {
-                values.iter().all(|value| {
-                    command
-                        .expressions
-                        .dependencies(value.id, value.span)
-                        .is_ok_and(|dependencies| dependencies.is_input_computable())
-                })
-            });
-            if !input_computable {
-                diagnostics.push(CompilerDiagnostic::new(
-                    CompilerDiagnosticCode::UniqueKeyNotInputComputable,
-                    unique.span,
-                ));
+            };
+            for unique in entity.indexes.iter().filter(|index| index.unique) {
+                let changes = matches!(
+                    binding.mode,
+                    BindingMode::Create
+                        | BindingMode::InitOrMutate
+                        | BindingMode::ObserveOrInitialize
+                ) || unique
+                    .fields
+                    .iter()
+                    .any(|field| assignments.contains_key(&(binding.id, field.0)));
+                if !changes {
+                    continue;
+                }
+                let values = resulting_field_values(binding, entity, &unique.fields, &assignments);
+                let input_computable = values.is_some_and(|values| {
+                    values.iter().all(|value| {
+                        command
+                            .expressions
+                            .dependencies(value.id, value.span)
+                            .is_ok_and(|dependencies| dependencies.is_input_computable())
+                    })
+                });
+                if !input_computable {
+                    diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::UniqueKeyNotInputComputable,
+                        unique.span,
+                    ));
+                }
             }
         }
     }
@@ -871,8 +1095,150 @@ fn validate_relationship_reads(
     command: &HirCommand,
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) {
-    let assignments = command
-        .effects
+    for path in command_effect_paths(command) {
+        let assignments = effect_assignments(&path.effects);
+        for source_binding in command.bindings.iter().filter(|binding| {
+            path.active_bindings.contains(&binding.id)
+                && matches!(
+                    binding.mode,
+                    BindingMode::Create
+                        | BindingMode::Mutate
+                        | BindingMode::InitOrMutate
+                        | BindingMode::ObserveOrInitialize
+                )
+        }) {
+            let Some(source_entity) = hir.entity(source_binding.entity_id) else {
+                continue;
+            };
+            for relationship in &source_entity.relationships {
+                let changes_relationship = matches!(
+                    source_binding.mode,
+                    BindingMode::Create
+                        | BindingMode::InitOrMutate
+                        | BindingMode::ObserveOrInitialize
+                ) || relationship
+                    .source_fields
+                    .iter()
+                    .any(|field| assignments.contains_key(&(source_binding.id, field.0)));
+                if !changes_relationship {
+                    continue;
+                }
+                let resulting_values = resulting_field_values(
+                    source_binding,
+                    source_entity,
+                    &relationship.source_fields,
+                    &assignments,
+                );
+                let qualifying_target = resulting_values.as_ref().is_some_and(|values| {
+                    command.bindings.iter().any(|target| {
+                        path.accessible_bindings.contains(&target.id)
+                            && target.id < source_binding.id
+                            && matches!(
+                                target.mode,
+                                BindingMode::Read
+                                    | BindingMode::Mutate
+                                    | BindingMode::Create
+                                    | BindingMode::InitOrMutate
+                                    | BindingMode::ObserveOrInitialize
+                            )
+                            && target.entity_id == relationship.target_entity
+                            && target.arguments.len() == values.len()
+                            && target
+                                .arguments
+                                .iter()
+                                .zip(values)
+                                .all(|(actual, expected)| {
+                                    command_expression_fingerprint(&command.expressions, actual.id)
+                                        == command_expression_fingerprint(
+                                            &command.expressions,
+                                            expected.id,
+                                        )
+                                })
+                    })
+                });
+                if !qualifying_target {
+                    diagnostics.push(
+                        CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::MissingRelationshipRead,
+                            relationship.name_span,
+                        )
+                        .with_related_span(source_binding.span),
+                    );
+                }
+            }
+        }
+    }
+}
+
+struct CommandEffectPath<'a> {
+    active_bindings: BTreeSet<BindingId>,
+    accessible_bindings: BTreeSet<BindingId>,
+    effects: Vec<&'a HirEffect>,
+}
+
+fn command_effect_paths(command: &HirCommand) -> Vec<CommandEffectPath<'_>> {
+    if command.decisions.is_empty() {
+        let bindings = command.bindings.iter().map(|binding| binding.id).collect();
+        return vec![CommandEffectPath {
+            active_bindings: bindings,
+            accessible_bindings: command.bindings.iter().map(|binding| binding.id).collect(),
+            effects: command.effects.iter().collect(),
+        }];
+    }
+    let branch_bindings = command
+        .decisions
+        .iter()
+        .flat_map(|decision| {
+            decision
+                .when_arms
+                .iter()
+                .map(|arm| &arm.action)
+                .chain(std::iter::once(&decision.else_action))
+        })
+        .flat_map(|action| match action {
+            HirDecisionAction::Apply { bindings, .. } => bindings.iter().copied(),
+            HirDecisionAction::NoEffect { .. } | HirDecisionAction::Reject(_) => [].iter().copied(),
+        })
+        .collect::<BTreeSet<_>>();
+    let common = command
+        .bindings
+        .iter()
+        .map(|binding| binding.id)
+        .filter(|binding| !branch_bindings.contains(binding))
+        .collect::<BTreeSet<_>>();
+    command
+        .decisions
+        .iter()
+        .flat_map(|decision| {
+            decision
+                .when_arms
+                .iter()
+                .map(|arm| &arm.action)
+                .chain(std::iter::once(&decision.else_action))
+                .filter_map(|action| match action {
+                    HirDecisionAction::Apply {
+                        bindings, effects, ..
+                    } => {
+                        let mut active = bindings.iter().copied().collect::<BTreeSet<_>>();
+                        active.insert(decision.binding);
+                        let mut accessible = common.clone();
+                        accessible.extend(bindings.iter().copied());
+                        Some(CommandEffectPath {
+                            active_bindings: active,
+                            accessible_bindings: accessible,
+                            effects: effects.iter().collect(),
+                        })
+                    }
+                    HirDecisionAction::NoEffect { .. } | HirDecisionAction::Reject(_) => None,
+                })
+        })
+        .collect()
+}
+
+fn effect_assignments<'a>(
+    effects: &[&'a HirEffect],
+) -> BTreeMap<(BindingId, FieldId), &'a HirExpressionRoot> {
+    effects
         .iter()
         .filter_map(|effect| match effect {
             HirEffect::Set {
@@ -880,98 +1246,52 @@ fn validate_relationship_reads(
                 field,
                 value,
                 ..
-            } => Some(((*binding, *field), value)),
-            HirEffect::Embed {
+            }
+            | HirEffect::Embed {
                 binding,
                 field,
                 value,
                 ..
             } => Some(((*binding, *field), value)),
-            HirEffect::Emit { .. } => None,
-            HirEffect::WorkflowTransition { .. } | HirEffect::WorkflowLease { .. } => None,
+            HirEffect::Emit { .. }
+            | HirEffect::WorkflowTransition { .. }
+            | HirEffect::WorkflowLease { .. } => None,
         })
-        .collect::<BTreeMap<_, _>>();
+        .collect()
+}
 
-    for source_binding in &command.bindings {
-        if !matches!(
-            source_binding.mode,
-            BindingMode::Create | BindingMode::Mutate | BindingMode::InitOrMutate
-        ) {
-            continue;
-        }
-        let Some(source_entity) = hir.entity(source_binding.entity_id) else {
-            continue;
-        };
-        for relationship in &source_entity.relationships {
-            let changes_relationship = matches!(
-                source_binding.mode,
-                BindingMode::Create | BindingMode::InitOrMutate
-            ) || relationship
-                .source_fields
-                .iter()
-                .any(|field| assignments.contains_key(&(source_binding.id, field.0)));
-            if !changes_relationship {
-                continue;
-            }
-            let resulting_values = relationship
-                .source_fields
-                .iter()
-                .map(|field| {
-                    assignments
-                        .get(&(source_binding.id, field.0))
-                        .copied()
-                        .or_else(|| {
-                            source_binding
-                                .initializer
-                                .iter()
-                                .find(|initialized| initialized.id == field.0)
-                                .map(|initialized| &initialized.value)
-                        })
-                        .or_else(|| {
-                            source_entity
-                                .key_fields
-                                .iter()
-                                .position(|key| *key == field.0)
-                                .and_then(|position| source_binding.arguments.get(position))
-                        })
+fn resulting_field_values<'a, T>(
+    binding: &'a HirBinding,
+    entity: &'a crate::hir::HirEntity,
+    fields: &'a [T],
+    assignments: &BTreeMap<(BindingId, FieldId), &'a HirExpressionRoot>,
+) -> Option<Vec<&'a HirExpressionRoot>>
+where
+    T: Copy + Into<(FieldId, Span)>,
+{
+    fields
+        .iter()
+        .map(|field| {
+            let (field, _) = (*field).into();
+            assignments
+                .get(&(binding.id, field))
+                .copied()
+                .or_else(|| {
+                    binding
+                        .initializer
+                        .iter()
+                        .find(|initialized| initialized.id == field)
+                        .map(|initialized| &initialized.value)
                 })
-                .collect::<Option<Vec<_>>>();
-            let qualifying_target = resulting_values.as_ref().is_some_and(|values| {
-                command.bindings.iter().any(|target| {
-                    target.id < source_binding.id
-                        && matches!(
-                            target.mode,
-                            BindingMode::Read
-                                | BindingMode::Mutate
-                                | BindingMode::Create
-                                | BindingMode::InitOrMutate
-                        )
-                        && target.entity_id == relationship.target_entity
-                        && target.arguments.len() == values.len()
-                        && target
-                            .arguments
-                            .iter()
-                            .zip(values)
-                            .all(|(actual, expected)| {
-                                command_expression_fingerprint(&command.expressions, actual.id)
-                                    == command_expression_fingerprint(
-                                        &command.expressions,
-                                        expected.id,
-                                    )
-                            })
+                .or_else(|| {
+                    entity
+                        .key_fields
+                        .iter()
+                        .position(|key| *key == field)
+                        .and_then(|position| binding.arguments.get(position))
                 })
-            });
-            if !qualifying_target {
-                diagnostics.push(
-                    CompilerDiagnostic::new(
-                        CompilerDiagnosticCode::MissingRelationshipRead,
-                        relationship.name_span,
-                    )
-                    .with_related_span(source_binding.span),
-                );
-            }
-        }
-    }
+        })
+        .collect()
 }
 
 fn validate_binding_ownership(command: &HirCommand, diagnostics: &mut Vec<CompilerDiagnostic>) {
@@ -1016,9 +1336,11 @@ fn validate_idempotency(
             BindingMode::Mutate
                 | BindingMode::Create
                 | BindingMode::InitOrMutate
+                | BindingMode::ObserveOrInitialize
                 | BindingMode::Delete
         )
-    }) || !command.effects.is_empty();
+    }) || !command.effects.is_empty()
+        || !command.decisions.is_empty();
     if command.invocation_class == riffdb_contract_ir::CommandInvocationClass::Reimport {
         if command.idempotency.is_some() {
             diagnostics.push(CompilerDiagnostic::new(

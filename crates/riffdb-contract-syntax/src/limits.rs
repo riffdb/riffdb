@@ -19,6 +19,8 @@ pub const MAX_AST_NODES: usize = 131_072;
 pub const MAX_DECLARATION_ITEMS: usize = 4_096;
 /// Maximum entries in an argument, tuple, variant, or object-field list.
 pub const MAX_LIST_ITEMS: usize = 1_024;
+/// Maximum ordered `when` arms in one compiler-sealed command decision.
+pub const MAX_COMMAND_DECISION_ARMS: usize = 8;
 /// Maximum diagnostics returned by one parse.
 pub const MAX_SYNTAX_DIAGNOSTICS: usize = 32;
 /// Maximum expected-token alternatives exposed by one diagnostic.

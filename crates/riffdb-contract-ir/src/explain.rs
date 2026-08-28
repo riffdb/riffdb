@@ -150,6 +150,18 @@ impl CommandExplain {
     /// Derives explain metadata without evaluating inputs or exposing values.
     #[must_use]
     pub fn from_plan(plan: &CommandPlan) -> Self {
+        let all_instructions = plan
+            .instructions()
+            .iter()
+            .chain(plan.decisions().iter().flat_map(|decision| {
+                decision
+                    .when_arms()
+                    .iter()
+                    .map(crate::CommandDecisionArmV1::action)
+                    .chain(std::iter::once(decision.else_action()))
+                    .flat_map(crate::CommandDecisionActionV1::instructions)
+            }))
+            .collect::<Vec<_>>();
         let bindings = plan.bindings().iter().map(|binding| binding.id()).collect();
         let mut read_fields = plan
             .bindings()
@@ -162,10 +174,9 @@ impl CommandExplain {
             })
             .collect::<Vec<_>>();
         read_fields.sort_unstable();
-        let mut write_fields = plan
-            .instructions()
+        let mut write_fields = all_instructions
             .iter()
-            .filter_map(|instruction| match instruction {
+            .filter_map(|instruction| match *instruction {
                 crate::Instruction::SetField { binding, field, .. }
                 | crate::Instruction::SetEmbedding { binding, field, .. }
                 | crate::Instruction::WorkflowTransition {
@@ -182,7 +193,7 @@ impl CommandExplain {
                 .iter()
                 .map(move |initialized| (binding.id(), initialized.field_id()))
         }));
-        for instruction in plan.instructions() {
+        for instruction in &all_instructions {
             if let crate::Instruction::WorkflowLease {
                 binding,
                 fields,
@@ -210,10 +221,9 @@ impl CommandExplain {
         }
         write_fields.sort_unstable();
         write_fields.dedup();
-        let workflow_transitions = plan
-            .instructions()
+        let workflow_transitions = all_instructions
             .iter()
-            .filter_map(|instruction| match instruction {
+            .filter_map(|instruction| match *instruction {
                 crate::Instruction::WorkflowTransition {
                     binding,
                     state_field,
@@ -234,15 +244,14 @@ impl CommandExplain {
                 _ => None,
             })
             .collect();
-        let workflow_leases = plan
-            .instructions()
+        let workflow_leases = all_instructions
             .iter()
             .filter_map(|instruction| {
                 let crate::Instruction::WorkflowLease {
                     binding,
                     fields,
                     operation,
-                } = instruction
+                } = *instruction
                 else {
                     return None;
                 };
@@ -340,19 +349,17 @@ impl CommandExplain {
             .iter()
             .map(|check| check.invariant_id())
             .collect();
-        let events = plan
-            .instructions()
+        let events = all_instructions
             .iter()
-            .filter_map(|instruction| match instruction {
+            .filter_map(|instruction| match *instruction {
                 crate::Instruction::EmitEvent(event) => Some(event.event_type()),
                 _ => None,
             })
             .collect();
         let outcomes = plan.outcomes().iter().map(|outcome| outcome.id()).collect();
-        let event_constructions = plan
-            .instructions()
+        let event_constructions = all_instructions
             .iter()
-            .filter_map(|instruction| match instruction {
+            .filter_map(|instruction| match *instruction {
                 crate::Instruction::EmitEvent(event) => Some(event.clone()),
                 _ => None,
             })

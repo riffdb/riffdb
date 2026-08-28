@@ -126,6 +126,12 @@ tag_registry!(binding_mode, "Binding mode", {
     CREATE = 0x03 => "create",
     DELETE = 0x04 => "delete",
     INIT_OR_MUTATE = 0x05 => "initialize or mutate",
+    OBSERVE_OR_INITIALIZE = 0x06 => "observe or initialize",
+});
+tag_registry!(command_decision_action, "Command decision action", {
+    APPLY = 0x01 => "apply",
+    NO_EFFECT = 0x02 => "no effect",
+    REJECT = 0x03 => "reject command",
 });
 tag_registry!(delete_policy_mode, "Delete policy mode", {
     NO_INBOUND = 0x01 => "no inbound relationship",
@@ -258,6 +264,7 @@ pub(crate) const TAG_REGISTRIES: &[TagRegistry] = &[
     binary_operator::REGISTRY,
     key_purpose::REGISTRY,
     binding_mode::REGISTRY,
+    command_decision_action::REGISTRY,
     delete_policy_mode::REGISTRY,
     delete_check_mode::REGISTRY,
     instruction::REGISTRY,
@@ -520,6 +527,18 @@ pub(crate) const INSTRUCTION_VARIANTS: &[TaggedVariantLayout] = &[
     }),
 ];
 
+/// Exact `CommandDecisionActionV1` payloads after the action tag.
+pub(crate) const COMMAND_DECISION_ACTION_VARIANTS: &[TaggedVariantLayout] = &[
+    tagged_variant!(command_decision_action::APPLY, "apply", {
+        "bindings" => "u32 count + canonical BindingId[]",
+        "instructions" => "u32 count + Instruction[]",
+    }),
+    tagged_variant!(command_decision_action::NO_EFFECT, "no effect", {}),
+    tagged_variant!(command_decision_action::REJECT, "reject command", {
+        "outcome" => "OutcomeConstruction",
+    }),
+];
+
 /// Exact `WorkflowLeaseOperation` payloads after the operation tag.
 pub(crate) const WORKFLOW_LEASE_OPERATION_VARIANTS: &[TaggedVariantLayout] = &[
     tagged_variant!(workflow_lease_operation::CLAIM, "claim", {
@@ -607,6 +626,11 @@ pub(crate) const TAGGED_UNION_LAYOUTS: &[TaggedUnionLayout] = &[
         name: "Instruction",
         tags: instruction::REGISTRY,
         variants: INSTRUCTION_VARIANTS,
+    },
+    TaggedUnionLayout {
+        name: "CommandDecisionActionV1",
+        tags: command_decision_action::REGISTRY,
+        variants: COMMAND_DECISION_ACTION_VARIANTS,
     },
     TaggedUnionLayout {
         name: "WorkflowLeaseOperation",
@@ -1224,6 +1248,7 @@ layout!(COMMAND_SEMANTICS_LAYOUT, "CommandSemantics", {
     "locality" => "LocalityPlan",
     "commit_checks" => "u32 count + CommitCheckPlan[]",
     "instructions" => "u32 count + Instruction[]",
+    "decisions" => "IR v18+: u32 count + CommandDecisionPlanV1[]; omitted in v1-v17",
     "secret_reveals" => "IR v11+: u32 count + SecretRevealSpecV1[]; omitted in v1-v10",
     "invocation_class" => "IR v10+: Command invocation class tag; application in v1-v9",
     "execution_class" => "Execution class tag",
@@ -1249,6 +1274,16 @@ layout!(COLLECTION_EXPANSION_LAYOUT, "CollectionExpansionPlanV1", {
     "first_instruction" => "dense zero-based u32 instruction position",
     "instruction_count" => "u32 consecutive template instructions; zero is valid for delete-only expansion",
     "duplicate_policy" => "u8 = 0x01 (reject)",
+});
+layout!(COMMAND_DECISION_LAYOUT, "CommandDecisionPlanV1", {
+    "binding" => "BindingId of one deferred initialized observation",
+    "collection_local" => "Boolean",
+    "when_arms" => "u32 count in 1..=8 + CommandDecisionArmV1[] in source order",
+    "else_action" => "CommandDecisionActionV1 tag plus exact selected payload",
+});
+layout!(COMMAND_DECISION_ARM_LAYOUT, "CommandDecisionArmV1", {
+    "predicate" => "ExprId of total Boolean expression",
+    "action" => "CommandDecisionActionV1 tag plus exact selected payload",
 });
 layout!(RELATIONSHIP_CHECK_LAYOUT, "RelationshipCheckPlan", {
     "relationship_name" => "string",
@@ -1446,6 +1481,8 @@ pub(crate) const FORMAT_LAYOUTS: &[FormatLayout] = &[
     COMMAND_SEMANTICS_LAYOUT,
     SECRET_REVEAL_SPEC_LAYOUT,
     COLLECTION_EXPANSION_LAYOUT,
+    COMMAND_DECISION_LAYOUT,
+    COMMAND_DECISION_ARM_LAYOUT,
     OUTCOME_SCHEMA_LAYOUT,
     BINDING_LAYOUT,
     ROOT_READ_LAYOUT,
@@ -2206,6 +2243,7 @@ mod tests {
                 BindingMode::Create,
                 BindingMode::Delete,
                 BindingMode::InitOrMutate,
+                BindingMode::ObserveOrInitialize,
             ]
             .map(|value| value as u8),
             registry_values(binding_mode::REGISTRY).as_slice()
@@ -2324,7 +2362,7 @@ mod tests {
         // (or a witness list both sides also append to) would make that
         // merge pass silently. Re-run this test after any merge touching the
         // registry.
-        assert_eq!(FORMAT_LAYOUTS.len(), 63);
+        assert_eq!(FORMAT_LAYOUTS.len(), 65);
         for layout in FORMAT_LAYOUTS {
             assert!(!layout.fields.is_empty(), "{}", layout.name);
             assert!(

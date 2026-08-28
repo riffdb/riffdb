@@ -75,6 +75,42 @@ contract InitializedStateRuntime version 1 {
   }
 }
 "#;
+const COMMAND_DECISION_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/compiler/command-decision/contract.riff"
+));
+const BULK_COMMAND_DECISION_SOURCE: &str = r#"
+contract BulkCommandDecisionRuntime version 1 {
+  entity State {
+    key (organization_id: uuid, state_id: uuid)
+    field active: bool
+    field revision: u64
+  }
+  aggregate States {
+    root State
+    partition_by organization_id
+    conflict_key (organization_id, state_id)
+  }
+  bulk command ApplyStates {
+    input request_id: uuid
+    input states: list<State, 1..100>
+    idempotency_key request_id
+    for state_input in states {
+      observe_or_initialize State(state_input.organization_id, state_input.state_id)
+        as state initialize { active: false, revision: 0 }
+      decide state {
+        when state.active == false => apply {
+          set state.active = true
+          set state.revision = state.revision + 1
+        }
+        when state.active == true => no_effect
+        else => reject StateConflict { state_id: state_input.state_id }
+      }
+    }
+    return Applied {}
+  }
+}
+"#;
 const SHARED_INITIALIZED_ROOT_SOURCE: &str = r#"
 contract SharedInitializedRootRuntime version 1 {
   entity Partition {
@@ -3621,6 +3657,233 @@ fn initialized_state_absence_emits_exactly_one_create() {
     };
     assert_eq!(image.target(), &target);
     assert_initialized_state(&bundle, image.fields(), 1);
+}
+
+#[test]
+fn command_decision_apply_constructs_only_the_selected_graph() {
+    let bundle = compile_contract_source(COMMAND_DECISION_SOURCE).expect("decision compiles");
+    let plan = command(&bundle, "ApplyState");
+    let input = input_record(
+        plan.input().record(),
+        [
+            ("request_id", CanonicalValue::Uuid([0x30; 16])),
+            ("organization_id", CanonicalValue::Uuid([0x31; 16])),
+            ("state_id", CanonicalValue::Uuid([0x32; 16])),
+            ("change_id", CanonicalValue::Uuid([0x33; 16])),
+        ],
+    );
+    let observations = plan
+        .bindings()
+        .iter()
+        .enumerate()
+        .map(|(index, _)| EntityObservation::Absent(derive_binding_target(plan, &input, index)))
+        .collect();
+    let read_snapshot = snapshot(plan_ref(&bundle, plan), observations);
+    let transaction = context(
+        &bundle,
+        plan,
+        &input,
+        LogicalTime::new(Timestamp::new(103, 0).expect("time")),
+    );
+    let ExecutionResult::CommitRequired(evaluated) = execute_command(
+        &bundle,
+        &input,
+        &read_snapshot,
+        &transaction,
+        EvaluationBudget::v1(),
+    )
+    .expect("apply decision evaluates") else {
+        panic!("decision mutation requires commit");
+    };
+    assert_eq!(evaluated.mutations().len(), 2);
+    assert!(
+        evaluated
+            .mutations()
+            .iter()
+            .all(|mutation| matches!(mutation, EntityMutation::Create(_)))
+    );
+}
+
+#[test]
+fn command_decision_no_effect_ignores_unselected_branch_failure() {
+    let bundle = compile_contract_source(COMMAND_DECISION_SOURCE).expect("decision compiles");
+    let plan = command(&bundle, "ApplyState");
+    let input = input_record(
+        plan.input().record(),
+        [
+            ("request_id", CanonicalValue::Uuid([0x40; 16])),
+            ("organization_id", CanonicalValue::Uuid([0x41; 16])),
+            ("state_id", CanonicalValue::Uuid([0x42; 16])),
+            ("change_id", CanonicalValue::Uuid([0x43; 16])),
+        ],
+    );
+    let state_target = derive_binding_target(plan, &input, 0);
+    let state_entity = bundle
+        .schema()
+        .entity(state_target.entity_type_id())
+        .expect("state entity");
+    let state = stored_record(
+        &bundle,
+        plan,
+        state_target,
+        input_record(
+            state_entity.record(),
+            [
+                ("organization_id", CanonicalValue::Uuid([0x41; 16])),
+                ("state_id", CanonicalValue::Uuid([0x42; 16])),
+                ("active", CanonicalValue::Bool(true)),
+                ("revision", CanonicalValue::U64(7)),
+            ],
+        ),
+    );
+    let change_target = derive_binding_target(plan, &input, 1);
+    let change_entity = bundle
+        .schema()
+        .entity(change_target.entity_type_id())
+        .expect("change entity");
+    let existing_change = stored_record(
+        &bundle,
+        plan,
+        change_target,
+        input_record(
+            change_entity.record(),
+            [
+                ("organization_id", CanonicalValue::Uuid([0x41; 16])),
+                ("state_id", CanonicalValue::Uuid([0x42; 16])),
+                ("change_id", CanonicalValue::Uuid([0x43; 16])),
+                ("recorded", CanonicalValue::Bool(true)),
+            ],
+        ),
+    );
+    let read_snapshot = snapshot(
+        plan_ref(&bundle, plan),
+        vec![
+            EntityObservation::Present(state),
+            EntityObservation::Present(existing_change),
+        ],
+    );
+    let transaction = context(
+        &bundle,
+        plan,
+        &input,
+        LogicalTime::new(Timestamp::new(104, 0).expect("time")),
+    );
+    let ExecutionResult::CommitRequired(evaluated) = execute_command(
+        &bundle,
+        &input,
+        &read_snapshot,
+        &transaction,
+        EvaluationBudget::v1(),
+    )
+    .expect("no-effect decision evaluates") else {
+        panic!("no-effect still persists one outcome");
+    };
+    assert!(evaluated.mutations().is_empty());
+    assert!(evaluated.event_intents().is_empty());
+}
+
+#[test]
+fn bulk_command_decisions_emit_only_selected_element_mutations() {
+    for count in [1usize, 9, 19, 100] {
+        let bundle =
+            compile_contract_source(BULK_COMMAND_DECISION_SOURCE).expect("bulk decision compiles");
+        let plan = command(&bundle, "ApplyStates");
+        let entity = bundle.schema().entities().first().expect("state entity");
+        let states = (0..count)
+            .map(|position| {
+                CanonicalValue::Record(input_record(
+                    entity.record(),
+                    [
+                        ("organization_id", CanonicalValue::Uuid([0x51; 16])),
+                        (
+                            "state_id",
+                            CanonicalValue::Uuid(
+                                [u8::try_from(position + 1).expect("bounded position"); 16],
+                            ),
+                        ),
+                        ("active", CanonicalValue::Bool(false)),
+                        ("revision", CanonicalValue::U64(0)),
+                    ],
+                ))
+            })
+            .collect();
+        let input = input_record(
+            plan.input().record(),
+            [
+                ("request_id", CanonicalValue::Uuid([0x50; 16])),
+                (
+                    "states",
+                    CanonicalValue::List(CanonicalList::new(states).expect("states")),
+                ),
+            ],
+        );
+        let facts = derive_input_command_facts(plan, input.clone()).expect("facts");
+        let observations = facts
+            .binding_plan_indices()
+            .iter()
+            .zip(facts.binding_entity_keys())
+            .enumerate()
+            .map(|(position, (binding_index, key))| {
+                let target = EntityTarget::new(
+                    plan.bindings()[*binding_index as usize].entity_type(),
+                    key.clone(),
+                )
+                .expect("target");
+                if position % 2 == 0 {
+                    EntityObservation::Absent(target)
+                } else {
+                    let key_values = entity
+                        .primary_key()
+                        .decode_entity(target.key())
+                        .expect("key values");
+                    EntityObservation::Present(stored_record(
+                        &bundle,
+                        plan,
+                        target,
+                        input_record(
+                            entity.record(),
+                            [
+                                ("organization_id", key_values[0].clone()),
+                                ("state_id", key_values[1].clone()),
+                                ("active", CanonicalValue::Bool(true)),
+                                ("revision", CanonicalValue::U64(7)),
+                            ],
+                        ),
+                    ))
+                }
+            })
+            .collect::<Vec<_>>();
+        let read_snapshot = snapshot(plan_ref(&bundle, plan), observations);
+        let transaction = TransactionContext::new(
+            RequestId::from_unix_milliseconds_and_random(1, [0x12; 10]).expect("request"),
+            AdmittedActorContext::new(
+                ActorId::new("runtime-test").expect("actor"),
+                ActorKind::Service,
+                TenantScope::Global,
+                None,
+            ),
+            plan_ref(&bundle, plan),
+            LogicalTime::new(Timestamp::new(105, 0).expect("time")),
+            facts.partition_key().clone(),
+        );
+        let ExecutionResult::CommitRequired(evaluated) = execute_command(
+            &bundle,
+            &input,
+            &read_snapshot,
+            &transaction,
+            EvaluationBudget::v1(),
+        )
+        .expect("bulk decisions evaluate") else {
+            panic!("bulk decision requires commit");
+        };
+        assert_eq!(evaluated.mutations().len(), count.div_ceil(2));
+        assert!(
+            evaluated
+                .mutations()
+                .iter()
+                .all(|mutation| matches!(mutation, EntityMutation::Create(_)))
+        );
+    }
 }
 
 #[test]

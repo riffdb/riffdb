@@ -187,6 +187,16 @@ pub(crate) enum Token {
     Create,
     #[token("init_or_mutate")]
     InitOrMutate,
+    #[token("observe_or_initialize")]
+    ObserveOrInitialize,
+    #[token("decide")]
+    Decide,
+    #[token("apply")]
+    Apply,
+    #[token("no_effect")]
+    NoEffect,
+    #[token("reject")]
+    Reject,
     #[token("initialize")]
     Initialize,
     #[token("as")]
@@ -278,6 +288,8 @@ pub(crate) enum Token {
     GreaterEqual,
     #[token("->")]
     Arrow,
+    #[token("=>")]
+    FatArrow,
     #[token("==")]
     EqualEqual,
     #[token("!=")]

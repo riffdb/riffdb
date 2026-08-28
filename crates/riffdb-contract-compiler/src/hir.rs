@@ -9,7 +9,7 @@ use riffdb_contract_ir::{
 use riffdb_contract_syntax::Span;
 use riffdb_contract_syntax::ast::{
     AggregateItem, Aggregation, Binding, BulkIteration, CommandDeclaration, CommandKind,
-    Declaration, DeletePolicyDeclaration, Effect, EntityBinding, EntityItem,
+    DecisionAction, Declaration, DeletePolicyDeclaration, Effect, EntityBinding, EntityItem,
     EventPolicyAnchorDeclaration, Expression, ObjectLiteral, OutcomeExpression, Path,
     RowPolicyOperation, ServiceValueKind, SetEffect, TypeExpression,
     WorkflowLeaseOperation as SyntaxWorkflowLeaseOperation,
@@ -348,6 +348,74 @@ struct SecretRevealScopeEntry {
 
 type SecretRevealScope = BTreeMap<String, SecretRevealScopeEntry>;
 
+#[derive(Clone, Copy)]
+enum CommandBindingSource<'a> {
+    Existing(&'a Binding),
+    Deferred(&'a riffdb_contract_syntax::ast::InitializedEntityBinding),
+}
+
+impl<'a> CommandBindingSource<'a> {
+    fn entity(self) -> &'a Spanned<String> {
+        match self {
+            Self::Existing(binding) => binding.entity(),
+            Self::Deferred(binding) => &binding.entity,
+        }
+    }
+
+    fn name(self) -> &'a Spanned<String> {
+        match self {
+            Self::Existing(binding) => binding.name(),
+            Self::Deferred(binding) => &binding.binding,
+        }
+    }
+
+    fn arguments(self) -> &'a [Spanned<Expression>] {
+        match self {
+            Self::Existing(binding) => binding.arguments(),
+            Self::Deferred(binding) => &binding.arguments,
+        }
+    }
+
+    fn initializer(self) -> Option<&'a Spanned<ObjectLiteral>> {
+        match self {
+            Self::Existing(binding) => binding.initializer(),
+            Self::Deferred(binding) => Some(&binding.initializer),
+        }
+    }
+
+    fn failure(self) -> Option<&'a Spanned<OutcomeExpression>> {
+        match self {
+            Self::Existing(binding) => binding.failure(),
+            Self::Deferred(_) => None,
+        }
+    }
+
+    fn restriction_failure(self) -> Option<&'a Spanned<OutcomeExpression>> {
+        match self {
+            Self::Existing(binding) => binding.restriction_failure(),
+            Self::Deferred(_) => None,
+        }
+    }
+
+    fn cascade_failure(self) -> Option<&'a Spanned<OutcomeExpression>> {
+        match self {
+            Self::Existing(binding) => binding.cascade_failure(),
+            Self::Deferred(_) => None,
+        }
+    }
+
+    fn mode(self) -> BindingMode {
+        match self {
+            Self::Existing(Binding::Read(_)) => BindingMode::Read,
+            Self::Existing(Binding::Mutate(_)) => BindingMode::Mutate,
+            Self::Existing(Binding::Create(_)) => BindingMode::Create,
+            Self::Existing(Binding::InitOrMutate(_)) => BindingMode::InitOrMutate,
+            Self::Existing(Binding::Delete(_)) => BindingMode::Delete,
+            Self::Deferred(_) => BindingMode::ObserveOrInitialize,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct HirOutcome {
     pub(crate) id: OutcomeId,
@@ -378,6 +446,35 @@ pub(crate) struct HirRequirement {
     pub(crate) name_span: Span,
     pub(crate) condition: HirExpressionRoot,
     pub(crate) rejection: HirOutcome,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct HirCommandDecision {
+    pub(crate) binding: BindingId,
+    pub(crate) collection_local: bool,
+    pub(crate) when_arms: Vec<HirDecisionArm>,
+    pub(crate) else_action: HirDecisionAction,
+    pub(crate) span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct HirDecisionArm {
+    pub(crate) predicate: HirExpressionRoot,
+    pub(crate) action: HirDecisionAction,
+    pub(crate) span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum HirDecisionAction {
+    Apply {
+        bindings: Vec<BindingId>,
+        effects: Vec<HirEffect>,
+        span: Span,
+    },
+    NoEffect {
+        span: Span,
+    },
+    Reject(HirOutcome),
 }
 
 #[derive(Clone, Debug)]
@@ -479,6 +576,7 @@ pub(crate) struct HirCommand {
     pub(crate) bindings: Vec<HirBinding>,
     pub(crate) requirements: Vec<HirRequirement>,
     pub(crate) effects: Vec<HirEffect>,
+    pub(crate) decisions: Vec<HirCommandDecision>,
     pub(crate) success: HirOutcome,
     pub(crate) expressions: HirExpressionArena,
     pub(crate) collection_expansion: Option<HirCollectionExpansion>,
@@ -2169,50 +2267,99 @@ fn lower_commands(
             }
             (CommandKind::Reimport, _) => unreachable!("reimport syntax is normalized above"),
         }
-        let mut binding_descriptors = Vec::new();
-        let top_level_binding_count = source.bindings.len();
+        let mut binding_sources = source
+            .bindings
+            .iter()
+            .map(|binding| (CommandBindingSource::Existing(&binding.value), false))
+            .collect::<Vec<_>>();
+        for decision in &source.decisions {
+            binding_sources.push((
+                CommandBindingSource::Deferred(&decision.value.binding),
+                false,
+            ));
+            for action in decision
+                .value
+                .when_arms
+                .iter()
+                .map(|arm| &arm.value.action.value)
+                .chain(std::iter::once(&decision.value.else_action.value))
+            {
+                if let DecisionAction::Apply { bindings, .. } = action {
+                    binding_sources.extend(
+                        bindings
+                            .iter()
+                            .map(|binding| (CommandBindingSource::Existing(&binding.value), false)),
+                    );
+                }
+            }
+        }
+        let top_level_binding_count = binding_sources.len();
         let collection_bindings = source
             .bulk_iteration
             .as_ref()
             .map_or(&[][..], |iteration| iteration.value.bindings.as_slice());
-        for (index, (binding, collection_local)) in source
-            .bindings
-            .iter()
-            .map(|binding| (binding, false))
-            .chain(collection_bindings.iter().map(|binding| (binding, true)))
-            .enumerate()
-        {
-            let mode = match &binding.value {
-                Binding::Read(_) => BindingMode::Read,
-                Binding::Mutate(_) => BindingMode::Mutate,
-                Binding::Create(_) => BindingMode::Create,
-                Binding::InitOrMutate(_) => BindingMode::InitOrMutate,
-                Binding::Delete(_) => BindingMode::Delete,
-            };
-            let Some(entity_id) = symbols.entities.get(&binding.value.entity().value).copied()
-            else {
+        binding_sources.extend(
+            collection_bindings
+                .iter()
+                .map(|binding| (CommandBindingSource::Existing(&binding.value), true)),
+        );
+        if let Some(iteration) = &source.bulk_iteration {
+            for decision in &iteration.value.decisions {
+                binding_sources.push((
+                    CommandBindingSource::Deferred(&decision.value.binding),
+                    true,
+                ));
+                for action in decision
+                    .value
+                    .when_arms
+                    .iter()
+                    .map(|arm| &arm.value.action.value)
+                    .chain(std::iter::once(&decision.value.else_action.value))
+                {
+                    if let DecisionAction::Apply { bindings, .. } = action {
+                        binding_sources.extend(
+                            bindings.iter().map(|binding| {
+                                (CommandBindingSource::Existing(&binding.value), true)
+                            }),
+                        );
+                    }
+                }
+            }
+        }
+        let mut binding_descriptors = Vec::new();
+        let mut binding_names = BTreeSet::new();
+        for (index, (binding, collection_local)) in binding_sources.into_iter().enumerate() {
+            let mode = binding.mode();
+            if !binding_names.insert(binding.name().value.as_str()) {
+                diagnostics.push(CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::DuplicateName,
+                    binding.name().span,
+                ));
+                continue;
+            }
+            let Some(entity_id) = symbols.entities.get(&binding.entity().value).copied() else {
                 diagnostics.push(CompilerDiagnostic::new(
                     CompilerDiagnosticCode::UnknownName,
-                    binding.value.entity().span,
+                    binding.entity().span,
                 ));
                 continue;
             };
             let Some(entity) = entities.iter().find(|entity| entity.id == entity_id) else {
                 diagnostics.push(CompilerDiagnostic::new(
                     CompilerDiagnosticCode::InvalidIr,
-                    binding.value.entity().span,
+                    binding.entity().span,
                 ));
                 continue;
             };
             let Ok(index) = u32::try_from(index) else {
                 diagnostics.push(CompilerDiagnostic::new(
                     CompilerDiagnosticCode::BoundExceeded,
-                    binding.value.name().span,
+                    binding.name().span,
                 ));
                 continue;
             };
             binding_descriptors.push((
-                &binding.value,
+                binding,
                 BindingId::new(index),
                 mode,
                 entity,
@@ -2469,12 +2616,58 @@ fn lower_commands(
             .bulk_iteration
             .as_ref()
             .map_or(&[][..], |iteration| iteration.value.effects.as_slice());
-        let mut lowered_collection_effect_count = 0usize;
-        for (effect, collection_local) in collection_effects
+        let decision_sources = source
+            .decisions
             .iter()
-            .map(|effect| (effect, true))
-            .chain(source.effects.iter().map(|effect| (effect, false)))
-        {
+            .map(|decision| (decision, false))
+            .chain(
+                source
+                    .bulk_iteration
+                    .iter()
+                    .flat_map(|iteration| iteration.value.decisions.iter())
+                    .map(|decision| (decision, true)),
+            )
+            .collect::<Vec<_>>();
+        let mut effect_sources = Vec::new();
+        for (decision_index, (decision, collection_local)) in decision_sources.iter().enumerate() {
+            for (arm_index, arm) in decision.value.when_arms.iter().enumerate() {
+                if let DecisionAction::Apply { effects, .. } = &arm.value.action.value {
+                    effect_sources.extend(effects.iter().map(|effect| {
+                        (effect, *collection_local, Some((decision_index, arm_index)))
+                    }));
+                }
+            }
+            if let DecisionAction::Apply { effects, .. } = &decision.value.else_action.value {
+                effect_sources.extend(effects.iter().map(|effect| {
+                    (
+                        effect,
+                        *collection_local,
+                        Some((decision_index, decision.value.when_arms.len())),
+                    )
+                }));
+            }
+        }
+        let bulk_has_decisions = source
+            .bulk_iteration
+            .as_ref()
+            .is_some_and(|iteration| !iteration.value.decisions.is_empty());
+        if bulk_has_decisions {
+            diagnostics.extend(collection_effects.iter().map(|effect| {
+                CompilerDiagnostic::new(CompilerDiagnosticCode::InvalidMutation, effect.span)
+            }));
+        } else {
+            effect_sources.extend(collection_effects.iter().map(|effect| (effect, true, None)));
+        }
+        if source.decisions.is_empty() {
+            effect_sources.extend(source.effects.iter().map(|effect| (effect, false, None)));
+        } else {
+            diagnostics.extend(source.effects.iter().map(|effect| {
+                CompilerDiagnostic::new(CompilerDiagnosticCode::InvalidMutation, effect.span)
+            }));
+        }
+        let mut decision_effects = BTreeMap::<(usize, usize), Vec<HirEffect>>::new();
+        let mut lowered_collection_effect_count = 0usize;
+        for (effect, collection_local, decision_action) in effect_sources {
             let effects_before = effects.len();
             resolver.set_collection_context(collection_local);
             match &effect.value {
@@ -2924,9 +3117,89 @@ fn lower_commands(
                     });
                 }
             }
-            if collection_local {
+            if let Some(action) = decision_action {
+                decision_effects
+                    .entry(action)
+                    .or_default()
+                    .extend(effects.drain(effects_before..));
+            } else if collection_local {
                 lowered_collection_effect_count += effects.len() - effects_before;
             }
+        }
+        let mut decisions = Vec::new();
+        for (decision_index, (decision, collection_local)) in decision_sources.iter().enumerate() {
+            resolver.set_collection_context(*collection_local);
+            let Some(binding) = binding_by_name
+                .get(decision.value.binding.binding.value.as_str())
+                .copied()
+            else {
+                diagnostics.push(CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::UnknownName,
+                    decision.value.binding.binding.span,
+                ));
+                continue;
+            };
+            if binding.mode != BindingMode::ObserveOrInitialize
+                || decision.value.subject.value != decision.value.binding.binding.value
+            {
+                diagnostics.push(CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::InvalidBinding,
+                    decision.value.subject.span,
+                ));
+                continue;
+            }
+            let mut when_arms = Vec::new();
+            for (arm_index, arm) in decision.value.when_arms.iter().enumerate() {
+                let Some(predicate) = lower_root(
+                    &mut resolver,
+                    &arm.value.predicate,
+                    Some(&ValueType::bool()),
+                    false,
+                    diagnostics,
+                ) else {
+                    continue;
+                };
+                let Some(action) = lower_decision_action(
+                    command_id,
+                    &arm.value.action,
+                    decision_effects
+                        .remove(&(decision_index, arm_index))
+                        .unwrap_or_default(),
+                    symbols,
+                    &mut resolver,
+                    &reveal_scope,
+                    &binding_by_name,
+                    diagnostics,
+                ) else {
+                    continue;
+                };
+                when_arms.push(HirDecisionArm {
+                    predicate,
+                    action,
+                    span: arm.span,
+                });
+            }
+            let Some(else_action) = lower_decision_action(
+                command_id,
+                &decision.value.else_action,
+                decision_effects
+                    .remove(&(decision_index, decision.value.when_arms.len()))
+                    .unwrap_or_default(),
+                symbols,
+                &mut resolver,
+                &reveal_scope,
+                &binding_by_name,
+                diagnostics,
+            ) else {
+                continue;
+            };
+            decisions.push(HirCommandDecision {
+                binding: binding.id,
+                collection_local: *collection_local,
+                when_arms,
+                else_action,
+                span: decision.span,
+            });
         }
         let mut collection_initializers = Vec::new();
         let mut top_level_initializers = Vec::new();
@@ -3080,7 +3353,7 @@ fn lower_commands(
                     .iter()
                     .filter(|binding| binding.collection_local)
                     .count();
-                if binding_count == 0 || binding_count != collection_bindings.len() {
+                if binding_count == 0 {
                     diagnostics.push(CompilerDiagnostic::new(
                         CompilerDiagnosticCode::InvalidBinding,
                         span,
@@ -3120,6 +3393,7 @@ fn lower_commands(
             bindings,
             requirements,
             effects,
+            decisions,
             success,
             expressions,
             collection_expansion,
@@ -3127,6 +3401,70 @@ fn lower_commands(
         });
     }
     result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lower_decision_action(
+    command_id: CommandId,
+    source: &Spanned<DecisionAction>,
+    effects: Vec<HirEffect>,
+    symbols: &GenesisSymbols,
+    resolver: &mut ExpressionLowerer<'_>,
+    reveal_scope: &SecretRevealScope,
+    binding_by_name: &BTreeMap<&str, &HirBinding>,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) -> Option<HirDecisionAction> {
+    match &source.value {
+        DecisionAction::Apply { bindings, .. } => {
+            let mut ids = Vec::with_capacity(bindings.len());
+            for binding in bindings {
+                let Some(lowered) = binding_by_name.get(binding.value.name().value.as_str()) else {
+                    diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::UnknownName,
+                        binding.value.name().span,
+                    ));
+                    return None;
+                };
+                ids.push(lowered.id);
+            }
+            ids.sort_unstable();
+            Some(HirDecisionAction::Apply {
+                bindings: ids,
+                effects,
+                span: source.span,
+            })
+        }
+        DecisionAction::NoEffect => {
+            if !effects.is_empty() {
+                diagnostics.push(CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::InvalidMutation,
+                    source.span,
+                ));
+                None
+            } else {
+                Some(HirDecisionAction::NoEffect { span: source.span })
+            }
+        }
+        DecisionAction::Reject(outcome) => {
+            if !effects.is_empty() {
+                diagnostics.push(CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::InvalidMutation,
+                    source.span,
+                ));
+                return None;
+            }
+            lower_outcome(
+                command_id,
+                outcome,
+                symbols,
+                resolver,
+                reveal_scope,
+                false,
+                diagnostics,
+            )
+            .map(HirDecisionAction::Reject)
+        }
+    }
 }
 
 fn normalize_reimport_command(
@@ -3287,11 +3625,13 @@ fn normalize_reimport_command(
         service_values: Vec::new(),
         idempotency: None,
         bindings: Vec::new(),
+        decisions: Vec::new(),
         bulk_iteration: Some(Spanned::new(
             BulkIteration {
                 element: Spanned::new(record_name, record_span),
                 collection: clause.value.source.clone(),
                 bindings,
+                decisions: Vec::new(),
                 requirements: Vec::new(),
                 effects,
             },

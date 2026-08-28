@@ -107,6 +107,150 @@ fn initialized_transition_revalidates_absent_and_present_races_without_stale_con
 }
 
 #[test]
+fn sealed_decision_apply_then_no_effect_persists_two_outcomes_and_one_entity_version() {
+    let database = BulkRowsDatabase::create("sealed-decision-apply-no-effect");
+    let ports = database.open();
+    let rows = [[0x48; 16], [0x49; 16]];
+    let apply = database.prepare_decision_put(&ports, &rows, 0x4a, 0x5a, 0x6a);
+    let no_effect = database.prepare_decision_put(&ports, &rows, 0x4b, 0x5b, 0x6b);
+    let notifications = Arc::new(RecordingApplicationCommitNotifications::default());
+    let coordinator = start_coordinator_with_notifications(
+        ports,
+        Arc::new(FixedAdmissionClock::new(command_timestamp())),
+        Arc::new(IncrementingProvenanceSource::new(0x72)),
+        notifications.clone(),
+    );
+    let executor = coordinator.command_executor();
+
+    let outcomes = runtime().block_on(async {
+        let apply = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve apply")
+            .submit(apply)
+            .expect("submit apply")
+            .completion()
+            .await
+            .expect("complete apply");
+        let no_effect = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve no effect")
+            .submit(no_effect)
+            .expect("submit no effect")
+            .completion()
+            .await
+            .expect("complete no effect");
+        [apply, no_effect]
+    });
+    assert!(
+        outcomes
+            .iter()
+            .all(|outcome| matches!(outcome, CommandExecutionResult::Committed(_)))
+    );
+    assert_eq!(
+        notifications.sequences(),
+        vec![
+            CommitSequence::first(),
+            CommitSequence::new(2).expect("second sequence"),
+        ]
+    );
+
+    drop(executor);
+    coordinator.shutdown().expect("drain decision coordinator");
+    let reopened = database.open();
+    for row in rows {
+        let stored = reopened
+            .read_entity(&database.row_target(row))
+            .expect("read decision row")
+            .expect("decision row exists");
+        assert_eq!(
+            stored.entity_version(),
+            riffdb_types::EntityVersion::first()
+        );
+    }
+}
+
+#[test]
+fn sealed_decision_rejection_discards_every_earlier_bulk_effect() {
+    let database = BulkRowsDatabase::create("sealed-decision-whole-command-rejection");
+    let ports = database.open();
+    let rejected_row = [0x4c; 16];
+    let provisional_row = [0x4d; 16];
+    let seed =
+        database.prepare_decision_put_with_values(&ports, &[rejected_row], &[-1], 0x4e, 0x5e, 0x6e);
+    let reject = database.prepare_decision_put_with_values(
+        &ports,
+        &[provisional_row, rejected_row],
+        &[7, 2],
+        0x4f,
+        0x5f,
+        0x6f,
+    );
+    let notifications = Arc::new(RecordingApplicationCommitNotifications::default());
+    let coordinator = start_coordinator_with_notifications(
+        ports,
+        Arc::new(FixedAdmissionClock::new(command_timestamp())),
+        Arc::new(IncrementingProvenanceSource::new(0x73)),
+        notifications.clone(),
+    );
+    let executor = coordinator.command_executor();
+
+    let outcomes = runtime().block_on(async {
+        let seed = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve negative seed")
+            .submit(seed)
+            .expect("submit negative seed")
+            .completion()
+            .await
+            .expect("complete negative seed");
+        let reject = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve rejecting bulk command")
+            .submit(reject)
+            .expect("submit rejecting bulk command")
+            .completion()
+            .await
+            .expect("complete typed rejection");
+        [seed, reject]
+    });
+    assert!(
+        outcomes
+            .iter()
+            .all(|outcome| matches!(outcome, CommandExecutionResult::Committed(_)))
+    );
+    assert_eq!(
+        notifications.sequences(),
+        vec![
+            CommitSequence::first(),
+            CommitSequence::new(2).expect("rejection sequence"),
+        ]
+    );
+
+    drop(executor);
+    coordinator.shutdown().expect("drain decision coordinator");
+    let reopened = database.open();
+    assert!(
+        reopened
+            .read_entity(&database.row_target(provisional_row))
+            .expect("read provisional row")
+            .is_none(),
+        "an earlier apply arm must not survive a later element rejection"
+    );
+    let rejected = reopened
+        .read_entity(&database.row_target(rejected_row))
+        .expect("read rejected row")
+        .expect("negative seed remains");
+    assert_eq!(
+        rejected.entity_version(),
+        riffdb_types::EntityVersion::first()
+    );
+}
+
+#[test]
 fn shared_initialized_root_and_local_transitions_commit_and_replay_as_one_graph() {
     let database = BulkRowsDatabase::create("shared-initialized-root");
     let ports = database.open();

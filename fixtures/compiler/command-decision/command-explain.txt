@@ -1,0 +1,33 @@
+command:1
+execution:IdempotentMutation
+expression:0 type=ValueType(Uuid) op=input-field:4
+expression:1 type=ValueType(Uuid) op=input-field:1
+expression:2 type=ValueType(Bool) op=constant(redacted)
+expression:3 type=ValueType(U64) op=constant(redacted)
+expression:4 type=ValueType(Uuid) op=input-field:4
+expression:5 type=ValueType(Uuid) op=input-field:1
+expression:6 type=ValueType(Uuid) op=input-field:2
+expression:7 type=ValueType(Bool) op=constant(redacted)
+expression:8 type=ValueType(U64) op=bound-field:0:2
+expression:9 type=ValueType(U64) op=constant(redacted)
+expression:10 type=ValueType(U64) op=binary:Add:8:9
+expression:11 type=ValueType(Bool) op=constant(redacted)
+expression:12 type=ValueType(Bool) op=bound-field:0:1
+expression:13 type=ValueType(Bool) op=constant(redacted)
+expression:14 type=ValueType(Bool) op=binary:Equal:12:13
+expression:15 type=ValueType(Bool) op=bound-field:0:1
+expression:16 type=ValueType(Bool) op=constant(redacted)
+expression:17 type=ValueType(Bool) op=binary:Equal:15:16
+expression:18 type=ValueType(Uuid) op=input-field:1
+partition:expr=0 purpose=Partition(AggregateTypeId(1)) components=1
+conflict:0 purpose=Conflict(AggregateTypeId(1)) expressions=[0,1]
+conflict:1 purpose=Conflict(AggregateTypeId(1)) expressions=[4,5]
+binding:0 mode=ObserveOrInitialize entity=1 complete=false reads=[1,2]
+initialize:0 fields=[1:2,2:3] state-independent:true
+binding:1 mode=Create entity=2 complete=false reads=[]
+write:0:1
+write:0:2
+write:1:1
+outcome:1 fields=[]
+outcome:2 fields=[]
+outcome:3 fields=[1:ValueType(Uuid)]

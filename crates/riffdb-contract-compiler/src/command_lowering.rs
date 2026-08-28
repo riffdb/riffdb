@@ -4,20 +4,21 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use riffdb_contract_ir::{
     BindingId, BindingMode, BindingPlan, CollectionDuplicatePolicyV1, CollectionExpansionPlanV1,
-    CommandInputSchema, CommandInvocationClass, CommandPlan, CommitCheckPlan,
-    ConflictDerivationPlan, EventConstruction, EventSchema, ExecutionClass, ExprId, ExpressionKind,
-    FieldExpression, FieldSchema, Instruction, IrValidationError, KeySchema, LocalityPlan,
-    OutcomeConstruction, OutcomeSchema, RecordSchema, RecordTypeRef, RootValidationReadId,
-    RootValidationReadPlan, SchemaIr, SecretRevealDestinationV1, SecretRevealSpecV1,
-    ServiceValueKind, ServiceValueSchema, WorkflowLeaseFields, WorkflowLeaseOperation,
+    CommandDecisionActionV1, CommandDecisionArmV1, CommandDecisionPlanV1, CommandInputSchema,
+    CommandInvocationClass, CommandPlan, CommitCheckPlan, ConflictDerivationPlan,
+    EventConstruction, EventSchema, ExecutionClass, ExprId, ExpressionKind, FieldExpression,
+    FieldSchema, Instruction, IrValidationError, KeySchema, LocalityPlan, OutcomeConstruction,
+    OutcomeSchema, RecordSchema, RecordTypeRef, RootValidationReadId, RootValidationReadPlan,
+    SchemaIr, SecretRevealDestinationV1, SecretRevealSpecV1, ServiceValueKind, ServiceValueSchema,
+    WorkflowLeaseFields, WorkflowLeaseOperation,
 };
 use riffdb_contract_syntax::Span;
 use riffdb_types::{CanonicalValue, ContractLineage, EntityTypeId, FieldId, InvariantId};
 
 use crate::diagnostic::{CompilerDiagnostic, CompilerDiagnosticCode, CompilerDiagnostics};
 use crate::hir::{
-    HirBinding, HirCommand, HirEffect, HirExpressionArena, HirExpressionNode, HirOutcome,
-    HirWorkflowLeaseOperation, TypedContractHir,
+    HirBinding, HirCommand, HirDecisionAction, HirEffect, HirExpressionArena, HirExpressionNode,
+    HirOutcome, HirWorkflowLeaseOperation, TypedContractHir,
 };
 use crate::locality::command_expression_fingerprint;
 
@@ -223,7 +224,6 @@ fn lower_command(
             occurrences.push(failure);
         }
     }
-    let rejection_base = occurrences.len();
     occurrences.extend(
         command
             .requirements
@@ -235,6 +235,31 @@ fn lower_command(
         HirEffect::WorkflowLease { operation, .. } => lease_hir_outcomes(operation),
         HirEffect::Set { .. } | HirEffect::Embed { .. } | HirEffect::Emit { .. } => Vec::new(),
     }));
+    for decision in &command.decisions {
+        for action in decision
+            .when_arms
+            .iter()
+            .map(|arm| &arm.action)
+            .chain(std::iter::once(&decision.else_action))
+        {
+            match action {
+                HirDecisionAction::Apply { effects, .. } => {
+                    occurrences.extend(effects.iter().flat_map(|effect| match effect {
+                        HirEffect::WorkflowTransition { stale, illegal, .. } => {
+                            vec![stale, illegal]
+                        }
+                        HirEffect::WorkflowLease { operation, .. } => lease_hir_outcomes(operation),
+                        HirEffect::Set { .. }
+                        | HirEffect::Embed { .. }
+                        | HirEffect::Emit { .. } => Vec::new(),
+                    }));
+                }
+                HirDecisionAction::Reject(outcome) => occurrences.push(outcome),
+                HirDecisionAction::NoEffect { .. } => {}
+            }
+        }
+    }
+    let success_occurrence = occurrences.len();
     occurrences.push(&command.success);
     let secret_reveals = lower_secret_reveals(command, &occurrences);
     let (outcome_schemas, normalized_outcomes) = normalize_outcomes(
@@ -243,19 +268,6 @@ fn lower_command(
         &mut hir_expressions,
         &mut diagnostics,
     );
-    let effect_outcome_count = command
-        .effects
-        .iter()
-        .try_fold(0usize, |count, effect| {
-            let additional = match effect {
-                HirEffect::WorkflowTransition { .. } => 2,
-                HirEffect::WorkflowLease { operation, .. } => lease_hir_outcomes(operation).len(),
-                HirEffect::Set { .. } | HirEffect::Embed { .. } | HirEffect::Emit { .. } => 0,
-            };
-            count.checked_add(additional)
-        })
-        .ok_or_else(|| vec![ir_diagnostic(command.span)])?;
-    let success_occurrence = rejection_base + command.requirements.len() + effect_outcome_count;
 
     let (locality, aggregate_id) =
         lower_locality(hir, schema, command, &mut hir_expressions, &mut diagnostics);
@@ -313,7 +325,39 @@ fn lower_command(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|diagnostic| vec![diagnostic])?;
 
-    let all_roots = collect_influential_roots(&raw_checks, &raw_instructions, &constructions);
+    let construction_by_span = normalized_outcomes
+        .iter()
+        .enumerate()
+        .map(|(index, occurrence)| (occurrence.source.span, index))
+        .collect::<BTreeMap<_, _>>();
+    let decision_plans = lower_command_decisions(
+        command,
+        &construction_by_span,
+        &constructions,
+        schema,
+        &expressions,
+    )
+    .map_err(|diagnostic| vec![diagnostic])?;
+
+    let mut all_roots = collect_influential_roots(&raw_checks, &raw_instructions, &constructions);
+    for decision in &decision_plans {
+        all_roots.extend(
+            decision
+                .when_arms()
+                .iter()
+                .map(CommandDecisionArmV1::predicate),
+        );
+        for action in decision
+            .when_arms()
+            .iter()
+            .map(CommandDecisionArmV1::action)
+            .chain(std::iter::once(decision.else_action()))
+        {
+            for instruction in action.instructions() {
+                append_instruction_roots(instruction, &mut all_roots);
+            }
+        }
+    }
     let (mut accessed_fields, complete_access) = read_dependencies(
         &expressions,
         command.bindings.len(),
@@ -359,8 +403,16 @@ fn lower_command(
                 .map(|argument| argument.id)
                 .collect();
             let accessed_fields = accessed_fields[index].iter().copied().collect();
-            if binding.mode == BindingMode::InitOrMutate {
-                BindingPlan::new_initialized(
+            if matches!(
+                binding.mode,
+                BindingMode::InitOrMutate | BindingMode::ObserveOrInitialize
+            ) {
+                let constructor = if binding.mode == BindingMode::InitOrMutate {
+                    BindingPlan::new_initialized
+                } else {
+                    BindingPlan::new_deferred_initialized
+                };
+                constructor(
                     binding.id,
                     binding.name.clone(),
                     binding.entity_id,
@@ -576,9 +628,11 @@ fn lower_command(
             BindingMode::Mutate
                 | BindingMode::Create
                 | BindingMode::InitOrMutate
+                | BindingMode::ObserveOrInitialize
                 | BindingMode::Delete
         )
     }) || !command.effects.is_empty()
+        || !command.decisions.is_empty()
     {
         ExecutionClass::IdempotentMutation
     } else {
@@ -668,7 +722,7 @@ fn lower_command(
                 schema,
             )
         } else {
-            CommandPlan::new_collection_with_secret_reveals(
+            CommandPlan::new_collection_with_decisions_and_secret_reveals(
                 command.id,
                 contract_lineage,
                 command.name.clone(),
@@ -685,13 +739,14 @@ fn lower_command(
                 commit_checks,
                 instructions,
                 expansion,
+                decision_plans,
                 secret_reveals,
                 execution_class,
                 schema,
             )
         }
     } else {
-        CommandPlan::new_with_service_values_and_secret_reveals(
+        CommandPlan::new_with_decisions_and_secret_reveals(
             command.id,
             contract_lineage,
             command.name.clone(),
@@ -707,6 +762,7 @@ fn lower_command(
             locality,
             commit_checks,
             instructions,
+            decision_plans,
             secret_reveals,
             execution_class,
             schema,
@@ -739,7 +795,18 @@ fn lower_secret_reveals(command: &HirCommand, outcomes: &[&HirOutcome]) -> Vec<S
             }));
         }
     }
-    for effect in &command.effects {
+    let decision_effects = command.decisions.iter().flat_map(|decision| {
+        decision
+            .when_arms
+            .iter()
+            .map(|arm| &arm.action)
+            .chain(std::iter::once(&decision.else_action))
+            .flat_map(|action| match action {
+                HirDecisionAction::Apply { effects, .. } => effects.iter().collect::<Vec<_>>(),
+                HirDecisionAction::NoEffect { .. } | HirDecisionAction::Reject(_) => Vec::new(),
+            })
+    });
+    for effect in command.effects.iter().chain(decision_effects) {
         match effect {
             HirEffect::Set {
                 binding,
@@ -782,6 +849,395 @@ fn lower_secret_reveals(command: &HirCommand, outcomes: &[&HirOutcome]) -> Vec<S
     reveals.sort_unstable();
     reveals.dedup();
     reveals
+}
+
+fn lower_command_decisions(
+    command: &HirCommand,
+    construction_by_span: &BTreeMap<Span, usize>,
+    constructions: &[OutcomeConstruction],
+    schema: &SchemaIr,
+    expressions: &riffdb_contract_ir::ExpressionArena,
+) -> Result<Vec<CommandDecisionPlanV1>, CompilerDiagnostic> {
+    command
+        .decisions
+        .iter()
+        .map(|decision| {
+            let when_arms = decision
+                .when_arms
+                .iter()
+                .map(|arm| {
+                    lower_decision_action(
+                        &arm.action,
+                        construction_by_span,
+                        constructions,
+                        schema,
+                        expressions,
+                    )
+                    .map_err(|_| ir_diagnostic(arm.span))
+                    .map(|action| CommandDecisionArmV1::new(arm.predicate.id, action))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let else_action = lower_decision_action(
+                &decision.else_action,
+                construction_by_span,
+                constructions,
+                schema,
+                expressions,
+            )?;
+            CommandDecisionPlanV1::new(
+                decision.binding,
+                decision.collection_local,
+                when_arms,
+                else_action,
+            )
+            .map_err(|_| ir_diagnostic(decision.span))
+        })
+        .collect()
+}
+
+fn lower_decision_action(
+    action: &HirDecisionAction,
+    construction_by_span: &BTreeMap<Span, usize>,
+    constructions: &[OutcomeConstruction],
+    schema: &SchemaIr,
+    expressions: &riffdb_contract_ir::ExpressionArena,
+) -> Result<CommandDecisionActionV1, CompilerDiagnostic> {
+    match action {
+        HirDecisionAction::Apply {
+            bindings,
+            effects,
+            span,
+        } => Ok(CommandDecisionActionV1::Apply {
+            bindings: bindings.clone(),
+            instructions: effects
+                .iter()
+                .map(|effect| {
+                    lower_decision_effect(
+                        effect,
+                        construction_by_span,
+                        constructions,
+                        schema,
+                        expressions,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| ir_diagnostic(*span))?,
+        }),
+        HirDecisionAction::NoEffect { span } => {
+            let _source_span = *span;
+            Ok(CommandDecisionActionV1::NoEffect)
+        }
+        HirDecisionAction::Reject(outcome) => construction_by_span
+            .get(&outcome.span)
+            .and_then(|index| constructions.get(*index))
+            .cloned()
+            .map(CommandDecisionActionV1::Reject)
+            .ok_or_else(|| ir_diagnostic(outcome.span)),
+    }
+}
+
+fn lower_decision_effect(
+    effect: &HirEffect,
+    construction_by_span: &BTreeMap<Span, usize>,
+    constructions: &[OutcomeConstruction],
+    schema: &SchemaIr,
+    expressions: &riffdb_contract_ir::ExpressionArena,
+) -> Result<Instruction, CompilerDiagnostic> {
+    let outcome = |value: &HirOutcome| {
+        construction_by_span
+            .get(&value.span)
+            .and_then(|index| constructions.get(*index))
+            .cloned()
+            .ok_or_else(|| ir_diagnostic(value.span))
+    };
+    Ok(match effect {
+        HirEffect::Set {
+            binding,
+            field,
+            value,
+            ..
+        } => Instruction::SetField {
+            binding: *binding,
+            field: *field,
+            value: value.id,
+        },
+        HirEffect::Embed {
+            binding,
+            field,
+            value,
+            model_identity,
+            model_version,
+            ..
+        } => Instruction::SetEmbedding {
+            binding: *binding,
+            field: *field,
+            value: value.id,
+            model_identity: model_identity.id,
+            model_version: model_version.id,
+        },
+        HirEffect::Emit {
+            event_id,
+            event_span,
+            fields,
+        } => {
+            let mut fields = fields
+                .iter()
+                .map(|field| FieldExpression::new(field.id, field.value.id))
+                .collect::<Vec<_>>();
+            fields.sort_unstable_by_key(|field| field.field_id());
+            Instruction::EmitEvent(
+                EventConstruction::new(*event_id, fields, schema, expressions)
+                    .map_err(|_| ir_diagnostic(*event_span))?,
+            )
+        }
+        HirEffect::WorkflowTransition {
+            binding,
+            state_field,
+            source_states,
+            destination,
+            expected_revision,
+            stale,
+            illegal,
+            ..
+        } => Instruction::WorkflowTransition {
+            binding: *binding,
+            state_field: *state_field,
+            source_states: source_states.clone(),
+            destination: *destination,
+            expected_revision: expected_revision.id,
+            stale: outcome(stale)?,
+            illegal: outcome(illegal)?,
+        },
+        HirEffect::WorkflowLease {
+            binding,
+            owner_field,
+            expiry_field,
+            fencing_token_field,
+            attempt_field,
+            minimum_duration_seconds,
+            maximum_duration_seconds,
+            operation,
+            ..
+        } => {
+            let operation = match operation.as_ref() {
+                HirWorkflowLeaseOperation::Claim {
+                    owner,
+                    duration_seconds,
+                    expected_revision,
+                    stale,
+                    unavailable,
+                    invalid,
+                    exhausted,
+                } => WorkflowLeaseOperation::Claim {
+                    owner: owner.id,
+                    duration_seconds: duration_seconds.id,
+                    expected_revision: expected_revision.id,
+                    stale: outcome(stale)?,
+                    unavailable: outcome(unavailable)?,
+                    invalid: outcome(invalid)?,
+                    exhausted: outcome(exhausted)?,
+                },
+                HirWorkflowLeaseOperation::Renew {
+                    owner,
+                    fencing_token,
+                    duration_seconds,
+                    expected_revision,
+                    stale,
+                    invalid,
+                    expired,
+                    exhausted,
+                } => WorkflowLeaseOperation::Renew {
+                    owner: owner.id,
+                    fencing_token: fencing_token.id,
+                    duration_seconds: duration_seconds.id,
+                    expected_revision: expected_revision.id,
+                    stale: outcome(stale)?,
+                    invalid: outcome(invalid)?,
+                    expired: outcome(expired)?,
+                    exhausted: outcome(exhausted)?,
+                },
+                HirWorkflowLeaseOperation::Release {
+                    owner,
+                    fencing_token,
+                    expected_revision,
+                    stale,
+                    invalid,
+                } => WorkflowLeaseOperation::Release {
+                    owner: owner.id,
+                    fencing_token: fencing_token.id,
+                    expected_revision: expected_revision.id,
+                    stale: outcome(stale)?,
+                    invalid: outcome(invalid)?,
+                },
+                HirWorkflowLeaseOperation::Expire {
+                    expected_revision,
+                    stale,
+                    active,
+                } => WorkflowLeaseOperation::Expire {
+                    expected_revision: expected_revision.id,
+                    stale: outcome(stale)?,
+                    active: outcome(active)?,
+                },
+                HirWorkflowLeaseOperation::Fence {
+                    owner,
+                    fencing_token,
+                    expected_revision,
+                    stale,
+                    invalid,
+                    expired,
+                } => WorkflowLeaseOperation::Fence {
+                    owner: owner.id,
+                    fencing_token: fencing_token.id,
+                    expected_revision: expected_revision.id,
+                    stale: outcome(stale)?,
+                    invalid: outcome(invalid)?,
+                    expired: outcome(expired)?,
+                },
+            };
+            Instruction::WorkflowLease {
+                binding: *binding,
+                fields: WorkflowLeaseFields {
+                    owner_field: *owner_field,
+                    expiry_field: *expiry_field,
+                    fencing_token_field: *fencing_token_field,
+                    attempt_field: *attempt_field,
+                    minimum_duration_seconds: *minimum_duration_seconds,
+                    maximum_duration_seconds: *maximum_duration_seconds,
+                },
+                operation,
+            }
+        }
+    })
+}
+
+fn append_instruction_roots(instruction: &Instruction, roots: &mut Vec<ExprId>) {
+    match instruction {
+        Instruction::Require {
+            predicate, reject, ..
+        } => {
+            roots.push(*predicate);
+            roots.extend(
+                reject
+                    .payload()
+                    .fields()
+                    .iter()
+                    .map(|field| field.expression()),
+            );
+        }
+        Instruction::SetField { value, .. } => roots.push(*value),
+        Instruction::SetEmbedding {
+            value,
+            model_identity,
+            model_version,
+            ..
+        } => roots.extend([*value, *model_identity, *model_version]),
+        Instruction::WorkflowTransition {
+            expected_revision,
+            stale,
+            illegal,
+            ..
+        } => {
+            roots.push(*expected_revision);
+            for outcome in [stale, illegal] {
+                roots.extend(
+                    outcome
+                        .payload()
+                        .fields()
+                        .iter()
+                        .map(|field| field.expression()),
+                );
+            }
+        }
+        Instruction::WorkflowLease { operation, .. } => {
+            let (expressions, outcomes): (Vec<ExprId>, Vec<&OutcomeConstruction>) = match operation
+            {
+                WorkflowLeaseOperation::Claim {
+                    owner,
+                    duration_seconds,
+                    expected_revision,
+                    stale,
+                    unavailable,
+                    invalid,
+                    exhausted,
+                } => (
+                    vec![*owner, *duration_seconds, *expected_revision],
+                    vec![stale, unavailable, invalid, exhausted],
+                ),
+                WorkflowLeaseOperation::Renew {
+                    owner,
+                    fencing_token,
+                    duration_seconds,
+                    expected_revision,
+                    stale,
+                    invalid,
+                    expired,
+                    exhausted,
+                } => (
+                    vec![
+                        *owner,
+                        *fencing_token,
+                        *duration_seconds,
+                        *expected_revision,
+                    ],
+                    vec![stale, invalid, expired, exhausted],
+                ),
+                WorkflowLeaseOperation::Release {
+                    owner,
+                    fencing_token,
+                    expected_revision,
+                    stale,
+                    invalid,
+                } => (
+                    vec![*owner, *fencing_token, *expected_revision],
+                    vec![stale, invalid],
+                ),
+                WorkflowLeaseOperation::Expire {
+                    expected_revision,
+                    stale,
+                    active,
+                } => (vec![*expected_revision], vec![stale, active]),
+                WorkflowLeaseOperation::Fence {
+                    owner,
+                    fencing_token,
+                    expected_revision,
+                    stale,
+                    invalid,
+                    expired,
+                } => (
+                    vec![*owner, *fencing_token, *expected_revision],
+                    vec![stale, invalid, expired],
+                ),
+            };
+            roots.extend(expressions);
+            for outcome in outcomes {
+                roots.extend(
+                    outcome
+                        .payload()
+                        .fields()
+                        .iter()
+                        .map(|field| field.expression()),
+                );
+            }
+        }
+        Instruction::EmitEvent(event) => {
+            roots.extend(
+                event
+                    .payload()
+                    .fields()
+                    .iter()
+                    .map(|field| field.expression()),
+            );
+        }
+        Instruction::Return(outcome) => {
+            roots.extend(
+                outcome
+                    .payload()
+                    .fields()
+                    .iter()
+                    .map(|field| field.expression()),
+            );
+        }
+    }
 }
 
 fn validate_event_partition_proofs(
@@ -955,6 +1411,7 @@ fn lower_locality(
                 BindingMode::Mutate
                     | BindingMode::Create
                     | BindingMode::InitOrMutate
+                    | BindingMode::ObserveOrInitialize
                     | BindingMode::Delete
             )
         })
@@ -1002,6 +1459,7 @@ fn lower_locality(
                 BindingMode::Mutate
                     | BindingMode::Create
                     | BindingMode::InitOrMutate
+                    | BindingMode::ObserveOrInitialize
                     | BindingMode::Delete
             )
         })
@@ -1061,7 +1519,10 @@ fn lower_commit_checks(
     for binding in command.bindings.iter().filter(|binding| {
         matches!(
             binding.mode,
-            BindingMode::Mutate | BindingMode::Create | BindingMode::InitOrMutate
+            BindingMode::Mutate
+                | BindingMode::Create
+                | BindingMode::InitOrMutate
+                | BindingMode::ObserveOrInitialize
         )
     }) {
         let Some(entity) = hir.entity(binding.entity_id) else {
@@ -1132,6 +1593,7 @@ fn lower_commit_checks(
             BindingMode::Mutate
                 | BindingMode::Create
                 | BindingMode::InitOrMutate
+                | BindingMode::ObserveOrInitialize
                 | BindingMode::Delete
         )
     }) {
