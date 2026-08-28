@@ -378,11 +378,31 @@ impl ProductionGraphBuilder {
         // reaches here -- it declines the certificate in the storage gate and
         // this start takes the complete path.
         //
-        // NOT YET ENABLED. Turning this on exposed a further failure in retained
-        // bootstrap replay that is not yet diagnosed, so the skip is held off
-        // rather than shipped speculatively. The proof plumbing, the locator
-        // tables and every reader fallback it depends on are in place and
-        // tested; only this switch is pending.
+        // NOT YET ENABLED, and the remaining blocker is now diagnosed.
+        //
+        // With the skip on, a bounded clean start reaches readiness without
+        // walking a single command segment -- measured `outbox_recovery=0`,
+        // `transient_index_rebuilds=0`, `process_to_ready=39594` microseconds --
+        // so the mechanism works. What fails is the first WRITE that validates
+        // the administration tail.
+        //
+        // `validate_administration_tail` (administration.rs, the join at ~301)
+        // reads the AUDIT row for the expected-last sequence. For a
+        // command-owned audit record that row holds a `CommandAuditLocatorV1`,
+        // and the decode arm deliberately maps a locator to `None` because
+        // resolving it has historically required the transient index. The
+        // derived half then also answers `None`, because `command_audit_record`
+        // on write access reads the index directly and the bounded path leaves
+        // it dormant. `(None, None)` is the fail-closed arm, so an intact
+        // database reports `CorruptData` -- absent-for-present again, and the
+        // ninth instance of this class.
+        //
+        // ADR-0165's shape already fits: the locator is ALREADY durable, in the
+        // AUDIT row itself, so no new table is needed. The decode arm must
+        // resolve it -- `command_member_at_write_access` plus
+        // `command_audit_from_locator` are the existing pieces -- instead of
+        // converting a present record into absence. That is the last thing
+        // standing between this branch and bounded readiness.
         let outbox_normalization_proven_unnecessary =
             false && bounded_clean_startup && storage.outbox_delivering_proven_absent();
         let outbox_recovery_started = std::time::Instant::now();
