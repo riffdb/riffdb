@@ -2662,6 +2662,20 @@ impl CapacityRejectionStage {
 /// Transport residual stages (`TransportAdapt`, `Authn`, `AdmissionContext`,
 /// `SpawnDispatch`, `EncodeConvert`) decompose the client-visible gap outside
 /// the original seven service-side stages. Codec internals stay uninstrumented.
+///
+/// Two members are deliberately *envelopes* rather than members of the
+/// partition, and are the only members that overlap another member:
+///
+/// - [`Self::ServerHandler`] spans the complete unary handler, so it contains
+///   every other stage recorded for that request. `ServerHandler` minus the sum
+///   of the partition members is the server-side time no stage claims.
+/// - [`Self::ServiceAwait`] spans the awaited application-service call inside
+///   that handler, so it contains `SpawnDispatch` through [`Self::AuditFinish`].
+///   `ServiceAwait` minus those members isolates spawn queueing and the
+///   completion handoff from transport-side cost.
+///
+/// [`Self::partitions_request`] separates the two groups, so a caller that sums
+/// stages never double counts. Every other member remains non-overlapping.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ReadPipelineStage {
     /// gRPC request split and protobuf → domain conversion.
@@ -2688,11 +2702,20 @@ pub enum ReadPipelineStage {
     ResponseBuild,
     /// Domain result → protobuf response conversion.
     EncodeConvert,
+    /// Audit finish and cursor publication after the response is assembled.
+    AuditFinish,
+    /// Awaited application-service call inside the unary handler (envelope).
+    ServiceAwait,
+    /// Complete unary read handler, entry to response return (envelope).
+    ServerHandler,
 }
 
 impl ReadPipelineStage {
     /// Every read-pipeline stage in stable metric and shutdown-line order.
-    pub const ALL: [Self; 12] = [
+    ///
+    /// New stages append. Existing positions never move, so an older evidence
+    /// reader keeps reading the same prefix it always did.
+    pub const ALL: [Self; 15] = [
         Self::TransportAdapt,
         Self::Authn,
         Self::AdmissionContext,
@@ -2705,6 +2728,9 @@ impl ReadPipelineStage {
         Self::AuthorizePost,
         Self::ResponseBuild,
         Self::EncodeConvert,
+        Self::AuditFinish,
+        Self::ServiceAwait,
+        Self::ServerHandler,
     ];
 
     /// Stable snake_case label value for the `{stage}` metric dimension.
@@ -2723,7 +2749,20 @@ impl ReadPipelineStage {
             Self::AuthorizePost => "authorize_post",
             Self::ResponseBuild => "response_build",
             Self::EncodeConvert => "encode_convert",
+            Self::AuditFinish => "audit_finish",
+            Self::ServiceAwait => "service_await",
+            Self::ServerHandler => "server_handler",
         }
+    }
+
+    /// Reports whether this stage is a member of the non-overlapping partition.
+    ///
+    /// `false` identifies the two envelope stages ([`Self::ServiceAwait`] and
+    /// [`Self::ServerHandler`]), which contain other stages by construction. A
+    /// caller summing stage time must sum only partition members.
+    #[must_use]
+    pub const fn partitions_request(self) -> bool {
+        !matches!(self, Self::ServiceAwait | Self::ServerHandler)
     }
 }
 

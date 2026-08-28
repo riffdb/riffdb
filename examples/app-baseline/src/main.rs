@@ -3187,7 +3187,7 @@ impl Args {
                     let name = args.next().ok_or("--load needs a profile name")?;
                     load_profile = Some(WorkloadProfile::parse(&name).ok_or_else(|| {
                         format!(
-                            "unknown load profile '{name}' (read_only|write_only|append_only|interactive|agent|membership_contention)"
+                            "unknown load profile '{name}' (read_only|point_read_only|write_only|append_only|interactive|agent|membership_contention)"
                         )
                     })?);
                 }
@@ -3355,7 +3355,7 @@ impl Args {
                          [--postgres-comparator minimal|safe-app] \
                          [--output PATH] [--assert-write-parity|--assert-all-parity] \
                          [--concurrent-clients N] [--concurrent-operations N] \
-                         [--load read_only|write_only|append_only|interactive|agent|membership_contention] [--load-clients N] \
+                         [--load read_only|point_read_only|write_only|append_only|interactive|agent|membership_contention] [--load-clients N] \
                          [--load-duration-secs N] [--load-warmup-secs N] [--load-zipf-s F] \
                          [--load-open-loop-rate OPS] [--load-open-loop-queue-depth N] \
                          [--load-tenants N] [--load-hot-tenant-percent PERCENT] \
