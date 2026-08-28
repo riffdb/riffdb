@@ -7709,6 +7709,24 @@ impl RedbWriteAccess {
                 3,
             )?;
             let mut found = Vec::new();
+            // ADR-0163 locator rows carry the same (request_id, sequence) key,
+            // so a command's audit sequences are recoverable from the key alone
+            // without resolving its segment. Merged first so the physical rows
+            // below still validate their own record.
+            let locator_rows = self.read_command_range(
+                crate::journal::JournalTable::AuditByRequestLocators,
+                &prefix,
+                &upper,
+                3,
+            )?;
+            for (key, _) in locator_rows {
+                let (decoded_request, sequence) = decode_audit_by_request_key(&key)
+                    .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+                if decoded_request != request_id {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                found.push(sequence);
+            }
             for (key, value) in rows {
                 let (decoded_request, sequence) = decode_audit_by_request_key(&key)
                     .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;

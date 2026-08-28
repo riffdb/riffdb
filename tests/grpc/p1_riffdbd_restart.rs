@@ -300,24 +300,26 @@ async fn real_riffdbd_restart_preserves_budget_and_bootstrap_replay() -> TestRes
     let second_address = second_process.wait_for_ready_address()?;
     // Tripwire on the readiness path's transient population-index rebuilds.
     //
-    // ADR-0156 says a bounded start leaves the population caches cold, and the
+    // ADR-0156 says a bounded start leaves the population caches cold. The
     // rebuild it means -- a walk of every command segment, decoding each one and
-    // re-deriving every manifest key -- is 96% of a bounded start's wall clock
-    // at 115,690 retained commands. So the target number is zero.
+    // re-deriving every manifest key -- was 96% of a bounded start's wall clock
+    // at 115,690 retained commands.
     //
-    // It is ONE today, and deliberately so: with the index dormant,
-    // `read_stored_outcome` answers `Ok(None)` for a durably committed outcome,
-    // because in the current layout IDEMPOTENCY/PROVENANCE/EVENTS/EVENT_ROUTES/
-    // OUTBOX hold no physical rows and the command-derived index is the only
-    // locator into a command segment. Removing the incidental rebuild made this
-    // very test fail with "durable command outcome was not found". The rebuild
-    // is load-bearing for read correctness, not just for the outbox.
+    // This was pinned at ONE for as long as the rebuild was load-bearing for
+    // read correctness: with the index dormant and no durable locator,
+    // `read_stored_outcome` answered `Ok(None)` for a durably committed outcome,
+    // and removing the incidental rebuild made this very test fail with
+    // "durable command outcome was not found".
     //
-    // Pinned exactly rather than as an upper bound so this fails in BOTH
-    // directions: a second readiness-path caller that reaches the rebuild trips
-    // it, and so does the fix -- whoever gives cold-cache reads a correct answer
-    // (durable locator rows, or warm-on-demand at the read sites) must come here
-    // and change this to zero on purpose.
+    // ADR-0163's durable locator tables removed that dependency, so the target
+    // number becomes ZERO once the readiness-path outbox skip is enabled. That
+    // switch is held off pending an undiagnosed bootstrap-replay failure, so
+    // this stays at ONE and must be flipped in the same change that enables it.
+    //
+    // Still pinned exactly rather than as an upper bound, so it keeps failing in
+    // both directions: any future readiness-path caller that reaches
+    // `ensure_transient_indexes_ready` before the ready line trips it, whichever
+    // call it is.
     assert_readiness_path_rebuild_census(&second_process, 1)?;
     let mut second_client = connect(second_address).await?;
 
