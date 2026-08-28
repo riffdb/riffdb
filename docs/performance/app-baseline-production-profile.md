@@ -178,15 +178,71 @@ batch dispatches per item across a thread pool that releases the GIL for each
 native round trip, while TypeScript and Go fan out over `driverd` and pay
 framing per batch.
 
+### Concurrency curves
+
+`--load-concurrency-sweep` at c=1/8/32/128, 30 s windows, one rep. These are the
+cells the ratio discussion above rests on, recorded here because the aggregate
+ratio hides the shape.
+
+`full` scale on N1:
+
+| clients | Postgres ops/s | RiffDB ops/s | ratio |
+| ---: | ---: | ---: | ---: |
+| 1 | 3,655 | 815 | 0.223x |
+| 8 | 20,519 | 4,846 | 0.236x |
+| 32 | 32,254 | 7,292 | 0.226x |
+| 128 | 21,046 | 7,675 | 0.365x |
+
+`production` scale on E2:
+
+| clients | Postgres ops/s | RiffDB ops/s | ratio | RiffDB ops completed |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 2,216 | 401 | 0.181x | 12,025 |
+| 8 | 16,669 | 3,230 | 0.194x | 96,930 |
+| 32 | 28,027 | 5,448 | 0.194x | 163,562 |
+| 128 | 16,253 | 7,067 | 0.435x | **212,404** |
+
+Every cell above completed with zero errors, zero conflicts and zero idempotency
+mismatches.
+
+Two readings matter and they differ by scale. At `full` RiffDB is flat from c=32
+to c=128 (7,292 to 7,675, +5%); at `production` it still climbs (5,448 to 7,067,
++30%), so group commit does amortise with concurrency once the dataset is large
+enough that the single writer is not already the whole story. But in both cases
+Postgres is past its own knee at c=128 -- dropping 35% on N1 and 42% on E2, with
+an 11.5-second maximum latency in the `full` run -- so roughly half of each
+ratio "improvement" at c=128 is Postgres degrading rather than RiffDB gaining.
+Neither c=128 cell should be read as a win.
+
+The durable finding is the c=1 column: **0.18-0.22x with a single client**, no
+concurrency, no contention and no queueing. A constant factor that exists before
+any concurrency effect cannot be closed by concurrency scaling. Note also that
+the c=1 read figures were measured while the columnar worker was consuming ~45%
+of CPU draining seed backlog, so the read-side component of that constant is not
+yet trustworthy and is being re-measured.
+
+The `production` c=128 count of 212,404 operations at zero errors is cited in
+ADR-0105 Amendment 1 as counter-evidence that this repository triggers h2 issue
+#939 in practice.
+
 ### What a run costs
 
-A production dual-backend run took 46 minutes wall clock on E2 and about 78 on
-N1. Roughly: 10-12 minutes of RiffDB seeding, 3-5 minutes of Postgres seeding
-and settling, two 65-second load windows, and the rest startup validation --
-paid twice, once by the measured daemon and once by the post-measurement
-inventory reopen, which deliberately still takes the complete pass because it is
-a corruption check and removing it to speed up a benchmark would be the wrong
-trade. Budget an hour per cell until the fast path engages.
+Fully attributed by polling process state every 15 s during a `--production`
+RiffDB-only run on N1, for a 13-second measurement window:
+
+| Phase | Wall clock |
+| --- | ---: |
+| Seed, 1,112,350 commands | 7.8 min |
+| Seed daemon graceful shutdown | 12.3 min |
+| Read-only pre-measurement inventory | ~15 s |
+| Measured daemon readiness | 21.8 min |
+| Load window plus post-measurement evidence | ~1 min |
+| **Total** | **43.6 min** |
+
+Two phases are 78% of it, and both have named causes above. Note the
+post-measurement inventory is cheap despite opening a full `RedbStore`: that
+open takes the bounded path too and builds no graph, so it never reaches
+`recover_outbox`. Budget an hour per production cell until that is fixed.
 
 ### Not yet measured
 
@@ -199,35 +255,97 @@ trade. Budget an hour per cell until the fast path engages.
   run-to-run variance, and an earlier session saw Postgres swing 17% between
   identical TypeScript runs.
 
-## Open defect: the clean-close fast path does not engage
+## Open defect: readiness is 96% outbox recovery
 
-A `riffdbd` started against this tier's cleanly shut down database takes the
-complete startup validation pass: more than twenty minutes at 99.9% CPU and
-about 10 GB resident on N1, without becoming ready, and with essentially no
-physical reads (12 KB), so it is CPU work over page-cached data. A `perf` flat
-profile puts 16.8% in `sha2::sha256::soft::unroll::compress` plus
-`riffdb_proto::wire::Cursor::next`, `durable_wire::preflight`, `crc32` and
-`prost` varint decoding -- a full re-parse and re-validation of every durable
-record, which is what ADR-0156 exists to avoid on a clean start.
+A `riffdbd` started against this tier's cleanly shut down database takes about
+22 minutes to become ready on an N1 VM. The ADR-0156 clean-close fast path
+**does** engage -- `clean_close_fast=true`, confirmed twice at the full
+1,112,350-command scale -- and the readiness cost is almost entirely somewhere
+ADR-0156 does not bound.
 
-One contributing cause is fixed here: `restart_for_measurement` took its
-pre-measurement inventory through `authoritative_table_inventory_after_reopen_v1`,
-which opens a full `RedbStore` and drops it. Opening transitions the ADR-0157
-lifecycle record to dirty and nothing in `Drop` writes it back, so that reopen
-discarded the certificate the seed daemon's shutdown had just written. Every
-measured restart therefore took the complete pass, including the run previously
-cited in this document as verifying that ADR-0156 resolved the startup ceiling --
-that claim was wrong and is withdrawn. The call site now uses the read-only
-`authoritative_table_inventory_v1`.
+`riffdb-startup-stages-v1` on a bounded measured restart at 115,690 retained
+commands, microseconds:
 
-That fix was not sufficient: the restart is still slow. The gate is a single
-`verified_clean_close_lifecycle` check (`startup.rs`, admitted at the
-`clean_close_fast: true` construction) which returns `None` silently on any of
-eight preconditions, with no reason code and no counter, so the eight cannot
-currently be told apart without patching the engine. A reason code is the next
-deliverable, ahead of any change to admission logic.
+```text
+store_open=1318215  evidence_begin=1173  structural_drain=156  catalog_history=3353
+evidence_finish=14710  port_activation=0  current_views=90  consumer_recovery=6
+outbox_recovery=31980581  graph_rest=10051  process_to_ready=33348476
+```
 
-## Known limitations
+`outbox_recovery` is 31.98 s of 33.35 s. Everything ADR-0156 bounds --
+evidence begin, structural drain, catalog history, evidence finish -- is 0.02 s
+combined, and `port_activation=0` shows the intended saving is real.
+
+The mechanism: `activate_operational_ports` correctly returns early when
+`bounded_clean_startup` is set, but `ProductionGraphBuilder::build` then calls
+`recover_outbox` unconditionally, whose first storage call reaches
+`ensure_transient_indexes_ready` and performs exactly the population rebuild
+activation had just skipped -- decoding every `COMMITS` row, cloning and
+retaining every segment, re-deriving every manifest key, then walking every
+event of every command. That is what the earlier `perf` profile was showing:
+SHA-256 for manifest-key derivation, `wire::Cursor::next`, `durable_wire::
+preflight`, CRC32 and prost varint for per-segment decode, `malloc`/`free` for
+the per-segment clones, and ~10 GB resident for the retained segments.
+
+On the bounded path the result is then **discarded**: the outbox is declared
+`Degraded` and `refresh` is skipped precisely because caches are cold. So the
+bounded path pays a full rebuild for a value it throws away.
+
+The cost is linear and tightly reproducible -- about 283 µs per retained
+command, 3.17x across a 3.11x data increase -- so it is a constant factor, not
+an algorithmic problem. Extrapolating to 1,112,350 commands and scaling for host
+seed rate predicts 19.8 minutes against 21.8 observed.
+
+A fix is not yet applied. Skipping `recover_outbox` on the bounded path, or
+deferring it past readiness, changes when outbox `Delivering` statuses are
+normalized, which is an ADR-0156/ADR-0157 question about the "cold caches"
+claim and outbox delivery guarantees rather than an implementation detail. It
+needs the maintainer's exact-text acceptance.
+
+### Withdrawn: the clean-close gate
+
+An earlier revision of this document claimed the fast path did not engage. That
+was an inference from a slow restart, not an observation, and it was wrong. What
+made it decidable was adding a reason code: `verified_clean_close_lifecycle`
+previously returned a bare `None` on any of ten preconditions, so every one of
+them looked identical from outside -- a slow start. It now names the declining
+precondition. A separate real defect was fixed on the way: the harness's
+pre-measurement inventory opened a full `RedbStore` and dropped it, which marks
+the lifecycle record dirty with nothing writing it back, so the measured daemon
+was forced onto the complete pass. That window is now about 15 seconds.
+
+## Clean shutdown: 12 minutes, and it is not the checkpoint
+
+A graceful stop of this database measured 12.3 minutes at about 180% CPU and
+11.9 GB resident. An earlier revision of this document attributed roughly 21
+seconds to the ADR-0019 A1 validated-prefix checkpoint, generalised from a
+smaller dataset. Both the number and the attribution were wrong.
+
+Labelled stage timings across two seed-daemon shutdowns at identical size,
+same binary and workload:
+
+| Stage | run A | run B |
+| --- | ---: | ---: |
+| `columnar_worker` | **36.63 s** | **0.137 s** |
+| `validated_prefix_checkpoint_write` | 0.183 s | 0.183 s |
+| `post_graph_release` (contains `redb::Database::drop`) | 0.044 s | 0.034 s |
+
+The checkpoint write is 0.183 s and flat at every size, so it is ruled out, as
+is redb's drop-time close. The cost is the columnar worker draining its ingest
+backlog, and it varies 267x at the same data size -- it is a queue depth at the
+moment of shutdown, not a function of history. The seeder outruns the columnar
+worker, and shutdown pays whatever is outstanding. The lever is ingest
+backpressure, not an algorithm, and no scaling law should be quoted from two
+points that differ by 267x.
+
+Two reporting gaps that hid this, both now closed: the harness's
+`graph_shutdown_elapsed_us` records the *final* daemon rather than the seed
+daemon (45-68 ms against 36.8 s in the same run), and
+`riffdb-shutdown-stages-v1` is a positional unlabelled line emitted once per
+daemon, so three lines from three daemons were indistinguishable. That is why an
+earlier reading of 758 ms coexisted with a 12-minute observed shutdown.
+
+## Known limitations## Known limitations
 
 - **The load phase reads one organization out of two hundred.** `--load-tenants`
   defaults to 1 and is capped at 64, and a tenant is an organization, so every

@@ -6636,6 +6636,57 @@ fn two_phase_admitted_command_reopens_clean() {
     );
 }
 
+/// A clean-close reopen must still resolve command-owned audit members.
+///
+/// A command-owned `Started`/`Terminal` pair is durable only inside its command
+/// segment: `stage_command_service_audit_group_in_write` advances the
+/// administration allocator without writing any `AUDIT` row, and no locator row
+/// is ever encoded for the pair, so the command-derived transient index is its
+/// only lookup structure. Clean-close fast startup (ADR-0156 section 5)
+/// deliberately leaves that index cold, and a cold index used to answer "no
+/// record" — which the administration read path cannot distinguish from a
+/// durably absent record, because it joins the index against the physical row
+/// and treats absence on both sides as corruption.
+///
+/// The stream scan therefore reported `CorruptData` for a database the writer
+/// had just closed cleanly, with every audit record intact: the same class of
+/// defect as `two_phase_admitted_command_reopens_clean` above, where the
+/// database refused state it had written itself. WP-704 requires every
+/// integrity fact skipped at clean startup to move onto the operational path
+/// that first uses it, so the first administration-audit read populates the
+/// index.
+#[test]
+fn clean_close_fast_startup_resolves_command_owned_audit_members() {
+    let path = TestDatabasePath::new("clean-close-command-audit");
+    prepare_command_database(&path.0);
+    let fixture = command_fixture();
+    let ports = open_operational(RedbStore::open(&path.0).expect("open command database"));
+    commit_command_fixture(&ports, &fixture);
+    assert_eq!(
+        command_audit_phases(&ports),
+        [ServiceAuditPhaseV1::Started, ServiceAuditPhaseV1::Succeeded],
+        "the committing handle resolves the pair from its already-warm index"
+    );
+    ports
+        .write_clean_close_lifecycle()
+        .expect("write the final clean-close certificate");
+    drop(ports);
+
+    let ports =
+        open_operational(RedbStore::open(&path.0).expect("reopen the cleanly closed database"));
+    assert!(
+        ports.clean_close_fast_startup(),
+        "the certificate must select the fast path; without it this arm would \
+         not cover a cold command-derived index"
+    );
+    assert_eq!(
+        command_audit_phases(&ports),
+        [ServiceAuditPhaseV1::Started, ServiceAuditPhaseV1::Succeeded],
+        "a cold index must be populated on first use, never reported as an \
+         absent audit record"
+    );
+}
+
 /// The tolerance is for an EQUAL pair only. Two different records at one
 /// administration sequence remain a real discontinuity and must still refuse.
 #[test]
