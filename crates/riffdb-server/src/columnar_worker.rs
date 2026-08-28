@@ -5,11 +5,10 @@ use std::fmt;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use riffdb_columnar::{
-    ColumnarAmplification, ColumnarEngine, ColumnarError, ColumnarSnapshotRebuild, OpenOptions,
-    frontier_lag_sequences,
+    ColumnarEngine, ColumnarError, ColumnarSnapshotRebuild, OpenOptions, frontier_lag_sequences,
 };
 use riffdb_observability::{MetricRegistry, RequiredGauge};
 use riffdb_storage_api::{
@@ -117,22 +116,16 @@ impl RunningColumnarWorker {
                     if stop_requested(&worker_stop) {
                         break;
                     }
-                    let pass_started = Instant::now();
                     worker_status.publish(
                         match run_columnar_pass(&runtime, metrics.as_ref(), &mut state) {
                             Ok(()) => ColumnarWorkerReadiness::Ready,
                             Err(_) => ColumnarWorkerReadiness::Degraded,
                         },
                     );
-                    let pass_us = elapsed_microseconds(pass_started);
-                    state.evidence.passes = state.evidence.passes.saturating_add(1);
-                    state.evidence.last_pass_us = pass_us;
-                    state.evidence.max_pass_us = state.evidence.max_pass_us.max(pass_us);
                     if wait_for_stop(&worker_stop, WORKER_POLL_INTERVAL) {
                         break;
                     }
                 }
-                emit_columnar_worker_evidence(&state.evidence);
                 worker_status.publish(ColumnarWorkerReadiness::Stopped);
             })
             .map_err(|_| ColumnarWorkerStartError)?;
@@ -175,90 +168,9 @@ struct EngineCatchupState {
     commits_since_checkpoint: u64,
 }
 
-/// Cumulative per-process columnar apply and rewrite cost.
-///
-/// ADR-0086 §6 requires a sequence-distance backlog metric alongside time lag,
-/// and its acceptance criteria require write/disk amplification and an apply
-/// CPU split. This carries both, plus the per-pass duration distribution that
-/// bounds how long a graceful stop waits for the worker: a stop request is only
-/// observed between passes, so the tail of the current pass is the shutdown
-/// cost.
-#[derive(Clone, Copy, Debug, Default)]
-struct ColumnarWorkerEvidence {
-    passes: u64,
-    /// Time in `synchronize_active_vector_projections`, which re-reads and
-    /// re-validates the active catalog lineage on every pass.
-    sync_us: u64,
-    /// Time in `maintain_vector_generations`.
-    maintain_us: u64,
-    /// Time reading the authoritative application head.
-    head_us: u64,
-    apply_us: u64,
-    checkpoint_us: u64,
-    max_pass_us: u64,
-    last_pass_us: u64,
-    commits_applied: u64,
-    amplification: ColumnarAmplification,
-    resident_rows: u64,
-    lag_at_exit: u64,
-}
-
-impl ColumnarWorkerEvidence {
-    /// Stable process-evidence line consumed by benchmark harnesses.
-    fn format_v1_line(&self) -> String {
-        format!(
-            "riffdb-columnar-worker-v1\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            self.passes,
-            self.sync_us,
-            self.maintain_us,
-            self.head_us,
-            self.apply_us,
-            self.checkpoint_us,
-            self.max_pass_us,
-            self.last_pass_us,
-            self.commits_applied,
-            self.amplification.checkpoints,
-            self.amplification.segments_written,
-            self.amplification.rows_rewritten,
-            self.amplification.rows_dirty,
-            self.amplification.segment_bytes_written,
-            self.resident_rows,
-            self.lag_at_exit,
-        )
-    }
-}
-
-/// Field order of [`ColumnarWorkerEvidence::format_v1_line`].
-const COLUMNAR_WORKER_EVIDENCE_LABELS: [&str; 16] = [
-    "passes",
-    "sync_us",
-    "maintain_us",
-    "head_us",
-    "apply_us",
-    "checkpoint_us",
-    "max_pass_us",
-    "last_pass_us",
-    "commits_applied",
-    "checkpoints",
-    "segments_written",
-    "rows_rewritten",
-    "rows_dirty",
-    "segment_bytes_written",
-    "resident_rows",
-    "lag_at_exit",
-];
-
-fn format_columnar_worker_labels_v1_line() -> String {
-    format!(
-        "riffdb-columnar-worker-labels-v1\t{}",
-        COLUMNAR_WORKER_EVIDENCE_LABELS.join(",")
-    )
-}
-
 struct ColumnarWorkerState {
     engines: BTreeMap<String, EngineCatchupState>,
     polls_since_checkpoint: u32,
-    evidence: ColumnarWorkerEvidence,
 }
 
 impl ColumnarWorkerState {
@@ -280,7 +192,6 @@ impl ColumnarWorkerState {
         Self {
             engines,
             polls_since_checkpoint: 0,
-            evidence: ColumnarWorkerEvidence::default(),
         }
     }
 }
@@ -557,20 +468,10 @@ fn run_columnar_pass(
     metrics: Option<&MetricRegistry>,
     state: &mut ColumnarWorkerState,
 ) -> Result<(), ColumnarWorkerError> {
-    let sync_started = Instant::now();
     runtime
         .synchronize_active_vector_projections()
         .map_err(|_| ColumnarWorkerError::Registration)?;
-    state.evidence.sync_us = state
-        .evidence
-        .sync_us
-        .saturating_add(elapsed_microseconds(sync_started));
-    let maintain_started = Instant::now();
     maintain_vector_generations(runtime)?;
-    state.evidence.maintain_us = state
-        .evidence
-        .maintain_us
-        .saturating_add(elapsed_microseconds(maintain_started));
     state.polls_since_checkpoint = state.polls_since_checkpoint.saturating_add(1);
     let force_checkpoint = state.polls_since_checkpoint >= CHECKPOINT_POLL_CADENCE;
     if force_checkpoint {
@@ -578,18 +479,8 @@ fn run_columnar_pass(
     }
 
     let apply_source = runtime.apply_source();
-    let head_started = Instant::now();
     let head = read_head(runtime)?;
-    state.evidence.head_us = state
-        .evidence
-        .head_us
-        .saturating_add(elapsed_microseconds(head_started));
     let mut max_lag = 0u64;
-    let mut pass_apply_us = 0u64;
-    let mut pass_checkpoint_us = 0u64;
-    let mut pass_commits = 0u64;
-    let mut pass_amplification = ColumnarAmplification::default();
-    let mut pass_resident_rows = 0u64;
     let vector_registrations = runtime
         .vector_registrations()
         .map_err(map_port_error)?
@@ -614,14 +505,11 @@ fn run_columnar_pass(
                 .map_err(|_| ColumnarWorkerError::Integrity)?;
             let processed_before = engine.processed_frontier().position();
             let published_before = engine.published_frontier_position();
-            let apply_started = Instant::now();
             let progress = engine
                 .apply_available(apply_source)
                 .map_err(ColumnarWorkerError::Apply)?;
-            pass_apply_us = pass_apply_us.saturating_add(elapsed_microseconds(apply_started));
             published_after = progress.published_frontier;
             let commits_applied = sequences_advanced(processed_before, progress.processed);
-            pass_commits = pass_commits.saturating_add(commits_applied);
             catchup.commits_since_checkpoint = catchup
                 .commits_since_checkpoint
                 .saturating_add(commits_applied);
@@ -634,11 +522,7 @@ fn run_columnar_pass(
             let should_checkpoint =
                 force_checkpoint || catchup.commits_since_checkpoint >= CHECKPOINT_COMMIT_CADENCE;
             if should_checkpoint {
-                let checkpoint_started = Instant::now();
-                let outcome = engine.checkpoint();
-                pass_checkpoint_us =
-                    pass_checkpoint_us.saturating_add(elapsed_microseconds(checkpoint_started));
-                match outcome {
+                match engine.checkpoint() {
                     Ok(manifest) => {
                         catchup.commits_since_checkpoint = 0;
                         if let Some(registration) = vector_registrations.get(&name) {
@@ -655,26 +539,12 @@ fn run_columnar_pass(
                     Err(error) => return Err(ColumnarWorkerError::Apply(error)),
                 }
             }
-            pass_amplification = accumulate(pass_amplification, engine.amplification());
-            pass_resident_rows = pass_resident_rows.saturating_add(engine.resident_segment_rows());
         }
 
         if let Some(lag) = frontier_lag_sequences(published_after, head) {
             max_lag = max_lag.max(lag);
         }
     }
-
-    state.evidence.apply_us = state.evidence.apply_us.saturating_add(pass_apply_us);
-    state.evidence.checkpoint_us = state
-        .evidence
-        .checkpoint_us
-        .saturating_add(pass_checkpoint_us);
-    state.evidence.commits_applied = state.evidence.commits_applied.saturating_add(pass_commits);
-    // Engine counters are already cumulative per engine, so the pass total
-    // replaces rather than accumulates the process view.
-    state.evidence.amplification = pass_amplification;
-    state.evidence.resident_rows = pass_resident_rows;
-    state.evidence.lag_at_exit = max_lag;
 
     if let Some(metrics) = metrics {
         metrics.set_required_gauge(RequiredGauge::ProjectionLagCommits, max_lag);
@@ -724,40 +594,6 @@ fn read_head(runtime: &ColumnarRuntime) -> Result<FrontierPosition, ColumnarWork
             riffdb_service::ColumnarPortError::Unavailable => ColumnarWorkerError::Unavailable,
             riffdb_service::ColumnarPortError::Integrity => ColumnarWorkerError::Integrity,
         })
-}
-
-/// Writes the once-per-process columnar cost receipt to stdout.
-///
-/// Emitted from the worker thread as it exits so every shutdown path — graceful,
-/// maintenance, and failed-build cleanup — produces exactly one line.
-fn emit_columnar_worker_evidence(evidence: &ColumnarWorkerEvidence) {
-    use std::io::Write as _;
-    let stdout = std::io::stdout();
-    let mut stdout = stdout.lock();
-    let _ = writeln!(stdout, "{}", format_columnar_worker_labels_v1_line());
-    let _ = writeln!(stdout, "{}", evidence.format_v1_line());
-    let _ = stdout.flush();
-}
-
-fn elapsed_microseconds(started: Instant) -> u64 {
-    u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
-}
-
-const fn accumulate(
-    total: ColumnarAmplification,
-    engine: ColumnarAmplification,
-) -> ColumnarAmplification {
-    ColumnarAmplification {
-        checkpoints: total.checkpoints.saturating_add(engine.checkpoints),
-        segments_written: total
-            .segments_written
-            .saturating_add(engine.segments_written),
-        rows_rewritten: total.rows_rewritten.saturating_add(engine.rows_rewritten),
-        rows_dirty: total.rows_dirty.saturating_add(engine.rows_dirty),
-        segment_bytes_written: total
-            .segment_bytes_written
-            .saturating_add(engine.segment_bytes_written),
-    }
 }
 
 const fn sequences_advanced(from: FrontierPosition, to: FrontierPosition) -> u64 {
