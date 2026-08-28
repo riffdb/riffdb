@@ -1805,16 +1805,15 @@ impl RedbStore {
         if classify_read_layout(&transaction)? == LayoutState::Empty {
             return Ok(());
         }
-        let present = matches!(
-            transaction.open_table(crate::layout::IDEMPOTENCY_LOCATORS),
-            Ok(_)
-        ) && matches!(
-            transaction.open_table(crate::layout::PROVENANCE_LOCATORS),
-            Ok(_)
-        ) && matches!(
-            transaction.open_table(crate::layout::AUDIT_BY_REQUEST_LOCATORS),
-            Ok(_)
-        );
+        let present = transaction
+            .open_table(crate::layout::IDEMPOTENCY_LOCATORS)
+            .is_ok()
+            && transaction
+                .open_table(crate::layout::PROVENANCE_LOCATORS)
+                .is_ok()
+            && transaction
+                .open_table(crate::layout::AUDIT_BY_REQUEST_LOCATORS)
+                .is_ok();
         drop(transaction);
         if present {
             return Ok(());
