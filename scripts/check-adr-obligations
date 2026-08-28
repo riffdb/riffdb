@@ -1,0 +1,141 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Verifies that obligations an accepted ADR defers to a work package are
+# discharged by something a machine can check.
+#
+# Why this exists. ADR-0156 section 5 stated, in prose: "If an existing path
+# relied exclusively on startup to establish one of those facts, WP-704 must add
+# the equivalent fail-closed local check before that path becomes eligible for
+# clean fast startup." WP-704's own objective repeated it. The clean-close fast
+# path then shipped without discharging it, and ten distinct absent-for-present
+# defects followed -- including a durably committed command reading as
+# never-admitted, and intact databases reporting CorruptData. Meanwhile
+# `check-requirement-coverage` reported coverage complete, because it verifies
+# that requirements are CLAIMED by a work package, not that the work package did
+# what it claimed.
+#
+# The gap is structural: this repository is rigorous at the design end (ADRs with
+# exact-text acceptance) and at the acceptance end (the recovery matrices), and
+# the link between them is prose.
+#
+# What this checks:
+#
+#   1. Every prose obligation in an accepted ADR -- a sentence naming a work
+#      package and saying it must do something -- is either DECLARED with a
+#      named proof, or explicitly ACKNOWLEDGED as outstanding in the ledger.
+#   2. Every declared proof actually exists in the tree, so an obligation cannot
+#      be discharged by naming a test that was renamed or deleted.
+#   3. The ledger contains no stale entries, so obligations cannot be silently
+#      acknowledged forever after their text changes.
+#
+# It deliberately does NOT require the 143 obligations that predate it to be
+# retrofitted. Those are seeded into the ledger as named, visible debt. What it
+# blocks is NEW undeclared obligations, and it turns the existing set into a
+# list that can be worked down rather than prose nobody can enumerate.
+#
+# Declaring an obligation, in the ADR header:
+#
+#   - **Obligations:**
+#     - `OBL-0156-1` WP-704 adds the fail-closed local check for facts skipped
+#       at clean startup. Proof: `bounded_startup_defers_the_population_rebuild`
+#
+# The proof is a test function name, and it must exist.
+
+require "set"
+require "yaml"
+
+ROOT = File.expand_path("..", __dir__)
+ADR_DIR = File.join(ROOT, "adr")
+LEDGER_PATH = File.join(ADR_DIR, "obligations-outstanding.yaml")
+
+# A deferred obligation names a work package and says it must do something.
+# Deliberately narrow: it looks for an imperative on a work package, not for
+# every occurrence of the word "must".
+OBLIGATION = /[^.\n]*\bWP-\d{3}\b[^.]*?\bmust\b[^.]*\./i
+DECLARED = /`(OBL-\d{4}-\d+)`.*?Proof:\s*`([^`]+)`/m
+
+errors = []
+warnings = []
+
+def obligation_key(adr, sentence)
+  # Key on a normalised prefix so incidental rewrapping does not orphan a
+  # ledger entry, while a material rewrite does.
+  "#{adr}::#{sentence.gsub(/\s+/, ' ').strip[0, 90]}"
+end
+
+# Proof names are searched for across the tree. Scoped to the repository by
+# construction -- never an unbounded filesystem walk.
+def proof_exists?(name)
+  return false if name.strip.empty?
+
+  # `:!adr` matters: without it the declaration finds itself, and every
+  # obligation would appear discharged by the sentence that declares it. The
+  # proof must exist in code or tests, not in prose.
+  system(
+    "git", "-C", ROOT, "grep", "--quiet", "--fixed-strings", "--", name, ":!adr", ":!docs",
+    out: File::NULL, err: File::NULL
+  )
+end
+
+ledger =
+  if File.exist?(LEDGER_PATH)
+    YAML.safe_load(File.read(LEDGER_PATH, encoding: "UTF-8")) || {}
+  else
+    {}
+  end
+acknowledged = (ledger["outstanding"] || []).to_h { |entry| [entry["key"], entry] }
+seen_keys = Set.new
+
+Dir.glob(File.join(ADR_DIR, "*.md")).sort.each do |path|
+  text = File.read(path, encoding: "UTF-8")
+  next unless text.match?(/\*\*Status:\*\*\s*Accepted/)
+
+  adr = File.basename(path)
+  declared = text.scan(DECLARED).to_h
+
+  declared.each do |id, proof|
+    next if proof_exists?(proof)
+
+    errors << "#{adr}: obligation #{id} names proof #{proof.inspect}, which does not exist in the tree"
+  end
+
+  text.scan(OBLIGATION) do |sentence|
+    key = obligation_key(adr, sentence)
+    seen_keys << key
+    next unless declared.empty?
+    next if acknowledged.key?(key)
+
+    errors << <<~MESSAGE.strip
+      #{adr}: undeclared deferred obligation.
+        #{sentence.gsub(/\s+/, ' ').strip[0, 140]}
+      Declare it in the ADR header with a proof that exists:
+        - **Obligations:**
+          - `OBL-XXXX-1` <what must be true>. Proof: `<test name>`
+      Or, if it genuinely cannot be discharged yet, add it to
+      adr/obligations-outstanding.yaml with an owner and a reason.
+    MESSAGE
+  end
+end
+
+stale = acknowledged.keys.reject { |key| seen_keys.include?(key) }
+stale.each do |key|
+  warnings << "ledger entry no longer matches any accepted ADR obligation: #{key}"
+end
+
+unless warnings.empty?
+  warnings.each { |warning| puts "warning: #{warning}" }
+  puts "Remove stale entries from #{LEDGER_PATH.sub("#{ROOT}/", '')}."
+end
+
+if errors.empty?
+  outstanding = acknowledged.size
+  puts "ADR obligations: #{seen_keys.size} deferred obligation(s) across accepted records; " \
+       "#{outstanding} acknowledged outstanding, 0 undeclared."
+  exit 0
+end
+
+errors.each { |error| warn(error) }
+warn ""
+warn "#{errors.size} ADR obligation problem(s)."
+exit 1
