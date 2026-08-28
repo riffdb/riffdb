@@ -108,11 +108,7 @@ impl CheckpointRoot {
         &self,
         derive: impl FnOnce() -> Result<Option<CommitSequence>, E>,
     ) -> Result<Option<CommitSequence>, E> {
-        if let Some(head) = self.snapshot_head.get() {
-            return Ok(*head);
-        }
-        let head = derive()?;
-        Ok(*self.snapshot_head.get_or_init(|| head))
+        derive_once(&self.snapshot_head, derive)
     }
 
     /// The captured snapshot itself, for reads of tables outside the cache.
@@ -217,6 +213,26 @@ impl Deref for CheckpointRoot {
     fn deref(&self) -> &Self::Target {
         &self.transaction
     }
+}
+
+/// Derives one value against an immutable read view exactly once.
+///
+/// Shared by every such cache so they cannot drift apart on the property that
+/// makes them sound: a failure is never stored. A derivation that fails is
+/// re-attempted on the next access and observes the same error, so no decode,
+/// lookup, or verification failure is ever converted into a value.
+///
+/// A lost initialisation race drops this thread's answer and uses the winner's.
+/// Both were derived against the same immutable view, so they are equal.
+pub(crate) fn derive_once<T: Copy, E>(
+    cell: &OnceLock<T>,
+    derive: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
+    if let Some(value) = cell.get() {
+        return Ok(*value);
+    }
+    let value = derive()?;
+    Ok(*cell.get_or_init(|| value))
 }
 
 /// Cache slot for one journal table, derived from its stable discriminant.

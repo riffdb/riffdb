@@ -8,7 +8,7 @@
     reason = "WP-487 builds the closed view; WP-488 installs its production publisher"
 )]
 
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use redb::TableDefinition;
 use riffdb_storage_api::{
@@ -95,6 +95,7 @@ impl RedbCompositeViewBuilder {
         RedbCompositeReadView {
             root: self.root,
             overlay: self.overlay.freeze(),
+            snapshot_head: OnceLock::new(),
         }
     }
 }
@@ -103,6 +104,11 @@ impl RedbCompositeViewBuilder {
 pub(crate) struct RedbCompositeReadView {
     root: Arc<CheckpointRoot>,
     overlay: FrozenCompositeOverlay,
+    /// The snapshot-visible application frontier of THIS view, derived once.
+    ///
+    /// Empty in every constructor below, so a successor can never inherit its
+    /// predecessor's frontier: each one is a distinct published state.
+    snapshot_head: OnceLock<Option<CommitSequence>>,
 }
 
 /// Redb-rooted private mutation stage for one command subgroup.
@@ -200,6 +206,7 @@ impl RedbCompositeMutationStage {
         Ok(RedbCompositeReadView {
             root: self.root,
             overlay,
+            snapshot_head: OnceLock::new(),
         })
     }
 
@@ -235,6 +242,7 @@ impl RedbCompositeMutationStage {
         Ok(RedbCompositeReadView {
             root: self.root,
             overlay,
+            snapshot_head: OnceLock::new(),
         })
     }
 
@@ -277,6 +285,7 @@ impl RedbCompositeMutationStage {
             RedbCompositeReadView {
                 root: self.root,
                 overlay,
+                snapshot_head: OnceLock::new(),
             },
             mutations,
         ))
@@ -461,6 +470,26 @@ impl RedbCompositeReadView {
         &self.overlay
     }
 
+    /// Resolves the snapshot-visible application frontier once per view.
+    ///
+    /// `derive` is the complete uncached derivation, including the cross-check
+    /// that the overlay's published application frontier equals the allocator's
+    /// predecessor. Both inputs are fixed for this view's whole life — the
+    /// overlay is frozen and the checkpoint root is one immutable snapshot — so
+    /// deriving once and reusing the answer is exactly equivalent to deriving
+    /// it per access, and the cross-check still runs against the same state it
+    /// guards. A published successor is a different view with its own empty
+    /// cell, so an advancing frontier is never masked.
+    ///
+    /// A failure is not cached, so a corrupt allocator, or a checkpoint that
+    /// disagrees with its overlay, can never be converted into a frontier.
+    pub(crate) fn snapshot_head<E>(
+        &self,
+        derive: impl FnOnce() -> Result<Option<CommitSequence>, E>,
+    ) -> Result<Option<CommitSequence>, E> {
+        crate::checkpoint_root::derive_once(&self.snapshot_head, derive)
+    }
+
     /// Re-roots the exact published successor after `covered` has become the
     /// durable redb checkpoint, retaining only concurrent newer final states.
     pub(crate) fn rebase_after(
@@ -474,7 +503,11 @@ impl RedbCompositeReadView {
             .overlay
             .rebase_after(&covered.overlay, checkpoint)
             .map_err(corrupt_value)?;
-        Ok(Self { root, overlay })
+        Ok(Self {
+            root,
+            overlay,
+            snapshot_head: OnceLock::new(),
+        })
     }
 
     pub(crate) fn resolve_point(
@@ -1032,6 +1065,84 @@ mod tests {
         // Every variant is pinned above, so no table can silently acquire a
         // mapping without also acquiring a pin.
         assert_eq!(CompositeTableV1::ALL.len(), 20);
+    }
+
+    /// The cached frontier belongs to one published view, so a successor that
+    /// advances the frontier reports its own value rather than inheriting the
+    /// predecessor's. A view that inherited one would report a durably
+    /// committed frontier as absent.
+    #[test]
+    fn a_composite_successor_derives_its_own_frontier() {
+        use riffdb_storage_api::ApplicationSequenceAllocator;
+        use riffdb_types::CommitSequence;
+
+        use crate::codec::encode_application_sequence_allocator_v1;
+        use crate::layout::META_APPLICATION_SEQUENCE;
+        use crate::store::RedbReadAccess;
+
+        let (_path, _store, ports) = operational("composite-frontier");
+        let initial =
+            encode_application_sequence_allocator_v1(ApplicationSequenceAllocator::initial())
+                .expect("initial allocator")
+                .as_bytes()
+                .to_vec();
+        let advanced = encode_application_sequence_allocator_v1(
+            ApplicationSequenceAllocator::Next(
+                CommitSequence::first().checked_next().expect("second"),
+            ),
+        )
+        .expect("advanced allocator")
+        .as_bytes()
+        .to_vec();
+
+        let predecessor = Arc::new(
+            RedbCompositeViewBuilder::capture(&ports, [0; 32])
+                .expect("capture")
+                .freeze(),
+        );
+        let access = RedbReadAccess::Composite(Arc::clone(&predecessor));
+        assert_eq!(
+            crate::reads::read_snapshot_head(&access).expect("predecessor frontier"),
+            None
+        );
+        // Second read takes the cached path and must agree with the first.
+        assert_eq!(
+            crate::reads::read_snapshot_head(&access).expect("cached frontier"),
+            None
+        );
+
+        let mut builder = RedbCompositeViewBuilder::capture(&ports, [0; 32]).expect("capture");
+        let frame = CompositeFrameV1::new(
+            CompositeFrameKindV1::Command,
+            database_id(),
+            None,
+            Some(CommitSequence::first()),
+            None,
+            None,
+            1,
+            256,
+            [0; 32],
+            [1; 32],
+            vec![
+                CompositeMutationV1::replace(
+                    CompositeTableV1::Meta,
+                    META_APPLICATION_SEQUENCE.as_bytes(),
+                    &initial,
+                    advanced.as_slice(),
+                )
+                .expect("mutation"),
+            ],
+        )
+        .expect("frame");
+        builder.apply_composite_frame(&frame).expect("apply");
+        let successor = Arc::new(builder.freeze());
+
+        assert_eq!(
+            crate::reads::read_snapshot_head(&RedbReadAccess::Composite(successor))
+                .expect("successor frontier"),
+            Some(CommitSequence::first()),
+            "a successor must derive the frontier it published, not its predecessor's"
+        );
     }
 
     #[test]

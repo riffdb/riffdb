@@ -787,10 +787,10 @@ pub(crate) fn read_commit_head(
 /// transaction as every entity/index post-image and command segment, so its
 /// predecessor is the exact frontier of this read transaction.
 ///
-/// A checkpoint-rooted access derives this once per snapshot and reuses it
-/// (`CheckpointRoot::snapshot_head`): every input below is fixed for that
-/// snapshot's whole life. A composite access derives it per call, because its
-/// overlay is not the checkpoint root's own state.
+/// Every input below is fixed for the life of the read view it is derived
+/// against, so each variant derives this once per view and reuses it. The cache
+/// belongs to the view rather than to the caller, so it is dropped with the
+/// state it describes and a published successor always starts empty.
 pub(crate) fn read_snapshot_head(
     access: &RedbReadAccess,
 ) -> Result<Option<CommitSequence>, StorageError> {
@@ -798,7 +798,7 @@ pub(crate) fn read_snapshot_head(
         RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => {
             root.snapshot_head(|| derive_snapshot_head(access))
         }
-        RedbReadAccess::Composite(_) => derive_snapshot_head(access),
+        RedbReadAccess::Composite(view) => view.snapshot_head(|| derive_snapshot_head(access)),
     }
 }
 
