@@ -786,7 +786,24 @@ pub(crate) fn read_commit_head(
 /// command history. The allocator is advanced in the same authoritative redb
 /// transaction as every entity/index post-image and command segment, so its
 /// predecessor is the exact frontier of this read transaction.
+///
+/// A checkpoint-rooted access derives this once per snapshot and reuses it
+/// (`CheckpointRoot::snapshot_head`): every input below is fixed for that
+/// snapshot's whole life. A composite access derives it per call, because its
+/// overlay is not the checkpoint root's own state.
 pub(crate) fn read_snapshot_head(
+    access: &RedbReadAccess,
+) -> Result<Option<CommitSequence>, StorageError> {
+    match access {
+        RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => {
+            root.snapshot_head(|| derive_snapshot_head(access))
+        }
+        RedbReadAccess::Composite(_) => derive_snapshot_head(access),
+    }
+}
+
+/// The complete uncached derivation, including the authority-presence check.
+fn derive_snapshot_head(
     access: &RedbReadAccess,
 ) -> Result<Option<CommitSequence>, StorageError> {
     let encoded = access
@@ -1288,6 +1305,70 @@ mod tests {
                 inclusive_upper: FrontierPosition::BeforeFirst,
             } if records.is_empty()
         ));
+    }
+
+    fn current_root(access: &RedbReadAccess) -> Arc<crate::checkpoint_root::CheckpointRoot> {
+        match access {
+            RedbReadAccess::Current(root) => Arc::clone(root),
+            RedbReadAccess::Durable(_) | RedbReadAccess::Composite(_) => {
+                panic!("a handle with no durable frontier serves `Current` reads")
+            }
+        }
+    }
+
+    /// Two reads with nothing committed between them are entitled to the same
+    /// snapshot, and a commit ends that entitlement for every later read.
+    #[test]
+    fn frontier_free_reads_reuse_one_snapshot_until_a_commit() {
+        let (_path, ports) = operational("current-root-reuse");
+        let before = ports.begin_read().expect("first frontier-free read");
+        let first = current_root(&before);
+        let second = current_root(&ports.begin_read().expect("second frontier-free read"));
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "two reads entitled to one snapshot must not open two transactions"
+        );
+        assert_eq!(
+            read_snapshot_head(&before).expect("empty frontier"),
+            None,
+            "the reused snapshot must still derive its own frontier"
+        );
+
+        let head = CommitSequence::first();
+        seed_commit(&ports, head);
+
+        let after = ports.begin_read().expect("post-commit read");
+        assert!(
+            !Arc::ptr_eq(&first, &current_root(&after)),
+            "a durable commit must retire the snapshot captured before it"
+        );
+        assert_eq!(
+            read_snapshot_head(&after).expect("advanced frontier"),
+            Some(head),
+            "a read begun after a durable commit must observe it"
+        );
+    }
+
+    /// The reused snapshot is released the moment a durable frontier takes over
+    /// selection, rather than pinning pages no reader can ever be handed again.
+    #[test]
+    fn installing_a_durable_frontier_retires_the_reused_snapshot() {
+        let (_path, ports) = operational("current-root-retire");
+        let held = ports.begin_read().expect("frontier-free read");
+        let root = current_root(&held);
+        assert!(ports.shared.holds_reusable_read_root());
+
+        let epoch = ports.begin_deferred_epoch().expect("durability epoch");
+        assert!(
+            !ports.shared.holds_reusable_read_root(),
+            "a durable frontier must release the root no reader can select again"
+        );
+        assert!(matches!(
+            ports.begin_read().expect("durable read"),
+            RedbReadAccess::Durable(_)
+        ));
+        drop(epoch);
+        drop(root);
     }
 
     #[test]

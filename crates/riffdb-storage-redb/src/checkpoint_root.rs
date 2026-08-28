@@ -32,18 +32,24 @@
 //! - A published composite checkpoint or a durable read frontier keeps one
 //!   snapshot across many queries, so each table is resolved once for all of
 //!   them.
-//! - `RedbReadAccess::Current` begins a fresh snapshot per read access, so the
-//!   cache lives only as long as that access — but a single access still makes
-//!   roughly nine point reads over two or three distinct tables, which is where
-//!   the read-only profile's savings come from. A daemon that has not written
-//!   since startup has neither a durable frontier nor a composite publication,
-//!   so this is the only shape its reads take.
+//! - `RedbReadAccess::Current` serves the newest snapshot a handle with no
+//!   durable frontier may open. `SharedRedb::current_read_root` reuses one such
+//!   snapshot for every access entitled to it — every access taken while
+//!   `durable_commit_epoch` is unchanged — so the cache spans those accesses
+//!   too. A daemon that has not written since startup has neither a durable
+//!   frontier nor a composite publication, so this is the only shape its reads
+//!   take.
+//!
+//! The same equivalence licenses caching a derived *value* rather than a
+//! handle, provided every input it reads is fixed by the snapshot. The
+//! snapshot-visible application frontier is the one such value cached here.
 
 use std::ops::Deref;
 use std::sync::OnceLock;
 use std::time::Instant;
 
 use redb::{ReadOnlyTable, ReadTransaction, TableDefinition, TableError};
+use riffdb_types::CommitSequence;
 
 use crate::journal::{JournalIoError, JournalTable};
 use crate::layout::{CAPABILITIES, META};
@@ -69,6 +75,7 @@ pub(crate) struct CheckpointRoot {
     meta: OnceLock<MetaTable>,
     capabilities: OnceLock<ByteTable>,
     journal_tables: [OnceLock<ByteTable>; JOURNAL_TABLE_SLOTS],
+    snapshot_head: OnceLock<Option<CommitSequence>>,
     transaction: ReadTransaction,
 }
 
@@ -79,8 +86,33 @@ impl CheckpointRoot {
             meta: OnceLock::new(),
             capabilities: OnceLock::new(),
             journal_tables: std::array::from_fn(|_| OnceLock::new()),
+            snapshot_head: OnceLock::new(),
             transaction,
         }
+    }
+
+    /// Resolves the snapshot-visible application frontier once per snapshot.
+    ///
+    /// `derive` is the complete uncached derivation, authority-presence check
+    /// included. Every input it reads — the application-sequence allocator row,
+    /// whether `COMMITS` is empty, and the retention watermark — is fixed for
+    /// this snapshot's whole life, so deriving once and reusing the answer is
+    /// exactly equivalent to deriving it per access. No check is skipped, made
+    /// conditional, or weakened: the check still runs, against the same
+    /// snapshot, and still decides whether this frontier may be served at all.
+    ///
+    /// A failure is not cached, for the same reason a failed table open is not:
+    /// the next access re-derives it and observes the same error, so a corrupt
+    /// or absent allocator can never be converted into a frontier.
+    pub(crate) fn snapshot_head<E>(
+        &self,
+        derive: impl FnOnce() -> Result<Option<CommitSequence>, E>,
+    ) -> Result<Option<CommitSequence>, E> {
+        if let Some(head) = self.snapshot_head.get() {
+            return Ok(*head);
+        }
+        let head = derive()?;
+        Ok(*self.snapshot_head.get_or_init(|| head))
     }
 
     /// The captured snapshot itself, for reads of tables outside the cache.

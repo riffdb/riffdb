@@ -167,6 +167,16 @@ pub(crate) struct SharedRedb {
     /// epoch is active every operational reader clones this immutable root;
     /// the epoch writer alone may observe redb's newer deferred roots.
     durable_read_frontier: RwLock<Option<Arc<CheckpointRoot>>>,
+    /// The newest frontier-free read root, with the durable commit epoch that
+    /// was already installed when it was captured.
+    ///
+    /// Only `begin_operational_read` reads it, and only on the branch where no
+    /// durable frontier governs reads. See `current_read_root` for why an
+    /// unchanged epoch entitles a later access to the same snapshot.
+    current_read_root: RwLock<Option<(u64, Arc<CheckpointRoot>)>>,
+    /// True while `current_read_root` may hold a root, so the frontier install
+    /// can skip the lock on every later call once the root has been retired.
+    current_read_root_live: AtomicBool,
     /// Shadow publication root used while WP-488 replaces the standard writer.
     /// It is not selected by operational reads until the complete frame-first
     /// path and recovery barriers are installed.
@@ -737,9 +747,9 @@ impl SharedRedb {
     }
 
     fn begin_operational_read(&self) -> Result<RedbReadAccess, StorageError> {
-        // Keep the shared guard through `begin_read`: an epoch cannot install
-        // its predecessor frontier between observing `None` and redb selecting
-        // the newest (possibly deferred) root.
+        // Keep the shared guard through the selection below: an epoch cannot
+        // install its predecessor frontier between observing `None` and redb
+        // selecting the newest (possibly deferred) root.
         let frontier = self
             .durable_read_frontier
             .read()
@@ -747,10 +757,102 @@ impl SharedRedb {
         if let Some(transaction) = frontier.as_ref() {
             return Ok(RedbReadAccess::Durable(Arc::clone(transaction)));
         }
-        let transaction = self.database.begin_read().map_err(transaction_error)?;
-        Ok(RedbReadAccess::Current(Arc::new(CheckpointRoot::new(
-            transaction,
-        ))))
+        Ok(RedbReadAccess::Current(self.current_read_root()?))
+    }
+
+    /// The newest snapshot a frontier-free reader is entitled to observe.
+    ///
+    /// A `ReadTransaction` is one fixed committed root, so the only question a
+    /// reused one raises is freshness: may THIS access be served the snapshot
+    /// an earlier access opened? It may exactly when nothing has been committed
+    /// in between, and `durable_commit_epoch` is the authoritative witness of
+    /// that. Every write that changes what redb's newest root contains lands
+    /// through `SharedRedb::commit_durable`, which increments that epoch
+    /// strictly AFTER `WriteTransaction::commit` returns and therefore strictly
+    /// before its writer is told the write is durable.
+    ///
+    /// So, with `epoch` read before the snapshot is captured and both stamped
+    /// together:
+    ///
+    /// - A commit whose epoch increment precedes this call's load committed
+    ///   even earlier, so a snapshot stamped with the loaded epoch already
+    ///   contains it. Reuse can therefore never hide an acknowledged write.
+    /// - A commit whose increment follows this call's load is concurrent with
+    ///   this read — its writer has not been told it is durable — so ordering
+    ///   this read before it is a permitted linearization, exactly as it is
+    ///   today when `begin_read` happens to run first.
+    ///
+    /// The epoch is monotonic and the stamp is written under the exclusive
+    /// guard, so a reused root is never older than its stamp claims. A root
+    /// captured a moment newer than its stamp is harmless in the other
+    /// direction: serving a NEWER committed snapshot than required is never a
+    /// staleness violation.
+    ///
+    /// The caller holds the durable-read-frontier guard, so a frontier install
+    /// cannot interleave with the capture; once one does install, it retires
+    /// this root rather than leaving it to pin pages no reader can select.
+    fn current_read_root(&self) -> Result<Arc<CheckpointRoot>, StorageError> {
+        let epoch = self.durable_commit_epoch.load(Ordering::Acquire);
+        {
+            let cached = self
+                .current_read_root
+                .read()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            if let Some((captured, root)) = cached.as_ref()
+                && *captured == epoch
+            {
+                return Ok(Arc::clone(root));
+            }
+        }
+        let mut cached = self
+            .current_read_root
+            .write()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        // Re-read under the exclusive guard. A commit between the two loads
+        // must not be stamped with the older epoch, and a racing capture that
+        // already installed the newest snapshot must be reused rather than
+        // replaced by an equally new one.
+        let epoch = self.durable_commit_epoch.load(Ordering::Acquire);
+        if let Some((captured, root)) = cached.as_ref()
+            && *captured == epoch
+        {
+            return Ok(Arc::clone(root));
+        }
+        let root = Arc::new(CheckpointRoot::new(
+            self.database.begin_read().map_err(transaction_error)?,
+        ));
+        *cached = Some((epoch, Arc::clone(&root)));
+        self.current_read_root_live.store(true, Ordering::Release);
+        Ok(root)
+    }
+
+    /// Whether a reusable frontier-free root is held right now.
+    ///
+    /// Test observability for the retirement contract: the pin it would leave
+    /// behind is invisible from outside redb, so it is asserted directly.
+    #[cfg(test)]
+    pub(crate) fn holds_reusable_read_root(&self) -> bool {
+        self.current_read_root
+            .read()
+            .expect("reusable read root")
+            .is_some()
+    }
+
+    /// Releases the reusable frontier-free root once a durable frontier governs
+    /// every operational read.
+    ///
+    /// Called under the durable-read-frontier write guard at each install, so
+    /// no capture can be in flight and none can start afterwards. Holding the
+    /// root past that point would keep a redb read transaction alive that no
+    /// reader can ever be handed again, pinning every page freed after it.
+    fn retire_current_read_root(&self) {
+        if !self.current_read_root_live.load(Ordering::Acquire) {
+            return;
+        }
+        self.current_read_root_live.store(false, Ordering::Release);
+        if let Ok(mut cached) = self.current_read_root.write() {
+            *cached = None;
+        }
     }
 
     fn begin_composite_operational_read(&self) -> Result<RedbReadAccess, StorageError> {
@@ -1676,6 +1778,8 @@ impl RedbStore {
                 bounded_clean_startup: AtomicBool::new(false),
                 durable_commit_epoch: AtomicU64::new(0),
                 durable_read_frontier: RwLock::new(None),
+                current_read_root: RwLock::new(None),
+                current_read_root_live: AtomicBool::new(false),
                 composite_publication: RwLock::new(None),
                 private_composite_frontier: Mutex::new(None),
                 publication_queue: Mutex::new(PublicationQueue::default()),
@@ -4558,6 +4662,10 @@ impl RedbOperationalPorts {
                     .map_err(transaction_error)?,
             ));
             *frontier = Some(transaction);
+            // Still under the write guard, so no frontier-free capture can be
+            // in flight and none can begin: every later read takes the durable
+            // branch instead.
+            self.shared.retire_current_read_root();
         }
         drop(frontier);
         let composite_predecessor = self.shared.capture_or_initialize_composite_view()?;
@@ -4604,6 +4712,7 @@ impl RedbOperationalPorts {
                     .begin_read()
                     .map_err(transaction_error)?,
             )));
+            self.shared.retire_current_read_root();
         }
         drop(frontier);
         let composite_predecessor = self.shared.capture_or_initialize_composite_view()?;
@@ -6089,6 +6198,7 @@ impl SharedRedb {
                 *frontier = Some(Arc::new(CheckpointRoot::new(
                     self.database.begin_read().map_err(transaction_error)?,
                 )));
+                self.retire_current_read_root();
             }
         }
         drop(self.journal_runtime()?);
