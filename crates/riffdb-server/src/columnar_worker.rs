@@ -186,6 +186,13 @@ struct EngineCatchupState {
 #[derive(Clone, Copy, Debug, Default)]
 struct ColumnarWorkerEvidence {
     passes: u64,
+    /// Time in `synchronize_active_vector_projections`, which re-reads and
+    /// re-validates the active catalog lineage on every pass.
+    sync_us: u64,
+    /// Time in `maintain_vector_generations`.
+    maintain_us: u64,
+    /// Time reading the authoritative application head.
+    head_us: u64,
     apply_us: u64,
     checkpoint_us: u64,
     max_pass_us: u64,
@@ -200,8 +207,11 @@ impl ColumnarWorkerEvidence {
     /// Stable process-evidence line consumed by benchmark harnesses.
     fn format_v1_line(&self) -> String {
         format!(
-            "riffdb-columnar-worker-v1\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            "riffdb-columnar-worker-v1\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             self.passes,
+            self.sync_us,
+            self.maintain_us,
+            self.head_us,
             self.apply_us,
             self.checkpoint_us,
             self.max_pass_us,
@@ -219,8 +229,11 @@ impl ColumnarWorkerEvidence {
 }
 
 /// Field order of [`ColumnarWorkerEvidence::format_v1_line`].
-const COLUMNAR_WORKER_EVIDENCE_LABELS: [&str; 13] = [
+const COLUMNAR_WORKER_EVIDENCE_LABELS: [&str; 16] = [
     "passes",
+    "sync_us",
+    "maintain_us",
+    "head_us",
     "apply_us",
     "checkpoint_us",
     "max_pass_us",
@@ -544,10 +557,20 @@ fn run_columnar_pass(
     metrics: Option<&MetricRegistry>,
     state: &mut ColumnarWorkerState,
 ) -> Result<(), ColumnarWorkerError> {
+    let sync_started = Instant::now();
     runtime
         .synchronize_active_vector_projections()
         .map_err(|_| ColumnarWorkerError::Registration)?;
+    state.evidence.sync_us = state
+        .evidence
+        .sync_us
+        .saturating_add(elapsed_microseconds(sync_started));
+    let maintain_started = Instant::now();
     maintain_vector_generations(runtime)?;
+    state.evidence.maintain_us = state
+        .evidence
+        .maintain_us
+        .saturating_add(elapsed_microseconds(maintain_started));
     state.polls_since_checkpoint = state.polls_since_checkpoint.saturating_add(1);
     let force_checkpoint = state.polls_since_checkpoint >= CHECKPOINT_POLL_CADENCE;
     if force_checkpoint {
@@ -555,7 +578,12 @@ fn run_columnar_pass(
     }
 
     let apply_source = runtime.apply_source();
+    let head_started = Instant::now();
     let head = read_head(runtime)?;
+    state.evidence.head_us = state
+        .evidence
+        .head_us
+        .saturating_add(elapsed_microseconds(head_started));
     let mut max_lag = 0u64;
     let mut pass_apply_us = 0u64;
     let mut pass_checkpoint_us = 0u64;
