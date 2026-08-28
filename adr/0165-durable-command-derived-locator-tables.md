@@ -182,13 +182,14 @@ the transient rebuild must remain available rather than being deleted.
   changes. There is no revalidation cost and no upgrade stall. The correction is
   recorded rather than silently removed, because the accepted trade was chosen
   against the incorrect cost.
-- **Write cost, measured.** On an idle N1 (8 vCPU Xeon, load 0.23, ext4), four
-  interleaved reps per arm, 115,690 commands, one `IDEMPOTENCY` locator row per
-  command: baseline mean 2492.2 ops/s (2465.6–2523.7), locators mean 2338.6
-  ops/s (2330.7–2351.3) — **−6.16% seed throughput**, with non-overlapping
-  groups and within-arm spread of 2.3% and 0.9%. This is measured for **one**
-  locator table; three tables will cost more and that extrapolation is **not**
-  measured.
+- **Write cost, measured for the shipped shape.** On an idle N1 (8 vCPU Xeon,
+  ext4), interleaved arms, three complete pairs, 115,690 commands, with all
+  three locator tables and four rows per command: baseline mean ~2495.7 ops/s
+  (2491.6, 2490.1, 2505.3), locators mean ~2157.5 ops/s (2178.9, 2128.9,
+  2164.7) — **≈ −13.5% seed throughput**, with no overlap between groups. An
+  earlier single-table prototype measured −6.16%, so the shipped shape costs
+  roughly double that. This is the shipped configuration, not a provisional
+  estimate.
 - **Bytes and fsyncs, measured** and unchanged by the placement: +135.9 bytes of
   engine storage and +15.6 bytes of B-tree metadata per command per table
   (+4.96% database size for one table), +180.0 bytes of journal frame per

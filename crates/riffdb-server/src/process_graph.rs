@@ -378,31 +378,27 @@ impl ProductionGraphBuilder {
         // reaches here -- it declines the certificate in the storage gate and
         // this start takes the complete path.
         //
-        // NOT YET ENABLED, and the remaining blocker is now diagnosed.
         //
-        // With the skip on, a bounded clean start reaches readiness without
+        // NOT YET ENABLED. The ninth path (the command-owned audit tail) is
+        // fixed, and with the skip on a bounded start reaches readiness without
         // walking a single command segment -- measured `outbox_recovery=0`,
-        // `transient_index_rebuilds=0`, `process_to_ready=39594` microseconds --
-        // so the mechanism works. What fails is the first WRITE that validates
-        // the administration tail.
+        // `transient_index_rebuilds=0`. Every earlier failure is gone: the
+        // outcome lookup, the checkpoint-coverage short-circuit, the bootstrap
+        // replay.
         //
-        // `validate_administration_tail` (administration.rs, the join at ~301)
-        // reads the AUDIT row for the expected-last sequence. For a
-        // command-owned audit record that row holds a `CommandAuditLocatorV1`,
-        // and the decode arm deliberately maps a locator to `None` because
-        // resolving it has historically required the transient index. The
-        // derived half then also answers `None`, because `command_audit_record`
-        // on write access reads the index directly and the bounded path leaves
-        // it dormant. `(None, None)` is the fail-closed arm, so an intact
-        // database reports `CorruptData` -- absent-for-present again, and the
-        // ninth instance of this class.
+        // A TENTH consumer then surfaces. `subscribe_commits` fails with
+        // `Unavailable`, and the shape is now familiar: the outbox index pages
+        // (`pending_outbox_page` / `undelivered_outbox_page`) return
+        // `Unavailable` outright for a dormant index rather than resolving
+        // durably, and `ensure_outbox_indexes_available` reaches them from a
+        // write access where warming would take the mutation gate reentrantly.
         //
-        // ADR-0165's shape already fits: the locator is ALREADY durable, in the
-        // AUDIT row itself, so no new table is needed. The decode arm must
-        // resolve it -- `command_member_at_write_access` plus
-        // `command_audit_from_locator` are the existing pieces -- instead of
-        // converting a present record into absence. That is the last thing
-        // standing between this branch and bounded readiness.
+        // The pattern is the finding: the bounded path has a long tail of
+        // consumers that silently depended on a warm index, and each one is
+        // only discovered when the one before it is fixed. Enabling the skip
+        // before that tail is enumerated ships a readiness win that breaks a
+        // different operation each time. Held until the tail is bounded rather
+        // than fixed one failure at a time.
         let outbox_normalization_proven_unnecessary =
             false && bounded_clean_startup && storage.outbox_delivering_proven_absent();
         let outbox_recovery_started = std::time::Instant::now();
