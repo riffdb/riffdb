@@ -1,0 +1,270 @@
+#!/usr/bin/env bash
+# One command that produces a comparable read-path measurement.
+#
+# Why this exists. Every profiling round in this repository has re-derived the
+# same five traps, and each one has cost real time or produced a wrong result:
+#
+#   1. `pgrep -x riffdbd` matches OTHER agents' daemons on a shared host. One
+#      investigation nearly profiled someone else's process and did strace one.
+#   2. The harness spawns a SEED daemon and then a MEASURED daemon. A naive
+#      "is a daemon running" check latches onto the seed, whose profile is all
+#      write-path work, and every conclusion drawn from it is about the wrong
+#      path.
+#   3. Rebuilding `riffdbd` without rebuilding `riffdb-app-baseline` links two
+#      different versions of the storage crate. The resulting failure looks
+#      exactly like a real defect; it already caused one correct change to be
+#      reverted.
+#   4. `--release` has no frame pointers, so `perf --call-graph fp` returns an
+#      empty call graph. Answering that needs `[profile.profiling]`.
+#   5. A database root under /tmp is tmpfs on these hosts. The app-baseline
+#      harness correctly refuses a RAM-backed bench root, and the run dies
+#      several minutes in.
+#
+# It also captures what no single profiler here gives: the in-process stage
+# census. `perf` attributes to symbols, and this codebase's costs hide from
+# that -- contended `Arc` refcounts inside redb get charged to inlined callers,
+# and a residual stage bucket once absorbed three-quarters of the storage
+# adapter and was read as query-execution cost. The census is stage-attributed
+# and has proved far more stable than throughput: a recent change showed
+# disjoint before/after ranges on one stage while throughput stayed inside
+# noise.
+#
+# NOT gate evidence. `[profile.profiling]` is not the shipping profile, and
+# these runs are `--skip-postgres` on a shared host. PERF-018 receipts come
+# from `benchmarks/run-app-baseline` only.
+set -euo pipefail
+export LC_ALL=C
+export TZ=UTC
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+usage() {
+    printf '%s\n' \
+        'usage: benchmarks/profile-read-path [options]' \
+        '         --load PROFILE      read_only|write_only|interactive (default: read_only)' \
+        '         --clients N         concurrent clients (default: 32)' \
+        '         --duration-secs N   measured window (default: 40)' \
+        '         --scale smoke|full  dataset tier (default: full)' \
+        '         --reps N            repetitions; stage medians are reported (default: 3)' \
+        '         --perf              also collect perf stat + call-graph record' \
+        '         --heaptrack         also collect an allocation profile' \
+        '         --label NAME        artifact subdirectory name (default: a timestamp)' \
+        '         --baseline NAME     diff the census against a stored label' \
+        '         --output DIR        (default: target/profiles)' \
+        '' \
+        'Artifacts land in <output>/<label>/ as census.tsv, census.json, stages.txt,' \
+        'and, with --perf, perf-stat.txt / perf-report.txt.' >&2
+    exit 2
+}
+
+load_profile=read_only
+clients=32
+duration=40
+scale=full
+reps=3
+want_perf=0
+want_heaptrack=0
+label=""
+baseline=""
+output_dir="target/profiles"
+
+while (($#)); do
+    case "$1" in
+        --load) load_profile="${2:-}"; shift 2 ;;
+        --clients) clients="${2:-}"; shift 2 ;;
+        --duration-secs) duration="${2:-}"; shift 2 ;;
+        --scale) scale="${2:-}"; shift 2 ;;
+        --reps) reps="${2:-}"; shift 2 ;;
+        --perf) want_perf=1; shift ;;
+        --heaptrack) want_heaptrack=1; shift ;;
+        --label) label="${2:-}"; shift 2 ;;
+        --baseline) baseline="${2:-}"; shift 2 ;;
+        --output) output_dir="${2:-}"; shift 2 ;;
+        -h|--help) usage ;;
+        *) printf 'unknown argument: %s\n' "$1" >&2; usage ;;
+    esac
+done
+
+case "$scale" in
+    smoke) scale_flag="--smoke" ;;
+    full) scale_flag="--full" ;;
+    *) printf 'unknown scale %s\n' "$scale" >&2; usage ;;
+esac
+
+label="${label:-$(date -u +%Y%m%dT%H%M%SZ)}"
+run_dir="$output_dir/$label"
+mkdir -p "$run_dir"
+
+# Trap 5: the bench root must be disk-backed. Checked before anything is built,
+# because the alternative is discovering it minutes into a seed.
+bench_root="${RIFFDB_PROFILE_DB_ROOT:-$HOME/.riffdb-profile-db}"
+mkdir -p "$bench_root"
+root_fstype="$(stat -f -c %T "$bench_root")"
+if [[ "$root_fstype" == "tmpfs" || "$root_fstype" == "ramfs" ]]; then
+    printf 'bench root %s is RAM-backed (%s); set RIFFDB_PROFILE_DB_ROOT to a disk path\n' \
+        "$bench_root" "$root_fstype" >&2
+    exit 1
+fi
+
+# Trap 3: both binaries, one profile, every time. Building only one links two
+# different versions of the storage crate.
+printf 'building riffdbd and riffdb-app-baseline (profile: profiling)\n' >&2
+cargo +1.97.0 build --profile profiling -q -p riffdb-server --bin riffdbd
+(cd examples/app-baseline && cargo +1.97.0 build --profile profiling -q --bin riffdb-app-baseline)
+daemon_bin="$repo_root/target/profiling/riffdbd"
+harness_bin="$repo_root/examples/app-baseline/target/profiling/riffdb-app-baseline"
+for binary in "$daemon_bin" "$harness_bin"; do
+    [[ -x "$binary" ]] || { printf 'missing %s\n' "$binary" >&2; exit 1; }
+done
+
+# Record the conditions. A measurement without them is not comparable, and this
+# host is shared: same-binary spread has been observed as high as 1.6x when a
+# neighbouring agent was running a load.
+{
+    printf 'commit\t%s\n' "$(git rev-parse HEAD)"
+    printf 'dirty\t%s\n' "$(git status --porcelain | wc -l)"
+    printf 'load_profile\t%s\nclients\t%s\nduration_secs\t%s\nscale\t%s\nreps\t%s\n' \
+        "$load_profile" "$clients" "$duration" "$scale" "$reps"
+    printf 'loadavg\t%s\n' "$(cut -d' ' -f1-3 /proc/loadavg)"
+    printf 'nproc\t%s\n' "$(nproc)"
+    printf 'cpu\t%s\n' "$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ *//')"
+    printf 'sha_ni\t%s\n' "$(grep -qm1 sha_ni /proc/cpuinfo && echo yes || echo no)"
+} > "$run_dir/conditions.tsv"
+
+# Trap 1 and 2: identify OUR measured daemon, never a neighbour's and never the
+# seed. The measured daemon is the last riffdbd spawned against our own bench
+# root, so match the path and take the newest.
+measured_daemon_pid() {
+    local newest="" newest_start=0 pid start
+    for pid in $(pgrep -f "riffdbd --database $bench_root" 2>/dev/null || true); do
+        start="$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null || echo 0)"
+        if ((start > newest_start)); then newest_start="$start"; newest="$pid"; fi
+    done
+    printf '%s' "$newest"
+}
+
+run_once() {
+    local rep="$1" log="$run_dir/run-$rep.log"
+    rm -rf "${bench_root:?}"/*
+    RIFFDB_APP_BASELINE_QUERY_EXECUTE_DIAGNOSTICS=1 \
+    RIFFDB_STOP_TIMEOUT_SECS="${RIFFDB_STOP_TIMEOUT_SECS:-1800}" \
+    RIFFDB_START_TIMEOUT_SECS="${RIFFDB_START_TIMEOUT_SECS:-1800}" \
+        "$harness_bin" "$scale_flag" --skip-postgres --reps 1 \
+        --load "$load_profile" --load-clients "$clients" \
+        --load-duration-secs "$duration" --load-warmup-secs 5 \
+        --riffdbd-bin "$daemon_bin" --database-root "$bench_root" \
+        --output "$run_dir/report-$rep.json" > "$log" 2>&1 &
+    local runner=$!
+
+    if ((want_perf)); then
+        # Wait for the MEASURED daemon: the seed daemon exits before it starts,
+        # so poll until a daemon exists that is younger than the run.
+        local pid="" i
+        for i in $(seq 1 900); do
+            kill -0 "$runner" 2>/dev/null || break
+            grep -q "^== load " "$log" 2>/dev/null && { pid="$(measured_daemon_pid)"; [[ -n "$pid" ]] && break; }
+            sleep 1
+        done
+        if [[ -n "$pid" ]]; then
+            perf stat -p "$pid" -e cycles,instructions,branches,branch-misses,cache-references,cache-misses,task-clock,context-switches \
+                -o "$run_dir/perf-stat-$rep.txt" -- sleep 10 2>/dev/null || true
+            perf record -F 997 -g --call-graph dwarf -p "$pid" \
+                -o "$run_dir/perf-$rep.data" -- sleep 15 >/dev/null 2>&1 || true
+            perf report --stdio --no-children -i "$run_dir/perf-$rep.data" \
+                > "$run_dir/perf-report-$rep.txt" 2>/dev/null || true
+        else
+            printf 'rep %s: no measured daemon found; perf skipped\n' "$rep" >&2
+        fi
+    fi
+
+    wait "$runner" || printf 'rep %s exited non-zero; artifacts retained\n' "$rep" >&2
+    grep -oE 'riffdb-query-execute-windows-v1.*' "$log" | head -1 > "$run_dir/census-$rep.tsv" || true
+    grep -oE 'throughput=[0-9]+' "$log" | head -1 >> "$run_dir/conditions.tsv" || true
+}
+
+for rep in $(seq 1 "$reps"); do
+    printf 'rep %s/%s\n' "$rep" "$reps" >&2
+    run_once "$rep"
+done
+
+if ((want_heaptrack)) && command -v heaptrack >/dev/null; then
+    printf 'heaptrack requires wrapping the daemon spawn; not yet supported\n' >&2
+fi
+
+python3 - "$run_dir" "$reps" "${baseline:+$output_dir/$baseline}" <<'PY'
+import json, pathlib, statistics, sys
+
+run = pathlib.Path(sys.argv[1])
+reps = int(sys.argv[2])
+baseline = pathlib.Path(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else None
+
+def stages(directory):
+    """Median per-execute microseconds per stage across every rep present."""
+    per_stage = {}
+    for path in sorted(directory.glob("census-*.tsv")):
+        text = path.read_text().strip()
+        if not text:
+            continue
+        fields = text.split("\t")
+        if len(fields) < 6:
+            continue
+        labels = fields[3].split(",")
+        totals = [0] * len(labels)
+        count = 0
+        for window in fields[5].split(";"):
+            parts = [int(v) for v in window.split(",") if v.strip()]
+            if len(parts) < len(labels) + 1:
+                continue
+            count += parts[0]
+            for index in range(len(labels)):
+                totals[index] += parts[index + 1]
+        if not count:
+            continue
+        for label, total in zip(labels, totals):
+            per_stage.setdefault(label, []).append(total / count / 1000.0)
+    return {label: statistics.median(values) for label, values in per_stage.items() if values}, per_stage
+
+current, raw = stages(run)
+if not current:
+    print("no census captured; was RIFFDB_APP_BASELINE_QUERY_EXECUTE_DIAGNOSTICS honoured?", file=sys.stderr)
+    sys.exit(1)
+
+prior = stages(baseline)[0] if baseline and baseline.exists() else {}
+
+rows = sorted(current.items(), key=lambda kv: -kv[1])
+total = sum(current.values())
+width = max(len(name) for name in current)
+lines = [f"{'stage':<{width}}  {'us/execute':>10}  {'share':>6}" + ("  {:>9}".format("vs base") if prior else "")]
+lines.append("-" * len(lines[0]))
+for name, value in rows:
+    line = f"{name:<{width}}  {value:10.3f}  {100 * value / total:5.1f}%"
+    if prior and name in prior and prior[name] > 0:
+        line += f"  {100 * (value - prior[name]) / prior[name]:+8.1f}%"
+    lines.append(line)
+lines.append("-" * len(lines[0]))
+lines.append(f"{'TOTAL':<{width}}  {total:10.3f}")
+if prior:
+    prior_total = sum(prior.values())
+    lines.append(f"{'TOTAL vs baseline':<{width}}  {100 * (total - prior_total) / prior_total:+9.1f}%")
+
+# Spread across reps, so a single-run conclusion is visibly unsupported.
+lines.append("")
+lines.append("per-rep spread (max/min) for the five largest stages:")
+for name, _ in rows[:5]:
+    values = raw.get(name, [])
+    if len(values) > 1 and min(values) > 0:
+        lines.append(f"  {name:<{width}}  {max(values) / min(values):.2f}x  over {len(values)} reps")
+
+report = "\n".join(lines)
+print(report)
+(run / "stages.txt").write_text(report + "\n")
+(run / "census.json").write_text(json.dumps({"median_us": current, "per_rep_us": raw}, indent=2) + "\n")
+PY
+
+printf '\nartifacts: %s\n' "$run_dir" >&2
+if [[ -n "$baseline" ]]; then
+    printf 'compared against: %s/%s\n' "$output_dir" "$baseline" >&2
+else
+    printf 'store this as a baseline with --label, then diff later with --baseline %s\n' "$label" >&2
+fi

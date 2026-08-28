@@ -73,6 +73,20 @@ pyo3-async-runtimes = { version = "=0.29.0", default-features = false, features 
 # the name generator after repeated collisions — irrelevant for scratch dirs.
 tempfile = { version = "=3.24.0", default-features = false }
 
+# Release code with symbols and frame pointers, for profiling only.
+#
+# `perf --call-graph fp` returns empty call graphs against `--release` because
+# the release profile omits frame pointers; every profiling round in this
+# repository has so far worked around that by hand with a throwaway target
+# directory. This profile makes the correct build one flag instead. It is not a
+# shipping profile and no gate evidence may be produced from it: `debug = true`
+# and `strip = false` change the binary layout, and forced frame pointers cost
+# a register.
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = false
+
 [profile.dev]
 debug = "line-tables-only"
 
