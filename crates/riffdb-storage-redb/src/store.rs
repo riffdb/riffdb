@@ -42,6 +42,7 @@ use crate::codec::{
     encode_index_epoch_v1, encode_outbox_intent_v1, encode_service_audit_request_index_v1,
 };
 
+use crate::checkpoint_root::CheckpointRoot;
 use crate::error::{
     commit_error, database_error, precommit_storage_error, storage_error, table_error,
     transaction_error,
@@ -165,7 +166,7 @@ pub(crate) struct SharedRedb {
     /// `None` means ordinary readers may open redb's newest root. While an
     /// epoch is active every operational reader clones this immutable root;
     /// the epoch writer alone may observe redb's newer deferred roots.
-    durable_read_frontier: RwLock<Option<Arc<ReadTransaction>>>,
+    durable_read_frontier: RwLock<Option<Arc<CheckpointRoot>>>,
     /// Shadow publication root used while WP-488 replaces the standard writer.
     /// It is not selected by operational reads until the complete frame-first
     /// path and recovery barriers are installed.
@@ -747,7 +748,9 @@ impl SharedRedb {
             return Ok(RedbReadAccess::Durable(Arc::clone(transaction)));
         }
         let transaction = self.database.begin_read().map_err(transaction_error)?;
-        Ok(RedbReadAccess::Current(transaction))
+        Ok(RedbReadAccess::Current(Arc::new(CheckpointRoot::new(
+            transaction,
+        ))))
     }
 
     fn begin_composite_operational_read(&self) -> Result<RedbReadAccess, StorageError> {
@@ -950,7 +953,7 @@ enum PendingPublicationPayload {
 }
 
 struct CommandPublication {
-    successor: Arc<ReadTransaction>,
+    successor: Arc<CheckpointRoot>,
     transient_deltas: Vec<TransientIndexDelta>,
     command_count: usize,
     encoded_bytes: usize,
@@ -964,7 +967,7 @@ struct CommandPublication {
 }
 
 struct ServiceAuditPublication {
-    successor: Arc<ReadTransaction>,
+    successor: Arc<CheckpointRoot>,
     transition_count: usize,
     encoded_bytes: usize,
     predecessor_sequence: Option<CommitSequence>,
@@ -1055,7 +1058,7 @@ fn elapsed_nanos(started: Instant) -> u64 {
 pub struct RedbSubmittedCommandFence {
     shared: Arc<SharedRedb>,
     receipt: Option<crate::journal::JournalFenceReceipt>,
-    successor: Arc<ReadTransaction>,
+    successor: Arc<CheckpointRoot>,
     applied: Vec<riffdb_storage_api::UnpublishedAuditedBatchV1>,
     transient_deltas: Vec<TransientIndexDelta>,
     command_count: usize,
@@ -1082,8 +1085,8 @@ pub(crate) struct RedbSubmittedServiceAuditFence {
 }
 
 pub(crate) enum RedbReadAccess {
-    Current(ReadTransaction),
-    Durable(Arc<ReadTransaction>),
+    Current(Arc<CheckpointRoot>),
+    Durable(Arc<CheckpointRoot>),
     Composite(Arc<crate::composite_view::RedbCompositeReadView>),
 }
 
@@ -1102,9 +1105,9 @@ impl RedbReadAccess {
         dead_code,
         reason = "WP-487 introduces the composite root; WP-488 publishes it"
     )]
-    pub(crate) fn into_shared(self) -> Result<Arc<ReadTransaction>, StorageError> {
+    pub(crate) fn into_shared(self) -> Result<Arc<CheckpointRoot>, StorageError> {
         match self {
-            Self::Current(transaction) => Ok(Arc::new(transaction)),
+            Self::Current(root) => Ok(root),
             Self::Durable(transaction) => Ok(transaction),
             Self::Composite(_) => Err(storage_error(StorageErrorKind::InvariantViolation)),
         }
@@ -1116,13 +1119,29 @@ impl RedbReadAccess {
         key: &[u8],
     ) -> Result<Option<Vec<u8>>, StorageError> {
         match self {
-            Self::Current(transaction) => {
-                crate::journal::read_value(transaction, table, key).map_err(journal_io_error)
-            }
-            Self::Durable(transaction) => {
-                crate::journal::read_value(transaction, table, key).map_err(journal_io_error)
+            Self::Current(root) | Self::Durable(root) => {
+                root.read_value(table, key).map_err(journal_io_error)
             }
             Self::Composite(view) => view.resolve_point(table.composite(), key),
+        }
+    }
+
+    /// Cached byte-table handle for the two non-overlay read variants.
+    ///
+    /// `Composite` returns before reaching this: every overlay-bearing table
+    /// must merge the checkpoint with the published suffix, which the callers
+    /// above do first. A logical table with no byte definition is the same
+    /// invariant violation it has always been, not an empty scan.
+    fn cached_byte_table(
+        &self,
+        table: crate::journal::JournalTable,
+    ) -> Result<&redb::ReadOnlyTable<&'static [u8], &'static [u8]>, StorageError> {
+        match self {
+            Self::Current(root) | Self::Durable(root) => root
+                .journal_byte_table(table)
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+                .map_err(table_error),
+            Self::Composite(_) => Err(storage_error(StorageErrorKind::InvariantViolation)),
         }
     }
 
@@ -1164,10 +1183,7 @@ impl RedbReadAccess {
                 )
                 .map(|page| page.rows().to_vec());
         }
-        let definition = crate::journal::byte_table_definition(table)
-            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-        self.open_table(definition)
-            .map_err(table_error)?
+        self.cached_byte_table(table)?
             .range::<&[u8]>((
                 std::ops::Bound::Included(start_inclusive),
                 end_exclusive.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
@@ -1207,10 +1223,7 @@ impl RedbReadAccess {
                 )
                 .map(|page| page.rows().to_vec());
         }
-        let definition = crate::journal::byte_table_definition(table)
-            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-        self.open_table(definition)
-            .map_err(table_error)?
+        self.cached_byte_table(table)?
             .range::<&[u8]>((
                 std::ops::Bound::Included(start_inclusive),
                 std::ops::Bound::Excluded(end_exclusive),
@@ -1271,11 +1284,10 @@ impl Deref for RedbReadAccess {
 
     fn deref(&self) -> &Self::Target {
         match self {
-            Self::Current(transaction) => transaction,
-            Self::Durable(transaction) => transaction,
+            Self::Current(root) | Self::Durable(root) => root.transaction(),
             // Only non-overlay tables may use `Deref`. Every table named by
             // `JournalTable` must go through the explicit point/range methods.
-            Self::Composite(view) => view.checkpoint_root(),
+            Self::Composite(view) => view.checkpoint_root().transaction(),
         }
     }
 }
@@ -4539,12 +4551,12 @@ impl RedbOperationalPorts {
             .write()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
         if frontier.is_none() {
-            let transaction = Arc::new(
+            let transaction = Arc::new(CheckpointRoot::new(
                 self.shared
                     .database
                     .begin_read()
                     .map_err(transaction_error)?,
-            );
+            ));
             *frontier = Some(transaction);
         }
         drop(frontier);
@@ -4586,12 +4598,12 @@ impl RedbOperationalPorts {
             .write()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
         if frontier.is_none() {
-            *frontier = Some(Arc::new(
+            *frontier = Some(Arc::new(CheckpointRoot::new(
                 self.shared
                     .database
                     .begin_read()
                     .map_err(transaction_error)?,
-            ));
+            )));
         }
         drop(frontier);
         let composite_predecessor = self.shared.capture_or_initialize_composite_view()?;
@@ -6074,9 +6086,9 @@ impl SharedRedb {
                 .write()
                 .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
             if frontier.is_none() {
-                *frontier = Some(Arc::new(
+                *frontier = Some(Arc::new(CheckpointRoot::new(
                     self.database.begin_read().map_err(transaction_error)?,
-                ));
+                )));
             }
         }
         drop(self.journal_runtime()?);
@@ -7142,7 +7154,9 @@ impl SharedRedb {
             .as_ref()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
             .capture()?;
-        let root = Arc::new(self.database.begin_read().map_err(transaction_error)?);
+        let root = Arc::new(CheckpointRoot::new(
+            self.database.begin_read().map_err(transaction_error)?,
+        ));
         if read_commit_tail(&root)? != batch.last_sequence
             || read_administration_tail(&root)? != batch.last_administration_sequence
         {
@@ -7281,7 +7295,9 @@ impl SharedRedb {
 
     fn finish_journal_checkpoint(&self, runtime: JournalRuntime) -> Result<(), StorageError> {
         drop(runtime.lane);
-        let checkpoint = Arc::new(self.database.begin_read().map_err(transaction_error)?);
+        let checkpoint = Arc::new(CheckpointRoot::new(
+            self.database.begin_read().map_err(transaction_error)?,
+        ));
         let checkpoint_database_id = read_identity_from_read_transaction(&checkpoint)?;
         let checkpoint_sequence = read_commit_tail(&checkpoint)?;
         let checkpoint_administration_sequence = read_administration_tail(&checkpoint)?;
@@ -7324,9 +7340,9 @@ impl SharedRedb {
             .write()
             .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
         if frontier.is_some() {
-            *frontier = Some(Arc::new(
+            *frontier = Some(Arc::new(CheckpointRoot::new(
                 self.database.begin_read().map_err(transaction_error)?,
-            ));
+            )));
         }
         Ok(())
     }
@@ -8466,13 +8482,13 @@ mod tests {
                     .durable_read_frontier
                     .write()
                     .expect("durable read frontier lock");
-                *frontier = Some(Arc::new(
+                *frontier = Some(Arc::new(CheckpointRoot::new(
                     store
                         .shared
                         .database
                         .begin_read()
                         .expect("durable frontier read"),
-                ));
+                )));
             }
             drop(
                 store

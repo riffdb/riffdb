@@ -1,6 +1,6 @@
 //! Owned authoritative reads over short redb read transactions.
 
-use redb::{ReadOnlyTable, ReadTransaction, ReadableTableMetadata};
+use redb::{ReadOnlyTable, ReadableTableMetadata};
 use riffdb_storage_api::{
     ApplicationSequenceAllocator, AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest,
     AuthoritativePointReader, AuthoritativeScanReader, CommandDerivedIndexKindV1,
@@ -37,7 +37,7 @@ use crate::keys::{
     encode_entity_key, encode_event_key, encode_idempotency_key, encode_partition_index_key,
     encode_provenance_key,
 };
-use crate::layout::{COMMITS, META_APPLICATION_SEQUENCE};
+use crate::layout::META_APPLICATION_SEQUENCE;
 #[cfg(test)]
 use crate::layout::{EVENTS, META};
 use crate::store::{RedbOperationalPorts, RedbReadAccess};
@@ -775,7 +775,7 @@ fn exclusive_prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 pub(crate) fn read_commit_head(
-    transaction: &ReadTransaction,
+    transaction: &redb::ReadTransaction,
     table: &BytesTable,
 ) -> Result<Option<CommitSequence>, StorageError> {
     let events = transaction.open_table(EVENTS).map_err(table_error)?;
@@ -800,11 +800,8 @@ pub(crate) fn read_snapshot_head(
                 return Err(corrupt());
             }
         }
-        RedbReadAccess::Current(transaction) => {
-            verify_snapshot_authority_presence(transaction, head)?;
-        }
-        RedbReadAccess::Durable(transaction) => {
-            verify_snapshot_authority_presence(transaction, head)?;
+        RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => {
+            verify_snapshot_authority_presence(root, head)?;
         }
     }
     Ok(head)
@@ -825,10 +822,13 @@ const fn snapshot_head_from_allocator(
 /// segment validation belongs to startup, recovery, history, and retention.
 /// A fully pruned history is witnessed by its exact retention watermark.
 fn verify_snapshot_authority_presence(
-    transaction: &ReadTransaction,
+    root: &crate::checkpoint_root::CheckpointRoot,
     head: Option<CommitSequence>,
 ) -> Result<(), StorageError> {
-    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+    let commits = root
+        .journal_byte_table(JournalTable::Commits)
+        .ok_or_else(corrupt)?
+        .map_err(table_error)?;
     if !commits.is_empty().map_err(precommit_storage_error)? {
         return if head.is_some() {
             Ok(())
@@ -836,9 +836,8 @@ fn verify_snapshot_authority_presence(
             Err(corrupt())
         };
     }
-    drop(commits);
 
-    let watermark = crate::retention::load_watermark(transaction)?
+    let watermark = crate::retention::load_watermark(root)?
         .map(|watermark| watermark.watermark_sequence());
     match (head, watermark) {
         (None, None | Some(0)) => Ok(()),
