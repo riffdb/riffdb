@@ -7,6 +7,15 @@ publish.workspace = true
 license.workspace = true
 autotests = false
 
+# Mirrors the root workspace's profiling profile so `benchmarks/profile-read-path`
+# can build the daemon and this harness under one profile. Building them under
+# different profiles links two versions of the storage crate, which fails in a
+# way that looks like a real defect.
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = false
+
 [workspace]
 resolver = "3"
 members = ["core", "postgres", "riffdb"]
