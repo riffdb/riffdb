@@ -24,6 +24,13 @@ const NS_LOAD_WRITE: u8 = 0x7e;
 pub enum WorkloadProfile {
     /// Read-only diagnostic mix used to isolate application-port and RiffQL capacity.
     ReadOnly,
+    /// Single-shape primary-key point read, for per-stage read attribution.
+    ///
+    /// The server read-stage histogram carries no query dimension, so a mixed
+    /// read profile reports one mean over seven differently shaped queries and
+    /// no point-read cost can be recovered from it. This profile exists so every
+    /// recorded stage belongs to the same query.
+    PointReadOnly,
     /// Write-only diagnostic mix used to expose the physical durable-command ceiling.
     WriteOnly,
     /// Isolated compiler-proved child appends without root-mutation compatibility cuts.
@@ -49,6 +56,7 @@ impl WorkloadProfile {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ReadOnly => "read_only",
+            Self::PointReadOnly => "point_read_only",
             Self::WriteOnly => "write_only",
             Self::AppendOnly => "append_only",
             Self::Interactive => "interactive",
@@ -61,6 +69,7 @@ impl WorkloadProfile {
     pub fn parse(text: &str) -> Option<Self> {
         match text {
             "read_only" => Some(Self::ReadOnly),
+            "point_read_only" => Some(Self::PointReadOnly),
             "write_only" => Some(Self::WriteOnly),
             "append_only" => Some(Self::AppendOnly),
             "interactive" => Some(Self::Interactive),
@@ -83,6 +92,7 @@ impl WorkloadProfile {
                 (LoadOp::ListProjectMembers, 10),
                 (LoadOp::TicketDetailPage, 15),
             ],
+            Self::PointReadOnly => &[(LoadOp::PointGetTicket, 1)],
             Self::WriteOnly => Self::saturating_weights(),
             Self::AppendOnly => &[(LoadOp::CreateComment, 1)],
             // Default mixes intentionally omit SwapMemberRoles: that op serializes
@@ -135,6 +145,7 @@ impl WorkloadProfile {
     pub const fn burst_ops(self) -> u32 {
         match self {
             Self::ReadOnly
+            | Self::PointReadOnly
             | Self::WriteOnly
             | Self::AppendOnly
             | Self::Interactive
@@ -148,6 +159,7 @@ impl WorkloadProfile {
     pub const fn think_time(self) -> Duration {
         match self {
             Self::ReadOnly
+            | Self::PointReadOnly
             | Self::WriteOnly
             | Self::AppendOnly
             | Self::Interactive
@@ -162,6 +174,7 @@ impl WorkloadProfile {
     pub const fn replay_basis_points(self) -> u32 {
         match self {
             Self::ReadOnly
+            | Self::PointReadOnly
             | Self::WriteOnly
             | Self::AppendOnly
             | Self::Interactive
@@ -2108,6 +2121,21 @@ mod tests {
                 .weights()
                 .iter()
                 .all(|(op, _)| is_write(*op))
+        );
+        assert!(
+            WorkloadProfile::PointReadOnly
+                .weights()
+                .iter()
+                .all(|(op, _)| !is_write(*op))
+        );
+        assert_eq!(
+            WorkloadProfile::PointReadOnly.weights(),
+            &[(LoadOp::PointGetTicket, 1)],
+            "stage attribution needs exactly one query shape"
+        );
+        assert_eq!(
+            WorkloadProfile::parse("point_read_only"),
+            Some(WorkloadProfile::PointReadOnly)
         );
         assert_eq!(
             WorkloadProfile::parse("read_only"),

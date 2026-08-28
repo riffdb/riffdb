@@ -1031,7 +1031,18 @@ fn completion_lane_evidence_is_fixed_cardinality_and_payload_free() {
 fn read_pipeline_stage_index_and_label_are_bijective_and_inventory_is_40() {
     assert_eq!(REQUIRED_METRIC_INVENTORY.len(), 40);
     assert_eq!(ReadPipelineStage::ALL.len(), READ_PIPELINE_STAGE_COUNT);
-    assert_eq!(READ_PIPELINE_STAGE_COUNT, 12);
+    assert_eq!(READ_PIPELINE_STAGE_COUNT, 15);
+    // Exactly two envelope stages, and they are the last two positions so the
+    // partition prefix an older evidence reader knows keeps its meaning.
+    let envelopes = ReadPipelineStage::ALL
+        .iter()
+        .filter(|stage| !stage.partitions_request())
+        .count();
+    assert_eq!(envelopes, 2);
+    assert!(!ReadPipelineStage::ServiceAwait.partitions_request());
+    assert!(!ReadPipelineStage::ServerHandler.partitions_request());
+    assert!(ReadPipelineStage::Execute.partitions_request());
+    assert!(ReadPipelineStage::AuditFinish.partitions_request());
     assert!(REQUIRED_METRIC_INVENTORY.iter().any(|descriptor| {
         descriptor.name == "riffdb_read_stage_duration_microseconds"
             && descriptor.label_keys == ["stage"]
@@ -1072,7 +1083,7 @@ fn read_stage_registry_observe_and_snapshot_round_trip() {
         );
     }
     let aggregate = registry.required_histogram(RequiredHistogram::ReadStageDurationMicroseconds);
-    assert_eq!(aggregate.count, 24);
+    assert_eq!(aggregate.count, 2 * READ_PIPELINE_STAGE_COUNT as u64);
 }
 
 #[test]
@@ -1094,7 +1105,7 @@ fn read_stage_shutdown_line_round_trips_through_parser() {
         .strip_prefix("riffdb-read-stages-v1\t")
         .expect("prefix");
     let parsed = parse_read_stages_v1_payload(payload).expect("parse");
-    assert_eq!(parsed.len(), 12);
+    assert_eq!(parsed.len(), READ_PIPELINE_STAGE_COUNT);
     for (index, stage) in parsed.into_iter().enumerate() {
         assert_eq!(stage.name, ReadPipelineStage::ALL[index].metric_label());
         assert_eq!(stage.count, snapshot[index].0);
