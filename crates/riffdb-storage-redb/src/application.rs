@@ -2644,6 +2644,30 @@ fn command_outcome_from_operational_indexes(
     {
         return command_outcome_from_member(&segment, locator, identity).map(Some);
     }
+    // ADR-0163 locator table, consulted BEFORE any absence conclusion below.
+    //
+    // The coverage short-circuit that follows infers absence from the validated-
+    // prefix checkpoint covering the captured frontier. That inference assumes
+    // the derived index was built over the checkpoint, which is false on a
+    // bounded clean-close start where the index is dormant: on such a start the
+    // shutdown checkpoint's S equals the captured frontier, so the
+    // short-circuit reported a durably committed outcome as absent.
+    if let Some(encoded) = access.read_value(JournalTable::IdempotencyLocators, exact_key)? {
+        let locator = crate::codec::decode_command_locator_v1(&encoded)?
+            .into_parts()
+            .0;
+        // Fail closed from here: the locator asserted the segment exists.
+        let capsule =
+            crate::command_authority::command_member_at_access(access, locator.commit_sequence())?
+                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?
+                .into_base();
+        if capsule.commit_sequence() != locator.commit_sequence()
+            || capsule.outcome().identity() != identity
+        {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        return Ok(Some(capsule.outcome().clone()));
+    }
     let Some(frontier) = frontier else {
         return Ok(None);
     };
@@ -3119,9 +3143,19 @@ fn provenance_exists(core: &BatchCore, provenance_id: ProvenanceId) -> Result<bo
     {
         return Ok(true);
     }
-    Ok(core
+    // ADR-0163: provenance is segment-owned, so PROVENANCE is empty and the
+    // locator table is what proves the id is taken. Checking only PROVENANCE
+    // reported a reserved id as free.
+    if core
         .access
         .read_command_value(JournalTable::Provenance, key.as_slice())?
+        .is_some()
+    {
+        return Ok(true);
+    }
+    Ok(core
+        .access
+        .read_command_value(JournalTable::ProvenanceLocators, key.as_slice())?
         .is_some())
 }
 

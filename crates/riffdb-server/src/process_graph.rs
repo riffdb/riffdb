@@ -377,8 +377,14 @@ impl ProductionGraphBuilder {
         // normalization runs. A positively observed `Delivering` entry never
         // reaches here -- it declines the certificate in the storage gate and
         // this start takes the complete path.
+        //
+        // NOT YET ENABLED. Turning this on exposed a further failure in retained
+        // bootstrap replay that is not yet diagnosed, so the skip is held off
+        // rather than shipped speculatively. The proof plumbing, the locator
+        // tables and every reader fallback it depends on are in place and
+        // tested; only this switch is pending.
         let outbox_normalization_proven_unnecessary =
-            bounded_clean_startup && storage.outbox_delivering_proven_absent();
+            false && bounded_clean_startup && storage.outbox_delivering_proven_absent();
         let outbox_recovery_started = std::time::Instant::now();
         let outbox_recovery = if outbox_normalization_proven_unnecessary {
             OutboxRecoveryReadiness::Degraded

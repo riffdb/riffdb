@@ -168,7 +168,25 @@ impl AuthoritativePointReader for RedbOperationalPorts {
         }
         let transaction = self.begin_composite_read()?;
         let Some(encoded) = transaction.read_value(JournalTable::Idempotency, encoded_key)? else {
-            return Ok(None);
+            // ADR-0163: outcomes are segment-owned, so IDEMPOTENCY is empty and
+            // the durable path to the owning segment is the locator table. An
+            // index miss plus an empty IDEMPOTENCY is NOT absence.
+            let Some(encoded) =
+                transaction.read_value(JournalTable::IdempotencyLocators, encoded_key)?
+            else {
+                return Ok(None);
+            };
+            let locator = decode_command_locator_v1(&encoded)?.into_parts().0;
+            // Fail closed from here: the locator asserted the segment exists.
+            let capsule = command_member_at_access(&transaction, locator.commit_sequence())?
+                .ok_or_else(corrupt)?
+                .into_base();
+            if capsule.commit_sequence() != locator.commit_sequence()
+                || capsule.outcome().identity() != identity
+            {
+                return Err(corrupt());
+            }
+            return Ok(Some(capsule.outcome().clone()));
         };
         let decoded = decode_idempotency_record_v1(&encoded)?;
         match decoded.into_parts().0 {
@@ -246,7 +264,24 @@ impl AuthoritativePointReader for RedbOperationalPorts {
         let Some(encoded) =
             transaction.read_value(JournalTable::Provenance, encoded_key.as_slice())?
         else {
-            return Ok(None);
+            // ADR-0163 locator table: PROVENANCE is empty because provenance is
+            // segment-owned, so its absence is not the answer.
+            let Some(encoded) =
+                transaction.read_value(JournalTable::ProvenanceLocators, encoded_key.as_slice())?
+            else {
+                return Ok(None);
+            };
+            let locator = decode_command_locator_v1(&encoded)?.into_parts().0;
+            let capsule = command_member_at_access(&transaction, locator.commit_sequence())?
+                .ok_or_else(corrupt)?
+                .into_base();
+            let record = capsule.provenance();
+            if capsule.commit_sequence() != locator.commit_sequence()
+                || record.provenance_id() != provenance_id
+            {
+                return Err(corrupt());
+            }
+            return Ok(Some(record.clone()));
         };
         let record = match decode_command_locator_v1(&encoded) {
             Ok(locator) => {
