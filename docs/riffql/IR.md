@@ -48,6 +48,13 @@ limit, and uses the same maximum for result-list bounds and whole-plan cost.
 Existing V1 through V11 bytes remain unchanged. Changing only `MAX` changes
 the surface, plan, module, role, lock, generated schema, and operation hashes.
 
+ADR-0159 adds no IR field or version. Cursor-page-cardinality eligibility is
+derived from the existing V12 row-limit, cursor, cardinality, and physical
+access structure: a parameter qualifies only when every use is an ordinary
+ordered cursor-page limit. The declared `MAX` remains identity-bearing in the
+IR and plan; only the validated submitted value is omitted from the separate
+process-local cursor lookup hash.
+
 Resolution diagnostics are bounded and value-free:
 
 | Code | Meaning |

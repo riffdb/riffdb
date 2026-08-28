@@ -223,6 +223,13 @@ Defaults and submitted values never narrow static cost. The separate 500-row
 physical scan ceiling reserves one row for a continuation probe; it is not an
 application-visible page size.
 
+An ordinary cursor-paged ordered access treats the submitted runtime limit as
+invocation cardinality rather than continuation identity. The compiler derives
+that exclusion only when every use of the parameter is a `take` on a cursor-
+paged index access. Mixed use, unpaged limits, and nearest K remain bound. The
+cursor-specific invariant-parameter hash is paid once per admitted request;
+the shared query parameter hash and immutable plan identity are unchanged.
+
 The V12 row-limit IR retains the parameter name, positive declared maximum,
 and optional default. Runtime validates the effective value before opening a
 provider or storage access. One accepted invocation executes the selected

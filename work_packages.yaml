@@ -1,4 +1,4 @@
-spec_version: '1.15'
+spec_version: '1.16'
 product: RiffDB
 repository: riffdb
 status: deployable-application-alpha-architecture-accepted
@@ -1517,6 +1517,454 @@ work_packages:
       target code cannot bypass authoritative validation or select an uncompiled operation or cursor route.
     scale: Generated checks are constant-time, each page is one bounded invocation/backend request, fixtures
       are finite, and no page walk, overfetch, per-row proof, or machine-dependent timing gate is introduced.
+  human_review_triggers: *id001
+- id: WP-708
+  name: Page-cardinality-independent named-query cursor identity
+  depends_on: [WP-565, WP-703, WP-706, WP-707]
+  objective: Implement ADR-0159's cursor-specific invariant-parameter hash so an ordinary ordered
+    named query may resume from the exact prior position with a different valid runtime page
+    cardinality while every semantic, authority, snapshot, provider, and compatibility binding
+    remains fail-closed.
+  requirements: [OQ-004, OQ-006, OQ-015, OQ-016, OQ-022, OQ-031, OQ-036,
+    OQ-043, OQ-062, OQ-064, OQ-066, OQ-068, OQ-069, OQ-070, OQ-071,
+    DRV-012, DRV-014, DRV-015, DRV-016, DRV-017]
+  required_adrs: [ADR-0027, ADR-0051, ADR-0052, ADR-0055, ADR-0108,
+    ADR-0112, ADR-0124, ADR-0130, ADR-0134, ADR-0150, ADR-0158, ADR-0159]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+    adr/0159-page-cardinality-independent-query-cursors.md,
+    crates/riffdb-query-ir/**, crates/riffdb-query-executor/**,
+    crates/riffdb-query-module/**, crates/riffdb-service/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-testkit/**, tests/operational_queries.rs,
+    tests/drivers/**, fixtures/driver/**, scripts/driver-conformance,
+    docs/SUMMARY.md, docs/riffql/**, docs/getting-started/**,
+    docs/compatibility.md, docs/known-limitations.md]
+  deliverables:
+  - >-
+    One compiler-derived closed set of eligible runtime cardinality parameters: every use must be
+    the row limit of an ordinary ordered cursor-paged access; nearest K, unpaged bindings, mixed
+    use, literals, and every non-limit parameter remain identity-bearing
+  - One cursor-specific canonical invariant-parameter hash domain used only by process-local named-
+    query cursor lookup; shared query parameter, live-query, consumer, source, IR, module, plan,
+    lock, token, protocol, storage, and durable identities remain byte-exact
+  - Authoritative pre-data-work validation of the newly submitted limit followed by exact resumed
+    execution at the prior snapshot/epoch position, with 1-to-maximum and maximum-to-1 forward and
+    reverse pages having no duplicate, omission, restart, or authority drift
+  - Negative semantic evidence for changed partition/filter/set/presence/plan/declared maximum,
+    capability revision, snapshot/epoch, invalid limit, unpaged limit, and nearest K
+  - Rust, Go, TypeScript, Python, CLI, MCP, local-driver, and remote-gRPC parity using the unchanged
+    generated method and opaque token, plus handbook and compatibility guidance
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-query-ir -p riffdb-query-executor -p riffdb-query-module -p riffdb-service --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test operational_queries --all-features
+  - cargo +1.97.0 test -p riffdb-storage-memory -p riffdb-storage-redb --all-features
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-application-bindings
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Only eligible invocation cardinality values are absent from cursor lookup; every other
+    identity remains exact, changed valid page sizes traverse the same snapshot-bound ordered stream,
+    invalid drift fails before data work, all language paths agree, and no durable/wire identity rotates.
+  standing_design_tests:
+    interface_safety: The compiler selects exclusion from immutable plan structure; callers cannot
+      annotate hash fields or exceed the existing limit domain, and fresh Rust-owned authorization,
+      policy, epoch, and continuation validation remains authoritative on every invocation.
+    scale: Hash derivation is once per bounded request, resumed execution remains one compiled page,
+      and no server materialization, hidden page walk, per-row proof, or raised ceiling is introduced.
+  human_review_triggers: *id001
+- id: WP-709
+  name: Exact external larger-page coalescing acceptance
+  depends_on: [WP-707, WP-708]
+  objective: Close ADR-0159's narrow interoperability exception with framework-neutral exact append-
+    only multi-page evidence and a value-free external-consumer receipt, retaining every framework
+    artifact and upstream page allocation in its owning adapter repository.
+  requirements: [OQ-004, OQ-016, OQ-030, OQ-031, OQ-068, OQ-069, OQ-070,
+    OQ-071, OQ-072, OQ-073, OQ-074, DRV-012, DRV-014, DRV-016, DRV-017]
+  required_adrs: [ADR-0055, ADR-0112, ADR-0120, ADR-0121, ADR-0124,
+    ADR-0148, ADR-0155, ADR-0158, ADR-0159]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0159-page-cardinality-independent-query-cursors.md,
+    crates/riffdb-query-executor/**, crates/riffdb-service/**,
+    crates/riffdb-testkit/**, tests/drivers/**, fixtures/driver/**,
+    scripts/driver-conformance, scripts/adapter-conformance,
+    docs/SUMMARY.md, docs/riffql/**, docs/getting-started/**,
+    docs/compatibility.md, docs/known-limitations.md]
+  deliverables:
+  - Framework-neutral client corpus requesting finite pages smaller than, equal to, and larger than
+    one compiled RiffDB maximum; it requests min(remaining, MAX), follows one token chain, appends
+    every row once in order, and returns the final token unchanged or none on true exhaustion
+  - Deterministic cancellation and injected cursor/authorization/provider/transport failure at each
+    boundary proving no partial success, restart, filter, sort, count, dedupe, discard, offset walk,
+    raw query, storage access, or unbounded allocation enters the RiffDB side
+  - Semantic invocation-count and backend-page evidence with no wall-clock threshold, plus large
+    finite requested-size arithmetic that exhausts a small dataset without preallocating the request
+  - Value-free external receipt pinning exact RiffDB/application identities and upstream conformance;
+    no external schema, route, package, adapter source, framework name, or false parity claim lands here
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-query-executor -p riffdb-service -p riffdb-testkit --all-features
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/adapter-conformance --all-domains --all-languages
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Exact append-only external page translation passes generic and real-consumer evidence
+    without weakening one RiffDB invocation, exposing partial success, adding framework code, or
+    converting cursor walking into filtering, counting, sorting, offset, discard, or hidden fallback.
+  standing_design_tests:
+    interface_safety: RiffDB still exposes only one bounded generated page; the owning adapter may
+      preserve its authoritative finite page contract solely by exact ordered append under one opaque
+      cursor chain and cannot select database semantics or release partial protected results.
+    scale: Every RiffDB call remains bounded by its compiled maximum; external count arithmetic is
+      checked and finite, test populations remain bounded, and a future streaming optimization requires
+      a separate accepted flow-control and partial-failure decision.
+  human_review_triggers: *id001
+- id: WP-710
+  name: Columnar V2 workload ledger, format registry, and independent codec
+  depends_on: [WP-430, WP-455, WP-612, WP-645, WP-696]
+  objective: After exact acceptance of ADR-0160, close the current row-framed columnar byte/CPU/
+    allocation ledger and implement an independent bounded typed segment V2 codec with deterministic
+    physical encodings and exact private statistics, without activating it in production or changing
+    authoritative, public-query, or existing projection identities.
+  requirements: [PRJ-001, PRJ-002, PRJ-003, PRJ-004, OQ-017, OQ-018, OQ-019,
+    OQ-020, OQ-021, OQ-022, OQ-024, OQ-053, PERF-001, PERF-007, PERF-008,
+    PERF-018]
+  required_adrs: [ADR-0010, ADR-0017, ADR-0072, ADR-0085, ADR-0086,
+    ADR-0111, ADR-0124, ADR-0130, ADR-0152, ADR-0160]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+    adr/0160-rebuildable-columnar-segment-v2.md,
+    release/version-topology-v1.json, crates/riffdb-types/**,
+    crates/riffdb-columnar/**, crates/riffdb-projection/**,
+    crates/riffdb-observability/**, fixtures/**, tests/**, benchmarks/**,
+    scripts/**, docs/architecture/**, docs/performance/**, docs/known-limitations.md]
+  deliverables:
+  - Fixed V1 row-framed baseline over incompressible, low-cardinality, clustered-selective, and
+    full-scan projection corpora, recording logical/physical bytes, allocations, rows examined,
+    canonical decode, merge, predicate, aggregate, sort, and output stages without application data
+  - Additive topology-registered V2 segment and manifest identities binding definition, incarnation,
+    generation, organization, frontier interval, row/column counts, primary-key/entity-version lanes,
+    canonical directory order, complete checksums, and every fixed byte/cardinality ceiling
+  - Closed deterministic encoding registry for fixed-width, offset/canonical, sorted dictionary plus
+    bit-packed ordinal, Boolean/validity bitmap, and checked integer/timestamp delta lanes, with one
+    stable smallest-exact-encoding selector and no external compression dependency
+  - Exact min/max and missing/null/present statistic construction plus an independent pruning oracle;
+    statistics are private, non-authoritative, non-policy-bearing, and unusable when type or policy
+    proof is absent
+  - Property/fuzz corpus for every encoding, type, optional state, offset, dictionary, bit width,
+    delta, checksum, truncation, arithmetic, maximum, and noncanonical representation boundary
+  - Mechanics receipt applying ADR-0160's byte, pruning, false-negative, and full-scan gates; a miss
+    leaves production layout V1 and stops WP-711 rather than weakening a threshold after results
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-types -p riffdb-columnar -p riffdb-projection --all-features
+  - cargo +nightly-2026-07-12 fuzz run columnar_segment_v2 -- -max_total_time=60
+  - ./scripts/check-version-topology
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy -p riffdb-types -p riffdb-columnar -p riffdb-projection --all-targets --all-features -- -D warnings
+  exit_gate: The independent V2 codec is canonical, bounded, corruption-detecting, topology-
+    registered, and logically byte-equivalent to V1; exact statistics have zero false-negative
+    pruning; every ADR-0160 mechanics threshold passes before production activation is authorized.
+  standing_design_tests:
+    interface_safety: No application surface changes and no caller can select layout, encoding,
+      statistics, pruning, validation, rebuild, or fallback; the codec owns no authority or query.
+    scale: Segments, lanes, dictionaries, bitmaps, offsets, validation, fixtures, and diagnostics
+      are statically bounded and stream per partition without full-database memory or rewrite.
+  human_review_triggers: *id001
+- id: WP-711
+  name: Crash-safe columnar V2 rebuild, compaction, and zone-map activation
+  depends_on: [WP-610, WP-667, WP-710]
+  objective: Activate ADR-0160's accepted V2 format through disjoint generation rebuild, atomic
+    publication, immutable compaction, validate-once reopen, and exact segment pruning while V1
+    remains readable and published until a complete matched-frontier V2 candidate succeeds.
+  requirements: [PRJ-001, PRJ-002, PRJ-003, PRJ-004, OQ-017, OQ-019,
+    OQ-020, OQ-021, OQ-022, OQ-024, OQ-053, PERF-007, PERF-008]
+  required_adrs: [ADR-0010, ADR-0017, ADR-0072, ADR-0085, ADR-0086,
+    ADR-0111, ADR-0124, ADR-0130, ADR-0160]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0160-rebuildable-columnar-segment-v2.md,
+    release/version-topology-v1.json, crates/riffdb-columnar/**,
+    crates/riffdb-projection/**, crates/riffdb-service/**,
+    crates/riffdb-server/**, crates/riffdb-observability/**,
+    fixtures/**, tests/**, scripts/**, docs/architecture/**,
+    docs/performance/**, docs/operations/**, docs/compatibility.md,
+    docs/known-limitations.md]
+  deliverables:
+  - V1-published/V2-candidate lifecycle that rebuilds from one authoritative snapshot plus retained
+    tail, verifies independent logical equality at a frontier, and atomically publishes one-layout
+    V2 generation without mixed manifests or request-visible partial state
+  - Immutable temporary-write/sync/checksum/rename/manifest compaction with exact supersession,
+    deletion/retraction, holdback, idempotent replay, visible/durable frontier, generation retirement,
+    retention, cancellation, ENOSPC, and prior-generation rollback behavior
+  - Open-time complete validation into immutable process-local segment views; production query hot
+    paths perform no per-operation durable re-read/re-hash/re-proof while scrub, restore, unclean
+    recovery, and rebuild retain full validation
+  - Exact zone-map/dictionary pruning in the production scan path with policy-aligned or fixed-work
+    handling for inference-sensitive policy shapes and no public statistic, skip count, or data-
+    dependent diagnostic
+  - Crash matrix at every segment/header/lane/manifest/checkpoint/publication/retirement boundary,
+    including unknown, mixed, corrupt, stale-incarnation, interrupted rebuild, and repeated reopen
+  - Current V1/V2 matched-frontier query, recovery, compaction, rebuild, bytes, CPU, allocation,
+    projection-lag, and no-projection/no-V2 non-regression receipts
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-columnar -p riffdb-projection -p riffdb-service -p riffdb-server --all-features
+  - ./scripts/recovery_full
+  - ./scripts/check-version-topology
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy -p riffdb-columnar -p riffdb-projection -p riffdb-service -p riffdb-server --all-targets --all-features -- -D warnings
+  exit_gate: A complete V2 generation publishes only after matched-frontier equality and survives
+    every crash/rebuild/compaction case; V1 remains exact and readable; pruning is exact and policy-
+    safe; no request repeats durable proof or observes mixed/partial derived state.
+  standing_design_tests:
+    interface_safety: V2 selection and pruning are private generation facts; applications cannot
+      weaken policy, freshness, validation, lifecycle, fallback, or any query/resource bound.
+    scale: Rebuild, validation, compaction, pruning, retained handles, and recovery are partition/
+      segment bounded and streaming; failed candidates cannot pin history beyond replay budgets.
+  human_review_triggers: *id001
+- id: WP-712
+  name: Vectorized columnar batch executor and late materialization
+  depends_on: [WP-696, WP-711]
+  objective: After exact acceptance of ADR-0161, replace row-at-a-time V2 execution with one
+    compiler-sealed bounded batch program, monotone selection vectors, exact aggregate partials,
+    bounded top-N, and policy-first late materialization while retaining an independent scalar oracle.
+  requirements: [PRJ-001, PRJ-002, PRJ-003, PRJ-004, QRY-001, QRY-002,
+    QRY-003, QRY-004, QRY-005, OQ-017, OQ-019, OQ-021, OQ-022, OQ-024,
+    OQ-044, OQ-045, OQ-046, OQ-047, OQ-048, OQ-049, OQ-050, OQ-051,
+    OQ-052, OQ-055, PERF-001, PERF-007, PERF-008, PERF-018]
+  required_adrs: [ADR-0051, ADR-0053, ADR-0070, ADR-0071, ADR-0086,
+    ADR-0087, ADR-0111, ADR-0129, ADR-0130, ADR-0152, ADR-0160, ADR-0161]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0161-compiler-sealed-vectorized-columnar-execution.md,
+    crates/riffdb-types/**, crates/riffdb-query-ir/**,
+    crates/riffdb-query-compiler/**, crates/riffdb-catalog/**,
+    crates/riffdb-query-executor/**, crates/riffdb-columnar/**,
+    crates/riffdb-policy/**, crates/riffdb-observability/**,
+    fixtures/**, tests/**, benchmarks/**, scripts/**,
+    docs/architecture/**, docs/performance/**, docs/known-limitations.md]
+  deliverables:
+  - Compiler/provider-owned column-use program ordering segment eligibility, policy fields,
+    predicates, aggregate/order keys, bounded top-N, and output-only materialization with exact
+    types, optional semantics, charges, and a maximum width from the closed batch-width set
+  - Bounded borrowed/decoded lane batches, validity maps, and monotone selection vectors; policy
+    runs before result shaping, rejected rows never decode output-only lanes, and no row/task grows
+    retained process state
+  - Exact deterministic aggregate/group partials using ADR-0152 merge laws and canonical segment/
+    batch merge order, plus complete total-order bounded heap selection and unchanged cursor results
+  - Scalar/vector randomized differential suite across every predicate, optional state, aggregate,
+    group, ordering, overflow, cancellation, output budget, and maximum-width boundary
+  - Architecture evidence for no caller physical inputs, no scalar fallback after V2 failure, no
+    per-row proof/task/allocation, and no worker/storage/publication authority in the executor
+  - Single-threaded V1, V2 scalar, and V2 batch CPU/allocation/throughput receipt satisfying
+    ADR-0161's vectorized mechanics threshold without selective-query regression
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-types -p riffdb-query-ir -p riffdb-query-compiler -p riffdb-query-executor -p riffdb-columnar -p riffdb-policy --all-features
+  - ./scripts/check-version-topology
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy -p riffdb-query-compiler -p riffdb-query-executor -p riffdb-columnar -p riffdb-policy --all-targets --all-features -- -D warnings
+  exit_gate: V2 batch results and failures equal the independent scalar evaluator under every
+    deterministic schedule; policy precedes all shaping; late materialization is proven; and the
+    predeclared CPU/throughput gate passes before the batch executor can become production default.
+  standing_design_tests:
+    interface_safety: Callers retain only finite compiled operations and cannot select width,
+      lanes, phases, vectorization, top-N algorithm, fallback, policy order, or partial results.
+    scale: Widths, vectors, partials, heaps, decoded lanes, outputs, arithmetic, and diagnostics are
+      compiler bounded per batch/query with no population-sized materialization.
+  human_review_triggers: *id001
+- id: WP-713
+  name: Bounded parallel columnar scans and public projected-query activation
+  depends_on: [WP-432, WP-667, WP-712]
+  objective: Activate ADR-0161's batch executor through one finite fair-share segment scheduler,
+    immutable one-frontier snapshots, deterministic merge, cancellation, and existing public
+    projected-query surfaces, without changing results, generated methods, cursors, or authority.
+  requirements: [PRJ-001, PRJ-002, PRJ-003, PRJ-004, QRY-001, QRY-002,
+    QRY-003, QRY-004, QRY-005, OQ-017, OQ-019, OQ-020, OQ-021, OQ-022,
+    OQ-024, OQ-055, PERF-001, PERF-007, PERF-008, PERF-018]
+  required_adrs: [ADR-0053, ADR-0070, ADR-0071, ADR-0086, ADR-0087,
+    ADR-0111, ADR-0129, ADR-0130, ADR-0160, ADR-0161]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0161-compiler-sealed-vectorized-columnar-execution.md,
+    crates/riffdb-columnar/**, crates/riffdb-projection/**,
+    crates/riffdb-policy/**, crates/riffdb-service/**,
+    crates/riffdb-api-grpc/**, crates/riffdb-api-mcp/**,
+    crates/riffdb-client-rust/**, crates/riffdb-server/**,
+    crates/riffdb-observability/**, examples/app-baseline/**,
+    fixtures/**, tests/**, benchmarks/**, scripts/**,
+    docs/architecture/**, docs/performance/**, docs/operations/**,
+    docs/known-limitations.md]
+  deliverables:
+  - One process-global bounded columnar scan scheduler with static worker ceiling, available-
+    parallelism selection, bounded queue/tasks/buffers, per-query fair-share admission, explicit
+    cancellation, and no thread/task per row, group, value, result, or completed operation
+  - Workers retain one immutable published snapshot and provider epoch, own no authoritative or
+    publication authority, and return bounded partials merged in canonical segment/batch order
+  - Existing causal/bounded/available freshness, post-wake and pre-release authorization,
+    revocation, lifecycle outcomes, cursor identity, exact result bytes, and no-partial-success
+    semantics across cancellation, slow worker, saturation, compaction, rebuild, and shutdown
+  - Policy-sensitive fixed-work/policy-aligned scheduling and redaction-safe fixed-cardinality
+    telemetry for admission, active workers, batches, examined rows, pruning class, CPU, wait,
+    cancellation, lag, and output without tenant/data labels
+  - Public gRPC, MCP, CLI, and generated-client equivalence using unchanged schemas and one neutral
+    query corpus; V1/scalar remains selected when V2 is not activated, never as silent error fallback
+  - One/four-worker 100k-row and simultaneous interactive-load receipt satisfying ADR-0161's
+    scaling and p95 guards with no write, catch-up, freshness, correctness, or no-projection regression
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-columnar -p riffdb-projection -p riffdb-policy -p riffdb-service -p riffdb-api-grpc -p riffdb-api-mcp -p riffdb-client-rust -p riffdb-server --all-features
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-application-bindings
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every public surface returns unchanged exact results from one authorized frontier;
+    scheduler work and shutdown are bounded; deterministic merges survive adversarial schedules;
+    and the cross-load scaling/tail gate passes before parallel execution becomes production default.
+  standing_design_tests:
+    interface_safety: Applications cannot select workers, tasks, width, scheduling, physical path,
+      fallback, freshness, policy, or partial success; every safe point and typed outcome remains.
+    scale: Scheduler workers, queues, tasks, snapshots, partials, buffers, waits, and telemetry are
+      globally and per-query bounded independently of population, tenants, or runtime duration.
+  human_review_triggers: *id001
+- id: WP-714
+  name: Exact incremental bitmap, rollup, and top-K provider state
+  depends_on: [WP-645, WP-696, WP-711, WP-712]
+  objective: After exact acceptance of ADR-0162, implement one compiler-owned bounded incremental-
+    structure registry and rebuildable provider-state generation for segment-local equality/presence
+    bitmaps, exact mergeable rollups, and maintained exact top-K lanes without a general view language,
+    approximation, framework branch, or caller-selected provider.
+  requirements: [PRJ-001, PRJ-002, PRJ-003, PRJ-004, OQ-017, OQ-018,
+    OQ-019, OQ-020, OQ-021, OQ-022, OQ-023, OQ-024, OQ-044, OQ-045,
+    OQ-046, OQ-047, OQ-048, OQ-049, OQ-050, OQ-051, OQ-052, OQ-053,
+    OQ-054, OQ-055, PERF-001, PERF-007, PERF-008, PERF-018]
+  required_adrs: [ADR-0010, ADR-0017, ADR-0051, ADR-0053, ADR-0085,
+    ADR-0086, ADR-0111, ADR-0124, ADR-0130, ADR-0152, ADR-0160, ADR-0161,
+    ADR-0162]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+    adr/0162-incremental-analytical-provider-structures.md,
+    release/version-topology-v1.json, crates/riffdb-types/**,
+    crates/riffdb-contract-ir/**, crates/riffdb-contract-compiler/**,
+    crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**,
+    crates/riffdb-query-module/**, crates/riffdb-catalog/**,
+    crates/riffdb-columnar/**, crates/riffdb-projection/**,
+    crates/riffdb-policy/**, crates/riffdb-observability/**,
+    fixtures/**, tests/**, benchmarks/**, scripts/**,
+    docs/architecture/**, docs/performance/**, docs/riffql/**,
+    docs/getting-started/**, docs/known-limitations.md]
+  deliverables:
+  - Closed compiler/catalog descriptor registry binding structure kind, exact source/predicate/
+    policy/order/aggregate semantics, provider identity, generation/epoch, state/write/rebuild
+    bounds, and finite consuming named-query plans with source-spanned excessive/unsupported refusal
+  - Segment-local exact equality and missing/null/present bitmaps over eligible V2 lanes with bounded
+    cardinality/bytes and no implicit cross-provider row-ID bridge
+  - Retraction-aware exact count/present/sum/mean/any/all rollups; min/max or distinct activate only
+    with bounded counted exact state, never approximation or guessed replacement after deletion
+  - Exact bounded top-K plus repair reserve under one complete total order and entity-key tie-breaker;
+    exhausted proof becomes rebuilding/unavailable rather than approximate output
+  - Atomic idempotent per-commit private apply and all-or-none frontier publication across row state
+    and every affected structure, plus canonical rebuild, checkpoint, compaction, replay, retirement,
+    corruption, cancellation, overflow, and retained-tail behavior
+  - Policy-invariant or exact policy-aligned state identities proving denied rows influence no count,
+    membership, rank, top-K, timing class, diagnostics, lifecycle, or shared availability
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-types -p riffdb-contract-ir -p riffdb-contract-compiler -p riffdb-query-ir -p riffdb-query-compiler -p riffdb-query-module -p riffdb-catalog -p riffdb-columnar -p riffdb-projection -p riffdb-policy --all-features
+  - ./scripts/recovery_full
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every incremental structure is compiler-declared, exact, bounded, policy-safe,
+    retraction-correct, rebuildable, crash-safe, and frontier-atomic; unsupported/overflow state fails
+    typed; no approximation, general view, framework branch, scan drift, or caller provider exists.
+  standing_design_tests:
+    interface_safety: Generated callers cannot request structures, fields, functions, precision,
+      refresh, fallback, stale success, policy widening, or bounds; only exact compiled capabilities run.
+    scale: Structures, keys, groups, entries, bytes, write amplification, apply/rebuild work, lag,
+      retained history, and diagnostics are statically bounded per partition and provider generation.
+  human_review_triggers: *id001
+- id: WP-715
+  name: Columnar Program B differential, security, and performance acceptance
+  depends_on: [WP-713, WP-714]
+  objective: Close ADR-0160 through ADR-0162 with cross-plane matched-frontier differential,
+    crash/rebuild, policy/inference, no-regression, and workload performance evidence over a neutral
+    ticket queue and run-metric dashboard before any Program B capability enters alpha qualification.
+  requirements: [PRJ-001, PRJ-002, PRJ-003, PRJ-004, QRY-001, QRY-002,
+    QRY-003, QRY-004, QRY-005, OQ-017, OQ-018, OQ-019, OQ-020, OQ-021,
+    OQ-022, OQ-023, OQ-024, OQ-044, OQ-045, OQ-046, OQ-047, OQ-048,
+    OQ-049, OQ-050, OQ-051, OQ-052, OQ-053, OQ-054, OQ-055, PERF-001,
+    PERF-007, PERF-008, PERF-018]
+  required_adrs: [ADR-0010, ADR-0053, ADR-0070, ADR-0071, ADR-0085,
+    ADR-0086, ADR-0087, ADR-0111, ADR-0124, ADR-0130, ADR-0152, ADR-0160,
+    ADR-0161, ADR-0162]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+    adr/0160-rebuildable-columnar-segment-v2.md,
+    adr/0161-compiler-sealed-vectorized-columnar-execution.md,
+    adr/0162-incremental-analytical-provider-structures.md,
+    release/version-topology-v1.json, crates/riffdb-types/**,
+    crates/riffdb-contract-ir/**, crates/riffdb-contract-compiler/**,
+    crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**,
+    crates/riffdb-query-module/**, crates/riffdb-catalog/**,
+    crates/riffdb-query-executor/**, crates/riffdb-columnar/**,
+    crates/riffdb-projection/**, crates/riffdb-policy/**,
+    crates/riffdb-service/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-api-mcp/**, crates/riffdb-client-rust/**,
+    crates/riffdb-server/**, crates/riffdb-observability/**,
+    clients/**, fixtures/**, examples/app-baseline/**, tests/**,
+    benchmarks/**, scripts/**, release/evidence/**,
+    docs/SUMMARY.md, docs/architecture/**, docs/performance/**,
+    docs/operations/**, docs/riffql/**, docs/getting-started/**,
+    docs/compatibility.md, docs/known-limitations.md]
+  deliverables:
+  - One independent materialized oracle comparing V1 scalar, V2 scalar, V2 vectorized, parallel V2,
+    and incremental provider results/failures at identical history incarnation, generation, policy,
+    parameters, snapshot, provider epoch, and frontier across randomized histories
+  - Full crash/restart/rebuild/compaction/retention/cancellation/deploy-under-load matrix with exact
+    final-state/frontier reconciliation, V1 readability, V2 corruption refusal, and bounded resources
+  - Adversarial organization, row/field/secret policy, capability revision, revocation, hidden
+    distribution, timing class, aggregate, bitmap, top-K, cursor, diagnostic, and lifecycle evidence
+  - Fixed 1k/10k/100k/1M partition profiles across 1/10/100-percent selectivity, full/grouped
+    aggregates, ordered top-N, concurrency 1/16/64, sustained writes, catch-up, compaction, cold/warm,
+    recording CPU, p50/p95/p99, allocations, bytes, pruning, lag, amplification, and rebuild throughput
+  - Neutral ticket-queue and run-metric generated/public application workloads plus value-free
+    external-consumer receipts; no external framework schema, route, package, or implementation lands
+  - Gate table for every ADR-0160/0161/0162 mechanics threshold and no-regression condition; any miss
+    disables only the failed capability and is reported honestly rather than broadening scope or bounds
+  - Handbook, compatibility, operations, rebuild, capacity-planning, and known-limitation guidance
+    describing only activated behavior and retaining deferred approximation/general-view boundaries
+  acceptance_commands:
+  - cargo +1.97.0 test --workspace --all-features
+  - ./scripts/recovery_full
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-application-bindings
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Activated Program B paths are exact, policy-safe, frontier-atomic, crash/rebuild safe,
+    resource bounded, cross-surface equivalent, and meet every predeclared performance gate; failed
+    candidates remain disabled with value-free receipts and no public or compatibility overclaim.
+  standing_design_tests:
+    interface_safety: Acceptance uses only compiled public/generated operations and cannot inject
+      layout, executor, structure, policy, fallback, freshness, or resource choices unavailable to apps.
+    scale: Evidence spans fixed large partitions but every runtime/evidence artifact, buffer, task,
+      state structure, retention hold, and diagnostic remains bounded independently of total history.
   human_review_triggers: *id001
 - id: WP-678
   name: Aggregate collection-byte language, proof, and IR successors
