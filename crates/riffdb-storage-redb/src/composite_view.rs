@@ -10,7 +10,7 @@
 
 use std::sync::{Arc, RwLock};
 
-use redb::{ReadTransaction, TableDefinition};
+use redb::TableDefinition;
 use riffdb_storage_api::{
     BoundedCompositePage, CompositeCheckpointV1, CompositeFrameV1, CompositeMutationStage,
     CompositeOverlayBuilder, CompositeTableV1, CompositeViewBase, FrozenCompositeOverlay,
@@ -18,6 +18,7 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{AdministrationSequence, CommitSequence, DatabaseId, SchemaHash};
 
+use crate::checkpoint_root::CheckpointRoot;
 use crate::codec::{
     IdempotencyRecordV1, decode_administration_audit_record_v1,
     decode_administration_sequence_allocator_v1, decode_application_sequence_allocator_v1,
@@ -29,7 +30,7 @@ use crate::codec::{
     decode_vector_health_observation_v1, decode_vector_observation_v1,
 };
 use crate::error::{precommit_storage_error, storage_error, table_error};
-use crate::journal::{JournalFrame, read_value};
+use crate::journal::JournalFrame;
 use crate::keys::{
     decode_application_sequence_key, decode_audit_by_request_key, decode_audit_key,
     decode_entity_key, decode_event_key, decode_event_route_key, decode_idempotency_key,
@@ -37,17 +38,12 @@ use crate::keys::{
     decode_vector_evidence_index_key, decode_vector_evidence_key,
     decode_vector_health_observation_key, decode_vector_observation_key,
 };
-use crate::layout::{
-    AUDIT, AUDIT_BY_REQUEST, COMMITS, ENTITIES, ENTITY_CHAIN_HEADS, EVENT_ROUTES, EVENTS,
-    IDEMPOTENCY, IDEMPOTENCY_PENDING, INDEX_EPOCHS, META, META_DATABASE_ID,
-    META_HISTORY_INCARNATION, META_RECORD_REGISTRY, OUTBOX, PROVENANCE, SECONDARY_INDEXES,
-    VECTOR_EVIDENCE, VECTOR_EVIDENCE_INDEX, VECTOR_OBSERVATIONS,
-};
+use crate::layout::{META_DATABASE_ID, META_HISTORY_INCARNATION, META_RECORD_REGISTRY};
 use crate::store::{RedbOperationalPorts, read_administration_tail, read_commit_tail};
 
 /// Unpublished builder that proves one overlay against one frozen redb root.
 pub(crate) struct RedbCompositeViewBuilder {
-    root: Arc<ReadTransaction>,
+    root: Arc<CheckpointRoot>,
     overlay: CompositeOverlayBuilder,
 }
 
@@ -62,7 +58,7 @@ impl RedbCompositeViewBuilder {
     }
 
     pub(crate) fn from_root(
-        root: Arc<ReadTransaction>,
+        root: Arc<CheckpointRoot>,
         checkpoint_frame_hash: [u8; 32],
     ) -> Result<Self, StorageError> {
         let checkpoint = checkpoint_identity(&root, checkpoint_frame_hash)?;
@@ -105,13 +101,13 @@ impl RedbCompositeViewBuilder {
 
 /// One immutable redb checkpoint and exact validated overlay.
 pub(crate) struct RedbCompositeReadView {
-    root: Arc<ReadTransaction>,
+    root: Arc<CheckpointRoot>,
     overlay: FrozenCompositeOverlay,
 }
 
 /// Redb-rooted private mutation stage for one command subgroup.
 pub(crate) struct RedbCompositeMutationStage {
-    root: Arc<ReadTransaction>,
+    root: Arc<CheckpointRoot>,
     stage: CompositeMutationStage,
 }
 
@@ -183,7 +179,7 @@ impl RedbCompositeMutationStage {
     ) -> Result<Option<Vec<u8>>, StorageError> {
         let table = self
             .root
-            .open_table(crate::layout::CAPABILITIES)
+            .capability_table()
             .map_err(crate::error::table_error)?;
         table
             .get(key)
@@ -307,9 +303,11 @@ impl RedbCompositeMutationStage {
         max_rows: usize,
         max_inspected: usize,
     ) -> Result<BoundedCompositePage, StorageError> {
-        let definition =
-            byte_table(table).ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-        let base = self.root.open_table(definition).map_err(table_error)?;
+        let base = self
+            .root
+            .journal_byte_table(journal_table(table))
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+            .map_err(table_error)?;
         let end = end_exclusive
             .map(std::ops::Bound::Excluded)
             .unwrap_or(std::ops::Bound::Unbounded);
@@ -345,9 +343,11 @@ impl RedbCompositeMutationStage {
         max_rows: usize,
         max_inspected: usize,
     ) -> Result<BoundedCompositePage, StorageError> {
-        let definition =
-            byte_table(table).ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-        let base = self.root.open_table(definition).map_err(table_error)?;
+        let base = self
+            .root
+            .journal_byte_table(journal_table(table))
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+            .map_err(table_error)?;
         let end = end_exclusive
             .map(std::ops::Bound::Excluded)
             .unwrap_or(std::ops::Bound::Unbounded);
@@ -449,11 +449,11 @@ impl RedbCompositePublication {
 }
 
 impl RedbCompositeReadView {
-    pub(crate) fn checkpoint_root(&self) -> &ReadTransaction {
+    pub(crate) fn checkpoint_root(&self) -> &CheckpointRoot {
         &self.root
     }
 
-    pub(crate) fn checkpoint_root_shared(&self) -> Arc<ReadTransaction> {
+    pub(crate) fn checkpoint_root_shared(&self) -> Arc<CheckpointRoot> {
         Arc::clone(&self.root)
     }
 
@@ -466,7 +466,7 @@ impl RedbCompositeReadView {
     pub(crate) fn rebase_after(
         &self,
         covered: &Self,
-        root: Arc<ReadTransaction>,
+        root: Arc<CheckpointRoot>,
         checkpoint_frame_hash: [u8; 32],
     ) -> Result<Self, StorageError> {
         let checkpoint = checkpoint_identity(&root, checkpoint_frame_hash)?;
@@ -496,9 +496,11 @@ impl RedbCompositeReadView {
         max_rows: usize,
         max_inspected: usize,
     ) -> Result<BoundedCompositePage, StorageError> {
-        let definition =
-            byte_table(table).ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-        let base = self.root.open_table(definition).map_err(table_error)?;
+        let base = self
+            .root
+            .journal_byte_table(journal_table(table))
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+            .map_err(table_error)?;
         let end = end_exclusive
             .map(std::ops::Bound::Excluded)
             .unwrap_or(std::ops::Bound::Unbounded);
@@ -536,9 +538,11 @@ impl RedbCompositeReadView {
         max_rows: usize,
         max_inspected: usize,
     ) -> Result<BoundedCompositePage, StorageError> {
-        let definition =
-            byte_table(table).ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-        let base = self.root.open_table(definition).map_err(table_error)?;
+        let base = self
+            .root
+            .journal_byte_table(journal_table(table))
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+            .map_err(table_error)?;
         let end = end_exclusive
             .map(std::ops::Bound::Excluded)
             .unwrap_or(std::ops::Bound::Unbounded);
@@ -569,7 +573,7 @@ impl RedbCompositeReadView {
 }
 
 struct RedbCheckpointBase<'root> {
-    root: &'root ReadTransaction,
+    root: &'root CheckpointRoot,
 }
 
 impl CompositeViewBase for RedbCheckpointBase<'_> {
@@ -578,7 +582,8 @@ impl CompositeViewBase for RedbCheckpointBase<'_> {
         table: CompositeTableV1,
         key: &[u8],
     ) -> Result<Option<Vec<u8>>, StorageValueError> {
-        read_value(self.root, journal_table(table), key)
+        self.root
+            .read_value(journal_table(table), key)
             .map_err(|_| StorageValueError::InvalidShape)
     }
 
@@ -593,13 +598,13 @@ impl CompositeViewBase for RedbCheckpointBase<'_> {
 }
 
 fn checkpoint_identity(
-    root: &ReadTransaction,
+    root: &CheckpointRoot,
     checkpoint_frame_hash: [u8; 32],
 ) -> Result<CompositeCheckpointV1, StorageError> {
-    let meta = root.open_table(META).map_err(table_error)?;
-    let database_bytes = required_meta(&meta, META_DATABASE_ID)?;
-    let history_bytes = required_meta(&meta, META_HISTORY_INCARNATION)?;
-    let registry_bytes = required_meta(&meta, META_RECORD_REGISTRY)?;
+    let meta = root.meta_table().map_err(table_error)?;
+    let database_bytes = required_meta(meta, META_DATABASE_ID)?;
+    let history_bytes = required_meta(meta, META_HISTORY_INCARNATION)?;
+    let registry_bytes = required_meta(meta, META_RECORD_REGISTRY)?;
     let database_id = decode_database_identity_v1(&database_bytes)?.into_parts().0;
     let history_incarnation = decode_history_incarnation_v1(&history_bytes)?
         .into_parts()
@@ -887,33 +892,6 @@ const fn journal_table(table: CompositeTableV1) -> crate::journal::JournalTable 
     }
 }
 
-const fn byte_table(
-    table: CompositeTableV1,
-) -> Option<TableDefinition<'static, &'static [u8], &'static [u8]>> {
-    match table {
-        CompositeTableV1::Meta => None,
-        CompositeTableV1::Entities => Some(ENTITIES),
-        CompositeTableV1::SecondaryIndexes => Some(SECONDARY_INDEXES),
-        CompositeTableV1::IndexEpochs => Some(INDEX_EPOCHS),
-        CompositeTableV1::Idempotency => Some(IDEMPOTENCY),
-        CompositeTableV1::IdempotencyLocators => Some(crate::layout::IDEMPOTENCY_LOCATORS),
-        CompositeTableV1::ProvenanceLocators => Some(crate::layout::PROVENANCE_LOCATORS),
-        CompositeTableV1::AuditByRequestLocators => Some(crate::layout::AUDIT_BY_REQUEST_LOCATORS),
-        CompositeTableV1::IdempotencyPending => Some(IDEMPOTENCY_PENDING),
-        CompositeTableV1::Events => Some(EVENTS),
-        CompositeTableV1::EventRoutes => Some(EVENT_ROUTES),
-        CompositeTableV1::Outbox => Some(OUTBOX),
-        CompositeTableV1::Provenance => Some(PROVENANCE),
-        CompositeTableV1::Commits => Some(COMMITS),
-        CompositeTableV1::Audit => Some(AUDIT),
-        CompositeTableV1::AuditByRequest => Some(AUDIT_BY_REQUEST),
-        CompositeTableV1::EntityChainHeads => Some(ENTITY_CHAIN_HEADS),
-        CompositeTableV1::VectorEvidence => Some(VECTOR_EVIDENCE),
-        CompositeTableV1::VectorObservations => Some(VECTOR_OBSERVATIONS),
-        CompositeTableV1::VectorEvidenceIndex => Some(VECTOR_EVIDENCE_INDEX),
-    }
-}
-
 fn corrupt_value(_: StorageValueError) -> StorageError {
     storage_error(StorageErrorKind::CorruptData)
 }
@@ -984,6 +962,76 @@ mod tests {
 
     fn request_id(millis: u64) -> RequestId {
         RequestId::from_unix_milliseconds_and_random(millis, [5; 10]).expect("request")
+    }
+
+    /// Point reads and range reads must land on the same physical redb table.
+    ///
+    /// Both now index one per-snapshot handle cache through
+    /// `journal_table(..)`, where the range path previously carried its own
+    /// `CompositeTableV1 -> TableDefinition` map. Two maps that disagreed for
+    /// one variant would have made a range read scan a different table than
+    /// the point read for the same logical table — and report absence for rows
+    /// that are durably present. The physical names are pinned as literals so
+    /// this fails on divergence rather than restating whatever the code says.
+    #[test]
+    fn every_composite_table_resolves_to_its_pinned_physical_table() {
+        use redb::TableHandle;
+
+        for (table, expected) in [
+            (CompositeTableV1::Meta, None),
+            (CompositeTableV1::Entities, Some("entities")),
+            (CompositeTableV1::SecondaryIndexes, Some("secondary_indexes")),
+            (CompositeTableV1::IndexEpochs, Some("index_epochs")),
+            (CompositeTableV1::Idempotency, Some("idempotency")),
+            (
+                CompositeTableV1::IdempotencyLocators,
+                Some("idempotency_locators"),
+            ),
+            (
+                CompositeTableV1::ProvenanceLocators,
+                Some("provenance_locators"),
+            ),
+            (
+                CompositeTableV1::AuditByRequestLocators,
+                Some("audit_by_request_locators"),
+            ),
+            (
+                CompositeTableV1::IdempotencyPending,
+                Some("idempotency_pending"),
+            ),
+            (CompositeTableV1::Events, Some("events")),
+            (CompositeTableV1::EventRoutes, Some("event_routes")),
+            (CompositeTableV1::Outbox, Some("outbox")),
+            (CompositeTableV1::Provenance, Some("provenance")),
+            (CompositeTableV1::Commits, Some("commits")),
+            (CompositeTableV1::Audit, Some("audit")),
+            (CompositeTableV1::AuditByRequest, Some("audit_by_request")),
+            (
+                CompositeTableV1::EntityChainHeads,
+                Some("entity_chain_heads"),
+            ),
+            (CompositeTableV1::VectorEvidence, Some("vector_evidence")),
+            (
+                CompositeTableV1::VectorObservations,
+                Some("vector_observations"),
+            ),
+            (
+                CompositeTableV1::VectorEvidenceIndex,
+                Some("vector_evidence_index"),
+            ),
+        ] {
+            let resolved = crate::journal::byte_table_definition(journal_table(table))
+                .map(|definition| definition.name().to_owned());
+            assert_eq!(
+                resolved.as_deref(),
+                expected,
+                "{table:?} resolves to the wrong physical table"
+            );
+        }
+
+        // Every variant is pinned above, so no table can silently acquire a
+        // mapping without also acquiring a pin.
+        assert_eq!(CompositeTableV1::ALL.len(), 20);
     }
 
     #[test]

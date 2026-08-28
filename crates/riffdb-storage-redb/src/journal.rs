@@ -3224,7 +3224,7 @@ pub(crate) fn point_read_substages() -> [u64; 3] {
     POINT_READ_SUBSTAGES.with(std::cell::Cell::get)
 }
 
-fn charge_point_read_substage(index: usize, started: Instant) {
+pub(crate) fn charge_point_read_substage(index: usize, started: Instant) {
     let elapsed = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
     POINT_READ_SUBSTAGES.with(|cell| {
         let mut current = cell.get();
