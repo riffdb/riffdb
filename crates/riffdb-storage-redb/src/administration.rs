@@ -1888,6 +1888,50 @@ where
     Ok(lifecycle)
 }
 
+/// Resolves a command-owned service audit record from its ADR-0165
+/// `audit_by_request_locators` row.
+///
+/// A write access cannot warm the transient index -- it holds the mutation
+/// lease and `ExclusiveGate` is a non-reentrant ticket lock -- so a dormant
+/// index would otherwise make a present audit record read as absent. The
+/// locator row carries the owning commit sequence, which is exactly the durable
+/// map from an allocator-derived administration sequence to its segment that no
+/// other table provides.
+///
+/// Fails closed: the locator asserts a segment owns this sequence, so a missing
+/// member, a mismatched commit sequence, or a segment holding neither audit at
+/// this sequence is corruption, never absence.
+fn command_audit_from_request_locator(
+    access: &RedbWriteAccess,
+    request_id: RequestId,
+    sequence: AdministrationSequence,
+) -> Result<Option<StoredServiceAuditRecordV1>, StorageError> {
+    let key = crate::keys::encode_audit_by_request_key(request_id, sequence);
+    let Some(encoded) =
+        access.read_command_value(JournalTable::AuditByRequestLocators, key.as_slice())?
+    else {
+        return Ok(None);
+    };
+    let locator = crate::codec::decode_command_locator_v1(&encoded)?
+        .into_parts()
+        .0;
+    let member = crate::command_authority::command_member_at_write_access(
+        access,
+        locator.commit_sequence(),
+    )?
+    .ok_or_else(corrupt)?;
+    let base = member.base();
+    if base.commit_sequence() != locator.commit_sequence() {
+        return Err(corrupt());
+    }
+    for audit in [base.started_audit(), base.terminal_audit()] {
+        if audit.administration_sequence() == sequence {
+            return Ok(Some(audit.clone()));
+        }
+    }
+    Err(corrupt())
+}
+
 fn service_lifecycle_in_write<T>(
     access: &RedbWriteAccess,
     table: &T,
@@ -1914,9 +1958,16 @@ where
                     .map(decoded_value)
             })
             .transpose()?;
-        let derived = access
-            .command_audit_record(*sequence)?
-            .map(StoredAdministrationAuditRecordV1::Service);
+        // Dormant only: with a warm index a miss is a real answer and must not
+        // be overridden. See `command_audit_from_request_locator`.
+        let derived = match access.command_audit_record(*sequence)? {
+            Some(indexed) => Some(indexed),
+            None if access.transient_indexes_dormant()? => {
+                command_audit_from_request_locator(access, request_id, *sequence)?
+            }
+            None => None,
+        }
+        .map(StoredAdministrationAuditRecordV1::Service);
         let record = match (physical, derived) {
             (Some(physical), Some(derived)) if physical == derived => physical,
             (Some(record), None) | (None, Some(record)) => record,
@@ -1969,9 +2020,16 @@ fn service_lifecycle_in_access(
     let mut lifecycle = None;
     for sequence in sequences {
         let key = encode_audit_key(*sequence);
-        let derived = access
-            .command_audit_record(*sequence)?
-            .map(StoredAdministrationAuditRecordV1::Service);
+        // Dormant only: with a warm index a miss is a real answer and must not
+        // be overridden. See `command_audit_from_request_locator`.
+        let derived = match access.command_audit_record(*sequence)? {
+            Some(indexed) => Some(indexed),
+            None if access.transient_indexes_dormant()? => {
+                command_audit_from_request_locator(access, request_id, *sequence)?
+            }
+            None => None,
+        }
+        .map(StoredAdministrationAuditRecordV1::Service);
         let physical = access
             .read_command_value(JournalTable::Audit, key.as_slice())?
             .map(
@@ -2136,6 +2194,27 @@ fn service_link_is_valid_access(
                 return Ok(command.commit_sequence() == commit_sequence
                     && command.base().provenance().provenance_id() == provenance_id
                     && command.base().provenance().commit_sequence() == commit_sequence);
+            }
+            // ADR-0165: provenance is segment-owned, so PROVENANCE is empty and
+            // the locator table is the durable path to the owning command. Its
+            // two siblings -- `provenance_exists` and `read_provenance` --
+            // already probe it; without it a valid link reads as INVALID, which
+            // is manufactured absence inside a validity predicate.
+            if let Some(encoded) = access
+                .read_command_value(JournalTable::ProvenanceLocators, provenance_key.as_slice())?
+            {
+                let locator = crate::codec::decode_command_locator_v1(&encoded)?
+                    .into_parts()
+                    .0;
+                let member = crate::command_authority::command_member_at_write_access(
+                    access,
+                    locator.commit_sequence(),
+                )?
+                .ok_or_else(corrupt)?;
+                let base = member.base();
+                return Ok(base.commit_sequence() == commit_sequence
+                    && base.provenance().provenance_id() == provenance_id
+                    && base.provenance().commit_sequence() == commit_sequence);
             }
             let Some(encoded_provenance) =
                 access.read_command_value(JournalTable::Provenance, provenance_key.as_slice())?
