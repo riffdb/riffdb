@@ -179,6 +179,8 @@ jobs:
         run: ./scripts/check-workspace-policy
       - name: Check requirement coverage
         run: ./scripts/check-requirement-coverage
+      - name: Check ADR obligations
+        run: ./scripts/check-adr-obligations
 
   source-convenience:
     name: Source install and bootstrap
