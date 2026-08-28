@@ -1699,15 +1699,19 @@ impl ReactiveModuleAdministrationRepository for RedbOperationalPorts {
     }
 }
 
-pub(crate) fn capability_from_tables<C, L>(
+/// Reads one capability row and checks the identities carried inside it.
+///
+/// The reciprocal token-lookup link is deliberately not checked here;
+/// [`capability_from_tables`] adds it. A caller that has already read and
+/// decoded the exact lookup row this record names uses this directly rather
+/// than decoding that row a second time.
+fn capability_record_from_table<C>(
     capabilities: &C,
-    lookups: &L,
     database_id: riffdb_types::DatabaseId,
     capability_id: CapabilityId,
 ) -> Result<Option<StoredCapabilityRecordV1>, StorageError>
 where
     C: ReadableTable<&'static [u8], &'static [u8]>,
-    L: ReadableTable<&'static [u8], &'static [u8]>,
 {
     let key = encode_capability_key(capability_id);
     let Some(value) = capabilities
@@ -1720,6 +1724,23 @@ where
     if record.capability_id() != capability_id || record.database_id() != database_id {
         return Err(corrupt());
     }
+    Ok(Some(record))
+}
+
+pub(crate) fn capability_from_tables<C, L>(
+    capabilities: &C,
+    lookups: &L,
+    database_id: riffdb_types::DatabaseId,
+    capability_id: CapabilityId,
+) -> Result<Option<StoredCapabilityRecordV1>, StorageError>
+where
+    C: ReadableTable<&'static [u8], &'static [u8]>,
+    L: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let Some(record) = capability_record_from_table(capabilities, database_id, capability_id)?
+    else {
+        return Ok(None);
+    };
     let lookup_key = encode_capability_token_key(record.token_digest());
     let lookup = lookups
         .get(lookup_key.as_slice())
@@ -1797,12 +1818,21 @@ where
             continue;
         };
         let lookup = decoded_value(decode_capability_token_lookup_v1(value.value())?);
-        let record =
-            capability_from_tables(capabilities, lookups, database_id, lookup.capability_id())?
-                .ok_or_else(corrupt)?;
+        let capability_id = lookup.capability_id();
+        let record = capability_record_from_table(capabilities, database_id, capability_id)?
+            .ok_or_else(corrupt)?;
         if record.token_digest() != *digest {
+            // Broken reciprocal link. Run the complete cross-check the shared
+            // helper performs so a corrupt database keeps exactly the failure
+            // disposition it had, then reject as before.
+            capability_from_tables(capabilities, lookups, database_id, capability_id)?;
             return Err(corrupt());
         }
+        // The digests are equal, so the row `capability_from_tables` would read
+        // and decode is `value`, already decoded above into `lookup`, and the
+        // reciprocal identity it checks is `lookup.capability_id() ==
+        // capability_id`, which holds by construction. Both are proved, so the
+        // second read and decode of the same row is skipped.
         if matched.is_some() {
             return Ok(CapabilityLookupResult::MultipleMatches);
         }
