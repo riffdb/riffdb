@@ -483,7 +483,7 @@ impl PanicTerminalAudit {
             approval_id,
             ServiceAuditLinkV1::None,
         )
-        .map_err(|e| { use std::io::Write; if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log"){let _=writeln!(f,"subsystem() at {} inner={e:?}", std::panic::Location::caller());} AuditAppendFailure::subsystem() })?;
+        .map_err(|_| AuditAppendFailure::subsystem())?;
         Ok(Self {
             input,
             deadline: context.control().deadline(),
@@ -653,10 +653,10 @@ impl BegunCapabilityMutation {
             self.approval_id.clone(),
             link,
         )
-        .map_err(|e| { use std::io::Write; if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log"){let _=writeln!(f,"subsystem() at {} inner={e:?}", std::panic::Location::caller());} AuditAppendFailure::subsystem() })?;
+        .map_err(|_| AuditAppendFailure::subsystem())?;
         self.lifecycle
             .begin_terminal(phase, link)
-            .map_err(|e| { use std::io::Write; if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log"){let _=writeln!(f,"subsystem() at {} inner={e:?}", std::panic::Location::caller());} AuditAppendFailure::subsystem() })?;
+            .map_err(|_| AuditAppendFailure::subsystem())?;
         let control = terminal_audit_control(context.control());
         let result = service.append_prepared_audit(&control, input).await;
         self.lifecycle.finish_terminal(result.is_ok());
@@ -695,7 +695,7 @@ impl BegunInvocation {
         context: &RequestContext,
     ) -> Result<ServiceAuditInput, AuditAppendFailure> {
         if self.operation != ServiceOperationV1::ExecuteCommand || !self.started {
-            { use std::io::Write; if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log"){let _=writeln!(f,"subsystem() bare-return at {}", std::panic::Location::caller());} return Err(AuditAppendFailure::subsystem()); }
+            return Err(AuditAppendFailure::subsystem());
         }
         ServiceAuditInput::new(
             context,
@@ -705,7 +705,7 @@ impl BegunInvocation {
             self.approval_id.clone(),
             ServiceAuditLinkV1::None,
         )
-        .map_err(|e| { use std::io::Write; if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log"){let _=writeln!(f,"subsystem() at {} inner={e:?}", std::panic::Location::caller());} AuditAppendFailure::subsystem() })
+        .map_err(|_| AuditAppendFailure::subsystem())
     }
 
     pub(crate) fn confirm_compound_success(
@@ -715,7 +715,7 @@ impl BegunInvocation {
         self.deferred_start.store(false, Ordering::Release);
         self.lifecycle
             .begin_terminal(ServiceAuditPhaseV1::Succeeded, link)
-            .map_err(|e| { use std::io::Write; if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log"){let _=writeln!(f,"subsystem() at {} inner={e:?}", std::panic::Location::caller());} AuditAppendFailure::subsystem() })?;
+            .map_err(|_| AuditAppendFailure::subsystem())?;
         self.lifecycle.finish_terminal(true);
         Ok(())
     }
@@ -724,7 +724,7 @@ impl BegunInvocation {
         self.deferred_start.store(false, Ordering::Release);
         self.lifecycle
             .begin_terminal(ServiceAuditPhaseV1::Failed, ServiceAuditLinkV1::None)
-            .map_err(|e| { use std::io::Write; if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log"){let _=writeln!(f,"subsystem() at {} inner={e:?}", std::panic::Location::caller());} AuditAppendFailure::subsystem() })?;
+            .map_err(|_| AuditAppendFailure::subsystem())?;
         self.lifecycle.finish_terminal(true);
         Ok(())
     }
@@ -964,7 +964,7 @@ impl BegunInvocation {
                 self.approval_id.clone(),
                 ServiceAuditLinkV1::None,
             )
-            .map_err(|e| { use std::io::Write; if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log"){let _=writeln!(f,"subsystem() at {} inner={e:?}", std::panic::Location::caller());} AuditAppendFailure::subsystem() })?;
+            .map_err(|_| AuditAppendFailure::subsystem())?;
             let terminal_input = ServiceAuditInput::new(
                 context,
                 self.operation,
@@ -973,10 +973,10 @@ impl BegunInvocation {
                 self.approval_id.clone(),
                 link,
             )
-            .map_err(|e| { use std::io::Write; if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log"){let _=writeln!(f,"subsystem() at {} inner={e:?}", std::panic::Location::caller());} AuditAppendFailure::subsystem() })?;
+            .map_err(|_| AuditAppendFailure::subsystem())?;
             self.lifecycle
                 .begin_terminal(phase, link)
-                .map_err(|e| { use std::io::Write; if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log"){let _=writeln!(f,"subsystem() at {} inner={e:?}", std::panic::Location::caller());} AuditAppendFailure::subsystem() })?;
+                .map_err(|_| AuditAppendFailure::subsystem())?;
             let control = terminal_audit_control(context.control());
             let result = service
                 .append_prepared_audit_pair(&control, started_input, terminal_input)
@@ -996,10 +996,10 @@ impl BegunInvocation {
             self.approval_id.clone(),
             link,
         )
-        .map_err(|e| { use std::io::Write; if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log"){let _=writeln!(f,"subsystem() at {} inner={e:?}", std::panic::Location::caller());} AuditAppendFailure::subsystem() })?;
+        .map_err(|_| AuditAppendFailure::subsystem())?;
         self.lifecycle
             .begin_terminal(phase, link)
-            .map_err(|e| { use std::io::Write; if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log"){let _=writeln!(f,"subsystem() at {} inner={e:?}", std::panic::Location::caller());} AuditAppendFailure::subsystem() })?;
+            .map_err(|_| AuditAppendFailure::subsystem())?;
         let control = terminal_audit_control(context.control());
         let result = service.append_prepared_audit(&control, input).await;
         self.lifecycle.finish_terminal(result.is_ok());
@@ -1062,10 +1062,10 @@ impl BegunInvocationCompletion {
             self.approval_id.clone(),
             link,
         )
-        .map_err(|e| { use std::io::Write; if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log"){let _=writeln!(f,"subsystem() at {} inner={e:?}", std::panic::Location::caller());} AuditAppendFailure::subsystem() })?;
+        .map_err(|_| AuditAppendFailure::subsystem())?;
         self.lifecycle
             .begin_terminal(phase, link)
-            .map_err(|e| { use std::io::Write; if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log"){let _=writeln!(f,"subsystem() at {} inner={e:?}", std::panic::Location::caller());} AuditAppendFailure::subsystem() })?;
+            .map_err(|_| AuditAppendFailure::subsystem())?;
         let control = terminal_audit_control(context.control());
         let result = service.append_prepared_audit(&control, input).await;
         self.lifecycle.finish_terminal(result.is_ok());
@@ -1696,12 +1696,6 @@ impl RiffDbServiceInner {
                     .await
                 {
                     lifecycle.fail_start();
-                    {
-                        use std::io::Write;
-                        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log") {
-                            let _ = writeln!(f, "AUDIT APPEND FAILED cause={:?} full={failure:?}", failure.cause());
-                        }
-                    }
                     self.note_audit_failure_with_cause(operation, failure.cause());
                     return Err(PublicError::storage_unavailable().into());
                 }
@@ -1772,7 +1766,7 @@ impl RiffDbServiceInner {
         control_mode: AuditAppendControl,
     ) -> Result<(), AuditAppendFailure> {
         let input = ServiceAuditInput::new(context, operation, phase, targets, approval_id, link)
-            .map_err(|e| { use std::io::Write; if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log"){let _=writeln!(f,"subsystem() at {} inner={e:?}", std::panic::Location::caller());} AuditAppendFailure::subsystem() })?;
+            .map_err(|_| AuditAppendFailure::subsystem())?;
         let terminal_control;
         let control = match control_mode {
             AuditAppendControl::Invocation => context.control(),
@@ -1801,10 +1795,10 @@ impl RiffDbServiceInner {
             }
         })?
         // Coordinator admission failures are always subsystem-level.
-        .map_err(|e| { use std::io::Write; if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log"){let _=writeln!(f,"subsystem() at {} inner={e:?}", std::panic::Location::caller());} AuditAppendFailure::subsystem() })?;
+        .map_err(|_| AuditAppendFailure::subsystem())?;
         let receipt = permit
             .submit(Box::new(input))
-            .map_err(|e| { use std::io::Write; if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log"){let _=writeln!(f,"subsystem() at {} inner={e:?}", std::panic::Location::caller());} AuditAppendFailure::subsystem() })?;
+            .map_err(|_| AuditAppendFailure::subsystem())?;
         self.await_audit_receipt(receipt).await
     }
 
@@ -1825,10 +1819,10 @@ impl RiffDbServiceInner {
                 AuditAppendFailure::request_scoped()
             }
         })?
-        .map_err(|e| { use std::io::Write; if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log"){let _=writeln!(f,"subsystem() at {} inner={e:?}", std::panic::Location::caller());} AuditAppendFailure::subsystem() })?;
+        .map_err(|_| AuditAppendFailure::subsystem())?;
         let receipt = permit
             .submit_fused_pair(Box::new(started), Box::new(terminal))
-            .map_err(|e| { use std::io::Write; if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log"){let _=writeln!(f,"subsystem() at {} inner={e:?}", std::panic::Location::caller());} AuditAppendFailure::subsystem() })?;
+            .map_err(|_| AuditAppendFailure::subsystem())?;
         self.await_audit_receipt(receipt).await
     }
 
@@ -1842,12 +1836,6 @@ impl RiffDbServiceInner {
                 Ok(())
             }
             Err(error) => {
-                {
-                    use std::io::Write;
-                    if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log"){
-                        let _=writeln!(f,"AUDIT RECEIPT ERROR: {error:?}");
-                    }
-                }
                 let fenced = matches!(error, AdministrationAuditExecutionError::CoordinatorFenced)
                     || self.executors.audit.lifecycle_state() == CoordinatorLifecycleState::Fenced;
                 if fenced {
@@ -1909,10 +1897,10 @@ impl RiffDbServiceInner {
         let lifecycle = current_operation_audit_lifecycle(operation);
         lifecycle
             .prepare_bootstrap_terminal(operation, preparation, request_control.deadline())
-            .map_err(|e| { use std::io::Write; if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log"){let _=writeln!(f,"subsystem() at {} inner={e:?}", std::panic::Location::caller());} AuditAppendFailure::subsystem() })?;
+            .map_err(|_| AuditAppendFailure::subsystem())?;
         let (preparation, deadline) = lifecycle
             .begin_bootstrap_terminal()
-            .map_err(|e| { use std::io::Write; if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log"){let _=writeln!(f,"subsystem() at {} inner={e:?}", std::panic::Location::caller());} AuditAppendFailure::subsystem() })?;
+            .map_err(|_| AuditAppendFailure::subsystem())?;
         let (control, _unused_cancellation) = RequestControl::new(deadline);
         let result = self
             .append_prepared_bootstrap_terminal(&control, preparation)
@@ -1938,11 +1926,11 @@ impl RiffDbServiceInner {
                 self.note_bootstrap_terminal_failure(
                     error == ControlPlaneExecutionAdmissionError::Fenced,
                 );
-                { use std::io::Write; if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log"){let _=writeln!(f,"subsystem() bare-return at {}", std::panic::Location::caller());} return Err(AuditAppendFailure::subsystem()); }
+                return Err(AuditAppendFailure::subsystem());
             }
             Err(_) => {
                 self.note_bootstrap_terminal_failure(false);
-                { use std::io::Write; if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log"){let _=writeln!(f,"subsystem() bare-return at {}", std::panic::Location::caller());} return Err(AuditAppendFailure::subsystem()); }
+                return Err(AuditAppendFailure::subsystem());
             }
         };
         let receipt = match permit.submit_capability_bootstrap_terminal(preparation) {
@@ -1951,7 +1939,7 @@ impl RiffDbServiceInner {
                 self.note_bootstrap_terminal_failure(
                     error == ControlPlaneExecutionAdmissionError::Fenced,
                 );
-                { use std::io::Write; if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log"){let _=writeln!(f,"subsystem() bare-return at {}", std::panic::Location::caller());} return Err(AuditAppendFailure::subsystem()); }
+                return Err(AuditAppendFailure::subsystem());
             }
         };
         match receipt.completion().await {
@@ -2023,14 +2011,7 @@ pub(crate) struct AuditAppendFailure {
 }
 
 impl AuditAppendFailure {
-    #[track_caller]
-    pub(crate) fn subsystem() -> Self {
-        {
-            use std::io::Write;
-            if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log"){
-                let _=writeln!(f,"SUBSYS at {}", std::panic::Location::caller());
-            }
-        }
+    pub(crate) const fn subsystem() -> Self {
         Self {
             cause: AuditFailureCause::SubsystemUnavailable,
         }

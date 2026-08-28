@@ -5030,14 +5030,7 @@ impl RedbWriteAccess {
         Ok(())
     }
 
-    #[track_caller]
     pub(crate) fn transaction(&self) -> Result<&WriteTransaction, StorageError> {
-        if self.transaction.is_none() {
-            use std::io::Write;
-            if let Ok(mut f)=std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log"){
-                let _=writeln!(f,"TXN-GONE caller={}", std::panic::Location::caller());
-            }
-        }
         self.transaction
             .as_ref()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))

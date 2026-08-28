@@ -196,22 +196,29 @@ the transient rebuild must remain available rather than being deleted.
   command (+5.78%), and **no additional fsync** — 6,396 versus 6,409 mean
   physical flushes across four runs per arm, inside both groups' spread, because
   the rows join their segment's frame.
-- **Readiness, predicted, to be checked on landing.** With cold-cache reads
-  correct, outbox normalization may be skipped on the readiness path when
-  bounded startup proved no in-flight `Delivering` entry (ADR-0156 Amendment 3).
-  `outbox_recovery` should fall from 33.32 s to under 50 ms at 115,690 retained
-  commands and from 102.45 s to under 50 ms at 359,318; `process_to_ready`
-  should fall from 34.75 s to about 1.43 s and from 106.68 s to about 4.23 s.
-- **Readiness remains LINEAR in retained commands.** The coefficient falls from
-  about 300 to about 12 microseconds per command, roughly 25x, but does not
-  reach independence: the residual is dominated by `store_open`, independently
-  measured at about 11.6 microseconds per command. This narrows, and does not
-  satisfy, ADR-0156's consequence that "Clean restart no longer scales with live
-  entity/index population or retained history".
-- The real-daemon tripwire `assert_readiness_path_rebuild_census(..., 1)` is
-  pinned exactly and MUST be changed to 0 as part of this work. It fails in both
-  directions by design, so the change is a deliberate act rather than a silent
-  one.
+- **Readiness, measured.** With cold-cache reads correct, outbox normalization
+  is skipped on the readiness path when bounded startup proved no in-flight
+  `Delivering` entry (ADR-0156 Amendment 3). Measured on this workstation:
+
+  | retained commands | `outbox_recovery` | `process_to_ready` | speedup |
+  | --- | --- | --- | --- |
+  | 115,690 | 33.32 s -> **0** | 34.75 s -> **1.351 s** | 25.7x |
+  | 359,318 | 102.45 s -> **0** | 106.68 s -> **4.232 s** | 25.2x |
+
+  `transient_index_rebuilds` is 0 at both sizes: a bounded clean start now
+  reaches readiness without decoding a single command segment. The predictions
+  this record carried were 1.43 s and 4.23 s.
+- **Readiness remains LINEAR in retained commands — confirmed by measurement,
+  not extrapolation.** Readiness scaled 3.13x for 3.11x the data, and the
+  coefficient is 11.68 and 11.78 microseconds per command at the two sizes,
+  against about 300 before. `store_open` is 98-99% of what remains, so the
+  residual is the independently measured `store_open` linearity and nothing
+  else. This narrows, and does not satisfy, ADR-0156's consequence that "Clean
+  restart no longer scales with live entity/index population or retained
+  history".
+- The real-daemon tripwire is now pinned at 0 and still fails in both
+  directions, so any future readiness-path caller that reaches
+  `ensure_transient_indexes_ready` before the ready line trips it.
 - `EVENT_ROUTES` and `OUTBOX` gain no locator table. Their manifest kinds have
   no index read call sites, so a locator there would buy only rebuild removal,
   and both tables are counted by ADR-0085's derivation, which this record

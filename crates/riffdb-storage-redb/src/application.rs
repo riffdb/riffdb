@@ -264,6 +264,60 @@ fn write_durable_command_locators(
     Ok(())
 }
 
+/// Newest command segment's digest, read durably through a bounded window.
+///
+/// `command_segment_tail` answers `None` when the transient index is dormant,
+/// which a bounded clean-close start leaves it. The previous fallback opened
+/// `COMMITS` through `access.transaction()`, but this path is also reached
+/// after the transaction has been taken, so it failed with an invariant
+/// violation that surfaced as `storage is temporarily unavailable` on the first
+/// command.
+///
+/// The newest segment's physical key is its first commit sequence, and a segment
+/// holds at most `MAX_STAGED_COMMANDS` commands, so it lies within a bounded
+/// window ending at the application frontier. That keeps this a window read
+/// rather than the full-table scan bounded startup exists to remove.
+fn last_command_segment_digest(
+    access: &RedbWriteAccess,
+) -> Result<Option<riffdb_storage_api::CommandSegmentDigestV1>, StorageError> {
+    let allocator = read_application_allocator(access)?;
+    let last = match allocator {
+        ApplicationSequenceAllocator::Next(next) => {
+            CommitSequence::new(next.get().saturating_sub(1))
+        }
+        ApplicationSequenceAllocator::Exhausted => CommitSequence::new(u64::MAX),
+    };
+    let Some(last) = last else {
+        return Ok(None);
+    };
+    let window = u64::try_from(riffdb_storage_api::MAX_STAGED_COMMANDS)
+        .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?
+        .saturating_sub(1);
+    let first = CommitSequence::new(last.get().saturating_sub(window).max(1))
+        .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+    let start = encode_application_sequence_key(first);
+    let mut end = encode_application_sequence_key(last).to_vec();
+    end.push(0);
+    let rows = access.read_command_range(
+        JournalTable::Commits,
+        start.as_slice(),
+        &end,
+        riffdb_storage_api::MAX_STAGED_COMMANDS.saturating_add(1),
+    )?;
+    let Some((_, value)) = rows.last() else {
+        return Ok(None);
+    };
+    match riffdb_storage_api::decode_command_segment_v1(&value[..]) {
+        Ok(segment) => Ok(Some(segment.value().segment_digest())),
+        Err(error)
+            if error.kind() == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(codec_error(error)),
+    }
+}
+
 fn build_command_segment(
     access: &RedbWriteAccess,
     capsules: Vec<StoredCommandCapsuleV2>,
@@ -284,23 +338,7 @@ fn build_command_segment(
     let predecessor = if let Some(tail) = access.command_segment_tail()? {
         tail.map(|(_, digest)| digest)
     } else {
-        let transaction = access.transaction()?;
-        let commits = transaction.open_table(COMMITS).map_err(table_error)?;
-        match commits.last().map_err(precommit_storage_error)? {
-            None => None,
-            Some((_, encoded)) => {
-                match riffdb_storage_api::decode_command_segment_v1(encoded.value()) {
-                    Ok(segment) => Some(segment.value().segment_digest()),
-                    Err(error)
-                        if error.kind()
-                            == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
-                    {
-                        None
-                    }
-                    Err(error) => return Err(codec_error(error)),
-                }
-            }
-        }
+        last_command_segment_digest(access)?
     };
     let manifest = build_command_segment_manifest(&capsules, first)?;
     StoredCommandSegmentV1::new(
