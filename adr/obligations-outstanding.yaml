@@ -1,0 +1,1335 @@
+---
+purpose: 'Deferred ADR obligations that are not yet discharged by a named, existing
+  proof. Seeded from the obligations that predate scripts/check-adr-obligations. This
+  list should shrink: move an entry out by declaring it in its ADR header with a Proof
+  that exists. New undeclared obligations are rejected by the check rather than added
+  here by default.'
+outstanding:
+- key: 0002-bounded-typed-dsl-and-versioned-deterministic-ir.md::WP-040 must prove
+    its key expressions are computable from validated command inputs, key fi
+  adr: 0002-bounded-typed-dsl-and-versioned-deterministic-ir.md
+  work_packages:
+  - WP-040
+  obligation: WP-040 must prove its key expressions are computable from validated
+    command inputs, key fields cannot be assigned, every required non-key field is
+    assigned exactly once on the creation path, and dupli
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0002-bounded-typed-dsl-and-versioned-deterministic-ir.md::runtime contain no
+    state-machine placeholder or execution path; WP-040 and WP-080 MUST NOT
+  adr: 0002-bounded-typed-dsl-and-versioned-deterministic-ir.md
+  work_packages:
+  - WP-040
+  - WP-080
+  obligation: runtime contain no state-machine placeholder or execution path; WP-040
+    and WP-080 MUST NOT reserve or invent one.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0002-bounded-typed-dsl-and-versioned-deterministic-ir.md::WP-040/WP-080 architecture
+    and negative-corpus tests must prove that state-machine syntax,
+  adr: 0002-bounded-typed-dsl-and-versioned-deterministic-ir.md
+  work_packages:
+  - WP-040
+  - WP-080
+  obligation: WP-040/WP-080 architecture and negative-corpus tests must prove that
+    state-machine syntax, HIR/IR nodes, transition instructions, and runtime dispatch
+    are absent rather than represented by placeholder
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0004-semantic-storage-api-and-redb-baseline.md::WP-070 must add the exact dependency
+    to the root workspace and root lockfile, then pass th
+  adr: 0004-semantic-storage-api-and-redb-baseline.md
+  work_packages:
+  - WP-070
+  obligation: WP-070 must add the exact dependency to the root workspace and root
+    lockfile, then pass the repository-root `cargo deny check` before merge; any resulting
+    graph difference stops for renewed human revi
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0004-semantic-storage-api-and-redb-baseline.md::does not validate redb''s
+    durability or recovery claims: WP-070 must prove the unchanged se'
+  adr: 0004-semantic-storage-api-and-redb-baseline.md
+  work_packages:
+  - WP-070
+  obligation: 'does not validate redb''s durability or recovery claims: WP-070 must
+    prove the unchanged semantic conformance suite and process crash/reopen matrix.'
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0004-semantic-storage-api-and-redb-baseline.md::WP-065 must freeze the accepted
+    field/enum/oneof inventory, schema hashes, bounds, and gol
+  adr: 0004-semantic-storage-api-and-redb-baseline.md
+  work_packages:
+  - WP-065
+  - WP-070
+  obligation: WP-065 must freeze the accepted field/enum/oneof inventory, schema hashes,
+    bounds, and goldens without speculative reserved fields, record types, key codecs,
+    or ADR-0019 placeholders before WP-070 per
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0004-semantic-storage-api-and-redb-baseline.md::Before WP-060 starts, one manifest-authorized
+    foundational interface follow-up must make `
+  adr: 0004-semantic-storage-api-and-redb-baseline.md
+  work_packages:
+  - WP-060
+  obligation: Before WP-060 starts, one manifest-authorized foundational interface
+    follow-up must make `CommitSequence`, `AdministrationSequence`, `EntityVersion`,
+    and `IndexEpoch` nonzero by construction over `Non
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0004-semantic-storage-api-and-redb-baseline.md::does not by itself report
+    general readiness: WP-130 must also enforce ADR-0007''s bootstrap'
+  adr: 0004-semantic-storage-api-and-redb-baseline.md
+  work_packages:
+  - WP-130
+  obligation: 'does not by itself report general readiness: WP-130 must also enforce
+    ADR-0007''s bootstrap/deployment lifecycle, require a valid active catalog, and
+    require both authoritative allocators to be able to'
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0004-semantic-storage-api-and-redb-baseline.md::- WP-060 must expose owned
+    values and a consuming synchronous state protocol, not the illu
+  adr: 0004-semantic-storage-api-and-redb-baseline.md
+  work_packages:
+  - WP-060
+  obligation: "- WP-060 must expose owned values and a consuming synchronous state
+    protocol, not the illustrative live GAT snapshot in SPEC 10."
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0004-semantic-storage-api-and-redb-baseline.md::0 to the root lockfile, WP-070
+    must also run the repository-root `cargo deny check`; the i
+  adr: 0004-semantic-storage-api-and-redb-baseline.md
+  work_packages:
+  - WP-070
+  obligation: 0 to the root lockfile, WP-070 must also run the repository-root `cargo
+    deny check`; the isolated review above cannot replace that command.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0004-semantic-storage-api-and-redb-baseline.md::WP-065 must prove that one
+    maximum valid row and its conservative replacement fit.
+  adr: 0004-semantic-storage-api-and-redb-baseline.md
+  work_packages:
+  - WP-065
+  obligation: WP-065 must prove that one maximum valid row and its conservative replacement
+    fit.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0004-semantic-storage-api-and-redb-baseline.md::The WP-010 follow-up and manifest
+    reconciliation must precede WP-060 implementation; WP-06
+  adr: 0004-semantic-storage-api-and-redb-baseline.md
+  work_packages:
+  - WP-010
+  - WP-060
+  - WP-065
+  - WP-070
+  obligation: The WP-010 follow-up and manifest reconciliation must precede WP-060
+    implementation; WP-065 proto-owner records and exact redb dependency approval
+    must precede WP-070 physical persistence.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0007-shared-application-service-boundary.md::WP-120 precedes WP-160, WP-170,
+    and WP-180 but must expose outbox, projection, statistics,
+  adr: 0007-shared-application-service-boundary.md
+  work_packages:
+  - WP-120
+  - WP-160
+  - WP-170
+  - WP-180
+  obligation: WP-120 precedes WP-160, WP-170, and WP-180 but must expose outbox, projection,
+    statistics, and health operations.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0007-shared-application-service-boundary.md::WP-100 MUST keep this interface
+    private until the complete driver exists; a placeholder th
+  adr: 0007-shared-application-service-boundary.md
+  work_packages:
+  - WP-100
+  obligation: WP-100 MUST keep this interface private until the complete driver exists;
+    a placeholder that can accept work without completing it is forbidden.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0007-shared-application-service-boundary.md::ADR-0012's ninth public error
+    is frozen by the exact WP-010 proto carve-out and must be pr
+  adr: 0007-shared-application-service-boundary.md
+  work_packages:
+  - WP-010
+  obligation: ADR-0012's ninth public error is frozen by the exact WP-010 proto carve-out
+    and must be preserved by the later service/protocol mapping.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0007-shared-application-service-boundary.md::The same manifest change adds
+    `MCP-046` to WP-060, WP-065, WP-070, WP-100, WP-120, and WP-
+  adr: 0007-shared-application-service-boundary.md
+  work_packages:
+  - WP-060
+  - WP-065
+  - WP-070
+  - WP-100
+  - WP-120
+  - WP-190
+  - WP-140
+  obligation: The same manifest change adds `MCP-046` to WP-060, WP-065, WP-070, WP-100,
+    WP-120, and WP-190 so each audit layer must map its part to automated evidence;
+    WP-140 retains final MCP conformance ownershi
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0007-shared-application-service-boundary.md::WP-185 must reuse and extend that
+    exact graph for MCP/workers/observability and may not bu
+  adr: 0007-shared-application-service-boundary.md
+  work_packages:
+  - WP-185
+  obligation: WP-185 must reuse and extend that exact graph for MCP/workers/observability
+    and may not build a second production core.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0007-shared-application-service-boundary.md::WP-065 must merge before WP-070;
+    WP-127 and its reviewed public fields must merge before W
+  adr: 0007-shared-application-service-boundary.md
+  work_packages:
+  - WP-065
+  - WP-070
+  - WP-127
+  - WP-130
+  obligation: WP-065 must merge before WP-070; WP-127 and its reviewed public fields
+    must merge before WP-130.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0007-shared-application-service-boundary.md::WP-130 must not claim its P1 exit
+    gate until the real production core reaches the closed l
+  adr: 0007-shared-application-service-boundary.md
+  work_packages:
+  - WP-130
+  obligation: WP-130 must not claim its P1 exit gate until the real production core
+    reaches the closed lifecycle above and public gRPC exercises it.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0008-native-mcp-tool-and-resource-model.md::WP-140/WP-150 resolution is already
+    known to differ from at least one scratch lock and mus'
+  adr: '0008-native-mcp-tool-and-resource-model.md'
+  work_packages:
+  - WP-140
+  - WP-150
+  obligation: WP-140/WP-150 resolution is already known to differ from at least one
+    scratch lock and must receive the required fresh human-visible lock review.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0008-native-mcp-tool-and-resource-model.md::WP-137 and WP-140 must not implement
+    a hash-only adapter shortcut.'
+  adr: '0008-native-mcp-tool-and-resource-model.md'
+  work_packages:
+  - WP-137
+  - WP-140
+  obligation: WP-137 and WP-140 must not implement a hash-only adapter shortcut.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0008-native-mcp-tool-and-resource-model.md::SDK reading a pre-WP-137 server:
+    absence is the legacy response shape, while a present val'
+  adr: '0008-native-mcp-tool-and-resource-model.md'
+  work_packages:
+  - WP-137
+  obligation: 'SDK reading a pre-WP-137 server: absence is the legacy response shape,
+    while a present value must pass every canonical/status/identity relation.'
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0008-native-mcp-tool-and-resource-model.md::WP-137 freezes the lower service
+    ceiling and a one-maximum-dynamic-item fixture; WP-140''s '
+  adr: '0008-native-mcp-tool-and-resource-model.md'
+  work_packages:
+  - WP-137
+  - WP-140
+  obligation: WP-137 freezes the lower service ceiling and a one-maximum-dynamic-item
+    fixture; WP-140's separately accepted 27-artifact registry must prove the complete
+    maximum fixed, dynamic, and mixed-page ledger
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0008-native-mcp-tool-and-resource-model.md::WP-137 must add one conditional
+    shape to each existing discovery operation, not a seventh '
+  adr: '0008-native-mcp-tool-and-resource-model.md'
+  work_packages:
+  - WP-137
+  obligation: WP-137 must add one conditional shape to each existing discovery operation,
+    not a seventh semantic operation or generic resource read.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0008-native-mcp-tool-and-resource-model.md::- WP-137 must land before production
+    stdio can cover the full MCP operation set.'
+  adr: '0008-native-mcp-tool-and-resource-model.md'
+  work_packages:
+  - WP-137
+  obligation: "- WP-137 must land before production stdio can cover the full MCP operation
+    set."
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0009-opaque-server-side-poc-capabilities.md::WP-110 must reproduce the auth-owned
+    feature slice and equivalent locked `cargo deny` resu'
+  adr: '0009-opaque-server-side-poc-capabilities.md'
+  work_packages:
+  - WP-110
+  obligation: WP-110 must reproduce the auth-owned feature slice and equivalent locked
+    `cargo deny` result using the checked-out repository's `deny.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0009-opaque-server-side-poc-capabilities.md::must merge through WP-065 before
+    WP-070 persists it, and public completion must merge thro'
+  adr: '0009-opaque-server-side-poc-capabilities.md'
+  work_packages:
+  - WP-065
+  - WP-070
+  - WP-127
+  - WP-130
+  obligation: must merge through WP-065 before WP-070 persists it, and public completion
+    must merge through WP-127 before WP-130 exposes it.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0009-opaque-server-side-poc-capabilities.md::WP-130 must supply the complete
+    provider inventories and composed readiness evidence befor'
+  adr: '0009-opaque-server-side-poc-capabilities.md'
+  work_packages:
+  - WP-130
+  obligation: WP-130 must supply the complete provider inventories and composed readiness
+    evidence before its runnable P1 exit gate.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0013-stable-ids-ir-encoding-and-plan-hash.md::WP-040 must now make equal compilation
+    inputs produce equal IDs, schemas, executable plans
+  adr: 0013-stable-ids-ir-encoding-and-plan-hash.md
+  work_packages:
+  - WP-040
+  obligation: WP-040 must now make equal compilation inputs produce equal IDs, schemas,
+    executable plans, and bundle bytes while preserving stable identities across compatible
+    versions in one contract lineage.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0013-stable-ids-ir-encoding-and-plan-hash.md::WP-050 must prove the 15 MiB
+    semantic bundle bound with a maximum-size fixture.
+  adr: 0013-stable-ids-ir-encoding-and-plan-hash.md
+  work_packages:
+  - WP-050
+  obligation: WP-050 must prove the 15 MiB semantic bundle bound with a maximum-size
+    fixture.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0013-stable-ids-ir-encoding-and-plan-hash.md::WP-065, which owns the durable
+    Protobuf wrapper and `StoredEnvelope`, must prove with that
+  adr: 0013-stable-ids-ir-encoding-and-plan-hash.md
+  work_packages:
+  - WP-065
+  obligation: WP-065, which owns the durable Protobuf wrapper and `StoredEnvelope`,
+    must prove with that fixture that the complete encoded envelope remains at or
+    below 16 MiB.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0013-stable-ids-ir-encoding-and-plan-hash.md::Before WP-040, ADR-0014 must
+    explicitly extend its registry with the distinct `ProjectionP
+  adr: 0013-stable-ids-ir-encoding-and-plan-hash.md
+  work_packages:
+  - WP-040
+  obligation: Before WP-040, ADR-0014 must explicitly extend its registry with the
+    distinct `ProjectionPlanHash` domain `riffdb.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0013-stable-ids-ir-encoding-and-plan-hash.md::**Protobuf as the IR itself:**
+    Rejected for v1 because WP-040 does not depend on WP-020 an
+  adr: 0013-stable-ids-ir-encoding-and-plan-hash.md
+  work_packages:
+  - WP-040
+  - WP-020
+  obligation: "**Protobuf as the IR itself:** Rejected for v1 because WP-040 does
+    not depend on WP-020 and semantic IR crates must not depend on generated transport/durable
+    DTOs."
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0013-stable-ids-ir-encoding-and-plan-hash.md::- WP-040 must add required path
+    dependencies and update the root lockfile; its allowed pat
+  adr: 0013-stable-ids-ir-encoding-and-plan-hash.md
+  work_packages:
+  - WP-040
+  obligation: "- WP-040 must add required path dependencies and update the root lockfile;
+    its allowed paths need an explicit `Cargo."
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0013-stable-ids-ir-encoding-and-plan-hash.md::- ADR-0014 and the WP-010 types
+    must add the projection-plan and contract-root hash domain
+  adr: 0013-stable-ids-ir-encoding-and-plan-hash.md
+  work_packages:
+  - WP-010
+  - WP-040
+  obligation: "- ADR-0014 and the WP-010 types must add the projection-plan and contract-root
+    hash domains/newtypes before WP-040 uses them."
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0013-stable-ids-ir-encoding-and-plan-hash.md::- ADR-0016 and the WP-010 types
+    must add typed partition identity and the closed compiled '
+  adr: 0013-stable-ids-ir-encoding-and-plan-hash.md
+  work_packages:
+  - WP-010
+  - WP-040
+  obligation: "- ADR-0016 and the WP-010 types must add typed partition identity and
+    the closed compiled key-component registry before WP-040 publishes key schemas."
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0013-stable-ids-ir-encoding-and-plan-hash.md::- **Defines or blocks:** focused
+    foundational `WP-010` follow-up, `WP-040`, `WP-050`, `WP-
+  adr: 0013-stable-ids-ir-encoding-and-plan-hash.md
+  work_packages:
+  - WP-010
+  - WP-040
+  - WP-050
+  - WP-060
+  - WP-065
+  - WP-080
+  - WP-127
+  - WP-170
+  - WP-140
+  - WP-200
+  obligation: "- **Defines or blocks:** focused foundational `WP-010` follow-up, `WP-040`,
+    `WP-050`, `WP-060`, formal durable-schema `WP-065`, `WP-080`, and formal public-schema
+    `WP-127`, plus `WP-170` projection co"
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0014-projection-and-contract-plan-hash-domains.md::- **Defines or blocks:**
+    WP-010 interface follow-up; `WP-040`; `WP-170` - **Final evidence
+  adr: 0014-projection-and-contract-plan-hash-domains.md
+  work_packages:
+  - WP-010
+  - WP-040
+  - WP-170
+  - WP-140
+  - WP-200
+  obligation: "- **Defines or blocks:** WP-010 interface follow-up; `WP-040`; `WP-170`
+    - **Final evidence:** `WP-140`, `WP-170`, `WP-200` ## Decision Deadline The exact
+    text must be accepted before the new hash type"
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0015-explicit-binding-outcomes-and-budget-bootstrap.md::- **Defines or blocks:**
+    WP-030 grammar follow-up; `WP-040`; `WP-045`; `WP-200` - **Final '
+  adr: 0015-explicit-binding-outcomes-and-budget-bootstrap.md
+  work_packages:
+  - WP-030
+  - WP-040
+  - WP-045
+  - WP-200
+  - WP-080
+  - WP-100
+  - WP-150
+  obligation: "- **Defines or blocks:** WP-030 grammar follow-up; `WP-040`; `WP-045`;
+    `WP-200` - **Final evidence:** `WP-080`, `WP-100`, `WP-150`, `WP-200` ## Decision
+    Deadline The exact text must be accepted before"
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0016-canonical-key-components-and-partition-identity.md::- **Defines or blocks:**
+    WP-010 interface follow-up; `WP-040`; `WP-060`; formal durable-sc
+  adr: 0016-canonical-key-components-and-partition-identity.md
+  work_packages:
+  - WP-010
+  - WP-040
+  - WP-060
+  - WP-065
+  - WP-070
+  - WP-080
+  - WP-090
+  - WP-100
+  - WP-110
+  - WP-120
+  - WP-140
+  - WP-190
+  - WP-200
+  obligation: "- **Defines or blocks:** WP-010 interface follow-up; `WP-040`; `WP-060`;
+    formal durable-schema `WP-065`; `WP-070`; `WP-080`; `WP-090`; `WP-100`; `WP-110`;
+    `WP-120` - **Final evidence:** `WP-140`, `WP-"
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0017-projection-group-keys-generations-and-frontiers.md::Before WP-070 persists
+    any projection state row, WP-065 must prove with the real generated
+  adr: 0017-projection-group-keys-generations-and-frontiers.md
+  work_packages:
+  - WP-070
+  - WP-065
+  obligation: Before WP-070 persists any projection state row, WP-065 must prove with
+    the real generated message and maximum-size fixtures that the complete encoded
+    `StoredProjectionStateV1` payload is no larger th
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0017-projection-group-keys-generations-and-frontiers.md::- WP-065 must discharge
+    the generated-payload and real-envelope size proof above before WP
+  adr: 0017-projection-group-keys-generations-and-frontiers.md
+  work_packages:
+  - WP-065
+  - WP-070
+  obligation: "- WP-065 must discharge the generated-payload and real-envelope size
+    proof above before WP-070 may persist a projection state row; the proof cannot
+    be deferred to a redb adapter or replaced with an es"
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0018-uuidv7-generation-ownership-and-replay-boundaries.md::WP-060 must freeze
+    database initialization and intent provenance ownership before WP-070 o'
+  adr: '0018-uuidv7-generation-ownership-and-replay-boundaries.md'
+  work_packages:
+  - WP-060
+  - WP-070
+  - WP-100
+  obligation: WP-060 must freeze database initialization and intent provenance ownership
+    before WP-070 or WP-100.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0018-uuidv7-generation-ownership-and-replay-boundaries.md::WP-110 must implement
+    bootstrap generation before WP-150; WP-130 must freeze and compose t'
+  adr: '0018-uuidv7-generation-ownership-and-replay-boundaries.md'
+  work_packages:
+  - WP-110
+  - WP-150
+  - WP-130
+  - WP-140
+  obligation: WP-110 must implement bootstrap generation before WP-150; WP-130 must
+    freeze and compose the exact client/server provider graph before WP-140 or the
+    runnable P1 exit gate.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0018-uuidv7-generation-ownership-and-replay-boundaries.md::WP-185 must reuse
+    it before integrated WP-190 evidence.'
+  adr: '0018-uuidv7-generation-ownership-and-replay-boundaries.md'
+  work_packages:
+  - WP-185
+  - WP-190
+  obligation: WP-185 must reuse it before integrated WP-190 evidence.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0019-poc-operational-metadata-deferral.md::WP-130 must complete the composed
+    readiness path without adding a durable ready, clean-shu'
+  adr: '0019-poc-operational-metadata-deferral.md'
+  work_packages:
+  - WP-130
+  obligation: WP-130 must complete the composed readiness path without adding a durable
+    ready, clean-shutdown, or last-integrity marker.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0019-poc-operational-metadata-deferral.md::WP-185 must extend that path rather
+    than introducing a P2-only prerequisite for the runnab'
+  adr: '0019-poc-operational-metadata-deferral.md'
+  work_packages:
+  - WP-185
+  obligation: WP-185 must extend that path rather than introducing a P2-only prerequisite
+    for the runnable P1 server.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0021-service-audit-target-registry-and-canonical-ordering.md::WP-065 may choose
+    reviewed Protobuf oneof field numbers that differ from these semantic ta
+  adr: 0021-service-audit-target-registry-and-canonical-ordering.md
+  work_packages:
+  - WP-065
+  obligation: WP-065 may choose reviewed Protobuf oneof field numbers that differ
+    from these semantic tags, but the conversion must be total and preserve this registry
+    and canonical order.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0022-durable-semantic-protobuf-schema-v1.md::Acceptance requires WP-065 to
+    freeze at least: - source and descriptor goldens for all nin'
+  adr: 0022-durable-semantic-protobuf-schema-v1.md
+  work_packages:
+  - WP-065
+  obligation: 'Acceptance requires WP-065 to freeze at least: - source and descriptor
+    goldens for all nine storage source files; - a generated inventory proving exactly
+    the 26 registered FQNs and no extra or deferre'
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0023-wp100-coordinator-edge-semantics.md::WP-100 must join already accepted
+    compiler, runtime, storage, authorization, idempotency, '
+  adr: 0023-wp100-coordinator-edge-semantics.md
+  work_packages:
+  - WP-100
+  obligation: WP-100 must join already accepted compiler, runtime, storage, authorization,
+    idempotency, and audit interfaces without introducing a dependency cycle or silently
+    choosing unspecified durable behavior.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0023-wp100-coordinator-edge-semantics.md::- WP-100 must add focused integration
+    tests before claiming completion; these clarificatio
+  adr: 0023-wp100-coordinator-edge-semantics.md
+  work_packages:
+  - WP-100
+  obligation: "- WP-100 must add focused integration tests before claiming completion;
+    these clarifications do not broaden the POC."
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0025-bootstrap-and-service-consumer-boundary-ownership.md::WP-130 architecture
+    tests must prove that the production `riffdbd` component graph has no '
+  adr: 0025-bootstrap-and-service-consumer-boundary-ownership.md
+  work_packages:
+  - WP-130
+  obligation: WP-130 architecture tests must prove that the production `riffdbd` component
+    graph has no reference to the test constructor or `InProcessTestComparison` bootstrap
+    path.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0025-bootstrap-and-service-consumer-boundary-ownership.md::- WP-130 must provide
+    two small mechanical adapters and production graph checks.
+  adr: 0025-bootstrap-and-service-consumer-boundary-ownership.md
+  work_packages:
+  - WP-130
+  obligation: "- WP-130 must provide two small mechanical adapters and production
+    graph checks."
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0025-bootstrap-and-service-consumer-boundary-ownership.md::WP-130 must freeze
+    the production-only construction and mechanical-adapter evidence before
+  adr: 0025-bootstrap-and-service-consumer-boundary-ownership.md
+  work_packages:
+  - WP-130
+  obligation: WP-130 must freeze the production-only construction and mechanical-adapter
+    evidence before claiming the first runnable P1 gate.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0026-wp120-authorization-recovery-and-failure-boundaries.md::WP-120 must map
+    that fact to its storage-neutral service DTO without depending on `riffdb-
+  adr: 0026-wp120-authorization-recovery-and-failure-boundaries.md
+  work_packages:
+  - WP-120
+  obligation: WP-120 must map that fact to its storage-neutral service DTO without
+    depending on `riffdb-storage-api` or presenting test-only memory execution as
+    durable production success.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0026-wp120-authorization-recovery-and-failure-boundaries.md::WP-120 integration
+    tests must exercise current-policy change between the two outcome check
+  adr: 0026-wp120-authorization-recovery-and-failure-boundaries.md
+  work_packages:
+  - WP-120
+  obligation: WP-120 integration tests must exercise current-policy change between
+    the two outcome checks, wrong stored owner/tenant/partition, missing outcome,
+    storage failure, memory-mode injection, incident-sour
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0026-wp120-authorization-recovery-and-failure-boundaries.md::WP-130 process
+    tests must prove production readiness fails when incident generation is una
+  adr: 0026-wp120-authorization-recovery-and-failure-boundaries.md
+  work_packages:
+  - WP-130
+  obligation: WP-130 process tests must prove production readiness fails when incident
+    generation is unavailable and that real sync outcomes retain their exact durability
+    after restart and replay.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0027-service-response-budget-and-oversize-disposition.md::WP-120 must enforce
+    the bound before releasing an authorized result and before WP-127 intr
+  adr: 0027-service-response-budget-and-oversize-disposition.md
+  work_packages:
+  - WP-120
+  - WP-127
+  obligation: WP-120 must enforce the bound before releasing an authorized result
+    and before WP-127 introduces Protobuf as a downstream representation.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0027-service-response-budget-and-oversize-disposition.md::- WP-127 must prove
+    the conservative charge covers exact supported wire bytes.
+  adr: 0027-service-response-budget-and-oversize-disposition.md
+  work_packages:
+  - WP-127
+  obligation: "- WP-127 must prove the conservative charge covers exact supported
+    wire bytes."
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0027-service-response-budget-and-oversize-disposition.md::WP-137 proves the
+    service maximum; WP-140's separately accepted fixtures must prove fixed-
+  adr: 0027-service-response-budget-and-oversize-disposition.md
+  work_packages:
+  - WP-137
+  - WP-140
+  obligation: WP-137 proves the service maximum; WP-140's separately accepted fixtures
+    must prove fixed-only, dynamic-only, and mixed maxima before emission.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0028-phase-zero-public-protobuf-completion.md::response field 9, while WP-137
+    servers must populate it for every committed or replayed du'
+  adr: '0028-phase-zero-public-protobuf-completion.md'
+  work_packages:
+  - WP-137
+  obligation: response field 9, while WP-137 servers must populate it for every committed
+    or replayed durable result and omit it for read-only execution.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0028-phase-zero-public-protobuf-completion.md::WP-130 may begin service conversion
+    only after WP-127 is merged and must not invent, renum'
+  adr: '0028-phase-zero-public-protobuf-completion.md'
+  work_packages:
+  - WP-130
+  - WP-127
+  obligation: WP-130 may begin service conversion only after WP-127 is merged and
+    must not invent, renumber, or reinterpret a public field while implementing Tonic
+    adapters.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0029-two-stage-public-key-validation.md::- WP-120 must close the explicit-capability-scope
+    gap before its capability service semant'
+  adr: '0029-two-stage-public-key-validation.md'
+  work_packages:
+  - WP-120
+  obligation: "- WP-120 must close the explicit-capability-scope gap before its capability
+    service semantics merge."
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0029-two-stage-public-key-validation.md::WP-130 must not compensate for a
+    missing decision by adding catalog-aware transport conver'
+  adr: '0029-two-stage-public-key-validation.md'
+  work_packages:
+  - WP-130
+  obligation: WP-130 must not compensate for a missing decision by adding catalog-aware
+    transport conversion.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0030-capability-partition-startup-evidence.md::WP-130 may not add service,
+    catalog, or storage interfaces and must not duplicate schema l
+  adr: 0030-capability-partition-startup-evidence.md
+  work_packages:
+  - WP-130
+  obligation: WP-130 may not add service, catalog, or storage interfaces and must
+    not duplicate schema logic in the server.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0030-capability-partition-startup-evidence.md::WP-130; memory, redb, catalog,
+    fixtures, and exhaustive matches must change in one coordin
+  adr: 0030-capability-partition-startup-evidence.md
+  work_packages:
+  - WP-130
+  obligation: WP-130; memory, redb, catalog, fixtures, and exhaustive matches must
+    change in one coordinated correction.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0033-first-commit-notification-publication.md::WP-130 supervision must then
+    stop new routing and authoritative readiness.
+  adr: 0033-first-commit-notification-publication.md
+  work_packages:
+  - WP-130
+  obligation: WP-130 supervision must then stop new routing and authoritative readiness.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0039-v2-index-migration-integration.md::WP-065 must prove from the accepted
+    key, value, binding, payload, envelope, and framing ma'
+  adr: '0039-v2-index-migration-integration.md'
+  work_packages:
+  - WP-065
+  obligation: WP-065 must prove from the accepted key, value, binding, payload, envelope,
+    and framing maxima that one maximum valid row plus its conservative V2 replacement
+    fits in 4 MiB.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0039-v2-index-migration-integration.md::3 and WP-050 architecture checks must
+    record the exact exception before the dependency mer'
+  adr: '0039-v2-index-migration-integration.md'
+  work_packages:
+  - WP-050
+  obligation: 3 and WP-050 architecture checks must record the exact exception before
+    the dependency merges.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0039-v2-index-migration-integration.md::WP-075 is a future nested-workspace
+    storage-interface/conformance consumer and must compil'
+  adr: '0039-v2-index-migration-integration.md'
+  work_packages:
+  - WP-075
+  obligation: WP-075 is a future nested-workspace storage-interface/conformance consumer
+    and must compile against and exercise the accepted V2/migration outcome rather
+    than freezing the pre-ADR startup shape; its e
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0039-v2-index-migration-integration.md::WP-125''s existing service-comparison
+    fixture directly calls `validate_catalog_history` and'
+  adr: '0039-v2-index-migration-integration.md'
+  work_packages:
+  - WP-125
+  obligation: WP-125's existing service-comparison fixture directly calls `validate_catalog_history`
+    and `StructuralEvidenceSession::finish`; it must match `Ready` with `Clean` for
+    its V2-only setup and reject eith
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0039-v2-index-migration-integration.md::- WP-060 storage-API and WP-070 memory
+    type-state tests prove migration entry requires the'
+  adr: '0039-v2-index-migration-integration.md'
+  work_packages:
+  - WP-060
+  - WP-070
+  obligation: "- WP-060 storage-API and WP-070 memory type-state tests prove migration
+    entry requires the same session's two exact-end authorities; handles are linear;
+    stale, skipped, repeated, reordered, cross-data"
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0039-v2-index-migration-integration.md::- WP-075''s unchanged nested conformance
+    suite must exercise and report pass or explicit fa'
+  adr: '0039-v2-index-migration-integration.md'
+  work_packages:
+  - WP-075
+  obligation: "- WP-075's unchanged nested conformance suite must exercise and report
+    pass or explicit failure for the accepted V2 startup outcome and dual-ledger migration
+    pagination."
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0039-v2-index-migration-integration.md::WP-125''s service-comparison fixture
+    must prove its V2-only setup joins only `Ready` with `'
+  adr: '0039-v2-index-migration-integration.md'
+  work_packages:
+  - WP-125
+  obligation: WP-125's service-comparison fixture must prove its V2-only setup joins
+    only `Ready` with `Clean` and fails closed on a migration or crossed outcome.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0039-v2-index-migration-integration.md::- **Interfaces corrected or blocked:**
+    `WP-050`, `WP-060`, `WP-065`, `WP-070`, `WP-075`, `'
+  adr: '0039-v2-index-migration-integration.md'
+  work_packages:
+  - WP-050
+  - WP-060
+  - WP-065
+  - WP-070
+  - WP-075
+  - WP-100
+  - WP-120
+  - WP-125
+  - WP-130
+  - WP-190
+  - WP-200
+  obligation: "- **Interfaces corrected or blocked:** `WP-050`, `WP-060`, `WP-065`,
+    `WP-070`, `WP-075`, `WP-100`, `WP-120`, `WP-125`, and `WP-130` - **Final recovery
+    and exit evidence:** `WP-190` and `WP-200` Under "
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0039-v2-index-migration-integration.md::WP-050, WP-060, WP-065, WP-070, WP-100,
+    WP-120, and WP-130 must be implemented before WP-1'
+  adr: '0039-v2-index-migration-integration.md'
+  work_packages:
+  - WP-050
+  - WP-060
+  - WP-065
+  - WP-070
+  - WP-100
+  - WP-120
+  - WP-130
+  obligation: WP-050, WP-060, WP-065, WP-070, WP-100, WP-120, and WP-130 must be implemented
+    before WP-130 completion and the P1 gate.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0039-v2-index-migration-integration.md::WP-125''s compatibility fixture must
+    land before WP-135 consumes that comparison package.'
+  adr: '0039-v2-index-migration-integration.md'
+  work_packages:
+  - WP-125
+  - WP-135
+  obligation: WP-125's compatibility fixture must land before WP-135 consumes that
+    comparison package.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0040-public-grpc-mcp-parity-bridge.md::WP-150's allowed paths exclude the client
+    crate, so that support must be supplied upstream
+  adr: 0040-public-grpc-mcp-parity-bridge.md
+  work_packages:
+  - WP-150
+  obligation: WP-150's allowed paths exclude the client crate, so that support must
+    be supplied upstream rather than reimplemented in the CLI.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0040-public-grpc-mcp-parity-bridge.md::WP-137 must implement it byte-for-byte;
+    it may not defer tag, presence, name, oneof, or RP
+  adr: 0040-public-grpc-mcp-parity-bridge.md
+  work_packages:
+  - WP-137
+  obligation: WP-137 must implement it byte-for-byte; it may not defer tag, presence,
+    name, oneof, or RPC-placement choices to an implementation PR.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0040-public-grpc-mcp-parity-bridge.md::The first successful response from either
+    WP-137-added RPC establishes the new-surface pro
+  adr: 0040-public-grpc-mcp-parity-bridge.md
+  work_packages:
+  - WP-137
+  obligation: The first successful response from either WP-137-added RPC establishes
+    the new-surface probe; both inventories must still complete before use.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0040-public-grpc-mcp-parity-bridge.md::Within WP-137's complete implementation-path
+    evidence, the dependency/credential subset mu
+  adr: 0040-public-grpc-mcp-parity-bridge.md
+  work_packages:
+  - WP-137
+  obligation: Within WP-137's complete implementation-path evidence, the dependency/credential
+    subset must name exactly `Cargo.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0040-public-grpc-mcp-parity-bridge.md::WP-140 must depend on WP-137.
+  adr: 0040-public-grpc-mcp-parity-bridge.md
+  work_packages:
+  - WP-140
+  - WP-137
+  obligation: WP-140 must depend on WP-137.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0040-public-grpc-mcp-parity-bridge.md::WP-150 must also depend on WP-137 and
+    consume its public helpers rather than gaining clien
+  adr: 0040-public-grpc-mcp-parity-bridge.md
+  work_packages:
+  - WP-150
+  - WP-137
+  obligation: WP-150 must also depend on WP-137 and consume its public helpers rather
+    than gaining client-internal paths.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0040-public-grpc-mcp-parity-bridge.md::WP-137 must provide: - source-info-stripped
+    descriptor and schema-hash fixtures proving ex'
+  adr: 0040-public-grpc-mcp-parity-bridge.md
+  work_packages:
+  - WP-137
+  obligation: 'WP-137 must provide: - source-info-stripped descriptor and schema-hash
+    fixtures proving exactly five services, 22 RPCs, six new unary shapes, and one
+    total streaming RPC; - language-neutral request/re'
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0040-public-grpc-mcp-parity-bridge.md::- **Defines:** P1 `WP-137`, depending
+    on `WP-130` - **Blocks:** `WP-135`, `WP-140`, and `W
+  adr: 0040-public-grpc-mcp-parity-bridge.md
+  work_packages:
+  - WP-137
+  - WP-130
+  - WP-135
+  - WP-140
+  - WP-150
+  - WP-200
+  obligation: "- **Defines:** P1 `WP-137`, depending on `WP-130` - **Blocks:** `WP-135`,
+    `WP-140`, and `WP-150` - **Final evidence:** `WP-200` ## Decision Deadline The
+    exact six-RPC inventory, field/tag registry, se"
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0041-cli-public-flow-and-output-contract.md::WP-150 must expose its assigned
+    POC operator and budget-demo operations through the public
+  adr: 0041-cli-public-flow-and-output-contract.md
+  work_packages:
+  - WP-150
+  obligation: WP-150 must expose its assigned POC operator and budget-demo operations
+    through the public Rust SDK over loopback gRPC.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0041-cli-public-flow-and-output-contract.md::WP-137 must therefore land the
+    narrow operation-specific retry helpers and serialization-n
+  adr: 0041-cli-public-flow-and-output-contract.md
+  work_packages:
+  - WP-137
+  - WP-150
+  obligation: WP-137 must therefore land the narrow operation-specific retry helpers
+    and serialization-neutral public-error views before WP-150 starts.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0041-cli-public-flow-and-output-contract.md::WP-155 must add the resulting
+    CLI commands through the reviewed public boundary and reuse '
+  adr: 0041-cli-public-flow-and-output-contract.md
+  work_packages:
+  - WP-155
+  - WP-070
+  obligation: WP-155 must add the resulting CLI commands through the reviewed public
+    boundary and reuse WP-070's accepted durable backup/restore implementation; it
+    may not create a second storage format.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0041-cli-public-flow-and-output-contract.md::each WP-150 command must be checked
+    in as reviewed golden fixtures before implementation o
+  adr: 0041-cli-public-flow-and-output-contract.md
+  work_packages:
+  - WP-150
+  obligation: each WP-150 command must be checked in as reviewed golden fixtures before
+    implementation of that command merges.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0041-cli-public-flow-and-output-contract.md::Before WP-150, WP-137 must provide:
+    - Linux protected-bearer-loader tests at 42, 43, and 4'
+  adr: 0041-cli-public-flow-and-output-contract.md
+  work_packages:
+  - WP-150
+  - WP-137
+  obligation: 'Before WP-150, WP-137 must provide: - Linux protected-bearer-loader
+    tests at 42, 43, and 44 bytes; every invalid alphabet byte; missing final EOF;
+    final and raced symlinks; FIFO, directory, and device'
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0041-cli-public-flow-and-output-contract.md::WP-140 must add source and process
+    tests proving its stdio credential-file path uses `riff
+  adr: 0041-cli-public-flow-and-output-contract.md
+  work_packages:
+  - WP-140
+  obligation: 'WP-140 must add source and process tests proving its stdio credential-file
+    path uses `riffdb_client_rust::load_protected_bearer_credential`, never imports
+    `riffdb-auth`, never receives raw file text, '
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0041-cli-public-flow-and-output-contract.md::WP-150 must provide at least:
+    - dependency and source architecture tests freezing the exac'
+  adr: 0041-cli-public-flow-and-output-contract.md
+  work_packages:
+  - WP-150
+  obligation: 'WP-150 must provide at least: - dependency and source architecture
+    tests freezing the exact direct allowlist, features, sole `riffdb_auth::bootstrap_secret`
+    symbol boundary, explicit rejection of `rif'
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0041-cli-public-flow-and-output-contract.md::WP-155 must add separately reviewed
+    process, authorization/audit, quiescence/offline, dest
+  adr: 0041-cli-public-flow-and-output-contract.md
+  work_packages:
+  - WP-155
+  obligation: WP-155 must add separately reviewed process, authorization/audit, quiescence/offline,
+    destructive-restore, backup-integrity, restored-readiness, failure, and CLI conformance
+    evidence.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0041-cli-public-flow-and-output-contract.md::The WP-190 exit gate must name
+    both cases.
+  adr: 0041-cli-public-flow-and-output-contract.md
+  work_packages:
+  - WP-190
+  obligation: The WP-190 exit gate must name both cases.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0041-cli-public-flow-and-output-contract.md::input/output bounds, WP-137 SDK
+    ownership, dual bootstrap credential delivery, the WP-135 '
+  adr: 0041-cli-public-flow-and-output-contract.md
+  work_packages:
+  - WP-137
+  - WP-135
+  - WP-150
+  - WP-155
+  obligation: input/output bounds, WP-137 SDK ownership, dual bootstrap credential
+    delivery, the WP-135 public-runner protocol and acceptance process, WP-150 dependency,
+    the interface-only CLI fixture checkpoint, a
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0041-cli-public-flow-and-output-contract.md::WP-155 requires its own later
+    human review; that review must add its complete registry ent
+  adr: 0041-cli-public-flow-and-output-contract.md
+  work_packages:
+  - WP-155
+  - WP-200
+  obligation: WP-155 requires its own later human review; that review must add its
+    complete registry entry and the WP-200 dependency before WP-200 begins final POC
+    acceptance.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0042-sealed-catalog-owned-index-migration-driver.md::WP-075, WP-100, WP-120,
+    WP-125, WP-190, and WP-200 remain corrective consumers or evidence
+  adr: 0042-sealed-catalog-owned-index-migration-driver.md
+  work_packages:
+  - WP-075
+  - WP-100
+  - WP-120
+  - WP-125
+  - WP-190
+  - WP-200
+  obligation: WP-075, WP-100, WP-120, WP-125, WP-190, and WP-200 remain corrective
+    consumers or evidence owners and must compile and test against the sealed interface.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0043-auth-owned-retained-mcp-credential.md::WP-140 tests must prove: - every
+    input length from zero through 43 is copied without synta'
+  adr: 0043-auth-owned-retained-mcp-credential.md
+  work_packages:
+  - WP-140
+  obligation: 'WP-140 tests must prove: - every input length from zero through 43
+    is copied without syntax validation and `borrow()` yields the exact prefix to
+    a test authenticator; - a 44-byte input is rejected wit'
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0043-auth-owned-retained-mcp-credential.md::- **Defines or blocks:** `WP-140`
+    - **Final evidence:** `WP-140`, `WP-185`, and `WP-200` #'
+  adr: 0043-auth-owned-retained-mcp-credential.md
+  work_packages:
+  - WP-140
+  - WP-185
+  - WP-200
+  obligation: "- **Defines or blocks:** `WP-140` - **Final evidence:** `WP-140`, `WP-185`,
+    and `WP-200` ## Decision Deadline This exact record must be accepted before WP-140
+    implements or merges the Streamable HTTP "
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0044-hosted-mcp-context-and-dependency-completion.md::WP-185 must reuse the
+    same predicate when it composes hosted MCP into `riffdbd` after WP-1
+  adr: 0044-hosted-mcp-context-and-dependency-completion.md
+  work_packages:
+  - WP-185
+  - WP-180
+  obligation: WP-185 must reuse the same predicate when it composes hosted MCP into
+    `riffdbd` after WP-180.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0044-hosted-mcp-context-and-dependency-completion.md::WP-140 acceptance must
+    compile and test both MCP transport features and the service constr
+  adr: 0044-hosted-mcp-context-and-dependency-completion.md
+  work_packages:
+  - WP-140
+  obligation: WP-140 acceptance must compile and test both MCP transport features
+    and the service constructor; default-empty feature tests alone are insufficient.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0044-hosted-mcp-context-and-dependency-completion.md::WP-140 must prove: -
+    the hosted constructor fixes `McpHttp` ingress and all five claims to'
+  adr: 0044-hosted-mcp-context-and-dependency-completion.md
+  work_packages:
+  - WP-140
+  obligation: 'WP-140 must prove: - the hosted constructor fixes `McpHttp` ingress
+    and all five claims to absent; - the constructor exposes no ingress, claims, raw
+    bytes, header, credential, or MCP identifier parame'
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0045-budget-safety-counterexample-evidence.md::- Downstream dependency: add
+    `WP-139` as a hard dependency of `WP-200`, because the final '
+  adr: 0045-budget-safety-counterexample-evidence.md
+  work_packages:
+  - WP-139
+  - WP-200
+  obligation: "- Downstream dependency: add `WP-139` as a hard dependency of `WP-200`,
+    because the final POC report and demo must consume the checked safety report."
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0045-budget-safety-counterexample-evidence.md::WP-139 must provide: - offline
+    unit tests for report construction, canonical order, bounds'
+  adr: 0045-budget-safety-counterexample-evidence.md
+  work_packages:
+  - WP-139
+  obligation: 'WP-139 must provide: - offline unit tests for report construction,
+    canonical order, bounds, redaction, and fixture reproduction; - a required-live
+    PostgreSQL test that verifies `server_version_num=180'
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0049-p2-derived-recovery-telemetry-and-hosted-composition.md::tracing subscribers,
+    and WP-185 must wire them into one in-process registry.'
+  adr: '0049-p2-derived-recovery-telemetry-and-hosted-composition.md'
+  work_packages:
+  - WP-185
+  obligation: tracing subscribers, and WP-185 must wire them into one in-process registry.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0049-p2-derived-recovery-telemetry-and-hosted-composition.md::- **Interfaces
+    corrected or blocked:** `WP-050`, `WP-060`, `WP-070`, `WP-100`, `WP-120`, `'
+  adr: '0049-p2-derived-recovery-telemetry-and-hosted-composition.md'
+  work_packages:
+  - WP-050
+  - WP-060
+  - WP-070
+  - WP-100
+  - WP-120
+  - WP-140
+  - WP-160
+  - WP-170
+  - WP-180
+  - WP-185
+  - WP-190
+  - WP-200
+  obligation: "- **Interfaces corrected or blocked:** `WP-050`, `WP-060`, `WP-070`,
+    `WP-100`, `WP-120`, `WP-140`, `WP-160`, `WP-170`, `WP-180`, and `WP-185` - **Final
+    evidence:** `WP-190` and `WP-200` Implementation"
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0050-public-offline-backup-and-restore-maintenance.md::WP-155 must include:
+    - public descriptor/wire/SDK/CLI goldens for the exact three operatio'
+  adr: 0050-public-offline-backup-and-restore-maintenance.md
+  work_packages:
+  - WP-155
+  obligation: 'WP-155 must include: - public descriptor/wire/SDK/CLI goldens for the
+    exact three operations, checked UUIDv7 operation IDs, backup-name grammar, replacement
+    enum, unknown fields, size limits, and stab'
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0053-composite-query-snapshots-and-current-view-publication.md::WP-205 must
+    enumerate the exact operation-specific safe points and prove that any consolid
+  adr: 0053-composite-query-snapshots-and-current-view-publication.md
+  work_packages:
+  - WP-205
+  obligation: WP-205 must enumerate the exact operation-specific safe points and prove
+    that any consolidation preserves the accepted revoke/deploy race outcomes before
+    implementation.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0055-safe-application-surface-and-declared-integrity.md::WP-290 and WP-295
+    must freeze exact grammar, IR tags, index semantics, and old/current fix
+  adr: 0055-safe-application-surface-and-declared-integrity.md
+  work_packages:
+  - WP-290
+  - WP-295
+  obligation: WP-290 and WP-295 must freeze exact grammar, IR tags, index semantics,
+    and old/current fixtures before production implementation.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0056-agent-application-alpha.md::`riffdb-app`, `riffdb-admin`, or `riffdb-kernel-protocol`;
+    WP-325 must choose an interface
+  adr: 0056-agent-application-alpha.md
+  work_packages:
+  - WP-325
+  obligation: "`riffdb-app`, `riffdb-admin`, or `riffdb-kernel-protocol`; WP-325 must
+    choose an interface compatible with the existing crate graph and receive review
+    before adding or renaming a first-party package."
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0056-agent-application-alpha.md::WP-335 must first publish repeated application
+    evidence and stop for a separate human-appr
+  adr: 0056-agent-application-alpha.md
+  work_packages:
+  - WP-335
+  obligation: WP-335 must first publish repeated application evidence and stop for
+    a separate human-approved language/IR decision before implementing a new construct.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0060-bounded-scheduler-storage-lanes-and-parallel-preparation.md::WP-370 and
+    MUST NOT be repaired by weakening durability, authorization, audit, atomicity, '
+  adr: 0060-bounded-scheduler-storage-lanes-and-parallel-preparation.md
+  work_packages:
+  - WP-370
+  obligation: WP-370 and MUST NOT be repaired by weakening durability, authorization,
+    audit, atomicity, idempotency, provenance, boundedness, or snapshot semantics.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0077-migration-language-ir-and-application-lock.md::- **Decision deadline:**
+    Before WP-406 changes grammar, IR, or application formats - **Dep
+  adr: 0077-migration-language-ir-and-application-lock.md
+  work_packages:
+  - WP-406
+  obligation: "- **Decision deadline:** Before WP-406 changes grammar, IR, or application
+    formats - **Depends on:** ADR-0076 - **Amends:** ADR-0002, ADR-0011, ADR-0013,
+    ADR-0057, ADR-0075 ## Context Migration behavi"
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0088-contract-migration-check-receipt.md::by WP-408 represents only an apply
+    operation: its legal path begins `Accepted -> Draining '
+  adr: '0088-contract-migration-check-receipt.md'
+  work_packages:
+  - WP-408
+  obligation: 'by WP-408 represents only an apply operation: its legal path begins
+    `Accepted -> Draining -> Preflight` and a successful preflight must continue to
+    backup publication.'
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0105-authenticated-remote-application-ingress.md::WP-550 must first freeze
+    their replacements.
+  adr: 0105-authenticated-remote-application-ingress.md
+  work_packages:
+  - WP-550
+  obligation: WP-550 must first freeze their replacements.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0107-compiler-bounded-collection-mutations.md::Before WP-560 can accept a production
+    delete plan, WP-559 must amend ADR-0100 and implemen
+  adr: 0107-compiler-bounded-collection-mutations.md
+  work_packages:
+  - WP-560
+  - WP-559
+  obligation: Before WP-560 can accept a production delete plan, WP-559 must amend
+    ADR-0100 and implement a versioned delete/tombstone changelog entry class through
+    frame encoding, validation, shipping, follower ap
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0118-secret-field-classification.md::laundering channel recorded at WP-597:
+    full-fidelity propagation remains the runtime seman'
+  adr: '0118-secret-field-classification.md'
+  work_packages:
+  - WP-597
+  obligation: 'laundering channel recorded at WP-597: full-fidelity propagation remains
+    the runtime semantics (no crypto promise is added), but the contract must declare
+    it.'
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0119-compiler-owned-workflow-reconstitution.md::WP-599 must verify at its
+    merge base that V7 remains the next unused capability successor '
+  adr: '0119-compiler-owned-workflow-reconstitution.md'
+  work_packages:
+  - WP-599
+  - WP-597
+  obligation: 'WP-599 must verify at its merge base that V7 remains the next unused
+    capability successor after WP-597''s `CapabilityRecordV6`; if another accepted
+    package has occupied that slot, implementation stops '
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0123-portable-cloud-performance-and-compact-writer-frames.md::WP-621 MUST reconcile
+    that allocation with the repository-wide durable-version registry be
+  adr: 0123-portable-cloud-performance-and-compact-writer-frames.md
+  work_packages:
+  - WP-621
+  obligation: WP-621 MUST reconcile that allocation with the repository-wide durable-version
+    registry before editing Proto or fixtures.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0130-compiler-planned-projection-result-sets.md::WP-645 must register them
+    in the ADR-0124 version topology before they merge.
+  adr: 0130-compiler-planned-projection-result-sets.md
+  work_packages:
+  - WP-645
+  obligation: WP-645 must register them in the ADR-0124 version topology before they
+    merge.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0130-compiler-planned-projection-result-sets.md::WP-645 must adapt and test
+    both existing provider families: - the columnar provider exerci'
+  adr: 0130-compiler-planned-projection-result-sets.md
+  work_packages:
+  - WP-645
+  obligation: 'WP-645 must adapt and test both existing provider families: - the columnar
+    provider exercises partitioned filtering, total order, aggregation/facet-shaped
+    measures, exact reference evaluation, and fro'
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0130-compiler-planned-projection-result-sets.md::WP-645 must add no BM25 runtime,
+    durable BM25 artifact, adapter, fixture, or bridge.
+  adr: 0130-compiler-planned-projection-result-sets.md
+  work_packages:
+  - WP-645
+  obligation: WP-645 must add no BM25 runtime, durable BM25 artifact, adapter, fixture,
+    or bridge.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0130-compiler-planned-projection-result-sets.md::WP-645 implementation must
+    follow WP-641 through WP-643 and the standing c=32, unary, and '
+  adr: 0130-compiler-planned-projection-result-sets.md
+  work_packages:
+  - WP-645
+  - WP-641
+  - WP-643
+  obligation: WP-645 implementation must follow WP-641 through WP-643 and the standing
+    c=32, unary, and ADR-0127 priority gates unless the maintainer explicitly reprioritizes
+    them.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0131-exact-indexed-text-cardinality-and-ordinal-windowing.md::WP-648 must prove
+    the real Better Auth admin route for `contains`, `starts_with`, and `end
+  adr: 0131-exact-indexed-text-cardinality-and-ordinal-windowing.md
+  work_packages:
+  - WP-648
+  obligation: WP-648 must prove the real Better Auth admin route for `contains`, `starts_with`,
+    and `ends_with`, its declared typed filters and total orders, numeric offsets
+    including zero/end/out-of-range cases, a
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0134-compiler-declared-exact-predicate-and-order-families.md::WP-656 must introduce
+    least-sufficient successor identities for every changed source-langu
+  adr: 0134-compiler-declared-exact-predicate-and-order-families.md
+  work_packages:
+  - WP-656
+  obligation: WP-656 must introduce least-sufficient successor identities for every
+    changed source-language, query IR, exact-result plan, query module, generated
+    surface, and provider-state boundary.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0134-compiler-declared-exact-predicate-and-order-families.md::WP-658 must contain
+    no Better Auth schema, role, route, generated profile, adapter runtime
+  adr: 0134-compiler-declared-exact-predicate-and-order-families.md
+  work_packages:
+  - WP-658
+  obligation: WP-658 must contain no Better Auth schema, role, route, generated profile,
+    adapter runtime, or framework-specific branch.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0137-bounded-framed-application-transport.md::WP-662 must replace, not delete,
+    the architecture pins named `production_transport_feature
+  adr: 0137-bounded-framed-application-transport.md
+  work_packages:
+  - WP-662
+  obligation: WP-662 must replace, not delete, the architecture pins named `production_transport_features_are_exact_default_disabled_and_confined`
+    and `reviewed_transport_and_entropy_graph_remains_exact`.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0137-bounded-framed-application-transport.md::WP-662 must refactor command
+    and named-query adaptation into one first-party Rust operatio
+  adr: 0137-bounded-framed-application-transport.md
+  work_packages:
+  - WP-662
+  obligation: WP-662 must refactor command and named-query adaptation into one first-party
+    Rust operation adapter used by both gRPC and framing.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0137-bounded-framed-application-transport.md::WP-660 and WP-661 already falsified
+    cross-profile stability, and both retain the Tonic/HTT
+  adr: 0137-bounded-framed-application-transport.md
+  work_packages:
+  - WP-660
+  - WP-661
+  obligation: WP-660 and WP-661 already falsified cross-profile stability, and both
+    retain the Tonic/HTTP/2 scheduling family this work must measure.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0141-public-gate-first-exclusive-application-lane.md::Before editing protocol
+    code, WP-670 must produce current-head N1 and E2 ledgers for every
+  adr: 0141-public-gate-first-exclusive-application-lane.md
+  work_packages:
+  - WP-670
+  obligation: Before editing protocol code, WP-670 must produce current-head N1 and
+    E2 ledgers for every representative unary scenario.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0143-fixed-generation-unary-stability.md::WP-674 must restart the unary bank
+    from the first scenario under this five-generation meth
+  adr: 0143-fixed-generation-unary-stability.md
+  work_packages:
+  - WP-674
+  obligation: WP-674 must restart the unary bank from the first scenario under this
+    five-generation method; its prior three-generation attempts remain historical
+    failed evidence and cannot be merged into the accept
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0144-release-evidence-durability-mode-reconciliation.md::WP-200 receives one
+    narrow owner-package amendment WP-200 may change only the following fr
+  adr: 0144-release-evidence-durability-mode-reconciliation.md
+  work_packages:
+  - WP-200
+  obligation: 'WP-200 receives one narrow owner-package amendment WP-200 may change
+    only the following frozen evidence behavior: - the public budget adapter records
+    the checked durability mode in `PublicCommandMetad'
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0145-compiler-declared-nullable-total-order-placement.md::WP-675 must stop
+    for an administrative renumbering; it may not reuse or reinterpret the oc
+  adr: 0145-compiler-declared-nullable-total-order-placement.md
+  work_packages:
+  - WP-675
+  obligation: WP-675 must stop for an administrative renumbering; it may not reuse
+    or reinterpret the occupied identity.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0146-fixed-generation-unary-sampling-and-cloud-host-validity.md::- **Defines
+    or blocks:** `WP-674`, `WP-623`, `WP-579` - **Final evidence:** `WP-674` ## De'
+  adr: 0146-fixed-generation-unary-sampling-and-cloud-host-validity.md
+  work_packages:
+  - WP-674
+  - WP-623
+  - WP-579
+  obligation: "- **Defines or blocks:** `WP-674`, `WP-623`, `WP-579` - **Final evidence:**
+    `WP-674` ## Decision Deadline The exact text must be accepted before `SPEC."
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0147-aggregate-byte-budgets-for-atomic-collection-commands.md::WP-678 must
+    re-audit `release/version-topology-v1.
+  adr: 0147-aggregate-byte-budgets-for-atomic-collection-commands.md
+  work_packages:
+  - WP-678
+  obligation: WP-678 must re-audit `release/version-topology-v1.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0149-correlated-index-validation-work-budgets.md::`StoredCommandSegmentV5`;
+    WP-684 must audit the durable schema registry, manifest, tag all'
+  adr: '0149-correlated-index-validation-work-budgets.md'
+  work_packages:
+  - WP-684
+  obligation: "`StoredCommandSegmentV5`; WP-684 must audit the durable schema registry,
+    manifest, tag allocation, and version topology immediately before assigning those
+    names or numbers."
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: '0149-correlated-index-validation-work-budgets.md::Plan hashes may change only
+    if WP-683 must carry a new compiler-derived coefficient or bud'
+  adr: '0149-correlated-index-validation-work-budgets.md'
+  work_packages:
+  - WP-683
+  obligation: 'Plan hashes may change only if WP-683 must carry a new compiler-derived
+    coefficient or budget identity; the topology audit must prefer constructor- validated
+    derived metadata when no runtime consumer '
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0150-compiler-sealed-operational-access-path-algebra.md::WP-687 must enumerate
+    every currently planner-admitted ordinary cell and make any unproved
+  adr: 0150-compiler-sealed-operational-access-path-algebra.md
+  work_packages:
+  - WP-687
+  obligation: WP-687 must enumerate every currently planner-admitted ordinary cell
+    and make any unproved cell fail compilation before it can reach page selection.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0150-compiler-sealed-operational-access-path-algebra.md::WP-687 must inventory
+    every repository query, exact lock, active module fixture, and gener
+  adr: 0150-compiler-sealed-operational-access-path-algebra.md
+  work_packages:
+  - WP-687
+  obligation: WP-687 must inventory every repository query, exact lock, active module
+    fixture, and generic adapter fixture whose ordinary plan contains a non-equality
+    predicate.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0150-compiler-sealed-operational-access-path-algebra.md::WP-687 must report
+    the complete affected repository inventory and any required external ap
+  adr: 0150-compiler-sealed-operational-access-path-algebra.md
+  work_packages:
+  - WP-687
+  obligation: WP-687 must report the complete affected repository inventory and any
+    required external application rebuild before merge.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0151-atomic-delete-and-return-preimage.md::WP-691 must remove `RDB-C023` for
+    every well-formed source shape governed by this ADR.
+  adr: 0151-atomic-delete-and-return-preimage.md
+  work_packages:
+  - WP-691
+  obligation: WP-691 must remove `RDB-C023` for every well-formed source shape governed
+    by this ADR.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0152-closed-exact-aggregate-function-families.md::WP-693 must first determine
+    which capability-registry data is transient and which enters a
+  adr: 0152-closed-exact-aggregate-function-families.md
+  work_packages:
+  - WP-693
+  obligation: WP-693 must first determine which capability-registry data is transient
+    and which enters a canonical executable or provider descriptor.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: 0156-clean-close-certificate-fast-startup.md::establish one of those facts,
+    WP-704 must add the equivalent fail-closed local check befor
+  adr: 0156-clean-close-certificate-fast-startup.md
+  work_packages:
+  - WP-704
+  obligation: establish one of those facts, WP-704 must add the equivalent fail-closed
+    local check before that path becomes eligible for clean fast startup.
+  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.

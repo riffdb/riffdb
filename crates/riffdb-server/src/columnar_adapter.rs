@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use riffdb_catalog::ActiveCatalogSnapshot;
@@ -178,6 +179,13 @@ pub(crate) struct ColumnarRuntime {
     projections_root: PathBuf,
     history_incarnation: u64,
     apply_source: ServerColumnarApplySource,
+    /// Highest application commit sequence this process has observed, or 0
+    /// before the first observation.
+    ///
+    /// The application frontier is monotonic within a history incarnation, so a
+    /// head probe may resume from the last observation instead of rescanning
+    /// the journal from sequence one.
+    observed_head: AtomicU64,
 }
 
 #[derive(Clone)]
@@ -223,6 +231,7 @@ impl ColumnarRuntime {
             projections_root,
             history_incarnation,
             apply_source: ServerColumnarApplySource::new(storage),
+            observed_head: AtomicU64::new(0),
         })
     }
 
@@ -311,6 +320,7 @@ impl ColumnarRuntime {
             projections_root: projections_root.to_path_buf(),
             history_incarnation,
             apply_source: ServerColumnarApplySource::new(storage),
+            observed_head: AtomicU64::new(0),
         }))
     }
 
@@ -542,8 +552,20 @@ impl ColumnarRuntime {
     }
 
     /// Reads the frozen application commit head without holding an engine lock.
+    ///
+    /// Resumes the probe from the highest sequence this process has already
+    /// observed. `scan_commits` derives the returned `inclusive_upper` from the
+    /// snapshot's own application frontier before it reads any commit row, so a
+    /// probe that starts above the head returns the identical frontier without
+    /// touching the commit range at all.
     pub(crate) fn read_application_head(&self) -> Result<FrontierPosition, ColumnarPortError> {
-        read_application_head(self.storage())
+        let observed = CommitSequence::new(self.observed_head.load(Ordering::Acquire));
+        let head = read_application_head_after(self.storage(), observed)?;
+        if let FrontierPosition::AppliedThrough(sequence) = head {
+            self.observed_head
+                .fetch_max(sequence.get(), Ordering::AcqRel);
+        }
+        Ok(head)
     }
 }
 
@@ -1236,9 +1258,26 @@ fn resolve_field_id(
 pub(crate) fn read_application_head(
     storage: &SharedRedbOperationalPorts,
 ) -> Result<FrontierPosition, ColumnarPortError> {
+    read_application_head_after(storage, None)
+}
+
+/// Reads the current application head, resuming the probe after `observed`.
+///
+/// The returned frontier is independent of `observed`: `scan_commits` fixes the
+/// page's `inclusive_upper` from the snapshot's application frontier before it
+/// inspects any row. Passing the last observed head therefore returns the same
+/// value while letting storage skip the commit range entirely once the probe
+/// starts above the head.
+pub(crate) fn read_application_head_after(
+    storage: &SharedRedbOperationalPorts,
+    observed: Option<CommitSequence>,
+) -> Result<FrontierPosition, ColumnarPortError> {
     let limit = StorageScanLimit::new(1).ok_or(ColumnarPortError::Integrity)?;
-    let page = AuthoritativeScanReader::scan_commits(storage, CommitScanRequest::initial(limit))
-        .map_err(map_port_storage)?;
+    let request = match observed {
+        Some(after) => CommitScanRequest::initial_after(after, limit),
+        None => CommitScanRequest::initial(limit),
+    };
+    let page = AuthoritativeScanReader::scan_commits(storage, request).map_err(map_port_storage)?;
     Ok(page.inclusive_upper())
 }
 

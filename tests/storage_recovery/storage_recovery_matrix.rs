@@ -6723,6 +6723,52 @@ fn clean_close_fast_startup_resolves_command_owned_audit_members() {
     );
 }
 
+/// An ordinary catalog read warms the cold index without blocking itself.
+///
+/// `read_active_catalog` opens a read transaction and then walks the entire
+/// administration stream through `validate_administration_stream_readonly`, so
+/// on a bounded clean start it is the first thing to need the cold
+/// command-derived index — and it needs it while holding its own read
+/// transaction open. Warming takes the exclusive mutation gate, so this is the
+/// caller-holds-a-read-while-the-warm-takes-the-gate shape, and this arm proves
+/// the real caller completes rather than deadlocking.
+///
+/// The companion unit test
+/// `store::tests::warming_the_indexes_commits_under_the_callers_live_read_transaction`
+/// forces the barrier's `begin_write` + `commit_durable` to run inside that
+/// nesting, which is the part redb has to permit. Here the point is the public
+/// caller: a cleanly restarted database must answer an ordinary catalog read.
+#[test]
+fn clean_close_fast_startup_warms_under_a_live_catalog_read() {
+    let path = TestDatabasePath::new("clean-close-catalog-warm");
+    prepare_command_database(&path.0);
+    let fixture = command_fixture();
+    let ports = open_operational(RedbStore::open(&path.0).expect("open command database"));
+    commit_command_fixture(&ports, &fixture);
+    ports
+        .write_clean_close_lifecycle()
+        .expect("write the final clean-close certificate");
+    drop(ports);
+
+    let ports =
+        open_operational(RedbStore::open(&path.0).expect("reopen the cleanly closed database"));
+    assert!(
+        ports.clean_close_fast_startup(),
+        "the certificate must select the fast path, leaving the index cold"
+    );
+    let active = riffdb_storage_api::CatalogRepository::read_active_catalog(&ports)
+        .expect("an ordinary catalog read must answer on a cleanly closed database");
+    assert!(
+        active.is_some(),
+        "the deployed fixture retains an active catalog pointer"
+    );
+    assert_eq!(
+        command_audit_phases(&ports),
+        [ServiceAuditPhaseV1::Started, ServiceAuditPhaseV1::Succeeded],
+        "the warmed index resolves the command-owned pair"
+    );
+}
+
 /// The tolerance is for an EQUAL pair only. Two different records at one
 /// administration sequence remain a real discontinuity and must still refuse.
 #[test]
