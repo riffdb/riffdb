@@ -3957,10 +3957,34 @@ impl RedbOperationalPorts {
         }
     }
 
+    /// Populates the command-derived index before an administration-audit read.
+    ///
+    /// A command-owned administration audit member is durable only inside its
+    /// command segment: no locator row is written into `AUDIT` for it, so the
+    /// command-derived transient index is its only lookup structure. Clean-close
+    /// fast startup (ADR-0156 section 5) deliberately leaves that index cold,
+    /// and a cold index answers "no record" — which the administration read path
+    /// cannot distinguish from a durably absent record, because it pairs the
+    /// index against the physical row and treats absence on both sides as
+    /// corruption. Leaving the index cold therefore reports an intact database
+    /// as corrupt.
+    ///
+    /// WP-704 requires every integrity fact skipped at clean startup to move
+    /// onto the operational path that first uses it, so the first such read
+    /// populates the index here — the same deferred population that
+    /// `pending_outbox_page` and `partition_event_route_page` already perform.
+    /// This narrows what the read path accepts rather than widening it: a
+    /// sequence still absent from a populated index remains a corruption
+    /// incident, and `Invalid` still fails closed.
+    fn ensure_command_audit_index(&self) -> Result<(), StorageError> {
+        self.shared.ensure_transient_indexes_ready()
+    }
+
     pub(crate) fn indexed_command_audit(
         &self,
         sequence: riffdb_types::AdministrationSequence,
     ) -> Result<Option<riffdb_storage_api::StoredServiceAuditRecordV1>, StorageError> {
+        self.ensure_command_audit_index()?;
         let state = self
             .shared
             .transient_indexes
@@ -3970,7 +3994,11 @@ impl RedbOperationalPorts {
             TransientIndexState::Ready(indexes) => {
                 Ok(indexes.command_audit_record(sequence).flatten())
             }
-            TransientIndexState::Dormant => Ok(None),
+            // Unreachable after population, and never silently empty: a cold
+            // index must not be reported as an absent audit record.
+            TransientIndexState::Dormant => {
+                Err(storage_error(StorageErrorKind::InvariantViolation))
+            }
             TransientIndexState::Invalid => Err(storage_error(StorageErrorKind::Unavailable)),
         }
     }
@@ -3981,6 +4009,7 @@ impl RedbOperationalPorts {
         sequence: riffdb_types::AdministrationSequence,
     ) -> Result<Option<riffdb_storage_api::StoredServiceAuditRecordV1>, StorageError> {
         let frontier = access.application_frontier()?;
+        self.ensure_command_audit_index()?;
         let state = self
             .shared
             .transient_indexes
@@ -3990,7 +4019,11 @@ impl RedbOperationalPorts {
             TransientIndexState::Ready(indexes) => indexes
                 .command_audit_record_at_or_before(sequence, frontier)
                 .ok_or_else(|| storage_error(StorageErrorKind::Unavailable)),
-            TransientIndexState::Dormant => Ok(None),
+            // Unreachable after population, and never silently empty: a cold
+            // index must not be reported as an absent audit record.
+            TransientIndexState::Dormant => {
+                Err(storage_error(StorageErrorKind::InvariantViolation))
+            }
             TransientIndexState::Invalid => Err(storage_error(StorageErrorKind::Unavailable)),
         }
     }
