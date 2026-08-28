@@ -36,9 +36,23 @@ const TAG_VECTOR: u8 = 0x0e;
 /// Thin wrapper around [`encode_canonical_value_into`]. Prefer the into form
 /// when appending many cells into a pre-reserved buffer.
 pub fn encode_canonical_value(value: &CanonicalValue) -> Result<Vec<u8>, CanonicalCodecError> {
-    let mut output = Vec::new();
+    let mut output = Vec::with_capacity(reserve_hint(canonical_value_encoded_len(value)));
     encode_canonical_value_into(&mut output, value)?;
     Ok(output)
+}
+
+/// Turns an exact-length result into a capacity request.
+///
+/// [`canonical_value_encoded_len`] and [`canonical_record_encoded_len`] reject
+/// exactly the faults the encoder rejects, so a length failure means the encode
+/// that follows will fail too. Requesting zero capacity in that case keeps the
+/// reported error the encoder's own, byte-for-byte as before pre-reservation,
+/// and `Vec::with_capacity(0)` does not allocate.
+const fn reserve_hint(length: Result<usize, CanonicalCodecError>) -> usize {
+    match length {
+        Ok(length) => length,
+        Err(_) => 0,
+    }
 }
 
 /// Appends one complete canonical value encoding v1 document onto `output`.
@@ -78,12 +92,32 @@ pub fn canonical_value_encoded_len(value: &CanonicalValue) -> Result<usize, Cano
     Ok(counter.len)
 }
 
+/// Exact encoded byte length of one record document under canonical value
+/// encoding v1.
+///
+/// The record-shaped mirror of [`canonical_value_encoded_len`]: matches
+/// [`encode_canonical_record`] without cloning the record into a
+/// [`CanonicalValue::Record`] first, and rejects the same bound, ordering, and
+/// nesting faults.
+pub fn canonical_record_encoded_len(
+    record: &CanonicalRecord,
+) -> Result<usize, CanonicalCodecError> {
+    let mut counter = LengthCounter::default();
+    counter.encode_record_value(record, 0)?;
+    Ok(counter.len)
+}
+
 /// Encodes one borrowed record as a complete canonical `Value::Record` document.
 ///
 /// This produces exactly the same v1 bytes as [`encode_canonical_value`] without
-/// cloning the record and its potentially large value graph first.
+/// cloning the record and its potentially large value graph first. The output
+/// buffer is reserved once at its exact final length, so a record encode never
+/// grows its buffer.
 pub fn encode_canonical_record(record: &CanonicalRecord) -> Result<Vec<u8>, CanonicalCodecError> {
-    let mut encoder = Encoder::default();
+    let mut encoder = Encoder {
+        output: Vec::with_capacity(reserve_hint(canonical_record_encoded_len(record))),
+        document_start: 0,
+    };
     encoder.encode_record_value(record, 0)?;
     Ok(encoder.output)
 }
@@ -107,7 +141,6 @@ pub fn decode_canonical_value(input: &[u8]) -> Result<CanonicalValue, CanonicalC
     Ok(value)
 }
 
-#[derive(Default)]
 struct Encoder {
     output: Vec<u8>,
     /// Start index of the document currently being written (for size bounds).
@@ -303,6 +336,17 @@ impl Encoder {
 impl LengthCounter {
     fn validate_depth(depth: usize) -> Result<(), CanonicalCodecError> {
         Encoder::validate_depth(depth)
+    }
+
+    /// Mirrors [`Encoder::encode_record_value`] step for step.
+    fn encode_record_value(
+        &mut self,
+        record: &CanonicalRecord,
+        depth: usize,
+    ) -> Result<(), CanonicalCodecError> {
+        Self::validate_depth(depth)?;
+        self.add(1)?;
+        self.encode_record_payload(record, depth)
     }
 
     fn encode_value(
@@ -1030,6 +1074,105 @@ mod tests {
             let mut packed = vec![0xAA, 0xBB];
             encode_canonical_value_into(&mut packed, &value).expect("append encode_into");
             assert_eq!(&packed[2..], encoded.as_slice());
+            // Pre-reservation is exact: the wrapper never grows its buffer.
+            assert_eq!(
+                encoded.capacity(),
+                encoded.len(),
+                "encode_canonical_value over-or-under reserved for {value:?}"
+            );
+        }
+    }
+
+    /// The record-shaped length function is exact, not a lower bound, so
+    /// [`encode_canonical_record`] reserves once and never grows.
+    #[test]
+    fn record_encoded_len_is_exact_and_reserves_once() {
+        use crate::{
+            CurrencyCode, Date, Decimal, DecimalSpec, EnumTypeId, EnumVariantId, Money, Timestamp,
+        };
+
+        let decimal = Decimal::new(DecimalSpec::new(10, 2).expect("spec"), 1_234).expect("decimal");
+        let inner = CanonicalRecord::new(vec![
+            (FieldId::new(2).expect("id"), CanonicalValue::I64(-1)),
+            (
+                FieldId::new(5).expect("id"),
+                CanonicalValue::Vector(CanonicalVector::new(vec![1.0, -2.0, 3.5]).expect("finite")),
+            ),
+        ])
+        .expect("inner record");
+        let records = [
+            CanonicalRecord::new(vec![]).expect("empty record"),
+            CanonicalRecord::new(vec![(FieldId::new(1).expect("id"), CanonicalValue::Null)])
+                .expect("single null"),
+            CanonicalRecord::new(vec![
+                (FieldId::new(1).expect("id"), CanonicalValue::Uuid([7; 16])),
+                (
+                    FieldId::new(2).expect("id"),
+                    CanonicalValue::String(
+                        CanonicalString::new("wide title ✓".repeat(24)).expect("string"),
+                    ),
+                ),
+                (
+                    FieldId::new(3).expect("id"),
+                    CanonicalValue::Timestamp(Timestamp::new(1_700_000_000, 7).expect("ts")),
+                ),
+                (
+                    FieldId::new(4).expect("id"),
+                    CanonicalValue::Decimal(decimal),
+                ),
+                (
+                    FieldId::new(5).expect("id"),
+                    CanonicalValue::Money(Money::new(
+                        CurrencyCode::new("EUR").expect("currency"),
+                        decimal,
+                    )),
+                ),
+                (
+                    FieldId::new(6).expect("id"),
+                    CanonicalValue::Date(Date::from_days_since_unix_epoch(19_000)),
+                ),
+                (
+                    FieldId::new(7).expect("id"),
+                    CanonicalValue::Enum {
+                        type_id: EnumTypeId::new(3).expect("type"),
+                        variant_id: EnumVariantId::new(1).expect("variant"),
+                    },
+                ),
+                (
+                    FieldId::new(8).expect("id"),
+                    CanonicalValue::Bytes(CanonicalBytes::new(vec![9; 300]).expect("bytes")),
+                ),
+                (
+                    FieldId::new(9).expect("id"),
+                    CanonicalValue::List(
+                        CanonicalList::new(vec![
+                            CanonicalValue::Record(inner.clone()),
+                            CanonicalValue::Bool(true),
+                        ])
+                        .expect("list"),
+                    ),
+                ),
+            ])
+            .expect("wide record"),
+        ];
+        for record in records {
+            let encoded = encode_canonical_record(&record).expect("encode");
+            let len = canonical_record_encoded_len(&record).expect("length");
+            assert_eq!(len, encoded.len(), "record length diverged from encode");
+            assert_eq!(
+                encoded.capacity(),
+                encoded.len(),
+                "encode_canonical_record grew or over-reserved its buffer"
+            );
+            // The record form and the value form agree byte for byte.
+            let as_value = encode_canonical_value(&CanonicalValue::Record(record.clone()))
+                .expect("value encode");
+            assert_eq!(as_value, encoded, "record and value encodings diverged");
+            assert_eq!(
+                canonical_value_encoded_len(&CanonicalValue::Record(record)).expect("value length"),
+                len,
+                "record and value lengths diverged"
+            );
         }
     }
 
