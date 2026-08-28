@@ -359,32 +359,32 @@ impl ProductionGraphBuilder {
         )
         .map_err(|_| ProductionGraphBuildError::CurrentView)?;
         let bounded_clean_startup = storage.bounded_clean_startup();
-        // Outbox normalization stays on the readiness path, and NOT because it
-        // is cheap. It is 96% of a bounded start's wall clock at 115,690
-        // retained commands, all of it in the transient population-index
-        // rebuild that `scan_undelivered_outbox_statuses` reaches through
-        // `ensure_transient_indexes_ready`.
+        // Outbox normalization is skipped on the readiness path only when
+        // bounded startup PROVED there is no in-flight `Delivering` entry to
+        // normalize (ADR-0156 Amendment 3). With nothing in `Delivering` the
+        // recovery has no transition to perform, and this path already discards
+        // its return value in favour of `Degraded`.
         //
-        // It cannot be skipped yet. In the current durable layout IDEMPOTENCY,
-        // PROVENANCE, EVENTS, EVENT_ROUTES and OUTBOX hold no physical rows at
-        // all — every outcome, provenance record, event and intent lives inside
-        // its command segment — so the command-derived index is not a cache, it
-        // is the ONLY locator from an idempotency key or provenance id to the
-        // owning segment. With it dormant, `read_stored_outcome` answers
-        // `Ok(None)` for a durably committed outcome: absence, which ADR-0156 §5
-        // forbids converting corruption or cold state into. This incidental
-        // rebuild is therefore load-bearing for read correctness, not just for
-        // the outbox, and removing it made a real riffdbd restart report
+        // Skipping matters because the scan cannot be reached without
+        // `ensure_transient_indexes_ready`, whose rebuild walks every command
+        // segment -- 96% of a bounded start's wall clock at 115,690 retained
+        // commands. It is only SAFE because ADR-0163's durable locators now let
+        // cold-cache point reads answer correctly instead of reporting absence;
+        // before them this same skip made a real riffdbd restart report
         // "durable command outcome was not found".
         //
-        // Discharging ADR-0156 §5's own obligation here — "if an existing path
-        // relied exclusively on startup to establish one of those facts, add the
-        // equivalent fail-closed local check" — needs either durable locator
-        // rows (a format change) or warm-on-demand at the read sites (a
-        // first-read stall). Both are maintainer decisions; neither is an
-        // observability change. See the report accompanying this branch.
+        // An inconclusive probe is not proof: it leaves the flag false and the
+        // normalization runs. A positively observed `Delivering` entry never
+        // reaches here -- it declines the certificate in the storage gate and
+        // this start takes the complete path.
+        let outbox_normalization_proven_unnecessary =
+            bounded_clean_startup && storage.outbox_delivering_proven_absent();
         let outbox_recovery_started = std::time::Instant::now();
-        let outbox_recovery = recover_outbox(storage.clone(), clocks.outbox());
+        let outbox_recovery = if outbox_normalization_proven_unnecessary {
+            OutboxRecoveryReadiness::Degraded
+        } else {
+            recover_outbox(storage.clone(), clocks.outbox())
+        };
         crate::startup_census::record(
             crate::startup_census::StartupStage::OutboxRecovery,
             outbox_recovery_started,

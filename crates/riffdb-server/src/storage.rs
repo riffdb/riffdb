@@ -125,6 +125,15 @@ impl SharedRedbOperationalPorts {
         self.bounded_clean_startup
     }
 
+    /// True only when bounded startup proved no in-flight `Delivering` outbox
+    /// entry exists. False on the complete path, and false when the bounded
+    /// probe could not decide, so ignorance never reads as proof.
+    pub(crate) fn outbox_delivering_proven_absent(&self) -> bool {
+        self.cell
+            .with_mut(|ports| Ok(ports.outbox_delivering_proven_absent()))
+            .unwrap_or(false)
+    }
+
     /// Publishes the storage adapter's transient-index rebuild census into the
     /// startup census so a bounded start that warmed the caches anyway is
     /// visible on the readiness line.
