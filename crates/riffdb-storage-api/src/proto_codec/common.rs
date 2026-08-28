@@ -2,13 +2,13 @@ use std::num::NonZeroU64;
 
 use riffdb_proto::storage::v1 as wire;
 use riffdb_types::{
-    ActorId, ActorKind, AdmittedActorContext, AgentSessionId, CanonicalRecord, CanonicalValue,
-    CapabilityId, CommandId, CommitSequence, ContractBundleHash, ContractLineage, ContractVersion,
-    DigestKeyId, EntityKey, EntityTypeId, EntityVersion, EventId, FieldId, IndexEpoch, IndexId,
-    LogicalTime, OutcomeId, PlanHash, TenantId, TenantScope, Timestamp, decode_canonical_value,
-    encode_canonical_record,
+    ActorId, ActorKind, AdmittedActorContext, AgentSessionId, CanonicalRecord, CapabilityId,
+    CommandId, CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, DigestKeyId,
+    EntityKey, EntityTypeId, EntityVersion, EventId, FieldId, IndexEpoch, IndexId, LogicalTime,
+    OutcomeId, PlanHash, TenantId, TenantScope, Timestamp,
 };
 
+use crate::records::VerifiedCanonicalRecordV1;
 use crate::{
     AuditPrincipalV1, DeclaredOutcome, DurableKeySchemaBindingV1, EntityTarget, ExecutablePlanRef,
     ExpectedEntityState, IdempotencyIdentity, IdempotencyKeyDigest, IndexEpochPosition,
@@ -337,17 +337,18 @@ pub(super) fn declared_outcome_from_proto(
 pub(super) fn canonical_record_from_bytes(
     bytes: &[u8],
 ) -> Result<CanonicalRecord, DurableCodecError> {
-    match decode_canonical_value(bytes).map_err(|_| DurableCodecError::corrupt())? {
-        CanonicalValue::Record(record) => {
-            if encode_canonical_record(&record).map_err(|_| DurableCodecError::corrupt())? == bytes
-            {
-                Ok(record)
-            } else {
-                Err(DurableCodecError::corrupt())
-            }
-        }
-        _ => Err(DurableCodecError::corrupt()),
-    }
+    verified_canonical_record_from_bytes(bytes).map(VerifiedCanonicalRecordV1::into_record)
+}
+
+/// Decodes one canonical record and retains the buffer that proved it canonical.
+///
+/// The check is exactly [`canonical_record_from_bytes`]'s: decode, re-encode,
+/// byte-compare, fail closed on any difference. Callers that go on to build a
+/// stored row take the proved buffer instead of encoding the same record again.
+pub(super) fn verified_canonical_record_from_bytes(
+    bytes: &[u8],
+) -> Result<VerifiedCanonicalRecordV1, DurableCodecError> {
+    VerifiedCanonicalRecordV1::verify(bytes).map_err(|_| DurableCodecError::corrupt())
 }
 
 pub(super) fn structural_prefix_from_bytes(
