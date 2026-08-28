@@ -1293,3 +1293,124 @@ fn pre_fence_apply_failures_are_not_relabelled_as_commit_status_unknown() {
          reclassifying every failure as durability uncertainty"
     );
 }
+
+/// `SharedRedb::commit_durable` is the only lane that may advance the root an
+/// operational reader can select.
+///
+/// A frontier-free read reuses one captured snapshot for every access taken
+/// while `durable_commit_epoch` is unchanged, and only `commit_durable`
+/// increments that epoch. A commit lane that opened its own write transaction
+/// and committed it directly would advance redb's root without moving the
+/// epoch, and a reused snapshot would then serve a root older than an
+/// acknowledged write — which no behavioural test would catch, because every
+/// single-access read would still look correct.
+///
+/// This is the complement of
+/// `every_live_database_engine_commit_routes_through_the_epoch_boundary`, which
+/// pins the `self.database.begin_write(` form and exempts whole files. A lane
+/// that opens its own `Database` -- or one added to an exempt file -- carries
+/// no `.database.` prefix and slips past that guard, so the shape asked here is
+/// behavioural instead of lexical: does one function both open a write
+/// transaction and commit it, without `commit_durable`?
+///
+/// The exceptions are named rather than left to be rediscovered. Each one
+/// either owns a `Database` it opened itself against a stopped file, or runs
+/// during recovery before any operational read exists.
+#[test]
+fn only_commit_durable_advances_a_root_an_operational_reader_can_select() {
+    const RECOVERY_OR_STOPPED_FILE: &[(&str, &str)] = &[
+        // Offline restore stamps, each on its own `Database::open` of a file
+        // whose owning process has stopped.
+        ("backup.rs", "stamp_history_incarnation"),
+        ("backup.rs", "stamp_retention_watermark"),
+        // Test-only downgrade fixture, likewise on a stopped database.
+        ("fixtures.rs", "downgrade_all_index_rows_to_v1_fixture"),
+        // Journal recovery, which runs before operational readiness is claimed.
+        ("journal.rs", "replay_frames"),
+    ];
+
+    let source_root = crate_root().join("src");
+    let mut found = Vec::new();
+    let mut paths: Vec<PathBuf> = fs::read_dir(&source_root)
+        .expect("adapter sources are readable")
+        .map(|entry| entry.expect("source entry").path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
+        .collect();
+    paths.sort();
+
+    for path in paths {
+        let name = path
+            .file_name()
+            .expect("source file name")
+            .to_str()
+            .expect("UTF-8 source file name")
+            .to_owned();
+        // Engine-mechanics microbenchmarks live behind `benchmark-support` and
+        // drive their own `Database` handles; they are not an operational lane.
+        if name == "benchmark_support.rs" {
+            continue;
+        }
+        for (function, body) in production_functions(&production_source(&path)) {
+            if body.contains(".begin_write()")
+                && body.contains(".commit()")
+                && !body.contains("commit_durable")
+            {
+                found.push((name.clone(), function));
+            }
+        }
+    }
+
+    let expected: Vec<(String, String)> = RECOVERY_OR_STOPPED_FILE
+        .iter()
+        .map(|(file, function)| ((*file).to_owned(), (*function).to_owned()))
+        .collect();
+    found.sort();
+    let mut expected = expected;
+    expected.sort();
+    assert_eq!(
+        found, expected,
+        "a redb write transaction is opened and committed without `commit_durable`. \
+         If the new lane can run while operational reads are served, it must commit \
+         through `commit_durable` so the durable commit epoch witnesses it; if it \
+         cannot, name it above with the reason."
+    );
+}
+
+/// Splits one production source into `(function name, body)` pairs, cutting at
+/// each item-level `fn`. Bodies are approximate — they run to the next `fn` —
+/// which is exactly what the commit-lane guard needs: it asks whether one
+/// function both opens and commits a write transaction.
+fn production_functions(source: &str) -> Vec<(String, String)> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut starts = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let indent = line.len() - line.trim_start().len();
+        if indent > 4 {
+            continue;
+        }
+        let trimmed = line.trim_start();
+        let after_visibility = trimmed
+            .strip_prefix("pub(crate) ")
+            .or_else(|| trimmed.strip_prefix("pub(super) "))
+            .or_else(|| trimmed.strip_prefix("pub "))
+            .unwrap_or(trimmed);
+        let declaration = after_visibility
+            .strip_prefix("const ")
+            .or_else(|| after_visibility.strip_prefix("async "))
+            .unwrap_or(after_visibility);
+        if let Some(rest) = declaration.strip_prefix("fn ")
+            && let Some(name) = rest.split(['(', '<']).next()
+            && !name.is_empty()
+        {
+            starts.push((index, name.to_owned()));
+        }
+    }
+    let mut functions = Vec::new();
+    for (position, (index, name)) in starts.iter().enumerate() {
+        let end = starts
+            .get(position + 1)
+            .map_or(lines.len(), |(next, _)| *next);
+        functions.push((name.clone(), lines[*index..end].join("\n")));
+    }
+    functions
+}
