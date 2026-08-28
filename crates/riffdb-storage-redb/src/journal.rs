@@ -257,10 +257,15 @@ pub(crate) enum JournalTable {
     VectorEvidence = 15,
     VectorObservations = 16,
     VectorEvidenceIndex = 17,
+    /// ADR-0163 command-derived locator tables. Additive tags: an older journal
+    /// never carries them, so existing extents decode unchanged.
+    IdempotencyLocators = 18,
+    ProvenanceLocators = 19,
+    AuditByRequestLocators = 20,
 }
 
 impl JournalTable {
-    pub(crate) const ALL: [Self; 17] = [
+    pub(crate) const ALL: [Self; 20] = [
         Self::Meta,
         Self::Entities,
         Self::SecondaryIndexes,
@@ -278,6 +283,9 @@ impl JournalTable {
         Self::VectorEvidence,
         Self::VectorObservations,
         Self::VectorEvidenceIndex,
+        Self::IdempotencyLocators,
+        Self::ProvenanceLocators,
+        Self::AuditByRequestLocators,
     ];
 
     pub(crate) const fn label(self) -> &'static str {
@@ -299,6 +307,9 @@ impl JournalTable {
             Self::VectorEvidence => "vector_evidence",
             Self::VectorObservations => "vector_observations",
             Self::VectorEvidenceIndex => "vector_evidence_index",
+            Self::IdempotencyLocators => "idempotency_locators",
+            Self::ProvenanceLocators => "provenance_locators",
+            Self::AuditByRequestLocators => "audit_by_request_locators",
         }
     }
 
@@ -321,6 +332,9 @@ impl JournalTable {
             15 => Ok(Self::VectorEvidence),
             16 => Ok(Self::VectorObservations),
             17 => Ok(Self::VectorEvidenceIndex),
+            18 => Ok(Self::IdempotencyLocators),
+            19 => Ok(Self::ProvenanceLocators),
+            20 => Ok(Self::AuditByRequestLocators),
             _ => Err(JournalCodecError::UnknownTable),
         }
     }
@@ -344,6 +358,11 @@ impl JournalTable {
             Self::VectorEvidence => riffdb_storage_api::CompositeTableV1::VectorEvidence,
             Self::VectorObservations => riffdb_storage_api::CompositeTableV1::VectorObservations,
             Self::VectorEvidenceIndex => riffdb_storage_api::CompositeTableV1::VectorEvidenceIndex,
+            Self::IdempotencyLocators => riffdb_storage_api::CompositeTableV1::IdempotencyLocators,
+            Self::ProvenanceLocators => riffdb_storage_api::CompositeTableV1::ProvenanceLocators,
+            Self::AuditByRequestLocators => {
+                riffdb_storage_api::CompositeTableV1::AuditByRequestLocators
+            }
         }
     }
 }
@@ -856,6 +875,9 @@ fn service_audit_mutation_is_closed(mutation: &JournalMutation) -> bool {
         | JournalTable::IndexEpochs
         | JournalTable::Idempotency
         | JournalTable::IdempotencyPending
+        | JournalTable::IdempotencyLocators
+        | JournalTable::ProvenanceLocators
+        | JournalTable::AuditByRequestLocators
         | JournalTable::Events
         | JournalTable::EventRoutes
         | JournalTable::Outbox
@@ -2884,6 +2906,17 @@ pub(crate) fn apply_mutation(
         }
         JournalTable::IndexEpochs => apply_byte_mutation(transaction, INDEX_EPOCHS, mutation),
         JournalTable::Idempotency => apply_byte_mutation(transaction, IDEMPOTENCY, mutation),
+        JournalTable::IdempotencyLocators => {
+            apply_byte_mutation(transaction, crate::layout::IDEMPOTENCY_LOCATORS, mutation)
+        }
+        JournalTable::ProvenanceLocators => {
+            apply_byte_mutation(transaction, crate::layout::PROVENANCE_LOCATORS, mutation)
+        }
+        JournalTable::AuditByRequestLocators => apply_byte_mutation(
+            transaction,
+            crate::layout::AUDIT_BY_REQUEST_LOCATORS,
+            mutation,
+        ),
         JournalTable::IdempotencyPending => {
             apply_byte_mutation(transaction, IDEMPOTENCY_PENDING, mutation)
         }
@@ -2924,6 +2957,27 @@ pub(crate) fn apply_validated_composite_mutation(
     match mutation.table() {
         CompositeTableV1::Meta => apply_meta_mutation_parts(
             transaction,
+            mutation.key(),
+            mutation.value(),
+            mutation.expected_hash(),
+        ),
+        CompositeTableV1::IdempotencyLocators => apply_byte_mutation_parts(
+            transaction,
+            crate::layout::IDEMPOTENCY_LOCATORS,
+            mutation.key(),
+            mutation.value(),
+            mutation.expected_hash(),
+        ),
+        CompositeTableV1::ProvenanceLocators => apply_byte_mutation_parts(
+            transaction,
+            crate::layout::PROVENANCE_LOCATORS,
+            mutation.key(),
+            mutation.value(),
+            mutation.expected_hash(),
+        ),
+        CompositeTableV1::AuditByRequestLocators => apply_byte_mutation_parts(
+            transaction,
+            crate::layout::AUDIT_BY_REQUEST_LOCATORS,
             mutation.key(),
             mutation.value(),
             mutation.expected_hash(),
@@ -3165,6 +3219,9 @@ pub(crate) fn read_value(
     }
     let definition = match table {
         JournalTable::Meta => unreachable!("meta returned above"),
+        JournalTable::IdempotencyLocators => crate::layout::IDEMPOTENCY_LOCATORS,
+        JournalTable::ProvenanceLocators => crate::layout::PROVENANCE_LOCATORS,
+        JournalTable::AuditByRequestLocators => crate::layout::AUDIT_BY_REQUEST_LOCATORS,
         JournalTable::Entities => ENTITIES,
         JournalTable::SecondaryIndexes => SECONDARY_INDEXES,
         JournalTable::IndexEpochs => INDEX_EPOCHS,
@@ -3206,6 +3263,9 @@ pub(crate) fn read_write_value(
     }
     let definition = match table {
         JournalTable::Meta => unreachable!("meta returned above"),
+        JournalTable::IdempotencyLocators => crate::layout::IDEMPOTENCY_LOCATORS,
+        JournalTable::ProvenanceLocators => crate::layout::PROVENANCE_LOCATORS,
+        JournalTable::AuditByRequestLocators => crate::layout::AUDIT_BY_REQUEST_LOCATORS,
         JournalTable::Entities => ENTITIES,
         JournalTable::SecondaryIndexes => SECONDARY_INDEXES,
         JournalTable::IndexEpochs => INDEX_EPOCHS,
@@ -3236,6 +3296,9 @@ pub(crate) const fn byte_table_definition(
 ) -> Option<TableDefinition<'static, &'static [u8], &'static [u8]>> {
     match table {
         JournalTable::Meta => None,
+        JournalTable::IdempotencyLocators => Some(crate::layout::IDEMPOTENCY_LOCATORS),
+        JournalTable::ProvenanceLocators => Some(crate::layout::PROVENANCE_LOCATORS),
+        JournalTable::AuditByRequestLocators => Some(crate::layout::AUDIT_BY_REQUEST_LOCATORS),
         JournalTable::Entities => Some(ENTITIES),
         JournalTable::SecondaryIndexes => Some(SECONDARY_INDEXES),
         JournalTable::IndexEpochs => Some(INDEX_EPOCHS),

@@ -214,7 +214,54 @@ fn capsulate_command_rows(
     )? {
         return Err(storage_error(StorageErrorKind::InvariantViolation));
     }
+    write_durable_command_locators(access, &segment)?;
     Ok((segment, terminals))
+}
+
+/// Writes the ADR-0163 locator rows that make a segment-owned command
+/// resolvable by key without the transient population index.
+///
+/// A command's outcome, provenance and audits live inside its command segment,
+/// and `COMMITS` is keyed by commit sequence, so an idempotency identity key, a
+/// provenance id and an audit request id had no durable path to their owning
+/// segment. With the transient index dormant, five read paths answered absent
+/// for durably committed data, including the write-path admission lookup that
+/// decides whether a retry re-executes.
+///
+/// Written in the same transaction and journal frame as the segment, so they
+/// cost bytes and B-tree inserts but no additional fsync.
+fn write_durable_command_locators(
+    access: &RedbWriteAccess,
+    segment: &StoredCommandSegmentV1,
+) -> Result<(), StorageError> {
+    for command in segment.commands() {
+        let base = command.base();
+        let locator = crate::codec::encode_command_locator_v1(
+            riffdb_storage_api::StoredCommandLocatorV1::new(base.commit_sequence()),
+        )?;
+        let identity_key = identity_key(base.outcome().identity())?;
+        access.put_command_value_assuming_absent(
+            JournalTable::IdempotencyLocators,
+            encode_idempotency_key(&identity_key).to_vec(),
+            locator.as_bytes().to_vec(),
+        )?;
+        access.put_command_value_assuming_absent(
+            JournalTable::ProvenanceLocators,
+            encode_provenance_key(base.provenance().provenance_id()).to_vec(),
+            locator.as_bytes().to_vec(),
+        )?;
+        // Two per command: the Started and terminal audit members. A fresh
+        // administration sequence makes each key new by construction.
+        for audit in [base.started_audit(), base.terminal_audit()] {
+            access.put_command_value_assuming_absent(
+                JournalTable::AuditByRequestLocators,
+                encode_audit_by_request_key(audit.request_id(), audit.administration_sequence())
+                    .to_vec(),
+                locator.as_bytes().to_vec(),
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn build_command_segment(
@@ -2445,13 +2492,38 @@ fn command_outcome_from_write_indexes(
     identity: &IdempotencyIdentity,
 ) -> Result<Option<StoredOutcomeV1>, StorageError> {
     let key = identity_key(identity)?;
-    access
-        .command_derived_member(
-            CommandDerivedIndexKindV1::Idempotency,
-            encode_idempotency_key(&key),
-        )?
-        .map(|(segment, locator)| command_outcome_from_member(&segment, locator, identity))
-        .transpose()
+    let exact_key = encode_idempotency_key(&key);
+    if let Some((segment, locator)) =
+        access.command_derived_member(CommandDerivedIndexKindV1::Idempotency, exact_key)?
+    {
+        return command_outcome_from_member(&segment, locator, identity).map(Some);
+    }
+    // This is the admission lookup, so `Ok(None)` means "never admitted" and a
+    // durably committed command answering absent is executed again. With the
+    // transient index dormant and no physical IDEMPOTENCY row that is exactly
+    // what happened; the ADR-0163 locator closes it.
+    //
+    // Every failure below is closed, never absent: only a genuinely absent
+    // locator is absence.
+    let Some(encoded) = access.read_command_value(JournalTable::IdempotencyLocators, exact_key)?
+    else {
+        return Ok(None);
+    };
+    let locator = crate::codec::decode_command_locator_v1(&encoded)?
+        .into_parts()
+        .0;
+    let member = crate::command_authority::command_member_at_write_access(
+        access,
+        locator.commit_sequence(),
+    )?
+    .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+    let capsule = member.into_base();
+    if capsule.commit_sequence() != locator.commit_sequence()
+        || capsule.outcome().identity() != identity
+    {
+        return Err(storage_error(StorageErrorKind::CorruptData));
+    }
+    Ok(Some(capsule.outcome().clone()))
 }
 
 fn matching_admissions(

@@ -1689,6 +1689,7 @@ impl RedbStore {
             }),
         };
         store.ensure_current_storage_format()?;
+        store.install_command_locator_tables()?;
         store.recover_durability_journal()?;
         store.cache_verified_retention_watermark()?;
         Ok(store)
@@ -1779,6 +1780,55 @@ impl RedbStore {
             .retention_watermark
             .store(sequence, Ordering::Release);
         Ok(())
+    }
+
+    /// Installs the ADR-0163 command-derived locator tables. Idempotent.
+    ///
+    /// These tables add no durable message type — `StoredCommandLocatorV1` is
+    /// already in the readable record registry — so the record-registry digest
+    /// is unchanged and they ride no registry transition. That is also why they
+    /// cannot be installed by the migration chain, which only advances when a
+    /// digest changes: they are installed here instead.
+    ///
+    /// Takes a write transaction only when a table is genuinely absent, so a
+    /// database that already has them pays one read transaction per open rather
+    /// than a commit.
+    fn install_command_locator_tables(&self) -> Result<(), StorageError> {
+        let transaction = self
+            .shared
+            .database
+            .begin_read()
+            .map_err(transaction_error)?;
+        // A never-initialized database gets every table from the initialization
+        // transaction. Creating them here first would make an empty layout look
+        // initialized while META is still absent.
+        if classify_read_layout(&transaction)? == LayoutState::Empty {
+            return Ok(());
+        }
+        let present = matches!(
+            transaction.open_table(crate::layout::IDEMPOTENCY_LOCATORS),
+            Ok(_)
+        ) && matches!(
+            transaction.open_table(crate::layout::PROVENANCE_LOCATORS),
+            Ok(_)
+        ) && matches!(
+            transaction.open_table(crate::layout::AUDIT_BY_REQUEST_LOCATORS),
+            Ok(_)
+        );
+        drop(transaction);
+        if present {
+            return Ok(());
+        }
+        let mut transaction = self
+            .shared
+            .database
+            .begin_write()
+            .map_err(transaction_error)?;
+        transaction
+            .set_durability(Durability::Immediate)
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        create_all_tables(&transaction).map_err(table_error)?;
+        self.shared.commit_durable(transaction)
     }
 
     fn ensure_current_storage_format(&self) -> Result<(), StorageError> {
@@ -4991,6 +5041,32 @@ impl RedbWriteAccess {
         Ok(prior)
     }
 
+    /// Inserts a durable row whose key is new by construction, without the
+    /// `read_command_value` pre-read `put_command_value` performs.
+    ///
+    /// Used for the ADR-0163 locator rows. Each key is proven new before this is
+    /// called: an idempotency identity key by the admission reservation, a
+    /// provenance id by its uniqueness reservation, and an audit-by-request key
+    /// by a freshly allocated administration sequence that cannot collide.
+    /// Paying a read per row to re-establish that measured 12-16% of seed
+    /// throughput on its own.
+    ///
+    /// The mutation is recorded on the journal, so the row joins the same frame
+    /// and the same fsync as the command segment it describes.
+    pub(crate) fn put_command_value_assuming_absent(
+        &self,
+        table: crate::journal::JournalTable,
+        key: Vec<u8>,
+        value: Vec<u8>,
+    ) -> Result<(), StorageError> {
+        let mutation = crate::journal::JournalMutation::put(table, key, value)
+            .map_err(journal_storage_error)?;
+        if let Some(transaction) = self.transaction.as_ref() {
+            crate::journal::apply_mutation(transaction, &mutation).map_err(journal_io_error)?;
+        }
+        self.record_observed_journal_mutation(mutation, None)
+    }
+
     pub(crate) fn delete_command_value(
         &self,
         table: crate::journal::JournalTable,
@@ -7962,15 +8038,25 @@ fn classify_table_names(
         .iter()
         .map(|name| (*name).to_owned())
         .collect::<BTreeSet<_>>();
-    // Vector projection control is the newest additive table. Normalize only
-    // that exact absence while classifying the already-enumerated predecessor
-    // layouts below; the registry migration installs it before publishing the
-    // successor registry digest. No other missing or extra table is hidden.
-    let mut with_vector_projection_control = tables.clone();
-    with_vector_projection_control.insert("vector_projection_controls".to_owned());
-    let matches = |candidate: &BTreeSet<String>| {
-        tables == *candidate || with_vector_projection_control == *candidate
-    };
+    // The newest additive tables are empty on install and carry no history, so
+    // their absence is normalized while classifying the already-enumerated
+    // predecessor layouts below. `vector_projection_controls` is installed by
+    // the registry migration before it publishes the successor digest; the
+    // ADR-0163 locator tables add no message type, so no digest advances for
+    // them and `install_command_locator_tables` installs them at open instead.
+    // Only these exact names are normalized. No other missing or extra table is
+    // hidden.
+    let mut with_newest_additive = tables.clone();
+    for name in [
+        "vector_projection_controls",
+        "idempotency_locators",
+        "provenance_locators",
+        "audit_by_request_locators",
+    ] {
+        with_newest_additive.insert(name.to_owned());
+    }
+    let matches =
+        |candidate: &BTreeSet<String>| tables == *candidate || with_newest_additive == *candidate;
     if matches(&expected) {
         return Ok(LayoutState::Initialized);
     }
