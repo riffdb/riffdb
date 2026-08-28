@@ -863,3 +863,96 @@ fn capability_v8_vector_inspection_is_required_canonical_and_role_bound() {
         .expect("canonical V8 decodes");
     assert_eq!(decoded.value(), &value);
 }
+
+/// The stored canonical bytes are re-proved on every entity and index-entry
+/// decode, and the row keeps exactly the bytes that proof accepted.
+///
+/// Rows retain the buffer produced by the canonicality re-encode rather than
+/// encoding the same record a second time. Both halves are asserted here: the
+/// retained encoding equals the stored bytes, and every stored byte string that
+/// is not an exact canonical record document still fails closed.
+#[test]
+fn canonical_record_bytes_are_reproved_and_retained_exactly() {
+    use crate::{DurableKeySchemaBindingV1, StoredEntityRecordV1};
+    use riffdb_types::{CanonicalValue, encode_canonical_value};
+
+    const ENTITY: &str = "riffdb.storage.v1.StoredEntityRecordV1";
+    const INDEX_ENTRY: &str = "riffdb.storage.v1.StoredIndexEntryV2";
+
+    let plan = sample::plan();
+    let entity = StoredEntityRecordV1::new(
+        sample::entity_target(),
+        riffdb_types::EntityVersion::first(),
+        plan.contract_version(),
+        DurableKeySchemaBindingV1::from_plan(&plan),
+        sample::canonical_record(0x42),
+    )
+    .expect("entity record");
+    let canonical = encode_entity_record_v1(&entity).expect("entity encodes");
+    let message = payload_message::<wire::StoredEntityRecordV1>(canonical.as_bytes());
+
+    let decoded = decode_entity_record_v1(&checked_envelope(ENTITY, &message))
+        .expect("canonical entity decodes")
+        .into_parts()
+        .0;
+    assert_eq!(
+        decoded.fields_encoded(),
+        message.canonical_fields.as_slice(),
+        "the retained encoding is the exact stored canonical document"
+    );
+    assert_eq!(decoded.fields(), entity.fields());
+
+    let mut trailing = message.clone();
+    trailing.canonical_fields.push(0x00);
+    assert_corrupt(decode_entity_record_v1(&checked_envelope(
+        ENTITY, &trailing,
+    )));
+
+    let mut truncated = message.clone();
+    truncated.canonical_fields.pop();
+    assert_corrupt(decode_entity_record_v1(&checked_envelope(
+        ENTITY, &truncated,
+    )));
+
+    let mut not_a_record = message.clone();
+    not_a_record.canonical_fields =
+        encode_canonical_value(&CanonicalValue::U64(7)).expect("scalar document encodes");
+    assert_corrupt(decode_entity_record_v1(&checked_envelope(
+        ENTITY,
+        &not_a_record,
+    )));
+
+    let mut empty = message;
+    empty.canonical_fields.clear();
+    assert_corrupt(decode_entity_record_v1(&checked_envelope(ENTITY, &empty)));
+
+    let (entry, _) = sample::index_records();
+    let canonical = encode_index_entry_v2(&entry).expect("index entry encodes");
+    let message = payload_message::<wire::StoredIndexEntryV2>(canonical.as_bytes());
+
+    let decoded = decode_index_entry_v2(&checked_envelope(INDEX_ENTRY, &message))
+        .expect("canonical index entry decodes")
+        .into_parts()
+        .0;
+    assert_eq!(
+        decoded.covered_values_encoded(),
+        message.canonical_covered_values.as_slice(),
+        "the retained encoding is the exact stored canonical document"
+    );
+    assert_eq!(decoded.covered_values(), entry.covered_values());
+
+    let mut trailing = message.clone();
+    trailing.canonical_covered_values.push(0x00);
+    assert_corrupt(decode_index_entry_v2(&checked_envelope(
+        INDEX_ENTRY,
+        &trailing,
+    )));
+
+    let mut not_a_record = message;
+    not_a_record.canonical_covered_values =
+        encode_canonical_value(&CanonicalValue::Null).expect("null document encodes");
+    assert_corrupt(decode_index_entry_v2(&checked_envelope(
+        INDEX_ENTRY,
+        &not_a_record,
+    )));
+}

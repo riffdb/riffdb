@@ -5,12 +5,12 @@ use std::fmt;
 use std::sync::Arc;
 
 use riffdb_types::{
-    AdmittedActorContext, CanonicalInputHash, CanonicalRecord, CommitSequence, ConflictKeyHash,
-    ContractVersion, EntityRecordHash, EntityVersion, EventHash, EventId, EventTypeId,
-    IndexEntryKey, IndexEpoch, LogicalTime, MAX_CANONICAL_DOCUMENT_BYTES,
+    AdmittedActorContext, CanonicalInputHash, CanonicalRecord, CanonicalValue, CommitSequence,
+    ConflictKeyHash, ContractVersion, EntityRecordHash, EntityVersion, EventHash, EventId,
+    EventTypeId, IndexEntryKey, IndexEpoch, LogicalTime, MAX_CANONICAL_DOCUMENT_BYTES,
     MAX_COMMIT_INTENT_SEMANTIC_BYTES, OutcomeId, PartitionKey, PartitionKeyHash, ProvenanceId,
-    RequestId, RowPolicyName, encode_canonical_record, hash_entity_record, hash_event,
-    hash_partition_key,
+    RequestId, RowPolicyName, decode_canonical_value, encode_canonical_record, hash_entity_record,
+    hash_event, hash_partition_key,
 };
 
 use crate::{
@@ -24,6 +24,49 @@ use crate::{
     VectorEvidenceMutationV1, VectorEvidenceTransitionPlanV1, actor_semantic_bytes,
     canonical_codec_storage_error, canonical_record_bytes, framed_bytes,
 };
+
+/// One canonical record proved byte-identical to its own canonical encoding.
+///
+/// [`Self::verify`] is the only constructor. It decodes the source bytes,
+/// re-encodes the decoded record, and rejects unless the re-encode is
+/// byte-identical — exactly the check a decoding caller performs today — then
+/// retains that proved buffer instead of discarding it. Callers can therefore
+/// never pair a record with detached bytes, and a stored row built from one of
+/// these values does not have to encode the same record a second time.
+pub(crate) struct VerifiedCanonicalRecordV1 {
+    record: CanonicalRecord,
+    encoded: Vec<u8>,
+}
+
+/// One closed reason a byte string is not an exact canonical record document.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct NotCanonicalRecordError;
+
+impl VerifiedCanonicalRecordV1 {
+    /// Decodes one canonical record and proves it re-encodes to its own bytes.
+    pub(crate) fn verify(bytes: &[u8]) -> Result<Self, NotCanonicalRecordError> {
+        let CanonicalValue::Record(record) =
+            decode_canonical_value(bytes).map_err(|_| NotCanonicalRecordError)?
+        else {
+            return Err(NotCanonicalRecordError);
+        };
+        let encoded = encode_canonical_record(&record).map_err(|_| NotCanonicalRecordError)?;
+        if encoded != bytes {
+            return Err(NotCanonicalRecordError);
+        }
+        Ok(Self { record, encoded })
+    }
+
+    /// Consumes the proof and returns only the decoded record.
+    pub(crate) fn into_record(self) -> CanonicalRecord {
+        self.record
+    }
+
+    /// Consumes the proof and returns the record with its proved encoding.
+    pub(crate) fn into_parts(self) -> (CanonicalRecord, Vec<u8>) {
+        (self.record, self.encoded)
+    }
+}
 
 /// The durability contract used for one completed engine commit.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -58,6 +101,38 @@ impl StoredEntityRecordV1 {
     ) -> Result<Self, StorageValueError> {
         let fields_encoded = encode_canonical_record(&fields)
             .map_err(|error| canonical_codec_storage_error(&error))?;
+        if fields_encoded.len() > MAX_CANONICAL_DOCUMENT_BYTES {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        if written_by_contract != schema_binding.contract_version() {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        Ok(Self {
+            target,
+            entity_version,
+            written_by_contract,
+            schema_binding,
+            fields: Arc::new(fields),
+            fields_encoded: Arc::from(fields_encoded),
+        })
+    }
+
+    /// Constructs a complete bounded entity row from already proved canonical
+    /// fields.
+    ///
+    /// Identical to [`Self::new`] except that the canonical encoding is the
+    /// exact buffer [`VerifiedCanonicalRecordV1::verify`] already proved
+    /// byte-identical to the stored bytes, so the same record is not encoded a
+    /// second time. Every check [`Self::new`] performs is preserved; the encode
+    /// failure it maps cannot occur here because the encode already succeeded.
+    pub(crate) fn from_verified_canonical_fields(
+        target: EntityTarget,
+        entity_version: EntityVersion,
+        written_by_contract: ContractVersion,
+        schema_binding: DurableKeySchemaBindingV1,
+        fields: VerifiedCanonicalRecordV1,
+    ) -> Result<Self, StorageValueError> {
+        let (fields, fields_encoded) = fields.into_parts();
         if fields_encoded.len() > MAX_CANONICAL_DOCUMENT_BYTES {
             return Err(StorageValueError::LimitExceeded);
         }
@@ -219,6 +294,34 @@ impl StoredIndexEntryV2 {
     ) -> Result<Self, StorageValueError> {
         let covered_values_encoded = encode_canonical_record(&covered_values)
             .map_err(|error| canonical_codec_storage_error(&error))?;
+        if covered_values_encoded.len() > MAX_CANONICAL_DOCUMENT_BYTES {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        let record = Self {
+            key,
+            schema_binding,
+            covered_values,
+            covered_values_encoded: Arc::from(covered_values_encoded),
+            partition_key,
+        };
+        let _ = record.semantic_bytes()?;
+        Ok(record)
+    }
+
+    /// Constructs a bounded canonical current index-entry record from already
+    /// proved canonical covered values.
+    ///
+    /// Identical to [`Self::new`] except that the canonical encoding is the
+    /// exact buffer [`VerifiedCanonicalRecordV1::verify`] already proved
+    /// byte-identical to the stored bytes, so the same record is not encoded a
+    /// second time. Every check [`Self::new`] performs is preserved.
+    pub(crate) fn from_verified_canonical_covered_values(
+        key: IndexEntryKey,
+        schema_binding: DurableKeySchemaBindingV1,
+        covered_values: VerifiedCanonicalRecordV1,
+        partition_key: PartitionKey,
+    ) -> Result<Self, StorageValueError> {
+        let (covered_values, covered_values_encoded) = covered_values.into_parts();
         if covered_values_encoded.len() > MAX_CANONICAL_DOCUMENT_BYTES {
             return Err(StorageValueError::LimitExceeded);
         }
