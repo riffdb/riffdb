@@ -326,6 +326,22 @@ pub struct RiffDbQueryExecuteWindowEvidence {
     pub authority_tail_commands_sum: u64,
     /// Maximum logical commands decoded from one authority tail.
     pub authority_tail_commands_max: u64,
+    /// Sum of entity point reads performed by one execute.
+    pub entity_point_reads_sum: u64,
+    /// Maximum entity point reads performed by one execute.
+    pub entity_point_reads_max: u64,
+    /// Sum of secondary-index rows returned to one execute.
+    pub index_rows_sum: u64,
+    /// Maximum secondary-index rows returned to one execute.
+    pub index_rows_max: u64,
+    /// Sum of bounded secondary-index range reads issued by one execute.
+    pub index_range_reads_sum: u64,
+    /// Maximum bounded secondary-index range reads issued by one execute.
+    pub index_range_reads_max: u64,
+    /// Sum of access steps driven by one execute.
+    pub program_steps_sum: u64,
+    /// Maximum access steps driven by one execute.
+    pub program_steps_max: u64,
 }
 
 /// Closed process-generation writer evidence emitted by `riffdbd`.
@@ -1655,7 +1671,11 @@ fn parse_query_execute_windows(encoded: &str) -> io::Result<RiffDbQueryExecuteEv
         })
         .collect::<io::Result<Vec<_>>>()?;
     let total_count = parse_scalar(fields.next(), "query total count")?;
-    if window_width == 0 || window_count == 0 || window_count > 64 || stage_names.len() != 14 {
+    if window_width == 0
+        || window_count == 0
+        || window_count > 64
+        || stage_names.len() != riffdb_storage_redb::QUERY_EXECUTE_STAGE_LABELS_V1.len()
+    {
         return Err(io::Error::other("invalid query execute shape"));
     }
     let encoded_windows = fields
@@ -1672,20 +1692,31 @@ fn parse_query_execute_windows(encoded: &str) -> io::Result<RiffDbQueryExecuteEv
                         .map_err(|_| io::Error::other("invalid query window value"))
                 })
                 .collect::<io::Result<Vec<_>>>()?;
-            if values.len() != stage_names.len() + 9 {
+            if values.len()
+                != stage_names.len() + riffdb_storage_redb::QUERY_EXECUTE_TRAILING_VALUES_V1 + 1
+            {
                 return Err(io::Error::other("invalid query window cardinality"));
             }
+            let trailing = 1 + stage_names.len();
             Ok(RiffDbQueryExecuteWindowEvidence {
                 count: values[0],
-                stage_ns: values[1..1 + stage_names.len()].to_vec(),
-                overlay_transitions_sum: values[1 + stage_names.len()],
-                overlay_transitions_max: values[2 + stage_names.len()],
-                overlay_bytes_sum: values[3 + stage_names.len()],
-                overlay_bytes_max: values[4 + stage_names.len()],
-                authority_tail_bytes_sum: values[5 + stage_names.len()],
-                authority_tail_bytes_max: values[6 + stage_names.len()],
-                authority_tail_commands_sum: values[7 + stage_names.len()],
-                authority_tail_commands_max: values[8 + stage_names.len()],
+                stage_ns: values[1..trailing].to_vec(),
+                overlay_transitions_sum: values[trailing],
+                overlay_transitions_max: values[trailing + 1],
+                overlay_bytes_sum: values[trailing + 2],
+                overlay_bytes_max: values[trailing + 3],
+                authority_tail_bytes_sum: values[trailing + 4],
+                authority_tail_bytes_max: values[trailing + 5],
+                authority_tail_commands_sum: values[trailing + 6],
+                authority_tail_commands_max: values[trailing + 7],
+                entity_point_reads_sum: values[trailing + 8],
+                entity_point_reads_max: values[trailing + 9],
+                index_rows_sum: values[trailing + 10],
+                index_rows_max: values[trailing + 11],
+                index_range_reads_sum: values[trailing + 12],
+                index_range_reads_max: values[trailing + 13],
+                program_steps_sum: values[trailing + 14],
+                program_steps_max: values[trailing + 15],
             })
         })
         .collect::<io::Result<Vec<_>>>()?;
@@ -2191,12 +2222,13 @@ mod tests {
         assert!(parse_writer_evidence("busy_us=1\tcommit_us:1:1:1,2").is_err());
 
         let query_stages = riffdb_storage_redb::QUERY_EXECUTE_STAGE_LABELS_V1.join(",");
-        let stage_sums = (1_u64..=14)
+        let stage_sums = (1_u64
+            ..=riffdb_storage_redb::QUERY_EXECUTE_STAGE_LABELS_V1.len() as u64)
             .map(|value| value.to_string())
             .collect::<Vec<_>>()
             .join(",");
         let query = parse_query_execute_windows(&format!(
-            "256\t1\t{query_stages}\t1\t1,{stage_sums},2,3,4,5,6,7,8,9"
+            "256\t1\t{query_stages}\t1\t1,{stage_sums},2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17"
         ))
         .expect("query execute evidence");
         assert_eq!(query.total_count, 1);
@@ -2204,6 +2236,10 @@ mod tests {
         assert_eq!(query.windows[0].authority_tail_bytes_max, 7);
         assert_eq!(query.windows[0].authority_tail_commands_sum, 8);
         assert_eq!(query.windows[0].authority_tail_commands_max, 9);
+        assert_eq!(query.windows[0].entity_point_reads_sum, 10);
+        assert_eq!(query.windows[0].index_rows_sum, 12);
+        assert_eq!(query.windows[0].index_range_reads_sum, 14);
+        assert_eq!(query.windows[0].program_steps_max, 17);
         assert!(parse_query_execute_windows(&format!(
             "256\t1\t{query_stages}\t1\t1,{stage_sums},2,3,4,5"
         ))

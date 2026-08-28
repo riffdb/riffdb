@@ -3255,7 +3255,9 @@ async fn supervise_ready_process(
                 .iter()
                 .map(|window| {
                     let mut values = Vec::with_capacity(
-                        riffdb_storage_redb::QUERY_EXECUTE_STAGE_LABELS_V1.len() + 9,
+                        riffdb_storage_redb::QUERY_EXECUTE_STAGE_LABELS_V1.len()
+                            + riffdb_storage_redb::QUERY_EXECUTE_TRAILING_VALUES_V1
+                            + 1,
                     );
                     values.push(window.count.to_string());
                     values.extend(window.stage_ns.iter().map(u64::to_string));
@@ -3267,6 +3269,14 @@ async fn supervise_ready_process(
                     values.push(window.authority_tail_bytes_max.to_string());
                     values.push(window.authority_tail_commands_sum.to_string());
                     values.push(window.authority_tail_commands_max.to_string());
+                    values.push(window.entity_point_reads_sum.to_string());
+                    values.push(window.entity_point_reads_max.to_string());
+                    values.push(window.index_rows_sum.to_string());
+                    values.push(window.index_rows_max.to_string());
+                    values.push(window.index_range_reads_sum.to_string());
+                    values.push(window.index_range_reads_max.to_string());
+                    values.push(window.program_steps_sum.to_string());
+                    values.push(window.program_steps_max.to_string());
                     values.join(",")
                 })
                 .collect::<Vec<_>>()
