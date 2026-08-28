@@ -4066,6 +4066,158 @@ fn prepare_checkpointed_command_database(path: &Path) {
     let _ = complete_startup_pass(RedbStore::open(path).expect("seed S=head checkpoint"));
 }
 
+/// ADR-0163: the locator tables carry rows and the ADR-0085-counted tables stay
+/// physically empty.
+///
+/// The second half is the invariant that rejected the obvious placement. If a
+/// locator ever lands in `idempotency`, `provenance` or `audit_by_request`,
+/// ADR-0085's O(1) checkpoint counts silently start counting it as a terminal
+/// outcome or an audit.
+#[test]
+fn durable_locators_are_written_without_populating_the_counted_tables() {
+    let path = TestDatabasePath::new("locators-written-counted-empty");
+    let _ = prepare_committed_command_database(&path.0);
+    assert!(retention_raw_table_has_rows(
+        &path.0,
+        "idempotency_locators"
+    ));
+    assert!(retention_raw_table_has_rows(&path.0, "provenance_locators"));
+    assert!(retention_raw_table_has_rows(
+        &path.0,
+        "audit_by_request_locators"
+    ));
+    assert!(!retention_raw_table_has_rows(&path.0, "idempotency"));
+    assert!(!retention_raw_table_has_rows(&path.0, "provenance"));
+    assert!(!retention_raw_table_has_rows(&path.0, "audit_by_request"));
+    let findings = collect_structural_findings(RedbStore::open(&path.0).expect("reopen"));
+    assert!(
+        findings.is_empty(),
+        "locator rows must validate: {findings:?}"
+    );
+}
+
+/// ADR-0163's central guarantee: a durably committed command is recognised as
+/// already admitted even with the transient population index dormant.
+///
+/// Before the locator existed this returned "never admitted", so a retry
+/// re-executed the command. The bounded clean-close start is what makes the
+/// index dormant, which is exactly the state ADR-0156 readiness leaves it in.
+#[test]
+fn a_committed_command_is_still_recognised_with_the_population_index_dormant() {
+    let path = TestDatabasePath::new("locator-admission-dormant");
+    let (fixture, _) = prepare_committed_command_database(&path.0);
+
+    // Certify a clean close so the next open takes the bounded path.
+    let ports = open_operational(RedbStore::open(&path.0).expect("reopen to certify"));
+    ports
+        .write_clean_close_lifecycle()
+        .expect("write clean-close certificate");
+    drop(ports);
+
+    let ports = open_operational(RedbStore::open(&path.0).expect("bounded reopen"));
+    assert!(
+        ports.clean_close_fast_startup(),
+        "the certified database must take the bounded path"
+    );
+    assert_eq!(
+        ports.transient_index_rebuilds(),
+        0,
+        "the bounded path must leave the population caches cold"
+    );
+
+    // Re-admit the same idempotency identity. Proceeding would mean the writer
+    // believes this command was never admitted.
+    let candidate = ports
+        .begin_empty_batch()
+        .expect("begin batch")
+        .begin_candidate(Box::new(fixture.intent.clone()))
+        .expect("begin candidate");
+    let outcome = candidate.recheck_admission().expect("recheck admission");
+    assert!(
+        !matches!(outcome, CandidateAdmissionResult::Proceed(_)),
+        "a durably committed command must not be admitted again with the index dormant"
+    );
+    assert_eq!(
+        ports.transient_index_rebuilds(),
+        0,
+        "recognising it must not have required rebuilding the population index"
+    );
+}
+
+/// A locator that does not decode fails closed, never absent.
+#[test]
+fn an_undecodable_idempotency_locator_fails_closed() {
+    let path = TestDatabasePath::new("locator-undecodable");
+    let (fixture, _) = prepare_committed_command_database(&path.0);
+    overwrite_first_row(&path.0, "idempotency_locators", &[0xFF, 0xFF, 0xFF, 0xFF]);
+    assert!(
+        readmission_is_corrupt(&path.0, &fixture),
+        "an undecodable locator must be CorruptData, never absence"
+    );
+}
+
+/// A locator naming a segment that does not contain the key fails closed.
+#[test]
+fn an_idempotency_locator_naming_the_wrong_segment_fails_closed() {
+    let path = TestDatabasePath::new("locator-wrong-segment");
+    let (fixture, _) = prepare_committed_command_database(&path.0);
+    // Sequence 9_999 has no segment at all, so nothing owns the key.
+    let encoded = riffdb_storage_api::encode_command_locator_v1(
+        riffdb_storage_api::StoredCommandLocatorV1::new(
+            CommitSequence::new(9_999).expect("absent sequence"),
+        ),
+    )
+    .expect("encode a locator for an absent segment");
+    overwrite_first_row(&path.0, "idempotency_locators", encoded.as_bytes());
+    assert!(
+        readmission_is_corrupt(&path.0, &fixture),
+        "a locator naming a segment without the key must be CorruptData, never absence"
+    );
+}
+
+/// Replaces the first row's value in a raw table, leaving its key intact.
+fn overwrite_first_row(path: &Path, table_name: &str, value: &[u8]) {
+    let database = Database::open(path).expect("open raw");
+    let definition = TableDefinition::<&[u8], &[u8]>::new(table_name);
+    let write = database.begin_write().expect("begin raw write");
+    {
+        let read = database.begin_read().expect("raw read");
+        let key = read
+            .open_table(definition)
+            .expect("table")
+            .first()
+            .expect("first")
+            .map(|(key, _)| key.value().to_vec())
+            .expect("a locator row to damage");
+        let mut table = write.open_table(definition).expect("raw table");
+        table.insert(key.as_slice(), value).expect("overwrite");
+    }
+    write.commit().expect("commit raw damage");
+}
+
+/// Re-admits the fixture over a bounded (index-dormant) open and reports
+/// whether the writer failed closed rather than treating the command as absent.
+fn readmission_is_corrupt(path: &Path, fixture: &CommandFixture) -> bool {
+    let ports = open_operational(RedbStore::open(path).expect("reopen to certify"));
+    ports
+        .write_clean_close_lifecycle()
+        .expect("write clean-close certificate");
+    drop(ports);
+    let ports = open_operational(RedbStore::open(path).expect("bounded reopen"));
+    assert!(ports.clean_close_fast_startup());
+    let Ok(batch) = ports.begin_empty_batch() else {
+        return true;
+    };
+    let Ok(candidate) = batch.begin_candidate(Box::new(fixture.intent.clone())) else {
+        return true;
+    };
+    match candidate.recheck_admission() {
+        Err(error) => error.kind() == riffdb_storage_api::StorageErrorKind::CorruptData,
+        Ok(CandidateAdmissionResult::Proceed(_)) => false,
+        Ok(_) => false,
+    }
+}
+
 #[test]
 fn command_derived_checkpoint_tables_are_physically_empty() {
     let path = TestDatabasePath::new("derived-checkpoint-tables-empty");
