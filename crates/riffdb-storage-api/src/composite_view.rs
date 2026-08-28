@@ -658,7 +658,7 @@ impl CompositeMutationStage {
     ) -> Result<(), StorageValueError> {
         validate_before_image(current, mutation.expected_hash())?;
         let table = &mut self.tables[mutation.table().index()];
-        let key: Box<[u8]> = mutation.key().into();
+        let key: Arc<[u8]> = Arc::from(mutation.key());
         let replacement = mutation
             .value()
             .map(|value| OverlayValue::Value(Arc::from(value)))
@@ -1030,17 +1030,17 @@ impl FrozenCompositeOverlay {
             return Err(StorageValueError::IdentityMismatch);
         }
 
-        let mut touched = BTreeMap::<(CompositeTableV1, Box<[u8]>), ()>::new();
+        let mut touched = BTreeMap::<(CompositeTableV1, Arc<[u8]>), ()>::new();
         let mut lineage = self.lineage.as_ref();
         while !same_lineage(lineage, covered.lineage.as_ref()) {
             let node = lineage.ok_or(StorageValueError::IdentityMismatch)?;
             for (table, key) in node.keys.iter() {
-                touched.insert((*table, key.clone()), ());
+                touched.insert((*table, Arc::from(key.as_ref())), ());
             }
             lineage = node.predecessor.as_ref();
         }
 
-        let mut pending: [BTreeMap<Box<[u8]>, OverlayValue>; TABLE_COUNT] =
+        let mut pending: [BTreeMap<Arc<[u8]>, OverlayValue>; TABLE_COUNT] =
             array::from_fn(|_| BTreeMap::new());
         let mut charged_bytes = 0_usize;
         for ((table, key), ()) in touched {
@@ -1439,7 +1439,7 @@ fn apply_mutations_atomically(
     base: &impl CompositeViewBase,
     maximum_table_charge: usize,
 ) -> Result<(), StorageValueError> {
-    let mut pending_tables: [BTreeMap<Box<[u8]>, OverlayValue>; TABLE_COUNT] =
+    let mut pending_tables: [BTreeMap<Arc<[u8]>, OverlayValue>; TABLE_COUNT] =
         array::from_fn(|_| BTreeMap::new());
     let mut candidate_charge = *charged_bytes;
     for mutation in mutations {
@@ -1453,7 +1453,7 @@ fn apply_mutations_atomically(
         };
         validate_before_image(current.as_deref(), mutation.expected_hash())?;
 
-        let key: Box<[u8]> = mutation.key().into();
+        let key: Arc<[u8]> = Arc::from(mutation.key());
         let replacement = mutation
             .value()
             .map(|value| OverlayValue::Value(Arc::from(value)))
@@ -1508,7 +1508,11 @@ struct PersistentOverlayMap {
 }
 
 struct OverlayNode {
-    key: Box<[u8]>,
+    // Shared, never copied. A successor copies one search path, and a
+    // `Box<[u8]>` key here made that copy allocate and memcpy every key on the
+    // path; an `Arc<[u8]>` makes it a refcount bump. The bytes are immutable
+    // once inserted, so sharing them across successors is exact.
+    key: Arc<[u8]>,
     value: OverlayValue,
     height: u16,
     left: Option<Arc<Self>>,
@@ -1528,11 +1532,11 @@ impl PersistentOverlayMap {
         None
     }
 
-    fn insert(&mut self, key: Box<[u8]>, value: OverlayValue) {
+    fn insert(&mut self, key: Arc<[u8]>, value: OverlayValue) {
         self.root = Some(insert_overlay_node(self.root.as_ref(), key, value));
     }
 
-    fn from_sorted_entries(entries: BTreeMap<Box<[u8]>, OverlayValue>) -> Self {
+    fn from_sorted_entries(entries: BTreeMap<Arc<[u8]>, OverlayValue>) -> Self {
         let len = entries.len();
         let mut entries = entries.into_iter();
         Self {
@@ -1558,7 +1562,7 @@ impl PersistentOverlayMap {
 }
 
 fn build_balanced_overlay(
-    entries: &mut impl Iterator<Item = (Box<[u8]>, OverlayValue)>,
+    entries: &mut impl Iterator<Item = (Arc<[u8]>, OverlayValue)>,
     len: usize,
 ) -> Option<Arc<OverlayNode>> {
     if len == 0 {
@@ -1575,7 +1579,7 @@ fn build_balanced_overlay(
 
 fn insert_overlay_node(
     node: Option<&Arc<OverlayNode>>,
-    key: Box<[u8]>,
+    key: Arc<[u8]>,
     value: OverlayValue,
 ) -> Arc<OverlayNode> {
     let Some(node) = node else {
@@ -1601,7 +1605,7 @@ fn insert_overlay_node(
 }
 
 fn overlay_node(
-    key: Box<[u8]>,
+    key: Arc<[u8]>,
     value: OverlayValue,
     left: Option<Arc<OverlayNode>>,
     right: Option<Arc<OverlayNode>>,
@@ -2601,7 +2605,7 @@ mod tests {
             };
             for key in keys {
                 map.insert(
-                    key.to_be_bytes().to_vec().into_boxed_slice(),
+                    Arc::from(key.to_be_bytes().as_slice()),
                     OverlayValue::Value(Arc::from(key.to_be_bytes())),
                 );
             }

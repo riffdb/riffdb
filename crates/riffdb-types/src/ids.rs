@@ -3,6 +3,7 @@
 use std::error::Error;
 use std::fmt;
 use std::num::{NonZeroU32, NonZeroU64};
+use std::sync::Arc;
 
 use crate::limits::{
     MAX_ACTOR_ID_BYTES, MAX_CONTRACT_LINEAGE_BYTES, MAX_ENVIRONMENT_BYTES,
@@ -730,15 +731,21 @@ impl fmt::Display for TextIdError {
 }
 
 /// A bounded exact contract lineage name.
+///
+/// The text is held behind an `Arc` because this identifier is copied along
+/// every command record, index entry and audit target on the single writer
+/// thread; a `String` field made each of those copies a heap allocation.
+/// Validation, ordering, hashing and display are unchanged: `Arc<str>`
+/// delegates all four to the same `str`.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct ContractLineage(String);
+pub struct ContractLineage(Arc<str>);
 
 impl ContractLineage {
     /// Validates and creates a contract lineage without normalizing its text.
     pub fn new(value: impl Into<String>) -> Result<Self, TextIdError> {
         let value = value.into();
         validate_text_id(&value, MAX_CONTRACT_LINEAGE_BYTES)?;
-        Ok(Self(value))
+        Ok(Self(Arc::from(value)))
     }
 
     /// Borrows the exact contract lineage name.
@@ -966,7 +973,7 @@ impl fmt::Display for ContractLineage {
 
 /// A bounded ASCII environment slug.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct Environment(String);
+pub struct Environment(Arc<str>);
 
 impl Environment {
     /// Validates and creates an environment slug without changing its spelling.
@@ -981,7 +988,7 @@ impl Environment {
             return Err(TextIdError::InvalidCharacter { index });
         }
 
-        Ok(Self(value))
+        Ok(Self(Arc::from(value)))
     }
 
     /// Borrows the exact environment slug.
@@ -1087,14 +1094,14 @@ fn validate_text_id(value: &str, maximum: usize) -> Result<(), TextIdError> {
 
 /// A bounded stable principal identifier.
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct ActorId(String);
+pub struct ActorId(Arc<str>);
 
 impl ActorId {
     /// Validates and creates an actor identifier.
     pub fn new(value: impl Into<String>) -> Result<Self, TextIdError> {
         let value = value.into();
         validate_text_id(&value, MAX_ACTOR_ID_BYTES)?;
-        Ok(Self(value))
+        Ok(Self(Arc::from(value)))
     }
 
     /// Borrows the identifier text.
