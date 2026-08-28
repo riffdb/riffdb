@@ -1,4 +1,4 @@
-# ADR-0163: Interruptible Columnar Catch-Up and Graceful-Stop Abandonment
+# ADR-0164: Interruptible Columnar Catch-Up and Graceful-Stop Abandonment
 
 - **Status:** Proposed
 - **Direction approved:** No
@@ -12,7 +12,9 @@
 - **Defines or blocks:** the columnar-worker bounding package
 
 This record is planning input only until its exact text is accepted. The number
-0163 is provisional; ADR-0160 through ADR-0162 are already taken on `main`.
+ADR-0163 is taken by the accepted durable command-derived locator tables
+record, which was drafted concurrently with this one; 0164 is this record's
+number.
 
 ## Context
 
