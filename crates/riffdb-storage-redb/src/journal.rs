@@ -257,7 +257,7 @@ pub(crate) enum JournalTable {
     VectorEvidence = 15,
     VectorObservations = 16,
     VectorEvidenceIndex = 17,
-    /// ADR-0163 command-derived locator tables. Additive tags: an older journal
+    /// ADR-0165 command-derived locator tables. Additive tags: an older journal
     /// never carries them, so existing extents decode unchanged.
     IdempotencyLocators = 18,
     ProvenanceLocators = 19,

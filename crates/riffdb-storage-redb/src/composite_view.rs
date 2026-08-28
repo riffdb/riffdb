@@ -674,7 +674,7 @@ fn validate_canonical_entry(
                 }
             }
         }
-        // ADR-0163 locator rows: the key must decode as its own kind and the
+        // ADR-0165 locator rows: the key must decode as its own kind and the
         // value must decode as a command locator. Anything else is closed here
         // rather than reaching a reader that could report absence.
         CompositeTableV1::IdempotencyLocators => {

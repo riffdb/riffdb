@@ -1,4 +1,4 @@
-# ADR-0163: Durable Command-Derived Locator Tables
+# ADR-0165: Durable Command-Derived Locator Tables
 
 - **Status:** Accepted
 - **Direction approved:** 2026-08-27 (separate locator tables). The approval

@@ -368,7 +368,7 @@ impl ProductionGraphBuilder {
         // Skipping matters because the scan cannot be reached without
         // `ensure_transient_indexes_ready`, whose rebuild walks every command
         // segment -- 96% of a bounded start's wall clock at 115,690 retained
-        // commands. It is only SAFE because ADR-0163's durable locators now let
+        // commands. It is only SAFE because ADR-0165's durable locators now let
         // cold-cache point reads answer correctly instead of reporting absence;
         // before them this same skip made a real riffdbd restart report
         // "durable command outcome was not found".

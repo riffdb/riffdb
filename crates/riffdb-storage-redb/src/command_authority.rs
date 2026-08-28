@@ -428,7 +428,7 @@ pub(crate) fn commit_at_access(
 /// rather than a history walk.
 ///
 /// Returns `None` only when no row in that window owns the sequence. A caller
-/// resolving an ADR-0163 locator MUST treat that as corruption, never absence:
+/// resolving an ADR-0165 locator MUST treat that as corruption, never absence:
 /// the locator asserted the row exists.
 pub(crate) fn command_member_at_write_access(
     access: &crate::store::RedbWriteAccess,

@@ -218,7 +218,7 @@ fn capsulate_command_rows(
     Ok((segment, terminals))
 }
 
-/// Writes the ADR-0163 locator rows that make a segment-owned command
+/// Writes the ADR-0165 locator rows that make a segment-owned command
 /// resolvable by key without the transient population index.
 ///
 /// A command's outcome, provenance and audits live inside its command segment,
@@ -2501,7 +2501,7 @@ fn command_outcome_from_write_indexes(
     // This is the admission lookup, so `Ok(None)` means "never admitted" and a
     // durably committed command answering absent is executed again. With the
     // transient index dormant and no physical IDEMPOTENCY row that is exactly
-    // what happened; the ADR-0163 locator closes it.
+    // what happened; the ADR-0165 locator closes it.
     //
     // Every failure below is closed, never absent: only a genuinely absent
     // locator is absence.
@@ -2644,7 +2644,7 @@ fn command_outcome_from_operational_indexes(
     {
         return command_outcome_from_member(&segment, locator, identity).map(Some);
     }
-    // ADR-0163 locator table, consulted BEFORE any absence conclusion below.
+    // ADR-0165 locator table, consulted BEFORE any absence conclusion below.
     //
     // The coverage short-circuit that follows infers absence from the validated-
     // prefix checkpoint covering the captured frontier. That inference assumes
@@ -3143,7 +3143,7 @@ fn provenance_exists(core: &BatchCore, provenance_id: ProvenanceId) -> Result<bo
     {
         return Ok(true);
     }
-    // ADR-0163: provenance is segment-owned, so PROVENANCE is empty and the
+    // ADR-0165: provenance is segment-owned, so PROVENANCE is empty and the
     // locator table is what proves the id is taken. Checking only PROVENANCE
     // reported a reserved id as free.
     if core
