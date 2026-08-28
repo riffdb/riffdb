@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 1.16
+**Version:** 1.17
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
 **Date:** 27 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 1.17 | 2026-08-27 | Accepted ADR-0163 and ADR-0164. Registered BLK-046 through BLK-057 and WP-716 through WP-718 for one compiler-sealed decision over a deferred initialized binding with ordered apply, exact no-effect, and typed whole-command rejection arms. Ignored elements remain transaction-current dependencies; union authority, selected policy, atomic outcome/replay, bounded branch work, and least-sufficient V18 identities are mandatory, while general branching and framework behavior remain forbidden. Registered OQ-075 through OQ-083, DRV-018, and WP-719/WP-720 for one stronger `AdmissionHead` query option: RiffDB captures the authorized application head once on the first page, combines it with existing causal floors, selects one sufficient snapshot/provider epoch, freezes that floor and epoch across cursors, and waits only within closed service bounds without process-local adapter state or stale fallback. |
 | 1.16 | 2026-08-27 | Accepted ADR-0159 and registered OQ-068 through OQ-074, DRV-017, and WP-708/WP-709. An ordinary ordered `take $limit after $cursor` continuation binds a cursor-specific hash of every invariant parameter while the submitted page cardinality may change within the same immutable compiled domain. Plan, declared maximum, predicates, order, authority, history, snapshot, and provider epoch remain bound; nearest/vector K and every non-page semantic input remain identity-bearing. One narrow append-only external-adapter exception may coalesce bounded RiffDB pages when an authoritative upstream interface requires a larger exact page, without raising RiffDB ceilings, filtering, sorting, counting, discarding, restarting, or adding framework code to RiffDB. |
 | 1.15 | 2026-08-27 | Accepted ADR-0158 and registered OQ-062 through OQ-067, DX-050, DRV-016, and WP-706/WP-707. RiffQL adds the closed query-only `Limit<MAX>` refinement with an implicit minimum of one and a maximum through 499. Planner cost, role authority, generated schemas, runtime validation, and result budgets use the declared maximum rather than the default or submitted value. RiffQL V9, query IR V12, and query-module format V12 are additive successors; old `Limit` source and every V1-V8/V1-V11/V1-V11 artifact remain byte-exact and readable. No global ceiling, protocol, storage format, provider algorithm, or external-framework branch changes. |
 | 1.14 | 2026-08-26 | Accepted ADR-0156 and ADR-0157 and registered STO-023, REC-004, PERF-019, WP-704, and WP-705 for an automatic conventional clean-close fast path. One private engine-atomic CLEAN/DIRTY lifecycle certificate may replace population-wide validation only after every writer and journal suffix drains and only when bounded identity, frontier, catalog, and authority roots match; its exact key, seven-field Protobuf identity, hashes, bounded-root framing, checked generation, and registry migration are frozen, and it is durably replaced by DIRTY before writers reactivate. Missing, dirty, stale, repaired, migrated, restored, or contradictory state retains complete validation. Latent unrelated corruption may be detected on access or explicit scrub rather than before clean readiness. No caller or operator can select the fast path, and no signing key or hostile-offline-write claim is added. |
@@ -7657,6 +7658,12 @@ does not create a kernel or storage escape hatch.
   plan, non-cardinality parameter, authorization, snapshot, order, provider-
   epoch, error, and cancellation semantics. No target-language binding may
   select excluded cursor fields or weaken authoritative Rust validation.
+- `DRV-018`: Rust, Go, TypeScript, Python, CLI, MCP, local-driver, and remote-
+  gRPC query options MUST carry the same closed `AdmissionHead` consistency
+  value through one API-neutral service implementation. The value contains no
+  raw head or caller-selected wait; older peers fail through capability/version
+  guidance rather than target-language caching, connection-order inference,
+  transport-local waiting, retry of stale success, or silent downgrade.
 
 ### 24.5.3 Compiler-bounded collection mutations
 
@@ -7864,6 +7871,64 @@ does not create a kernel or storage escape hatch.
   and one mutation per target with no dormant-row command, internal service
   recursion, generic upsert/branching, framework code, or per-index repeated
   initializer/compatibility proof.
+- `BLK-046`: Contract source MAY declare one `observe_or_initialize` exact-key
+  binding consumed immediately and exactly once by one `decide` block containing
+  one through eight ordered `when` arms and one mandatory `else`. Arms are
+  limited to `apply`, `no_effect`, or typed whole-command `reject`; nesting,
+  jumps, callbacks, dynamic targets/outcomes, and general control flow are
+  forbidden.
+- `BLK-047`: A deferred initialized binding MUST retain ADR-0153's typed,
+  state-independent initializer and path-sensitive definite-assignment rules
+  without exposing absence/presence origin. Every arm predicate, target,
+  binding, effect, outcome, reveal, and dependency MUST be finite, deterministic,
+  compiler-resolved, and same-partition.
+- `BLK-048`: An `apply` arm MUST finalize the deferred target as exactly one
+  revalidated create or revision-checked replace and MAY execute only its finite
+  compiler-declared branch-local suffix. A `no_effect` arm MUST create no
+  application entity mutation, index delta, event, outbox intent, workflow
+  transition, or changelog row for that decision.
+- `BLK-049`: Selecting `reject` for any ordinary or collection decision MUST
+  produce exactly its declared business outcome and discard every provisional
+  application effect from the complete command. No partial per-element success
+  or earlier/later arm effect may be released.
+- `BLK-050`: Every apply, no-effect, and reject choice MUST depend on one exact
+  absence or present-version/hash observation and every other influential
+  selected-arm dependency. Conflict or authority drift MUST discard the whole
+  graph and reevaluate every choice; a stale no-effect classification MUST
+  never commit beside another element's effects.
+- `BLK-051`: Invocation authority MUST include the union of all reachable arm
+  operations, entities, fields, relationships, events, outcomes, and reveals
+  before state access. Absent-path decisions use create policy over the complete
+  provisional/successor record; present-path decisions use update policy over
+  the exact preimage and selected successor, with an unchanged successor for
+  no-effect or reject.
+- `BLK-052`: An all-no-effect command MUST still persist its normal idempotent
+  outcome, provenance, audit, and nonzero commit sequence while persisting no
+  application effect. Idempotent replay and uncertainty recovery MUST return
+  the exact original success or rejection without rereading or reselecting arms.
+- `BLK-053`: Static decision-effect cost MUST charge the maximum arm plus the
+  real bounded union of arm-independent observation, capability, and authority
+  work. Runtime MUST construct and charge only the selected arm's application
+  effects beneath every existing element, byte, target, graph, index, validation,
+  correlated-work, retry, outcome, and partition ceiling.
+- `BLK-054`: Grammar, dataflow, authority, target, relationship, uniqueness,
+  index-alternative, byte, and compatibility proof MUST be paid once per plan;
+  predicate evaluation occurs once per decision instance. No proof or
+  unselected application effect may repeat per field, index, validation target,
+  storage operation, retry substep, page, or generated-language layer.
+- `BLK-055`: Deferred initialized decisions MUST use least-sufficient V18
+  grammar, executable-IR, and bundle identities with canonical arm order,
+  predicate, kind, branch-local program, and rejection encoding. V1-V17 bytes
+  remain exact and readable; old readers reject V18 before activation and no
+  durable command/storage encoding changes without separate review.
+- `BLK-056`: Memory/redb, deterministic concurrency, failpoint recovery, policy,
+  secret, idempotency, generated Rust/Go/TypeScript/Python, CLI, MCP, local-
+  driver, and remote-gRPC corpora MUST agree for ordinary and 1/9/19/100-element
+  apply, no-effect, mixed, and rejection commands.
+- `BLK-057`: Acceptance MUST prove one generic real consumer can replace a
+  racy pre-read/omit sequence with one generated atomic decision command while
+  keeping its schema, routes, adapter source, business-policy names, generated
+  profile, and framework packages outside RiffDB.
 
 Compiler-bounded one-hop cascade deletion extends that closed bulk-command
 model without introducing recursive graph traversal or caller-selected delete
@@ -8270,6 +8335,45 @@ behavior:
   compiled row, byte, fuel, scan, policy, provider, frame, and response bounds;
   no ceiling increase, hidden server page walk, framework branch, schema,
   route, adapter source, or speculative streaming protocol is introduced.
+- `OQ-075`: Generated application queries MAY request the one stronger closed
+  `AdmissionHead` consistency class. It requires a snapshot/provider frontier
+  at least the authorized application head captured for the logical query and
+  MUST NOT weaken explicit causal, session, source-freshness, policy, or
+  provider requirements. Omission retains existing behavior.
+- `OQ-076`: For a first-page or non-cursor request, the API-neutral service MUST
+  capture the committed application head exactly once after successful initial
+  authorization and before provider/snapshot selection, then use the maximum of
+  that head, explicit read-after-commit, and inherited session floors.
+- `OQ-077`: An authoritative query MUST use one immutable snapshot at or beyond
+  the computed floor. A projected, exact-index, or composite query MUST use one
+  servable provider/common epoch at or beyond it; page rows, totals, facets,
+  ranks, offsets, aggregates, and continuations MUST share that epoch.
+- `OQ-078`: A cursor minted by an admission-fenced first page MUST bind its
+  consistency class, computed floor, and selected snapshot/provider epoch in
+  addition to all existing identities. Continuations MUST reuse those facts
+  without recapturing the head; a non-fenced cursor cannot be upgraded in place.
+- `OQ-079`: Admission-head waiting MUST stop at the earliest request deadline,
+  cancellation, or finite server-owned freshness-wait ceiling and use bounded
+  provider notification/readiness mechanisms. Callers MUST NOT choose a wait,
+  poll interval, provider, epoch, worker, activation, or fallback.
+- `OQ-080`: Failure to reach the floor MUST return the existing typed freshness/
+  lifecycle family with bounded safe guidance. RiffDB MUST NOT serve a lower
+  frontier, silently change source, busy-poll, hold writer authority, walk
+  pages, use adapter state, or release partial results.
+- `OQ-081`: Current capability and row/field policy MUST be revalidated after
+  waiting and before release. Admission-head consistency grants no field, row,
+  partition, provider, secret, or historical authority, and failures/telemetry
+  MUST NOT expose captured sequences, tenant keys, values, or hidden-result
+  cardinality.
+- `OQ-082`: Immutable descriptor and policy-shape compatibility MUST be paid
+  once per plan/provider epoch; head capture, provider selection, epoch
+  negotiation, and freshness proof MUST be paid once per logical query. None
+  may repeat per row, result, operation step, provider subcall, or continuation.
+- `OQ-083`: Deterministic barrier, cross-client/process, continuous-write cursor,
+  lag/rebuild/divergence, saturation/cancellation, exact-count/offset, policy/
+  revocation, compatibility, generated-surface, and external value-free evidence
+  MUST prove fresh-through-admission semantics without claiming linearizability
+  or introducing framework code.
 
 ### 24.5.5 Compiled workflow concurrency
 

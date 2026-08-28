@@ -181,6 +181,8 @@ direction, merged draft, or implementation choice.
 | [0160](0160-rebuildable-columnar-segment-v2.md) | Rebuildable Typed Columnar Segment V2 and Exact Segment Pruning | Proposed |
 | [0161](0161-compiler-sealed-vectorized-columnar-execution.md) | Compiler-Sealed Vectorized Columnar Execution and Bounded Parallel Scans | Proposed |
 | [0162](0162-incremental-analytical-provider-structures.md) | Compiler-Declared Incremental Analytical Provider Structures | Proposed |
+| [0163](0163-compiler-sealed-command-decisions.md) | Compiler-Sealed Command Decisions with Exact No-Effect Arms | Accepted |
+| [0164](0164-admission-head-fenced-query-consistency.md) | Admission-Head-Fenced Query Consistency | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through

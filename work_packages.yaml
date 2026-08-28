@@ -1,4 +1,4 @@
-spec_version: '1.16'
+spec_version: '1.17'
 product: RiffDB
 repository: riffdb
 status: deployable-application-alpha-architecture-accepted
@@ -1965,6 +1965,292 @@ work_packages:
       layout, executor, structure, policy, fallback, freshness, or resource choices unavailable to apps.
     scale: Evidence spans fixed large partitions but every runtime/evidence artifact, buffer, task,
       state structure, retention hold, and diagnostic remains bounded independently of total history.
+  human_review_triggers: *id001
+- id: WP-716
+  name: Compiler-sealed command-decision language and V18 identities
+  depends_on: [WP-697]
+  objective: Implement ADR-0163's deferred initialized binding and one closed ordered decision
+    algebra with apply, exact no-effect, and typed whole-command rejection arms, preserving finite
+    dataflow, union authority, branch cost, same-partition target visibility, and least-sufficient
+    V18 identities without adding general control flow or framework behavior.
+  requirements: [BLK-046, BLK-047, BLK-048, BLK-049, BLK-051, BLK-053,
+    BLK-054, BLK-055, DSL-001, DSL-002, DSL-003, DSL-004, DSL-005, DSL-006,
+    DSL-007, DSL-008, DSL-009, DSL-010, DSL-011, DSL-012, SAFE-004, SAFE-005]
+  required_adrs: [ADR-0002, ADR-0003, ADR-0012, ADR-0031, ADR-0055,
+    ADR-0107, ADR-0124, ADR-0129, ADR-0147, ADR-0149, ADR-0153, ADR-0163]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+    adr/0163-compiler-sealed-command-decisions.md,
+    release/version-topology-v1.json, crates/riffdb-types/**,
+    crates/riffdb-contract-syntax/**, crates/riffdb-contract-ir/**,
+    crates/riffdb-contract-compiler/**, crates/riffdb-diagnostics/**,
+    crates/riffdb-cli/assets/editor/**, clients/editor/**, fixtures/compiler/**,
+    fixtures/contracts/**, fuzz/**, tests/**, scripts/**, docs/SUMMARY.md,
+    docs/contracts/**, docs/architecture/**, docs/known-limitations.md]
+  deliverables:
+  - Source grammar, formatter, syntax AST, source spans, editor grammar, and bounded item accounting
+    for observe_or_initialize plus immediately consuming decide blocks with one through eight ordered
+    when arms, mandatory else, and exact apply/no_effect/reject arm kinds
+  - Compiler-resolved deferred initialized binding and arm-local program whose predicates,
+    expressions, targets, effects, outcomes, reveals, and dependencies are deterministic, typed,
+    finite, same-partition, and current-element/input computable, with nesting and dynamic behavior
+    rejected at exact source spans
+  - Path-sensitive definite assignment for absent/present and every arm, complete apply postimages,
+    unchanged no-effect/reject successors, common-success value safety, branch-local create safety,
+    secret flow, relationship, uniqueness, invariant, and alias analysis
+  - Static discovery/role/capability metadata containing the union of every reachable arm authority
+    and selected-state create/update policy requirements without exposing state origin or arm choice
+  - Conservative cost proof charging maximum selected application effects plus real union overhead
+    beneath unchanged collection, byte, target, graph, index, validation, correlated-work, retry,
+    outcome, and partition limits, with pay-once architecture assertions
+  - Least-sufficient grammar/executable-IR/bundle V18 tags and canonical arm encoding, topology
+    registration, golden/hash/lock fixtures, old-reader refusal, and byte-exact V1-V17 writer corpus
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler --all-features
+  - cargo +1.97.0 test -p riffdb-diagnostics --all-features
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler -p riffdb-diagnostics --all-targets --all-features -- -D warnings
+  exit_gate: Valid V18 decisions lower to one finite exact arm program with complete dataflow,
+    authority, policy, target, cost, and compatibility proofs; every invalid shape fails at a source
+    span; old artifacts remain exact; and no general branch, callback, state-origin value, dynamic
+    target/outcome, framework path, or unregistered identity exists.
+  standing_design_tests:
+    interface_safety: Applications declare only one finite arm set over compiler-known values and
+      targets; they cannot submit control flow, select an arm, inspect origin, choose transaction or
+      conflict behavior, weaken atomicity, or opt out of a guarantee.
+    scale: Arms, depth, bindings, targets, expressions, bytes, effects, indexes, and collection
+      elements are statically bounded; compiler proof is per plan and introduces no scan, dynamic
+      graph, cross-partition work, or population-sized state.
+  human_review_triggers: *id001
+- id: WP-717
+  name: Atomic command-decision runtime policy and recovery
+  depends_on: [WP-698, WP-716]
+  objective: Execute ADR-0163 decisions from exact transaction-current observations so apply commits
+    only its selected graph, no-effect commits no application effects while remaining revalidated,
+    and rejection atomically discards the complete ordinary or bounded collection command across
+    memory/redb, retries, idempotency, policy, uncertainty, and crash recovery.
+  requirements: [BLK-046, BLK-048, BLK-049, BLK-050, BLK-051, BLK-052,
+    BLK-053, BLK-054, BLK-056, TXN-010, TXN-011, TXN-012, TXN-013,
+    PERF-004, PERF-005, SAFE-004, SAFE-005]
+  required_adrs: [ADR-0002, ADR-0003, ADR-0004, ADR-0005, ADR-0012,
+    ADR-0023, ADR-0055, ADR-0107, ADR-0124, ADR-0129, ADR-0147, ADR-0149,
+    ADR-0153, ADR-0163]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0163-compiler-sealed-command-decisions.md,
+    release/version-topology-v1.json, crates/riffdb-types/**,
+    crates/riffdb-contract-ir/**, crates/riffdb-invariant/**,
+    crates/riffdb-runtime/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-commit/**, crates/riffdb-policy/**, crates/riffdb-service/**,
+    crates/riffdb-testkit/**, fixtures/**, tests/**, fuzz/**, scripts/**,
+    docs/contracts/**, docs/architecture/**, docs/known-limitations.md]
+  deliverables:
+  - Snapshot materialization for deferred absent/present initialized records and selected branch-local
+    dependencies, retaining exact absence/version/hash evidence and no state-origin value
+  - Deterministic ordered predicate evaluation producing only the selected apply graph, an exact
+    no-application-effect dependency, or one typed whole-command rejection with no unselected
+    mutation/event/index/changelog construction
+  - Coordinator capability acquisition and complete revalidation schedules proving stale apply,
+    ignore, and rejection choices are discarded and every arm is reselected on bounded retry
+  - Union invocation authority plus exact absent create and present update policy, unchanged-successor
+    policy for no-effect/reject, branch-local policy, revocation, secrets, relationships, uniqueness,
+    invariants, events, provenance, redaction, and response-release equivalence
+  - Ordinary and 1/9/19/100-element all-apply, all-ignore, mixed, and each-rejection execution under
+    duplicate, byte, graph, index-work, cancellation, saturation, and complete-or-absent boundaries
+  - Memory/redb failpoint and replay corpus proving all-no-effect still has one durable outcome/audit/
+    provenance/sequence, uncertain resolution is exact, and no application effect survives rejection
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-runtime -p riffdb-commit -p riffdb-policy -p riffdb-service --all-features
+  - cargo +1.97.0 test -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-testkit --all-features
+  - cargo +1.97.0 test -p riffdb-commit --test command_concurrency --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test bulk_command_recovery --all-features
+  - ./scripts/recovery_full
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy -p riffdb-runtime -p riffdb-commit -p riffdb-policy -p riffdb-service -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-testkit --all-targets --all-features -- -D warnings
+  exit_gate: Every decision uses transaction-current evidence and commits exactly its selected
+    complete graph, no-effect, or whole-command rejection with exact policy, replay, uncertainty,
+    crash, and bounded bulk behavior; no stale choice, partial effect, framework behavior, repeated
+    proof, or weakened ceiling remains.
+  standing_design_tests:
+    interface_safety: Runtime derives the arm only from the compiled program and revalidated state;
+      no caller, adapter, transport, backend, or configuration can choose it or bypass authority,
+      policy, validation, atomicity, idempotency, durability, or provenance.
+    scale: One bounded decision and selected arm execute per target beneath existing finite retry,
+      graph, index, byte, collection, and partition bounds with no scan, task per row, dynamic target
+      discovery, or cross-partition transaction.
+  human_review_triggers: *id001
+- id: WP-718
+  name: Command-decision generated compatibility and external acceptance
+  depends_on: [WP-699, WP-717]
+  objective: Close ADR-0163 across generated/public surfaces, compatibility topology, handbook,
+    architecture checks, and one value-free real-consumer receipt while retaining all external
+    schemas, policy names, routes, adapter code, and generated profiles in their owning repository.
+  requirements: [BLK-046, BLK-049, BLK-051, BLK-052, BLK-054, BLK-055,
+    BLK-056, BLK-057, DRV-007, DRV-008, DRV-012, DRV-014, SAFE-004,
+    SAFE-005, PERF-004, PERF-005]
+  required_adrs: [ADR-0055, ADR-0107, ADR-0124, ADR-0129, ADR-0142,
+    ADR-0147, ADR-0148, ADR-0149, ADR-0153, ADR-0163]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0163-compiler-sealed-command-decisions.md,
+    release/version-topology-v1.json, proto/**, crates/**, clients/**,
+    templates/**, fixtures/**, examples/**, tests/**, benchmarks/**, scripts/**,
+    docs/**, release/evidence/**]
+  deliverables:
+  - Rust, Go, TypeScript, Python, CLI, MCP, local-driver, and remote-gRPC exact operation/input/
+    outcome/error/authority conformance without a caller-visible arm, origin, transaction, target,
+    predicate, policy, callback, or handwritten semantic branch
+  - Framework-neutral generated lifecycle application covering absent/present apply, no-effect,
+    mixed bulk, typed rejection, event/changelog, policy, secret, uncertainty, and replay
+  - V1-V17/V18 compatibility, deployment rotation, recovery, generated-artifact, application-lock,
+    role, topology, and clean-install evidence with no durable decoder retirement
+  - Stage-attributed operation/mutation/index/changelog receipt proving ignored elements emit no
+    application work and unselected arms do not pay physical-effect cost
+  - Value-free external capability receipt proving one real consumer's atomic apply/ignore/reject
+    contract, with all external code and vocabulary absent from RiffDB
+  - Handbook and architecture inventory distinguishing sealed decisions from general branching,
+    callbacks, per-item partial outcomes, dynamic targets, and consumer-owned business policy
+  acceptance_commands:
+  - cargo +1.97.0 test --workspace --all-features
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every generated surface, backend, policy case, restart path, bound, and compatibility
+    window preserves exact apply/no-effect/rejection semantics; generic and external receipts are
+    green; and no framework code, caller branch, stale choice, false changelog, or unexplained
+    generated drift remains.
+  standing_design_tests:
+    interface_safety: Generated callers receive only the named command's typed input and outcomes;
+      no surface exposes branch control, origin, transaction machinery, target selection, or a
+      guarantee opt-out.
+    scale: Acceptance uses bounded generic corpora and value-free receipts; generation and transport
+      add no per-row proof, unbounded allocation, dynamic program, or external population state.
+  human_review_triggers: *id001
+- id: WP-719
+  name: Admission-head service floor provider negotiation and cursor identity
+  depends_on: [WP-645, WP-667, WP-696, WP-708]
+  objective: Implement ADR-0164's stronger AdmissionHead query option through the API-neutral
+    service by capturing one authorized application head, combining every causal floor, selecting
+    one sufficient authoritative/provider/common epoch, freezing it across cursors, and waiting only
+    through bounded cancellable readiness without stale fallback or process-local adapter state.
+  requirements: [OQ-075, OQ-076, OQ-077, OQ-078, OQ-079, OQ-080,
+    OQ-081, OQ-082, PRJ-001, PRJ-002, PRJ-003, PRJ-004, SAFE-004, SAFE-005]
+  required_adrs: [ADR-0004, ADR-0010, ADR-0051, ADR-0052, ADR-0053,
+    ADR-0055, ADR-0070, ADR-0071, ADR-0086, ADR-0108, ADR-0111, ADR-0124,
+    ADR-0130, ADR-0134, ADR-0141, ADR-0150, ADR-0158, ADR-0159, ADR-0164]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0164-admission-head-fenced-query-consistency.md,
+    release/version-topology-v1.json, proto/**, crates/riffdb-types/**,
+    crates/riffdb-errors/**, crates/riffdb-storage-api/**,
+    crates/riffdb-query-ir/**, crates/riffdb-query-executor/**,
+    crates/riffdb-query-module/**, crates/riffdb-columnar/**,
+    crates/riffdb-projection/**, crates/riffdb-policy/**,
+    crates/riffdb-service/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-client-rust/**, crates/riffdb-server/**,
+    crates/riffdb-testkit/**, fixtures/**, tests/**, scripts/**,
+    docs/SUMMARY.md, docs/concepts/**, docs/riffql/**, docs/architecture/**,
+    docs/getting-started/**, docs/known-limitations.md]
+  deliverables:
+  - Closed service-level AdmissionHead option and request conversion whose absent value retains exact
+    behavior and whose present value cannot weaken another causal/source/policy/provider requirement
+  - Initial-auth-then-once head capture and maximum-floor calculation with deterministic barrier
+    evidence around pre-admission and post-capture commits and no transport-local observation
+  - Authoritative snapshot, projected provider, maintained exact-index, and composite common-epoch
+    selection at or beyond the floor, with page/count/facet/rank/offset/aggregate alignment
+  - Cursor registry binding for consistency class, computed floor, and selected epoch; continuations
+    recapture nothing, page cardinality remains independent, and an old cursor cannot be upgraded
+  - Bounded notification-based waiting, waiter admission/fairness/cancellation/deadline/saturation,
+    lifecycle/refusal mapping, post-wake and pre-release reauthorization, and redacted telemetry
+  - Pay-once instrumentation proving descriptor/policy compatibility per plan/provider epoch and
+    capture/selection/negotiation/freshness proof once per logical query, never per row or page
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-service -p riffdb-query-executor -p riffdb-projection -p riffdb-columnar -p riffdb-policy --all-features
+  - cargo +1.97.0 test -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-server -p riffdb-testkit --all-features
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy -p riffdb-service -p riffdb-query-executor -p riffdb-projection -p riffdb-columnar -p riffdb-policy -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-server --all-targets --all-features -- -D warnings
+  exit_gate: Every AdmissionHead request serves one authorized snapshot/epoch at or beyond its
+    once-captured maximum floor or returns a bounded typed refusal; cursors freeze that proof under
+    sustained writes; and no stale fallback, process cache, recapture, busy polling, policy bypass,
+    transport branch, or repeated descriptor proof remains.
+  standing_design_tests:
+    interface_safety: Applications choose only the stronger closed class and cannot submit a head,
+      epoch, provider, wait, poll, worker, fallback, isolation level, or stale-success opt-out.
+    scale: One capture, negotiation, bounded waiter, and retained epoch occur per logical query;
+      continuation, row, result, and provider subcalls add no repeated proof or duration/population-
+      proportional state.
+  human_review_triggers: *id001
+- id: WP-720
+  name: Admission-head generated compatibility and cross-process acceptance
+  depends_on: [WP-565, WP-703, WP-709, WP-719]
+  objective: Close ADR-0164 across additive gRPC/driver options, generated Rust/Go/TypeScript/Python,
+    CLI, MCP, local/remote execution, compatibility negotiation, cross-process conformance, handbook,
+    and one value-free external receipt without exposing raw heads or framework vocabulary.
+  requirements: [OQ-075, OQ-078, OQ-079, OQ-080, OQ-081, OQ-082,
+    OQ-083, DRV-007, DRV-008, DRV-012, DRV-014, DRV-018, SAFE-004, SAFE-005]
+  required_adrs: [ADR-0053, ADR-0055, ADR-0070, ADR-0071, ADR-0086,
+    ADR-0124, ADR-0130, ADR-0141, ADR-0148, ADR-0150, ADR-0158, ADR-0159,
+    ADR-0164]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0164-admission-head-fenced-query-consistency.md,
+    release/version-topology-v1.json, proto/**, crates/riffdb-errors/**,
+    crates/riffdb-proto/**, crates/riffdb-service/**,
+    crates/riffdb-api-grpc/**, crates/riffdb-api-mcp/**,
+    crates/riffdb-client-rust/**, crates/riffdb-query-module/**,
+    crates/riffdb-driver-host/**, crates/riffdb-cli/**, clients/**,
+    templates/**, examples/**, fixtures/**, tests/**, scripts/**,
+    release/evidence/**, docs/**]
+  deliverables:
+  - Additive closed gRPC and shared driver-core request value plus capability/version negotiation;
+    omission preserves legacy behavior and older peers return typed refresh/upgrade guidance
+  - Generated Rust, Go, TypeScript, and Python options and CLI/MCP routes carrying one semantic value
+    with no raw sequence, caller wait, provider, transport-local capture, connection-order inference,
+    retry of stale success, or silent downgrade
+  - Installed local-driver and remote-gRPC cross-language corpus covering authoritative, projected,
+    exact-index, composite, explicit-fence maximum, cursor, count/offset, error, cancellation, and
+    revocation equivalence
+  - Cross-client/process and sustained-write process tests proving an acknowledged pre-admission
+    write is visible without adapter state and later cursor pages retain the first epoch
+  - Protobuf/driver compatibility fixtures, topology, generated freshness, clean-install, old-client
+    omission, old-server refusal, and unchanged query/lock/role/durable/cursor-token identities
+  - Handbook and value-free external receipt mapping one stronger external preference to AdmissionHead
+    while retaining the external enum, schema, adapter, and conformance source outside RiffDB
+  acceptance_commands:
+  - cargo +1.97.0 test --workspace --all-features
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-application-bindings
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every public/generated surface implements one fresh-through-admission guarantee across
+    processes and providers with exact cursor/epoch, error, cancellation, policy, and compatibility
+    behavior; external evidence is green; and no raw head, unsafe wait, stale fallback, framework
+    branch, or unexplained identity drift remains.
+  standing_design_tests:
+    interface_safety: Every public surface exposes only the same stronger enum and cannot express a
+      raw head, wait, provider, fallback, transport-local policy, or guarantee downgrade.
+    scale: Cross-surface tests retain bounded requests, waiters, pages, processes, epochs, and
+      diagnostics; generated/driver layers add no per-row work or population-sized state.
   human_review_triggers: *id001
 - id: WP-678
   name: Aggregate collection-byte language, proof, and IR successors
