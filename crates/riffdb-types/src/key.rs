@@ -248,8 +248,18 @@ struct KeyBuilder {
 }
 
 impl KeyBuilder {
+    /// Bytes reserved when a key builder starts.
+    ///
+    /// Reserving only the six-byte prefix made every subsequent component push
+    /// grow the vector, so one key encode cost four or five allocations
+    /// (6 -> 8 -> 16 -> 32 -> 64) on the single writer thread. Reserving a
+    /// whole typical key up front makes it one. This is a capacity hint only:
+    /// the encoded bytes, the component bounds and `MAX_KEY_BYTES` are
+    /// unchanged, and a longer key still grows exactly as it did before.
+    const INITIAL_CAPACITY: usize = 64;
+
     fn new(prefix: &[u8], type_id: [u8; 4]) -> Self {
-        let mut bytes = Vec::with_capacity(prefix.len() + type_id.len());
+        let mut bytes = Vec::with_capacity(Self::INITIAL_CAPACITY);
         bytes.extend_from_slice(prefix);
         bytes.extend_from_slice(&type_id);
         Self { bytes }
