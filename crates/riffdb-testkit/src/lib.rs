@@ -10,3 +10,6 @@ pub mod inspection;
 pub mod model;
 pub mod process;
 pub mod scratch;
+
+#[cfg(test)]
+mod external_page_coalescing;

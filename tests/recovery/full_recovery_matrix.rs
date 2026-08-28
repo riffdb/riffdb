@@ -228,6 +228,17 @@ fn main() -> ExitCode {
         }
         Err(error) => {
             eprintln!("full_recovery_matrix failed: {error}");
+            // Print the whole chain, not just the outermost line. The
+            // inspector's own `Display` is a fixed category label that
+            // deliberately omits the concrete cause, so the summary alone
+            // cannot distinguish (for example) a corrupt-decode rejection from
+            // a missing reciprocal record. Reporting the chain is what makes a
+            // red arm diagnosable instead of merely known-red.
+            let mut source = error.source();
+            while let Some(cause) = source {
+                eprintln!("  caused by: {cause}");
+                source = cause.source();
+            }
             ExitCode::FAILURE
         }
     }
