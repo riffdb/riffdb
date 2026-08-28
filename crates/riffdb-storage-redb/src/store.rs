@@ -4846,6 +4846,23 @@ impl RedbWriteAccess {
             .map(|value| value.is_some())
     }
 
+    /// True when the transient population indexes are dormant, which is what a
+    /// bounded clean-close start leaves them.
+    ///
+    /// A write-path caller cannot warm them: it already holds the mutation
+    /// lease and `ExclusiveGate` is a non-reentrant ticket lock. So a caller
+    /// that must not manufacture absence uses this to select a durable fallback
+    /// for the dormant case ONLY, leaving the warm case -- where an index miss
+    /// is a real, meaningful answer such as "not published yet" -- untouched.
+    pub(crate) fn transient_indexes_dormant(&self) -> Result<bool, StorageError> {
+        let state = self
+            .shared
+            .transient_indexes
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        Ok(matches!(*state, TransientIndexState::Dormant))
+    }
+
     pub(crate) fn command_audit_record(
         &self,
         sequence: riffdb_types::AdministrationSequence,
