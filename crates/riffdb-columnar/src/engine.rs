@@ -140,6 +140,9 @@ pub struct ColumnarEngine {
     has_published: bool,
     /// Durable frontier from last successful checkpoint / open.
     durable_frontier: FrontierPosition,
+    /// True once a MANIFEST describing this engine's durable state exists,
+    /// either loaded at open or written by a checkpoint in this process.
+    has_manifest: bool,
     /// History incarnation bound into published frontiers (immutable for engine life).
     history_incarnation: u64,
 }
@@ -158,6 +161,7 @@ impl ColumnarEngine {
         let mut apply = ApplyState::new(definition.clone());
         let mut has_published = false;
         let mut durable_frontier = FrontierPosition::BeforeFirst;
+        let mut has_manifest = false;
 
         match checkpoint.load_manifest()? {
             None => {
@@ -182,6 +186,7 @@ impl ColumnarEngine {
                 apply.published = Arc::new(apply.working.to_snapshot(manifest.durable_frontier));
                 has_published = true;
                 durable_frontier = manifest.durable_frontier;
+                has_manifest = true;
             }
         }
 
@@ -191,6 +196,7 @@ impl ColumnarEngine {
             checkpoint,
             has_published,
             durable_frontier,
+            has_manifest,
             history_incarnation: options.history_incarnation,
         })
     }
@@ -343,6 +349,24 @@ impl ColumnarEngine {
     pub fn checkpoint(&mut self) -> Result<ManifestV1, ColumnarError> {
         self.ensure_no_holdback()?;
         let durable = self.apply.published.visible_frontier;
+        // The worker forces a checkpoint on a poll cadence whether or not
+        // anything changed. With an empty delta no segment is produced, the
+        // retained inventory is unchanged, and the durable frontier has not
+        // moved, so the manifest this would write is identical to the one
+        // already on disk. Skip the write and its two fsyncs rather than
+        // restating durable facts. Nothing that was durable becomes
+        // non-durable: the skip is taken only when a manifest already records
+        // exactly this state.
+        if self.has_manifest
+            && self.apply.working.delta.is_empty()
+            && self.durable_frontier == durable
+        {
+            return Ok(self.checkpoint.unchanged_manifest(
+                &self.apply.working,
+                self.definition.fingerprint(),
+                durable,
+            ));
+        }
         // Only checkpoint at published frontier (race-free by D4).
         let manifest = self.checkpoint.checkpoint(
             &mut self.apply.working,
@@ -352,6 +376,7 @@ impl ColumnarEngine {
         // After checkpoint, published snapshot should reflect emptied delta + new segments.
         self.apply.published = Arc::new(self.apply.working.to_snapshot(durable));
         self.durable_frontier = durable;
+        self.has_manifest = true;
         Ok(manifest)
     }
 
@@ -375,6 +400,7 @@ impl ColumnarEngine {
         )?;
         self.apply.published = Arc::new(self.apply.working.to_snapshot(frontier));
         self.durable_frontier = frontier;
+        self.has_manifest = true;
         Ok(())
     }
 
