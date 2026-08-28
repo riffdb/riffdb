@@ -1,6 +1,12 @@
 # ADR-0165: Durable Command-Derived Locator Tables
 
 - **Status:** Accepted
+- **Obligations:**
+  - `OBL-0165-1` ADR-0156 section 5's deferred fail-closed local check is
+    discharged for the command-derived locator kinds: a bounded clean start
+    reaches readiness without rebuilding the population index, and a durably
+    committed command is still recognised with that index dormant.
+    Proof: `assert_readiness_path_rebuild_census`
 - **Direction approved:** 2026-08-27 (separate locator tables). The approval
   accepted a registry-chain migration and one complete-validation start per
   database. Verification before implementation showed that cost does not exist;
