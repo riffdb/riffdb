@@ -270,9 +270,29 @@ fn validate_administration_tail(
         return Ok(allocator);
     };
     let key = encode_audit_key(expected_last);
-    let derived = access
-        .command_audit_record(expected_last)?
-        .map(StoredAdministrationAuditRecordV1::Service);
+    // A command's service audits live inside its command segment and have no
+    // physical AUDIT row, so the transient index is normally their only lookup.
+    // On a bounded clean-close start that index is dormant by design, and the
+    // fail-closed join below reads `(None, None)` as corruption -- an intact
+    // database declaring itself corrupt on its first write.
+    //
+    // Warming the index here is not available: this runs on a write access with
+    // the mutation gate already held, and `ExclusiveGate` is a non-reentrant
+    // ticket lock. Instead use the same bounded fallback the read-only twin in
+    // `validate_administration_stream_readonly` already uses, which decodes at
+    // most the final command segment and takes no lease.
+    let derived = match access.command_audit_record(expected_last)? {
+        Some(indexed) => Some(indexed),
+        // Dormant only. With a warm index a miss is a real answer -- notably a
+        // sealed epoch that has not published yet -- and must not be overridden.
+        None if access.transient_indexes_dormant()? => {
+            let transaction = access.transaction()?;
+            let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+            command_audit_at_transaction_tail(&commits, expected_last)?
+        }
+        None => None,
+    }
+    .map(StoredAdministrationAuditRecordV1::Service);
     let physical = access
         .read_command_value(JournalTable::Audit, key.as_slice())?
         .map(

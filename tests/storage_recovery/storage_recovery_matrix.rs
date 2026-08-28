@@ -4144,6 +4144,42 @@ fn a_committed_command_is_still_recognised_with_the_population_index_dormant() {
     );
 }
 
+/// A write on a bounded (index-dormant) start must validate the administration
+/// tail against the command-owned audit record the AUDIT row locates.
+///
+/// The AUDIT row for a command-owned audit holds a `CommandAuditLocatorV1`, not
+/// the record. The write-side decode arm used to map that locator to `None`
+/// because resolving it had historically needed the transient index, and the
+/// derived half is `None` on a bounded start, so the fail-closed `(None, None)`
+/// join declared an intact database corrupt. Absence manufactured from a record
+/// that is present -- the same class as the outcome and provenance defects, on
+/// the write path.
+#[test]
+fn a_write_after_a_bounded_start_validates_the_command_owned_audit_tail() {
+    let path = TestDatabasePath::new("locator-audit-tail-bounded");
+    let _ = prepare_committed_command_database(&path.0);
+
+    let ports = open_operational(RedbStore::open(&path.0).expect("reopen to certify"));
+    ports
+        .write_clean_close_lifecycle()
+        .expect("write clean-close certificate");
+    drop(ports);
+
+    let ports = open_operational(RedbStore::open(&path.0).expect("bounded reopen"));
+    assert!(
+        ports.clean_close_fast_startup(),
+        "the certified database must take the bounded path"
+    );
+    assert_eq!(ports.transient_index_rebuilds(), 0);
+
+    // Committing a second command validates the administration tail, which
+    // reads the AUDIT row written for the first command's audits.
+    let second = command_fixture_at(2);
+    let transition = command_audit_transition(&second);
+    try_commit_command_fixture_with_audit(&ports, &second, transition)
+        .expect("a bounded start must resolve the command-owned audit tail, not report corruption");
+}
+
 /// A locator that does not decode fails closed, never absent.
 #[test]
 fn an_undecodable_idempotency_locator_fails_closed() {
