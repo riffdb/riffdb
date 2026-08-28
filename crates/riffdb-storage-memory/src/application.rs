@@ -4143,6 +4143,25 @@ mod tests {
         let CommitScanPageV1::Page { next_after, .. } = first_page else {
             panic!("two commits require pagination");
         };
+
+        // A head probe fixes `inclusive_upper` from the published application
+        // frontier before it inspects any commit row, so resuming the probe at
+        // or above the head reports the identical frontier and returns no rows.
+        // The columnar worker relies on this to poll the head without rescanning
+        // the commit range from sequence one on every poll.
+        let resumed = ports
+            .scan_commits(CommitScanRequest::initial_after(inclusive_upper, limit))
+            .expect("resumed head probe");
+        assert_eq!(
+            resumed.inclusive_upper(),
+            FrontierPosition::AppliedThrough(inclusive_upper),
+            "a probe above the head must still report the exact head"
+        );
+        assert!(
+            matches!(&resumed, CommitScanPageV1::ExactEnd { records, .. } if records.is_empty()),
+            "a probe above the head must read no commit rows"
+        );
+
         let index_page = ports
             .scan_index(
                 AuthoritativeIndexScanRequest::new(second.range.clone(), None, limit)

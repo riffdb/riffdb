@@ -71,7 +71,7 @@ mod query;
 mod store;
 
 pub use apply::ApplyProgress;
-pub use checkpoint::{CheckpointError, ManifestV1, SegmentInventoryEntry};
+pub use checkpoint::{CheckpointError, ColumnarAmplification, ManifestV1, SegmentInventoryEntry};
 pub use definition::{
     ColumnarProjectionDefinition, DefinitionError, DefinitionFingerprint, LAYOUT_VERSION,
     ProviderDescriptorError, RegisteredDefinition, VectorAnnConfig, VectorProviderProfileV1,
