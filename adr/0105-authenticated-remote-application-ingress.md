@@ -2,7 +2,8 @@
 
 - **Status:** Accepted
 - **Direction approved:** 2026-08-09
-- **Exact text accepted:** Yes, 2026-08-09
+- **Exact text accepted:** Yes, 2026-08-09; amended 2026-08-27
+  (Amendment 1: h2 0.4.19)
 - **Decision deadline:** Before WP-553 changes listener, endpoint, certificate,
   health, or credential-rotation interfaces
 - **Requires:** ADR-0007, ADR-0009, ADR-0025, ADR-0029, ADR-0040,
@@ -216,3 +217,70 @@ service, command, storage, and deterministic-runtime dependency graphs.
 
 Exact acceptance is required before adding a non-loopback listener, TLS/public
 endpoint configuration, certificate dependency, or remote deployment claim.
+
+## Amendment 1 — h2 advanced to 0.4.19 (Accepted 2026-08-27)
+
+The maintainer accepted this exact text on 2026-08-27. The transport HTTP/2
+framing dependency advances from `h2` 0.4.16 to 0.4.19 as a transitive
+lockfile-only change. `h2` remains undeclared by any first-party crate, reached
+only through `hyper` 1.11.0 and `tonic` 0.14.6. Every obligation in ADR-0105's
+transport dependency review stands: the reviewed TLS closure is unchanged,
+`tls-ring` remains the only backend, no compression codec is introduced, and
+the exact `tonic = "=0.14.6"` pin does not move.
+
+- **Why the pin advances — not security.** RUSTSEC-2026-0258 is already
+  remediated: the advisory records `patched = [">= 0.4.16"]` and the tree
+  reached 0.4.16 in commit `94ba1704` on 2026-08-21 as incidental lockfile
+  drift. `cargo audit` reports zero vulnerabilities at 0.4.16. The advisory
+  item recorded as outstanding in ADR-0004 Amendment 5 is stale and should be
+  closed there.
+- **Why the pin advances anyway — availability.** The 0.4.16 remediation (h2
+  PR #935) added a connection-level DATA-framing budget that closes the
+  connection with `GOAWAY ENHANCE_YOUR_CALM` on exhaustion, and charged
+  end-of-stream DATA frames against it. h2 issue #939 reports well-behaved
+  clients multiplexing many concurrent small-payload requests on one connection
+  being terminated with `too_many_data_frames`. That is RiffDB's own client
+  profile: a single long-lived `tonic::transport::Channel` issuing many small
+  unary RPCs. 0.4.16 is the only released version carrying the regression.
+  This repository has not observed the failure: its own c=128 benchmark runs
+  completed 212,404 operations with zero errors, which is counter-evidence that
+  RiffDB actually triggers #939 in practice. The pin therefore advances as a
+  matter of prudence against a known upstream regression in the exact version
+  the tree happened to land on, not in response to a live incident.
+- **Fix verified upstream, not assumed.** h2 PR #940 (`c12d7820ad`, in 0.4.17)
+  sets `is_budgeted = !frame.is_end_stream()` so EOS DATA frames are neither
+  charged nor leaked from the budget. 0.4.18 adds `data_frame_budget(n)` to the
+  builders; 0.4.19 scales the default budget to the configured connection
+  window. The issue reporter confirmed #940 resolves both the reduced
+  reproduction and their production system. No RiffDB-side reproduction was
+  built and none is required.
+- **Dependency graph.** `cargo tree -p h2 --edges normal` resolves to 11
+  unchanged normal edges: `atomic-waker`, `bytes`, `fnv`, `futures-core`,
+  `futures-sink`, `http`, `indexmap`, `slab`, `tokio`, `tokio-util`, and
+  `tracing`. The `Cargo.lock` diff touches only h2's `version` and `checksum`;
+  its dependency list is unchanged.
+- **Features.** `cargo tree -p h2 -e features` shows no feature enabled. `h2`
+  is selected as an optional dependency of `hyper`/`tonic`; RiffDB selects none
+  directly.
+- **Unsafe surface.** Unchanged and byte-identical between 0.4.16 and 0.4.19:
+  exactly one `unsafe` block,
+  `unsafe { std::str::from_utf8_unchecked(self.0.as_ref()) }` at
+  `src/hpack/header.rs:283`. The two other textual matches are the
+  `clippy::undocumented_unsafe_blocks` lint name at `src/lib.rs:85` and a
+  comment at `src/proto/streams/streams.rs:33`.
+- **Architecture pins.** No architecture test pins `h2`;
+  `crates/riffdb-server/tests/architecture.rs` pins `tonic`, `rustls`,
+  `tokio-rustls`, `ring`, and `base64`, all unchanged.
+  `production_transport_features_are_exact_default_disabled_and_confined` and
+  `lockfile_has_one_exact_ring_tls_stack_and_no_alternative_or_compression_stack`
+  pass.
+- **`cargo deny`/`cargo audit`.** `advisories` reports no RUSTSEC finding at
+  either 0.4.16 or 0.4.19. At the time this amendment was drafted
+  `cargo deny check advisories` failed at both versions on a single unrelated
+  pre-existing item — yanked `chacha20` 0.10.1, reached via `rmcp` 2.2.0 →
+  `rand` 0.10.2 — which was not an h2 finding and has since been cleared by
+  advancing `chacha20` to 0.10.2 in a separate commit. `advisories` is green.
+- **What this amendment does not grant.** It does not adopt
+  `data_frame_budget()` as a configured bound, does not change the bounds
+  applied to the `loopback_cleartext` profile, and does not extend the trust
+  boundary in `docs/security.md`.

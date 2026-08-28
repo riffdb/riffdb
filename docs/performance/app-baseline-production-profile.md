@@ -178,6 +178,53 @@ batch dispatches per item across a thread pool that releases the GIL for each
 native round trip, while TypeScript and Go fan out over `driverd` and pay
 framing per batch.
 
+### Concurrency curves
+
+`--load-concurrency-sweep` at c=1/8/32/128, 30 s windows, one rep. These are the
+cells the ratio discussion above rests on, recorded here because the aggregate
+ratio hides the shape.
+
+`full` scale on N1:
+
+| clients | Postgres ops/s | RiffDB ops/s | ratio |
+| ---: | ---: | ---: | ---: |
+| 1 | 3,655 | 815 | 0.223x |
+| 8 | 20,519 | 4,846 | 0.236x |
+| 32 | 32,254 | 7,292 | 0.226x |
+| 128 | 21,046 | 7,675 | 0.365x |
+
+`production` scale on E2:
+
+| clients | Postgres ops/s | RiffDB ops/s | ratio | RiffDB ops completed |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 2,216 | 401 | 0.181x | 12,025 |
+| 8 | 16,669 | 3,230 | 0.194x | 96,930 |
+| 32 | 28,027 | 5,448 | 0.194x | 163,562 |
+| 128 | 16,253 | 7,067 | 0.435x | **212,404** |
+
+Every cell above completed with zero errors, zero conflicts and zero idempotency
+mismatches.
+
+Two readings matter and they differ by scale. At `full` RiffDB is flat from c=32
+to c=128 (7,292 to 7,675, +5%); at `production` it still climbs (5,448 to 7,067,
++30%), so group commit does amortise with concurrency once the dataset is large
+enough that the single writer is not already the whole story. But in both cases
+Postgres is past its own knee at c=128 -- dropping 35% on N1 and 42% on E2, with
+an 11.5-second maximum latency in the `full` run -- so roughly half of each
+ratio "improvement" at c=128 is Postgres degrading rather than RiffDB gaining.
+Neither c=128 cell should be read as a win.
+
+The durable finding is the c=1 column: **0.18-0.22x with a single client**, no
+concurrency, no contention and no queueing. A constant factor that exists before
+any concurrency effect cannot be closed by concurrency scaling. Note also that
+the c=1 read figures were measured while the columnar worker was consuming ~45%
+of CPU draining seed backlog, so the read-side component of that constant is not
+yet trustworthy and is being re-measured.
+
+The `production` c=128 count of 212,404 operations at zero errors is cited in
+ADR-0105 Amendment 1 as counter-evidence that this repository triggers h2 issue
+#939 in practice.
+
 ### What a run costs
 
 Fully attributed by polling process state every 15 s during a `--production`
