@@ -160,3 +160,56 @@ fn an_idle_checkpoint_writes_no_segment() {
         "an idle checkpoint must not rewrite segments"
     );
 }
+
+#[test]
+fn skipping_an_idle_checkpoint_preserves_the_durable_state() {
+    let bundle = compile_bundle();
+    let definition = register_ticket_board(&bundle);
+    let directory = temp_dir("amplification-idle-durable");
+    let org = uuid(0x10);
+    let mut source = HistorySource::default();
+    let mut oracle = Oracle::default();
+
+    let durable_after_write;
+    {
+        let mut engine = ColumnarEngine::open(
+            definition.clone(),
+            riffdb_columnar::OpenOptions::new(directory.clone()).with_history_incarnation(1),
+        )
+        .expect("open engine");
+        for sequence in 1..=4 {
+            push_ticket_create(
+                &mut source,
+                &mut oracle,
+                &bundle,
+                sequence,
+                org,
+                sequence,
+                1,
+                "title",
+                5,
+            );
+        }
+        engine.apply_available(&source).expect("apply");
+        engine.checkpoint().expect("durable checkpoint");
+        durable_after_write = engine.durable_frontier().position();
+
+        // Forced idle checkpoints must leave the durable frontier where the
+        // last real checkpoint put it.
+        for _ in 0..5 {
+            engine.apply_available(&source).expect("apply");
+            engine.checkpoint().expect("idle checkpoint");
+        }
+        assert_eq!(engine.durable_frontier().position(), durable_after_write);
+    }
+
+    // Reopening reads the manifest the real checkpoint wrote: skipping the
+    // idle rewrites lost nothing.
+    let reopened = ColumnarEngine::open(
+        definition,
+        riffdb_columnar::OpenOptions::new(directory).with_history_incarnation(1),
+    )
+    .expect("reopen engine");
+    assert_eq!(reopened.durable_frontier().position(), durable_after_write);
+    assert_eq!(reopened.resident_segment_rows(), 4);
+}

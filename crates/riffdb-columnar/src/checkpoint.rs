@@ -441,6 +441,26 @@ impl CheckpointDir {
     /// org instead of growing with checkpoints. Superseded files are not
     /// deleted here — the previous manifest may still reference them until the
     /// rename lands — they are swept on the next open.
+    /// Rebuilds the manifest describing the already durable state, writing
+    /// nothing.
+    ///
+    /// Used when a checkpoint would store facts byte-identical to the manifest
+    /// already on disk: an empty delta contributes no segment, the retained
+    /// inventory is unchanged, and the durable frontier has not advanced.
+    pub(crate) fn unchanged_manifest(
+        &self,
+        working: &WorkingState,
+        fingerprint: DefinitionFingerprint,
+        durable_frontier: FrontierPosition,
+    ) -> ManifestV1 {
+        ManifestV1 {
+            layout_version: LAYOUT_VERSION,
+            fingerprint,
+            durable_frontier,
+            segments: inventory_from_segments(&working.segments),
+        }
+    }
+
     pub(crate) fn checkpoint(
         &mut self,
         working: &mut WorkingState,
