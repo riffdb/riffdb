@@ -64,6 +64,27 @@ What the current implementation does is therefore not a decision that was taken.
 It is an accident of the stop flag being checked only at pass boundaries, and it
 is the dominant term in a 12.3-minute graceful stop of a 1.1M-command database.
 
+### The head-probe fix does not remove this, and the size dependence is the point
+
+A separate behaviour-preserving fix removed a 500-row journal rescan that the
+worker performed once per 25 ms poll, cutting per-commit apply cost about
+fourfold. That is enough for the worker to outrun the write lane at 115,690
+commands, where the columnar shutdown stage fell to single-digit milliseconds in
+three of three daemons.
+
+It is **not** enough at 359,318 commands. Three daemons in one post-fix run,
+same binary, measured per-commit apply of 82, 250, and 380 µs and columnar
+shutdown stages of **0.188 ms, 4.57 s, and 55.79 s**. The two slow daemons had
+applied only 274,564 and 181,350 of ~358,500 commits when stopped: the worker
+was still behind, and the unbounded pass still charged the stop for the backlog.
+Why apply degrades from 82 to 380 µs per commit between daemons in one run is
+not yet isolated.
+
+The conclusion this record rests on is therefore not "the worker is slow". It is
+that **a graceful stop's cost must not be a function of how far behind a derived
+worker happens to be**, whatever its speed. A constant-factor speedup moves the
+size at which the unbounded pass becomes visible; it does not bound it.
+
 ## Proposed Decision
 
 ### 1. Columnar catch-up becomes cooperatively interruptible
