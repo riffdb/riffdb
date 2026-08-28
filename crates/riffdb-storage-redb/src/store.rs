@@ -8423,6 +8423,117 @@ mod tests {
         );
     }
 
+    /// Warming the transient indexes must not block on the caller's own read.
+    ///
+    /// The administration-audit read paths warm the command-derived index on
+    /// first use (see `ensure_command_audit_index`), and they do so *while their
+    /// caller holds a live read transaction* — `read_active_catalog` opens one,
+    /// then walks the whole administration stream through
+    /// `validate_administration_stream_readonly`. Warming takes the exclusive
+    /// mutation gate and, when a journal runtime exists, its barrier checkpoint
+    /// runs a real `begin_write` + `commit_durable`. This arm proves that
+    /// nesting is safe: redb admits a writer alongside live readers, so the
+    /// commit completes rather than waiting for a reader that is waiting for it.
+    ///
+    /// The durable read frontier is installed deliberately, because it is the
+    /// precondition for the journal runtime to exist and therefore for the
+    /// barrier to take `begin_write` instead of its early return. Without it
+    /// this arm would exercise only the no-write path and prove nothing about
+    /// the nesting.
+    ///
+    /// What this arm does NOT license: warming from a path that already holds
+    /// the mutation lease. `ExclusiveGate` is a non-reentrant FIFO ticket lock,
+    /// so a second acquire on the holding thread blocks forever. Warm-on-demand
+    /// belongs only on read paths, which take no ticket.
+    #[test]
+    fn warming_the_indexes_commits_under_the_callers_live_read_transaction() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let scope = crate::test_path::ScopedDirectory::new("warm-under-live-read");
+            let path = scope.join("db.redb");
+            let mut store = RedbStore::open(&path).expect("open");
+            let database_id = DatabaseId::from_bytes({
+                let mut bytes = [0x33; 16];
+                bytes[6] = 0x71;
+                bytes[8] = 0xa1;
+                bytes
+            })
+            .expect("database");
+            store.initialize_database(database_id).expect("initialize");
+            {
+                let mut frontier = store
+                    .shared
+                    .durable_read_frontier
+                    .write()
+                    .expect("durable read frontier lock");
+                *frontier = Some(Arc::new(
+                    store
+                        .shared
+                        .database
+                        .begin_read()
+                        .expect("durable frontier read"),
+                ));
+            }
+            drop(
+                store
+                    .shared
+                    .journal_runtime()
+                    .expect("initialise the journal runtime"),
+            );
+            assert!(
+                store
+                    .shared
+                    .journal_runtime
+                    .lock()
+                    .expect("journal runtime lock")
+                    .is_some(),
+                "a live journal runtime is what makes the barrier take begin_write; \
+                 without it this arm degrades to the no-write path"
+            );
+            assert!(
+                matches!(
+                    *store
+                        .shared
+                        .transient_indexes
+                        .read()
+                        .expect("transient index lock"),
+                    TransientIndexState::Dormant
+                ),
+                "the arm must start from a cold index or it warms nothing"
+            );
+
+            // The caller's read transaction, held across the whole warm.
+            let read = store
+                .shared
+                .begin_operational_read()
+                .expect("caller read access");
+            store
+                .shared
+                .ensure_transient_indexes_ready()
+                .expect("warm the indexes under a live read transaction");
+            assert!(
+                matches!(
+                    *store
+                        .shared
+                        .transient_indexes
+                        .read()
+                        .expect("transient index lock"),
+                    TransientIndexState::Ready(_)
+                ),
+                "the warm must publish a populated index"
+            );
+            drop(read);
+            sender.send(()).expect("report completion");
+        });
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect(
+                "warming must not block on the caller's live read transaction; \
+                 a timeout here is a deadlock, not a slow machine",
+            );
+        worker.join().expect("worker thread");
+    }
+
     #[test]
     fn pre_export_registry_installs_operation_table_before_publication() {
         let scope = crate::test_path::ScopedDirectory::new("pre-export-registry");
