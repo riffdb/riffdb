@@ -1,13 +1,16 @@
 # ADR-0163: Durable Command-Derived Locator Tables
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-08-27 (separate locator tables). The approval
   accepted a registry-chain migration and one complete-validation start per
   database. Verification before implementation showed that cost does not exist;
   see "Migration" below. The placement decision is unaffected and its stated
   reasoning holds, but the maintainer approved a worse trade than the real one
   and should re-read on that basis.
-- **Exact text accepted:** Not yet — maintainer acceptance wording pending
+- **Exact text accepted:** Yes, 2026-08-27
+- **Accepted:** 2026-08-27
+- **Acceptance reference:** Maintainer exact-text acceptance after re-reading on
+  the corrected migration-cost basis recorded below
 - **Decision deadline:** Before any implementation adds a durable table, a
   `RegistryMigration` variant, or a record-registry digest link
 - **Requires:** ADR-0004, ADR-0006, ADR-0019, ADR-0085, ADR-0099, ADR-0156,
