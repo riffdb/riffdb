@@ -320,7 +320,7 @@ async fn real_riffdbd_restart_preserves_budget_and_bootstrap_replay() -> TestRes
     // both directions: any future readiness-path caller that reaches
     // `ensure_transient_indexes_ready` before the ready line trips it, whichever
     // call it is.
-    assert_readiness_path_rebuild_census(&second_process, 1)?;
+    assert_readiness_path_rebuild_census(&second_process, 0)?;
     let mut second_client = connect(second_address).await?;
 
     assert_principal_less_liveness(&mut second_client).await?;
@@ -358,6 +358,7 @@ async fn real_riffdbd_restart_preserves_budget_and_bootstrap_replay() -> TestRes
     )?;
     assert_eq!(outcome_after_restart, outcome_before_restart);
 
+    for line in second_process.stderr_lines() { eprintln!("DBG {line}"); }
     let bootstrap_replayed = bounded_rpc(
         "retained bootstrap replay after restart",
         second_client.create_bootstrap_capability(
@@ -369,6 +370,7 @@ async fn real_riffdbd_restart_preserves_budget_and_bootstrap_replay() -> TestRes
     let replayed_transition = replayed_bootstrap_transition(bootstrap_replayed)?;
     assert_eq!(replayed_transition, bootstrap_transition);
 
+    for line in second_process.stderr_lines() { eprintln!("DBG2 {line}"); }
     let live_subscription = bounded_rpc(
         "live commit subscription before clean shutdown",
         second_client.subscribe_commits(

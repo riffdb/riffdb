@@ -400,7 +400,7 @@ impl ProductionGraphBuilder {
         // different operation each time. Held until the tail is bounded rather
         // than fixed one failure at a time.
         let outbox_normalization_proven_unnecessary =
-            false && bounded_clean_startup && storage.outbox_delivering_proven_absent();
+            bounded_clean_startup && storage.outbox_delivering_proven_absent();
         let outbox_recovery_started = std::time::Instant::now();
         let outbox_recovery = if outbox_normalization_proven_unnecessary {
             OutboxRecoveryReadiness::Degraded

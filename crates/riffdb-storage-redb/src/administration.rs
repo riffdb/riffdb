@@ -75,6 +75,7 @@ fn decoded_value<T>(item: EncodedPageItem<T>) -> T {
     item.into_parts().0
 }
 
+#[track_caller]
 fn corrupt() -> StorageError {
     storage_error(StorageErrorKind::CorruptData)
 }
@@ -286,9 +287,15 @@ fn validate_administration_tail(
         // Dormant only. With a warm index a miss is a real answer -- notably a
         // sealed epoch that has not published yet -- and must not be overridden.
         None if access.transient_indexes_dormant()? => {
-            let transaction = access.transaction()?;
-            let commits = transaction.open_table(COMMITS).map_err(table_error)?;
-            command_audit_at_transaction_tail(&commits, expected_last)?
+            // Read through the access rather than opening COMMITS from the write
+            // transaction directly. `validate_administration_tail` is also
+            // reached from the audit-append path, where the transaction has
+            // already been taken -- opening it there answered
+            // `InvariantViolation`, which surfaced as `storage_unavailable` on
+            // every commit subscription. The access-level range read is the same
+            // shape `command_member_at_write_access` already uses and is valid
+            // whether or not a live transaction remains.
+            command_audit_at_command_tail(access, expected_last)?
         }
         None => None,
     }
@@ -330,6 +337,33 @@ fn validate_administration_tail(
 /// next writer but deliberately absent from the published read indexes until
 /// its journal fence completes. The normal path is the O(1) transient lookup
 /// above; this fallback decodes at most the final command segment.
+/// Access-level twin of [`command_audit_at_transaction_tail`], valid on a write
+/// access whose transaction has already been taken.
+fn command_audit_at_command_tail(
+    access: &crate::store::RedbWriteAccess,
+    sequence: AdministrationSequence,
+) -> Result<Option<StoredServiceAuditRecordV1>, StorageError> {
+    let rows = access.read_command_range(JournalTable::Commits, &[0], &[u8::MAX; 9], 0)?;
+    let Some((_, value)) = rows.last() else {
+        return Ok(None);
+    };
+    let Ok(segment) = riffdb_storage_api::decode_command_segment_v1(&value[..]) else {
+        return Ok(None);
+    };
+    let Some(command) = segment.value().commands().last() else {
+        return Err(corrupt());
+    };
+    for record in [
+        command.base().started_audit(),
+        command.base().terminal_audit(),
+    ] {
+        if record.administration_sequence() == sequence {
+            return Ok(Some(record.clone()));
+        }
+    }
+    Ok(None)
+}
+
 fn command_audit_at_transaction_tail<T>(
     commits: &T,
     sequence: AdministrationSequence,

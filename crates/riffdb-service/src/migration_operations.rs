@@ -328,7 +328,7 @@ fn ensure_control_open(context: &RequestContext) -> ServiceResult<()> {
     }
 }
 
-const fn pre_submit_failure(error: PortAdmissionError) -> ServiceFailure {
+fn pre_submit_failure(error: PortAdmissionError) -> ServiceFailure {
     match error {
         PortAdmissionError::Cancelled => ServiceFailure::Cancelled,
         PortAdmissionError::DeadlineExceeded => ServiceFailure::DeadlineExceeded,
@@ -338,7 +338,7 @@ const fn pre_submit_failure(error: PortAdmissionError) -> ServiceFailure {
     }
 }
 
-const fn controlled_failure(error: ControlledWaitError) -> ServiceFailure {
+fn controlled_failure(error: ControlledWaitError) -> ServiceFailure {
     match error {
         ControlledWaitError::Cancelled => ServiceFailure::Cancelled,
         ControlledWaitError::DeadlineExceeded => ServiceFailure::DeadlineExceeded,

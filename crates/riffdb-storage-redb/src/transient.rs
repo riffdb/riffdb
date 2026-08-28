@@ -1005,7 +1005,7 @@ fn update_event_membership(
     Ok(())
 }
 
-const fn corrupt() -> StorageError {
+fn corrupt() -> StorageError {
     StorageError::new(StorageErrorKind::CorruptData, None)
 }
 

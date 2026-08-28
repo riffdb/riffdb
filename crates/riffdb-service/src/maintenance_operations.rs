@@ -769,7 +769,7 @@ fn observation_matches_retire(
         && observation.input_hash() == request.input_hash()
 }
 
-const fn pre_submit_admission_failure(error: PortAdmissionError) -> ServiceFailure {
+fn pre_submit_admission_failure(error: PortAdmissionError) -> ServiceFailure {
     match error {
         PortAdmissionError::Cancelled => ServiceFailure::Cancelled,
         PortAdmissionError::DeadlineExceeded => ServiceFailure::DeadlineExceeded,
@@ -779,7 +779,7 @@ const fn pre_submit_admission_failure(error: PortAdmissionError) -> ServiceFailu
     }
 }
 
-const fn controlled_wait_failure(error: ControlledWaitError) -> ServiceFailure {
+fn controlled_wait_failure(error: ControlledWaitError) -> ServiceFailure {
     match error {
         ControlledWaitError::Cancelled => ServiceFailure::Cancelled,
         ControlledWaitError::DeadlineExceeded => ServiceFailure::DeadlineExceeded,
@@ -796,7 +796,7 @@ fn ensure_control_open(control: &crate::RequestControl) -> ServiceResult<()> {
     }
 }
 
-const fn post_submit_start_uncertainty() -> ServiceFailure {
+fn post_submit_start_uncertainty() -> ServiceFailure {
     ServiceFailure::Public(PublicError::outcome_unknown())
 }
 

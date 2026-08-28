@@ -1313,7 +1313,14 @@ impl PublicError {
 
     /// Creates a storage-unavailable failure.
     #[must_use]
-    pub const fn storage_unavailable() -> Self {
+    #[track_caller]
+    pub fn storage_unavailable() -> Self {
+        {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log") {
+                let _ = writeln!(f, "storage_unavailable from {}", std::panic::Location::caller());
+            }
+        }
         Self::contextless(PublicErrorKind::StorageUnavailable)
     }
 
