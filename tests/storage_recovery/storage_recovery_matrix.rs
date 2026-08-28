@@ -4066,7 +4066,7 @@ fn prepare_checkpointed_command_database(path: &Path) {
     let _ = complete_startup_pass(RedbStore::open(path).expect("seed S=head checkpoint"));
 }
 
-/// ADR-0163: the locator tables carry rows and the ADR-0085-counted tables stay
+/// ADR-0165: the locator tables carry rows and the ADR-0085-counted tables stay
 /// physically empty.
 ///
 /// The second half is the invariant that rejected the obvious placement. If a
@@ -4096,7 +4096,7 @@ fn durable_locators_are_written_without_populating_the_counted_tables() {
     );
 }
 
-/// ADR-0163's central guarantee: a durably committed command is recognised as
+/// ADR-0165's central guarantee: a durably committed command is recognised as
 /// already admitted even with the transient population index dormant.
 ///
 /// Before the locator existed this returned "never admitted", so a retry

@@ -168,7 +168,7 @@ impl AuthoritativePointReader for RedbOperationalPorts {
         }
         let transaction = self.begin_composite_read()?;
         let Some(encoded) = transaction.read_value(JournalTable::Idempotency, encoded_key)? else {
-            // ADR-0163: outcomes are segment-owned, so IDEMPOTENCY is empty and
+            // ADR-0165: outcomes are segment-owned, so IDEMPOTENCY is empty and
             // the durable path to the owning segment is the locator table. An
             // index miss plus an empty IDEMPOTENCY is NOT absence.
             let Some(encoded) =
@@ -264,7 +264,7 @@ impl AuthoritativePointReader for RedbOperationalPorts {
         let Some(encoded) =
             transaction.read_value(JournalTable::Provenance, encoded_key.as_slice())?
         else {
-            // ADR-0163 locator table: PROVENANCE is empty because provenance is
+            // ADR-0165 locator table: PROVENANCE is empty because provenance is
             // segment-owned, so its absence is not the answer.
             let Some(encoded) =
                 transaction.read_value(JournalTable::ProvenanceLocators, encoded_key.as_slice())?

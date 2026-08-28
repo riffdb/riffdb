@@ -65,11 +65,11 @@ pub enum CompositeTableV1 {
     VectorObservations = 16,
     /// Authoritative partition-ordered vector-evidence index.
     VectorEvidenceIndex = 17,
-    /// ADR-0163 durable idempotency-key locators.
+    /// ADR-0165 durable idempotency-key locators.
     IdempotencyLocators = 18,
-    /// ADR-0163 durable provenance-id locators.
+    /// ADR-0165 durable provenance-id locators.
     ProvenanceLocators = 19,
-    /// ADR-0163 durable audit-request locators.
+    /// ADR-0165 durable audit-request locators.
     AuditByRequestLocators = 20,
 }
 

@@ -34,7 +34,7 @@ pub(crate) const EVENT_ROUTES: TableDefinition<&[u8], &[u8]> = TableDefinition::
 pub(crate) const OUTBOX: TableDefinition<&[u8], &[u8]> = TableDefinition::new("outbox");
 pub(crate) const OUTBOX_STATUS: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("outbox_status");
-/// ADR-0163 durable command-derived locators.
+/// ADR-0165 durable command-derived locators.
 ///
 /// A command's outcome, provenance and audits live inside its command segment
 /// in `COMMITS`, which is keyed by commit sequence, so an idempotency identity

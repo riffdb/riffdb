@@ -1782,7 +1782,7 @@ impl RedbStore {
         Ok(())
     }
 
-    /// Installs the ADR-0163 command-derived locator tables. Idempotent.
+    /// Installs the ADR-0165 command-derived locator tables. Idempotent.
     ///
     /// These tables add no durable message type — `StoredCommandLocatorV1` is
     /// already in the readable record registry — so the record-registry digest
@@ -5076,7 +5076,7 @@ impl RedbWriteAccess {
     /// Inserts a durable row whose key is new by construction, without the
     /// `read_command_value` pre-read `put_command_value` performs.
     ///
-    /// Used for the ADR-0163 locator rows. Each key is proven new before this is
+    /// Used for the ADR-0165 locator rows. Each key is proven new before this is
     /// called: an idempotency identity key by the admission reservation, a
     /// provenance id by its uniqueness reservation, and an audit-by-request key
     /// by a freshly allocated administration sequence that cannot collide.
@@ -7742,7 +7742,7 @@ impl RedbWriteAccess {
                 3,
             )?;
             let mut found = Vec::new();
-            // ADR-0163 locator rows carry the same (request_id, sequence) key,
+            // ADR-0165 locator rows carry the same (request_id, sequence) key,
             // so a command's audit sequences are recoverable from the key alone
             // without resolving its segment. Merged first so the physical rows
             // below still validate their own record.
@@ -8092,7 +8092,7 @@ fn classify_table_names(
     // their absence is normalized while classifying the already-enumerated
     // predecessor layouts below. `vector_projection_controls` is installed by
     // the registry migration before it publishes the successor digest; the
-    // ADR-0163 locator tables add no message type, so no digest advances for
+    // ADR-0165 locator tables add no message type, so no digest advances for
     // them and `install_command_locator_tables` installs them at open instead.
     // Only these exact names are normalized. No other missing or extra table is
     // hidden.

@@ -311,7 +311,7 @@ async fn real_riffdbd_restart_preserves_budget_and_bootstrap_replay() -> TestRes
     // and removing the incidental rebuild made this very test fail with
     // "durable command outcome was not found".
     //
-    // ADR-0163's durable locator tables removed that dependency, so the target
+    // ADR-0165's durable locator tables removed that dependency, so the target
     // number becomes ZERO once the readiness-path outbox skip is enabled. That
     // switch is held off pending an undiagnosed bootstrap-replay failure, so
     // this stays at ONE and must be flipped in the same change that enables it.
