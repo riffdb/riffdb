@@ -418,6 +418,60 @@ pub(crate) fn commit_at_access(
     })
 }
 
+/// Loads the command member at `sequence` through a write access.
+///
+/// The read-side peer walks backwards to the greatest physical key at or below
+/// `sequence`; a write access has no reverse range primitive, so this uses the
+/// fact that a segment's physical key is its FIRST commit sequence and a segment
+/// holds at most `MAX_STAGED_COMMANDS` commands. The owning row therefore lies
+/// in a bounded window ending at `sequence`, making this a bounded forward scan
+/// rather than a history walk.
+///
+/// Returns `None` only when no row in that window owns the sequence. A caller
+/// resolving an ADR-0163 locator MUST treat that as corruption, never absence:
+/// the locator asserted the row exists.
+pub(crate) fn command_member_at_write_access(
+    access: &crate::store::RedbWriteAccess,
+    sequence: CommitSequence,
+) -> Result<Option<CommandAuthorityMember>, StorageError> {
+    let window = u64::try_from(riffdb_storage_api::MAX_STAGED_COMMANDS)
+        .map_err(|_| corrupt())?
+        .saturating_sub(1);
+    let first =
+        CommitSequence::new(sequence.get().saturating_sub(window).max(1)).ok_or_else(corrupt)?;
+    let start = encode_application_sequence_key(first);
+    let mut end = encode_application_sequence_key(sequence).to_vec();
+    end.push(0);
+    let rows = access.read_command_range(
+        JournalTable::Commits,
+        &start,
+        &end,
+        riffdb_storage_api::MAX_STAGED_COMMANDS.saturating_add(1),
+    )?;
+    // Latest owning row wins, matching the read side's reverse selection.
+    for (physical_key, encoded) in rows.into_iter().rev() {
+        let physical_sequence =
+            decode_application_sequence_key(&physical_key).map_err(|_| corrupt())?;
+        // Locators are only written for segment-owned commands: a historical row
+        // carries its own physical outcome and needs none. So a non-segment row
+        // does not own the sequence, and the caller fails closed if none does.
+        let member = match riffdb_storage_api::decode_command_segment_v1(&encoded) {
+            Ok(segment) => segment_member(segment.into_parts().0, physical_sequence, sequence)?,
+            Err(error)
+                if error.kind()
+                    == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
+            {
+                continue;
+            }
+            Err(error) => return Err(crate::error::codec_error(error)),
+        };
+        if member.is_some() {
+            return Ok(member);
+        }
+    }
+    Ok(None)
+}
+
 fn segment_member(
     segment: StoredCommandSegmentV1,
     physical_sequence: CommitSequence,

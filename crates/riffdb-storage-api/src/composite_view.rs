@@ -25,7 +25,7 @@ pub const MAX_COMPOSITE_OVERLAY_BYTES: usize = 128 * 1024 * 1024;
 pub const MAX_COMPOSITE_COMPONENT_BYTES: usize = 16 * 1024 * 1024;
 /// Conservative per-entry ordered-map and enum overhead charge.
 const OVERLAY_ENTRY_OVERHEAD: usize = 64;
-const TABLE_COUNT: usize = 17;
+const TABLE_COUNT: usize = 20;
 
 /// Closed authoritative table catalog shared by journal overlays.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -65,6 +65,12 @@ pub enum CompositeTableV1 {
     VectorObservations = 16,
     /// Authoritative partition-ordered vector-evidence index.
     VectorEvidenceIndex = 17,
+    /// ADR-0163 durable idempotency-key locators.
+    IdempotencyLocators = 18,
+    /// ADR-0163 durable provenance-id locators.
+    ProvenanceLocators = 19,
+    /// ADR-0163 durable audit-request locators.
+    AuditByRequestLocators = 20,
 }
 
 impl CompositeTableV1 {
@@ -87,6 +93,9 @@ impl CompositeTableV1 {
         Self::VectorEvidence,
         Self::VectorObservations,
         Self::VectorEvidenceIndex,
+        Self::IdempotencyLocators,
+        Self::ProvenanceLocators,
+        Self::AuditByRequestLocators,
     ];
 
     const fn index(self) -> usize {

@@ -3098,9 +3098,12 @@ mod tests {
         assert!(sample.encoded_journal_bytes() > 0);
         assert_eq!(sample.mutation_census().len(), JournalTable::ALL.len());
         assert_eq!(sample.mutation_census()[0].table(), "meta");
+        // Tracks the last of `JournalTable::ALL`, which the ADR-0163 locator
+        // tables extend. The census still covers every journal table in
+        // declaration order; only the final name moved.
         assert_eq!(
             sample.mutation_census().last().map(|entry| entry.table()),
-            Some("vector_evidence_index")
+            Some("audit_by_request_locators")
         );
         let observed_mutations = sample
             .mutation_census()
