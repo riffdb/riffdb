@@ -95,8 +95,8 @@ use std::fmt;
 
 pub use riffdb_query_ir::{
     CompiledReactiveOperationV1, ProjectionResultSetPlanV1, ProjectionResultSetPlanV2,
-    ReactiveModulePlanV1, ReactiveOperationPlanV1, ReactivePredicateNodeV1, ResultSetOutputShapeV1,
-    ResultSetWindowBoundsV2, ResultSetWindowV1,
+    QueryRowLimit, ReactiveModulePlanV1, ReactiveOperationPlanV1, ReactivePredicateNodeV1,
+    ResultSetOutputShapeV1, ResultSetWindowBoundsV2, ResultSetWindowV1,
 };
 pub use riffdb_types::{QueryModuleName, QueryModuleVersion};
 

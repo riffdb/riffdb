@@ -267,6 +267,76 @@ fn interrupt_application_deployment_after(environment: &dyn Environment, stage: 
     }
 }
 
+/// Share of a closed ceiling at which a query is worth naming before it fails.
+///
+/// A query is charged its declared maxima, so headroom only shrinks when the
+/// schema or a declared bound changes. Naming the ones already close turns a
+/// future build break into something an author can see coming.
+const QUERY_COST_REPORT_PERCENT: u64 = 60;
+
+/// Reports what the planner already computed about each compiled query.
+///
+/// Costs are charged from schema and declared maxima, never from data, so this
+/// is safe to print. Nothing here fails the check: a query near a ceiling and a
+/// single-row paged binding are both legal, and the compiler has no non-fatal
+/// severity to express "legal but probably not what you meant".
+fn print_query_survey(queries: &[QueryCostReport]) {
+    if queries.is_empty() {
+        return;
+    }
+    let mut crowded = queries
+        .iter()
+        .filter(|query| query.result_bytes_percent() >= QUERY_COST_REPORT_PERCENT)
+        .collect::<Vec<_>>();
+    crowded.sort_by(|left, right| {
+        right
+            .result_bytes
+            .cmp(&left.result_bytes)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    let single_row = queries
+        .iter()
+        .filter(|query| query.single_row_page)
+        .map(|query| query.name.as_str())
+        .collect::<Vec<_>>();
+
+    let widest = queries
+        .iter()
+        .map(|query| query.result_bytes)
+        .max()
+        .unwrap_or(0);
+    let maximum = queries
+        .first()
+        .map_or(0, |query| query.result_bytes_maximum);
+    println!(
+        "query cost: {} compiled; widest charges {widest} of {maximum} result bytes",
+        queries.len()
+    );
+    for query in crowded {
+        println!(
+            "  {} charges {}% of the result-byte ceiling ({} of {}), {} of {} access steps",
+            query.name,
+            query.result_bytes_percent(),
+            query.result_bytes,
+            query.result_bytes_maximum,
+            query.access_steps,
+            query.access_steps_maximum
+        );
+    }
+    if !single_row.is_empty() {
+        let (noun, verb) = if single_row.len() == 1 {
+            ("query", "returns")
+        } else {
+            ("queries", "return")
+        };
+        println!(
+            "query paging: {} paged {noun} {verb} at most one row per request, costing one round trip per row: {}",
+            single_row.len(),
+            single_row.join(", ")
+        );
+    }
+}
+
 fn application_seed_guidance(seed_input_count: usize) -> String {
     if seed_input_count == 0 {
         "application seed plan: none; run `riffdb dev --run`, or add ordered `seed_inputs` before requesting `--seed`"
@@ -280,11 +350,11 @@ fn application_seed_guidance(seed_input_count: usize) -> String {
 
 use crate::scaffold::{
     ApplicationCheckStatus, ApplicationLockPreview, LockedApplication, PinnedLockPreview,
-    PinnedLockRefresh, ScaffoldLanguage, application_contract_source, application_contract_version,
-    application_lock_identity, check_application, check_application_lock,
-    check_application_sources, check_project_application_lock, create_application,
-    generate_application, generate_project_application, load_locked_application,
-    load_locked_migration_submission, load_locked_project_application,
+    PinnedLockRefresh, QueryCostReport, ScaffoldLanguage, application_contract_source,
+    application_contract_version, application_lock_identity, check_application,
+    check_application_lock, check_application_sources, check_project_application_lock,
+    create_application, generate_application, generate_project_application,
+    load_locked_application, load_locked_migration_submission, load_locked_project_application,
     load_locked_project_migration_submission, migrate_application_source_v2,
     plan_application_migrations, plan_project_application_migrations, preview_application_lock,
     preview_application_lock_from_pinned_bundle, preview_application_lock_with_bundle,
@@ -761,16 +831,18 @@ pub async fn run() -> ExitCode {
                 check_application(Path::new(source))
             };
             return match result {
-                Ok(ApplicationCheckStatus::ExactLock { seed_input_count }) => {
+                Ok(status @ ApplicationCheckStatus::ExactLock { .. }) => {
                     println!("application sources, exact lock, and generated bindings are exact");
-                    println!("{}", application_seed_guidance(seed_input_count));
+                    print_query_survey(status.queries());
+                    println!("{}", application_seed_guidance(status.seed_input_count()));
                     ExitCode::SUCCESS
                 }
-                Ok(ApplicationCheckStatus::SourceOnly { seed_input_count }) => {
+                Ok(status @ ApplicationCheckStatus::SourceOnly { .. }) => {
                     println!(
                         "application sources compile; no lock or generated artifacts were checked"
                     );
-                    println!("{}", application_seed_guidance(seed_input_count));
+                    print_query_survey(status.queries());
+                    println!("{}", application_seed_guidance(status.seed_input_count()));
                     ExitCode::SUCCESS
                 }
                 Err(error) => {
@@ -799,7 +871,7 @@ pub async fn run() -> ExitCode {
                 if *write {
                     write_application_lock(Path::new(source), Some(Path::new(lock)))
                 } else {
-                    check_application_lock(Path::new(source), Some(Path::new(lock)))
+                    check_application_lock(Path::new(source), Some(Path::new(lock))).map(|_| ())
                 }
             }
             ApplicationCommand::Generate {
