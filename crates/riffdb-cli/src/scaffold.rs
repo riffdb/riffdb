@@ -16,7 +16,7 @@ use riffdb_query_module::{
     GeneratedApplicationArtifact, GeneratedApplicationArtifactKind, GeneratedMcpCommand,
     GeneratedMcpReactiveTool, GeneratedMcpTool, GeneratedVectorInspectionTool, NamedQuerySource,
     PythonGenerationError, QueryModule, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
-    ReactiveModulePlanV1, compile_application_role, compile_application_role_v2,
+    QueryRowLimit, ReactiveModulePlanV1, compile_application_role, compile_application_role_v2,
     compile_reactive_source, generate_go_application_client, generate_mcp_commands,
     generate_mcp_reactive_tools, generate_mcp_tools, generate_python_application_client,
     generate_python_client, generate_rust_application_client, generate_rust_client,
@@ -301,6 +301,7 @@ struct CompiledSymbolicApplication {
     lock: ApplicationLock,
     outputs: Vec<(String, Vec<u8>)>,
     runtime_operation_catalog: Option<Vec<u8>>,
+    queries: Vec<QueryCostReport>,
 }
 
 pub(crate) struct LockedApplication {
@@ -343,10 +344,90 @@ fn source_parent(path: &Path) -> &Path {
         .unwrap_or_else(|| Path::new("."))
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// What one compiled named query costs, and whether its paging looks intentional.
+///
+/// The planner already computes this vector and writes it into compiled plan
+/// artifacts; it simply had no route back to the author. Without it a query
+/// sitting at 95% of a closed ceiling is indistinguishable from one sitting at
+/// 5% until an unrelated schema change tips it over.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct QueryCostReport {
+    pub(crate) name: String,
+    pub(crate) result_bytes: u64,
+    pub(crate) result_bytes_maximum: u64,
+    pub(crate) access_steps: u64,
+    pub(crate) access_steps_maximum: u64,
+    /// A paged binding whose maximum page is one row. Legal and bounded, and
+    /// almost never intended: it costs one round trip per row returned.
+    pub(crate) single_row_page: bool,
+}
+
+impl QueryCostReport {
+    /// Share of the closed result-byte ceiling this query is charged, 0..=100.
+    pub(crate) const fn result_bytes_percent(&self) -> u64 {
+        if self.result_bytes_maximum == 0 {
+            return 0;
+        }
+        self.result_bytes.saturating_mul(100) / self.result_bytes_maximum
+    }
+}
+
+/// Surveys every compiled query for cost headroom and single-row paging.
+fn survey_queries(module: &QueryModule) -> Vec<QueryCostReport> {
+    module
+        .queries()
+        .iter()
+        .map(|query| {
+            let cost = query.plan().cost();
+            // Operational families and exact-text plans have no ordinary step
+            // program; only an ordinary paged binding can be single-row paged.
+            let single_row_page = query.ordinary_program().is_some_and(|program| {
+                program.steps().iter().any(|step| {
+                    step.cursor_parameter().is_some()
+                        && matches!(step.row_limit(), QueryRowLimit::Literal(1))
+                })
+            });
+            QueryCostReport {
+                name: query.name().to_owned(),
+                result_bytes: cost.encoded_result_bytes(),
+                result_bytes_maximum: riffdb_types::MAX_APPLICATION_QUERY_RESULT_BYTES,
+                access_steps: cost.access_steps(),
+                access_steps_maximum: riffdb_types::MAX_APPLICATION_QUERY_STEPS,
+                single_row_page,
+            }
+        })
+        .collect()
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ApplicationCheckStatus {
-    SourceOnly { seed_input_count: usize },
-    ExactLock { seed_input_count: usize },
+    SourceOnly {
+        seed_input_count: usize,
+        queries: Vec<QueryCostReport>,
+    },
+    ExactLock {
+        seed_input_count: usize,
+        queries: Vec<QueryCostReport>,
+    },
+}
+
+impl ApplicationCheckStatus {
+    pub(crate) fn seed_input_count(&self) -> usize {
+        match self {
+            Self::SourceOnly {
+                seed_input_count, ..
+            }
+            | Self::ExactLock {
+                seed_input_count, ..
+            } => *seed_input_count,
+        }
+    }
+
+    pub(crate) fn queries(&self) -> &[QueryCostReport] {
+        match self {
+            Self::SourceOnly { queries, .. } | Self::ExactLock { queries, .. } => queries,
+        }
+    }
 }
 
 fn application_seed_input_count(source_path: &Path) -> Result<usize, ScaffoldError> {
@@ -363,14 +444,16 @@ pub(crate) fn check_application(
 ) -> Result<ApplicationCheckStatus, ScaffoldError> {
     let root = source_parent(source_path);
     if root.join(DEFAULT_LOCK_PATH).exists() {
-        check_application_lock(source_path, None)?;
+        let queries = check_application_lock(source_path, None)?;
         Ok(ApplicationCheckStatus::ExactLock {
             seed_input_count: application_seed_input_count(source_path)?,
+            queries,
         })
     } else {
-        let _ = compile_symbolic_application(source_path)?;
+        let compiled = compile_symbolic_application(source_path)?;
         Ok(ApplicationCheckStatus::SourceOnly {
             seed_input_count: application_seed_input_count(source_path)?,
+            queries: compiled.queries,
         })
     }
 }
@@ -382,9 +465,10 @@ pub(crate) fn check_application(
 pub(crate) fn check_application_sources(
     source_path: &Path,
 ) -> Result<ApplicationCheckStatus, ScaffoldError> {
-    let _ = compile_symbolic_application(source_path)?;
+    let compiled = compile_symbolic_application(source_path)?;
     Ok(ApplicationCheckStatus::SourceOnly {
         seed_input_count: application_seed_input_count(source_path)?,
+        queries: compiled.queries,
     })
 }
 
@@ -658,7 +742,7 @@ fn publish_compiled_project_lock(
 pub(crate) fn check_application_lock(
     source_path: &Path,
     lock_path: Option<&Path>,
-) -> Result<(), ScaffoldError> {
+) -> Result<Vec<QueryCostReport>, ScaffoldError> {
     let root = source_parent(source_path);
     let lock_path = workspace_lock_path(root, lock_path)?;
     let existing = read_bounded(&lock_path, 4 * 1_024 * 1_024)?;
@@ -680,7 +764,7 @@ pub(crate) fn check_application_lock(
             ));
         }
     }
-    Ok(())
+    Ok(compiled.queries)
 }
 
 pub(crate) fn check_project_application_lock(
@@ -1470,6 +1554,7 @@ fn compile_symbolic_application_mode(
     let [module] = modules.as_slice() else {
         return Err(ScaffoldError::Manifest);
     };
+    let query_report = survey_queries(module);
     let mut outputs = vec![(
         EXACT_MANIFEST_PATH.to_owned(),
         exact.canonical_bytes().to_vec(),
@@ -1619,6 +1704,7 @@ fn compile_symbolic_application_mode(
         lock,
         outputs,
         runtime_operation_catalog,
+        queries: query_report,
     })
 }
 
@@ -3610,12 +3696,9 @@ mod tests {
         fs::remove_file(&generated).expect("remove generated");
         fs::remove_file(&lock).expect("remove lock");
 
-        assert_eq!(
-            check_application(&source).expect("read-only compile"),
-            ApplicationCheckStatus::SourceOnly {
-                seed_input_count: 1
-            }
-        );
+        let status = check_application(&source).expect("read-only compile");
+        assert!(matches!(status, ApplicationCheckStatus::SourceOnly { .. }));
+        assert_eq!(status.seed_input_count(), 1);
         let preview = preview_application_lock(&source).expect("read-only lock preview");
         assert!(!generated.exists());
         assert!(!lock.exists());
@@ -3643,12 +3726,10 @@ mod tests {
         assert_eq!(diagnostic.code().as_str(), "RDB-AL008");
         assert_eq!(diagnostic.path().as_str(), DEFAULT_LOCK_PATH);
 
-        assert_eq!(
-            check_application_sources(&source).expect("source-only check ignores exact artifacts"),
-            ApplicationCheckStatus::SourceOnly {
-                seed_input_count: 1
-            }
-        );
+        let status =
+            check_application_sources(&source).expect("source-only check ignores exact artifacts");
+        assert!(matches!(status, ApplicationCheckStatus::SourceOnly { .. }));
+        assert_eq!(status.seed_input_count(), 1);
         assert_eq!(
             fs::read(&generated).expect("source-only check is read-only"),
             b"substituted\n"
@@ -3659,12 +3740,9 @@ mod tests {
             r#""seed_inputs":[]"#,
         );
         fs::write(&source, source_without_seed).expect("remove seed plan");
-        assert_eq!(
-            check_application_sources(&source).expect("seedless source-only check"),
-            ApplicationCheckStatus::SourceOnly {
-                seed_input_count: 0
-            }
-        );
+        let status = check_application_sources(&source).expect("seedless source-only check");
+        assert!(matches!(status, ApplicationCheckStatus::SourceOnly { .. }));
+        assert_eq!(status.seed_input_count(), 0);
     }
 
     #[test]
