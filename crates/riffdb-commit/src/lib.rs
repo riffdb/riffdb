@@ -30,6 +30,7 @@ mod service_values;
 mod telemetry;
 #[cfg(test)]
 mod test_support;
+mod writer_census;
 
 pub use audit::{AdministrationAuditInputView, BootstrapCompoundAuditProof};
 pub use audit_executor::{
@@ -93,4 +94,10 @@ pub use telemetry::{
     CommitIdempotencyObservation, CommitTelemetry, CommitTelemetryEvent,
     CommitUncertaintyResolution, CommitUncertaintyStage, CompletionLanePhase, NoopCommitTelemetry,
     PreparedEpochRollbackReason,
+};
+#[doc(hidden)]
+pub use writer_census::{
+    WRITER_BATCH_STAGE_LABELS_V1, WRITER_BATCH_WINDOW_COUNT_V1, WRITER_BATCH_WINDOW_WIDTH_V1,
+    WriterBatchCensusV1, WriterBatchWindowV1, format_writer_batch_stages_v1_line,
+    writer_batch_stage_census_v1,
 };
