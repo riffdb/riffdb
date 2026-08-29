@@ -1013,7 +1013,10 @@ mod tests {
         for (table, expected) in [
             (CompositeTableV1::Meta, None),
             (CompositeTableV1::Entities, Some("entities")),
-            (CompositeTableV1::SecondaryIndexes, Some("secondary_indexes")),
+            (
+                CompositeTableV1::SecondaryIndexes,
+                Some("secondary_indexes"),
+            ),
             (CompositeTableV1::IndexEpochs, Some("index_epochs")),
             (CompositeTableV1::Idempotency, Some("idempotency")),
             (
@@ -1086,14 +1089,13 @@ mod tests {
                 .expect("initial allocator")
                 .as_bytes()
                 .to_vec();
-        let advanced = encode_application_sequence_allocator_v1(
-            ApplicationSequenceAllocator::Next(
+        let advanced =
+            encode_application_sequence_allocator_v1(ApplicationSequenceAllocator::Next(
                 CommitSequence::first().checked_next().expect("second"),
-            ),
-        )
-        .expect("advanced allocator")
-        .as_bytes()
-        .to_vec();
+            ))
+            .expect("advanced allocator")
+            .as_bytes()
+            .to_vec();
 
         let predecessor = Arc::new(
             RedbCompositeViewBuilder::capture(&ports, [0; 32])

@@ -380,8 +380,7 @@ impl QueryExecutionPort for RedbOperationalPorts {
                 .iter()
                 .copied()
                 .fold(0_u64, u64::saturating_add);
-            profile.stage_ns[VIEW_CALL_RESIDUAL] =
-                profile.view_total_ns.saturating_sub(nested_ns);
+            profile.stage_ns[VIEW_CALL_RESIDUAL] = profile.view_total_ns.saturating_sub(nested_ns);
             profile.stage_ns[PROGRAM_DRIVE_EXCLUSIVE] =
                 drive_ns.saturating_sub(profile.view_total_ns);
             record_query_execute_profile(profile);
@@ -960,9 +959,7 @@ impl RedbQueryView<'_> {
     /// Closes the window opened by [`Self::begin_view_call`].
     fn end_view_call(&mut self, started: Option<Instant>) {
         if let (Some(profile), Some(started)) = (self.profile.as_mut(), started) {
-            profile.view_total_ns = profile
-                .view_total_ns
-                .saturating_add(elapsed_nanos(started));
+            profile.view_total_ns = profile.view_total_ns.saturating_add(elapsed_nanos(started));
         }
     }
 }
@@ -1159,8 +1156,7 @@ impl RedbQueryView<'_> {
                 let decoded = decode_current_index_entry(entry)?;
                 if decoded.1.partition_key() != generation_target.partition_key() {
                     if let (Some(profile), Some(started)) = (self.profile.as_mut(), entry_started) {
-                        profile.stage_ns[INDEX_ENTRY_DECODE] = profile.stage_ns
-                            [INDEX_ENTRY_DECODE]
+                        profile.stage_ns[INDEX_ENTRY_DECODE] = profile.stage_ns[INDEX_ENTRY_DECODE]
                             .saturating_add(elapsed_nanos(started));
                     }
                     continue;
@@ -1178,8 +1174,8 @@ impl RedbQueryView<'_> {
                 let target = EntityTarget::new(step.internal_entity_id(), entity_key)
                     .map_err(|_| corrupt())?;
                 if let (Some(profile), Some(started)) = (self.profile.as_mut(), entry_started) {
-                    profile.stage_ns[INDEX_ENTRY_DECODE] = profile.stage_ns[INDEX_ENTRY_DECODE]
-                        .saturating_add(elapsed_nanos(started));
+                    profile.stage_ns[INDEX_ENTRY_DECODE] =
+                        profile.stage_ns[INDEX_ENTRY_DECODE].saturating_add(elapsed_nanos(started));
                 }
                 let record = self.read_entity(&target)?.ok_or_else(corrupt)?;
                 let policy_started = self.profile.as_ref().map(|_| Instant::now());
@@ -1382,11 +1378,9 @@ impl RedbQueryView<'_> {
                 }
                 entries.push((entry_key, values));
                 if entries.len() == fetch_limit {
-                    if let (Some(profile), Some(started)) =
-                        (self.profile.as_mut(), entries_started)
+                    if let (Some(profile), Some(started)) = (self.profile.as_mut(), entries_started)
                     {
-                        profile.stage_ns[INDEX_ENTRY_DECODE] = profile.stage_ns
-                            [INDEX_ENTRY_DECODE]
+                        profile.stage_ns[INDEX_ENTRY_DECODE] = profile.stage_ns[INDEX_ENTRY_DECODE]
                             .saturating_add(elapsed_nanos(started));
                     }
                     break 'ranges;
@@ -1510,8 +1504,8 @@ impl RedbQueryView<'_> {
             let (_, entry) = decode_current_index_entry(row)?;
             if entry.partition_key() == lookup.partition() {
                 if let (Some(profile), Some(started)) = (self.profile.as_mut(), started) {
-                    profile.stage_ns[INDEX_ENTRY_DECODE] = profile.stage_ns[INDEX_ENTRY_DECODE]
-                        .saturating_add(elapsed_nanos(started));
+                    profile.stage_ns[INDEX_ENTRY_DECODE] =
+                        profile.stage_ns[INDEX_ENTRY_DECODE].saturating_add(elapsed_nanos(started));
                 }
                 return Ok(true);
             }

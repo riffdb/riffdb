@@ -3305,10 +3305,7 @@ impl CommandWriter {
             // private successor before it can drain the oldest fence.
             const WRITER_PIPELINE_DRAIN_TRANSITIONS: usize =
                 riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS;
-            crate::writer_census::charge(
-                crate::writer_census::LOOP_ADMIT_GATE,
-                admit_gate_started,
-            );
+            crate::writer_census::charge(crate::writer_census::LOOP_ADMIT_GATE, admit_gate_started);
             if pipeline_transitions == 0
                 || !command_deferred_eligible
                 || journal_suffix_transitions.saturating_add(pipeline_transitions)

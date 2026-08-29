@@ -353,11 +353,7 @@ pub(crate) fn end_iteration(iteration_ns: u64, submitted_unit: bool) {
     publish(stages, COMMANDS.with(Cell::get), submitted_unit);
 }
 
-fn publish(
-    stages: [u64; WRITER_BATCH_STAGE_LABELS_V1.len()],
-    commands: u64,
-    submitted_unit: bool,
-) {
+fn publish(stages: [u64; WRITER_BATCH_STAGE_LABELS_V1.len()], commands: u64, submitted_unit: bool) {
     let census = WRITER_BATCH_CENSUS.get_or_init(Census::new);
     let ordinal = census.total_count.fetch_add(1, Ordering::Relaxed);
     let unbounded_window = usize::try_from(ordinal)
@@ -465,8 +461,7 @@ mod tests {
             "exec_admission"
         );
         assert_eq!(
-            WRITER_BATCH_STAGE_LABELS_V1[DRIVE_NESTED_END],
-            "exec_drive_unnamed",
+            WRITER_BATCH_STAGE_LABELS_V1[DRIVE_NESTED_END], "exec_drive_unnamed",
             "the nested run must stop before its own derived residual"
         );
         assert_eq!(
