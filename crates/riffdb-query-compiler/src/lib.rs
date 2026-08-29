@@ -996,6 +996,10 @@ pub enum PlannerDiagnosticCode {
     OperationalFamilyRequired,
     /// Exact text provider declaration is unsupported or exceeds a bound.
     ExactTextProvider,
+    /// Every cardinality is bounded, but the bounded whole-request cost is over
+    /// a closed planner ceiling. Distinct from `Unbounded`: the author declared
+    /// a bound and the fix is to lower it, not to add one.
+    CostCeilingExceeded,
 }
 
 impl PlannerDiagnosticCode {
@@ -1012,7 +1016,63 @@ impl PlannerDiagnosticCode {
             Self::Cardinality => "RDB-QP007",
             Self::OperationalFamilyRequired => "RDB-QP008",
             Self::ExactTextProvider => "RDB-QP009",
+            Self::CostCeilingExceeded => "RDB-QP010",
         }
+    }
+}
+
+/// Closed planner resource a whole-request cost ceiling governs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlannerBoundResource {
+    /// Access steps in one compiled query.
+    AccessSteps,
+    /// Encoded whole-request result bytes.
+    EncodedResultBytes,
+}
+
+impl PlannerBoundResource {
+    /// Stable lowercase identifier.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AccessSteps => "access_steps",
+            Self::EncodedResultBytes => "encoded_result_bytes",
+        }
+    }
+}
+
+/// One closed numeric observation explaining a ceiling rejection.
+///
+/// Both values are compiler-derived from schema and declared maxima, never from
+/// stored data or a submitted request, so reporting them discloses nothing a
+/// reader of the contract source could not already compute. This mirrors the
+/// contract compiler's `CompilerBoundObservation`, which established that a
+/// typed, closed observation is compatible with value-free diagnostics: what
+/// stays excluded is free-form text and runtime values, not the bound itself.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PlannerBoundObservation {
+    resource: PlannerBoundResource,
+    actual: u64,
+    maximum: u64,
+}
+
+impl PlannerBoundObservation {
+    /// The governed resource.
+    #[must_use]
+    pub const fn resource(self) -> PlannerBoundResource {
+        self.resource
+    }
+
+    /// Statically charged amount for the whole request.
+    #[must_use]
+    pub const fn actual(self) -> u64 {
+        self.actual
+    }
+
+    /// Closed ceiling the amount exceeded.
+    #[must_use]
+    pub const fn maximum(self) -> u64 {
+        self.maximum
     }
 }
 
@@ -1024,6 +1084,7 @@ pub struct PlannerDiagnostic {
     symbol_path: Vec<String>,
     summary: &'static str,
     suggested_index: Option<String>,
+    bound: Option<PlannerBoundObservation>,
 }
 
 impl PlannerDiagnostic {
@@ -1055,6 +1116,12 @@ impl PlannerDiagnostic {
     #[must_use]
     pub fn suggested_index(&self) -> Option<&str> {
         self.suggested_index.as_deref()
+    }
+
+    /// The closed numeric observation, when this diagnostic reports a ceiling.
+    #[must_use]
+    pub const fn bound(&self) -> Option<PlannerBoundObservation> {
+        self.bound
     }
 }
 
@@ -2356,8 +2423,37 @@ impl QueryCostAccumulator {
     }
 
     fn finish(self, steps: usize) -> Result<QueryCostVectorV1, PlannerDiagnostics> {
+        let access_steps = u64::try_from(steps).map_err(|_| internal())?;
+        // Report which ceiling was exceeded and by how much. Every cardinality
+        // here is already bounded -- the author declared a bound and it is too
+        // large -- so this is `CostCeilingExceeded` and the fix is to lower the
+        // declared maximum, not to add a bound. Answering "which resource, what
+        // amount, what ceiling" is the whole difference between a mechanical
+        // correction and guessing at limit values.
+        if access_steps > riffdb_types::MAX_APPLICATION_QUERY_STEPS {
+            return Err(ceiling(
+                self.primary_span,
+                "query access steps exceed a closed planner ceiling",
+                PlannerBoundObservation {
+                    resource: PlannerBoundResource::AccessSteps,
+                    actual: access_steps,
+                    maximum: riffdb_types::MAX_APPLICATION_QUERY_STEPS,
+                },
+            ));
+        }
+        if self.encoded_result_bytes > riffdb_types::MAX_APPLICATION_QUERY_RESULT_BYTES {
+            return Err(ceiling(
+                self.primary_span,
+                "query whole-request result bytes exceed a closed planner ceiling",
+                PlannerBoundObservation {
+                    resource: PlannerBoundResource::EncodedResultBytes,
+                    actual: self.encoded_result_bytes,
+                    maximum: riffdb_types::MAX_APPLICATION_QUERY_RESULT_BYTES,
+                },
+            ));
+        }
         QueryCostVectorV1::new(
-            u64::try_from(steps).map_err(|_| internal())?,
+            access_steps,
             self.scanned_index_rows,
             self.point_reads,
             self.dependent_keys,
@@ -3400,6 +3496,22 @@ fn one(
         symbol_path,
         summary,
         suggested_index,
+        bound: None,
+    }])
+}
+
+fn ceiling(
+    primary: Span,
+    summary: &'static str,
+    bound: PlannerBoundObservation,
+) -> PlannerDiagnostics {
+    PlannerDiagnostics(vec![PlannerDiagnostic {
+        code: PlannerDiagnosticCode::CostCeilingExceeded,
+        primary,
+        symbol_path: Vec::new(),
+        summary,
+        suggested_index: None,
+        bound: Some(bound),
     }])
 }
 

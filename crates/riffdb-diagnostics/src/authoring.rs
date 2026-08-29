@@ -490,7 +490,7 @@ impl AuthoringDiagnostics {
                         path.clone(),
                         Some((span.start, span.end)),
                         symbols,
-                        diagnostic.summary(),
+                        query_plan_summary(diagnostic),
                         cause,
                         vec![fix],
                     )
@@ -876,6 +876,27 @@ fn contract_semantic_summary(diagnostic: &riffdb_contract_compiler::CompilerDiag
     }
 }
 
+/// Quotes the closed bound observation when the planner supplied one.
+///
+/// Both numbers are compiler-derived from schema and declared maxima, so this
+/// echoes nothing from the query source. Without them the author is told only
+/// that some ceiling was exceeded, and is left to rediscover which resource and
+/// which ceiling by trial compilation.
+fn query_plan_summary(diagnostic: &riffdb_query_compiler::PlannerDiagnostic) -> String {
+    diagnostic.bound().map_or_else(
+        || diagnostic.summary().to_owned(),
+        |bound| {
+            format!(
+                "{}: {} is statically charged {} against a maximum of {}",
+                diagnostic.summary(),
+                bound.resource().as_str(),
+                bound.actual(),
+                bound.maximum()
+            )
+        },
+    )
+}
+
 fn query_plan_class(
     code: riffdb_query_compiler::PlannerDiagnosticCode,
 ) -> (AuthoringCause, AuthoringFix) {
@@ -887,6 +908,9 @@ fn query_plan_class(
         Code::NonLocal => (AuthoringCause::NonLocal, AuthoringFix::SupplyPartitionRoute),
         Code::Unindexed | Code::Unordered => (AuthoringCause::MissingIndex, AuthoringFix::AddIndex),
         Code::Unbounded => (AuthoringCause::Unbounded, AuthoringFix::AddBound),
+        // The author already declared a bound; it is too large. Telling them to
+        // "add a bound" sends them looking for something that is already there.
+        Code::CostCeilingExceeded => (AuthoringCause::LimitExceeded, AuthoringFix::ReduceInput),
         Code::ExactTextProvider => (
             AuthoringCause::InvalidSyntax,
             AuthoringFix::UseLanguageReference,
@@ -1058,6 +1082,74 @@ mod tests {
     use super::*;
 
     const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
+
+    /// A bounded query over the result-byte ceiling must be reported as a
+    /// limit to reduce, not as a missing bound, and must quote the charged
+    /// amount and the ceiling.
+    ///
+    /// Without both numbers an author is told only that "some ceiling" was
+    /// exceeded and has to rediscover the ratio by trial compilation. With
+    /// them the correction is arithmetic. The numbers are schema-derived, so
+    /// this still echoes nothing from the query source.
+    #[test]
+    fn a_bounded_query_over_the_result_ceiling_reports_the_charge_and_the_ceiling() {
+        let bundle = compile_contract_source(CONTRACT).expect("contract");
+        let copies = (0..40)
+            .map(|index| format!("copy_{index}: tickets {{ title }}"))
+            .collect::<Vec<_>>()
+            .join("\n        ");
+        let query = format!(
+            "query Huge(
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
+    $status: TicketStatus
+) {{
+    many tickets from Ticket
+        where organization_id == $organization_id
+          && project_id == $project_id
+          && status == $status
+        order by ticket_id asc
+        take 499
+    return Found {{
+        {copies}
+    }}
+    outcomes Found
+}}
+// SECRET_VALUE_MUST_NOT_APPEAR
+"
+        );
+        let error = QueryModule::compile(
+            QueryModuleCandidate::new(
+                QueryModuleName::new("diagnostic").expect("name"),
+                QueryModuleVersion::new(1).expect("version"),
+                vec![NamedQuerySource::new("Huge", &query).expect("query")],
+            )
+            .expect("candidate"),
+            &bundle,
+        )
+        .expect_err("ceiling");
+        let diagnostics = AuthoringDiagnostics::from_query_module(
+            AuthoringSourcePath::new("riffdb/queries/huge.riffq").expect("path"),
+            &error,
+        )
+        .expect("diagnostics");
+        let diagnostic = &diagnostics.as_slice()[0];
+
+        assert_eq!(diagnostic.code().as_str(), "RDB-QP010");
+        assert_eq!(diagnostic.cause(), AuthoringCause::LimitExceeded);
+        assert!(diagnostic.fixes().contains(&AuthoringFix::ReduceInput));
+        assert!(diagnostic.summary().contains("encoded_result_bytes"));
+        assert!(diagnostic.summary().contains("4194304"));
+
+        for rendered in [
+            diagnostics.render_human().expect("human"),
+            diagnostics.render_json().expect("JSON"),
+        ] {
+            assert!(rendered.contains("4194304"));
+            assert!(!rendered.contains("SECRET_VALUE_MUST_NOT_APPEAR"));
+            assert!(!rendered.contains("$organization_id"));
+        }
+    }
 
     #[test]
     fn query_planner_diagnostic_retains_original_span_and_never_echoes_values() {
