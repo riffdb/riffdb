@@ -6,9 +6,9 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 1.17
+**Version:** 1.18
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
-**Date:** 27 August 2026
+**Date:** 29 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
 **Working URI scheme:** `riffdb://`  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 1.18 | 2026-08-29 | Accepted ADR-0167, ADR-0168, and ADR-0169 from the contract/query/migration language design review. Amended `OQ-062`: a `Limit` parameter MUST declare its maximum and the unbounded spelling is not accepted in source, because an unbounded `Limit` is charged and authorized at the 499-row type maximum whatever default it declares. Every V1-V8/V1-V11/V1-V11 artifact remains byte-exact and readable. Source declaring an unbounded `Limit` is rejected from RiffQL V9 onward and must declare a maximum; already-compiled modules that encode an unbounded runtime limit remain readable and replayable and are not rewritten. Consequently every parameterised page is RiffQL V9 and query-module format V12, and an exact-predicate family, which requires a typed limit parameter, can no longer be expressed at V9 or V10. An existing index identity MAY now gain or change a cover through the receipted migration path, which derives an index rebuild and reconstructs every entry from the post-image. An aggregate root is not required to be materialized. New planner diagnostic RDB-QP010 separates a bounded whole-request cost over a closed ceiling from an unbounded one and reports the charged amount and the ceiling. No durable format, storage key, protocol, or provider algorithm changes. |
 | 1.17 | 2026-08-27 | Accepted ADR-0163 and ADR-0164. Registered BLK-046 through BLK-057 and WP-716 through WP-718 for one compiler-sealed decision over a deferred initialized binding with ordered apply, exact no-effect, and typed whole-command rejection arms. Ignored elements remain transaction-current dependencies; union authority, selected policy, atomic outcome/replay, bounded branch work, and least-sufficient V18 identities are mandatory, while general branching and framework behavior remain forbidden. Registered OQ-075 through OQ-083, DRV-018, and WP-719/WP-720 for one stronger `AdmissionHead` query option: RiffDB captures the authorized application head once on the first page, combines it with existing causal floors, selects one sufficient snapshot/provider epoch, freezes that floor and epoch across cursors, and waits only within closed service bounds without process-local adapter state or stale fallback. |
 | 1.16 | 2026-08-27 | Accepted ADR-0159 and registered OQ-068 through OQ-074, DRV-017, and WP-708/WP-709. An ordinary ordered `take $limit after $cursor` continuation binds a cursor-specific hash of every invariant parameter while the submitted page cardinality may change within the same immutable compiled domain. Plan, declared maximum, predicates, order, authority, history, snapshot, and provider epoch remain bound; nearest/vector K and every non-page semantic input remain identity-bearing. One narrow append-only external-adapter exception may coalesce bounded RiffDB pages when an authoritative upstream interface requires a larger exact page, without raising RiffDB ceilings, filtering, sorting, counting, discarding, restarting, or adding framework code to RiffDB. |
 | 1.15 | 2026-08-27 | Accepted ADR-0158 and registered OQ-062 through OQ-067, DX-050, DRV-016, and WP-706/WP-707. RiffQL adds the closed query-only `Limit<MAX>` refinement with an implicit minimum of one and a maximum through 499. Planner cost, role authority, generated schemas, runtime validation, and result budgets use the declared maximum rather than the default or submitted value. RiffQL V9, query IR V12, and query-module format V12 are additive successors; old `Limit` source and every V1-V8/V1-V11/V1-V11 artifact remain byte-exact and readable. No global ceiling, protocol, storage format, provider algorithm, or external-framework branch changes. |
@@ -1734,6 +1735,14 @@ An aggregate declares:
 - Optional colocated child entities.
 - Invariants that may span entities inside the same supported aggregate boundary.
 
+An aggregate root names the aggregate's identity and partition derivation. It
+is not required to be materialized: a contract MAY omit any command that
+creates the root entity, and child entities MAY be created, read, exported, and
+retained in a partition whose root row does not exist. A command that mutates
+the root forfeits the ADR-0094 shared-lease optimisation for child appends in
+that aggregate, so materializing a root solely to make it present is a cost
+with no corresponding guarantee.
+
 ### Commands
 
 A command declares:
@@ -2555,9 +2564,12 @@ implicitly available and MUST NOT be repeated. Every cover field MUST be a
 direct non-secret field of the indexed entity with a statically bounded
 canonical encoding; expressions, relations, aliases, aggregates, dynamic
 projections, and caller-selected layouts are forbidden. Cover order is
-canonical schema identity. An existing index identity MUST NOT gain or change a
-cover; evolution declares a new index and uses the ordinary receipted
-rebuild/migration path.
+canonical schema identity. An existing index identity MAY gain or change a
+cover. The change is a migration-classified difference: it derives an index
+rebuild and every entry is reconstructed from the post-image, so a cover is
+never carried forward from a predecessor layout. Declaring a new index identity
+remains available and is preferred when readers must observe both covers during
+a rollout.
 
 For a V14 covering index, the coordinator MUST derive the exact canonical
 covered record from the transaction-current entity post-image and commit it
@@ -8276,7 +8288,9 @@ behavior:
 - `OQ-062`: RiffQL MAY declare a query-only `Limit<MAX>` parameter where `MAX`
   is one canonical unsigned literal in 1..=499. The effective runtime value is
   always in 1..=`MAX`; optional, set, nested, nonliteral, zero, excessive, and
-  multi-bound forms MUST fail with a source-spanned diagnostic.
+  multi-bound forms MUST fail with a source-spanned diagnostic. A `Limit`
+  parameter MUST declare its maximum. The unbounded spelling is not accepted in
+  source.
 - `OQ-063`: A bounded-limit default MUST be absent or a positive literal no
   greater than `MAX`. Defaults and submitted values MUST NOT narrow static
   cost: planner, role, scan, hydration, policy, intermediate, output-row, and

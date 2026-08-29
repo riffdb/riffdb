@@ -1,10 +1,11 @@
 # ADR-0169: Optional Aggregate Root Materialization
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-08-29
-- **Exact text accepted:** No
-- **Accepted:** Not accepted
-- **Acceptance reference:** Pending maintainer exact-text acceptance
+- **Exact text accepted:** Yes, 2026-08-29
+- **Accepted:** 2026-08-29
+- **Acceptance reference:** Maintainer exact-text acceptance in the current
+  Claude Code session for drafted commit `a448af6d`
 - **Decision deadline:** Before an application ships whose aggregate root no
   command can create
 - **Requires:** ADR-0094 and ADR-0129
