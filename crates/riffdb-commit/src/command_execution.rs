@@ -762,7 +762,10 @@ where
         evaluation_frontier: CommandEvaluationFrontier,
         preparations: Vec<CommandExecutionPreparation>,
     ) -> RepeatableCommandGroupFuture<'a> {
-        Box::pin(drive_command_execution_group(
+        // The boxed future is a large generic state machine; this charges the
+        // allocation and the argument move, not the polling that follows.
+        let box_started = crate::writer_census::stage_start();
+        let future = Box::pin(drive_command_execution_group(
             self,
             conflicts,
             admission_clock,
@@ -775,7 +778,9 @@ where
             evaluation_pool,
             evaluation_frontier,
             preparations,
-        ))
+        ));
+        crate::writer_census::charge(crate::writer_census::EXEC_FUTURE_BOX, box_started);
+        future
     }
 }
 
@@ -1164,11 +1169,17 @@ where
         administration_clock,
         preparations,
     );
+    let admission_elapsed = admission_started.elapsed();
     telemetry.record(CommitTelemetryEvent::CommandPipelineStageCompleted {
         stage: CommandPipelineStage::Admission,
         command_count: u16::try_from(admissions.len()).unwrap_or(u16::MAX),
-        elapsed: admission_started.elapsed(),
+        elapsed: admission_elapsed,
     });
+    crate::writer_census::charge_nanos(
+        crate::writer_census::EXEC_ADMISSION,
+        u64::try_from(admission_elapsed.as_nanos()).unwrap_or(u64::MAX),
+    );
+    let lower_started = crate::writer_census::stage_start();
     let count = admissions.len();
     let mut results = (0..count).map(|_| None).collect::<Vec<_>>();
     let mut pending = Vec::new();
@@ -1178,6 +1189,7 @@ where
             Err(result) => results[index] = Some(result),
         }
     }
+    crate::writer_census::charge(crate::writer_census::EXEC_ADMISSION_LOWER, lower_started);
 
     let compatibility_started = Instant::now();
     let (groups, conflict_key_splits, exact_access_splits, commutative_shared_groups) =
@@ -1217,12 +1229,17 @@ where
             commutative_shared_groups
         },
     });
+    let compatibility_elapsed = compatibility_started.elapsed();
     telemetry.record(CommitTelemetryEvent::CommandPipelineStageCompleted {
         stage: CommandPipelineStage::Compatibility,
         command_count: u16::try_from(groups.iter().map(|group| group.items.len()).sum::<usize>())
             .unwrap_or(u16::MAX),
-        elapsed: compatibility_started.elapsed(),
+        elapsed: compatibility_elapsed,
     });
+    crate::writer_census::charge_nanos(
+        crate::writer_census::EXEC_COMPATIBILITY,
+        u64::try_from(compatibility_elapsed.as_nanos()).unwrap_or(u64::MAX),
+    );
     if evaluation_frontier == CommandEvaluationFrontier::WriterPrivate
         && pending_count > 0
         && !serial_eligible
@@ -1251,10 +1268,15 @@ where
                     .iter()
                     .all(|(_, state)| state.has_audited_lifecycle())
             });
+        let serial_setup_started = crate::writer_census::stage_start();
         let serial = groups
             .into_iter()
             .flat_map(|group| group.items)
             .collect::<Vec<_>>();
+        crate::writer_census::charge(
+            crate::writer_census::EXEC_SERIAL_SETUP,
+            serial_setup_started,
+        );
         let grouped = drive_transaction_local_serial_pending_group(
             port,
             conflicts,
@@ -1270,7 +1292,8 @@ where
             serial,
         )
         .await;
-        return match grouped {
+        let finalize_started = crate::writer_census::stage_start();
+        let drive_result = match grouped {
             IndexedCommandGroupDriveResult::Complete(grouped) => {
                 for (index, result) in grouped {
                     results[index] = Some(result);
@@ -1290,6 +1313,11 @@ where
                 })
             }
         };
+        crate::writer_census::charge(
+            crate::writer_census::EXEC_GROUP_FINALIZE,
+            finalize_started,
+        );
+        return drive_result;
     }
     // Incompatible completion groups may overlap the conflict capabilities
     // retained by an earlier deferred subgroup. Deferring more than one here
@@ -1306,6 +1334,10 @@ where
                 .all(|(_, state)| state.has_audited_lifecycle())
         });
     let mut submitted = Vec::new();
+    // Everything below is off the serial/detached group driver. It is charged
+    // as one stage so the level-1 residual stays interpretable; nothing inside
+    // it charges a level-1 stage of its own.
+    let alternate_started = crate::writer_census::stage_start();
     for group in groups {
         if group.items.len() > 1 || all_groups_deferred_eligible {
             let grouped = drive_compatible_pending_group(
@@ -1356,6 +1388,7 @@ where
             }
         }
     }
+    crate::writer_census::charge(crate::writer_census::EXEC_ALTERNATE_PATH, alternate_started);
     if submitted.is_empty() {
         CommandGroupDriveResult::Complete(finalize_group_results(results, lifecycle))
     } else {
@@ -1860,6 +1893,7 @@ where
 {
     let command_count = evaluated.len();
     let mut detached = Vec::with_capacity(command_count);
+    let detach_started = crate::writer_census::stage_start();
     while let Some((index, attempt)) = evaluated.pop_front() {
         match detach_evaluated_command_on_empty(
             port,
@@ -1914,6 +1948,8 @@ where
         }
     }
 
+    crate::writer_census::charge(crate::writer_census::EXEC_DETACH, detach_started);
+    let stage_group_started = crate::writer_census::stage_start();
     let (command_indices, candidates): (Vec<_>, Vec<_>) = detached.into_iter().unzip();
     let mut preparations = Vec::with_capacity(candidates.len());
     let mut retained = Vec::<RetainedDetachedCommand>::with_capacity(candidates.len());
@@ -1942,10 +1978,17 @@ where
         preparations.push(preparation);
         retained.push(authority);
     }
+    crate::writer_census::charge(crate::writer_census::EXEC_STAGE_GROUP, stage_group_started);
     let preparation_started = Instant::now();
     let prepared =
         evaluation_pool.prepare_detached(preparations, durability.storage_mode(), telemetry);
-    evaluation_elapsed = evaluation_elapsed.saturating_add(preparation_started.elapsed());
+    let preparation_step = preparation_started.elapsed();
+    crate::writer_census::charge_nanos(
+        crate::writer_census::EXEC_PREPARE_DETACHED,
+        u64::try_from(preparation_step.as_nanos()).unwrap_or(u64::MAX),
+    );
+    let stage_group_resumed = crate::writer_census::stage_start();
+    evaluation_elapsed = evaluation_elapsed.saturating_add(preparation_step);
     if prepared.iter().any(Result::is_err) {
         empty.rollback();
         lifecycle.stop();
@@ -2048,6 +2091,7 @@ where
                 .into();
         }
     };
+    crate::writer_census::charge(crate::writer_census::EXEC_STAGE_GROUP, stage_group_resumed);
     record_transaction_local_serial_pipeline_stages(
         telemetry,
         u16::try_from(indices.len()).expect("group cap fits u16"),
@@ -2311,7 +2355,13 @@ where
     BatchSequenceAssigned<FirstStagedBatch<P>>:
         CommandCandidateSequenceAssigned<Prior = FirstStagedBatch<P>, Staged = FirstStagedBatch<P>>,
 {
+    let serial_setup_started = crate::writer_census::stage_start();
     let (indices, states): (Vec<_>, Vec<_>) = pending.into_iter().unzip();
+    crate::writer_census::charge(
+        crate::writer_census::EXEC_SERIAL_SETUP,
+        serial_setup_started,
+    );
+    let acquire_started = crate::writer_census::stage_start();
     let acquired = match evaluation_frontier {
         CommandEvaluationFrontier::Published => {
             acquire_transaction_local_serial_group(states, conflicts).await
@@ -2320,6 +2370,7 @@ where
             acquire_writer_private_fifo_group(states, conflicts).await
         }
     };
+    crate::writer_census::charge(crate::writer_census::EXEC_CONFLICT_ACQUIRE, acquire_started);
     let acquired = match acquired {
         Ok(acquired) => acquired,
         Err((states, _)) => {
@@ -2337,8 +2388,10 @@ where
             .into();
         }
     };
+    let serial_zip_started = crate::writer_census::stage_start();
     let mut acquired =
         std::collections::VecDeque::from(indices.into_iter().zip(acquired).collect::<Vec<_>>());
+    crate::writer_census::charge(crate::writer_census::EXEC_SERIAL_SETUP, serial_zip_started);
     let Some(first_pair) = acquired.pop_front() else {
         return Vec::new().into();
     };
@@ -2347,12 +2400,15 @@ where
 
     let serial_started = Instant::now();
     let mut evaluation_elapsed = Duration::ZERO;
-    let empty = match if use_deferred_tail {
+    let batch_begin_started = crate::writer_census::stage_start();
+    let opened = if use_deferred_tail {
         port.begin_deferred_command_epoch()
             .and_then(DeferredCommandEpoch::begin_empty_batch)
     } else {
         port.begin_empty_batch()
-    } {
+    };
+    crate::writer_census::charge(crate::writer_census::EXEC_BATCH_BEGIN, batch_begin_started);
+    let empty = match opened {
         Ok(empty) => empty,
         Err(error) => {
             let mut completed = vec![(first_index_for_open, Err(storage_error(error, lifecycle)))];
@@ -2382,7 +2438,13 @@ where
         let mut to_capture = std::collections::VecDeque::new();
         to_capture.push_back(first_slot.take().expect("nonempty serial group"));
         to_capture.append(&mut acquired);
-        let captured = match capture_writer_private_snapshots(&empty, to_capture) {
+        let capture_started = crate::writer_census::stage_start();
+        let capture_result = capture_writer_private_snapshots(&empty, to_capture);
+        crate::writer_census::charge(
+            crate::writer_census::EXEC_SNAPSHOT_CAPTURE,
+            capture_started,
+        );
+        let captured = match capture_result {
             Ok(captured) => captured,
             Err(failure) => {
                 empty.rollback();
@@ -2418,6 +2480,7 @@ where
                 return completed.into();
             }
         };
+        let pool_marshal_started = crate::writer_census::stage_start();
         let indices = captured
             .iter()
             .map(|(index, _, _)| *index)
@@ -2426,9 +2489,19 @@ where
             .into_iter()
             .map(|(_, attempt, snapshot)| (attempt, snapshot))
             .collect();
+        crate::writer_census::charge(
+            crate::writer_census::EXEC_POOL_MARSHAL,
+            pool_marshal_started,
+        );
         let evaluation_started = Instant::now();
         let evaluated = pool.evaluate_writer_private(inputs, telemetry);
-        evaluation_elapsed = evaluation_elapsed.saturating_add(evaluation_started.elapsed());
+        let evaluation_step = evaluation_started.elapsed();
+        crate::writer_census::charge_nanos(
+            crate::writer_census::EXEC_EVALUATE,
+            u64::try_from(evaluation_step.as_nanos()).unwrap_or(u64::MAX),
+        );
+        evaluation_elapsed = evaluation_elapsed.saturating_add(evaluation_step);
+        let pool_scatter_started = crate::writer_census::stage_start();
         let mut fallback = Vec::new();
         let mut completed = Vec::new();
         let mut terminal = None;
@@ -2455,6 +2528,10 @@ where
                 }
             }
         }
+        crate::writer_census::charge(
+            crate::writer_census::EXEC_POOL_MARSHAL,
+            pool_scatter_started,
+        );
         if !fallback.is_empty() || !completed.is_empty() {
             empty.rollback();
             fallback.extend(
@@ -2635,11 +2712,17 @@ where
                     return completed.into();
                 }
             };
-        evaluation_elapsed = evaluation_elapsed.saturating_add(evaluation_started.elapsed());
+        let evaluation_step = evaluation_started.elapsed();
+        crate::writer_census::charge_nanos(
+            crate::writer_census::EXEC_EVALUATE,
+            u64::try_from(evaluation_step.as_nanos()).unwrap_or(u64::MAX),
+        );
+        evaluation_elapsed = evaluation_elapsed.saturating_add(evaluation_step);
         (first_index, first)
     };
 
-    let mut staged = match stage_first_evaluated_command_on_empty(
+    let stage_serial_started = crate::writer_census::stage_start();
+    let staged_first = stage_first_evaluated_command_on_empty(
         port,
         empty,
         provenance,
@@ -2648,7 +2731,12 @@ where
         lifecycle,
         telemetry,
         first,
-    ) {
+    );
+    crate::writer_census::charge(
+        crate::writer_census::EXEC_STAGE_SERIAL,
+        stage_serial_started,
+    );
+    let mut staged = match staged_first {
         Ok(staged) => staged,
         Err(CommandDriverContinuation::Retry(retry)) => {
             let fallback = std::iter::once((first_index, *retry))
@@ -2888,12 +2976,18 @@ where
                     return completed.into();
                 }
             };
-            evaluation_elapsed = evaluation_elapsed.saturating_add(evaluation_started.elapsed());
+            let evaluation_step = evaluation_started.elapsed();
+            crate::writer_census::charge_nanos(
+                crate::writer_census::EXEC_EVALUATE,
+                u64::try_from(evaluation_step.as_nanos()).unwrap_or(u64::MAX),
+            );
+            evaluation_elapsed = evaluation_elapsed.saturating_add(evaluation_step);
             (index, evaluated)
         };
 
+        let append_started = crate::writer_census::stage_start();
         let (prior, entries, durability_mode) = staged.into_storage_and_entries();
-        match append_evaluated_command(
+        let appended = append_evaluated_command(
             port,
             prior,
             provenance,
@@ -2902,7 +2996,9 @@ where
             lifecycle,
             telemetry,
             evaluated,
-        ) {
+        );
+        crate::writer_census::charge(crate::writer_census::EXEC_STAGE_SERIAL, append_started);
+        match appended {
             Ok((storage, entry)) => {
                 staged =
                     CheckedStagedCommand::from_appended(storage, entries, entry, durability_mode);
@@ -3057,6 +3153,9 @@ where
     B: NonEmptyCommandBatch + DeferredNonEmptyCommandBatch,
     <B::Epoch as DeferredCommandEpoch>::Fence: 'static,
 {
+    // Audit-transition preparation sits after the staging stage closes and
+    // before the commit clock starts, so no existing histogram observes it.
+    let audit_prepare_started = crate::writer_census::stage_start();
     let audits = {
         let audited_count = staged.audited_starts().filter(Option::is_some).count();
         if audited_count == 0 {
@@ -3122,6 +3221,10 @@ where
         }
     };
 
+    crate::writer_census::charge(
+        crate::writer_census::EXEC_AUDIT_PREPARE,
+        audit_prepare_started,
+    );
     let batch_size = staged.len();
     let commit_started_at = Instant::now();
     let commit_result = if use_deferred_tail {
@@ -3129,13 +3232,21 @@ where
             Some(audits) => {
                 let apply_started_at = Instant::now();
                 let applied = staged.apply_group_deferred(audits);
+                let apply_elapsed = apply_started_at.elapsed();
+                crate::writer_census::charge_nanos(
+                    crate::writer_census::EXEC_APPLY,
+                    u64::try_from(apply_elapsed.as_nanos()).unwrap_or(u64::MAX),
+                );
                 telemetry.record(CommitTelemetryEvent::CommitApplicationCompleted {
-                    elapsed: apply_started_at.elapsed(),
+                    elapsed: apply_elapsed,
                     batch_size: u16::try_from(batch_size).expect("group cap fits u16"),
                 });
                 match applied {
                     CheckedCommandGroupApplyResult::Applied { epoch, batch } => {
-                        return match seal_checked_deferred_group(epoch, batch, telemetry) {
+                        let seal_started = crate::writer_census::stage_start();
+                        let sealed = seal_checked_deferred_group(epoch, batch, telemetry);
+                        crate::writer_census::charge(crate::writer_census::EXEC_SEAL, seal_started);
+                        return match sealed {
                             Ok(fence) => {
                                 let batch_size =
                                     u16::try_from(batch_size).expect("group cap fits u16");

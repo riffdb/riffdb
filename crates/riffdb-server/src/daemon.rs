@@ -3137,6 +3137,7 @@ async fn supervise_ready_process(
     let writer_journal_stage_census = riffdb_storage_redb::writer_journal_stage_census_v1();
     let writer_publication_stage_census = riffdb_storage_redb::writer_publication_stage_census_v1();
     let query_execute_census = riffdb_storage_redb::query_execute_census_v1();
+    let writer_batch_census = riffdb_commit::writer_batch_stage_census_v1();
     let notification_stop_failed = graph.begin_transport_shutdown().is_err();
     let transport_result = match &trigger {
         ReadyProcessTrigger::Transport(completion) => classify_transport_completion(completion),
@@ -3287,6 +3288,15 @@ async fn supervise_ready_process(
                 riffdb_storage_redb::QUERY_EXECUTE_WINDOW_WIDTH_V1,
                 riffdb_storage_redb::QUERY_EXECUTE_WINDOW_COUNT_V1,
                 query_execute_census.total_count,
+            );
+        }
+        // Diagnostic-only, and absent unless RIFFDB_WRITER_BATCH_DIAGNOSTICS=1
+        // populated it, so the ordered evidence block is unchanged by default.
+        if writer_batch_census.total_count > 0 {
+            let _ = writeln!(
+                stdout,
+                "{}",
+                riffdb_commit::format_writer_batch_stages_v1_line(&writer_batch_census)
             );
         }
         let _ = stdout.flush();

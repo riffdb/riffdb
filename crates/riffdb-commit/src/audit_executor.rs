@@ -3237,16 +3237,29 @@ impl CommandWriter {
         // bounded recovery suffix even as old receipts are published.
         let mut journal_suffix_transitions = 0_usize;
         loop {
+            // One census iteration spans the complete loop body, so the two
+            // stretches the `busy`/`idle` counters miss -- the pre-execution
+            // blocking drain and every post-submission step -- are named.
+            crate::writer_census::begin_iteration();
+            let iteration_started = crate::writer_census::stage_start();
+            let drain_ready_started = crate::writer_census::stage_start();
             drain_ready_completions(
                 &published_rx,
                 &mut in_flight,
                 &mut journal_suffix_transitions,
                 &self.lifecycle,
             );
+            crate::writer_census::charge(
+                crate::writer_census::LOOP_DRAIN_READY,
+                drain_ready_started,
+            );
+            let recv_started = crate::writer_census::stage_start();
             let unit = match work_rx.recv() {
                 Ok(unit) => unit,
                 Err(_) => break,
             };
+            crate::writer_census::charge(crate::writer_census::LOOP_WORK_RECV, recv_started);
+            let admit_gate_started = crate::writer_census::stage_start();
             let pipeline_transitions = match &unit {
                 WorkUnit::CommandGroup(group) => group.len(),
                 WorkUnit::AuditGroup(group) => group.len(),
@@ -3292,6 +3305,10 @@ impl CommandWriter {
             // private successor before it can drain the oldest fence.
             const WRITER_PIPELINE_DRAIN_TRANSITIONS: usize =
                 riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS;
+            crate::writer_census::charge(
+                crate::writer_census::LOOP_ADMIT_GATE,
+                admit_gate_started,
+            );
             if pipeline_transitions == 0
                 || !command_deferred_eligible
                 || journal_suffix_transitions.saturating_add(pipeline_transitions)
@@ -3310,6 +3327,10 @@ impl CommandWriter {
                         reorder_occupancy: 0,
                         elapsed: drain_elapsed,
                     });
+                crate::writer_census::charge_nanos(
+                    crate::writer_census::LOOP_DRAIN_ALL_PRE,
+                    u64::try_from(drain_elapsed.as_nanos()).unwrap_or(u64::MAX),
+                );
                 command_evaluation_frontier =
                     crate::command_execution::CommandEvaluationFrontier::Published;
             }
@@ -3343,6 +3364,12 @@ impl CommandWriter {
                 }
             }
             let busy = busy_started.elapsed();
+            crate::writer_census::charge_nanos(
+                crate::writer_census::UNIT_EXECUTE,
+                u64::try_from(busy.as_nanos()).unwrap_or(u64::MAX),
+            );
+            let post_submit_started = crate::writer_census::stage_start();
+            let submitted_unit = deferred.is_some();
             let queue_delay_estimate_micros = self.observe_ewma(unit_enqueued_hint, busy);
             self.telemetry
                 .record(CommitTelemetryEvent::WriterUnitCompleted {
@@ -3386,6 +3413,10 @@ impl CommandWriter {
                         });
                 }
                 if requires_pipeline_drain {
+                    crate::writer_census::charge(
+                        crate::writer_census::POST_SUBMIT_ENQUEUE,
+                        post_submit_started,
+                    );
                     let drain_elapsed = drain_all_completions(
                         &published_rx,
                         &mut in_flight,
@@ -3399,11 +3430,26 @@ impl CommandWriter {
                             reorder_occupancy: 0,
                             elapsed: drain_elapsed,
                         });
+                    crate::writer_census::charge_nanos(
+                        crate::writer_census::POST_DRAIN_ALL,
+                        u64::try_from(drain_elapsed.as_nanos()).unwrap_or(u64::MAX),
+                    );
+                } else {
+                    crate::writer_census::charge(
+                        crate::writer_census::POST_SUBMIT_ENQUEUE,
+                        post_submit_started,
+                    );
                 }
+            } else {
+                crate::writer_census::charge(
+                    crate::writer_census::POST_SUBMIT_ENQUEUE,
+                    post_submit_started,
+                );
             }
             // Capacity 2 with <=1 outstanding unit: send always succeeds while
             // the intake actor is alive. During actor-panic unwind, avoid a
             // second panic from expect on a closed channel.
+            let feedback_started = crate::writer_census::stage_start();
             if !std::thread::panicking() {
                 feedback_tx
                     .try_send(UnitCompleted)
@@ -3411,6 +3457,13 @@ impl CommandWriter {
             } else {
                 let _ = feedback_tx.try_send(UnitCompleted);
             }
+            crate::writer_census::charge(crate::writer_census::POST_FEEDBACK, feedback_started);
+            crate::writer_census::end_iteration(
+                iteration_started.map_or(0, |started| {
+                    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
+                }),
+                submitted_unit,
+            );
             last_edge = Instant::now();
         }
         drop(completion_tx);
@@ -3722,6 +3775,8 @@ impl CommandWriter {
         footprint: Option<crate::command_execution::DeferredPipelineFootprint>,
         evaluation_frontier: crate::command_execution::CommandEvaluationFrontier,
     ) -> Option<SubmittedWriterUnit> {
+        crate::writer_census::observe_commands(u64::try_from(group.len()).unwrap_or(u64::MAX));
+        let queue_telemetry_started = crate::writer_census::stage_start();
         for (_, command_id, ingress, enqueued_at, _) in &group {
             self.telemetry
                 .record(CommitTelemetryEvent::StorageQueueCompleted {
@@ -3738,11 +3793,17 @@ impl CommandWriter {
                 },
             )
             .unzip();
-        match self
+        crate::writer_census::charge(
+            crate::writer_census::EXEC_QUEUE_TELEMETRY,
+            queue_telemetry_started,
+        );
+        let drive_started = crate::writer_census::stage_start();
+        let driven = self
             .operations
             .drive_command_group(preparations, evaluation_frontier)
-            .await
-        {
+            .await;
+        crate::writer_census::charge(crate::writer_census::DRIVE_TOTAL, drive_started);
+        match driven {
             CommandGroupDriveResult::Complete(results) => {
                 if evaluation_frontier
                     == crate::command_execution::CommandEvaluationFrontier::WriterPrivate
@@ -3753,7 +3814,12 @@ impl CommandWriter {
                         footprint,
                     })
                 } else {
+                    let finish_started = crate::writer_census::stage_start();
                     self.finish_command_group(metadata, results);
+                    crate::writer_census::charge(
+                        crate::writer_census::EXEC_FINISH_GROUP,
+                        finish_started,
+                    );
                     None
                 }
             }
