@@ -167,6 +167,10 @@ const SERIAL_NESTED_END: usize = 40;
 ///
 /// `drive_total` sits past the end: it is the parent of `exec_admission`
 /// through `exec_drive_unnamed` and would double-count if summed.
+///
+/// [`EXEC_ALTERNATE_PATH`] sits *inside* the range and is the same kind of
+/// parent, so every sum over this run must skip it. It could not be moved past
+/// the end without renumbering a published stage order.
 #[cfg(test)]
 const LEVEL1_START: usize = 9;
 #[cfg(test)]
@@ -384,10 +388,13 @@ pub(crate) fn end_iteration(iteration_ns: u64, submitted_unit: bool) {
         .copied()
         .fold(0_u64, u64::saturating_add);
     stages[LOOP_RESIDUAL] = iteration_ns.saturating_sub(level0);
-    let nested: u64 = stages[DRIVE_NESTED_START..DRIVE_NESTED_END]
-        .iter()
-        .copied()
-        .fold(0_u64, u64::saturating_add);
+    // `exec_alternate_path` sits inside this index run but is a parent, not a
+    // sibling: the loop it wraps calls the compatible-group driver, which
+    // charges `exec_evaluate`, `exec_seal`, `exec_apply` and their neighbours
+    // within the same window. Summing it here double counted those children and
+    // drove `exec_drive_unnamed` to a saturated zero, which reads as "fully
+    // attributed" when the opposite is true.
+    let nested: u64 = nested_sum(&stages);
     stages[EXEC_DRIVE_UNNAMED] = stages[DRIVE_TOTAL].saturating_sub(nested);
     let serial: u64 = stages[SERIAL_NESTED_START..SERIAL_NESTED_END]
         .iter()
@@ -448,6 +455,18 @@ pub fn writer_batch_stage_census_v1() -> WriterBatchCensusV1 {
             }
         }),
     }
+}
+
+/// Sums the disjoint level-1 run nested inside `drive_total`.
+///
+/// Excludes [`EXEC_ALTERNATE_PATH`], which is a parent of part of that run.
+fn nested_sum(stages: &[u64; WRITER_BATCH_STAGE_LABELS_V1.len()]) -> u64 {
+    stages[DRIVE_NESTED_START..DRIVE_NESTED_END]
+        .iter()
+        .enumerate()
+        .filter(|(offset, _)| DRIVE_NESTED_START + offset != EXEC_ALTERNATE_PATH)
+        .map(|(_, value)| *value)
+        .fold(0_u64, u64::saturating_add)
 }
 
 /// Renders one payload-free writer-batch census line.
@@ -537,20 +556,25 @@ mod tests {
         stages[DRIVE_TOTAL] = 900;
         stages[EXEC_ADMISSION] = 400;
         stages[EXEC_APPLY] = 250;
-        let nested: u64 = stages[DRIVE_NESTED_START..DRIVE_NESTED_END]
-            .iter()
-            .copied()
-            .fold(0, u64::saturating_add);
-        stages[EXEC_DRIVE_UNNAMED] = stages[DRIVE_TOTAL].saturating_sub(nested);
+        // A parent charge over the two named children, as the real writer
+        // records it. Counting it would leave 0 rather than 250.
+        stages[EXEC_ALTERNATE_PATH] = 650;
+        stages[EXEC_DRIVE_UNNAMED] = stages[DRIVE_TOTAL].saturating_sub(nested_sum(&stages));
         stages[EXEC_OUTER_RESIDUAL] = stages[UNIT_EXECUTE]
             .saturating_sub(stages[DRIVE_TOTAL])
             .saturating_sub(stages[EXEC_QUEUE_TELEMETRY])
             .saturating_sub(stages[EXEC_FINISH_GROUP]);
         assert_eq!(stages[EXEC_DRIVE_UNNAMED], 250);
         assert_eq!(stages[EXEC_OUTER_RESIDUAL], 50);
+        // `exec_alternate_path` is excluded here for the same reason
+        // `nested_sum` excludes it and `drive_total` sits past `LEVEL1_END`:
+        // it is a parent of part of the run, so counting it would tile
+        // `unit_execute` at more than 100%.
         let level1: u64 = stages[LEVEL1_START..LEVEL1_END]
             .iter()
-            .copied()
+            .enumerate()
+            .filter(|(offset, _)| LEVEL1_START + offset != EXEC_ALTERNATE_PATH)
+            .map(|(_, value)| *value)
             .fold(0, u64::saturating_add);
         assert_eq!(
             level1, stages[UNIT_EXECUTE],
