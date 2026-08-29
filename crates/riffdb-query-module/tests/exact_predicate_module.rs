@@ -2,10 +2,9 @@
 
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_module::{
-    NamedQuerySource, QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1,
-    QUERY_MODULE_FORMAT_VERSION_EXACT_PREDICATE_V1,
-    QUERY_MODULE_FORMAT_VERSION_NULLABLE_EXACT_ORDER_V1, QueryModule, QueryModuleCandidate,
-    generate_go_client, generate_python_client, generate_rust_client, generate_typescript_client,
+    NamedQuerySource, QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1, QueryModule,
+    QueryModuleCandidate, generate_go_client, generate_python_client, generate_rust_client,
+    generate_typescript_client,
 };
 use riffdb_types::{QueryModuleName, QueryModuleVersion};
 

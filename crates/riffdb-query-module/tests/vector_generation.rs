@@ -4,9 +4,8 @@
 
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_module::{
-    NamedQuerySource, QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1,
-    QUERY_MODULE_FORMAT_VERSION_PROJECTED_VECTOR_V1, QueryModule, QueryModuleCandidate,
-    QueryModuleName, QueryModuleVersion, generate_go_application_client,
+    NamedQuerySource, QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1, QueryModule,
+    QueryModuleCandidate, QueryModuleName, QueryModuleVersion, generate_go_application_client,
     generate_python_application_client, generate_rust_application_client,
     generate_typescript_application_client,
 };

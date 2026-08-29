@@ -5,11 +5,9 @@
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_module::{
     CompiledNamedQueryPlan, NamedQuerySource, QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1,
-    QUERY_MODULE_FORMAT_VERSION_EXACT_FILTERED_RESULT_SET_V1,
-    QUERY_MODULE_FORMAT_VERSION_EXACT_RESULT_SET_V1, QueryModule, QueryModuleCandidate,
-    QueryModuleName, QueryModuleVersion, generate_go_application_client, generate_mcp_tools,
-    generate_python_application_client, generate_rust_application_client,
-    generate_typescript_application_client,
+    QueryModule, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
+    generate_go_application_client, generate_mcp_tools, generate_python_application_client,
+    generate_rust_application_client, generate_typescript_application_client,
 };
 use riffdb_types::{ExactTextOperatorV1, ExactTextOrderV1, ProjectionProviderPolicyModeV1};
 use std::num::NonZeroU16;
