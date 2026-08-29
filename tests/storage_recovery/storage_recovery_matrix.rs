@@ -6954,3 +6954,361 @@ fn audited_admission_writes_pending_and_started_atomically() {
         vec![ServiceAuditPhaseV1::Started, ServiceAuditPhaseV1::Started]
     );
 }
+
+// ---------------------------------------------------------------------------
+// Covering-index durability and the startup/read detection asymmetry.
+//
+// SPEC.md states that for a V14 covering index the coordinator MUST derive the
+// exact canonical covered record from the entity post-image, and that
+// "missing, stale, malformed, duplicate, wrong-lineage, or non-derivable
+// coverage is corruption and MUST fail closed without entity-read fallback".
+// The read path enforces exactly that: it hard-checks the stored cover
+// field-ID set against the plan's and returns a backend-integrity error on any
+// disagreement.
+//
+// Startup structural evidence does not. `inspect_index_row` checks key decode,
+// value decode, and the schema-binding cross-link, and nothing else — it has
+// no contract in scope, so it cannot know what an entry's cover should be.
+// These two arms hold both halves of that asymmetry in place: a complete cover
+// survives a full close and reopen and serves its covered read, and an
+// incomplete cover survives every startup check and is caught only by the
+// read. The second arm is the durable evidence that a database in this state
+// reports healthy.
+// ---------------------------------------------------------------------------
+
+/// The live application contract: `by_board_project_status` covers three
+/// fields and the board pages already compile to covered plans against it.
+const COVERED_CONTRACT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/app-baseline/contracts/ticketdesk.riff"
+));
+
+/// A board page: a covered plan over `by_board_project_status`.
+const COVERED_BOARD_QUERY: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../queries/ticketdesk/board_page_450.riffq"
+));
+
+const COVERED_ORGANIZATION: [u8; 16] = [0x11; 16];
+const COVERED_PROJECT: [u8; 16] = [0x22; 16];
+
+/// Which cover a fixture entry carries.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum FixtureCover {
+    /// Exactly the declared cover, derived from the entity post-image.
+    Complete,
+    /// No covered fields at all — the shape a rebuild that skipped cover
+    /// derivation leaves behind. Structurally valid, semantically corrupt.
+    Empty,
+}
+
+fn covered_contract_bundle() -> &'static ValidatedContractBundle {
+    static BUNDLE: OnceLock<ValidatedContractBundle> = OnceLock::new();
+    BUNDLE.get_or_init(|| {
+        ValidatedContractBundle::from_compiler_bundle(
+            compile_contract_source(COVERED_CONTRACT).expect("compile covering-index contract"),
+        )
+        .expect("validate covering-index bundle")
+    })
+}
+
+/// Builds one durable covering-index entry for a Ticket, with the requested
+/// cover shape. Every component comes from the contract's own schema, so the
+/// row is exactly what the engine would write for this contract.
+fn covering_index_entry(ordinal: u8, cover: FixtureCover) -> StoredIndexEntryV2 {
+    let bundle = covered_contract_bundle();
+    let schema = bundle.bundle().schema();
+    let ticket = schema
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "Ticket")
+        .expect("Ticket entity");
+    let index = ticket
+        .indexes()
+        .iter()
+        .find(|index| index.name() == "by_board_project_status")
+        .expect("covering index");
+    let status = schema
+        .enums()
+        .iter()
+        .find(|enumeration| enumeration.name() == "TicketStatus")
+        .expect("TicketStatus");
+    let open = CanonicalValue::Enum {
+        type_id: status.id(),
+        variant_id: status
+            .variants()
+            .iter()
+            .find(|variant| variant.name() == "Open")
+            .expect("Open variant")
+            .id(),
+    };
+    let organization = CanonicalValue::Uuid(COVERED_ORGANIZATION);
+    let project = CanonicalValue::Uuid(COVERED_PROJECT);
+    let ticket_id = CanonicalValue::Uuid(covered_uuid(ordinal));
+
+    let entity_key = ticket
+        .primary_key()
+        .encode_entity(&[organization.clone(), ticket_id.clone()])
+        .expect("Ticket entity key");
+    let index_key = index
+        .key_schema()
+        .encode_index(
+            &[organization.clone(), project, open, ticket_id],
+            entity_key,
+        )
+        .expect("covering index key");
+    let partition = schema
+        .aggregates()
+        .iter()
+        .find(|aggregate| aggregate.name() == "Tickets")
+        .expect("Tickets aggregate")
+        .keys()
+        .partition_schema()
+        .encode_partition(std::slice::from_ref(&organization))
+        .expect("Ticket partition key");
+
+    let covered_values = match cover {
+        FixtureCover::Complete => {
+            let field = |name: &str| {
+                ticket
+                    .record()
+                    .fields()
+                    .iter()
+                    .find(|field| field.name() == name)
+                    .expect("covered field is declared on Ticket")
+                    .id()
+            };
+            CanonicalRecord::new(vec![
+                (
+                    field("title"),
+                    CanonicalValue::string(format!("covered board ticket {ordinal}"))
+                        .expect("title"),
+                ),
+                (
+                    field("reporter_id"),
+                    CanonicalValue::Uuid(covered_uuid(0x40 | ordinal)),
+                ),
+                (
+                    field("assignee_id"),
+                    CanonicalValue::Uuid(covered_uuid(0x50 | ordinal)),
+                ),
+            ])
+            .expect("complete canonical cover")
+        }
+        FixtureCover::Empty => CanonicalRecord::new(Vec::new()).expect("empty cover"),
+    };
+
+    StoredIndexEntryV2::new(
+        index_key,
+        DurableKeySchemaBindingV1::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+        ),
+        covered_values,
+        partition,
+    )
+    .expect("durable covering-index entry")
+}
+
+fn covered_uuid(ordinal: u8) -> [u8; 16] {
+    let mut bytes = [0u8; 16];
+    bytes[0] = ordinal;
+    bytes[6] = 0x70 | (bytes[6] & 0x0f);
+    bytes[8] = 0x80 | (bytes[8] & 0x3f);
+    bytes
+}
+
+/// Activates the covering-index contract and installs the given durable
+/// secondary-index rows behind the store, exactly as a rebuild would leave
+/// them.
+fn seed_covering_index_database(path: &Path, entries: &[StoredIndexEntryV2]) {
+    let mut store = RedbStore::open(path).expect("open covering-index database");
+    store
+        .initialize_database(database_id())
+        .expect("initialize covering-index database");
+    let mut ports = open_operational(store);
+    let bundle = covered_contract_bundle()
+        .to_stored()
+        .expect("stored covering-index bundle");
+    let result = ports
+        .activate_catalog(&CatalogActivationIntentV1::new(
+            None,
+            bundle.clone(),
+            RequestId::from_bytes(uuid_bytes(0x71)).expect("catalog request"),
+            catalog_principal(),
+            Timestamp::new(1_700_000_000, 0).expect("catalog timestamp"),
+            None,
+        ))
+        .expect("activate the covering-index catalog");
+    assert!(
+        matches!(
+            &result,
+            CatalogActivationResult::Activated { active, .. }
+                if *active == riffdb_storage_api::ActiveCatalogPointerV1::from_bundle(&bundle)
+        ),
+        "unexpected covering-index activation result: {result:?}"
+    );
+    drop(ports);
+
+    let raw = entries
+        .iter()
+        .map(|entry| {
+            (
+                entry.key().clone(),
+                encode_index_entry_v2(entry)
+                    .expect("encode covering entry")
+                    .as_bytes()
+                    .to_vec(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let previous = write_raw_index_entries(path, &raw);
+    assert!(
+        previous.iter().all(Option::is_none),
+        "the fixture must introduce its covering rows, not replace existing ones"
+    );
+}
+
+/// Compiles the board page and runs it against the reopened database.
+fn execute_covered_board_page(
+    ports: &RedbOperationalPorts,
+) -> Result<riffdb_query_executor::QueryOwnedSnapshot, riffdb_query_executor::QueryExecutionError> {
+    let bundle = covered_contract_bundle();
+    let catalog = riffdb_query_ir::SymbolicCatalog::from_bundle(bundle.bundle())
+        .expect("covering-index symbolic catalog");
+    let program = riffdb_query_compiler::compile_query(
+        &riffdb_riffql_syntax::parse_query(COVERED_BOARD_QUERY).expect("board page parses"),
+        &catalog,
+    )
+    .expect("board page compiles");
+    assert!(
+        program.steps()[0].covered_result_layout().is_some(),
+        "the board page must compile to a covered plan or these arms prove nothing"
+    );
+    let status = bundle
+        .bundle()
+        .schema()
+        .enums()
+        .iter()
+        .find(|enumeration| enumeration.name() == "TicketStatus")
+        .expect("TicketStatus");
+    let parameters =
+        riffdb_query_executor::QueryParameters::checked(std::collections::BTreeMap::from([
+            (
+                "organization_id".to_owned(),
+                CanonicalValue::Uuid(COVERED_ORGANIZATION),
+            ),
+            (
+                "project_id".to_owned(),
+                CanonicalValue::Uuid(COVERED_PROJECT),
+            ),
+            (
+                "status".to_owned(),
+                CanonicalValue::Enum {
+                    type_id: status.id(),
+                    variant_id: status
+                        .variants()
+                        .iter()
+                        .find(|variant| variant.name() == "Open")
+                        .expect("Open variant")
+                        .id(),
+                },
+            ),
+        ]))
+        .expect("board page parameters");
+    riffdb_query_executor::QueryExecutionPort::execute_query(ports, &program, &parameters)
+}
+
+/// A complete cover must survive a full durable close and startup
+/// revalidation and still satisfy the covered read that consumes it.
+#[test]
+fn a_complete_covering_index_cover_survives_reopen_and_serves_its_covered_read() {
+    let path = TestDatabasePath::new("covering-index-complete-cover");
+    let entries = [
+        covering_index_entry(1, FixtureCover::Complete),
+        covering_index_entry(2, FixtureCover::Complete),
+    ];
+    seed_covering_index_database(&path.0, &entries);
+
+    let ports =
+        open_operational(RedbStore::open(&path.0).expect("reopen the covering-index database"));
+    let snapshot = execute_covered_board_page(&ports).expect("the covered board page executes");
+    let covered = snapshot
+        .covered_result()
+        .expect("the board page retains its positional covered result");
+    assert_eq!(covered.entity(), "Ticket");
+    assert_eq!(covered.rows().len(), 2, "both covered entries are visible");
+    let title = covered
+        .fields()
+        .position(|field| field == "title")
+        .expect("title is a covered field");
+    assert_eq!(
+        covered
+            .rows()
+            .iter()
+            .map(|row| row[title].clone())
+            .collect::<Vec<_>>(),
+        vec![
+            CanonicalValue::string("covered board ticket 1").expect("first title"),
+            CanonicalValue::string("covered board ticket 2").expect("second title"),
+        ],
+        "the covered read serves the stored cover, in index order, without the entity table"
+    );
+}
+
+/// An entry whose cover is empty passes EVERY startup structural check and is
+/// caught only by the read that needs it.
+///
+/// This is the detection gap, held in place so it cannot close silently. A
+/// database left in this state by a rebuild that skipped cover derivation
+/// opens clean, reports no structural finding, validates its complete catalog
+/// history — and then fails the board page closed with a backend-integrity
+/// error. There is no startup signal, no statistic, and no repair path.
+///
+/// If a future change teaches startup to inspect covers, this arm fails on the
+/// `findings.is_empty()` assertion inside the startup pass and must be
+/// rewritten deliberately rather than deleted: a startup finding is fatal to
+/// the whole database, not a warning, so making covers a structural finding
+/// changes an affected installation from degraded to unopenable.
+#[test]
+fn an_empty_cover_passes_every_startup_check_and_fails_only_the_covered_read() {
+    let path = TestDatabasePath::new("covering-index-empty-cover");
+    let entries = [covering_index_entry(1, FixtureCover::Empty)];
+    seed_covering_index_database(&path.0, &entries);
+
+    // Startup structural evidence reports nothing at all.
+    assert_eq!(
+        collect_structural_findings(
+            RedbStore::open(&path.0).expect("reopen for structural evidence")
+        ),
+        Vec::new(),
+        "an empty cover is invisible to startup structural evidence"
+    );
+
+    // The durable row is exactly what a cover-skipping rebuild leaves.
+    let persisted = read_raw_index_entries(&path.0);
+    assert_eq!(persisted.len(), 1);
+    assert!(
+        decode_index_entry_v2(&persisted[0].1)
+            .expect("the empty-cover entry decodes as a valid V2 row")
+            .value()
+            .covered_values()
+            .fields()
+            .is_empty(),
+        "the fixture must persist an entry whose cover is empty"
+    );
+
+    // And the complete startup pass — structural drain plus catalog history —
+    // opens the database as healthy.
+    let ports =
+        open_operational(RedbStore::open(&path.0).expect("reopen the empty-cover database"));
+
+    // Only the covered read notices.
+    assert_eq!(
+        execute_covered_board_page(&ports).map(|_| ()),
+        Err(riffdb_query_executor::QueryExecutionError::BackendIntegrity),
+        "a covered plan must fail closed on an incomplete cover rather than \
+         hydrating from the entity table"
+    );
+}
