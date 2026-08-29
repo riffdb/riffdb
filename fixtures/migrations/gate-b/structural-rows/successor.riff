@@ -4,6 +4,7 @@ contract StructuralRows version 2 {
     key (id: uuid)
     field amount: u64
     field status: WorkflowStatus
+    index by_status (status, id) cover (amount)
   }
   aggregate Rows { root Record partition_by id conflict_key (id) }
 }

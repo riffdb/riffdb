@@ -432,3 +432,124 @@ fn uuid_for(value: u64) -> [u8; 16] {
     bytes[8] = 0x80 | (bytes[8] & 0x3f);
     bytes
 }
+
+/// Gate B's successor declares a covering index, so its migration is the one
+/// standing gate in which a rebuild derives a cover over real rows.
+///
+/// SPEC.md requires the coordinator to derive the exact canonical covered
+/// record from the transaction-current entity post-image, and states that
+/// missing coverage is corruption that MUST fail closed without entity-read
+/// fallback. A rebuilt entry with an empty or partial cover is therefore not a
+/// degraded row — it is a row the covered read rejects outright, on a database
+/// that reports healthy at startup.
+///
+/// The cover is asserted against the successor schema's own declaration rather
+/// than a literal, so it stays correct if the fixture's cover list changes.
+#[test]
+fn the_rebuilt_covering_index_carries_the_complete_cover_from_the_post_image() {
+    let parent_bundle = compile_contract_source(STRUCTURAL_PARENT).expect("parent");
+    let (candidate_bundle, migration) = compile_contract_migration_successor(
+        STRUCTURAL_SUCCESSOR,
+        STRUCTURAL_MIGRATION,
+        &parent_bundle,
+    )
+    .expect("structural successor");
+
+    let candidate_entity = &candidate_bundle.schema().entities()[0];
+    let covering = candidate_entity
+        .indexes()
+        .iter()
+        .find(|index| !index.cover_fields().is_empty())
+        .expect(
+            "the Gate-B successor must declare a covering index; without one this gate \
+             exercises no cover derivation at all",
+        );
+    let covering_id = covering.id();
+    let mut declared_cover = covering.cover_fields().to_vec();
+    declared_cover.sort_unstable();
+    let amount = candidate_entity
+        .record()
+        .fields()
+        .iter()
+        .find(|field| field.name() == "amount")
+        .expect("replacement field")
+        .id();
+    assert!(
+        declared_cover.contains(&amount),
+        "the covering index must cover the field the transform rewrites, so a cover \
+         derived from the pre-image rather than the post-image is also caught"
+    );
+    assert!(
+        !parent_bundle.schema().entities()[0]
+            .indexes()
+            .iter()
+            .any(|index| index.id() == covering_id),
+        "the covering index must be a new identity introduced by the successor"
+    );
+
+    let parent = ValidatedContractBundle::from_compiler_bundle(parent_bundle).expect("parent");
+    let candidate =
+        ValidatedContractBundle::from_compiler_bundle(candidate_bundle).expect("candidate");
+    let plan = ValidatedMigrationPlan::from_artifacts(parent.clone(), candidate.clone(), migration)
+        .expect("sealed covering-index plan");
+    let row = named_row(
+        &parent,
+        "Row",
+        vec![
+            ("id", CanonicalValue::Uuid(uuid_for(1))),
+            ("value", CanonicalValue::I64(7)),
+            ("status", enum_value(&parent, "WorkflowStatus", "Closed")),
+        ],
+    );
+    let mut stage = memory_stage(&parent, vec![row]);
+    MigrationCoordinator::apply(&plan, &mut stage).expect("covering-index migration applies");
+
+    let rebuilt = stage
+        .index_entries()
+        .iter()
+        .find(|entry| entry.key().index_id() == covering_id)
+        .expect("the migration must rebuild the newly declared covering index");
+    let stored_cover = rebuilt
+        .covered_values()
+        .fields()
+        .iter()
+        .map(|(field, _)| *field)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        stored_cover, declared_cover,
+        "a rebuilt covering-index entry must carry the exact declared cover; an empty \
+         or partial cover passes every startup structural check and is then read as \
+         corruption by the covered plan"
+    );
+
+    // The cover must come from the post-image the index key came from: the
+    // transform replaced i64 `value` with u64 `amount`, so a cover taken from
+    // the pre-image would carry the retired field or the wrong value.
+    let migrated = stage.entities().next().expect("migrated row");
+    for (field, value) in rebuilt.covered_values().fields() {
+        let post_image = migrated
+            .fields()
+            .fields()
+            .iter()
+            .find_map(|(candidate, value)| (candidate == field).then_some(value))
+            .expect("every covered field is a direct field of the migrated post-image");
+        assert_eq!(
+            value, post_image,
+            "covered values must be derived from the successor post-image"
+        );
+    }
+    assert_eq!(
+        rebuilt
+            .covered_values()
+            .fields()
+            .iter()
+            .find_map(|(field, value)| (*field == amount).then_some(value)),
+        Some(&CanonicalValue::U64(7)),
+        "the covered value must be the converted successor value, not the retired one"
+    );
+    assert_eq!(
+        rebuilt.schema_binding().bundle_hash(),
+        candidate.bundle_hash(),
+        "the rebuilt covering entry binds to the successor contract"
+    );
+}
