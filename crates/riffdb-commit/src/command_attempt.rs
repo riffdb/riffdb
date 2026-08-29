@@ -1024,7 +1024,9 @@ pub(crate) async fn evaluate_next_command_attempt(
     snapshots: &dyn SnapshotReader,
     conflicts: &dyn ConflictManager,
 ) -> Result<CommandAttemptResolution, CommandAttemptError> {
+    let acquire_started = crate::writer_census::stage_start();
     let acquired = acquire_command_attempt(state, conflicts).await?;
+    crate::writer_census::charge(crate::writer_census::SERIAL_ACQUIRE, acquire_started);
     evaluate_acquired_command_attempt(acquired, admission, snapshots)
 }
 
@@ -1091,11 +1093,13 @@ impl AcquiredCommandAttempt {
         if !snapshot_matches_request(&self.state.snapshot_request, &discovery) {
             return Err(CommandAttemptError::Integrity);
         }
+        let facts_started = crate::writer_census::stage_start();
         let facts = derive_input_command_facts(
             self.state.resolved_plan.plan(),
             self.state.normalized_input.clone(),
         )
         .map_err(|_| CommandAttemptError::Integrity)?;
+        crate::writer_census::charge(crate::writer_census::SERIAL_INPUT_FACTS, facts_started);
         match crate::command_index::lower_cascade_discovery(
             &self.state.resolved_plan,
             &facts,
@@ -1106,7 +1110,12 @@ impl AcquiredCommandAttempt {
             crate::command_index::CascadeDiscoveryDecision::Complete => Ok(discovery),
             crate::command_index::CascadeDiscoveryDecision::ReadPredecessors(request) => {
                 let request = *request;
+                let read_started = crate::writer_census::stage_start();
                 let snapshot = read(request.clone()).map_err(CommandAttemptError::SnapshotRead)?;
+                crate::writer_census::charge(
+                    crate::writer_census::SERIAL_DEPENDENCY_READ,
+                    read_started,
+                );
                 self.state.snapshot_request = request;
                 Ok(snapshot)
             }
@@ -1124,6 +1133,7 @@ pub(crate) async fn acquire_command_attempt(
     }
     check_request_control(state.deadline, &state.cancellation)?;
 
+    let lease_started = crate::writer_census::stage_start();
     let lease = conflicts
         .acquire_mut(
             state.raw_conflict_keys.clone(),
@@ -1132,6 +1142,7 @@ pub(crate) async fn acquire_command_attempt(
         )
         .await
         .map_err(map_conflict_error)?;
+    crate::writer_census::charge(crate::writer_census::SERIAL_LEASE, lease_started);
 
     check_request_control(state.deadline, &state.cancellation)?;
     Ok(AcquiredCommandAttempt {
@@ -1149,9 +1160,11 @@ pub(crate) fn evaluate_acquired_command_attempt(
     admission: &dyn AdmissionRepository,
     snapshots: &dyn SnapshotReader,
 ) -> Result<CommandAttemptResolution, CommandAttemptError> {
+    let admission_started = crate::writer_census::stage_start();
     let durable = admission
         .lookup_admission(acquired.lookup_candidates().clone())
         .map_err(CommandAttemptError::PendingRecheck)?;
+    crate::writer_census::charge(crate::writer_census::SERIAL_ADMISSION, admission_started);
     evaluate_acquired_command_attempt_after_lookup(acquired, durable, snapshots)
 }
 
@@ -1169,9 +1182,11 @@ pub(crate) fn evaluate_acquired_command_attempt_after_lookup(
     };
     check_request_control(state.deadline, &state.cancellation)?;
 
+    let snapshot_started = crate::writer_census::stage_start();
     let raw_snapshot = snapshots
         .read_snapshot(state.snapshot_request.clone())
         .map_err(CommandAttemptError::SnapshotRead)?;
+    crate::writer_census::charge(crate::writer_census::SERIAL_SNAPSHOT, snapshot_started);
     finish_acquired_discovery(state, lease, raw_snapshot, snapshots)
 }
 
@@ -1310,6 +1325,7 @@ fn finish_acquired_evaluation(
     };
 
     let context = transaction_context(&state.commit_context);
+    let evaluate_started = crate::writer_census::stage_start();
     let execution = catch_unwind(AssertUnwindSafe(|| {
         execute_command(
             snapshot.resolved_plan().bundle().bundle(),
@@ -1320,6 +1336,7 @@ fn finish_acquired_evaluation(
         )
     }))
     .map_err(|_| CommandAttemptError::EvaluationPanicked)?;
+    crate::writer_census::charge(crate::writer_census::SERIAL_EVALUATE, evaluate_started);
 
     let resolution = match execution {
         Ok(ExecutionResult::CommitRequired(evaluated)) => {

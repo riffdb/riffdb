@@ -90,7 +90,14 @@ pub(crate) const EXEC_AUDIT_PREPARE: usize = 21;
 pub(crate) const EXEC_APPLY: usize = 22;
 /// Level-1 stage: sealing the deferred epoch into a journal fence.
 pub(crate) const EXEC_SEAL: usize = 23;
-/// Level-1 stage: command paths other than the serial/detached group driver.
+/// Level-1 stage: the per-group drive loop.
+///
+/// NOT a disjoint sibling. The loop it wraps calls the compatible-group driver
+/// whenever a group has more than one item or every group is deferral
+/// eligible, so `exec_evaluate`, `exec_seal`, `exec_apply`, and their
+/// neighbours are charged *inside* this window and are double counted against
+/// it. Read it as a parent, like `drive_total`, and use the level-2
+/// `serial_*` run for what the truly serial branch costs.
 pub(crate) const EXEC_ALTERNATE_PATH: usize = 24;
 /// Level-1 stage: boxing the group-driver future.
 ///
@@ -131,6 +138,31 @@ pub(crate) const EXEC_OUTER_RESIDUAL: usize = 31;
 /// disjoint level-1 run. It exists only so both residuals can be derived.
 pub(crate) const DRIVE_TOTAL: usize = 32;
 
+/// Level-2 stage: conflict-attempt acquisition on the serial path.
+pub(crate) const SERIAL_ACQUIRE: usize = 33;
+/// Level-2 stage: deriving input command facts from the frozen request.
+pub(crate) const SERIAL_INPUT_FACTS: usize = 34;
+/// Level-2 stage: reading the declared dependency snapshot.
+pub(crate) const SERIAL_DEPENDENCY_READ: usize = 35;
+/// Level-2 stage: acquiring the conflict lease.
+pub(crate) const SERIAL_LEASE: usize = 36;
+/// Level-2 stage: durable idempotency admission.
+pub(crate) const SERIAL_ADMISSION: usize = 37;
+/// Level-2 stage: capturing and materializing the read snapshot.
+pub(crate) const SERIAL_SNAPSHOT: usize = 38;
+/// Level-2 stage: deterministic runtime evaluation on the serial path.
+pub(crate) const SERIAL_EVALUATE: usize = 39;
+/// Level-2 residual: [`EXEC_ALTERNATE_PATH`] minus the seven named stages.
+///
+/// Derived, never charged. Single-client commands take the serial path
+/// exclusively, so without this tiling the largest block of their cost is one
+/// unattributed bucket.
+pub(crate) const SERIAL_RESIDUAL: usize = 40;
+
+/// First and exclusive-end index of the run nested inside `exec_alternate_path`.
+const SERIAL_NESTED_START: usize = 33;
+const SERIAL_NESTED_END: usize = 40;
+
 /// First and exclusive-end index of the disjoint level-1 run.
 ///
 /// `drive_total` sits past the end: it is the parent of `exec_admission`
@@ -150,9 +182,12 @@ const DRIVE_NESTED_END: usize = 30;
 /// `unit_execute`, with `exec_drive_unnamed` and `exec_outer_residual`
 /// derived. Level-1 stages are already inside `unit_execute` and must never be
 /// added to the level-0 total. `drive_total` is the parent of indices 11..=30
-/// and belongs to neither tiling.
+/// and belongs to neither tiling. Indices 33..=40 tile `exec_alternate_path`
+/// -- the serial single-command path every unbatched command takes -- with
+/// `serial_residual` derived. They are already inside it and must never be
+/// added to the level-1 total.
 #[doc(hidden)]
-pub const WRITER_BATCH_STAGE_LABELS_V1: [&str; 33] = [
+pub const WRITER_BATCH_STAGE_LABELS_V1: [&str; 41] = [
     "loop_drain_ready",
     "loop_work_recv",
     "loop_admit_gate",
@@ -186,6 +221,14 @@ pub const WRITER_BATCH_STAGE_LABELS_V1: [&str; 33] = [
     "exec_drive_unnamed",
     "exec_outer_residual",
     "drive_total",
+    "serial_acquire",
+    "serial_input_facts",
+    "serial_dependency_read",
+    "serial_lease",
+    "serial_admission",
+    "serial_snapshot",
+    "serial_evaluate",
+    "serial_residual",
 ];
 
 /// Number of writer loop iterations merged into one ordinal window.
@@ -346,6 +389,11 @@ pub(crate) fn end_iteration(iteration_ns: u64, submitted_unit: bool) {
         .copied()
         .fold(0_u64, u64::saturating_add);
     stages[EXEC_DRIVE_UNNAMED] = stages[DRIVE_TOTAL].saturating_sub(nested);
+    let serial: u64 = stages[SERIAL_NESTED_START..SERIAL_NESTED_END]
+        .iter()
+        .copied()
+        .fold(0_u64, u64::saturating_add);
+    stages[SERIAL_RESIDUAL] = stages[EXEC_ALTERNATE_PATH].saturating_sub(serial);
     stages[EXEC_OUTER_RESIDUAL] = stages[UNIT_EXECUTE]
         .saturating_sub(stages[DRIVE_TOTAL])
         .saturating_sub(stages[EXEC_QUEUE_TELEMETRY])
@@ -465,8 +513,16 @@ mod tests {
             "the nested run must stop before its own derived residual"
         );
         assert_eq!(
+            WRITER_BATCH_STAGE_LABELS_V1[SERIAL_NESTED_START],
+            "serial_acquire"
+        );
+        assert_eq!(
+            WRITER_BATCH_STAGE_LABELS_V1[SERIAL_NESTED_END], "serial_residual",
+            "the serial run must stop before its own derived residual"
+        );
+        assert_eq!(
             WRITER_BATCH_STAGE_LABELS_V1.len(),
-            DRIVE_TOTAL + 1,
+            SERIAL_RESIDUAL + 1,
             "every declared index must have a label"
         );
     }

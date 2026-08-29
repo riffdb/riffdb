@@ -1331,9 +1331,10 @@ where
                 .all(|(_, state)| state.has_audited_lifecycle())
         });
     let mut submitted = Vec::new();
-    // Everything below is off the serial/detached group driver. It is charged
-    // as one stage so the level-1 residual stays interpretable; nothing inside
-    // it charges a level-1 stage of its own.
+    // The per-group drive loop. This charge is a parent, not a disjoint sibling:
+    // the compatible-group driver called below charges its own level-1 stages
+    // inside this window. The level-2 `serial_*` stages decompose the branch
+    // that does not, and `serial_residual` carries the nested grouped work.
     let alternate_started = crate::writer_census::stage_start();
     for group in groups {
         if group.items.len() > 1 || all_groups_deferred_eligible {
