@@ -183,6 +183,11 @@ direction, merged draft, or implementation choice.
 | [0162](0162-incremental-analytical-provider-structures.md) | Compiler-Declared Incremental Analytical Provider Structures | Proposed |
 | [0163](0163-compiler-sealed-command-decisions.md) | Compiler-Sealed Command Decisions with Exact No-Effect Arms | Accepted |
 | [0164](0164-admission-head-fenced-query-consistency.md) | Admission-Head-Fenced Query Consistency | Accepted |
+| [0165](0165-durable-command-derived-locator-tables.md) | Durable Command-Derived Locator Tables | Accepted |
+| [0166](0166-interruptible-columnar-catch-up-and-shutdown-abandonment.md) | Interruptible Columnar Catch-Up and Graceful-Stop Abandonment | Accepted |
+| [0167](0167-required-bounded-limit-maximum.md) | Required Bounded Limit Maximum | Proposed |
+| [0168](0168-index-cover-evolution-through-migration.md) | Index Cover Evolution Through Migration | Proposed |
+| [0169](0169-optional-aggregate-root-materialization.md) | Optional Aggregate Root Materialization | Proposed |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
