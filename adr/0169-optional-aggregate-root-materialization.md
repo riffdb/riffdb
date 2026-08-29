@@ -115,8 +115,24 @@ or conflict ownership.
 ## Testing
 
 The OpenFGA adapter's 149-test upstream conformance run against a live service
-with no `TuplePartition` rows. A first-party arm asserting export and retention
-over a rootless partition is not yet written and is the natural follow-on.
+with no `TuplePartition` rows covers reads, writes, changelog, and restart.
+
+Two first-party arms in `tests/storage_recovery/storage_recovery_matrix.rs`
+cover the maintenance paths that run cannot reach:
+
+- `an_aggregate_root_that_no_command_creates_compiles_and_activates` — the
+  contract compiles and its catalog activates on a real database. The premise
+  is asserted rather than assumed: adding a `CreateParcel` command fails it
+  with `left: 2, right: 1`.
+- `offline_backup_and_retention_administer_a_rootless_aggregate` — retention
+  status, a retention hold, an offline backup, and a structural reopen all
+  succeed with no findings.
+
+Export remains argued rather than tested. `read_application_export_entity_page`
+takes an entity type and builds a key prefix, so export never traverses root to
+child and is structurally incapable of observing root presence — but no arm
+commits a child row into a rootless partition and exports it. That arm is the
+remaining gap.
 
 ## Requirements and Work Packages
 

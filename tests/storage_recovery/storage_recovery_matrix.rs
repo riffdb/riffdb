@@ -7122,6 +7122,154 @@ fn covered_uuid(ordinal: u8) -> [u8; 16] {
 /// Activates the covering-index contract and installs the given durable
 /// secondary-index rows behind the store, exactly as a rebuild would leave
 /// them.
+/// A contract whose aggregate root no command can create. `ParcelItem` is the
+/// only entity any command writes, so a `Parcels` partition holds children with
+/// no root row -- exactly the shape ADR-0169 permits.
+const ROOTLESS_CONTRACT: &str = r#"
+contract RootlessAggregate version 1 {
+  entity ParcelItem {
+    key (parcel_id: u64, item_id: u64)
+    field quantity: u64
+  }
+
+  entity Parcel {
+    key (parcel_id: u64)
+  }
+
+  aggregate Parcels {
+    root Parcel
+    child ParcelItem
+    partition_by parcel_id
+    conflict_key (parcel_id)
+  }
+
+  command AddParcelItem {
+    input idempotency_key: string<128>
+    input parcel_id: u64
+    input item_id: u64
+    input quantity: u64
+
+    idempotency_key idempotency_key
+    create ParcelItem(parcel_id, item_id) as item
+      else ParcelItemAlreadyExists { parcel_id: parcel_id }
+
+    set item.quantity = quantity
+
+    return ParcelItemAdded { item: item }
+  }
+}
+"#;
+
+fn rootless_contract_bundle() -> &'static ValidatedContractBundle {
+    static BUNDLE: OnceLock<ValidatedContractBundle> = OnceLock::new();
+    BUNDLE.get_or_init(|| {
+        ValidatedContractBundle::from_compiler_bundle(
+            compile_contract_source(ROOTLESS_CONTRACT).expect("compile rootless contract"),
+        )
+        .expect("validate rootless bundle")
+    })
+}
+
+/// ADR-0169: an aggregate root need not be materialized.
+///
+/// The compile is the load-bearing half -- if the compiler grew a rule that
+/// every root needs a creating command, this fails here rather than anywhere
+/// downstream. The assertions after it state the premise instead of assuming
+/// it: the contract really does declare a root, and really does declare no
+/// command that can create one.
+#[test]
+fn an_aggregate_root_that_no_command_creates_compiles_and_activates() {
+    let bundle = rootless_contract_bundle();
+    let aggregate = bundle
+        .bundle()
+        .schema()
+        .aggregates()
+        .iter()
+        .find(|aggregate| aggregate.name() == "Parcels")
+        .expect("the Parcels aggregate");
+    let root = bundle
+        .bundle()
+        .schema()
+        .entity(aggregate.root())
+        .expect("the declared root entity");
+    assert_eq!(root.name(), "Parcel");
+    assert_eq!(
+        bundle.bundle().commands().len(),
+        1,
+        "AddParcelItem is the only command, so nothing can create a Parcel"
+    );
+
+    let path = TestDatabasePath::new("rootless-aggregate-activate");
+    activate_rootless_catalog(&path.0);
+}
+
+/// Offline backup and retention administration are the two maintenance paths
+/// ADR-0169 names that the OpenFGA adapter's conformance run cannot reach: it
+/// proves reads, writes, changelog, and restart over a rootless aggregate, but
+/// never exports, backs up, or prunes one. If either path grew a root lookup,
+/// this fails rather than silently skipping the partition.
+#[test]
+fn offline_backup_and_retention_administer_a_rootless_aggregate() {
+    let path = TestDatabasePath::new("rootless-aggregate-maintenance");
+    activate_rootless_catalog(&path.0);
+
+    use riffdb_storage_api::{BackupBuildMetadataV1, OfflineBackupPersistencePort};
+
+    let maintenance = riffdb_storage_redb::RedbOfflineRetention::bind(&path.0);
+    maintenance
+        .status()
+        .expect("retention status over a rootless aggregate");
+    maintenance
+        .add_hold("rootless", 1, "ADR-0169 rootless retention hold")
+        .expect("install a hold over a rootless aggregate");
+
+    let scope = ScratchScope::new("rootless-backup");
+    let backup_dir = scope.path().join("backup");
+    let build = BackupBuildMetadataV1::new(
+        "0.1.0",
+        "0123456789abcdef",
+        "rustc-1.97.0",
+        1,
+        vec!["rootless".to_owned()],
+    )
+    .expect("build metadata");
+    let manifest = riffdb_storage_redb::RedbOfflineBackup::bind(&path.0, &backup_dir)
+        .create_offline_backup(&build)
+        .expect("offline backup over a rootless aggregate");
+    assert_eq!(manifest.database_id(), database_id());
+
+    let findings = collect_structural_findings(
+        RedbStore::open(&path.0).expect("reopen the rootless database"),
+    );
+    assert!(
+        findings.is_empty(),
+        "a rootless aggregate produces no structural finding: {findings:?}"
+    );
+}
+
+/// Initializes one database and activates the rootless catalog on it.
+fn activate_rootless_catalog(path: &Path) {
+    let mut store = RedbStore::open(path).expect("open rootless database");
+    store
+        .initialize_database(database_id())
+        .expect("initialize rootless database");
+    let mut ports = open_operational(store);
+    let stored = rootless_contract_bundle()
+        .to_stored()
+        .expect("stored rootless bundle");
+    let result = ports
+        .activate_catalog(&CatalogActivationIntentV1::new(
+            None,
+            stored,
+            RequestId::from_bytes(uuid_bytes(0x69)).expect("rootless catalog request"),
+            catalog_principal(),
+            Timestamp::new(1_700_000_000, 0).expect("rootless catalog timestamp"),
+            None,
+        ))
+        .expect("activate the rootless catalog");
+    assert!(matches!(result, CatalogActivationResult::Activated { .. }));
+}
+
 fn seed_covering_index_database(path: &Path, entries: &[StoredIndexEntryV2]) {
     let mut store = RedbStore::open(path).expect("open covering-index database");
     store
