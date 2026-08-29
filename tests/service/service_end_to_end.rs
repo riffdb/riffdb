@@ -2061,6 +2061,9 @@ query BudgetSummary(
             ReadPipelineStage::AuthorizeBegin,
             ReadPipelineStage::AuthorizePre,
             ReadPipelineStage::AuthorizePost,
+            // The audit finish that closes the invocation used to sit outside
+            // every stage, so its cost landed in the unattributed remainder.
+            ReadPipelineStage::AuditFinish,
         ] {
             assert_eq!(
                 observability.metrics().read_stage_duration(stage).count,

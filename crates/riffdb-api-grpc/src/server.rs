@@ -604,6 +604,20 @@ impl GrpcApplication {
             .max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES)
     }
 
+    /// Returns the read-stage sink only for the operation the stages describe.
+    ///
+    /// Every other stage in the read histogram is recorded on the query path,
+    /// so admitting another operation's authentication and admission here would
+    /// leave two stages counting a different population than the other thirteen.
+    fn read_stage_telemetry_for_operation(
+        lifecycle: &dyn GrpcLifecycleRoute,
+        operation: ServiceOperationV1,
+    ) -> Option<Arc<dyn ServiceTelemetry>> {
+        (operation == ServiceOperationV1::ExecuteQuery)
+            .then(|| lifecycle.read_stage_telemetry())
+            .flatten()
+    }
+
     fn normal_context(
         &self,
         metadata: &MetadataMap,
@@ -659,7 +673,7 @@ impl GrpcApplication {
         operation: ServiceOperationV1,
         metadata: &MetadataMap,
     ) -> Result<(Arc<dyn ApplicationService>, AuthenticatedPrincipal, Instant), Status> {
-        let telemetry = lifecycle.read_stage_telemetry();
+        let telemetry = Self::read_stage_telemetry_for_operation(lifecycle, operation);
         let admission_started = Instant::now();
         let (service, security) = self.normal_admission(lifecycle, operation)?;
         let deadline = self.limits.deadline(metadata)?;
@@ -714,7 +728,14 @@ impl GrpcApplication {
         ),
         Status,
     > {
-        let telemetry = lifecycle.read_stage_telemetry();
+        // Read-pipeline stages describe one read. This helper also serves
+        // commands and every other normal RPC, and recording their admission and
+        // authentication into the read histogram made `authn` and
+        // `admission_context` the only two populated stages of a write-dominated
+        // run, with counts unrelated to the read count. Gate them on the read
+        // operation exactly as `SpawnDispatch` already is, so every stage in the
+        // histogram is charged to the same population of requests.
+        let telemetry = Self::read_stage_telemetry_for_operation(lifecycle, operation);
         // AdmissionContext spans lifecycle admission, security selection,
         // deadline parsing, and request-context assembly — everything in this
         // function except the authentication measured as `Authn`.
@@ -2206,7 +2227,10 @@ impl ApplicationQueryService for GrpcApplication {
         let lifecycle = self
             .select_lifecycle(&metadata)
             .map_err(|status| status_from_application_boundary(status, &application))?;
-        if let Some(telemetry) = lifecycle.read_stage_telemetry() {
+        // Resolved once. The stage sink is an `Arc` clone per call, so taking it
+        // three times charged the read path two avoidable atomic pairs.
+        let telemetry = lifecycle.read_stage_telemetry();
+        if let Some(telemetry) = telemetry.as_ref() {
             telemetry.record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
                 stage: ReadPipelineStage::TransportAdapt,
                 elapsed: transport_started.elapsed(),
@@ -2220,6 +2244,10 @@ impl ApplicationQueryService for GrpcApplication {
                 request_id,
             )
             .map_err(|status| status_from_application_boundary(status, &application))?;
+        // ServiceAwait is an envelope over SpawnDispatch..AuditFinish. Its excess
+        // over those members is spawn queueing plus the completion handoff, which
+        // no partition stage can observe from inside the spawned job.
+        let service_await_started = Instant::now();
         let result = match request {
             ExecuteSymbolicQueryInvocation::AdHoc(request) => map_application_service(
                 service.execute_symbolic_query(context, request).await,
@@ -2232,10 +2260,20 @@ impl ApplicationQueryService for GrpcApplication {
         };
         let encode_started = Instant::now();
         let response = execute_symbolic_query_result_to_proto(result)?;
-        if let Some(telemetry) = lifecycle.read_stage_telemetry() {
+        if let Some(telemetry) = telemetry.as_ref() {
+            let encode_elapsed = encode_started.elapsed();
+            telemetry.record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
+                stage: ReadPipelineStage::ServiceAwait,
+                elapsed: encode_started.saturating_duration_since(service_await_started),
+            });
             telemetry.record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
                 stage: ReadPipelineStage::EncodeConvert,
-                elapsed: encode_started.elapsed(),
+                elapsed: encode_elapsed,
+            });
+            // ServerHandler closes last so it contains every stage above it.
+            telemetry.record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
+                stage: ReadPipelineStage::ServerHandler,
+                elapsed: transport_started.elapsed(),
             });
         }
         Ok(Response::new(response))

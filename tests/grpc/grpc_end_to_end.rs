@@ -3212,6 +3212,8 @@ async fn execute_query_records_five_residual_read_pipeline_stages() {
         ReadPipelineStage::AdmissionContext,
         ReadPipelineStage::SpawnDispatch,
         ReadPipelineStage::EncodeConvert,
+        ReadPipelineStage::ServiceAwait,
+        ReadPipelineStage::ServerHandler,
     ] {
         let snapshot = observability.metrics().read_stage_duration(stage);
         assert!(
@@ -3221,7 +3223,23 @@ async fn execute_query_records_five_residual_read_pipeline_stages() {
         );
     }
 
-    // Shutdown line inventory is 12 stages.
+    // The envelopes must contain what they claim to, or the server-side
+    // remainder derived from them bounds nothing.
+    let handler = observability
+        .metrics()
+        .read_stage_duration(ReadPipelineStage::ServerHandler);
+    let service_await = observability
+        .metrics()
+        .read_stage_duration(ReadPipelineStage::ServiceAwait);
+    assert_eq!(handler.count, service_await.count);
+    assert!(
+        handler.sum >= service_await.sum,
+        "ServerHandler must contain ServiceAwait, got {} < {}",
+        handler.sum,
+        service_await.sum
+    );
+
+    // Shutdown line inventory is 15 stages.
     let line =
         riffdb_observability::format_read_stages_v1_line(&observability.read_stage_snapshot());
     assert!(line.starts_with("riffdb-read-stages-v1\t"));
@@ -3229,7 +3247,7 @@ async fn execute_query_records_five_residual_read_pipeline_stages() {
         .strip_prefix("riffdb-read-stages-v1\t")
         .expect("prefix");
     let parsed = riffdb_observability::parse_read_stages_v1_payload(payload).expect("parse");
-    assert_eq!(parsed.len(), 12);
+    assert_eq!(parsed.len(), 15);
 
     shutdown_sender.send(()).expect("server still running");
     server
