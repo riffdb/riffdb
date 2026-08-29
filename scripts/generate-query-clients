@@ -85,7 +85,7 @@ if [[ "${1:-}" == "--check" ]]; then
       and (.repository_closure[] | select(.path == "examples/agent-alpha/riffdb.application.lock.json") |
         .query_module_format == 1 and .rotation == "unchanged_ordinary_v1")
       and (.repository_closure[] | select(.path == "examples/ticketdesk/riffdb.application.lock.json") |
-        .query_module_format == 7 and .rotation == "accepted_successor_current")
+        .query_module_format == 12 and .rotation == "accepted_successor_current")
       and .classification.ordinary_v1_bytes_preserved == true
       and .classification.operational_v2_additive == true
       and .classification.repository_closure_successors_current == true

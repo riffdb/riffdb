@@ -4084,8 +4084,8 @@ mod tests {
             base.join("riffdb/queries/item_page.riffq"),
             br#"query ItemPage(
     $tenant_id: Item.tenant_id,
-    $first_limit: Limit = 25,
-    $second_limit: Limit = 25,
+    $first_limit: Limit<499> = 25,
+    $second_limit: Limit<499> = 25,
 ) {
     many first from Item
         where tenant_id == $tenant_id

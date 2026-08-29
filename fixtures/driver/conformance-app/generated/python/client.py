@@ -23,7 +23,7 @@ def _compact_tag(value: object, tag: str, keys: frozenset[str]) -> dict[str, obj
 CONTRACT_LINEAGE: Final[str] = "DriverConformance"
 CONTRACT_VERSION: Final[int] = 1
 CONTRACT_BUNDLE_HASH: Final[str] = "2fcc01955fcad80a8b6ac5fc6149e95b96889d29182301eb416b8cd1fa70bb0a"
-QUERY_MODULE_HASH: Final[str] = "d5edf8b81ecca77cfe91a63f53c2a8f4d3f06835029b197194bfc99af9bbfd07"
+QUERY_MODULE_HASH: Final[str] = "86063e5371ce90e9ef93b7ba8c80f9b82a88a5e976b35149064095cacb51306e"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Item:
@@ -93,7 +93,7 @@ class ItemSecretNotFound:
 
 ItemSecretResult: TypeAlias = ItemSecretFound | ItemSecretNotFound
 
-SEARCH_ITEMS_QUERY_PLAN_HASH: Final[str] = "c1cd3b841799feb49d22c23af8dd5784fb87b8fb7019b0a99d22ae391afb2097"
+SEARCH_ITEMS_QUERY_PLAN_HASH: Final[str] = "ce239a4ec83c5a97902dd7a825df45082cd3e320d96a6a384886785c95592615"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SearchItemsParams:
@@ -229,6 +229,8 @@ class DriverConformanceClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     def search_items(self, parameters: SearchItemsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchItemsResult]:
+        if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
+            raise ValueError("limit must be an integer from 1 through 499")
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -327,6 +329,8 @@ class AsyncDriverConformanceClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     async def search_items(self, parameters: SearchItemsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchItemsResult]:
+        if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
+            raise ValueError("limit must be an integer from 1 through 499")
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,

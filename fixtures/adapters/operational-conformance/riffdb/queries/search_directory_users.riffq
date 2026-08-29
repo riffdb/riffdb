@@ -3,7 +3,7 @@ query SearchDirectoryUsers(
     $needle: DirectoryUser.email,
     $excluded_states: Set<DirectoryUser.state>,
     $maximum_created_at: DirectoryUser.created_at?,
-    $limit: Limit = 25,
+    $limit: Limit<499> = 25,
     $offset: u64 = 0
 ) {
     many users from DirectoryUser

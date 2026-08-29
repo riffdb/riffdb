@@ -1,5 +1,5 @@
 {
-  "application_manifest_hash": "bf5ab595acb8f5a57cf5e3a3d032b812a67caffcecf4cd7842c0a014c1f74baa",
+  "application_manifest_hash": "0fa8a8ded711b22ca6fdc518abf62a7986df39b182be283a6f3a77aa0752b2cd",
   "commands": [
     {
       "annotations": {
@@ -301,7 +301,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "d5edf8b81ecca77cfe91a63f53c2a8f4d3f06835029b197194bfc99af9bbfd07",
+      "module_hash": "86063e5371ce90e9ef93b7ba8c80f9b82a88a5e976b35149064095cacb51306e",
       "name": "driver_conformance_item_secret",
       "operation_name": "ItemSecret",
       "result_schema": {
@@ -377,7 +377,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "d5edf8b81ecca77cfe91a63f53c2a8f4d3f06835029b197194bfc99af9bbfd07",
+      "module_hash": "86063e5371ce90e9ef93b7ba8c80f9b82a88a5e976b35149064095cacb51306e",
       "name": "driver_conformance_item_page",
       "operation_name": "ItemPage",
       "result_schema": {
@@ -481,7 +481,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "d5edf8b81ecca77cfe91a63f53c2a8f4d3f06835029b197194bfc99af9bbfd07",
+      "module_hash": "86063e5371ce90e9ef93b7ba8c80f9b82a88a5e976b35149064095cacb51306e",
       "name": "driver_conformance_search_items",
       "operation_name": "SearchItems",
       "result_schema": {

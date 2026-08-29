@@ -23,7 +23,7 @@ def _compact_tag(value: object, tag: str, keys: frozenset[str]) -> dict[str, obj
 CONTRACT_LINEAGE: Final[str] = "AdapterOperationalConformance"
 CONTRACT_VERSION: Final[int] = 1
 CONTRACT_BUNDLE_HASH: Final[str] = "5cf309d8ba731173e426e53ec66d41fad99cc95cbbbfd10ad67a2b5db9a86b9c"
-QUERY_MODULE_HASH: Final[str] = "590fdb5830f1355b30acfd495f3fba1259215109d5de7fd2790156153cd84b1d"
+QUERY_MODULE_HASH: Final[str] = "5fd8e72cb766441893389ea140bd62b9ec442df2f14f34eabcf944c7e89dc470"
 
 class AuthSessionState(StrEnum):
     AUTH_ACTIVE = "AuthActive"
@@ -100,7 +100,7 @@ class InventoryRecord:
     observed_at: Timestamp | None
     organization_id: UUID
 
-EXACT_DOCUMENTS_CONTAINS_ASC_QUERY_PLAN_HASH: Final[str] = "f41a39060a728d5133881f8252b021374463e54627139bd01f15223d0831618c"
+EXACT_DOCUMENTS_CONTAINS_ASC_QUERY_PLAN_HASH: Final[str] = "6e34398b6c071eec9a22739d6c2886c86807f9d5e970976d30179075d5fea51e"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ExactDocumentsContainsAscParams:
@@ -128,7 +128,7 @@ class ExactDocumentsContainsAscFound:
 
 ExactDocumentsContainsAscResult: TypeAlias = ExactDocumentsContainsAscFound
 
-EXACT_DOCUMENTS_ENDS_WITH_DESC_QUERY_PLAN_HASH: Final[str] = "36f0815a0d7af2d2ddaa25d6bca9756a157de510c5bd1f4c81c3036184b9c240"
+EXACT_DOCUMENTS_ENDS_WITH_DESC_QUERY_PLAN_HASH: Final[str] = "aad26293f50467749b2ba518510712441d4ad21da654ed5a8f618483847e0d3e"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ExactDocumentsEndsWithDescParams:
@@ -156,7 +156,7 @@ class ExactDocumentsEndsWithDescFound:
 
 ExactDocumentsEndsWithDescResult: TypeAlias = ExactDocumentsEndsWithDescFound
 
-EXACT_DOCUMENTS_STARTS_WITH_ASC_QUERY_PLAN_HASH: Final[str] = "c01dc86f5c35164396c5d8de1ecc2882ce458f5276d62842e6a0ebb3d2b81207"
+EXACT_DOCUMENTS_STARTS_WITH_ASC_QUERY_PLAN_HASH: Final[str] = "cbc70ee95fe5fafb50ff8e0157a03054022e2314e91217137bf493a36bc7d4a9"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ExactDocumentsStartsWithAscParams:
@@ -211,7 +211,7 @@ class GetAuthSessionMissing:
 
 GetAuthSessionResult: TypeAlias = GetAuthSessionFound | GetAuthSessionMissing
 
-INVENTORY_BY_OBSERVED_ASC_NULLS_LAST_QUERY_PLAN_HASH: Final[str] = "65341f9676fd61e7e09084517bdd23f1c154086cddf13a48edf3956dec75607f"
+INVENTORY_BY_OBSERVED_ASC_NULLS_LAST_QUERY_PLAN_HASH: Final[str] = "07736366645887728a8a265a46218e529de64debbad5a207bd5e23b82cc98272"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class InventoryByObservedAscNullsLastParams:
@@ -239,7 +239,7 @@ class InventoryByObservedAscNullsLastFound:
 
 InventoryByObservedAscNullsLastResult: TypeAlias = InventoryByObservedAscNullsLastFound
 
-INVENTORY_BY_OBSERVED_DESC_NULLS_FIRST_QUERY_PLAN_HASH: Final[str] = "422d504c4646f36995749bcdbbc14513d80d69219840dbb6bb9eb7fa1b949692"
+INVENTORY_BY_OBSERVED_DESC_NULLS_FIRST_QUERY_PLAN_HASH: Final[str] = "b7c8616f2dcd1cf44b2bf1a456bf53679a9b9a8801911571fe8aec950527d310"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class InventoryByObservedDescNullsFirstParams:
@@ -267,7 +267,7 @@ class InventoryByObservedDescNullsFirstFound:
 
 InventoryByObservedDescNullsFirstResult: TypeAlias = InventoryByObservedDescNullsFirstFound
 
-INVENTORY_BY_SUBTITLE_ASC_NULLS_FIRST_QUERY_PLAN_HASH: Final[str] = "c2b711bc829fd7ca34acda9d7b25fef2b8d2e47bafc38528d362ce4a0e9cc555"
+INVENTORY_BY_SUBTITLE_ASC_NULLS_FIRST_QUERY_PLAN_HASH: Final[str] = "cd8351b80a0cd6ac6f05f4e07b464cac49f1bb42a5b208d53cc2be189aa0c685"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class InventoryBySubtitleAscNullsFirstParams:
@@ -295,7 +295,7 @@ class InventoryBySubtitleAscNullsFirstFound:
 
 InventoryBySubtitleAscNullsFirstResult: TypeAlias = InventoryBySubtitleAscNullsFirstFound
 
-INVENTORY_BY_SUBTITLE_DESC_NULLS_LAST_QUERY_PLAN_HASH: Final[str] = "386141e08e661147f5323e57fd6a4527915ecf6a51f8a6dcea335d2800459c3b"
+INVENTORY_BY_SUBTITLE_DESC_NULLS_LAST_QUERY_PLAN_HASH: Final[str] = "3d2dec50fd9e34643ffe0092308c592fbeff261dfeb738b45aec81d17bb88b31"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class InventoryBySubtitleDescNullsLastParams:
@@ -406,7 +406,7 @@ class MetricDashboardFound:
 
 MetricDashboardResult: TypeAlias = MetricDashboardFound
 
-REVIEWED_DIRECTORY_USERS_QUERY_PLAN_HASH: Final[str] = "457adf856768f654148762864564e41ff64797a95b03d26ea3cf7a98c185aec3"
+REVIEWED_DIRECTORY_USERS_QUERY_PLAN_HASH: Final[str] = "4142fe614ea22d173e268ff62ccb30cb47651980a675c2e042b8347d7ed6d7c7"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ReviewedDirectoryUsersParams:
@@ -437,7 +437,7 @@ class ReviewedDirectoryUsersFound:
 
 ReviewedDirectoryUsersResult: TypeAlias = ReviewedDirectoryUsersFound
 
-SEARCH_DIRECTORY_USERS_QUERY_PLAN_HASH: Final[str] = "8f6844ea9aede080c04b455ec72c17970e4caf31c246e8d77197c0e3188afc86"
+SEARCH_DIRECTORY_USERS_QUERY_PLAN_HASH: Final[str] = "63eb9bafa6a65130018ab64e53eec2ff79b4d85d38dc2dc1717718e31e1a4587"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SearchDirectoryUsersParams:
@@ -651,6 +651,8 @@ class AdapterOperationalConformanceClient:
         self._command_attempts = command_attempts
 
     def exact_documents_contains_asc(self, parameters: ExactDocumentsContainsAscParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ExactDocumentsContainsAscResult]:
+        if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
+            raise ValueError("limit must be an integer from 1 through 499")
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -663,6 +665,8 @@ class AdapterOperationalConformanceClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     def exact_documents_ends_with_desc(self, parameters: ExactDocumentsEndsWithDescParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ExactDocumentsEndsWithDescResult]:
+        if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
+            raise ValueError("limit must be an integer from 1 through 499")
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -675,6 +679,8 @@ class AdapterOperationalConformanceClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     def exact_documents_starts_with_asc(self, parameters: ExactDocumentsStartsWithAscParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ExactDocumentsStartsWithAscResult]:
+        if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
+            raise ValueError("limit must be an integer from 1 through 499")
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -700,6 +706,8 @@ class AdapterOperationalConformanceClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     def inventory_by_observed_asc_nulls_last(self, parameters: InventoryByObservedAscNullsLastParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryByObservedAscNullsLastResult]:
+        if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
+            raise ValueError("limit must be an integer from 1 through 499")
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -712,6 +720,8 @@ class AdapterOperationalConformanceClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     def inventory_by_observed_desc_nulls_first(self, parameters: InventoryByObservedDescNullsFirstParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryByObservedDescNullsFirstResult]:
+        if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
+            raise ValueError("limit must be an integer from 1 through 499")
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -724,6 +734,8 @@ class AdapterOperationalConformanceClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     def inventory_by_subtitle_asc_nulls_first(self, parameters: InventoryBySubtitleAscNullsFirstParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryBySubtitleAscNullsFirstResult]:
+        if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
+            raise ValueError("limit must be an integer from 1 through 499")
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -736,6 +748,8 @@ class AdapterOperationalConformanceClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     def inventory_by_subtitle_desc_nulls_last(self, parameters: InventoryBySubtitleDescNullsLastParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryBySubtitleDescNullsLastResult]:
+        if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
+            raise ValueError("limit must be an integer from 1 through 499")
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -810,6 +824,8 @@ class AdapterOperationalConformanceClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     def reviewed_directory_users(self, parameters: ReviewedDirectoryUsersParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ReviewedDirectoryUsersResult]:
+        if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
+            raise ValueError("limit must be an integer from 1 through 499")
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -822,6 +838,8 @@ class AdapterOperationalConformanceClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     def search_directory_users(self, parameters: SearchDirectoryUsersParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchDirectoryUsersResult]:
+        if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
+            raise ValueError("limit must be an integer from 1 through 499")
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1056,6 +1074,8 @@ class AsyncAdapterOperationalConformanceClient:
         self._command_attempts = command_attempts
 
     async def exact_documents_contains_asc(self, parameters: ExactDocumentsContainsAscParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ExactDocumentsContainsAscResult]:
+        if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
+            raise ValueError("limit must be an integer from 1 through 499")
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1068,6 +1088,8 @@ class AsyncAdapterOperationalConformanceClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     async def exact_documents_ends_with_desc(self, parameters: ExactDocumentsEndsWithDescParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ExactDocumentsEndsWithDescResult]:
+        if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
+            raise ValueError("limit must be an integer from 1 through 499")
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1080,6 +1102,8 @@ class AsyncAdapterOperationalConformanceClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     async def exact_documents_starts_with_asc(self, parameters: ExactDocumentsStartsWithAscParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ExactDocumentsStartsWithAscResult]:
+        if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
+            raise ValueError("limit must be an integer from 1 through 499")
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1105,6 +1129,8 @@ class AsyncAdapterOperationalConformanceClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     async def inventory_by_observed_asc_nulls_last(self, parameters: InventoryByObservedAscNullsLastParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryByObservedAscNullsLastResult]:
+        if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
+            raise ValueError("limit must be an integer from 1 through 499")
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1117,6 +1143,8 @@ class AsyncAdapterOperationalConformanceClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     async def inventory_by_observed_desc_nulls_first(self, parameters: InventoryByObservedDescNullsFirstParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryByObservedDescNullsFirstResult]:
+        if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
+            raise ValueError("limit must be an integer from 1 through 499")
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1129,6 +1157,8 @@ class AsyncAdapterOperationalConformanceClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     async def inventory_by_subtitle_asc_nulls_first(self, parameters: InventoryBySubtitleAscNullsFirstParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryBySubtitleAscNullsFirstResult]:
+        if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
+            raise ValueError("limit must be an integer from 1 through 499")
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1141,6 +1171,8 @@ class AsyncAdapterOperationalConformanceClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     async def inventory_by_subtitle_desc_nulls_last(self, parameters: InventoryBySubtitleDescNullsLastParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryBySubtitleDescNullsLastResult]:
+        if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
+            raise ValueError("limit must be an integer from 1 through 499")
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1215,6 +1247,8 @@ class AsyncAdapterOperationalConformanceClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     async def reviewed_directory_users(self, parameters: ReviewedDirectoryUsersParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ReviewedDirectoryUsersResult]:
+        if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
+            raise ValueError("limit must be an integer from 1 through 499")
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
@@ -1227,6 +1261,8 @@ class AsyncAdapterOperationalConformanceClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     async def search_directory_users(self, parameters: SearchDirectoryUsersParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchDirectoryUsersResult]:
+        if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
+            raise ValueError("limit must be an integer from 1 through 499")
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,

@@ -316,7 +316,7 @@ const PARAMETERIZED_NEAREST_QUERY: &str = r#"
 query SimilarDocuments(
     $org_id: Document.org_id,
     $query_vec: Document.embedding,
-    $k: Limit,
+    $k: Limit<499>,
 ) {
     source projected Document.embedding
     freshness available
@@ -352,8 +352,9 @@ fn parameterized_nearest_k_499_compiles_binds_and_executes() {
     assert_eq!(step.maximum_rows(), 499);
     assert_eq!(
         step.row_limit(),
-        &riffdb_query_ir::QueryRowLimit::Parameter {
+        &riffdb_query_ir::QueryRowLimit::BoundedParameter {
             name: "k".to_owned(),
+            maximum: 499,
             default: None,
         }
     );

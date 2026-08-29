@@ -23,7 +23,7 @@ def _compact_tag(value: object, tag: str, keys: frozenset[str]) -> dict[str, obj
 CONTRACT_LINEAGE: Final[str] = "TicketDesk"
 CONTRACT_VERSION: Final[int] = 1
 CONTRACT_BUNDLE_HASH: Final[str] = "7cae1122f8daad0469b74e1e40473f7cfcd9ea8474c39e1ddc510218b2ac0999"
-QUERY_MODULE_HASH: Final[str] = "c30959d45f028bb8f7eb452f9368c32cd05dd19d4b524a60f01935fcb473c0b7"
+QUERY_MODULE_HASH: Final[str] = "07e927f735f4b4501c8c6d06458716ebca1ffbd451ec72a517c2b968e71612b4"
 
 class TicketStatus(StrEnum):
     OPEN = "Open"
@@ -280,7 +280,7 @@ class GetUserNotFound:
 
 GetUserResult: TypeAlias = GetUserFound | GetUserNotFound
 
-LIST_COMMENTS_QUERY_PLAN_HASH: Final[str] = "257a1d3a6301bdb15c3fac5d1cda94569ae3f6e7c94f1cbbd8a62dcb83462dbd"
+LIST_COMMENTS_QUERY_PLAN_HASH: Final[str] = "64559d88efd2d574700ed2fcf00f88402c45c4cbbe5ce1aafd9ee7367bbb444a"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListCommentsParams:
@@ -303,7 +303,7 @@ class ListCommentsFound:
 
 ListCommentsResult: TypeAlias = ListCommentsFound
 
-LIST_TICKETS_QUERY_PLAN_HASH: Final[str] = "6930b4040e3c0c7a8b3d44315e74f356e5c5a4fa6d05049cb78cca1ec4643f95"
+LIST_TICKETS_QUERY_PLAN_HASH: Final[str] = "7383edd6564a4e5062615af9c6edf278fea89b7a7fb45e24df6468b326128455"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListTicketsParams:
@@ -330,7 +330,7 @@ class ListTicketsFound:
 
 ListTicketsResult: TypeAlias = ListTicketsFound
 
-LIST_TICKETS_BY_ASSIGNEE_QUERY_PLAN_HASH: Final[str] = "c927cb236e2e0929f2ff3e323eed462578a6cbbf1fe8bc5571888bcd77d4c7d8"
+LIST_TICKETS_BY_ASSIGNEE_QUERY_PLAN_HASH: Final[str] = "35c620250590740f440efe6281bd5de78bbd2a07b7386fd1021a64ff6510268a"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListTicketsByAssigneeParams:
@@ -993,6 +993,8 @@ class TicketDeskClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     def list_comments(self, parameters: ListCommentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListCommentsResult]:
+        if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
+            raise ValueError("limit must be an integer from 1 through 499")
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
         if generated_cursor is not None:
@@ -1012,6 +1014,8 @@ class TicketDeskClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     def list_tickets(self, parameters: ListTicketsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListTicketsResult]:
+        if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
+            raise ValueError("limit must be an integer from 1 through 499")
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
         if generated_cursor is not None:
@@ -1031,6 +1035,8 @@ class TicketDeskClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     def list_tickets_by_assignee(self, parameters: ListTicketsByAssigneeParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListTicketsByAssigneeResult]:
+        if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
+            raise ValueError("limit must be an integer from 1 through 499")
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
         if generated_cursor is not None:
@@ -1418,6 +1424,8 @@ class AsyncTicketDeskClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     async def list_comments(self, parameters: ListCommentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListCommentsResult]:
+        if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
+            raise ValueError("limit must be an integer from 1 through 499")
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
         if generated_cursor is not None:
@@ -1437,6 +1445,8 @@ class AsyncTicketDeskClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     async def list_tickets(self, parameters: ListTicketsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListTicketsResult]:
+        if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
+            raise ValueError("limit must be an integer from 1 through 499")
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
         if generated_cursor is not None:
@@ -1456,6 +1466,8 @@ class AsyncTicketDeskClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     async def list_tickets_by_assignee(self, parameters: ListTicketsByAssigneeParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListTicketsByAssigneeResult]:
+        if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
+            raise ValueError("limit must be an integer from 1 through 499")
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
         if generated_cursor is not None:

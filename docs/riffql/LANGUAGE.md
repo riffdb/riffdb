@@ -56,7 +56,7 @@ projection. RiffDB does not silently deduplicate, reorder, or issue per-row
 reads because each would change declared cardinality or hide work.
 
 ```riffql
-query OpenTickets($tenant: TenantId, $limit: Limit = 25) {
+query OpenTickets($tenant: TenantId, $limit: Limit<499> = 25) {
     many tickets from Ticket
         where tenant_id == $tenant && status == TicketStatus.Open
         order by updated_at desc, ticket_id desc
@@ -192,7 +192,7 @@ replace its ordering and bound with a `nearest` clause:
 query SimilarDocuments(
     $org_id: Document.org_id,
     $query_vec: Document.embedding,
-    $k: Limit,
+    $k: Limit<499>,
 ) {
     source projected Document.embedding
     freshness causal inherit_session_commit true max_wait_ms 500
@@ -460,7 +460,7 @@ query SearchUsers(
     $organization_id: User.organization_id,
     $needle: User.name,
     $active: User.active?,
-    $limit: Limit = 50,
+    $limit: Limit<499> = 50,
     $offset: u64 = 0
 ) {
     many users from User

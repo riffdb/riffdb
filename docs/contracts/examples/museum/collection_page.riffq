@@ -1,6 +1,6 @@
 query CollectionPage(
     $collection_id: Collection.collection_id,
-    $artifact_limit: Limit = 25,
+    $artifact_limit: Limit<499> = 25,
 ) {
     one collection from Collection
         where collection_id == $collection_id

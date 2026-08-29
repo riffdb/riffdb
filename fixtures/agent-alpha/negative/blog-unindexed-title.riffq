@@ -1,6 +1,6 @@
 query UnindexedTitle(
     $site_id: Site.site_id,
-    $limit: Limit = 20,
+    $limit: Limit<499> = 20,
 ) {
     many posts from Post
         where site_id == $site_id

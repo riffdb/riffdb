@@ -38,27 +38,27 @@
     {
       "kind": "go",
       "path": "fixtures/driver/conformance-app/generated/go/client.go",
-      "sha256": "8df4f52c4a923a7c3c90b6ee741cd4de29075ce99fa41876bae18ba89f218653"
+      "sha256": "9ec740fe98e94928f491a3da5db34624e0fe7e4663220824324a786979703866"
     },
     {
       "kind": "mcp",
       "path": "fixtures/driver/conformance-app/generated/mcp/tools.json",
-      "sha256": "e4bed2a3a77628cdf4a62e0ad898d6ac6d2740cd6db635c3ebf3df8e47ef8278"
+      "sha256": "21b8c2006bca18cffdcb9250b7b96b6366ee14e14656235dd681340125bbc801"
     },
     {
       "kind": "python",
       "path": "fixtures/driver/conformance-app/generated/python/client.py",
-      "sha256": "3303532744803d0634790650c2ffee58f199920be834981d503ec453b8bb044f"
+      "sha256": "ecffdd4facb44ac2e772b0bf01d22ecc0c366c00bc09460df43d42da5603eb2f"
     },
     {
       "kind": "rust",
       "path": "fixtures/driver/conformance-app/generated/rust/client.rs",
-      "sha256": "3422c0e0129a018dc1f99c0cf86c23fb4b3036eb495a8bd77b5f42224ebd33dc"
+      "sha256": "7be47c7243b3720961cfa7104c305d00cc5605662df94a873bd5ce9b68188c7e"
     },
     {
       "kind": "typescript",
       "path": "fixtures/driver/conformance-app/generated/typescript/client.ts",
-      "sha256": "9e38fb4fd4d2ba37f87517b5f2522b088147c3cb71ff4eb92d6a3d9d435a16b7"
+      "sha256": "f930f481e010981c8baacb55c8f61a85b43add7e7066e1f936f4247eb0a97074"
     }
   ],
   "observation": {
@@ -67,7 +67,7 @@
     "schema": "riffdb.driver-conformance-observation/v1"
   },
   "role": {
-    "definition_hash": "c6a9241b80b7a5844188ea9c58ff6dd099e2d9cc55195e943e2a2e7b4cd239fc",
+    "definition_hash": "de704065afff98dac8c94ddf699ca7605ac77f65e478b320520304b18867ed89",
     "name": "DriverConformanceApplication",
     "secret_outputs": [
       {
@@ -81,7 +81,7 @@
   "schema": "riffdb.unary-delete-preimage-external-acceptance/v1",
   "source_lock": {
     "path": "fixtures/driver/conformance-app/riffdb.application.lock.json",
-    "sha256": "a5102d067a9ed4b5b5da0f847cea1cfd2058e5be39421f9c4382cd0001b08132"
+    "sha256": "8706904a33ec394018c59f2dc915cd7e27e65250bd51eb0c723c2727bb98a34e"
   },
   "status": "passed",
   "verified_semantics": {

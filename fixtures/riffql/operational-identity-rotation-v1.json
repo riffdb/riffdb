@@ -18,7 +18,7 @@
         "path": "generated/rust/client.rs"
       },
       {
-        "content_hash": "54c02a8e184d64474f95dd01c874b879b83c98e9e42979b31dd4c15d408624ac",
+        "content_hash": "271b6880ae95a3ac7e52ca02cdfcff54bf061f685f1e561351bbddd0f8e5e311",
         "kind": "typescript",
         "path": "generated/typescript/client.ts"
       },
@@ -39,7 +39,7 @@
       }
     ],
     "language_version": 2,
-    "lock_hash": "a4b4b898097e6f373b1a83baabc5d825f77cfe88457113d19c65c9d523b36222",
+    "lock_hash": "5ec19f410e68cb55d20f4f0aaf329f41d8f0a651276c02d630c255681e4334bc",
     "manifest_hash": "6f6fd866ff9a9c2bb6011e64543eb1e8edf3581926c311c0899586a00f1c32c7",
     "module_hash": "eac022f01cf4b4b60999d55636af7c3b73ff609efe182ca657b447046b4f7d81",
     "plan_or_family_hash": "061ebdde4be25b922c048d860cc7bd7a0b897daf87144670ae0b5e5cf1b79aae",
@@ -67,7 +67,7 @@
         "path": "generated/rust/client.rs"
       },
       {
-        "content_hash": "e67712257fd5e178ce3921bc0cb93c64ab94d2ad2876ddd3470dde386625d5de",
+        "content_hash": "ba7c2b1c4681f59a83dc3f503e0d51324bef3c9d9fbf045ce86a9331209696bb",
         "kind": "typescript",
         "path": "generated/typescript/client.ts"
       },
@@ -88,7 +88,7 @@
       }
     ],
     "language_version": 2,
-    "lock_hash": "56c0c805f0883b02e39571bd732f64552d87a09c1c41f3cf2e51c3d0ed2174d0",
+    "lock_hash": "779256eb820c2cb2ef47c62b21240c19cd79d5261e0410b654e89a91cace5443",
     "manifest_hash": "286eaf39057f09cdeb52f5891cf7a588efe6d405586ac221f75919c2cd31e218",
     "module_hash": "dc13dd2ec2d81307d87f21eef83f199a0639e682b74adcc78e9c0fa748bc339d",
     "plan_or_family_hash": "95022266ca71e324900fda3278513af9b45626762b9c5697a3cfffff89c7bfc5",
@@ -116,7 +116,7 @@
         "path": "generated/rust/client.rs"
       },
       {
-        "content_hash": "fcb5cb58066106e20fa2fec4b345eee98c757817dd27d6ce34f1156b3d0d9250",
+        "content_hash": "dbb2b248971d484eb2d6c1668ed29be47292280ce67ba4736b54b03ed3a12e95",
         "kind": "typescript",
         "path": "generated/typescript/client.ts"
       },
@@ -137,7 +137,7 @@
       }
     ],
     "language_version": 1,
-    "lock_hash": "c2f1907bf9b5b0b2b669498414a48dd7ca8738b8ccbc56eadde56cacb70aeeab",
+    "lock_hash": "abf6adc33ac1e0719e76d85a270c78044e73d1f97a6a135481d832bb89a714f6",
     "manifest_hash": "305102c6bc5579ed66ba46faedf13cee8eb18a1f979f0f39861054766fd22805",
     "module_hash": "825131a339e1180e68cefaaa46d97f8f06d64211b65f2a14c3a29ebe0441ecae",
     "plan_or_family_hash": "90296b54d2b9635d2d15336d7a76d226fb3b49f1ac9047377c7338ff30658f7f",
@@ -217,10 +217,10 @@
         "4d0245689b82f7498d0fc5189cca42dea82c76354b17e6b10fce1eed598c77c5",
         "ca4a0d3bdef9c76f46c9ef0d2a381767095c128ead5bc89cbeaabea62fcafa76",
         "5118951200261ccff8cee2cd4426f5c96ea3ea0a201888a53a3e32f4a7151ae8",
-        "7f24e2dd19526a1d15f75aef93df5d3a06e1f1e54540fe8e6145a772f01db716"
+        "f14dc623b9646bd1bf98086199009f97899b50dae769d110f3ddc6b45ecf8382"
       ],
       "contract_bundle_hash": "0e7d234414fd9da7ca189b1f96038b7d05c033503fe76a3c96e24a603021c7bf",
-      "lock_hash": "bb65cbdab7036860dbecbb53e3125fa04883e4179e6c6a5a3d38f00630435fbe",
+      "lock_hash": "73160c8d3566ef108a562844516d8a19247ed327eb1ae2aac4d4723d6f5c16cb",
       "manifest_hash": "8eb9e714737e86065d145cab0db1b5c1fc1d8b94c3e7daa3468b45ed1771d874",
       "module_hashes": [
         "f594471a8843b1e30effbb50cb4b75f239482926128ffb59c71675bae6a1c8bb"
@@ -235,26 +235,26 @@
     },
     {
       "artifact_hashes": [
-        "3246ce0f2d5ed4c3b72caaba9e334ef517121de52c35f0761a1c0e1ab8c463fc",
-        "ef470b7462236101f264cf2b5f2bc219941bafb15db9ca1062b1ebdb576afabe",
-        "0713bd125e92b1444258d42db239b9a8eeb54b364724140cfb26f564e0656460",
-        "cdf6f1e85c52100ffb5990a537aebf78f0be32a00526dddb1a920ce92a72cf06",
-        "07ff79663d3cc3a531e32d2f5636c4ce33649ecf90fa4b3a5848472c2eaf112b",
+        "1d3a8d1707e20a33e8c8d1a7c3951382df60e01defcb606fff2c7787f45223c8",
+        "1f5299bebbf5ff9ed54fc52539c6959f49fd2d4c9c96723872087115beafadb7",
+        "15bbf412cf4b72097e64ef7010f030101b88d8b29a9220d6ac2fbb5c02ffd746",
+        "fc0308538a8557f855c88b81b40ca0024b99be35f04fca1544b291b9dc54517b",
+        "a0058bbe931b15fa5fac53eda8d058477a75a4b888f830b0257f5c72f1c70edd",
         "63270188c5062547e48bbd5b30399c821085a3ce60a97495be1afe99e328a4e2",
-        "6b2c40fce48b2ce781ac66d90991eeb004987481d8aaf07f31b69d772136f7f5",
-        "08b5b875afa20aba93cf8432ff96f922f8277824a884610e91c425e5a800f3bb"
+        "1133c9e1f2d59bde5740c10c8434063db693e7c00149e33e64ce975aa1213748",
+        "a3afd76a67c46bb83d6c14c0d82f77a7473a0244ae6c4bcbb61301a4332c5952"
       ],
       "contract_bundle_hash": "7cae1122f8daad0469b74e1e40473f7cfcd9ea8474c39e1ddc510218b2ac0999",
-      "lock_hash": "1a60fb1345586b0dea9b0b4c3a762f807502becb75b32669f824944798622e68",
-      "manifest_hash": "4c852f0993c06f6e007e3f41ba34c0fc0474c78483fdab89d752642e7b24a121",
+      "lock_hash": "442095e91e6787aa7382fadbdc20634a0337b9162b7c7094d0351446c289be5e",
+      "manifest_hash": "0966179f42a10673d1ba3e2604f1588ea0ed228cd44f1fea2ebdb1c94231acb5",
       "module_hashes": [
-        "c30959d45f028bb8f7eb452f9368c32cd05dd19d4b524a60f01935fcb473c0b7"
+        "07e927f735f4b4501c8c6d06458716ebca1ffbd451ec72a517c2b968e71612b4"
       ],
       "path": "examples/ticketdesk/riffdb.application.lock.json",
-      "query_module_format": 7,
+      "query_module_format": 12,
       "role_hashes": [
-        "07d72240c6aa4a905ab781137371838b4dc7b3bf17ed47bb7e178219b62c12b2",
-        "3d438828528f4e512a0ed06d92f3fcbaeb7c287846113fc7fef7dbaa33f57561",
+        "fd37deff3b506279510ff986b653f82fe38b9808106f974c0b5adf8026eb6211",
+        "66cd013c853135b8768768d2b90bdbb573f68cfee6ce90f97024845838acaa45",
         "732d5743f6f363023f9d6bf875bc3a642894382ccaddda53f2b72364dbf7dbe7"
       ],
       "rotation": "accepted_successor_current",

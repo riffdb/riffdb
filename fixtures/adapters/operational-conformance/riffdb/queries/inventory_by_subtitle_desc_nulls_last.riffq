@@ -1,6 +1,6 @@
 query InventoryBySubtitleDescNullsLast(
     $organization_id: InventoryRecord.organization_id,
-    $limit: Limit = 25,
+    $limit: Limit<499> = 25,
     $offset: u64 = 0
 ) {
     many records from InventoryRecord

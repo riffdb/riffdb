@@ -36,7 +36,7 @@ query SearchUsers(
   $needle: User.email,
   $states: Set<User.state>,
   $after: User.created_at?,
-  $limit: Limit,
+  $limit: Limit<499>,
   $offset: u64
 ) {
   many users from User

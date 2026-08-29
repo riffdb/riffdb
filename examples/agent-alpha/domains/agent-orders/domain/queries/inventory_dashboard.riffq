@@ -1,7 +1,7 @@
 query InventoryDashboard(
     $store_id: Store.store_id,
     $after: Cursor?,
-    $limit: Limit = 50,
+    $limit: Limit<499> = 50,
 ) {
     many inventory from Inventory
         where store_id == $store_id

@@ -50,7 +50,7 @@
     {
       "kind": "typescript",
       "path": "fixtures/riffql/operational-access-corpus-v1/generated/typescript/client.ts",
-      "sha256": "4f8cb5c7202af5662d3f5c09105702d955289cac684d85a5b36d4e27c30e4a3b"
+      "sha256": "eedfbab86df9c39ec8105acd9250c8c451bc5a317f6d4ceba22b41a6f7c8ff37"
     }
   ],
   "operational_access_operations": [
@@ -191,7 +191,7 @@
   },
   "source_lock": {
     "path": "fixtures/riffql/operational-access-corpus-v1/riffdb.application.lock.json",
-    "sha256": "927bcd0b238559079d011c6eed83f012df767c203dbe46d5512cc90052d96e4b"
+    "sha256": "2230f5342071d4fc5e507ffdfcb998c8a97038017cd2b8e0cc52cb5ed9ed0088"
   },
   "status": "development",
   "work_package": "WP-701"

@@ -33,7 +33,7 @@ query SearchUsers(
   $organization_id: User.organization_id,
   $needle: User.email,
   $states: Set<User.state>,
-  $limit: Limit,
+  $limit: Limit<499>,
   $offset: u64
 ) {
   many users from User
@@ -60,7 +60,7 @@ fn semantic_family_rotates_module_identity_and_round_trips_by_recompilation() {
     let module = QueryModule::compile(candidate, &contract).expect("module");
     assert_eq!(
         module.format_version(),
-        QUERY_MODULE_FORMAT_VERSION_EXACT_PREDICATE_V1
+        QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1
     );
     let exact = module.queries()[0]
         .exact_predicate_result()
@@ -92,7 +92,7 @@ fn semantic_family_rotates_module_identity_and_round_trips_by_recompilation() {
 #[test]
 fn bounded_limit_composes_with_present_and_nullable_exact_predicate_families() {
     let contract = compile_contract_source(CONTRACT).expect("contract");
-    let bounded = QUERY.replace("$limit: Limit,", "$limit: Limit<100>,");
+    let bounded = QUERY.replace("$limit: Limit<499>,", "$limit: Limit<100>,");
     let candidate = QueryModuleCandidate::new(
         QueryModuleName::new("bounded_directory").expect("module name"),
         QueryModuleVersion::new(1).expect("version"),
@@ -123,7 +123,7 @@ fn bounded_limit_composes_with_present_and_nullable_exact_predicate_families() {
     )
     .expect("nullable contract");
     let nullable = QUERY
-        .replace("$limit: Limit,", "$limit: Limit<100>,")
+        .replace("$limit: Limit<499>,", "$limit: Limit<100>,")
         .replace(
             "order by created_at desc, user_id asc",
             "order by created_at desc nulls last, user_id asc",
@@ -172,7 +172,7 @@ fn explicit_nullable_order_uses_v10_and_old_module_bytes_remain_stable() {
     let module = QueryModule::compile(candidate, &contract).expect("nullable module");
     assert_eq!(
         module.format_version(),
-        QUERY_MODULE_FORMAT_VERSION_NULLABLE_EXACT_ORDER_V1
+        QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1
     );
     let exact = module.queries()[0]
         .nullable_exact_predicate_result()
@@ -202,7 +202,7 @@ fn explicit_nullable_order_uses_v10_and_old_module_bytes_remain_stable() {
     let old_module = QueryModule::compile(old_candidate, &old_contract).expect("old module");
     assert_eq!(
         old_module.format_version(),
-        QUERY_MODULE_FORMAT_VERSION_EXACT_PREDICATE_V1
+        QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1
     );
 }
 
@@ -224,7 +224,7 @@ fn successor_omission_uses_v9_only_with_the_complete_lineage_proof() {
         .expect("complete lineage proof");
     assert_eq!(
         module.format_version(),
-        QUERY_MODULE_FORMAT_VERSION_EXACT_PREDICATE_V1
+        QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1
     );
     let decoded = QueryModule::decode_and_validate_with_lineage(
         module.canonical_bytes(),

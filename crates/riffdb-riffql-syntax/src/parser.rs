@@ -304,10 +304,24 @@ impl Parser {
                         Some("use one canonical unsigned literal from 1 through 499"),
                     )));
                 }
-                self.expect(TokenKind::Greater)?;
+                self.close_bounded_maximum()?;
                 TypeReference::BoundedLimit(maximum_value.expect("checked bounded Limit maximum"))
             } else {
-                TypeReference::Limit
+                // An unbounded `Limit` is charged -- and authorized -- at the
+                // type maximum of 499 regardless of any declared default, so
+                // `Limit = 50` reads as a fifty-row bound while granting
+                // authority for 499. Every use is either equivalent to
+                // `Limit<499>` or a mistake, so the maximum is now required.
+                // Already-compiled modules still decode their unbounded row
+                // limits; only source declaring one is rejected.
+                return Err(ParseDiagnostics::one(ParseDiagnostic::new(
+                    DiagnosticCode::InvalidToken,
+                    self.span_from(start),
+                    "Limit must declare its maximum",
+                    Some(
+                        "use Limit<MAX> with MAX from 1 through 499; the declared maximum is what cost and role authority are charged at, not the default",
+                    ),
+                )));
             }
         } else {
             TypeReference::Named(self.path()?)
@@ -1125,6 +1139,32 @@ impl Parser {
 
     fn peek(&self, kind: TokenKind) -> bool {
         self.peek_kind().is_some_and(|value| *value == kind)
+    }
+
+    /// Consumes the `>` closing a bounded maximum.
+    ///
+    /// `Limit<50>=25` lexes its `>=` as one relational token, so closing the
+    /// maximum has to split it: the `>` closes the bound and the `=` is left in
+    /// place to introduce the default. Without this, the only spelling that
+    /// parses is one with a space before the `=`, and the failure reads
+    /// "unexpected RiffQL token" with no help — now that a maximum is required
+    /// rather than optional, every author would meet it.
+    fn close_bounded_maximum(&mut self) -> Result<(), ParseDiagnostics> {
+        if self.take(TokenKind::Greater).is_some() {
+            return Ok(());
+        }
+        if self.peek(TokenKind::GreaterEqual) {
+            let span = self.tokens[self.index].span;
+            self.tokens[self.index] = Token {
+                kind: TokenKind::Equal,
+                span: Span {
+                    start: span.start + 1,
+                    end: span.end,
+                },
+            };
+            return Ok(());
+        }
+        self.expect(TokenKind::Greater).map(|_| ())
     }
 
     fn take(&mut self, kind: TokenKind) -> Option<Span> {

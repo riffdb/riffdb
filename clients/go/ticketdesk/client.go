@@ -8,7 +8,7 @@ import (
 	riffdb "riffdb.dev/application"
 )
 
-const QueryModuleHash = "c30959d45f028bb8f7eb452f9368c32cd05dd19d4b524a60f01935fcb473c0b7"
+const QueryModuleHash = "07e927f735f4b4501c8c6d06458716ebca1ffbd451ec72a517c2b968e71612b4"
 const ContractLineage = "TicketDesk"
 const ContractVersion uint64 = 1
 const ContractBundleHash = "7cae1122f8daad0469b74e1e40473f7cfcd9ea8474c39e1ddc510218b2ac0999"
@@ -2130,7 +2130,7 @@ func (client *Client) GetUser(ctx context.Context, parameters GetUserParams, opt
 	return QueryResult[GetUserResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
 
-const ListCommentsQueryPlanHash = "257a1d3a6301bdb15c3fac5d1cda94569ae3f6e7c94f1cbbd8a62dcb83462dbd"
+const ListCommentsQueryPlanHash = "64559d88efd2d574700ed2fcf00f88402c45c4cbbe5ce1aafd9ee7367bbb444a"
 
 var ListCommentsOperation = riffdb.Operation{Name: "ticketdesk_list_comments", InputSchemaHash: "008e7247e2011c184634a1852a886aaf3d4b878d97e75f2b65749841638f53d7"}
 
@@ -2204,6 +2204,9 @@ func decodeListCommentsResult(value riffdb.Value) (ListCommentsResult, error) {
 }
 func (client *Client) ListComments(ctx context.Context, parameters ListCommentsParams, options QueryOptions) (QueryResult[ListCommentsResult], error) {
 	input := map[string]riffdb.Value{}
+	if parameters.Limit != nil && (*parameters.Limit == 0 || uint64(*parameters.Limit) > 499) {
+		return QueryResult[ListCommentsResult]{}, errors.New("limit must be from 1 through 499")
+	}
 	if parameters.After != nil {
 		if options.Cursor != "" {
 			return QueryResult[ListCommentsResult]{}, errors.New("generated cursor conflicts with query options")
@@ -2230,7 +2233,7 @@ func (client *Client) ListComments(ctx context.Context, parameters ListCommentsP
 	return QueryResult[ListCommentsResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
 
-const ListTicketsQueryPlanHash = "6930b4040e3c0c7a8b3d44315e74f356e5c5a4fa6d05049cb78cca1ec4643f95"
+const ListTicketsQueryPlanHash = "7383edd6564a4e5062615af9c6edf278fea89b7a7fb45e24df6468b326128455"
 
 var ListTicketsOperation = riffdb.Operation{Name: "ticketdesk_list_tickets", InputSchemaHash: "2b4e3e6aeeb69261eb8eedad512fdc55bf2d5e41d39b4b6c3e9cf212aae243e0"}
 
@@ -2328,6 +2331,9 @@ func decodeListTicketsResult(value riffdb.Value) (ListTicketsResult, error) {
 }
 func (client *Client) ListTickets(ctx context.Context, parameters ListTicketsParams, options QueryOptions) (QueryResult[ListTicketsResult], error) {
 	input := map[string]riffdb.Value{}
+	if parameters.Limit != nil && (*parameters.Limit == 0 || uint64(*parameters.Limit) > 499) {
+		return QueryResult[ListTicketsResult]{}, errors.New("limit must be from 1 through 499")
+	}
 	if parameters.After != nil {
 		if options.Cursor != "" {
 			return QueryResult[ListTicketsResult]{}, errors.New("generated cursor conflicts with query options")
@@ -2355,7 +2361,7 @@ func (client *Client) ListTickets(ctx context.Context, parameters ListTicketsPar
 	return QueryResult[ListTicketsResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
 
-const ListTicketsByAssigneeQueryPlanHash = "c927cb236e2e0929f2ff3e323eed462578a6cbbf1fe8bc5571888bcd77d4c7d8"
+const ListTicketsByAssigneeQueryPlanHash = "35c620250590740f440efe6281bd5de78bbd2a07b7386fd1021a64ff6510268a"
 
 var ListTicketsByAssigneeOperation = riffdb.Operation{Name: "ticketdesk_list_tickets_by_assignee", InputSchemaHash: "6c44484392eb00036ddefd89782799209d57e6da27f28557bec663d449ff1dfb"}
 
@@ -2453,6 +2459,9 @@ func decodeListTicketsByAssigneeResult(value riffdb.Value) (ListTicketsByAssigne
 }
 func (client *Client) ListTicketsByAssignee(ctx context.Context, parameters ListTicketsByAssigneeParams, options QueryOptions) (QueryResult[ListTicketsByAssigneeResult], error) {
 	input := map[string]riffdb.Value{}
+	if parameters.Limit != nil && (*parameters.Limit == 0 || uint64(*parameters.Limit) > 499) {
+		return QueryResult[ListTicketsByAssigneeResult]{}, errors.New("limit must be from 1 through 499")
+	}
 	if parameters.After != nil {
 		if options.Cursor != "" {
 			return QueryResult[ListTicketsByAssigneeResult]{}, errors.New("generated cursor conflicts with query options")

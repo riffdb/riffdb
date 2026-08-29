@@ -6008,7 +6008,7 @@ contract ExactUsers version 1 {
 query SearchUsers(
   $organization_id: User.organization_id,
   $needle: User.name,
-  $limit: Limit = 50,
+  $limit: Limit<499> = 50,
   $offset: u64 = 0
 ) {
   many users from User
@@ -6047,7 +6047,7 @@ query SearchUsers(
   $organization_id: User.organization_id,
   $states: Set<User.state>,
   $before: User.created_at,
-  $limit: Limit = 50,
+  $limit: Limit<499> = 50,
   $offset: u64 = 0
 ) {
   many users from User

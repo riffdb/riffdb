@@ -347,7 +347,7 @@ mod tests {
 
     #[test]
     fn canonical_format_is_parse_stable_and_idempotent() {
-        let source = r#"query Open($tenant: TenantId,$limit: Limit=25){
+        let source = r#"query Open($tenant: TenantId,$limit: Limit<499>=25){
 many tickets from Ticket where tenant_id==$tenant order by updated_at desc,ticket_id desc take $limit
 return Found{tickets: tickets{ticket_id title}}
 outcomes Found

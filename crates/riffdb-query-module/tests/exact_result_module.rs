@@ -34,7 +34,7 @@ const QUERY: &str = r#"
 query SearchUsers(
   $organization_id: User.organization_id,
   $needle: User.name,
-  $limit: Limit = 50,
+  $limit: Limit<499> = 50,
   $offset: u64 = 0
 ) {
   many users from User
@@ -94,7 +94,7 @@ fn optional_typed_filter_rotates_to_v6_without_changing_unfiltered_v5() {
         QueryModule::compile(candidate, &contract).expect("filtered exact module");
     assert_eq!(
         filtered_module.format_version(),
-        QUERY_MODULE_FORMAT_VERSION_EXACT_FILTERED_RESULT_SET_V1
+        QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1
     );
     let exact = filtered_module
         .query("SearchUsers")
@@ -119,7 +119,7 @@ fn optional_typed_filter_rotates_to_v6_without_changing_unfiltered_v5() {
     let (_, unfiltered) = module();
     assert_eq!(
         unfiltered.format_version(),
-        QUERY_MODULE_FORMAT_VERSION_EXACT_RESULT_SET_V1
+        QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1
     );
 }
 
@@ -128,7 +128,7 @@ fn exact_source_compiles_to_one_sealed_provider_plan_and_v5_round_trips() {
     let (contract, module) = module();
     assert_eq!(
         module.format_version(),
-        QUERY_MODULE_FORMAT_VERSION_EXACT_RESULT_SET_V1
+        QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1
     );
     let query = module.query("SearchUsers").expect("query");
     let CompiledNamedQueryPlan::ExactTextResultV1(exact) = query.plan() else {
@@ -153,7 +153,7 @@ fn exact_source_compiles_to_one_sealed_provider_plan_and_v5_round_trips() {
 #[test]
 fn bounded_limit_composes_with_exact_result_provider_window() {
     let contract = compile_contract_source(CONTRACT).expect("contract");
-    let source = QUERY.replace("$limit: Limit = 50", "$limit: Limit<100> = 50");
+    let source = QUERY.replace("$limit: Limit<499> = 50", "$limit: Limit<100> = 50");
     let candidate = QueryModuleCandidate::new(
         QueryModuleName::new("bounded_exact_users").expect("name"),
         QueryModuleVersion::new(1).expect("version"),

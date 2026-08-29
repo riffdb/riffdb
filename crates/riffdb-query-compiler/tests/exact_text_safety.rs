@@ -30,7 +30,7 @@ const PROTECTED_QUERY: &str = r#"
 query SearchUsers(
   $organization_id: User.organization_id,
   $needle: User.name,
-  $limit: Limit = 50,
+  $limit: Limit<499> = 50,
   $offset: u64 = 0
 ) {
   many users from User
@@ -48,7 +48,7 @@ query SearchActiveUsers(
   $organization_id: User.organization_id,
   $needle: User.name,
   $active: User.active?,
-  $limit: Limit = 50,
+  $limit: Limit<499> = 50,
   $offset: u64 = 0
 ) {
   many users from User

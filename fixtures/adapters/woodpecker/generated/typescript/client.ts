@@ -112,7 +112,8 @@ export function decodeApplicationError(value: unknown): RiffDbApplicationError {
 }
 
 export type ApplicationValueSchema =
-  | { readonly kind: "bool" | "i64" | "u64" | "string" | "uuid" | "enum" | "bytes" | "date" | "timestamp" | "cursor" | "limit" }
+  | { readonly kind: "bool" | "i64" | "u64" | "string" | "uuid" | "enum" | "bytes" | "date" | "timestamp" | "cursor" }
+  | { readonly kind: "limit"; readonly maximum?: number }
   | { readonly kind: "decimal"; readonly precision?: number; readonly scale?: number }
   | { readonly kind: "money"; readonly precision?: number; readonly scale?: number; readonly currency?: string }
   | { readonly kind: "optional"; readonly value: ApplicationValueSchema }
@@ -325,7 +326,8 @@ export class WoodpeckerSchedulerClient {
 
 export const PIPELINE_ACTIVITY_REACTIVE_MODULE_HASH = "013fca346ac4129db0957a24267f51d399fce6db69e7a57e010a0a961839b85f" as const;
 export type ReactiveParameterSchema =
-  | { readonly kind: "bool" | "i64" | "u64" | "string" | "uuid" | "bytes" | "date" | "timestamp" | "cursor" | "limit" }
+  | { readonly kind: "bool" | "i64" | "u64" | "string" | "uuid" | "bytes" | "date" | "timestamp" | "cursor" }
+  | { readonly kind: "limit"; readonly maximum?: number }
   | { readonly kind: "decimal"; readonly precision: number; readonly scale: number }
   | { readonly kind: "money"; readonly precision: number; readonly scale: number; readonly currency: string }
   | { readonly kind: "enum"; readonly typeId: number; readonly variants: Readonly<Record<string, number>> }

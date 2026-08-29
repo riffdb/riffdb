@@ -7,13 +7,13 @@ use riffdb_riffql_syntax::{
 };
 
 const AVAILABLE: &str = r#"
-query Similar($org: Document.org_id, $vector: Document.embedding, $k: Limit) {
+query Similar($org: Document.org_id, $vector: Document.embedding) {
     source projected Document.embedding
     freshness available
 
     many rows from Document
         where org_id == $org
-        nearest(embedding, $vector, $k)
+        nearest(embedding, $vector, 10)
     return Found { rows: rows { title } }
     outcomes Found
 }

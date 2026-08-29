@@ -2,7 +2,7 @@ query SearchItems(
     $organization_id: Item.organization_id,
     $needle: Item.title,
     $item_id: Item.item_id?,
-    $limit: Limit = 50,
+    $limit: Limit<499> = 50,
     $offset: u64 = 0
 ) {
     many items from Item

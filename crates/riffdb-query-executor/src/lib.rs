@@ -3486,7 +3486,7 @@ query GroupedSummary($organization_id: Ticket.organization_id) {
     const PARAMETER_BOUNDED_GROUPED_SUMMARY: &str = r#"
 query ParameterBoundedGroupedSummary(
     $organization_id: Ticket.organization_id,
-    $limit: Limit = 5,
+    $limit: Limit<499> = 5,
 ) {
     many tickets from Ticket
         where organization_id == $organization_id
@@ -4249,9 +4249,14 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
             &catalog,
         )
         .expect("family");
+        // The only typed limit is now Limit<MAX>, so a parameter-bounded
+        // group cardinality carries its declared maximum.
         assert_eq!(
             family.aggregates()[0].maximum_groups(),
-            &PageBound::Parameter("limit".to_owned())
+            &PageBound::BoundedParameter {
+                name: "limit".to_owned(),
+                maximum: 499
+            }
         );
         let parameters = QueryParameters::checked(BTreeMap::from([
             ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
