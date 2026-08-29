@@ -82,6 +82,10 @@ name = "contract_migration_acceptance"
 path = "../../tests/migrations/contract_migration_acceptance.rs"
 
 [[test]]
+name = "contract_migration_index_cover"
+path = "../../tests/migrations/contract_migration_index_cover.rs"
+
+[[test]]
 name = "durable_event_consumers"
 path = "../../tests/durable_event_consumers.rs"
 

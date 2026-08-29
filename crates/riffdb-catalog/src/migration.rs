@@ -2199,13 +2199,16 @@ fn derive_indexes(
                         .entity(entity.id())
                         .with_index(index_id)
                 })?;
-            StoredIndexEntryV2::new(
-                key,
-                binding.clone(),
-                CanonicalRecord::new(Vec::new()).expect("empty record"),
-                partition.clone(),
-            )
-            .map_err(|_| {
+            // Derived from `record` — the same post-image `values` above is
+            // derived from, in this transform. A covering index rebuilt
+            // without its cover is read as corruption and fails closed.
+            let covered = riffdb_contract_ir::encode_operational_index_cover_v1(index, record)
+                .map_err(|_| {
+                    MigrationFinding::new(migration_finding_code::INDEX_INVALID)
+                        .entity(entity.id())
+                        .with_index(index_id)
+                })?;
+            StoredIndexEntryV2::new(key, binding.clone(), covered, partition.clone()).map_err(|_| {
                 MigrationFinding::new(migration_finding_code::INDEX_INVALID)
                     .entity(entity.id())
                     .with_index(index_id)

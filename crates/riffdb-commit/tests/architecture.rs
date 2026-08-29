@@ -521,7 +521,9 @@ fn command_index_derivation_preserves_the_sealed_storage_progression_chain() {
         "IndexEntryMutationV1::Delete(old_key)",
         "IndexEntryMutationV1::Put(",
         "fn covered_values(",
-        "CanonicalRecord::new(covered)",
+        // Cover derivation is sealed once in riffdb-contract-ir and shared with
+        // the migration rebuild path, exactly as index-key lowering already is.
+        "riffdb_contract_ir::encode_operational_index_cover_v1(index, record)",
         "encode_index(&new_values",
         "encode_index_prefix(values)",
         "IndexRangePrefixBuilder::new(index.id())",

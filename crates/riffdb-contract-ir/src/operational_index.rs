@@ -101,6 +101,32 @@ pub fn encode_operational_index_values_v1(
     Ok(values)
 }
 
+/// Lowers one logical entity record to the exact canonical covered record for
+/// a covering index.
+///
+/// The cover is derived from the same post-image the index key is derived
+/// from, so a covered read observes one consistent row. A cover field absent
+/// from the record is an error rather than an omission: a short cover is
+/// indistinguishable from durable corruption at read time and fails the query
+/// closed, so it must never be written.
+pub fn encode_operational_index_cover_v1(
+    index: &IndexSchema,
+    record: &CanonicalRecord,
+) -> Result<CanonicalRecord, IrValidationError> {
+    let mut covered = Vec::with_capacity(index.cover_fields().len());
+    for field in index.cover_fields() {
+        let value = record_value(record, *field).ok_or(IrValidationError::InvalidKey {
+            reason: "covered index field is missing",
+        })?;
+        covered.push((*field, value.clone()));
+    }
+    // `CanonicalRecord::new` sorts by stable ID, so the declared cover order
+    // does not have to be ascending; the stored record is canonical either way.
+    CanonicalRecord::new(covered).map_err(|_| IrValidationError::InvalidKey {
+        reason: "covered index fields are not a canonical record",
+    })
+}
+
 /// Returns the unique ignored payload stored beside a missing/null discriminator.
 pub fn presence_placeholder_v1(
     component: &crate::KeyComponentSchema,
