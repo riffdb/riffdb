@@ -146,7 +146,17 @@ fn encoded_result_cost_overflow_is_source_spanned_and_releases_no_plan() {
     let diagnostics =
         compile_query(&parse_query(&source).expect("parse"), &catalog).expect_err("reject");
     let diagnostic = &diagnostics.as_slice()[0];
-    assert_eq!(diagnostic.code(), PlannerDiagnosticCode::Unbounded);
+    // The query declares `take 499`, so it is bounded -- what it exceeds is the
+    // result-byte ceiling. That is `CostCeilingExceeded`, and the diagnostic
+    // carries the charged amount and the ceiling so the author can size the
+    // bound directly instead of searching for one.
+    assert_eq!(
+        diagnostic.code(),
+        PlannerDiagnosticCode::CostCeilingExceeded
+    );
+    let bound = diagnostic.bound().expect("ceiling observation");
+    assert_eq!(bound.resource().as_str(), "encoded_result_bytes");
+    assert!(bound.actual() > bound.maximum());
     assert!(diagnostic.primary().end > diagnostic.primary().start);
     assert_eq!(
         format!(
