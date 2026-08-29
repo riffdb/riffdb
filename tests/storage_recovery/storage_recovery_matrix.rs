@@ -7247,6 +7247,71 @@ fn offline_backup_and_retention_administer_a_rootless_aggregate() {
     );
 }
 
+/// ADR-0169 names export among the paths a rootless partition must support.
+///
+/// Export pages by entity type: `read_application_export_entity_page` takes an
+/// `EntityTypeId` and builds a key prefix from it, never traversing root to
+/// child. This arm holds that shape against a database whose aggregate root no
+/// command can create -- the snapshot captures, binds the active lineage, and
+/// serves the child entity type while the root type is empty.
+///
+/// What it does not establish: that a *populated* child page exports. Writing a
+/// committed row into a rootless partition needs a command fixture bound to a
+/// second contract, and this file's fixture builder is bound to
+/// `STORAGE_RECOVERY_CONTRACT` throughout. A fixture assembled wrongly would
+/// pass without exercising anything, which is worse than a stated limit.
+#[test]
+fn export_captures_a_snapshot_over_a_rootless_aggregate() {
+    use riffdb_storage_api::ApplicationExportSnapshotPort;
+
+    let path = TestDatabasePath::new("rootless-aggregate-export");
+    activate_rootless_catalog(&path.0);
+
+    let ports = open_operational(RedbStore::open(&path.0).expect("reopen the rootless database"));
+    let bundle = rootless_contract_bundle();
+    let snapshot = ports
+        .capture_application_export_snapshot(bundle.lineage())
+        .expect("export snapshot over a rootless aggregate");
+    assert_eq!(
+        snapshot.binding().contract_bundle_hash(),
+        bundle.bundle_hash()
+    );
+
+    let schema = bundle.bundle().schema();
+    let child = schema
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "ParcelItem")
+        .expect("the ParcelItem child");
+    let root = schema
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "Parcel")
+        .expect("the Parcel root");
+
+    // The child type is reachable without the root existing, which is the
+    // property under test; both pages are empty because nothing was committed.
+    let child_page = snapshot
+        .read_application_export_entity_page(
+            child.id(),
+            None,
+            StorageScanLimit::new(64).expect("export scan limit"),
+        )
+        .expect("child entity page over a rootless aggregate");
+    assert!(child_page.records().is_empty());
+    let root_page = snapshot
+        .read_application_export_entity_page(
+            root.id(),
+            None,
+            StorageScanLimit::new(64).expect("export scan limit"),
+        )
+        .expect("root entity page over a rootless aggregate");
+    assert!(
+        root_page.records().is_empty(),
+        "no command can create a Parcel, so its page must be empty"
+    );
+}
+
 /// Initializes one database and activates the rootless catalog on it.
 fn activate_rootless_catalog(path: &Path) {
     let mut store = RedbStore::open(path).expect("open rootless database");
