@@ -2742,6 +2742,24 @@ async fn explain_named_query(
     Ok(result)
 }
 
+/// Records one closed read-pipeline stage that ended now.
+///
+/// The stage sinks are behind a trait object, so the caller pays one virtual
+/// call and one histogram update. `Instant::elapsed` is the only clock read.
+fn record_read_stage(
+    service: &RiffDbServiceInner,
+    stage: ReadPipelineStage,
+    started: std::time::Instant,
+) {
+    service
+        .providers
+        .telemetry
+        .record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
+            stage,
+            elapsed: started.elapsed(),
+        });
+}
+
 async fn execute_named_query(
     service: Arc<RiffDbServiceInner>,
     context: RequestContext,
@@ -2958,6 +2976,7 @@ async fn execute_projected_vector_named_query(
             ApplicationErrorCode::CursorInvalid,
         ));
     }
+    let param_materialize_started = Instant::now();
     let source = program
         .projected_source()
         .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
@@ -2985,7 +3004,19 @@ async fn execute_projected_vector_named_query(
         target,
     )
     .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    record_read_stage(
+        &service,
+        ReadPipelineStage::ParamMaterialize,
+        param_materialize_started,
+    );
+    let authorize_begin_started = Instant::now();
     let begun = begin_symbolic(&service, &context, &bundle, operation_request, OPERATION).await?;
+    record_read_stage(
+        &service,
+        ReadPipelineStage::AuthorizeBegin,
+        authorize_begin_started,
+    );
+    let authorize_pre_started = Instant::now();
     let execution_authorization = begun
         .reauthorize_read(&service, &context)
         .await?
@@ -3150,6 +3181,12 @@ async fn execute_projected_vector_named_query(
         let failure = PublicError::storage_unavailable().into();
         return Err(finish_failure(&service, &context, &begun, failure).await);
     };
+    record_read_stage(
+        &service,
+        ReadPipelineStage::AuthorizePre,
+        authorize_pre_started,
+    );
+    let execute_started = Instant::now();
     let observed = match execute_vector_projection_with_freshness(
         &service,
         &context,
@@ -3166,6 +3203,8 @@ async fn execute_projected_vector_named_query(
             return Err(finish_failure(&service, &context, &begun, failure).await);
         }
     };
+    record_read_stage(&service, ReadPipelineStage::Execute, execute_started);
+    let authorize_post_started = Instant::now();
     // Safe point 3: no ranked values cross the boundary under stale authority.
     let release_authorization = begun
         .reauthorize_read(&service, &context)
@@ -3188,6 +3227,12 @@ async fn execute_projected_vector_named_query(
     {
         return Err(begun.finish_authorization_denial(&service, &context).await);
     }
+    record_read_stage(
+        &service,
+        ReadPipelineStage::AuthorizePost,
+        authorize_post_started,
+    );
+    let response_build_started = Instant::now();
     let result = vector_projection_response(
         &program,
         document.as_ref(),
@@ -3198,7 +3243,14 @@ async fn execute_projected_vector_named_query(
         entity,
     )
     .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    record_read_stage(
+        &service,
+        ReadPipelineStage::ResponseBuild,
+        response_build_started,
+    );
+    let audit_finish_started = Instant::now();
     finish_success(&service, &context, &begun).await?;
+    record_read_stage(&service, ReadPipelineStage::AuditFinish, audit_finish_started);
     Ok(result)
 }
 
@@ -3402,6 +3454,7 @@ async fn execute_exact_predicate_named_query(
             ApplicationErrorCode::CursorInvalid,
         ));
     }
+    let param_materialize_started = Instant::now();
     let submitted = exact_parameters_with_defaults(
         document.as_ref(),
         submitted,
@@ -3489,7 +3542,19 @@ async fn execute_exact_predicate_named_query(
         target,
     )
     .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    record_read_stage(
+        &service,
+        ReadPipelineStage::ParamMaterialize,
+        param_materialize_started,
+    );
+    let authorize_begin_started = Instant::now();
     let begun = begin_symbolic(&service, &context, &bundle, operation_request, OPERATION).await?;
+    record_read_stage(
+        &service,
+        ReadPipelineStage::AuthorizeBegin,
+        authorize_begin_started,
+    );
+    let authorize_pre_started = Instant::now();
     let execution_authorization = begun
         .reauthorize_read(&service, &context)
         .await?
@@ -3550,6 +3615,12 @@ async fn execute_exact_predicate_named_query(
         limit,
         minimum_epoch,
     );
+    record_read_stage(
+        &service,
+        ReadPipelineStage::AuthorizePre,
+        authorize_pre_started,
+    );
+    let execute_started = Instant::now();
     let observed = match execute_exact_provider_with_readiness(&service, &context, &begun, || {
         provider_request.execute(provider.as_ref())
     })
@@ -3565,6 +3636,7 @@ async fn execute_exact_predicate_named_query(
             return Err(finish_failure(&service, &context, &begun, failure).await);
         }
     };
+    record_read_stage(&service, ReadPipelineStage::Execute, execute_started);
     let descriptor = exact
         .provider_descriptor_digest()
         .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
@@ -3574,6 +3646,7 @@ async fn execute_exact_predicate_named_query(
         let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
         return Err(finish_failure(&service, &context, &begun, failure).await);
     }
+    let authorize_post_started = Instant::now();
     let release_authorization = begun
         .reauthorize_read(&service, &context)
         .await?
@@ -3599,6 +3672,12 @@ async fn execute_exact_predicate_named_query(
         );
         return Err(finish_failure(&service, &context, &begun, failure).await);
     }
+    record_read_stage(
+        &service,
+        ReadPipelineStage::AuthorizePost,
+        authorize_post_started,
+    );
+    let response_build_started = Instant::now();
     let result = exact_predicate_result_response(
         &exact,
         &document,
@@ -3607,7 +3686,14 @@ async fn execute_exact_predicate_named_query(
         Arc::clone(bundle.enum_variant_names()),
     )
     .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    record_read_stage(
+        &service,
+        ReadPipelineStage::ResponseBuild,
+        response_build_started,
+    );
+    let audit_finish_started = Instant::now();
     finish_success(&service, &context, &begun).await?;
+    record_read_stage(&service, ReadPipelineStage::AuditFinish, audit_finish_started);
     Ok(result)
 }
 
@@ -3838,6 +3924,7 @@ async fn execute_exact_named_query(
             ApplicationErrorCode::CursorInvalid,
         ));
     }
+    let param_materialize_started = Instant::now();
     let submitted = exact_parameters_with_defaults(
         document.as_ref(),
         submitted,
@@ -3895,8 +3982,20 @@ async fn execute_exact_named_query(
         target,
     )
     .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    record_read_stage(
+        &service,
+        ReadPipelineStage::ParamMaterialize,
+        param_materialize_started,
+    );
+    let authorize_begin_started = Instant::now();
     let begun = begin_symbolic(&service, &context, &bundle, operation_request, OPERATION).await?;
+    record_read_stage(
+        &service,
+        ReadPipelineStage::AuthorizeBegin,
+        authorize_begin_started,
+    );
 
+    let authorize_pre_started = Instant::now();
     let execution_authorization = begun
         .reauthorize_read(&service, &context)
         .await?
@@ -3960,6 +4059,12 @@ async fn execute_exact_named_query(
         let failure = PublicError::storage_unavailable().into();
         return Err(finish_failure(&service, &context, &begun, failure).await);
     };
+    record_read_stage(
+        &service,
+        ReadPipelineStage::AuthorizePre,
+        authorize_pre_started,
+    );
+    let execute_started = Instant::now();
     let observed = match execute_exact_provider_with_readiness(&service, &context, &begun, || {
         provider.execute(request.clone())
     })
@@ -3975,12 +4080,14 @@ async fn execute_exact_named_query(
             return Err(finish_failure(&service, &context, &begun, failure).await);
         }
     };
+    record_read_stage(&service, ReadPipelineStage::Execute, execute_started);
     if observed.provider() != exact.binding().plan().provider_digest()
         || minimum_epoch.is_some_and(|minimum| observed.epoch() < minimum)
     {
         let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
         return Err(finish_failure(&service, &context, &begun, failure).await);
     }
+    let authorize_post_started = Instant::now();
     // Fresh authorization safe point 3 occurs after the complete page/count
     // epoch is selected and before any value crosses the service boundary.
     let release_authorization = begun
@@ -4007,6 +4114,12 @@ async fn execute_exact_named_query(
         );
         return Err(finish_failure(&service, &context, &begun, failure).await);
     }
+    record_read_stage(
+        &service,
+        ReadPipelineStage::AuthorizePost,
+        authorize_post_started,
+    );
+    let response_build_started = Instant::now();
     let result = exact_result_response(
         &exact,
         &document,
@@ -4015,7 +4128,14 @@ async fn execute_exact_named_query(
         Arc::clone(bundle.enum_variant_names()),
     )
     .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    record_read_stage(
+        &service,
+        ReadPipelineStage::ResponseBuild,
+        response_build_started,
+    );
+    let audit_finish_started = Instant::now();
     finish_success(&service, &context, &begun).await?;
+    record_read_stage(&service, ReadPipelineStage::AuditFinish, audit_finish_started);
     Ok(result)
 }
 
@@ -4925,8 +5045,16 @@ async fn execute_compiled_query(
             stage: ReadPipelineStage::ResponseBuild,
             elapsed: response_build_started.elapsed(),
         });
+    let audit_finish_started = Instant::now();
     finish_success(&service, &context, &begun).await?;
     result.next_cursor = cursor_guard.map(crate::CursorPublicationGuard::publish);
+    service
+        .providers
+        .telemetry
+        .record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
+            stage: ReadPipelineStage::AuditFinish,
+            elapsed: audit_finish_started.elapsed(),
+        });
     Ok(result)
 }
 

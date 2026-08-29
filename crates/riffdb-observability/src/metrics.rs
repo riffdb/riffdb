@@ -1001,7 +1001,7 @@ impl CommandMetricSeries {
 const COMMAND_GROUP_DISPATCH_REASON_COUNT: usize = 4;
 const COMMAND_PIPELINE_STAGE_COUNT: usize = 5;
 /// Closed end-to-end symbolic read pipeline stage cardinality.
-pub const READ_PIPELINE_STAGE_COUNT: usize = 12;
+pub const READ_PIPELINE_STAGE_COUNT: usize = 15;
 /// Closed mutating-command service-stage cardinality.
 pub const WRITE_SERVICE_STAGE_COUNT: usize = 5;
 
@@ -1384,6 +1384,9 @@ pub const fn read_pipeline_stage_index(stage: ReadPipelineStage) -> usize {
         ReadPipelineStage::AuthorizePost => 9,
         ReadPipelineStage::ResponseBuild => 10,
         ReadPipelineStage::EncodeConvert => 11,
+        ReadPipelineStage::AuditFinish => 12,
+        ReadPipelineStage::ServiceAwait => 13,
+        ReadPipelineStage::ServerHandler => 14,
     }
 }
 
