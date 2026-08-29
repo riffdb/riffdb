@@ -857,12 +857,19 @@ fn generate_gate_b_application_fixture(root: &std::path::Path) -> Result<(), Box
   aggregate Rows { root Row partition_by id conflict_key (id) }
 }
 "#;
+    // The successor declares a NEW covering index identity. SPEC.md requires
+    // the coordinator to derive the exact canonical covered record from the
+    // entity post-image on the rebuild path, and a rebuilt entry that carries
+    // no cover is read as corruption and fails the query closed. Declaring the
+    // cover here is what gives gate B a migration that actually rebuilds one
+    // over real rows, which is the only standing evidence for that derivation.
     const CANDIDATE: &str = r#"contract StructuralRows version 2 {
   enum WorkflowStatus { Open, Archived }
   entity Record {
     key (id: uuid)
     field amount: u64
     field status: WorkflowStatus
+    index by_status (status, id) cover (amount)
   }
   aggregate Rows { root Record partition_by id conflict_key (id) }
 }
