@@ -1855,15 +1855,8 @@ fn covered_values(
     index: &IndexSchema,
     record: &CanonicalRecord,
 ) -> Result<CanonicalRecord, CommandIndexError> {
-    let mut covered = Vec::with_capacity(index.cover_fields().len());
-    for field in index.cover_fields() {
-        let position = record
-            .fields()
-            .binary_search_by_key(field, |(candidate, _)| *candidate)
-            .map_err(|_| CommandIndexError::internal_defect())?;
-        covered.push((*field, record.fields()[position].1.clone()));
-    }
-    CanonicalRecord::new(covered).map_err(|_| CommandIndexError::internal_defect())
+    riffdb_contract_ir::encode_operational_index_cover_v1(index, record)
+        .map_err(|_| CommandIndexError::internal_defect())
 }
 
 fn insert_generation(
