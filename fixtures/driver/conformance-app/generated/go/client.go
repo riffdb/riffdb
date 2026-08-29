@@ -8,7 +8,7 @@ import (
 	riffdb "riffdb.dev/application"
 )
 
-const QueryModuleHash = "d5edf8b81ecca77cfe91a63f53c2a8f4d3f06835029b197194bfc99af9bbfd07"
+const QueryModuleHash = "86063e5371ce90e9ef93b7ba8c80f9b82a88a5e976b35149064095cacb51306e"
 const ContractLineage = "DriverConformance"
 const ContractVersion uint64 = 1
 const ContractBundleHash = "2fcc01955fcad80a8b6ac5fc6149e95b96889d29182301eb416b8cd1fa70bb0a"
@@ -237,7 +237,7 @@ input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 input["item_id"] = riffdb.UUID(parameters.ItemId)
 response, err := client.session.Invoke(ctx, ItemSecretOperation, input, options); if err != nil { return QueryResult[ItemSecretResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[ItemSecretResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeItemSecretResult(response.Value); if err != nil { return QueryResult[ItemSecretResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ItemSecret", PlanHash: ItemSecretQueryPlanHash}; return QueryResult[ItemSecretResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
 
-const SearchItemsQueryPlanHash = "c1cd3b841799feb49d22c23af8dd5784fb87b8fb7019b0a99d22ae391afb2097"
+const SearchItemsQueryPlanHash = "ce239a4ec83c5a97902dd7a825df45082cd3e320d96a6a384886785c95592615"
 var SearchItemsOperation = riffdb.Operation{Name: "driver_conformance_search_items", InputSchemaHash: "8b5d1f261f1dc98cccaa81d531b27eb9e71094bb3f38485898e015f3a7fcd26c"}
 func decodeSearchItemsResult(value riffdb.Value) (SearchItemsResult, error) { fields, err := riffdb.RecordFields(value); if err != nil { return nil, err }; outcomeValue, err := requiredField(fields, "outcome"); if err != nil { return nil, err }; outcome, err := riffdb.EnumValue(outcomeValue); if err != nil { return nil, err }; var raw riffdb.Value; switch outcome {
 case "Found": result := SearchItemsFound{Outcome: outcome}
@@ -246,6 +246,7 @@ raw, err = requiredField(fields, "total"); if err != nil { return nil, err }; re
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
 func (client *Client) SearchItems(ctx context.Context, parameters SearchItemsParams, options QueryOptions) (QueryResult[SearchItemsResult], error) { input := map[string]riffdb.Value{}
+if parameters.Limit != nil && (*parameters.Limit == 0 || uint64(*parameters.Limit) > 499) { return QueryResult[SearchItemsResult]{}, errors.New("limit must be from 1 through 499") }
 input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 input["needle"] = riffdb.String(parameters.Needle)
 if parameters.ItemId != nil { input["item_id"] = riffdb.Optional(parameters.ItemId, func(item string) riffdb.Value { return riffdb.UUID(item) }) }

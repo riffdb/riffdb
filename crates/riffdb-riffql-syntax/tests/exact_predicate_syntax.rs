@@ -7,13 +7,13 @@ use riffdb_riffql_syntax::{
 };
 
 const RICH: &str = r#"
-query SearchUsers($organization_id: User.organization_id, $needle: User.email, $states: Set<User.state>, $limit: Limit, $offset: u64) {
+query SearchUsers($organization_id: User.organization_id, $needle: User.email, $states: Set<User.state>, $offset: u64) {
   many users from User
     where organization_id == $organization_id
       && email contains $needle
       && state not_in $states
     order by created_at desc, user_id asc
-    take $limit offset $offset
+    take 50 offset $offset
   aggregate totals from users { exact_count() as total }
   return Found { users: users { user_id email created_at } totals: totals { total } }
   outcomes Found

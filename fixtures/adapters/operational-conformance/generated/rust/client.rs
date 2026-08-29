@@ -5,7 +5,7 @@ use riffdb_client_rust::{ApplicationCardinality, ApplicationClientError, Applica
 pub use riffdb_client_rust::QueryOptions;
 use riffdb_client_rust::v1::value::Kind as WireKind;
 
-pub const QUERY_MODULE_HASH: [u8; 32] = [0x59, 0x0f, 0xdb, 0x58, 0x30, 0xf1, 0x35, 0x5b, 0x30, 0xac, 0xfd, 0x49, 0x5f, 0x3f, 0xba, 0x12, 0x59, 0x21, 0x51, 0x09, 0xd5, 0xde, 0x7f, 0xd2, 0x79, 0x01, 0x56, 0x15, 0x3c, 0xd8, 0x4b, 0x1d];
+pub const QUERY_MODULE_HASH: [u8; 32] = [0x5f, 0xd8, 0xe7, 0x2c, 0xb7, 0x66, 0x44, 0x18, 0x93, 0x38, 0x9e, 0xa1, 0x40, 0xbd, 0x62, 0xb9, 0xec, 0x44, 0x2d, 0xf2, 0xf1, 0x4f, 0x34, 0xea, 0xbc, 0xf9, 0x44, 0xc7, 0xe8, 0x9d, 0xc4, 0x70];
 pub const CONTRACT_LINEAGE: &str = "AdapterOperationalConformance";
 pub const CONTRACT_VERSION: u64 = 1;
 
@@ -60,7 +60,7 @@ pub enum ExactDocumentsContainsAscResult {
     Found(Box<ExactDocumentsContainsAscFound>),
 }
 
-pub const EXACT_DOCUMENTS_CONTAINS_ASC_QUERY_PLAN_HASH: [u8; 32] = [0xf4, 0x1a, 0x39, 0x06, 0x0a, 0x72, 0x8d, 0x51, 0x33, 0x88, 0x1f, 0x82, 0x52, 0xb0, 0x21, 0x37, 0x44, 0x63, 0xe5, 0x46, 0x27, 0x13, 0x9b, 0xd0, 0x1f, 0x15, 0x22, 0x3d, 0x08, 0x31, 0x61, 0x8c];
+pub const EXACT_DOCUMENTS_CONTAINS_ASC_QUERY_PLAN_HASH: [u8; 32] = [0x6e, 0x34, 0x39, 0x8b, 0x6c, 0x07, 0x1e, 0xec, 0x9a, 0x22, 0x73, 0x9d, 0x6c, 0x28, 0x86, 0xc8, 0x68, 0x07, 0xf9, 0xd5, 0xe9, 0x70, 0x97, 0x6d, 0x30, 0x17, 0x90, 0x75, 0xd5, 0xfe, 0xa5, 0x1e];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExactDocumentsContainsAscQuery(pub ExactDocumentsContainsAscParams);
 impl GeneratedQuery for ExactDocumentsContainsAscQuery {
@@ -68,6 +68,7 @@ impl GeneratedQuery for ExactDocumentsContainsAscQuery {
 
     fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
         let mut parameters = BTreeMap::new();
+        if self.0.limit == 0 || self.0.limit > 499 { return Err(ApplicationClientError::InvalidInput); }
         parameters.insert("site_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.site_id)?));
         parameters.insert("needle".to_owned(), ApplicationValue::String(self.0.needle));
         parameters.insert("document_id".to_owned(), match self.0.document_id { Some(value) => ApplicationValue::Uuid(ApplicationUuid::from_text(value)?), None => ApplicationValue::Null });
@@ -152,7 +153,7 @@ pub enum ExactDocumentsEndsWithDescResult {
     Found(Box<ExactDocumentsEndsWithDescFound>),
 }
 
-pub const EXACT_DOCUMENTS_ENDS_WITH_DESC_QUERY_PLAN_HASH: [u8; 32] = [0x36, 0xf0, 0x81, 0x5a, 0x0d, 0x7a, 0xf2, 0xd2, 0xdd, 0xaa, 0x25, 0xd6, 0xbc, 0xa9, 0x75, 0x6a, 0x15, 0x7d, 0xe5, 0x10, 0xc5, 0xbd, 0x1f, 0x4c, 0x81, 0xc3, 0x03, 0x61, 0x84, 0xb9, 0xc2, 0x40];
+pub const EXACT_DOCUMENTS_ENDS_WITH_DESC_QUERY_PLAN_HASH: [u8; 32] = [0xaa, 0xd2, 0x62, 0x93, 0xf5, 0x04, 0x67, 0x74, 0x9b, 0x2b, 0xa5, 0x18, 0x51, 0x07, 0x12, 0x44, 0x1d, 0x4a, 0xd2, 0x1d, 0xa6, 0x54, 0xed, 0x5a, 0x8f, 0x61, 0x84, 0x83, 0x84, 0x7e, 0x0d, 0x3e];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExactDocumentsEndsWithDescQuery(pub ExactDocumentsEndsWithDescParams);
 impl GeneratedQuery for ExactDocumentsEndsWithDescQuery {
@@ -160,6 +161,7 @@ impl GeneratedQuery for ExactDocumentsEndsWithDescQuery {
 
     fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
         let mut parameters = BTreeMap::new();
+        if self.0.limit == 0 || self.0.limit > 499 { return Err(ApplicationClientError::InvalidInput); }
         parameters.insert("site_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.site_id)?));
         parameters.insert("needle".to_owned(), ApplicationValue::String(self.0.needle));
         parameters.insert("document_id".to_owned(), match self.0.document_id { Some(value) => ApplicationValue::Uuid(ApplicationUuid::from_text(value)?), None => ApplicationValue::Null });
@@ -244,7 +246,7 @@ pub enum ExactDocumentsStartsWithAscResult {
     Found(Box<ExactDocumentsStartsWithAscFound>),
 }
 
-pub const EXACT_DOCUMENTS_STARTS_WITH_ASC_QUERY_PLAN_HASH: [u8; 32] = [0xc0, 0x1d, 0xc8, 0x6f, 0x5c, 0x35, 0x16, 0x43, 0x96, 0xc5, 0xd8, 0xde, 0x1e, 0xcc, 0x28, 0x82, 0xce, 0x45, 0x8f, 0x52, 0x76, 0xd6, 0x28, 0x42, 0xe6, 0xa0, 0xeb, 0xb3, 0xd2, 0xb8, 0x12, 0x07];
+pub const EXACT_DOCUMENTS_STARTS_WITH_ASC_QUERY_PLAN_HASH: [u8; 32] = [0xcb, 0xc7, 0x0e, 0xe9, 0x5f, 0xe5, 0xfa, 0xfb, 0x50, 0xff, 0x8e, 0x01, 0x57, 0xa0, 0x30, 0x54, 0x02, 0x2e, 0x23, 0x14, 0xe9, 0x12, 0x17, 0x13, 0x7b, 0xf4, 0x93, 0xa3, 0x6b, 0xc7, 0xd4, 0xa9];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExactDocumentsStartsWithAscQuery(pub ExactDocumentsStartsWithAscParams);
 impl GeneratedQuery for ExactDocumentsStartsWithAscQuery {
@@ -252,6 +254,7 @@ impl GeneratedQuery for ExactDocumentsStartsWithAscQuery {
 
     fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
         let mut parameters = BTreeMap::new();
+        if self.0.limit == 0 || self.0.limit > 499 { return Err(ApplicationClientError::InvalidInput); }
         parameters.insert("site_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.site_id)?));
         parameters.insert("needle".to_owned(), ApplicationValue::String(self.0.needle));
         parameters.insert("document_id".to_owned(), match self.0.document_id { Some(value) => ApplicationValue::Uuid(ApplicationUuid::from_text(value)?), None => ApplicationValue::Null });
@@ -424,7 +427,7 @@ pub enum InventoryByObservedAscNullsLastResult {
     Found(Box<InventoryByObservedAscNullsLastFound>),
 }
 
-pub const INVENTORY_BY_OBSERVED_ASC_NULLS_LAST_QUERY_PLAN_HASH: [u8; 32] = [0x65, 0x34, 0x1f, 0x96, 0x76, 0xfd, 0x61, 0xe7, 0xe0, 0x90, 0x84, 0x51, 0x7b, 0xdd, 0x23, 0xf1, 0xc1, 0x54, 0x08, 0x6c, 0xdd, 0xf1, 0x3a, 0x48, 0xed, 0xf3, 0x95, 0x6d, 0xec, 0x75, 0x60, 0x7f];
+pub const INVENTORY_BY_OBSERVED_ASC_NULLS_LAST_QUERY_PLAN_HASH: [u8; 32] = [0x07, 0x73, 0x63, 0x66, 0x64, 0x58, 0x87, 0x72, 0x8a, 0x8a, 0x26, 0x5a, 0x46, 0x21, 0x8e, 0x52, 0x9d, 0xe6, 0x4d, 0xeb, 0xba, 0xd5, 0xa2, 0x07, 0xbd, 0x5e, 0x23, 0xb8, 0x2c, 0xc9, 0x82, 0x72];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InventoryByObservedAscNullsLastQuery(pub InventoryByObservedAscNullsLastParams);
 impl GeneratedQuery for InventoryByObservedAscNullsLastQuery {
@@ -432,6 +435,7 @@ impl GeneratedQuery for InventoryByObservedAscNullsLastQuery {
 
     fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
         let mut parameters = BTreeMap::new();
+        if self.0.limit == 0 || self.0.limit > 499 { return Err(ApplicationClientError::InvalidInput); }
         parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
         parameters.insert("limit".to_owned(), ApplicationValue::U64(self.0.limit));
         parameters.insert("offset".to_owned(), ApplicationValue::U64(self.0.offset));
@@ -516,7 +520,7 @@ pub enum InventoryByObservedDescNullsFirstResult {
     Found(Box<InventoryByObservedDescNullsFirstFound>),
 }
 
-pub const INVENTORY_BY_OBSERVED_DESC_NULLS_FIRST_QUERY_PLAN_HASH: [u8; 32] = [0x42, 0x2d, 0x50, 0x4c, 0x46, 0x46, 0xf3, 0x69, 0x95, 0x74, 0x9b, 0xcd, 0xbb, 0xc1, 0x45, 0x13, 0xd8, 0x0d, 0x69, 0x21, 0x98, 0x40, 0xdb, 0xb6, 0xbb, 0x9e, 0xb7, 0xfa, 0x1b, 0x94, 0x96, 0x92];
+pub const INVENTORY_BY_OBSERVED_DESC_NULLS_FIRST_QUERY_PLAN_HASH: [u8; 32] = [0xb7, 0xc8, 0x61, 0x6f, 0x2d, 0xcd, 0x1c, 0xf4, 0x4b, 0x2b, 0xf1, 0xa4, 0x56, 0xbf, 0x53, 0x67, 0x9a, 0x9b, 0x9a, 0x88, 0x01, 0x91, 0x15, 0x71, 0xfe, 0x8a, 0xec, 0x95, 0x05, 0x27, 0xd3, 0x10];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InventoryByObservedDescNullsFirstQuery(pub InventoryByObservedDescNullsFirstParams);
 impl GeneratedQuery for InventoryByObservedDescNullsFirstQuery {
@@ -524,6 +528,7 @@ impl GeneratedQuery for InventoryByObservedDescNullsFirstQuery {
 
     fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
         let mut parameters = BTreeMap::new();
+        if self.0.limit == 0 || self.0.limit > 499 { return Err(ApplicationClientError::InvalidInput); }
         parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
         parameters.insert("limit".to_owned(), ApplicationValue::U64(self.0.limit));
         parameters.insert("offset".to_owned(), ApplicationValue::U64(self.0.offset));
@@ -608,7 +613,7 @@ pub enum InventoryBySubtitleAscNullsFirstResult {
     Found(Box<InventoryBySubtitleAscNullsFirstFound>),
 }
 
-pub const INVENTORY_BY_SUBTITLE_ASC_NULLS_FIRST_QUERY_PLAN_HASH: [u8; 32] = [0xc2, 0xb7, 0x11, 0xbc, 0x82, 0x9f, 0xd7, 0xca, 0x34, 0xac, 0xda, 0x9d, 0x7b, 0x25, 0xfe, 0xf2, 0xb8, 0xd2, 0xe4, 0x7b, 0xaf, 0xc3, 0x85, 0x28, 0xd3, 0x62, 0xce, 0x4a, 0x0e, 0x9c, 0xc5, 0x55];
+pub const INVENTORY_BY_SUBTITLE_ASC_NULLS_FIRST_QUERY_PLAN_HASH: [u8; 32] = [0xcd, 0x83, 0x51, 0xb8, 0x0a, 0x0c, 0xd6, 0xac, 0x6f, 0x05, 0xf4, 0xe0, 0x7b, 0x46, 0x4c, 0xac, 0x49, 0xf1, 0xbb, 0x42, 0xa5, 0xb2, 0x08, 0xd5, 0x3c, 0xc2, 0xbe, 0x18, 0x9a, 0xa0, 0xc6, 0x85];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InventoryBySubtitleAscNullsFirstQuery(pub InventoryBySubtitleAscNullsFirstParams);
 impl GeneratedQuery for InventoryBySubtitleAscNullsFirstQuery {
@@ -616,6 +621,7 @@ impl GeneratedQuery for InventoryBySubtitleAscNullsFirstQuery {
 
     fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
         let mut parameters = BTreeMap::new();
+        if self.0.limit == 0 || self.0.limit > 499 { return Err(ApplicationClientError::InvalidInput); }
         parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
         parameters.insert("limit".to_owned(), ApplicationValue::U64(self.0.limit));
         parameters.insert("offset".to_owned(), ApplicationValue::U64(self.0.offset));
@@ -700,7 +706,7 @@ pub enum InventoryBySubtitleDescNullsLastResult {
     Found(Box<InventoryBySubtitleDescNullsLastFound>),
 }
 
-pub const INVENTORY_BY_SUBTITLE_DESC_NULLS_LAST_QUERY_PLAN_HASH: [u8; 32] = [0x38, 0x61, 0x41, 0xe0, 0x8e, 0x66, 0x11, 0x47, 0xf5, 0x32, 0x3e, 0x57, 0xfd, 0x6a, 0x45, 0x27, 0x91, 0x5e, 0xcf, 0x6a, 0x51, 0xf8, 0xa6, 0xdc, 0xea, 0x33, 0x5d, 0x28, 0x00, 0x45, 0x9c, 0x3b];
+pub const INVENTORY_BY_SUBTITLE_DESC_NULLS_LAST_QUERY_PLAN_HASH: [u8; 32] = [0x3d, 0x2d, 0xec, 0x50, 0xfd, 0x9e, 0x34, 0x64, 0x3f, 0xfe, 0x00, 0x92, 0x30, 0x8c, 0x59, 0x2f, 0xbe, 0xff, 0x26, 0x1d, 0xfe, 0xb7, 0x38, 0xb4, 0x5a, 0xec, 0x81, 0xd1, 0x7b, 0xb8, 0x8b, 0x31];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InventoryBySubtitleDescNullsLastQuery(pub InventoryBySubtitleDescNullsLastParams);
 impl GeneratedQuery for InventoryBySubtitleDescNullsLastQuery {
@@ -708,6 +714,7 @@ impl GeneratedQuery for InventoryBySubtitleDescNullsLastQuery {
 
     fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
         let mut parameters = BTreeMap::new();
+        if self.0.limit == 0 || self.0.limit > 499 { return Err(ApplicationClientError::InvalidInput); }
         parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
         parameters.insert("limit".to_owned(), ApplicationValue::U64(self.0.limit));
         parameters.insert("offset".to_owned(), ApplicationValue::U64(self.0.offset));
@@ -1087,7 +1094,7 @@ pub enum ReviewedDirectoryUsersResult {
     Found(Box<ReviewedDirectoryUsersFound>),
 }
 
-pub const REVIEWED_DIRECTORY_USERS_QUERY_PLAN_HASH: [u8; 32] = [0x45, 0x7a, 0xdf, 0x85, 0x67, 0x68, 0xf6, 0x54, 0x14, 0x87, 0x62, 0x86, 0x45, 0x64, 0xe4, 0x1f, 0xf6, 0x47, 0x97, 0xa9, 0x5b, 0x03, 0xd2, 0x6e, 0xa3, 0xcf, 0x7a, 0x98, 0xc1, 0x85, 0xae, 0xc3];
+pub const REVIEWED_DIRECTORY_USERS_QUERY_PLAN_HASH: [u8; 32] = [0x41, 0x42, 0xfe, 0x61, 0x4e, 0xa2, 0x2d, 0x17, 0x3e, 0x26, 0x8f, 0xf6, 0x2c, 0xcb, 0x30, 0xcb, 0x47, 0x65, 0x19, 0x80, 0xa6, 0x75, 0xc2, 0xe0, 0x42, 0xb8, 0x34, 0x7d, 0x7e, 0xd6, 0xd7, 0xc7];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReviewedDirectoryUsersQuery(pub ReviewedDirectoryUsersParams);
 impl GeneratedQuery for ReviewedDirectoryUsersQuery {
@@ -1095,6 +1102,7 @@ impl GeneratedQuery for ReviewedDirectoryUsersQuery {
 
     fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
         let mut parameters = BTreeMap::new();
+        if self.0.limit == 0 || self.0.limit > 499 { return Err(ApplicationClientError::InvalidInput); }
         parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
         parameters.insert("states".to_owned(), ApplicationValue::List(self.0.states.into_iter().map(ApplicationValue::String).collect()));
         parameters.insert("before_created_at".to_owned(), ApplicationValue::U64(self.0.before_created_at));
@@ -1186,7 +1194,7 @@ pub enum SearchDirectoryUsersResult {
     Found(Box<SearchDirectoryUsersFound>),
 }
 
-pub const SEARCH_DIRECTORY_USERS_QUERY_PLAN_HASH: [u8; 32] = [0x8f, 0x68, 0x44, 0xea, 0x9a, 0xed, 0xe0, 0x80, 0xc0, 0x4b, 0x45, 0x5e, 0xc7, 0x2c, 0x17, 0x97, 0x0e, 0x4c, 0xaf, 0x31, 0xc2, 0x46, 0xe8, 0xd7, 0x71, 0x97, 0xc0, 0xe3, 0x18, 0x8a, 0xfc, 0x86];
+pub const SEARCH_DIRECTORY_USERS_QUERY_PLAN_HASH: [u8; 32] = [0x63, 0xeb, 0x9b, 0xaf, 0xa6, 0xa6, 0x51, 0x30, 0x01, 0x8a, 0xb6, 0x4e, 0x53, 0xee, 0xc2, 0xff, 0x79, 0xb4, 0xd8, 0x5d, 0x38, 0xdc, 0x2d, 0xc1, 0x71, 0x77, 0x18, 0xe3, 0x1e, 0x1a, 0x45, 0x87];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchDirectoryUsersQuery(pub SearchDirectoryUsersParams);
 impl GeneratedQuery for SearchDirectoryUsersQuery {
@@ -1194,6 +1202,7 @@ impl GeneratedQuery for SearchDirectoryUsersQuery {
 
     fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
         let mut parameters = BTreeMap::new();
+        if self.0.limit == 0 || self.0.limit > 499 { return Err(ApplicationClientError::InvalidInput); }
         parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
         parameters.insert("needle".to_owned(), ApplicationValue::String(self.0.needle));
         parameters.insert("excluded_states".to_owned(), ApplicationValue::List(self.0.excluded_states.into_iter().map(ApplicationValue::String).collect()));

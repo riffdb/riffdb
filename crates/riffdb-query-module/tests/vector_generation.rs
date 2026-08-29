@@ -4,8 +4,9 @@
 
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_module::{
-    NamedQuerySource, QUERY_MODULE_FORMAT_VERSION_PROJECTED_VECTOR_V1, QueryModule,
-    QueryModuleCandidate, QueryModuleName, QueryModuleVersion, generate_go_application_client,
+    NamedQuerySource, QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1,
+    QUERY_MODULE_FORMAT_VERSION_PROJECTED_VECTOR_V1, QueryModule, QueryModuleCandidate,
+    QueryModuleName, QueryModuleVersion, generate_go_application_client,
     generate_python_application_client, generate_rust_application_client,
     generate_typescript_application_client,
 };
@@ -62,7 +63,7 @@ const NEAREST_QUERY: &str = r#"
 query SimilarDocuments(
     $org_id: Document.org_id,
     $query_vector: Document.embedding,
-    $k: Limit,
+    $k: Limit<499>,
 ) {
     source projected Document.embedding
     freshness causal inherit_session_commit true max_wait_ms 500
@@ -120,9 +121,11 @@ fn projected_nearest_module_round_trips_with_its_successor_identity() {
     )
     .expect("module candidate");
     let module = QueryModule::compile(candidate, &contract).expect("projected module compiles");
+    // A parameterised nearest K is a typed limit, and the only typed limit is
+    // now Limit<MAX>, so this module carries the bounded-limit codec.
     assert_eq!(
         module.format_version(),
-        QUERY_MODULE_FORMAT_VERSION_PROJECTED_VECTOR_V1
+        QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1
     );
     let query = module.query("SimilarDocuments").expect("named query");
     let source = query

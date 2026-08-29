@@ -2,7 +2,7 @@ query ModerationQueue(
     $site_id: Site.site_id,
     $status: CommentStatus,
     $after: Cursor?,
-    $limit: Limit = 25,
+    $limit: Limit<499> = 25,
 ) {
     many comments from Comment
         where site_id == $site_id

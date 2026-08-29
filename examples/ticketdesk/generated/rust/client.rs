@@ -6,7 +6,7 @@ pub use riffdb_client_rust::QueryOptions;
 use riffdb_client_rust::v1::value::Kind as WireKind;
 
 use riffdb_client_rust::app_v1;
-pub const QUERY_MODULE_HASH: [u8; 32] = [0xc3, 0x09, 0x59, 0xd4, 0x5f, 0x02, 0x8b, 0xb8, 0xf7, 0xeb, 0x45, 0x2f, 0x93, 0x68, 0xc3, 0x2c, 0xd0, 0x5d, 0xd1, 0x9d, 0x4b, 0x52, 0x4a, 0x60, 0xf0, 0x19, 0x35, 0xfc, 0xb4, 0x73, 0xc0, 0xb7];
+pub const QUERY_MODULE_HASH: [u8; 32] = [0x07, 0xe9, 0x27, 0xf7, 0x35, 0xf4, 0xb4, 0x50, 0x1c, 0x8c, 0x6d, 0x06, 0x45, 0x87, 0x16, 0xeb, 0xca, 0x1f, 0xfb, 0xd4, 0x51, 0xec, 0x72, 0xa5, 0x17, 0xc2, 0xb9, 0x68, 0xe7, 0x16, 0x12, 0xb4];
 pub const CONTRACT_LINEAGE: &str = "TicketDesk";
 pub const CONTRACT_VERSION: u64 = 1;
 
@@ -531,7 +531,7 @@ pub enum ListCommentsResult {
     Found(Box<ListCommentsFound>),
 }
 
-pub const LIST_COMMENTS_QUERY_PLAN_HASH: [u8; 32] = [0x25, 0x7a, 0x1d, 0x3a, 0x63, 0x01, 0xbd, 0xb1, 0x5c, 0x3f, 0xac, 0x5d, 0x1c, 0xda, 0x94, 0x56, 0x9a, 0xe3, 0xf6, 0xe7, 0xc9, 0x4f, 0x1c, 0xbb, 0xd8, 0xa6, 0x2d, 0xcb, 0x83, 0x46, 0x2d, 0xbd];
+pub const LIST_COMMENTS_QUERY_PLAN_HASH: [u8; 32] = [0x64, 0x55, 0x9d, 0x88, 0xef, 0xd2, 0xd5, 0x74, 0x70, 0x0e, 0xd2, 0xfc, 0xf0, 0x0f, 0x88, 0x40, 0x2c, 0x45, 0xc4, 0xcb, 0xbe, 0x5c, 0xe1, 0xaa, 0xfd, 0x9e, 0xe7, 0x36, 0x7b, 0xbb, 0x44, 0x4a];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ListCommentsQuery(pub ListCommentsParams);
 impl GeneratedQuery for ListCommentsQuery {
@@ -539,6 +539,7 @@ impl GeneratedQuery for ListCommentsQuery {
 
     fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
         let mut parameters = BTreeMap::new();
+        if self.0.limit == 0 || self.0.limit > 499 { return Err(ApplicationClientError::InvalidInput); }
         let generated_cursor = self.0.after;
         parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
         parameters.insert("ticket_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.ticket_id)?));
@@ -613,7 +614,7 @@ pub enum ListTicketsResult {
     Found(Box<ListTicketsFound>),
 }
 
-pub const LIST_TICKETS_QUERY_PLAN_HASH: [u8; 32] = [0x69, 0x30, 0xb4, 0x04, 0x0e, 0x3c, 0x0c, 0x7a, 0x8b, 0x3d, 0x44, 0x31, 0x5e, 0x74, 0xf3, 0x56, 0xe5, 0xc5, 0xa4, 0xfa, 0x6d, 0x05, 0x04, 0x9c, 0xb7, 0x8c, 0xca, 0x1e, 0xc4, 0x64, 0x3f, 0x95];
+pub const LIST_TICKETS_QUERY_PLAN_HASH: [u8; 32] = [0x73, 0x83, 0xed, 0xd6, 0x56, 0x4a, 0x4e, 0x50, 0x62, 0x61, 0x5a, 0xf9, 0xc6, 0xed, 0xf2, 0x78, 0xfe, 0xa8, 0x9b, 0x7a, 0x7f, 0xb4, 0x5e, 0x24, 0xdf, 0x64, 0x68, 0xb3, 0x26, 0x12, 0x84, 0x55];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ListTicketsQuery(pub ListTicketsParams);
 impl GeneratedQuery for ListTicketsQuery {
@@ -621,6 +622,7 @@ impl GeneratedQuery for ListTicketsQuery {
 
     fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
         let mut parameters = BTreeMap::new();
+        if self.0.limit == 0 || self.0.limit > 499 { return Err(ApplicationClientError::InvalidInput); }
         let generated_cursor = self.0.after;
         parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
         parameters.insert("project_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.project_id)?));
@@ -699,7 +701,7 @@ pub enum ListTicketsByAssigneeResult {
     Found(Box<ListTicketsByAssigneeFound>),
 }
 
-pub const LIST_TICKETS_BY_ASSIGNEE_QUERY_PLAN_HASH: [u8; 32] = [0xc9, 0x27, 0xcb, 0x23, 0x6e, 0x2e, 0x09, 0x29, 0xf2, 0xff, 0x3e, 0x32, 0x3e, 0xed, 0x46, 0x25, 0x78, 0xa6, 0xcb, 0xbf, 0x1f, 0xe8, 0xbc, 0x55, 0x71, 0x88, 0x8b, 0xcd, 0x77, 0xd4, 0xc7, 0xd8];
+pub const LIST_TICKETS_BY_ASSIGNEE_QUERY_PLAN_HASH: [u8; 32] = [0x35, 0xc6, 0x20, 0x25, 0x05, 0x90, 0x74, 0x0f, 0x44, 0x0e, 0xfe, 0x62, 0x81, 0xbd, 0x5d, 0xe7, 0x8b, 0xbd, 0x2a, 0x07, 0xb7, 0x38, 0x6f, 0xd1, 0x02, 0x1a, 0x64, 0xff, 0x65, 0x10, 0x26, 0x8a];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ListTicketsByAssigneeQuery(pub ListTicketsByAssigneeParams);
 impl GeneratedQuery for ListTicketsByAssigneeQuery {
@@ -707,6 +709,7 @@ impl GeneratedQuery for ListTicketsByAssigneeQuery {
 
     fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
         let mut parameters = BTreeMap::new();
+        if self.0.limit == 0 || self.0.limit > 499 { return Err(ApplicationClientError::InvalidInput); }
         let generated_cursor = self.0.after;
         parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
         parameters.insert("assignee_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.assignee_id)?));
@@ -3170,7 +3173,7 @@ fn decode_wire_money(value: v1::Value, expected_currency: &str) -> Result<MoneyV
 use riffdb_client_rust::generated::{GeneratedEventConsumer, GeneratedLiveQuery};
 use riffdb_client_rust::{ApplicationEvent, ApplicationEventCheckpoint, ApplicationEventConsumer, ApplicationEventConsumerPublicStatus, ApplicationEventMutationResult, ApplicationEventProgressCursor, ApplicationLiveQueryUpdate, ApplicationReactiveOperation, EventConsumerOptions, LiveQueryCheckpoint, LiveQueryCursor, TypedContextualBatch, TypedContextualWorkItem, TypedEventBatch, TypedLiveQueryReset, TypedLiveQuerySnapshot, TypedLiveQueryStream};
 
-pub const TICKET_ACTIVITY_REACTIVE_MODULE_HASH: [u8; 32] = [167, 28, 69, 162, 196, 171, 231, 94, 209, 163, 149, 66, 181, 228, 11, 168, 108, 159, 108, 230, 169, 49, 119, 85, 192, 227, 43, 245, 52, 22, 68, 13];
+pub const TICKET_ACTIVITY_REACTIVE_MODULE_HASH: [u8; 32] = [133, 10, 93, 211, 167, 41, 33, 83, 32, 82, 8, 98, 204, 145, 33, 120, 85, 89, 76, 26, 8, 44, 204, 34, 9, 47, 120, 187, 38, 129, 232, 218];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TicketEventsParams {
     pub organization_id: String,

@@ -70,7 +70,7 @@ inspection when the application role declares the corresponding authority.
 query SimilarDocuments(
     $organization_id: Document.organization_id,
     $query_vector: Document.embedding,
-    $k: Limit,
+    $k: Limit<499>,
 ) {
     source projected Document.embedding
     freshness causal inherit_session_commit true max_wait_ms 500

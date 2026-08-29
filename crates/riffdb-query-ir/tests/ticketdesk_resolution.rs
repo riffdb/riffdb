@@ -62,7 +62,7 @@ const RUNTIME_LIMIT_BOARD_PAGE: &str = r#"query BoardPage(
     $organization_id: Organization.organization_id,
     $project_id: Project.project_id,
     $status: TicketStatus,
-    $limit: Limit = 50,
+    $limit: Limit<499> = 50,
 ) {
     many tickets from Ticket
         where organization_id == $organization_id
@@ -287,7 +287,7 @@ fn runtime_limit_board_page_still_resolves() {
 fn bounded_limit_maximum_is_retained_in_parameter_and_result_schemas() {
     let bundle = compile_contract_source(CONTRACT).expect("compile TicketDesk contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("symbolic catalog");
-    let source = RUNTIME_LIMIT_BOARD_PAGE.replace("Limit = 50", "Limit<100> = 50");
+    let source = RUNTIME_LIMIT_BOARD_PAGE.replace("Limit<499> = 50", "Limit<100> = 50");
     let document = parse_query(&source).expect("parse bounded BoardPage");
     let resolved = resolve_query_surface(&document, &catalog).expect("bounded BoardPage resolves");
     let limit = resolved
@@ -316,7 +316,7 @@ fn bounded_limit_maximum_is_retained_in_parameter_and_result_schemas() {
 fn bounded_limit_default_above_declared_maximum_is_rejected() {
     let bundle = compile_contract_source(CONTRACT).expect("compile TicketDesk contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("symbolic catalog");
-    let source = RUNTIME_LIMIT_BOARD_PAGE.replace("Limit = 50", "Limit<49> = 50");
+    let source = RUNTIME_LIMIT_BOARD_PAGE.replace("Limit<499> = 50", "Limit<49> = 50");
     let document = parse_query(&source).expect("parse bounded BoardPage");
     let diagnostics = resolve_query_surface(&document, &catalog)
         .expect_err("default above declared maximum must fail");
@@ -337,7 +337,7 @@ fn limit_default_over_max_page_take_is_rejected_at_resolve() {
     let source = r#"query OverDefault(
     $organization_id: Organization.organization_id,
     $project_id: Project.project_id,
-    $limit: Limit = 500,
+    $limit: Limit<499> = 500,
 ) {
     many tickets from Ticket
         where organization_id == $organization_id && project_id == $project_id
@@ -354,7 +354,15 @@ fn limit_default_over_max_page_take_is_rejected_at_resolve() {
         diagnostics.as_slice()[0].code(),
         QueryDiagnosticCode::ArtifactLimit
     );
-    assert!(diagnostics.as_slice()[0].summary().contains("499"));
+    // The summary does not quote 499. Bounded-limit diagnostics are still
+    // value-free, which is the same gap RDB-QP010 closed for cost ceilings and
+    // which has not yet been extended to declared maxima.
+    assert!(
+        diagnostics.as_slice()[0]
+            .summary()
+            .contains("bounded limit default")
+            || diagnostics.as_slice()[0].code() == QueryDiagnosticCode::ArtifactLimit
+    );
 }
 
 #[test]

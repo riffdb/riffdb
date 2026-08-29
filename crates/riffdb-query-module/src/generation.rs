@@ -3769,7 +3769,7 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
     };
     writeln!(
         output,
-        "export type ApplicationValueSchema =\n  | {{ readonly kind: \"bool\" | \"i64\" | \"u64\" | \"string\" | \"uuid\" | \"enum\" | \"bytes\" | \"date\" | \"timestamp\" | \"cursor\" | \"limit\" }}\n{vector_schema}  | {{ readonly kind: \"decimal\"; readonly precision?: number; readonly scale?: number }}\n  | {{ readonly kind: \"money\"; readonly precision?: number; readonly scale?: number; readonly currency?: string }}\n  | {{ readonly kind: \"optional\"; readonly value: ApplicationValueSchema }}\n  | {{ readonly kind: \"list\"; readonly value: ApplicationValueSchema; readonly minimum?: number; readonly maximum?: number; readonly aggregateCanonicalElementBytes?: number }}\n  | {{ readonly kind: \"record\"; readonly fields: ReadonlyArray<{{ readonly name: string; readonly schema: ApplicationValueSchema; readonly wireId?: number }}> }};\n\
+        "export type ApplicationValueSchema =\n  | {{ readonly kind: \"bool\" | \"i64\" | \"u64\" | \"string\" | \"uuid\" | \"enum\" | \"bytes\" | \"date\" | \"timestamp\" | \"cursor\" }}\n  | {{ readonly kind: \"limit\"; readonly maximum?: number }}\n{vector_schema}  | {{ readonly kind: \"decimal\"; readonly precision?: number; readonly scale?: number }}\n  | {{ readonly kind: \"money\"; readonly precision?: number; readonly scale?: number; readonly currency?: string }}\n  | {{ readonly kind: \"optional\"; readonly value: ApplicationValueSchema }}\n  | {{ readonly kind: \"list\"; readonly value: ApplicationValueSchema; readonly minimum?: number; readonly maximum?: number; readonly aggregateCanonicalElementBytes?: number }}\n  | {{ readonly kind: \"record\"; readonly fields: ReadonlyArray<{{ readonly name: string; readonly schema: ApplicationValueSchema; readonly wireId?: number }}> }};\n\
          export interface DriverOperationIdentity {{ readonly name: string; readonly inputSchemaHash: string; }}\n\
          export interface CompactApplicationValue {{ readonly type: string; readonly value?: unknown; }}\n\
          export interface CompactNamedQueryResult {{ readonly outcome: string; readonly resultName: string; readonly entity: string; readonly fields: ReadonlyArray<string>; readonly rows: ReadonlyArray<ReadonlyArray<CompactApplicationValue>>; }}\n\
@@ -4213,7 +4213,8 @@ fn emit_typescript_reactive_module(
     .expect("string");
     output.push_str(
         r#"export type ReactiveParameterSchema =
-  | { readonly kind: "bool" | "i64" | "u64" | "string" | "uuid" | "bytes" | "date" | "timestamp" | "cursor" | "limit" }
+  | { readonly kind: "bool" | "i64" | "u64" | "string" | "uuid" | "bytes" | "date" | "timestamp" | "cursor" }
+  | { readonly kind: "limit"; readonly maximum?: number }
   | { readonly kind: "decimal"; readonly precision: number; readonly scale: number }
   | { readonly kind: "money"; readonly precision: number; readonly scale: number; readonly currency: string }
   | { readonly kind: "enum"; readonly typeId: number; readonly variants: Readonly<Record<string, number>> }

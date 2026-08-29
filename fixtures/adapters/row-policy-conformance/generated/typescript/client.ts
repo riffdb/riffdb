@@ -112,7 +112,8 @@ export function decodeApplicationError(value: unknown): RiffDbApplicationError {
 }
 
 export type ApplicationValueSchema =
-  | { readonly kind: "bool" | "i64" | "u64" | "string" | "uuid" | "enum" | "bytes" | "date" | "timestamp" | "cursor" | "limit" }
+  | { readonly kind: "bool" | "i64" | "u64" | "string" | "uuid" | "enum" | "bytes" | "date" | "timestamp" | "cursor" }
+  | { readonly kind: "limit"; readonly maximum?: number }
   | { readonly kind: "decimal"; readonly precision?: number; readonly scale?: number }
   | { readonly kind: "money"; readonly precision?: number; readonly scale?: number; readonly currency?: string }
   | { readonly kind: "optional"; readonly value: ApplicationValueSchema }
@@ -687,7 +688,8 @@ export class AdapterRowPolicyConformanceClient {
 
 export const DOCUMENT_ACTIVITY_REACTIVE_MODULE_HASH = "3964e3ed87e46dd7a53f1108d5df7d4c76b8f025d639dcffca8e5180ef7f6b09" as const;
 export type ReactiveParameterSchema =
-  | { readonly kind: "bool" | "i64" | "u64" | "string" | "uuid" | "bytes" | "date" | "timestamp" | "cursor" | "limit" }
+  | { readonly kind: "bool" | "i64" | "u64" | "string" | "uuid" | "bytes" | "date" | "timestamp" | "cursor" }
+  | { readonly kind: "limit"; readonly maximum?: number }
   | { readonly kind: "decimal"; readonly precision: number; readonly scale: number }
   | { readonly kind: "money"; readonly precision: number; readonly scale: number; readonly currency: string }
   | { readonly kind: "enum"; readonly typeId: number; readonly variants: Readonly<Record<string, number>> }

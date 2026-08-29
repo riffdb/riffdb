@@ -3,7 +3,7 @@ query ListTicketsByAssignee(
     $assignee_id: AppUser.user_id,
     $statuses: Set<TicketStatus>,
     $after: Cursor?,
-    $limit: Limit = 25,
+    $limit: Limit<499> = 25,
 ) {
     many tickets from Ticket
         where organization_id == $organization_id

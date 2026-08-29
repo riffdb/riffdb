@@ -2,7 +2,7 @@ query PublicFeed(
     $site_id: Site.site_id,
     $status: PostStatus,
     $after: Cursor?,
-    $limit: Limit = 20,
+    $limit: Limit<499> = 20,
 ) {
     many posts from Post
         where site_id == $site_id

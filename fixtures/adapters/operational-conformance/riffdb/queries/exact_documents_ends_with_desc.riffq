@@ -2,7 +2,7 @@ query ExactDocumentsEndsWithDesc(
     $site_id: Document.site_id,
     $needle: Document.title,
     $document_id: Document.document_id?,
-    $limit: Limit = 25,
+    $limit: Limit<499> = 25,
     $offset: u64 = 0
 ) {
     many documents from Document

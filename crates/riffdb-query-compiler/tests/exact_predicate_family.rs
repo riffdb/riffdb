@@ -9,10 +9,7 @@ use riffdb_query_ir::{
     ExactPredicateOperatorV1, ExactStatePlacementV1, QUERY_IR_VERSION_EXACT_PREDICATE_V1,
     QUERY_IR_VERSION_NULLABLE_EXACT_ORDER_V1, SymbolicCatalog,
 };
-use riffdb_riffql_syntax::{
-    RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1, RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1,
-    parse_query,
-};
+use riffdb_riffql_syntax::{RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1, parse_query};
 use riffdb_types::EXACT_PREDICATE_PROVIDER_STATE_SCHEMA_HASH_V4;
 use riffdb_types::ProjectionProviderPolicyModeV1;
 
@@ -41,7 +38,7 @@ query SearchUsers(
   $needle: User.email,
   $states: Set<User.state>,
   $after: User.created_at?,
-  $limit: Limit,
+  $limit: Limit<499>,
   $offset: u64
 ) {
   many users from User
@@ -67,7 +64,7 @@ fn rich_family_is_finite_canonical_and_provider_complete() {
     let document = parse_query(QUERY).expect("query");
     assert_eq!(
         document.language_version,
-        RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1
+        RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1
     );
     assert_eq!(QUERY_IR_VERSION_EXACT_PREDICATE_V1, 9);
 
@@ -117,8 +114,8 @@ fn one_missing_index_rejects_the_complete_family_with_a_value_free_span() {
         error.as_slice()[0].code(),
         PlannerDiagnosticCode::ExactTextProvider
     );
-    assert_eq!(error.as_slice()[0].primary().start, 195);
-    assert_eq!(error.as_slice()[0].primary().end, 199);
+    assert_eq!(error.as_slice()[0].primary().start, 200);
+    assert_eq!(error.as_slice()[0].primary().end, 204);
     assert_eq!(
         error.as_slice()[0].summary(),
         "exact predicate family member lacks a declared provider index"
@@ -158,7 +155,7 @@ query ReviewedUsers(
   $organization_id: User.organization_id,
   $states: Set<User.state>,
   $before: User.created_at,
-  $limit: Limit,
+  $limit: Limit<499>,
   $offset: u64
 ) {
   many users from User
@@ -200,7 +197,7 @@ fn nullable_order_requires_and_seals_explicit_state_placement() {
     let document = parse_query(&query).expect("nullable order source");
     assert_eq!(
         document.language_version,
-        RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1
+        RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1
     );
     assert_eq!(QUERY_IR_VERSION_NULLABLE_EXACT_ORDER_V1, 10);
     let compiled = compile_nullable_exact_predicate_query_v1(&document, &catalog(&contract))

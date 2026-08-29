@@ -779,7 +779,7 @@ const PARAM_PAGE: &str = r#"
 query ParamPage(
     $organization_id: Organization.organization_id,
     $project_id: Project.project_id,
-    $limit: Limit = 25,
+    $limit: Limit<499> = 25,
 ) {
     many tickets from Ticket
         where organization_id == $organization_id

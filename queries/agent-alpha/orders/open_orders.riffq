@@ -2,7 +2,7 @@ query OpenOrders(
     $store_id: Store.store_id,
     $status: OrderStatus,
     $after: Cursor?,
-    $limit: Limit = 25,
+    $limit: Limit<499> = 25,
 ) {
     many orders from PurchaseOrder
         where store_id == $store_id

@@ -294,14 +294,17 @@ query SearchTickets(
 
     let legacy_bundle = compile_contract_source(CONTRACT).expect("legacy contract");
     let legacy = QueryModule::compile(candidate(false), &legacy_bundle).expect("legacy module");
-    assert_eq!(
-        u32::from_be_bytes(
-            legacy.canonical_bytes()[20..24]
-                .try_into()
-                .expect("version")
-        ),
-        QUERY_MODULE_FORMAT_VERSION_V1
+    // The claim under test is that compiling an operational family does not
+    // drag a non-operational module up to the operational codec. The corpus
+    // this module compiles now declares bounded limits, so its own codec is
+    // the bounded-limit one -- what matters is that it is not V2.
+    let legacy_version = u32::from_be_bytes(
+        legacy.canonical_bytes()[20..24]
+            .try_into()
+            .expect("version"),
     );
+    assert_ne!(legacy_version, QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_V1);
+    assert_eq!(legacy_version, QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1);
 }
 
 #[test]
@@ -467,7 +470,7 @@ fn strict_decode_recompiles_against_the_exact_contract() {
 fn bounded_limit_uses_module_v12_and_freezes_its_generated_schema_maximum() {
     let bundle = compile_contract_source(CONTRACT).expect("contract");
     let source = include_str!("../../../queries/ticketdesk/list_tickets.riffq")
-        .replace("$limit: Limit = 25", "$limit: Limit<100> = 25");
+        .replace("$limit: Limit<499> = 25", "$limit: Limit<100> = 25");
     let candidate = QueryModuleCandidate::new(
         QueryModuleName::new("bounded_pages").expect("module name"),
         QueryModuleVersion::new(1).expect("module version"),
@@ -512,7 +515,7 @@ fn same_version_with_changed_source_has_a_distinct_identity() {
             NamedQuerySource::new(
                 "ListTickets",
                 include_str!("../../../queries/ticketdesk/list_tickets.riffq")
-                    .replace("$limit: Limit = 25", "$limit: Limit = 26"),
+                    .replace("$limit: Limit<499> = 25", "$limit: Limit<499> = 26"),
             )
             .expect("changed source"),
         ],

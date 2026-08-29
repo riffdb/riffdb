@@ -11,13 +11,12 @@ fn exact_text_count_and_ordinal_window_are_canonical_and_finite() {
 query SearchUsers(
     $organization_id: User.organization_id,
     $needle: User.name,
-    $limit: Limit = 50,
     $offset: u64 = 0
 ) {
     many users from User
         where organization_id == $organization_id && name contains $needle
         order by name asc, user_id asc
-        take $limit offset $offset
+        take 50 offset $offset
 
     aggregate total from users {
         exact_count() as value
@@ -49,7 +48,7 @@ query SearchUsers(
         AggregateFunction::ExactCount
     );
     assert!(matches!(
-        document.parameters[3].ty.value,
+        document.parameters[2].ty.value,
         TypeReference::Named(_)
     ));
     let canonical = format_query(&document);

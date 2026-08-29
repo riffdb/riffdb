@@ -2,7 +2,7 @@ query ReviewedDirectoryUsers(
     $organization_id: DirectoryUser.organization_id,
     $states: Set<DirectoryUser.state>,
     $before_created_at: DirectoryUser.created_at,
-    $limit: Limit = 25,
+    $limit: Limit<499> = 25,
     $offset: u64 = 0
 ) {
     many users from DirectoryUser
