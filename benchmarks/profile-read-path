@@ -187,6 +187,20 @@ run_once() {
     wait "$runner" || printf 'rep %s exited non-zero; artifacts retained\n' "$rep" >&2
     grep -oE 'riffdb-query-execute-windows-v1.*' "$log" | head -1 > "$run_dir/census-$rep.tsv" || true
     grep -oE 'throughput=[0-9]+' "$log" | head -1 >> "$run_dir/conditions.tsv" || true
+    # Write-path censuses. The daemon prints one shutdown block per daemon it
+    # ran (setup, seed, measured); the MEASURED one is last, so take the tail.
+    # Trap 6: `flush_us` in riffdb-writer-evidence-v1 is an alias of `commit_us`
+    # -- the same value observed into two histograms -- so it measures no flush
+    # at all. Dividing it by a device fsync latency invents a flush count. The
+    # journal lane issues exactly one fdatasync per batch, so the flush count is
+    # COMMAND_FLUSH_COUNT in riffdb-writer-flush-census-v1 and the flush time is
+    # COMMAND_SYNC_MICROS in riffdb-writer-journal-stages-v1. Those are printed
+    # below; prefer them over anything named "flush" in the evidence line.
+    for census in writer-flush-census writer-journal-stages writer-frame-census \
+                  writer-publication-stages writer-evidence dispatch-reasons; do
+        grep -aoE "riffdb-${census}-v1\t.*" "$log" | tail -1 \
+            > "$run_dir/${census}-$rep.tsv" || true
+    done
 }
 
 for rep in $(seq 1 "$reps"); do
