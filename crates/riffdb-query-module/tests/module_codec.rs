@@ -6,9 +6,9 @@ use riffdb_query_module::{
     NamedQuerySource, QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1,
     QUERY_MODULE_FORMAT_VERSION_COVERED_RESULT_V1, QUERY_MODULE_FORMAT_VERSION_EXACT_AGGREGATE_V1,
     QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1,
-    QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_V1, QUERY_MODULE_FORMAT_VERSION_V1, QueryModule,
-    QueryModuleCandidate, QueryModuleErrorKind, QueryModuleName, QueryModuleVersion,
-    generate_go_application_client, generate_go_client, generate_mcp_commands, generate_mcp_tools,
+    QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_V1, QueryModule, QueryModuleCandidate,
+    QueryModuleErrorKind, QueryModuleName, QueryModuleVersion, generate_go_application_client,
+    generate_go_client, generate_mcp_commands, generate_mcp_tools,
     generate_python_application_client, generate_python_client, generate_rust_application_client,
     generate_rust_client, generate_typescript_application_client, generate_typescript_client,
 };
