@@ -3306,6 +3306,18 @@ async fn supervise_ready_process(
                 query_execute_census.total_count,
             );
         }
+        // A debug build inflates CPU and leaves I/O alone, so it does not scale
+        // a stage census uniformly -- it reorders it. Measuring one and reading
+        // the ordering as real produced a complete, confidently wrong write-path
+        // decomposition once; say so where the numbers are handed over. Stderr,
+        // because the stdout evidence block is an exact ordered protocol.
+        if cfg!(debug_assertions)
+            && (writer_batch_census.total_count > 0 || query_execute_census.total_count > 0)
+        {
+            eprintln!(
+                "riffdb-census-profile-warning-v1\tdebug build: stage costs are inflated                  unevenly against I/O and their ordering is not the release ordering;                  rebuild with --release before drawing a conclusion"
+            );
+        }
         // Diagnostic-only, and absent unless RIFFDB_WRITER_BATCH_DIAGNOSTICS=1
         // populated it, so the ordered evidence block is unchanged by default.
         if writer_batch_census.total_count > 0 {

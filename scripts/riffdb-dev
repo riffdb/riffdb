@@ -193,6 +193,14 @@ if ((acceptance)); then
     profile=release
     profile_args+=(--release)
 fi
+# A debug build inflates CPU and leaves I/O alone, so a stage census taken here
+# is not merely slower than release -- its stage ordering differs, which is the
+# part people read. Warn where the census is requested rather than where the
+# number is later quoted.
+if [[ "$profile" == debug ]] &&
+    [[ -n "${RIFFDB_WRITER_BATCH_DIAGNOSTICS:-}${RIFFDB_QUERY_EXECUTE_DIAGNOSTICS:-}${RIFFDB_COMMAND_SERVICE_DIAGNOSTICS:-}" ]]; then
+    echo "warning: diagnostics are enabled on a debug build; stage costs are inflated unevenly against I/O and their ordering is not the release ordering. Use --acceptance, or build --release and measure against that, before drawing a conclusion." >&2
+fi
 build_packages=(-p riffdb-server --bin riffdbd -p riffdb-cli --bin riffdb)
 driver_runner=0
 if ((generic_application && run)) \
