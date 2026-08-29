@@ -75,7 +75,54 @@ Three diagnostic residuals in this codebase have pointed the wrong way:
 
 Check whether a stage is a parent, an alias, or a duration before targeting it.
 
-## Open
+## The service path, measured
 
-The 1751 µs service/transport block is the largest single component and has no
-stage census. It should be decomposed before anything is optimised against it.
+`riffdb-command-service-stages-v1` (`RIFFDB_COMMAND_SERVICE_DIAGNOSTICS=1`)
+closes the last gap. Same workload, 500 single-tuple writes, 6099 µs at the
+client:
+
+| | µs | share of the write |
+|---|---:|---:|
+| Transport, auth, gRPC — outside `execute_command` | 1275 | 20.9% |
+| `svc_commit_wait` — writer plus journal | 4507 | 73.9% |
+| All other service work | 247 | 4.1% |
+
+`svc_commit_wait` decomposes against the writer censuses:
+
+| | µs |
+|---|---:|
+| Writer CPU | 2372 |
+| Journal lane (fsync 1231, frame encode 393) | 1652 |
+| Coordinator queue and scheduling | 483 |
+
+The service layer itself is **247 µs, 4.1%** — prepare 35, snapshot wait 88,
+normalize 52, input facts 26, audit begin 21, release 24, admit 3, residual 70.
+It is not where the time goes, and the earlier "1751 µs service/transport"
+figure was mostly transport, not service.
+
+## Complete accounting for one 6099 µs single-tuple write
+
+| component | µs | share |
+|---|---:|---:|
+| Writer CPU | 2372 | 38.9% |
+| Journal lane | 1652 | 27.1% |
+| Transport, auth, gRPC | 1275 | 20.9% |
+| Coordinator queue and scheduling | 483 | 7.9% |
+| Service work | 247 | 4.1% |
+
+Transport at 1275 µs is worth its own note: a raw gRPC round trip on this host
+measures about 44 µs, so this is roughly 29× the framing floor. Whatever it is
+— TLS, driver marshalling, capability and request-context construction — it is
+not gRPC framing, and it is the second largest attackable block after
+evaluation.
+
+## Ranked, by what can be attacked without weakening a guarantee
+
+| target | µs | note |
+|---|---:|---|
+| Re-derivation the compiler already sealed | 1666 | interpreter, detach, staging, frame encode |
+| Transport, auth, request framing | 1275 | 29× the gRPC floor; undecomposed |
+| Durability | 1578 | fsync is irreducible per commit; amortises only with concurrency |
+| Apply — real state mutation | 548 | genuine work |
+| Coordinator queue and scheduling | 483 | undecomposed |
+| Service layer | 247 | already small |
