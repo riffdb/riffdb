@@ -803,9 +803,7 @@ pub(crate) fn read_snapshot_head(
 }
 
 /// The complete uncached derivation, including the authority-presence check.
-fn derive_snapshot_head(
-    access: &RedbReadAccess,
-) -> Result<Option<CommitSequence>, StorageError> {
+fn derive_snapshot_head(access: &RedbReadAccess) -> Result<Option<CommitSequence>, StorageError> {
     let encoded = access
         .read_value(JournalTable::Meta, META_APPLICATION_SEQUENCE.as_bytes())?
         .ok_or_else(corrupt)?;
@@ -854,8 +852,8 @@ fn verify_snapshot_authority_presence(
         };
     }
 
-    let watermark = crate::retention::load_watermark(root)?
-        .map(|watermark| watermark.watermark_sequence());
+    let watermark =
+        crate::retention::load_watermark(root)?.map(|watermark| watermark.watermark_sequence());
     match (head, watermark) {
         (None, None | Some(0)) => Ok(()),
         (Some(head), Some(watermark)) if head.get() == watermark => Ok(()),

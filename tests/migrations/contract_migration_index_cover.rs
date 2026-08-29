@@ -117,7 +117,8 @@ fn an_unrelated_index_change_does_not_strip_an_existing_cover() {
         "index by_assignee_status (organization_id, assignee_id, ticket_id)",
     );
     assert!(
-        successor_source.contains("index by_assignee_status (organization_id, assignee_id, ticket_id)"),
+        successor_source
+            .contains("index by_assignee_status (organization_id, assignee_id, ticket_id)"),
         "the unrelated index declaration this fixture rewrites has changed"
     );
     let candidate_bundle = compile_contract_successor(&successor_source, &parent_bundle)
@@ -190,7 +191,10 @@ fn rebuilt_covering_entries_bind_to_the_successor_contract() {
         entry.schema_binding().contract_version(),
         candidate.contract_version()
     );
-    assert_eq!(entry.schema_binding().bundle_hash(), candidate.bundle_hash());
+    assert_eq!(
+        entry.schema_binding().bundle_hash(),
+        candidate.bundle_hash()
+    );
 }
 
 /// Predecessor without the covering index, successor that declares it, and the
@@ -227,9 +231,8 @@ fn covering_index_plan() -> (
     let parent = ValidatedContractBundle::from_compiler_bundle(parent_bundle).expect("parent");
     let candidate =
         ValidatedContractBundle::from_compiler_bundle(candidate_bundle).expect("candidate");
-    let plan =
-        ValidatedMigrationPlan::from_artifacts(parent.clone(), candidate.clone(), migration)
-            .expect("sealed covering-index plan");
+    let plan = ValidatedMigrationPlan::from_artifacts(parent.clone(), candidate.clone(), migration)
+        .expect("sealed covering-index plan");
     (parent, candidate, plan)
 }
 

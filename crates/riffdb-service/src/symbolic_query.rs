@@ -3250,7 +3250,11 @@ async fn execute_projected_vector_named_query(
     );
     let audit_finish_started = Instant::now();
     finish_success(&service, &context, &begun).await?;
-    record_read_stage(&service, ReadPipelineStage::AuditFinish, audit_finish_started);
+    record_read_stage(
+        &service,
+        ReadPipelineStage::AuditFinish,
+        audit_finish_started,
+    );
     Ok(result)
 }
 
@@ -3693,7 +3697,11 @@ async fn execute_exact_predicate_named_query(
     );
     let audit_finish_started = Instant::now();
     finish_success(&service, &context, &begun).await?;
-    record_read_stage(&service, ReadPipelineStage::AuditFinish, audit_finish_started);
+    record_read_stage(
+        &service,
+        ReadPipelineStage::AuditFinish,
+        audit_finish_started,
+    );
     Ok(result)
 }
 
@@ -4135,7 +4143,11 @@ async fn execute_exact_named_query(
     );
     let audit_finish_started = Instant::now();
     finish_success(&service, &context, &begun).await?;
-    record_read_stage(&service, ReadPipelineStage::AuditFinish, audit_finish_started);
+    record_read_stage(
+        &service,
+        ReadPipelineStage::AuditFinish,
+        audit_finish_started,
+    );
     Ok(result)
 }
 

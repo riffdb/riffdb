@@ -1313,10 +1313,7 @@ where
                 })
             }
         };
-        crate::writer_census::charge(
-            crate::writer_census::EXEC_GROUP_FINALIZE,
-            finalize_started,
-        );
+        crate::writer_census::charge(crate::writer_census::EXEC_GROUP_FINALIZE, finalize_started);
         return drive_result;
     }
     // Incompatible completion groups may overlap the conflict capabilities
@@ -2440,10 +2437,7 @@ where
         to_capture.append(&mut acquired);
         let capture_started = crate::writer_census::stage_start();
         let capture_result = capture_writer_private_snapshots(&empty, to_capture);
-        crate::writer_census::charge(
-            crate::writer_census::EXEC_SNAPSHOT_CAPTURE,
-            capture_started,
-        );
+        crate::writer_census::charge(crate::writer_census::EXEC_SNAPSHOT_CAPTURE, capture_started);
         let captured = match capture_result {
             Ok(captured) => captured,
             Err(failure) => {

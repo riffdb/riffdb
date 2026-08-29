@@ -2208,11 +2208,13 @@ fn derive_indexes(
                         .entity(entity.id())
                         .with_index(index_id)
                 })?;
-            StoredIndexEntryV2::new(key, binding.clone(), covered, partition.clone()).map_err(|_| {
-                MigrationFinding::new(migration_finding_code::INDEX_INVALID)
-                    .entity(entity.id())
-                    .with_index(index_id)
-            })
+            StoredIndexEntryV2::new(key, binding.clone(), covered, partition.clone()).map_err(
+                |_| {
+                    MigrationFinding::new(migration_finding_code::INDEX_INVALID)
+                        .entity(entity.id())
+                        .with_index(index_id)
+                },
+            )
         })
         .collect()
 }
