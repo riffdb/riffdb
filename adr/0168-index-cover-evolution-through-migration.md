@@ -1,10 +1,11 @@
 # ADR-0168: Index Cover Evolution Through Migration
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-08-29
-- **Exact text accepted:** No
-- **Accepted:** Not accepted
-- **Acceptance reference:** Pending maintainer exact-text acceptance
+- **Exact text accepted:** Yes, 2026-08-29
+- **Accepted:** 2026-08-29
+- **Acceptance reference:** Maintainer exact-text acceptance in the current
+  Claude Code session for drafted commit `a448af6d`
 - **Decision deadline:** Before the next covering-index change is authored
   against the stated prohibition
 - **Requires:** ADR-0124 and ADR-0153

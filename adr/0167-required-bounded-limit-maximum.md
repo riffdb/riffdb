@@ -1,10 +1,11 @@
 # ADR-0167: Required Bounded Limit Maximum
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-08-29
-- **Exact text accepted:** No
-- **Accepted:** Not accepted
-- **Acceptance reference:** Pending maintainer exact-text acceptance
+- **Exact text accepted:** Yes, 2026-08-29
+- **Accepted:** 2026-08-29
+- **Acceptance reference:** Maintainer exact-text acceptance in the current
+  Claude Code session for drafted commit `a448af6d`
 - **Decision deadline:** Before the next application lock freezes a query
   module compiled from `Limit` source
 - **Requires:** ADR-0055, ADR-0108, ADR-0124, ADR-0158, and ADR-0159
