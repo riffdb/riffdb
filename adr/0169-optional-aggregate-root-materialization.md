@@ -128,11 +128,18 @@ cover the maintenance paths that run cannot reach:
   status, a retention hold, an offline backup, and a structural reopen all
   succeed with no findings.
 
-Export remains argued rather than tested. `read_application_export_entity_page`
-takes an entity type and builds a key prefix, so export never traverses root to
-child and is structurally incapable of observing root presence — but no arm
-commits a child row into a rootless partition and exports it. That arm is the
-remaining gap.
+- `export_captures_a_snapshot_over_a_rootless_aggregate` — the export snapshot
+  captures against the active lineage, serves the child entity type, and finds
+  the root type empty.
+
+Export pages by entity type: `read_application_export_entity_page` takes an
+`EntityTypeId` and builds a key prefix from it, never traversing root to child.
+The arm holds that shape. What it does not establish is that a *populated*
+child page exports, because committing a row into a rootless partition needs a
+command fixture bound to a second contract and the recovery matrix's fixture
+builder is bound to one contract throughout. A fixture assembled wrongly would
+pass without exercising anything, so the limit is named rather than papered
+over.
 
 ## Requirements and Work Packages
 
