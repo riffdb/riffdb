@@ -337,7 +337,10 @@ pub(crate) async fn execute_command(
     mode: CommandInvocationMode,
 ) -> ServiceResult<ExecuteCommandResult> {
     let service_started = Instant::now();
+    let census_started = crate::command_census::stage_start();
+    let prepare_started = crate::command_census::stage_start();
     let active = prepare_active_command(service, context, request).await?;
+    crate::command_census::charge(crate::command_census::SVC_PREPARE_ACTIVE, prepare_started);
     let targets = ServiceAuditTargetMap::execute_command(
         active.catalog_request.lineage().clone(),
         active.catalog_request.version(),
@@ -359,7 +362,7 @@ pub(crate) async fn execute_command(
             }
         }
         ExecutionClass::IdempotentMutation => {
-            execute_mutation(
+            let outcome = execute_mutation(
                 service,
                 context,
                 request,
@@ -368,7 +371,9 @@ pub(crate) async fn execute_command(
                 mode,
                 service_started,
             )
-            .await
+            .await;
+            crate::command_census::finish_command(census_started);
+            outcome
         }
     }
 }
@@ -672,6 +677,7 @@ async fn execute_mutation(
             active.catalog_request.command_id(),
             caller_key.clone(),
         );
+        let snapshot_started = crate::command_census::stage_start();
         let inspection = match wait_with_control(
             context.control(),
             service.providers.deadline_scheduler.as_ref(),
@@ -679,7 +685,13 @@ async fn execute_mutation(
         )
         .await
         {
-            Ok(Ok(inspection)) => inspection,
+            Ok(Ok(inspection)) => {
+                crate::command_census::charge(
+                    crate::command_census::SVC_SNAPSHOT_WAIT,
+                    snapshot_started,
+                );
+                inspection
+            }
             Ok(Err(error)) => {
                 let failure = map_idempotency_inspection(service, error.kind());
                 return Err(terminate_mutation(
@@ -742,6 +754,7 @@ async fn execute_mutation(
                 }
             },
         };
+        let normalize_started = crate::command_census::stage_start();
         let normalized = match normalize_command_input(
             selected.plan(),
             selected.bundle().bundle().schema(),
@@ -762,6 +775,11 @@ async fn execute_mutation(
                 .await);
             }
         };
+        crate::command_census::charge(
+            crate::command_census::SVC_NORMALIZE_INPUT,
+            normalize_started,
+        );
+        let facts_started = crate::command_census::stage_start();
         let facts = match derive_input_command_facts(selected.plan(), normalized.clone()) {
             Ok(facts) => facts,
             Err(error) => {
@@ -777,7 +795,9 @@ async fn execute_mutation(
                 .await);
             }
         };
+        crate::command_census::charge(crate::command_census::SVC_INPUT_FACTS, facts_started);
         let operation = command_operation(&selected, CommandExecutionClass::Mutation, &facts);
+        let audit_started = crate::command_census::stage_start();
         if begun.is_none() {
             begun = Some(
                 service
@@ -785,6 +805,7 @@ async fn execute_mutation(
                     .await?,
             );
         }
+        crate::command_census::charge(crate::command_census::SVC_AUDIT_BEGIN, audit_started);
 
         let invocation = begun.as_ref().expect("mutation begins before admission");
         if matches!(
@@ -803,8 +824,15 @@ async fn execute_mutation(
         }
         // Capacity admission precedes re-authorization and preparation construction.
         // Per preparation-attempt item: never hold item N capacity while admitting N+1.
+        let admit_started = crate::command_census::stage_start();
         let permit = match admit_command_capacity(service, context, &normalized).await {
-            Ok(permit) => permit,
+            Ok(permit) => {
+                crate::command_census::charge(
+                    crate::command_census::SVC_ADMIT_CAPACITY,
+                    admit_started,
+                );
+                permit
+            }
             Err(failure) => {
                 // ADR-0071: capacity-only audit skip when no durable Started.
                 // Draining/Stopped/Fenced/Cancelled still append via finish_failure.
@@ -1003,7 +1031,9 @@ async fn execute_mutation(
                 elapsed: service_started.elapsed(),
             });
         let coordinator_started = Instant::now();
+        let commit_started = crate::command_census::stage_start();
         let completion = receipt.completion().await;
+        crate::command_census::charge(crate::command_census::SVC_COMMIT_WAIT, commit_started);
         service
             .providers
             .telemetry
@@ -1014,6 +1044,7 @@ async fn execute_mutation(
         match completion {
             Ok(CoordinatorCommandResult::Committed(outcome)) => {
                 let finish_started = Instant::now();
+                let release_started = crate::command_census::stage_start();
                 let (result, link) = match map_committed_outcome(
                     outcome,
                     &selected_request,
@@ -1063,6 +1094,7 @@ async fn execute_mutation(
                         elapsed: finish_started.elapsed(),
                     },
                 );
+                crate::command_census::charge(crate::command_census::SVC_RELEASE, release_started);
                 return response;
             }
             Ok(CoordinatorCommandResult::ExecutionFailed(outcome)) => {

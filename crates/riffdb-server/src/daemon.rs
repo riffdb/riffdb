@@ -3249,6 +3249,22 @@ async fn supervise_ready_process(
             stdout,
             "riffdb-writer-publication-stages-v1\t{writer_publication_stage_census}"
         );
+        // Diagnostic-only, and zero unless RIFFDB_COMMAND_SERVICE_DIAGNOSTICS=1
+        // populated it. The writer censuses start where the writer picks a
+        // command up; this one covers the service path around it.
+        let command_service_stage_census = riffdb_service::command_service_stage_census_v1();
+        if command_service_stage_census[riffdb_service::COMMAND_SERVICE_STAGE_LABELS_V1.len()] > 0 {
+            let labels = riffdb_service::COMMAND_SERVICE_STAGE_LABELS_V1.join(",");
+            let values = command_service_stage_census
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            let _ = writeln!(
+                stdout,
+                "riffdb-command-service-stages-v1\tlabels={labels}\tvalues={values}"
+            );
+        }
         if query_execute_census.total_count > 0 {
             let stage_names = riffdb_storage_redb::QUERY_EXECUTE_STAGE_LABELS_V1.join(",");
             let windows = query_execute_census

@@ -7,6 +7,8 @@ mod application;
 mod application_error;
 mod audit;
 mod columnar_notification;
+mod command_census;
+pub use command_census::{COMMAND_SERVICE_STAGE_LABELS_V1, command_service_stage_census_v1};
 mod command_operations;
 mod commit_operations;
 mod consumer_operations;
