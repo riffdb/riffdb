@@ -13,6 +13,7 @@ run=0
 go_runner_package=.
 go_runner_package_set=0
 acceptance=0
+debug_profile=0
 seed_dir=
 seed_builtin=0
 seed_concurrency=8
@@ -34,6 +35,7 @@ while (($#)); do
             shift 2
             ;;
         --acceptance) acceptance=1; shift ;;
+        --debug) debug_profile=1; shift ;;
         --seed-dir)
             seed_dir="${2:-}"
             shift 2
@@ -44,7 +46,7 @@ while (($#)); do
             shift 2
             ;;
         *)
-            echo "usage: riffdb-dev [--application-root DIR] [--role application|ROLE] [--watch|--run] [--go-runner-package PATH] [--seed] [--seed-dir DIR] [--seed-concurrency 1..8] [--acceptance]" >&2
+            echo "usage: riffdb-dev [--application-root DIR] [--role application|ROLE] [--watch|--run] [--go-runner-package PATH] [--seed] [--seed-dir DIR] [--seed-concurrency 1..8] [--acceptance] [--debug]" >&2
             exit 2
             ;;
     esac
@@ -187,11 +189,15 @@ for tool in cargo date find jq mkfifo mktemp od sort stat timeout tr; do
     }
 done
 
-profile=debug
-profile_args=()
-if ((acceptance)); then
-    profile=release
-    profile_args+=(--release)
+# Release is the default. A debug daemon inflates CPU and leaves I/O alone, so
+# every measurement taken against one is not merely slower but differently
+# ordered; defaulting to it made that the easy mistake to make. Opt in with
+# --debug when you want fast rebuilds and are not reading any number.
+profile=release
+profile_args=(--release)
+if ((debug_profile)) && ((acceptance == 0)); then
+    profile=debug
+    profile_args=()
 fi
 # A debug build inflates CPU and leaves I/O alone, so a stage census taken here
 # is not merely slower than release -- its stage ordering differs, which is the
