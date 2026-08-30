@@ -2486,9 +2486,19 @@ work_packages:
       was already implemented -- lower_conflict_keys sorts a deduplicated conflict-key set, and
       ConflictKeyBuilder namespaces each key by aggregate, so that sort is already a total order over
       (aggregate, key). Deadlock-freedom is now proved by an arm that fails when the canonical sort
-      is removed. One gap remains, a crash arm proving a command writing two aggregates is atomic
-      across a restart. That arm needs a storage-recovery command fixture bound to a second
-      contract, which the matrix does not yet have, so the package stays open.
+      is removed. The crash arm is delivered against a second contract added beside the existing
+      one, and atomicity holds on both commit profiles -- nothing partial survives a pre-commit
+      crash, and a post-commit crash recovers both aggregates under one commit sequence. Aborting
+      after the commit instead of before makes it fail, so it is load-bearing. Building it found an
+      unstated restriction that keeps the package open, now for a different reason. A cross-aggregate
+      command's non-locality aggregate cannot carry an index. Index entries are partitioned by the
+      command's single partition key, namespaced by the locality aggregate, so keeping that key
+      makes validate_persisted_key reject the durable state at the next startup, while giving the
+      index its owner's key makes CommandWriteSetPlanV1 refuse the write plan. Unreachable from both
+      directions, found by a clean commit-and-reopen rather than by a crash, and detailed in
+      docs/performance/wp-721-cross-aggregate-conflict-ownership.md. Resolving it is an ADR-0170
+      amendment -- reject the shape at compile time, or make index partitioning per-aggregate and
+      relax the write plan's one-partition rule -- not an implementation choice.
   name: Partition-local cross-aggregate command writes
   depends_on: [WP-040, WP-080]
   objective: Close ADR-0170 by admitting a command whose create/mutate bindings derive one
@@ -2517,7 +2527,14 @@ work_packages:
     settled in docs/performance/wp-721-cross-aggregate-conflict-ownership.md
   - Crash-consistency coverage proving one command writing two aggregates is atomic across a
     restart, and a negative arm proving two commands with disjoint union conflict sets do not
-    serialise against each other
+    serialise against each other. The crash coverage is delivered as
+    crash_before_cross_aggregate_commit_leaves_both_aggregates_absent and
+    crash_after_cross_aggregate_commit_preserves_both_aggregates over both commit profiles
+  - An accepted resolution for the index restriction the crash arm found, and its diagnostic. Today
+    a contract whose second aggregate indexes anything compiles, passes RDB-C017, and fails only
+    when a command first writes it, with either an unopenable database or a runtime refusal and no
+    diagnostic naming the cause. a_cross_aggregate_index_entry_cannot_leave_the_command_partition
+    pins the constraint as executable evidence in the meantime
   acceptance_commands:
   - cargo +1.97.0 test --workspace --all-features
   - ./scripts/check-adr-obligations

@@ -121,6 +121,72 @@ contract StorageRecovery version 1 {
 }
 "#;
 
+/// Two aggregates on one partition route, and one command that writes both
+/// (ADR-0170).
+///
+/// Kept separate from [`STORAGE_RECOVERY_CONTRACT`] rather than folded into it.
+/// Every fixture in this file is bound to that contract's bundle hash, plan
+/// hash, and entity/index identifiers, so extending it to carry a second
+/// aggregate would restate the durable identity of every existing arm to prove
+/// one new property.
+///
+/// `Row` and `Ledger` both partition by `id`, so `Adjust` derives one route
+/// across two aggregates: exactly the shape `RDB-C017` used to refuse and
+/// ADR-0170 admits. Its atomicity across a restart is the open WP-721 proof.
+const CROSS_AGGREGATE_RECOVERY_CONTRACT: &str = r#"
+contract CrossAggregateRecovery version 1 {
+  entity Row {
+    key (id: u64)
+    field value: u64
+    index ByValue(value)
+    delete_policy no_inbound
+  }
+
+  entity Ledger {
+    key (id: u64, entry: u64)
+    field amount: u64
+    delete_policy no_inbound
+  }
+
+  event Adjusted {
+    partition_by (id)
+    id: u64
+    value: u64
+  }
+
+  aggregate Rows {
+    root Row
+    partition_by id
+    conflict_key (id)
+  }
+
+  aggregate Ledgers {
+    root Ledger
+    partition_by id
+    conflict_key (id, entry)
+  }
+
+  command Adjust {
+    input idempotency_key: string<128>
+    input id: u64
+    input entry: u64
+    input value: u64
+
+    idempotency_key idempotency_key
+    create Row(id) as row
+      else RowAlreadyExists { id: id }
+    create Ledger(id, entry) as ledger
+      else LedgerAlreadyExists { id: id }
+
+    set row.value = value
+    set ledger.amount = value
+
+    emit Adjusted { id: id, value: value }
+    return AdjustedOutcome { row: row }
+  }
+}
+"#;
+
 /// Whole-directory scope for one test's database: `.0` is the database path
 /// inside a [`ScratchScope`] that removes the directory — database plus every
 /// side file it grows (journal, checkpoint, spare, durable-format marker, …)
@@ -1694,6 +1760,12 @@ fn process_recovery_child() {
         "after-command-batch-commit" => {
             RedbTestController::abort_after_commit(RedbTestOperation::CommandBatch)
         }
+        "before-cross-aggregate-commit" => {
+            RedbTestController::abort_before_commit(RedbTestOperation::CommandBatch)
+        }
+        "after-cross-aggregate-commit" => {
+            RedbTestController::abort_after_commit(RedbTestOperation::CommandBatch)
+        }
         "before-command-group-commit" => {
             RedbTestController::abort_before_commit(RedbTestOperation::CommandBatch)
         }
@@ -1767,6 +1839,10 @@ fn process_recovery_child() {
         "before-command-batch-commit" | "after-command-batch-commit" => {
             let ports = open_operational(store);
             commit_command_fixture(&ports, &command_fixture());
+        }
+        "before-cross-aggregate-commit" | "after-cross-aggregate-commit" => {
+            let ports = open_operational(store);
+            commit_cross_aggregate_fixture(&ports, &cross_aggregate_fixture());
         }
         "before-command-group-commit" | "after-command-group-commit" => {
             let ports = open_operational(store);
@@ -7523,5 +7599,730 @@ fn an_empty_cover_passes_every_startup_check_and_fails_only_the_covered_read() {
         Err(riffdb_query_executor::QueryExecutionError::BackendIntegrity),
         "a covered plan must fail closed on an incomplete cover rather than \
          hydrating from the entity table"
+    );
+}
+
+// ---- ADR-0170: one command writing two aggregates, atomic across a restart --
+//
+// The compiler proof, union conflict ownership, and executable IR V19 landed
+// with WP-721; SPEC 1.19 recorded this crash arm as the one outstanding proof.
+//
+// Atomicity here is a property of the single redb write transaction rather than
+// of aggregate count, which is a reason to expect the arm to pass — not a
+// reason to skip it. The claim under test is that a command whose bindings span
+// two aggregates lands all-or-nothing, so a crash cannot leave one aggregate's
+// entity and index written while the other's are missing.
+
+fn cross_aggregate_validated_bundle() -> &'static ValidatedContractBundle {
+    static BUNDLE: OnceLock<ValidatedContractBundle> = OnceLock::new();
+    BUNDLE.get_or_init(|| {
+        ValidatedContractBundle::from_compiler_bundle(
+            compile_contract_source(CROSS_AGGREGATE_RECOVERY_CONTRACT)
+                .expect("compile cross-aggregate recovery contract"),
+        )
+        .expect("validate cross-aggregate recovery bundle")
+    })
+}
+
+fn cross_aggregate_plan() -> ExecutablePlanRef {
+    let bundle = cross_aggregate_validated_bundle();
+    let command = bundle
+        .bundle()
+        .commands()
+        .first()
+        .expect("cross-aggregate command");
+    // Premise check: this fixture is worthless if the command does not actually
+    // span aggregates, which is exactly what an unnoticed contract edit would
+    // do to it.
+    assert!(
+        command.locality().spans_aggregates(),
+        "the cross-aggregate recovery command must span aggregates"
+    );
+    ExecutablePlanRef::new(
+        bundle.lineage().clone(),
+        bundle.contract_version(),
+        bundle.bundle_hash(),
+        command.command_id(),
+        command.plan_hash(),
+    )
+}
+
+/// One command's complete two-aggregate write set, plus the per-aggregate
+/// coordinates an assertion needs to check each side independently.
+#[derive(Clone)]
+struct CrossAggregateFixture {
+    candidates: IdempotencyLookupCandidatesV1,
+    intent: riffdb_storage_api::CommitIntent,
+    affected_targets: AffectedIndexEpochTargets,
+    write_plan: CommandWriteSetPlanV1,
+    records: AtomicCommandRecordSet,
+    /// Aggregate 1's root entity (`Row`) and aggregate 2's (`Ledger`).
+    targets: [EntityTarget; 2],
+    /// The locality aggregate's index entry. Only `Rows` carries an index:
+    /// see `cross_aggregate_second_aggregate_index_is_uncommittable` for why a
+    /// second indexed aggregate cannot be expressed at all.
+    index_key: IndexEntryKey,
+    range: IndexRangeTarget,
+}
+
+fn cross_aggregate_fixture() -> CrossAggregateFixture {
+    let plan = cross_aggregate_plan();
+    let sequence = CommitSequence::new(1).expect("cross-aggregate sequence");
+    let id = 41_u64;
+    let entry = 7_u64;
+    let value = 23_u64;
+
+    // Aggregate 1's root: Row(id).
+    let row_type = EntityTypeId::new(1).expect("row entity type");
+    let mut row_key = EntityKeyBuilder::new(row_type);
+    row_key.push_u64(id).expect("row key component");
+    let row_key = row_key.finish().expect("row key");
+    let row_target = EntityTarget::new(row_type, row_key.clone()).expect("row target");
+
+    // Aggregate 2's root: Ledger(id, entry).
+    let ledger_type = EntityTypeId::new(2).expect("ledger entity type");
+    let mut ledger_key = EntityKeyBuilder::new(ledger_type);
+    ledger_key.push_u64(id).expect("ledger key component");
+    ledger_key.push_u64(entry).expect("ledger entry component");
+    let ledger_key = ledger_key.finish().expect("ledger key");
+    let ledger_target = EntityTarget::new(ledger_type, ledger_key).expect("ledger target");
+
+    // One partition route for the whole command, namespaced by the locality
+    // aggregate. Index entries are partitioned by the command's partition key
+    // rather than per-aggregate, matching `command_index`'s `command_partition`.
+    let mut partition = PartitionKeyBuilder::new(AggregateTypeId::new(1).expect("aggregate"));
+    partition.push_u64(id).expect("partition component");
+    let partition = partition.finish().expect("partition key");
+
+    let row_index_id = IndexId::new(1).expect("row index ID");
+    let mut row_index_key = IndexEntryKeyBuilder::new(row_index_id);
+    row_index_key.push_u64(value).expect("row index component");
+    let row_index_key = row_index_key.finish(row_key).expect("row index entry key");
+    let mut row_prefix = riffdb_storage_api::IndexRangePrefixBuilder::new(row_index_id);
+    row_prefix.push_u64(value).expect("row range component");
+    let row_range = IndexRangeTarget::new(partition.clone(), row_prefix.finish());
+
+    let tenant_scope = TenantScope::Tenant(TenantId::new("tenant-a").expect("tenant"));
+    let principal = ActorId::new("principal-a").expect("principal");
+    let actor = riffdb_types::AdmittedActorContext::new(
+        principal.clone(),
+        ActorKind::Human,
+        tenant_scope.clone(),
+        None,
+    );
+    let identity = IdempotencyIdentity::new(
+        database_id(),
+        Environment::new("test").expect("environment"),
+        tenant_scope,
+        principal,
+        plan.contract_lineage().clone(),
+        plan.command_id(),
+        IdempotencyKeyDigest::from_hmac_bytes(DigestKeyId::new(1).expect("digest key"), [0x71; 32]),
+    );
+    let request_id = RequestId::from_bytes(uuid_bytes(0x72)).expect("request ID");
+    let provenance_id = ProvenanceId::from_bytes(uuid_bytes(0x73)).expect("provenance ID");
+    let logical_time =
+        LogicalTime::new(Timestamp::new(1_700_000_001, 0).expect("logical timestamp"));
+    let pending = StoredPendingAdmissionV1::new(
+        identity.clone(),
+        CanonicalInputHash::from_bytes([0x74; 32]),
+        request_id,
+        plan.clone(),
+        logical_time,
+        actor.clone(),
+        partition.clone(),
+        StoredAdmittedProvenanceClaimsV1::default(),
+    )
+    .expect("cross-aggregate pending admission");
+
+    let snapshot_request = SnapshotRequest::new(
+        plan.clone(),
+        vec![row_target.clone(), ledger_target.clone()],
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("cross-aggregate snapshot request");
+    let snapshot = ReadSnapshot::new(
+        &snapshot_request,
+        None,
+        vec![
+            EntityObservation::Absent(row_target.clone()),
+            EntityObservation::Absent(ledger_target.clone()),
+        ],
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("cross-aggregate read snapshot");
+
+    let row_post = EntityPostImage::new(row_target.clone(), plan.contract_version(), record(value))
+        .expect("row post-image");
+    let ledger_post = EntityPostImage::new(
+        ledger_target.clone(),
+        plan.contract_version(),
+        record(value),
+    )
+    .expect("ledger post-image");
+    let event_intent = EventIntent::new(EventTypeId::new(1).expect("event type"), record(value))
+        .expect("event intent");
+    let declared_outcome =
+        DeclaredOutcome::new(OutcomeId::new(1).expect("outcome ID"), record(value))
+            .expect("declared outcome");
+    let evaluated = riffdb_storage_api::EvaluatedCommand::new(
+        &snapshot,
+        vec![
+            EntityMutation::Create(row_post.clone()),
+            EntityMutation::Create(ledger_post.clone()),
+        ],
+        vec![event_intent],
+        declared_outcome.clone(),
+        EvaluationBudget::v1(),
+    )
+    .expect("cross-aggregate evaluated command");
+
+    let partition_hash = hash_partition_key(partition.as_bytes());
+    let context = PreEvaluationCommitContext::new(pending.clone(), partition_hash, Vec::new())
+        .expect("cross-aggregate commit context");
+    let candidates =
+        IdempotencyLookupCandidatesV1::new(vec![identity.clone()]).expect("lookup candidates");
+    let intent = riffdb_storage_api::CommitIntent::new_for_vacant_terminal_admission(
+        context,
+        candidates.clone(),
+        evaluated,
+        provenance_id,
+    )
+    .expect("cross-aggregate commit intent");
+
+    let schema_binding = DurableKeySchemaBindingV1::from_plan(&plan);
+    let mutations = vec![
+        riffdb_storage_api::CommittedEntityMutationV1::new(
+            ExpectedEntityState::Absent,
+            StoredEntityRecordV1::new(
+                row_target.clone(),
+                EntityVersion::first(),
+                plan.contract_version(),
+                schema_binding.clone(),
+                record(value),
+            )
+            .expect("stored row"),
+        )
+        .expect("committed row mutation"),
+        riffdb_storage_api::CommittedEntityMutationV1::new(
+            ExpectedEntityState::Absent,
+            StoredEntityRecordV1::new(
+                ledger_target.clone(),
+                EntityVersion::first(),
+                plan.contract_version(),
+                schema_binding.clone(),
+                record(value),
+            )
+            .expect("stored ledger"),
+        )
+        .expect("committed ledger mutation"),
+    ];
+
+    let index_mutations = vec![IndexEntryMutationV1::Put(
+        StoredIndexEntryV2::new(
+            row_index_key.clone(),
+            schema_binding.clone(),
+            record(value),
+            partition.clone(),
+        )
+        .expect("stored row index entry"),
+    )];
+
+    let row_generation = PartitionIndexTarget::new(partition.clone(), row_index_id);
+    let affected_targets = AffectedIndexEpochTargets::new(vec![row_generation.clone()])
+        .expect("cross-aggregate affected targets");
+    let affected_current = AffectedEpochCurrentState::new(
+        &affected_targets,
+        vec![CurrentIndexGenerationObservation::new(
+            row_generation.clone(),
+            IndexEpochPosition::BeforeFirst,
+        )],
+    )
+    .expect("cross-aggregate affected current state");
+    let epoch_advances = vec![
+        IndexEpochAdvanceV1::new(
+            row_generation,
+            schema_binding.clone(),
+            IndexEpochPosition::BeforeFirst,
+        )
+        .expect("row epoch advance"),
+    ];
+
+    let upper_bound =
+        match command_write_set_upper_bound_v1(&intent, &index_mutations, &epoch_advances)
+            .expect("canonical encoded upper bound")
+        {
+            EncodedWriteSetUpperBoundResultV1::Fits(bound) => bound,
+            EncodedWriteSetUpperBoundResultV1::ExceedsAcceptedAggregateCap(_) => {
+                panic!("cross-aggregate recovery fixture must fit the accepted aggregate cap")
+            }
+        };
+    let write_plan = CommandWriteSetPlanV1::new(
+        &intent,
+        affected_targets.clone(),
+        affected_current,
+        index_mutations,
+        epoch_advances,
+        upper_bound,
+    )
+    .expect("cross-aggregate write plan");
+
+    let event_id = EventId::new(sequence, 0);
+    let event_type_id = EventTypeId::new(1).expect("event type");
+    let event_payload = record(value);
+    let event = StoredDurableEventV1::new(
+        event_id,
+        event_type_id,
+        event_payload.clone(),
+        derive_event_hash_v1(event_id, event_type_id, &event_payload).expect("event hash"),
+    )
+    .expect("durable event");
+    let stored_outcome = StoredOutcomeV1::new(
+        identity.clone(),
+        sequence,
+        request_id,
+        plan.clone(),
+        pending.canonical_input_hash(),
+        actor.clone(),
+        logical_time,
+        partition.clone(),
+        partition_hash,
+        Vec::new(),
+        declared_outcome.clone(),
+        StoredAdmittedProvenanceClaimsV1::default(),
+        provenance_id,
+        DurabilityMode::Sync,
+    )
+    .expect("cross-aggregate stored outcome");
+    let provenance = StoredProvenanceRecordV1::new(
+        provenance_id,
+        sequence,
+        identity,
+        request_id,
+        plan.clone(),
+        pending.canonical_input_hash(),
+        actor.clone(),
+        logical_time,
+        partition_hash,
+        Vec::new(),
+        declared_outcome.outcome_id(),
+        mutations
+            .iter()
+            .map(|mutation| AffectedEntityV1::from_record(mutation.post_image()))
+            .collect(),
+        vec![event_id],
+        StoredAdmittedProvenanceClaimsV1::default(),
+    )
+    .expect("cross-aggregate provenance");
+    let commit = riffdb_storage_api::StoredCommitRecordV1::new(
+        sequence,
+        request_id,
+        plan,
+        pending.canonical_input_hash(),
+        actor,
+        logical_time,
+        partition_hash,
+        Vec::new(),
+        StoredReadDependenciesV1::from_live(snapshot.read_dependencies())
+            .expect("stored dependencies"),
+        mutations
+            .iter()
+            .map(riffdb_storage_api::CommittedEntityReferenceV2::from_live_mutation)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("live entity references")
+            .into_iter()
+            .flatten()
+            .collect(),
+        vec![event],
+        declared_outcome,
+        provenance_id,
+        vec![event_id],
+        DurabilityMode::Sync,
+    )
+    .expect("cross-aggregate commit record");
+    let records = AtomicCommandRecordSet::new(
+        AssignedCommandSequence::from_assigned(sequence),
+        mutations,
+        write_plan.clone(),
+        stored_outcome,
+        provenance,
+        commit,
+    )
+    .expect("cross-aggregate atomic command record set");
+
+    CrossAggregateFixture {
+        candidates,
+        intent,
+        affected_targets,
+        write_plan,
+        records,
+        targets: [row_target, ledger_target],
+        index_key: row_index_key,
+        range: row_range,
+    }
+}
+
+fn prepare_cross_aggregate_database(path: &Path) {
+    let mut store = RedbStore::open(path).expect("open cross-aggregate recovery database");
+    store
+        .initialize_database(database_id())
+        .expect("initialize cross-aggregate recovery database");
+    let mut ports = open_operational(store);
+    let bundle = cross_aggregate_validated_bundle()
+        .to_stored()
+        .expect("stored cross-aggregate bundle");
+    let result = ports
+        .activate_catalog(&CatalogActivationIntentV1::new(
+            None,
+            bundle.clone(),
+            RequestId::from_bytes(uuid_bytes(0x75)).expect("catalog request"),
+            catalog_principal(),
+            Timestamp::new(1_700_000_000, 0).expect("catalog timestamp"),
+            None,
+        ))
+        .expect("activate cross-aggregate recovery catalog");
+    assert!(
+        matches!(
+            &result,
+            CatalogActivationResult::Activated { active, .. }
+                if *active == riffdb_storage_api::ActiveCatalogPointerV1::from_bundle(&bundle)
+        ),
+        "unexpected cross-aggregate catalog activation result: {result:?}"
+    );
+}
+
+fn commit_cross_aggregate_fixture(ports: &RedbOperationalPorts, fixture: &CrossAggregateFixture) {
+    let candidate = ports
+        .begin_empty_batch()
+        .expect("begin cross-aggregate batch")
+        .begin_candidate(Box::new(fixture.intent.clone()))
+        .expect("begin cross-aggregate candidate");
+    let CandidateAdmissionResult::Proceed(candidate) =
+        candidate.recheck_admission().expect("recheck admission")
+    else {
+        panic!("the cross-aggregate fixture's admission state must proceed");
+    };
+    let (candidate, current) = candidate
+        .read_transaction_current()
+        .expect("read transaction-current state");
+    // Both aggregates' bindings must be transaction-current, or the write set
+    // under test is not the cross-aggregate one this arm claims to commit.
+    assert_eq!(
+        current.bindings().len(),
+        2,
+        "a cross-aggregate command must read both bindings"
+    );
+    for (position, binding) in current.bindings().iter().enumerate() {
+        assert_eq!(
+            binding.expected_state(),
+            fixture.records.entities()[position].expected(),
+            "binding {position} must match the fixture's committed expectation"
+        );
+    }
+    let candidate = candidate
+        .plan_validated(fixture.affected_targets.clone())
+        .read_affected_epoch_current()
+        .expect("read affected epoch current");
+    let CandidateCapacityResult::Reserved(candidate) = candidate
+        .reserve_capacity(fixture.write_plan.clone())
+        .expect("reserve cross-aggregate capacity")
+    else {
+        panic!("small cross-aggregate fixture must reserve");
+    };
+    let candidate = candidate
+        .assign_sequence()
+        .expect("assign cross-aggregate sequence");
+    candidate
+        .stage(fixture.records.clone())
+        .expect("stage cross-aggregate records")
+        .commit_with_service_audit_transitions(
+            DurabilityMode::Sync,
+            vec![cross_aggregate_audit_transition(fixture)],
+        )
+        .expect("commit cross-aggregate command");
+}
+
+/// Neither aggregate's entity or index entry is present, and neither is the
+/// command's own record graph.
+///
+/// The per-aggregate loop is the point: a torn commit that wrote one aggregate
+/// and not the other would satisfy a single-target assertion.
+fn assert_cross_aggregate_absent(ports: &RedbOperationalPorts, fixture: &CrossAggregateFixture) {
+    assert_eq!(
+        ports
+            .lookup_admission(fixture.candidates.clone())
+            .expect("lookup cross-aggregate admission"),
+        AdmissionLookupResultV1::NotFound,
+        "a crash before the commit must leave no admission"
+    );
+    assert_eq!(
+        ports
+            .read_commit(CommitSequence::first())
+            .expect("read cross-aggregate commit"),
+        None,
+        "a crash before the commit must leave no commit record"
+    );
+    let limit = StorageScanLimit::new(2).expect("scan limit");
+    for (position, target) in fixture.targets.iter().enumerate() {
+        assert_eq!(
+            ports.read_entity(target).expect("read entity"),
+            None,
+            "aggregate {position}'s entity must be absent after a precommit crash"
+        );
+    }
+    let page = ports
+        .scan_index(
+            AuthoritativeIndexScanRequest::new(fixture.range.clone(), None, limit)
+                .expect("index request"),
+        )
+        .expect("scan index");
+    assert!(
+        matches!(
+            page,
+            AuthoritativeIndexScanPage::ExactEnd {
+                ref entries,
+                epoch: IndexEpochPosition::BeforeFirst,
+            } if entries.is_empty()
+        ),
+        "the index must be empty after a precommit crash: {page:?}"
+    );
+}
+
+/// Both aggregates' entities and index entries are present, under one commit.
+fn assert_cross_aggregate_present(ports: &RedbOperationalPorts, fixture: &CrossAggregateFixture) {
+    let AdmissionLookupResultV1::Found(_) = ports
+        .lookup_admission(fixture.candidates.clone())
+        .expect("lookup cross-aggregate admission")
+    else {
+        panic!("a crash after the commit must preserve the admission");
+    };
+    let commit = ports
+        .read_commit(CommitSequence::first())
+        .expect("read cross-aggregate commit")
+        .expect("a crash after the commit must preserve the commit record");
+    // One commit sequence owns both aggregates' entities. Two sequences would
+    // mean the write was split, which is the thing ADR-0170 claims it is not.
+    assert_eq!(
+        commit.entity_references().len(),
+        2,
+        "one commit record must own both aggregates' entities"
+    );
+    let limit = StorageScanLimit::new(2).expect("scan limit");
+    for (position, target) in fixture.targets.iter().enumerate() {
+        let stored = ports
+            .read_entity(target)
+            .expect("read entity")
+            .unwrap_or_else(|| panic!("aggregate {position}'s entity must be present"));
+        assert_eq!(
+            stored.entity_version(),
+            EntityVersion::first(),
+            "aggregate {position}'s entity must be at its first version"
+        );
+    }
+    let page = ports
+        .scan_index(
+            AuthoritativeIndexScanRequest::new(fixture.range.clone(), None, limit)
+                .expect("index request"),
+        )
+        .expect("scan index");
+    let AuthoritativeIndexScanPage::ExactEnd { entries, .. } = page else {
+        panic!("the index scan must reach an exact end");
+    };
+    assert_eq!(entries.len(), 1, "the index must carry exactly its entry");
+    assert_eq!(
+        entries[0].value().key(),
+        &fixture.index_key,
+        "the index entry must be the fixture's"
+    );
+}
+
+fn cross_aggregate_audit_transition(
+    fixture: &CrossAggregateFixture,
+) -> riffdb_storage_api::CommandServiceAuditTransitionV1 {
+    let principal = catalog_principal();
+    let request_id = fixture.records.commit().admission_request_id();
+    let started = ServiceAuditAppendIntentV1::new(
+        request_id,
+        Timestamp::new(1_700_000_002, 0).expect("started timestamp"),
+        ServiceOperationV1::ExecuteCommand,
+        ServiceAuditPhaseV1::Started,
+        principal.clone(),
+        ServiceIngressKindV1::Grpc,
+        ServiceAuditTargetsV1::empty(),
+        None,
+        ServiceAuditLinkV1::None,
+    )
+    .expect("cross-aggregate started audit");
+    let terminal = ServiceAuditAppendIntentV1::new(
+        request_id,
+        Timestamp::new(1_700_000_003, 0).expect("terminal timestamp"),
+        ServiceOperationV1::ExecuteCommand,
+        ServiceAuditPhaseV1::Succeeded,
+        principal,
+        ServiceIngressKindV1::Grpc,
+        ServiceAuditTargetsV1::empty(),
+        None,
+        ServiceAuditLinkV1::Command {
+            commit_sequence: fixture.records.commit().commit_sequence(),
+            provenance_id: fixture.records.provenance().provenance_id(),
+        },
+    )
+    .expect("cross-aggregate terminal audit");
+    riffdb_storage_api::CommandServiceAuditTransitionV1::started_and_terminal(started, terminal)
+        .expect("fused cross-aggregate audit lifecycle")
+}
+
+/// ADR-0170, WP-721: a crash before the commit leaves BOTH aggregates absent.
+///
+/// The failure this excludes is a torn write in which one aggregate's entity
+/// and index entry survive and the other's do not. A single-aggregate arm
+/// cannot see that, which is why this one walks both.
+#[test]
+fn crash_before_cross_aggregate_commit_leaves_both_aggregates_absent() {
+    for (label, profile) in [
+        ("standard", RedbCommitProfile::Standard),
+        ("hardened", RedbCommitProfile::Hardened),
+    ] {
+        let path = TestDatabasePath::new(&format!("before-cross-aggregate-{label}"));
+        prepare_cross_aggregate_database(&path.0);
+        run_crashing_child_with_profile("before-cross-aggregate-commit", &path.0, profile);
+
+        let ports = open_operational(
+            RedbStore::open(&path.0).expect("recover precommit cross-aggregate crash"),
+        );
+        assert_cross_aggregate_absent(&ports, &cross_aggregate_fixture());
+    }
+}
+
+/// ADR-0170, WP-721: a crash after the commit preserves BOTH aggregates, under
+/// one commit sequence, and the second recovery observes the same state.
+#[test]
+fn crash_after_cross_aggregate_commit_preserves_both_aggregates() {
+    for (label, profile) in [
+        ("standard", RedbCommitProfile::Standard),
+        ("hardened", RedbCommitProfile::Hardened),
+    ] {
+        let path = TestDatabasePath::new(&format!("after-cross-aggregate-{label}"));
+        prepare_cross_aggregate_database(&path.0);
+        run_crashing_child_with_profile("after-cross-aggregate-commit", &path.0, profile);
+
+        let fixture = cross_aggregate_fixture();
+        let ports = open_operational(
+            RedbStore::open(&path.0).expect("recover postcommit cross-aggregate crash"),
+        );
+        assert_cross_aggregate_present(&ports, &fixture);
+        drop(ports);
+
+        // Recovery is idempotent: a second open must not complete a partially
+        // observed write differently from the first.
+        let ports = open_operational(
+            RedbStore::open(&path.0).expect("repeat postcommit cross-aggregate recovery"),
+        );
+        assert_cross_aggregate_present(&ports, &fixture);
+    }
+}
+
+/// The boundary WP-721's crash arm found: ADR-0170 admits a cross-aggregate
+/// command, but the non-locality aggregate's entities cannot carry an index.
+///
+/// Index entries are partitioned by the command's single partition key —
+/// `derive_grammar_v1_indexes` passes `pending().partition_key()` for every
+/// index it derives — and that key is namespaced by the *locality* aggregate.
+/// Two accepted rules then contradict each other for an index owned by the
+/// other aggregate:
+///
+/// - Keep the command's key, and `validate_persisted_key`'s `PartitionIndex`
+///   arm rejects the durable state at the next startup. It resolves the index's
+///   owning entity, takes that entity's aggregate, and requires the partition
+///   key to decode against *that* aggregate's partition schema;
+///   `decode_partition` checks the encoded aggregate type ID, so a key
+///   namespaced by aggregate 1 cannot decode under aggregate 2.
+/// - Give the index its owner's key instead, and the write plan refuses first —
+///   which is what this arm pins, because it is a value-level check needing no
+///   database.
+///
+/// The shape is therefore unreachable from both directions rather than merely
+/// unproven, and `cross_aggregate_fixture`'s `Ledger` carries no index for that
+/// reason. This is a real gap in ADR-0170's implementation, not a property of
+/// the fixture: a contract whose second aggregate indexes anything compiles,
+/// and fails only once a command tries to write it.
+#[test]
+fn a_cross_aggregate_index_entry_cannot_leave_the_command_partition() {
+    let fixture = cross_aggregate_fixture();
+    let id = 41_u64;
+
+    // The index owner's own partition key: same route value, namespaced by
+    // aggregate 2 exactly as its partition schema demands.
+    let mut foreign = PartitionKeyBuilder::new(AggregateTypeId::new(2).expect("ledger aggregate"));
+    foreign.push_u64(id).expect("foreign partition component");
+    let foreign = foreign.finish().expect("foreign partition key");
+
+    let mut command_partition =
+        PartitionKeyBuilder::new(AggregateTypeId::new(1).expect("locality aggregate"));
+    command_partition.push_u64(id).expect("partition component");
+    let command_partition = command_partition.finish().expect("partition key");
+    assert_ne!(
+        command_partition, foreign,
+        "the two aggregates' partition keys must differ, or this arm proves nothing"
+    );
+
+    let schema_binding = DurableKeySchemaBindingV1::from_plan(fixture.records.commit().plan());
+    let row_index_id = IndexId::new(1).expect("row index ID");
+    let generation = PartitionIndexTarget::new(command_partition, row_index_id);
+    let affected_targets = AffectedIndexEpochTargets::new(vec![generation.clone()])
+        .expect("one well-formed epoch target");
+    let affected_current = AffectedEpochCurrentState::new(
+        &affected_targets,
+        vec![CurrentIndexGenerationObservation::new(
+            generation.clone(),
+            IndexEpochPosition::BeforeFirst,
+        )],
+    )
+    .expect("affected current state");
+    let advances = vec![
+        IndexEpochAdvanceV1::new(
+            generation,
+            schema_binding.clone(),
+            IndexEpochPosition::BeforeFirst,
+        )
+        .expect("epoch advance"),
+    ];
+
+    // The only difference from the committed fixture: this entry is partitioned
+    // by the index owner's aggregate rather than the command's.
+    let entries = vec![IndexEntryMutationV1::Put(
+        StoredIndexEntryV2::new(
+            fixture.index_key.clone(),
+            schema_binding,
+            record(23),
+            foreign,
+        )
+        .expect("an entry under a foreign partition is individually well-formed"),
+    )];
+    let upper_bound = match command_write_set_upper_bound_v1(&fixture.intent, &entries, &advances)
+        .expect("canonical encoded upper bound")
+    {
+        EncodedWriteSetUpperBoundResultV1::Fits(bound) => bound,
+        EncodedWriteSetUpperBoundResultV1::ExceedsAcceptedAggregateCap(_) => {
+            panic!("this write set must fit the accepted aggregate cap")
+        }
+    };
+
+    let refused = CommandWriteSetPlanV1::new(
+        &fixture.intent,
+        affected_targets,
+        affected_current,
+        entries,
+        advances,
+        upper_bound,
+    );
+    assert!(
+        refused.is_err(),
+        "an index entry outside the command's partition must be refused. If \
+         this now succeeds, the cross-aggregate index restriction has changed: \
+         re-check validate_persisted_key's PartitionIndex arm and give \
+         cross_aggregate_fixture's Ledger an index again"
     );
 }
