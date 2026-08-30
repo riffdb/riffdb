@@ -1,0 +1,85 @@
+{{- if .Values.proxy.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "riffdb.fullname" . }}-proxy-config
+  namespace: {{ include "riffdb.namespace" . }}
+  labels:
+    {{- include "riffdb.labels" . | nindent 4 }}
+data:
+  haproxy.cfg: |
+    global
+      log stdout local0
+    defaults
+      mode tcp
+      timeout connect 5s
+      timeout client 60s
+      timeout server 60s
+    frontend riffdb_in
+      bind :{{ .Values.proxy.port }}
+      default_backend riffdb_out
+    backend riffdb_out
+      # Pass-through: TLS terminates at riffdbd, never at the proxy, so no
+      # private key reaches this container.
+      server riffdbd {{ include "riffdb.fullname" . }}.{{ include "riffdb.namespace" . }}.svc:{{ .Values.server.listener.port }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "riffdb.fullname" . }}-proxy
+  namespace: {{ include "riffdb.namespace" . }}
+  labels:
+    {{- include "riffdb.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.proxy.replicas }}
+  selector:
+    matchLabels:
+      {{- include "riffdb.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: proxy
+  template:
+    metadata:
+      labels:
+        {{- include "riffdb.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: proxy
+    spec:
+      containers:
+        - name: haproxy
+          image: {{ include "riffdb.proxyImage" . }}
+          imagePullPolicy: {{ .Values.proxy.image.pullPolicy }}
+          ports:
+            - name: grpc-tls
+              containerPort: {{ .Values.proxy.port }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          {{- with .Values.proxy.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /usr/local/etc/haproxy
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "riffdb.fullname" . }}-proxy-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "riffdb.fullname" . }}-proxy
+  namespace: {{ include "riffdb.namespace" . }}
+  labels:
+    {{- include "riffdb.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "riffdb.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+  ports:
+    - name: grpc-tls
+      port: {{ .Values.proxy.port }}
+      targetPort: grpc-tls
+{{- end }}

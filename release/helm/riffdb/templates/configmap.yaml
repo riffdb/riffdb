@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "riffdb.fullname" . }}-config
+  namespace: {{ include "riffdb.namespace" . }}
+  labels:
+    {{- include "riffdb.labels" . | nindent 4 }}
+data:
+  riffdbd.toml: |
+    [server]
+    database = "/var/lib/riffdb/data/riffdb.redb"
+    environment = {{ .Values.server.environment | quote }}
+    audience = {{ .Values.server.audience | quote }}
+    capability_keys = "/run/riffdb-protected/capability.keys"
+    idempotency_keys = "/run/riffdb-protected/idempotency.keys"
+
+    [server.application_listener]
+    mode = "direct_tls"
+    listen = "0.0.0.0:{{ .Values.server.listener.port }}"
+    public_endpoint = {{ include "riffdb.publicEndpoint" . | quote }}
+    certificate_chain = "/run/riffdb-protected/server-chain.pem"
+    private_key = "/run/riffdb-protected/server-key.pem"
+
+    [server.application_listener.bounds]
+    max_connections = {{ .Values.server.listener.bounds.maxConnections }}
+    max_streams_per_connection = {{ .Values.server.listener.bounds.maxStreamsPerConnection }}
+    handshake_timeout_seconds = {{ .Values.server.listener.bounds.handshakeTimeoutSeconds }}
+    idle_timeout_seconds = {{ .Values.server.listener.bounds.idleTimeoutSeconds }}
+    keepalive_interval_seconds = {{ .Values.server.listener.bounds.keepaliveIntervalSeconds }}
+    drain_timeout_seconds = {{ .Values.server.listener.bounds.drainTimeoutSeconds }}
+
+    [maintenance]
+    backup_root = "/var/lib/riffdb/backups"
+  liveness.toml: |
+    [client]
+    endpoint = {{ include "riffdb.publicEndpoint" . | quote }}
+    database = "default"
+  readiness.toml: |
+    [client]
+    endpoint = {{ include "riffdb.publicEndpoint" . | quote }}
+    database = "default"

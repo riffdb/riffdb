@@ -2397,11 +2397,15 @@ work_packages:
   allowed_paths: [work_packages.yaml, release/**, docs/operations/**, docs/**, scripts/**,
     .github/workflows/**]
   deliverables:
-  - A versioned chart whose values cover listener and TLS material, storage class and volume sizing,
-    resource limits, liveness/readiness, credential and certificate rotation, and backup targets,
-    with no host-loopback shortcut
-  - A rendered-manifest golden test so a values change that alters the deployment is visible in
-    review, and chart version bound to the release version it deploys
+  - Chart delivered at release/helm/riffdb. Values cover listener and TLS material, storage class
+    and volume sizing, resources, probes, proxy, and backup targets, with no host-loopback shortcut.
+    Secrets are never templated; image.tag resolves to appVersion so a chart cannot silently deploy
+    a different RiffDB release than it declares; the backups claim carries a keep policy so it
+    outlives the release and END-001's restore drill stays possible
+  - Golden render delivered at release/helm/rendered with scripts/check-helm-render, verified
+    load-bearing by confirming a values change moves the recorded manifest. The acceptance manifest
+    it replaces hardcoded an image and namespace, stated no resource requests at all, and bundled
+    proof Jobs with the workload; those Jobs are opt-in here
   - Documented upgrade between two released chart versions including the durable-format
     compatibility check, and documented rollback
   - Operator runbook covering install, upgrade, rotate, back up, restore, and drain, exercised

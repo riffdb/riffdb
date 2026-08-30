@@ -1,0 +1,21 @@
+{{- if .Values.server.persistence.backups.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "riffdb.fullname" . }}-backups
+  namespace: {{ include "riffdb.namespace" . }}
+  labels:
+    {{- include "riffdb.labels" . | nindent 4 }}
+  annotations:
+    # Backups must outlive the release. Losing them with an uninstall would
+    # make restore-after-disk-loss untestable, which END-001 requires.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: {{ toYaml .Values.server.persistence.backups.accessModes | nindent 4 }}
+  {{- with .Values.server.persistence.backups.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.server.persistence.backups.size }}
+{{- end }}

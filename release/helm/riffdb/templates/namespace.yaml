@@ -1,0 +1,8 @@
+{{- if .Values.namespace.create }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "riffdb.namespace" . }}
+  labels:
+    {{- include "riffdb.labels" . | nindent 4 }}
+{{- end }}
