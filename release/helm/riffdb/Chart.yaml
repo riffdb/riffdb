@@ -1,0 +1,22 @@
+apiVersion: v2
+name: riffdb
+description: RiffDB application server, its TLS proxy path, and operator-facing storage
+type: application
+# version is the chart's own identity; appVersion is the RiffDB release it
+# deploys. WP-728 binds both to the tag it publishes, so a chart can never
+# claim a RiffDB version it was not built against.
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.27.0-0"
+home: https://riffdb.dev
+sources:
+  - https://riffdb.dev
+keywords:
+  - database
+  - contract-first
+maintainers:
+  - name: RiffDB
+annotations:
+  riffdb.dev/posture: >-
+    Pre-alpha. This chart deploys the documented POC configuration surface only.
+    It exposes no tuning knobs riffdbd does not support, and no secret values.

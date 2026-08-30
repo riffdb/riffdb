@@ -1,0 +1,133 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "riffdb.fullname" . }}
+  namespace: {{ include "riffdb.namespace" . }}
+  labels:
+    {{- include "riffdb.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "riffdb.fullname" . }}
+  replicas: {{ .Values.server.replicas }}
+  selector:
+    matchLabels:
+      {{- include "riffdb.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "riffdb.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Roll the pod when the rendered configuration changes, so a values edit
+        # applies rather than sitting inert until the next unrelated restart.
+        riffdb.dev/config-checksum: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.server.terminationGracePeriodSeconds }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        # Copies secret material into a memory-backed volume with restricted
+        # modes. riffdbd refuses group- or world-readable key files.
+        - name: protect-server-secrets
+          image: {{ include "riffdb.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+          command: ["copy-protected", "/incoming", "/protected"]
+          volumeMounts:
+            - name: server-secrets
+              mountPath: /incoming
+              readOnly: true
+            - name: protected
+              mountPath: /protected
+      containers:
+        - name: riffdbd
+          image: {{ include "riffdb.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["riffdbd", "--config", "/etc/riffdb/riffdbd.toml"]
+          securityContext:
+            runAsNonRoot: {{ .Values.podSecurityContext.runAsNonRoot }}
+            runAsUser: {{ .Values.podSecurityContext.runAsUser }}
+            runAsGroup: {{ .Values.podSecurityContext.runAsGroup }}
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: grpc-tls
+              containerPort: {{ .Values.server.listener.port }}
+          livenessProbe:
+            exec:
+              command: ["riffdb", "--config", "/etc/riffdb/liveness.toml", "server", "health"]
+            periodSeconds: {{ .Values.server.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.server.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.server.probes.liveness.failureThreshold }}
+          readinessProbe:
+            exec:
+              command: ["riffdb", "--config", "/etc/riffdb/readiness.toml", "server", "health"]
+            periodSeconds: {{ .Values.server.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.server.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.server.probes.readiness.failureThreshold }}
+          {{- with .Values.server.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/riffdb
+              readOnly: true
+            - name: protected
+              mountPath: /run/riffdb-protected
+              readOnly: true
+            - name: bootstrap-handoff
+              mountPath: /run/riffdb-bootstrap
+            - name: data
+              mountPath: /var/lib/riffdb/data
+            {{- if .Values.server.persistence.backups.enabled }}
+            - name: backups
+              mountPath: /var/lib/riffdb/backups
+            {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "riffdb.fullname" . }}-config
+        - name: server-secrets
+          secret:
+            secretName: {{ .Values.server.secretName }}
+            defaultMode: 256
+        - name: protected
+          emptyDir:
+            medium: Memory
+        - name: bootstrap-handoff
+          emptyDir:
+            medium: Memory
+        {{- if .Values.server.persistence.backups.enabled }}
+        - name: backups
+          persistentVolumeClaim:
+            claimName: {{ include "riffdb.fullname" . }}-backups
+        {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: {{ toYaml .Values.server.persistence.data.accessModes | nindent 10 }}
+        {{- with .Values.server.persistence.data.storageClassName }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.server.persistence.data.size }}
