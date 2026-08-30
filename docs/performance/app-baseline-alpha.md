@@ -119,11 +119,18 @@ For each of the fourteen frozen unary operations, the harness runs five fixed
 counterbalanced process generations. Each generation restarts RiffDB after
 common setup, performs 20 same-operation warmups, then records exactly 1,000
 operations.
-All five p50 and p95 observations are retained. After sorting them as
-`x1 <= x2 <= x3 <= x4 <= x5`, the qualified statistic is `x3` and stability
-requires `x4 / x2 <= 1.20` independently for each backend and percentile. The
-two extremes remain disclosed. PostgreSQL ratios are derived from the two
-qualified backend medians and are not separately stability-gated.
+All five p50 and p95 observations are retained for both backends. After sorting
+them as `x1 <= x2 <= x3 <= x4 <= x5`, the qualified statistic is `x3`.
+
+Stability requires `x4 / x2 <= 1.20` for **RiffDB's** p50 and p95 (ADR-0171).
+PostgreSQL's five-value summary and spread are computed, retained, and
+published, and a comparator spread above 1.20 is disclosed in the receipt, but
+it does not invalidate the evidence: the comparator's measurement stability is
+not a property RiffDB can influence and its ratios are not a gate. Both
+extremes remain disclosed for both backends, and host validity, correctness,
+and comparator-input drift still invalidate for either. PostgreSQL ratios are
+derived from the two qualified backend medians and are not separately
+stability-gated.
 
 Each measured cell also binds V2 preflight and postflight host observations.
 The postflight proves the complete-cell aggregate Linux CPU-steal delta against
