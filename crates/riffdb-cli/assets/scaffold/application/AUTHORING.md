@@ -106,10 +106,24 @@ aggregate selected in the worksheet.
 `RDB-C017` means either that two bindings derive different route values or that
 the command writes two aggregate roots. Supplying the same route fixes only the
 first case. For the second, move the written entities under one business root
-or split the operation into separate idempotent commands. RiffDB never turns
+or split the operation into separate idempotent commands. RiffDB does not turn
 cross-aggregate writes into an implicit distributed transaction.
 Its two corrective-action codes are `supply_partition_route` and
 `model_one_mutation_aggregate`; satisfy both claims before retrying.
+
+Choosing between those two repairs is a real trade, so make it deliberately.
+One command commits one aggregate, and an aggregate's `conflict_key` is the
+granularity at which writers contend. Placing the entities under one root buys
+a single atomic write and pays for it with that root's coarser conflict key:
+a checkout keyed `(tenant_id)` serialises against every other write in the
+tenant, where `(tenant_id, product_id)` does not. Splitting into one command
+per aggregate keeps the fine conflict key and pays for it with a compensating
+action, because the second command can fail after the first has committed.
+Neither is free, and the compiler cannot choose for you.
+
+The restriction is scoped to writes. A command may freely `read` another
+aggregate in the same partition, and one command may write many rows of its own
+aggregate under many distinct conflict keys.
 
 ## Prove relationships inside commands
 

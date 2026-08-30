@@ -1,4 +1,4 @@
-spec_version: '1.18'
+spec_version: '1.19'
 product: RiffDB
 repository: riffdb
 status: deployable-application-alpha-architecture-accepted
@@ -2245,6 +2245,51 @@ work_packages:
       continuation, row, result, and provider subcalls add no repeated proof or duration/population-
       proportional state.
   human_review_triggers: *id001
+- id: WP-721
+  name: Partition-local cross-aggregate command writes
+  depends_on: [WP-040, WP-080]
+  objective: Close ADR-0170 by admitting a command whose create/mutate bindings derive one
+    identical partition route but belong to different aggregates in that partition, deriving
+    logical conflict ownership as the statically enumerable union of the conflict keys those
+    bindings derive, and acquiring that union under a canonical deadlock-free lease order.
+    Cross-partition writes remain rejected by RDB-C017.
+  requirements: [PERF-005]
+  required_adrs: [ADR-0094, ADR-0170]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0170-partition-local-cross-aggregate-writes.md,
+    crates/riffdb-contract-compiler/**, crates/riffdb-contract-ir/**,
+    crates/riffdb-diagnostics/**, crates/riffdb-commit/**,
+    crates/riffdb-proto/**, examples/**, fixtures/**, tests/**]
+  deliverables:
+  - Compiler proof that every create/mutate binding derives one identical partition route,
+    admitting bindings from different aggregates in that partition and continuing to reject a
+    command whose bindings derive different routes with RDB-C017
+  - Command conflict ownership derived as the union of its bindings' conflict keys, rejected
+    when the complete union is not statically enumerable
+  - Canonical total order over (aggregate, conflict key) proving lease acquisition across
+    aggregates cannot deadlock, with a concurrency test that would fail under an arbitrary order
+  - Executable IR V19 carrying per-conflict-key aggregate ownership, written only by a command
+    that genuinely spans aggregates so every single-aggregate command keeps its current locality
+    bytes and plan hash under the ADR-0126 least-sufficient writer rule; the format question is
+    settled in docs/performance/wp-721-cross-aggregate-conflict-ownership.md
+  - Crash-consistency coverage proving one command writing two aggregates is atomic across a
+    restart, and a negative arm proving two commands with disjoint union conflict sets do not
+    serialise against each other
+  acceptance_commands:
+  - cargo +1.97.0 test --workspace --all-features
+  - ./scripts/check-adr-obligations
+  - ./scripts/downstream-adapter-check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: A partition-local command writing two aggregates compiles, commits atomically, and
+    owns the union of its bindings' conflict keys; a cross-partition write is still rejected; the
+    lease order is proved deadlock-free; and no existing contract, durable format, or conflict
+    identity changes.
+  standing_design_tests:
+    interface_safety: No surface admits a write whose bindings derive different partition routes,
+      and no caller can select conflict ownership, lease order, or a weaker atomicity.
+    concurrency: Two commands whose union conflict sets are disjoint proceed without serialising;
+      two whose sets intersect are ordered by the canonical lease order and never deadlock.
 - id: WP-720
   name: Admission-head generated compatibility and cross-process acceptance
   depends_on: [WP-565, WP-703, WP-709, WP-719]

@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 1.18
+**Version:** 1.19
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
 **Date:** 29 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 1.19 | 2026-08-29 | Accepted ADR-0170 and registered WP-721. Amended `PERF-005`: a command's `create` and `mutate` bindings MUST derive one identical partition route but MAY belong to different aggregates within that partition, in which case the command's logical conflict keys are the union of the conflict keys its bindings derive and that complete union MUST be statically enumerable. Cross-partition writes remain rejected; the rejected case narrows from multi-aggregate to cross-partition. The change is admitted on measurement: a coarse `conflict_key` does not serialise writers, so splitting a partition-local write across two aggregates costs a second durable commit for no measured scalability, and the restriction cannot be defended on concurrency grounds. `RDB-C017` continues to reject every cross-aggregate write until WP-721 delivers the union conflict ownership and its deadlock-free lease ordering. No durable format, storage key, protocol, or provider algorithm changes. |
 | 1.18 | 2026-08-29 | Accepted ADR-0167, ADR-0168, and ADR-0169 from the contract/query/migration language design review. Amended `OQ-062`: a `Limit` parameter MUST declare its maximum and the unbounded spelling is not accepted in source, because an unbounded `Limit` is charged and authorized at the 499-row type maximum whatever default it declares. Every V1-V8/V1-V11/V1-V11 artifact remains byte-exact and readable. Source declaring an unbounded `Limit` is rejected from RiffQL V9 onward and must declare a maximum; already-compiled modules that encode an unbounded runtime limit remain readable and replayable and are not rewritten. Consequently every parameterised page is RiffQL V9 and query-module format V12, and an exact-predicate family, which requires a typed limit parameter, can no longer be expressed at V9 or V10. An existing index identity MAY now gain or change a cover through the receipted migration path, which derives an index rebuild and reconstructs every entry from the post-image. An aggregate root is not required to be materialized. New planner diagnostic RDB-QP010 separates a bounded whole-request cost over a closed ceiling from an unbounded one and reports the charged amount and the ceiling. No durable format, storage key, protocol, or provider algorithm changes. |
 | 1.17 | 2026-08-27 | Accepted ADR-0163 and ADR-0164. Registered BLK-046 through BLK-057 and WP-716 through WP-718 for one compiler-sealed decision over a deferred initialized binding with ordered apply, exact no-effect, and typed whole-command rejection arms. Ignored elements remain transaction-current dependencies; union authority, selected policy, atomic outcome/replay, bounded branch work, and least-sufficient V18 identities are mandatory, while general branching and framework behavior remain forbidden. Registered OQ-075 through OQ-083, DRV-018, and WP-719/WP-720 for one stronger `AdmissionHead` query option: RiffDB captures the authorized application head once on the first page, combines it with existing causal floors, selects one sufficient snapshot/provider epoch, freezes that floor and epoch across cursors, and waits only within closed service bounds without process-local adapter state or stale fallback. |
 | 1.16 | 2026-08-27 | Accepted ADR-0159 and registered OQ-068 through OQ-074, DRV-017, and WP-708/WP-709. An ordinary ordered `take $limit after $cursor` continuation binds a cursor-specific hash of every invariant parameter while the submitted page cardinality may change within the same immutable compiled domain. Plan, declared maximum, predicates, order, authority, history, snapshot, and provider epoch remain bound; nearest/vector K and every non-page semantic input remain identity-bearing. One narrow append-only external-adapter exception may coalesce bounded RiffDB pages when an authoritative upstream interface requires a larger exact page, without raising RiffDB ceilings, filtering, sorting, counting, discarding, restarting, or adding framework code to RiffDB. |
@@ -7145,11 +7146,13 @@ ADR-0055.
   authorization, atomicity, visibility, or response-release semantics.
 - `PERF-005`: A command MAY observe entities owned by multiple aggregates only
   when the compiler proves that every binding is in one identical partition.
-  Every `create` and `mutate` binding MUST remain in exactly one mutation
-  aggregate, and only that aggregate derives logical conflict keys. External
-  observations MUST remain explicit and MUST be revalidated exactly inside the
-  authoritative commit transaction; cross-partition reads and multi-aggregate
-  writes MUST be rejected. Commands sharing one aggregate conflict key MAY
+  Every `create` and `mutate` binding MUST derive that one identical partition
+  route. Bindings MAY belong to different aggregates within that partition, in
+  which case the command's logical conflict keys are the union of the conflict
+  keys its bindings derive and that complete union MUST be statically
+  enumerable. External observations MUST remain explicit and MUST be
+  revalidated exactly inside the authoritative commit transaction;
+  cross-partition reads and cross-partition writes MUST be rejected. Commands sharing one aggregate conflict key MAY
   share a same-snapshot physical completion group only under the ADR-0094
   compiler-derived commutative child-append proof and complete exact-access
   compatibility check. Otherwise, fresh synchronous commands MAY share an

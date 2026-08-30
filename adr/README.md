@@ -188,6 +188,7 @@ direction, merged draft, or implementation choice.
 | [0167](0167-required-bounded-limit-maximum.md) | Required Bounded Limit Maximum | Accepted |
 | [0168](0168-index-cover-evolution-through-migration.md) | Index Cover Evolution Through Migration | Accepted |
 | [0169](0169-optional-aggregate-root-materialization.md) | Optional Aggregate Root Materialization | Accepted |
+| [0170](0170-partition-local-cross-aggregate-writes.md) | Partition-Local Cross-Aggregate Writes | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
