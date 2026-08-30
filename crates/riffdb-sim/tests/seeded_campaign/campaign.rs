@@ -777,6 +777,44 @@ pub(crate) const SWEEP_SEEDS: u64 = 24;
 /// unreleased) — never silently skipped, and bounded so exclusions cannot
 /// hollow out the sweep. After the pin advances and
 /// [`REDB_PIN_CONTAINS_FD82CED`] flips, a wedged seed fails the sweep again.
+/// WP-725 diagnostic: sweep the commit-PRESENT configuration across many seeds
+/// and report how many resolve an interrupted commit as present.
+///
+/// The question this answers is whether the after-commit window narrowed or
+/// closed. If no seed in a wide sweep produces a present resolution, the
+/// pinned witness did not merely drift and re-pinning would hide an engine
+/// change rather than track one.
+#[test]
+#[ignore = "WP-725 diagnostic sweep; run explicitly"]
+fn wp725_commit_present_window_sweep() {
+    const PROBE_SEEDS: u64 = 96;
+    let mut present_seeds = Vec::new();
+    let mut absent_total = 0_u64;
+    let mut completed = 0_u64;
+    let mut wedged = 0_u64;
+    for offset in 0..PROBE_SEEDS {
+        let seed = SWEEP_SEED_BASE + offset;
+        match run_campaign_outcome(seed, crate::subsumption::COMMIT_PRESENT_ARMS_CONFIG) {
+            CampaignOutcome::Completed(report) => {
+                completed += 1;
+                absent_total += report.in_flight_commit_absent;
+                if report.in_flight_commit_present > 0 {
+                    present_seeds.push((seed, report.in_flight_commit_present));
+                }
+            }
+            CampaignOutcome::WedgedByRedb410FileGrowth { .. } => wedged += 1,
+        }
+    }
+    println!(
+        "wp725-sweep\tseeds={PROBE_SEEDS}\tcompleted={completed}\twedged={wedged}\t\
+         present_seeds={}\tabsent_total={absent_total}",
+        present_seeds.len()
+    );
+    for (seed, count) in &present_seeds {
+        println!("wp725-present\tseed={seed:#x}\tpresent={count}");
+    }
+}
+
 #[test]
 fn per_merge_sweep_holds_the_oracle_and_reaches_the_swept_territory() {
     let mut total = CampaignReport::default();

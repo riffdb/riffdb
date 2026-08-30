@@ -69,14 +69,43 @@ change when a committed batch becomes observable to recovery? A recovery test
 is the last place to paper over a change in when durability is visible, and the
 last place to do it is immediately before a release.
 
-## What WP-725 must establish
+## The window is closed, not narrow
 
-1. Whether the after-commit window still exists at all — sweep every seed and
-   report whether any produces `in_flight_commit_present > 0`. If none does,
-   the window is closed rather than narrow, and that is an engine question
-   rather than a fixture question.
-2. What clean-close fast startup changed about the frontier a recovery
+Swept 96 seeds from `SWEEP_SEED_BASE` under `COMMIT_PRESENT_ARMS_CONFIG` — the
+configuration hand-tuned for this case, whose own comment records that the
+physical window "is substantially rarer":
+
+    wp725-sweep  seeds=96  completed=96  wedged=0  present_seeds=0
+                 absent_total=296
+
+Every campaign completed, none wedged, 296 interrupted commits resolved as
+absent, and **not one resolved as present**. The reproduction is retained as
+`wp725_commit_present_window_sweep`, ignored by default.
+
+That settles the fixture-versus-engine question. A drifted schedule would leave
+the window reachable from some nearby coordinate; a window no seed can hit in
+96 attempts is closed. Re-pinning cannot work — and had someone tried, the
+search would have failed slowly rather than revealing why.
+
+## What WP-725 must still establish
+
+1. What clean-close fast startup changed about the frontier a recovery
    observes, stated against `fa5d906c`'s diff rather than inferred.
 3. A sweep-level assertion on `total.in_flight_commit_present > 0`, so this
    coverage cannot lapse silently again. Its absence is why a regression in the
    more dangerous recovery direction survived from 2026-08-26 to now.
+
+## The open question, stated precisely
+
+Can a crash still land after a batch's engine commit and before its
+acknowledgement, such that recovery observes the batch present?
+
+If clean-close fast startup narrowed that interval to the point where the
+simulator's operation-counted crash injection can no longer address it, the
+guarantee is intact and the test needs a different injection mechanism. If
+instead a committed batch is no longer observable as present at recovery until
+some later point, that is a change in when durability becomes visible, and it
+belongs in ADR-0156/ADR-0157 rather than in a re-pinned fixture.
+
+Nothing measured here distinguishes those two, and the difference matters more
+than the red tests do.
