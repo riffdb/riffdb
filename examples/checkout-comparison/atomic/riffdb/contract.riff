@@ -1,0 +1,110 @@
+contract StorefrontAtomic version 1 {
+  entity Tenant {
+    key (tenant_id: uuid)
+    field name: string<128>
+    delete_policy cascade {
+      relationship Product.product_parent using Product.by_parent maximum 8
+      relationship Order.order_parent using Order.by_parent maximum 8
+    }
+  }
+
+  entity Product {
+    key (tenant_id: uuid, product_id: uuid)
+    field sku: string<64>
+    field unit_price: money<USD>
+    field stock_on_hand: u64
+    field revision: u64
+    index by_parent (tenant_id, product_id)
+    reference product_parent (tenant_id) -> Tenant(tenant_id)
+    delete_policy no_inbound
+  }
+
+  entity Order {
+    key (tenant_id: uuid, order_id: uuid)
+    field customer_id: uuid
+    field order_total: money<USD>
+    field revision: u64
+    index by_parent (tenant_id, order_id)
+    reference order_parent (tenant_id) -> Tenant(tenant_id)
+    delete_policy no_inbound
+  }
+
+  entity OrderLine {
+    key (tenant_id: uuid, order_id: uuid, line_id: uuid)
+    field product_id: uuid
+    field quantity: u64
+    field line_total: money<USD>
+    index by_parent2 (tenant_id, order_id, line_id)
+    delete_policy no_inbound
+  }
+
+  entity CheckoutLine {
+    key (tenant_id: uuid, order_id: uuid, line_id: uuid)
+    field product_id: uuid
+    field quantity: u64
+    field line_total: money<USD>
+  }
+
+  aggregate StorefrontData {
+    root Tenant
+    child Product
+    child Order
+    child OrderLine
+    child CheckoutLine
+    partition_by tenant_id
+    conflict_key (tenant_id)
+  }
+
+  command CreateTenant {
+    input idempotency_key: string<128>
+    input tenant_id: uuid
+    input name: string<128>
+    idempotency_key idempotency_key
+    create Tenant(tenant_id) as tenant else TenantAlreadyExists {}
+    set tenant.name = name
+    return TenantCreated {}
+  }
+
+  command CreateProduct {
+    input request_id: uuid
+    input tenant_id: uuid
+    input product_id: uuid
+    input sku: string<64>
+    input unit_price: money<USD>
+    input stock_on_hand: u64
+    idempotency_key request_id
+    read Tenant(tenant_id) as tenant else ProductTenantMissing {}
+    create Product(tenant_id, product_id) as product else ProductAlreadyExists {}
+    set product.sku = sku
+    set product.unit_price = unit_price
+    set product.stock_on_hand = stock_on_hand
+    set product.revision = 1
+    return ProductCreated {}
+  }
+
+  bulk command AtomicCheckout {
+    input request_id: uuid
+    input tenant_id: uuid
+    input order_id: uuid
+    input customer_id: uuid
+    input order_total: money<USD>
+    input lines: list<CheckoutLine, 1..32>
+    idempotency_key request_id
+    read Tenant(tenant_id) as tenant else TenantMissing {}
+    create Order(tenant_id, order_id) as order else OrderExists {}
+    for line in lines {
+      mutate Product(tenant_id, line.product_id) as product else ProductMissing {}
+      create OrderLine(tenant_id, order_id, line.line_id) as order_line else LineExists {}
+      require in_stock: product.stock_on_hand >= line.quantity else InsufficientStock {}
+      set product.stock_on_hand = product.stock_on_hand - line.quantity
+      set product.revision = product.revision + 1
+      set order_line.product_id = line.product_id
+      set order_line.quantity = line.quantity
+      set order_line.line_total = line.line_total
+    }
+    set order.customer_id = customer_id
+    set order.order_total = order_total
+    set order.revision = 1
+    return CheckoutCompleted {}
+  }
+}

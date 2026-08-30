@@ -1,0 +1,18 @@
+query FindOrder(
+    $tenant_id: Order.tenant_id,
+    $order_id: Order.order_id,
+) {
+    many orders from Order
+        where tenant_id == $tenant_id
+          && order_id == $order_id
+        order by order_id asc
+        take 1
+
+    return Found {
+        orders: orders {
+            order_id customer_id status placed_at order_total payment_reference revision
+        }
+    }
+
+    outcomes Found
+}
