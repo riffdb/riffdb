@@ -1466,16 +1466,30 @@ fn lower_locality(
         .collect::<Vec<_>>();
     let mut conflicts = Vec::new();
     for binding in selected {
-        let replacements = root_entity
+        // ADR-0170: a binding derives its conflict key from *its own*
+        // aggregate. The anchor fixes the partition route, which every binding
+        // shares, but substituting one aggregate's root key fields into another
+        // aggregate's bindings would build a key for a row that does not exist.
+        let Some(owner_hir) = hir.aggregate_for_entity(binding.entity_id) else {
+            diagnostics.push(ir_diagnostic(binding.span));
+            continue;
+        };
+        let (Some(owner), Some(owner_root)) =
+            (schema.aggregate(owner_hir.id), hir.entity(owner_hir.root))
+        else {
+            diagnostics.push(ir_diagnostic(binding.span));
+            continue;
+        };
+        let replacements = owner_root
             .key_fields
             .iter()
             .copied()
             .zip(binding.arguments.iter().map(|argument| argument.id))
             .collect::<BTreeMap<_, _>>();
         let mut conflict_expressions = Vec::new();
-        for source in &aggregate_hir.keys.conflicts {
+        for source in &owner_hir.keys.conflicts {
             match append_schema_expression(
-                &aggregate_hir.keys.expressions,
+                &owner_hir.keys.expressions,
                 source.id,
                 expressions,
                 SchemaReplacement::Existing(&replacements),
@@ -1486,7 +1500,7 @@ fn lower_locality(
             }
         }
         match ConflictDerivationPlan::new(
-            aggregate.keys().conflict_schema().clone(),
+            owner.keys().conflict_schema().clone(),
             conflict_expressions,
         ) {
             Ok(conflict) => conflicts.push(conflict),

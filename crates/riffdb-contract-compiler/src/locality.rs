@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use riffdb_contract_ir::{BinaryOperator, BindingMode, ExpressionKind, UnaryOperator};
+use riffdb_contract_ir::{BinaryOperator, ExpressionKind, UnaryOperator};
 use riffdb_contract_syntax::Span;
 use riffdb_types::{AggregateTypeId, EntityTypeId, FieldId, encode_canonical_value};
 
@@ -71,7 +71,10 @@ pub(crate) fn analyze_locality(
     }
 
     for command in &hir.commands {
-        let mut mutation_aggregate = None;
+        // ADR-0170: mutating bindings need not share an aggregate. They must
+        // still derive one identical partition route, which the fingerprint
+        // below proves over every binding, read or write. Conflict ownership
+        // becomes the union of the keys those bindings derive.
         let mut partition_fingerprint = None;
         for binding in &command.bindings {
             let Some((aggregate_id, _)) = owners.get(&binding.entity_id).copied() else {
@@ -81,25 +84,6 @@ pub(crate) fn analyze_locality(
                 ));
                 continue;
             };
-            if matches!(
-                binding.mode,
-                BindingMode::Create
-                    | BindingMode::Mutate
-                    | BindingMode::InitOrMutate
-                    | BindingMode::ObserveOrInitialize
-                    | BindingMode::Delete
-            ) {
-                if let Some(expected) = mutation_aggregate {
-                    if expected != aggregate_id {
-                        diagnostics.push(CompilerDiagnostic::new(
-                            CompilerDiagnosticCode::CrossPartitionMutation,
-                            binding.entity_span,
-                        ));
-                    }
-                } else {
-                    mutation_aggregate = Some(aggregate_id);
-                }
-            }
             validate_input_only_binding(command, binding, &mut diagnostics);
             let Some(aggregate) = hir.aggregate(aggregate_id) else {
                 continue;
@@ -621,7 +605,11 @@ contract Example version 1 {
     }
 
     #[test]
-    fn same_partition_writes_to_two_aggregates_reject() {
+    fn same_partition_writes_to_two_aggregates_are_admitted() {
+        // ADR-0170. This asserted a rejection until the record was accepted:
+        // two mutation aggregates were refused even when both derived one
+        // partition route. Conflict ownership is now the union of the keys the
+        // bindings derive, and the route proof below is what remains.
         let source = r#"
 contract Example version 1 {
   entity Account { key (tenant: uuid, account_id: uuid) }
@@ -648,13 +636,47 @@ contract Example version 1 {
   }
 }
 "#;
-        let diagnostics = analyze(source).expect_err("two mutation aggregates reject");
+        analyze(source).expect("two mutation aggregates on one partition route are admitted");
+    }
+
+    #[test]
+    fn writes_to_two_partition_routes_still_reject() {
+        // The half ADR-0170 keeps: bindings deriving different routes are the
+        // implicit distributed transaction the rule exists to prevent.
+        let source = r#"
+contract Example version 1 {
+  entity Account { key (tenant: uuid, account_id: uuid) }
+  entity Entry { key (region: uuid, entry_id: uuid) }
+  aggregate Accounts {
+    root Account
+    partition_by tenant
+    conflict_key (tenant, account_id)
+  }
+  aggregate Entries {
+    root Entry
+    partition_by region
+    conflict_key (region, entry_id)
+  }
+  command ChangeBoth {
+    input request_key: string<16>
+    input tenant: uuid
+    input region: uuid
+    input account_id: uuid
+    input entry_id: uuid
+    idempotency_key request_key
+    mutate Account(tenant, account_id) as account else MissingAccount {}
+    mutate Entry(region, entry_id) as entry else MissingEntry {}
+    return Changed { account: account, entry: entry }
+  }
+}
+"#;
+        let diagnostics = analyze(source).expect_err("two partition routes reject");
         let diagnostic = diagnostics
             .as_slice()
             .iter()
             .find(|diagnostic| diagnostic.code() == CompilerDiagnosticCode::CrossPartitionMutation)
-            .expect("mutation aggregate diagnostic");
-        let start = source.find("Entry(tenant").expect("second mutation");
+            .expect("partition route diagnostic");
+        let start = source.find("Entry(region").expect("second mutation");
         assert_eq!(
             diagnostic.primary_span(),
             Span::new(start, start + 5).expect("span")

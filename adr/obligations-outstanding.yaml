@@ -1339,8 +1339,9 @@ outstanding:
   - WP-721
   obligation: WP-721 must deliver the compiler proof, the union conflict ownership, and
     a deadlock-free lease ordering across aggregates before any writer behaviour changes.
-  reason: ADR-0170 was accepted 2026-08-29 as a decision, not as shipped behaviour. RDB-C017
-    still rejects every cross-aggregate write, and the encoding must reach executable IR V19
-    first, so no proof can exist until WP-721 lands. Format question settled in
-    docs/performance/wp-721-cross-aggregate-conflict-ownership.md.
+  reason: The compiler proof and union conflict ownership are delivered at executable IR V19, and
+    the canonical lease order over (aggregate, conflict key) was already implemented by
+    lower_conflict_keys. The obligation is not discharged because deadlock-freedom has no arm that
+    fails under an arbitrary acquisition order, and no arm proves a command writing two aggregates
+    is atomic across a restart. Verified by reading is not verified.
   owner: WP-721

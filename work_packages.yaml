@@ -2246,6 +2246,16 @@ work_packages:
       proportional state.
   human_review_triggers: *id001
 - id: WP-721
+  closure:
+    status: partial
+    evidence: crates/riffdb-contract-compiler/tests/cross_aggregate_writes.rs
+    decision: The compiler proof, union conflict ownership, and executable IR V19 are delivered, and
+      single-aggregate contracts keep byte-identical locks and plan hashes. The canonical lease order
+      was already implemented -- lower_conflict_keys sorts a deduplicated conflict-key set, and
+      ConflictKeyBuilder namespaces each key by aggregate, so that sort is already a total order over
+      (aggregate, key). What remains is proof rather than mechanism -- a deadlock arm that fails under
+      an arbitrary acquisition order, and a crash arm proving a command writing two aggregates is
+      atomic across a restart. Until both exist the package stays open.
   name: Partition-local cross-aggregate command writes
   depends_on: [WP-040, WP-080]
   objective: Close ADR-0170 by admitting a command whose create/mutate bindings derive one
