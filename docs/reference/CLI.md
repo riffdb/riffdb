@@ -346,6 +346,7 @@ Usage: riffdb contract [OPTIONS] <COMMAND>
 
 Commands:
   validate
+  explain   Describes one local contract's aggregates, keys, and deletion proofs
   deploy
 
 Options:
@@ -1138,6 +1139,26 @@ Options:
 
 ```text
 Usage: riffdb contract validate [OPTIONS] <SOURCE>
+
+Arguments:
+  <SOURCE>
+
+Options:
+      --config <PATH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+#### `riffdb contract explain`
+
+```text
+Describes one local contract's aggregates, keys, and deletion proofs
+
+Usage: riffdb contract explain [OPTIONS] <SOURCE>
 
 Arguments:
   <SOURCE>
