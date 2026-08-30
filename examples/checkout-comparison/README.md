@@ -13,7 +13,11 @@ transaction.
 |---|---|---|---:|
 | `atomic/` | one aggregate rooted at `Tenant` | `(tenant_id)` | 1 |
 | `saga/` | `ProductData` and `OrderData` | `(tenant_id, product_id)`, `(tenant_id, order_id)` | 2 |
+| `fine-atomic/` | `ProductData` and `OrderData`, one command | `(tenant_id, product_id)`, `(tenant_id, order_id)` | 1 |
 | `postgres/` | tables with foreign keys | row locks | 1 |
+
+`fine-atomic/` was unexpressible before ADR-0170. It is the shape the choice
+above used to exclude: fine conflict keys *and* a single atomic commit.
 
 The workload is identical in all three: a three-line checkout that decrements
 three products and writes one order with three lines. Each concurrent client
@@ -35,6 +39,7 @@ Postgres runs, each preceded by re-applying `schema.sql`, for the reason under
 |---|---:|---:|---:|---:|
 | `atomic` | **483** [492, 483, 478] | **2377** [2377, 2460, 2349] | **5259** [5245, 5259, 5265] | 10.9× |
 | `saga` | **244** [244, 244] | **1380** [1365, 1380] | **2559** [2523, 2594] | 10.5× |
+| `fine-atomic` | **485** [489, 480] | **2629** [2675, 2583] | **5740** [5401, 6078] | 11.8× |
 | `postgres` | **599** [607, 599, 592] | **2983** [3012, 2062, 2983] | **5833** [5974, 5753, 5833] | 9.7× |
 
 p50 latency at c=32: atomic 5.6 ms, saga 9.9 ms, Postgres 5.1 ms.
@@ -45,12 +50,22 @@ sharing one coarse conflict domain scaled as well as clients sharing none —
 concurrent writers whether or not they contend on a lease. Splitting the write
 cost roughly 2× throughput at every concurrency and doubled p50 latency.
 
+**Fine conflict keys and one commit is the best shape measured.** `fine-atomic`
+recovers the whole ~2× the split was costing (485 against the saga's 244 at
+c=1, 5740 against 2559 at c=32) while keeping the per-product conflict key the
+saga was paying for. It matches or slightly beats the coarse-key `atomic`
+contract at every concurrency, which is the expected result once the premise
+that a coarse key serialises writers has been refuted: the coarse key was never
+costing anything, so removing it wins nothing, and the second commit was
+costing everything.
+
 **Postgres is ahead of the single-aggregate contract by 11–26%**: 1.24× at
 c=1, 1.26× at c=8, 1.11× at c=32. That is consistent with the two other
 durable-write comparisons in this repository — 1.18× on a single-transaction
 order insert, 1.26× on the OpenFGA conformance suite — so the honest summary is
 that RiffDB trails Postgres modestly and consistently on durable write
-throughput, and that the aggregate split doubles that gap.
+throughput, and that the aggregate split doubles that gap. Against
+`fine-atomic` the remaining gap narrows to 7–18%.
 
 ## A confound worth avoiding
 
@@ -81,6 +96,7 @@ them.
 ```sh
 ../../scripts/riffdb-dev --application-root "$PWD/atomic" --acceptance
 ../../scripts/riffdb-dev --application-root "$PWD/saga" --acceptance
+../../scripts/riffdb-dev --application-root "$PWD/fine-atomic" --acceptance
 ```
 
 Each run prints three `BENCH` lines on stderr, one per concurrency.

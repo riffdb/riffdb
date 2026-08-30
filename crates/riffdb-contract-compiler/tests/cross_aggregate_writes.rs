@@ -158,3 +158,27 @@ fn a_single_aggregate_command_keeps_its_older_least_sufficient_identity() {
         "a single-aggregate contract must not be lifted to V19"
     );
 }
+
+#[test]
+fn a_cross_aggregate_bundle_round_trips_through_its_canonical_encoding() {
+    // The locality encoding is what feeds the command plan hash, so a decode
+    // that loses or reorders conflict ownership would surface much later as a
+    // stale application lock rather than as a decode failure.
+    let bundle = compile_contract_source(CROSS_AGGREGATE).expect("compiles");
+    let bytes = bundle.canonical_bytes().to_vec();
+    let decoded = riffdb_contract_ir::ContractBundle::decode(&bytes).expect("decodes");
+    assert_eq!(
+        decoded.canonical_bytes(),
+        bytes.as_slice(),
+        "a cross-aggregate bundle must re-encode to the same bytes"
+    );
+    assert_eq!(decoded.bundle_hash(), bundle.bundle_hash());
+
+    let command = decoded
+        .commands()
+        .iter()
+        .find(|command| command.name() == "Checkout")
+        .expect("Checkout survives the round trip");
+    assert!(command.locality().spans_aggregates());
+    assert_eq!(command.locality().conflict_keys().len(), 2);
+}
