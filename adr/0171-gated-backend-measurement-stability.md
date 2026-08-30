@@ -1,12 +1,20 @@
 # ADR-0171: Measurement Stability Binds the Gated Backend
 
-- **Status:** Proposed
+- **Status:** Accepted
+- **Obligations:**
+  - `OBL-0171-1` The verifier binds the spread rule to the gated backend and
+    treats the comparator's spread as published disclosure, in both directions
+    and with each direction separately load-bearing: an unstable comparator
+    passes carrying its spread and a disclosure marker, a stable comparator is
+    not marked disclosed, and an unstable RiffDB fails on a receipt that is
+    otherwise self-consistent.
+    Proof: `check-wp674-unary-baseline --self-test`
 - **Direction approved:** 2026-08-30
-- **Exact text accepted:** No
-- **Accepted:** Not accepted
+- **Exact text accepted:** Yes, 2026-08-30
+- **Accepted:** 2026-08-30
 - **Acceptance reference:** Maintainer approved the direction in the current
-  Claude Code session on the measurement recorded under "Evidence"; the exact
-  text is not yet accepted
+  Claude Code session on the measurement recorded under "Evidence", then
+  accepted this record's exact text on being told it awaited that acceptance
 - **Decision deadline:** Before WP-674 attempts another unary bank
 - **Requires:** ADR-0142, ADR-0143, ADR-0146
 - **Amends:** `PERF-008`'s unary evidence-integrity rule
@@ -145,14 +153,28 @@ None. Measurement governance carries no authority, credential, or data path.
 
 ## Testing
 
-`scripts/check-wp674-unary-baseline` owns the rule and has a self-test. It must
-gain arms for both directions above: an unstable comparator that passes with
-disclosure, and an unstable RiffDB that fails.
+`scripts/check-wp674-unary-baseline` owns the rule and has a self-test. It has
+gained arms for both directions above: an unstable comparator that passes with
+disclosure and retains its spread, a stable comparator that is not marked as
+disclosed, and an unstable RiffDB that fails.
+
+The two failing directions are separately load-bearing, checked by drifting the
+implementation and confirming each arm speaks on its own. The pre-existing
+`spread` arm mutates only the summary, so it can also fail on the
+ratio-derivation check and pass vacuously when the stability rule is removed;
+the new `riffdb_spread` arm keeps the whole receipt self-consistent so the
+stability rule is the only thing left to reject it.
+
+`method.stability_rule_binds` is recorded in the baseline receipt, so a
+candidate measured under the old both-backends rule fails the existing
+method-drift check rather than being silently compared against a baseline that
+meant something different.
 
 ## Requirements and Work Packages
 
-Amends `PERF-008`. WP-674 must implement the split rule in the verifier and its
-self-test before banking under it.
+Amends `PERF-008` and `PERF-018`. WP-674 implements the split rule in the
+verifier and its self-test, discharged as `OBL-0171-1`. What remains for WP-674
+is the qualification run itself.
 
 ## Decision Deadline
 
