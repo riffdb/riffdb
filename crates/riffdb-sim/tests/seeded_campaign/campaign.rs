@@ -956,32 +956,33 @@ fn per_merge_sweep_holds_the_oracle_and_reaches_the_swept_territory() {
             .max_torn_in_one_recovery
             .max(report.max_torn_in_one_recovery);
     }
-    let commit_present =
-        match run_campaign_outcome(0x51C2_C147, crate::subsumption::COMMIT_PRESENT_ARMS_CONFIG) {
+    // The targeted interrupted-commit witness, rotated to 0x51C2_C406 when
+    // fa5d906c moved the operation stream off 0x51C2_C147. It is no longer a
+    // commit-PRESENT witness: that territory was retired rather than rotated,
+    // because it is unreachable at every crash placement rather than merely
+    // moved. See `corpus::REGRESSION_CORPUS` for both receipts.
+    let interrupted_commit =
+        match run_campaign_outcome(0x51C2_C406, crate::subsumption::COMMIT_PRESENT_ARMS_CONFIG) {
             CampaignOutcome::Completed(report) => report,
             CampaignOutcome::WedgedByRedb410FileGrowth { .. } => {
-                panic!("targeted commit-PRESENT witness wedged instead of completing")
+                panic!("targeted interrupted-commit witness wedged instead of completing")
             }
         };
     assert_eq!(
-        commit_present.final_frontier,
+        interrupted_commit.final_frontier,
         u64::from(
             crate::subsumption::COMMIT_PRESENT_ARMS_CONFIG
                 .generator
                 .commands
         ),
-        "targeted commit-PRESENT witness did not drive the plan to completion"
+        "targeted interrupted-commit witness did not drive the plan to completion"
     );
     assert!(
-        commit_present.in_flight_commit_present > 0,
-        "targeted recovery did not resolve an interrupted commit as present"
-    );
-    assert!(
-        commit_present.in_flight_commit_absent > 0,
+        interrupted_commit.in_flight_commit_absent > 0,
         "targeted recovery did not resolve an interrupted commit as absent"
     );
     assert!(
-        commit_present.in_flight_admit_present + commit_present.in_flight_admit_absent > 0,
+        interrupted_commit.in_flight_admit_present + interrupted_commit.in_flight_admit_absent > 0,
         "targeted recovery did not resolve an interrupted phase-one admission"
     );
     assert!(
@@ -1008,6 +1009,25 @@ fn per_merge_sweep_holds_the_oracle_and_reaches_the_swept_territory() {
     assert!(
         total.in_flight_commit_absent > 0,
         "no swept recovery resolved an interrupted commit as absent"
+    );
+    // The assertion whose absence let this change go unnoticed. The sweep
+    // asserted the ABSENT direction and never asserted the PRESENT one, so
+    // fa5d906c closing the in-doubt interval was invisible here even though
+    // it is the more dangerous direction to change silently.
+    //
+    // It is now asserted in the direction that is true: a batch's engine
+    // commit is the last fault-eligible operation of its step, so no crash
+    // leaves a batch durable but unacknowledged. That is proved exhaustively
+    // over crash placement by `wp725_commit_present_window_ordinal_walk` and
+    // receipted as a retirement in the corpus and the SIM-006 classification.
+    assert_eq!(
+        total.in_flight_commit_present, 0,
+        "a swept recovery resolved an interrupted commit as PRESENT. The \
+         in-doubt interval -- durable but unacknowledged -- has been closed \
+         since fa5d906c, so this means it reopened. That is a change in when \
+         durability becomes observable and belongs in ADR-0156/ADR-0157: \
+         restore the retired corpus expectation and SIM-006 row rather than \
+         relaxing this assertion. Totals: {total:?}"
     );
     assert!(
         total.in_flight_admit_present + total.in_flight_admit_absent > 0,

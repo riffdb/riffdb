@@ -2358,10 +2358,26 @@ work_packages:
     state. Clean-close fast startup made batch acknowledgement exact
   - A sweep-level assertion on total.in_flight_commit_present, whose absence is why a regression in
     the more dangerous recovery direction survived unnoticed; the sweep asserts the absent case and
-    never asserted the present one
+    never asserted the present one. Delivered. The sweep now asserts the present count is zero with
+    the reasoning attached, so a reopened in-doubt interval reds in the standard suite rather than
+    waiting for a diagnostic run
   - Restored reproduction, or re-pinned schedules only after the two questions above are answered.
     Re-pinning first would turn the suite green while leaving a recovery-visibility change unexamined
-    immediately before a release
+    immediately before a release. Delivered, and the regression was six changes rather than one.
+    wp725_corpus_territory_audit replays every corpus entry at once instead of stopping at the first
+    failure, which showed fa5d906c moved windows in both directions -- it invalidated three active
+    witnesses and restored two that earlier layout changes had rotated away. Five are ordinary
+    rotations and restorations; only the commit-PRESENT territory is gone rather than moved
+  - Typed retirement distinct from rotation, in both registries. A rotation names a successor that
+    reaches the moved window; a retirement records that no successor exists, which is a claim a
+    re-pin cannot check. CorpusTerritoryRetirement and ScenarioClass::ExcludedStorageStateUnreachable
+    each keep the last witness replaying with the retired expectation inverted, so reproducing the
+    state again fails rather than passing quietly. Both were drift-checked against a territory that
+    is still live
+  - Successors scouted rather than guessed. wp725_scout_successor_witnesses applies the bar the
+    existing receipts record -- identical counters across 12 reruns before pinning -- and all three
+    pinned successors met it. Restorations were verified against the diff, since the full corpus
+    replay passes at fa5d906c~1
   acceptance_commands:
   - cargo +1.97.0 test -p riffdb-sim --all-features
   exit_gate: The seeded campaign is green, and a deliberately drifted pin fails with a diagnosis

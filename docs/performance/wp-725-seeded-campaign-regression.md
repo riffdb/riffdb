@@ -198,8 +198,54 @@ suite around a guarantee that changed.
 
 Retiring it also means the sweep must gain the assertion whose absence let this
 go unnoticed: the sweep asserted the ABSENT case and never asserted the PRESENT
-one. Its replacement is the walk — an assertion that no ordinal resolves
-PRESENT — which fails if the in-doubt window ever reopens.
+one. It now asserts `total.in_flight_commit_present == 0` with the reasoning
+attached, so a change that reopens the interval reds in the standard suite
+rather than waiting for someone to run a diagnostic.
 
 This is a behaviour change ADR-0156/ADR-0157 did not anticipate or record, and
 it should be added to them as a consequence.
+
+## The retirement was one of six changes, not the whole regression
+
+Fixing the first failure and re-running produced a second, then a third. That
+is the wrong way to read a suite whose failures share a cause, so
+`wp725_corpus_territory_audit` replays every corpus entry and reports all of
+them at once instead of stopping at the first. Its output is the actual shape:
+
+| seed | before | after `fa5d906c` | treatment |
+|---|---|---|---|
+| `0x51C2C067` | rotated away 2026-08-11 | reaches its territory again | **restored** |
+| `0x51C2C0DF` | rotated away 2026-08-18 | reaches its territory again | **restored** |
+| `0x51C2C000` | active | torn decisions 23, below its pinned 30 | rotated to `0x51C2C307` |
+| `0x51C2C147` | active | no interrupted admission resolves | rotated to `0x51C2C406` |
+| `0x51C2C200` | active | no interrupted admission resolves | rotated to `0x51C2C504` |
+| commit-PRESENT | witnessed by `0x51C2C147` | unreachable at every placement | **retired** |
+
+So `fa5d906c` moved the physical operation stream for the third time in this
+corpus's history, and it moved windows in *both* directions — invalidating three
+witnesses while restoring two that an earlier layout change had rotated away.
+Only the commit-PRESENT territory is gone rather than moved, and only it is
+retired; the other five are the corpus's ordinary rotation and restoration
+machinery doing its job.
+
+That distinction is the whole point of separating the two receipts. A blanket
+re-pin would have recorded six identical "the schedule moved" notes and buried
+the one entry that is a behaviour change.
+
+### What each treatment had to prove
+
+Restorations were checked against the diff, not inferred: the full corpus replay
+passes at `fa5d906c~1`, so neither restored entry reached its territory there.
+
+Rotations were scouted by `wp725_scout_successor_witnesses` and held to the bar
+the existing receipts record — a candidate must reproduce identical counters
+across 12 reruns before pinning, or it is schedule luck rather than a witness.
+All three successors met it.
+
+The retirement carries the extra burden, because "no successor exists" is the
+claim a re-pin cannot check. It is proved exhaustively over crash placement by
+the walk, and it stays falsifiable: `0x51C2C406` keeps replaying with the
+retired expectation **inverted**, so reproducing commit-PRESENT again fails the
+corpus. `subsumption::retired_rows_replay_without_reaching_their_crash_point`
+does the same for the SIM-006 row. Both were drift-checked by pointing the
+retirement at a territory that is still live and confirming they red.

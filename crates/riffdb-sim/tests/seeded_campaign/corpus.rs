@@ -105,6 +105,10 @@ pub(crate) struct CorpusEntry {
     /// successor must appear later in the append-only corpus; repeated layout
     /// changes may form a forward-only chain whose terminal entry is active.
     pub rotation: Option<CorpusWitnessRotation>,
+    /// A reviewed retirement of part of this entry's territory, when an
+    /// intentional change made that state unreachable rather than moving it.
+    /// A chain of rotations ends in a retirement when the window closes.
+    pub retirement: Option<CorpusTerritoryRetirement>,
 }
 
 /// Receipted replacement of one schedule-sensitive corpus witness.
@@ -122,6 +126,31 @@ pub(crate) struct CorpusWitnessRotation {
     /// so the corpus records the whole history rather than dropping the
     /// rotation that was true in between.
     pub restored_by: Option<&'static str>,
+}
+
+/// Receipted retirement of one expectation whose territory an intentional
+/// change made unreachable.
+///
+/// This is not a rotation. A rotation says "the window moved, here is the
+/// successor that reaches it"; a retirement says "there is no window left, and
+/// therefore no successor to pin". Rotating instead would demand a witness for
+/// a state the engine cannot enter, and the only way to satisfy that demand is
+/// to stop asserting anything.
+///
+/// The entry stays in the append-only corpus and keeps replaying. Its
+/// surviving expectations must still hold, and `retired_expectations` must NOT
+/// hold — so a change that reopens the territory reds here.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CorpusTerritoryRetirement {
+    /// Exact RiffDB commit whose intentional change closed the territory.
+    pub closed_by_commit: &'static str,
+    /// Review date (UTC).
+    pub retired: &'static str,
+    /// Expectations this entry must no longer reproduce.
+    pub retired_expectations: &'static [CorpusExpectation],
+    /// Test proving the closure exhaustively over crash placement, rather
+    /// than a sample that merely failed to find the window.
+    pub proof: &'static str,
 }
 
 /// The corpus. Append-only.
@@ -147,6 +176,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             rotated: "2026-08-11",
             restored_by: Some("c7ec046edb68fd489a7ca00f7c356f6265f979c7"),
         }),
+        retirement: None,
     },
     CorpusEntry {
         seed: 0x51C2_C067,
@@ -168,8 +198,17 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             successor_seed: 0x51C2_C000,
             invalidated_by_commit: "c2bba5ce043d9b8933e432c6d2a49e5adf618985",
             rotated: "2026-08-11",
-            restored_by: None,
+            // Clean-close fast startup removed storage work from recovery,
+            // which moved the operation stream again and landed this window
+            // back on the original seed: 42 torn decisions, an interrupted
+            // commit resolved absent, six recovery-window crashes, ten
+            // initialization survivals. Verified against the diff rather than
+            // assumed -- the whole corpus replay passes at fa5d906c~1, so this
+            // entry did not reach its territory there. The 2026-08-11 rotation
+            // receipt is retained because it was true in between.
+            restored_by: Some("fa5d906c3abc47af15590810676f27615233aef5"),
         }),
+        retirement: None,
     },
     CorpusEntry {
         seed: 0x51C2_C0E1,
@@ -194,6 +233,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             rotated: "2026-08-14",
             restored_by: None,
         }),
+        retirement: None,
     },
     CorpusEntry {
         seed: 0x51C2_C006,
@@ -222,6 +262,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             // 4.1.0 pin; the successor witness stays in the corpus.
             restored_by: Some("c7ec046edb68fd489a7ca00f7c356f6265f979c7"),
         }),
+        retirement: None,
     },
     CorpusEntry {
         seed: 0x51C2_C022,
@@ -242,6 +283,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             rotated: "2026-08-14",
             restored_by: Some("c7ec046edb68fd489a7ca00f7c356f6265f979c7"),
         }),
+        retirement: None,
     },
     CorpusEntry {
         seed: 0x51C2_C000,
@@ -260,7 +302,13 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             CorpusExpectation::RecoveryWindowCrash,
             CorpusExpectation::InitializationBoundary,
         ]),
-        rotation: None,
+        rotation: Some(CorpusWitnessRotation {
+            successor_seed: 0x51C2_C307,
+            invalidated_by_commit: "fa5d906c3abc47af15590810676f27615233aef5",
+            rotated: "2026-08-30",
+            restored_by: None,
+        }),
+        retirement: None,
     },
     CorpusEntry {
         seed: 0x51C2_C001,
@@ -285,6 +333,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             rotated: "2026-08-18",
             restored_by: None,
         }),
+        retirement: None,
     },
     CorpusEntry {
         seed: 0x51C2_C0DF,
@@ -306,8 +355,15 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             successor_seed: 0x51C2_C200,
             invalidated_by_commit: "c7ec046edb68fd489a7ca00f7c356f6265f979c7",
             rotated: "2026-08-18",
-            restored_by: None,
+            // Clean-close fast startup moved the operation stream a third time
+            // and landed this window back on the original seed: five
+            // recovery-window crashes, 32 torn decisions, an interrupted
+            // admission resolved. The corpus replay passes at fa5d906c~1, so
+            // this entry did not reach its territory there. Both receipts are
+            // retained; the successor stays in the corpus.
+            restored_by: Some("fa5d906c3abc47af15590810676f27615233aef5"),
         }),
+        retirement: None,
     },
     CorpusEntry {
         seed: 0x51C2_C06D,
@@ -322,6 +378,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
         pinned: "2026-08-14",
         outcome: CorpusOutcome::WedgesUntilRedbFileGrowthFix,
         rotation: None,
+        retirement: None,
     },
     CorpusEntry {
         seed: 0x51C2_C147,
@@ -342,7 +399,13 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             CorpusExpectation::InFlightCommitAbsent,
             CorpusExpectation::InFlightAdmitResolved,
         ]),
-        rotation: None,
+        rotation: Some(CorpusWitnessRotation {
+            successor_seed: 0x51C2_C406,
+            invalidated_by_commit: "fa5d906c3abc47af15590810676f27615233aef5",
+            rotated: "2026-08-30",
+            restored_by: None,
+        }),
+        retirement: None,
     },
     CorpusEntry {
         seed: 0x51C2_C200,
@@ -360,9 +423,129 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             CorpusExpectation::TornDecisionsAtLeast(10),
             CorpusExpectation::InFlightAdmitResolved,
         ]),
+        rotation: Some(CorpusWitnessRotation {
+            successor_seed: 0x51C2_C504,
+            invalidated_by_commit: "fa5d906c3abc47af15590810676f27615233aef5",
+            rotated: "2026-08-30",
+            restored_by: None,
+        }),
+        retirement: None,
+    },
+    // ---- successors appended for fa5d906c, clean-close fast startup -------
+    //
+    // That commit removed storage work from recovery, moving the physical
+    // operation stream for the third time in this corpus's history. It also
+    // moved two older windows BACK onto their original seeds (0x51C2C067 and
+    // 0x51C2C0DF, receipted above), so the same change both invalidated and
+    // restored witnesses -- which is why each direction is recorded separately
+    // rather than as one blanket re-pin.
+    //
+    // Scouted by `wp725_scout_successor_witnesses` and held to the bar the
+    // existing receipts record: identical counters across 12 reruns before
+    // pinning.
+    CorpusEntry {
+        seed: 0x51C2_C307,
+        generator_version: 1,
+        config: COMMIT_ARMS_CONFIG,
+        caught: "active successor for the heavy torn-recovery territory after \
+                 fa5d906c clean-close fast startup moved the physical \
+                 operation stream: 44 torn decisions across 14 recoveries, \
+                 three interrupted batches resolved absent, six \
+                 recovery-window crashes, and nine initialization boundary \
+                 resolutions with the oracle holding throughout; rerun 12/12 \
+                 with identical counters before pinning.",
+        pinned: "2026-08-30",
+        outcome: CorpusOutcome::Completes(&[
+            CorpusExpectation::TornDecisionsAtLeast(30),
+            CorpusExpectation::InFlightCommitAbsent,
+            CorpusExpectation::RecoveryWindowCrash,
+            CorpusExpectation::InitializationBoundary,
+        ]),
         rotation: None,
+        retirement: None,
+    },
+    CorpusEntry {
+        seed: 0x51C2_C406,
+        generator_version: 1,
+        config: COMMIT_PRESENT_ARMS_CONFIG,
+        caught: "active successor for the interrupted-commit and \
+                 interrupted-admission territory after fa5d906c. It is the \
+                 terminal entry of the commit-PRESENT chain: that resolution \
+                 is not merely rarer here, it is unreachable at every crash \
+                 placement, so this entry carries a retirement receipt instead \
+                 of a fourth successor. One interrupted batch resolves absent, \
+                 three interrupted admissions resolve, 55 torn decisions \
+                 resolve, and 15 crashes land inside recovery windows; rerun \
+                 12/12 with identical counters before pinning.",
+        pinned: "2026-08-30",
+        outcome: CorpusOutcome::Completes(&[
+            CorpusExpectation::InFlightCommitAbsent,
+            CorpusExpectation::InFlightAdmitResolved,
+        ]),
+        rotation: None,
+        // The chain ends here. Rotating again would demand a witness for a
+        // state the engine can no longer enter: a batch's engine commit is now
+        // the last fault-eligible operation of its step, so a caller-visible
+        // commit failure implies non-durability. Confirmed benign rather than
+        // silent loss -- the oracle checks every family in both directions and
+        // diverged on none of the 823 ABSENT resolutions the walk produced.
+        retirement: Some(CorpusTerritoryRetirement {
+            closed_by_commit: "fa5d906c3abc47af15590810676f27615233aef5",
+            retired: "2026-08-30",
+            retired_expectations: &[CorpusExpectation::InFlightCommitPresent],
+            proof: "campaign::wp725_commit_present_window_ordinal_walk",
+        }),
+    },
+    CorpusEntry {
+        seed: 0x51C2_C504,
+        generator_version: 1,
+        config: COMMIT_ARMS_CONFIG,
+        caught: "active successor for crash-during-recovery plus interrupted \
+                 admission after fa5d906c moved the physical operation stream: \
+                 six of fourteen crashes land in recovery windows, 46 torn \
+                 decisions resolve, two interrupted admissions resolve, and \
+                 two interrupted batches resolve absent; rerun 12/12 with \
+                 identical counters before pinning.",
+        pinned: "2026-08-30",
+        outcome: CorpusOutcome::Completes(&[
+            CorpusExpectation::RecoveryWindowCrash,
+            CorpusExpectation::TornDecisionsAtLeast(10),
+            CorpusExpectation::InFlightAdmitResolved,
+        ]),
+        rotation: None,
+        retirement: None,
     },
 ];
+
+/// Whether a rotation's successor still covers the territory the rotated entry
+/// was pinned for.
+///
+/// Normally that is exact outcome equality. A successor that has itself been
+/// partly retired is the one exception: the territory it covered when pinned is
+/// what it still asserts PLUS what it now asserts is gone, and that
+/// reconstruction is what must match. Comparing only the live half would let a
+/// retirement silently shrink every ancestor in the chain.
+fn successor_preserves_territory(entry: &CorpusEntry, successor: &CorpusEntry) -> bool {
+    let (CorpusOutcome::Completes(wanted), CorpusOutcome::Completes(live)) =
+        (entry.outcome, successor.outcome)
+    else {
+        return successor.outcome == entry.outcome;
+    };
+    let retired = successor
+        .retirement
+        .map_or(&[][..], |retirement| retirement.retired_expectations);
+    if retired.is_empty() {
+        return successor.outcome == entry.outcome;
+    }
+    // Set equality across the live and retired halves. `CorpusExpectation` is
+    // Copy + Eq and these lists hold a handful of entries, so a linear scan is
+    // the whole implementation.
+    wanted
+        .iter()
+        .all(|needle| live.contains(needle) || retired.contains(needle))
+        && live.iter().all(|held| wanted.contains(held))
+        && retired.iter().all(|gone| wanted.contains(gone))
+}
 
 fn outcome_holds(entry: &CorpusEntry, outcome: &CampaignOutcome) -> bool {
     match (entry.outcome, outcome) {
@@ -424,10 +607,16 @@ fn regression_corpus_replays_and_reproduces_its_territory() {
                 entry.seed,
                 rotation.successor_seed
             );
-            assert_eq!(
-                successor.outcome, entry.outcome,
-                "corpus seed {:#x} rotation successor {:#x} must preserve the exact expected territory",
-                entry.seed, rotation.successor_seed
+            assert!(
+                successor_preserves_territory(entry, successor),
+                "corpus seed {:#x} rotation successor {:#x} must preserve the \
+                 exact expected territory: {:?} against {:?} plus retirement \
+                 {:?}",
+                entry.seed,
+                rotation.successor_seed,
+                entry.outcome,
+                successor.outcome,
+                successor.retirement.map(|r| r.retired_expectations)
             );
             assert!(
                 rotation.invalidated_by_commit.len() == 40
@@ -486,6 +675,55 @@ fn regression_corpus_replays_and_reproduces_its_territory() {
                         entry.caught
                     );
                 }
+                if let Some(retirement) = entry.retirement {
+                    assert!(
+                        !retirement.retired_expectations.is_empty(),
+                        "corpus seed {:#x} carries an empty retirement; drop \
+                         the annotation rather than recording a receipt for \
+                         nothing",
+                        entry.seed
+                    );
+                    assert!(
+                        retirement.closed_by_commit.len() == 40
+                            && retirement
+                                .closed_by_commit
+                                .bytes()
+                                .all(|byte| byte.is_ascii_hexdigit()),
+                        "corpus seed {:#x} retirement must name an exact Git \
+                         commit",
+                        entry.seed
+                    );
+                    assert!(
+                        !retirement.retired.is_empty() && !retirement.proof.is_empty(),
+                        "corpus seed {:#x} retirement needs a date and a \
+                         standing proof",
+                        entry.seed
+                    );
+                    for retired in retirement.retired_expectations {
+                        assert!(
+                            !expectations.contains(retired),
+                            "corpus seed {:#x} both requires and retires \
+                             {retired:?}",
+                            entry.seed
+                        );
+                        // The inverted assertion. A retirement claims the
+                        // territory is gone; if the replay reaches it again
+                        // the claim is false, and the entry must be restored
+                        // rather than the receipt amended.
+                        assert!(
+                            !retired.holds(&report),
+                            "corpus seed {:#x} reproduces {retired:?} again, \
+                             which was retired {} as unreachable since {}. \
+                             Restore it to the entry's expectations and re-run \
+                             {} to re-measure the window, rather than editing \
+                             this receipt; report: {report:?}",
+                            entry.seed,
+                            retirement.retired,
+                            retirement.closed_by_commit,
+                            retirement.proof
+                        );
+                    }
+                }
             }
             CorpusOutcome::WedgesUntilRedbFileGrowthFix => {
                 if REDB_PIN_CONTAINS_FD82CED {
@@ -518,6 +756,158 @@ fn regression_corpus_replays_and_reproduces_its_territory() {
                     );
                 }
             }
+        }
+    }
+}
+
+/// Replays every corpus entry and reports which expectations still hold,
+/// instead of stopping at the first that does not.
+///
+/// `regression_corpus_replays_and_reproduces_its_territory` is a gate and
+/// rightly fails fast. That makes it a poor instrument when an intentional
+/// change moves the physical operation stream, because the first failure hides
+/// how many entries moved and in which direction — and treating them one at a
+/// time invites re-pinning each in turn without ever seeing the shape. Running
+/// this first is what showed `fa5d906c` both invalidated three witnesses and
+/// restored two others.
+#[test]
+#[ignore = "WP-725 diagnostic audit; run explicitly"]
+fn wp725_corpus_territory_audit() {
+    for entry in REGRESSION_CORPUS {
+        let outcome = run_campaign_outcome(entry.seed, entry.config);
+        let CampaignOutcome::Completed(report) = outcome else {
+            println!("corpus-audit\tseed={:#x}\tWEDGED", entry.seed);
+            continue;
+        };
+        let expectations = match entry.outcome {
+            CorpusOutcome::Completes(expectations) => expectations,
+            CorpusOutcome::WedgesUntilRedbFileGrowthFix => {
+                println!(
+                    "corpus-audit\tseed={:#x}\tcompleted (pinned as a wedge)",
+                    entry.seed
+                );
+                continue;
+            }
+        };
+        let retired = entry
+            .retirement
+            .map_or(&[][..], |retirement| retirement.retired_expectations);
+        let verdicts: Vec<String> = expectations
+            .iter()
+            .map(|expectation| {
+                let mark = if expectation.holds(&report) { "+" } else { "-" };
+                format!("{mark}{expectation:?}")
+            })
+            .chain(retired.iter().map(|expectation| {
+                // A retired expectation is inverted: holding is the failure.
+                let mark = if expectation.holds(&report) { "!" } else { "=" };
+                format!("{mark}retired:{expectation:?}")
+            }))
+            .collect();
+        println!(
+            "corpus-audit\tseed={:#x}\trotation={}\ttorn={}\tabsent={}\t\
+             present={}\tadmit={}\twindow={}\tinit={}\t{}",
+            entry.seed,
+            entry
+                .rotation
+                .map_or("none", |rotation| if rotation.restored_by.is_some() {
+                    "restored"
+                } else {
+                    "rotated"
+                }),
+            report.torn_decisions,
+            report.in_flight_commit_absent,
+            report.in_flight_commit_present,
+            report.in_flight_admit_present + report.in_flight_admit_absent,
+            report.recovery_window_crashes,
+            report.initialization_rolled_back + report.initialization_survived,
+            verdicts.join(" ")
+        );
+    }
+}
+
+/// Scouts successor witnesses for territories an intentional change moved.
+///
+/// The corpus convention is to rotate: keep the historical coordinate, prove
+/// it no longer reaches its territory, and append a successor that does. This
+/// finds candidates for that append and applies the bar the existing receipts
+/// record — a candidate must reproduce identical counters across repeated runs
+/// before it is worth pinning, or it is schedule luck rather than a witness.
+#[test]
+#[ignore = "WP-725 successor scout; run explicitly"]
+fn wp725_scout_successor_witnesses() {
+    const SCAN: u64 = 4_096;
+    const WANTED: usize = 3;
+    const RERUNS: u32 = 12;
+    for (label, base, config, required) in [
+        (
+            "heavy-torn (successor for 0x51C2C000)",
+            0x51C2_C300_u64,
+            COMMIT_ARMS_CONFIG,
+            &[
+                CorpusExpectation::TornDecisionsAtLeast(30),
+                CorpusExpectation::InFlightCommitAbsent,
+                CorpusExpectation::RecoveryWindowCrash,
+                CorpusExpectation::InitializationBoundary,
+            ][..],
+        ),
+        (
+            "commit-absent + admission (successor for 0x51C2C147)",
+            0x51C2_C400,
+            COMMIT_PRESENT_ARMS_CONFIG,
+            &[
+                CorpusExpectation::InFlightCommitAbsent,
+                CorpusExpectation::InFlightAdmitResolved,
+            ][..],
+        ),
+        (
+            "recovery-window + admission (successor for 0x51C2C200)",
+            0x51C2_C500,
+            COMMIT_ARMS_CONFIG,
+            &[
+                CorpusExpectation::RecoveryWindowCrash,
+                CorpusExpectation::TornDecisionsAtLeast(10),
+                CorpusExpectation::InFlightAdmitResolved,
+            ][..],
+        ),
+    ] {
+        let mut found = 0;
+        for offset in 0..SCAN {
+            let seed = base + offset;
+            let CampaignOutcome::Completed(report) = run_campaign_outcome(seed, config) else {
+                continue;
+            };
+            if report.final_frontier != u64::from(config.generator.commands) {
+                continue;
+            }
+            if !required.iter().all(|wanted| wanted.holds(&report)) {
+                continue;
+            }
+            let stable = (0..RERUNS).all(|_| {
+                matches!(
+                    run_campaign_outcome(seed, config),
+                    CampaignOutcome::Completed(rerun) if rerun == report
+                )
+            });
+            println!(
+                "corpus-scout\t{label}\tseed={seed:#x}\tstable={stable}\t\
+                 torn={}\tabsent={}\tpresent={}\tadmit={}\twindow={}\tinit={}",
+                report.torn_decisions,
+                report.in_flight_commit_absent,
+                report.in_flight_commit_present,
+                report.in_flight_admit_present + report.in_flight_admit_absent,
+                report.recovery_window_crashes,
+                report.initialization_rolled_back + report.initialization_survived,
+            );
+            if stable {
+                found += 1;
+                if found == WANTED {
+                    break;
+                }
+            }
+        }
+        if found == 0 {
+            println!("corpus-scout\t{label}\tNO CANDIDATE in {SCAN} seeds");
         }
     }
 }
