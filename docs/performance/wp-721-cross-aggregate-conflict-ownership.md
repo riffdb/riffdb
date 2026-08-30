@@ -234,12 +234,44 @@ index, and `a_cross_aggregate_index_entry_cannot_leave_the_command_partition`
 pins the second half of the contradiction as a value-level check that needs no
 database, so the constraint is executable evidence rather than a comment.
 
-What it does not do is fix it. The options are to reject the shape at compile
-time with a diagnostic that says so, or to make index partitioning
-per-aggregate — which means relaxing the write plan's one-partition rule and is
-a durable-layout question, not a compiler one. Either is an ADR-0170 amendment
-rather than an implementation choice, so this note states the finding and
-WP-721 carries it forward.
+## The fix: index entries follow their owning aggregate
+
+Of the two options — refuse the shape at compile time, or partition index
+entries per aggregate — the second was accepted, because it removes the
+restriction rather than naming it.
+
+`owning_partition_key` derives each index entry's partition key from the
+**index owner's** aggregate rather than the command's. The route values are
+identical by construction (the compiler refuses a command whose bindings derive
+different partition routes), so it decodes the command's key under its own
+aggregate's schema and re-encodes the same values under the owner's.
+
+The write plan's one-partition rule relaxes to match, but only that far:
+`index_entry_partition_is_admissible` accepts an entry whose partition key
+carries a different aggregate namespace **on the same route**, and still refuses
+one addressing a different route. The storage boundary has no schema, so it
+compares the encoded route suffix — the key's bytes after the typed envelope and
+aggregate identifier — which is exactly the component material both schemas
+encode. Cross-partition writes stay refused, which is the property ADR-0170 kept.
+
+### Why this needed no compatibility handling
+
+For a single-aggregate command the index owner *is* the command's aggregate, so
+`owning_partition_key` returns the command's key unchanged and every existing
+contract's durable bytes are identical. The behaviour only differs in the
+cross-aggregate case, which was unreachable before — nothing durable exists in
+the old shape to migrate, because the old shape could not be written.
+
+That is also why the read path needed no change: capability partition scopes are
+already validated against the owning aggregate's partition schema
+(`validate_capability_partition`), so a query authorized for the second
+aggregate now finds its entries where it was already looking.
+
+`crash_after_cross_aggregate_commit_preserves_both_aggregates` carries an
+indexed second aggregate again, and
+`a_cross_aggregate_index_entry_may_change_namespace_but_not_route` pins both
+halves of the relaxation: the owner's namespace on the command's route is
+admitted, a different route is refused under either namespace.
 
 ## What this does not settle
 

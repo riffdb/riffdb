@@ -2490,15 +2490,17 @@ work_packages:
       one, and atomicity holds on both commit profiles -- nothing partial survives a pre-commit
       crash, and a post-commit crash recovers both aggregates under one commit sequence. Aborting
       after the commit instead of before makes it fail, so it is load-bearing. Building it found an
-      unstated restriction that keeps the package open, now for a different reason. A cross-aggregate
-      command's non-locality aggregate cannot carry an index. Index entries are partitioned by the
-      command's single partition key, namespaced by the locality aggregate, so keeping that key
-      makes validate_persisted_key reject the durable state at the next startup, while giving the
-      index its owner's key makes CommandWriteSetPlanV1 refuse the write plan. Unreachable from both
-      directions, found by a clean commit-and-reopen rather than by a crash, and detailed in
-      docs/performance/wp-721-cross-aggregate-conflict-ownership.md. Resolving it is an ADR-0170
-      amendment -- reject the shape at compile time, or make index partitioning per-aggregate and
-      relax the write plan's one-partition rule -- not an implementation choice.
+      unstated restriction, since fixed. A cross-aggregate command's non-locality aggregate could not
+      carry an index. Index entries were partitioned by the command's single partition key,
+      namespaced by the locality aggregate, so keeping that key made validate_persisted_key reject
+      the durable state at the next startup, while giving the index its owner's key made
+      CommandWriteSetPlanV1 refuse the write plan. Unreachable from both directions, and found by a
+      clean commit-and-reopen rather than by a crash. owning_partition_key now derives each entry's
+      key from the index owner's aggregate, and the write plan accepts a different aggregate
+      namespace on the same route while still refusing a different route. No compatibility handling
+      was needed -- for a single-aggregate command the owner is the command's aggregate and the key
+      is unchanged, and the previously broken shape had no durable representation to migrate.
+      Detailed in docs/performance/wp-721-cross-aggregate-conflict-ownership.md.
   name: Partition-local cross-aggregate command writes
   depends_on: [WP-040, WP-080]
   objective: Close ADR-0170 by admitting a command whose create/mutate bindings derive one
@@ -2530,11 +2532,11 @@ work_packages:
     serialise against each other. The crash coverage is delivered as
     crash_before_cross_aggregate_commit_leaves_both_aggregates_absent and
     crash_after_cross_aggregate_commit_preserves_both_aggregates over both commit profiles
-  - An accepted resolution for the index restriction the crash arm found, and its diagnostic. Today
-    a contract whose second aggregate indexes anything compiles, passes RDB-C017, and fails only
-    when a command first writes it, with either an unopenable database or a runtime refusal and no
-    diagnostic naming the cause. a_cross_aggregate_index_entry_cannot_leave_the_command_partition
-    pins the constraint as executable evidence in the meantime
+  - Per-aggregate index partitioning, resolving the restriction the crash arm found. Index entries
+    follow their owning aggregate's partition key, and the write plan's one-partition rule relaxes
+    to a same-route rule so cross-partition writes stay refused.
+    a_cross_aggregate_index_entry_may_change_namespace_but_not_route pins both halves, and the crash
+    arm carries an indexed second aggregate
   acceptance_commands:
   - cargo +1.97.0 test --workspace --all-features
   - ./scripts/check-adr-obligations
