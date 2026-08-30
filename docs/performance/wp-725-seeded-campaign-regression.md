@@ -119,28 +119,87 @@ Widening the window, shifting it later, and doubling crash density all produce
 zero. With the 96-seed sweep that is 216 campaigns and not one after-commit
 resolution.
 
-## The open question, stated precisely
+## What the frontier is, and why that narrows it
+
+The recovered application frontier is not a separately written pointer. It is
+**derived** from the COMMITS table by
+`command_authority_head_profiled(&commits, &events)` in
+`read_commit_tail_profiled`. A commit record that is durable in COMMITS *is*
+the frontier, in the same redb transaction that wrote it.
+
+So there is no acknowledgement write that can lag a durable commit. If a batch's
+record is durable, recovery observes it present by construction.
+
+`fa5d906c` did not touch `command_authority.rs` or `retention.rs`, so that
+derivation is unchanged across the regression. Whatever closed the window, it
+was not the meaning of the frontier.
+
+That leaves the window's width in *operations*. The simulator places crashes by
+store-operation ordinal, so `in_flight_commit_present` requires at least one
+observable operation between the durable commit and the end of the batch step.
+If clean-close fast startup removed the post-commit work a crash used to land
+in, the width is now zero and no ordinal can address it — which is the benign
+reading, and would mean the guarantee is stronger rather than weaker.
+
+## The question that was open, and its answer
 
 Can a crash still land after a batch's engine commit and before its
 acknowledgement, such that recovery observes the batch present?
 
-If clean-close fast startup narrowed that interval to the point where the
-simulator's operation-counted crash injection can no longer address it, the
-guarantee is intact and the test needs a different injection mechanism. If
-instead a committed batch is no longer observable as present at recovery until
-some later point, that is a change in when durability becomes visible, and it
-belongs in ADR-0156/ADR-0157 rather than in a re-pinned fixture.
+**No, and not because the injection cannot reach it. The window has zero
+width.**
 
-There is a third possibility worth naming, because it is the benign one and it
-would still require action. If clean-close fast startup fused the engine commit
-and its acknowledgement such that no intermediate state exists, the guarantee
-is *stronger* than before -- there is no longer a window in which a batch is
-durable but unacknowledged. In that case the arm should be retired with that
-reasoning recorded, not re-pinned, because a test asserting a state that can no
-longer occur is unfalsifiable rather than passing.
+The random draw could not prove that. `crash_operations` is a *range* the
+schedule redraws from, so a zero across 216 campaigns is consistent with both
+"the window is gone" and "the draw keeps stepping over a one-operation window".
+`wp725_commit_present_window_ordinal_walk` removes the draw: `(k, k+1)` is
+half-open, so `draw_crash_countdown` returns exactly `k`, and with
+`max_crashes: 1` the run carries one crash at one known ordinal. Walking `k`
+from zero until the plan exhausts covers **every reachable placement**.
 
-What is not acceptable is leaving it undecided. Two of these three readings are
-benign and one is a durability-observability regression, and 216 campaigns
-cannot tell them apart from the outside. The answer is in what `fa5d906c`
-changed about when a committed batch becomes visible to recovery, and that is a
-question for whoever owns ADR-0156/ADR-0157.
+    wp725-walk  seeds=4  ordinals<=768  present_placements=0
+                absent_placements=823   seeds_exhausted_before_max=4
+
+Four complete plans, every ordinal in each, 823 interrupted commits resolved
+ABSENT, and not one resolved PRESENT. There is no store-operation ordinal at
+which a crash leaves a batch durable but unacknowledged.
+
+### Why that is the benign reading and not silent loss
+
+Zero-width has two explanations that look identical from the count alone: the
+commit fence is now the last fault-eligible operation of the batch step (benign),
+or recovery is failing to observe a batch that really is durable (a durability
+regression, and the dangerous one).
+
+The oracle already separates them. `verify_model_against_inspection` checks
+**every family in both directions** — admissions, outcomes, commits, entities,
+index entries and epochs, provenance, events, outbox intents — so a store
+holding effects the model lacks is a `DuplicateStoreEntry` or unmatched-store-
+entry divergence, not a pass. It runs at the recovered frontier after every one
+of those 823 crashes and diverged on none. The batches recorded ABSENT were
+genuinely not durable.
+
+The two remaining guards agree. The `PARTIAL batch survived the crash` panic
+never fired, so no batch was half-applied; and `a clean shutdown loses nothing`
+held at every plan exhaustion, so nothing acknowledged was later lost.
+
+### Consequence
+
+Clean-close fast startup made the batch acknowledgement **exact**: a
+caller-visible commit failure now implies non-durability, where before there was
+an in-doubt interval in which the caller saw an error and the batch was durable
+anyway. That is a stronger guarantee, not a weaker one.
+
+So `command.commit.after-engine-commit` asserts a state the engine can no longer
+enter. Per the third reading named above, it must be **retired with this
+reasoning recorded, not re-pinned** — a test asserting an unreachable state is
+unfalsifiable rather than passing, and re-pinning it would manufacture a green
+suite around a guarantee that changed.
+
+Retiring it also means the sweep must gain the assertion whose absence let this
+go unnoticed: the sweep asserted the ABSENT case and never asserted the PRESENT
+one. Its replacement is the walk — an assertion that no ordinal resolves
+PRESENT — which fails if the in-doubt window ever reopens.
+
+This is a behaviour change ADR-0156/ADR-0157 did not anticipate or record, and
+it should be added to them as a consequence.
