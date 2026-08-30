@@ -19804,6 +19804,17 @@ work_packages:
       authorizes no implementation and returns the universal threshold to the maintainer.
   human_review_triggers: *id001
 - id: WP-674
+  closure:
+    status: blocked_on_accepted_rule
+    evidence: docs/performance/wp-674-comparator-stability.md
+    decision: A fresh receipt-mode run on N1 at 35fe502d under ADR-0146's protocol -- five
+      generations, 20 warmups, 1000 measured operations, PostgreSQL fsync=on -- shows RiffDB stable
+      on all fourteen scenarios (central-three spread 1.002 to 1.028) and PostgreSQL over the 1.20
+      limit on five. Raising generations from 100 to 1000 operations did not fix the comparator; it
+      moved which scenarios fail. Because the stability rule is written "for each backend" and
+      PostgreSQL must run in every generation, its spread invalidates the receipt even though
+      ADR-0142 made its ratios disclosure rather than gates. The package cannot close without an
+      accepted amendment to ADR-0142/ADR-0146 choosing how the comparator's stability is treated.
   name: Portable unary SLO governance and frozen alpha baseline
   depends_on: [WP-654, WP-670, WP-673]
   objective: After exact acceptance of ADR-0142 and its ADR-0143/ADR-0146 measurement amendments, replace the
