@@ -34,6 +34,9 @@ server:
     port: 7443
     # Reachable name clients dial. It must match the certificate presented.
     publicEndpoint: ""
+    # Name the server certificate is issued for; defaults to the service DNS
+    # name. The health probes verify against it.
+    tlsServerName: ""
     bounds:
       maxConnections: 256
       maxStreamsPerConnection: 128
@@ -65,6 +68,9 @@ server:
   # Name of a Secret holding server-chain.pem, server-key.pem, capability.keys,
   # and idempotency.keys. The chart never renders these values.
   secretName: riffdb-server-secrets
+  # Key within that Secret holding the trust root the health probes verify the
+  # server's certificate against.
+  tlsTrustRootFile: riffdb-ca.pem
 
   persistence:
     data:

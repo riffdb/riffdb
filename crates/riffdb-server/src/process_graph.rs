@@ -1476,6 +1476,35 @@ pub(crate) enum ProductionGraphBuildError {
     },
 }
 
+impl ProductionGraphBuildError {
+    /// Closed, non-secret class naming which owner refused to start.
+    ///
+    /// `kind=graph_build` alone tells an operator only that process
+    /// construction failed, which is true of fifteen different owners. This
+    /// narrows it to one without dumping a source: the discriminant is a fixed
+    /// string set, carries no path, identity, or stored value, and follows the
+    /// same shape as the startup refusal that already names its storage class.
+    pub(crate) const fn class(&self) -> &'static str {
+        match self {
+            Self::ServerGeneration(_) => "server_generation",
+            Self::CurrentView => "current_view",
+            Self::ReadableIdempotencyDigests(_) => "idempotency_digests",
+            Self::TrustedAudience(_) => "trusted_audience",
+            Self::Runtime(_) => "runtime",
+            Self::Observability(_) => "observability",
+            Self::BlockingDriver(_) => "blocking_driver",
+            Self::ConflictManager { .. } => "conflict_manager",
+            Self::Coordinator { .. } => "coordinator",
+            Self::ProjectionWorker { .. } => "projection_worker",
+            Self::ColumnarRegistration { .. } => "columnar_registration",
+            Self::ColumnarWorker { .. } => "columnar_worker",
+            Self::ExactTextRuntime { .. } => "exact_text_runtime",
+            Self::ExactTextWorker { .. } => "exact_text_worker",
+            Self::Activation { .. } => "activation",
+        }
+    }
+}
+
 impl fmt::Debug for ProductionGraphBuildError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ProductionGraphBuildError([REDACTED])")
