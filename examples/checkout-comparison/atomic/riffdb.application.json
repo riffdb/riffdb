@@ -1,0 +1,53 @@
+{
+  "schema": "riffdb.application-source/v6",
+  "application": "storefront",
+  "contract": {
+    "source": "riffdb/contract.riff",
+    "lineage": "StorefrontAtomic",
+    "version": 1
+  },
+  "generation": {
+    "go": "generated/c.go",
+    "mcp": "generated/t.json",
+    "python": "generated/c.py",
+    "rust": "src/generated/storefront.rs",
+    "typescript": "generated/c.ts"
+  },
+  "migrations": [],
+  "query_modules": [
+    {
+      "name": "storefront_atomic",
+      "version": 1,
+      "queries": [
+        {
+          "name": "FindOrder",
+          "source": "riffdb/queries/find_order.riffq"
+        }
+      ]
+    }
+  ],
+  "reactive_modules": [],
+  "roles": [
+    {
+      "name": "StorefrontServer",
+      "environment": "development",
+      "tenant_scope": "global",
+      "queries": [
+        "FindOrder"
+      ],
+      "commands": [
+        "AtomicCheckout",
+        "CreateProduct",
+        "CreateTenant"
+      ],
+      "event_streams": [],
+      "watch_queries": [],
+      "agent_subscriptions": [],
+      "row_policies": []
+    }
+  ],
+  "seed_inputs": [
+    "seeds/01-CreateTenant.jsonl",
+    "seeds/02-CreateProduct.jsonl"
+  ]
+}

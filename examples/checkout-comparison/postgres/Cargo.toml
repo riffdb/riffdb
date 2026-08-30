@@ -1,0 +1,17 @@
+# Standalone: these harnesses build against a patched riffdb-client-rust and
+# are not members of the repository workspace.
+[workspace]
+
+[package]
+name = "pgbench"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio-postgres = "0.7"
+ulid = "1"
+
+[profile.dev]
+opt-level = 3
+debug = false
