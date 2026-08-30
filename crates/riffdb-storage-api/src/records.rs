@@ -3280,6 +3280,50 @@ fn validate_index_epochs(epochs: &[IndexEpochAdvanceV1]) -> Result<(), StorageVa
     Ok(())
 }
 
+/// Whether an index entry may be stored under `partition` for a command whose
+/// own partition key is `command_partition`.
+///
+/// ADR-0170 admits a command whose bindings span two aggregates on one
+/// partition route, and an index entry is namespaced by its **owning**
+/// aggregate rather than the command's. So the aggregate prefix may differ,
+/// but the route it encodes may not: the entry must address the same partition
+/// the command was admitted for, merely in the owner's namespace.
+///
+/// The storage boundary has no schema, so it compares the encoded route
+/// suffix — everything after the typed envelope's aggregate identifier — which
+/// is exactly the component material both schemas encode. `partition_schema`
+/// components are identical across aggregates that share a route (the compiler
+/// refuses a command whose bindings derive different routes), so equal suffixes
+/// mean equal routes.
+fn index_entry_partition_is_admissible(
+    partition: &PartitionKey,
+    command_partition: &PartitionKey,
+) -> bool {
+    if partition == command_partition {
+        return true;
+    }
+    let (Some(entry_route), Some(command_route)) = (
+        partition_route_suffix(partition),
+        partition_route_suffix(command_partition),
+    ) else {
+        return false;
+    };
+    entry_route == command_route
+}
+
+/// The encoded route components of a partition key: its bytes with the typed
+/// envelope prefix and aggregate identifier removed.
+fn partition_route_suffix(partition: &PartitionKey) -> Option<&[u8]> {
+    let bytes = partition.as_bytes();
+    // `PARTITION_KEY_V1_PREFIX` then the canonical aggregate identifier. The
+    // identifier's encoded width is whatever the builder wrote, so this
+    // re-derives it from the key's own aggregate rather than assuming a size.
+    let owner = partition.aggregate_type_id();
+    let probe = riffdb_types::PartitionKeyBuilder::new(owner);
+    let envelope = probe.as_bytes().len();
+    bytes.get(envelope..)
+}
+
 fn validate_post_image_bindings(
     plan: &ExecutablePlanRef,
     command_partition: &PartitionKey,
@@ -3290,7 +3334,7 @@ fn validate_post_image_bindings(
         IndexEntryMutationV1::Delete(_) => false,
         IndexEntryMutationV1::Put(record) => {
             !record.schema_binding().matches_plan(plan)
-                || record.partition_key() != command_partition
+                || !index_entry_partition_is_admissible(record.partition_key(), command_partition)
         }
     }) || epochs
         .iter()

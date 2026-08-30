@@ -145,6 +145,7 @@ contract CrossAggregateRecovery version 1 {
   entity Ledger {
     key (id: u64, entry: u64)
     field amount: u64
+    index ByAmount(amount)
     delete_policy no_inbound
   }
 
@@ -7658,11 +7659,10 @@ struct CrossAggregateFixture {
     records: AtomicCommandRecordSet,
     /// Aggregate 1's root entity (`Row`) and aggregate 2's (`Ledger`).
     targets: [EntityTarget; 2],
-    /// The locality aggregate's index entry. Only `Rows` carries an index:
-    /// see `cross_aggregate_second_aggregate_index_is_uncommittable` for why a
-    /// second indexed aggregate cannot be expressed at all.
-    index_key: IndexEntryKey,
-    range: IndexRangeTarget,
+    /// Each aggregate's own index entry, stored under its own aggregate's
+    /// partition key.
+    index_keys: [IndexEntryKey; 2],
+    ranges: [IndexRangeTarget; 2],
 }
 
 fn cross_aggregate_fixture() -> CrossAggregateFixture {
@@ -7685,7 +7685,7 @@ fn cross_aggregate_fixture() -> CrossAggregateFixture {
     ledger_key.push_u64(id).expect("ledger key component");
     ledger_key.push_u64(entry).expect("ledger entry component");
     let ledger_key = ledger_key.finish().expect("ledger key");
-    let ledger_target = EntityTarget::new(ledger_type, ledger_key).expect("ledger target");
+    let ledger_target = EntityTarget::new(ledger_type, ledger_key.clone()).expect("ledger target");
 
     // One partition route for the whole command, namespaced by the locality
     // aggregate. Index entries are partitioned by the command's partition key
@@ -7701,6 +7701,30 @@ fn cross_aggregate_fixture() -> CrossAggregateFixture {
     let mut row_prefix = riffdb_storage_api::IndexRangePrefixBuilder::new(row_index_id);
     row_prefix.push_u64(value).expect("row range component");
     let row_range = IndexRangeTarget::new(partition.clone(), row_prefix.finish());
+
+    // ADR-0170 + per-aggregate index partitioning: the Ledger's index lives
+    // under `Ledgers`' partition key, the same route value in its own
+    // aggregate namespace. Under the old one-key-per-command rule this entry
+    // was unwritable and, if forced, made the database refuse to reopen.
+    let mut ledger_partition =
+        PartitionKeyBuilder::new(AggregateTypeId::new(2).expect("ledger aggregate"));
+    ledger_partition
+        .push_u64(id)
+        .expect("ledger partition component");
+    let ledger_partition = ledger_partition.finish().expect("ledger partition key");
+    let ledger_index_id = IndexId::new(2).expect("ledger index ID");
+    let mut ledger_index_key = IndexEntryKeyBuilder::new(ledger_index_id);
+    ledger_index_key
+        .push_u64(value)
+        .expect("ledger index component");
+    let ledger_index_key = ledger_index_key
+        .finish(ledger_key.clone())
+        .expect("ledger index entry key");
+    let mut ledger_prefix = riffdb_storage_api::IndexRangePrefixBuilder::new(ledger_index_id);
+    ledger_prefix
+        .push_u64(value)
+        .expect("ledger range component");
+    let ledger_range = IndexRangeTarget::new(ledger_partition.clone(), ledger_prefix.finish());
 
     let tenant_scope = TenantScope::Tenant(TenantId::new("tenant-a").expect("tenant"));
     let principal = ActorId::new("principal-a").expect("principal");
@@ -7820,25 +7844,45 @@ fn cross_aggregate_fixture() -> CrossAggregateFixture {
         .expect("committed ledger mutation"),
     ];
 
-    let index_mutations = vec![IndexEntryMutationV1::Put(
-        StoredIndexEntryV2::new(
-            row_index_key.clone(),
-            schema_binding.clone(),
-            record(value),
-            partition.clone(),
-        )
-        .expect("stored row index entry"),
-    )];
+    let index_mutations = vec![
+        IndexEntryMutationV1::Put(
+            StoredIndexEntryV2::new(
+                row_index_key.clone(),
+                schema_binding.clone(),
+                record(value),
+                partition.clone(),
+            )
+            .expect("stored row index entry"),
+        ),
+        // Namespaced by `Ledgers`, not by the command's `Rows`.
+        IndexEntryMutationV1::Put(
+            StoredIndexEntryV2::new(
+                ledger_index_key.clone(),
+                schema_binding.clone(),
+                record(value),
+                ledger_partition.clone(),
+            )
+            .expect("stored ledger index entry"),
+        ),
+    ];
 
     let row_generation = PartitionIndexTarget::new(partition.clone(), row_index_id);
-    let affected_targets = AffectedIndexEpochTargets::new(vec![row_generation.clone()])
-        .expect("cross-aggregate affected targets");
+    let ledger_generation = PartitionIndexTarget::new(ledger_partition.clone(), ledger_index_id);
+    let affected_targets =
+        AffectedIndexEpochTargets::new(vec![row_generation.clone(), ledger_generation.clone()])
+            .expect("cross-aggregate affected targets");
     let affected_current = AffectedEpochCurrentState::new(
         &affected_targets,
-        vec![CurrentIndexGenerationObservation::new(
-            row_generation.clone(),
-            IndexEpochPosition::BeforeFirst,
-        )],
+        vec![
+            CurrentIndexGenerationObservation::new(
+                row_generation.clone(),
+                IndexEpochPosition::BeforeFirst,
+            ),
+            CurrentIndexGenerationObservation::new(
+                ledger_generation.clone(),
+                IndexEpochPosition::BeforeFirst,
+            ),
+        ],
     )
     .expect("cross-aggregate affected current state");
     let epoch_advances = vec![
@@ -7848,6 +7892,12 @@ fn cross_aggregate_fixture() -> CrossAggregateFixture {
             IndexEpochPosition::BeforeFirst,
         )
         .expect("row epoch advance"),
+        IndexEpochAdvanceV1::new(
+            ledger_generation,
+            schema_binding.clone(),
+            IndexEpochPosition::BeforeFirst,
+        )
+        .expect("ledger epoch advance"),
     ];
 
     let upper_bound =
@@ -7959,8 +8009,8 @@ fn cross_aggregate_fixture() -> CrossAggregateFixture {
         write_plan,
         records,
         targets: [row_target, ledger_target],
-        index_key: row_index_key,
-        range: row_range,
+        index_keys: [row_index_key, ledger_index_key],
+        ranges: [row_range, ledger_range],
     }
 }
 
@@ -8072,22 +8122,24 @@ fn assert_cross_aggregate_absent(ports: &RedbOperationalPorts, fixture: &CrossAg
             "aggregate {position}'s entity must be absent after a precommit crash"
         );
     }
-    let page = ports
-        .scan_index(
-            AuthoritativeIndexScanRequest::new(fixture.range.clone(), None, limit)
-                .expect("index request"),
-        )
-        .expect("scan index");
-    assert!(
-        matches!(
-            page,
-            AuthoritativeIndexScanPage::ExactEnd {
-                ref entries,
-                epoch: IndexEpochPosition::BeforeFirst,
-            } if entries.is_empty()
-        ),
-        "the index must be empty after a precommit crash: {page:?}"
-    );
+    for (position, range) in fixture.ranges.iter().enumerate() {
+        let page = ports
+            .scan_index(
+                AuthoritativeIndexScanRequest::new(range.clone(), None, limit)
+                    .expect("index request"),
+            )
+            .expect("scan index");
+        assert!(
+            matches!(
+                page,
+                AuthoritativeIndexScanPage::ExactEnd {
+                    ref entries,
+                    epoch: IndexEpochPosition::BeforeFirst,
+                } if entries.is_empty()
+            ),
+            "aggregate {position}'s index must be empty after a precommit crash: {page:?}"
+        );
+    }
 }
 
 /// Both aggregates' entities and index entries are present, under one commit.
@@ -8121,21 +8173,27 @@ fn assert_cross_aggregate_present(ports: &RedbOperationalPorts, fixture: &CrossA
             "aggregate {position}'s entity must be at its first version"
         );
     }
-    let page = ports
-        .scan_index(
-            AuthoritativeIndexScanRequest::new(fixture.range.clone(), None, limit)
-                .expect("index request"),
-        )
-        .expect("scan index");
-    let AuthoritativeIndexScanPage::ExactEnd { entries, .. } = page else {
-        panic!("the index scan must reach an exact end");
-    };
-    assert_eq!(entries.len(), 1, "the index must carry exactly its entry");
-    assert_eq!(
-        entries[0].value().key(),
-        &fixture.index_key,
-        "the index entry must be the fixture's"
-    );
+    for (position, range) in fixture.ranges.iter().enumerate() {
+        let page = ports
+            .scan_index(
+                AuthoritativeIndexScanRequest::new(range.clone(), None, limit)
+                    .expect("index request"),
+            )
+            .expect("scan index");
+        let AuthoritativeIndexScanPage::ExactEnd { entries, .. } = page else {
+            panic!("aggregate {position}'s index scan must reach an exact end");
+        };
+        assert_eq!(
+            entries.len(),
+            1,
+            "aggregate {position}'s index must carry exactly its own entry"
+        );
+        assert_eq!(
+            entries[0].value().key(),
+            &fixture.index_keys[position],
+            "aggregate {position}'s index entry must be the fixture's"
+        );
+    }
 }
 
 fn cross_aggregate_audit_transition(
@@ -8224,105 +8282,105 @@ fn crash_after_cross_aggregate_commit_preserves_both_aggregates() {
     }
 }
 
-/// The boundary WP-721's crash arm found: ADR-0170 admits a cross-aggregate
-/// command, but the non-locality aggregate's entities cannot carry an index.
+/// The relaxation ADR-0170 needed is narrow: an index entry may leave the
+/// command's *aggregate namespace*, never its *partition route*.
 ///
-/// Index entries are partitioned by the command's single partition key —
-/// `derive_grammar_v1_indexes` passes `pending().partition_key()` for every
-/// index it derives — and that key is namespaced by the *locality* aggregate.
-/// Two accepted rules then contradict each other for an index owned by the
-/// other aggregate:
+/// WP-721's crash arm found that index entries were partitioned by the
+/// command's single partition key, namespaced by the locality aggregate, while
+/// startup validation resolves an entry's expected namespace from the index
+/// owner's aggregate. A second indexed aggregate was therefore unreachable from
+/// both directions: keep the command's key and the database would not reopen;
+/// use the owner's and the write plan refused it.
 ///
-/// - Keep the command's key, and `validate_persisted_key`'s `PartitionIndex`
-///   arm rejects the durable state at the next startup. It resolves the index's
-///   owning entity, takes that entity's aggregate, and requires the partition
-///   key to decode against *that* aggregate's partition schema;
-///   `decode_partition` checks the encoded aggregate type ID, so a key
-///   namespaced by aggregate 1 cannot decode under aggregate 2.
-/// - Give the index its owner's key instead, and the write plan refuses first —
-///   which is what this arm pins, because it is a value-level check needing no
-///   database.
-///
-/// The shape is therefore unreachable from both directions rather than merely
-/// unproven, and `cross_aggregate_fixture`'s `Ledger` carries no index for that
-/// reason. This is a real gap in ADR-0170's implementation, not a property of
-/// the fixture: a contract whose second aggregate indexes anything compiles,
-/// and fails only once a command tries to write it.
+/// `owning_partition_key` now derives each entry's key from its owning
+/// aggregate, so the write plan must accept a foreign namespace on the same
+/// route. This pins both halves of that: the same route under another
+/// aggregate is admitted, and a *different* route is still refused, because
+/// `RDB-C017` rejecting cross-partition writes is the property ADR-0170 kept.
 #[test]
-fn a_cross_aggregate_index_entry_cannot_leave_the_command_partition() {
+fn a_cross_aggregate_index_entry_may_change_namespace_but_not_route() {
     let fixture = cross_aggregate_fixture();
-    let id = 41_u64;
+    let route = 41_u64;
+    let other_route = 42_u64;
+    let value = 23_u64;
 
-    // The index owner's own partition key: same route value, namespaced by
-    // aggregate 2 exactly as its partition schema demands.
-    let mut foreign = PartitionKeyBuilder::new(AggregateTypeId::new(2).expect("ledger aggregate"));
-    foreign.push_u64(id).expect("foreign partition component");
-    let foreign = foreign.finish().expect("foreign partition key");
-
-    let mut command_partition =
-        PartitionKeyBuilder::new(AggregateTypeId::new(1).expect("locality aggregate"));
-    command_partition.push_u64(id).expect("partition component");
-    let command_partition = command_partition.finish().expect("partition key");
-    assert_ne!(
-        command_partition, foreign,
-        "the two aggregates' partition keys must differ, or this arm proves nothing"
-    );
-
+    let partition_for = |aggregate: u32, component: u64| {
+        let mut builder =
+            PartitionKeyBuilder::new(AggregateTypeId::new(aggregate).expect("aggregate"));
+        builder.push_u64(component).expect("partition component");
+        builder.finish().expect("partition key")
+    };
     let schema_binding = DurableKeySchemaBindingV1::from_plan(fixture.records.commit().plan());
     let row_index_id = IndexId::new(1).expect("row index ID");
-    let generation = PartitionIndexTarget::new(command_partition, row_index_id);
-    let affected_targets = AffectedIndexEpochTargets::new(vec![generation.clone()])
-        .expect("one well-formed epoch target");
-    let affected_current = AffectedEpochCurrentState::new(
-        &affected_targets,
-        vec![CurrentIndexGenerationObservation::new(
-            generation.clone(),
-            IndexEpochPosition::BeforeFirst,
-        )],
-    )
-    .expect("affected current state");
-    let advances = vec![
-        IndexEpochAdvanceV1::new(
-            generation,
-            schema_binding.clone(),
-            IndexEpochPosition::BeforeFirst,
-        )
-        .expect("epoch advance"),
-    ];
 
-    // The only difference from the committed fixture: this entry is partitioned
-    // by the index owner's aggregate rather than the command's.
-    let entries = vec![IndexEntryMutationV1::Put(
-        StoredIndexEntryV2::new(
-            fixture.index_key.clone(),
-            schema_binding,
-            record(23),
-            foreign,
+    let plan_for = |entry_partition: riffdb_types::PartitionKey| {
+        let generation = PartitionIndexTarget::new(partition_for(1, route), row_index_id);
+        let affected_targets = AffectedIndexEpochTargets::new(vec![generation.clone()])
+            .expect("one well-formed epoch target");
+        let affected_current = AffectedEpochCurrentState::new(
+            &affected_targets,
+            vec![CurrentIndexGenerationObservation::new(
+                generation.clone(),
+                IndexEpochPosition::BeforeFirst,
+            )],
         )
-        .expect("an entry under a foreign partition is individually well-formed"),
-    )];
-    let upper_bound = match command_write_set_upper_bound_v1(&fixture.intent, &entries, &advances)
-        .expect("canonical encoded upper bound")
-    {
-        EncodedWriteSetUpperBoundResultV1::Fits(bound) => bound,
-        EncodedWriteSetUpperBoundResultV1::ExceedsAcceptedAggregateCap(_) => {
-            panic!("this write set must fit the accepted aggregate cap")
-        }
+        .expect("affected current state");
+        let advances = vec![
+            IndexEpochAdvanceV1::new(
+                generation,
+                schema_binding.clone(),
+                IndexEpochPosition::BeforeFirst,
+            )
+            .expect("epoch advance"),
+        ];
+        let entries = vec![IndexEntryMutationV1::Put(
+            StoredIndexEntryV2::new(
+                fixture.index_keys[0].clone(),
+                schema_binding.clone(),
+                record(value),
+                entry_partition,
+            )
+            .expect("an index entry is individually well-formed"),
+        )];
+        let upper_bound =
+            match command_write_set_upper_bound_v1(&fixture.intent, &entries, &advances)
+                .expect("canonical encoded upper bound")
+            {
+                EncodedWriteSetUpperBoundResultV1::Fits(bound) => bound,
+                EncodedWriteSetUpperBoundResultV1::ExceedsAcceptedAggregateCap(_) => {
+                    panic!("this write set must fit the accepted aggregate cap")
+                }
+            };
+        CommandWriteSetPlanV1::new(
+            &fixture.intent,
+            affected_targets,
+            affected_current,
+            entries,
+            advances,
+            upper_bound,
+        )
     };
 
-    let refused = CommandWriteSetPlanV1::new(
-        &fixture.intent,
-        affected_targets,
-        affected_current,
-        entries,
-        advances,
-        upper_bound,
-    );
+    // Same route, the index owner's own aggregate: admitted. Without this,
+    // ADR-0170's second aggregate could not carry an index at all.
     assert!(
-        refused.is_err(),
-        "an index entry outside the command's partition must be refused. If \
-         this now succeeds, the cross-aggregate index restriction has changed: \
-         re-check validate_persisted_key's PartitionIndex arm and give \
-         cross_aggregate_fixture's Ledger an index again"
+        plan_for(partition_for(2, route)).is_ok(),
+        "an index entry in its owning aggregate's namespace on the command's \
+         route must be admitted"
     );
+    // Same aggregate as the command, unchanged: still admitted.
+    assert!(
+        plan_for(partition_for(1, route)).is_ok(),
+        "the ordinary single-aggregate shape must be unaffected"
+    );
+    // A different route is a cross-partition write, which ADR-0170 kept
+    // refused. Both namespaces are checked so the rule cannot be satisfied by
+    // matching the aggregate alone.
+    for aggregate in [1, 2] {
+        assert!(
+            plan_for(partition_for(aggregate, other_route)).is_err(),
+            "an index entry addressing another partition route must be \
+             refused, aggregate {aggregate}"
+        );
+    }
 }

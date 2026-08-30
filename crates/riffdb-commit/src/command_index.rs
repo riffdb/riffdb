@@ -7,18 +7,18 @@ use std::collections::BTreeSet;
 
 use riffdb_catalog::ResolvedExecutablePlan;
 use riffdb_contract_ir::{
-    BindingMode, DeleteCheckModeV1, EXECUTABLE_IR_VERSION_V1, EXECUTABLE_IR_VERSION_V2,
-    EXECUTABLE_IR_VERSION_V3, EXECUTABLE_IR_VERSION_V4, EXECUTABLE_IR_VERSION_V5,
-    EXECUTABLE_IR_VERSION_V6, EXECUTABLE_IR_VERSION_V7, EXECUTABLE_IR_VERSION_V8,
-    EXECUTABLE_IR_VERSION_V9, EXECUTABLE_IR_VERSION_V10, EXECUTABLE_IR_VERSION_V11,
-    EXECUTABLE_IR_VERSION_V12, EXECUTABLE_IR_VERSION_V13, EXECUTABLE_IR_VERSION_V14,
-    EXECUTABLE_IR_VERSION_V15, EXECUTABLE_IR_VERSION_V16, EXECUTABLE_IR_VERSION_V17,
-    EXECUTABLE_IR_VERSION_V18, EXECUTABLE_IR_VERSION_V19, ExecutionClass, GRAMMAR_VERSION_V1,
-    GRAMMAR_VERSION_V2, GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4, GRAMMAR_VERSION_V5,
-    GRAMMAR_VERSION_V6, GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8, GRAMMAR_VERSION_V9,
-    GRAMMAR_VERSION_V10, GRAMMAR_VERSION_V11, GRAMMAR_VERSION_V12, GRAMMAR_VERSION_V13,
-    GRAMMAR_VERSION_V14, GRAMMAR_VERSION_V15, GRAMMAR_VERSION_V16, GRAMMAR_VERSION_V17,
-    GRAMMAR_VERSION_V18, GRAMMAR_VERSION_V19, IndexSchema,
+    AggregateSchema, BindingMode, DeleteCheckModeV1, EXECUTABLE_IR_VERSION_V1,
+    EXECUTABLE_IR_VERSION_V2, EXECUTABLE_IR_VERSION_V3, EXECUTABLE_IR_VERSION_V4,
+    EXECUTABLE_IR_VERSION_V5, EXECUTABLE_IR_VERSION_V6, EXECUTABLE_IR_VERSION_V7,
+    EXECUTABLE_IR_VERSION_V8, EXECUTABLE_IR_VERSION_V9, EXECUTABLE_IR_VERSION_V10,
+    EXECUTABLE_IR_VERSION_V11, EXECUTABLE_IR_VERSION_V12, EXECUTABLE_IR_VERSION_V13,
+    EXECUTABLE_IR_VERSION_V14, EXECUTABLE_IR_VERSION_V15, EXECUTABLE_IR_VERSION_V16,
+    EXECUTABLE_IR_VERSION_V17, EXECUTABLE_IR_VERSION_V18, EXECUTABLE_IR_VERSION_V19,
+    ExecutionClass, GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V2, GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4,
+    GRAMMAR_VERSION_V5, GRAMMAR_VERSION_V6, GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8,
+    GRAMMAR_VERSION_V9, GRAMMAR_VERSION_V10, GRAMMAR_VERSION_V11, GRAMMAR_VERSION_V12,
+    GRAMMAR_VERSION_V13, GRAMMAR_VERSION_V14, GRAMMAR_VERSION_V15, GRAMMAR_VERSION_V16,
+    GRAMMAR_VERSION_V17, GRAMMAR_VERSION_V18, GRAMMAR_VERSION_V19, IndexSchema, SchemaIr,
 };
 use riffdb_invariant::{InputDerivedCommandFacts, derive_input_command_facts};
 #[cfg(test)]
@@ -1680,6 +1680,16 @@ fn derive_grammar_v1_indexes(
         if binding.key_schema() != entity.primary_key() {
             return Err(CommandIndexError::internal_defect());
         }
+        // ADR-0170: this binding's aggregate, which may not be the command's.
+        let owner_partition = owning_partition_key(
+            bundle.schema(),
+            command_partition,
+            bundle
+                .schema()
+                .aggregate_for_entity(entity.id())
+                .ok_or_else(CommandIndexError::internal_defect)?,
+        )?;
+        let command_partition = &owner_partition;
 
         let current_record = match (binding.mode(), &current.bindings()[binding_position]) {
             (BindingMode::Create, EntityObservation::Absent(_)) => None,
@@ -1814,6 +1824,58 @@ fn derive_grammar_v1_indexes(
         }
     }
     builder.finish()
+}
+
+/// The partition key an index entry is stored under: its **owning aggregate's**,
+/// not necessarily the command's.
+///
+/// ADR-0170 admits a command whose bindings span two aggregates on one
+/// partition route. A partition key is namespaced by its aggregate, and startup
+/// validation resolves an index entry's expected namespace from the index
+/// owner's aggregate (`validate_persisted_key`'s `PartitionIndex` arm), so an
+/// entry for a binding outside the command's locality aggregate has to carry
+/// that aggregate's key. Using the command's key for everything wrote state
+/// that the next startup refused to open.
+///
+/// The route *values* are identical by construction — the compiler refuses a
+/// command whose bindings derive different partition routes — so this decodes
+/// the command's key under its own aggregate's schema and re-encodes the same
+/// values under the owner's. For a single-aggregate command the owner is the
+/// command's aggregate and the key is returned unchanged, so nothing about an
+/// existing contract's durable bytes moves.
+fn owning_partition_key(
+    schema: &SchemaIr,
+    command_partition: &PartitionKey,
+    owner: &AggregateSchema,
+) -> Result<PartitionKey, CommandIndexError> {
+    if owner.id() == command_partition.aggregate_type_id() {
+        return Ok(command_partition.clone());
+    }
+    let locality = schema
+        .aggregate(command_partition.aggregate_type_id())
+        .ok_or_else(CommandIndexError::internal_defect)?;
+    let values = locality
+        .keys()
+        .partition_schema()
+        .decode_partition(command_partition)
+        .map_err(|_| CommandIndexError::internal_defect())?;
+    let owned = owner
+        .keys()
+        .partition_schema()
+        .encode_partition(&values)
+        .map_err(|_| CommandIndexError::internal_defect())?;
+    // The routes must agree component-for-component, or the two aggregates do
+    // not share one route and this command should never have compiled.
+    if owner
+        .keys()
+        .partition_schema()
+        .decode_partition(&owned)
+        .map_err(|_| CommandIndexError::internal_defect())?
+        != values
+    {
+        return Err(CommandIndexError::internal_defect());
+    }
+    Ok(owned)
 }
 
 fn insert_unique_target(
