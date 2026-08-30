@@ -146,8 +146,6 @@ pub enum AuthoringFix {
     CorrectType,
     /// Supply the complete partition route.
     SupplyPartitionRoute,
-    /// Model every atomic create/mutate binding under one aggregate root.
-    ModelOneMutationAggregate,
     /// Read the exact relationship target and reuse its key input expressions.
     ProveRelationshipTarget,
     /// Add the compiler-suggested bounded index.
@@ -181,7 +179,6 @@ impl AuthoringFix {
             Self::CorrectSymbol => "correct_symbol",
             Self::CorrectType => "correct_type",
             Self::SupplyPartitionRoute => "supply_partition_route",
-            Self::ModelOneMutationAggregate => "model_one_mutation_aggregate",
             Self::ProveRelationshipTarget => "prove_relationship_target",
             Self::AddIndex => "add_index",
             Self::AddBound => "add_bound",
@@ -877,12 +874,16 @@ fn contract_semantic_class(
             AuthoringCause::TypeMismatch,
             vec![AuthoringFix::CorrectType],
         ),
+        // ADR-0170 narrowed what this code can mean. It fired for two causes:
+        // bindings deriving different partition routes, and bindings writing
+        // two aggregate roots. The second is now admitted, so the only fix a
+        // reader can act on is supplying one route. The retired
+        // `model_one_mutation_aggregate` code would have sent them to
+        // restructure their aggregates for a rule that no longer exists, so it
+        // is removed rather than left unreachable in the registry.
         Code::CrossPartitionMutation => (
             AuthoringCause::NonLocal,
-            vec![
-                AuthoringFix::SupplyPartitionRoute,
-                AuthoringFix::ModelOneMutationAggregate,
-            ],
+            vec![AuthoringFix::SupplyPartitionRoute],
         ),
         Code::MissingRelationshipRead => (
             AuthoringCause::MissingRelationshipProof,
@@ -907,7 +908,7 @@ fn contract_semantic_summary(diagnostic: &riffdb_contract_compiler::CompilerDiag
     use riffdb_contract_compiler::CompilerDiagnosticCode as Code;
     match diagnostic.code() {
         Code::CrossPartitionMutation => {
-            "atomic command writes span multiple aggregate roots or partition routes".to_owned()
+            "atomic command writes derive different partition routes".to_owned()
         }
         Code::MissingRelationshipRead => {
             "relationship proof must read the exact target before mutation and reuse the same key expressions".to_owned()
@@ -1390,7 +1391,7 @@ contract Orders version 1 {
     }
 
     #[test]
-    fn cross_partition_diagnostic_names_both_required_model_corrections() {
+    fn cross_partition_diagnostic_names_the_one_remaining_model_correction() {
         // ADR-0170 admits two mutation aggregates that share a partition route,
         // so the rejection this exercises is now the cross-*partition* one:
         // `Inventory` is keyed by `warehouse_id` and derives a different route.
@@ -1440,7 +1441,7 @@ contract Orders version 1 {
         assert_eq!(diagnostic.cause(), AuthoringCause::NonLocal);
         assert_eq!(
             diagnostic.summary(),
-            "atomic command writes span multiple aggregate roots or partition routes"
+            "atomic command writes derive different partition routes"
         );
         assert_eq!(
             diagnostic.span().map(|span| (span.start(), span.end())),
@@ -1451,16 +1452,17 @@ contract Orders version 1 {
         );
         assert_eq!(
             diagnostic.fixes(),
-            &[
-                AuthoringFix::SupplyPartitionRoute,
-                AuthoringFix::ModelOneMutationAggregate,
-            ]
+            // ADR-0170: writing two aggregate roots on one route is admitted,
+            // so `model_one_mutation_aggregate` is no longer a correction this
+            // code can ask for. The fixture above genuinely crosses partitions
+            // (`store_id` against `warehouse_id`), which is what still fires.
+            &[AuthoringFix::SupplyPartitionRoute]
         );
         assert!(
             diagnostics
                 .render_human()
                 .expect("human")
-                .contains("fixes: supply_partition_route,model_one_mutation_aggregate")
+                .contains("fixes: supply_partition_route")
         );
     }
 

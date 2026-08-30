@@ -99,17 +99,24 @@ spans. Contract and query source support `//` line comments, not block comments.
 
 Put the tenant, store, or organization route first in every entity key in that
 partition. An aggregate has one root; every child key begins with the complete
-root key. A command may read another aggregate in the same partition, but every
-`create` and `mutate` binding in one command must belong to the single mutation
-aggregate selected in the worksheet.
+root key. Every `create` and `mutate` binding in one command must derive the
+same partition route — but they may belong to **different aggregates** within
+that route. A checkout may decrement `Product` stock and create an `Order` in
+one atomic command, as long as both derive the same tenant.
 
-`RDB-C017` means either that two bindings derive different route values or that
-the command writes two aggregate roots. Supplying the same route fixes only the
-first case. For the second, move the written entities under one business root
-or split the operation into separate idempotent commands. RiffDB never turns
-cross-aggregate writes into an implicit distributed transaction.
-Its two corrective-action codes are `supply_partition_route` and
-`model_one_mutation_aggregate`; satisfy both claims before retrying.
+The command's conflict ownership is then the union of the conflict keys its
+bindings derive, so each aggregate keeps its own fine key. You do not have to
+choose between one atomic write and a fine conflict key, and you do not need a
+compensating action for a write that stays inside one partition.
+
+`RDB-C017` therefore means one thing: two bindings derive different route
+values. Its corrective-action code is `supply_partition_route`. A write that
+genuinely crosses partitions must still be split into one idempotent command
+per partition — RiffDB does not turn a cross-partition write into an implicit
+distributed transaction.
+
+A command may also freely `read` another aggregate, and may write many rows of
+one aggregate under many distinct conflict keys.
 
 ## Prove relationships inside commands
 
