@@ -37,14 +37,32 @@ data:
 
     [maintenance]
     backup_root = "/var/lib/riffdb/backups"
+    # Without this, projections_root defaults to <cwd>/projections, and the
+    # image's WORKDIR is /var/lib/riffdb -- which readOnlyRootFilesystem makes
+    # unwritable, so the exact-text runtime cannot open and process graph
+    # construction refuses with class=exact_text_runtime. Placing it inside the
+    # data volume keeps derived state with the database it derives from.
+    projections_root = "/var/lib/riffdb/data/projections"
   liveness.toml: |
     [client]
     endpoint = "https://riffdb.riffdb-alpha.svc:7443"
     database = "default"
+    output = "json"
+    max_attempts = 1
+    # The probe dials the server's own TLS listener, so it needs the trust root
+    # and the name the certificate is issued for. Without both, the probe fails
+    # configuration_invalid and the pod never reports ready even though the
+    # server is listening.
+    tls_trust_root = "/run/riffdb-protected/riffdb-ca.pem"
+    tls_server_name = "riffdb.riffdb-alpha.svc"
   readiness.toml: |
     [client]
     endpoint = "https://riffdb.riffdb-alpha.svc:7443"
     database = "default"
+    output = "json"
+    max_attempts = 1
+    tls_trust_root = "/run/riffdb-protected/riffdb-ca.pem"
+    tls_server_name = "riffdb.riffdb-alpha.svc"
 ---
 # Source: riffdb/templates/proxy.yaml
 apiVersion: v1
@@ -224,7 +242,7 @@ spec:
       annotations:
         # Roll the pod when the rendered configuration changes, so a values edit
         # applies rather than sitting inert until the next unrelated restart.
-        riffdb.dev/config-checksum: 8f01dab269a5c0d8ab0234851dd89c1e0e59597d34cd4c77d4d727ee6e0d9ea4
+        riffdb.dev/config-checksum: 2376130e3a59a98ab7620d7d324dc2ed12587073917c93baa20779dba1621273
     spec:
       terminationGracePeriodSeconds: 25
       initContainers:

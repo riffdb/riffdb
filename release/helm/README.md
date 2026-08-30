@@ -75,6 +75,34 @@ The golden exists so a values or template edit is reviewable as a manifest
 diff. Reviewing the template alone reviews the source of a program whose output
 an operator runs; the golden reviews the output.
 
+## Verified against a real cluster
+
+`helm lint` and `helm template` prove the chart renders. They prove nothing
+about whether the API server accepts the objects or the pods start. This chart
+was installed on a kind cluster (Kubernetes v1.34, podman provider) with an
+image built from `release/container/Dockerfile`, reaching `riffdb-0 1/1
+Running` with `server health` returning `status: pre_bootstrap`,
+`liveness: true`, `readiness: false` — the documented no-contract state.
+
+Doing that found a defect the render checks could not.
+
+**`projections_root` defaulted under a read-only path.** It falls back to
+`<cwd>/projections`, the image's `WORKDIR` is `/var/lib/riffdb`, and the pod
+mounts only `data` and `backups` under `readOnlyRootFilesystem: true`. The
+exact-text runtime could not open, and process graph construction refused. The
+chart now sets `projections_root` inside the data volume.
+
+`release/container/compose.yaml` and `release/kubernetes/riffdb.yaml` have the
+same shape — `read_only: true`, only `data` and `backups` mounted, no
+`projections_root` configured — so this is not a chart-only problem. Both need
+the same fix, and `remote-kubernetes-render-check` cannot catch it because it
+parses YAML rather than starting anything.
+
+The probes also need `tls_trust_root` and `tls_server_name`, which the first
+draft of this chart omitted. Without them the probe fails
+`configuration_invalid` and the pod never reports ready while the server is
+listening perfectly well.
+
 ## Not yet covered
 
 WP-727 also requires a documented upgrade between two released chart versions

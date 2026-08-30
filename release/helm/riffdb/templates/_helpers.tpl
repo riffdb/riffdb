@@ -45,6 +45,15 @@ release cannot silently deploy a different RiffDB release than it declares.
 {{- end -}}
 {{- end -}}
 
+{{/* The DNS name the server certificate must be issued for. */}}
+{{- define "riffdb.serverName" -}}
+{{- if .Values.server.listener.tlsServerName -}}
+{{- .Values.server.listener.tlsServerName -}}
+{{- else -}}
+{{- printf "%s.%s.svc" (include "riffdb.fullname" .) (include "riffdb.namespace" .) -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "riffdb.labels" -}}
 helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
 app.kubernetes.io/name: {{ include "riffdb.name" . }}
