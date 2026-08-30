@@ -1361,19 +1361,37 @@ if report.get("schema") == "riffdb.app-baseline/v1":
     summaries = comparisons.get("rep_summaries") or {}
     if deferred_unary_stability:
         unary_summaries = comparisons.get("unary_rep_summaries") or {}
-        def central_three_stable(summary):
+        def five_positive_generations(summary):
             values = sorted((summary or {}).get("values") or [])
             return (
                 (summary or {}).get("reps") == 5
                 and len(values) == 5
                 and all(isinstance(value, (int, float)) and value > 0 for value in values)
-                and values[3] / values[1] <= 1.20
             )
+        def central_three_stable(summary):
+            values = sorted((summary or {}).get("values") or [])
+            return five_positive_generations(summary) and values[3] / values[1] <= 1.20
+        # ADR-0171: the spread rule binds the gated backend. RiffDB's values
+        # gate the release, so an unstable RiffDB summary is not eligible
+        # evidence. PostgreSQL must still supply five positive generations --
+        # a missing or malformed comparator summary is still a miss -- but its
+        # spread is published as disclosure rather than making the attempt
+        # ineligible, because the comparator's measurement stability is not a
+        # property RiffDB can influence and its ratios are not a gate.
         parity_stable = bool(unary_summaries) and all(
-            central_three_stable((entry.get(backend) or {}).get(statistic))
+            five_positive_generations((entry.get("postgres") or {}).get(statistic))
+            and central_three_stable((entry.get("riffdb") or {}).get(statistic))
             for entry in unary_summaries.values()
-            for backend in ("postgres", "riffdb")
             for statistic in ("p50_ns", "p95_ns")
+        )
+        eligibility["postgres_central_three_spread_disclosed"] = sorted(
+            f"{scenario}.{statistic}"
+            for scenario, entry in unary_summaries.items()
+            for statistic in ("p50_ns", "p95_ns")
+            if five_positive_generations((entry.get("postgres") or {}).get(statistic))
+            and sorted(((entry.get("postgres") or {}).get(statistic) or {}).get("values"))[3]
+            / sorted(((entry.get("postgres") or {}).get(statistic) or {}).get("values"))[1]
+            > 1.20
         )
     else:
         parity_stable = bool(summaries) and all(
