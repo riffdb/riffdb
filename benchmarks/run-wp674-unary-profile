@@ -113,23 +113,49 @@ safe_app_attempt_shape_is_exact() {
     ' "$report" >/dev/null
 }
 
+# ADR-0171: the central-three spread rule binds the gated backend. RiffDB's
+# values gate the release, so an unstable RiffDB cell is a completed unstable
+# cell and the retry prohibition applies. PostgreSQL still runs in every
+# generation and its five-value summary is still required and retained, but its
+# spread is published as disclosure rather than aborting the profile -- the
+# comparator's measurement stability is not a property RiffDB can influence and
+# its ratios are not a gate.
+#
+# The comparator's shape is still checked here. Only the 1.20 bound is lifted,
+# so a missing or malformed PostgreSQL summary still fails.
 safe_app_attempt_spread_is_valid() {
     local report="$1" scenario="$2"
     jq -e --arg scenario "$scenario" '
-      def central_three_stable:
+      def five_positive_generations:
         (.values | sort) as $values |
         .reps == 5
         and ($values | length) == 5
-        and ($values | all(type == "number" and . > 0))
-        and (($values[3] / $values[1]) <= 1.20);
+        and ($values | all(type == "number" and . > 0));
+      def central_three_stable:
+        five_positive_generations
+        and ((.values | sort)[3] / (.values | sort)[1]) <= 1.20;
       .comparisons.unary_rep_summaries[$scenario] as $summary |
-      [
-        $summary.postgres.p50_ns,
-        $summary.postgres.p95_ns,
-        $summary.riffdb.p50_ns,
-        $summary.riffdb.p95_ns
-      ] | all(central_three_stable)
+      ([$summary.postgres.p50_ns, $summary.postgres.p95_ns]
+        | all(five_positive_generations))
+      and ([$summary.riffdb.p50_ns, $summary.riffdb.p95_ns]
+        | all(central_three_stable))
     ' "$report" >/dev/null
+}
+
+# Names the comparator statistics whose spread exceeded the bound, so the
+# profile can carry ADR-0171's required disclosure instead of discarding the
+# attempt. Prints nothing when the comparator was stable.
+safe_app_comparator_disclosure() {
+    local report="$1" scenario="$2"
+    jq -r --arg scenario "$scenario" '
+      .comparisons.unary_rep_summaries[$scenario] as $summary |
+      [$summary.postgres | to_entries[]
+        | select(.key == "p50_ns" or .key == "p95_ns")
+        | (.value.values | sort) as $values
+        | select(($values[3] / $values[1]) > 1.20)
+        | {statistic: .key, central_three_spread: ($values[3] / $values[1])}
+      ] | if length == 0 then empty else tojson end
+    ' "$report"
 }
 
 minimal_attempt_shape_is_exact() {
@@ -150,27 +176,28 @@ minimal_attempt_shape_is_exact() {
     ' "$report" >/dev/null
 }
 
+# ADR-0171, as above: RiffDB's spread gates, the comparator's is disclosed.
 minimal_attempt_spread_is_valid() {
     local report="$1"
     jq -e '
-      def central_three_stable:
+      def five_positive_generations:
         (.values | sort) as $values |
         .reps == 5
         and ($values | length) == 5
-        and ($values | all(type == "number" and . > 0))
-        and (($values[3] / $values[1]) <= 1.20);
-      [.comparisons.unary_rep_summaries[] |
-        .postgres.p50_ns,
-        .postgres.p95_ns,
-        .riffdb.p50_ns,
-        .riffdb.p95_ns
-      ] | all(central_three_stable)
+        and ($values | all(type == "number" and . > 0));
+      def central_three_stable:
+        five_positive_generations
+        and ((.values | sort)[3] / (.values | sort)[1]) <= 1.20;
+      ([.comparisons.unary_rep_summaries[] |
+        .postgres.p50_ns, .postgres.p95_ns] | all(five_positive_generations))
+      and ([.comparisons.unary_rep_summaries[] |
+        .riffdb.p50_ns, .riffdb.p95_ns] | all(central_three_stable))
     ' "$report" >/dev/null
 }
 
 run_host_attempt() {
     local attempt="$1" attempt_root="$attempts_dir/host-attempt-$1"
-    local scenario attempt_report attempt_status
+    local scenario attempt_report attempt_status comparator_disclosure
     mkdir -p "$attempt_root"
     for scenario in "${scenarios[@]}"; do
         attempt_report="$attempt_root/safe-app-$scenario.json"
@@ -199,9 +226,17 @@ run_host_attempt() {
             return 1
         fi
         if ! safe_app_attempt_spread_is_valid "$attempt_report" "$scenario"; then
-            printf 'WP-674 %s: unstable completed cell retained; retry prohibited: %s\n' \
+            printf 'WP-674 %s: unstable completed RiffDB cell retained; retry prohibited: %s\n' \
                 "$profile" "$scenario" >&2
             return 1
+        fi
+        # ADR-0171: the comparator's instability is disclosed, not fatal. Print
+        # it as the profile runs so an operator sees it while the evidence is
+        # being produced, rather than only in the assembled receipt.
+        comparator_disclosure="$(safe_app_comparator_disclosure "$attempt_report" "$scenario")"
+        if [[ -n "$comparator_disclosure" ]]; then
+            printf 'WP-674 %s: comparator spread disclosed for %s: %s\n' \
+                "$profile" "$scenario" "$comparator_disclosure"
         fi
         if ! jq -e '.evidence_eligibility.eligible == true' \
             "$attempt_report" >/dev/null; then
