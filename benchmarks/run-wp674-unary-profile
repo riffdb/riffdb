@@ -40,6 +40,26 @@ if ! git diff --quiet --ignore-submodules -- || \
     exit 2
 fi
 
+# The output directory cannot live inside the repository. Every measured run
+# re-checks the clean tree, and creating an untracked directory here makes the
+# very first scenario fail with "--require-stable requires an exact clean source
+# tree" -- after the profile has already declared itself clean, which reads like
+# a contradiction. Write outside the tree and copy the fragment in afterwards,
+# which is what assembling the manifest expects anyway.
+# `realpath -m` resolves `..` without requiring the path to exist, so a path
+# that leaves the tree is not refused for merely starting inside it.
+candidate="$(realpath -m -- "$output_dir")"
+repo_real="$(realpath -m -- "$repo_root")"
+if [[ "$candidate" == "$repo_real" || "$candidate" == "$repo_real"/* ]]; then
+    printf 'WP-674 --output-dir must be outside the repository (%s is inside %s).\n' \
+        "$candidate" "$repo_real" >&2
+    printf 'Each measured run re-checks the clean tree, so an untracked output\n' >&2
+    printf 'directory here fails every scenario. Write to e.g. $HOME/tmp/wp674/%s\n' \
+        "$profile" >&2
+    printf 'and copy profile-fragment.json under release/evidence/wp-674/ after.\n' >&2
+    exit 2
+fi
+
 case "$profile" in
     workstation) hardware_class=workstation_nvme ;;
     n1) hardware_class=gcp_n1_persistent_disk ;;

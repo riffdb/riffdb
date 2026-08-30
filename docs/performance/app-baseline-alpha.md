@@ -174,11 +174,17 @@ Bank one clean host column with:
 ```bash
 ./benchmarks/run-wp674-unary-profile \
   --profile workstation \
-  --output-dir release/evidence/wp-674/workstation
+  --output-dir "$HOME/tmp/wp674/workstation"
 ```
 
-Use `--profile n1` and `--profile e2` on those hosts. Assemble and verify the
-three columns only after copying them beneath one evidence root:
+`--output-dir` must be **outside** the repository. Every measured run re-checks
+the clean source tree, so an untracked output directory inside it fails the
+first scenario with `--require-stable requires an exact clean source tree`; the
+runner refuses an in-tree path rather than letting that happen mid-profile.
+
+Use `--profile n1` and `--profile e2` on those hosts. Copy each
+`profile-fragment.json` and its reports beneath one evidence root, then assemble
+and verify:
 
 WP-674 requires one exact runner and daemon artifact across all three hosts.
 Build them once, copy those bytes to the other hosts, and set
