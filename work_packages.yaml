@@ -2345,7 +2345,17 @@ work_packages:
     retained as wp725_commit_present_window_sweep, ignored by default
   - What clean-close fast startup changed about the frontier a recovery observes, stated against
     fa5d906c's diff rather than inferred, and whether a committed batch is still observable to
-    recovery at the same point
+    recovery at the same point. Answered. The frontier is derived from the COMMITS table by
+    command_authority_head_profiled, so a durable commit record is the frontier atomically, and
+    fa5d906c touched neither command_authority.rs nor retention.rs. The change is the window's width
+    in operations, not the meaning of the frontier
+  - Zero width proved by exhaustive placement rather than inferred from a random draw.
+    wp725_commit_present_window_ordinal_walk pins the countdown to one ordinal and walks every
+    reachable ordinal in four complete plans -- 823 interrupted commits resolve absent, none
+    resolves present. The benign reading is confirmed rather than assumed, because
+    verify_model_against_inspection checks every family in both directions and diverged on none of
+    those 823 recoveries, so the absences are genuine non-durability and not unobserved durable
+    state. Clean-close fast startup made batch acknowledgement exact
   - A sweep-level assertion on total.in_flight_commit_present, whose absence is why a regression in
     the more dangerous recovery direction survived unnoticed; the sweep asserts the absent case and
     never asserted the present one
@@ -19821,6 +19831,9 @@ work_packages:
       PostgreSQL must run in every generation, its spread invalidates the receipt even though
       ADR-0142 made its ratios disclosure rather than gates. The package cannot close without an
       accepted amendment to ADR-0142/ADR-0146 choosing how the comparator's stability is treated.
+      ADR-0171 proposes that amendment -- the spread rule binds the gated backend, and the
+      comparator's spread becomes mandatory published disclosure. The maintainer approved that
+      direction on 2026-08-30 and has not accepted the exact text, so the block stands until they do.
   name: Portable unary SLO governance and frozen alpha baseline
   depends_on: [WP-654, WP-670, WP-673]
   objective: After exact acceptance of ADR-0142 and its ADR-0143/ADR-0146 measurement amendments, replace the

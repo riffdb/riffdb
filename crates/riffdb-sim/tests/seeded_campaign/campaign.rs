@@ -828,6 +828,62 @@ fn wp725_commit_present_window_shape() {
     }
 }
 
+/// Decides the question the random draw cannot: is there ANY store-operation
+/// ordinal at which a crash resolves an interrupted batch PRESENT?
+///
+/// `wp725_commit_present_window_shape` widens, shifts, and densifies a
+/// *randomly drawn* countdown. A zero there is ambiguous — the draw may simply
+/// never land on a narrow window. This pins the countdown to exactly one
+/// ordinal (`(k, k+1)` is half-open, so `draw_crash_countdown` returns `k`) and
+/// walks every ordinal in turn, with `max_crashes: 1` so the run carries one
+/// crash at one known place.
+///
+/// The result is exhaustive over placement for a given seed. If no ordinal
+/// resolves PRESENT, the window has zero width and the arm tests an
+/// unreachable state; if some ordinal does, the window exists and the fixture's
+/// draw is what fails to address it.
+#[test]
+#[ignore = "WP-725 diagnostic sweep; run explicitly"]
+fn wp725_commit_present_window_ordinal_walk() {
+    const ORDINAL_MAX: u64 = 768;
+    const PROBE_SEEDS: u64 = 4;
+    let mut present_placements = Vec::new();
+    let mut absent_placements = 0_u64;
+    let mut uncrashed = 0_u64;
+    for offset in 0..PROBE_SEEDS {
+        let seed = SWEEP_SEED_BASE + offset;
+        for ordinal in 0..ORDINAL_MAX {
+            let config = CampaignConfig {
+                crash_operations: (ordinal, ordinal + 1),
+                max_crashes: 1,
+                ..crate::subsumption::COMMIT_PRESENT_ARMS_CONFIG
+            };
+            let CampaignOutcome::Completed(report) = run_campaign_outcome(seed, config) else {
+                continue;
+            };
+            if report.crashes == 0 {
+                // The plan finished before the countdown elapsed: every later
+                // ordinal is also unreachable for this seed.
+                uncrashed += 1;
+                break;
+            }
+            absent_placements += report.in_flight_commit_absent;
+            if report.in_flight_commit_present > 0 {
+                present_placements.push((seed, ordinal, report.in_flight_commit_present));
+            }
+        }
+    }
+    println!(
+        "wp725-walk\tseeds={PROBE_SEEDS}\tordinals<={ORDINAL_MAX}\t\
+         present_placements={}\tabsent_placements={absent_placements}\t\
+         seeds_exhausted_before_max={uncrashed}",
+        present_placements.len()
+    );
+    for (seed, ordinal, count) in present_placements.iter().take(32) {
+        println!("wp725-walk-present\tseed={seed:#x}\tordinal={ordinal}\tpresent={count}");
+    }
+}
+
 #[test]
 #[ignore = "WP-725 diagnostic sweep; run explicitly"]
 fn wp725_commit_present_window_sweep() {
