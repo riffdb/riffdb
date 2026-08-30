@@ -2334,12 +2334,23 @@ work_packages:
   required_adrs: []
   allowed_paths: [work_packages.yaml, crates/riffdb-sim/**, fixtures/**, docs/**]
   deliverables:
-  - A diagnosis stating whether the pinned schedules drifted, the crash points moved, or the
-    reproduction is load-sensitive, with the evidence that distinguishes them
-  - Either restored reproduction or re-pinned schedules with a receipt explaining what moved and why
-    the new pin is sound
-  - A check that fails when a pinned schedule stops reaching its recorded territory, so this cannot
-    decay silently again
+  - Diagnosis delivered in docs/performance/wp-725-seeded-campaign-regression.md. All three arms
+    share one cause. The witness seed 0x51C2C147 no longer resolves an interrupted commit as
+    present; bisected to fa5d906c clean-close fast startup (ADR-0156/ADR-0157), whose parent passes
+    and which neither record anticipated. Atomicity is unaffected -- the partial-batch panic never
+    fires across 32 crashes and 32 recoveries
+  - A sweep over every seed establishing whether the after-commit window still exists at all or has
+    closed; if no seed resolves an interrupted commit as present, the answer is an engine question
+    rather than a fixture question
+  - What clean-close fast startup changed about the frontier a recovery observes, stated against
+    fa5d906c's diff rather than inferred, and whether a committed batch is still observable to
+    recovery at the same point
+  - A sweep-level assertion on total.in_flight_commit_present, whose absence is why a regression in
+    the more dangerous recovery direction survived unnoticed; the sweep asserts the absent case and
+    never asserted the present one
+  - Restored reproduction, or re-pinned schedules only after the two questions above are answered.
+    Re-pinning first would turn the suite green while leaving a recovery-visibility change unexamined
+    immediately before a release
   acceptance_commands:
   - cargo +1.97.0 test -p riffdb-sim --all-features
   exit_gate: The seeded campaign is green, and a deliberately drifted pin fails with a diagnosis
