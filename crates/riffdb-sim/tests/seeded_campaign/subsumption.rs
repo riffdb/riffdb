@@ -158,6 +158,39 @@ pub(crate) enum ScenarioClass {
         /// Verifiable reason for the exclusion.
         reason: &'static str,
     },
+    /// Storage-layer process-crash arm whose state the engine can no longer
+    /// enter, after an intentional change that narrowed the interval to
+    /// nothing. This is NOT a rotation: there is no successor witness to pin,
+    /// because there is no territory left to witness. Re-pinning such a row
+    /// would manufacture a green suite around a guarantee that changed, and a
+    /// campaign asserting an unreachable state is unfalsifiable rather than
+    /// passing.
+    ///
+    /// The bar for this class is exhaustive proof over crash placement, not a
+    /// sample: a random schedule that fails to reach a window is indis-
+    /// tinguishable from a window that is gone. `proof` names the test that
+    /// walks every reachable placement.
+    ///
+    /// The row does not stop being executable when it retires. Its last
+    /// witness is retained and still replayed, and the assertion inverts: the
+    /// campaign must complete AND must no longer exhibit `retired_evidence`.
+    /// A retirement that turns out to be wrong therefore reds in the standard
+    /// suite rather than waiting for someone to run the walk.
+    ExcludedStorageStateUnreachable {
+        /// Verifiable reason the state can no longer be entered.
+        reason: &'static str,
+        /// The commit that made it unreachable.
+        unreachable_since: &'static str,
+        /// The test that proves it exhaustively over crash placement.
+        proof: &'static str,
+        /// The last witness that reached this crash point, retained so the
+        /// retirement stays falsifiable.
+        retired_witness_seed: u64,
+        /// That witness's campaign configuration.
+        retired_witness_config: CampaignConfig,
+        /// The evidence the retained witness must no longer exhibit.
+        retired_evidence: CoveredEvidence,
+    },
     /// Storage-owned row whose evidence is owner typestate proof, not a
     /// process crash: there is no crash point to schedule.
     ExcludedStorageNoCrashPoint {
@@ -264,20 +297,28 @@ pub(crate) const SCENARIO_CLASSIFICATION: &[(&str, ScenarioClass)] = &[
         },
     ),
     (
-        // The exact checkpoint-at-S layout moved the former witness. The
-        // replacement was scouted against the new operation stream and rerun
-        // 12/12 with identical counters before pinning. The redb 4.2.0 pin
-        // then moved it again: `PageManager::grow` syncs the extension before
-        // the layout reaches the header, which shifts the operation stream and
-        // makes this territory rarer (3 of 90 seeds under 4.1.0, 1 of 234
-        // under 4.2.0). Seed `0x51C2_C147` was scouted against the new stream and
-        // reruns 12/12 PRESENT, ABSENT, interrupted-admission, and complete
-        // before pinning, so one witness still covers every commit territory.
+        // Covered by a pinned witness until fa5d906c (clean-close fast
+        // startup, ADR-0156/ADR-0157). Twice rotated before that, as the
+        // checkpoint-at-S layout and then the redb 4.2.0 pin moved the
+        // physical operation stream; the territory was already rare (1 of 234
+        // seeds under 4.2.0). fa5d906c removed it entirely rather than moving
+        // it, so the chain ends here instead of rotating a third time.
         "command.commit.after-engine-commit",
-        ScenarioClass::CoveredByCampaign {
-            seed: 0x51C2_C147,
-            config: COMMIT_PRESENT_ARMS_CONFIG,
-            evidence: CoveredEvidence::InFlightCommitPresent,
+        ScenarioClass::ExcludedStorageStateUnreachable {
+            reason: "a batch's engine commit is now the last fault-eligible \
+                     operation of its step, so a caller-visible commit failure \
+                     implies non-durability; the in-doubt interval in which a \
+                     batch was durable but unacknowledged no longer exists. \
+                     Confirmed benign rather than silent loss: \
+                     verify_model_against_inspection checks every family in \
+                     both directions and diverged on none of the 823 \
+                     interrupted commits the walk resolved ABSENT, so the \
+                     store genuinely lacked those effects",
+            unreachable_since: "fa5d906c3abc47af15590810676f27615233aef5",
+            proof: "campaign::wp725_commit_present_window_ordinal_walk",
+            retired_witness_seed: 0x51C2_C147,
+            retired_witness_config: COMMIT_PRESENT_ARMS_CONFIG,
+            retired_evidence: CoveredEvidence::InFlightCommitPresent,
         },
     ),
     (
@@ -525,6 +566,44 @@ fn every_recovery_scenario_row_is_classified_exactly_once() {
                     "{name}: a typed exclusion carries a verifiable reason"
                 );
             }
+            ScenarioClass::ExcludedStorageStateUnreachable {
+                reason,
+                unreachable_since,
+                proof,
+                ..
+            } => {
+                assert_eq!(
+                    scenario.evidence,
+                    RecoveryEvidenceKind::DedicatedCrashChild,
+                    "{name}: storage exclusions apply to process-crash arms"
+                );
+                assert!(storage_owned, "{name}: not a storage_recovery_matrix row");
+                assert!(
+                    !reason.trim().is_empty(),
+                    "{name}: a typed exclusion carries a verifiable reason"
+                );
+                // The commit that closed the state, so the claim is auditable
+                // against a diff rather than taken on the reason's word.
+                assert_eq!(
+                    unreachable_since.len(),
+                    40,
+                    "{name}: unreachable_since must be a full 40-character \
+                     commit id, not an abbreviation"
+                );
+                assert!(
+                    unreachable_since.chars().all(|c| c.is_ascii_hexdigit()),
+                    "{name}: unreachable_since must be a commit id"
+                );
+                // A retired row's standing proof must name a test in this
+                // crate, so the claim stays executable rather than becoming a
+                // comment that outlives its evidence.
+                assert!(
+                    proof.starts_with("campaign::")
+                        || proof.starts_with("corpus::")
+                        || proof.starts_with("subsumption::"),
+                    "{name}: proof {proof:?} must name a seeded_campaign test"
+                );
+            }
             ScenarioClass::ExcludedStorageNoCrashPoint { reason } => {
                 assert_eq!(
                     scenario.evidence,
@@ -586,10 +665,75 @@ fn every_recovery_scenario_row_is_classified_exactly_once() {
         .iter()
         .filter(|(_, class)| matches!(class, ScenarioClass::CoveredByCampaign { .. }))
         .count();
+    // Retirements are counted separately and bounded, so "excluded because
+    // unreachable" cannot become a quiet drain on the covered set.
+    let retired = SCENARIO_CLASSIFICATION
+        .iter()
+        .filter(|(_, class)| matches!(class, ScenarioClass::ExcludedStorageStateUnreachable { .. }))
+        .count();
     assert!(
-        covered >= 4,
-        "the covered storage-arm set shrank below four"
+        retired <= 1,
+        "more than one storage arm has been retired as unreachable ({retired}); \
+         each retirement removes a crash point from the covered set, so a \
+         second one needs its own review rather than this floor being lowered \
+         again"
     );
+    assert!(
+        covered + retired >= 4,
+        "the storage-arm set shrank below four: {covered} covered plus \
+         {retired} retired. A row may leave the covered set only by becoming \
+         unreachable (proved exhaustively over crash placement), never by \
+         being dropped"
+    );
+}
+
+/// SIM-006: a retired row stays falsifiable. Its last witness is replayed and
+/// must still complete with the oracle holding, but must NOT reach the crash
+/// point any more — the assertion of `covered_rows_replay_as_pinned_campaign_
+/// schedules`, inverted.
+///
+/// Without this, retiring a row would be indistinguishable from deleting it,
+/// and a change that reopened the interval would go unnoticed exactly the way
+/// `fa5d906c` closing it did.
+#[test]
+fn retired_rows_replay_without_reaching_their_crash_point() {
+    for (name, class) in SCENARIO_CLASSIFICATION {
+        let ScenarioClass::ExcludedStorageStateUnreachable {
+            unreachable_since,
+            proof,
+            retired_witness_seed,
+            retired_witness_config,
+            retired_evidence,
+            ..
+        } = class
+        else {
+            continue;
+        };
+        let CampaignOutcome::Completed(report) =
+            run_campaign_outcome(*retired_witness_seed, *retired_witness_config)
+        else {
+            panic!(
+                "retired witness (seed {retired_witness_seed:#x}) for {name} \
+                 wedged instead of completing; a retired row must still replay \
+                 cleanly, or the retirement is hiding a second failure"
+            );
+        };
+        assert_eq!(
+            report.final_frontier,
+            u64::from(retired_witness_config.generator.commands),
+            "retired witness (seed {retired_witness_seed:#x}) for {name} did \
+             not drive its plan to completion"
+        );
+        assert!(
+            !retired_evidence.holds(&report),
+            "retired row {name} reached its crash point again \
+             ({retired_evidence:?}) on seed {retired_witness_seed:#x}. The \
+             state was retired as unreachable since {unreachable_since}; if it \
+             is reachable once more, restore the row to CoveredByCampaign \
+             rather than deleting this assertion, and re-run {proof} to \
+             confirm the window's width. Report: {report:?}"
+        );
+    }
 }
 
 /// SIM-006: every covered row's pinned campaign schedule reaches the row's
