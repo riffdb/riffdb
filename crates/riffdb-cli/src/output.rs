@@ -43,6 +43,7 @@ pub(crate) enum CommandIdentity {
     MigrationApply,
     MigrationOperation,
     ContractValidate,
+    ContractExplain,
     ContractDeploy,
     CommandExecute,
     CommandRun,
@@ -127,6 +128,7 @@ impl CommandIdentity {
             Self::MigrationApply => "migration.apply",
             Self::MigrationOperation => "migration.operation",
             Self::ContractValidate => "contract.validate",
+            Self::ContractExplain => "contract.explain",
             Self::ContractDeploy => "contract.deploy",
             Self::CommandExecute => "command.execute",
             Self::CommandRun => "command.run",
@@ -407,6 +409,25 @@ pub(crate) fn client_error(command: CommandIdentity, error: &ClientError) -> Ter
             1,
         ),
     }
+}
+
+/// Emits one local contract explanation as human text and a JSON payload.
+pub(crate) fn render_contract_explanation(explanation: String) -> Terminal {
+    Terminal::new(
+        CommandIdentity::ContractExplain,
+        true,
+        &ContractExplanationResult {
+            explanation: explanation.clone(),
+        },
+        explanation,
+        false,
+        0,
+    )
+}
+
+#[derive(Serialize)]
+struct ContractExplanationResult {
+    explanation: String,
 }
 
 pub(crate) fn render_contract_validation(response: &v1::ValidateContractResponse) -> Terminal {
@@ -3575,6 +3596,7 @@ mod tests {
     fn command_from_text(command: &str) -> CommandIdentity {
         match command {
             "contract.validate" => CommandIdentity::ContractValidate,
+            "contract.explain" => CommandIdentity::ContractExplain,
             "contract.deploy" => CommandIdentity::ContractDeploy,
             "command.execute" => CommandIdentity::CommandExecute,
             "command.outcome" => CommandIdentity::CommandOutcome,
