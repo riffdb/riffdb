@@ -463,8 +463,10 @@ impl CompilerDiagnosticCode {
             Self::ConflictNotInputComputable => {
                 Some("derive aggregate keys only from root-key inputs and constants")
             }
+            // ADR-0170: writing two aggregate roots on one partition route is
+            // admitted, so the only remaining cause is a differing route.
             Self::CrossPartitionMutation => Some(
-                "if the bindings differ only by route, derive one partition route for all of them; if they write two aggregate roots, either split the write into one idempotent command per aggregate, or place both entities under one root and accept that root's coarser conflict key",
+                "every create and mutate binding must derive the same partition route; bindings may belong to different aggregates within that route, but a write that crosses partitions must be split into one idempotent command per partition",
             ),
             Self::InvalidRelationship => Some(
                 "map required non-optional fields to the complete target key in canonical order",

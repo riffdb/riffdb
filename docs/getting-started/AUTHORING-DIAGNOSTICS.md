@@ -37,9 +37,6 @@ The main correction codes are deliberately executable concepts:
 - `correct_symbol` / `correct_type`: resolve the named contract operation or
   make exact types agree.
 - `supply_partition_route`: add the complete same-partition route.
-- `model_one_mutation_aggregate`: place every entity changed atomically under
-  one declared aggregate root, or split the workflow into independently
-  idempotent commands.
 - `prove_relationship_target`: read the complete relationship target before
   the mutable binding, declare its missing-target outcome, and reuse the same
   target-key input expressions when storing the relationship fields.
@@ -55,14 +52,15 @@ The main correction codes are deliberately executable concepts:
 - `generate_locked`: restore compiler-owned output with
   `riffdb application generate --locked`.
 
-`RDB-C017` deliberately reports both `supply_partition_route` and
-`model_one_mutation_aggregate`. It covers two unsafe shapes: bindings whose
-route expressions are not provably identical, and one command that creates or
-mutates records owned by different aggregates. A shared route does not make
-independent aggregate writes atomic. Start from the command's complete mutation
-set, choose one business root, make every written entity a root or child of
-that aggregate, and put the route first in every key. If that ownership would
-be false, keep the roots independent and use separate idempotent commands.
+`RDB-C017` reports `supply_partition_route` and covers one unsafe shape:
+bindings whose route expressions are not provably identical. Since ADR-0170 a
+command MAY create and mutate records owned by different aggregates, provided
+every binding derives the same partition route; the command's conflict
+ownership is then the union of the conflict keys those bindings derive, so each
+aggregate keeps its own key. Start from the command's complete mutation set and
+make every binding derive one route. A write that genuinely spans partitions
+must still be split into independently idempotent commands, because RiffDB does
+not turn it into an implicit distributed transaction.
 
 `RDB-C024` rejects a relationship change whose exact target proof is missing or
 has expression drift. The complete target read must appear before the relevant
