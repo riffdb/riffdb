@@ -1,4 +1,4 @@
-spec_version: '1.19'
+spec_version: '1.20'
 product: RiffDB
 repository: riffdb
 status: deployable-application-alpha-architecture-accepted
@@ -19837,7 +19837,7 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-674
   closure:
-    status: blocked_on_accepted_rule
+    status: unblocked_pending_qualification_run
     evidence: docs/performance/wp-674-comparator-stability.md
     decision: A fresh receipt-mode run on N1 at 35fe502d under ADR-0146's protocol -- five
       generations, 20 warmups, 1000 measured operations, PostgreSQL fsync=on -- shows RiffDB stable
@@ -19847,9 +19847,14 @@ work_packages:
       PostgreSQL must run in every generation, its spread invalidates the receipt even though
       ADR-0142 made its ratios disclosure rather than gates. The package cannot close without an
       accepted amendment to ADR-0142/ADR-0146 choosing how the comparator's stability is treated.
-      ADR-0171 proposes that amendment -- the spread rule binds the gated backend, and the
-      comparator's spread becomes mandatory published disclosure. The maintainer approved that
-      direction on 2026-08-30 and has not accepted the exact text, so the block stands until they do.
+      ADR-0171 is that amendment and was accepted on 2026-08-30 -- the spread rule binds the gated
+      backend, and the comparator's spread becomes mandatory published disclosure. SPEC PERF-008 and
+      PERF-018 carry the amended text, and scripts/check-wp674-unary-baseline implements the split
+      rule with self-test arms in both directions, each drift-checked to be separately load-bearing.
+      The receipt records method.stability_rule_binds, so a candidate measured under the old rule
+      fails method-drift rather than comparing against a baseline that meant something different.
+      What remains is the qualification run itself -- five generations on N1, E2, and workstation
+      with host-validity preflight and postflight -- which no longer has a known blocker.
   name: Portable unary SLO governance and frozen alpha baseline
   depends_on: [WP-654, WP-670, WP-673]
   objective: After exact acceptance of ADR-0142 and its ADR-0143/ADR-0146 measurement amendments, replace the
@@ -19857,11 +19862,13 @@ work_packages:
     non-rotatable RiffDB regression bank, retain same-run PostgreSQL unary disclosure and every
     mixed/seed comparator obligation, and hand WP-623 one internally consistent release gate.
   requirements: [PERF-005, PERF-008, PERF-018, END-007, END-008, END-009, END-010]
-  required_adrs: [ADR-0056, ADR-0059, ADR-0123, ADR-0132, ADR-0141, ADR-0142, ADR-0143, ADR-0146]
+  required_adrs: [ADR-0056, ADR-0059, ADR-0123, ADR-0132, ADR-0141, ADR-0142, ADR-0143, ADR-0146,
+    ADR-0171]
   allowed_paths: [work_packages.yaml, SPEC.md, adr/README.md,
     adr/0142-portable-unary-service-levels-and-comparator-evidence.md,
     adr/0143-fixed-generation-unary-stability.md,
     adr/0146-fixed-generation-unary-sampling-and-cloud-host-validity.md,
+    adr/0171-gated-backend-measurement-stability.md,
     examples/app-baseline/**, benchmarks/**, scripts/**, release/**,
     tests/**, docs/SUMMARY.md, docs/performance/**, docs/operations/**]
   deliverables:

@@ -124,7 +124,23 @@ def scenario_class(name: str) -> str:
     fail(f"unknown frozen unary scenario {name}")
 
 
-def summary_value(summary: Any, label: str, *, require_stable: bool = True) -> float:
+def summary_spread(summary: Any, label: str) -> float:
+    """Central-three spread of a five-generation summary, validated first.
+
+    ADR-0171 makes this number invalidating for RiffDB and disclosable for the
+    comparator, so both paths must compute it identically and neither may skip
+    the structural validation that precedes it.
+    """
+    return summary_value(summary, label, require_stable=False, return_spread=True)
+
+
+def summary_value(
+    summary: Any,
+    label: str,
+    *,
+    require_stable: bool = True,
+    return_spread: bool = False,
+) -> float:
     if not isinstance(summary, dict):
         fail(f"{label} summary is absent")
     if summary.get("reps") != REPETITIONS:
@@ -153,6 +169,8 @@ def summary_value(summary: Any, label: str, *, require_stable: bool = True) -> f
             f"{label} central-three spread {central_spread:.4f} "
             f"exceeds {MAX_SPREAD:.2f}"
         )
+    if return_spread:
+        return central_spread
     return median
 
 
@@ -395,12 +413,35 @@ def verify_report(
         "ratios_riffdb_over_postgres": {},
         "encoded_size": next(iter(encoded_sizes.values())),
     }
+    # ADR-0171: the central-three spread rule binds the gated backend. RiffDB's
+    # values gate the release, so an unstable RiffDB spread is invalid evidence.
+    # PostgreSQL must still run in every generation and its spread is still
+    # computed and retained, but it is published as disclosure rather than
+    # invalidating a receipt -- the comparator's measurement stability is not a
+    # property RiffDB can influence, and its ratios are not a gate.
+    comparator_spreads: dict[str, float] = {}
     for backend in ("postgres", "riffdb"):
+        gated = backend == "riffdb"
         for statistic in ("p50_ns", "p95_ns"):
+            summary = (entry.get(backend) or {}).get(statistic)
             result[backend][statistic] = summary_value(
-                (entry.get(backend) or {}).get(statistic),
+                summary,
                 f"{label}.{backend}.{statistic}",
+                require_stable=gated,
             )
+            if not gated:
+                comparator_spreads[statistic] = summary_spread(
+                    summary, f"{label}.{backend}.{statistic}"
+                )
+    result["postgres_central_three_spread"] = comparator_spreads
+    # Disclosure marker, so a reader weighing a published ratio can see that the
+    # comparator it was computed against was unstable, without opening a
+    # separate document.
+    result["postgres_stability_disclosure"] = sorted(
+        statistic
+        for statistic, spread in comparator_spreads.items()
+        if spread > MAX_SPREAD
+    )
     for statistic in ("p50", "p95"):
         calculated = result["riffdb"][f"{statistic}_ns"] / result["postgres"][f"{statistic}_ns"]
         ratio_summary = (entry.get("ratios_riffdb_over_postgres") or {}).get(statistic)
@@ -788,6 +829,12 @@ def verify_corpus(
             "maximum_whole_cell_steal_percent": 1.0,
             "host_validity_schema": "riffdb.app-baseline-host-validity/v2",
             "qualified_statistic": "median_of_five_with_central_three_stability",
+            # ADR-0171. Named in the method block because it is part of what a
+            # baseline receipt means, so a candidate measured under the old
+            # both-backends rule fails the method-drift check rather than being
+            # silently comparable.
+            "stability_rule_binds": "gated_backend_only",
+            "comparator_spread_treatment": "published_disclosure",
         },
         "scenario_classes": {
             class_name: {
@@ -1206,6 +1253,80 @@ def run_self_test(root: Path) -> None:
         pass
     else:
         fail("unstable unary summary passed")
+
+    # ADR-0171, both directions. The rule binds the gated backend, so an
+    # unstable comparator must pass WITH a disclosure while the identical
+    # instability in RiffDB must fail. Asserting only the failing direction
+    # would let a verifier that rejects everything look correct.
+    unstable_comparator = fake_report(manifest, "n1", sorted(SCENARIOS)[0])
+    comparator_entry = unstable_comparator["comparisons"]["unary_rep_summaries"][
+        sorted(SCENARIOS)[0]
+    ]["postgres"]["p95_ns"]
+    comparator_entry.update({
+        "values": [1.0, 1.0, 1.459, 1.459, 1.459],
+        "min": 1.0,
+        "median": 1.459,
+        "max": 1.459,
+        "spread_ratio": 1.459,
+    })
+    # The published ratio is derived from backend medians, so moving the
+    # comparator's median moves it; keep the receipt self-consistent.
+    ratio_entry = unstable_comparator["comparisons"]["unary_rep_summaries"][
+        sorted(SCENARIOS)[0]
+    ]["ratios_riffdb_over_postgres"]["p95"]
+    riffdb_median = unstable_comparator["comparisons"]["unary_rep_summaries"][
+        sorted(SCENARIOS)[0]
+    ]["riffdb"]["p95_ns"]["median"]
+    ratio_entry["qualified_ratio_of_backend_medians"] = riffdb_median / 1.459
+    disclosed, _ = verify_report(
+        unstable_comparator, manifest, "n1", sorted(SCENARIOS)[0], "comparator_spread"
+    )
+    if "p95_ns" not in disclosed.get("postgres_stability_disclosure", []):
+        fail("an unstable comparator passed without a published disclosure")
+    if not math.isclose(
+        disclosed.get("postgres_central_three_spread", {}).get("p95_ns", 0.0),
+        1.459,
+        rel_tol=1e-9,
+    ):
+        fail("the comparator's spread was not retained beside its ratio")
+
+    stable_comparator = fake_report(manifest, "n1", sorted(SCENARIOS)[0])
+    quiet, _ = verify_report(
+        stable_comparator, manifest, "n1", sorted(SCENARIOS)[0], "comparator_stable"
+    )
+    if quiet.get("postgres_stability_disclosure"):
+        fail("a stable comparator was marked as disclosed")
+
+    # The same instability in the gated backend, in an otherwise self-consistent
+    # receipt. The pre-existing "spread" arm above mutates only the summary and
+    # so can also fail on the ratio-derivation check; this one keeps the whole
+    # receipt coherent, so the ONLY thing left to reject it is the RiffDB
+    # stability rule.
+    unstable_riffdb = fake_report(manifest, "n1", sorted(SCENARIOS)[0])
+    riffdb_entry = unstable_riffdb["comparisons"]["unary_rep_summaries"][
+        sorted(SCENARIOS)[0]
+    ]["riffdb"]["p95_ns"]
+    riffdb_entry.update({
+        "values": [1.0, 1.0, 1.459, 1.459, 1.459],
+        "min": 1.0,
+        "median": 1.459,
+        "max": 1.459,
+        "spread_ratio": 1.459,
+    })
+    postgres_median = unstable_riffdb["comparisons"]["unary_rep_summaries"][
+        sorted(SCENARIOS)[0]
+    ]["postgres"]["p95_ns"]["median"]
+    unstable_riffdb["comparisons"]["unary_rep_summaries"][sorted(SCENARIOS)[0]][
+        "ratios_riffdb_over_postgres"
+    ]["p95"]["qualified_ratio_of_backend_medians"] = 1.459 / postgres_median
+    try:
+        verify_report(
+            unstable_riffdb, manifest, "n1", sorted(SCENARIOS)[0], "riffdb_spread"
+        )
+    except ValueError:
+        pass
+    else:
+        fail("an unstable gated backend passed")
 
     short_sample = fake_report(manifest, "n1", sorted(SCENARIOS)[0])
     short_sample["configuration"]["measured_samples"] = 100

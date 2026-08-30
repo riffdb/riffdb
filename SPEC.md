@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 1.19
+**Version:** 1.20
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
 **Date:** 29 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 1.20 | 2026-08-30 | Accepted ADR-0171. Amended `PERF-008` and `PERF-018`: the five-generation central-three stability rule (`x4 / x2` at most 1.20) binds the gated backend only. RiffDB's qualified p50 and p95 must satisfy it on every scenario and profile, unchanged. Safe-application PostgreSQL MUST still run in every generation and its five-value summary and spread MUST be computed and published, and a comparator spread above 1.20 MUST be disclosed in the receipt, but it no longer invalidates the evidence. ADR-0142 already made unary PostgreSQL ratios disclosure rather than gates, yet the integrity rule was written "for each backend", so a comparator RiffDB cannot influence could block a release; a 1,000-operation receipt run measured RiffDB stable on all fourteen scenarios (1.002 to 1.028) and PostgreSQL over the limit on five, and ADR-0146's larger generations moved which scenarios fail rather than fixing them. Host validity, correctness, comparator-input drift, retained extremes, and the retry prohibition remain invalidating for either backend, and every PostgreSQL ratio remains mandatory published disclosure. The baseline receipt records `method.stability_rule_binds`, so a candidate measured under the previous rule fails method-drift rather than comparing against a baseline that meant something different. No durable format, storage key, protocol, or provider algorithm changes. |
 | 1.19 | 2026-08-29 | Accepted ADR-0170 and registered WP-721. Amended `PERF-005`: a command's `create` and `mutate` bindings MUST derive one identical partition route but MAY belong to different aggregates within that partition, in which case the command's logical conflict keys are the union of the conflict keys its bindings derive and that complete union MUST be statically enumerable. Cross-partition writes remain rejected; the rejected case narrows from multi-aggregate to cross-partition. The change is admitted on measurement: a coarse `conflict_key` does not serialise writers, so splitting a partition-local write across two aggregates costs a second durable commit for no measured scalability, and the restriction cannot be defended on concurrency grounds. WP-721 implements it at executable IR V19 under ADR-0126's least-sufficient writer rule, so a command writing one aggregate keeps its existing bytes, plan hash, and application lock; `RDB-C017` now rejects only a write whose bindings derive different partition routes. The canonical lease order over `(aggregate, conflict key)` was already in place. Two proofs remain outstanding and are tracked by WP-721: a deadlock arm that fails under an arbitrary acquisition order, and a crash arm proving a command writing two aggregates is atomic across a restart. No durable format, storage key, protocol, or provider algorithm changes. |
 | 1.18 | 2026-08-29 | Accepted ADR-0167, ADR-0168, and ADR-0169 from the contract/query/migration language design review. Amended `OQ-062`: a `Limit` parameter MUST declare its maximum and the unbounded spelling is not accepted in source, because an unbounded `Limit` is charged and authorized at the 499-row type maximum whatever default it declares. Every V1-V8/V1-V11/V1-V11 artifact remains byte-exact and readable. Source declaring an unbounded `Limit` is rejected from RiffQL V9 onward and must declare a maximum; already-compiled modules that encode an unbounded runtime limit remain readable and replayable and are not rewritten. Consequently every parameterised page is RiffQL V9 and query-module format V12, and an exact-predicate family, which requires a typed limit parameter, can no longer be expressed at V9 or V10. An existing index identity MAY now gain or change a cover through the receipted migration path, which derives an index rebuild and reconstructs every entry from the post-image. An aggregate root is not required to be materialized. New planner diagnostic RDB-QP010 separates a bounded whole-request cost over a closed ceiling from an unbounded one and reports the charged amount and the ceiling. No durable format, storage key, protocol, or provider algorithm changes. |
 | 1.17 | 2026-08-27 | Accepted ADR-0163 and ADR-0164. Registered BLK-046 through BLK-057 and WP-716 through WP-718 for one compiler-sealed decision over a deferred initialized binding with ordered apply, exact no-effect, and typed whole-command rejection arms. Ignored elements remain transaction-current dependencies; union authority, selected policy, atomic outcome/replay, bounded branch work, and least-sufficient V18 identities are mandatory, while general branching and framework behavior remain forbidden. Registered OQ-075 through OQ-083, DRV-018, and WP-719/WP-720 for one stronger `AdmissionHead` query option: RiffDB captures the authorized application head once on the first page, combines it with existing causal floors, selects one sufficient snapshot/provider epoch, freezes that floor and epoch across cursors, and waits only within closed service bounds without process-local adapter state or stale fallback. |
@@ -7241,12 +7242,16 @@ ADR-0055.
   generations per backend/scenario/host, with RiffDB restarted after common
   setup and each generation running 20 same-scenario warmups followed by
   exactly 1,000 measured operations over the frozen full dataset. For each
-  backend and statistic, sort the five retained generation values as
+  statistic, sort the five retained RiffDB generation values as
   `x1 <= x2 <= x3 <= x4 <= x5`; the qualified statistic is `x3`, and evidence
-  is invalid when `x4 / x2` exceeds 1.20. Both extremes remain mandatory
-  evidence and MUST NOT be deleted, replaced, or retried based on performance.
+  is invalid when `x4 / x2` exceeds 1.20. The same five-value summary and
+  spread MUST be computed and published for safe-application PostgreSQL, and a
+  comparator spread above 1.20 MUST be disclosed in the receipt, but it does
+  not invalidate the evidence. Both extremes remain mandatory
+  evidence for both backends and MUST NOT be deleted, replaced, or retried
+  based on performance.
   Evidence is also invalid when host validity or correctness fails or a
-  semantic comparator input drifts. Every qualified
+  semantic comparator input drifts, for either backend. Every qualified
   unary p50 and p95 MUST additionally remain at most 1.10 times its exact
   frozen RiffDB low-water baseline. A valid accepted release MAY ratchet an
   individual baseline down with a bound source receipt; moving one upward
@@ -8686,8 +8691,11 @@ behavior:
   ratios remain mandatory published evidence even though the ratios are not a
   unary release gate. A benchmark MUST reject missing or reclassified
   scenarios, missing hosts/backends/generations, greater-than-20-percent
-  central-three p50 or p95 spread for either backend, performance-selected
-  retry, baseline identity drift, and any semantic or correctness mismatch.
+  central-three p50 or p95 RiffDB spread, performance-selected
+  retry, baseline identity drift, and any semantic or correctness mismatch. A
+  greater-than-20-percent comparator spread MUST be published as a disclosure
+  rather than rejected, because the comparator's measurement stability is not a
+  property RiffDB can influence and its ratios are not a gate.
   New qualification evidence MUST bind bounded V2 host-validity observations
   across each complete measured cell and reject aggregate guest CPU steal
   above 1.00 percent of elapsed aggregate CPU ticks, counter or boot/host
