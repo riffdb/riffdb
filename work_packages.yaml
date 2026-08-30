@@ -2245,6 +2245,190 @@ work_packages:
       continuation, row, result, and provider subcalls add no repeated proof or duration/population-
       proportional state.
   human_review_triggers: *id001
+- id: WP-722
+  name: Public-source-only authoring acceptance
+  depends_on: [WP-569, WP-721]
+  objective: Prove the agent-facing thesis the release rests on. A fresh agent with only the public
+    handbook, scaffold, and diagnostics must author a compiling contract and named query for an
+    unseen domain without reading RiffDB implementation source. Every rejection it cannot repair
+    from the diagnostic alone is a defect in the diagnostic, not in the agent.
+  requirements: [DX-002, DX-004, SAFE-004]
+  required_adrs: [ADR-0167, ADR-0170]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-contract-compiler/**,
+    crates/riffdb-diagnostics/**, crates/riffdb-cli/**, crates/riffdb-riffql-syntax/**,
+    docs/**, tests/**, scripts/**]
+  deliverables:
+  - A scored authoring evaluation over at least three unseen domains, run with no RiffDB source in
+    context, recording every diagnostic encountered and whether its help alone was sufficient
+  - Every contract-semantic and query-plan code reachable from ordinary authoring carries help that
+    states the repair, verified by a test that fails when a code's help is absent
+  - AUTHORING.md content reachable without scaffolding a project, and referenced from the
+    diagnostics that its sections answer
+  - A worked-example corpus covering aggregate choice, delete policy, bounded reads, and
+    cross-aggregate writes, each compiled by the repository checks so it cannot rot
+  acceptance_commands:
+  - cargo +1.97.0 test --workspace --all-features
+  - ./scripts/check-adr-obligations
+  - ./scripts/handbook check
+  exit_gate: Three independent fresh-agent authoring runs produce compiling contracts and queries
+    with zero reads of RiffDB implementation source, and every diagnostic they hit named its repair.
+  standing_design_tests:
+    diagnostic_completeness: No contract-semantic or query-plan diagnostic reachable from ordinary
+      authoring renders without help text stating what a working source would look like.
+
+- id: WP-723
+  name: Continuous downstream adapter protection
+  depends_on: [WP-569]
+  objective: Make a contract or RiffQL language change unable to land green while it breaks an
+    out-of-tree adapter. The adapter repositories are the only consumers exercising those languages
+    end to end and no test in this repository compiles them, which is how ADR-0167 shipped and left
+    riffdb-better-auth failing RDB-QS003.
+  requirements: [VER-003, DRV-014]
+  required_adrs: [ADR-0148]
+  allowed_paths: [work_packages.yaml, .github/workflows/**, scripts/**, docs/**]
+  deliverables:
+  - Adapter repositories reachable from CI with pinned revisions, so scripts/downstream-adapter-check
+    runs on every pull request rather than only on a developer workstation
+  - A required CI job that compiles every pinned adapter against the working tree and fails the
+    change rather than the adapter
+  - A recorded procedure for the intended break, where a language change updates the pinned adapter
+    revision in the same reviewed change
+  acceptance_commands:
+  - ./scripts/downstream-adapter-check
+  exit_gate: A language change that breaks a pinned adapter fails CI on the change that caused it,
+    demonstrated by a deliberate reproduction of the ADR-0167 break.
+
+- id: WP-724
+  name: Real adapter workload comprehensiveness
+  depends_on: [WP-569, WP-573]
+  objective: Close the gap between what the release gate claims and what it exercises. OpenFGA is a
+    real out-of-tree adapter running its upstream conformance suite against a live service; MLflow
+    and Woodpecker are in-tree fixtures this repository authored. A fixture proves the language can
+    express a shape, not that the upstream system works.
+  requirements: [SAFE-001, DRV-014, APE-001]
+  required_adrs: [ADR-0148]
+  allowed_paths: [SPEC.md, work_packages.yaml, fixtures/adapters/**, docs/**, scripts/**]
+  deliverables:
+  - One of MLflow or Woodpecker promoted to a real adapter that runs its upstream suite against a
+    live RiffDB, or both reclassified in SPEC and the release gate as language-expressiveness
+    fixtures rather than adapter workloads
+  - Better Auth's supported surface stated where an adopter meets it, including that additional
+    fields and plugins require a materialized profile rather than failing at runtime
+  - The release gate's adapter claim rewritten to match what each adapter actually demonstrates
+  acceptance_commands:
+  - ./scripts/adapter-conformance --all-domains --all-languages
+  - ./scripts/downstream-adapter-check
+  exit_gate: Every adapter named in the release gate either runs an upstream suite or is described
+    as a fixture, and no gate sentence overstates what its evidence covers.
+
+- id: WP-725
+  name: Seeded-campaign determinism restoration
+  depends_on: [WP-577]
+  objective: Restore the seeded simulator campaign to green. Three arms fail on main --
+    campaign::per_merge_sweep_holds_the_oracle_and_reaches_the_swept_territory,
+    corpus::regression_corpus_replays_and_reproduces_its_territory, and
+    subsumption::covered_rows_replay_as_pinned_campaign_schedules -- each asserting that a pinned
+    schedule still reaches its recorded crash point. A release gate that does not notice its own red
+    suite is not a gate.
+  requirements: [SIM-001, SIM-002, SIM-004]
+  required_adrs: []
+  allowed_paths: [work_packages.yaml, crates/riffdb-sim/**, fixtures/**, docs/**]
+  deliverables:
+  - A diagnosis stating whether the pinned schedules drifted, the crash points moved, or the
+    reproduction is load-sensitive, with the evidence that distinguishes them
+  - Either restored reproduction or re-pinned schedules with a receipt explaining what moved and why
+    the new pin is sound
+  - A check that fails when a pinned schedule stops reaching its recorded territory, so this cannot
+    decay silently again
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-sim --all-features
+  exit_gate: The seeded campaign is green, and a deliberately drifted pin fails with a diagnosis
+    rather than a bare assertion.
+
+- id: WP-726
+  name: Unary transport floor and honest service levels
+  depends_on: [WP-674]
+  objective: Address the component ADR-0142 routed around rather than removed. On both cloud
+    profiles the outside-service residual alone exceeds the retired 1.10x budget -- 415 us against a
+    312 us target on N1 -- so eliminating all server query work could not have passed it. The
+    replacement absolute levels are cleared with roughly five times headroom while RiffDB sits near
+    2.3x PostgreSQL on point reads, which means nothing currently constrains unary latency.
+  requirements: [PERF-008, PERF-018, DRV-004]
+  required_adrs: [ADR-0142, ADR-0146, ADR-0148]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-api-grpc/**, crates/riffdb-service/**,
+    crates/riffdb-driver-host/**, crates/riffdb-client-rust/**, docs/performance/**, release/**,
+    scripts/**]
+  deliverables:
+  - A stage decomposition of the outside-service residual on both cloud profiles, separating client
+    encode, transport, driver host, admission, and response release, measured on release builds
+  - A stated decision, with evidence, on whether that floor is reducible for alpha or is the
+    product's honest unary cost
+  - Absolute service levels recalibrated so they constrain rather than merely admit the current
+    artifact, or an explicit statement that they are floors and the frozen low-water bank is the
+    operative gate
+  - Published PostgreSQL unary ratios retained as disclosure, with the gap stated plainly in the
+    handbook rather than only in performance evidence
+  acceptance_commands:
+  - ./scripts/check-alpha-performance-evidence
+  - ./scripts/check-wp674-unary-baseline --self-test
+  exit_gate: The unary residual is decomposed and either reduced or accepted on the record, and no
+    published service level can be met by an artifact that has regressed against the frozen bank.
+
+- id: WP-727
+  name: Kubernetes packaging and operator-grade deployment
+  depends_on: [WP-558]
+  objective: Give an operator a supported way to run RiffDB that is not a hand-edited manifest.
+    release/kubernetes ships one raw riffdb.yaml and release/container ships a Compose file; there
+    is no chart, no values surface, and no upgrade path between released versions.
+  requirements: [NET-010, NET-012, APE-002]
+  required_adrs: []
+  allowed_paths: [work_packages.yaml, release/**, docs/operations/**, docs/**, scripts/**,
+    .github/workflows/**]
+  deliverables:
+  - A versioned chart whose values cover listener and TLS material, storage class and volume sizing,
+    resource limits, liveness/readiness, credential and certificate rotation, and backup targets,
+    with no host-loopback shortcut
+  - A rendered-manifest golden test so a values change that alters the deployment is visible in
+    review, and chart version bound to the release version it deploys
+  - Documented upgrade between two released chart versions including the durable-format
+    compatibility check, and documented rollback
+  - Operator runbook covering install, upgrade, rotate, back up, restore, and drain, exercised
+    against the chart rather than against hand-written YAML
+  acceptance_commands:
+  - ./scripts/remote-compose-acceptance
+  exit_gate: An operator installs, upgrades, rotates credentials and certificates, backs up,
+    restores, and drains a cluster deployment from released chart artifacts alone, and every NET-010
+    proof holds against the chart rather than a bespoke manifest.
+
+- id: WP-728
+  name: Signed release automation, publication, and version enforcement
+  depends_on: [WP-200, WP-727]
+  objective: Turn a verified bundle into a release someone can consume. scripts/release-poc --verify
+    assembles binaries, SBOM, and checksums, but no workflow runs it, no container image is built in
+    CI, and nothing is published anywhere -- every workflow ends at upload-artifact, which expires.
+    The versioning and retirement policy is written and unenforced by any release mechanism.
+  requirements: [AFC-001, VER-001, VER-004, DRV-014]
+  required_adrs: [ADR-0124]
+  allowed_paths: [work_packages.yaml, .github/workflows/**, release/**, scripts/**, docs/**]
+  deliverables:
+  - A tag-triggered release workflow that runs scripts/release-poc --verify on a clean revision and
+    refuses to publish anything if any release check fails
+  - Published, immutable, checksummed release artifacts with their SBOM and durable-format manifest,
+    plus a container image built and pushed from the tracked Dockerfile
+  - Driver package publication for the Rust, Go, TypeScript, and Python surfaces, each carrying the
+    conformance manifest DRV-014 requires
+  - Version enforcement in the workflow, so a tag whose transition class, topology record, or
+    durable-format manifest is inconsistent with the change fails before publication rather than
+    after
+  - Provenance and signature over every published artifact, and a documented consumer verification
+    procedure
+  acceptance_commands:
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  exit_gate: A tag produces signed, verifiable, published artifacts and a container image from a
+    clean revision with no manual step, a consumer verifies them from the documented procedure, and
+    an inconsistent version transition is refused before anything is published.
+
 - id: WP-721
   closure:
     status: partial
@@ -14589,7 +14773,8 @@ work_packages:
   name: Deployable Application Alpha release gate
   depends_on: [WP-421, WP-490, WP-493, WP-494, WP-496, WP-551, WP-552, WP-558,
     WP-562, WP-565, WP-567, WP-569, WP-573, WP-574, WP-575, WP-576, WP-578,
-    WP-597, WP-598, WP-600, WP-623, WP-648]
+    WP-597, WP-598, WP-600, WP-623, WP-648,
+    WP-722, WP-723, WP-724, WP-725, WP-726, WP-727, WP-728]
   objective: Close the first alpha release with installed, remote, multi-language, adapter-shaped,
     upgrade, rotation, correctness, recovery, security, performance, and documentation evidence
     over only generated and public symbolic application surfaces.
@@ -14653,6 +14838,19 @@ work_packages:
   - Six fresh independent public-only agent evaluations covering Blog and Orders across Rust, Go,
     TypeScript, and Python, proving zero kernel imports, raw IDs, generic writes, handwritten
     transport/query/transaction glue, or RiffDB implementation-source access
+  - WP-722 authoring evidence, a fresh agent authoring a compiling contract and named query for an
+    unseen domain from public sources alone. Evaluating generated bindings is not evidence that the
+    contract and query languages are authorable
+  - WP-723 continuous adapter protection green, so no language change lands while breaking a pinned
+    out-of-tree adapter, and WP-724 has settled which named adapters run an upstream suite and which
+    are fixtures with the gate text matching
+  - WP-725 seeded campaign green; no release runs with a red first-party suite
+  - WP-726 has decomposed the unary outside-service residual and either reduced it or accepted it on
+    the record, with published service levels that constrain the artifact rather than admit it
+  - WP-727 chart artifacts install, upgrade, rotate, back up, restore, and drain a cluster
+    deployment with no hand-edited manifest
+  - WP-728 publishes signed verifiable artifacts, a container image, and driver packages from a tag
+    with no manual step, refusing an inconsistent version transition before publication
   acceptance_commands:
   - cargo +1.97.0 test --workspace --all-features
   - ./scripts/deployable-alpha-acceptance --all-domains --all-languages --remote
@@ -14677,12 +14875,15 @@ work_packages:
   - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
   - cargo +1.97.0 doc --workspace --no-deps
   - cargo deny check
-  exit_gate: A design partner can deploy, install, operate, upgrade, rotate, recover, and develop a
-    non-critical adapter workload through generated public symbolic surfaces; every provisional
-    alpha requirement and prior correctness/performance gate passes; and no waiver introduces an
-    insecure listener, kernel/storage bypass, raw transaction, unbounded query, unfenced workflow,
-    missing row policy, silent format reset, nonportable data, untested restore, shortened soak,
-    silent authority widening, or language-owned transport trust.
+  exit_gate: A design partner can obtain signed released artifacts, deploy and upgrade them from
+    published packaging, operate, rotate, recover, author their own contract from public sources,
+    and develop a non-critical adapter workload through generated public symbolic surfaces; every
+    provisional alpha requirement and prior correctness/performance gate passes with a green
+    first-party suite; and no waiver introduces an insecure listener, kernel/storage bypass, raw
+    transaction, unbounded query, unfenced workflow, missing row policy, silent format reset,
+    nonportable data, untested restore, shortened soak, silent authority widening, language-owned
+    transport trust, an unpublished or unverifiable release artifact, a performance level that
+    constrains nothing, or a gate sentence that overstates the evidence behind it.
   standing_design_tests:
     interface_safety: The final installed matrix must prove all unsafe alternatives absent across
       languages, transports, adapters, deployment, and evolution; no waiver or known-limitation
