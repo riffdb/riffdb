@@ -2410,6 +2410,12 @@ work_packages:
     compatibility check, and documented rollback
   - Operator runbook covering install, upgrade, rotate, back up, restore, and drain, exercised
     against the chart rather than against hand-written YAML
+  - Startup verification delivered as scripts/check-container-startup, which runs the release image
+    read-only as uid 65532 with only the documented volumes and asserts the ready boundary and a
+    projections root inside a mounted volume. Verified load-bearing by removing the fix and
+    confirming the check exits nonzero naming class=exact_text_runtime. It found a defect that
+    render-only checks cannot reach, where the shipped Compose and Kubernetes runtime
+    configurations could not start riffdbd at all; both are now fixed
   acceptance_commands:
   - ./scripts/remote-compose-acceptance
   exit_gate: An operator installs, upgrades, rotates credentials and certificates, backs up,
