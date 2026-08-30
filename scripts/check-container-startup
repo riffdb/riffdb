@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Starts the release container in the shape the shipped deployment artifacts
+# use and asserts the server reaches its ready boundary.
+#
+# `remote-kubernetes-render-check` parses YAML and `helm template` renders it.
+# Neither starts anything, which is how `release/container/riffdbd.toml` and
+# `release/kubernetes/riffdb.yaml` came to ship a configuration that cannot
+# start riffdbd: `projections_root` defaulted to `<cwd>/projections`, the image
+# WORKDIR is `/var/lib/riffdb`, and a read-only root filesystem with only
+# `data` and `backups` mounted leaves that path unwritable. The server refused
+# with `class=exact_text_runtime` before reaching its listener.
+#
+# This check reproduces the constraints that matter -- read-only root, non-root
+# uid, only the documented volumes -- so any future configuration default that
+# lands outside a mount fails here rather than on an operator's cluster.
+
+usage() {
+    echo "usage: ./scripts/check-container-startup [--keep]" >&2
+    exit 2
+}
+
+keep=0
+case "${1:-}" in
+    "") ;;
+    --keep) keep=1 ;;
+    *) usage ;;
+esac
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+runtime=""
+for candidate in podman docker; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+        runtime="$candidate"
+        break
+    fi
+done
+[[ -n "$runtime" ]] || {
+    echo "check-container-startup requires podman or docker" >&2
+    exit 1
+}
+command -v openssl >/dev/null 2>&1 || {
+    echo "check-container-startup requires openssl" >&2
+    exit 1
+}
+
+for binary in riffdb riffdbd; do
+    [[ -x "target/release/$binary" ]] || {
+        echo "target/release/$binary is absent; build it first:" >&2
+        echo "  cargo build --release -p riffdb-cli --bin riffdb" >&2
+        echo "  cargo build --release -p riffdb-server --bin riffdbd" >&2
+        exit 1
+    }
+done
+
+work="$(mktemp -d "${RIFFDB_TMP_ROOT:-${TMPDIR:-/tmp}}/riffdb-container-startup.XXXXXX")"
+image="riffdb-container-startup:check"
+cleanup() {
+    ((keep)) || rm -rf "$work"
+    "$runtime" rmi -f "$image" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+mkdir -p "$work/cfg" "$work/secrets" "$work/data" "$work/backups" "$work/bootstrap"
+
+# The exact runtime configuration the Compose deployment ships.
+cp release/container/riffdbd.toml "$work/cfg/riffdbd.toml"
+
+printf '%s\n' \
+    'riffdb-capability-digest-keys-v1' \
+    '1:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f' \
+    >"$work/secrets/capability.keys"
+printf '%s\n' \
+    'riffdb-idempotency-digest-keys-v1' \
+    '1:202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f' \
+    >"$work/secrets/idempotency.keys"
+
+# A CA and a server certificate signed by it, matching the acceptance shape.
+# riffdbd refuses a chain it cannot serve, so a bare self-signed file is not a
+# substitute.
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+    -subj '/CN=RiffDB container startup check CA' \
+    -keyout "$work/ca.key" -out "$work/secrets/riffdb-ca.pem" >/dev/null 2>&1
+printf 'subjectAltName=DNS:riffdbd,IP:127.0.0.1\nextendedKeyUsage=serverAuth\n' \
+    >"$work/server.ext"
+openssl req -newkey rsa:2048 -nodes -subj '/CN=riffdbd' \
+    -keyout "$work/secrets/server-key.pem" -out "$work/server.csr" >/dev/null 2>&1
+openssl x509 -req -days 1 -sha256 -in "$work/server.csr" \
+    -CA "$work/secrets/riffdb-ca.pem" -CAkey "$work/ca.key" -CAcreateserial \
+    -extfile "$work/server.ext" -out "$work/secrets/server-chain.pem" >/dev/null 2>&1
+chmod 0600 "$work/secrets/capability.keys" "$work/secrets/idempotency.keys" \
+    "$work/secrets/server-key.pem"
+
+"$runtime" build -q -f release/container/Dockerfile -t "$image" . >/dev/null
+
+# Rootless podman needs the container uid mapped to the caller so the mounted
+# volumes are writable by 65532; docker's default mapping already is.
+map=()
+if [[ "$runtime" == podman ]]; then
+    map=(--userns=keep-id:uid=65532,gid=65532)
+fi
+
+log="$work/riffdbd.log"
+set +e
+timeout 120 "$runtime" run --rm --read-only --user 65532:65532 "${map[@]}" \
+    -v "$work/cfg/riffdbd.toml:/etc/riffdb/riffdbd.toml:ro,Z" \
+    -v "$work/secrets:/run/secrets:ro,Z" \
+    -v "$work/bootstrap:/run/bootstrap:Z" \
+    -v "$work/data:/var/lib/riffdb/data:Z" \
+    -v "$work/backups:/var/lib/riffdb/backups:Z" \
+    "$image" riffdbd --config /etc/riffdb/riffdbd.toml >"$log" 2>&1
+set -e
+
+if ! grep -q 'riffdbd-ready-v1' "$log"; then
+    echo "the release container did not reach its ready boundary" >&2
+    echo "--- container output ---" >&2
+    tail -20 "$log" >&2
+    if grep -q 'class=' "$log"; then
+        echo "--- refusing owner ---" >&2
+        grep 'class=' "$log" >&2
+    fi
+    exit 1
+fi
+
+# Derived state must land inside a mounted volume, not on the read-only root.
+[[ -d "$work/data/projections" ]] || {
+    echo "the projections root was not created inside the mounted data volume" >&2
+    exit 1
+}
+
+echo "check-container-startup-v1	ready	read-only root, uid 65532, documented volumes only"

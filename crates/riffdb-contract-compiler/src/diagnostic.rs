@@ -464,7 +464,7 @@ impl CompilerDiagnosticCode {
                 Some("derive aggregate keys only from root-key inputs and constants")
             }
             Self::CrossPartitionMutation => Some(
-                "use one structural partition derivation and one aggregate for create/mutate bindings",
+                "if the bindings differ only by route, derive one partition route for all of them; if they write two aggregate roots, either split the write into one idempotent command per aggregate, or place both entities under one root and accept that root's coarser conflict key",
             ),
             Self::InvalidRelationship => Some(
                 "map required non-optional fields to the complete target key in canonical order",
@@ -539,7 +539,7 @@ impl CompilerDiagnosticCode {
                 Some("name one declared target index and provide its complete partition-routed key")
             }
             Self::InvalidDeletePolicy => Some(
-                "declare no_inbound only with no inbound relation, or name one exact canonical reverse index covering every inbound relation",
+                "declare no_inbound only when nothing references this entity; otherwise cascade over every inbound relation in this aggregate, naming each reverse index and maximum, or restrict against the one inbound source's reverse index",
             ),
             Self::InvalidSecretReveal => Some(
                 "add `reveals binding.secret_field` at the exact non-secret flow site, or keep the destination secret-classified",

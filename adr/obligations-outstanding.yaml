@@ -1333,3 +1333,15 @@ outstanding:
   obligation: establish one of those facts, WP-704 must add the equivalent fail-closed
     local check before that path becomes eligible for clean fast startup.
   reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
+- key: "0170-partition-local-cross-aggregate-writes.md::WP-721 must deliver the compiler proof, the union conflict ownership, and a deadlock-free "
+  adr: 0170-partition-local-cross-aggregate-writes.md
+  work_packages:
+  - WP-721
+  obligation: WP-721 must deliver the compiler proof, the union conflict ownership, and
+    a deadlock-free lease ordering across aggregates before any writer behaviour changes.
+  reason: The compiler proof, union conflict ownership, and executable IR V19 are delivered, and
+    deadlock-freedom now has an arm that fails when the canonical sort is removed. The obligation is
+    not discharged because no arm proves a command writing two aggregates is atomic across a
+    restart; that needs a storage-recovery command fixture bound to a second contract, which the
+    matrix does not yet have.
+  owner: WP-721

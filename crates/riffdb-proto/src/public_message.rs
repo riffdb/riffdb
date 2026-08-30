@@ -1635,8 +1635,10 @@ fn semantic_diagnostic_registry(code: &str) -> Option<DiagnosticRegistryEntry> {
             Some("derive aggregate keys only from root-key inputs and constants"),
         ),
         "RDB-C017" => (
-            "all command bindings must be statically colocated in one partition",
-            Some("make all bindings use the same structural partition derivation"),
+            "one command commits one aggregate; these bindings write two",
+            Some(
+                "if the bindings differ only by route, derive one partition route for all of them; if they write two aggregate roots, either split the write into one idempotent command per aggregate, or place both entities under one root and accept that root's coarser conflict key",
+            ),
         ),
         "RDB-C018" => (
             "a required relationship must map stored fields to one complete same-partition target key",
@@ -1705,6 +1707,16 @@ fn semantic_diagnostic_registry(code: &str) -> Option<DiagnosticRegistryEntry> {
             Some(
                 "use only the old row, canonical literals, checked operators, and closed conversions",
             ),
+        ),
+        "RDB-C045" => (
+            "the deletion policy lacks a complete no-inbound or indexed-restrict proof",
+            Some(
+                "declare no_inbound only when no relationship targets this entity; otherwise cascade over every inbound relationship in the same aggregate, naming each reverse index and maximum, or restrict against the one inbound source's reverse index",
+            ),
+        ),
+        "RDB-C046" => (
+            "a secret value crosses a non-secret boundary without an exact reveal",
+            Some("project the secret field with an explicit `reveals` clause"),
         ),
         "RDB-C201" => (
             "an identifier cannot form a valid MCP command tool-name segment",

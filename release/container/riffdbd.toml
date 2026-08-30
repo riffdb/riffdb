@@ -22,3 +22,9 @@ drain_timeout_seconds = 15
 
 [maintenance]
 backup_root = "/var/lib/riffdb/backups"
+# projections_root otherwise defaults to <cwd>/projections, and the image's
+# WORKDIR is /var/lib/riffdb, which read_only makes unwritable -- the exact-text
+# runtime then cannot open and process graph construction refuses with
+# class=exact_text_runtime. Derived state belongs with the database it derives
+# from, so it lives inside the mounted data volume.
+projections_root = "/var/lib/riffdb/data/projections"

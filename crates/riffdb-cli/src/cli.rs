@@ -830,6 +830,11 @@ pub(crate) enum ContractCommand {
         #[arg(value_name = "SOURCE")]
         source: OsString,
     },
+    /// Describes one local contract's aggregates, keys, and deletion proofs.
+    Explain {
+        #[arg(value_name = "SOURCE")]
+        source: OsString,
+    },
     Deploy {
         #[arg(value_name = "SOURCE")]
         source: OsString,

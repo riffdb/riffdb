@@ -1,0 +1,115 @@
+# RiffDB chart values.
+#
+# Every knob here maps to something riffdbd already supports. The chart adds no
+# configuration surface of its own, because `docs/known-limitations.md` states
+# that riffdbd exposes only the documented POC fields and no secret value in
+# TOML. Secrets are supplied as Kubernetes Secrets and never templated.
+
+nameOverride: ""
+fullnameOverride: ""
+
+# The chart does not create the namespace by default. Creating one couples the
+# release lifecycle to a namespace that likely outlives it.
+namespace:
+  create: false
+  name: riffdb-alpha
+
+image:
+  repository: riffdb
+  # Empty means "use the chart's appVersion", so a chart release and the RiffDB
+  # release it deploys cannot drift silently.
+  tag: ""
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+server:
+  replicas: 1
+  # riffdbd is a single-writer engine. More than one replica does not shard or
+  # replicate; it starts a second server against a second volume.
+  environment: kubernetes-alpha
+  audience: riffdb-container-application
+  terminationGracePeriodSeconds: 25
+
+  listener:
+    port: 7443
+    # Reachable name clients dial. It must match the certificate presented.
+    publicEndpoint: ""
+    # Name the server certificate is issued for; defaults to the service DNS
+    # name. The health probes verify against it.
+    tlsServerName: ""
+    bounds:
+      maxConnections: 256
+      maxStreamsPerConnection: 128
+      handshakeTimeoutSeconds: 5
+      idleTimeoutSeconds: 60
+      keepaliveIntervalSeconds: 20
+      drainTimeoutSeconds: 15
+
+  # Absent in the acceptance manifest this chart replaces. An operator-grade
+  # deployment states them, because an unbounded database pod is the one most
+  # likely to be evicted under node pressure.
+  resources:
+    requests:
+      cpu: "1"
+      memory: 2Gi
+    limits:
+      memory: 4Gi
+
+  probes:
+    liveness:
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 3
+    readiness:
+      periodSeconds: 5
+      timeoutSeconds: 3
+      failureThreshold: 3
+
+  # Name of a Secret holding server-chain.pem, server-key.pem, capability.keys,
+  # and idempotency.keys. The chart never renders these values.
+  secretName: riffdb-server-secrets
+  # Key within that Secret holding the trust root the health probes verify the
+  # server's certificate against.
+  tlsTrustRootFile: riffdb-ca.pem
+
+  persistence:
+    data:
+      size: 10Gi
+      storageClassName: ""
+      accessModes: ["ReadWriteOnce"]
+    backups:
+      enabled: true
+      size: 20Gi
+      storageClassName: ""
+      accessModes: ["ReadWriteOnce"]
+
+proxy:
+  enabled: true
+  image:
+    # Digest-pinned in the acceptance manifest; kept pinned here.
+    repository: haproxy
+    tag: 3.1-alpine
+    digest: sha256:475863a372c92c3dab3d59eafbbf8019dceebcd0c456594551b160ecdba4bdb9
+    pullPolicy: IfNotPresent
+  replicas: 1
+  port: 8443
+  resources:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      memory: 128Mi
+
+# The acceptance manifest bundles proof Jobs with the workload. They are
+# evidence, not something an operator deploys, so they are opt-in here.
+acceptanceJobs:
+  enabled: false
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
