@@ -7,6 +7,7 @@ mod app;
 mod batch;
 mod cli;
 mod config;
+mod contract_explain;
 mod credential;
 mod input;
 mod lsp;

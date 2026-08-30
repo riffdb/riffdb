@@ -1,0 +1,59 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "riffdb.fullname" . }}-config
+  namespace: {{ include "riffdb.namespace" . }}
+  labels:
+    {{- include "riffdb.labels" . | nindent 4 }}
+data:
+  riffdbd.toml: |
+    [server]
+    database = "/var/lib/riffdb/data/riffdb.redb"
+    environment = {{ .Values.server.environment | quote }}
+    audience = {{ .Values.server.audience | quote }}
+    capability_keys = "/run/riffdb-protected/capability.keys"
+    idempotency_keys = "/run/riffdb-protected/idempotency.keys"
+
+    [server.application_listener]
+    mode = "direct_tls"
+    listen = "0.0.0.0:{{ .Values.server.listener.port }}"
+    public_endpoint = {{ include "riffdb.publicEndpoint" . | quote }}
+    certificate_chain = "/run/riffdb-protected/server-chain.pem"
+    private_key = "/run/riffdb-protected/server-key.pem"
+
+    [server.application_listener.bounds]
+    max_connections = {{ .Values.server.listener.bounds.maxConnections }}
+    max_streams_per_connection = {{ .Values.server.listener.bounds.maxStreamsPerConnection }}
+    handshake_timeout_seconds = {{ .Values.server.listener.bounds.handshakeTimeoutSeconds }}
+    idle_timeout_seconds = {{ .Values.server.listener.bounds.idleTimeoutSeconds }}
+    keepalive_interval_seconds = {{ .Values.server.listener.bounds.keepaliveIntervalSeconds }}
+    drain_timeout_seconds = {{ .Values.server.listener.bounds.drainTimeoutSeconds }}
+
+    [maintenance]
+    backup_root = "/var/lib/riffdb/backups"
+    # Without this, projections_root defaults to <cwd>/projections, and the
+    # image's WORKDIR is /var/lib/riffdb -- which readOnlyRootFilesystem makes
+    # unwritable, so the exact-text runtime cannot open and process graph
+    # construction refuses with class=exact_text_runtime. Placing it inside the
+    # data volume keeps derived state with the database it derives from.
+    projections_root = "/var/lib/riffdb/data/projections"
+  liveness.toml: |
+    [client]
+    endpoint = {{ include "riffdb.publicEndpoint" . | quote }}
+    database = "default"
+    output = "json"
+    max_attempts = 1
+    # The probe dials the server's own TLS listener, so it needs the trust root
+    # and the name the certificate is issued for. Without both, the probe fails
+    # configuration_invalid and the pod never reports ready even though the
+    # server is listening.
+    tls_trust_root = "/run/riffdb-protected/{{ .Values.server.tlsTrustRootFile }}"
+    tls_server_name = {{ include "riffdb.serverName" . | quote }}
+  readiness.toml: |
+    [client]
+    endpoint = {{ include "riffdb.publicEndpoint" . | quote }}
+    database = "default"
+    output = "json"
+    max_attempts = 1
+    tls_trust_root = "/run/riffdb-protected/{{ .Values.server.tlsTrustRootFile }}"
+    tls_server_name = {{ include "riffdb.serverName" . | quote }}

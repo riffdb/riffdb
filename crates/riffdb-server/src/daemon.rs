@@ -516,6 +516,15 @@ pub fn riffdbd_main() -> ExitCode {
                     RedbStartupError::Format(_) => {}
                 }
             }
+            if let DaemonError::GraphBuild(source) = &error {
+                // The kind alone is true of fifteen different owners. The class
+                // is a fixed string naming which one refused, with no path,
+                // identity, or stored value in it.
+                eprintln!(
+                    "riffdbd process graph construction refused class={}",
+                    source.class()
+                );
+            }
             eprintln!(
                 "riffdbd terminated without reaching a clean process boundary kind={}",
                 error.kind()

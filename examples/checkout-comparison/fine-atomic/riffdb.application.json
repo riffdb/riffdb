@@ -1,0 +1,60 @@
+{
+  "schema": "riffdb.application-source/v6",
+  "application": "storefront",
+  "contract": {
+    "source": "riffdb/contract.riff",
+    "lineage": "StorefrontFineAtomic",
+    "version": 1
+  },
+  "generation": {
+    "go": "generated/client.go",
+    "mcp": "generated/tools.json",
+    "python": "generated/client.py",
+    "rust": "src/generated/storefront.rs",
+    "typescript": "generated/client.ts"
+  },
+  "migrations": [],
+  "query_modules": [
+    {
+      "name": "storefront",
+      "version": 1,
+      "queries": [
+        {
+          "name": "FindOrder",
+          "source": "riffdb/queries/find_order.riffq"
+        },
+        {
+          "name": "FindExpiredReservations",
+          "source": "riffdb/queries/find_expired_reservations.riffq"
+        }
+      ]
+    }
+  ],
+  "reactive_modules": [],
+  "roles": [
+    {
+      "name": "StorefrontServer",
+      "environment": "development",
+      "tenant_scope": "global",
+      "queries": [
+        "FindExpiredReservations",
+        "FindOrder"
+      ],
+      "commands": [
+        "AtomicCheckout",
+        "CancelOrder",
+        "CapturePayment",
+        "ConsumeReservations",
+        "CreateProduct",
+        "ReleaseExpiredReservations"
+      ],
+      "event_streams": [],
+      "watch_queries": [],
+      "agent_subscriptions": [],
+      "row_policies": []
+    }
+  ],
+  "seed_inputs": [
+    "seeds/01-CreateProduct.jsonl"
+  ]
+}

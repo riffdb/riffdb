@@ -1,0 +1,221 @@
+contract StorefrontFineAtomic version 1 {
+  enum OrderStatus { AwaitingPayment, Paid, Cancelled }
+
+  entity Product {
+    key (tenant_id: uuid, product_id: uuid)
+    field sku: string<64>
+    field name: string<256>
+    field unit_price: money<USD>
+    field stock_on_hand: u64
+    field revision: u64
+    unique product_sku (tenant_id, sku)
+    index by_sku (tenant_id, sku, product_id)
+    delete_policy restrict Reservation.by_parent
+  }
+
+  entity Reservation {
+    key (tenant_id: uuid, product_id: uuid, reservation_id: uuid)
+    field order_id: uuid
+    field quantity: u64
+    field expires_at: timestamp
+    index by_parent (tenant_id, product_id, reservation_id)
+    index by_expiry (tenant_id, expires_at, product_id, reservation_id)
+    index by_order (tenant_id, order_id, product_id, reservation_id)
+    reference reservation_parent (tenant_id, product_id) -> Product(tenant_id, product_id)
+    delete_policy no_inbound
+  }
+
+  entity Order {
+    key (tenant_id: uuid, order_id: uuid)
+    field customer_id: uuid
+    field status: OrderStatus
+    field placed_at: timestamp
+    field order_total: money<USD>
+    field payment_reference: optional<string<128>>
+    field revision: u64
+    index by_customer (tenant_id, customer_id, order_id)
+    delete_policy cascade {
+      relationship OrderLine.order_line_parent using OrderLine.by_parent maximum 32
+    }
+  }
+
+  entity OrderLine {
+    key (tenant_id: uuid, order_id: uuid, line_id: uuid)
+    field product_id: uuid
+    field quantity: u64
+    field unit_price: money<USD>
+    field line_total: money<USD>
+    index by_parent (tenant_id, order_id, line_id)
+    reference order_line_parent (tenant_id, order_id) -> Order(tenant_id, order_id)
+    delete_policy no_inbound
+  }
+
+  entity CheckoutLine {
+    key (tenant_id: uuid, order_id: uuid, line_id: uuid)
+    field product_id: uuid
+    field reservation_id: uuid
+    field quantity: u64
+    field unit_price: money<USD>
+    field line_total: money<USD>
+    field expires_at: timestamp
+  }
+
+  entity ReservationRelease {
+    key (tenant_id: uuid, product_id: uuid, reservation_id: uuid)
+    field observed_order_id: uuid
+  }
+
+  aggregate ProductData {
+    root Product
+    child Reservation
+    child ReservationRelease
+    partition_by tenant_id
+    conflict_key (tenant_id, product_id)
+  }
+
+  aggregate OrderData {
+    root Order
+    child OrderLine
+    child CheckoutLine
+    partition_by tenant_id
+    conflict_key (tenant_id, order_id)
+  }
+
+  command CreateProduct {
+    input idempotency_key: string<128>
+    input tenant_id: uuid
+    input product_id: uuid
+    input sku: string<64>
+    input name: string<256>
+    input unit_price: money<USD>
+    input stock_on_hand: u64
+    idempotency_key idempotency_key
+    create Product(tenant_id, product_id) as product else ProductAlreadyExists {}
+    set product.sku = sku
+    set product.name = name
+    set product.unit_price = unit_price
+    set product.stock_on_hand = stock_on_hand
+    set product.revision = 1
+    return ProductCreated {}
+  }
+
+  bulk command AtomicCheckout {
+    input request_id: uuid
+    input tenant_id: uuid
+    input order_id: uuid
+    input customer_id: uuid
+    input placed_at: timestamp
+    input order_total: money<USD>
+    input lines: list<CheckoutLine, 1..32>
+    idempotency_key request_id
+    create Order(tenant_id, order_id) as order else OrderAlreadyPlaced {}
+    for line in lines {
+      mutate Product(tenant_id, line.product_id) as product else ProductMissing {}
+      create OrderLine(tenant_id, order_id, line.line_id) as order_line else OrderLineExists {}
+      require in_stock: product.stock_on_hand >= line.quantity else InsufficientStock {}
+      set product.stock_on_hand = product.stock_on_hand - line.quantity
+      set product.revision = product.revision + 1
+      set order_line.product_id = line.product_id
+      set order_line.quantity = line.quantity
+      set order_line.unit_price = line.unit_price
+      set order_line.line_total = line.line_total
+    }
+    set order.customer_id = customer_id
+    set order.status = OrderStatus.AwaitingPayment
+    set order.placed_at = placed_at
+    set order.order_total = order_total
+    set order.payment_reference = null
+    set order.revision = 1
+    return CheckoutCompleted {}
+  }
+
+  bulk command ReleaseExpiredReservations {
+    input request_id: uuid
+    input tenant_id: uuid
+    input releases: list<ReservationRelease, 1..32>
+    idempotency_key request_id
+    for release in releases {
+      mutate Product(tenant_id, release.product_id) as product else ProductMissing {}
+      delete Reservation(tenant_id, release.product_id, release.reservation_id) as reservation
+        else ReservationMissing {}
+      require same_order: reservation.order_id == release.observed_order_id
+        else ReservationOrderMismatch {}
+      set product.stock_on_hand = product.stock_on_hand + reservation.quantity
+      set product.revision = product.revision + 1
+    }
+    return ReservationsReleased {}
+  }
+
+  bulk command ConsumeReservations {
+    input request_id: uuid
+    input tenant_id: uuid
+    input releases: list<ReservationRelease, 1..32>
+    idempotency_key request_id
+    for release in releases {
+      delete Reservation(tenant_id, release.product_id, release.reservation_id) as reservation
+        else ReservationMissing {}
+      require same_order: reservation.order_id == release.observed_order_id
+        else ReservationOrderMismatch {}
+    }
+    return ReservationsConsumed {}
+  }
+
+  bulk command PlaceOrder {
+    input request_id: uuid
+    input tenant_id: uuid
+    input order_id: uuid
+    input customer_id: uuid
+    input placed_at: timestamp
+    input order_total: money<USD>
+    input lines: list<CheckoutLine, 1..32>
+    idempotency_key request_id
+    create Order(tenant_id, order_id) as order else OrderAlreadyPlaced {}
+    for line in lines {
+      create OrderLine(tenant_id, order_id, line.line_id) as order_line else OrderLineExists {}
+      set order_line.product_id = line.product_id
+      set order_line.quantity = line.quantity
+      set order_line.unit_price = line.unit_price
+      set order_line.line_total = line.line_total
+    }
+    set order.customer_id = customer_id
+    set order.status = OrderStatus.AwaitingPayment
+    set order.placed_at = placed_at
+    set order.order_total = order_total
+    set order.payment_reference = null
+    set order.revision = 1
+    return OrderPlaced {}
+  }
+
+  command CapturePayment {
+    input request_id: uuid
+    input tenant_id: uuid
+    input order_id: uuid
+    input expected_revision: u64
+    input payment_reference: string<128>
+    input captured_at: timestamp
+    idempotency_key request_id
+    mutate Order(tenant_id, order_id) as order else OrderMissing {}
+    require current_revision: order.revision == expected_revision else OrderStale {}
+    require awaiting_payment: order.status == OrderStatus.AwaitingPayment
+      else OrderNotAwaitingPayment {}
+    set order.status = OrderStatus.Paid
+    set order.payment_reference = payment_reference
+    set order.revision = order.revision + 1
+    return PaymentCaptured {}
+  }
+
+  command CancelOrder {
+    input request_id: uuid
+    input tenant_id: uuid
+    input order_id: uuid
+    input expected_revision: u64
+    idempotency_key request_id
+    mutate Order(tenant_id, order_id) as order else OrderMissing {}
+    require current_revision: order.revision == expected_revision else OrderStale {}
+    require awaiting_payment: order.status == OrderStatus.AwaitingPayment
+      else OrderNotAwaitingPayment {}
+    set order.status = OrderStatus.Cancelled
+    set order.revision = order.revision + 1
+    return OrderCancelled {}
+  }
+}

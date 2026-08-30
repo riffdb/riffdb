@@ -1,0 +1,24 @@
+# Standalone: these harnesses build against a patched riffdb-client-rust and
+# are not members of the repository workspace.
+[workspace]
+
+[package]
+name = "atomic-bench"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+riffdb-client-rust = "0.1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+ulid = "1"
+
+# The dev harness invokes `cargo run` without --release, and an unoptimized
+# client would charge its own overhead to the database. The daemon under test
+# is built --release by `riffdb-dev --acceptance`; this makes the client match.
+[profile.dev]
+opt-level = 3
+debug = false
+
+[[bin]]
+name = "atomic-bench"
+path = "src/main.rs"

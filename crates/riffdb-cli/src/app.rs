@@ -6492,6 +6492,38 @@ async fn contract_command(
                 Err(error) => client_error(CommandIdentity::ContractDeploy, &error),
             }
         }
+        // Explain is local and read-only: it compiles the source in process and
+        // reports the structure the compiler derived. It contacts no server and
+        // needs no credential, so it stays usable while a contract is being
+        // written.
+        ContractCommand::Explain { source } => {
+            let source = match read_text(&source, stdin) {
+                Ok(source) => source,
+                Err(error) => return input_terminal(CommandIdentity::ContractExplain, error),
+            };
+            match riffdb_contract_compiler::compile_contract_source(&source) {
+                Ok(bundle) => crate::output::render_contract_explanation(
+                    crate::contract_explain::render_contract_explain(&bundle),
+                ),
+                Err(error) => riffdb_diagnostics::AuthoringSourcePath::new("<contract>")
+                    .ok()
+                    .and_then(|path| {
+                        riffdb_diagnostics::AuthoringDiagnostics::from_contract(path, &error).ok()
+                    })
+                    .map_or_else(
+                        || {
+                            local_error(
+                                CommandIdentity::ContractExplain,
+                                "compile_failed",
+                                "contract source did not compile",
+                            )
+                        },
+                        |diagnostics| {
+                            authoring_error(CommandIdentity::ContractExplain, &diagnostics)
+                        },
+                    ),
+            }
+        }
     }
 }
 
@@ -11359,6 +11391,9 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
         TopLevel::Contract {
             command: ContractCommand::Validate { .. },
         } => CommandIdentity::ContractValidate,
+        TopLevel::Contract {
+            command: ContractCommand::Explain { .. },
+        } => CommandIdentity::ContractExplain,
         TopLevel::Contract {
             command: ContractCommand::Deploy { .. },
         } => CommandIdentity::ContractDeploy,

@@ -777,6 +777,144 @@ pub(crate) const SWEEP_SEEDS: u64 = 24;
 /// unreleased) — never silently skipped, and bounded so exclusions cannot
 /// hollow out the sweep. After the pin advances and
 /// [`REDB_PIN_CONTAINS_FD82CED`] flips, a wedged seed fails the sweep again.
+/// WP-725 diagnostic: sweep the commit-PRESENT configuration across many seeds
+/// and report how many resolve an interrupted commit as present.
+///
+/// The question this answers is whether the after-commit window narrowed or
+/// closed. If no seed in a wide sweep produces a present resolution, the
+/// pinned witness did not merely drift and re-pinning would hide an engine
+/// change rather than track one.
+/// WP-725 diagnostic: is the after-commit window unaddressable by the current
+/// operation-counted injection, or absent?
+///
+/// The sim places crashes by store-operation ordinal. Clean-close fast startup
+/// removed storage work from recovery, so the same ordinal budget now covers
+/// more logical progress and may simply step over the window. Widening and
+/// shifting the crash range distinguishes "cannot address it" from "not there".
+#[test]
+#[ignore = "WP-725 diagnostic sweep; run explicitly"]
+fn wp725_commit_present_window_shape() {
+    const PROBE_SEEDS: u64 = 24;
+    for (label, ops, crashes) in [
+        ("narrow-early", (1_u64, 48_u64), 32_u64),
+        ("baseline", (1, 128), 32),
+        ("wide", (1, 512), 32),
+        ("late", (64, 512), 32),
+        ("dense", (1, 128), 64),
+    ] {
+        let config = CampaignConfig {
+            crash_operations: ops,
+            max_crashes: crashes,
+            ..crate::subsumption::COMMIT_PRESENT_ARMS_CONFIG
+        };
+        let mut present = 0_u64;
+        let mut absent = 0_u64;
+        let mut present_seeds = 0_u64;
+        for offset in 0..PROBE_SEEDS {
+            if let CampaignOutcome::Completed(report) =
+                run_campaign_outcome(SWEEP_SEED_BASE + offset, config)
+            {
+                present += report.in_flight_commit_present;
+                absent += report.in_flight_commit_absent;
+                if report.in_flight_commit_present > 0 {
+                    present_seeds += 1;
+                }
+            }
+        }
+        println!(
+            "wp725-shape\t{label}\tops={ops:?}\tcrashes={crashes}\t\
+             present={present}\tpresent_seeds={present_seeds}\tabsent={absent}"
+        );
+    }
+}
+
+/// Decides the question the random draw cannot: is there ANY store-operation
+/// ordinal at which a crash resolves an interrupted batch PRESENT?
+///
+/// `wp725_commit_present_window_shape` widens, shifts, and densifies a
+/// *randomly drawn* countdown. A zero there is ambiguous — the draw may simply
+/// never land on a narrow window. This pins the countdown to exactly one
+/// ordinal (`(k, k+1)` is half-open, so `draw_crash_countdown` returns `k`) and
+/// walks every ordinal in turn, with `max_crashes: 1` so the run carries one
+/// crash at one known place.
+///
+/// The result is exhaustive over placement for a given seed. If no ordinal
+/// resolves PRESENT, the window has zero width and the arm tests an
+/// unreachable state; if some ordinal does, the window exists and the fixture's
+/// draw is what fails to address it.
+#[test]
+#[ignore = "WP-725 diagnostic sweep; run explicitly"]
+fn wp725_commit_present_window_ordinal_walk() {
+    const ORDINAL_MAX: u64 = 768;
+    const PROBE_SEEDS: u64 = 4;
+    let mut present_placements = Vec::new();
+    let mut absent_placements = 0_u64;
+    let mut uncrashed = 0_u64;
+    for offset in 0..PROBE_SEEDS {
+        let seed = SWEEP_SEED_BASE + offset;
+        for ordinal in 0..ORDINAL_MAX {
+            let config = CampaignConfig {
+                crash_operations: (ordinal, ordinal + 1),
+                max_crashes: 1,
+                ..crate::subsumption::COMMIT_PRESENT_ARMS_CONFIG
+            };
+            let CampaignOutcome::Completed(report) = run_campaign_outcome(seed, config) else {
+                continue;
+            };
+            if report.crashes == 0 {
+                // The plan finished before the countdown elapsed: every later
+                // ordinal is also unreachable for this seed.
+                uncrashed += 1;
+                break;
+            }
+            absent_placements += report.in_flight_commit_absent;
+            if report.in_flight_commit_present > 0 {
+                present_placements.push((seed, ordinal, report.in_flight_commit_present));
+            }
+        }
+    }
+    println!(
+        "wp725-walk\tseeds={PROBE_SEEDS}\tordinals<={ORDINAL_MAX}\t\
+         present_placements={}\tabsent_placements={absent_placements}\t\
+         seeds_exhausted_before_max={uncrashed}",
+        present_placements.len()
+    );
+    for (seed, ordinal, count) in present_placements.iter().take(32) {
+        println!("wp725-walk-present\tseed={seed:#x}\tordinal={ordinal}\tpresent={count}");
+    }
+}
+
+#[test]
+#[ignore = "WP-725 diagnostic sweep; run explicitly"]
+fn wp725_commit_present_window_sweep() {
+    const PROBE_SEEDS: u64 = 96;
+    let mut present_seeds = Vec::new();
+    let mut absent_total = 0_u64;
+    let mut completed = 0_u64;
+    let mut wedged = 0_u64;
+    for offset in 0..PROBE_SEEDS {
+        let seed = SWEEP_SEED_BASE + offset;
+        match run_campaign_outcome(seed, crate::subsumption::COMMIT_PRESENT_ARMS_CONFIG) {
+            CampaignOutcome::Completed(report) => {
+                completed += 1;
+                absent_total += report.in_flight_commit_absent;
+                if report.in_flight_commit_present > 0 {
+                    present_seeds.push((seed, report.in_flight_commit_present));
+                }
+            }
+            CampaignOutcome::WedgedByRedb410FileGrowth { .. } => wedged += 1,
+        }
+    }
+    println!(
+        "wp725-sweep\tseeds={PROBE_SEEDS}\tcompleted={completed}\twedged={wedged}\t\
+         present_seeds={}\tabsent_total={absent_total}",
+        present_seeds.len()
+    );
+    for (seed, count) in &present_seeds {
+        println!("wp725-present\tseed={seed:#x}\tpresent={count}");
+    }
+}
+
 #[test]
 fn per_merge_sweep_holds_the_oracle_and_reaches_the_swept_territory() {
     let mut total = CampaignReport::default();
@@ -818,32 +956,33 @@ fn per_merge_sweep_holds_the_oracle_and_reaches_the_swept_territory() {
             .max_torn_in_one_recovery
             .max(report.max_torn_in_one_recovery);
     }
-    let commit_present =
-        match run_campaign_outcome(0x51C2_C147, crate::subsumption::COMMIT_PRESENT_ARMS_CONFIG) {
+    // The targeted interrupted-commit witness, rotated to 0x51C2_C406 when
+    // fa5d906c moved the operation stream off 0x51C2_C147. It is no longer a
+    // commit-PRESENT witness: that territory was retired rather than rotated,
+    // because it is unreachable at every crash placement rather than merely
+    // moved. See `corpus::REGRESSION_CORPUS` for both receipts.
+    let interrupted_commit =
+        match run_campaign_outcome(0x51C2_C406, crate::subsumption::COMMIT_PRESENT_ARMS_CONFIG) {
             CampaignOutcome::Completed(report) => report,
             CampaignOutcome::WedgedByRedb410FileGrowth { .. } => {
-                panic!("targeted commit-PRESENT witness wedged instead of completing")
+                panic!("targeted interrupted-commit witness wedged instead of completing")
             }
         };
     assert_eq!(
-        commit_present.final_frontier,
+        interrupted_commit.final_frontier,
         u64::from(
             crate::subsumption::COMMIT_PRESENT_ARMS_CONFIG
                 .generator
                 .commands
         ),
-        "targeted commit-PRESENT witness did not drive the plan to completion"
+        "targeted interrupted-commit witness did not drive the plan to completion"
     );
     assert!(
-        commit_present.in_flight_commit_present > 0,
-        "targeted recovery did not resolve an interrupted commit as present"
-    );
-    assert!(
-        commit_present.in_flight_commit_absent > 0,
+        interrupted_commit.in_flight_commit_absent > 0,
         "targeted recovery did not resolve an interrupted commit as absent"
     );
     assert!(
-        commit_present.in_flight_admit_present + commit_present.in_flight_admit_absent > 0,
+        interrupted_commit.in_flight_admit_present + interrupted_commit.in_flight_admit_absent > 0,
         "targeted recovery did not resolve an interrupted phase-one admission"
     );
     assert!(
@@ -870,6 +1009,25 @@ fn per_merge_sweep_holds_the_oracle_and_reaches_the_swept_territory() {
     assert!(
         total.in_flight_commit_absent > 0,
         "no swept recovery resolved an interrupted commit as absent"
+    );
+    // The assertion whose absence let this change go unnoticed. The sweep
+    // asserted the ABSENT direction and never asserted the PRESENT one, so
+    // fa5d906c closing the in-doubt interval was invisible here even though
+    // it is the more dangerous direction to change silently.
+    //
+    // It is now asserted in the direction that is true: a batch's engine
+    // commit is the last fault-eligible operation of its step, so no crash
+    // leaves a batch durable but unacknowledged. That is proved exhaustively
+    // over crash placement by `wp725_commit_present_window_ordinal_walk` and
+    // receipted as a retirement in the corpus and the SIM-006 classification.
+    assert_eq!(
+        total.in_flight_commit_present, 0,
+        "a swept recovery resolved an interrupted commit as PRESENT. The \
+         in-doubt interval -- durable but unacknowledged -- has been closed \
+         since fa5d906c, so this means it reopened. That is a change in when \
+         durability becomes observable and belongs in ADR-0156/ADR-0157: \
+         restore the retired corpus expectation and SIM-006 row rather than \
+         relaxing this assertion. Totals: {total:?}"
     );
     assert!(
         total.in_flight_admit_present + total.in_flight_admit_absent > 0,

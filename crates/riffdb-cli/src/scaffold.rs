@@ -435,7 +435,7 @@ fn application_seed_input_count(source_path: &Path) -> Result<usize, ScaffoldErr
     let source_text =
         std::str::from_utf8(&source_bytes).map_err(|_| ScaffoldError::ApplicationSource)?;
     let source = ApplicationSourceManifest::parse(source_text)
-        .map_err(|error| application_source_diagnostic(source_path, error.kind()))?;
+        .map_err(|error| application_source_diagnostic(source_path, error))?;
     Ok(source.seed_inputs().len())
 }
 
@@ -592,7 +592,7 @@ pub(crate) fn migrate_application_source_v2(
     let source_text =
         std::str::from_utf8(&source_bytes).map_err(|_| ScaffoldError::ApplicationSource)?;
     let parsed = ApplicationSourceManifest::parse(source_text)
-        .map_err(|error| application_source_diagnostic(source_path, error.kind()))?;
+        .map_err(|error| application_source_diagnostic(source_path, error))?;
     let migrated = if parsed.schema() == riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V2 {
         parsed.canonical_bytes().to_vec()
     } else {
@@ -607,7 +607,7 @@ pub(crate) fn migrate_application_source_v2(
         let proposed =
             serde_json::to_string(&value).map_err(|_| ScaffoldError::ApplicationSource)?;
         ApplicationSourceManifest::parse(&proposed)
-            .map_err(|error| application_source_diagnostic(source_path, error.kind()))?
+            .map_err(|error| application_source_diagnostic(source_path, error))?
             .canonical_bytes()
             .to_vec()
     };
@@ -1279,7 +1279,7 @@ pub(crate) fn application_contract_version(source_path: &Path) -> Result<u64, Sc
     let source_text =
         std::str::from_utf8(&source_bytes).map_err(|_| ScaffoldError::ApplicationSource)?;
     let source = ApplicationSourceManifest::parse(source_text)
-        .map_err(|error| application_source_diagnostic(source_path, error.kind()))?;
+        .map_err(|error| application_source_diagnostic(source_path, error))?;
     Ok(source.contract().version())
 }
 
@@ -1288,7 +1288,7 @@ pub(crate) fn application_contract_source(source_path: &Path) -> Result<String, 
     let source_text =
         std::str::from_utf8(&source_bytes).map_err(|_| ScaffoldError::ApplicationSource)?;
     let source = ApplicationSourceManifest::parse(source_text)
-        .map_err(|error| application_source_diagnostic(source_path, error.kind()))?;
+        .map_err(|error| application_source_diagnostic(source_path, error))?;
     read_workspace_text(
         source_parent(source_path),
         source.contract().source(),
@@ -1332,7 +1332,7 @@ fn compile_symbolic_application_mode(
     let source_text =
         std::str::from_utf8(&source_bytes).map_err(|_| ScaffoldError::ApplicationSource)?;
     let source = ApplicationSourceManifest::parse(source_text)
-        .map_err(|error| application_source_diagnostic(source_path, error.kind()))?;
+        .map_err(|error| application_source_diagnostic(source_path, error))?;
     let root = source_parent(source_path);
     let contract_source = read_workspace_text(root, source.contract().source(), 1_048_576)?;
     let contract = if let Some(contract) = contract_override {
@@ -1507,7 +1507,7 @@ fn compile_symbolic_application_mode(
     } else {
         source.exact_manifest(&contract, &modules)
     }
-    .map_err(|error| application_source_diagnostic(source_path, error.kind()))?;
+    .map_err(|error| application_source_diagnostic(source_path, error))?;
     for role in source.roles() {
         let tenant = match role.tenant_scope() {
             ApplicationSourceTenantScope::Global => None,
@@ -1734,10 +1734,13 @@ impl From<io::Error> for ScaffoldError {
 
 fn application_source_diagnostic(
     path: &Path,
-    kind: riffdb_query_module::ApplicationSourceErrorKind,
+    error: riffdb_query_module::ApplicationSourceError,
 ) -> ScaffoldError {
     diagnostic_path(path)
-        .and_then(|path| AuthoringDiagnostics::from_application_source(path, kind).ok())
+        .and_then(|path| {
+            AuthoringDiagnostics::from_application_source_member(path, error.kind(), error.member())
+                .ok()
+        })
         .map_or(ScaffoldError::ApplicationSource, ScaffoldError::Authoring)
 }
 

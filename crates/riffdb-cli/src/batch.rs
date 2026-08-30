@@ -238,7 +238,7 @@ pub(crate) fn parse_source_with_constraint(
         }
         let key = input
             .get(idempotency_field)
-            .and_then(serde_json::Value::as_str)
+            .and_then(batch_idempotency_key)
             .filter(|key| !key.is_empty() && key.len() <= MAX_IDEMPOTENCY_KEY_BYTES)
             .ok_or(BatchError::Input(InputError::Invalid))?;
         if !keys.insert(key.to_owned()) {
@@ -715,6 +715,28 @@ fn checkpoint_checksum(checkpoint: &Checkpoint) -> Result<String, BatchError> {
     serde_json::to_vec(&unsigned)
         .map(|bytes| digest_hex(&bytes))
         .map_err(|_| BatchError::CheckpointInvalid)
+}
+
+/// The deduplication key for one seed line's declared idempotency input.
+///
+/// A command may key idempotency on any input its contract declares, so a seed
+/// line carries whatever that input's type encodes to: a bare string, or a
+/// tagged scalar such as `{"$uuid": "..."}`. Both identify one command
+/// uniquely, so both are accepted rather than forcing a contract to declare a
+/// string idempotency input purely to satisfy the seeder.
+fn batch_idempotency_key(value: &serde_json::Value) -> Option<&str> {
+    if let Some(text) = value.as_str() {
+        return Some(text);
+    }
+    let tagged = value.as_object()?;
+    if tagged.len() != 1 {
+        return None;
+    }
+    let (name, inner) = tagged.iter().next()?;
+    if !name.starts_with('$') {
+        return None;
+    }
+    inner.as_str()
 }
 
 fn digest_hex(bytes: &[u8]) -> String {

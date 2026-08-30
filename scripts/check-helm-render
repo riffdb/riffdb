@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Renders the RiffDB chart against pinned values and compares the result with a
+# committed golden manifest.
+#
+# A chart is a program whose output an operator runs. Reviewing a values or
+# template change by reading the template is reviewing the source of that
+# program rather than its output; this makes the output reviewable. A change
+# that alters what gets deployed shows up as a manifest diff.
+
+usage() {
+    echo "usage: ./scripts/check-helm-render [--write]" >&2
+    exit 2
+}
+
+write=0
+case "${1:-}" in
+    "") ;;
+    --write) write=1 ;;
+    *) usage ;;
+esac
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+command -v helm >/dev/null 2>&1 || {
+    echo "check-helm-render requires helm" >&2
+    exit 1
+}
+
+chart="release/helm/riffdb"
+golden="release/helm/rendered/riffdb-default-v1.yaml"
+
+# Pinned so the golden is a function of the chart alone: a newer local helm or
+# cluster must not change the recorded output.
+render() {
+    helm template riffdb "$chart" \
+        --namespace riffdb-alpha \
+        --kube-version 1.29.0 \
+        --api-versions v1 \
+        --api-versions apps/v1 \
+        --api-versions batch/v1
+}
+
+helm lint "$chart" >/dev/null
+
+if ((write)); then
+    mkdir -p "$(dirname "$golden")"
+    render >"$golden"
+    echo "check-helm-render-v1	wrote	$golden"
+    exit 0
+fi
+
+if [[ ! -f "$golden" ]]; then
+    echo "rendered golden is absent: $golden" >&2
+    echo "run ./scripts/check-helm-render --write after reviewing the chart" >&2
+    exit 1
+fi
+
+if diff -u "$golden" <(render); then
+    echo "check-helm-render-v1	rendered manifest matches the committed golden"
+else
+    echo "the chart renders differently than the committed golden" >&2
+    echo "review the diff above, then run ./scripts/check-helm-render --write" >&2
+    exit 1
+fi

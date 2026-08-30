@@ -782,6 +782,11 @@ pub enum ApplicationSourceErrorKind {
     UnknownOperation,
     /// Hard source bound exceeded.
     LimitExceeded,
+    /// A member declares fewer entries than its closed minimum requires.
+    ///
+    /// Distinct from [`Self::LimitExceeded`] because the corrective action is
+    /// the opposite one: the source must gain an entry, not shed one.
+    MissingRequiredEntry,
     /// Strict decoder observed noncanonical bytes.
     NonCanonical,
     /// Compiled contract/module identity does not match symbolic declarations.
@@ -792,17 +797,35 @@ pub enum ApplicationSourceErrorKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ApplicationSourceError {
     kind: ApplicationSourceErrorKind,
+    member: Option<&'static str>,
 }
 
 impl ApplicationSourceError {
     const fn new(kind: ApplicationSourceErrorKind) -> Self {
-        Self { kind }
+        Self { kind, member: None }
+    }
+
+    /// Records the exact schema member the failure concerns.
+    ///
+    /// The parser already knows which member it rejected; carrying the name
+    /// spares the caller a binary search across the whole document.
+    const fn at(kind: ApplicationSourceErrorKind, member: &'static str) -> Self {
+        Self {
+            kind,
+            member: Some(member),
+        }
     }
 
     /// Closed failure kind.
     #[must_use]
     pub const fn kind(self) -> ApplicationSourceErrorKind {
         self.kind
+    }
+
+    /// The schema member this failure concerns, when the parser knows it.
+    #[must_use]
+    pub const fn member(self) -> Option<&'static str> {
+        self.member
     }
 }
 
@@ -823,6 +846,9 @@ impl fmt::Display for ApplicationSourceError {
                 "application source role names an unknown query"
             }
             ApplicationSourceErrorKind::LimitExceeded => "application source limit exceeded",
+            ApplicationSourceErrorKind::MissingRequiredEntry => {
+                "application source omits a required entry"
+            }
             ApplicationSourceErrorKind::NonCanonical => {
                 "application source bytes are not canonical"
             }
@@ -1408,12 +1434,22 @@ fn positive_u64(object: &Map<String, Value>, key: &str) -> Result<u64, Applicati
 
 fn object<'a>(
     value: &'a Value,
-    expected: &[&str],
+    expected: &[&'static str],
 ) -> Result<&'a Map<String, Value>, ApplicationSourceError> {
     let object = value
         .as_object()
         .ok_or_else(|| ApplicationSourceError::new(ApplicationSourceErrorKind::InvalidShape))?;
-    if object.len() != expected.len() || !expected.iter().all(|key| object.contains_key(*key)) {
+    // Name the first member that is absent, then the first that is unexpected,
+    // so the report points at one concrete key instead of the whole object.
+    if let Some(missing) = expected.iter().find(|key| !object.contains_key(**key)) {
+        return Err(ApplicationSourceError::at(
+            ApplicationSourceErrorKind::InvalidShape,
+            missing,
+        ));
+    }
+    // An unexpected member's name comes from the document, not from this closed
+    // list, so it cannot be reported as a static name and stays unnamed.
+    if object.len() != expected.len() {
         return Err(ApplicationSourceError::new(
             ApplicationSourceErrorKind::InvalidShape,
         ));
@@ -1429,7 +1465,14 @@ fn array(
     let values = value
         .as_array()
         .ok_or_else(|| ApplicationSourceError::new(ApplicationSourceErrorKind::InvalidShape))?;
-    if values.len() < minimum || values.len() > maximum {
+    // Under the minimum and over the maximum need opposite corrections, so they
+    // are reported as different failures rather than one "bound" failure.
+    if values.len() < minimum {
+        return Err(ApplicationSourceError::new(
+            ApplicationSourceErrorKind::MissingRequiredEntry,
+        ));
+    }
+    if values.len() > maximum {
         return Err(ApplicationSourceError::new(
             ApplicationSourceErrorKind::LimitExceeded,
         ));

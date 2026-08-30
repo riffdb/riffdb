@@ -164,6 +164,8 @@ pub enum AuthoringFix {
     CorrectPath,
     /// Reduce input to the documented bound.
     ReduceInput,
+    /// A closed member requires at least one entry that the source omits.
+    SupplyRequiredEntry,
     /// Retry after correcting local permissions or availability.
     CorrectFilesystem,
     /// Contact the operator with the local incident context.
@@ -188,6 +190,7 @@ impl AuthoringFix {
             Self::NarrowRole => "narrow_role",
             Self::CorrectPath => "correct_path",
             Self::ReduceInput => "reduce_input",
+            Self::SupplyRequiredEntry => "supply_required_entry",
             Self::CorrectFilesystem => "correct_filesystem",
             Self::ContactOperator => "contact_operator",
         }
@@ -318,6 +321,7 @@ pub struct AuthoringDiagnostic {
     span: Option<AuthoringSourceSpan>,
     symbol_path: Vec<String>,
     summary: String,
+    help: Option<String>,
     cause: AuthoringCause,
     fixes: Vec<AuthoringFix>,
     file_change: FileChangeDisposition,
@@ -359,6 +363,19 @@ impl AuthoringDiagnostic {
     #[must_use]
     pub fn summary(&self) -> &str {
         &self.summary
+    }
+
+    /// Static corrective guidance, when the producing stage supplies one.
+    #[must_use]
+    pub fn help(&self) -> Option<&str> {
+        self.help.as_deref()
+    }
+
+    /// Attaches static corrective guidance produced by the compiler.
+    #[must_use]
+    fn with_help(mut self, help: Option<&str>) -> Self {
+        self.help = help.map(str::to_owned);
+        self
     }
 
     /// Closed cause.
@@ -425,6 +442,7 @@ impl AuthoringDiagnostics {
                         AuthoringCause::InvalidSyntax,
                         vec![AuthoringFix::UseLanguageReference],
                     )
+                    .map(|value| value.with_help(diagnostic.code().help()))
                 })
                 .collect::<Result<Vec<_>, _>>()?,
             CompilationError::Semantic(diagnostics) => diagnostics
@@ -444,6 +462,7 @@ impl AuthoringDiagnostics {
                         cause,
                         fixes,
                     )
+                    .map(|value| value.with_help(code.help()))
                 })
                 .collect::<Result<Vec<_>, _>>()?,
         };
@@ -515,13 +534,29 @@ impl AuthoringDiagnostics {
         path: AuthoringSourcePath,
         kind: ApplicationSourceErrorKind,
     ) -> Result<Self, AuthoringDiagnosticBoundsError> {
+        Self::from_application_source_member(path, kind, None)
+    }
+
+    /// Converts a symbolic application-source failure that names its member.
+    ///
+    /// The parser knows which member it rejected. Reporting the name turns a
+    /// whole-document search into a single edit.
+    pub fn from_application_source_member(
+        path: AuthoringSourcePath,
+        kind: ApplicationSourceErrorKind,
+        member: Option<&str>,
+    ) -> Result<Self, AuthoringDiagnosticBoundsError> {
+        let summary = member.map_or_else(
+            || application_source_summary(kind).to_owned(),
+            |member| format!("{} at member `{member}`", application_source_summary(kind)),
+        );
         Self::new(vec![diagnostic_value(
             AuthoringStage::ApplicationSource,
             application_source_code(kind),
             path,
             None,
             Vec::new(),
-            application_source_summary(kind),
+            &summary,
             application_source_cause(kind),
             vec![application_source_fix(kind)],
         )?])
@@ -670,6 +705,9 @@ impl AuthoringDiagnostics {
                 writeln!(output, "  symbol: {}", diagnostic.symbol_path.join("."))
                     .map_err(|_| AuthoringDiagnosticBoundsError)?;
             }
+            if let Some(help) = &diagnostic.help {
+                writeln!(output, "  help: {help}").map_err(|_| AuthoringDiagnosticBoundsError)?;
+            }
             writeln!(output, "  cause: {}", diagnostic.cause.as_str())
                 .map_err(|_| AuthoringDiagnosticBoundsError)?;
             writeln!(
@@ -705,6 +743,7 @@ impl AuthoringDiagnostics {
                     "code": diagnostic.code.as_str(),
                     "file_change": diagnostic.file_change.as_str(),
                     "fixes": diagnostic.fixes.iter().map(|fix| fix.as_str()).collect::<Vec<_>>(),
+                    "help": diagnostic.help.as_deref().map_or(Value::Null, |help| json!(help)),
                     "path": diagnostic.path.as_str(),
                     "retry": diagnostic.retry.as_str(),
                     "span": diagnostic.span.map(|span| json!({
@@ -803,6 +842,7 @@ fn diagnostic_value(
         span,
         symbol_path,
         summary,
+        help: None,
         cause,
         fixes,
         file_change: FileChangeDisposition::NoFilesChanged,
@@ -964,6 +1004,7 @@ static_registry!(
         ApplicationSourceErrorKind::Duplicate => ("RDB-AS006", "application source repeats a declaration", AuthoringCause::InvalidSyntax, AuthoringFix::CorrectSymbol),
         ApplicationSourceErrorKind::UnknownOperation => ("RDB-AS007", "application role names an undeclared query", AuthoringCause::UnknownSymbol, AuthoringFix::CorrectSymbol),
         ApplicationSourceErrorKind::LimitExceeded => ("RDB-AS008", "application source exceeds a hard bound", AuthoringCause::LimitExceeded, AuthoringFix::ReduceInput),
+        ApplicationSourceErrorKind::MissingRequiredEntry => ("RDB-AS011", "application source omits an entry a closed member requires", AuthoringCause::InvalidSyntax, AuthoringFix::SupplyRequiredEntry),
         ApplicationSourceErrorKind::NonCanonical => ("RDB-AS009", "application source bytes are not canonical", AuthoringCause::IdentityDrift, AuthoringFix::WriteLock),
         ApplicationSourceErrorKind::IdentityMismatch => ("RDB-AS010", "compiled application does not match symbolic source", AuthoringCause::IdentityDrift, AuthoringFix::WriteLock)
     }
@@ -1258,18 +1299,105 @@ query Operational($organization_id: Organization.organization_id, $title: Ticket
         assert!(value["diagnostics"][0]["span"]["end"].as_u64().is_some());
         assert!(!rendered.contains("SECRET_VALUE"));
         assert!(!rendered.contains("entity Item"));
+        // The shape is closed, so a member added here is a deliberate change:
+        // `help` carries the compiler's static corrective guidance, which was
+        // previously computed and shown only on the MCP surface.
         assert_eq!(
             value["diagnostics"][0].as_object().expect("object").len(),
-            10
+            11
+        );
+        assert!(
+            value["diagnostics"][0]
+                .as_object()
+                .expect("object")
+                .contains_key("help")
         );
     }
 
     #[test]
-    fn cross_aggregate_diagnostic_names_both_required_model_corrections() {
+    fn a_contract_diagnostic_carries_the_compilers_corrective_guidance() {
+        // The guidance already existed on CompilerDiagnosticCode and reached
+        // only the MCP surface; the CLI showed a cause and a fix code with no
+        // statement of what a working contract would look like.
+        let source = r"
+contract Orders version 1 {
+  entity Product {
+    key (tenant_id: uuid, product_id: uuid)
+    field stock: u64
+    delete_policy no_inbound
+  }
+  entity Reservation {
+    key (tenant_id: uuid, product_id: uuid, reservation_id: uuid)
+    field quantity: u64
+    index by_parent (tenant_id, product_id, reservation_id)
+    reference reservation_parent (tenant_id, product_id) -> Product(tenant_id, product_id)
+    delete_policy no_inbound
+  }
+  aggregate ProductData {
+    root Product
+    child Reservation
+    partition_by tenant_id
+    conflict_key (tenant_id, product_id)
+  }
+}
+";
+        let error = riffdb_contract_compiler::compile_contract_source(source)
+            .expect_err("the deletion policy cannot be proved");
+        let diagnostics = AuthoringDiagnostics::from_contract(
+            AuthoringSourcePath::new("riffdb/contract.riff").expect("path"),
+            &error,
+        )
+        .expect("diagnostics");
+        let human = diagnostics.render_human().expect("human");
+        assert!(human.contains("RDB-C045"), "{human}");
+        assert!(human.contains("  help: "), "{human}");
+        assert!(
+            human.contains("cascade over every inbound relation"),
+            "{human}"
+        );
+    }
+
+    #[test]
+    fn a_member_below_its_minimum_is_not_reported_as_an_exceeded_bound() {
+        // `query_modules: []` reported RDB-AS008 with `reduce_input`, which is
+        // the opposite of the required correction.
+        let diagnostics = AuthoringDiagnostics::from_application_source(
+            AuthoringSourcePath::new("riffdb.application.json").expect("path"),
+            ApplicationSourceErrorKind::MissingRequiredEntry,
+        )
+        .expect("diagnostics");
+        let human = diagnostics.render_human().expect("human");
+        assert!(human.contains("RDB-AS011"), "{human}");
+        assert!(human.contains("supply_required_entry"), "{human}");
+        assert!(!human.contains("reduce_input"), "{human}");
+    }
+
+    #[test]
+    fn an_invalid_member_is_named_when_the_parser_knows_it() {
+        let diagnostics = AuthoringDiagnostics::from_application_source_member(
+            AuthoringSourcePath::new("riffdb.application.json").expect("path"),
+            ApplicationSourceErrorKind::InvalidShape,
+            Some("python"),
+        )
+        .expect("diagnostics");
+        assert!(
+            diagnostics
+                .render_human()
+                .expect("human")
+                .contains("at member `python`"),
+            "the rejected member must be named"
+        );
+    }
+
+    #[test]
+    fn cross_partition_diagnostic_names_both_required_model_corrections() {
+        // ADR-0170 admits two mutation aggregates that share a partition route,
+        // so the rejection this exercises is now the cross-*partition* one:
+        // `Inventory` is keyed by `warehouse_id` and derives a different route.
         let source = r#"
 contract Orders version 1 {
   entity PurchaseOrder { key (store_id: uuid, order_id: uuid) }
-  entity Inventory { key (store_id: uuid, product_id: uuid) field available: i64 }
+  entity Inventory { key (warehouse_id: uuid, product_id: uuid) field available: i64 }
   aggregate OrdersRoot {
     root PurchaseOrder
     partition_by store_id
@@ -1277,23 +1405,24 @@ contract Orders version 1 {
   }
   aggregate InventoryRoot {
     root Inventory
-    partition_by store_id
-    conflict_key (store_id, product_id)
+    partition_by warehouse_id
+    conflict_key (warehouse_id, product_id)
   }
   command Reserve {
     input request_key: string<128>
     input store_id: uuid
+    input warehouse_id: uuid
     input order_id: uuid
     input product_id: uuid
     idempotency_key request_key
     mutate PurchaseOrder(store_id, order_id) as purchase else OrderMissing {}
-    mutate Inventory(store_id, product_id) as inventory else InventoryMissing {}
+    mutate Inventory(warehouse_id, product_id) as inventory else InventoryMissing {}
     set inventory.available = inventory.available - 1
     return Reserved { purchase: purchase, inventory: inventory }
   }
 }
 "#;
-        let error = compile_contract_source(source).expect_err("two mutation aggregates reject");
+        let error = compile_contract_source(source).expect_err("two partition routes reject");
         let diagnostics = AuthoringDiagnostics::from_contract(
             AuthoringSourcePath::new("riffdb/contract.riff").expect("path"),
             &error,
@@ -1304,7 +1433,9 @@ contract Orders version 1 {
             .iter()
             .find(|diagnostic| diagnostic.code().as_str() == "RDB-C017")
             .expect("cross-aggregate diagnostic");
-        let expected_start = source.find("Inventory(store_id").expect("second mutation");
+        let expected_start = source
+            .find("Inventory(warehouse_id")
+            .expect("second mutation");
 
         assert_eq!(diagnostic.cause(), AuthoringCause::NonLocal);
         assert_eq!(

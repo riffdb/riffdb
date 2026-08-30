@@ -1,0 +1,1 @@
+{"idempotency_key": "atomic-tenant", "tenant_id": {"$uuid": "018f5f7e-7b0c-7d9a-8f14-77f42f53c851"}, "name": "Bench tenant"}

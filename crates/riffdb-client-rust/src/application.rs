@@ -1762,7 +1762,16 @@ impl From<GeneratedExecutionError> for ApplicationClientError {
     fn from(error: GeneratedExecutionError) -> Self {
         match error {
             GeneratedExecutionError::Client(error) => Self::Client(error),
-            GeneratedExecutionError::CommandShape(_) => Self::InvalidResponse,
+            // An input the caller built wrongly and an outcome the server sent
+            // wrongly are different faults with different fixes. Reporting the
+            // first as `InvalidResponse` sends callers to audit the decoder for
+            // a mistake that is in their own request.
+            GeneratedExecutionError::CommandShape(
+                crate::generated::GeneratedCommandError::InvalidInputShape,
+            ) => Self::InvalidInput,
+            GeneratedExecutionError::CommandShape(
+                crate::generated::GeneratedCommandError::InvalidOutcomeShape,
+            ) => Self::InvalidResponse,
         }
     }
 }

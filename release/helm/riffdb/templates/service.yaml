@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "riffdb.fullname" . }}
+  namespace: {{ include "riffdb.namespace" . }}
+  labels:
+    {{- include "riffdb.labels" . | nindent 4 }}
+spec:
+  # Readiness gates traffic, but the server must be addressable while it is
+  # still bringing up its first contract, or bootstrap cannot reach it.
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "riffdb.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: grpc-tls
+      port: {{ .Values.server.listener.port }}
+      targetPort: grpc-tls
