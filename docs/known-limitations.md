@@ -28,6 +28,17 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 - `riffdbd` exposes only the documented POC configuration fields. There is no
   network metrics listener, storage-engine selector, general tuning surface,
   or secret value in TOML.
+- A command whose bindings span two aggregates on one partition route
+  (ADR-0170) is atomic across a crash, but the aggregate that does not own the
+  command's partition route must not declare an index. Index entries are
+  partitioned by the command's single partition key, which is namespaced by the
+  route-owning aggregate, and startup validation requires each index entry's
+  partition key to belong to the index owner's aggregate. Such a contract
+  compiles and passes `RDB-C017`; the failure appears only when a command first
+  writes it, as a refused write plan or a database that will not reopen, with no
+  diagnostic naming the cause. Keep cross-aggregate writes to an unindexed
+  second aggregate until WP-721 resolves this. See
+  `docs/performance/wp-721-cross-aggregate-conflict-ownership.md`.
 - systemd `active` means the process started. After generic bootstrap,
   authenticated Health is intentionally `not_ready` with no active contract;
   require `ready` or `degraded` only after deploying the first application

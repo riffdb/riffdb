@@ -181,13 +181,65 @@ constructor's. A V19 bundle compiled and locked but could not be read back, so
 a cross-aggregate contract could never have been deployed. Any future version
 must update both lists; the round-trip test now covers it.
 
-Outstanding: a crash arm proving a command writing two aggregates is atomic
-across a restart. `tests/storage_recovery/storage_recovery_matrix.rs` builds
-every `CommandFixture` from one hardcoded plan and `AggregateTypeId::new(1)`,
-so the arm needs a fixture bound to a second contract -- the same limitation
-already recorded against the rootless-aggregate export arm. Atomicity here is a
-property of the single redb write transaction rather than of aggregate count,
-which is a reason to expect the arm to pass, not a reason to skip it.
+## The crash arm, and the restriction it found
+
+The arm is delivered.
+`crash_before_cross_aggregate_commit_leaves_both_aggregates_absent` and
+`crash_after_cross_aggregate_commit_preserves_both_aggregates` run a
+two-aggregate command through the child-crash harness on both commit profiles.
+Atomicity holds: nothing partial survives a pre-commit crash, and a post-commit
+crash recovers both aggregates' entities under **one** commit sequence, with
+the same state on a second recovery. Aborting after the commit instead of
+before makes the second arm fail, so it is load-bearing rather than decorative.
+
+Building it required a second contract. Every existing `CommandFixture` in
+`storage_recovery_matrix.rs` is bound to `STORAGE_RECOVERY_CONTRACT`'s bundle
+hash, plan hash, and identifiers, so extending that contract would have
+restated the durable identity of every arm in the file to prove one new
+property. `CROSS_AGGREGATE_RECOVERY_CONTRACT` sits beside it instead.
+
+Writing it also found a restriction nobody had stated:
+
+**A cross-aggregate command's non-locality aggregate cannot carry an index.**
+
+`derive_grammar_v1_indexes` passes `pending().partition_key()` as the
+`command_partition` for *every* index it derives, and that key is namespaced by
+the locality aggregate — `AggregateTypeId(1)` for a command whose
+`LocalityPlan` names the first aggregate. For an index owned by an entity of
+the *other* aggregate, two accepted rules then contradict each other:
+
+- Keep the command's partition key, and the write succeeds but the next
+  startup rejects the database. `validate_persisted_key`'s `PartitionIndex` arm
+  resolves the index's owning entity, takes that entity's aggregate, and
+  requires the target's partition key to decode against *that* aggregate's
+  partition schema. `decode_partition` passes `owner.get()` into
+  `decode_complete_components`, so a key namespaced by aggregate 1 cannot
+  decode under aggregate 2. Catalog history validation fails with
+  `InvalidHistoricalEvidence` and the store will not open.
+- Give the index its owner's partition key instead, and
+  `CommandWriteSetPlanV1::new` refuses the write plan with `IdentityMismatch`
+  before anything is written, because a command's index entries must share one
+  partition key.
+
+So the shape is unreachable from both directions. This was found by committing
+a `Ledger` with an index and watching a *clean* commit-and-reopen fail — the
+crash harness was not even needed, which is why no existing arm had caught it.
+
+It is a real gap in the ADR-0170 implementation rather than a fixture artifact.
+A contract whose second aggregate indexes anything compiles today, passes
+`RDB-C017`, and fails only when a command first writes it — at which point the
+failure is either an unopenable database or a runtime refusal, neither of which
+names the cause. `cross_aggregate_fixture`'s `Ledger` therefore carries no
+index, and `a_cross_aggregate_index_entry_cannot_leave_the_command_partition`
+pins the second half of the contradiction as a value-level check that needs no
+database, so the constraint is executable evidence rather than a comment.
+
+What it does not do is fix it. The options are to reject the shape at compile
+time with a diagnostic that says so, or to make index partitioning
+per-aggregate — which means relaxing the write plan's one-partition rule and is
+a durable-layout question, not a compiler one. Either is an ADR-0170 amendment
+rather than an implementation choice, so this note states the finding and
+WP-721 carries it forward.
 
 ## What this does not settle
 
