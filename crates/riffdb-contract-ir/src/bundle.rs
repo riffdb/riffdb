@@ -3941,6 +3941,10 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
             BUNDLE_FORMAT_VERSION_V18,
             GRAMMAR_VERSION_V18,
             EXECUTABLE_IR_VERSION_V18
+        ) | (
+            BUNDLE_FORMAT_VERSION_V19,
+            GRAMMAR_VERSION_V19,
+            EXECUTABLE_IR_VERSION_V19
         )
     ) {
         return Err(IrValidationError::UnsupportedVersion {

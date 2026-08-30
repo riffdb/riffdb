@@ -1339,9 +1339,9 @@ outstanding:
   - WP-721
   obligation: WP-721 must deliver the compiler proof, the union conflict ownership, and
     a deadlock-free lease ordering across aggregates before any writer behaviour changes.
-  reason: The compiler proof and union conflict ownership are delivered at executable IR V19, and
-    the canonical lease order over (aggregate, conflict key) was already implemented by
-    lower_conflict_keys. The obligation is not discharged because deadlock-freedom has no arm that
-    fails under an arbitrary acquisition order, and no arm proves a command writing two aggregates
-    is atomic across a restart. Verified by reading is not verified.
+  reason: The compiler proof, union conflict ownership, and executable IR V19 are delivered, and
+    deadlock-freedom now has an arm that fails when the canonical sort is removed. The obligation is
+    not discharged because no arm proves a command writing two aggregates is atomic across a
+    restart; that needs a storage-recovery command fixture bound to a second contract, which the
+    matrix does not yet have.
   owner: WP-721

@@ -167,10 +167,27 @@ riffdb-openfga and riffdb-better-auth application locks were verified
 byte-identical after the change, which is the compatibility claim tested rather
 than argued.
 
-Outstanding: a deadlock arm that fails under an arbitrary acquisition order,
-and a crash arm proving a command writing two aggregates is atomic across a
-restart. The lease order is believed correct by construction and by reading
-`lower_conflict_keys`; that is not the same as tested.
+Deadlock-freedom is now proved rather than argued.
+`cross_aggregate_conflict_acquisition_is_globally_ordered_and_deadlock_free`
+declares two commands whose shared keys appear in opposing order, asserts that
+opposition in the fixture, and then asserts both lowered sequences ascend under
+one global order spanning aggregates. Deleting `raw.sort_unstable()` makes it
+fail, which is the property that matters: the arm is load-bearing, not
+decorative.
+
+One decode gate was missed on the first pass and caught by a round-trip arm:
+`decode_bundle` has its own accepted version-tuple list, separate from the
+constructor's. A V19 bundle compiled and locked but could not be read back, so
+a cross-aggregate contract could never have been deployed. Any future version
+must update both lists; the round-trip test now covers it.
+
+Outstanding: a crash arm proving a command writing two aggregates is atomic
+across a restart. `tests/storage_recovery/storage_recovery_matrix.rs` builds
+every `CommandFixture` from one hardcoded plan and `AggregateTypeId::new(1)`,
+so the arm needs a fixture bound to a second contract -- the same limitation
+already recorded against the rootless-aggregate export arm. Atomicity here is a
+property of the single redb write transaction rather than of aggregate count,
+which is a reason to expect the arm to pass, not a reason to skip it.
 
 ## What this does not settle
 

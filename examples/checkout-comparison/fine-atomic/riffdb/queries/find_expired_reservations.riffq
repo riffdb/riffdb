@@ -1,0 +1,19 @@
+query FindExpiredReservations(
+    $tenant_id: Reservation.tenant_id,
+    $horizon: Reservation.expires_at,
+    $after: Cursor?,
+) {
+    many reservations from Reservation
+        where tenant_id == $tenant_id
+          && expires_at <= $horizon
+        order by expires_at asc, product_id asc, reservation_id asc
+        take 32 after $after
+
+    return Found {
+        reservations: reservations {
+            product_id reservation_id order_id quantity expires_at
+        }
+    }
+
+    outcomes Found
+}

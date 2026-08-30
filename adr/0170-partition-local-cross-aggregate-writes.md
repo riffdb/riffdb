@@ -77,6 +77,25 @@ measured on a single-transaction order insert and on the OpenFGA suite. RiffDB
 trails Postgres modestly and consistently on durable write throughput; the
 aggregate split doubles that gap.
 
+## Outcome
+
+Implemented and measured. The shape this record unlocks — fine conflict keys
+with one atomic commit — was benchmarked on the same harness that justified the
+record, and is the best RiffDB configuration measured:
+
+| contract | c=1 | c=8 | c=32 |
+|---|---:|---:|---:|
+| two aggregates, fine keys, **one** commit | **485** | **2629** | **5740** |
+| one aggregate, coarse key, one commit | 483 | 2377 | 5259 |
+| two aggregates, fine keys, two commits | 244 | 1380 | 2559 |
+
+It recovers the whole ~2× the split was costing while keeping the per-product
+conflict key, and matches or beats the coarse-key contract at every
+concurrency. That is the expected result once the premise that a coarse key
+serialises writers is refuted: the coarse key was never costing anything, and
+the second commit was costing everything. Harness in
+`examples/checkout-comparison/fine-atomic`.
+
 ## Proposed Decision
 
 A command MAY write entities belonging to more than one aggregate when the

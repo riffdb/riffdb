@@ -2221,6 +2221,59 @@ contract ServiceValues version 1 {
     }
 
     #[test]
+    fn cross_aggregate_conflict_acquisition_is_globally_ordered_and_deadlock_free() {
+        // ADR-0170 lets one command own conflict keys in several aggregates.
+        // Two commands acquiring an overlapping set in opposite orders would
+        // deadlock, so the safety property is that *every* command acquires in
+        // ascending order of one global total order. `ConflictKeyBuilder`
+        // prefixes each key with its aggregate, so sorting the raw keys is that
+        // order -- across aggregates as well as within one.
+        fn key(aggregate: u32, value: u64) -> ConflictKey {
+            let mut builder = riffdb_types::ConflictKeyBuilder::new(
+                AggregateTypeId::new(aggregate).expect("nonzero"),
+            );
+            builder.push_u64(value).expect("bounded component");
+            builder.finish().expect("conflict key")
+        }
+
+        // Orders is aggregate 1, Inventory is aggregate 2. Each command
+        // declares its bindings in the order the contract author wrote them,
+        // which is the order that would deadlock.
+        let first_declared = vec![key(2, 5), key(1, 7), key(1, 3)];
+        let second_declared = vec![key(1, 3), key(2, 5)];
+
+        // The declared orders disagree about the shared pair, so an
+        // acquisition that honoured declaration order could cycle. This
+        // assertion is what makes the test fail if the sort is removed.
+        let shared = (key(1, 3), key(2, 5));
+        let declared_position = |declared: &[ConflictKey], probe: &ConflictKey| {
+            declared.iter().position(|entry| entry == probe)
+        };
+        assert!(
+            (declared_position(&first_declared, &shared.0)
+                > declared_position(&first_declared, &shared.1))
+                != (declared_position(&second_declared, &shared.0)
+                    > declared_position(&second_declared, &shared.1)),
+            "the fixture must declare the shared keys in opposing orders"
+        );
+
+        let (first, _) =
+            lower_conflict_keys(&first_declared, &hash_conflict_key).expect("first lowering");
+        let (second, _) =
+            lower_conflict_keys(&second_declared, &hash_conflict_key).expect("second lowering");
+
+        // Every command acquires ascending, which is the standard
+        // resource-ordering proof that no acquisition cycle can form.
+        assert!(first.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(second.windows(2).all(|pair| pair[0] < pair[1]));
+
+        // And the order spans aggregates: aggregate 1's keys precede
+        // aggregate 2's, in both commands, whatever the author declared.
+        assert_eq!(first, vec![key(1, 3), key(1, 7), key(2, 5)]);
+        assert_eq!(second, vec![key(1, 3), key(2, 5)]);
+    }
+
+    #[test]
     fn raw_conflicts_are_bounded_sorted_deduplicated_and_collision_checked() {
         fn conflict(value: u64) -> ConflictKey {
             let mut builder = riffdb_types::ConflictKeyBuilder::new(AggregateTypeId::first());
