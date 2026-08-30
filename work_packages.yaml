@@ -2339,9 +2339,10 @@ work_packages:
     present; bisected to fa5d906c clean-close fast startup (ADR-0156/ADR-0157), whose parent passes
     and which neither record anticipated. Atomicity is unaffected -- the partial-batch panic never
     fires across 32 crashes and 32 recoveries
-  - A sweep over every seed establishing whether the after-commit window still exists at all or has
-    closed; if no seed resolves an interrupted commit as present, the answer is an engine question
-    rather than a fixture question
+  - Sweep delivered and decisive. 96 seeds under COMMIT_PRESENT_ARMS_CONFIG all complete, none
+    wedge, 296 interrupted commits resolve absent, and none resolves present. The window is closed
+    rather than narrow, so this is an engine question and re-pinning cannot work. Reproduction
+    retained as wp725_commit_present_window_sweep, ignored by default
   - What clean-close fast startup changed about the frontier a recovery observes, stated against
     fa5d906c's diff rather than inferred, and whether a committed batch is still observable to
     recovery at the same point
