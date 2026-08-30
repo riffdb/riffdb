@@ -1390,11 +1390,14 @@ contract Orders version 1 {
     }
 
     #[test]
-    fn cross_aggregate_diagnostic_names_both_required_model_corrections() {
+    fn cross_partition_diagnostic_names_both_required_model_corrections() {
+        // ADR-0170 admits two mutation aggregates that share a partition route,
+        // so the rejection this exercises is now the cross-*partition* one:
+        // `Inventory` is keyed by `warehouse_id` and derives a different route.
         let source = r#"
 contract Orders version 1 {
   entity PurchaseOrder { key (store_id: uuid, order_id: uuid) }
-  entity Inventory { key (store_id: uuid, product_id: uuid) field available: i64 }
+  entity Inventory { key (warehouse_id: uuid, product_id: uuid) field available: i64 }
   aggregate OrdersRoot {
     root PurchaseOrder
     partition_by store_id
@@ -1402,23 +1405,24 @@ contract Orders version 1 {
   }
   aggregate InventoryRoot {
     root Inventory
-    partition_by store_id
-    conflict_key (store_id, product_id)
+    partition_by warehouse_id
+    conflict_key (warehouse_id, product_id)
   }
   command Reserve {
     input request_key: string<128>
     input store_id: uuid
+    input warehouse_id: uuid
     input order_id: uuid
     input product_id: uuid
     idempotency_key request_key
     mutate PurchaseOrder(store_id, order_id) as purchase else OrderMissing {}
-    mutate Inventory(store_id, product_id) as inventory else InventoryMissing {}
+    mutate Inventory(warehouse_id, product_id) as inventory else InventoryMissing {}
     set inventory.available = inventory.available - 1
     return Reserved { purchase: purchase, inventory: inventory }
   }
 }
 "#;
-        let error = compile_contract_source(source).expect_err("two mutation aggregates reject");
+        let error = compile_contract_source(source).expect_err("two partition routes reject");
         let diagnostics = AuthoringDiagnostics::from_contract(
             AuthoringSourcePath::new("riffdb/contract.riff").expect("path"),
             &error,
@@ -1429,7 +1433,9 @@ contract Orders version 1 {
             .iter()
             .find(|diagnostic| diagnostic.code().as_str() == "RDB-C017")
             .expect("cross-aggregate diagnostic");
-        let expected_start = source.find("Inventory(store_id").expect("second mutation");
+        let expected_start = source
+            .find("Inventory(warehouse_id")
+            .expect("second mutation");
 
         assert_eq!(diagnostic.cause(), AuthoringCause::NonLocal);
         assert_eq!(

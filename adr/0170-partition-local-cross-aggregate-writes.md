@@ -98,9 +98,12 @@ sentence:
 > bindings derive and the complete union MUST be statically enumerable. A
 > command whose bindings derive different partition routes MUST be rejected.
 
-`RDB-C017` continues to reject every cross-aggregate write until WP-721
-delivers the union conflict ownership and its lease ordering. This record
-states the decision; it does not describe shipped behaviour.
+WP-721 implements this at executable IR V19. `RDB-C017` now rejects only a
+write whose bindings derive different partition routes, and a command writing
+one aggregate is unchanged in every respect including its plan hash. Two
+proofs are still outstanding, both tracked by WP-721: deadlock-freedom of the
+lease order under an arbitrary acquisition sequence, and crash atomicity of a
+command writing two aggregates.
 
 ## Options Considered
 

@@ -83,6 +83,8 @@ pub const BUNDLE_FORMAT_VERSION_V16: u32 = 16;
 pub const BUNDLE_FORMAT_VERSION_V17: u32 = 17;
 /// Bundle framing containing compiler-sealed command decisions.
 pub const BUNDLE_FORMAT_VERSION_V18: u32 = 18;
+/// Bundle framing containing partition-local cross-aggregate command writes.
+pub const BUNDLE_FORMAT_VERSION_V19: u32 = 19;
 /// Canonical grammar version represented by a bundle.
 pub const GRAMMAR_VERSION_V1: u32 = 1;
 /// Contract grammar containing compiled workflows and service-owned values.
@@ -119,6 +121,8 @@ pub const GRAMMAR_VERSION_V16: u32 = 16;
 pub const GRAMMAR_VERSION_V17: u32 = 17;
 /// Contract grammar containing deferred initialized decisions.
 pub const GRAMMAR_VERSION_V18: u32 = 18;
+/// Contract grammar containing partition-local cross-aggregate command writes.
+pub const GRAMMAR_VERSION_V19: u32 = 19;
 /// Executable IR version represented by a bundle.
 pub const EXECUTABLE_IR_VERSION_V1: u32 = 1;
 /// Executable IR containing compiled workflow transitions and service values.
@@ -155,6 +159,15 @@ pub const EXECUTABLE_IR_VERSION_V16: u32 = 16;
 pub const EXECUTABLE_IR_VERSION_V17: u32 = 17;
 /// Executable IR containing compiler-sealed command decisions.
 pub const EXECUTABLE_IR_VERSION_V18: u32 = 18;
+/// Executable IR whose command conflict ownership may span aggregates that
+/// derive one identical partition route (ADR-0170).
+///
+/// The byte layout is unchanged: a conflict key already encodes its owning
+/// aggregate, both in its `KeyPurpose::Conflict` schema and in the
+/// `ConflictKeyBuilder` namespace prefix. What V19 widens is the accepted
+/// value space, so a V18 reader refuses a cross-aggregate plan by version
+/// rather than by an opaque locality validation failure.
+pub const EXECUTABLE_IR_VERSION_V19: u32 = 19;
 
 const RELATIONSHIP_SCHEMA_EXTENSION: u32 = 0xffff_fffe;
 const UNIQUE_KEY_SCHEMA_EXTENSION: u32 = 0xffff_fffd;
@@ -1082,7 +1095,9 @@ impl ContractBundle {
         mcp_command_names: McpCommandNameRegistryV2,
         compatibility: CompatibilityReport,
     ) -> Result<Self, IrValidationError> {
-        let version = if commands.iter().any(CommandPlan::requires_ir_v18) {
+        let version = if commands.iter().any(CommandPlan::requires_ir_v19) {
+            BUNDLE_FORMAT_VERSION_V19
+        } else if commands.iter().any(CommandPlan::requires_ir_v18) {
             BUNDLE_FORMAT_VERSION_V18
         } else if commands.iter().any(CommandPlan::requires_ir_v17) {
             BUNDLE_FORMAT_VERSION_V17
@@ -1234,6 +1249,10 @@ impl ContractBundle {
                 BUNDLE_FORMAT_VERSION_V18,
                 GRAMMAR_VERSION_V18,
                 EXECUTABLE_IR_VERSION_V18
+            ) | (
+                BUNDLE_FORMAT_VERSION_V19,
+                GRAMMAR_VERSION_V19,
+                EXECUTABLE_IR_VERSION_V19
             )
         ) || (ir_version < EXECUTABLE_IR_VERSION_V2
             && (!workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2)))
@@ -1263,6 +1282,8 @@ impl ContractBundle {
                 && commands.iter().any(CommandPlan::requires_ir_v17))
             || (ir_version < EXECUTABLE_IR_VERSION_V18
                 && commands.iter().any(CommandPlan::requires_ir_v18))
+            || (ir_version < EXECUTABLE_IR_VERSION_V19
+                && commands.iter().any(CommandPlan::requires_ir_v19))
             || (ir_version >= EXECUTABLE_IR_VERSION_V6
                 && commands
                     .iter()

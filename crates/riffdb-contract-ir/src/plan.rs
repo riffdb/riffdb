@@ -1543,11 +1543,17 @@ impl LocalityPlan {
             conflict_keys.len(),
             MAX_COMMAND_CONFLICT_KEYS_V1,
         )?;
+        // ADR-0170: one partition route per command, but its conflict ownership
+        // may span aggregates that derive that route. Each conflict key already
+        // names its owning aggregate through `KeyPurpose::Conflict`, so the
+        // union is read off the keys rather than declared separately. Proving
+        // those aggregates share the route is the compiler's job; this checks
+        // only that every key is a conflict key.
         if partition_schema.purpose() != KeyPurpose::Partition(aggregate_id)
             || partition_schema.components().len() != 1
             || conflict_keys
                 .iter()
-                .any(|key| key.schema.purpose() != KeyPurpose::Conflict(aggregate_id))
+                .any(|key| !matches!(key.schema.purpose(), KeyPurpose::Conflict(_)))
         {
             return Err(IrValidationError::InvalidDependency {
                 reason: "locality plan does not describe one complete aggregate partition",
@@ -1579,6 +1585,15 @@ impl LocalityPlan {
     #[must_use]
     pub fn conflict_keys(&self) -> &[ConflictDerivationPlan] {
         &self.conflict_keys
+    }
+
+    /// Reports whether conflict ownership names an aggregate other than the
+    /// partition owner, which is the ADR-0170 shape that requires IR V19.
+    #[must_use]
+    pub fn spans_aggregates(&self) -> bool {
+        self.conflict_keys.iter().any(|key| {
+            !matches!(key.schema.purpose(), KeyPurpose::Conflict(owner) if owner == self.aggregate_id)
+        })
     }
 }
 
@@ -2646,6 +2661,15 @@ impl CommandPlan {
                 .bindings
                 .iter()
                 .any(|binding| binding.mode == BindingMode::ObserveOrInitialize)
+    }
+    /// Whether this command's conflict ownership spans aggregates (ADR-0170).
+    ///
+    /// A command writing one aggregate answers `false` and keeps emitting its
+    /// existing least-sufficient identity, so no contract that compiles today
+    /// changes plan hash.
+    #[must_use]
+    pub fn requires_ir_v19(&self) -> bool {
+        self.locality.spans_aggregates()
     }
     /// Whether this command requires the distinct reimport invocation class in IR v10.
     #[must_use]
@@ -6127,6 +6151,14 @@ fn validate_binding_plans(
                 kind: "binding aggregate owner",
             },
         )?;
+        // ADR-0170: a mutable binding may belong to any aggregate the command
+        // takes conflict ownership of, not only the partition owner. The
+        // locality's conflict keys name that set, so membership in it is the
+        // invariant; a binding whose aggregate is absent has no lease and is
+        // still rejected.
+        let owned = locality.conflict_keys.iter().any(
+            |key| matches!(key.schema().purpose(), KeyPurpose::Conflict(id) if id == owner.id()),
+        );
         if entity.primary_key() != &binding.key_schema
             || (matches!(
                 binding.mode,
@@ -6135,10 +6167,10 @@ fn validate_binding_plans(
                     | BindingMode::InitOrMutate
                     | BindingMode::ObserveOrInitialize
                     | BindingMode::Delete
-            ) && owner.id() != locality.aggregate_id)
+            ) && !owned)
         {
             return Err(IrValidationError::InvalidDependency {
-                reason: "binding key mismatch or mutable binding is outside the locality aggregate",
+                reason: "binding key mismatch or mutable binding has no conflict ownership",
             });
         }
         for (expression, component) in binding
@@ -6409,7 +6441,9 @@ fn validate_locality(
             reason: "partition derivation is not input-computable",
         });
     }
-    let root = schema
+    // The partition owner's root is still validated for existence; each
+    // binding's conflict template now resolves its own root below.
+    schema
         .entity(aggregate.root())
         .ok_or(IrValidationError::InvalidReference {
             kind: "aggregate root entity",
@@ -6458,7 +6492,21 @@ fn validate_locality(
         });
     }
     for (conflict, binding) in locality.conflict_keys.iter().zip(mutable) {
-        if conflict.schema != *aggregate.keys().conflict_schema() {
+        // ADR-0170: each mutable binding derives its conflict key from its own
+        // aggregate's template. The partition check above already proved every
+        // one of those aggregates derives the command's single partition route.
+        let owner = schema.aggregate_for_entity(binding.entity_type).ok_or(
+            IrValidationError::InvalidReference {
+                kind: "conflict binding aggregate owner",
+            },
+        )?;
+        let owner_root =
+            schema
+                .entity(owner.root())
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "conflict binding aggregate root",
+                })?;
+        if conflict.schema != *owner.keys().conflict_schema() {
             return Err(IrValidationError::InvalidDependency {
                 reason: "locality conflict schema does not equal the aggregate template",
             });
@@ -6478,18 +6526,18 @@ fn validate_locality(
                 });
             }
         }
-        for (template, expression) in aggregate
+        for (template, expression) in owner
             .keys()
             .conflict_expressions()
             .iter()
             .zip(&conflict.expressions)
         {
             if !matches_key_template(
-                aggregate.keys().expressions(),
+                owner.keys().expressions(),
                 *template,
                 arena,
                 *expression,
-                root,
+                owner_root,
                 binding,
             )? {
                 return Err(IrValidationError::InvalidDependency {

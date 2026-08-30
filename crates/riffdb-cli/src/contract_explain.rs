@@ -117,6 +117,44 @@ pub(crate) fn render_contract_explain(bundle: &ContractBundle) -> String {
         }
     }
 
+    output.push_str("\ncommand conflict ownership\n");
+    for command in bundle.commands() {
+        let owners = command
+            .locality()
+            .conflict_keys()
+            .iter()
+            .filter_map(|key| match key.schema().purpose() {
+                riffdb_contract_ir::KeyPurpose::Conflict(owner) => Some(owner),
+                _ => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        let named = owners
+            .iter()
+            .map(|owner| {
+                schema
+                    .aggregates()
+                    .iter()
+                    .find(|aggregate| aggregate.id() == *owner)
+                    .map_or_else(
+                        || format!("{owner:?}"),
+                        |aggregate| aggregate.name().to_owned(),
+                    )
+            })
+            .collect::<Vec<_>>();
+        // Writers contend on this set, so a command owning two aggregates is
+        // the thing an author most needs to see about it (ADR-0170).
+        output.push_str(&format!(
+            "  {}: {}{}\n",
+            command.name(),
+            named.join(", "),
+            if command.locality().spans_aggregates() {
+                " (spans aggregates; one atomic write over one partition route)"
+            } else {
+                ""
+            }
+        ));
+    }
+
     output.push_str(&unguarded_subtractions(bundle));
     output
 }

@@ -65,12 +65,19 @@ keeps its existing plan hash. Only a command that genuinely spans aggregates
 emits the V19 form. No contract that exists today changes identity, and the
 riffdb-openfga and riffdb-better-auth locks stay valid.
 
-The V19 form needs conflict keys that carry their own aggregate rather than
-inheriting one from the plan. The minimal change is to pair each
-`ConflictDerivationPlan` with its owning `AggregateTypeId` and relax the
-`KeyPurpose::Conflict` equality check to membership in the command's aggregate
-set. The partition schema stays single — ADR-0170 keeps one partition route per
-command, so `partition_schema` and `partition_expression` are unchanged.
+The V19 form needs **no new bytes at all**. This note originally proposed
+pairing each `ConflictDerivationPlan` with its owning `AggregateTypeId`;
+implementing it showed that pairing already exists. A conflict key's schema is
+`KeyPurpose::Conflict(owner)`, `encode_key_schema` writes that owner as a u32,
+and `ConflictKeyBuilder::new(aggregate_type)` additionally namespaces the
+encoded key bytes by aggregate. Per-key ownership was always encoded; only
+`LocalityPlan::new` insisted every key name the same aggregate.
+
+So V19 widens an accepted value space rather than a layout. It still earns a
+version, because a V18 reader must refuse a cross-aggregate plan by version
+rather than by an opaque locality validation failure. The partition schema
+stays single — ADR-0170 keeps one partition route per command, so
+`partition_schema` and `partition_expression` are unchanged.
 
 ADR-0126 closes with the clause that governs this work:
 
@@ -117,20 +124,53 @@ conflict keys carry a `KeyPurpose::Conflict` for an aggregate that is not the
 plan's. The result is the same rejection reported further from the source and
 with a worse diagnostic. The encoding leads; the front end follows.
 
-## Where the real work is
+## Where the work actually was
 
-Not the compiler, and not the encoding. Two things:
+This note first predicted the work would be lease acquisition and crash
+atomicity, and that the compiler and encoding were the easy parts. The first
+half of that was wrong.
 
-**Lease acquisition.** The writer must take a lease set spanning aggregates
-under a canonical total order over `(aggregate, conflict key)`, or concurrent
-commands acquiring overlapping sets in different orders will deadlock. The
-ordering is mechanical; proving it is the deliverable, and it needs a test that
-fails under an arbitrary order rather than one that merely passes under the
-canonical one.
+**Lease acquisition was already done.** `lower_conflict_keys` in
+`crates/riffdb-commit/src/command_admission.rs` takes the declared conflict
+keys as a set, sorts them, and dedups before any lease is taken. Because
+`ConflictKeyBuilder` prefixes each key with its aggregate, that sort *is* a
+canonical total order over `(aggregate, key)`. The writer never assumed one
+aggregate; only the compiler and the IR validator did.
 
-**Crash atomicity.** No test in this repository covers a command writing two
-aggregates, because none can be expressed. A restart arm proving such a command
-is all-or-nothing is new coverage, not an extension of existing coverage.
+**The work was three validation gates and the version ladder**, all of which
+independently re-derived the single-aggregate rule:
+
+1. `LocalityPlan::new` required every conflict key's purpose to equal the
+   plan's aggregate. Relaxed to "is a conflict key"; the union is read off the
+   keys.
+2. The binding validator required every mutable binding's aggregate to equal
+   `locality.aggregate_id`. Relaxed to membership in the ownership set, so a
+   binding with no conflict key — and therefore no lease — is still rejected.
+3. The conflict-coverage validator compared every derivation against *one*
+   aggregate's template. Each now resolves its binding's own aggregate and
+   root. The partition check immediately above it already resolved per-binding
+   aggregates, which is what proves they share the route.
+
+`lower_locality` in the compiler had the same shape: it substituted every
+binding's arguments into the anchor aggregate's conflict expressions, which for
+a foreign binding builds a key for a row that does not exist.
+
+**Crash atomicity is still absent.** No arm covers a command writing two
+aggregates across a restart. That was true before this work and remains true.
+
+## Status
+
+Delivered: the compiler proof, union conflict ownership, executable IR V19 and
+its version ladder, and coverage in
+`crates/riffdb-contract-compiler/tests/cross_aggregate_writes.rs`. The
+riffdb-openfga and riffdb-better-auth application locks were verified
+byte-identical after the change, which is the compatibility claim tested rather
+than argued.
+
+Outstanding: a deadlock arm that fails under an arbitrary acquisition order,
+and a crash arm proving a command writing two aggregates is atomic across a
+restart. The lease order is believed correct by construction and by reading
+`lower_conflict_keys`; that is not the same as tested.
 
 ## What this does not settle
 
