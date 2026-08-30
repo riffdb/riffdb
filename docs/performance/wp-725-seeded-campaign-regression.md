@@ -95,6 +95,30 @@ search would have failed slowly rather than revealing why.
    coverage cannot lapse silently again. Its absence is why a regression in the
    more dangerous recovery direction survived from 2026-08-26 to now.
 
+## It is not an addressability problem either
+
+The sim places crashes by store-operation ordinal, and clean-close fast startup
+removed storage work from recovery -- notably an early return in
+`journal.rs` that skips mutating an already-exact empty extent. Fewer
+operations per recovery means the same ordinal budget covers more logical
+progress, so the natural next hypothesis was that the injection simply steps
+over a window that still exists.
+
+It does not. Five crash-window shapes over 24 seeds each
+(`wp725_commit_present_window_shape`):
+
+| shape | crash_operations | max_crashes | present | absent |
+|---|---|---:|---:|---:|
+| narrow-early | (1, 48) | 32 | **0** | 2 |
+| baseline | (1, 128) | 32 | **0** | 64 |
+| wide | (1, 512) | 32 | **0** | 20 |
+| late | (64, 512) | 32 | **0** | 16 |
+| dense | (1, 128) | 64 | **0** | 110 |
+
+Widening the window, shifting it later, and doubling crash density all produce
+zero. With the 96-seed sweep that is 216 campaigns and not one after-commit
+resolution.
+
 ## The open question, stated precisely
 
 Can a crash still land after a batch's engine commit and before its
@@ -107,5 +131,16 @@ instead a committed batch is no longer observable as present at recovery until
 some later point, that is a change in when durability becomes visible, and it
 belongs in ADR-0156/ADR-0157 rather than in a re-pinned fixture.
 
-Nothing measured here distinguishes those two, and the difference matters more
-than the red tests do.
+There is a third possibility worth naming, because it is the benign one and it
+would still require action. If clean-close fast startup fused the engine commit
+and its acknowledgement such that no intermediate state exists, the guarantee
+is *stronger* than before -- there is no longer a window in which a batch is
+durable but unacknowledged. In that case the arm should be retired with that
+reasoning recorded, not re-pinned, because a test asserting a state that can no
+longer occur is unfalsifiable rather than passing.
+
+What is not acceptable is leaving it undecided. Two of these three readings are
+benign and one is a durability-observability regression, and 216 campaigns
+cannot tell them apart from the outside. The answer is in what `fa5d906c`
+changed about when a committed batch becomes visible to recovery, and that is a
+question for whoever owns ADR-0156/ADR-0157.

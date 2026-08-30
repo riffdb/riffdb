@@ -784,6 +784,50 @@ pub(crate) const SWEEP_SEEDS: u64 = 24;
 /// closed. If no seed in a wide sweep produces a present resolution, the
 /// pinned witness did not merely drift and re-pinning would hide an engine
 /// change rather than track one.
+/// WP-725 diagnostic: is the after-commit window unaddressable by the current
+/// operation-counted injection, or absent?
+///
+/// The sim places crashes by store-operation ordinal. Clean-close fast startup
+/// removed storage work from recovery, so the same ordinal budget now covers
+/// more logical progress and may simply step over the window. Widening and
+/// shifting the crash range distinguishes "cannot address it" from "not there".
+#[test]
+#[ignore = "WP-725 diagnostic sweep; run explicitly"]
+fn wp725_commit_present_window_shape() {
+    const PROBE_SEEDS: u64 = 24;
+    for (label, ops, crashes) in [
+        ("narrow-early", (1_u64, 48_u64), 32_u64),
+        ("baseline", (1, 128), 32),
+        ("wide", (1, 512), 32),
+        ("late", (64, 512), 32),
+        ("dense", (1, 128), 64),
+    ] {
+        let config = CampaignConfig {
+            crash_operations: ops,
+            max_crashes: crashes,
+            ..crate::subsumption::COMMIT_PRESENT_ARMS_CONFIG
+        };
+        let mut present = 0_u64;
+        let mut absent = 0_u64;
+        let mut present_seeds = 0_u64;
+        for offset in 0..PROBE_SEEDS {
+            if let CampaignOutcome::Completed(report) =
+                run_campaign_outcome(SWEEP_SEED_BASE + offset, config)
+            {
+                present += report.in_flight_commit_present;
+                absent += report.in_flight_commit_absent;
+                if report.in_flight_commit_present > 0 {
+                    present_seeds += 1;
+                }
+            }
+        }
+        println!(
+            "wp725-shape\t{label}\tops={ops:?}\tcrashes={crashes}\t\
+             present={present}\tpresent_seeds={present_seeds}\tabsent={absent}"
+        );
+    }
+}
+
 #[test]
 #[ignore = "WP-725 diagnostic sweep; run explicitly"]
 fn wp725_commit_present_window_sweep() {
