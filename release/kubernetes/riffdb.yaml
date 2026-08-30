@@ -34,6 +34,10 @@ data:
 
     [maintenance]
     backup_root = "/var/lib/riffdb/backups"
+    # Defaults to <cwd>/projections under the image WORKDIR, which
+    # readOnlyRootFilesystem makes unwritable; riffdbd then refuses with
+    # class=exact_text_runtime before reaching its listener.
+    projections_root = "/var/lib/riffdb/data/projections"
   liveness.toml: |
     [client]
     endpoint = "https://riffdbd.riffdb-alpha.svc:7443"

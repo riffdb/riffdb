@@ -91,6 +91,12 @@ Before completion:
 - Run `./scripts/handbook check` for changes that affect public behavior or
   handbook sources. The check includes the book build, generated-reference
   freshness, links, snippets, and the published Rust API surface.
+- Run `./scripts/check-container-startup` for any change to the release
+  container, its shipped runtime configuration, or a server default that
+  resolves against the working directory. Rendering and YAML checks do not
+  start anything, which is how `release/container/riffdbd.toml` and
+  `release/kubernetes/riffdb.yaml` shipped a configuration that could not start
+  the server: `projections_root` resolved under a read-only path.
 - Run `./scripts/downstream-adapter-check` for any change to the contract or
   RiffQL language, including its bounds and required syntax. The out-of-tree
   adapter repositories are the only consumers that exercise those languages end
