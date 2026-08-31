@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 1.21
+**Version:** 1.23
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
 **Date:** 31 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 1.23 | 2026-08-31 | Accepted ADR-0174 and registered `OQ-084` through `OQ-100` plus WP-733 through WP-738 for one compiler-sealed bounded filtered-result pipeline. A non-output candidate binding completes finite same-partition source/intersection/union/difference sets under independent all-or-refusal budgets before root hydration, authorization, total ordering, limit, and cursor selection. A new rebuildable `long_pattern_v1` provider supports exact binary and Unicode-fold equality, prefix, suffix, substring, LIKE/ILIKE, negation, `%`, `_`, and escaping for source values through 8,000 bytes using bounded gram candidates plus exact retained-value verification rather than widening 4,096-byte storage keys or the quadratic exact-text V1 format. The global scan ceiling becomes 65,535 rows with one probe, admitting bounded pages through 65,534 while retaining the independent 4 MiB encoded-result and every query-specific cost/authority ceiling. Existing artifacts, exact/tokenized providers, keys, and pages through 499 retain their meanings and least-sufficient bytes. |
 | 1.22 | 2026-08-31 | Registered `FTS-005` through `FTS-015` and WP-730 through WP-732 for ADR-0173's remaining stages. The tokenized provider first persists one canonical partition-scoped V1 segment carrying authoritative keys, compiler-shaped outputs, postings, per-field term frequencies, field-length norms, and positions with exact rebuild/replay/recovery behavior. Named RiffQL then admits only compiler-sealed conjunction, capped disjunction, phrase, and bounded proximity over one declared `text_index`, with typed term/candidate/result refusals and no request-time field, operator, analyzer, provider, boost, score, or cost selection. Ranked search uses the provider-owned `riff_bm25_v1` fixed-point order over the caller's complete authorized set at one ADR-0164 admission-head fence, with primary-key tie-breaking and snapshot-bound cursors. Existing exact-text behavior and declaration-free artifacts remain byte-exact. |
 | 1.21 | 2026-08-31 | Accepted ADR-0173 and registered `FTS-001` through `FTS-004` plus WP-729 for the tokenized-text declaration and analyzer stage. ADR-0173 explicitly refines ADR-0092: tokenized-search v1 has exactly `keyword_v1` and Unicode-17 `standard_v1`, ranking statistics are scoped to the caller's authorized set at the fenced snapshot, and the boolean vocabulary is conjunction, compiler-capped disjunction, phrase, and bounded proximity. The declaration freezes positive integer per-field weights, analyzer identity, staleness and replay bounds, the `boolean_v1` result model, and compiler-owned term/candidate/result ceilings into additive contract IR identity. Durable segments, matching, and ranking remain separately staged. |
 | 1.20 | 2026-08-30 | Accepted ADR-0171. Amended `PERF-008` and `PERF-018`: the five-generation central-three stability rule (`x4 / x2` at most 1.20) binds the gated backend only. RiffDB's qualified p50 and p95 must satisfy it on every scenario and profile, unchanged. Safe-application PostgreSQL MUST still run in every generation and its five-value summary and spread MUST be computed and published, and a comparator spread above 1.20 MUST be disclosed in the receipt, but it no longer invalidates the evidence. ADR-0142 already made unary PostgreSQL ratios disclosure rather than gates, yet the integrity rule was written "for each backend", so a comparator RiffDB cannot influence could block a release; a 1,000-operation receipt run measured RiffDB stable on all fourteen scenarios (1.002 to 1.028) and PostgreSQL over the limit on five, and ADR-0146's larger generations moved which scenarios fail rather than fixing them. Host validity, correctness, comparator-input drift, retained extremes, and the retry prohibition remain invalidating for either backend, and every PostgreSQL ratio remains mandatory published disclosure. The baseline receipt records `method.stability_rule_binds`, so a candidate measured under the previous rule fails method-drift rather than comparing against a baseline that meant something different. No durable format, storage key, protocol, or provider algorithm changes. |
@@ -8398,6 +8399,99 @@ behavior:
   revocation, compatibility, generated-surface, and external value-free evidence
   MUST prove fresh-through-admission semantics without claiming linearizability
   or introducing framework code.
+- `OQ-084`: RiffQL MAY declare one non-output candidate binding that contains
+  only complete canonical root keys from compiler-selected sources. It MUST NOT
+  appear in outcomes, aggregates, commands, projections, generated values, or
+  caller parameters, and its declared `within` maximum MUST be a positive
+  refusal ceiling of at most 65,535 rather than a truncating page.
+- `OQ-085`: Candidate sources MUST emit one type-exact root key through a
+  compiler-proved same-partition ordinary index, relationship mapping,
+  exact-text provider, long-pattern provider, or tokenized provider. Runtime
+  source, entity, field, index, provider, join, and fallback selection is
+  forbidden.
+- `OQ-086`: Candidate algebra V1 MUST be exactly one source, intersection of
+  two through eight sources, union of two through eight sources, or difference
+  of one positive source and one through eight negative sources. Keys MUST be
+  normalized and deduplicated once with canonical equality; arbitrary joins,
+  recursion, Cartesian products, runtime join order, and cross-partition
+  composition remain forbidden.
+- `OQ-087`: Every source and combined candidate binding MUST independently
+  bound matches, distinct keys, key bytes, entries/postings inspected,
+  relationship rows, fan-out, probes, hydration, policy work, text and pattern
+  verification, sort rows/bytes, output, participant epochs, and total work.
+  Any overflow MUST refuse the whole operation without values or hidden
+  cardinality in public errors; truncation, approximation, and partial success
+  are forbidden.
+- `OQ-088`: A root binding consuming candidates MUST complete every source and
+  set operation, hydrate or read a proved cover for every candidate, apply root
+  predicates and policy, derive the complete unique total-order key, and sort
+  the complete surviving population before `take`, continuation probing, or
+  cursor formation. It MUST NOT stop after observing enough rows for a page.
+- `OQ-089`: A candidate query combining ordinary or provider sources MUST use
+  one captured admission head and one compatible snapshot/provider participant
+  set sufficient for that head. The plan and cursor MUST bind every source,
+  bound, participant, generation, snapshot, predicate, order, authority, and
+  invariant parameter; incompatible, stale, or retired state fails typed.
+- `OQ-090`: Authorization and row/field policy MUST apply before observable
+  candidate membership, negation universe, count, sort, cursor, diagnostic, and
+  release. Unauthorized rows MUST influence none of them, and source-specific
+  overflows or timing labels MUST NOT reveal denied data.
+- `OQ-091`: A query MAY declare a finite order family whose variants freeze
+  fields, directions, null placement, encoding, and unique tie-breaker. A
+  generated closed enum MAY select an already compiled variant, but callers
+  MUST NOT submit field names, arbitrary order lists, expressions, indexes,
+  collations, or tie-breakers; changing the variant changes cursor identity.
+- `OQ-092`: A contract MAY declare `long_pattern_v1` on one bounded string
+  field with binary or Unicode-fold matching, source values through 8,000
+  bytes, matched values through 144,000 bytes, a closed supported-operator set,
+  and independent positive row, value, gram, posting, pattern, candidate,
+  verification, result, replay, checkpoint, staleness, and retention bounds.
+  These are compiler-owned and never request cost controls.
+- `OQ-093`: `long_pattern_v1` provider-state V1 MUST retain each matched value
+  once by canonical entity key together with its digest, canonical distinct
+  three-byte gram set, postings, and compiler-shaped release data or locator.
+  It is derived and rebuildable; atomic epoch apply, checkpoint, replay,
+  compaction, corruption refusal, crash recovery, and restart MUST never
+  publish a partial or identity-mismatched generation.
+- `OQ-094`: Binary patterns MUST compare canonical UTF-8 bytes. Folded patterns
+  MUST use `unicode_fold_v1`; `%` matches zero or more matched-form Unicode
+  scalar values, `_` exactly one, and backslash escapes only `%`, `_`, and
+  backslash. Literal starts-with, ends-with, and contains do not interpret
+  wildcards. Matching MUST be exact, deterministic, and independent of
+  unrelated rows.
+- `OQ-095`: Equality MAY use a digest and pattern operators MAY use mandatory
+  literal grams only as candidate filters; complete retained matched bytes MUST
+  be verified before membership. Collisions and gram false positives MUST NOT
+  change results, and no accepted pattern may return a partial population.
+- `OQ-096`: A valid pattern without a mandatory gram MUST execute through a
+  compiler-declared bounded scan of retained provider values with linear-space,
+  bounded-work matching. It MUST NOT hydrate authoritative rows to decide text
+  membership. Negated patterns MUST use set difference from an authorized
+  positive universe rather than infer a complement from hidden rows.
+- `OQ-097`: The global physical query scan ceiling MUST be 65,535 rows with one
+  reserved continuation probe, so static `take` and `Limit<MAX>` admit maxima
+  through 65,534. Declared maximum still governs cost and role authority. The
+  4 MiB encoded-result, request/response/frame, key, field, provider, policy,
+  hydration, cursor, and query-specific ceilings remain independent and MUST
+  NOT rise implicitly.
+- `OQ-098`: A source bound above 499 and every candidate, order-family, and
+  long-pattern feature MUST use least-sufficient additive language, IR, module,
+  plan, role, generated-schema, contract, provider, checkpoint, and topology
+  identities. Existing artifacts and providers retain exact bytes and meaning;
+  no existing key, cursor, command, entity, event, outcome, or log encoding is
+  reinterpreted.
+- `OQ-099`: Rust, Go, TypeScript, Python, gRPC, MCP, CLI, local, and remote
+  paths MUST share one compiler/service semantic corpus for candidate sets,
+  exact root order, pattern behavior, bounds, refusal, authorization, and
+  compatibility. A surface unable to carry an encoded result within its fixed
+  byte ceiling MUST fail typed rather than silently reduce rows.
+- `OQ-100`: Generic and downstream value-free acceptance MUST prove combined
+  tag/relationship/text filters before root order and pagination, page
+  boundaries 499/500/50,000/65,534/65,535, Unicode and 8,000-byte patterns,
+  concurrent cursor stability, recovery, policy noninterference, and no
+  adapter filtering, sorting, counting, deduplication, restart, or framework
+  branch. ADR-0159 exact ordered page assembly remains the only larger-logical-
+  page adapter translation until a separately accepted framed query stream.
 
 ### 24.5.5 Compiled workflow concurrency
 

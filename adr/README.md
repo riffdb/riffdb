@@ -192,7 +192,7 @@ direction, merged draft, or implementation choice.
 | [0171](0171-gated-backend-measurement-stability.md) | Measurement Stability Binds the Gated Backend | Accepted |
 | [0172](0172-case-insensitive-text-matching.md) | Case-Insensitive Text Matching | Accepted |
 | [0173](0173-tokenized-text-search-provider.md) | Tokenized Text Search Provider | Accepted |
-| [0174](0174-bounded-filtered-result-pipelines.md) | Bounded Filtered Result Pipelines | Proposed |
+| [0174](0174-bounded-filtered-result-pipelines.md) | Bounded Filtered Result Pipelines | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through

@@ -1,4 +1,4 @@
-spec_version: '1.21'
+spec_version: '1.23'
 product: RiffDB
 repository: riffdb
 status: deployable-application-alpha-architecture-accepted
@@ -2756,6 +2756,314 @@ work_packages:
       shape; sustained writes may therefore retire a ranked cursor snapshot before its token TTL.
       Ranking is `riff_bm25_v1` only and exposes order rather than score.
     follow_ups: []
+
+- id: WP-733
+  name: Bounded filtered-result compatibility and identity inventory
+  depends_on: [WP-690, WP-719, WP-731]
+  objective: Freeze ADR-0174's framework-neutral source shapes, page and provider boundaries,
+    compatibility identities, and failing real-consumer reproductions before executable semantics
+    are added.
+  requirements: [OQ-084, OQ-085, OQ-086, OQ-087, OQ-088, OQ-089, OQ-090,
+    OQ-091, OQ-092, OQ-093, OQ-094, OQ-095, OQ-096, OQ-097, OQ-098, OQ-100]
+  required_adrs: [ADR-0108, ADR-0124, ADR-0130, ADR-0131, ADR-0134, ADR-0150,
+    ADR-0158, ADR-0159, ADR-0164, ADR-0167, ADR-0172, ADR-0173, ADR-0174]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+    adr/0174-bounded-filtered-result-pipelines.md, release/version-topology-v1.json,
+    fixtures/**, tests/**, scripts/**, docs/architecture/**, docs/known-limitations.md]
+  deliverables:
+  - Framework-neutral two-tag-before-root-order, combined text/tag, negation, empty, duplicate,
+    overflow, Unicode, 8,000-byte value, and page-boundary fixtures with exact expected semantics
+  - Complete active/reserved language, contract, query IR/module, executable plan, provider,
+    checkpoint, role, generated-schema, cursor, and topology identity inventory
+  - Exact candidate syntax corpus and public diagnostic allocation without executable acceptance
+  - MLflow search capability matrix retained as generic values and a value-free downstream receipt,
+    with adapter source and framework schema remaining outside this repository
+  acceptance_commands:
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-adr-obligations
+  - ./scripts/handbook check
+  exit_gate: Every semantic and identity choice required by later packages is inventoried with
+    failing generic fixtures; no source construct, executable plan, provider state, public schema,
+    durable identity, or framework branch is activated.
+  standing_design_tests:
+    interface_safety: The inventory admits only named compiler-owned sources, algebra, orders,
+      operators, and bounds; no generic join, runtime provider, cost, field, or fallback surface is
+      proposed.
+    scale: Every fixture declares independent rows, keys, bytes, probes, provider work, sort,
+      output, and retained-state bounds, including the maximum and one-over cases.
+  human_review_triggers: &id0174
+  - Any change to candidate completion, policy placement, snapshot/provider compatibility, root
+    ordering, cursor identity, wildcard semantics, global row ceiling, response bytes, or an
+    accepted durable/public identity requires maintainer review.
+
+- id: WP-734
+  name: Compiler-sealed candidate algebra
+  depends_on: [WP-733]
+  objective: Add ADR-0174's non-output candidate syntax, checked identities, compiler proofs,
+    reference semantics, and ordinary same-partition exact-index execution with all-or-refusal
+    bounds and no observable result before complete root ordering.
+  requirements: [OQ-084, OQ-085, OQ-086, OQ-087, OQ-088, OQ-090, OQ-098]
+  required_adrs: [ADR-0038, ADR-0051, ADR-0052, ADR-0053, ADR-0055, ADR-0108,
+    ADR-0111, ADR-0124, ADR-0129, ADR-0130, ADR-0134, ADR-0150, ADR-0174]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/0174-bounded-filtered-result-pipelines.md,
+    release/version-topology-v1.json, proto/**, crates/riffdb-types/**,
+    crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**,
+    crates/riffdb-query-compiler/**, crates/riffdb-query-module/**,
+    crates/riffdb-query-executor/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-policy/**, crates/riffdb-errors/**, crates/riffdb-testkit/**,
+    clients/editor/**, fixtures/**, tests/**, scripts/**, docs/riffql/**,
+    docs/architecture/**, docs/reference/**, docs/known-limitations.md]
+  deliverables:
+  - Additive candidate source/single/intersection/union/difference AST, checked IR, module, plan,
+    explain, role, topology, and compatibility identities with canonical source and byte fixtures
+  - Compiler proof of one type-exact root key, same partition, declared relationship mapping,
+    source count, independent budgets, authorized positive universe for difference, and one root
+    consumer; every invalid shape has a source-span snapshot
+  - Reference set evaluator plus memory/redb ordinary-index source execution with pay-once
+    normalization, deterministic deduplication, whole-operation overflow, cancellation, and no
+    intermediate `take`, page, cursor, or result exposure
+  - Policy and architecture tests proving no arbitrary/cross-partition join, recursion, runtime
+    optimizer, authoritative entity scan, partial result, hidden count, or application set value
+  acceptance_commands:
+  - cargo test -p riffdb-riffql-syntax -p riffdb-query-ir -p riffdb-query-compiler
+    -p riffdb-query-module -p riffdb-query-executor --all-features
+  - cargo test -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-policy
+    -p riffdb-testkit --all-features
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Candidate algebra is byte-frozen and reference-equivalent for ordinary sources with
+    complete independent bounds and policy, but provider bridges and public combined root results
+    remain staged in WP-735 and WP-737.
+  standing_design_tests:
+    interface_safety: Applications cannot express or observe candidate structure; only a compiled
+      root binding may consume it, and every source/operator/bound is compiler-owned.
+    scale: At most eight sources and 65,535 distinct keys execute inside independent source, set,
+      byte, probe, hydration, policy, and total-work ceilings with typed refusal.
+  human_review_triggers: *id0174
+
+- id: WP-735
+  name: Complete candidate root ordering and provider participation
+  depends_on: [WP-719, WP-734]
+  objective: Complete candidate populations at one admission-fenced participant set, then hydrate,
+    authorize, sort, page, cursor, and expose root results through finite compiled order families
+    and the shared service/transports.
+  requirements: [OQ-085, OQ-087, OQ-088, OQ-089, OQ-090, OQ-091, OQ-098, OQ-099]
+  required_adrs: [ADR-0051, ADR-0052, ADR-0053, ADR-0055, ADR-0086, ADR-0108,
+    ADR-0111, ADR-0124, ADR-0130, ADR-0134, ADR-0150, ADR-0159, ADR-0164,
+    ADR-0173, ADR-0174]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/0174-bounded-filtered-result-pipelines.md,
+    release/version-topology-v1.json, proto/**, crates/riffdb-types/**,
+    crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**,
+    crates/riffdb-query-compiler/**, crates/riffdb-query-module/**,
+    crates/riffdb-query-executor/**, crates/riffdb-catalog/**,
+    crates/riffdb-projection/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-policy/**, crates/riffdb-errors/**, crates/riffdb-service/**,
+    crates/riffdb-proto/**, crates/riffdb-api-grpc/**, crates/riffdb-api-mcp/**,
+    crates/riffdb-client-rust/**, crates/riffdb-driver-host/**, crates/riffdb-cli/**,
+    crates/riffdb-mcp-stdio/**, crates/riffdb-server/**, clients/**, templates/**,
+    examples/**, fixtures/**, tests/**, scripts/**, docs/**, release/distribution/**]
+  deliverables:
+  - One participant-set descriptor binding ordinary and provider sources to the same admission head,
+    snapshot, generation set, policy shape, plan, parameters, and retained cursor identity
+  - Complete candidate hydration/cover, root predicate and policy evaluation, total-order sort, one
+    continuation probe, page, and cursor after completion, with no early-stop optimization
+  - Finite generated order-family identity and closed selector across Rust, Go, TypeScript, Python,
+    gRPC, MCP, CLI, local, and remote paths without arbitrary runtime sort expressions
+  - Reference, randomized, concurrent-write, retained/retired epoch, cancellation, policy,
+    cursor-tamper, storage parity, and cross-surface tests for the two-tag-before-root-order shape
+  acceptance_commands:
+  - cargo test -p riffdb-query-ir -p riffdb-query-compiler -p riffdb-query-module
+    -p riffdb-query-executor -p riffdb-projection -p riffdb-policy -p riffdb-service --all-features
+  - cargo test -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-api-grpc
+    -p riffdb-api-mcp -p riffdb-client-rust -p riffdb-driver-host -p riffdb-cli
+    -p riffdb-server --all-features
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-application-bindings
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every candidate source completes at one authorized participant set before exact root
+    order/page/cursor formation on every surface; no hidden row affects results and no application
+    can submit structure, provider, order fields, cost, or fallback.
+  standing_design_tests:
+    interface_safety: The only runtime structural input is a closed generated order variant whose
+      complete immutable plan and authority already exist; callers cannot build an order or set.
+    scale: Candidate, hydration, policy, sort-key, output, cursor, retained epoch, wait, and total
+      work remain independently bounded and cancellation releases transient state.
+  human_review_triggers: *id0174
+
+- id: WP-736
+  name: Independently bounded 65534-row query pages
+  depends_on: [WP-733]
+  objective: Raise the structural query row ceiling to 65,535 scanned rows with one continuation
+    probe while preserving independent encoded-result, cost, authority, transport, and every
+    query-specific ceiling through additive identities for source bounds above 499.
+  requirements: [OQ-087, OQ-097, OQ-098, OQ-099, OQ-100]
+  required_adrs: [ADR-0027, ADR-0051, ADR-0052, ADR-0055, ADR-0112, ADR-0124,
+    ADR-0130, ADR-0158, ADR-0159, ADR-0167, ADR-0174]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/0158-compiler-declared-bounded-runtime-page-limits.md,
+    adr/0167-required-bounded-limit-maximum.md, adr/0174-bounded-filtered-result-pipelines.md,
+    release/version-topology-v1.json, proto/**, crates/riffdb-types/**,
+    crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**,
+    crates/riffdb-query-compiler/**, crates/riffdb-query-module/**,
+    crates/riffdb-query-executor/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-policy/**, crates/riffdb-errors/**, crates/riffdb-service/**,
+    crates/riffdb-proto/**, crates/riffdb-api-grpc/**, crates/riffdb-api-mcp/**,
+    crates/riffdb-client-rust/**, crates/riffdb-driver-host/**, crates/riffdb-cli/**,
+    clients/**, templates/**, examples/**, fixtures/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - One shared 65,535 scan/65,534 result constant through parser, resolver, checked IR, compiler,
+    executor, policy, storage, service, public messages, generators, schemas, and documentation
+  - Least-sufficient successor identities only for bounds above 499; old plans/modules/cursors and
+    sources at or below 499 retain exact semantics and accepted bytes
+  - Boundary and conservative result-byte/cost/authority tests at 499, 500, 50,000, 65,534, and
+    65,535 across static and parameter limits, plus no backend work on invalid input
+  - Memory/redb forward/reverse cursor parity with one global probe and unchanged 4 MiB result,
+    request/response/frame, and diagnostic ceilings
+  acceptance_commands:
+  - cargo test -p riffdb-riffql-syntax -p riffdb-query-ir -p riffdb-query-compiler
+    -p riffdb-query-module -p riffdb-query-executor --all-features
+  - cargo test -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-policy
+    -p riffdb-service -p riffdb-proto --all-features
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - ./scripts/downstream-adapter-check
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Narrow queries return through 65,534 exact rows with one probe and cursor parity while
+    excessive result bytes, costs, authority, transport bytes, and 65,535-row takes fail before
+    partial release; old artifacts remain exact.
+  standing_design_tests:
+    interface_safety: Every query states its finite maximum and receives no way to weaken bytes,
+      work, policy, authority, cursor, or transport limits when choosing more rows.
+    scale: The structural u16 ceiling is independent from conservative result bytes, scanned work,
+      hydration, policy, provider, memory, and output bounds; no unbounded allocation is admitted.
+  human_review_triggers: *id0174
+
+- id: WP-737
+  name: Long-value exact wildcard pattern provider
+  depends_on: [WP-734]
+  objective: Implement `long_pattern_v1` declaration, derived checkpoint and recovery, exact
+    binary/Unicode-fold literal and wildcard semantics for 8,000-byte source values, and bounded
+    candidate-source integration without changing storage keys or existing text providers.
+  requirements: [OQ-085, OQ-087, OQ-089, OQ-090, OQ-092, OQ-093, OQ-094,
+    OQ-095, OQ-096, OQ-098, OQ-099]
+  required_adrs: [ADR-0004, ADR-0086, ADR-0108, ADR-0124, ADR-0130, ADR-0131,
+    ADR-0164, ADR-0172, ADR-0173, ADR-0174]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/0174-bounded-filtered-result-pipelines.md,
+    Cargo.lock, release/version-topology-v1.json, proto/**, crates/riffdb-types/**,
+    crates/riffdb-contract-syntax/**, crates/riffdb-contract-ir/**,
+    crates/riffdb-contract-compiler/**, crates/riffdb-riffql-syntax/**,
+    crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**,
+    crates/riffdb-query-module/**, crates/riffdb-query-executor/**,
+    crates/riffdb-catalog/**, crates/riffdb-projection/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-policy/**, crates/riffdb-errors/**,
+    crates/riffdb-service/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-api-mcp/**, crates/riffdb-client-rust/**,
+    crates/riffdb-driver-host/**, crates/riffdb-cli/**, clients/**, templates/**,
+    examples/**, fixtures/**, tests/**, scripts/**, docs/**, release/distribution/**]
+  deliverables:
+  - Contract grammar and checked declaration with profile, supported operators, source/matched
+    bytes, rows, grams, postings, pattern, candidate, verification, result, replay, staleness, and
+    retention bounds in least-sufficient bundle and topology identities
+  - Canonical provider-state V1 retaining one matched value, digest, distinct byte trigrams,
+    postings, and release data per key with atomic mutation, rebuild, replay, checkpoint,
+    compaction, crash recovery, corruption refusal, and byte-frozen fixtures
+  - Linear-space wildcard evaluator freezing `%`, `_`, escape, binary, Unicode-fold, literal
+    prefix/suffix/contains, digest/gram candidate, collision verification, short/wildcard-only
+    bounded provider scan, and authorized negation semantics
+  - Candidate-source, authorization, participant, cursor, generated-surface, independent reference,
+    randomized history, maximum expansion/value, storage parity, and architecture-negative tests
+  acceptance_commands:
+  - cargo test -p riffdb-types -p riffdb-contract-syntax -p riffdb-contract-ir
+    -p riffdb-contract-compiler -p riffdb-projection --all-features
+  - cargo test -p riffdb-query-ir -p riffdb-query-compiler -p riffdb-query-module
+    -p riffdb-query-executor -p riffdb-storage-memory -p riffdb-storage-redb --all-features
+  - cargo test -p riffdb-policy -p riffdb-service -p riffdb-api-grpc -p riffdb-api-mcp
+    -p riffdb-client-rust -p riffdb-driver-host -p riffdb-cli --all-features
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - ./scripts/downstream-adapter-check
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every accepted literal/wildcard pattern is exact and bounded through 8,000 source
+    bytes across rebuild/recovery and every public surface; no key widening, quadratic substring
+    state, authoritative scan, partial result, tokenized substitution, or hidden-row complement
+    exists.
+  standing_design_tests:
+    interface_safety: Applications invoke only compiled operators over one declared field/profile;
+      they cannot choose provider structure, grams, matcher, scan, budget, collation, or fallback.
+    scale: Source/matched bytes, rows, grams, postings, candidates, verification, matcher states,
+      result, checkpoint, replay, retained epochs, and diagnostics are independently bounded.
+  human_review_triggers: *id0174
+
+- id: WP-738
+  name: Bounded filtered-result generic and downstream closure
+  depends_on: [WP-735, WP-736, WP-737]
+  objective: Close ADR-0174 with one generic combined-search corpus, cross-language and
+    cross-process conformance, downstream adapter receipts, compatibility, recovery, security,
+    handbook, and full-workspace evidence.
+  requirements: [OQ-084, OQ-085, OQ-086, OQ-087, OQ-088, OQ-089, OQ-090,
+    OQ-091, OQ-092, OQ-093, OQ-094, OQ-095, OQ-096, OQ-097, OQ-098, OQ-099, OQ-100]
+  required_adrs: [ADR-0055, ADR-0086, ADR-0108, ADR-0111, ADR-0124, ADR-0130,
+    ADR-0131, ADR-0134, ADR-0150, ADR-0158, ADR-0159, ADR-0164, ADR-0167,
+    ADR-0172, ADR-0173, ADR-0174]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/0174-bounded-filtered-result-pipelines.md,
+    release/version-topology-v1.json, proto/**, crates/**, clients/**, templates/**,
+    examples/**, fixtures/**, tests/**, scripts/**, docs/**, release/distribution/**]
+  deliverables:
+  - Generic experiment/run-like corpus combining relationship tags, attributes, exact and wildcard
+    text, null/existence and negation before multiple root orders, limits, and cursors
+  - Four-language local/remote, gRPC, MCP, CLI, concurrency, cancellation, policy noninterference,
+    cursor retirement/tamper, crash/rebuild/restore, compatibility, and maximum-bound evidence
+  - Fresh downstream adapter check and value-free receipt proving no adapter filtering, sorting,
+    counting, deduplication, denormalization, restart, framework branch, or semantic page walk
+  - Complete handbook, generated reference, architecture, operations, compatibility, known-limit,
+    requirement-coverage, topology, dependency, formatting, lint, documentation, and workspace gates
+  acceptance_commands:
+  - cargo test --workspace --all-features
+  - cargo doc --workspace --no-deps
+  - cargo deny check
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-application-bindings
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-adr-obligations
+  - ./scripts/handbook check
+  - ./scripts/downstream-adapter-check
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: The generic and downstream corpora prove exact complete filtering before order/page,
+    scalable bounded rows, long wildcard semantics, policy, recovery, compatibility, and every
+    surface with no unexplained failure or adapter workaround.
+  standing_design_tests:
+    interface_safety: All evidence uses generated named operations and typed values; no caller can
+      express joins, set structure, fields, providers, arbitrary orders, budgets, scans, fallback,
+      policy bypass, or partial semantics.
+    scale: Every candidate, provider, sort, page, byte, work, epoch, response, process, and external
+      assembly dimension is finite and independently tested at its maximum and one over.
+  human_review_triggers: *id0174
 
 - id: WP-721
   closure:
