@@ -20,7 +20,9 @@ use riffdb_types::{
     EnumVariantId, EventTypeId, FieldId, IndexId, InvariantId, OutcomeId, ProjectionId,
 };
 
-use crate::diagnostic::{CompilerDiagnostic, CompilerDiagnosticCode, CompilerDiagnostics};
+use crate::diagnostic::{
+    CompilerDiagnostic, CompilerDiagnosticCause, CompilerDiagnosticCode, CompilerDiagnostics,
+};
 use crate::expression_lowering::{
     BindingExpressionScope, CollectionElementExpressionScope, ExpressionLowerer, ExpressionScope,
 };
@@ -1997,18 +1999,24 @@ fn lower_workflow_lease(
     let duration_valid = minimum.zip(maximum).is_some_and(|(minimum, maximum)| {
         minimum > 0 && minimum <= maximum && maximum <= MAX_WORKFLOW_LEASE_DURATION_SECONDS
     });
-    if !owner_valid
-        || !expiry_valid
-        || !fence_valid
-        || !attempts_valid
-        || !distinct
-        || !non_key
-        || !duration_valid
-    {
-        diagnostics.push(CompilerDiagnostic::new(
-            CompilerDiagnosticCode::InvalidWorkflowLease,
-            span,
-        ));
+    // Seven conditions shared one message. Ordered so the message names the
+    // field-level problem before the relationships between fields.
+    let lease_cause = if !owner_valid || !expiry_valid || !fence_valid || !attempts_valid {
+        Some(CompilerDiagnosticCause::WorkflowLeaseFieldRoleInvalid)
+    } else if !distinct {
+        Some(CompilerDiagnosticCause::WorkflowLeaseFieldsNotDistinct)
+    } else if !non_key {
+        Some(CompilerDiagnosticCause::WorkflowLeaseFieldInPrimaryKey)
+    } else if !duration_valid {
+        Some(CompilerDiagnosticCause::WorkflowLeaseDurationOutOfRange)
+    } else {
+        None
+    };
+    if let Some(cause) = lease_cause {
+        diagnostics.push(
+            CompilerDiagnostic::new(CompilerDiagnosticCode::InvalidWorkflowLease, span)
+                .with_cause(cause),
+        );
         return None;
     }
     Some(HirWorkflowLease {
