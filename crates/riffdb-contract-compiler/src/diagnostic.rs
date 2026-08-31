@@ -485,8 +485,16 @@ impl CompilerDiagnosticCode {
             Self::MissingRelationshipRead => Some(
                 "bind the complete referenced key before the mutable binding and declare its failure outcome",
             ),
+            // Two repairs, and the second is the one authors miss. Uniqueness
+            // is enforced inside one partition, so prefixing the key with the
+            // route makes the value unique PER route -- which is vacuous when
+            // the route already identifies one row. When the value must be
+            // unique across a wider scope, the partition is what has to change,
+            // and that is a decision about the aggregate rather than the key.
+            // Widening a partition does not serialise writers: `conflict_key`
+            // is what they contend on.
             Self::InvalidUniqueKey => Some(
-                "declare required key-compatible fields beginning with the canonical partition prefix",
+                "a unique key is enforced within one partition, so its fields must be required, key-compatible, and begin with the aggregate's partition route; either prefix the route to make the value unique per route, or, if the value must be unique across a wider scope, partition the aggregate by that scope and keep a finer conflict_key so writers still do not contend",
             ),
             Self::UniqueKeyNotInputComputable => Some(
                 "assign every changed unique component from command inputs or input-only expressions",

@@ -81,3 +81,110 @@ fn rejects_wrong_option_types_unknown_fields_and_duplicate_encodings() {
         compile_contract_source(&source).expect_err("invalid operational index must fail closed");
     }
 }
+
+/// A unique key not prefixed by its aggregate's partition route is refused, and
+/// the refusal is legible enough to act on.
+///
+/// This is the shape a real adapter hit: an entity partitioned by its own
+/// identifier, carrying a `unique` on a name that has to be unique across every
+/// such entity. The rule is correct -- uniqueness is enforced inside one
+/// partition -- but the message used to restate the rule twice and offer only
+/// the repair that does not help, so the author concluded the constraint was
+/// unexpressible and reached for a saga.
+///
+/// Two properties keep it legible: the diagnostic points at the aggregate whose
+/// route the key is measured against, and the help names BOTH repairs.
+#[test]
+fn a_unique_key_outside_its_partition_route_is_refused_and_names_both_repairs() {
+    const GLOBAL_NAME: &str = r#"
+contract Registry version 1 {
+  entity Item {
+    key (item_id: u64)
+    field name: string<100>
+    unique by_name (name)
+  }
+  aggregate Items {
+    root Item
+    partition_by item_id
+    conflict_key (item_id)
+  }
+}
+"#;
+    let error = compile_contract_source(GLOBAL_NAME)
+        .expect_err("a unique key outside the partition route is refused");
+    let diagnostic = error
+        .semantic()
+        .expect("semantic diagnostics")
+        .as_slice()
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.code() == riffdb_contract_compiler::CompilerDiagnosticCode::InvalidUniqueKey
+        })
+        .expect("RDB-C025");
+
+    // The aggregate is the other half of the rule; without it the author cannot
+    // see which route the key failed against.
+    let related = diagnostic
+        .related_span()
+        .expect("the refusal names the aggregate whose route the key must match");
+    let aggregate_at = GLOBAL_NAME.find("aggregate Items").expect("aggregate");
+    assert!(
+        (related.start() as usize) >= aggregate_at,
+        "the related span must point at the aggregate, not back at the key"
+    );
+
+    let help = diagnostic.code().help().expect("RDB-C025 help");
+    // Repair one: prefix the route, accepting per-route uniqueness.
+    assert!(
+        help.contains("partition route"),
+        "help must name the route requirement: {help}"
+    );
+    // Repair two: widen the partition. This is the one that unblocks a value
+    // that must be unique across a wider scope, and the one that was missing.
+    assert!(
+        help.contains("partition the aggregate by that scope"),
+        "help must offer widening the partition, not only fixing the key: {help}"
+    );
+    // And the reason widening is affordable, which is the belief that made the
+    // correct repair look unacceptable.
+    assert!(
+        help.contains("conflict_key"),
+        "help must say writers contend on conflict_key, not on the partition: {help}"
+    );
+}
+
+/// The same rule still refuses a unique key whose fields are not key-compatible,
+/// and that refusal does NOT point at the aggregate, because the route is not
+/// what went wrong.
+#[test]
+fn a_unique_key_over_an_optional_field_is_refused_without_blaming_the_route() {
+    const OPTIONAL_UNIQUE: &str = r#"
+contract Registry version 1 {
+  entity Item {
+    key (tenant_id: uuid, item_id: u64)
+    field name: optional<string<100>>
+    unique by_name (tenant_id, name)
+  }
+  aggregate Items {
+    root Item
+    partition_by tenant_id
+    conflict_key (tenant_id, item_id)
+  }
+}
+"#;
+    let error = compile_contract_source(OPTIONAL_UNIQUE)
+        .expect_err("a unique key over an optional field is refused");
+    let diagnostic = error
+        .semantic()
+        .expect("semantic diagnostics")
+        .as_slice()
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.code() == riffdb_contract_compiler::CompilerDiagnosticCode::InvalidUniqueKey
+        })
+        .expect("RDB-C025");
+    assert!(
+        diagnostic.related_span().is_none(),
+        "the route is correct here, so the aggregate must not be implicated"
+    );
+}
