@@ -193,6 +193,10 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 - Outbox delivery has only the explicitly configured POC connector behavior.
 - Projection state is rebuildable and can be degraded while authoritative
   commits remain available.
+- Tokenized-text declarations and durable provider-state V1 are implemented,
+  including postings, term frequencies, field-length norms, positions, atomic
+  maintenance, rebuild, compaction, and strict recovery. Named boolean and
+  ranked tokenized queries are not activated yet, and there is no scan fallback.
 - Restore publication assumes the database directory is private to the sole
   configured service identity: the current operator for user scope or `riffdb`
   for system scope. An uncooperative process with equal write authority can

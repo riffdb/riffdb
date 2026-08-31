@@ -2552,6 +2552,171 @@ work_packages:
       statistics, scoring, and ranking remain staged successor work under ADR-0173.
     follow_ups: []
 
+- id: WP-730
+  name: Durable tokenized-text segment and recovery
+  depends_on: [WP-729]
+  objective: Implement ADR-0173's complete first durable inverted-index format and its bounded
+    atomic maintenance, rebuild, replay, compaction, checkpoint, corruption, and recovery behavior
+    before any public tokenized query is activated.
+  requirements: [FTS-005, FTS-006, FTS-007]
+  required_adrs: [ADR-0004, ADR-0086, ADR-0092, ADR-0130, ADR-0131, ADR-0172, ADR-0173]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/0173-tokenized-text-search-provider.md,
+    release/version-topology-v1.json, crates/riffdb-types/**, crates/riffdb-contract-ir/**,
+    crates/riffdb-projection/**, crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-testkit/**, fixtures/**, tests/**, scripts/**,
+    docs/SUMMARY.md, docs/architecture/**, docs/operations/**, docs/known-limitations.md]
+  deliverables:
+  - One canonical provider-state V1 carrying index identity, analyzer, partition, generation,
+    frontier, keys, outputs, postings, per-field frequencies and norms, and token positions from
+    its first byte-frozen release
+  - Atomic checked mutation, deletion, compaction, disjoint rebuild, contiguous replay, checkpoint,
+    and recovery with strict mixed-version, corruption, identity, order, duplicate, and bound refusal
+  - Memory and redb derived-state persistence behind existing projection storage boundaries, with
+    never-reused generations and no authoritative dependency on tokenized state
+  - Reference and crash tests across updates, deletes, Unicode analysis, maximum bounds, corrupt
+    bytes, cancelled rebuild, restart, and replay proving no partial generation or frontier publishes
+  acceptance_commands:
+  - cargo test -p riffdb-types -p riffdb-projection -p riffdb-storage-api
+    -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-testkit --all-features
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Provider-state V1 is byte-frozen with every future boolean/ranking primitive present;
+    mutation, rebuild, compaction, replay, recovery, and restart are reference-equivalent and
+    bounded; corrupt or partial state never publishes; and no public tokenized query exists.
+  standing_design_tests:
+    interface_safety: The segment is private derived machinery selected only from compiled contract
+      identity; applications cannot submit a key, format, analyzer, provider, generation, frontier,
+      budget, rebuild, checkpoint, or fallback choice.
+    scale: Rows, fields, source bytes, analyzed terms, positions, postings, output, checkpoint,
+      replay, mutation amplification, rebuild work, and diagnostics are bounded before allocation.
+  closure:
+    status: complete
+    completed_at: "2026-08-31"
+    requirements_satisfied: [FTS-005, FTS-006, FTS-007]
+    evidence: crates/riffdb-projection/tests/tokenized_text_provider.rs
+    decision: Provider-state V1 freezes the compiled index identity, analyzer, partition,
+      generation, frontier, canonical keys and outputs, field token-count norms, and redundant
+      explicit postings with frequencies and positions. Whole-epoch staging is atomic; update,
+      delete, compaction, disjoint rebuild, checkpoint, recovery, unknown-version, corruption,
+      canonical-order, duplicate, and bound tests pass. Recovery independently reconstructs
+      postings from document terms and refuses a mismatch before publication. Targeted storage and
+      recovery suites, topology, generated, coverage, handbook, formatting, and strict Clippy gates
+      pass, while authoritative storage and every public query surface remain unchanged.
+    known_limitations: Provider activation and named boolean/ranked execution remain WP-731 and
+      WP-732. The V1 checkpoint is private derived state and never an application-facing format.
+    follow_ups: []
+
+- id: WP-731
+  name: Exact bounded tokenized boolean named queries
+  depends_on: [WP-647, WP-730]
+  objective: Activate exact conjunction, capped disjunction, phrase, and bounded proximity through
+    finite named RiffQL operations and the shared authorization/service/transports using only the
+    maintained tokenized segment and typed all-or-refusal budgets.
+  requirements: [FTS-008, FTS-009, FTS-010, FTS-011, FTS-015]
+  required_adrs: [ADR-0038, ADR-0051, ADR-0052, ADR-0053, ADR-0055, ADR-0086, ADR-0092,
+    ADR-0108, ADR-0111, ADR-0124, ADR-0130, ADR-0131, ADR-0173]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/0173-tokenized-text-search-provider.md,
+    release/version-topology-v1.json, proto/**, crates/riffdb-types/**,
+    crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**,
+    crates/riffdb-query-module/**, crates/riffdb-query-executor/**, crates/riffdb-catalog/**,
+    crates/riffdb-projection/**, crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-policy/**, crates/riffdb-errors/**,
+    crates/riffdb-service/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-api-mcp/**, crates/riffdb-client-rust/**, crates/riffdb-driver-host/**,
+    crates/riffdb-cli/**, crates/riffdb-mcp-stdio/**, crates/riffdb-server/**, clients/**,
+    templates/**, examples/**, fixtures/**, tests/**, scripts/**, docs/**, release/distribution/**]
+  deliverables:
+  - Additive RiffQL, query IR, module, plan, and generated-operation identities for exactly four
+    compiler-sealed boolean shapes over one declared text index and one typed bounded string input
+  - Exact maintained-posting execution with deterministic set, phrase, and proximity semantics,
+    canonical entity-key order, typed term/candidate/result refusal, and no scan or partial result
+  - Fresh authorization before provider selection and release through one API-neutral service path,
+    with generated gRPC, MCP, CLI, Rust, Go, TypeScript, and Python parity and redacted failures
+  - Independent reference, randomized history, concurrency, cursor, policy, lifecycle, recovery,
+    cost, and architecture-negative evidence
+  acceptance_commands:
+  - cargo test -p riffdb-riffql-syntax -p riffdb-query-ir -p riffdb-query-compiler
+    -p riffdb-query-module -p riffdb-query-executor -p riffdb-projection --all-features
+  - cargo test -p riffdb-service -p riffdb-api-grpc -p riffdb-api-mcp -p riffdb-client-rust
+    -p riffdb-driver-host -p riffdb-cli -p riffdb-server --all-features
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-application-bindings
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - ./scripts/downstream-adapter-check
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every admitted named boolean operation equals the reference evaluator at one authorized
+    provider epoch on every surface; budgets refuse rather than truncate; and no runtime structure,
+    scan, stale fallback, scoring, caller field/operator/provider choice, or client shaping exists.
+  standing_design_tests:
+    interface_safety: Applications invoke only generated typed methods whose structure, field,
+      analyzer, expression, distance, partition proof, provider, budgets, and output are compiled.
+    scale: Query bytes, analyzed terms, disjunction arms, proximity, candidates, result rows, output,
+      cursor, waits, retained epoch state, work, and diagnostics are independently bounded.
+
+- id: WP-732
+  name: Authorized-snapshot fixed-point tokenized ranking
+  depends_on: [WP-719, WP-731]
+  objective: Complete ADR-0173 with provider-owned deterministic relevance over the caller's full
+    authorized set at one admission-head-fenced snapshot, exact total-order cursor pagination, and
+    identical generated named-operation behavior on every public surface.
+  requirements: [FTS-012, FTS-013, FTS-014, FTS-015]
+  required_adrs: [ADR-0051, ADR-0052, ADR-0053, ADR-0055, ADR-0086, ADR-0092, ADR-0108,
+    ADR-0111, ADR-0124, ADR-0130, ADR-0164, ADR-0173]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/0092-native-full-text-search-projections.md,
+    adr/0173-tokenized-text-search-provider.md, release/version-topology-v1.json, proto/**,
+    crates/riffdb-types/**, crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**,
+    crates/riffdb-query-compiler/**, crates/riffdb-query-module/**,
+    crates/riffdb-query-executor/**, crates/riffdb-catalog/**, crates/riffdb-projection/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-policy/**, crates/riffdb-errors/**, crates/riffdb-service/**,
+    crates/riffdb-proto/**, crates/riffdb-api-grpc/**, crates/riffdb-api-mcp/**,
+    crates/riffdb-client-rust/**, crates/riffdb-driver-host/**, crates/riffdb-cli/**,
+    crates/riffdb-mcp-stdio/**, crates/riffdb-server/**, clients/**, templates/**, examples/**,
+    fixtures/**, tests/**, scripts/**, docs/**, release/distribution/**]
+  deliverables:
+  - Frozen `riff_bm25_v1` fixed-point score and checked arithmetic with contract weights and
+    canonical entity-key tie-breaking, exposed as an order only and never caller-tunable
+  - Authorized-set-only document frequencies and field-length statistics at the same fenced snapshot
+    as membership, with adversarial evidence that denied rows influence no observable result
+  - Admission-head capture once on the first page and cursor binding of floor, epoch, generation,
+    authorized-set/statistics identity, plan, parameters, and total order; retired state fails typed
+  - Reference rank equality, concurrent-write pagination, cursor expiry, policy leakage, recovery,
+    compaction, cross-language, and pay-once proof tests plus complete public/operational guidance
+  acceptance_commands:
+  - cargo test -p riffdb-query-ir -p riffdb-query-compiler -p riffdb-query-module
+    -p riffdb-query-executor -p riffdb-projection -p riffdb-policy -p riffdb-service --all-features
+  - cargo test -p riffdb-api-grpc -p riffdb-api-mcp -p riffdb-client-rust
+    -p riffdb-driver-host -p riffdb-cli -p riffdb-server --all-features
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-application-bindings
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - ./scripts/downstream-adapter-check
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test --workspace --all-features
+  exit_gate: Ranked membership and exact order equal the fixed-point reference over only the
+    authorized fenced corpus; every page sequence is stable and complete; retired state fails
+    typed; all generated surfaces agree; and callers receive no score, boost, field, analyzer,
+    provider, cost, consistency downgrade, scan, or fallback control.
+  standing_design_tests:
+    interface_safety: Applications invoke one generated ranked operation and may request only the
+      existing stronger admission-head consistency class; every relevance and authority choice is
+      compiled or server-derived and cannot be weakened at runtime.
+    scale: Authorized-set materialization is provider-maintained and snapshot-bounded; terms,
+      candidates, statistics, score arithmetic, result rows, pages, cursors, epochs, waits, output,
+      and diagnostics remain within compiler-declared ceilings.
+
 - id: WP-721
   closure:
     status: partial

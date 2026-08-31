@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 1.22 | 2026-08-31 | Registered `FTS-005` through `FTS-015` and WP-730 through WP-732 for ADR-0173's remaining stages. The tokenized provider first persists one canonical partition-scoped V1 segment carrying authoritative keys, compiler-shaped outputs, postings, per-field term frequencies, field-length norms, and positions with exact rebuild/replay/recovery behavior. Named RiffQL then admits only compiler-sealed conjunction, capped disjunction, phrase, and bounded proximity over one declared `text_index`, with typed term/candidate/result refusals and no request-time field, operator, analyzer, provider, boost, score, or cost selection. Ranked search uses the provider-owned `riff_bm25_v1` fixed-point order over the caller's complete authorized set at one ADR-0164 admission-head fence, with primary-key tie-breaking and snapshot-bound cursors. Existing exact-text behavior and declaration-free artifacts remain byte-exact. |
 | 1.21 | 2026-08-31 | Accepted ADR-0173 and registered `FTS-001` through `FTS-004` plus WP-729 for the tokenized-text declaration and analyzer stage. ADR-0173 explicitly refines ADR-0092: tokenized-search v1 has exactly `keyword_v1` and Unicode-17 `standard_v1`, ranking statistics are scoped to the caller's authorized set at the fenced snapshot, and the boolean vocabulary is conjunction, compiler-capped disjunction, phrase, and bounded proximity. The declaration freezes positive integer per-field weights, analyzer identity, staleness and replay bounds, the `boolean_v1` result model, and compiler-owned term/candidate/result ceilings into additive contract IR identity. Durable segments, matching, and ranking remain separately staged. |
 | 1.20 | 2026-08-30 | Accepted ADR-0171. Amended `PERF-008` and `PERF-018`: the five-generation central-three stability rule (`x4 / x2` at most 1.20) binds the gated backend only. RiffDB's qualified p50 and p95 must satisfy it on every scenario and profile, unchanged. Safe-application PostgreSQL MUST still run in every generation and its five-value summary and spread MUST be computed and published, and a comparator spread above 1.20 MUST be disclosed in the receipt, but it no longer invalidates the evidence. ADR-0142 already made unary PostgreSQL ratios disclosure rather than gates, yet the integrity rule was written "for each backend", so a comparator RiffDB cannot influence could block a release; a 1,000-operation receipt run measured RiffDB stable on all fourteen scenarios (1.002 to 1.028) and PostgreSQL over the limit on five, and ADR-0146's larger generations moved which scenarios fail rather than fixing them. Host validity, correctness, comparator-input drift, retained extremes, and the retry prohibition remain invalidating for either backend, and every PostgreSQL ratio remains mandatory published disclosure. The baseline receipt records `method.stability_rule_binds`, so a candidate measured under the previous rule fails method-drift rather than comparing against a baseline that meant something different. No durable format, storage key, protocol, or provider algorithm changes. |
 | 1.19 | 2026-08-29 | Accepted ADR-0170 and registered WP-721. Amended `PERF-005`: a command's `create` and `mutate` bindings MUST derive one identical partition route but MAY belong to different aggregates within that partition, in which case the command's logical conflict keys are the union of the conflict keys its bindings derive and that complete union MUST be statically enumerable. Cross-partition writes remain rejected; the rejected case narrows from multi-aggregate to cross-partition. The change is admitted on measurement: a coarse `conflict_key` does not serialise writers, so splitting a partition-local write across two aggregates costs a second durable commit for no measured scalability, and the restriction cannot be defended on concurrency grounds. WP-721 implements it at executable IR V19 under ADR-0126's least-sufficient writer rule, so a command writing one aggregate keeps its existing bytes, plan hash, and application lock; `RDB-C017` now rejects only a write whose bindings derive different partition routes. The canonical lease order over `(aggregate, conflict key)` was already in place. Two proofs remain outstanding and are tracked by WP-721: a deadlock arm that fails under an arbitrary acquisition order, and a crash arm proving a command writing two aggregates is atomic across a restart. No durable format, storage key, protocol, or provider algorithm changes. |
@@ -8906,6 +8907,81 @@ matching under `OQ-025` through `OQ-030` remains a separate provider.
   version, with canonical field-ID order and versioned compatibility fixtures.
   A contract without `text_index` MUST retain its prior least-sufficient bytes.
   Changing an analyzer or field weight MUST change index and bundle identity.
+- `FTS-005`: Each deployed `text_index` MUST own a partition-scoped,
+  policy-aligned, rebuildable provider generation with a versioned canonical
+  checkpoint. Provider-state V1 MUST carry the text-index identity, analyzer,
+  partition, generation, exact frontier, canonical entity keys,
+  compiler-shaped bounded outputs, postings, per-field term frequencies,
+  per-field token-count norms, and positions. Unknown, mixed, noncanonical,
+  corrupt, duplicate, excessive, or identity-mismatched state MUST be refused
+  before publication; no authoritative state depends on this derived format.
+- `FTS-006`: One commit epoch MUST apply at most one post-image or deletion per
+  entity atomically to tokenized provider state and advance its frontier only
+  after every posting, frequency, norm, position, key, and output change is
+  complete. Rebuild from one authoritative snapshot, bounded contiguous replay,
+  compaction, checkpoint recovery, and restart MUST produce byte-identical
+  logical results. Failed, cancelled, partial, stale, or out-of-order work MUST
+  publish neither a frontier nor a partially changed generation.
+- `FTS-007`: Tokenized state, per-document analyzed terms, positions, outputs,
+  checkpoint bytes, replay age/bytes/backlog, write amplification, and rebuild
+  work MUST be statically bounded. Exceeding a bound MUST produce a typed
+  provider lifecycle refusal; it MUST NOT truncate postings, omit positions,
+  drop documents, fall back to an entity scan, or acknowledge stale state as
+  current.
+- `FTS-008`: RiffQL MAY declare a named tokenized match only through one closed
+  compiler-owned expression: conjunction, a disjunction whose arm count is
+  statically capped, phrase adjacency, or proximity with a positive statically
+  bounded distance. Terms come from one typed bounded string parameter analyzed
+  by the selected index. Fields, operators, analyzers, distances, providers,
+  budgets, boosts, scoring controls, and fallback behavior MUST NOT be runtime
+  parameters.
+- `FTS-009`: Tokenized matching MUST be exact and deterministic at one selected
+  provider epoch. Conjunction requires every analyzed term, disjunction requires
+  at least one arm, phrase requires consecutive positions in one declared
+  source field, and proximity requires ordered terms in one source field with
+  each adjacent distance at most the compiled bound. Match membership MUST be
+  independent of unrelated corpus contents and field weights.
+- `FTS-010`: The compiler MUST bind one named match operation to its exact
+  contract, text-index identity, partition proof, policy mode, expression,
+  analyzer, term ceiling, candidate ceiling, result ceiling, typed output, and
+  exact provider descriptor. Runtime MUST refuse an empty analyzed query, too
+  many terms, too many candidates, excessive output, unavailable lifecycle, or
+  mismatched epoch before release; it MUST never return a partial result.
+- `FTS-011`: Boolean match execution MUST use maintained postings and bounded
+  set operations, apply fresh authorization before provider selection and
+  before release, and expose the same generated named operation through the
+  API-neutral service, gRPC, MCP, CLI, and supported SDK paths. A fixed-corpus
+  reference evaluator plus randomized mutation, deletion, rebuild, compaction,
+  recovery, concurrent-write, policy, and pagination tests MUST prove exact
+  membership with no duplicate or omission.
+- `FTS-012`: Ranked tokenized search MUST use the provider-owned
+  `riff_bm25_v1` integer scoring function only. Its score scale is 1,000,000,
+  `k1` is 1,200/1,000, `b` is 750/1,000, every division rounds toward zero,
+  weighted term contributions accumulate in checked unsigned 128-bit
+  intermediates and MUST fit `u64`, and equal scores break by canonical entity
+  key ascending. Callers cannot submit scoring functions, boosts, weights,
+  constants, fields, or tie-breakers.
+- `FTS-013`: For `riff_bm25_v1`, document count, per-term document frequency,
+  and average per-field token length MUST be computed solely over the complete
+  set authorized for the caller at one fenced snapshot. Unauthorized rows MUST
+  influence neither membership, statistics, score, rank, count, diagnostics,
+  nor returned timing labels. Membership is evaluated before ranking and MUST
+  not change when an unrelated authorized row changes.
+- `FTS-014`: A ranked first page MUST capture the ADR-0164 authorized
+  application head once, combine it with every causal floor, select one
+  sufficient provider epoch, and bind the floor, epoch, authorized-set identity,
+  statistics identity, plan, parameters, order, and result ceiling into its
+  opaque cursor. Continuations recapture none of them. A retired snapshot or
+  provider generation returns the existing typed lifecycle outcome rather than
+  rescoring or reordering; every admitted page sequence is a total order with
+  no duplicate or omission.
+- `FTS-015`: Boolean and ranked tokenized operations MUST preserve the shared
+  service, authorization, query-runtime, transport, redaction, and generated-
+  interface boundaries. Exact-text prefix/substring behavior remains separate
+  and byte-compatible. Public documentation MUST state analyzer semantics,
+  boolean membership, ranking stability, cursor expiry, freshness, budgets,
+  rebuild behavior, and the absence of wildcard, regex, fuzzy, stemming,
+  highlighting, snippets, caller boosts, and hybrid vector fusion.
 
 The Deployable Application Alpha milestone is complete only when WP-550 through
 WP-570, WP-572 through WP-579, and WP-597, WP-598, and WP-600 pass in dependency
