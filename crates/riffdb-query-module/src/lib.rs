@@ -17,6 +17,7 @@ mod go_generation;
 mod projection_result_set;
 mod python_generation;
 mod reactive_module;
+mod tokenized_text_result_set;
 
 pub use application_manifest::{
     APPLICATION_MANIFEST_SCHEMA_V1, APPLICATION_MANIFEST_SCHEMA_V2, APPLICATION_MANIFEST_SCHEMA_V3,
@@ -62,12 +63,14 @@ pub use reactive_module::{
     canonicalize_reactive_source, compile_reactive_source, decode_and_validate_reactive_module,
     reactive_module_query_dependencies, reactive_query_catalog,
 };
+pub use tokenized_text_result_set::*;
 
 use riffdb_contract_ir::ContractBundle;
 use riffdb_query_compiler::{
     compile_exact_predicate_query_v1, compile_exact_text_query_v1,
     compile_nullable_exact_predicate_query_v1, compile_operational_query_family, compile_query,
-    exact_predicate_artifact_invariant, exact_text_artifact_invariant,
+    compile_tokenized_text_query_v1, exact_predicate_artifact_invariant,
+    exact_text_artifact_invariant,
 };
 use riffdb_query_ir::{
     AuthorizationEntityAccess, CoveredResultLayoutV1, NamedQuerySchemas, OperationalQueryFamilyV1,
@@ -76,8 +79,9 @@ use riffdb_query_ir::{
     QUERY_IR_VERSION_EXACT_PREDICATE_V1, QUERY_IR_VERSION_EXACT_RESULT_SET_V1,
     QUERY_IR_VERSION_NULLABLE_EXACT_ORDER_V1, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1,
     QUERY_IR_VERSION_OPERATIONAL_V1, QUERY_IR_VERSION_PROJECTED_VECTOR_V1,
-    QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_V1, QueryAccessProgramV1, QuerySourceMap,
-    SecretOutputRequirement, SourceSymbolKind, SymbolicCatalog,
+    QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_TOKENIZED_TEXT_V1, QUERY_IR_VERSION_V1,
+    QueryAccessProgramV1, QuerySourceMap, SecretOutputRequirement, SourceSymbolKind,
+    SymbolicCatalog,
 };
 use riffdb_riffql_syntax::{
     Document, MAX_IDENTIFIER_BYTES, MAX_SOURCE_BYTES, ParseDiagnostics, RIFFQL_LANGUAGE_VERSION,
@@ -85,7 +89,7 @@ use riffdb_riffql_syntax::{
     RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1, RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1,
     RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1, RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1,
     RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1, RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1,
-    format_query, parse_query,
+    RIFFQL_LANGUAGE_VERSION_TOKENIZED_TEXT_V1, format_query, parse_query,
 };
 use riffdb_types::{
     ContractBundleHash, ContractLineage, ContractVersion, QueryCostVectorV1, QueryModuleHash,
@@ -125,6 +129,8 @@ pub const QUERY_MODULE_FORMAT_VERSION_NULLABLE_EXACT_ORDER_V1: u32 = 10;
 pub const QUERY_MODULE_FORMAT_VERSION_EXACT_AGGREGATE_V1: u32 = 11;
 /// Additive module codec carrying compiler-declared bounded runtime page limits.
 pub const QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1: u32 = 12;
+/// Additive module codec carrying compiler-sealed tokenized-text plans.
+pub const QUERY_MODULE_FORMAT_VERSION_TOKENIZED_TEXT_V1: u32 = 13;
 /// Maximum queries retained in one immutable module.
 pub const MAX_MODULE_QUERIES: usize = 4_096;
 /// Maximum canonical bytes for one immutable module.
@@ -232,6 +238,8 @@ pub enum CompiledNamedQueryPlan {
     ExactPredicateV1(Arc<CompiledExactPredicateResultSetV1>),
     /// Exact predicate family with compiler-declared nullable order placement.
     NullableExactPredicateV1(Arc<CompiledNullableExactPredicateResultSetV1>),
+    /// Exact bounded tokenized-text membership over one declared index.
+    TokenizedTextV1(Arc<CompiledTokenizedTextResultSetV1>),
 }
 
 impl CompiledNamedQueryPlan {
@@ -250,7 +258,8 @@ impl CompiledNamedQueryPlan {
                 .any(|member| program_has_cover(member.program())),
             Self::ExactTextResultV1(_)
             | Self::ExactPredicateV1(_)
-            | Self::NullableExactPredicateV1(_) => false,
+            | Self::NullableExactPredicateV1(_)
+            | Self::TokenizedTextV1(_) => false,
         }
     }
 
@@ -276,7 +285,8 @@ impl CompiledNamedQueryPlan {
             }
             Self::ExactTextResultV1(_)
             | Self::ExactPredicateV1(_)
-            | Self::NullableExactPredicateV1(_) => None,
+            | Self::NullableExactPredicateV1(_)
+            | Self::TokenizedTextV1(_) => None,
         }
     }
 
@@ -306,7 +316,8 @@ impl CompiledNamedQueryPlan {
             }
             Self::ExactTextResultV1(_)
             | Self::ExactPredicateV1(_)
-            | Self::NullableExactPredicateV1(_) => None,
+            | Self::NullableExactPredicateV1(_)
+            | Self::TokenizedTextV1(_) => None,
         }
     }
 
@@ -319,6 +330,7 @@ impl CompiledNamedQueryPlan {
             Self::ExactTextResultV1(exact) => exact.schemas(),
             Self::ExactPredicateV1(exact) => exact.schemas(),
             Self::NullableExactPredicateV1(exact) => exact.schemas(),
+            Self::TokenizedTextV1(tokenized) => tokenized.schemas(),
         }
     }
 
@@ -331,6 +343,7 @@ impl CompiledNamedQueryPlan {
             Self::ExactTextResultV1(exact) => exact.secret_outputs(),
             Self::ExactPredicateV1(exact) => exact.secret_outputs(),
             Self::NullableExactPredicateV1(exact) => exact.secret_outputs(),
+            Self::TokenizedTextV1(tokenized) => tokenized.secret_outputs(),
         }
     }
 
@@ -343,6 +356,7 @@ impl CompiledNamedQueryPlan {
             Self::ExactTextResultV1(exact) => exact.identity(),
             Self::ExactPredicateV1(exact) => exact.identity(),
             Self::NullableExactPredicateV1(exact) => exact.identity(),
+            Self::TokenizedTextV1(tokenized) => tokenized.identity(),
         }
     }
 
@@ -355,6 +369,7 @@ impl CompiledNamedQueryPlan {
             Self::ExactTextResultV1(exact) => exact.authorization(),
             Self::ExactPredicateV1(exact) => exact.authorization(),
             Self::NullableExactPredicateV1(exact) => exact.authorization(),
+            Self::TokenizedTextV1(tokenized) => tokenized.authorization(),
         }
     }
 
@@ -367,6 +382,7 @@ impl CompiledNamedQueryPlan {
             Self::ExactTextResultV1(exact) => exact.cost(),
             Self::ExactPredicateV1(exact) => exact.cost(),
             Self::NullableExactPredicateV1(exact) => exact.cost(),
+            Self::TokenizedTextV1(tokenized) => tokenized.cost(),
         }
     }
 
@@ -377,6 +393,7 @@ impl CompiledNamedQueryPlan {
             Self::ExactTextResultV1(exact) => exact.authorization_cost(),
             Self::ExactPredicateV1(exact) => exact.authorization_cost(),
             Self::NullableExactPredicateV1(exact) => exact.authorization_cost(),
+            Self::TokenizedTextV1(tokenized) => tokenized.authorization_cost(),
             _ => self.cost(),
         }
     }
@@ -390,6 +407,7 @@ impl CompiledNamedQueryPlan {
             Self::ExactTextResultV1(exact) => exact.canonical_bytes(),
             Self::ExactPredicateV1(exact) => exact.canonical_bytes(),
             Self::NullableExactPredicateV1(exact) => exact.canonical_bytes(),
+            Self::TokenizedTextV1(tokenized) => tokenized.canonical_bytes(),
         }
     }
 
@@ -405,6 +423,7 @@ impl CompiledNamedQueryPlan {
             Self::ExactTextResultV1(exact) => exact.representative_program(),
             Self::ExactPredicateV1(exact) => exact.representative_program(),
             Self::NullableExactPredicateV1(exact) => exact.representative_program(),
+            Self::TokenizedTextV1(tokenized) => tokenized.representative_program(),
         }
     }
 }
@@ -461,6 +480,7 @@ impl CompiledNamedQuery {
             CompiledNamedQueryPlan::ExactTextResultV1(_) => None,
             CompiledNamedQueryPlan::ExactPredicateV1(_) => None,
             CompiledNamedQueryPlan::NullableExactPredicateV1(_) => None,
+            CompiledNamedQueryPlan::TokenizedTextV1(_) => None,
         }
     }
 
@@ -473,6 +493,7 @@ impl CompiledNamedQuery {
             CompiledNamedQueryPlan::ExactTextResultV1(_) => None,
             CompiledNamedQueryPlan::ExactPredicateV1(_) => None,
             CompiledNamedQueryPlan::NullableExactPredicateV1(_) => None,
+            CompiledNamedQueryPlan::TokenizedTextV1(_) => None,
         }
     }
 
@@ -485,6 +506,7 @@ impl CompiledNamedQuery {
             CompiledNamedQueryPlan::ExactTextResultV1(_) => None,
             CompiledNamedQueryPlan::ExactPredicateV1(_) => None,
             CompiledNamedQueryPlan::NullableExactPredicateV1(_) => None,
+            CompiledNamedQueryPlan::TokenizedTextV1(_) => None,
         }
     }
 
@@ -497,6 +519,7 @@ impl CompiledNamedQuery {
             | CompiledNamedQueryPlan::OperationalV1(_)
             | CompiledNamedQueryPlan::ExactPredicateV1(_)
             | CompiledNamedQueryPlan::NullableExactPredicateV1(_) => None,
+            CompiledNamedQueryPlan::TokenizedTextV1(_) => None,
         }
     }
 
@@ -510,6 +533,7 @@ impl CompiledNamedQuery {
             | CompiledNamedQueryPlan::OperationalV1(_)
             | CompiledNamedQueryPlan::ExactPredicateV1(_)
             | CompiledNamedQueryPlan::NullableExactPredicateV1(_) => None,
+            CompiledNamedQueryPlan::TokenizedTextV1(_) => None,
         }
     }
 
@@ -522,6 +546,7 @@ impl CompiledNamedQuery {
             | CompiledNamedQueryPlan::OperationalV1(_)
             | CompiledNamedQueryPlan::ExactTextResultV1(_)
             | CompiledNamedQueryPlan::NullableExactPredicateV1(_) => None,
+            CompiledNamedQueryPlan::TokenizedTextV1(_) => None,
         }
     }
 
@@ -535,6 +560,7 @@ impl CompiledNamedQuery {
             | CompiledNamedQueryPlan::OperationalV1(_)
             | CompiledNamedQueryPlan::ExactTextResultV1(_)
             | CompiledNamedQueryPlan::NullableExactPredicateV1(_) => None,
+            CompiledNamedQueryPlan::TokenizedTextV1(_) => None,
         }
     }
 
@@ -549,6 +575,7 @@ impl CompiledNamedQuery {
             | CompiledNamedQueryPlan::OperationalV1(_)
             | CompiledNamedQueryPlan::ExactTextResultV1(_)
             | CompiledNamedQueryPlan::ExactPredicateV1(_) => None,
+            CompiledNamedQueryPlan::TokenizedTextV1(_) => None,
         }
     }
 
@@ -564,6 +591,7 @@ impl CompiledNamedQuery {
             | CompiledNamedQueryPlan::OperationalV1(_)
             | CompiledNamedQueryPlan::ExactTextResultV1(_)
             | CompiledNamedQueryPlan::ExactPredicateV1(_) => None,
+            CompiledNamedQueryPlan::TokenizedTextV1(_) => None,
         }
     }
 
@@ -579,6 +607,34 @@ impl CompiledNamedQuery {
             CompiledNamedQueryPlan::ExactTextResultV1(_) => None,
             CompiledNamedQueryPlan::ExactPredicateV1(_) => None,
             CompiledNamedQueryPlan::NullableExactPredicateV1(_) => None,
+            CompiledNamedQueryPlan::TokenizedTextV1(_) => None,
+        }
+    }
+
+    /// Compiler-sealed tokenized-text operation, when present.
+    #[must_use]
+    pub fn tokenized_text_result(&self) -> Option<&CompiledTokenizedTextResultSetV1> {
+        match &self.plan {
+            CompiledNamedQueryPlan::TokenizedTextV1(tokenized) => Some(tokenized),
+            CompiledNamedQueryPlan::V1(_)
+            | CompiledNamedQueryPlan::OperationalV1(_)
+            | CompiledNamedQueryPlan::ExactTextResultV1(_)
+            | CompiledNamedQueryPlan::ExactPredicateV1(_)
+            | CompiledNamedQueryPlan::NullableExactPredicateV1(_) => None,
+        }
+    }
+
+    /// Shared immutable tokenized-text plan for derived-provider execution.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn shared_tokenized_text_result(&self) -> Option<Arc<CompiledTokenizedTextResultSetV1>> {
+        match &self.plan {
+            CompiledNamedQueryPlan::TokenizedTextV1(tokenized) => Some(Arc::clone(tokenized)),
+            CompiledNamedQueryPlan::V1(_)
+            | CompiledNamedQueryPlan::OperationalV1(_)
+            | CompiledNamedQueryPlan::ExactTextResultV1(_)
+            | CompiledNamedQueryPlan::ExactPredicateV1(_)
+            | CompiledNamedQueryPlan::NullableExactPredicateV1(_) => None,
         }
     }
 
@@ -828,7 +884,13 @@ impl QueryModule {
     /// Canonical module codec selected by its contained plan kinds.
     #[must_use]
     pub fn format_version(&self) -> u32 {
-        if self.queries.iter().any(|query| {
+        if self
+            .queries
+            .iter()
+            .any(|query| matches!(query.plan(), CompiledNamedQueryPlan::TokenizedTextV1(_)))
+        {
+            QUERY_MODULE_FORMAT_VERSION_TOKENIZED_TEXT_V1
+        } else if self.queries.iter().any(|query| {
             query
                 .plan()
                 .representative_program()
@@ -1032,7 +1094,35 @@ fn compile_document_plan(
     catalog: &SymbolicCatalog,
 ) -> Result<CompiledNamedQueryPlan, riffdb_query_compiler::PlannerDiagnostics> {
     let query_shape_version = riffdb_riffql_syntax::document_query_shape_language_version(document);
-    if query_shape_version == RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1 {
+    if query_shape_version == RIFFQL_LANGUAGE_VERSION_TOKENIZED_TEXT_V1 {
+        let compiled = compile_tokenized_text_query_v1(document, catalog)?;
+        let operation = document
+            .name
+            .as_ref()
+            .and_then(|name| QueryOperationName::new(name.value.as_str()).ok())
+            .ok_or_else(|| {
+                exact_text_artifact_invariant(
+                    document
+                        .name
+                        .as_ref()
+                        .map_or(riffdb_riffql_syntax::Span { start: 0, end: 0 }, |name| {
+                            name.span
+                        }),
+                )
+            })?;
+        CompiledTokenizedTextResultSetV1::new(operation, compiled)
+            .map(|tokenized| CompiledNamedQueryPlan::TokenizedTextV1(Arc::new(tokenized)))
+            .map_err(|_| {
+                exact_text_artifact_invariant(
+                    document
+                        .name
+                        .as_ref()
+                        .map_or(riffdb_riffql_syntax::Span { start: 0, end: 0 }, |name| {
+                            name.span
+                        }),
+                )
+            })
+    } else if query_shape_version == RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1 {
         let compiled = compile_nullable_exact_predicate_query_v1(document, catalog)?;
         let name = document
             .name
@@ -1171,6 +1261,7 @@ fn query_source_map(query: &CompiledNamedQuery) -> &QuerySourceMap {
         CompiledNamedQueryPlan::ExactTextResultV1(exact) => exact.source_map(),
         CompiledNamedQueryPlan::ExactPredicateV1(exact) => exact.source_map(),
         CompiledNamedQueryPlan::NullableExactPredicateV1(exact) => exact.source_map(),
+        CompiledNamedQueryPlan::TokenizedTextV1(tokenized) => tokenized.source_map(),
     }
 }
 
@@ -1282,6 +1373,37 @@ fn query_explain_lines(query: &CompiledNamedQuery) -> Vec<String> {
             "nullable_exact_predicate.measure=exact_count".to_owned(),
             "nullable_exact_predicate.provider=compiler_required".to_owned(),
         ],
+        CompiledNamedQueryPlan::TokenizedTextV1(tokenized) => vec![
+            format!(
+                "tokenized_text.index={}",
+                tokenized.tokenized_plan().index().get()
+            ),
+            format!(
+                "tokenized_text.analyzer={}",
+                tokenized.tokenized_plan().analyzer().as_str()
+            ),
+            format!(
+                "tokenized_text.match={:?}",
+                tokenized.tokenized_plan().kind()
+            ),
+            format!(
+                "tokenized_text.query_parameter=${}",
+                tokenized.query_parameter()
+            ),
+            format!(
+                "tokenized_text.max_terms={}",
+                tokenized.tokenized_plan().max_terms()
+            ),
+            format!(
+                "tokenized_text.max_candidates={}",
+                tokenized.tokenized_plan().max_candidates()
+            ),
+            format!(
+                "tokenized_text.max_results={}",
+                tokenized.tokenized_plan().max_results()
+            ),
+            "tokenized_text.provider=compiler_required".to_owned(),
+        ],
     };
     lines.extend(query.plan().secret_outputs().iter().map(|requirement| {
         format!(
@@ -1300,6 +1422,9 @@ fn encode_module(
     contract: &ContractBundle,
     queries: &[CompiledNamedQuery],
 ) -> Result<Vec<u8>, QueryModuleError> {
+    let tokenized_text = queries
+        .iter()
+        .any(|query| matches!(query.plan(), CompiledNamedQueryPlan::TokenizedTextV1(_)));
     let nullable_exact_order = queries.iter().any(|query| {
         matches!(
             query.plan(),
@@ -1350,7 +1475,9 @@ fn encode_module(
             .surface()
             .has_bounded_limit()
     });
-    let format_version = if bounded_limit {
+    let format_version = if tokenized_text {
+        QUERY_MODULE_FORMAT_VERSION_TOKENIZED_TEXT_V1
+    } else if bounded_limit {
         QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1
     } else if exact_aggregate {
         QUERY_MODULE_FORMAT_VERSION_EXACT_AGGREGATE_V1
@@ -1384,7 +1511,9 @@ fn encode_module(
     output.extend_from_slice(&contract.contract_version().get().to_be_bytes());
     output.extend_from_slice(contract.bundle_hash().as_bytes());
     output.extend_from_slice(
-        &if bounded_limit {
+        &if tokenized_text {
+            RIFFQL_LANGUAGE_VERSION_TOKENIZED_TEXT_V1
+        } else if bounded_limit {
             RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1
         } else if exact_aggregate {
             RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1
@@ -1406,7 +1535,9 @@ fn encode_module(
         .to_be_bytes(),
     );
     output.extend_from_slice(
-        &if bounded_limit {
+        &if tokenized_text {
+            QUERY_IR_VERSION_TOKENIZED_TEXT_V1
+        } else if bounded_limit {
             QUERY_IR_VERSION_BOUNDED_LIMIT_V1
         } else if exact_aggregate {
             QUERY_IR_VERSION_EXACT_AGGREGATE_V1
@@ -1439,7 +1570,8 @@ fn encode_module(
         write_text(&mut output, query.name())?;
         write_bytes(&mut output, query.canonical_source().as_bytes())?;
         output.extend_from_slice(query.source_hash().as_bytes());
-        if bounded_limit
+        if tokenized_text
+            || bounded_limit
             || nullable_exact_order
             || exact_predicate
             || projected_vector
@@ -1454,6 +1586,7 @@ fn encode_module(
                 CompiledNamedQueryPlan::ExactTextResultV1(_) => 3,
                 CompiledNamedQueryPlan::ExactPredicateV1(_) => 4,
                 CompiledNamedQueryPlan::NullableExactPredicateV1(_) => 5,
+                CompiledNamedQueryPlan::TokenizedTextV1(_) => 6,
             });
         }
         write_bytes(&mut output, query.plan().canonical_bytes())?;
@@ -1507,6 +1640,7 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
             | QUERY_MODULE_FORMAT_VERSION_NULLABLE_EXACT_ORDER_V1
             | QUERY_MODULE_FORMAT_VERSION_EXACT_AGGREGATE_V1
             | QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1
+            | QUERY_MODULE_FORMAT_VERSION_TOKENIZED_TEXT_V1
     ) {
         return Err(QueryModuleError::new(
             QueryModuleErrorKind::UnsupportedVersion,
@@ -1576,6 +1710,10 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
             language_version == RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1
                 && ir_version == QUERY_IR_VERSION_BOUNDED_LIMIT_V1
         }
+        QUERY_MODULE_FORMAT_VERSION_TOKENIZED_TEXT_V1 => {
+            language_version == RIFFQL_LANGUAGE_VERSION_TOKENIZED_TEXT_V1
+                && ir_version == QUERY_IR_VERSION_TOKENIZED_TEXT_V1
+        }
         _ => false,
     };
     if !versions_match {
@@ -1593,8 +1731,16 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
         let query_name = input.text(MAX_IDENTIFIER_BYTES)?;
         let source = input.text(MAX_SOURCE_BYTES)?;
         input.skip(32)?;
-        if format_version != QUERY_MODULE_FORMAT_VERSION_V1 && !matches!(input.u8()?, 1..=5) {
-            return Err(QueryModuleError::new(QueryModuleErrorKind::InvalidEncoding));
+        if format_version != QUERY_MODULE_FORMAT_VERSION_V1 {
+            let maximum_plan_tag =
+                if format_version == QUERY_MODULE_FORMAT_VERSION_TOKENIZED_TEXT_V1 {
+                    6
+                } else {
+                    5
+                };
+            if !matches!(input.u8()?, tag if (1..=maximum_plan_tag).contains(&tag)) {
+                return Err(QueryModuleError::new(QueryModuleErrorKind::InvalidEncoding));
+            }
         }
         input.bytes(riffdb_query_ir::MAX_QUERY_ARTIFACT_BYTES)?;
         input.skip(32)?;
@@ -1613,7 +1759,8 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
                 | QUERY_MODULE_FORMAT_VERSION_PROJECTED_VECTOR_V1
                 | QUERY_MODULE_FORMAT_VERSION_EXACT_PREDICATE_V1
                 | QUERY_MODULE_FORMAT_VERSION_NULLABLE_EXACT_ORDER_V1
-                | QUERY_MODULE_FORMAT_VERSION_EXACT_AGGREGATE_V1 => 10,
+                | QUERY_MODULE_FORMAT_VERSION_EXACT_AGGREGATE_V1
+                | QUERY_MODULE_FORMAT_VERSION_TOKENIZED_TEXT_V1 => 10,
                 QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1 => 10,
                 QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1 => 9,
                 _ => 7,

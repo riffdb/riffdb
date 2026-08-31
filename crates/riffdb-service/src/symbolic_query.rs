@@ -77,8 +77,8 @@ use crate::{
     NullableExactPredicateProjectionRequest, PortAdmissionError, PortDriverStopped,
     QueryCursorLookup, QueryCursorState, ReadPipelineStage, RequestContext, RiffDbService,
     RiffDbServiceInner, ServiceAuditTargetMap, ServiceFailure, ServiceFuture, ServiceResult,
-    ServiceTelemetryEvent, SourceName, SubmittedEnum, SubmittedValue, VectorProjectionPortError,
-    VectorProjectionRequest,
+    ServiceTelemetryEvent, SourceName, SubmittedEnum, SubmittedValue, TokenizedTextCursorState,
+    TokenizedTextProjectionRequest, VectorProjectionPortError, VectorProjectionRequest,
 };
 
 async fn resolve_admission_head_floor(
@@ -2880,6 +2880,22 @@ async fn execute_named_query(
         )
         .await;
     }
+    if let Some(tokenized) = query.shared_tokenized_text_result() {
+        return execute_tokenized_named_query(
+            service,
+            context,
+            bundle,
+            tokenized,
+            query.shared_document(),
+            module_hash,
+            query_name,
+            request.parameters,
+            request.cursor,
+            request.minimum_application_head,
+            request.consistency,
+        )
+        .await;
+    }
     let presence = query
         .operational_family()
         .map(|family| {
@@ -3912,6 +3928,390 @@ fn exact_scalar_value(value: &CanonicalValue) -> Option<ExactScalarV1> {
 }
 
 #[allow(clippy::too_many_arguments)]
+async fn execute_tokenized_named_query(
+    service: Arc<RiffDbServiceInner>,
+    context: RequestContext,
+    bundle: riffdb_catalog::ValidatedContractBundle,
+    tokenized: Arc<riffdb_query_module::CompiledTokenizedTextResultSetV1>,
+    document: Arc<Document>,
+    module_hash: QueryModuleHash,
+    query_name: QueryOperationName,
+    submitted: SymbolicQueryParameters,
+    cursor: Option<CursorToken>,
+    minimum_application_head: Option<u64>,
+    consistency: Option<QueryConsistencyV1>,
+) -> ServiceResult<ExecuteSymbolicQueryResult> {
+    const OPERATION: ServiceOperationV1 = ServiceOperationV1::ExecuteQuery;
+    let param_materialize_started = Instant::now();
+    let program = tokenized.representative_program();
+    let limit_name = document
+        .body
+        .bindings
+        .first()
+        .and_then(|binding| binding.take.as_ref())
+        .and_then(|take| match &take.limit.value {
+            riffdb_riffql_syntax::Expression::Parameter(name) => Some(name.value.as_str()),
+            _ => None,
+        })
+        .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let offset_name = document
+        .body
+        .bindings
+        .first()
+        .and_then(|binding| binding.take.as_ref())
+        .and_then(|take| take.offset.as_ref())
+        .and_then(|offset| match &offset.value {
+            riffdb_riffql_syntax::Expression::Parameter(name) => Some(name.value.as_str()),
+            _ => None,
+        })
+        .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let submitted =
+        exact_parameters_with_defaults(document.as_ref(), submitted, [limit_name, offset_name])
+            .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let parameters = materialize_query_parameters(
+        &service,
+        OPERATION,
+        bundle.bundle(),
+        document.as_ref(),
+        &submitted,
+    )?;
+    let target = application_query_target_with_identity(
+        bundle.bundle(),
+        program,
+        &parameters,
+        context.ingress(),
+        tokenized.identity(),
+        tokenized.authorization_cost(),
+        Some(NonZeroU16::MIN),
+    )
+    .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let partition_value = parameters
+        .get(program.partition_parameter())
+        .cloned()
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let query_text = match parameters.get(tokenized.query_parameter()) {
+        Some(CanonicalValue::String(value)) => value.as_str().to_owned(),
+        _ => return Err(validation_failure(ValidationCode::TypeMismatch)),
+    };
+    let mut limit = exact_u64_parameter(&document, &parameters, limit_name)
+        .and_then(|value| u16::try_from(value).ok())
+        .and_then(NonZeroU16::new)
+        .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let mut offset = exact_u64_parameter(&document, &parameters, offset_name)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let ranked =
+        tokenized.tokenized_plan().ranking() == riffdb_query_ir::TokenizedRankingV1::RiffBm25V1;
+    if !tokenized_cursor_request_allowed(ranked, cursor.is_some()) {
+        return Err(application_validation_failure(
+            ValidationCode::InvalidValue,
+            ApplicationErrorCode::CursorInvalid,
+        ));
+    }
+    let cursor_lookup = QueryCursorLookup::new(
+        CursorContractIdentity::new(
+            program.contract().lineage().clone(),
+            program.contract().version(),
+            program.contract().bundle_hash(),
+        ),
+        Some(module_hash),
+        tokenized.identity(),
+        query_cursor_parameter_hash(program, &parameters)
+            .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?,
+        context.principal().capability_id(),
+        context.principal().capability_revision(),
+    );
+    let prior = match cursor {
+        Some(token) => match service.cursors.resolve_tokenized_text(
+            token,
+            context.principal().principal_id(),
+            &cursor_lookup,
+        ) {
+            Ok(state) => Some(state),
+            Err(CursorAccessError::InvalidCursor) => {
+                return Err(application_validation_failure(
+                    ValidationCode::InvalidValue,
+                    ApplicationErrorCode::CursorInvalid,
+                ));
+            }
+            Err(CursorAccessError::Unavailable) => {
+                return Err(PublicError::storage_unavailable().into());
+            }
+        },
+        None => None,
+    };
+    if let Some(prior) = prior.as_deref() {
+        if prior.result_ceiling() != tokenized.tokenized_plan().max_results()
+            || minimum_application_head
+                .is_some_and(|floor| floor > prior.minimum_application_head())
+            || consistency.is_some_and(|value| value != QueryConsistencyV1::AdmissionHead)
+        {
+            return Err(application_validation_failure(
+                ValidationCode::InvalidValue,
+                ApplicationErrorCode::CursorInvalid,
+            ));
+        }
+        offset = prior.next_offset();
+        let remaining = tokenized
+            .tokenized_plan()
+            .max_results()
+            .checked_sub(offset)
+            .and_then(|remaining| u16::try_from(remaining).ok())
+            .and_then(NonZeroU16::new)
+            .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+        limit = NonZeroU16::new(limit.get().min(remaining.get()))
+            .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    }
+    let (minimum_application_head, consistency) = match prior.as_deref() {
+        Some(prior) => (Some(prior.minimum_application_head()), None),
+        None if ranked => (
+            minimum_application_head,
+            Some(QueryConsistencyV1::AdmissionHead),
+        ),
+        None => (minimum_application_head, consistency),
+    };
+    if u32::from(limit.get()) > tokenized.tokenized_plan().max_results()
+        || offset
+            .checked_add(u32::from(limit.get()))
+            .is_none_or(|end| end > tokenized.tokenized_plan().max_results())
+    {
+        return Err(validation_failure(ValidationCode::InvalidValue));
+    }
+    let operation_request = OperationRequest::execute_named_query(
+        bundle.lineage().clone(),
+        module_hash,
+        query_name,
+        target,
+    )
+    .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    record_read_stage(
+        &service,
+        ReadPipelineStage::ParamMaterialize,
+        param_materialize_started,
+    );
+    let authorize_begin_started = Instant::now();
+    let begun = begin_symbolic(&service, &context, &bundle, operation_request, OPERATION).await?;
+    record_read_stage(
+        &service,
+        ReadPipelineStage::AuthorizeBegin,
+        authorize_begin_started,
+    );
+    let authorize_pre_started = Instant::now();
+    let execution_authorization = begun
+        .reauthorize_read(&service, &context)
+        .await?
+        .into_application_query()
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let minimum_application_head = match resolve_admission_head_floor(
+        &service,
+        &context,
+        minimum_application_head,
+        consistency,
+    )
+    .await
+    {
+        Ok(floor) => floor,
+        Err(failure) => return Err(finish_failure(&service, &context, &begun, failure).await),
+    };
+    let minimum_epoch = minimum_application_head
+        .map(|value| {
+            CommitSequence::new(value)
+                .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))
+        })
+        .transpose()?;
+    let row_policy =
+        resolve_authorized_query_row_policy_context(&execution_authorization, bundle.bundle())
+            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?
+            .map(Arc::new);
+    let row_policy_identity =
+        match row_policy.as_deref() {
+            Some(policy) => Some(policy.internal_capability_identity().ok_or_else(|| {
+                service.internal_failure(OPERATION, InternalDefect::ProofMismatch)
+            })?),
+            None => None,
+        };
+    let Some(policy_shape) = execution_authorization.application_role_hash() else {
+        let failure = application_validation_failure(
+            ValidationCode::InvalidValue,
+            ApplicationErrorCode::QueryUnavailable,
+        );
+        return Err(finish_failure(&service, &context, &begun, failure).await);
+    };
+    let request = TokenizedTextProjectionRequest::new(
+        Arc::clone(&tokenized),
+        execution_authorization
+            .target()
+            .partition()
+            .partition_key()
+            .clone(),
+        partition_value,
+        policy_shape,
+        row_policy,
+        query_text,
+        offset,
+        limit,
+        minimum_epoch,
+        prior
+            .as_deref()
+            .map(|prior| (prior.epoch(), prior.generation())),
+    );
+    let Some(provider) = service.providers.tokenized_text.as_ref() else {
+        let failure = PublicError::storage_unavailable().into();
+        return Err(finish_failure(&service, &context, &begun, failure).await);
+    };
+    record_read_stage(
+        &service,
+        ReadPipelineStage::AuthorizePre,
+        authorize_pre_started,
+    );
+    let execute_started = Instant::now();
+    let observed = match execute_exact_provider_with_readiness(&service, &context, &begun, || {
+        provider.execute(request.clone())
+    })
+    .await?
+    {
+        Ok(observed) => observed,
+        Err(error) => {
+            let Some(code) = exact_projection_application_code(error) else {
+                let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+                return Err(finish_failure(&service, &context, &begun, failure).await);
+            };
+            let failure = application_validation_failure(ValidationCode::InvalidValue, code);
+            return Err(finish_failure(&service, &context, &begun, failure).await);
+        }
+    };
+    record_read_stage(&service, ReadPipelineStage::Execute, execute_started);
+    if observed.provider() != tokenized.tokenized_plan().descriptor().digest()
+        || minimum_epoch.is_some_and(|minimum| observed.epoch() < minimum)
+    {
+        let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+        return Err(finish_failure(&service, &context, &begun, failure).await);
+    }
+    let statistics_identity = observed
+        .statistics_identity()
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    if prior.as_deref().is_some_and(|prior| {
+        prior.epoch() != observed.epoch()
+            || prior.generation() != observed.generation()
+            || prior.history_incarnation() != observed.history_incarnation()
+            || prior.statistics_identity() != statistics_identity
+    }) {
+        let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+        return Err(finish_failure(&service, &context, &begun, failure).await);
+    }
+    let returned = u32::try_from(observed.rows().len())
+        .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let next_offset = offset
+        .checked_add(returned)
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let has_more = u64::from(next_offset) < observed.exact_total()
+        && next_offset < tokenized.tokenized_plan().max_results();
+    let cursor_guard = if ranked && has_more {
+        let floor = minimum_application_head
+            .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+        match service.cursors.register_tokenized_text_unpublished(
+            context.principal().principal_id(),
+            cursor_lookup,
+            TokenizedTextCursorState::new(
+                next_offset,
+                observed.epoch(),
+                observed.generation(),
+                floor,
+                observed.history_incarnation(),
+                statistics_identity,
+                tokenized.tokenized_plan().max_results(),
+            ),
+        ) {
+            Ok(guard) => {
+                if guard.capacity_evicted() {
+                    service
+                        .providers
+                        .telemetry
+                        .record(ServiceTelemetryEvent::CursorEvicted);
+                }
+                Some(guard)
+            }
+            Err(_) => {
+                let failure = PublicError::storage_unavailable().into();
+                return Err(finish_failure(&service, &context, &begun, failure).await);
+            }
+        }
+    } else {
+        None
+    };
+    let authorize_post_started = Instant::now();
+    let release_authorization = begun
+        .reauthorize_read(&service, &context)
+        .await?
+        .into_application_query()
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let release_row_policy =
+        resolve_authorized_query_row_policy_context(&release_authorization, bundle.bundle())
+            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let release_row_policy_identity =
+        match release_row_policy.as_ref() {
+            Some(policy) => Some(policy.internal_capability_identity().ok_or_else(|| {
+                service.internal_failure(OPERATION, InternalDefect::ProofMismatch)
+            })?),
+            None => None,
+        };
+    if release_authorization.application_role_hash() != Some(policy_shape)
+        || release_row_policy_identity != row_policy_identity
+    {
+        let failure = application_validation_failure(
+            ValidationCode::InvalidValue,
+            ApplicationErrorCode::QueryUnavailable,
+        );
+        return Err(finish_failure(&service, &context, &begun, failure).await);
+    }
+    record_read_stage(
+        &service,
+        ReadPipelineStage::AuthorizePost,
+        authorize_post_started,
+    );
+    let response_build_started = Instant::now();
+    let mut result = tokenized_result_response(
+        &tokenized,
+        &document,
+        module_hash,
+        observed,
+        Arc::clone(bundle.enum_variant_names()),
+    )
+    .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    record_read_stage(
+        &service,
+        ReadPipelineStage::ResponseBuild,
+        response_build_started,
+    );
+    let audit_finish_started = Instant::now();
+    finish_success(&service, &context, &begun).await?;
+    result.next_cursor = cursor_guard.map(crate::CursorPublicationGuard::publish);
+    record_read_stage(
+        &service,
+        ReadPipelineStage::AuditFinish,
+        audit_finish_started,
+    );
+    Ok(result)
+}
+
+const fn tokenized_cursor_request_allowed(ranked: bool, cursor_present: bool) -> bool {
+    !cursor_present || ranked
+}
+
+#[cfg(test)]
+mod tokenized_cursor_request_tests {
+    use super::tokenized_cursor_request_allowed;
+
+    #[test]
+    fn ranked_continuations_are_reachable_and_boolean_cursors_are_refused() {
+        assert!(tokenized_cursor_request_allowed(false, false));
+        assert!(tokenized_cursor_request_allowed(true, false));
+        assert!(tokenized_cursor_request_allowed(true, true));
+        assert!(!tokenized_cursor_request_allowed(false, true));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn execute_exact_named_query(
     service: Arc<RiffDbServiceInner>,
     context: RequestContext,
@@ -4195,6 +4595,10 @@ const fn exact_projection_application_code(
     error: ExactTextProjectionPortError,
 ) -> Option<ApplicationErrorCode> {
     match error {
+        ExactTextProjectionPortError::InputInvalid => Some(ApplicationErrorCode::InputInvalid),
+        ExactTextProjectionPortError::ResponseTooLarge => {
+            Some(ApplicationErrorCode::ResponseTooLarge)
+        }
         ExactTextProjectionPortError::SnapshotRetired => {
             Some(ApplicationErrorCode::SnapshotRetired)
         }
@@ -4250,6 +4654,68 @@ fn exact_parameters_with_defaults(
             .insert(name.to_owned(), SubmittedValue::U64(value.parse().ok()?));
     }
     Some(submitted)
+}
+
+fn tokenized_result_response(
+    tokenized: &riffdb_query_module::CompiledTokenizedTextResultSetV1,
+    document: &Document,
+    module_hash: QueryModuleHash,
+    observed: ExactTextProjectionResult,
+    enum_variant_names: SharedEnumVariantNames,
+) -> Option<ExecuteSymbolicQueryResult> {
+    let program = tokenized.representative_program();
+    let step = program.steps().first()?;
+    if program.steps().len() != 1 || step.result_names().len() != 1 {
+        return None;
+    }
+    let access = program.internal_entity_access(step.entity())?;
+    let field_names = step
+        .selected_fields()
+        .iter()
+        .map(|name| access.internal_field_id(name).map(|field| (field, name)))
+        .collect::<Option<BTreeMap<FieldId, &String>>>()?;
+    let (rows, _exact_total, epoch, _generation, _provider, _history_incarnation) =
+        observed.into_parts();
+    let rows = rows
+        .into_iter()
+        .map(|row| {
+            let (_key, output) = row.into_parts();
+            let fields = output
+                .into_fields()
+                .into_iter()
+                .map(|(field, value)| {
+                    field_names
+                        .get(&field)
+                        .map(|name| (Arc::<str>::from(name.as_str()), value))
+                })
+                .collect::<Option<BTreeMap<_, _>>>()?;
+            (fields.len() == field_names.len()).then_some(SymbolicResultRecord {
+                entity: Arc::from(step.entity()),
+                fields,
+                exact_decimals: BTreeMap::new(),
+                exact_means: BTreeMap::new(),
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let row_result_name = selection_result_name(
+        &document.body.selection,
+        &document.body.bindings.first()?.name.value,
+    )?;
+    let fields = BTreeMap::from([(row_result_name, SymbolicResultField::Many(rows))]);
+    Some(ExecuteSymbolicQueryResult {
+        identity: SymbolicQueryIdentity::from_named_plan(
+            program,
+            module_hash,
+            tokenized.identity(),
+        ),
+        outcome: document.body.outcome.as_ref()?.value.as_str().to_owned(),
+        application_head: epoch.get(),
+        fields,
+        compact_result: None,
+        packed_result: false,
+        enum_variant_names,
+        next_cursor: None,
+    })
 }
 
 fn exact_result_response(

@@ -10,7 +10,8 @@ use crate::{
     RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1, RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1,
     RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1, RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1,
     RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1, RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1,
-    Selection, Span, Spanned, Take, TypeReference, UnaryOperator,
+    RIFFQL_LANGUAGE_VERSION_TOKENIZED_TEXT_V1, Selection, Span, Spanned, Take,
+    TokenizedMatchClause, TokenizedMatchKind, TokenizedRanking, TypeReference, UnaryOperator,
 };
 
 /// Parses one UTF-8 RiffQL source document in a supported language version.
@@ -144,7 +145,13 @@ impl Parser {
             selection,
             outcomes,
         };
-        let language_version = if parameters
+        let language_version = if body
+            .bindings
+            .iter()
+            .any(|binding| binding.tokenized_match.is_some())
+        {
+            RIFFQL_LANGUAGE_VERSION_TOKENIZED_TEXT_V1
+        } else if parameters
             .iter()
             .any(|parameter| matches!(parameter.ty.value, TypeReference::BoundedLimit(_)))
         {
@@ -368,6 +375,78 @@ impl Parser {
         let entity = self.identifier()?;
         self.expect_word("where")?;
         let predicate = self.expression(0)?;
+        let tokenized_match = if let Some(start) = self.take_word("matching") {
+            self.expect(TokenKind::LeftParen)?;
+            let index = self.identifier()?;
+            self.expect(TokenKind::Comma)?;
+            let kind_start = self.current_start();
+            let kind = if self.take_word("conjunction").is_some() {
+                TokenizedMatchKind::Conjunction
+            } else if self.take_word("disjunction").is_some() {
+                TokenizedMatchKind::Disjunction
+            } else if self.take_word("phrase").is_some() {
+                TokenizedMatchKind::Phrase
+            } else if self.take_word("proximity").is_some() {
+                self.expect(TokenKind::Comma)?;
+                let distance = self.literal()?;
+                let distance_span = distance.span;
+                let Literal::Unsigned(distance) = distance.value else {
+                    return Err(ParseDiagnostics::one(ParseDiagnostic::new(
+                        DiagnosticCode::UnexpectedToken,
+                        distance_span,
+                        "tokenized proximity distance must be a positive integer literal",
+                        None,
+                    )));
+                };
+                let distance = distance
+                    .parse::<u16>()
+                    .ok()
+                    .filter(|distance| (1..=1_024).contains(distance))
+                    .ok_or_else(|| {
+                        ParseDiagnostics::one(ParseDiagnostic::new(
+                            DiagnosticCode::InvalidToken,
+                            distance_span,
+                            "tokenized proximity distance exceeds its compiler bound",
+                            Some("use a value from 1 through 1024"),
+                        ))
+                    })?;
+                TokenizedMatchKind::Proximity(distance)
+            } else {
+                return Err(self.error(
+                    DiagnosticCode::UnexpectedToken,
+                    "unknown tokenized match kind",
+                    Some("use conjunction, disjunction, phrase, or proximity"),
+                ));
+            };
+            let kind = Spanned {
+                value: kind,
+                span: self.span_from(kind_start),
+            };
+            self.expect(TokenKind::Comma)?;
+            let query = self.parameter_name()?;
+            let ranking = if self.take(TokenKind::Comma).is_some() {
+                if self.take_word("riff_bm25_v1").is_none() {
+                    return Err(self.error(
+                        DiagnosticCode::UnexpectedToken,
+                        "unknown tokenized ranking",
+                        Some("use riff_bm25_v1 or omit ranking for canonical key order"),
+                    ));
+                }
+                TokenizedRanking::RiffBm25V1
+            } else {
+                TokenizedRanking::Boolean
+            };
+            self.expect(TokenKind::RightParen)?;
+            Some(TokenizedMatchClause {
+                index,
+                kind,
+                query,
+                ranking,
+                span: self.span_from(start.start as usize),
+            })
+        } else {
+            None
+        };
         let mut order = Vec::new();
         if self.take_word("order").is_some() {
             self.expect_word("by")?;
@@ -498,6 +577,22 @@ impl Parser {
                 Some("change cardinality to many"),
             )));
         }
+        if tokenized_match.is_some() && cardinality.value != Cardinality::Many {
+            return Err(ParseDiagnostics::one(ParseDiagnostic::new(
+                DiagnosticCode::UnsupportedForm,
+                cardinality.span,
+                "tokenized matching is only valid on many bindings",
+                Some("change cardinality to many"),
+            )));
+        }
+        if tokenized_match.is_some() && nearest.is_some() {
+            return Err(ParseDiagnostics::one(ParseDiagnostic::new(
+                DiagnosticCode::UnsupportedForm,
+                cardinality.span,
+                "tokenized matching cannot be combined with nearest",
+                None,
+            )));
+        }
         if nearest.is_some() && !order.is_empty() {
             return Err(ParseDiagnostics::one(ParseDiagnostic::new(
                 DiagnosticCode::UnsupportedForm,
@@ -530,6 +625,7 @@ impl Parser {
             order,
             take,
             nearest,
+            tokenized_match,
             absence_outcome,
         })
     }
@@ -1268,7 +1364,13 @@ fn query_shape_language_version(
     body: &QueryBody,
     projected_source: Option<&ProjectedSource>,
 ) -> u32 {
-    if body_uses_exact_aggregate_core(body) {
+    if body
+        .bindings
+        .iter()
+        .any(|binding| binding.tokenized_match.is_some())
+    {
+        RIFFQL_LANGUAGE_VERSION_TOKENIZED_TEXT_V1
+    } else if body_uses_exact_aggregate_core(body) {
         RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1
     } else if projected_source.is_some() {
         RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1

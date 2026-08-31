@@ -68,6 +68,7 @@
 # RiffQL
 
 - [RiffQL Language](riffql/LANGUAGE.md)
+- [Tokenized Text Search](riffql/TOKENIZED-TEXT.md)
 - [Exact Predicate and Order Families](riffql/EXACT-PREDICATES.md)
 - [Planning and Bounds](riffql/PLANNING.md)
 - [Immutable Query Modules](riffql/MODULES.md)

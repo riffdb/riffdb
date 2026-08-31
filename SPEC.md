@@ -8957,6 +8957,14 @@ matching under `OQ-025` through `OQ-030` remains a separate provider.
 - `FTS-012`: Ranked tokenized search MUST use the provider-owned
   `riff_bm25_v1` integer scoring function only. Its score scale is 1,000,000,
   `k1` is 1,200/1,000, `b` is 750/1,000, every division rounds toward zero,
+  its inverse-document-frequency value is exactly
+  `floor(1,000,000 * (N - df + 1) / (df + 1))` for authorized document count
+  `N` and authorized document frequency `df`; for term frequency `tf`, document
+  field length `dl`, and total authorized field length `L`, its exact rational
+  normalization is `denominator = tf*1,000,000*L +
+  1,200*(250*L + 750*dl*N)` and `tf_scaled = floor(1,000,000 * tf * 2,200 *
+  1,000 * L / denominator)`, with each field contribution equal to
+  `floor(weight * idf_scaled * tf_scaled / 1,000,000)`,
   weighted term contributions accumulate in checked unsigned 128-bit
   intermediates and MUST fit `u64`, and equal scores break by canonical entity
   key ascending. Callers cannot submit scoring functions, boosts, weights,

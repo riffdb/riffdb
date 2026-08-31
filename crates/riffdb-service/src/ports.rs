@@ -1653,6 +1653,7 @@ pub struct ExactTextProjectionResult {
     generation: ProjectionGeneration,
     provider: ProjectionProviderDescriptorHash,
     history_incarnation: u64,
+    statistics_identity: Option<[u8; 32]>,
 }
 
 impl ExactTextProjectionResult {
@@ -1675,6 +1676,31 @@ impl ExactTextProjectionResult {
             generation,
             provider,
             history_incarnation,
+            statistics_identity: None,
+        }
+    }
+
+    /// Constructs a tokenized result with its authorized statistics identity.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn new_tokenized(
+        rows: Vec<ExactTextProjectionRow>,
+        exact_total: u64,
+        epoch: CommitSequence,
+        generation: ProjectionGeneration,
+        provider: ProjectionProviderDescriptorHash,
+        history_incarnation: u64,
+        statistics_identity: [u8; 32],
+    ) -> Self {
+        Self {
+            rows,
+            exact_total,
+            epoch,
+            generation,
+            provider,
+            history_incarnation,
+            statistics_identity: Some(statistics_identity),
         }
     }
     /// Bounded ordered output rows.
@@ -1707,6 +1733,11 @@ impl ExactTextProjectionResult {
     pub const fn history_incarnation(&self) -> u64 {
         self.history_incarnation
     }
+    /// Authorized corpus/statistics identity for ranked tokenized results.
+    #[must_use]
+    pub const fn statistics_identity(&self) -> Option<[u8; 32]> {
+        self.statistics_identity
+    }
 
     /// Consumes the checked result into response-assembly parts.
     #[doc(hidden)]
@@ -1735,6 +1766,10 @@ impl ExactTextProjectionResult {
 /// Closed value-free exact-provider lifecycle or integrity failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExactTextProjectionPortError {
+    /// Bounded submitted text is empty or exceeds its compiled term/input shape.
+    InputInvalid,
+    /// The complete candidate/result set exceeds a compiler-sealed public bound.
+    ResponseTooLarge,
     /// Registration or initial rebuild is in progress.
     Building,
     /// The provider is rebuilding a new generation.
@@ -1757,6 +1792,125 @@ pub trait ExactTextProjectionPort: Send + Sync {
     fn execute(
         &self,
         request: ExactTextProjectionRequest,
+    ) -> Result<ExactTextProjectionResult, ExactTextProjectionPortError>;
+}
+
+/// One compiler-owned tokenized request constructed only after current authorization.
+#[derive(Clone)]
+pub struct TokenizedTextProjectionRequest {
+    query: Arc<riffdb_query_module::CompiledTokenizedTextResultSetV1>,
+    partition_key: PartitionKey,
+    partition_value: CanonicalValue,
+    policy_shape: ApplicationRoleHash,
+    row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+    query_text: String,
+    offset: u32,
+    limit: std::num::NonZeroU16,
+    minimum_epoch: Option<CommitSequence>,
+    pinned_epoch: Option<CommitSequence>,
+    pinned_generation: Option<ProjectionGeneration>,
+}
+
+impl TokenizedTextProjectionRequest {
+    /// Seals service-materialized values to one immutable tokenized plan.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn new(
+        query: Arc<riffdb_query_module::CompiledTokenizedTextResultSetV1>,
+        partition_key: PartitionKey,
+        partition_value: CanonicalValue,
+        policy_shape: ApplicationRoleHash,
+        row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+        query_text: String,
+        offset: u32,
+        limit: std::num::NonZeroU16,
+        minimum_epoch: Option<CommitSequence>,
+        pinned_snapshot: Option<(CommitSequence, ProjectionGeneration)>,
+    ) -> Self {
+        Self {
+            query,
+            partition_key,
+            partition_value,
+            policy_shape,
+            row_policy,
+            query_text,
+            offset,
+            limit,
+            minimum_epoch,
+            pinned_epoch: pinned_snapshot.map(|snapshot| snapshot.0),
+            pinned_generation: pinned_snapshot.map(|snapshot| snapshot.1),
+        }
+    }
+
+    /// Immutable tokenized plan and provider descriptor.
+    #[must_use]
+    pub const fn query(&self) -> &Arc<riffdb_query_module::CompiledTokenizedTextResultSetV1> {
+        &self.query
+    }
+    /// Authorization-routed aggregate partition.
+    #[must_use]
+    pub const fn partition_key(&self) -> &PartitionKey {
+        &self.partition_key
+    }
+    /// Canonical partition value used to validate the compiler-owned index prefix.
+    #[must_use]
+    pub const fn partition_value(&self) -> &CanonicalValue {
+        &self.partition_value
+    }
+    /// Current compiled role/policy identity checked for this request.
+    #[must_use]
+    pub const fn policy_shape(&self) -> ApplicationRoleHash {
+        self.policy_shape
+    }
+    /// Current compiler-owned row-policy authority, when protected.
+    #[must_use]
+    pub const fn row_policy(&self) -> Option<&Arc<AuthorizedQueryRowPolicyContextV1>> {
+        self.row_policy.as_ref()
+    }
+    /// Bounded text analyzed only by the compiled provider.
+    #[must_use]
+    pub fn query_text(&self) -> &str {
+        &self.query_text
+    }
+    /// Checked zero-based ordinal.
+    #[must_use]
+    pub const fn offset(&self) -> u32 {
+        self.offset
+    }
+    /// Checked bounded page size.
+    #[must_use]
+    pub const fn limit(&self) -> std::num::NonZeroU16 {
+        self.limit
+    }
+    /// Optional causal lower frontier.
+    #[must_use]
+    pub const fn minimum_epoch(&self) -> Option<CommitSequence> {
+        self.minimum_epoch
+    }
+
+    /// Exact retained snapshot required by a continuation.
+    #[must_use]
+    pub const fn pinned_snapshot(&self) -> Option<(CommitSequence, ProjectionGeneration)> {
+        match (self.pinned_epoch, self.pinned_generation) {
+            (Some(epoch), Some(generation)) => Some((epoch, generation)),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Debug for TokenizedTextProjectionRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("TokenizedTextProjectionRequest([REDACTED])")
+    }
+}
+
+/// Least-authority tokenized derived-result execution boundary.
+pub trait TokenizedTextProjectionPort: Send + Sync {
+    /// Executes one compiler-owned request without authoritative scans or row fetches.
+    fn execute(
+        &self,
+        request: TokenizedTextProjectionRequest,
     ) -> Result<ExactTextProjectionResult, ExactTextProjectionPortError>;
 }
 

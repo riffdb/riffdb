@@ -3,8 +3,10 @@
 //! Closed-program execution over one engine-owned authoritative read view.
 
 mod exact_result_set;
+mod tokenized_text;
 
 pub use exact_result_set::*;
+pub use tokenized_text::*;
 
 #[cfg(test)]
 use std::cell::Cell;

@@ -2621,6 +2621,7 @@ work_packages:
     ADR-0108, ADR-0111, ADR-0124, ADR-0130, ADR-0131, ADR-0173]
   allowed_paths: [SPEC.md, work_packages.yaml, adr/0173-tokenized-text-search-provider.md,
     release/version-topology-v1.json, proto/**, crates/riffdb-types/**,
+    crates/riffdb-contract-compiler/**,
     crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**,
     crates/riffdb-query-module/**, crates/riffdb-query-executor/**, crates/riffdb-catalog/**,
     crates/riffdb-projection/**, crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
@@ -2660,6 +2661,25 @@ work_packages:
       analyzer, expression, distance, partition proof, provider, budgets, and output are compiled.
     scale: Query bytes, analyzed terms, disjunction arms, proximity, candidates, result rows, output,
       cursor, waits, retained epoch state, work, and diagnostics are independently bounded.
+  closure:
+    status: complete
+    completed_at: "2026-08-31"
+    requirements_satisfied: [FTS-008, FTS-009, FTS-010, FTS-011, FTS-015]
+    evidence: RiffQL V10, query IR V13, and query-module V13 seal one declared text index,
+      analyzer, partition proof, typed query input, exact conjunction/disjunction/phrase/proximity
+      shape, provider descriptor, output, and term/candidate/result ceilings. The executor uses only
+      maintained postings, produces canonical entity-key order, and refuses whole operations on
+      every bound violation. The production request path has architecture-negative coverage proving
+      it cannot scan or hydrate authoritative state; the background worker builds one policy-aligned
+      durable generation from a pinned export snapshot. Fresh pre/post authorization and one shared
+      service path feed generated gRPC, MCP, CLI, Rust, Go, TypeScript, and Python surfaces. Fixed,
+      randomized-history, deletion, compaction, checkpoint-recovery, corruption, policy, lifecycle,
+      topology, generated-artifact, handbook, downstream-adapter, four-language remote-conformance,
+      formatting, strict Clippy, documentation, dependency-policy, and full workspace gates pass.
+    known_limitations: Boolean pagination uses the compiled bounded numeric offset and does not
+      freeze a corpus across separate requests. V1 intentionally has no wildcard, regex, fuzzy,
+      stemming, highlighting, snippets, score output, caller tuning, hybrid search, or scan fallback.
+    follow_ups: []
 
 - id: WP-732
   name: Authorized-snapshot fixed-point tokenized ranking
@@ -2716,6 +2736,26 @@ work_packages:
     scale: Authorized-set materialization is provider-maintained and snapshot-bounded; terms,
       candidates, statistics, score arithmetic, result rows, pages, cursors, epochs, waits, output,
       and diagnostics remain within compiler-declared ceilings.
+  closure:
+    status: complete
+    completed_at: "2026-08-31"
+    requirements_satisfied: [FTS-012, FTS-013, FTS-014, FTS-015]
+    evidence: The provider-owned `riff_bm25_v1` freezes exact rational IDF and BM25 term-frequency
+      normalization with checked u128 intermediates, u64 final scores, contract field weights, and
+      canonical entity-key tie-breaking; scores and tuning controls never enter public schemas.
+      Statistics are derived only from the complete policy-aligned provider snapshot. A ranked first
+      page forces ADR-0164 admission-head consistency, while opaque continuations bind the causal
+      floor, provider epoch and generation, authorized statistics identity, history incarnation,
+      plan, invariant parameters, current capability identity/revision, order, and result ceiling.
+      Retained-epoch selection and cursor-family tests prove exact continuation identity and typed
+      retirement instead of rescoring. Reference score fixtures, stable ties, recovery, compaction,
+      policy-aligned construction, no-request-scan architecture evidence, shared-service transport
+      tests, four-language remote conformance, topology, generated artifacts, handbook, adapters,
+      formatting, strict Clippy, documentation, dependency policy, and full workspace tests pass.
+    known_limitations: The production POC retains eight provider epochs per registered ranked query
+      shape; sustained writes may therefore retire a ranked cursor snapshot before its token TTL.
+      Ranking is `riff_bm25_v1` only and exposes order rather than score.
+    follow_ups: []
 
 - id: WP-721
   closure:

@@ -130,6 +130,32 @@ silently reordering.
 The scoring function is frozen and not selectable, like `recall_target_bps`.
 The contract declares **per-field weights**, and nothing else.
 
+For `riff_bm25_v1`, the inverse-document-frequency term is deliberately an
+integer rational rather than a platform logarithm. With score scale `S =
+1_000_000`, authorized document count `N`, and authorized document frequency
+`df`, it is exactly:
+
+```text
+idf_scaled = floor(S * (N - df + 1) / (df + 1))
+```
+
+For term frequency `tf`, document field length `dl`, and the total authorized
+token length `L` for that field, V1 evaluates the BM25 normalization as one
+exact rational (so no intermediate average is rounded):
+
+```text
+denominator = tf*S*L + 1200*(250*L + 750*dl*N)
+tf_scaled = floor(S * tf * 2200 * 1000 * L / denominator)
+term_contribution = floor(weight * idf_scaled * tf_scaled / S)
+score = checked_sum(term_contribution)
+```
+
+`N` and `df` are taken from the same admission-head-fenced authorized corpus;
+`1 <= df <= N` for every scored posting. All multiplication uses checked
+unsigned 128-bit intermediates and every division rounds toward zero. This
+formula is part of the `riff_bm25_v1` identity and may change only under a new
+scoring-function version.
+
 Weights exist because without them a title match ranks identically to a body
 match, which is wrong for nearly every application that has both. They are
 compile-time and part of index identity, so relevance stays a property of the

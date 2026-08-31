@@ -1,6 +1,6 @@
 //! Background-owned exact text result-set provider for generated RiffQL.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -17,12 +17,14 @@ use riffdb_projection::{
     ExactPredicateProviderBindingV1, ExactPredicateProviderBindingV2, ExactPredicateProviderRowV1,
     ExactTextPartitionIndexV2, ExactTextPartitionIndexV3, MAX_EXACT_PREDICATE_CHECKPOINT_BYTES_V4,
     ProviderEpochObservationV1, ProviderLifecycleV1, ResultSetEpochContextV1,
-    ResultSetEpochRequirementV1, negotiate_result_set_epoch_v1,
+    ResultSetEpochRequirementV1, TokenizedTextConfigV1, TokenizedTextFieldV1,
+    TokenizedTextMutationV1, TokenizedTextPartitionIndexV1, negotiate_result_set_epoch_v1,
 };
 use riffdb_query_executor::{
     ExactTextResultSetV1, QueryExecutionError, QueryExecutionPort,
     execute_exact_predicate_result_set_v1, execute_exact_text_filtered_result_set_v1,
     execute_exact_text_result_set_v1, execute_nullable_exact_predicate_result_set_v1,
+    execute_tokenized_text_v1,
 };
 use riffdb_query_ir::{
     ExactComparisonProfileV1, ExactPredicateNodeV1, ExactReferenceCellV1, ExactScalarV1,
@@ -31,11 +33,12 @@ use riffdb_service::{
     ExactPredicateProjectionPort, ExactPredicateProjectionRequest, ExactPredicateProjectionResult,
     ExactTextProjectionPort, ExactTextProjectionPortError, ExactTextProjectionRequest,
     ExactTextProjectionResult, ExactTextProjectionRow, NullableExactPredicateProjectionRequest,
+    TokenizedTextProjectionPort, TokenizedTextProjectionRequest,
 };
 use riffdb_storage_api::{
-    AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest, AuthoritativePointReader,
-    AuthoritativeScanReader, EntityTarget, IndexRangePrefixBuilder, IndexRangeTarget,
-    StorageScanLimit,
+    ApplicationExportSnapshotPort, ApplicationExportSourceRecordV1, AuthoritativeIndexScanPage,
+    AuthoritativeIndexScanRequest, AuthoritativePointReader, AuthoritativeScanReader, EntityTarget,
+    IndexRangePrefixBuilder, IndexRangeTarget, StorageScanLimit,
 };
 use riffdb_types::{
     CanonicalRecord, CanonicalValue, CapabilityId, CommitSequence,
@@ -67,6 +70,14 @@ type ExactPredicateSourceRows = Vec<ExactPredicateProviderRowV1>;
 
 struct ExactTextRegistration {
     query: Arc<riffdb_query_module::CompiledExactTextResultSetV1>,
+    partition_key: PartitionKey,
+    partition_value: CanonicalValue,
+    policy_shape: riffdb_types::ApplicationRoleHash,
+    row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+}
+
+struct TokenizedTextRegistration {
+    query: Arc<riffdb_query_module::CompiledTokenizedTextResultSetV1>,
     partition_key: PartitionKey,
     partition_value: CanonicalValue,
     policy_shape: riffdb_types::ApplicationRoleHash,
@@ -270,6 +281,44 @@ impl ExactTextRegistration {
     }
 }
 
+impl TokenizedTextRegistration {
+    fn from_request(request: &TokenizedTextProjectionRequest) -> Self {
+        Self {
+            query: Arc::clone(request.query()),
+            partition_key: request.partition_key().clone(),
+            partition_value: request.partition_value().clone(),
+            policy_shape: request.policy_shape(),
+            row_policy: request.row_policy().cloned(),
+        }
+    }
+
+    fn key(&self) -> SlotKey {
+        slot_key(
+            self.query.identity(),
+            hash_partition_key(self.partition_key.as_bytes()),
+            self.policy_shape,
+            self.row_policy_identity(),
+        )
+    }
+
+    fn row_policy_identity(&self) -> Option<(CapabilityId, NonZeroU64)> {
+        self.row_policy
+            .as_deref()
+            .and_then(AuthorizedQueryRowPolicyContextV1::internal_capability_identity)
+    }
+
+    fn matches(&self, request: &TokenizedTextProjectionRequest) -> bool {
+        self.query.identity() == request.query().identity()
+            && self.partition_key == *request.partition_key()
+            && self.partition_value == *request.partition_value()
+            && self.policy_shape == request.policy_shape()
+            && self.row_policy_identity()
+                == request
+                    .row_policy()
+                    .and_then(|policy| policy.internal_capability_identity())
+    }
+}
+
 enum ExactTextSlotState {
     Building,
     Rebuilding(ProjectionGeneration),
@@ -322,6 +371,59 @@ struct ExactTextSlot {
     state: Mutex<ExactTextSlotState>,
 }
 
+enum TokenizedTextSlotState {
+    Building,
+    Rebuilding(TokenizedTextEpochs),
+    Ready(TokenizedTextEpochs),
+    Unavailable {
+        observed_head: CommitSequence,
+        prior_generation: ProjectionGeneration,
+    },
+    IntegrityFailure,
+}
+
+struct TokenizedTextEpochs {
+    providers: VecDeque<Box<TokenizedTextPartitionIndexV1>>,
+}
+
+impl TokenizedTextEpochs {
+    fn one(provider: TokenizedTextPartitionIndexV1) -> Self {
+        Self {
+            providers: VecDeque::from([Box::new(provider)]),
+        }
+    }
+
+    fn current(&self) -> Option<&TokenizedTextPartitionIndexV1> {
+        self.providers.back().map(Box::as_ref)
+    }
+
+    fn select(
+        &self,
+        pinned: Option<(CommitSequence, ProjectionGeneration)>,
+    ) -> Option<&TokenizedTextPartitionIndexV1> {
+        match pinned {
+            None => self.current(),
+            Some((epoch, generation)) => self.providers.iter().find_map(|provider| {
+                (provider.frontier() == Some(epoch) && provider.generation() == generation)
+                    .then_some(provider.as_ref())
+            }),
+        }
+    }
+
+    fn push(&mut self, provider: TokenizedTextPartitionIndexV1, retained: usize) {
+        self.providers.push_back(Box::new(provider));
+        while self.providers.len() > retained.max(1) {
+            self.providers.pop_front();
+        }
+    }
+}
+
+struct TokenizedTextSlot {
+    registration: TokenizedTextRegistration,
+    checkpoint: PathBuf,
+    state: Mutex<TokenizedTextSlotState>,
+}
+
 enum ExactPredicateSlotState {
     Building,
     Rebuilding(ProjectionGeneration),
@@ -366,6 +468,16 @@ impl ExactTextSlot {
     }
 }
 
+impl TokenizedTextSlot {
+    fn new(registration: TokenizedTextRegistration, checkpoint: PathBuf) -> Self {
+        Self {
+            registration,
+            checkpoint,
+            state: Mutex::new(TokenizedTextSlotState::Building),
+        }
+    }
+}
+
 impl ExactPredicateSlot {
     fn new(registration: ExactPredicateRegistration, checkpoint: PathBuf) -> Self {
         Self {
@@ -396,6 +508,8 @@ pub(crate) struct ExactTextRuntime {
     slots: Mutex<BTreeMap<SlotKey, Arc<ExactTextSlot>>>,
     predicate_slots: Mutex<BTreeMap<SlotKey, Arc<ExactPredicateSlot>>>,
     nullable_predicate_slots: Mutex<BTreeMap<SlotKey, Arc<NullableExactPredicateSlot>>>,
+    tokenized_root: PathBuf,
+    tokenized_slots: Mutex<BTreeMap<SlotKey, Arc<TokenizedTextSlot>>>,
 }
 
 impl ExactTextRuntime {
@@ -409,6 +523,8 @@ impl ExactTextRuntime {
         fs::create_dir_all(&root).map_err(|_| ExactTextRuntimeOpenError)?;
         let predicate_root = projections_root.join("exact-predicate-v4");
         fs::create_dir_all(&predicate_root).map_err(|_| ExactTextRuntimeOpenError)?;
+        let tokenized_root = projections_root.join("tokenized-text-v1");
+        fs::create_dir_all(&tokenized_root).map_err(|_| ExactTextRuntimeOpenError)?;
         Ok(Arc::new(Self {
             storage,
             root,
@@ -418,6 +534,8 @@ impl ExactTextRuntime {
             slots: Mutex::new(BTreeMap::new()),
             predicate_slots: Mutex::new(BTreeMap::new()),
             nullable_predicate_slots: Mutex::new(BTreeMap::new()),
+            tokenized_root,
+            tokenized_slots: Mutex::new(BTreeMap::new()),
         }))
     }
 
@@ -517,6 +635,40 @@ impl ExactTextRuntime {
         }
         let checkpoint = self.predicate_root.join(format!("{}.rxp5", hex(&key)));
         let slot = Arc::new(NullableExactPredicateSlot::new(registration, checkpoint));
+        slots.insert(key, Arc::clone(&slot));
+        Ok(slot)
+    }
+
+    fn registered_tokenized_slots(
+        &self,
+    ) -> Result<Vec<Arc<TokenizedTextSlot>>, ExactTextProjectionPortError> {
+        self.tokenized_slots
+            .lock()
+            .map(|slots| slots.values().cloned().collect())
+            .map_err(|_| ExactTextProjectionPortError::Integrity)
+    }
+
+    fn tokenized_slot_for(
+        &self,
+        request: &TokenizedTextProjectionRequest,
+    ) -> Result<Arc<TokenizedTextSlot>, ExactTextProjectionPortError> {
+        let registration = TokenizedTextRegistration::from_request(request);
+        let key = registration.key();
+        let mut slots = self
+            .tokenized_slots
+            .lock()
+            .map_err(|_| ExactTextProjectionPortError::Integrity)?;
+        if let Some(slot) = slots.get(&key) {
+            if !slot.registration.matches(request) {
+                return Err(ExactTextProjectionPortError::Integrity);
+            }
+            return Ok(Arc::clone(slot));
+        }
+        if slots.len() >= MAX_REGISTERED_EXACT_PARTITIONS {
+            return Err(ExactTextProjectionPortError::Unavailable);
+        }
+        let checkpoint = self.tokenized_root.join(format!("{}.rttx", hex(&key)));
+        let slot = Arc::new(TokenizedTextSlot::new(registration, checkpoint));
         slots.insert(key, Arc::clone(&slot));
         Ok(slot)
     }
@@ -655,6 +807,124 @@ impl ExactTextProjectionPort for ExactTextRuntime {
             result.generation(),
             result.provider(),
             result.history_incarnation(),
+        ))
+    }
+}
+
+impl TokenizedTextProjectionPort for ExactTextRuntime {
+    fn execute(
+        &self,
+        request: TokenizedTextProjectionRequest,
+    ) -> Result<ExactTextProjectionResult, ExactTextProjectionPortError> {
+        let plan = request.query().tokenized_plan();
+        let policy_binding_is_exact = match plan.descriptor().policy_mode() {
+            ProjectionProviderPolicyModeV1::PartitionAligned => request.row_policy().is_none(),
+            ProjectionProviderPolicyModeV1::BoundedRowAdmission => request.row_policy().is_some(),
+            ProjectionProviderPolicyModeV1::PolicySubpartition => false,
+        };
+        if !policy_binding_is_exact {
+            return Err(ExactTextProjectionPortError::Integrity);
+        }
+        let head = read_application_head(&self.storage)
+            .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
+        let FrontierPosition::AppliedThrough(head) = head else {
+            return Err(ExactTextProjectionPortError::Building);
+        };
+        let slot = self.tokenized_slot_for(&request)?;
+        let state = slot
+            .state
+            .lock()
+            .map_err(|_| ExactTextProjectionPortError::Integrity)?;
+        let provider = match &*state {
+            TokenizedTextSlotState::Building => {
+                return Err(ExactTextProjectionPortError::Building);
+            }
+            TokenizedTextSlotState::Rebuilding(epochs) => match request.pinned_snapshot() {
+                Some(pinned) => epochs
+                    .select(Some(pinned))
+                    .ok_or(ExactTextProjectionPortError::SnapshotRetired)?,
+                None => return Err(ExactTextProjectionPortError::Rebuilding),
+            },
+            TokenizedTextSlotState::Unavailable { .. } => {
+                return Err(ExactTextProjectionPortError::Unavailable);
+            }
+            TokenizedTextSlotState::IntegrityFailure => {
+                return Err(ExactTextProjectionPortError::Integrity);
+            }
+            TokenizedTextSlotState::Ready(epochs) => epochs
+                .select(request.pinned_snapshot())
+                .ok_or(ExactTextProjectionPortError::SnapshotRetired)?,
+        };
+        if request.pinned_snapshot().is_none() && provider.frontier() != Some(head) {
+            return Err(ExactTextProjectionPortError::FreshnessUnsatisfied);
+        }
+        let descriptor = plan.descriptor();
+        let provider_epoch = provider
+            .frontier()
+            .ok_or(ExactTextProjectionPortError::Integrity)?;
+        let participant = ProviderEpochObservationV1::new(
+            descriptor.digest(),
+            descriptor.state_identity().schema_hash(),
+            self.history_incarnation,
+            provider.generation(),
+            provider_epoch,
+            provider_epoch,
+            ProviderLifecycleV1::Ready,
+        )
+        .map_err(|_| ExactTextProjectionPortError::Integrity)?;
+        negotiate_result_set_epoch_v1(
+            ResultSetEpochContextV1::new(request.query().identity(), request.policy_shape()),
+            &[participant],
+            request.pinned_snapshot().map_or_else(
+                || {
+                    request.minimum_epoch().map_or(
+                        ResultSetEpochRequirementV1::Latest,
+                        ResultSetEpochRequirementV1::AtLeast,
+                    )
+                },
+                |(epoch, _)| ResultSetEpochRequirementV1::Exact(epoch),
+            ),
+        )
+        .map_err(map_epoch_error)?;
+        let page = execute_tokenized_text_v1(
+            plan,
+            provider,
+            provider.generation(),
+            provider_epoch,
+            request.query_text(),
+            request.offset(),
+            u32::from(request.limit().get()),
+        )
+        .map_err(|error| match error {
+            riffdb_query_executor::TokenizedTextExecutionErrorV1::EpochMismatch
+            | riffdb_query_executor::TokenizedTextExecutionErrorV1::PlanMismatch
+            | riffdb_query_executor::TokenizedTextExecutionErrorV1::ProviderCorrupt => {
+                ExactTextProjectionPortError::Integrity
+            }
+            riffdb_query_executor::TokenizedTextExecutionErrorV1::InputLimit
+            | riffdb_query_executor::TokenizedTextExecutionErrorV1::EmptyQuery
+            | riffdb_query_executor::TokenizedTextExecutionErrorV1::TermLimit => {
+                ExactTextProjectionPortError::InputInvalid
+            }
+            riffdb_query_executor::TokenizedTextExecutionErrorV1::CandidateLimit
+            | riffdb_query_executor::TokenizedTextExecutionErrorV1::ResultLimit
+            | riffdb_query_executor::TokenizedTextExecutionErrorV1::ScoreOverflow => {
+                ExactTextProjectionPortError::ResponseTooLarge
+            }
+        })?;
+        let rows = page
+            .rows()
+            .iter()
+            .map(|row| ExactTextProjectionRow::new(row.key().clone(), row.output().clone()))
+            .collect();
+        Ok(ExactTextProjectionResult::new_tokenized(
+            rows,
+            u64::from(page.exact_total()),
+            page.epoch(),
+            page.generation(),
+            descriptor.digest(),
+            self.history_incarnation,
+            page.statistics_identity(),
         ))
     }
 }
@@ -991,6 +1261,103 @@ fn refresh_registered_slots(runtime: &ExactTextRuntime) -> Result<(), ()> {
     }
     refresh_registered_predicate_slots(runtime)?;
     refresh_registered_nullable_predicate_slots(runtime)?;
+    refresh_registered_tokenized_slots(runtime)?;
+    Ok(())
+}
+
+fn refresh_registered_tokenized_slots(runtime: &ExactTextRuntime) -> Result<(), ()> {
+    let slots = runtime.registered_tokenized_slots().map_err(|_| ())?;
+    for slot in slots {
+        let head = read_application_head(&runtime.storage).map_err(|_| ())?;
+        let FrontierPosition::AppliedThrough(head) = head else {
+            continue;
+        };
+        let prior_generation = {
+            let mut state = slot.state.lock().map_err(|_| ())?;
+            match &*state {
+                TokenizedTextSlotState::Ready(epochs)
+                    if epochs
+                        .current()
+                        .and_then(TokenizedTextPartitionIndexV1::frontier)
+                        == Some(head) =>
+                {
+                    continue;
+                }
+                TokenizedTextSlotState::Ready(_) => {
+                    let previous =
+                        std::mem::replace(&mut *state, TokenizedTextSlotState::IntegrityFailure);
+                    let TokenizedTextSlotState::Ready(epochs) = previous else {
+                        return Err(());
+                    };
+                    let generation = epochs
+                        .current()
+                        .map(TokenizedTextPartitionIndexV1::generation)
+                        .ok_or(())?;
+                    *state = TokenizedTextSlotState::Rebuilding(epochs);
+                    Some(generation)
+                }
+                TokenizedTextSlotState::Rebuilding(epochs) => Some(
+                    epochs
+                        .current()
+                        .map(TokenizedTextPartitionIndexV1::generation)
+                        .ok_or(())?,
+                ),
+                TokenizedTextSlotState::Building => None,
+                TokenizedTextSlotState::Unavailable {
+                    observed_head,
+                    prior_generation,
+                } => {
+                    if *observed_head == head {
+                        continue;
+                    }
+                    let generation = *prior_generation;
+                    *state = TokenizedTextSlotState::Building;
+                    Some(generation)
+                }
+                TokenizedTextSlotState::IntegrityFailure => continue,
+            }
+        };
+        match rebuild_tokenized_slot(runtime, &slot, head, prior_generation) {
+            Ok(Some(provider)) => {
+                let mut state = slot.state.lock().map_err(|_| ())?;
+                let retained = usize::try_from(
+                    slot.registration
+                        .query
+                        .tokenized_plan()
+                        .descriptor()
+                        .static_bounds()
+                        .retained_epochs,
+                )
+                .map_err(|_| ())?;
+                let previous =
+                    std::mem::replace(&mut *state, TokenizedTextSlotState::IntegrityFailure);
+                let mut epochs = match previous {
+                    TokenizedTextSlotState::Rebuilding(epochs) => epochs,
+                    TokenizedTextSlotState::Building => TokenizedTextEpochs::one(provider.clone()),
+                    _ => return Err(()),
+                };
+                if epochs
+                    .current()
+                    .is_none_or(|current| current.frontier() != provider.frontier())
+                {
+                    epochs.push(provider, retained);
+                }
+                *state = TokenizedTextSlotState::Ready(epochs);
+            }
+            Ok(None) | Err(RebuildFailure::Transient) => {}
+            Err(RebuildFailure::Capacity(prior_generation)) => {
+                let mut state = slot.state.lock().map_err(|_| ())?;
+                *state = TokenizedTextSlotState::Unavailable {
+                    observed_head: head,
+                    prior_generation,
+                };
+            }
+            Err(RebuildFailure::Integrity) => {
+                let mut state = slot.state.lock().map_err(|_| ())?;
+                *state = TokenizedTextSlotState::IntegrityFailure;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1249,6 +1616,215 @@ fn rebuild_predicate_slot(
     )
     .map_err(|_| RebuildFailure::Transient)?;
     Ok(Some(provider))
+}
+
+fn rebuild_tokenized_slot(
+    runtime: &ExactTextRuntime,
+    slot: &TokenizedTextSlot,
+    head: CommitSequence,
+    prior_generation: Option<ProjectionGeneration>,
+) -> Result<Option<TokenizedTextPartitionIndexV1>, RebuildFailure> {
+    if prior_generation.is_none()
+        && let Some(bytes) = read_checkpoint(&slot.checkpoint)?
+        && let Ok(provider_bytes) = decode_activation_checkpoint(
+            &bytes,
+            &slot.registration.key(),
+            runtime.history_incarnation,
+        )
+        && let Ok(recovered) = TokenizedTextPartitionIndexV1::from_checkpoint_bytes(provider_bytes)
+        && recovered.config().index_identity()
+            == slot.registration.query.tokenized_plan().index_identity()
+        && recovered.partition() == hash_partition_key(slot.registration.partition_key.as_bytes())
+    {
+        if recovered.frontier() == Some(head) {
+            return Ok(Some(recovered));
+        }
+        return rebuild_tokenized_slot(runtime, slot, head, Some(recovered.generation()));
+    }
+    let generation = prior_generation
+        .map_or(
+            Some(runtime.initial_generation),
+            ProjectionGeneration::checked_next,
+        )
+        .ok_or(RebuildFailure::Integrity)?;
+    let plan = slot.registration.query.tokenized_plan();
+    let config = TokenizedTextConfigV1::new(
+        plan.index_identity(),
+        plan.analyzer(),
+        plan.fields()
+            .iter()
+            .map(|field| TokenizedTextFieldV1::new(field.field(), field.weight()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| RebuildFailure::Integrity)?,
+    )
+    .map_err(|_| RebuildFailure::Integrity)?;
+    let rows = read_complete_tokenized_partition(runtime, &slot.registration, head, generation)?;
+    let provider = TokenizedTextPartitionIndexV1::rebuild(
+        config,
+        hash_partition_key(slot.registration.partition_key.as_bytes()),
+        generation,
+        head,
+        &rows,
+    )
+    .map_err(|error| match error {
+        riffdb_projection::TokenizedTextErrorV1::PartitionLimit
+        | riffdb_projection::TokenizedTextErrorV1::DocumentLimit
+        | riffdb_projection::TokenizedTextErrorV1::OutputLimit
+        | riffdb_projection::TokenizedTextErrorV1::CheckpointLimit => {
+            RebuildFailure::Capacity(generation)
+        }
+        _ => RebuildFailure::Integrity,
+    })?;
+    persist_tokenized_checkpoint(
+        &slot.checkpoint,
+        &slot.registration.key(),
+        runtime.history_incarnation,
+        &provider,
+    )
+    .map_err(|_| RebuildFailure::Transient)?;
+    Ok(Some(provider))
+}
+
+fn read_complete_tokenized_partition(
+    runtime: &ExactTextRuntime,
+    registration: &TokenizedTextRegistration,
+    expected_head: CommitSequence,
+    generation: ProjectionGeneration,
+) -> Result<Vec<TokenizedTextMutationV1>, RebuildFailure> {
+    let program = registration.query.representative_program();
+    let step = program.steps().first().ok_or(RebuildFailure::Integrity)?;
+    if program.steps().len() != 1 {
+        return Err(RebuildFailure::Integrity);
+    }
+    let access = program
+        .internal_entity_access(step.entity())
+        .ok_or(RebuildFailure::Integrity)?;
+    let partition_field_name = step
+        .predicates()
+        .iter()
+        .find(|predicate| {
+            predicate.operator() == riffdb_query_ir::QueryPredicateOperator::Equal
+                && matches!(
+                    predicate.value(),
+                    riffdb_query_ir::QueryPredicateValue::Parameter(name)
+                        if name == program.partition_parameter()
+                )
+        })
+        .map(riffdb_query_ir::QueryPredicate::field)
+        .ok_or(RebuildFailure::Integrity)?;
+    let partition_field = access
+        .internal_field_id(partition_field_name)
+        .ok_or(RebuildFailure::Integrity)?;
+    let output_fields = step
+        .selected_fields()
+        .iter()
+        .map(|name| {
+            access
+                .internal_field_id(name)
+                .ok_or(RebuildFailure::Integrity)
+        })
+        .collect::<Result<BTreeSet<FieldId>, _>>()?;
+    let text_fields = registration
+        .query
+        .tokenized_plan()
+        .fields()
+        .iter()
+        .map(|field| field.field())
+        .collect::<BTreeSet<_>>();
+    let snapshot = ApplicationExportSnapshotPort::capture_application_export_snapshot(
+        &runtime.storage,
+        program.contract().lineage(),
+    )
+    .map_err(|_| RebuildFailure::Transient)?;
+    if snapshot.binding().application_frontier() != Some(expected_head)
+        || snapshot.binding().contract_bundle_hash() != program.contract().bundle_hash()
+    {
+        return Err(RebuildFailure::Transient);
+    }
+    let limit = StorageScanLimit::new(REBUILD_PAGE_ROWS).ok_or(RebuildFailure::Integrity)?;
+    let mut after = None::<Vec<u8>>;
+    let mut candidates = BTreeSet::new();
+    let mut rows =
+        BTreeMap::<riffdb_types::EntityKey, (Vec<(FieldId, String)>, CanonicalRecord)>::new();
+    loop {
+        let page = snapshot
+            .read_application_export_entity_page(step.internal_entity_id(), after.as_deref(), limit)
+            .map_err(|_| RebuildFailure::Transient)?;
+        for source in page.records() {
+            let ApplicationExportSourceRecordV1::Entity(record) = source else {
+                return Err(RebuildFailure::Integrity);
+            };
+            let values = record.fields().fields();
+            if values
+                .iter()
+                .find(|(field, _)| *field == partition_field)
+                .map(|(_, value)| value)
+                != Some(&registration.partition_value)
+            {
+                continue;
+            }
+            let key = record.target().key().clone();
+            if !candidates.insert(key.clone()) {
+                return Err(RebuildFailure::Integrity);
+            }
+            if candidates.len() > MAX_PROJECTED_POLICY_CANDIDATES_V1 {
+                return Err(RebuildFailure::Capacity(generation));
+            }
+            let fields = values
+                .iter()
+                .filter(|(field, _)| text_fields.contains(field))
+                .filter_map(|(field, value)| match value {
+                    CanonicalValue::String(value) => Some(Ok((*field, value.as_str().to_owned()))),
+                    CanonicalValue::Null => None,
+                    _ => Some(Err(RebuildFailure::Integrity)),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let output = CanonicalRecord::new(
+                values
+                    .iter()
+                    .filter(|(field, _)| output_fields.contains(field))
+                    .cloned()
+                    .collect(),
+            )
+            .map_err(|_| RebuildFailure::Integrity)?;
+            if output.len() != output_fields.len() || rows.insert(key, (fields, output)).is_some() {
+                return Err(RebuildFailure::Integrity);
+            }
+        }
+        if page.exact_end() {
+            break;
+        }
+        after = Some(
+            page.continuation()
+                .ok_or(RebuildFailure::Integrity)?
+                .to_vec(),
+        );
+    }
+    if let Some(policy) = registration.row_policy.as_deref() {
+        let ordered_candidates = candidates.iter().cloned().collect::<Vec<_>>();
+        let admission = QueryExecutionPort::authorize_projected_candidates(
+            &runtime.storage,
+            step.internal_entity_id(),
+            &ordered_candidates,
+            policy,
+        )
+        .map_err(|error| map_policy_admission_error(error, generation))?;
+        if !admission.covers(step.internal_entity_id(), &candidates) {
+            return Err(RebuildFailure::Integrity);
+        }
+        rows.retain(|key, _| admission.admits(key));
+    }
+    rows.into_iter()
+        .map(|(key, (fields, output))| {
+            TokenizedTextMutationV1::upsert(key, fields, output).map_err(|error| match error {
+                riffdb_projection::TokenizedTextErrorV1::DocumentLimit
+                | riffdb_projection::TokenizedTextErrorV1::OutputLimit => {
+                    RebuildFailure::Capacity(generation)
+                }
+                _ => RebuildFailure::Integrity,
+            })
+        })
+        .collect()
 }
 
 fn rebuild_nullable_predicate_slot(
@@ -1843,6 +2419,18 @@ fn persist_predicate_checkpoint_bytes(
     .sync_all()
 }
 
+fn persist_tokenized_checkpoint(
+    path: &Path,
+    slot_key: &[u8],
+    history_incarnation: u64,
+    provider: &TokenizedTextPartitionIndexV1,
+) -> Result<(), std::io::Error> {
+    let provider_bytes = provider
+        .to_checkpoint_bytes()
+        .map_err(|_| std::io::Error::other("tokenized checkpoint integrity"))?;
+    persist_predicate_checkpoint_bytes(path, slot_key, history_incarnation, &provider_bytes)
+}
+
 fn read_checkpoint(path: &Path) -> Result<Option<Vec<u8>>, RebuildFailure> {
     let mut file = match File::open(path) {
         Ok(file) => file,
@@ -2092,6 +2680,33 @@ mod tests {
         assert!(execute.contains("execute_nullable_exact_predicate_result_set_v1"));
         assert!(execute.contains("policy_binding_is_exact"));
         assert!(execute.contains("request.row_policy().is_some()"));
+    }
+
+    #[test]
+    fn tokenized_execute_path_uses_only_retained_posting_epochs() {
+        let execute = production_source()
+            .split_once("impl TokenizedTextProjectionPort for ExactTextRuntime")
+            .expect("tokenized port implementation")
+            .1
+            .split_once("impl ExactPredicateProjectionPort for ExactTextRuntime")
+            .expect("tokenized execute boundary")
+            .0;
+        for forbidden in [
+            "capture_application_export_snapshot",
+            "read_application_export_entity_page",
+            "scan_index",
+            "read_entity",
+            "read_complete_tokenized_partition",
+        ] {
+            assert!(
+                !execute.contains(forbidden),
+                "tokenized request execution must not contain {forbidden}"
+            );
+        }
+        assert!(execute.contains("execute_tokenized_text_v1"));
+        assert!(execute.contains("request.pinned_snapshot()"));
+        assert!(execute.contains("SnapshotRetired"));
+        assert!(execute.contains("policy_binding_is_exact"));
     }
 
     #[test]

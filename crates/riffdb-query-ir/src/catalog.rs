@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 
 use riffdb_contract_ir::{
-    ContractBundle, ExpressionKind, IndexFieldEncodingV1, KeySchema, RowPolicyOperationV1,
-    ValueType,
+    ContractBundle, ExpressionKind, IndexFieldEncodingV1, KeySchema, LineageEntryState,
+    RowPolicyOperationV1, StableIdNamespaceTag, ValueType,
 };
-use riffdb_types::{EntityTypeId, EnumTypeId, EnumVariantId, FieldId, IndexId};
+use riffdb_types::{EntityTypeId, EnumTypeId, EnumVariantId, FieldId, HashDomain, IndexId, hash};
 
 use crate::{
     QueryDiagnostic, QueryDiagnosticCode, QueryDiagnosticStage, QueryDiagnostics,
@@ -159,6 +159,7 @@ pub struct EntitySymbol {
     name: String,
     fields: BTreeMap<String, FieldSymbol>,
     indexes: BTreeMap<String, IndexSymbol>,
+    text_indexes: BTreeMap<String, TextIndexSymbol>,
     relationships: BTreeMap<String, RelationshipSymbol>,
     primary_key: Vec<String>,
     partition_field: String,
@@ -195,6 +196,18 @@ impl EntitySymbol {
     #[must_use]
     pub fn indexes(&self) -> impl ExactSizeIterator<Item = &IndexSymbol> {
         self.indexes.values()
+    }
+
+    /// Resolves one compiler-owned tokenized text index by source name.
+    #[must_use]
+    pub fn text_index(&self, name: &str) -> Option<&TextIndexSymbol> {
+        self.text_indexes.get(name)
+    }
+
+    /// Tokenized text indexes in exact source-name order.
+    #[must_use]
+    pub fn text_indexes(&self) -> impl ExactSizeIterator<Item = &TextIndexSymbol> {
+        self.text_indexes.values()
     }
 
     /// Resolves an exact required relationship name.
@@ -240,6 +253,70 @@ impl EntitySymbol {
     #[must_use]
     pub const fn internal_id(&self) -> EntityTypeId {
         self.id
+    }
+}
+
+/// Safe compiler-visible tokenized text-index declaration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TextIndexSymbol {
+    id: riffdb_types::IndexId,
+    identity: [u8; 32],
+    name: String,
+    analyzer: riffdb_types::TextAnalyzerV1,
+    source_fields: Vec<(riffdb_types::FieldId, u16)>,
+    max_terms: u32,
+    max_candidates: u32,
+    max_results: u32,
+}
+
+impl TextIndexSymbol {
+    /// Exact contract source name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Stable contract identity.
+    #[must_use]
+    pub const fn id(&self) -> riffdb_types::IndexId {
+        self.id
+    }
+
+    /// Contract-derived immutable index identity.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn identity(&self) -> [u8; 32] {
+        self.identity
+    }
+
+    /// Frozen analyzer.
+    #[must_use]
+    pub const fn analyzer(&self) -> riffdb_types::TextAnalyzerV1 {
+        self.analyzer
+    }
+
+    /// Canonically ordered weighted source fields.
+    #[must_use]
+    pub fn source_fields(&self) -> &[(riffdb_types::FieldId, u16)] {
+        &self.source_fields
+    }
+
+    /// Maximum analyzed query terms.
+    #[must_use]
+    pub const fn max_terms(&self) -> u32 {
+        self.max_terms
+    }
+
+    /// Maximum candidate documents.
+    #[must_use]
+    pub const fn max_candidates(&self) -> u32 {
+        self.max_candidates
+    }
+
+    /// Maximum returned documents.
+    #[must_use]
+    pub const fn max_results(&self) -> u32 {
+        self.max_results
     }
 }
 
@@ -436,6 +513,53 @@ impl SymbolicCatalog {
                     return Err(invariant("duplicate exact-contract index"));
                 }
             }
+            let mut text_indexes = BTreeMap::new();
+            for spec in bundle
+                .schema()
+                .text_index_specs()
+                .iter()
+                .filter(|spec| spec.entity() == entity.id())
+            {
+                let name = bundle
+                    .ledger()
+                    .allocations()
+                    .iter()
+                    .flat_map(|allocation| allocation.entries())
+                    .find(|entry| {
+                        entry.identity().namespace().tag() == StableIdNamespaceTag::Index
+                            && entry.identity().namespace().owner_ids() == [entity.id().get()]
+                            && {
+                                entry.id() == spec.index().get()
+                                    && entry.state() == LineageEntryState::Active
+                            }
+                    })
+                    .map(|entry| entry.name().to_owned())
+                    .ok_or_else(|| invariant("text index has no active lineage name"))?;
+                let symbol = TextIndexSymbol {
+                    id: spec.index(),
+                    identity: {
+                        let mut preimage = Vec::with_capacity(44);
+                        preimage.extend_from_slice(b"RIFFDB-TEXT-INDEX-V1\0");
+                        preimage.extend_from_slice(bundle.bundle_hash().as_bytes());
+                        preimage.extend_from_slice(&entity.id().to_be_bytes());
+                        preimage.extend_from_slice(&spec.index().to_be_bytes());
+                        *hash(HashDomain::ProjectionPlan, &preimage).as_bytes()
+                    },
+                    name: name.clone(),
+                    analyzer: spec.analyzer(),
+                    source_fields: spec
+                        .source_fields()
+                        .iter()
+                        .map(|source| (source.field(), source.weight()))
+                        .collect(),
+                    max_terms: spec.max_terms(),
+                    max_candidates: spec.max_candidates(),
+                    max_results: spec.max_results(),
+                };
+                if text_indexes.insert(name, symbol).is_some() {
+                    return Err(invariant("duplicate tokenized text index"));
+                }
+            }
             let mut relationships = BTreeMap::new();
             for relationship in bundle
                 .schema()
@@ -482,6 +606,7 @@ impl SymbolicCatalog {
                 name: entity.name().to_owned(),
                 fields,
                 indexes,
+                text_indexes,
                 relationships,
                 primary_key: key_ids
                     .iter()
@@ -618,6 +743,38 @@ impl SymbolicCatalog {
     #[must_use]
     pub const fn identity(&self) -> &ExactContractIdentity {
         &self.identity
+    }
+
+    /// Creates a compiler-private catalog view in which one tokenized index
+    /// supplies only the partition-plus-primary-key metadata access witness.
+    ///
+    /// The synthetic ordinary entry is never returned by `from_bundle` and is
+    /// never an executable fallback. It lets a provider-owned named operation
+    /// reuse the shared schema, authorization, partition, output, and cost
+    /// lowering without making tokenized indexes available to ordinary RiffQL.
+    #[doc(hidden)]
+    pub fn with_tokenized_metadata_index(
+        &self,
+        entity_name: &str,
+        index_name: &str,
+    ) -> Option<Self> {
+        let mut catalog = self.clone();
+        let entity = catalog.entities.get_mut(entity_name)?;
+        let text = entity.text_indexes.get(index_name)?;
+        if entity.indexes.contains_key(index_name) {
+            return None;
+        }
+        let fields = entity.primary_key.clone();
+        let symbol = IndexSymbol {
+            id: text.id,
+            name: text.name.clone(),
+            encodings: vec![IndexFieldEncodingV1::Canonical; fields.len()],
+            fields,
+            cover_fields: Vec::new(),
+            key_schema: entity.primary_key_schema.clone(),
+        };
+        entity.indexes.insert(index_name.to_owned(), symbol);
+        Some(catalog)
     }
 
     /// Resolves an exact entity source name.

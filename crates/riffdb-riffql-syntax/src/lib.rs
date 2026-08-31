@@ -20,7 +20,8 @@ pub use syntax::{
     RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1, RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1,
     RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1, RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1,
     RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1, RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1,
-    Selection, Span, Spanned, Take, TypeReference, UnaryOperator,
+    RIFFQL_LANGUAGE_VERSION_TOKENIZED_TEXT_V1, Selection, Span, Spanned, Take,
+    TokenizedMatchClause, TokenizedMatchKind, TokenizedRanking, TypeReference, UnaryOperator,
 };
 
 /// Maximum accepted UTF-8 query source bytes.

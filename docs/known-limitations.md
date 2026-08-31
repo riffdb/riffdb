@@ -193,10 +193,14 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 - Outbox delivery has only the explicitly configured POC connector behavior.
 - Projection state is rebuildable and can be degraded while authoritative
   commits remain available.
-- Tokenized-text declarations and durable provider-state V1 are implemented,
-  including postings, term frequencies, field-length norms, positions, atomic
-  maintenance, rebuild, compaction, and strict recovery. Named boolean and
-  ranked tokenized queries are not activated yet, and there is no scan fallback.
+- Tokenized-text declarations, durable provider-state V1, named boolean search,
+  and fixed `riff_bm25_v1` ranking are implemented. The closed boolean shapes
+  are conjunction, capped disjunction, phrase, and bounded ordered proximity.
+  There is no wildcard, regular expression, fuzzy match, stemming, highlighting,
+  snippet, caller boost, score output, hybrid vector/text query, or scan fallback.
+  The production provider retains eight epochs per registered query shape, so a
+  ranked cursor may return the typed snapshot-retired outcome after sustained
+  writes even if the cursor token itself has not expired.
 - Restore publication assumes the database directory is private to the sole
   configured service identity: the current operator for user scope or `riffdb`
   for system scope. An uncooperative process with equal write authority can

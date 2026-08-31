@@ -2,8 +2,8 @@ use std::fmt::Write;
 
 use crate::{
     AggregateFunction, BinaryOperator, Cardinality, Direction, Document, Expression,
-    FieldSelection, Literal, NullPlacement, Path, ProjectedFreshness, Selection, TypeReference,
-    UnaryOperator,
+    FieldSelection, Literal, NullPlacement, Path, ProjectedFreshness, Selection,
+    TokenizedMatchKind, TokenizedRanking, TypeReference, UnaryOperator,
 };
 
 /// Emits the canonical, idempotent RiffQL source spelling for the document version.
@@ -76,6 +76,28 @@ pub fn format_query(document: &Document) -> String {
             format_expression(&binding.predicate.value, 0)
         )
         .expect("String writes cannot fail");
+        if let Some(matching) = &binding.tokenized_match {
+            write!(
+                output,
+                "        matching({}, ",
+                matching.index.value.as_str()
+            )
+            .expect("String writes cannot fail");
+            match matching.kind.value {
+                TokenizedMatchKind::Conjunction => output.push_str("conjunction"),
+                TokenizedMatchKind::Disjunction => output.push_str("disjunction"),
+                TokenizedMatchKind::Phrase => output.push_str("phrase"),
+                TokenizedMatchKind::Proximity(distance) => {
+                    write!(output, "proximity, {distance}").expect("String writes cannot fail");
+                }
+            }
+            write!(output, ", ${}", matching.query.value.as_str())
+                .expect("String writes cannot fail");
+            if matching.ranking == TokenizedRanking::RiffBm25V1 {
+                output.push_str(", riff_bm25_v1");
+            }
+            output.push_str(")\n");
+        }
         if !binding.order.is_empty() {
             output.push_str("        order by ");
             for (index, term) in binding.order.iter().enumerate() {
