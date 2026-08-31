@@ -254,3 +254,55 @@ contract Folded version 1 {
         "the expansion must be charged as a bound refusal"
     );
 }
+
+/// One field has one text comparison rule.
+///
+/// A `text_key` encoding decides how a field's text compares. Two indexes
+/// declaring different profiles for one field would make that answer depend on
+/// which index a plan happened to use, so the contract is refused rather than
+/// resolved arbitrarily.
+#[test]
+fn conflicting_text_profiles_for_one_field_are_refused() {
+    const CONFLICTING: &str = r#"
+contract Registry version 1 {
+  entity Item {
+    key (tenant_id: uuid, item_id: u64)
+    field name: string<40>
+    index by_name_binary (tenant_id, name, item_id) text_key(name, binary_utf8_v1)
+    index by_name_folded (tenant_id, name, item_id) text_key(name, unicode_fold_v1)
+  }
+  aggregate Items { root Item partition_by tenant_id conflict_key (tenant_id, item_id) }
+}
+"#;
+    let error = compile_contract_source(CONFLICTING)
+        .expect_err("two text profiles for one field are refused");
+    let diagnostic = error
+        .semantic()
+        .expect("semantic diagnostics")
+        .as_slice()
+        .iter()
+        .find(|diagnostic| diagnostic.cause().is_some())
+        .expect("a caused diagnostic");
+    assert_eq!(
+        diagnostic.cause(),
+        Some(riffdb_contract_compiler::CompilerDiagnosticCause::TextProfileConflictsAcrossIndexes),
+        "the refusal must name the conflict rather than a generic type error"
+    );
+}
+
+/// The same profile declared twice is agreement, not conflict.
+#[test]
+fn repeating_one_text_profile_across_indexes_is_allowed() {
+    const AGREEING: &str = r#"
+contract Registry version 1 {
+  entity Item {
+    key (tenant_id: uuid, item_id: u64)
+    field name: string<40>
+    index by_name (tenant_id, name, item_id) text_key(name, unicode_fold_v1)
+    index by_item_name (tenant_id, item_id, name) text_key(name, unicode_fold_v1)
+  }
+  aggregate Items { root Item partition_by tenant_id conflict_key (tenant_id, item_id) }
+}
+"#;
+    compile_contract_source(AGREEING).expect("agreeing profiles compile");
+}
