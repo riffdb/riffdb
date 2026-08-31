@@ -64,17 +64,16 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   rejected inside a decision arm; no-effect never runs either form. Decisions
   are not general branching, per-item partial outcomes, callbacks, or dynamic
   transaction programs.
-- Runtime-selectable page sizes use either plain `Limit` (the full 1..=499
-  domain) or the query-only `Limit<MAX>` refinement. Bounded limits do not
+- Runtime-selectable page sizes use the query-only `Limit<MAX>` refinement,
+  where `MAX` is at most 65,534. Bounded limits do not
   refine offsets, byte budgets, contract integers, full-population aggregate
   work, or projection candidate work; those retain their separately compiled
   bounds.
 - One RiffDB invocation still returns at most its compiled maximum and never
-  more than 499 rows. ADR-0159 permits an owning external adapter to preserve a
-  larger authoritative page only by exact ordered append over one unchanged
-  cursor chain; RiffDB has no hidden multi-page response or streaming query
-  protocol. Large upstream pages may therefore require multiple driver
-  crossings until a separately accepted streaming design exists.
+  more than 65,534 rows. The independent 4 MiB encoded-result and transport
+  ceilings often make the practical maximum smaller for wide rows, as can
+  provider, policy, cost, hydration, or role bounds. RiffDB has no hidden
+  multi-page response or streaming query protocol.
 - An ordinary command may atomically delete and return the transaction-current preimage of exactly
   one complete-key, partition-local `no_inbound` entity. Multiple ordinary deletes, inbound
   `restrict` or `cascade`, set-null, orphaning, cross-partition deletion, and physical erasure are

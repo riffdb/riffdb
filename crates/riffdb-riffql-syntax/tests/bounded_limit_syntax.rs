@@ -1,8 +1,8 @@
 //! ADR-0158 bounded runtime page-limit syntax acceptance.
 
 use riffdb_riffql_syntax::{
-    DiagnosticCode, RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1, TypeReference, format_query,
-    parse_query,
+    DiagnosticCode, RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1,
+    RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1, TypeReference, format_query, parse_query,
 };
 
 const QUERY: &str = r#"query BoundedPage($org: Item.org_id, $limit: Limit<100> = 50, $after: Cursor?) {
@@ -14,6 +14,34 @@ const QUERY: &str = r#"query BoundedPage($org: Item.org_id, $limit: Limit<100> =
     outcomes Found
 }
 "#;
+
+#[test]
+fn extended_bounded_limits_select_v11_at_every_adr_0174_boundary() {
+    for maximum in [500_u64, 50_000, 65_534] {
+        let source = QUERY.replace("Limit<100> = 50", &format!("Limit<{maximum}> = 50"));
+        let document = parse_query(&source).expect("extended bounded Limit source");
+        assert_eq!(
+            document.language_version,
+            RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1
+        );
+        assert!(matches!(
+            document.parameters[1].ty.value,
+            TypeReference::BoundedLimit(candidate) if candidate == maximum
+        ));
+    }
+
+    let source = QUERY.replace("Limit<100>", "Limit<65535>");
+    let diagnostics = parse_query(&source).expect_err("probe row remains reserved");
+    assert_eq!(
+        diagnostics.as_slice()[0].code(),
+        DiagnosticCode::InvalidToken
+    );
+    assert!(
+        diagnostics.as_slice()[0]
+            .help()
+            .is_some_and(|help| help.contains("65534"))
+    );
+}
 
 #[test]
 fn bounded_limit_round_trips_and_selects_language_v9() {
@@ -38,7 +66,7 @@ fn bounded_limit_round_trips_and_selects_language_v9() {
 fn bounded_limit_maximum_is_canonical_and_inside_the_global_page_ceiling() {
     for source in [
         QUERY.replace("Limit<100>", "Limit<0>"),
-        QUERY.replace("Limit<100>", "Limit<500>"),
+        QUERY.replace("Limit<100>", "Limit<65535>"),
         QUERY.replace("Limit<100>", "Limit<010>"),
     ] {
         let diagnostics = parse_query(&source).expect_err("invalid bounded maximum");

@@ -4,6 +4,17 @@
 pub const MAX_APPLICATION_QUERY_STEPS: u64 = 64;
 /// Hard maximum encoded application-query result bytes.
 pub const MAX_APPLICATION_QUERY_RESULT_BYTES: u64 = 4_194_304;
+/// Hard maximum physical rows inspected by one application-query access step.
+///
+/// One row is reserved for continuation detection, so the largest result page
+/// is `MAX_APPLICATION_QUERY_PAGE_ROWS`.
+pub const MAX_APPLICATION_QUERY_SCANNED_ROWS: u64 = 65_535;
+/// Hard maximum rows returned by one application-query page.
+pub const MAX_APPLICATION_QUERY_PAGE_ROWS: u64 = MAX_APPLICATION_QUERY_SCANNED_ROWS - 1;
+/// Largest page encoded by the predecessor bounded-limit V1 identity.
+pub const MAX_APPLICATION_QUERY_PAGE_ROWS_BOUNDED_LIMIT_V1: u64 = 499;
+/// Existing exact-vector provider partition ceiling, independent from page rows.
+pub const MAX_EXACT_VECTOR_PARTITION_ROWS_V1: u64 = 500;
 
 /// Canonical compiler-derived maximum work for one complete query request.
 ///
@@ -156,5 +167,13 @@ mod tests {
             QueryCostVectorV1::new(1, 0, 0, 0, 0, 0, MAX_APPLICATION_QUERY_RESULT_BYTES + 1,)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn page_rows_reserve_exactly_one_continuation_probe() {
+        assert_eq!(MAX_APPLICATION_QUERY_SCANNED_ROWS, 65_535);
+        assert_eq!(MAX_APPLICATION_QUERY_PAGE_ROWS, 65_534);
+        assert_eq!(MAX_APPLICATION_QUERY_PAGE_ROWS_BOUNDED_LIMIT_V1, 499);
+        assert_eq!(MAX_EXACT_VECTOR_PARTITION_ROWS_V1, 500);
     }
 }

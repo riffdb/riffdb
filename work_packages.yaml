@@ -2994,6 +2994,15 @@ work_packages:
       work, policy, authority, cursor, or transport limits when choosing more rows.
     scale: The structural u16 ceiling is independent from conservative result bytes, scanned work,
       hydration, policy, provider, memory, and output bounds; no unbounded allocation is admitted.
+  closure:
+    status: complete
+    evidence: crates/riffdb-riffql-syntax/tests/bounded_limit_syntax.rs
+    decision: ADR-0174's shared 65,535-row scan and 65,534-row page ceilings now flow through
+      syntax, checked IR, compilation, execution, role authority, packed public results, generated
+      artifacts, and handbook guidance. Bounds through 499 retain V9/V12/V12; larger bounds use
+      V11/V14/V14. Static and runtime 500-row pages execute with one probe, 65,535 is refused,
+      the 4 MiB result/transport ceiling and the exact-vector 500-row provider ceiling remain
+      independent, and all WP-736 acceptance commands pass.
   human_review_triggers: *id0174
 
 - id: WP-737

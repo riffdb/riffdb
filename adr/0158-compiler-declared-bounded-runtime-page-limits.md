@@ -15,6 +15,10 @@
   at the complete 499-row type range
 - **Defines or blocks:** WP-706 and WP-707
 
+> **Amendment:** ADR-0167 removed plain `Limit`, and ADR-0174 raised the shared
+> structural page maximum to 65,534 while retaining the exact V9/V12/V12
+> identity for `Limit<MAX>` bounds through 499.
+
 This record is authoritative for WP-706 and WP-707.
 
 ## Context

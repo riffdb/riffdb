@@ -2079,6 +2079,9 @@ version = "0.1.0"
 [[package]]
 name = "riffdb-riffql-syntax"
 version = "0.1.0"
+dependencies = [
+ "riffdb-types",
+]
 
 [[package]]
 name = "riffdb-runtime"

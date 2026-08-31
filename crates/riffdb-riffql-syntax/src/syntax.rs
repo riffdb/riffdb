@@ -22,6 +22,8 @@ pub const RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1: u32 = 8;
 pub const RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1: u32 = 9;
 /// Compiler-sealed tokenized boolean matching.
 pub const RIFFQL_LANGUAGE_VERSION_TOKENIZED_TEXT_V1: u32 = 10;
+/// Candidate and independently widened bounded-result pipeline language.
+pub const RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1: u32 = 11;
 /// Maximum compiler-declared causal projection wait.
 pub const MAX_PROJECTED_CAUSAL_WAIT_MS: u32 = 30_000;
 /// Maximum compiler-declared bounded projection lag.

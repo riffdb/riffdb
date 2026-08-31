@@ -10,9 +10,9 @@ is explicit and cursors are optional typed parameters.
 
 For application pages, start with a fixed bound such as `take 25` or `take 50`.
 Use `Limit<MAX>` when callers need to choose a smaller page at runtime while
-the compiler must prove a reviewed maximum. Plain `Limit` remains available
-when the role can afford its full 499-row range; its default does not reduce
-that proof obligation.
+the compiler must prove a reviewed maximum. `MAX` may be as large as 65,534;
+the compiler still refuses a query whose independently bounded result bytes,
+cost, authority, provider work, or transport envelope cannot support it.
 
 `one` and `maybe` are primary-key point reads: their predicates must constrain
 the target entity's complete primary key. A secondary index does not satisfy a
@@ -137,10 +137,10 @@ typed SDK and gRPC execution, but are omitted from MCP tool generation and
 cannot be referenced by reactive watches, live queries, hydrations, or
 contextual subscriptions.
 
-## Compiler-declared bounded runtime limits (language V9)
+## Compiler-declared bounded runtime limits (language V9 and V11)
 
 `Limit<MAX>` is a query-only page-size refinement with an implicit minimum of
-one and an inclusive maximum from 1 through 499:
+one and an inclusive maximum from 1 through 65,534:
 
 ```riffql
 query OpenTickets(
@@ -158,23 +158,24 @@ query OpenTickets(
 ```
 
 `MAX` is a canonical unsigned decimal literal. Zero, leading zeros, a maximum
-above 499, optional or set wrappers, and defaults outside 1..=`MAX` are
+above 65,534, optional or set wrappers, and defaults outside 1..=`MAX` are
 compile-time errors. At runtime, an omitted parameter uses its compiled default;
 otherwise zero, a wrong type, or a value above `MAX` is rejected before any
 provider or storage work.
 
 The compiler charges every binding at its declared `MAX`, never its default or
 submitted value. Charges remain cumulative when a query has several bindings.
-The maximum is part of language V9, query IR V12, module V12, generated input
-schemas, roles, plans, locks, and cursor-bound operation identity, so changing
-it requires the normal immutable query deployment rotation.
+Bounds through 499 retain language V9, query IR V12, and module V12. Bounds
+from 500 through 65,534 use the additive language V11, query IR V14, and module
+V14 identities. The maximum is also part of generated input schemas, roles,
+plans, locks, and cursor-bound operation identity, so changing it requires the
+normal immutable query deployment rotation.
 
-Plain `Limit` is unchanged and is statically charged at its full 499-row page
-range. Fixed `take` literals retain their exact bound. `Limit<MAX>` is also
-accepted as an existing `nearest` K parameter, but it narrows only returned
-page work; a projection provider's separately declared candidate or
-full-population work remains unchanged. This is not a general integer
-refinement and cannot be used for offsets, byte budgets, or contract fields.
+Fixed `take` literals retain their exact bound. `Limit<MAX>` is also accepted
+as an existing `nearest` K parameter, but it narrows only returned page work;
+a projection provider's separately declared candidate or full-population work
+remains unchanged. This is not a general integer refinement and cannot be used
+for offsets, byte budgets, or contract fields.
 
 For an ordinary ordered `take $limit after $cursor` page, the submitted limit
 controls only that invocation's cardinality. A continuation may be resumed
@@ -211,14 +212,15 @@ query SimilarDocuments(
   come back in ascending distance order) and `take` (K is the binding's
   checked page bound).
 - K is either a positive integer literal, `Limit`, or `Limit<MAX>` parameter.
-  All share the 499-row global page-take ceiling; a bounded limit additionally
-  enforces its declared maximum. Invalid values are rejected before nearest
-  provider or storage work begins.
+  All share the 65,534-row structural page-take ceiling; `Limit<MAX>` also
+  enforces its declared maximum. A provider's smaller compiled candidate or
+  partition ceiling remains authoritative. Invalid values are rejected before
+  nearest provider or storage work begins.
 - The binding still requires the exact partition (organization) equality
   predicate that routes all query access; a nearest query without it does
   not compile (`RDB-QP002`).
-- The static plan cost charges the full 500-row partition-scan ceiling, not
-  K: exact nearest search examines the whole partition.
+- The static plan cost charges the provider's complete compiled partition-scan
+  ceiling, not K: exact nearest search examines the whole admitted partition.
 - Production execution requires the exact compiler-owned
   `source projected Entity.vector_field` declaration. The source must match
   the nearest binding and a production-capable contract vector field; it is

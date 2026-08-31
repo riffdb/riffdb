@@ -1253,7 +1253,7 @@ impl CapabilityGrantV1 {
         max_scan_rows: NonZeroU16,
         mut approval_required: Vec<CapabilityPermissionKindV1>,
     ) -> Result<Self, CapabilityGrantError> {
-        if usize::from(max_scan_rows.get()) > 500
+        if u64::from(max_scan_rows.get()) > crate::MAX_APPLICATION_QUERY_SCANNED_ROWS
             || field_visibility.len() > MAX_CAPABILITY_FIELD_VISIBILITY
             || approval_required.len() > 31
         {
@@ -2066,6 +2066,32 @@ mod tests {
             &original.permissions.1,
             &independently_built.permissions.1
         ));
+    }
+
+    #[test]
+    fn query_scan_authority_accepts_the_shared_u16_ceiling() {
+        let permissions = CapabilityPermissionsV1::new(vec![
+            CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::ReadHealth)
+                .expect("permission"),
+        ])
+        .expect("permissions");
+        let grant = CapabilityGrantV1::new(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            permissions,
+            Vec::new(),
+            NonZeroU16::new(
+                u16::try_from(crate::MAX_APPLICATION_QUERY_SCANNED_ROWS)
+                    .expect("shared scan ceiling fits u16"),
+            )
+            .expect("nonzero"),
+            Vec::new(),
+        )
+        .expect("shared maximum authority");
+        assert_eq!(
+            u64::from(grant.max_scan_rows().get()),
+            crate::MAX_APPLICATION_QUERY_SCANNED_ROWS
+        );
     }
 
     #[test]

@@ -769,7 +769,7 @@ query BoardPageMax(
             && project_id == $project_id
             && status == TicketStatus.Open
         order by ticket_id asc
-        take 499
+        take 500
     return Found { tickets: tickets { ticket_id } }
     outcomes Found
 }
@@ -779,7 +779,7 @@ const PARAM_PAGE: &str = r#"
 query ParamPage(
     $organization_id: Organization.organization_id,
     $project_id: Project.project_id,
-    $limit: Limit<499> = 25,
+    $limit: Limit<500> = 25,
 ) {
     many tickets from Ticket
         where organization_id == $organization_id
@@ -910,22 +910,20 @@ fn open_status_value(catalog: &SymbolicCatalog) -> CanonicalValue {
 }
 
 #[test]
-fn max_page_take_executes_with_continuation_probe_against_full_range() {
-    use riffdb_query_executor::max_query_page_take;
-
+fn page_take_above_legacy_ceiling_executes_with_one_continuation_probe() {
     let bundle = compile_contract_source(&contract_without_cover()).expect("contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
     let program =
         compile_query(&parse_query(STATIC_MAX_PAGE).expect("query"), &catalog).expect("program");
-    assert_eq!(program.steps()[0].maximum_rows(), max_query_page_take());
+    assert_eq!(program.steps()[0].maximum_rows(), 500);
     let parameters = QueryParameters::checked(BTreeMap::from([
         ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
         ("project_id".to_owned(), CanonicalValue::Uuid([2; 16])),
     ]))
     .expect("parameters");
-    // ≥ max_query_page_take() rows in range so the adapter probes one past the page.
+    // More than 500 rows in range so the adapter probes one past the page.
     let mut view = ProbeScanView {
-        available: max_query_page_take() as usize + 10,
+        available: 510,
         scan_calls: 0,
         open_status: open_status_value(&catalog),
     };
@@ -933,7 +931,7 @@ fn max_page_take_executes_with_continuation_probe_against_full_range() {
     assert_eq!(view.scan_calls, 1);
     match snapshot.fields().get("tickets") {
         Some(QueryResultValue::Many(rows)) => {
-            assert_eq!(rows.len() as u64, max_query_page_take());
+            assert_eq!(rows.len(), 500);
         }
         other => panic!("expected many tickets, got {other:?}"),
     }
@@ -944,9 +942,7 @@ fn max_page_take_executes_with_continuation_probe_against_full_range() {
 }
 
 #[test]
-fn parameterized_limit_over_max_page_take_is_invalid_parameter_with_zero_scan() {
-    use riffdb_query_executor::{MAX_QUERY_SCANNED_ROWS, max_query_page_take};
-
+fn parameterized_limit_over_declared_extended_bound_has_zero_scan() {
     let bundle = compile_contract_source(&contract_without_cover()).expect("contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
     let program =
@@ -954,10 +950,7 @@ fn parameterized_limit_over_max_page_take_is_invalid_parameter_with_zero_scan() 
     let parameters = QueryParameters::checked(BTreeMap::from([
         ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
         ("project_id".to_owned(), CanonicalValue::Uuid([2; 16])),
-        (
-            "limit".to_owned(),
-            CanonicalValue::U64(MAX_QUERY_SCANNED_ROWS),
-        ),
+        ("limit".to_owned(), CanonicalValue::U64(501)),
     ]))
     .expect("parameters");
     let mut view = ProbeScanView {
@@ -979,14 +972,11 @@ fn parameterized_limit_over_max_page_take_is_invalid_parameter_with_zero_scan() 
     let parameters = QueryParameters::checked(BTreeMap::from([
         ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
         ("project_id".to_owned(), CanonicalValue::Uuid([2; 16])),
-        (
-            "limit".to_owned(),
-            CanonicalValue::U64(max_query_page_take()),
-        ),
+        ("limit".to_owned(), CanonicalValue::U64(500)),
     ]))
     .expect("parameters");
     let mut view = ProbeScanView {
-        available: max_query_page_take() as usize + 5,
+        available: 505,
         scan_calls: 0,
         open_status: open_status_value(&catalog),
     };
@@ -994,7 +984,7 @@ fn parameterized_limit_over_max_page_take_is_invalid_parameter_with_zero_scan() 
     assert_eq!(view.scan_calls, 1);
     match snapshot.fields().get("tickets") {
         Some(QueryResultValue::Many(rows)) => {
-            assert_eq!(rows.len() as u64, max_query_page_take());
+            assert_eq!(rows.len(), 500);
         }
         other => panic!("expected many tickets, got {other:?}"),
     }
@@ -1123,7 +1113,7 @@ fn scan_ceiling_breach_is_bound_exceeded_not_internal() {
 fn report_only_board_scale_materialize_project_loop() {
     let bundle = compile_contract_source(&contract_without_cover()).expect("contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
-    // take 499 so the closed program admits a 450-row board page.
+    // take 500 so the closed program admits a 450-row board page.
     let program =
         compile_query(&parse_query(STATIC_MAX_PAGE).expect("query"), &catalog).expect("program");
     let parameters = QueryParameters::checked(BTreeMap::from([

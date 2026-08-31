@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use riffdb_contract_ir::{ValueType, ValueTypeTag};
 use riffdb_riffql_syntax::{
     Cardinality, Document, Expression, FieldSelection, Literal, Path,
-    RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1, RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1,
-    Selection, Span, TypeReference, format_query,
+    RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1, RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1,
+    RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1, Selection, Span, TypeReference, format_query,
 };
 use riffdb_types::{
     AggregateSemanticIdentityV1, ContractBundleHash, ContractLineage, ContractVersion,
@@ -17,11 +17,11 @@ use crate::{
     MAX_SOURCE_MAP_ENTRIES, NamedFieldSchema, NamedParameterSchema, NamedQuerySchemas,
     NamedResultBranchSchema, NamedTypeSchema, OperationalAggregateFunctionV1,
     OperationalAggregateGroupKeyV1, OperationalAggregateMeasureV1, OperationalAggregateV1,
-    PageBound, QUERY_IR_VERSION_BOUNDED_LIMIT_V1, QUERY_IR_VERSION_EXACT_AGGREGATE_V1,
-    QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1, QUERY_IR_VERSION_PROJECTED_VECTOR_V1,
-    QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_V1, QueryDiagnostic, QueryDiagnosticCode,
-    QueryDiagnosticStage, QueryDiagnostics, SymbolicCatalog, page_take_within_scan_bound,
-    source_aggregate_semantic_identity,
+    PageBound, QUERY_IR_VERSION_BOUNDED_LIMIT_V1, QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1,
+    QUERY_IR_VERSION_EXACT_AGGREGATE_V1, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1,
+    QUERY_IR_VERSION_PROJECTED_VECTOR_V1, QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_V1,
+    QueryDiagnostic, QueryDiagnosticCode, QueryDiagnosticStage, QueryDiagnostics, SymbolicCatalog,
+    page_take_within_scan_bound, source_aggregate_semantic_identity,
 };
 
 const IR_MAGIC: &[u8] = b"RIFFDB-QUERY-SURFACE\0";
@@ -275,7 +275,9 @@ impl ResolvedQueryV1 {
     /// Query IR version.
     #[must_use]
     pub fn ir_version(&self) -> u32 {
-        if self.has_bounded_limit() {
+        if self.has_extended_bounded_limit() {
+            QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1
+        } else if self.has_bounded_limit() {
             QUERY_IR_VERSION_BOUNDED_LIMIT_V1
         } else if self.projected {
             QUERY_IR_VERSION_PROJECTED_VECTOR_V1
@@ -298,6 +300,18 @@ impl ResolvedQueryV1 {
             .parameters()
             .iter()
             .any(|parameter| matches!(parameter.value_type(), NamedTypeSchema::BoundedLimit { .. }))
+    }
+
+    /// Whether any bounded limit requires ADR-0174's enlarged page identity.
+    #[must_use]
+    pub fn has_extended_bounded_limit(&self) -> bool {
+        self.schemas.parameters().iter().any(|parameter| {
+            matches!(
+                parameter.value_type(),
+                NamedTypeSchema::BoundedLimit { maximum }
+                    if *maximum > riffdb_types::MAX_APPLICATION_QUERY_PAGE_ROWS_BOUNDED_LIMIT_V1
+            )
+        })
     }
 
     /// Whether the surface contains an ADR-0152 additive aggregate semantic.
@@ -449,7 +463,7 @@ impl<'a> Resolver<'a> {
                 let (declared_maximum, exceeded_summary) = match &ty {
                     NamedTypeSchema::Limit => (
                         crate::max_query_page_take(),
-                        "Limit default exceeds the maximum page take of 499 (scan ceiling reserves one row for the continuation probe)",
+                        "Limit default exceeds the maximum page take of 65534 (scan ceiling reserves one row for the continuation probe)",
                     ),
                     NamedTypeSchema::BoundedLimit { maximum } => (
                         *maximum,
@@ -1633,9 +1647,9 @@ impl<'a> Resolver<'a> {
                 let parsed = value.parse::<u64>().ok().filter(|value| *value > 0);
                 match parsed {
                     Some(take) if page_take_within_scan_bound(take) => Ok(PageBound::Literal(take)),
-                    // Bound is max_query_page_take() (= 499): the bound plus
+                    // The bound plus
                     // one probe row must stay within MAX_QUERY_SCANNED_ROWS
-                    // (500). The continuation-probe rationale is take's; a
+                    // one probe stays within the 65,535-row scan ceiling. The
                     // nearest K inherits the same ceiling but mints no
                     // continuation, so its message names the shared ceiling
                     // instead.
@@ -1644,8 +1658,8 @@ impl<'a> Resolver<'a> {
                         span,
                         Vec::new(),
                         match clause {
-                            PageBoundClause::Take => "static take exceeds the maximum page take of 499 (scan ceiling reserves one row for the continuation probe)",
-                            PageBoundClause::NearestK => "nearest k exceeds the maximum page bound of 499 (K is the binding's checked page bound and shares the take ceiling)",
+                            PageBoundClause::Take => "static take exceeds the maximum page take of 65534 (scan ceiling reserves one row for the continuation probe)",
+                            PageBoundClause::NearestK => "nearest k exceeds the maximum page bound of 65534 (K is the binding's checked page bound and shares the take ceiling)",
                         },
                     )),
                     None => Err(self.diagnostic(
@@ -1776,7 +1790,9 @@ fn canonical_surface(
     );
     bytes.extend_from_slice(IR_MAGIC);
     bytes.extend_from_slice(
-        &if document.language_version == RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1 {
+        &if document.language_version == RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1 {
+            QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1
+        } else if document.language_version == RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1 {
             QUERY_IR_VERSION_BOUNDED_LIMIT_V1
         } else if document.language_version == RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1 {
             QUERY_IR_VERSION_EXACT_AGGREGATE_V1

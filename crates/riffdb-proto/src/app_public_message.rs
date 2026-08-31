@@ -3,7 +3,8 @@
 use std::collections::BTreeSet;
 
 use riffdb_types::{
-    EmbeddingMetadata, EntityKey, MAX_CONTRACT_LINEAGE_BYTES, decode_canonical_value,
+    EmbeddingMetadata, EntityKey, MAX_APPLICATION_QUERY_PAGE_ROWS, MAX_CONTRACT_LINEAGE_BYTES,
+    decode_canonical_value,
 };
 
 use crate::app::v1 as app_v1;
@@ -18,7 +19,8 @@ const MAX_REACTIVE_SOURCE_BYTES: usize = 1_048_576;
 const MAX_REACTIVE_QUERY_MODULES: usize = 32;
 const MAX_SYMBOLIC_CATALOG_BYTES: usize = 262_144;
 const MAX_QUERY_ITEMS: usize = 1_024;
-const MAX_QUERY_ROWS: usize = 500;
+const MAX_SYMBOLIC_QUERY_ROWS: usize = MAX_APPLICATION_QUERY_PAGE_ROWS as usize;
+const MAX_VECTOR_PAGE_ROWS: usize = 500;
 const MAX_DIAGNOSTICS: usize = 32;
 const MAX_DIAGNOSTIC_TEXT_BYTES: usize = 1_024;
 const MAX_CURSOR_BYTES: usize = 4_096;
@@ -96,7 +98,7 @@ fn validate_vector_page_request(value: &crate::v1::PageRequest) -> Result<(), Pu
 fn validate_vector_staleness_page(
     value: &app_v1::VectorStalenessPage,
 ) -> Result<(), PublicWireError> {
-    if value.items.len() > MAX_QUERY_ROWS
+    if value.items.len() > MAX_VECTOR_PAGE_ROWS
         || value
             .next_cursor
             .as_deref()
@@ -124,7 +126,7 @@ fn validate_vector_staleness_page(
 fn validate_vector_model_page(
     value: &app_v1::VectorModelVersionPage,
 ) -> Result<(), PublicWireError> {
-    if value.items.len() > MAX_QUERY_ROWS
+    if value.items.len() > MAX_VECTOR_PAGE_ROWS
         || value
             .next_cursor
             .as_deref()
@@ -610,7 +612,7 @@ fn validate_legacy_result_fields(fields: &[app_v1::ResultField]) -> Result<(), P
             validate_parameters(&record.fields)?;
         }
     }
-    if rows > MAX_QUERY_ROWS {
+    if rows > MAX_SYMBOLIC_QUERY_ROWS {
         return Err(PublicWireError::TooManyItems);
     }
     Ok(())
@@ -627,7 +629,7 @@ fn validate_compact_result_field(
         || field.fields.is_empty()
         || field.fields.len() > MAX_QUERY_ITEMS
         || field.fields.iter().any(|name| !valid_name(name))
-        || field.rows.len() > MAX_QUERY_ROWS
+        || field.rows.len() > MAX_SYMBOLIC_QUERY_ROWS
         || (cardinality == app_v1::ResultCardinality::One && field.rows.len() != 1)
         || (cardinality == app_v1::ResultCardinality::Maybe && field.rows.len() > 1)
     {
@@ -658,7 +660,7 @@ fn validate_packed_result_field(field: &app_v1::PackedResultField) -> Result<(),
         || field.fields.is_empty()
         || field.fields.len() > MAX_QUERY_ITEMS
         || field.fields.iter().any(|name| !valid_name(name))
-        || row_count > MAX_QUERY_ROWS
+        || row_count > MAX_SYMBOLIC_QUERY_ROWS
         || field.columns.len() != field.fields.len()
         || (cardinality == app_v1::ResultCardinality::One && row_count != 1)
         || (cardinality == app_v1::ResultCardinality::Maybe && row_count > 1)
@@ -1320,6 +1322,35 @@ mod tests {
         assert_eq!(
             response.validate_structure(),
             Err(PublicWireError::InconsistentFields)
+        );
+    }
+
+    #[test]
+    fn symbolic_packed_rows_use_the_shared_65534_ceiling() {
+        let encoded =
+            riffdb_types::encode_canonical_value(&riffdb_types::CanonicalValue::Bool(false))
+                .expect("bool");
+        let row_count = MAX_SYMBOLIC_QUERY_ROWS;
+        let mut data = Vec::with_capacity(encoded.len() * row_count);
+        let mut offsets = Vec::with_capacity(row_count + 1);
+        offsets.push(0);
+        for _ in 0..row_count {
+            data.extend_from_slice(&encoded);
+            offsets.push(u32::try_from(data.len()).expect("packed query result fits u32"));
+        }
+        let mut field = app_v1::PackedResultField {
+            name: "rows".to_owned(),
+            cardinality: app_v1::ResultCardinality::Many as i32,
+            entity: "A".to_owned(),
+            fields: vec!["b".to_owned()],
+            row_count: row_count as u32,
+            columns: vec![app_v1::PackedColumn { offsets, data }],
+        };
+        assert_eq!(validate_packed_result_field(&field), Ok(()));
+        field.row_count += 1;
+        assert_eq!(
+            validate_packed_result_field(&field),
+            Err(PublicWireError::InvalidBytes)
         );
     }
 

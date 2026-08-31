@@ -216,13 +216,15 @@ fn board_page_50_static_resolves_wide_row_without_runtime_limit() {
 
 #[test]
 fn scan_bound_constants_encode_continuation_probe_relationship() {
-    assert_eq!(MAX_QUERY_SCANNED_ROWS, 500);
+    assert_eq!(MAX_QUERY_SCANNED_ROWS, 65_535);
     assert_eq!(QUERY_CONTINUATION_PROBE_ROWS, 1);
-    assert_eq!(max_query_page_take(), 499);
-    assert_eq!(scanned_rows_budget_for_page_take(499), Some(500));
-    assert_eq!(scanned_rows_budget_for_page_take(500), Some(501));
-    assert!(page_take_within_scan_bound(499));
-    assert!(!page_take_within_scan_bound(500));
+    assert_eq!(max_query_page_take(), 65_534);
+    assert_eq!(scanned_rows_budget_for_page_take(65_534), Some(65_535));
+    assert_eq!(scanned_rows_budget_for_page_take(65_535), Some(65_536));
+    for take in [499, 500, 50_000, 65_534] {
+        assert!(page_take_within_scan_bound(take));
+    }
+    assert!(!page_take_within_scan_bound(65_535));
     assert!(!page_take_within_scan_bound(0));
 }
 
@@ -230,25 +232,18 @@ fn scan_bound_constants_encode_continuation_probe_relationship() {
 /// used to deploy then fail as RDB-INTERNAL-0001. Static take 500 is now rejected
 /// at resolve with a diagnostic that names the continuation-aware page bound.
 #[test]
-fn static_take_500_is_rejected_at_resolve_with_bound_diagnostic() {
+fn static_take_500_is_now_inside_the_structural_scan_bound() {
     let bundle = compile_contract_source(CONTRACT).expect("compile TicketDesk contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("symbolic catalog");
     let document = parse_query(STATIC_TAKE_500).expect("parse static take 500");
-    let diagnostics =
-        resolve_query_surface(&document, &catalog).expect_err("take 500 must not resolve");
-    let diagnostic = &diagnostics.as_slice()[0];
-    assert_eq!(diagnostic.code(), QueryDiagnosticCode::ArtifactLimit);
-    assert!(
-        diagnostic.summary().contains("499"),
-        "diagnostic must name the max page take: {}",
-        diagnostic.summary()
-    );
-    assert!(
-        diagnostic.summary().contains("continuation probe")
-            || diagnostic.summary().contains("scan ceiling"),
-        "diagnostic must explain the probe reserve: {}",
-        diagnostic.summary()
-    );
+    let resolved = resolve_query_surface(&document, &catalog).expect("take 500 resolves");
+    assert!(matches!(
+        resolved.schemas().results()[0].fields()[0].value_type(),
+        NamedTypeSchema::List {
+            maximum: riffdb_query_ir::PageBound::Literal(500),
+            ..
+        }
+    ));
 }
 
 #[test]

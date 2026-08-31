@@ -1067,7 +1067,9 @@ impl QueryAccessProgramV1 {
         {
             return None;
         }
-        let ir_version = if surface.has_bounded_limit() {
+        let ir_version = if surface.has_extended_bounded_limit() {
+            crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1
+        } else if surface.has_bounded_limit() {
             crate::QUERY_IR_VERSION_BOUNDED_LIMIT_V1
         } else if projected_source.is_some() {
             crate::QUERY_IR_VERSION_PROJECTED_VECTOR_V1
@@ -1176,7 +1178,9 @@ impl QueryAccessProgramV1 {
     /// Least-sufficient executable IR identity for this exact program.
     #[must_use]
     pub fn ir_version(&self) -> u32 {
-        if self.surface.has_bounded_limit() {
+        if self.surface.has_extended_bounded_limit() {
+            crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1
+        } else if self.surface.has_bounded_limit() {
             crate::QUERY_IR_VERSION_BOUNDED_LIMIT_V1
         } else if self.projected_source.is_some() {
             crate::QUERY_IR_VERSION_PROJECTED_VECTOR_V1
@@ -1310,7 +1314,9 @@ fn encode_program(
     if projected_source.is_some()
         && matches!(
             surface.ir_version,
-            crate::QUERY_IR_VERSION_PROJECTED_VECTOR_V1 | crate::QUERY_IR_VERSION_BOUNDED_LIMIT_V1
+            crate::QUERY_IR_VERSION_PROJECTED_VECTOR_V1
+                | crate::QUERY_IR_VERSION_BOUNDED_LIMIT_V1
+                | crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1
         )
     {
         let source = projected_source?;
@@ -1421,7 +1427,9 @@ fn encode_program(
         write_strings(&mut out, &step.dependencies)?;
         if matches!(
             surface.ir_version,
-            crate::QUERY_IR_VERSION_COVERED_RESULT_V1 | crate::QUERY_IR_VERSION_BOUNDED_LIMIT_V1
+            crate::QUERY_IR_VERSION_COVERED_RESULT_V1
+                | crate::QUERY_IR_VERSION_BOUNDED_LIMIT_V1
+                | crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1
         ) {
             match &step.covered_result_layout {
                 None => out.push(0),

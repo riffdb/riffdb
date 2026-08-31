@@ -6,12 +6,13 @@ use crate::{
     MAX_COLLECTION_ITEMS, MAX_NESTING, MAX_PROJECTED_CAUSAL_WAIT_MS, MAX_PROJECTED_LAG_MS,
     MAX_SYNTAX_ITEMS, NullPlacement, OrderTerm, Parameter, ParseDiagnostic, ParseDiagnostics, Path,
     ProjectedFreshness, ProjectedSource, QueryBody, RIFFQL_LANGUAGE_VERSION,
-    RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1, RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1,
-    RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1, RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1,
-    RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1, RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1,
-    RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1, RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1,
-    RIFFQL_LANGUAGE_VERSION_TOKENIZED_TEXT_V1, Selection, Span, Spanned, Take,
-    TokenizedMatchClause, TokenizedMatchKind, TokenizedRanking, TypeReference, UnaryOperator,
+    RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1, RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1,
+    RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1, RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1,
+    RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1, RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1,
+    RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1, RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1,
+    RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1, RIFFQL_LANGUAGE_VERSION_TOKENIZED_TEXT_V1, Selection,
+    Span, Spanned, Take, TokenizedMatchClause, TokenizedMatchKind, TokenizedRanking, TypeReference,
+    UnaryOperator,
 };
 
 /// Parses one UTF-8 RiffQL source document in a supported language version.
@@ -145,7 +146,16 @@ impl Parser {
             selection,
             outcomes,
         };
-        let language_version = if body
+        let extended_limit = parameters.iter().any(|parameter| {
+            matches!(
+                parameter.ty.value,
+                TypeReference::BoundedLimit(maximum)
+                    if maximum > riffdb_types::MAX_APPLICATION_QUERY_PAGE_ROWS_BOUNDED_LIMIT_V1
+            )
+        });
+        let language_version = if extended_limit {
+            RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1
+        } else if body
             .bindings
             .iter()
             .any(|binding| binding.tokenized_match.is_some())
@@ -298,17 +308,21 @@ impl Parser {
                         DiagnosticCode::UnexpectedToken,
                         maximum.span,
                         "bounded Limit maximum must be an unsigned literal",
-                        Some("use Limit<MAX> where MAX is from 1 through 499"),
+                        Some("use Limit<MAX> where MAX is from 1 through 65534"),
                     )));
                 };
                 let canonical = value == "0" || !value.starts_with('0');
                 let maximum_value = value.parse::<u64>().ok();
-                if !canonical || !maximum_value.is_some_and(|value| (1..=499).contains(&value)) {
+                if !canonical
+                    || !maximum_value.is_some_and(|value| {
+                        (1..=riffdb_types::MAX_APPLICATION_QUERY_PAGE_ROWS).contains(&value)
+                    })
+                {
                     return Err(ParseDiagnostics::one(ParseDiagnostic::new(
                         DiagnosticCode::InvalidToken,
                         maximum.span,
                         "bounded Limit maximum is outside the supported range",
-                        Some("use one canonical unsigned literal from 1 through 499"),
+                        Some("use one canonical unsigned literal from 1 through 65534"),
                     )));
                 }
                 self.close_bounded_maximum()?;
@@ -326,7 +340,7 @@ impl Parser {
                     self.span_from(start),
                     "Limit must declare its maximum",
                     Some(
-                        "use Limit<MAX> with MAX from 1 through 499; the declared maximum is what cost and role authority are charged at, not the default",
+                        "use Limit<MAX> with MAX from 1 through 65534; the declared maximum is what cost and role authority are charged at, not the default",
                     ),
                 )));
             }

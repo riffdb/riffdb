@@ -40,8 +40,6 @@ use riffdb_types::{
     ProjectionProviderStaticBoundsV1, QueryCostVectorV1,
 };
 
-const MAX_QUERY_ROWS: u64 = 500;
-
 /// Raw compiler declaration for one finite exact binary UTF-8 family.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExactTextCompilerDeclarationV1 {
@@ -1571,7 +1569,7 @@ impl<'a> Planner<'a> {
                 let vector_parameter = nearest.vector.value.as_str().to_owned();
                 // Nearest.k is the compiler-proven maximum retained in the
                 // stable plan encoding. Literal K uses its exact value;
-                // parameterized K uses maximum_rows (the 499 page ceiling),
+                // parameterized K uses maximum_rows (the checked page ceiling),
                 // while row_limit retains the runtime parameter binding.
                 let k = match &nearest.k.value {
                     riffdb_riffql_syntax::Expression::Literal(
@@ -2291,14 +2289,12 @@ impl QueryCostAccumulator {
                 self.point_reads = checked_cost_add(self.point_reads, rows, self.primary_span)?;
             }
             QueryAccessKind::Nearest { .. } => {
-                // Exact KNN examines every row in the org partition, bounded
-                // only by the physical scan ceiling — the honest static charge
-                // is that ceiling, not K (charging the declared output rows
-                // under-billed a partition scan by orders of magnitude and
-                // left the runtime fuel unable to fund the real scan).
+                // Exact KNN examines every row in the org partition. Its
+                // existing provider-specific 500-row ceiling remains
+                // independent from ADR-0174's wider ordinary page ceiling.
                 self.scanned_index_rows = checked_cost_add(
                     self.scanned_index_rows,
-                    riffdb_query_ir::MAX_QUERY_SCANNED_ROWS,
+                    riffdb_types::MAX_EXACT_VECTOR_PARTITION_ROWS_V1,
                     self.primary_span,
                 )?;
             }
@@ -3277,7 +3273,7 @@ fn maximum_rows(
                 PlannerDiagnosticCode::Unbounded,
                 nearest.k.span,
                 vec![binding.name.value.as_str().to_owned()],
-                "nearest k must be a positive literal within the 499 page bound",
+                "nearest k must be a positive literal within the 65534 page bound",
                 None,
             )
         });
@@ -3298,7 +3294,7 @@ fn maximum_rows(
         }
         _ => None,
     }
-    .filter(|value| (1..=MAX_QUERY_ROWS).contains(value))
+    .filter(|value| (1..=riffdb_query_ir::max_query_page_take()).contains(value))
     .ok_or_else(|| {
         one(
             PlannerDiagnosticCode::Unbounded,

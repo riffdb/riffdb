@@ -14,8 +14,8 @@ The v1 planner accepts only:
   exactly one complete-key component through `in`, the target bound does not
   exceed the source bound, and a missing-target outcome is declared;
 - one wholly forward or wholly reverse traversal direction;
-- explicit application-visible row bounds no greater than the 499-row page
-  ceiling (the 500-row physical scan ceiling reserves one continuation probe).
+- explicit application-visible row bounds no greater than the 65,534-row page
+  ceiling (the 65,535-row physical scan ceiling reserves one continuation probe).
 
 Operational version-2 members may additionally use null/existence or binary
 prefix predicates when the selected contract index carries the matching sealed
@@ -212,16 +212,15 @@ existing maximum visible-field multiplier, and encoded bytes retain the fixed
 consumed as execution fuel, so these derived ceilings do not create ambient or
 unmetered read authority.
 
-A plain `Limit` parameter is charged at its complete 499-row page range.
-Therefore, two index scans each controlled by an independent plain `Limit`
-parameter require 998 aggregate index rows and fail a role whose whole-query
-allowance is only 500. Fixed `take` bounds let a multi-collection page divide
-that allowance deliberately. `Limit<MAX>` provides the runtime-selectable
-middle: each access is charged at its immutable declared `MAX`, and two uses
+Each `Limit<MAX>` access is charged at its immutable declared `MAX`; two uses
 of `Limit<100>` charge 200 rows even when a request submits smaller values.
-Defaults and submitted values never narrow static cost. The separate 500-row
+Fixed `take` bounds let a multi-collection page divide authority deliberately.
+Defaults and submitted values never narrow static cost. The separate 65,535-row
 physical scan ceiling reserves one row for a continuation probe; it is not an
-application-visible page size.
+application-visible page size. The 4 MiB encoded-result ceiling and all
+provider-, policy-, hydration-, authority-, and transport-specific ceilings
+remain independent, so a large structural maximum is not permission to exceed
+any of them.
 
 An ordinary cursor-paged ordered access treats the submitted runtime limit as
 invocation cardinality rather than continuation identity. The compiler derives
