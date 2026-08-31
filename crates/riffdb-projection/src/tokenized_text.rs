@@ -375,6 +375,18 @@ impl TokenizedTextPartitionIndexV1 {
             .map(|value| value.length)
     }
 
+    /// Complete token count for one field over this policy-aligned snapshot.
+    #[doc(hidden)]
+    pub fn total_field_length(&self, field: FieldId) -> Result<u64, TokenizedTextErrorV1> {
+        self.documents.values().try_fold(0_u64, |total, document| {
+            total
+                .checked_add(u64::from(
+                    document.fields.get(&field).map_or(0, |value| value.length),
+                ))
+                .ok_or(TokenizedTextErrorV1::DocumentLimit)
+        })
+    }
+
     /// Canonical row key and already policy-shaped output.
     #[must_use]
     pub fn row(&self, row: EntityKeyHash) -> Option<(&EntityKey, &CanonicalRecord)> {

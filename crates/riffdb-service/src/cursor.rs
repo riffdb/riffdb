@@ -15,8 +15,8 @@ use riffdb_types::{
     ActorId, ApplicationRoleHash, CanonicalValue, CapabilityId, CommitSequence, ContractBundleHash,
     ContractLineage, ContractVersion, EmbeddingMetadata, EntityKey, EntityTypeId,
     EventConsumerIdentityHash, EventConsumerRevision, EventId, FieldId, IndexEntryKey,
-    IndexEpochPosition, IndexId, MAX_CAPABILITY_FIELD_VISIBILITY, PartitionKey, ProjectionIdentity,
-    QueryParameterHash, QueryPlanHash, TenantScope,
+    IndexEpochPosition, IndexId, MAX_CAPABILITY_FIELD_VISIBILITY, PartitionKey,
+    ProjectionGeneration, ProjectionIdentity, QueryParameterHash, QueryPlanHash, TenantScope,
 };
 
 use crate::EventSelection;
@@ -1602,6 +1602,71 @@ pub(crate) struct QueryCursorState {
     admission_head_fenced: bool,
 }
 
+/// Registry-only ranked tokenized continuation bound to one retained provider snapshot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TokenizedTextCursorState {
+    next_offset: u32,
+    epoch: CommitSequence,
+    generation: ProjectionGeneration,
+    minimum_application_head: u64,
+    history_incarnation: u64,
+    statistics_identity: [u8; 32],
+    result_ceiling: u32,
+}
+
+impl TokenizedTextCursorState {
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub(crate) const fn new(
+        next_offset: u32,
+        epoch: CommitSequence,
+        generation: ProjectionGeneration,
+        minimum_application_head: u64,
+        history_incarnation: u64,
+        statistics_identity: [u8; 32],
+        result_ceiling: u32,
+    ) -> Self {
+        Self {
+            next_offset,
+            epoch,
+            generation,
+            minimum_application_head,
+            history_incarnation,
+            statistics_identity,
+            result_ceiling,
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn next_offset(&self) -> u32 {
+        self.next_offset
+    }
+    #[must_use]
+    pub(crate) const fn epoch(&self) -> CommitSequence {
+        self.epoch
+    }
+    #[must_use]
+    pub(crate) const fn generation(&self) -> ProjectionGeneration {
+        self.generation
+    }
+    #[must_use]
+    pub(crate) const fn minimum_application_head(&self) -> u64 {
+        self.minimum_application_head
+    }
+    #[must_use]
+    pub(crate) const fn history_incarnation(&self) -> u64 {
+        self.history_incarnation
+    }
+    #[must_use]
+    pub(crate) const fn statistics_identity(&self) -> [u8; 32] {
+        self.statistics_identity
+    }
+    #[must_use]
+    pub(crate) const fn result_ceiling(&self) -> u32 {
+        self.result_ceiling
+    }
+}
+
 /// Caller-reconstructible protected-consumer binding.
 ///
 /// The durable checkpoint is deliberately absent. It remains registry-only so
@@ -1706,6 +1771,7 @@ pub(crate) enum ServiceCursorLookup {
     ResourceDiscovery(ResourceDiscoveryCursorLookup),
     ApplicationCatalog(ApplicationCatalogCursorLookup),
     Query(QueryCursorLookup),
+    TokenizedText(QueryCursorLookup),
     EventConsumerProgress(EventConsumerProgressCursorLookup),
 }
 
@@ -1721,6 +1787,7 @@ pub(crate) enum ServiceCursorState {
     ResourceDiscovery(Arc<ResourceDiscoveryCursorState>),
     ApplicationCatalog(Arc<ApplicationCatalogCursorState>),
     Query(Arc<QueryCursorState>),
+    TokenizedText(Arc<TokenizedTextCursorState>),
     EventConsumerProgress(Arc<EventConsumerProgressCursorState>),
 }
 
@@ -2210,6 +2277,41 @@ impl ServiceCursorRegistries {
         )?;
         match state.as_ref() {
             ServiceCursorState::Query(state) => Ok(Arc::clone(state)),
+            _ => Err(CursorAccessError::Unavailable),
+        }
+    }
+
+    pub(crate) fn register_tokenized_text_unpublished(
+        &self,
+        principal: &ActorId,
+        lookup: QueryCursorLookup,
+        state: TokenizedTextCursorState,
+    ) -> Result<CursorPublicationGuard<'_>, CursorUnavailable> {
+        let registration = self.registry.register_replacing(
+            CursorBinding::new(
+                principal.clone(),
+                ServiceCursorLookup::TokenizedText(lookup),
+            ),
+            ServiceCursorState::TokenizedText(Arc::new(state)),
+        )?;
+        Ok(self.publication_guard_exclusive(registration))
+    }
+
+    pub(crate) fn resolve_tokenized_text(
+        &self,
+        token: CursorToken,
+        principal: &ActorId,
+        lookup: &QueryCursorLookup,
+    ) -> Result<Arc<TokenizedTextCursorState>, CursorAccessError> {
+        let state = self.registry.resolve(
+            token,
+            &CursorBinding::new(
+                principal.clone(),
+                ServiceCursorLookup::TokenizedText(lookup.clone()),
+            ),
+        )?;
+        match state.as_ref() {
+            ServiceCursorState::TokenizedText(state) => Ok(Arc::clone(state)),
             _ => Err(CursorAccessError::Unavailable),
         }
     }
@@ -2862,7 +2964,7 @@ mod tests {
                     token,
                     &CursorBinding::new(
                         principal.clone(),
-                        ServiceCursorLookup::Query(exact_lookup),
+                        ServiceCursorLookup::Query(exact_lookup.clone()),
                     ),
                 )
                 .expect("exact operational cursor resolves"),
@@ -2881,6 +2983,51 @@ mod tests {
                 Err(CursorAccessError::InvalidCursor)
             ));
         }
+
+        let ranked = registry
+            .register(
+                CursorBinding::new(
+                    principal.clone(),
+                    ServiceCursorLookup::TokenizedText(exact_lookup.clone()),
+                ),
+                9_u8,
+            )
+            .expect("ranked tokenized cursor registers")
+            .token();
+        assert_eq!(
+            *registry
+                .resolve(
+                    ranked,
+                    &CursorBinding::new(
+                        principal.clone(),
+                        ServiceCursorLookup::TokenizedText(exact_lookup.clone()),
+                    ),
+                )
+                .expect("exact ranked binding resolves"),
+            9
+        );
+        assert!(matches!(
+            registry.resolve(
+                ranked,
+                &CursorBinding::new(principal, ServiceCursorLookup::Query(exact_lookup)),
+            ),
+            Err(CursorAccessError::InvalidCursor)
+        ));
+    }
+
+    #[test]
+    fn ranked_tokenized_cursor_state_freezes_snapshot_and_result_ceiling() {
+        let epoch = CommitSequence::new(41).expect("epoch");
+        let generation = ProjectionGeneration::first();
+        let state = TokenizedTextCursorState::new(20, epoch, generation, 37, 3, [0x5a; 32], 1_000);
+
+        assert_eq!(state.next_offset(), 20);
+        assert_eq!(state.epoch(), epoch);
+        assert_eq!(state.generation(), generation);
+        assert_eq!(state.minimum_application_head(), 37);
+        assert_eq!(state.history_incarnation(), 3);
+        assert_eq!(state.statistics_identity(), [0x5a; 32]);
+        assert_eq!(state.result_ceiling(), 1_000);
     }
 
     #[test]

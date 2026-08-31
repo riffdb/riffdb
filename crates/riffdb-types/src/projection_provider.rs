@@ -34,6 +34,8 @@ pub enum ProjectionProviderKindV1 {
     Vector = 2,
     /// Partition-scoped exact binary UTF-8 text engine.
     ExactText = 3,
+    /// Partition-scoped tokenized text engine.
+    TokenizedText = 4,
 }
 
 /// Exact or explicitly bounded approximate result posture.
@@ -245,6 +247,7 @@ impl ProjectionProviderDescriptorV1 {
             1 => ProjectionProviderKindV1::Columnar,
             2 => ProjectionProviderKindV1::Vector,
             3 => ProjectionProviderKindV1::ExactText,
+            4 => ProjectionProviderKindV1::TokenizedText,
             _ => return Err(ProjectionProviderValidationError::UnknownProvider),
         };
         let recall = u16::from_be_bytes([bytes[8], bytes[9]]);
@@ -371,7 +374,9 @@ impl ProjectionProviderDescriptorV1 {
         match self.kind {
             ProjectionProviderKindV1::Columnar => AggregateSemanticSetV1::BOUNDED_EXACT_CORE,
             ProjectionProviderKindV1::ExactText => AggregateSemanticSetV1::EXACT_COUNT_ONLY,
-            ProjectionProviderKindV1::Vector => AggregateSemanticSetV1::NONE,
+            ProjectionProviderKindV1::Vector | ProjectionProviderKindV1::TokenizedText => {
+                AggregateSemanticSetV1::NONE
+            }
         }
     }
     /// Ranked authorization-shaping mode.
@@ -448,6 +453,13 @@ impl ProjectionProviderDescriptorV1 {
                 | ProjectionProviderCapabilitiesV1::WINDOW
                 | ProjectionProviderCapabilitiesV1::OUTPUT)
                 .bits(),
+            ProjectionProviderKindV1::TokenizedText => (ProjectionProviderCapabilitiesV1::CANDIDATE
+                | ProjectionProviderCapabilitiesV1::FILTER
+                | ProjectionProviderCapabilitiesV1::RANK
+                | ProjectionProviderCapabilitiesV1::ORDER
+                | ProjectionProviderCapabilitiesV1::WINDOW
+                | ProjectionProviderCapabilitiesV1::OUTPUT)
+                .bits(),
         };
         if self.capabilities.bits() & !supported != 0 {
             return Err(ProjectionProviderValidationError::UnsupportedCapability);
@@ -473,7 +485,9 @@ impl ProjectionProviderDescriptorV1 {
         }
         if matches!(
             self.kind,
-            ProjectionProviderKindV1::Columnar | ProjectionProviderKindV1::ExactText
+            ProjectionProviderKindV1::Columnar
+                | ProjectionProviderKindV1::ExactText
+                | ProjectionProviderKindV1::TokenizedText
         ) && !matches!(self.posture, ProjectionProviderPostureV1::Exact)
         {
             return Err(ProjectionProviderValidationError::InvalidPosture);

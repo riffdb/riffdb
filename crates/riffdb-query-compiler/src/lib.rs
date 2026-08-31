@@ -4,9 +4,11 @@
 
 mod exact_predicate;
 mod reactive;
+mod tokenized_text;
 
 pub use exact_predicate::*;
 pub use reactive::*;
+pub use tokenized_text::*;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
@@ -994,7 +996,7 @@ pub enum PlannerDiagnosticCode {
     Cardinality,
     /// Operational predicates require finite-family compilation.
     OperationalFamilyRequired,
-    /// Exact text provider declaration is unsupported or exceeds a bound.
+    /// Exact or tokenized text provider declaration is unsupported or exceeds a bound.
     ExactTextProvider,
     /// Every cardinality is bounded, but the bounded whole-request cost is over
     /// a closed planner ceiling. Distinct from `Unbounded`: the author declared

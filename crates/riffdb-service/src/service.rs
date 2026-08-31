@@ -182,6 +182,7 @@ pub struct ServiceProviders {
     pub(crate) contextual_causation: Option<ContextualCausationTokenCodec>,
     pub(crate) columnar: Option<Arc<dyn ColumnarProjectionPort>>,
     pub(crate) exact_text: Option<Arc<dyn crate::ExactTextProjectionPort>>,
+    pub(crate) tokenized_text: Option<Arc<dyn crate::TokenizedTextProjectionPort>>,
     pub(crate) exact_predicate: Option<Arc<dyn crate::ExactPredicateProjectionPort>>,
     pub(crate) vector_projection: Option<Arc<dyn crate::VectorProjectionPort>>,
 }
@@ -238,6 +239,7 @@ impl ServiceProviders {
             contextual_causation: None,
             columnar: None,
             exact_text: None,
+            tokenized_text: None,
             exact_predicate: None,
             vector_projection: None,
         }
@@ -306,6 +308,16 @@ impl ServiceProviders {
     #[must_use]
     pub fn with_exact_text(mut self, exact_text: Arc<dyn crate::ExactTextProjectionPort>) -> Self {
         self.exact_text = Some(exact_text);
+        self
+    }
+
+    /// Installs the bounded tokenized-text provider.
+    #[must_use]
+    pub fn with_tokenized_text(
+        mut self,
+        tokenized_text: Arc<dyn crate::TokenizedTextProjectionPort>,
+    ) -> Self {
+        self.tokenized_text = Some(tokenized_text);
         self
     }
 

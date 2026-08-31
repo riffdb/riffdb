@@ -90,7 +90,9 @@ bounded `in`, `&&`, and `||`. Exact-result language V6 additionally recognizes
 bounded `not_in`, `starts_with`, `ends_with`, and `contains` while compiling a
 provider-independent semantic family. See
 [Exact Predicate and Order Families](EXACT-PREDICATES.md) for its stricter
-shape and current activation status. RiffQL has no mutation, SQL escape,
+shape and current activation status. Tokenized-text language V10 adds four
+compiler-sealed `matching` shapes and the optional fixed `riff_bm25_v1` order;
+see [Tokenized Text Search](TOKENIZED-TEXT.md). RiffQL has no mutation, SQL escape,
 function call, recursion,
 loop, callback, clock, randomness, network, filesystem, group-by, unrestricted
 scan, or arbitrary join.

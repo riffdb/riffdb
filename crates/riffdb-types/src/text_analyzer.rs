@@ -10,6 +10,11 @@ use crate::unicode_fold_v1;
 
 /// Unicode revision frozen by both `standard_v1` segmentation and folding.
 pub const TEXT_ANALYZER_V1_UNICODE_VERSION: (u64, u64, u64) = (17, 0, 0);
+/// Immutable semantic schema digest of tokenized provider-state V1.
+pub const TOKENIZED_TEXT_PROVIDER_STATE_SCHEMA_HASH_V1: [u8; 32] = [
+    0x8e, 0x32, 0x7e, 0x0e, 0x53, 0xa3, 0x01, 0xe0, 0x3c, 0xe3, 0xbe, 0x04, 0xec, 0xe5, 0x7c, 0x3a,
+    0x94, 0x87, 0x83, 0x94, 0x9a, 0xc1, 0x01, 0x3d, 0x52, 0x16, 0x7f, 0x88, 0xd1, 0xe4, 0xd3, 0x0c,
+];
 
 /// Closed tokenized-text analyzer vocabulary for ADR-0173 v1.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

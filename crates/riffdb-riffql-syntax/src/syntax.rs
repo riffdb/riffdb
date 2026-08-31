@@ -20,6 +20,8 @@ pub const RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1: u32 = 7;
 pub const RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1: u32 = 8;
 /// Compiler-declared bounded runtime page-limit language version.
 pub const RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1: u32 = 9;
+/// Compiler-sealed tokenized boolean matching.
+pub const RIFFQL_LANGUAGE_VERSION_TOKENIZED_TEXT_V1: u32 = 10;
 /// Maximum compiler-declared causal projection wait.
 pub const MAX_PROJECTED_CAUSAL_WAIT_MS: u32 = 30_000;
 /// Maximum compiler-declared bounded projection lag.
@@ -250,11 +252,50 @@ pub struct Binding {
     /// Nearest-neighbor search clause (ADR-0091). When present, replaces
     /// `order by` + `take` for a `many` binding.
     pub nearest: Option<NearestClause>,
+    /// Compiler-sealed tokenized text match clause.
+    pub tokenized_match: Option<TokenizedMatchClause>,
     /// Declared absence or missing-target outcome.
     ///
     /// This is required by `one`; the planner also requires it for a bounded
     /// dependent point batch sourced from an earlier `many`.
     pub absence_outcome: Option<Spanned<Identifier>>,
+}
+
+/// One compiler-owned tokenized match over a declared text index.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TokenizedMatchClause {
+    /// Contract text-index source name.
+    pub index: Spanned<Identifier>,
+    /// Closed compile-time match structure.
+    pub kind: Spanned<TokenizedMatchKind>,
+    /// Typed bounded string parameter analyzed by the declared index.
+    pub query: Spanned<Identifier>,
+    /// Provider-owned result order; boolean key order when omitted.
+    pub ranking: TokenizedRanking,
+    /// Complete clause span.
+    pub span: Span,
+}
+
+/// Closed tokenized result ordering vocabulary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TokenizedRanking {
+    /// Canonical entity-key order with no score computation.
+    Boolean,
+    /// Frozen provider-owned fixed-point relevance order.
+    RiffBm25V1,
+}
+
+/// Closed tokenized boolean vocabulary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TokenizedMatchKind {
+    /// Every analyzed query term must occur.
+    Conjunction,
+    /// At least one analyzed query term must occur.
+    Disjunction,
+    /// Terms must occupy consecutive positions in one field.
+    Phrase,
+    /// Ordered adjacent terms must be within the compiled distance.
+    Proximity(u16),
 }
 
 /// Bounded page clause.

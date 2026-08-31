@@ -184,9 +184,22 @@ the latter independently, and refuses any mismatch, unknown version, duplicate,
 noncanonical position, excessive value, or identity error. Authoritative entity
 and commit state never depends on the segment.
 
-This stage is private provider machinery. No application can select its
-format, analyzer, partition, generation, checkpoint, rebuild, or fallback, and
-no public tokenized query is claimed until the separately gated boolean stage.
+Named tokenized queries now execute through the same API-neutral application
+service and generated transport surfaces as every other immutable query. The
+compiler seals one of conjunction, capped disjunction, phrase, or bounded
+proximity and may additionally seal the fixed `riff_bm25_v1` order. Request-time
+execution reads only a ready maintained posting generation. The background
+worker alone takes the bounded authoritative snapshot, applies the complete
+row-policy admission set, builds the segment, and publishes its checkpoint.
+
+Boolean results use canonical entity-key order. Ranked results calculate their
+statistics only from that policy-aligned snapshot and pin the admission head,
+provider epoch and generation, statistics identity, parameters, authority, and
+result ceiling in an opaque registry cursor. Eight provider epochs are retained
+per registered query shape; a continuation whose epoch has retired fails typed
+rather than rescanning or reranking. No application can select the format,
+analyzer, field, operator, score, partition, generation, checkpoint, rebuild,
+provider, scan, or fallback.
 
 ## Reactive application path
 
