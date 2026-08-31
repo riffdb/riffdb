@@ -1556,6 +1556,66 @@ contract Invalid version 1 {
     parse_contract(source).expect_err("partial ANN authority must be unrepresentable");
 }
 
+#[test]
+fn parses_atomic_text_index_with_weighted_fields_and_frozen_options() {
+    let source = r#"
+contract Search version 1 {
+  entity Document {
+    key (id: uuid)
+    field title: string<256>
+    field body: string<65536>
+    text_index search((title weight 4, body weight 1), analyzer standard_v1, staleness_slo 60, replay_age_seconds 86400, replay_bytes 1073741824, replay_backlog 100000, result boolean_v1, max_terms 16, max_candidates 10000, max_results 1000)
+  }
+}
+"#;
+    let document = parse_contract(source).expect("text index declaration parses");
+    let Declaration::Entity(entity) = &document.contract.value.declarations[0].value else {
+        panic!("entity declaration");
+    };
+    let text_index = entity
+        .items
+        .iter()
+        .find_map(|item| match &item.value {
+            EntityItem::TextIndex(index) => Some(index),
+            _ => None,
+        })
+        .expect("text index retained in AST");
+    assert_eq!(text_index.name.value, "search");
+    assert_eq!(text_index.analyzer.value, "standard_v1");
+    assert_eq!(text_index.result_model.value, "boolean_v1");
+    assert_eq!(
+        text_index
+            .source_fields
+            .iter()
+            .map(|source| (
+                source.value.field.value.as_str(),
+                source.value.weight.value.as_str()
+            ))
+            .collect::<Vec<_>>(),
+        [("title", "4"), ("body", "1")]
+    );
+}
+
+#[test]
+fn text_index_option_words_remain_ordinary_identifiers() {
+    let source = r#"
+contract Compat version 1 {
+  entity Row {
+    key (id: uuid)
+    field analyzer: string<8>
+    field standard_v1: string<8>
+    field keyword_v1: string<8>
+    field weight: u64
+    field boolean_v1: string<8>
+    field max_terms: u64
+    field max_candidates: u64
+    field max_results: u64
+  }
+}
+"#;
+    parse_contract(source).expect("contextual text-index words remain identifiers");
+}
+
 // ─── Secret field classification is contextual (ADR-0118, WP-597) ───
 
 /// `field secret name: type` records the classification with the modifier's

@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 1.21 | 2026-08-31 | Accepted ADR-0173 and registered `FTS-001` through `FTS-004` plus WP-729 for the tokenized-text declaration and analyzer stage. ADR-0173 explicitly refines ADR-0092: tokenized-search v1 has exactly `keyword_v1` and Unicode-17 `standard_v1`, ranking statistics are scoped to the caller's authorized set at the fenced snapshot, and the boolean vocabulary is conjunction, compiler-capped disjunction, phrase, and bounded proximity. The declaration freezes positive integer per-field weights, analyzer identity, staleness and replay bounds, the `boolean_v1` result model, and compiler-owned term/candidate/result ceilings into additive contract IR identity. Durable segments, matching, and ranking remain separately staged. |
 | 1.20 | 2026-08-30 | Accepted ADR-0171. Amended `PERF-008` and `PERF-018`: the five-generation central-three stability rule (`x4 / x2` at most 1.20) binds the gated backend only. RiffDB's qualified p50 and p95 must satisfy it on every scenario and profile, unchanged. Safe-application PostgreSQL MUST still run in every generation and its five-value summary and spread MUST be computed and published, and a comparator spread above 1.20 MUST be disclosed in the receipt, but it no longer invalidates the evidence. ADR-0142 already made unary PostgreSQL ratios disclosure rather than gates, yet the integrity rule was written "for each backend", so a comparator RiffDB cannot influence could block a release; a 1,000-operation receipt run measured RiffDB stable on all fourteen scenarios (1.002 to 1.028) and PostgreSQL over the limit on five, and ADR-0146's larger generations moved which scenarios fail rather than fixing them. Host validity, correctness, comparator-input drift, retained extremes, and the retry prohibition remain invalidating for either backend, and every PostgreSQL ratio remains mandatory published disclosure. The baseline receipt records `method.stability_rule_binds`, so a candidate measured under the previous rule fails method-drift rather than comparing against a baseline that meant something different. No durable format, storage key, protocol, or provider algorithm changes. |
 | 1.19 | 2026-08-29 | Accepted ADR-0170 and registered WP-721. Amended `PERF-005`: a command's `create` and `mutate` bindings MUST derive one identical partition route but MAY belong to different aggregates within that partition, in which case the command's logical conflict keys are the union of the conflict keys its bindings derive and that complete union MUST be statically enumerable. Cross-partition writes remain rejected; the rejected case narrows from multi-aggregate to cross-partition. The change is admitted on measurement: a coarse `conflict_key` does not serialise writers, so splitting a partition-local write across two aggregates costs a second durable commit for no measured scalability, and the restriction cannot be defended on concurrency grounds. WP-721 implements it at executable IR V19 under ADR-0126's least-sufficient writer rule, so a command writing one aggregate keeps its existing bytes, plan hash, and application lock; `RDB-C017` now rejects only a write whose bindings derive different partition routes. The canonical lease order over `(aggregate, conflict key)` was already in place. Two proofs remain outstanding and are tracked by WP-721: a deadlock arm that fails under an arbitrary acquisition order, and a crash arm proving a command writing two aggregates is atomic across a restart. No durable format, storage key, protocol, or provider algorithm changes. |
 | 1.18 | 2026-08-29 | Accepted ADR-0167, ADR-0168, and ADR-0169 from the contract/query/migration language design review. Amended `OQ-062`: a `Limit` parameter MUST declare its maximum and the unbounded spelling is not accepted in source, because an unbounded `Limit` is charged and authorized at the 499-row type maximum whatever default it declares. Every V1-V8/V1-V11/V1-V11 artifact remains byte-exact and readable. Source declaring an unbounded `Limit` is rejected from RiffQL V9 onward and must declare a maximum; already-compiled modules that encode an unbounded runtime limit remain readable and replayable and are not rewritten. Consequently every parameterised page is RiffQL V9 and query-module format V12, and an exact-predicate family, which requires a typed limit parameter, can no longer be expressed at V9 or V10. An existing index identity MAY now gain or change a cover through the receipted migration path, which derives an index rebuild and reconstructs every entry from the post-image. An aggregate root is not required to be materialized. New planner diagnostic RDB-QP010 separates a bounded whole-request cost over a closed ceiling from an unbounded one and reports the charged amount and the ceiling. No durable format, storage key, protocol, or provider algorithm changes. |
@@ -8874,6 +8875,37 @@ The `QSO-*` prefix registers ADR-0128's named-query secret-output family.
   bounded cascades, and atomic verification consumption. It MUST NOT introduce
   a read-only command solely to reveal stored secret query data; real state
   transitions may retain declared one-time secret outcomes under SECF-006.
+
+### 24.5.14 Tokenized text-search declarations and analyzers
+
+The `FTS-*` prefix registers ADR-0092 as refined by ADR-0173. Exact-text
+matching under `OQ-025` through `OQ-030` remains a separate provider.
+
+- `FTS-001`: A contract MAY declare a `text_index` over one to 1,024 distinct
+  bounded string fields on one entity. Every field has a positive integer
+  weight of at most 10,000. The declaration MUST freeze one analyzer identity,
+  a positive stale-entity threshold, positive replay-age/byte/backlog ceilings,
+  the closed `boolean_v1` result model, and positive maximum term, candidate,
+  and result-window budgets. The result window MUST NOT exceed the candidate
+  ceiling. These are compiler-owned contract inputs, never request parameters.
+- `FTS-002`: The v1 analyzer set MUST be exactly `keyword_v1` and
+  `standard_v1`. `keyword_v1` emits the complete source value as exactly one
+  term, including an empty value. `standard_v1` performs Unicode 17.0.0 UAX #29
+  word segmentation and then applies ADR-0172's `unicode_fold_v1` separately to
+  each emitted word. Analyzer output is deterministic, position preserving,
+  and versioned; an analyzer behavior change requires a new identity and a
+  rebuild rather than an in-place upgrade.
+- `FTS-003`: The compiler MUST reject an empty or repeated source list,
+  unknown or non-string fields, unknown analyzer/result identities, zero or
+  excessive weights and budgets, invalid replay/staleness bounds, and a result
+  window above the candidate ceiling. Every rejection MUST name the failing
+  condition and carry the narrow source span; it MUST NOT silently deduplicate,
+  truncate, substitute a scan, or accept a caller-selected cost control.
+- `FTS-004`: A `text_index` declaration MUST enter canonical contract schema,
+  bundle, plan, and application identity through the least-sufficient additive
+  version, with canonical field-ID order and versioned compatibility fixtures.
+  A contract without `text_index` MUST retain its prior least-sufficient bytes.
+  Changing an analyzer or field weight MUST change index and bundle identity.
 
 The Deployable Application Alpha milestone is complete only when WP-550 through
 WP-570, WP-572 through WP-579, and WP-597, WP-598, and WP-600 pass in dependency

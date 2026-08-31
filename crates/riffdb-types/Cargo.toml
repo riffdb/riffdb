@@ -18,6 +18,11 @@ caseless = { version = "=0.2.2", default-features = false }
 hmac = { version = "0.13.0", default-features = false }
 sha2 = { version = "0.11.0", default-features = false }
 unicode-normalization = { version = "=0.1.25", default-features = false, features = ["std"] }
+# ADR-0173: `standard_v1` durable term identity is Unicode 17.0.0 UAX #29
+# word segmentation followed by `unicode_fold_v1`. Exact pinning and the
+# analyzer conformance test prevent a dependency bump from silently changing
+# deployed index contents.
+unicode-segmentation = { version = "=1.13.3", default-features = false }
 
 [dev-dependencies]
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }

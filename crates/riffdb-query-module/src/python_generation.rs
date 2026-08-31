@@ -159,6 +159,7 @@ fn locate_contract_symbol(source: &str, path: &[String]) -> Option<(u32, u32)> {
                     | EntityItem::Index(_)
                     | EntityItem::Unique(_)
                     | EntityItem::Reference(_)
+                    | EntityItem::TextIndex(_)
                     | EntityItem::VectorField(_) => None,
                 })
             })

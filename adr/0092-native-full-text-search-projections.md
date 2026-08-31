@@ -6,6 +6,9 @@
 - **Related:** ADR-0086 (projection plane), ADR-0087 (ad-hoc grammar
   governance), ADR-0091 (vector search; shares the per-tenant
   corpus-statistics rule)
+- **Amended by:** ADR-0173, which freezes the v1 analyzer and boolean-match
+  vocabularies and narrows scoring statistics from the organization to the
+  caller's authorized set
 
 ## Context
 
@@ -30,6 +33,12 @@ included, and compaction is result-invariant in the strict sense.
 
 ### 2. Corpus statistics are per-organization (the inference rule)
 
+> **Amended by ADR-0173:** corpus statistics are scoped to the complete set
+> authorized for the caller at the fenced snapshot, not to every row in the
+> physical organization partition. The per-organization rule below remains the
+> outer partition boundary; its stated same-organization residual channel is
+> removed.
+
 Relevance scoring uses corpus-wide statistics (document frequencies, field
 length norms). Computed globally, they are an inference channel: a score can
 reveal the existence of documents the principal cannot see. Therefore all
@@ -43,6 +52,11 @@ same-org documents outside the principal's row policy — is stated policy,
 mirroring 0086 §5's "beyond stated policy" boundary.)
 
 ### 3. Analyzers are declared, versioned contract surface
+
+> **Amended by ADR-0173:** the closed first vocabulary is exactly
+> `keyword_v1` and `standard_v1`. The tentative simple, language-default
+> stemming, and language-tailored vocabulary below is superseded; stemming and
+> language packs require new versioned analyzer identities and accepted work.
 
 Tokenization is declared per text field (analyzer name + version + language
 where applicable) in the projection definition. Analyzer output feeds the
@@ -64,6 +78,12 @@ over integers with documented rounding. Rank ties break by primary key
 ascending, matching the engine's sort tie-break everywhere else.
 
 ### 5. Grammar
+
+> **Amended by ADR-0173:** boolean membership is conjunction,
+> compiler-capped disjunction, phrase, and bounded proximity over analyzed
+> terms. Prefix remains an exact-text question and is not a tokenized-search
+> v1 operator. Applications invoke finite named operations and never submit
+> fields, operators, analyzers, or provider choices.
 
 New predicates entering the 0087 surface by this amendment: `match(field,
 $query)`, `phrase(field, $query)`, and `prefix(field, $term)`, plus ordering

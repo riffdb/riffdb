@@ -165,6 +165,78 @@ pub(crate) fn vector_field_item(
     ))
 }
 
+/// Builds the atomic ADR-0173 `text_index` declaration while keeping every
+/// option name contextual outside this declaration.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn text_index_item(
+    name: Spanned<String>,
+    source_fields: Vec<Spanned<TextIndexSourceDeclaration>>,
+    analyzer_keyword: Spanned<String>,
+    analyzer: Spanned<String>,
+    slo_keyword: Spanned<String>,
+    staleness_slo: Spanned<String>,
+    age_keyword: Spanned<String>,
+    replay_age_seconds: Spanned<String>,
+    bytes_keyword: Spanned<String>,
+    replay_bytes: Spanned<String>,
+    backlog_keyword: Spanned<String>,
+    replay_backlog: Spanned<String>,
+    result_keyword: Spanned<String>,
+    result_model: Spanned<String>,
+    terms_keyword: Spanned<String>,
+    max_terms: Spanned<String>,
+    candidates_keyword: Spanned<String>,
+    max_candidates: Spanned<String>,
+    results_keyword: Spanned<String>,
+    max_results: Spanned<String>,
+    lo: usize,
+    hi: usize,
+) -> Result<Spanned<EntityItem>, SyntaxDiagnostic> {
+    for (keyword, expected) in [
+        (&analyzer_keyword, "analyzer"),
+        (&slo_keyword, "staleness_slo"),
+        (&age_keyword, "replay_age_seconds"),
+        (&bytes_keyword, "replay_bytes"),
+        (&backlog_keyword, "replay_backlog"),
+        (&result_keyword, "result"),
+        (&terms_keyword, "max_terms"),
+        (&candidates_keyword, "max_candidates"),
+        (&results_keyword, "max_results"),
+    ] {
+        if keyword.value != expected {
+            return Err(SyntaxDiagnostic::new(
+                SyntaxDiagnosticCode::InvalidToken,
+                keyword.span,
+            ));
+        }
+    }
+    for source in &source_fields {
+        if source.value.weight_keyword.value != "weight" {
+            return Err(SyntaxDiagnostic::new(
+                SyntaxDiagnosticCode::InvalidToken,
+                source.value.weight_keyword.span,
+            ));
+        }
+    }
+    Ok(spanned(
+        EntityItem::TextIndex(TextIndexDeclaration {
+            name,
+            source_fields,
+            analyzer,
+            staleness_slo,
+            replay_age_seconds,
+            replay_bytes,
+            replay_backlog,
+            result_model,
+            max_terms,
+            max_candidates,
+            max_results,
+        }),
+        lo,
+        hi,
+    ))
+}
+
 /// Builds the atomic production-vector clause while keeping its vocabulary
 /// contextual outside `vector_field(...)`.
 #[allow(clippy::too_many_arguments)]
@@ -862,6 +934,7 @@ const EXPECTED_TOKEN_NAMES: &[&str] = &[
     "unique",
     "reference",
     "vector_field",
+    "text_index",
     "cosine",
     "euclidean",
     "dot_product",
@@ -1043,6 +1116,21 @@ impl NodeCounter {
                             self.add(1, item.span)?;
                             self.name(&vector_field.name)?;
                             self.names(&vector_field.source_fields, item.span)?;
+                        }
+                        EntityItem::TextIndex(text_index) => {
+                            self.add(1, item.span)?;
+                            self.name(&text_index.name)?;
+                            self.collection(
+                                text_index.source_fields.len(),
+                                MAX_LIST_ITEMS,
+                                item.span,
+                            )?;
+                            for source in &text_index.source_fields {
+                                self.add(1, source.span)?;
+                                self.name(&source.value.field)?;
+                            }
+                            self.name(&text_index.analyzer)?;
+                            self.name(&text_index.result_model)?;
                         }
                         EntityItem::DeletePolicy(policy) => {
                             self.add(1, item.span)?;

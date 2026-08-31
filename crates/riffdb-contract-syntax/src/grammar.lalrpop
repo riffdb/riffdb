@@ -215,6 +215,41 @@ EntityItem: Spanned<EntityItem> = {
             lo,
             hi,
         )),
+    <lo:@L> "text_index" <name:Identifier> "(" "(" <source_fields:TextIndexSourceList> ")"
+        "," <analyzer_keyword:Identifier> <analyzer:Identifier>
+        "," <slo_keyword:Identifier> <staleness_slo:UnsignedInteger>
+        "," <age_keyword:Identifier> <replay_age_seconds:UnsignedInteger>
+        "," <bytes_keyword:Identifier> <replay_bytes:UnsignedInteger>
+        "," <backlog_keyword:Identifier> <replay_backlog:UnsignedInteger>
+        "," <result_keyword:Identifier> <result_model:Identifier>
+        "," <terms_keyword:Identifier> <max_terms:UnsignedInteger>
+        "," <candidates_keyword:Identifier> <max_candidates:UnsignedInteger>
+        "," <results_keyword:Identifier> <max_results:UnsignedInteger>
+        ")" <hi:@R>
+        =>? parser::grammar_result(parser::text_index_item(
+            name,
+            source_fields,
+            analyzer_keyword,
+            analyzer,
+            slo_keyword,
+            staleness_slo,
+            age_keyword,
+            replay_age_seconds,
+            bytes_keyword,
+            replay_bytes,
+            backlog_keyword,
+            replay_backlog,
+            result_keyword,
+            result_model,
+            terms_keyword,
+            max_terms,
+            candidates_keyword,
+            max_candidates,
+            results_keyword,
+            max_results,
+            lo,
+            hi,
+        )),
     <lo:@L> "delete_policy" "no_inbound" <hi:@R>
         => parser::spanned(EntityItem::DeletePolicy(DeletePolicyDeclaration::NoInbound), lo, hi),
     <lo:@L> "delete_policy" "restrict" <source_entity:Identifier> "." <index:Identifier> <hi:@R>
@@ -226,6 +261,20 @@ EntityItem: Spanned<EntityItem> = {
         => parser::spanned(EntityItem::DeletePolicy(DeletePolicyDeclaration::Cascade {
             relationships,
         }), lo, hi),
+};
+
+TextIndexSourceList: Vec<Spanned<TextIndexSourceDeclaration>> = {
+    => Vec::new(),
+    <head:TextIndexSource> <tail:("," <TextIndexSource>)*> <_trailing:Comma?> => {
+        let mut values = vec![head];
+        values.extend(tail);
+        values
+    },
+};
+
+TextIndexSource: Spanned<TextIndexSourceDeclaration> = {
+    <lo:@L> <field:Identifier> <weight_keyword:Identifier> <weight:UnsignedInteger> <hi:@R>
+        => parser::spanned(TextIndexSourceDeclaration { field, weight_keyword, weight }, lo, hi),
 };
 
 VectorProductionClause: VectorProductionDeclaration = {
@@ -1003,6 +1052,7 @@ extern {
         "unique" => Token::Unique,
         "reference" => Token::Reference,
         "vector_field" => Token::VectorField,
+        "text_index" => Token::TextIndex,
         "delete_policy" => Token::DeletePolicy,
         "no_inbound" => Token::NoInbound,
         "restrict" => Token::Restrict,

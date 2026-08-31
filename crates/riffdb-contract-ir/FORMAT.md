@@ -587,6 +587,8 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 8 | `vector_field_specs` | IR v6+: optional u32 marker 0xfffffffb + u32 count + VectorFieldSpecV1[]; omitted when empty |
 | 9 | `secret_field_specs` | IR v8+: optional u32 marker 0xfffffff8 + u32 count + SecretFieldSpecV1[]; omitted when empty |
 | 10 | `vector_ann_specs` | IR v12+: optional u32 marker 0xfffffff7 + u32 count + VectorAnnSpecV1[]; omitted when empty |
+| 11 | `vector_production_specs` | IR v15+: optional u32 marker 0xfffffff5 + u32 count + VectorProductionSpecV1[]; omitted when empty |
+| 12 | `text_index_specs` | IR v20+: optional u32 marker 0xfffffff4 + u32 count + TextIndexSpecV1[]; omitted when empty |
 
 ### RelationshipSchema
 
@@ -653,6 +655,23 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 5 | `replay_age_seconds` | u64 (1..=31536000) |
 | 6 | `replay_bytes` | u64 (1..=1099511627776) |
 | 7 | `replay_backlog` | u64 (1..=100000000) |
+
+### TextIndexSpecV1
+
+| # | Field | Encoding |
+|---:|---|---|
+| 1 | `entity` | EntityTypeId |
+| 2 | `index` | IndexId |
+| 3 | `analyzer` | u8 (0x01 keyword_v1, 0x02 standard_v1) |
+| 4 | `source_fields` | u32 count + canonical (FieldId, u32 weight)[] |
+| 5 | `stale_entity_count_threshold` | u32 positive stale-entity count threshold |
+| 6 | `replay_age_seconds` | u64 (1..=31536000) |
+| 7 | `replay_bytes` | u64 (1..=1099511627776) |
+| 8 | `replay_backlog` | u64 (1..=100000000) |
+| 9 | `result_model` | u8 (0x01 boolean_v1) |
+| 10 | `max_terms` | u32 (1..=1024) |
+| 11 | `max_candidates` | u32 (1..=1000000) |
+| 12 | `max_results` | u32 (1..=65536 and <= max_candidates) |
 
 ### EntitySchema
 

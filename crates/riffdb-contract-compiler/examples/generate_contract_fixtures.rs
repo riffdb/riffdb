@@ -300,6 +300,25 @@ contract ProductionEmbeddingShape version 1 {
 }
 "#;
 
+/// Tokenized-text declaration fixture (ADR-0173 / WP-729): pins the V20
+/// schema extension, both weighted sources, analyzer, result model, and every
+/// compiler-owned lifecycle/work ceiling.
+const TEXT_INDEX_SOURCE: &str = r#"
+contract TextIndexShape version 1 {
+  entity Document {
+    key (org_id: uuid, doc_id: uuid)
+    field title: string<256>
+    field body: optional<string<65536>>
+    text_index search((title weight 4, body weight 1), analyzer standard_v1, staleness_slo 60, replay_age_seconds 86400, replay_bytes 1073741824, replay_backlog 100000, result boolean_v1, max_terms 16, max_candidates 10000, max_results 1000)
+  }
+  aggregate Documents {
+    root Document
+    partition_by org_id
+    conflict_key (org_id, doc_id)
+  }
+}
+"#;
+
 /// Aggregate collection-byte fixture (ADR-0147 / WP-678): pins the V16
 /// correlated input/graph proof without naming an external framework.
 const AGGREGATE_COLLECTION_BUDGET_SOURCE: &str = r#"
@@ -420,6 +439,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .ok_or("production embedding fixture command is absent")?,
         )
         .render_text(),
+    )?;
+
+    let text_index_bundle = compile_contract_source(TEXT_INDEX_SOURCE)?;
+    let text_index_root = fixture_root.join("text-index");
+    fs::create_dir_all(&text_index_root)?;
+    fs::write(text_index_root.join("contract.riff"), TEXT_INDEX_SOURCE)?;
+    fs::write(
+        text_index_root.join("bundle.bin"),
+        text_index_bundle.canonical_bytes(),
+    )?;
+    fs::write(
+        text_index_root.join("bundle-hash.txt"),
+        format!("{}\n", hex(text_index_bundle.bundle_hash().as_bytes())),
     )?;
 
     let aggregate_collection_bundle = compile_contract_source(AGGREGATE_COLLECTION_BUDGET_SOURCE)?;
@@ -3189,6 +3221,18 @@ fn diagnostic_snapshots() -> Result<String, Box<dyn Error>> {
                 "command ReadDigest { input tenant_id: uuid input row_id: uuid ",
                 "read Row(tenant_id, row_id) as row else Missing {} ",
                 "return Found { digest: row.digest } } }",
+            )
+            .to_owned(),
+        ),
+        (
+            "RDB-C047-invalid-text-index",
+            CompilerDiagnosticCode::InvalidTextIndex,
+            concat!(
+                "contract InvalidTextIndex version 1 { ",
+                "entity Document { key (tenant_id: uuid, document_id: uuid) field title: string<256> ",
+                "text_index search((title weight 1), analyzer custom_v1, staleness_slo 1, ",
+                "replay_age_seconds 1, replay_bytes 1, replay_backlog 1, result boolean_v1, ",
+                "max_terms 1, max_candidates 1, max_results 1) } }",
             )
             .to_owned(),
         ),

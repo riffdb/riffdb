@@ -207,6 +207,8 @@ pub enum EntityItem {
     Reference(ReferenceDeclaration),
     /// A declared vector field for nearest-neighbor search.
     VectorField(VectorFieldDeclaration),
+    /// A declared tokenized text-search projection.
+    TextIndex(TextIndexDeclaration),
     /// The only compiler-owned policy under which current state may be deleted.
     DeletePolicy(DeletePolicyDeclaration),
 }
@@ -401,6 +403,44 @@ pub struct VectorAnnDeclaration {
     pub row_threshold: Spanned<String>,
     /// Required recall ratio in integer basis points (`1..=10_000`).
     pub recall_target_bps: Spanned<String>,
+}
+
+/// One contract-declared tokenized text-search projection (ADR-0173).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TextIndexDeclaration {
+    /// Stable index name in the entity's index namespace.
+    pub name: Spanned<String>,
+    /// Weighted source fields in source order.
+    pub source_fields: Vec<Spanned<TextIndexSourceDeclaration>>,
+    /// Contextual closed analyzer identity.
+    pub analyzer: Spanned<String>,
+    /// Positive stale-entity count threshold lexeme.
+    pub staleness_slo: Spanned<String>,
+    /// Maximum retained replay age in seconds.
+    pub replay_age_seconds: Spanned<String>,
+    /// Maximum retained replay bytes.
+    pub replay_bytes: Spanned<String>,
+    /// Maximum retained sequence backlog.
+    pub replay_backlog: Spanned<String>,
+    /// Contextual closed result-model identity.
+    pub result_model: Spanned<String>,
+    /// Maximum analyzed terms accepted by one compiled query.
+    pub max_terms: Spanned<String>,
+    /// Maximum exact candidates admitted before result production.
+    pub max_candidates: Spanned<String>,
+    /// Maximum addressable result window.
+    pub max_results: Spanned<String>,
+}
+
+/// One weighted source field in a [`TextIndexDeclaration`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TextIndexSourceDeclaration {
+    /// Existing bounded string field on the same entity.
+    pub field: Spanned<String>,
+    /// Contextual `weight` keyword span, validated by the parser.
+    pub weight_keyword: Spanned<String>,
+    /// Positive integer relevance weight lexeme.
+    pub weight: Spanned<String>,
 }
 
 /// The grammar's closed distance metric keywords.

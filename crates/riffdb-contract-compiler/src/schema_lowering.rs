@@ -229,6 +229,37 @@ pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerD
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let text_index_specs = hir
+        .entities
+        .iter()
+        .flat_map(|entity| {
+            entity.text_indexes.iter().map(|text_index| {
+                let source_fields = text_index
+                    .source_fields
+                    .iter()
+                    .map(|(field, weight)| {
+                        riffdb_contract_ir::TextIndexSourceV1::new(*field, *weight)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                riffdb_contract_ir::TextIndexSpecV1::new(
+                    entity.id,
+                    text_index.index_id,
+                    text_index.analyzer,
+                    source_fields,
+                    text_index.stale_entity_count_threshold,
+                    text_index.replay_age_seconds,
+                    text_index.replay_bytes,
+                    text_index.replay_backlog,
+                    text_index.result_model,
+                    text_index.max_terms,
+                    text_index.max_candidates,
+                    text_index.max_results,
+                )
+                .map(|spec| (spec, text_index.span))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| CompilerDiagnostics::single(ir_diagnostic(hir.span)))?;
     // Probe each spec individually so a schema-validation failure carries the
     // offending `vector_field`'s span, not the whole-contract span (the same
     // per-item probe the delete-policy path above uses).
@@ -296,6 +327,10 @@ pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerD
                     .map(|(spec, _)| spec)
                     .collect(),
             )
+        })
+        .and_then(|schema| {
+            schema
+                .with_text_index_specs(text_index_specs.into_iter().map(|(spec, _)| spec).collect())
         })
         .map_err(|_| CompilerDiagnostics::single(ir_diagnostic(hir.span)))
 }
