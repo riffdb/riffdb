@@ -1,12 +1,11 @@
 # ADR-0172: Case-Insensitive Text Matching
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-08-30
-- **Exact text accepted:** No
-- **Accepted:** Not accepted
-- **Acceptance reference:** Maintainer asked for the long-term capability in the
-  current Claude Code session, on the gap recorded under "Evidence"; the exact
-  text is not yet accepted
+- **Exact text accepted:** Yes, 2026-08-30
+- **Accepted:** 2026-08-30
+- **Acceptance reference:** Maintainer accepted this record's exact text in the
+  current Claude Code session, on the gap recorded under "Evidence"
 - **Decision deadline:** Before an adapter ships case-insensitive matching by
   maintaining its own folded shadow field
 - **Requires:** ADR-0131
