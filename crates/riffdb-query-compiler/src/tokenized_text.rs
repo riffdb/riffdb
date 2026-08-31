@@ -7,8 +7,8 @@ use riffdb_query_ir::{
     TokenizedTextPlanFieldV1, TokenizedTextPlanV1,
 };
 use riffdb_riffql_syntax::{
-    Cardinality, Document, RIFFQL_LANGUAGE_VERSION_TOKENIZED_TEXT_V1, Span, TokenizedMatchKind,
-    TypeReference,
+    Cardinality, Document, RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1,
+    RIFFQL_LANGUAGE_VERSION_TOKENIZED_TEXT_V1, Span, TokenizedMatchKind, TypeReference,
 };
 use riffdb_types::{
     ProjectionProviderCapabilitiesV1, ProjectionProviderDescriptorV1, ProjectionProviderKindV1,
@@ -34,8 +34,11 @@ pub fn compile_tokenized_text_query_v1(
     document: &Document,
     catalog: &SymbolicCatalog,
 ) -> Result<CompiledTokenizedTextQueryV1, PlannerDiagnostics> {
-    if document.language_version != RIFFQL_LANGUAGE_VERSION_TOKENIZED_TEXT_V1
-        || document.body.bindings.len() != 1
+    if !matches!(
+        document.language_version,
+        RIFFQL_LANGUAGE_VERSION_TOKENIZED_TEXT_V1
+            | RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1
+    ) || document.body.bindings.len() != 1
         || !document.body.aggregates.is_empty()
     {
         return Err(diagnostic(

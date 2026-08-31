@@ -4,6 +4,7 @@ use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_module::{
     ApplicationManifest, CompiledNamedQuery, CompiledNamedQueryPlan, ManifestErrorKind,
     NamedQuerySource, QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1,
+    QUERY_MODULE_FORMAT_VERSION_BOUNDED_RESULT_PIPELINE_V1,
     QUERY_MODULE_FORMAT_VERSION_COVERED_RESULT_V1, QUERY_MODULE_FORMAT_VERSION_EXACT_AGGREGATE_V1,
     QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1,
     QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_V1, QueryModule, QueryModuleCandidate,
@@ -502,6 +503,54 @@ fn bounded_limit_uses_module_v12_and_freezes_its_generated_schema_maximum() {
     assert!(python.contains(
         "not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 100"
     ));
+}
+
+#[test]
+fn extended_bounded_limits_use_additive_module_v14_and_round_trip() {
+    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let maximum = 500_u64;
+    let source = format!(
+        r#"query LargePage(
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
+    $statuses: Set<TicketStatus>,
+    $after: Cursor?,
+    $limit: Limit<{maximum}> = 500,
+) {{
+    many tickets from Ticket
+        where organization_id == $organization_id
+            && project_id == $project_id
+            && status in $statuses
+        order by status desc, ticket_id desc
+        take $limit after $after
+    return Found {{ tickets: tickets {{ ticket_id }} }}
+    outcomes Found
+}}"#
+    );
+    let candidate = QueryModuleCandidate::new(
+        QueryModuleName::new("large_pages").expect("module name"),
+        QueryModuleVersion::new(maximum).expect("module version"),
+        vec![NamedQuerySource::new("LargePage", source).expect("source")],
+    )
+    .expect("candidate");
+    let module = QueryModule::compile(candidate, &bundle).expect("extended bounded module");
+    assert_eq!(
+        module.format_version(),
+        QUERY_MODULE_FORMAT_VERSION_BOUNDED_RESULT_PIPELINE_V1
+    );
+    let program = module
+        .query("LargePage")
+        .and_then(CompiledNamedQuery::ordinary_program)
+        .expect("ordinary plan");
+    assert_eq!(
+        program.ir_version(),
+        riffdb_query_ir::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1
+    );
+    assert_eq!(program.steps()[0].maximum_rows(), maximum);
+    let decoded = QueryModule::decode_and_validate(module.canonical_bytes(), &bundle)
+        .expect("strict V14 round trip");
+    assert_eq!(decoded.canonical_bytes(), module.canonical_bytes());
+    assert_eq!(decoded.identity(), module.identity());
 }
 
 #[test]

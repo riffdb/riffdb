@@ -74,22 +74,23 @@ use riffdb_query_compiler::{
 };
 use riffdb_query_ir::{
     AuthorizationEntityAccess, CoveredResultLayoutV1, NamedQuerySchemas, OperationalQueryFamilyV1,
-    QUERY_IR_VERSION_BOUNDED_LIMIT_V1, QUERY_IR_VERSION_COVERED_RESULT_V1,
-    QUERY_IR_VERSION_EXACT_AGGREGATE_V1, QUERY_IR_VERSION_EXACT_FILTERED_RESULT_SET_V1,
-    QUERY_IR_VERSION_EXACT_PREDICATE_V1, QUERY_IR_VERSION_EXACT_RESULT_SET_V1,
-    QUERY_IR_VERSION_NULLABLE_EXACT_ORDER_V1, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1,
-    QUERY_IR_VERSION_OPERATIONAL_V1, QUERY_IR_VERSION_PROJECTED_VECTOR_V1,
-    QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_TOKENIZED_TEXT_V1, QUERY_IR_VERSION_V1,
-    QueryAccessProgramV1, QuerySourceMap, SecretOutputRequirement, SourceSymbolKind,
-    SymbolicCatalog,
+    QUERY_IR_VERSION_BOUNDED_LIMIT_V1, QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1,
+    QUERY_IR_VERSION_COVERED_RESULT_V1, QUERY_IR_VERSION_EXACT_AGGREGATE_V1,
+    QUERY_IR_VERSION_EXACT_FILTERED_RESULT_SET_V1, QUERY_IR_VERSION_EXACT_PREDICATE_V1,
+    QUERY_IR_VERSION_EXACT_RESULT_SET_V1, QUERY_IR_VERSION_NULLABLE_EXACT_ORDER_V1,
+    QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1, QUERY_IR_VERSION_OPERATIONAL_V1,
+    QUERY_IR_VERSION_PROJECTED_VECTOR_V1, QUERY_IR_VERSION_SECRET_OUTPUT_V1,
+    QUERY_IR_VERSION_TOKENIZED_TEXT_V1, QUERY_IR_VERSION_V1, QueryAccessProgramV1, QuerySourceMap,
+    SecretOutputRequirement, SourceSymbolKind, SymbolicCatalog,
 };
 use riffdb_riffql_syntax::{
     Document, MAX_IDENTIFIER_BYTES, MAX_SOURCE_BYTES, ParseDiagnostics, RIFFQL_LANGUAGE_VERSION,
-    RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1, RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1,
-    RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1, RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1,
-    RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1, RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1,
-    RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1, RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1,
-    RIFFQL_LANGUAGE_VERSION_TOKENIZED_TEXT_V1, format_query, parse_query,
+    RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1, RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1,
+    RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1, RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1,
+    RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1, RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1,
+    RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1, RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1,
+    RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1, RIFFQL_LANGUAGE_VERSION_TOKENIZED_TEXT_V1,
+    format_query, parse_query,
 };
 use riffdb_types::{
     ContractBundleHash, ContractLineage, ContractVersion, QueryCostVectorV1, QueryModuleHash,
@@ -131,6 +132,8 @@ pub const QUERY_MODULE_FORMAT_VERSION_EXACT_AGGREGATE_V1: u32 = 11;
 pub const QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1: u32 = 12;
 /// Additive module codec carrying compiler-sealed tokenized-text plans.
 pub const QUERY_MODULE_FORMAT_VERSION_TOKENIZED_TEXT_V1: u32 = 13;
+/// Additive module codec for ADR-0174 bounded filtered-result pipelines.
+pub const QUERY_MODULE_FORMAT_VERSION_BOUNDED_RESULT_PIPELINE_V1: u32 = 14;
 /// Maximum queries retained in one immutable module.
 pub const MAX_MODULE_QUERIES: usize = 4_096;
 /// Maximum canonical bytes for one immutable module.
@@ -884,7 +887,15 @@ impl QueryModule {
     /// Canonical module codec selected by its contained plan kinds.
     #[must_use]
     pub fn format_version(&self) -> u32 {
-        if self
+        if self.queries.iter().any(|query| {
+            query
+                .plan()
+                .representative_program()
+                .surface()
+                .has_extended_bounded_limit()
+        }) {
+            QUERY_MODULE_FORMAT_VERSION_BOUNDED_RESULT_PIPELINE_V1
+        } else if self
             .queries
             .iter()
             .any(|query| matches!(query.plan(), CompiledNamedQueryPlan::TokenizedTextV1(_)))
@@ -1475,7 +1486,16 @@ fn encode_module(
             .surface()
             .has_bounded_limit()
     });
-    let format_version = if tokenized_text {
+    let extended_bounded_limit = queries.iter().any(|query| {
+        query
+            .plan()
+            .representative_program()
+            .surface()
+            .has_extended_bounded_limit()
+    });
+    let format_version = if extended_bounded_limit {
+        QUERY_MODULE_FORMAT_VERSION_BOUNDED_RESULT_PIPELINE_V1
+    } else if tokenized_text {
         QUERY_MODULE_FORMAT_VERSION_TOKENIZED_TEXT_V1
     } else if bounded_limit {
         QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1
@@ -1511,7 +1531,9 @@ fn encode_module(
     output.extend_from_slice(&contract.contract_version().get().to_be_bytes());
     output.extend_from_slice(contract.bundle_hash().as_bytes());
     output.extend_from_slice(
-        &if tokenized_text {
+        &if extended_bounded_limit {
+            RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1
+        } else if tokenized_text {
             RIFFQL_LANGUAGE_VERSION_TOKENIZED_TEXT_V1
         } else if bounded_limit {
             RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1
@@ -1535,7 +1557,9 @@ fn encode_module(
         .to_be_bytes(),
     );
     output.extend_from_slice(
-        &if tokenized_text {
+        &if extended_bounded_limit {
+            QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1
+        } else if tokenized_text {
             QUERY_IR_VERSION_TOKENIZED_TEXT_V1
         } else if bounded_limit {
             QUERY_IR_VERSION_BOUNDED_LIMIT_V1
@@ -1641,6 +1665,7 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
             | QUERY_MODULE_FORMAT_VERSION_EXACT_AGGREGATE_V1
             | QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1
             | QUERY_MODULE_FORMAT_VERSION_TOKENIZED_TEXT_V1
+            | QUERY_MODULE_FORMAT_VERSION_BOUNDED_RESULT_PIPELINE_V1
     ) {
         return Err(QueryModuleError::new(
             QueryModuleErrorKind::UnsupportedVersion,
@@ -1714,6 +1739,10 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
             language_version == RIFFQL_LANGUAGE_VERSION_TOKENIZED_TEXT_V1
                 && ir_version == QUERY_IR_VERSION_TOKENIZED_TEXT_V1
         }
+        QUERY_MODULE_FORMAT_VERSION_BOUNDED_RESULT_PIPELINE_V1 => {
+            language_version == RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1
+                && ir_version == QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1
+        }
         _ => false,
     };
     if !versions_match {
@@ -1732,12 +1761,15 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
         let source = input.text(MAX_SOURCE_BYTES)?;
         input.skip(32)?;
         if format_version != QUERY_MODULE_FORMAT_VERSION_V1 {
-            let maximum_plan_tag =
-                if format_version == QUERY_MODULE_FORMAT_VERSION_TOKENIZED_TEXT_V1 {
-                    6
-                } else {
-                    5
-                };
+            let maximum_plan_tag = if matches!(
+                format_version,
+                QUERY_MODULE_FORMAT_VERSION_TOKENIZED_TEXT_V1
+                    | QUERY_MODULE_FORMAT_VERSION_BOUNDED_RESULT_PIPELINE_V1
+            ) {
+                6
+            } else {
+                5
+            };
             if !matches!(input.u8()?, tag if (1..=maximum_plan_tag).contains(&tag)) {
                 return Err(QueryModuleError::new(QueryModuleErrorKind::InvalidEncoding));
             }
@@ -1760,7 +1792,8 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
                 | QUERY_MODULE_FORMAT_VERSION_EXACT_PREDICATE_V1
                 | QUERY_MODULE_FORMAT_VERSION_NULLABLE_EXACT_ORDER_V1
                 | QUERY_MODULE_FORMAT_VERSION_EXACT_AGGREGATE_V1
-                | QUERY_MODULE_FORMAT_VERSION_TOKENIZED_TEXT_V1 => 10,
+                | QUERY_MODULE_FORMAT_VERSION_TOKENIZED_TEXT_V1
+                | QUERY_MODULE_FORMAT_VERSION_BOUNDED_RESULT_PIPELINE_V1 => 10,
                 QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1 => 10,
                 QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1 => 9,
                 _ => 7,

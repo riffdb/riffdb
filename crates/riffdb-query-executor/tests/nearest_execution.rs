@@ -156,7 +156,7 @@ fn nearest_static_cost_charges_the_partition_scan_ceiling_not_k() {
     let program = nearest_program();
     assert_eq!(
         program.cost().scanned_index_rows(),
-        MAX_QUERY_SCANNED_ROWS,
+        riffdb_types::MAX_EXACT_VECTOR_PARTITION_ROWS_V1,
         "static scan charge must be the partition-scan ceiling"
     );
     assert!(program.cost().scanned_index_rows() > 10, "and never just K");
@@ -270,7 +270,7 @@ fn nearest_execution_charges_reported_scan_work_and_succeeds_within_budget() {
     let program = nearest_program();
     let mut view = NearestView {
         rows: vec![result_row()],
-        scanned_rows: MAX_QUERY_SCANNED_ROWS,
+        scanned_rows: riffdb_types::MAX_EXACT_VECTOR_PARTITION_ROWS_V1,
         reported_calls: 0,
         received_k: None,
     };
@@ -450,7 +450,7 @@ fn parameterized_nearest_mistyped_k_is_a_caller_error_before_backend_work() {
     assert_eq!(view.received_k, None);
 }
 
-// ─── K ceiling (S2/N14): K inherits the 499 page-take ceiling ───
+// ─── K ceiling (S2/N14): K inherits the 65,534 page-take ceiling ───
 
 fn nearest_query_with_k(k: &str) -> String {
     NEAREST_QUERY.replace(
@@ -480,27 +480,27 @@ fn nearest_k_at_the_499_ceiling_compiles() {
 /// (previously enforced but unpinned: every nearest test used k = 10, so
 /// nothing would red if the nearest binding stopped inheriting the ceiling).
 #[test]
-fn nearest_k_over_the_499_ceiling_is_a_typed_refusal() {
+fn nearest_k_over_the_global_ceiling_is_a_typed_refusal() {
     let bundle = compile_contract_source(CONTRACT).expect("vector contract compiles");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
-    let source = nearest_query_with_k("500");
+    let source = nearest_query_with_k("65535");
     let document = parse_query(&source).expect("parse");
 
     // The resolver names the exact bound, code, and K-token span.
     let diagnostics =
-        resolve_query_surface(&document, &catalog).expect_err("k = 500 must be refused");
+        resolve_query_surface(&document, &catalog).expect_err("k = 65535 must be refused");
     let diagnostic = &diagnostics.as_slice()[0];
     assert_eq!(diagnostic.code(), QueryDiagnosticCode::ArtifactLimit);
     assert_eq!(
         diagnostic.summary(),
-        "nearest k exceeds the maximum page bound of 499 (K is the binding's checked page bound and shares the take ceiling)"
+        "nearest k exceeds the maximum page bound of 65534 (K is the binding's checked page bound and shares the take ceiling)"
     );
-    let start = source.find(", 500)").expect("k literal present") as u32 + 2;
+    let start = source.find(", 65535)").expect("k literal present") as u32 + 2;
     assert_eq!(
         diagnostic.primary(),
         Span {
             start,
-            end: start + 3,
+            end: start + 5,
         },
         "the diagnostic points at the K literal"
     );
@@ -508,7 +508,7 @@ fn nearest_k_over_the_499_ceiling_is_a_typed_refusal() {
     // The public front door refuses the same query.
     assert!(
         compile_query(&document, &catalog).is_err(),
-        "compile_query must refuse k = 500"
+        "compile_query must refuse k = 65535"
     );
 
     // And a colossal K is refused identically, not accepted with saturation.

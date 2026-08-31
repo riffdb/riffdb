@@ -229,7 +229,9 @@ result is genuinely a collection selected through a declared secondary index.
 
 For `many` reads, predicates must supply the leading index fields and `order
 by` must match the remaining index key in forward or reverse order. Use fixed
-`take` values first; a `Limit` parameter is charged at the full 500-row maximum.
+`take` values first; `Limit<MAX>` is charged at its complete declared maximum,
+which may be at most 65,534 rows and remains subject to independent byte, cost,
+authority, provider, and transport ceilings.
 
 For junction-to-entity or line-to-product hydration, the first collection must
 be a bounded, ascending, duplicate-free set of complete target key components.

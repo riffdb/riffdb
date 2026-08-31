@@ -14,6 +14,10 @@
 - **Defines or blocks:** Nothing further; the implementation is complete and
   awaits this record
 
+> **Amendment:** ADR-0174 raises the required bounded maximum's structural
+> range to 65,534. Bounds through 499 retain V9/V12/V12 identity; larger bounds
+> use the additive V11/V14/V14 identity.
+
 ## Context
 
 ADR-0158 added `Limit<MAX>` and deliberately kept the unbounded `Limit` form,

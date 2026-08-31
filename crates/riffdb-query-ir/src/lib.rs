@@ -72,6 +72,8 @@ pub const QUERY_IR_VERSION_EXACT_AGGREGATE_V1: u32 = 11;
 pub const QUERY_IR_VERSION_BOUNDED_LIMIT_V1: u32 = 12;
 /// Canonical compiler-sealed tokenized-text query IR version.
 pub const QUERY_IR_VERSION_TOKENIZED_TEXT_V1: u32 = 13;
+/// Canonical bounded filtered-result pipeline and enlarged page-limit IR.
+pub const QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1: u32 = 14;
 /// Maximum public query schema and canonical IR bytes.
 pub const MAX_QUERY_ARTIFACT_BYTES: usize = 4_194_304;
 /// Maximum source-map entries.
@@ -83,7 +85,7 @@ pub const MAX_SOURCE_MAP_ENTRIES: usize = 131_072;
 /// continuation is minted, and charge the peeked observation to `scanned_rows`.
 /// Therefore a legal page `take` must satisfy
 /// `take + QUERY_CONTINUATION_PROBE_ROWS <= MAX_QUERY_SCANNED_ROWS`.
-pub const MAX_QUERY_SCANNED_ROWS: u64 = 500;
+pub const MAX_QUERY_SCANNED_ROWS: u64 = riffdb_types::MAX_APPLICATION_QUERY_SCANNED_ROWS;
 
 /// Extra physical rows inspected solely to decide whether a continuation exists.
 ///
@@ -119,6 +121,6 @@ pub const fn page_take_within_scan_bound(take: u64) -> bool {
 }
 
 // Resolver diagnostics name this bound as a static string; keep them aligned.
-const _: () = assert!(max_query_page_take() == 499);
-const _: () = assert!(MAX_QUERY_SCANNED_ROWS == 500);
+const _: () = assert!(max_query_page_take() == 65_534);
+const _: () = assert!(MAX_QUERY_SCANNED_ROWS == 65_535);
 const _: () = assert!(QUERY_CONTINUATION_PROBE_ROWS == 1);
