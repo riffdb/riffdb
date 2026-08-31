@@ -42,12 +42,41 @@ pub const MAX_EXACT_TEXT_ROWS_PER_PARTITION_V1: usize = 4_096;
 pub const MAX_EXACT_TEXT_TERMS_PER_ROW_V1: usize =
     MAX_EXACT_TEXT_VALUE_BYTES_V1 * (MAX_EXACT_TEXT_VALUE_BYTES_V1 + 1) / 2;
 
-/// First exact profile: no normalization beyond canonical UTF-8 validity.
+/// Closed exact matching profiles.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(u8)]
 pub enum ExactTextProfileV1 {
     /// Compare exact UTF-8 byte sequences.
     BinaryUtf8V1 = 1,
+    /// Compare under ADR-0172's frozen `unicode_fold_v1` transform: Unicode
+    /// 17.0.0 NFKC followed by full non-Turkic case folding. Values and needles
+    /// are folded by the same function, so matching is case- and
+    /// compatibility-insensitive while remaining exact and bytewise.
+    UnicodeFoldV1 = 2,
+}
+
+impl ExactTextProfileV1 {
+    /// Decodes a durable profile discriminant.
+    #[must_use]
+    pub const fn from_discriminant(value: u8) -> Option<Self> {
+        match value {
+            1 => Some(Self::BinaryUtf8V1),
+            2 => Some(Self::UnicodeFoldV1),
+            _ => None,
+        }
+    }
+
+    /// Applies this profile's transform to matching text.
+    ///
+    /// A stored value and a submitted needle must both pass through here, or
+    /// matching is not symmetric.
+    #[must_use]
+    pub fn matched_form(self, value: &str) -> String {
+        match self {
+            Self::BinaryUtf8V1 => value.to_owned(),
+            Self::UnicodeFoldV1 => crate::unicode_fold_v1(value),
+        }
+    }
 }
 
 /// Closed exact operators; no wildcard, regex, token, fuzzy, or score shape exists.
@@ -115,10 +144,19 @@ impl ExactTextProfileV1 {
         if value.is_empty() {
             return Err(ExactTextBindErrorV1::EmptyNeedle);
         }
-        if value.len() > MAX_EXACT_TEXT_NEEDLE_BYTES_V1 {
+        // ADR-0172: transform BEFORE bounding. A folded needle can be longer
+        // than its source, so a caller-supplied value checked pre-fold could
+        // expand past the limit the check was meant to enforce.
+        let bound = self.matched_form(value);
+        if bound.len() > MAX_EXACT_TEXT_NEEDLE_BYTES_V1 {
             return Err(ExactTextBindErrorV1::NeedleTooLong);
         }
-        Ok(ExactTextNeedleV1(value.to_owned()))
+        // An empty fold of a nonempty needle would match everything; refuse it
+        // as the empty needle it effectively is.
+        if bound.is_empty() {
+            return Err(ExactTextBindErrorV1::EmptyNeedle);
+        }
+        Ok(ExactTextNeedleV1(bound))
     }
 
     /// Evaluates the frozen truth table. Missing and null never match.

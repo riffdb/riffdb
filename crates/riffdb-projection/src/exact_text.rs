@@ -181,7 +181,10 @@ impl ExactTextPartitionIndexV1 {
         for mutation in mutations {
             match mutation {
                 ExactTextIndexMutationV1::Upsert { row, value } => {
-                    if value.len() > MAX_EXACT_TEXT_VALUE_BYTES_V1 {
+                    // ADR-0172: the profile transform runs BEFORE the bound
+                    // check. Folding can expand a value, so a limit measured on
+                    // the source would not bound what is actually stored.
+                    if self.profile.matched_form(value).len() > MAX_EXACT_TEXT_VALUE_BYTES_V1 {
                         return Err(ExactTextProviderErrorV1::ValueTooLong);
                     }
                     if !self.rows.contains_key(row) {
@@ -222,8 +225,12 @@ impl ExactTextPartitionIndexV1 {
                 );
             }
             if let ExactTextIndexMutationV1::Upsert { value, .. } = mutation {
+                // Postings, ordering, and the stored row must all be the SAME
+                // representation. Building terms from the source while storing
+                // the folded form would index text the needle can never match.
+                let matched = self.profile.matched_form(value);
                 record_terms(
-                    value,
+                    &matched,
                     &mut touched_equals,
                     &mut touched_prefixes,
                     &mut touched_suffixes,
@@ -231,13 +238,13 @@ impl ExactTextPartitionIndexV1 {
                 );
                 add_value_to_postings(
                     row,
-                    value,
+                    &matched,
                     &mut self.equals,
                     &mut self.prefixes,
                     &mut self.suffixes,
                     &mut self.contains,
                 );
-                self.rows.insert(row, value.clone());
+                self.rows.insert(row, matched);
             }
         }
         order_touched_postings(&mut self.equals, &touched_equals, &self.rows);
@@ -291,7 +298,7 @@ impl ExactTextPartitionIndexV1 {
             ExactTextOperatorV1::Contains => &self.contains,
         };
         postings
-            .get(needle.as_str().as_bytes())
+            .get(self.profile.matched_form(needle.as_str()).as_bytes())
             .map_or(&[], |posting| posting.ascending.as_slice())
     }
 
@@ -313,7 +320,8 @@ impl ExactTextPartitionIndexV1 {
             ExactTextOperatorV1::EndsWith => &self.suffixes,
             ExactTextOperatorV1::Contains => &self.contains,
         };
-        let Some(posting) = postings.get(needle.as_str().as_bytes()) else {
+        let Some(posting) = postings.get(self.profile.matched_form(needle.as_str()).as_bytes())
+        else {
             return Ok(ExactTextResultPageV1 {
                 rows: Vec::new(),
                 exact_total: 0,
@@ -407,7 +415,9 @@ impl ExactTextPartitionIndexV1 {
         if &bytes[..4] != b"RXTS" || u16::from_be_bytes([bytes[4], bytes[5]]) != 1 {
             return Err(ExactTextProviderErrorV1::UnsupportedFormat);
         }
-        if bytes[6] != ExactTextProfileV1::BinaryUtf8V1 as u8 || bytes[7] != 0 {
+        let profile = ExactTextProfileV1::from_discriminant(bytes[6])
+            .ok_or(ExactTextProviderErrorV1::UnsupportedFormat)?;
+        if bytes[7] != 0 {
             return Err(ExactTextProviderErrorV1::UnsupportedFormat);
         }
         let partition = PartitionKeyHash::from_bytes(read_array(bytes, 8)?);
@@ -445,13 +455,7 @@ impl ExactTextPartitionIndexV1 {
         if cursor != bytes.len() {
             return Err(ExactTextProviderErrorV1::InvalidCheckpoint);
         }
-        Self::rebuild(
-            partition,
-            generation,
-            frontier,
-            ExactTextProfileV1::BinaryUtf8V1,
-            &rows,
-        )
+        Self::rebuild(partition, generation, frontier, profile, &rows)
     }
 }
 
@@ -893,7 +897,9 @@ impl ExactTextPartitionIndexV2 {
         if &bytes[..4] != b"RXTS" || u16::from_be_bytes([bytes[4], bytes[5]]) != 2 {
             return Err(ExactTextProviderErrorV1::UnsupportedFormat);
         }
-        if bytes[6] != ExactTextProfileV1::BinaryUtf8V1 as u8 || bytes[7] != 0 {
+        let profile = ExactTextProfileV1::from_discriminant(bytes[6])
+            .ok_or(ExactTextProviderErrorV1::UnsupportedFormat)?;
+        if bytes[7] != 0 {
             return Err(ExactTextProviderErrorV1::UnsupportedFormat);
         }
         let partition = PartitionKeyHash::from_bytes(read_array(bytes, 8)?);
@@ -954,13 +960,7 @@ impl ExactTextPartitionIndexV2 {
         if cursor != bytes.len() {
             return Err(ExactTextProviderErrorV1::InvalidCheckpoint);
         }
-        let recovered = Self::rebuild(
-            partition,
-            generation,
-            frontier,
-            ExactTextProfileV1::BinaryUtf8V1,
-            &rows,
-        )?;
+        let recovered = Self::rebuild(partition, generation, frontier, profile, &rows)?;
         if recovered.to_checkpoint_bytes()? != bytes {
             return Err(ExactTextProviderErrorV1::InvalidCheckpoint);
         }
