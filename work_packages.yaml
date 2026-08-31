@@ -517,6 +517,19 @@ work_packages:
       surface can select structure, access paths, policy, cost, provider, or fallback.
     scale: Every corpus dimension and external loopback is compiler-bounded and partition-local; no
       full population, cross-provider, cross-partition, or duration-proportional state is retained.
+  closure:
+    status: complete
+    completed_at: "2026-08-25"
+    requirements_satisfied: [OQ-032, OQ-033, OQ-034, OQ-035, OQ-036, OQ-037,
+      OQ-038, OQ-039, OQ-040, OQ-041, OQ-042, OQ-043]
+    evidence: Commit 2f3b93c2 closes the generic operational-access corpus, four generated
+      languages plus MCP, exact memory/redb semantics, handbook guidance, compatibility receipt,
+      and the value-free external tuple-store receipt at
+      fixtures/riffql/wp690-external-tuple-capability-v1.json. This closure metadata was restored
+      during WP-733's hard-dependency audit; no WP-690 implementation changed.
+    known_limitations: The accepted semijoin/candidate extension remained intentionally unavailable
+      until ADR-0174 and WP-734.
+    follow_ups: []
   human_review_triggers: *id001
 - id: WP-691
   name: Atomic unary delete and revalidated preimage outcome
@@ -2244,6 +2257,18 @@ work_packages:
     scale: One capture, negotiation, bounded waiter, and retained epoch occur per logical query;
       continuation, row, result, and provider subcalls add no repeated proof or duration/population-
       proportional state.
+  closure:
+    status: complete
+    completed_at: "2026-08-28"
+    requirements_satisfied: [OQ-075, OQ-076, OQ-077, OQ-078, OQ-079, OQ-080,
+      OQ-081, OQ-082, PRJ-001, PRJ-002, PRJ-003, PRJ-004, SAFE-004, SAFE-005]
+    evidence: Commit 5ce580ed implements admission-head request conversion, once-only authorized
+      head capture, floor combination, snapshot/provider selection and waiting, cursor identity,
+      post-wake authorization, service and transport coverage, generated clients, topology, and
+      handbook evidence. This closure metadata was restored during WP-733's dependency audit; no
+      WP-719 implementation changed.
+    known_limitations: Candidate participant sets were not part of ADR-0164 and remain WP-735.
+    follow_ups: []
   human_review_triggers: *id001
 - id: WP-722
   name: Public-source-only authoring acceptance
@@ -2794,6 +2819,21 @@ work_packages:
       proposed.
     scale: Every fixture declares independent rows, keys, bytes, probes, provider work, sort,
       output, and retained-state bounds, including the maximum and one-over cases.
+  closure:
+    status: complete
+    completed_at: "2026-08-31"
+    requirements_satisfied: [OQ-084, OQ-085, OQ-086, OQ-087, OQ-088, OQ-089,
+      OQ-090, OQ-091, OQ-092, OQ-093, OQ-094, OQ-095, OQ-096, OQ-097,
+      OQ-098, OQ-100]
+    evidence: fixtures/riffql/bounded-filtered-result-v1 freezes candidate and pattern source,
+      independent materialized oracle, boundary and refusal cases, exact diagnostic allocations,
+      and the collision-free V11/V14/V14/V21/V6/provider-V1 identity inventory. The value-free
+      consumer receipt retains only source digests and capability maxima. All declared paper-stage
+      acceptance commands pass, and no executable syntax, provider, public schema, or durable
+      identity is activated.
+    known_limitations: Every ADR-0174 runtime capability remains unavailable until WP-734 through
+      WP-737; the fixtures intentionally fail under the predecessor parsers and compilers.
+    follow_ups: [WP-734, WP-735, WP-736, WP-737, WP-738]
   human_review_triggers: &id0174
   - Any change to candidate completion, policy placement, snapshot/provider compatibility, root
     ordering, cursor identity, wildcard semantics, global row ceiling, response bytes, or an

@@ -1,0 +1,54 @@
+{
+  "schema": "riffdb.external-bounded-filtered-capability/v1",
+  "work_package": "WP-733",
+  "status": "blocked_pending_core_implementation",
+  "consumer_class": "partitioned_experiment_tracking_store",
+  "framework_artifacts_retained": false,
+  "stored_values_retained": false,
+  "source_reproductions": {
+    "two_tag_before_root_order_sha256": "da94f12ebda3d5e3979816eebc4b324e1dfad39e98f70e2c1236f60e58179048",
+    "folded_500_byte_name_sha256": "bf58ddddf88a96127f9718a3458ebfa073c7ba928dfc459b06ece9680af302eb"
+  },
+  "generic_fixtures": {
+    "contract_sha256": "07e75a27d30a9a54379746c23381dc5f8ccd951af978c65f6b1f0ea8964d942d",
+    "two_tag_before_root_order_sha256": "e2a63022ff9992272ef33b17a5e890375bd9063d5a0139b84de65e0f60847b0d",
+    "combined_tag_pattern_sha256": "39a7c073db1662884eca6707f25d7934e0f14871482f66bb8ccef21dbe6af95a",
+    "authorized_pattern_difference_sha256": "198a0b2af6b4497e7e4f1e625546b8e5e43bcbadadfde30ab772a86123fe70af",
+    "oracle_sha256": "1d3bfb2d5d4d2ad6baac7d9fa7a18f7b733bae2a790853a0d4b949a19f8c6513",
+    "inventory_sha256": "b44ca7621065aaa0a92745beb3960dfa3b22bc59d9adfa4d85334161ebf947eb"
+  },
+  "identity_allocation": {
+    "riffql_language": 11,
+    "query_ir": 14,
+    "query_module": 14,
+    "contract_grammar": 21,
+    "contract_executable_ir": 21,
+    "contract_bundle": 21,
+    "compiled_role": 6,
+    "long_pattern_checkpoint": 1
+  },
+  "required_capabilities": {
+    "complete_candidate_intersection_before_root_order": true,
+    "same_partition": true,
+    "root_order_fields": ["name", "experiment_id", "creation_time", "last_update_time"],
+    "maximum_requested_rows": 50000,
+    "maximum_experiment_name_bytes": 500,
+    "maximum_experiment_tag_value_bytes": 5000,
+    "maximum_run_tag_value_bytes": 8000,
+    "like": true,
+    "ilike": true,
+    "percent_wildcard": true,
+    "underscore_wildcard": true,
+    "tag_null_and_existence": true
+  },
+  "forbidden_workarounds": [
+    "adapter_filtering",
+    "adapter_sorting",
+    "pre_paginated_filtering",
+    "intermediate_truncation",
+    "unbounded_denormalization",
+    "tokenized_pattern_substitution",
+    "storage_key_widening"
+  ],
+  "implementation_receipt": null
+}
