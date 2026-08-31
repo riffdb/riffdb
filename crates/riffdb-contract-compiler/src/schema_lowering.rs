@@ -390,10 +390,18 @@ pub(crate) fn validate_unique_declarations(
                     })
             });
             if !canonical_route || !required_key_types {
-                diagnostics.push(CompilerDiagnostic::new(
-                    CompilerDiagnosticCode::InvalidUniqueKey,
-                    unique.span,
-                ));
+                // Point at the aggregate as well as the unique key. The route
+                // half of this rule is unreadable from the key alone: an author
+                // has to see which `partition_by` the key is being measured
+                // against before either repair is obvious, and the second
+                // repair -- widen the partition to the scope the value must be
+                // unique in -- is a change to the aggregate, not to the key.
+                let mut diagnostic =
+                    CompilerDiagnostic::new(CompilerDiagnosticCode::InvalidUniqueKey, unique.span);
+                if !canonical_route {
+                    diagnostic = diagnostic.with_related_span(owner.span);
+                }
+                diagnostics.push(diagnostic);
             }
         }
     }

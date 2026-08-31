@@ -69,6 +69,97 @@ target exists. This is intentional: the compiled command proves all reference
 integrity in the same transaction instead of relying on a racy application
 preflight.
 
+## Choosing a partition route
+
+`partition_by` and `conflict_key` are separate decisions and are routinely
+confused. Getting the distinction wrong produces a contract that compiles and
+is quietly unusable, so it is worth stating plainly.
+
+**`conflict_key` is what writers contend on.** Two commands whose conflict keys
+differ do not serialise against each other, whatever partition they are in.
+
+**`partition_by` is the locality and visibility unit.** It decides three things:
+
+- what one index scan or bounded query can see, because a scan is scoped to one
+  partition;
+- which entities a single command may write, since every `create`/`mutate`
+  binding must derive the same route; and
+- what a capability may be scoped to.
+
+The practical consequence is that **a partition should be as wide as the widest
+thing you need to search or write atomically**, and the conflict key should then
+be as narrow as the thing you actually update. Widening a partition does not
+cost concurrency; narrowing a conflict key is what buys it.
+
+Two failure modes follow directly, and both are silent:
+
+- **A route that identifies a single row makes that entity's indexes useless.**
+  If `Item` keys `(item_id)` and the aggregate declares `partition_by item_id`,
+  every item is alone in its partition, so `index by_created (...)` can only
+  ever return that one item. There is no way to list items. If a collection has
+  to be searched or ordered as a whole, partition it by the scope it is
+  searched within — a tenant, an organization, or a fixed scope constant for a
+  genuinely global collection — and keep the per-row identifier in the
+  conflict key.
+- **A unique key is enforced inside one partition**, which is why `RDB-C025`
+  requires it to begin with the partition route. Prefixing the route makes a
+  value unique *per route*, which is vacuous when the route already identifies
+  one row. A value that must be unique across a wider scope needs the aggregate
+  partitioned by that scope; see the entry under "Uniqueness" below.
+
+A fixed scope constant is a legitimate route. An entity partitioned by
+`scope: string<32>` always set to `"global"` is one searchable collection whose
+writers still do not contend, provided the conflict key carries the row
+identifier.
+
+## Uniqueness
+
+`unique` is enforced by a durable occupancy row inside the writing command's
+partition, transaction-current, in the same commit. That makes it exact and
+race-free, and it is why the key must start with the partition route.
+
+To make a value unique across every row of a collection, partition the
+aggregate by the scope the value is unique in and include that scope in the
+unique key:
+
+```text
+entity Experiment {
+  key (scope: string<32>, experiment_id: u64)
+  field name: string<500>
+  unique by_name (scope, name)
+}
+aggregate Experiments {
+  root Experiment
+  partition_by scope
+  conflict_key (scope, experiment_id)
+}
+```
+
+Creates and renames are then both checked atomically by the engine. Concurrent
+writes to different experiments do not contend, because the conflict key
+carries `experiment_id`.
+
+## Composing two indexed predicates
+
+RiffQL has no general join, but one ordered dependent batch composes two
+bounded index reads into an intersection: read the first predicate, then read
+the second restricted to the first's keys. A candidate with no matching second
+row simply produces no row, which is the intersection.
+
+The planner accepts this only in an exact shape, and `RDB-QP007` reports the
+whole shape rather than the part that failed. The conditions most often missed:
+
+- **Every comparison in the dependent binding must be on key fields.** A
+  predicate over a non-key field is a residual filter and is refused. If you
+  need to match on a value that is not in the key, put a fixed-size digest of
+  it in the key and compare that.
+- **The dependent binding needs an absence outcome** (`else <Outcome>`). For a
+  `many` binding it never fires — an empty match is zero rows, not an outcome —
+  but the planner requires it to be declared.
+- Both bindings order ascending by exactly the joining field, and the dependent
+  binding's `take` must not carry an `after` cursor and must be no larger than
+  the source's.
+
 ## Operational query indexes
 
 Indexes used by null/existence and text-prefix RiffQL predicates declare their
