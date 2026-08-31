@@ -35,7 +35,8 @@ pub(crate) fn assemble_bundle(
             }
         })?;
     let artifacts = generated_schema_artifacts(&parts.schema, &parts.commands, &parts.projections)?;
-    let identities = stable_identities(&parts.schema, &parts.commands, &parts.projections)?;
+    let identities =
+        stable_identities(symbols, &parts.schema, &parts.commands, &parts.projections)?;
     let required =
         required_lineage_allocation_namespaces(&parts.schema, &parts.commands, &parts.projections)?;
     let ledger = match parent {
@@ -121,6 +122,7 @@ fn generated_schema_artifacts(
 }
 
 pub(crate) fn stable_identities(
+    symbols: &GenesisSymbols,
     schema: &SchemaIr,
     commands: &[CommandPlan],
     projections: &[ProjectionPlan],
@@ -157,6 +159,23 @@ pub(crate) fn stable_identities(
                 index.name(),
             )?;
         }
+    }
+    for spec in schema.text_index_specs() {
+        let name = symbols
+            .indexes
+            .iter()
+            .find_map(|((entity, name), index)| {
+                (*entity == spec.entity() && *index == spec.index()).then_some(name)
+            })
+            .ok_or(riffdb_contract_ir::IrValidationError::InvalidReference {
+                kind: "text index stable identity",
+            })?;
+        push(
+            StableIdNamespaceTag::Index,
+            0x01,
+            vec![spec.entity().get()],
+            name,
+        )?;
     }
     for event in schema.events() {
         push(StableIdNamespaceTag::Event, 0, vec![], event.name())?;

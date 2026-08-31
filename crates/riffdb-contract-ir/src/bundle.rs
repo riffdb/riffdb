@@ -1723,6 +1723,29 @@ fn validate_ledger(
             )?;
         }
     }
+    for spec in schema.text_index_specs() {
+        let name = ledger
+            .allocations
+            .iter()
+            .flat_map(|allocation| &allocation.entries)
+            .find(|entry| {
+                entry.state == LineageEntryState::Active
+                    && entry.id == spec.index().get()
+                    && entry.identity.namespace.tag() == StableIdNamespaceTag::Index
+                    && entry.identity.namespace.owner_ids() == [spec.entity().get()]
+            })
+            .map(|entry| entry.identity.name().to_owned())
+            .ok_or(IrValidationError::InvalidLineageLedger {
+                reason: "text index has no active stable identity",
+            })?;
+        push(
+            StableIdNamespaceTag::Index,
+            index_owner_tag::ENTITY,
+            vec![spec.entity().get()],
+            &name,
+            spec.index().get(),
+        )?;
+    }
     for event in schema.events() {
         push(
             StableIdNamespaceTag::Event,
