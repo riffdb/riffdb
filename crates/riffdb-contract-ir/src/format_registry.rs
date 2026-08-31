@@ -1067,6 +1067,8 @@ layout!(SCHEMA_LAYOUT, "StructuralSchema", {
     "vector_field_specs" => "IR v6+: optional u32 marker 0xfffffffb + u32 count + VectorFieldSpecV1[]; omitted when empty",
     "secret_field_specs" => "IR v8+: optional u32 marker 0xfffffff8 + u32 count + SecretFieldSpecV1[]; omitted when empty",
     "vector_ann_specs" => "IR v12+: optional u32 marker 0xfffffff7 + u32 count + VectorAnnSpecV1[]; omitted when empty",
+    "vector_production_specs" => "IR v15+: optional u32 marker 0xfffffff5 + u32 count + VectorProductionSpecV1[]; omitted when empty",
+    "text_index_specs" => "IR v20+: optional u32 marker 0xfffffff4 + u32 count + TextIndexSpecV1[]; omitted when empty",
 });
 layout!(RELATIONSHIP_LAYOUT, "RelationshipSchema", {
     "name" => "string",
@@ -1112,6 +1114,20 @@ layout!(VECTOR_PRODUCTION_SPEC_LAYOUT, "VectorProductionSpecV1", {
     "replay_age_seconds" => "u64 (1..=31536000)",
     "replay_bytes" => "u64 (1..=1099511627776)",
     "replay_backlog" => "u64 (1..=100000000)",
+});
+layout!(TEXT_INDEX_SPEC_LAYOUT, "TextIndexSpecV1", {
+    "entity" => "EntityTypeId",
+    "index" => "IndexId",
+    "analyzer" => "u8 (0x01 keyword_v1, 0x02 standard_v1)",
+    "source_fields" => "u32 count + canonical (FieldId, u32 weight)[]",
+    "stale_entity_count_threshold" => "u32 positive stale-entity count threshold",
+    "replay_age_seconds" => "u64 (1..=31536000)",
+    "replay_bytes" => "u64 (1..=1099511627776)",
+    "replay_backlog" => "u64 (1..=100000000)",
+    "result_model" => "u8 (0x01 boolean_v1)",
+    "max_terms" => "u32 (1..=1024)",
+    "max_candidates" => "u32 (1..=1000000)",
+    "max_results" => "u32 (1..=65536 and <= max_candidates)",
 });
 layout!(ENTITY_LAYOUT, "EntitySchema", {
     "id" => "u32",
@@ -1459,6 +1475,7 @@ pub(crate) const FORMAT_LAYOUTS: &[FormatLayout] = &[
     SECRET_FIELD_SPEC_LAYOUT,
     VECTOR_ANN_SPEC_LAYOUT,
     VECTOR_PRODUCTION_SPEC_LAYOUT,
+    TEXT_INDEX_SPEC_LAYOUT,
     ENTITY_LAYOUT,
     EVENT_LAYOUT,
     EVENT_PARTITION_LAYOUT,
@@ -2362,7 +2379,7 @@ mod tests {
         // (or a witness list both sides also append to) would make that
         // merge pass silently. Re-run this test after any merge touching the
         // registry.
-        assert_eq!(FORMAT_LAYOUTS.len(), 65);
+        assert_eq!(FORMAT_LAYOUTS.len(), 66);
         for layout in FORMAT_LAYOUTS {
             assert!(!layout.fields.is_empty(), "{}", layout.name);
             assert!(

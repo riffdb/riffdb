@@ -8,9 +8,13 @@
   and accepted this record's exact text in the current Claude Code session
 - **Decision deadline:** Before an application ships a second store alongside
   RiffDB to answer text queries
-- **Requires:** ADR-0131, ADR-0164, ADR-0172
-- **Amends:** Nothing; adds a provider alongside the exact-text provider
-- **Defines or blocks:** Nothing yet
+- **Requires:** ADR-0092, ADR-0131, ADR-0164, ADR-0172
+- **Amends:** ADR-0092 sections 2, 3, and 5 by narrowing corpus statistics to
+  the authorized set, freezing the two-analyzer v1 vocabulary, and replacing
+  its tentative predicate list with the boolean vocabulary below; adds a
+  provider alongside the exact-text provider
+- **Defines or blocks:** WP-729 and its staged durable-segment, boolean-match,
+  and ranked-search successors
 
 ## Context
 

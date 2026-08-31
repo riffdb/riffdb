@@ -187,6 +187,7 @@ pub(crate) struct HirEntity {
     pub(crate) relationships: Vec<HirRelationship>,
     pub(crate) delete_policy: Option<HirDeletePolicy>,
     pub(crate) vector_fields: Vec<HirVectorField>,
+    pub(crate) text_indexes: Vec<HirTextIndex>,
 }
 
 /// One validated vector-field search configuration (ADR-0091): the resolved
@@ -211,6 +212,22 @@ pub(crate) struct HirVectorProduction {
     pub(crate) replay_age_seconds: u64,
     pub(crate) replay_bytes: u64,
     pub(crate) replay_backlog: u64,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct HirTextIndex {
+    pub(crate) index_id: IndexId,
+    pub(crate) analyzer: riffdb_types::TextAnalyzerV1,
+    pub(crate) source_fields: Vec<(FieldId, u16)>,
+    pub(crate) stale_entity_count_threshold: u32,
+    pub(crate) replay_age_seconds: u64,
+    pub(crate) replay_bytes: u64,
+    pub(crate) replay_backlog: u64,
+    pub(crate) result_model: riffdb_types::TextSearchResultModelV1,
+    pub(crate) max_terms: u32,
+    pub(crate) max_candidates: u32,
+    pub(crate) max_results: u32,
+    pub(crate) span: Span,
 }
 
 impl HirEntity {
@@ -809,6 +826,7 @@ fn lower_entities(
                 | EntityItem::Index(_)
                 | EntityItem::Unique(_)
                 | EntityItem::Reference(_)
+                | EntityItem::TextIndex(_)
                 | EntityItem::DeletePolicy(_) => {}
                 EntityItem::VectorField(vector_field) => {
                     let field_id = symbols
@@ -1165,7 +1183,10 @@ fn lower_entities(
                         }
                     };
                 }
-                EntityItem::Key(_) | EntityItem::Field(_) | EntityItem::VectorField(_) => {}
+                EntityItem::Key(_)
+                | EntityItem::Field(_)
+                | EntityItem::VectorField(_)
+                | EntityItem::TextIndex(_) => {}
             }
         }
         // Validate vector field declarations and retain the resolved search
@@ -1404,6 +1425,205 @@ fn lower_entities(
                 }
             }
         }
+        let mut text_indexes = Vec::new();
+        for item in &source.items {
+            let EntityItem::TextIndex(text_index) = &item.value else {
+                continue;
+            };
+            let mut valid = true;
+            if text_index.source_fields.is_empty() {
+                valid = false;
+                push_text_index_diagnostic(
+                    diagnostics,
+                    CompilerDiagnosticCause::TextIndexEmptySources,
+                    item.span,
+                );
+            }
+            let analyzer = match text_index.analyzer.value.as_str() {
+                "keyword_v1" => Some(riffdb_types::TextAnalyzerV1::KeywordV1),
+                "standard_v1" => Some(riffdb_types::TextAnalyzerV1::StandardV1),
+                _ => {
+                    valid = false;
+                    push_text_index_diagnostic(
+                        diagnostics,
+                        CompilerDiagnosticCause::TextIndexAnalyzerUnknown,
+                        text_index.analyzer.span,
+                    );
+                    None
+                }
+            };
+            let result_model = match text_index.result_model.value.as_str() {
+                "boolean_v1" => Some(riffdb_types::TextSearchResultModelV1::BooleanV1),
+                _ => {
+                    valid = false;
+                    push_text_index_diagnostic(
+                        diagnostics,
+                        CompilerDiagnosticCause::TextIndexResultModelUnknown,
+                        text_index.result_model.span,
+                    );
+                    None
+                }
+            };
+            let mut weighted_fields = Vec::new();
+            for source_field in &text_index.source_fields {
+                let source_field = &source_field.value;
+                let Some((field_id, value_type)) = field_scope.get(&source_field.field.value)
+                else {
+                    valid = false;
+                    diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::UnknownName,
+                        source_field.field.span,
+                    ));
+                    continue;
+                };
+                let is_string = value_type.tag() == ValueTypeTag::String
+                    || value_type
+                        .optional_inner()
+                        .is_some_and(|inner| inner.tag() == ValueTypeTag::String);
+                if !is_string {
+                    valid = false;
+                    push_text_index_diagnostic(
+                        diagnostics,
+                        CompilerDiagnosticCause::TextIndexSourceNotString,
+                        source_field.field.span,
+                    );
+                    continue;
+                }
+                let weight = match source_field.weight.value.parse::<u16>() {
+                    Ok(weight)
+                        if (1..=riffdb_contract_ir::MAX_TEXT_INDEX_FIELD_WEIGHT)
+                            .contains(&weight) =>
+                    {
+                        weight
+                    }
+                    _ => {
+                        valid = false;
+                        push_text_index_diagnostic(
+                            diagnostics,
+                            CompilerDiagnosticCause::TextIndexWeightOutOfRange,
+                            source_field.weight.span,
+                        );
+                        continue;
+                    }
+                };
+                weighted_fields.push((*field_id, weight));
+            }
+            weighted_fields.sort_unstable_by_key(|(field, _)| *field);
+            let stale_entity_count_threshold = match text_index.staleness_slo.value.parse::<u32>() {
+                Ok(value) if value > 0 => Some(value),
+                _ => {
+                    valid = false;
+                    push_text_index_diagnostic(
+                        diagnostics,
+                        CompilerDiagnosticCause::TextIndexStalenessOutOfRange,
+                        text_index.staleness_slo.span,
+                    );
+                    None
+                }
+            };
+            let replay_age_seconds = parse_text_index_bound(
+                &text_index.replay_age_seconds,
+                riffdb_contract_ir::MAX_VECTOR_REPLAY_AGE_SECONDS,
+                CompilerDiagnosticCause::TextIndexReplayOutOfRange,
+                diagnostics,
+            );
+            let replay_bytes = parse_text_index_bound(
+                &text_index.replay_bytes,
+                riffdb_contract_ir::MAX_VECTOR_REPLAY_BYTES,
+                CompilerDiagnosticCause::TextIndexReplayOutOfRange,
+                diagnostics,
+            );
+            let replay_backlog = parse_text_index_bound(
+                &text_index.replay_backlog,
+                riffdb_contract_ir::MAX_VECTOR_REPLAY_BACKLOG,
+                CompilerDiagnosticCause::TextIndexReplayOutOfRange,
+                diagnostics,
+            );
+            let max_terms = parse_text_index_u32_bound(
+                &text_index.max_terms,
+                riffdb_contract_ir::MAX_TEXT_INDEX_QUERY_TERMS,
+                CompilerDiagnosticCause::TextIndexTermBudgetOutOfRange,
+                diagnostics,
+            );
+            let max_candidates = parse_text_index_u32_bound(
+                &text_index.max_candidates,
+                riffdb_contract_ir::MAX_TEXT_INDEX_CANDIDATES,
+                CompilerDiagnosticCause::TextIndexCandidateBudgetOutOfRange,
+                diagnostics,
+            );
+            let max_results = parse_text_index_u32_bound(
+                &text_index.max_results,
+                riffdb_contract_ir::MAX_TEXT_INDEX_RESULTS,
+                CompilerDiagnosticCause::TextIndexResultBudgetOutOfRange,
+                diagnostics,
+            );
+            valid &= replay_age_seconds.is_some()
+                && replay_bytes.is_some()
+                && replay_backlog.is_some()
+                && max_terms.is_some()
+                && max_candidates.is_some()
+                && max_results.is_some();
+            if let (Some(max_candidates), Some(max_results)) = (max_candidates, max_results)
+                && max_results > max_candidates
+            {
+                valid = false;
+                push_text_index_diagnostic(
+                    diagnostics,
+                    CompilerDiagnosticCause::TextIndexResultExceedsCandidate,
+                    text_index.max_results.span,
+                );
+            }
+            let index_id = symbols
+                .indexes
+                .get(&(id, text_index.name.value.clone()))
+                .copied();
+            if valid && index_id.is_none() {
+                diagnostics.push(CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::UnknownName,
+                    text_index.name.span,
+                ));
+            }
+            if let (
+                true,
+                Some(index_id),
+                Some(analyzer),
+                Some(stale_entity_count_threshold),
+                Some(replay_age_seconds),
+                Some(replay_bytes),
+                Some(replay_backlog),
+                Some(result_model),
+                Some(max_terms),
+                Some(max_candidates),
+                Some(max_results),
+            ) = (
+                valid,
+                index_id,
+                analyzer,
+                stale_entity_count_threshold,
+                replay_age_seconds,
+                replay_bytes,
+                replay_backlog,
+                result_model,
+                max_terms,
+                max_candidates,
+                max_results,
+            ) {
+                text_indexes.push(HirTextIndex {
+                    index_id,
+                    analyzer,
+                    source_fields: weighted_fields,
+                    stale_entity_count_threshold,
+                    replay_age_seconds,
+                    replay_bytes,
+                    replay_backlog,
+                    result_model,
+                    max_terms,
+                    max_candidates,
+                    max_results,
+                    span: item.span,
+                });
+            }
+        }
         result.push(HirEntity {
             id,
             name: source.name.value.clone(),
@@ -1415,9 +1635,50 @@ fn lower_entities(
             relationships,
             delete_policy,
             vector_fields,
+            text_indexes,
         });
     }
     result
+}
+
+fn parse_text_index_bound(
+    value: &Spanned<String>,
+    maximum: u64,
+    cause: CompilerDiagnosticCause,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) -> Option<u64> {
+    match value.value.parse::<u64>() {
+        Ok(parsed) if (1..=maximum).contains(&parsed) => Some(parsed),
+        _ => {
+            push_text_index_diagnostic(diagnostics, cause, value.span);
+            None
+        }
+    }
+}
+
+fn parse_text_index_u32_bound(
+    value: &Spanned<String>,
+    maximum: u32,
+    cause: CompilerDiagnosticCause,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) -> Option<u32> {
+    match value.value.parse::<u32>() {
+        Ok(parsed) if (1..=maximum).contains(&parsed) => Some(parsed),
+        _ => {
+            push_text_index_diagnostic(diagnostics, cause, value.span);
+            None
+        }
+    }
+}
+
+fn push_text_index_diagnostic(
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+    cause: CompilerDiagnosticCause,
+    span: Span,
+) {
+    diagnostics.push(
+        CompilerDiagnostic::new(CompilerDiagnosticCode::InvalidTextIndex, span).with_cause(cause),
+    );
 }
 
 fn lower_events(

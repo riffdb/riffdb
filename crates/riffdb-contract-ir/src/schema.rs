@@ -1329,6 +1329,7 @@ pub struct SchemaIr {
     vector_field_specs: Vec<VectorFieldSpecV1>,
     vector_ann_specs: Vec<VectorAnnSpecV1>,
     vector_production_specs: Vec<VectorProductionSpecV1>,
+    text_index_specs: Vec<TextIndexSpecV1>,
     secret_field_specs: Vec<SecretFieldSpecV1>,
 }
 
@@ -1347,6 +1348,193 @@ pub const MAX_VECTOR_REPLAY_AGE_SECONDS: u64 = 31_536_000;
 pub const MAX_VECTOR_REPLAY_BYTES: u64 = 1_099_511_627_776;
 /// Maximum retained sequence backlog accepted for one production vector projection.
 pub const MAX_VECTOR_REPLAY_BACKLOG: u64 = 100_000_000;
+
+/// Maximum weighted source fields on one tokenized text index.
+pub const MAX_TEXT_INDEX_SOURCE_FIELDS: usize = 1_024;
+/// Maximum positive integer field weight.
+pub const MAX_TEXT_INDEX_FIELD_WEIGHT: u16 = 10_000;
+/// Maximum analyzed terms admitted by one compiled tokenized query.
+pub const MAX_TEXT_INDEX_QUERY_TERMS: u32 = 1_024;
+/// Maximum boolean candidates admitted before result production.
+pub const MAX_TEXT_INDEX_CANDIDATES: u32 = 1_000_000;
+/// Maximum addressable boolean result window.
+pub const MAX_TEXT_INDEX_RESULTS: u32 = 65_536;
+
+/// One weighted source field in canonical field-ID order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TextIndexSourceV1 {
+    field: FieldId,
+    weight: u16,
+}
+
+impl TextIndexSourceV1 {
+    /// Creates a source field with one positive bounded integer weight.
+    pub fn new(field: FieldId, weight: u16) -> Result<Self, IrValidationError> {
+        if !(1..=MAX_TEXT_INDEX_FIELD_WEIGHT).contains(&weight) {
+            return Err(IrValidationError::LimitExceeded {
+                kind: "text index field weight",
+                actual: usize::from(weight),
+                maximum: usize::from(MAX_TEXT_INDEX_FIELD_WEIGHT),
+            });
+        }
+        Ok(Self { field, weight })
+    }
+
+    /// Source field identifier.
+    #[must_use]
+    pub const fn field(self) -> FieldId {
+        self.field
+    }
+
+    /// Relative positive integer relevance weight.
+    #[must_use]
+    pub const fn weight(self) -> u16 {
+        self.weight
+    }
+}
+
+/// Complete identity-bearing declaration for one tokenized text index.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TextIndexSpecV1 {
+    entity: EntityTypeId,
+    index: IndexId,
+    analyzer: riffdb_types::TextAnalyzerV1,
+    source_fields: Vec<TextIndexSourceV1>,
+    stale_entity_count_threshold: u32,
+    replay_age_seconds: u64,
+    replay_bytes: u64,
+    replay_backlog: u64,
+    result_model: riffdb_types::TextSearchResultModelV1,
+    max_terms: u32,
+    max_candidates: u32,
+    max_results: u32,
+}
+
+impl TextIndexSpecV1 {
+    /// Constructs one complete checked tokenized-text declaration.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        entity: EntityTypeId,
+        index: IndexId,
+        analyzer: riffdb_types::TextAnalyzerV1,
+        source_fields: Vec<TextIndexSourceV1>,
+        stale_entity_count_threshold: u32,
+        replay_age_seconds: u64,
+        replay_bytes: u64,
+        replay_backlog: u64,
+        result_model: riffdb_types::TextSearchResultModelV1,
+        max_terms: u32,
+        max_candidates: u32,
+        max_results: u32,
+    ) -> Result<Self, IrValidationError> {
+        checked_len(
+            "text index source fields",
+            source_fields.len(),
+            MAX_TEXT_INDEX_SOURCE_FIELDS,
+        )?;
+        if source_fields.is_empty() {
+            return Err(IrValidationError::InvalidReference {
+                kind: "text index source fields",
+            });
+        }
+        if source_fields
+            .windows(2)
+            .any(|pair| pair[0].field >= pair[1].field)
+        {
+            return Err(IrValidationError::NonCanonicalOrder {
+                kind: "text index source fields",
+            });
+        }
+        if stale_entity_count_threshold == 0
+            || !(1..=MAX_VECTOR_REPLAY_AGE_SECONDS).contains(&replay_age_seconds)
+            || !(1..=MAX_VECTOR_REPLAY_BYTES).contains(&replay_bytes)
+            || !(1..=MAX_VECTOR_REPLAY_BACKLOG).contains(&replay_backlog)
+            || !(1..=MAX_TEXT_INDEX_QUERY_TERMS).contains(&max_terms)
+            || !(1..=MAX_TEXT_INDEX_CANDIDATES).contains(&max_candidates)
+            || !(1..=MAX_TEXT_INDEX_RESULTS).contains(&max_results)
+            || max_results > max_candidates
+        {
+            return Err(IrValidationError::InvalidReference {
+                kind: "text index bounds",
+            });
+        }
+        Ok(Self {
+            entity,
+            index,
+            analyzer,
+            source_fields,
+            stale_entity_count_threshold,
+            replay_age_seconds,
+            replay_bytes,
+            replay_backlog,
+            result_model,
+            max_terms,
+            max_candidates,
+            max_results,
+        })
+    }
+
+    /// Owning entity.
+    #[must_use]
+    pub const fn entity(&self) -> EntityTypeId {
+        self.entity
+    }
+    /// Stable text-index identifier.
+    #[must_use]
+    pub const fn index(&self) -> IndexId {
+        self.index
+    }
+    /// Frozen analyzer identity.
+    #[must_use]
+    pub const fn analyzer(&self) -> riffdb_types::TextAnalyzerV1 {
+        self.analyzer
+    }
+    /// Weighted sources in canonical field-ID order.
+    #[must_use]
+    pub fn source_fields(&self) -> &[TextIndexSourceV1] {
+        &self.source_fields
+    }
+    /// Positive stale-entity threshold.
+    #[must_use]
+    pub const fn stale_entity_count_threshold(&self) -> u32 {
+        self.stale_entity_count_threshold
+    }
+    /// Replay age ceiling.
+    #[must_use]
+    pub const fn replay_age_seconds(&self) -> u64 {
+        self.replay_age_seconds
+    }
+    /// Replay byte ceiling.
+    #[must_use]
+    pub const fn replay_bytes(&self) -> u64 {
+        self.replay_bytes
+    }
+    /// Replay backlog ceiling.
+    #[must_use]
+    pub const fn replay_backlog(&self) -> u64 {
+        self.replay_backlog
+    }
+    /// Frozen result model.
+    #[must_use]
+    pub const fn result_model(&self) -> riffdb_types::TextSearchResultModelV1 {
+        self.result_model
+    }
+    /// Maximum query terms.
+    #[must_use]
+    pub const fn max_terms(&self) -> u32 {
+        self.max_terms
+    }
+    /// Maximum candidate population.
+    #[must_use]
+    pub const fn max_candidates(&self) -> u32 {
+        self.max_candidates
+    }
+    /// Maximum result window.
+    #[must_use]
+    pub const fn max_results(&self) -> u32 {
+        self.max_results
+    }
+}
 
 /// Search configuration for one contract-declared vector field
 /// (ADR-0091 / WP-591): the distance metric, the source fields whose edits
@@ -1889,6 +2077,7 @@ impl SchemaIr {
             vector_field_specs: Vec::new(),
             vector_ann_specs: Vec::new(),
             vector_production_specs: Vec::new(),
+            text_index_specs: Vec::new(),
             secret_field_specs: Vec::new(),
         };
         result.validate_enum_references()?;
@@ -2066,6 +2255,67 @@ impl SchemaIr {
             .map(|index| &self.vector_production_specs[index])
     }
 
+    /// Attaches canonical tokenized-text declarations and validates every
+    /// referenced source as a stored string field on the owning entity.
+    pub fn with_text_index_specs(
+        mut self,
+        mut specs: Vec<TextIndexSpecV1>,
+    ) -> Result<Self, IrValidationError> {
+        checked_len("text index specs", specs.len(), MAX_DECLARATIONS_PER_KIND)?;
+        specs.sort_unstable_by_key(|spec| (spec.entity, spec.index));
+        if specs
+            .windows(2)
+            .any(|pair| pair[0].entity == pair[1].entity && pair[0].index == pair[1].index)
+        {
+            return Err(IrValidationError::NonCanonicalOrder {
+                kind: "duplicate text index spec",
+            });
+        }
+        let ordinary_index_ids = self
+            .entities
+            .iter()
+            .flat_map(EntitySchema::indexes)
+            .map(IndexSchema::id)
+            .collect::<BTreeSet<_>>();
+        for spec in &specs {
+            if ordinary_index_ids.contains(&spec.index) {
+                return Err(IrValidationError::InvalidReference {
+                    kind: "text index ID collides with ordinary index",
+                });
+            }
+            let entity = self
+                .entity(spec.entity)
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "text index entity",
+                })?;
+            for source in &spec.source_fields {
+                let field = entity.record().field(source.field).ok_or(
+                    IrValidationError::InvalidReference {
+                        kind: "text index source field",
+                    },
+                )?;
+                let value_type = field.value_type();
+                let is_string = value_type.tag() == ValueTypeTag::String
+                    || value_type
+                        .optional_inner()
+                        .is_some_and(|inner| inner.tag() == ValueTypeTag::String);
+                if !is_string {
+                    return Err(IrValidationError::TypeMismatch {
+                        context: "text index source field is not a string",
+                    });
+                }
+            }
+        }
+        self.text_index_specs = specs;
+        Ok(self)
+    }
+
+    /// Tokenized-text declarations in canonical `(entity, index)` order.
+    #[must_use]
+    pub fn text_index_specs(&self) -> &[TextIndexSpecV1] {
+        &self.text_index_specs
+    }
+
     /// Attaches checked secret-field classifications (ADR-0118), validating
     /// that every spec references an existing stored field and never a
     /// primary-key field.
@@ -2241,6 +2491,11 @@ impl SchemaIr {
     #[must_use]
     pub fn requires_ir_v15(&self) -> bool {
         !self.vector_production_specs.is_empty()
+    }
+    /// Whether this schema requires V20 tokenized-text declaration metadata.
+    #[must_use]
+    pub fn requires_ir_v20(&self) -> bool {
+        !self.text_index_specs.is_empty()
     }
     /// Resolves an entity.
     #[must_use]

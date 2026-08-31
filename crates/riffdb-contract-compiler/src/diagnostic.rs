@@ -125,6 +125,28 @@ pub enum CompilerDiagnosticCause {
     MigrationVersionMismatch,
     /// A migration does not move strictly forward in contract version.
     MigrationVersionNotIncreasing,
+    /// A tokenized text index declares no source fields.
+    TextIndexEmptySources,
+    /// A tokenized text-index source is not a bounded string field.
+    TextIndexSourceNotString,
+    /// A tokenized text index names an analyzer outside the closed v1 set.
+    TextIndexAnalyzerUnknown,
+    /// A tokenized text index names a result model outside the closed v1 set.
+    TextIndexResultModelUnknown,
+    /// A tokenized text-index field weight is zero or exceeds its ceiling.
+    TextIndexWeightOutOfRange,
+    /// A tokenized text-index stale-entity threshold is not positive.
+    TextIndexStalenessOutOfRange,
+    /// A tokenized text-index replay ceiling is zero or excessive.
+    TextIndexReplayOutOfRange,
+    /// A tokenized text-index term budget is zero or excessive.
+    TextIndexTermBudgetOutOfRange,
+    /// A tokenized text-index candidate budget is zero or excessive.
+    TextIndexCandidateBudgetOutOfRange,
+    /// A tokenized text-index result budget is zero or excessive.
+    TextIndexResultBudgetOutOfRange,
+    /// A tokenized text-index result window exceeds its candidate ceiling.
+    TextIndexResultExceedsCandidate,
 }
 
 impl CompilerDiagnosticCause {
@@ -170,6 +192,19 @@ impl CompilerDiagnosticCause {
             Self::MigrationVersionNotIncreasing => {
                 "the candidate contract version must be greater than the parent's"
             }
+            Self::TextIndexEmptySources => "the text index declares no source fields",
+            Self::TextIndexSourceNotString => "a text-index source is not a bounded string field",
+            Self::TextIndexAnalyzerUnknown => "the analyzer is not keyword_v1 or standard_v1",
+            Self::TextIndexResultModelUnknown => "the result model is not boolean_v1",
+            Self::TextIndexWeightOutOfRange => "a field weight is outside 1..=10000",
+            Self::TextIndexStalenessOutOfRange => "the stale-entity threshold must be positive",
+            Self::TextIndexReplayOutOfRange => {
+                "a replay ceiling is zero or exceeds its compiler maximum"
+            }
+            Self::TextIndexTermBudgetOutOfRange => "max_terms is outside 1..=1024",
+            Self::TextIndexCandidateBudgetOutOfRange => "max_candidates is outside 1..=1000000",
+            Self::TextIndexResultBudgetOutOfRange => "max_results is outside 1..=65536",
+            Self::TextIndexResultExceedsCandidate => "max_results exceeds max_candidates",
         }
     }
 }
@@ -298,6 +333,8 @@ pub enum CompilerDiagnosticCode {
     InvalidDeletePolicy,
     /// `RDB-C046`: a secret value crosses a non-secret boundary without an exact reveal.
     InvalidSecretReveal,
+    /// `RDB-C047`: a tokenized text-index declaration is invalid.
+    InvalidTextIndex,
     /// `RDB-C201`: an identifier cannot form an ADR-0064 command tool-name segment.
     InvalidCommandToolName,
     /// `RDB-C202`: a complete ADR-0064 command tool name exceeds 128 bytes.
@@ -308,7 +345,7 @@ pub enum CompilerDiagnosticCode {
 
 impl CompilerDiagnosticCode {
     /// Complete pre-freeze public semantic diagnostic registry in code order.
-    pub const ALL: [Self; 48] = [
+    pub const ALL: [Self; 49] = [
         Self::InvalidContractVersion,
         Self::DuplicateName,
         Self::MissingDeclaration,
@@ -354,6 +391,7 @@ impl CompilerDiagnosticCode {
         Self::InvalidRowPolicyRelationship,
         Self::InvalidDeletePolicy,
         Self::InvalidSecretReveal,
+        Self::InvalidTextIndex,
         Self::InvalidCommandToolName,
         Self::CommandToolNameTooLong,
         Self::CommandToolNameCollision,
@@ -408,6 +446,7 @@ impl CompilerDiagnosticCode {
             Self::InvalidRowPolicyRelationship => "RDB-C043",
             Self::InvalidDeletePolicy => "RDB-C045",
             Self::InvalidSecretReveal => "RDB-C046",
+            Self::InvalidTextIndex => "RDB-C047",
             Self::InvalidCommandToolName => "RDB-C201",
             Self::CommandToolNameTooLong => "RDB-C202",
             Self::CommandToolNameCollision => "RDB-C203",
@@ -509,6 +548,7 @@ impl CompilerDiagnosticCode {
             Self::InvalidSecretReveal => {
                 "a secret value crosses a non-secret destination without an exact reveals annotation"
             }
+            Self::InvalidTextIndex => "the tokenized text-index declaration is invalid",
             Self::InvalidCommandToolName => {
                 "an identifier cannot form a valid MCP command tool-name segment"
             }
@@ -647,6 +687,9 @@ impl CompilerDiagnosticCode {
             ),
             Self::InvalidSecretReveal => Some(
                 "add `reveals binding.secret_field` at the exact non-secret flow site, or keep the destination secret-classified",
+            ),
+            Self::InvalidTextIndex => Some(
+                "use distinct bounded string sources, keyword_v1 or standard_v1, boolean_v1, positive weights and ceilings, and max_results no greater than max_candidates",
             ),
             Self::InvalidCommandToolName => {
                 Some("start contract and command identifiers with an ASCII letter")
@@ -950,7 +993,7 @@ mod tests {
 
     #[test]
     fn public_diagnostic_registry_is_complete_unique_and_code_ordered() {
-        assert_eq!(CompilerDiagnosticCode::ALL.len(), 48);
+        assert_eq!(CompilerDiagnosticCode::ALL.len(), 49);
         let codes = CompilerDiagnosticCode::ALL.map(CompilerDiagnosticCode::as_str);
         assert!(codes.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(CompilerDiagnosticCode::ALL.iter().all(|code| {

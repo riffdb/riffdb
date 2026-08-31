@@ -2477,6 +2477,81 @@ work_packages:
     clean revision with no manual step, a consumer verifies them from the documented procedure, and
     an inconsistent version transition is refused before anything is published.
 
+- id: WP-729
+  name: Tokenized text-search declaration and frozen analyzers
+  depends_on: [WP-646]
+  objective: Begin ADR-0173 with the contract-owned identity and deterministic analysis boundary.
+    A contract declares one bounded text_index with weighted source fields, one closed versioned
+    analyzer, staleness and replay ceilings, the boolean-v1 result model, and compiler-owned term,
+    candidate, and result-window budgets. Both v1 analyzers execute against a pinned conformance
+    corpus. Durable segments, query matching, and ranking remain later packages.
+  requirements: [FTS-001, FTS-002, FTS-003, FTS-004]
+  required_adrs: [ADR-0092, ADR-0131, ADR-0164, ADR-0172, ADR-0173]
+  allowed_paths: [SPEC.md, work_packages.yaml, Cargo.lock,
+    adr/0092-native-full-text-search-projections.md,
+    adr/0173-tokenized-text-search-provider.md,
+    crates/riffdb-types/**, crates/riffdb-contract-syntax/**,
+    crates/riffdb-contract-ir/**, crates/riffdb-contract-compiler/**,
+    crates/riffdb-query-module/src/python_generation.rs,
+    crates/riffdb-cli/assets/**, clients/editor/tree-sitter-riff/keywords.json,
+    examples/agent-alpha/domains/rust/Cargo.lock, fixtures/**,
+    release/version-topology-v1.json,
+    docs/contracts/**, docs/reference/**]
+  deliverables:
+  - Contextual text_index grammar and AST with weighted source fields, exactly keyword_v1 or
+    standard_v1, a positive stale-entity threshold, the complete replay clause, boolean_v1,
+    and fixed compiler-owned term, candidate, and result-window budgets
+  - Canonical checked IR and additive bundle successor carrying every declaration field; contracts
+    without text_index retain their least-sufficient bytes, while analyzer or weight changes rotate
+    bundle identity
+  - Source-spanned compiler diagnostics naming empty, duplicate, unknown, non-string, zero,
+    over-limit, or cross-bound failures without silent deduplication or truncation
+  - One exact-pinned Unicode 17.0.0 UAX 29 tokenizer dependency and an analyzer conformance corpus
+    proving whole-value keyword output, segmentation-before-fold, positions, compatibility folds,
+    punctuation, scripts, emoji boundaries, and deterministic repeated analysis
+  - >-
+    Public handbook authoring guidance that states the stage-one limitation: declarations and
+    analyzers are available, while durable indexing and named tokenized queries are not yet
+  acceptance_commands:
+  - cargo test -p riffdb-types -p riffdb-contract-syntax -p riffdb-contract-ir
+    -p riffdb-contract-compiler --all-features
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/handbook check
+  - ./scripts/downstream-adapter-check
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test --workspace --all-features
+  exit_gate: A valid text_index reaches canonical round-trippable bundle identity with every
+    declaration field retained; both analyzers equal the pinned corpus; every invalid condition is
+    rejected at its source span; analyzer and weight changes rotate identity; declaration-free
+    contracts retain their least-sufficient bytes; generated, handbook, downstream, version,
+    Clippy, and full-workspace checks pass. No segment, match executor, ranking, caller-supplied
+    analyzer, boost, scoring parameter, field, operator, or cost hint exists.
+  standing_design_tests:
+    interface_safety: Application source selects only one closed compiler-validated declaration;
+      runtime callers receive no analyzer, field, boost, score, provider, budget, scan, truncation,
+      or consistency selector, and this package adds no invocable tokenized query.
+    scale: Source fields and every weight, field byte bound, replay ceiling, term count, candidate
+      set, and result window are finite and compiler checked; analyzer iteration is linear in the
+      already bounded source value and retains no corpus-sized state.
+  closure:
+    status: complete
+    completed_at: "2026-08-31"
+    requirements_satisfied: [FTS-001, FTS-002, FTS-003, FTS-004]
+    evidence: Contract parsing and source-spanned compiler tests cover the complete bounded
+      declaration and every invalid condition. Canonical IR V20 fixtures prove round trips,
+      identity rotation for analyzer and weight changes, and least-sufficient V1 bytes when no
+      text index exists. The pinned Unicode 17.0.0 corpus proves keyword and standard analyzer
+      output, positions, folds, scripts, emoji boundaries, and determinism. Targeted, generated,
+      requirement-coverage, version-topology, handbook, downstream-adapter, formatting, workspace
+      Clippy, and full-workspace test gates pass.
+    known_limitations: This package establishes declaration, identity, and analysis only. Durable
+      text-index segments, replay and freshness enforcement, query matching, authorized-set
+      statistics, scoring, and ranking remain staged successor work under ADR-0173.
+    follow_ups: []
+
 - id: WP-721
   closure:
     status: partial

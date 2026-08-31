@@ -15,7 +15,7 @@ from frontier i64 idempotency_key illegal import in include index input invalid
 initialize init_or_mutate observe_or_initialize decide apply no_effect reject invariant is key lease list measure module money mutate not null on optional
 owner partition_by policy presence principal projection query read reference
 release renew require return revision root row service set source stale
-state state_machine string sum text_key timestamp to
+state state_machine string sum text_index text_key timestamp to
 transaction_time transactionally_ordered transition true u64 unavailable
 unicode_fold_v1 unique update uuid uuid_v7 vector_field version when where workflow
 ```
@@ -191,6 +191,56 @@ An optional field is not an ordinary index key. If a query filters or orders
 on an optional field, declare `presence(field)` as shown above so missing,
 explicit-null, and present values remain distinct and the compiler can prove
 the access shape.
+
+## Tokenized text indexes (declaration-only alpha)
+
+An entity may declare a bounded, weighted tokenized-text index over required or
+optional bounded string fields:
+
+```riff
+entity Document {
+    key (organization_id: uuid, document_id: uuid)
+    field title: string<256>
+    field body: optional<string<65536>>
+
+    text_index search((title weight 4, body weight 1),
+        analyzer standard_v1,
+        staleness_slo 60,
+        replay_age_seconds 86400,
+        replay_bytes 1073741824,
+        replay_backlog 100000,
+        result boolean_v1,
+        max_terms 16,
+        max_candidates 10000,
+        max_results 1000)
+}
+```
+
+Every clause is required and compiler owned. Source names must be distinct;
+weights and all budgets must be positive and within the fixed format maxima;
+`max_results` cannot exceed `max_candidates`. Callers cannot replace these
+values, name a field or analyzer, provide boosts, request a scan, or choose a
+consistency fallback at runtime.
+
+The v1 analyzer set is closed:
+
+- `keyword_v1` emits the complete source value as exactly one term, including
+  one empty term for an empty value. It performs no normalization.
+- `standard_v1` first applies Unicode 17.0.0 UAX 29 word segmentation, assigns
+  monotonically increasing positions, and then applies ADR-0172's
+  `unicode_fold_v1` compatibility fold to each term. Analyzer behavior is
+  pinned by checked-in conformance tests rather than changing with the host.
+
+The declaration selects only `boolean_v1`; ranked results, caller-selected
+operators, and caller-visible scores are not available. The stale-entity and
+replay ceilings are durable contract identity for the later projection stage.
+Changing an analyzer or field weight changes the contract bundle identity.
+
+This stage provides declaration validation, canonical IR, and the analyzers
+only. It does **not** yet build or persist a tokenized index, expose a named
+tokenized query through RiffQL or an SDK, execute boolean matching, compute
+authorized-set statistics, or rank results. Continue using `text_key(...,
+binary_utf8_v1)` for the currently available exact byte-prefix behavior.
 
 ## Explicit covering indexes
 

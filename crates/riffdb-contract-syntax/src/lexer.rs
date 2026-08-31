@@ -59,6 +59,8 @@ pub(crate) enum Token {
     Reference,
     #[token("vector_field")]
     VectorField,
+    #[token("text_index")]
+    TextIndex,
     #[token("delete_policy")]
     DeletePolicy,
     #[token("no_inbound")]

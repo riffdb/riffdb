@@ -85,6 +85,8 @@ pub const BUNDLE_FORMAT_VERSION_V17: u32 = 17;
 pub const BUNDLE_FORMAT_VERSION_V18: u32 = 18;
 /// Bundle framing containing partition-local cross-aggregate command writes.
 pub const BUNDLE_FORMAT_VERSION_V19: u32 = 19;
+/// Bundle framing containing tokenized text-index declarations.
+pub const BUNDLE_FORMAT_VERSION_V20: u32 = 20;
 /// Canonical grammar version represented by a bundle.
 pub const GRAMMAR_VERSION_V1: u32 = 1;
 /// Contract grammar containing compiled workflows and service-owned values.
@@ -123,6 +125,8 @@ pub const GRAMMAR_VERSION_V17: u32 = 17;
 pub const GRAMMAR_VERSION_V18: u32 = 18;
 /// Contract grammar containing partition-local cross-aggregate command writes.
 pub const GRAMMAR_VERSION_V19: u32 = 19;
+/// Contract grammar containing tokenized text-index declarations.
+pub const GRAMMAR_VERSION_V20: u32 = 20;
 /// Executable IR version represented by a bundle.
 pub const EXECUTABLE_IR_VERSION_V1: u32 = 1;
 /// Executable IR containing compiled workflow transitions and service values.
@@ -168,6 +172,8 @@ pub const EXECUTABLE_IR_VERSION_V18: u32 = 18;
 /// value space, so a V18 reader refuses a cross-aggregate plan by version
 /// rather than by an opaque locality validation failure.
 pub const EXECUTABLE_IR_VERSION_V19: u32 = 19;
+/// Executable IR whose schema carries tokenized text-index declarations.
+pub const EXECUTABLE_IR_VERSION_V20: u32 = 20;
 
 const RELATIONSHIP_SCHEMA_EXTENSION: u32 = 0xffff_fffe;
 const UNIQUE_KEY_SCHEMA_EXTENSION: u32 = 0xffff_fffd;
@@ -180,6 +186,7 @@ const INDEX_COVER_FIELDS_EXTENSION: u32 = 0xffff_fff6;
 const SECRET_FIELD_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fff8;
 const VECTOR_ANN_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fff7;
 const VECTOR_PRODUCTION_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fff5;
+const TEXT_INDEX_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fff4;
 // The second word cannot be a valid following source-name length. Keeping the
 // extension magic eight bytes wide prevents a future stable event ID equal to
 // the first word from being misread as a partition extension.
@@ -1095,7 +1102,9 @@ impl ContractBundle {
         mcp_command_names: McpCommandNameRegistryV2,
         compatibility: CompatibilityReport,
     ) -> Result<Self, IrValidationError> {
-        let version = if commands.iter().any(CommandPlan::requires_ir_v19) {
+        let version = if schema.requires_ir_v20() {
+            BUNDLE_FORMAT_VERSION_V20
+        } else if commands.iter().any(CommandPlan::requires_ir_v19) {
             BUNDLE_FORMAT_VERSION_V19
         } else if commands.iter().any(CommandPlan::requires_ir_v18) {
             BUNDLE_FORMAT_VERSION_V18
@@ -1253,6 +1262,10 @@ impl ContractBundle {
                 BUNDLE_FORMAT_VERSION_V19,
                 GRAMMAR_VERSION_V19,
                 EXECUTABLE_IR_VERSION_V19
+            ) | (
+                BUNDLE_FORMAT_VERSION_V20,
+                GRAMMAR_VERSION_V20,
+                EXECUTABLE_IR_VERSION_V20
             )
         ) || (ir_version < EXECUTABLE_IR_VERSION_V2
             && (!workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2)))
@@ -1284,6 +1297,7 @@ impl ContractBundle {
                 && commands.iter().any(CommandPlan::requires_ir_v18))
             || (ir_version < EXECUTABLE_IR_VERSION_V19
                 && commands.iter().any(CommandPlan::requires_ir_v19))
+            || (ir_version < EXECUTABLE_IR_VERSION_V20 && schema.requires_ir_v20())
             || (ir_version >= EXECUTABLE_IR_VERSION_V6
                 && commands
                     .iter()
@@ -2776,6 +2790,33 @@ fn encode_schema(writer: &mut Writer, schema: &SchemaIr) -> Result<(), IrValidat
             writer.u64(spec.replay_backlog())?;
         }
     }
+    if !schema.text_index_specs().is_empty() {
+        writer.u32(TEXT_INDEX_SPEC_SCHEMA_EXTENSION)?;
+        writer.u32(schema.text_index_specs().len() as u32)?;
+        for spec in schema.text_index_specs() {
+            writer.u32(spec.entity().get())?;
+            writer.u32(spec.index().get())?;
+            writer.u8(match spec.analyzer() {
+                riffdb_types::TextAnalyzerV1::KeywordV1 => 1,
+                riffdb_types::TextAnalyzerV1::StandardV1 => 2,
+            })?;
+            writer.u32(spec.source_fields().len() as u32)?;
+            for source in spec.source_fields() {
+                writer.u32(source.field().get())?;
+                writer.u32(u32::from(source.weight()))?;
+            }
+            writer.u32(spec.stale_entity_count_threshold())?;
+            writer.u64(spec.replay_age_seconds())?;
+            writer.u64(spec.replay_bytes())?;
+            writer.u64(spec.replay_backlog())?;
+            writer.u8(match spec.result_model() {
+                riffdb_types::TextSearchResultModelV1::BooleanV1 => 1,
+            })?;
+            writer.u32(spec.max_terms())?;
+            writer.u32(spec.max_candidates())?;
+            writer.u32(spec.max_results())?;
+        }
+    }
     Ok(())
 }
 
@@ -3945,6 +3986,10 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
             BUNDLE_FORMAT_VERSION_V19,
             GRAMMAR_VERSION_V19,
             EXECUTABLE_IR_VERSION_V19
+        ) | (
+            BUNDLE_FORMAT_VERSION_V20,
+            GRAMMAR_VERSION_V20,
+            EXECUTABLE_IR_VERSION_V20
         )
     ) {
         return Err(IrValidationError::UnsupportedVersion {
@@ -4559,6 +4604,70 @@ fn decode_schema(reader: &mut Reader<'_>) -> Result<SchemaIr, IrValidationError>
             )?);
         }
     }
+    let mut text_index_specs = Vec::new();
+    if reader.remaining() >= 4 && reader.peek_u32()? == TEXT_INDEX_SPEC_SCHEMA_EXTENSION {
+        let _marker = reader.u32()?;
+        let spec_count = decode_len(reader, "text index specs", crate::MAX_DECLARATIONS_PER_KIND)?;
+        text_index_specs.reserve(spec_count);
+        for _ in 0..spec_count {
+            let entity = decode_entity_id(reader)?;
+            let index = decode_index_id(reader)?;
+            let analyzer = match reader.u8()? {
+                1 => riffdb_types::TextAnalyzerV1::KeywordV1,
+                2 => riffdb_types::TextAnalyzerV1::StandardV1,
+                tag => {
+                    return Err(IrValidationError::UnknownTag {
+                        kind: "text analyzer",
+                        tag,
+                    });
+                }
+            };
+            let source_count = decode_len(
+                reader,
+                "text index source fields",
+                crate::MAX_TEXT_INDEX_SOURCE_FIELDS,
+            )?;
+            let mut source_fields = Vec::with_capacity(source_count);
+            for _ in 0..source_count {
+                let field = decode_field_id(reader)?;
+                let raw_weight = reader.u32()?;
+                let weight =
+                    u16::try_from(raw_weight).map_err(|_| IrValidationError::LimitExceeded {
+                        kind: "text index field weight",
+                        actual: raw_weight as usize,
+                        maximum: usize::from(crate::MAX_TEXT_INDEX_FIELD_WEIGHT),
+                    })?;
+                source_fields.push(crate::TextIndexSourceV1::new(field, weight)?);
+            }
+            let stale_entity_count_threshold = reader.u32()?;
+            let replay_age_seconds = reader.u64()?;
+            let replay_bytes = reader.u64()?;
+            let replay_backlog = reader.u64()?;
+            let result_model = match reader.u8()? {
+                1 => riffdb_types::TextSearchResultModelV1::BooleanV1,
+                tag => {
+                    return Err(IrValidationError::UnknownTag {
+                        kind: "text result model",
+                        tag,
+                    });
+                }
+            };
+            text_index_specs.push(crate::TextIndexSpecV1::new(
+                entity,
+                index,
+                analyzer,
+                source_fields,
+                stale_entity_count_threshold,
+                replay_age_seconds,
+                replay_bytes,
+                replay_backlog,
+                result_model,
+                reader.u32()?,
+                reader.u32()?,
+                reader.u32()?,
+            )?);
+        }
+    }
     SchemaIr::with_integrity_and_delete_policies(
         entities,
         events,
@@ -4571,7 +4680,8 @@ fn decode_schema(reader: &mut Reader<'_>) -> Result<SchemaIr, IrValidationError>
     .with_vector_field_specs(vector_field_specs)?
     .with_secret_field_specs(secret_field_specs)?
     .with_vector_ann_specs(vector_ann_specs)?
-    .with_vector_production_specs(vector_production_specs)
+    .with_vector_production_specs(vector_production_specs)?
+    .with_text_index_specs(text_index_specs)
 }
 
 fn decode_entity_schema(reader: &mut Reader<'_>) -> Result<EntitySchema, IrValidationError> {

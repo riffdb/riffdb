@@ -225,6 +225,15 @@ fn allocate_symbols(
                                 &mut diagnostics,
                             );
                         }
+                        EntityItem::TextIndex(text_index) => {
+                            indexes.insert(&text_index.name, &mut diagnostics);
+                            let source_names = text_index
+                                .source_fields
+                                .iter()
+                                .map(|source| source.value.field.clone())
+                                .collect::<Vec<_>>();
+                            validate_unique_spanned_names(&source_names, &mut diagnostics);
+                        }
                         EntityItem::DeletePolicy(_) => {}
                     }
                 }

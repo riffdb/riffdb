@@ -80,6 +80,7 @@ pub(crate) fn resolve_declared_types(
                         | EntityItem::Index(_)
                         | EntityItem::Unique(_)
                         | EntityItem::Reference(_)
+                        | EntityItem::TextIndex(_)
                         | EntityItem::DeletePolicy(_) => {}
                         EntityItem::VectorField(vector_field) => {
                             // Resolve the vector field to ValueType::vector(dimension).

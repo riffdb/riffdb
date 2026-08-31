@@ -1,7 +1,7 @@
 format=riffdb-compiler-diagnostic-fixture-v1
 
 [semantic-code-registry]
-count=48
+count=49
 code.0.id=RDB-C001
 code.0.message=contract version must be a supported nonzero integer
 code.0.help=use a base-10 application version in 1..=u64::MAX
@@ -52,7 +52,7 @@ code.15.message=partition and conflict keys must be computable from validated in
 code.15.help=derive aggregate keys only from root-key inputs and constants
 code.16.id=RDB-C017
 code.16.message=command bindings must share one partition and writes one aggregate
-code.16.help=use one structural partition derivation and one aggregate for create/mutate bindings
+code.16.help=every create and mutate binding must derive the same partition route; bindings may belong to different aggregates within that route, but a write that crosses partitions must be split into one idempotent command per partition
 code.17.id=RDB-C018
 code.17.message=a required relationship must map stored fields to one complete same-partition target key
 code.17.help=map required non-optional fields to the complete target key in canonical order
@@ -76,7 +76,7 @@ code.23.message=a relationship change lacks a dominating exact target binding an
 code.23.help=bind the complete referenced key before the mutable binding and declare its failure outcome
 code.24.id=RDB-C025
 code.24.message=a unique key must use required fields and begin with the complete partition route
-code.24.help=declare required key-compatible fields beginning with the canonical partition prefix
+code.24.help=a unique key is enforced within one partition, so its fields must be required, key-compatible, and begin with the aggregate's partition route; either prefix the route to make the value unique per route, or, if the value must be unique across a wider scope, partition the aggregate by that scope and keep a finer conflict_key so writers still do not contend
 code.25.id=RDB-C026
 code.25.message=a changed unique value must be computable from validated command inputs
 code.25.help=assign every changed unique component from command inputs or input-only expressions
@@ -133,19 +133,22 @@ code.42.message=the row-policy relationship must use one exact local declared in
 code.42.help=name one declared target index and provide its complete partition-routed key
 code.43.id=RDB-C045
 code.43.message=the deletion policy lacks a complete no-inbound or indexed-restrict proof
-code.43.help=declare no_inbound only with no inbound relation, or name one exact canonical reverse index covering every inbound relation
+code.43.help=declare no_inbound only when nothing references this entity; otherwise cascade over every inbound relation in this aggregate, naming each reverse index and maximum, or restrict against the one inbound source's reverse index
 code.44.id=RDB-C046
 code.44.message=a secret value crosses a non-secret destination without an exact reveals annotation
 code.44.help=add `reveals binding.secret_field` at the exact non-secret flow site, or keep the destination secret-classified
-code.45.id=RDB-C201
-code.45.message=an identifier cannot form a valid MCP command tool-name segment
-code.45.help=start contract and command identifiers with an ASCII letter
-code.46.id=RDB-C202
-code.46.message=the complete MCP command tool name exceeds 128 bytes
-code.46.help=shorten the source contract or command identifier
-code.47.id=RDB-C203
-code.47.message=two commands normalize to the same MCP command tool name
-code.47.help=rename one command so lowercase identifiers remain distinct
+code.45.id=RDB-C047
+code.45.message=the tokenized text-index declaration is invalid
+code.45.help=use distinct bounded string sources, keyword_v1 or standard_v1, boolean_v1, positive weights and ceilings, and max_results no greater than max_candidates
+code.46.id=RDB-C201
+code.46.message=an identifier cannot form a valid MCP command tool-name segment
+code.46.help=start contract and command identifiers with an ASCII letter
+code.47.id=RDB-C202
+code.47.message=the complete MCP command tool name exceeds 128 bytes
+code.47.help=shorten the source contract or command identifier
+code.48.id=RDB-C203
+code.48.message=two commands normalize to the same MCP command tool name
+code.48.help=rename one command so lowercase identifiers remain distinct
 
 [RDB-C001-invalid-contract-version]
 expected=RDB-C001
@@ -320,7 +323,7 @@ diagnostic.0.code=RDB-C017
 diagnostic.0.message=command bindings must share one partition and writes one aggregate
 diagnostic.0.primary=425..428
 diagnostic.0.related=none
-diagnostic.0.help=use one structural partition derivation and one aggregate for create/mutate bindings
+diagnostic.0.help=every create and mutate binding must derive the same partition route; bindings may belong to different aggregates within that route, but a write that crosses partitions must be split into one idempotent command per partition
 
 [RDB-C018-invalid-relationship]
 expected=RDB-C018
@@ -399,8 +402,8 @@ count=1
 diagnostic.0.code=RDB-C025
 diagnostic.0.message=a unique key must use required fields and begin with the complete partition route
 diagnostic.0.primary=176..186
-diagnostic.0.related=none
-diagnostic.0.help=declare required key-compatible fields beginning with the canonical partition prefix
+diagnostic.0.related=207..223
+diagnostic.0.help=a unique key is enforced within one partition, so its fields must be required, key-compatible, and begin with the aggregate's partition route; either prefix the route to make the value unique per route, or, if the value must be unique across a wider scope, partition the aggregate by that scope and keep a finer conflict_key so writers still do not contend
 
 [RDB-C026-unique-key-not-input-computable]
 expected=RDB-C026
@@ -630,7 +633,7 @@ diagnostic.0.code=RDB-C045
 diagnostic.0.message=the deletion policy lacks a complete no-inbound or indexed-restrict proof
 diagnostic.0.primary=96..120
 diagnostic.0.related=none
-diagnostic.0.help=declare no_inbound only with no inbound relation, or name one exact canonical reverse index covering every inbound relation
+diagnostic.0.help=declare no_inbound only when nothing references this entity; otherwise cascade over every inbound relation in this aggregate, naming each reverse index and maximum, or restrict against the one inbound source's reverse index
 
 [RDB-C046-invalid-secret-reveal]
 expected=RDB-C046
@@ -641,6 +644,16 @@ diagnostic.0.message=a secret value crosses a non-secret destination without an 
 diagnostic.0.primary=337..343
 diagnostic.0.related=103..109
 diagnostic.0.help=add `reveals binding.secret_field` at the exact non-secret flow site, or keep the destination secret-classified
+
+[RDB-C047-invalid-text-index]
+expected=RDB-C047
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C047
+diagnostic.0.message=the tokenized text-index declaration is invalid
+diagnostic.0.primary=167..176
+diagnostic.0.related=none
+diagnostic.0.help=use distinct bounded string sources, keyword_v1 or standard_v1, boolean_v1, positive weights and ceilings, and max_results no greater than max_candidates
 
 [RDB-C201-invalid-command-tool-name]
 expected=RDB-C201
