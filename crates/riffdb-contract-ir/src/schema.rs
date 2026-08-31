@@ -244,7 +244,12 @@ pub enum IndexFieldEncodingV1 {
 }
 
 /// Maximum byte expansion charged for the frozen Unicode-fold profile.
-pub const UNICODE_FOLD_V1_MAXIMUM_EXPANSION: usize = 18;
+///
+/// Re-exported from `riffdb-types`, which owns the transform this bound
+/// describes; a bound that lived apart from its function would drift from it.
+/// `riffdb_types::unicode_fold` verifies it exhaustively against the pinned
+/// tables.
+pub use riffdb_types::UNICODE_FOLD_V1_MAXIMUM_EXPANSION;
 
 /// One local entity index declaration.
 #[derive(Clone, Debug, Eq, PartialEq)]

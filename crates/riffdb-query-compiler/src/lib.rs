@@ -2673,14 +2673,17 @@ const OPERATIONAL_COMPONENT_CAPABILITY_REGISTRY: [(
         },
     ),
     (
+        // ADR-0172. Folded comparison is still bytewise, so cursor safety and
+        // order stability carry over from the binary profile unchanged; the
+        // capability set is therefore identical to it.
         IndexFieldEncodingV1::TextKey(TextKeyProfileV1::UnicodeFold),
         OperationalComponentCapabilities {
-            exact: false,
-            membership: false,
-            range_or_complement: false,
+            exact: true,
+            membership: true,
+            range_or_complement: true,
             presence_state: false,
-            prefix: false,
-            order: false,
+            prefix: true,
+            order: true,
         },
     ),
 ];
@@ -3620,12 +3623,12 @@ mod operational_component_registry_tests {
                 TextKeyProfileV1::UnicodeFold,
             )),
             super::OperationalComponentCapabilities {
-                exact: false,
-                membership: false,
-                range_or_complement: false,
+                exact: true,
+                membership: true,
+                range_or_complement: true,
                 presence_state: false,
-                prefix: false,
-                order: false,
+                prefix: true,
+                order: true,
             }
         );
     }

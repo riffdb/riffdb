@@ -28,6 +28,7 @@ mod reimport;
 mod secret;
 mod service;
 mod time;
+mod unicode_fold;
 mod value;
 mod vector;
 
@@ -57,5 +58,6 @@ pub use reimport::*;
 pub use secret::*;
 pub use service::*;
 pub use time::*;
+pub use unicode_fold::*;
 pub use value::*;
 pub use vector::*;

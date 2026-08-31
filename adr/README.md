@@ -191,7 +191,7 @@ direction, merged draft, or implementation choice.
 | [0170](0170-partition-local-cross-aggregate-writes.md) | Partition-Local Cross-Aggregate Writes | Accepted |
 | [0171](0171-gated-backend-measurement-stability.md) | Measurement Stability Binds the Gated Backend | Accepted |
 | [0172](0172-case-insensitive-text-matching.md) | Case-Insensitive Text Matching | Accepted |
-| [0173](0173-tokenized-text-search-provider.md) | Tokenized Text Search Provider | Proposed |
+| [0173](0173-tokenized-text-search-provider.md) | Tokenized Text Search Provider | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
