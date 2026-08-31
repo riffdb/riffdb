@@ -84,6 +84,7 @@ pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerD
     let mut diagnostics = Vec::new();
     validate_relationship_declarations(hir)?;
     validate_unique_declarations(hir)?;
+    validate_text_profile_consistency(hir)?;
     let enums = lower_enums(hir, &mut diagnostics);
     let entities = lower_entities(hir, &mut diagnostics);
     let aggregates = lower_aggregates(hir, &mut diagnostics);
@@ -391,6 +392,51 @@ fn lower_delete_policies(
             }
         })
         .collect()
+}
+
+/// One field, one text comparison rule.
+///
+/// A `text_key` encoding decides how a field's text compares — for the
+/// operational index that declares it and, since ADR-0172, for provider-backed
+/// text predicates over the same field. Two indexes declaring different
+/// profiles for one field would make that answer depend on which plan the
+/// compiler happened to choose, so the contract is refused rather than
+/// resolved arbitrarily.
+pub(crate) fn validate_text_profile_consistency(
+    hir: &TypedContractHir,
+) -> Result<(), CompilerDiagnostics> {
+    let mut diagnostics = Vec::new();
+    for entity in &hir.entities {
+        let mut declared: Vec<(
+            riffdb_types::FieldId,
+            riffdb_contract_ir::TextKeyProfileV1,
+            Span,
+        )> = Vec::new();
+        for index in &entity.indexes {
+            for ((field_id, _), encoding) in index.fields.iter().zip(&index.encodings) {
+                let riffdb_contract_ir::IndexFieldEncodingV1::TextKey(profile) = encoding else {
+                    continue;
+                };
+                if let Some((_, prior, _)) = declared
+                    .iter()
+                    .find(|(candidate, prior, _)| candidate == field_id && prior != profile)
+                {
+                    let _ = prior;
+                    diagnostics.push(
+                        CompilerDiagnostic::new(CompilerDiagnosticCode::InvalidType, index.span)
+                            .with_cause(CompilerDiagnosticCause::TextProfileConflictsAcrossIndexes),
+                    );
+                    continue;
+                }
+                declared.push((*field_id, *profile, index.span));
+            }
+        }
+    }
+    if diagnostics.is_empty() {
+        Ok(())
+    } else {
+        Err(CompilerDiagnostics::new(diagnostics).expect("nonempty diagnostics"))
+    }
 }
 
 pub(crate) fn validate_unique_declarations(

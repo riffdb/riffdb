@@ -109,6 +109,10 @@ pub enum CompilerDiagnosticCause {
     UniqueKeyOutsidePartitionRoute,
     /// A unique key names an optional or non-key-compatible field.
     UniqueKeyFieldNotKeyCompatible,
+    /// Two indexes declare different text profiles for one field, so how that
+    /// field's text compares would depend on which index a plan happened to
+    /// use.
+    TextProfileConflictsAcrossIndexes,
     /// A workflow lease names a field that is not a valid owner, expiry,
     /// fencing-token, or attempt field for its declared role.
     WorkflowLeaseFieldRoleInvalid,
@@ -172,6 +176,9 @@ impl CompilerDiagnosticCause {
             }
             Self::UniqueKeyFieldNotKeyCompatible => {
                 "a unique key field is optional or not key-compatible"
+            }
+            Self::TextProfileConflictsAcrossIndexes => {
+                "two indexes declare different text profiles for the same field"
             }
             Self::WorkflowLeaseFieldRoleInvalid => {
                 "a lease field does not have the type its role requires"
