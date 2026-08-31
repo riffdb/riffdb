@@ -1,28 +1,24 @@
 # ADR-0174: Bounded Filtered Result Pipelines
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-08-31
-- **Exact text accepted:** No
-- **Acceptance reference:** The maintainer approved the bounded candidate-set,
-  long-value pattern-provider, and higher page-ceiling direction in the current
-  Codex session and requested the correct holistic capability rather than an
-  adapter workaround. This exact record still requires review.
+- **Exact text accepted:** Yes, 2026-08-31
+- **Accepted:** 2026-08-31
+- **Acceptance reference:** The maintainer accepted this record's exact text
+  and directed implementation in the current Codex session.
 - **Decision deadline:** Before RiffQL admits a candidate binding, the global
   query row ceiling changes, or a long-value pattern-provider identity is
   frozen
 - **Requires:** ADR-0051, ADR-0052, ADR-0053, ADR-0055, ADR-0086, ADR-0108,
   ADR-0111, ADR-0124, ADR-0130, ADR-0131, ADR-0134, ADR-0150, ADR-0158,
   ADR-0159, ADR-0164, ADR-0167, ADR-0172, and ADR-0173
-- **Amends if accepted:** ADR-0131's exact-text implementation ceiling,
+- **Amends:** ADR-0131's exact-text implementation ceiling,
   ADR-0150's relationship-composition extension boundary, ADR-0158 and
   ADR-0167's 499-row global page ceiling, and ADR-0159's larger-page adapter
   exception
-- **Defines or blocks:** Proposed WP-733 through WP-738
+- **Defines or blocks:** WP-733 through WP-738
 
-Direction approval is recorded, but this record is not authoritative until the
-maintainer accepts its exact text. The implementation packages may add failing
-fixtures and inventory evidence but may not freeze the public or durable
-identities below before that acceptance.
+This record is authoritative for WP-733 through WP-738.
 
 ## Context
 
@@ -473,7 +469,8 @@ The staged acceptance corpus must include:
 
 ## Requirements and Work Packages
 
-If accepted, register a closed requirement family and these packages:
+The closed requirements are `OQ-084` through `OQ-100`, implemented by these
+packages:
 
 - **WP-733:** MLflow-neutral search compatibility inventory, exact syntax,
   identity inventory, and failing fixtures.
