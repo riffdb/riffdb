@@ -284,9 +284,19 @@ impl TokenizedTextPartitionIndexV1 {
             return Err(TokenizedTextErrorV1::PartitionLimit);
         }
         let postings = build_postings(&next)?;
-        self.documents = next;
-        self.postings = postings;
-        self.frontier = Some(epoch);
+        let candidate = Self {
+            config: self.config.clone(),
+            partition: self.partition,
+            generation: self.generation,
+            frontier: Some(epoch),
+            documents: next,
+            postings,
+        };
+        // A successful epoch must always remain representable by the durable
+        // boundary. Validate before publication so checkpoint overflow cannot
+        // strand an acknowledged in-memory state.
+        candidate.to_checkpoint_bytes()?;
+        *self = candidate;
         Ok(())
     }
 
@@ -453,7 +463,10 @@ impl TokenizedTextPartitionIndexV1 {
         let frontier =
             CommitSequence::new(reader.u64()?).ok_or(TokenizedTextErrorV1::InvalidCheckpoint)?;
         let field_count = usize::from(reader.u16()?);
-        let mut fields = Vec::with_capacity(field_count.min(1_024));
+        if field_count == 0 || field_count > 1_024 {
+            return Err(TokenizedTextErrorV1::InvalidConfiguration);
+        }
+        let mut fields = Vec::with_capacity(field_count);
         for _ in 0..field_count {
             let field =
                 FieldId::new(reader.u32()?).ok_or(TokenizedTextErrorV1::InvalidCheckpoint)?;
@@ -483,6 +496,9 @@ impl TokenizedTextPartitionIndexV1 {
                 return Err(TokenizedTextErrorV1::OutputInvalid);
             };
             let analyzed_field_count = usize::from(reader.u16()?);
+            if analyzed_field_count > config.fields().len() {
+                return Err(TokenizedTextErrorV1::InvalidCheckpoint);
+            }
             let mut analyzed_fields = BTreeMap::new();
             let mut terms = 0usize;
             for _ in 0..analyzed_field_count {
@@ -621,6 +637,11 @@ fn decode_postings(
 ) -> Result<PostingMapV1, TokenizedTextErrorV1> {
     let count =
         usize::try_from(reader.u32()?).map_err(|_| TokenizedTextErrorV1::InvalidCheckpoint)?;
+    // Each entry needs at least a field, empty term length, and document count.
+    // Reject impossible declared counts before any per-entry allocation/work.
+    if count > reader.remaining() / 10 {
+        return Err(TokenizedTextErrorV1::InvalidCheckpoint);
+    }
     let mut postings = PostingMapV1::new();
     for _ in 0..count {
         let field = FieldId::new(reader.u32()?).ok_or(TokenizedTextErrorV1::InvalidCheckpoint)?;
@@ -641,7 +662,11 @@ fn decode_postings(
             let frequency = reader.u32()?;
             let position_count = usize::try_from(reader.u32()?)
                 .map_err(|_| TokenizedTextErrorV1::InvalidCheckpoint)?;
-            if frequency == 0 || usize::try_from(frequency).ok() != Some(position_count) {
+            if frequency == 0
+                || position_count > MAX_TOKENIZED_TERMS_PER_DOCUMENT_V1
+                || usize::try_from(frequency).ok() != Some(position_count)
+                || position_count > reader.remaining() / 4
+            {
                 return Err(TokenizedTextErrorV1::InvalidCheckpoint);
             }
             let mut positions = Vec::with_capacity(position_count);
@@ -710,6 +735,10 @@ struct Reader<'a> {
 impl<'a> Reader<'a> {
     const fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, cursor: 0 }
+    }
+
+    const fn remaining(&self) -> usize {
+        self.bytes.len() - self.cursor
     }
 
     fn take(&mut self, length: usize) -> Result<&'a [u8], TokenizedTextErrorV1> {
