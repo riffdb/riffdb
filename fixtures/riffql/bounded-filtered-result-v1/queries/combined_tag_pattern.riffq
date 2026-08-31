@@ -1,0 +1,33 @@
+query ExperimentsWithTagAndName(
+    $scope: Experiment.scope,
+    $tag_key: ExperimentTag.tag_key,
+    $tag_digest: ExperimentTag.value_digest,
+    $name_pattern: string<500>,
+    $limit: Limit<50000> = 1000,
+    $after: Cursor?,
+) {
+    candidates matching_experiments: Experiment.experiment_id
+        from intersect {
+            ExperimentTag.experiment_id using by_tag_digest
+                where scope == $scope
+                    && tag_key == $tag_key
+                    && value_digest == $tag_digest,
+            Experiment.experiment_id using by_name_pattern
+                where scope == $scope
+                    && name ilike $name_pattern,
+        }
+        within 65535
+        else IntegrityFailure
+
+    many experiments from Experiment
+        where scope == $scope
+            && experiment_id in matching_experiments
+        order by name asc, experiment_id asc
+        take $limit after $after
+        else IntegrityFailure
+
+    return Found {
+        experiments: experiments { experiment_id, name, last_update_time }
+    }
+    outcomes Found | IntegrityFailure
+}

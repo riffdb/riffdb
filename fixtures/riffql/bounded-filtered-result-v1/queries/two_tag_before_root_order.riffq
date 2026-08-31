@@ -1,0 +1,40 @@
+query ExperimentsWithTwoTags(
+    $scope: Experiment.scope,
+    $first_key: ExperimentTag.tag_key,
+    $first_digest: ExperimentTag.value_digest,
+    $second_key: ExperimentTag.tag_key,
+    $second_digest: ExperimentTag.value_digest,
+    $limit: Limit<50000> = 1000,
+    $after: Cursor?,
+) {
+    candidates matching_experiments: Experiment.experiment_id
+        from intersect {
+            ExperimentTag.experiment_id using by_tag_digest
+                where scope == $scope
+                    && tag_key == $first_key
+                    && value_digest == $first_digest,
+            ExperimentTag.experiment_id using by_tag_digest
+                where scope == $scope
+                    && tag_key == $second_key
+                    && value_digest == $second_digest,
+        }
+        within 65535
+        else IntegrityFailure
+
+    many experiments from Experiment
+        where scope == $scope
+            && experiment_id in matching_experiments
+        order by last_update_time desc, experiment_id asc
+        take $limit after $after
+        else IntegrityFailure
+
+    return Found {
+        experiments: experiments {
+            experiment_id,
+            name,
+            creation_time,
+            last_update_time,
+        }
+    }
+    outcomes Found | IntegrityFailure
+}

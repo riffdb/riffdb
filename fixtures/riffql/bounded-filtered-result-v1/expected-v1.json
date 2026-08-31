@@ -1,0 +1,36 @@
+{
+  "schema": "riffdb.bounded-filtered-result-oracle/v1",
+  "work_package": "WP-733",
+  "status": "pre_execution_fixture",
+  "partition": "tenant-a",
+  "rows": [
+    {"id": 1, "name": "Café Alpha", "created": 10, "updated": 40, "authorized": true, "tags": {"env": "prod", "team": "edge"}},
+    {"id": 2, "name": "CAFE beta", "created": 20, "updated": 60, "authorized": true, "tags": {"env": "prod", "team": "core"}},
+    {"id": 3, "name": "cafe gamma", "created": 30, "updated": 50, "authorized": true, "tags": {"env": "prod", "team": "core"}},
+    {"id": 4, "name": "hidden cafe", "created": 40, "updated": 90, "authorized": false, "tags": {"env": "prod", "team": "core"}},
+    {"id": 5, "name": "plain", "created": 50, "updated": 30, "authorized": true, "tags": {"env": "dev", "team": "core"}}
+  ],
+  "cases": [
+    {"name": "two_tag_then_updated_desc", "sources": [[1, 2, 3, 4], [2, 3, 4, 5]], "authorized_intersection": [2, 3], "ordered_result": [2, 3]},
+    {"name": "duplicate_union_deduplicates", "sources": [[1, 2, 2, 3], [2, 3, 3]], "authorized_union": [1, 2, 3], "ordered_result": [2, 3, 1]},
+    {"name": "empty_source_completes_empty", "sources": [[1, 2, 3], []], "ordered_result": []},
+    {"name": "policy_before_difference", "positive_physical": [1, 2, 3, 4, 5], "negative_physical": [1, 2, 3, 4], "authorized_result": [5]},
+    {"name": "folded_like", "pattern": "%cafe%", "matched_ids": [1, 2, 3], "denied_match_not_observable": 4},
+    {"name": "underscore_scalar", "values": ["aéz", "aéz"], "pattern": "a_z", "matched_value_indexes": [0]},
+    {"name": "escaped_wildcards", "values": ["a%b", "a_b", "axb"], "patterns": {"a\\%b": [0], "a\\_b": [1], "a_b": [0, 1, 2]}},
+    {"name": "wildcard_only", "pattern": "%", "requires_provider_value_scan": true, "matched_authorized_ids": [1, 2, 3, 5]},
+    {"name": "candidate_overflow", "within": 2, "distinct_candidates": 3, "outcome": "IntegrityFailure", "partial_rows": 0},
+    {"name": "verification_overflow", "maximum_bytes": 8, "required_bytes": 9, "outcome": "IntegrityFailure", "partial_rows": 0}
+  ],
+  "page_boundaries": [
+    {"requested": 499, "structurally_valid": true},
+    {"requested": 500, "structurally_valid": true},
+    {"requested": 50000, "structurally_valid": true},
+    {"requested": 65534, "structurally_valid": true},
+    {"requested": 65535, "structurally_valid": false}
+  ],
+  "value_boundaries": [
+    {"source_bytes": 8000, "profile": "unicode_fold_v1", "maximum_matched_bytes": 144000, "valid": true},
+    {"source_bytes": 8001, "profile": "unicode_fold_v1", "maximum_matched_bytes": 144018, "valid": false}
+  ]
+}
