@@ -231,6 +231,19 @@ The v1 analyzer set is closed:
   `unicode_fold_v1` compatibility fold to each term. Analyzer behavior is
   pinned by checked-in conformance tests rather than changing with the host.
 
+Two consequences of UAX 29 segmentation are worth knowing before you choose
+`standard_v1`, because both are pinned behaviour rather than defects:
+
+- **Scripts without spacing segment per character.** UAX 29 carries no
+  dictionary, so `東京大学` analyzes to four single-character terms rather than
+  to words. Search over such text is therefore effectively per-character. If a
+  field is predominantly CJK and you need whole-value matching, `keyword_v1`
+  is the honest choice until a dictionary-backed analyzer is declared.
+- **A value can analyze to no terms at all.** A value made only of punctuation,
+  whitespace, or emoji produces an empty term list, so that row cannot be found
+  through this index by any query. It is still authoritative and still readable
+  by key; it is simply absent from the tokenized index.
+
 The declaration selects only `boolean_v1`; ranked results, caller-selected
 operators, and caller-visible scores are not available. The stale-entity and
 replay ceilings are durable contract identity for the later projection stage.
