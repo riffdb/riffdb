@@ -43,6 +43,16 @@ impl TextSearchResultModelV1 {
 }
 
 impl TextAnalyzerV1 {
+    /// Decodes the byte-frozen analyzer discriminant.
+    #[must_use]
+    pub const fn from_discriminant(value: u8) -> Option<Self> {
+        match value {
+            1 => Some(Self::KeywordV1),
+            2 => Some(Self::StandardV1),
+            _ => None,
+        }
+    }
+
     /// Canonical contract spelling.
     #[must_use]
     pub const fn as_str(self) -> &'static str {

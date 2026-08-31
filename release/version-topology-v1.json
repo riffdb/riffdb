@@ -346,6 +346,23 @@
       "durable_manifest": {"readable_key":"readable_redb_layout_versions","writable_key":"writable_redb_layout_versions"}
     },
     {
+      "id": "durable.tokenized_text_provider_state",
+      "title": "Tokenized-text provider checkpoint",
+      "classification": "durable",
+      "owner": "riffdb-projection",
+      "source_assertions": [{"kind":"identity_regex","path":"crates/riffdb-projection/src/tokenized_text.rs","pattern":"pub const TOKENIZED_TEXT_STATE_VERSION_V([0-9]+): u16 = ([0-9]+);","identities":["1"]}],
+      "readable_identities": ["1"], "writable_identities": ["1"], "current_identities": ["1"],
+      "writer_policy": "single_current",
+      "compatibility_rule": "V1 binds one text-index identity, analyzer, policy partition, generation, frontier, canonical keys and outputs, field norms, and explicit per-field postings with frequencies and positions.",
+      "breaking_when": "RTTS framing, canonical order, analyzer or field identity, posting/frequency/norm/position meaning, or recovery/refusal semantics change under V1.",
+      "supported_release_posture": "Tokenized provider-state V1 is current and rebuildable.",
+      "lifecycle": {"active":["1"],"read_only":[],"retirement_candidate":[],"retired":[]},
+      "reserved_identity_policy": "Checkpoint versions, framing bytes, field order, and analyzer tags are never reused.",
+      "evidence": ["crates/riffdb-projection/tests/tokenized_text_provider.rs"],
+      "checks": ["./scripts/check-version-topology"],
+      "last_change": {"classification":"new_domain_identity","decision":"ADR-0173/WP-730 tokenized provider-state V1"}
+    },
+    {
       "id": "evidence.authoring_diagnostic",
       "title": "Authoring diagnostic evidence format",
       "classification": "evidence",

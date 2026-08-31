@@ -17,6 +17,7 @@ mod query;
 mod recovery;
 mod registry;
 mod result_set_epoch;
+mod tokenized_text;
 
 pub use control::*;
 pub use error::*;
@@ -30,3 +31,4 @@ pub use query::*;
 pub use recovery::*;
 pub use registry::*;
 pub use result_set_epoch::*;
+pub use tokenized_text::*;

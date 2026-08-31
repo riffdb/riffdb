@@ -249,10 +249,12 @@ operators, and caller-visible scores are not available. The stale-entity and
 replay ceilings are durable contract identity for the later projection stage.
 Changing an analyzer or field weight changes the contract bundle identity.
 
-This stage provides declaration validation, canonical IR, and the analyzers
-only. It does **not** yet build or persist a tokenized index, expose a named
-tokenized query through RiffQL or an SDK, execute boolean matching, compute
-authorized-set statistics, or rank results. Continue using `text_key(...,
+RiffDB now has the private durable tokenized provider-state V1 used by this
+declaration. It stores postings, per-field term frequencies and token counts,
+and positions, and has bounded atomic update, rebuild, compaction, checkpoint,
+and recovery behavior. Public named tokenized queries are not activated yet,
+so applications still cannot execute boolean matching, compute authorized-set
+statistics, or request relevance order. Continue using `text_key(...,
 binary_utf8_v1)` for the currently available exact byte-prefix behavior.
 
 ## Explicit covering indexes

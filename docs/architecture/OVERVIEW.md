@@ -165,6 +165,29 @@ and current capability revision identify the policy-aligned derived state,
 while every request still reauthorizes before provider selection and again
 before values cross the public boundary.
 
+### Tokenized text provider state
+
+ADR-0173's tokenized provider is separate from exact text. Its V1 segment is a
+partition-scoped, policy-aligned, rebuildable derived generation identified by
+the compiled `text_index`, analyzer, partition, generation, and exact commit
+frontier. The byte-frozen checkpoint carries canonical entity keys and shaped
+outputs, per-field token-count norms, and explicit postings with term
+frequencies and positions. Those four primitives are present before query
+activation so phrase, proximity, and ranking never require an in-place format
+reinterpretation.
+
+One commit epoch is staged against a bounded copy and publishes the documents,
+postings, and frontier together only after complete validation. Rebuild uses
+one authoritative snapshot; compaction reconstructs only derived posting
+order. Recovery decodes both document terms and redundant postings, rebuilds
+the latter independently, and refuses any mismatch, unknown version, duplicate,
+noncanonical position, excessive value, or identity error. Authoritative entity
+and commit state never depends on the segment.
+
+This stage is private provider machinery. No application can select its
+format, analyzer, partition, generation, checkpoint, rebuild, or fallback, and
+no public tokenized query is claimed until the separately gated boolean stage.
+
 ## Reactive application path
 
 The accepted P8 architecture reuses authoritative domain events; it does not
