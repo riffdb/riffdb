@@ -10,7 +10,9 @@ use riffdb_contract_ir::{
 use riffdb_contract_syntax::Span;
 use riffdb_types::{EnumTypeId, EnumVariantId};
 
-use crate::diagnostic::{CompilerDiagnostic, CompilerDiagnosticCode, CompilerDiagnostics};
+use crate::diagnostic::{
+    CompilerDiagnostic, CompilerDiagnosticCause, CompilerDiagnosticCode, CompilerDiagnostics,
+};
 use crate::hir::{HirDeletePolicy, HirEffect, HirInvariant, TypedContractHir};
 
 /// Lowers the complete checked workflow catalog into span-free IR.
@@ -398,8 +400,13 @@ pub(crate) fn validate_unique_declarations(
                 // unique in -- is a change to the aggregate, not to the key.
                 let mut diagnostic =
                     CompilerDiagnostic::new(CompilerDiagnosticCode::InvalidUniqueKey, unique.span);
-                if !canonical_route {
-                    diagnostic = diagnostic.with_related_span(owner.span);
+                if canonical_route {
+                    diagnostic = diagnostic
+                        .with_cause(CompilerDiagnosticCause::UniqueKeyFieldNotKeyCompatible);
+                } else {
+                    diagnostic = diagnostic
+                        .with_cause(CompilerDiagnosticCause::UniqueKeyOutsidePartitionRoute)
+                        .with_related_span(owner.span);
                 }
                 diagnostics.push(diagnostic);
             }

@@ -904,7 +904,23 @@ fn contract_semantic_class(
     }
 }
 
+/// Quotes the closed cause when the check supplied one.
+///
+/// Several codes refuse for more than one reason, and the reasons have
+/// different repairs. Without the cause an author is told which construct is
+/// wrong but not which rule it broke, and has to rediscover that by trial
+/// compilation -- the same argument already accepted for bound observations in
+/// [`query_plan_summary`].
 fn contract_semantic_summary(diagnostic: &riffdb_contract_compiler::CompilerDiagnostic) -> String {
+    let base = contract_semantic_base_summary(diagnostic);
+    diagnostic
+        .cause()
+        .map_or(base.clone(), |cause| format!("{base}: {}", cause.as_str()))
+}
+
+fn contract_semantic_base_summary(
+    diagnostic: &riffdb_contract_compiler::CompilerDiagnostic,
+) -> String {
     use riffdb_contract_compiler::CompilerDiagnosticCode as Code;
     match diagnostic.code() {
         Code::CrossPartitionMutation => {
