@@ -525,3 +525,84 @@ fn decode_hex(value: &str) -> Vec<u8> {
         })
         .collect()
 }
+
+/// ADR-0172: the provider matches under the frozen fold when the profile
+/// declares it, and a value and a needle fold by the same function.
+///
+/// This is the half MLflow's ILIKE actually needs -- `contains` and
+/// `ends_with` case-insensitively, which the index encoding alone cannot give.
+#[test]
+fn the_fold_profile_matches_case_and_compatibility_insensitively() {
+    use riffdb_projection::{ExactTextIndexMutationV1, ExactTextPartitionIndexV1};
+    use riffdb_types::{
+        CommitSequence, EntityKeyHash, ExactTextOperatorV1, ExactTextProfileV1, PartitionKeyHash,
+        ProjectionGeneration,
+    };
+
+    let partition = PartitionKeyHash::from_bytes([7_u8; 32]);
+    let generation = ProjectionGeneration::new(1).expect("generation");
+    let mut index =
+        ExactTextPartitionIndexV1::new(partition, generation, ExactTextProfileV1::UnicodeFoldV1);
+    let row = EntityKeyHash::from_bytes([1_u8; 32]);
+    index
+        .apply(
+            CommitSequence::new(1).expect("epoch"),
+            &[ExactTextIndexMutationV1::upsert(row, "Straße Ünïcode ﬁle").expect("upsert")],
+        )
+        .expect("apply");
+
+    let matches = |operator, needle: &str| {
+        let bound = ExactTextProfileV1::UnicodeFoldV1
+            .bind_needle(needle)
+            .expect("needle");
+        !index.lookup(operator, &bound).is_empty()
+    };
+
+    // Case-insensitive across all three anchored operators.
+    assert!(matches(ExactTextOperatorV1::StartsWith, "STRASSE"));
+    assert!(matches(ExactTextOperatorV1::Contains, "ÜNÏCODE"));
+    assert!(matches(ExactTextOperatorV1::EndsWith, "file"));
+    // NFKC compatibility: the stored ligature matches its decomposed spelling.
+    assert!(matches(ExactTextOperatorV1::EndsWith, "FILE"));
+    // The expanding fold is symmetric: ß in the value matches ss in the needle.
+    assert!(matches(ExactTextOperatorV1::StartsWith, "straß"));
+    // A genuine non-match is still a non-match.
+    assert!(!matches(ExactTextOperatorV1::Contains, "absent"));
+}
+
+/// The binary profile must be unaffected, or linking the fold would silently
+/// change every existing index's behaviour.
+#[test]
+fn the_binary_profile_stays_case_sensitive() {
+    use riffdb_projection::{ExactTextIndexMutationV1, ExactTextPartitionIndexV1};
+    use riffdb_types::{
+        CommitSequence, EntityKeyHash, ExactTextOperatorV1, ExactTextProfileV1, PartitionKeyHash,
+        ProjectionGeneration,
+    };
+
+    let mut index = ExactTextPartitionIndexV1::new(
+        PartitionKeyHash::from_bytes([7_u8; 32]),
+        ProjectionGeneration::new(1).expect("generation"),
+        ExactTextProfileV1::BinaryUtf8V1,
+    );
+    index
+        .apply(
+            CommitSequence::new(1).expect("epoch"),
+            &[
+                ExactTextIndexMutationV1::upsert(EntityKeyHash::from_bytes([1_u8; 32]), "Straße")
+                    .expect("upsert"),
+            ],
+        )
+        .expect("apply");
+
+    let matches = |needle: &str| {
+        let bound = ExactTextProfileV1::BinaryUtf8V1
+            .bind_needle(needle)
+            .expect("needle");
+        !index
+            .lookup(ExactTextOperatorV1::Contains, &bound)
+            .is_empty()
+    };
+    assert!(matches("Straße"), "exact bytes still match");
+    assert!(!matches("STRASSE"), "the binary profile is case-sensitive");
+}
