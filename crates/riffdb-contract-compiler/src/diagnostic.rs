@@ -109,6 +109,22 @@ pub enum CompilerDiagnosticCause {
     UniqueKeyOutsidePartitionRoute,
     /// A unique key names an optional or non-key-compatible field.
     UniqueKeyFieldNotKeyCompatible,
+    /// A workflow lease names a field that is not a valid owner, expiry,
+    /// fencing-token, or attempt field for its declared role.
+    WorkflowLeaseFieldRoleInvalid,
+    /// A workflow lease reuses one field for more than one lease role.
+    WorkflowLeaseFieldsNotDistinct,
+    /// A workflow lease names a primary-key field.
+    WorkflowLeaseFieldInPrimaryKey,
+    /// A workflow lease duration range is empty, inverted, or over the ceiling.
+    WorkflowLeaseDurationOutOfRange,
+    /// A migration names a lineage other than its parent's or candidate's.
+    MigrationLineageMismatch,
+    /// A migration's declared `from`/`to` versions do not match the parent and
+    /// candidate contract versions.
+    MigrationVersionMismatch,
+    /// A migration does not move strictly forward in contract version.
+    MigrationVersionNotIncreasing,
 }
 
 impl CompilerDiagnosticCause {
@@ -134,6 +150,25 @@ impl CompilerDiagnosticCause {
             }
             Self::UniqueKeyFieldNotKeyCompatible => {
                 "a unique key field is optional or not key-compatible"
+            }
+            Self::WorkflowLeaseFieldRoleInvalid => {
+                "a lease field does not have the type its role requires"
+            }
+            Self::WorkflowLeaseFieldsNotDistinct => {
+                "one field is used for more than one lease role"
+            }
+            Self::WorkflowLeaseFieldInPrimaryKey => "a lease field is part of the primary key",
+            Self::WorkflowLeaseDurationOutOfRange => {
+                "the lease duration range is empty, inverted, or over the ceiling"
+            }
+            Self::MigrationLineageMismatch => {
+                "the migration lineage differs from the parent or candidate contract"
+            }
+            Self::MigrationVersionMismatch => {
+                "the declared from/to versions do not match the parent and candidate versions"
+            }
+            Self::MigrationVersionNotIncreasing => {
+                "the candidate contract version must be greater than the parent's"
             }
         }
     }

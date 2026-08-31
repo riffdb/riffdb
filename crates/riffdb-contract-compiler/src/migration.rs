@@ -18,7 +18,9 @@ use riffdb_contract_syntax::{Span, Spanned, parse_migration};
 use riffdb_types::{ContractVersion, EntityTypeId, FieldId, hash_migration_source};
 
 use crate::compiler::CompilationError;
-use crate::diagnostic::{CompilerDiagnostic, CompilerDiagnosticCode, CompilerDiagnostics};
+use crate::diagnostic::{
+    CompilerDiagnostic, CompilerDiagnosticCause, CompilerDiagnosticCode, CompilerDiagnostics,
+};
 use crate::expression_lowering::{ExpressionLowerer, ExpressionScope};
 use crate::symbols::GenesisSymbols;
 
@@ -829,15 +831,24 @@ fn validate_identity(
         .parse::<u64>()
         .ok()
         .and_then(ContractVersion::new);
-    if migration.lineage.value != parent.lineage().as_str()
+    // Five conditions shared one message. Lineage first, then the declared
+    // versions, then their ordering -- an author fixes them in that order.
+    let identity_cause = if migration.lineage.value != parent.lineage().as_str()
         || parent.lineage() != candidate.lineage()
-        || from != Some(parent.contract_version())
-        || to != Some(candidate.contract_version())
-        || parent.contract_version() >= candidate.contract_version()
     {
-        return Err(semantic_error(
+        Some(CompilerDiagnosticCause::MigrationLineageMismatch)
+    } else if from != Some(parent.contract_version()) || to != Some(candidate.contract_version()) {
+        Some(CompilerDiagnosticCause::MigrationVersionMismatch)
+    } else if parent.contract_version() >= candidate.contract_version() {
+        Some(CompilerDiagnosticCause::MigrationVersionNotIncreasing)
+    } else {
+        None
+    };
+    if let Some(cause) = identity_cause {
+        return Err(semantic_error_with_cause(
             CompilerDiagnosticCode::InvalidMigrationIdentity,
             document.migration.span,
+            cause,
         ));
     }
     Ok(())
@@ -1548,4 +1559,14 @@ fn semantic_error(code: CompilerDiagnosticCode, span: Span) -> CompilationError 
     CompilationError::Semantic(CompilerDiagnostics::single(CompilerDiagnostic::new(
         code, span,
     )))
+}
+
+fn semantic_error_with_cause(
+    code: CompilerDiagnosticCode,
+    span: Span,
+    cause: CompilerDiagnosticCause,
+) -> CompilationError {
+    CompilationError::Semantic(CompilerDiagnostics::single(
+        CompilerDiagnostic::new(code, span).with_cause(cause),
+    ))
 }
