@@ -2825,21 +2825,66 @@ fn choose_access(
             .order
             .iter()
             .all(|term| term.direction.value == Direction::Ascending);
-        let valid = binding.cardinality.value == Cardinality::Many
-            && binding.absence_outcome.is_some()
-            && binding
-                .take
-                .as_ref()
-                .is_some_and(|take| take.after.is_none())
-            && complete_key
-            && key_only
-            && context.maximum_rows <= source_maximum
-            && source_order == [source_field.value.as_str()]
-            && source_order_is_forward
-            && target_order == [collection.field]
-            && forward_order
-            && collection.field == source_field.value.as_str();
-        if !valid {
+        // Report WHICH condition failed. This shape has eleven requirements and
+        // reporting the shape as a whole tells an author nothing about the edit
+        // to make -- one adapter read the combined message as proof that
+        // composing two indexed predicates was unsupported and went looking for
+        // a new engine capability, when the query was two edits from compiling.
+        //
+        // Ordered most-structural first, so the message names the earliest
+        // thing that has to change rather than an incidental later one.
+        let failure = if collection.field != source_field.value.as_str() {
+            Some(
+                "dependent key batch must join on the same field it selects from the source \
+                 binding",
+            )
+        } else if binding.cardinality.value != Cardinality::Many {
+            Some("dependent key batch must bind `many`, because a driver key may match no row")
+        } else if !complete_key {
+            Some(
+                "dependent key batch must constrain every primary-key field, by equality or by \
+                 the bounded collection",
+            )
+        } else if !key_only {
+            Some(
+                "dependent key batch may only compare primary-key fields; a predicate over a \
+                 non-key field is a residual filter. Move the value into the key, or compare a \
+                 fixed-size digest of it that is part of the key",
+            )
+        } else if binding.absence_outcome.is_none() {
+            Some(
+                "dependent key batch must declare an absence outcome with `else`; for a `many` \
+                 binding it never fires, because an empty match is zero rows rather than an \
+                 outcome",
+            )
+        } else if !binding
+            .take
+            .as_ref()
+            .is_some_and(|take| take.after.is_none())
+        {
+            Some(
+                "dependent key batch must declare `take` without an `after` cursor; the source \
+                 binding carries the pagination",
+            )
+        } else if context.maximum_rows > source_maximum {
+            Some(
+                "dependent key batch `take` must be no larger than the source binding's, so the \
+                 batch cannot exceed the keys driving it",
+            )
+        } else if source_order != [source_field.value.as_str()] || !source_order_is_forward {
+            Some(
+                "the source binding must order ascending by exactly the joining field, so its \
+                 keys arrive in traversal order",
+            )
+        } else if target_order != [collection.field] || !forward_order {
+            Some(
+                "dependent key batch must order ascending by exactly the joining field, matching \
+                 the source binding's order",
+            )
+        } else {
+            None
+        };
+        if let Some(summary) = failure {
             return Err(one(
                 PlannerDiagnosticCode::Cardinality,
                 binding.predicate.span,
@@ -2848,7 +2893,7 @@ fn choose_access(
                     source_binding.value.as_str().to_owned(),
                     source_field.value.as_str().to_owned(),
                 ],
-                "dependent key batch is not a complete ordered bounded primary-key traversal",
+                summary,
                 None,
             ));
         }
