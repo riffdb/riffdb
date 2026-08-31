@@ -1,12 +1,11 @@
 # ADR-0173: Tokenized Text Search Provider
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-08-30
-- **Exact text accepted:** No
-- **Accepted:** Not accepted
-- **Acceptance reference:** Maintainer asked for the ability to project and
-  query a search store in the current Claude Code session; the exact text is
-  not yet accepted
+- **Exact text accepted:** Yes, 2026-08-30
+- **Accepted:** 2026-08-30
+- **Acceptance reference:** Maintainer decided the four open design questions
+  and accepted this record's exact text in the current Claude Code session
 - **Decision deadline:** Before an application ships a second store alongside
   RiffDB to answer text queries
 - **Requires:** ADR-0131, ADR-0164, ADR-0172

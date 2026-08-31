@@ -1102,12 +1102,13 @@ fn operational_index_components(
                 .ok_or(CompilerDiagnosticCode::InvalidType)?;
             let maximum = match profile {
                 TextKeyProfileV1::BinaryUtf8 => maximum,
-                TextKeyProfileV1::UnicodeFold => {
-                    let _reserved_bound = maximum
-                        .checked_mul(UNICODE_FOLD_V1_MAXIMUM_EXPANSION)
-                        .ok_or(CompilerDiagnosticCode::BoundExceeded)?;
-                    return Err(CompilerDiagnosticCode::InvalidType);
-                }
+                // ADR-0172. NFKC can turn one code point into many, so a folded
+                // component is charged at its worst-case expansion rather than
+                // at the source field's bound. The ratio is proved exhaustively
+                // against the pinned tables in `riffdb_types::unicode_fold`.
+                TextKeyProfileV1::UnicodeFold => maximum
+                    .checked_mul(UNICODE_FOLD_V1_MAXIMUM_EXPANSION)
+                    .ok_or(CompilerDiagnosticCode::BoundExceeded)?,
             };
             riffdb_contract_ir::KeyComponentSchema::ordered_bytes(maximum)
                 .map_err(|_| CompilerDiagnosticCode::BoundExceeded)

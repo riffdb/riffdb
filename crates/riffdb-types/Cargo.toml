@@ -10,8 +10,14 @@ publish.workspace = true
 default = []
 
 [dependencies]
+# ADR-0172: the frozen `unicode_fold_v1` transform. Pinned exactly, because the
+# Unicode version these crates carry decides durable index contents; an
+# unpinned bump would silently re-fold every text index. The pin is asserted by
+# `unicode_fold::tests::the_pinned_unicode_version_is_exact`.
+caseless = { version = "=0.2.2", default-features = false }
 hmac = { version = "0.13.0", default-features = false }
 sha2 = { version = "0.11.0", default-features = false }
+unicode-normalization = { version = "=0.1.25", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }

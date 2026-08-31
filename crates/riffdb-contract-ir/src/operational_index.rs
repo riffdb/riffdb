@@ -68,10 +68,11 @@ pub fn encode_operational_index_values_v1(
                 };
                 let transformed = match profile {
                     TextKeyProfileV1::BinaryUtf8 => value.as_str().as_bytes().to_vec(),
+                    // ADR-0172. The same transform the exact-text provider
+                    // applies to a needle, so a stored value and a submitted
+                    // one compare as equal text.
                     TextKeyProfileV1::UnicodeFold => {
-                        return Err(IrValidationError::InvalidKey {
-                            reason: "Unicode-fold text-key profile is not linked",
-                        });
+                        riffdb_types::unicode_fold_v1(value.as_str()).into_bytes()
                     }
                 };
                 values.push(CanonicalValue::bytes(transformed).map_err(|_| {

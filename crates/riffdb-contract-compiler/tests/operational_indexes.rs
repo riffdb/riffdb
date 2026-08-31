@@ -188,3 +188,69 @@ contract Registry version 1 {
         "the route is correct here, so the aggregate must not be implicated"
     );
 }
+
+/// ADR-0172: the fold is linked, reachable, and produces a distinct identity.
+///
+/// It was declared, specified, bound-charged, and wire-encoded for a long time
+/// while refusing to lower, so the value of this arm is that the profile now
+/// reaches a compiled contract at all.
+#[test]
+fn the_unicode_fold_profile_compiles_and_changes_index_identity() {
+    const FOLDED: &str = r#"
+contract Folded version 1 {
+  entity Doc {
+    key (tenant_id: uuid, doc_id: uuid)
+    field title: string<40>
+    index by_title (tenant_id, title, doc_id)
+      text_key(title, unicode_fold_v1)
+  }
+  aggregate Docs { root Doc partition_by tenant_id conflict_key (tenant_id, doc_id) }
+}
+"#;
+    let folded = compile_contract_source(FOLDED).expect("the fold profile compiles");
+    let binary = compile_contract_source(&FOLDED.replace("unicode_fold_v1", "binary_utf8_v1"))
+        .expect("the binary profile compiles");
+
+    // Two profiles over the same field are two different durable indexes.
+    // Sharing an identity would let a rebuild silently reinterpret stored keys.
+    assert_ne!(
+        folded.bundle_hash(),
+        binary.bundle_hash(),
+        "a text profile is part of durable index identity"
+    );
+}
+
+/// The fold charges its worst-case expansion, so a field that fits under the
+/// binary profile can legitimately exceed the key bound under the fold. That is
+/// honest arithmetic rather than a regression, and it must be a bound refusal
+/// rather than a silent truncation.
+#[test]
+fn the_fold_charges_its_expansion_against_the_key_bound() {
+    const WIDE: &str = r#"
+contract Folded version 1 {
+  entity Doc {
+    key (tenant_id: uuid, doc_id: uuid)
+    field title: string<200>
+    index by_title (tenant_id, title, doc_id)
+      text_key(title, unicode_fold_v1)
+  }
+  aggregate Docs { root Doc partition_by tenant_id conflict_key (tenant_id, doc_id) }
+}
+"#;
+    // The same field is fine unfolded.
+    compile_contract_source(&WIDE.replace("unicode_fold_v1", "binary_utf8_v1"))
+        .expect("200 bytes fits the binary profile");
+
+    let error = compile_contract_source(WIDE).expect_err("200 bytes folded exceeds the key bound");
+    assert!(
+        error
+            .semantic()
+            .expect("semantic diagnostics")
+            .as_slice()
+            .iter()
+            .any(|diagnostic| {
+                diagnostic.code() == riffdb_contract_compiler::CompilerDiagnosticCode::BoundExceeded
+            }),
+        "the expansion must be charged as a bound refusal"
+    );
+}
