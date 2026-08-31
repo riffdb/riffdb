@@ -80,6 +80,65 @@ impl CompilerBoundResource {
     }
 }
 
+/// Closed, compiler-derived reason a semantic diagnostic fired.
+///
+/// Several checks refuse for more than one reason under one code. Reporting
+/// only the code tells an author that something is wrong with a construct they
+/// can see, but not which rule it broke -- and the rules have different
+/// repairs, so the author is left to rediscover which one applies by trial
+/// compilation. This is the same argument already accepted for
+/// [`CompilerBoundObservation`], applied to causes rather than ceilings.
+///
+/// The vocabulary is closed and value-free: each variant names a rule, never a
+/// fragment of the author's source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum CompilerDiagnosticCause {
+    /// A field was assigned through a binding that cannot be written.
+    AssignmentThroughUnwritableBinding,
+    /// A primary-key field was assigned; keys are immutable after creation.
+    AssignmentToKeyField,
+    /// The same field was assigned more than once in one command.
+    DuplicateFieldAssignment,
+    /// A cascade failure outcome was declared on a binding that does not
+    /// delete a collection-local entity through a collection expansion.
+    CascadeFailureOutsideCollectionDelete,
+    /// A cascade failure outcome reuses the binding's ordinary failure.
+    CascadeFailureDuplicatesOrdinaryFailure,
+    /// A unique key does not begin with its aggregate's partition route.
+    UniqueKeyOutsidePartitionRoute,
+    /// A unique key names an optional or non-key-compatible field.
+    UniqueKeyFieldNotKeyCompatible,
+}
+
+impl CompilerDiagnosticCause {
+    /// Stable, value-free wire and display token.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AssignmentThroughUnwritableBinding => {
+                "a read or delete binding cannot be assigned through"
+            }
+            Self::AssignmentToKeyField => "a primary-key field is immutable after creation",
+            Self::DuplicateFieldAssignment => {
+                "the same field is assigned more than once in this command"
+            }
+            Self::CascadeFailureOutsideCollectionDelete => {
+                "a cascade failure belongs on a collection-local delete under a collection expansion"
+            }
+            Self::CascadeFailureDuplicatesOrdinaryFailure => {
+                "the cascade failure must differ from the binding's ordinary failure"
+            }
+            Self::UniqueKeyOutsidePartitionRoute => {
+                "the unique key does not begin with the aggregate's partition route"
+            }
+            Self::UniqueKeyFieldNotKeyCompatible => {
+                "a unique key field is optional or not key-compatible"
+            }
+        }
+    }
+}
+
 /// Safe checked evidence attached to one `RDB-C020` ceiling violation.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct CompilerBoundObservation {
@@ -574,6 +633,7 @@ pub struct CompilerDiagnostic {
     primary_span: Span,
     related_span: Option<Span>,
     bound: Option<CompilerBoundObservation>,
+    cause: Option<CompilerDiagnosticCause>,
 }
 
 impl CompilerDiagnostic {
@@ -585,7 +645,21 @@ impl CompilerDiagnostic {
             primary_span,
             related_span: None,
             bound: None,
+            cause: None,
         }
+    }
+
+    /// Attaches the closed reason this diagnostic fired.
+    #[must_use]
+    pub const fn with_cause(mut self, cause: CompilerDiagnosticCause) -> Self {
+        self.cause = Some(cause);
+        self
+    }
+
+    /// Borrows the closed reason, when the check supplied one.
+    #[must_use]
+    pub const fn cause(&self) -> Option<CompilerDiagnosticCause> {
+        self.cause
     }
 
     /// Constructs a precise value-free `RDB-C020` ceiling observation.
@@ -600,6 +674,7 @@ impl CompilerDiagnostic {
             code: CompilerDiagnosticCode::BoundExceeded,
             primary_span,
             related_span: None,
+            cause: None,
             bound: Some(CompilerBoundObservation {
                 resource,
                 actual,

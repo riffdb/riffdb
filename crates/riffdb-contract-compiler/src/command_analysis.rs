@@ -6,7 +6,9 @@ use riffdb_contract_ir::{BindingId, BindingMode, ExpressionKind, ValueTypeTag};
 use riffdb_contract_syntax::Span;
 use riffdb_types::FieldId;
 
-use crate::diagnostic::{CompilerDiagnostic, CompilerDiagnosticCode, CompilerDiagnostics};
+use crate::diagnostic::{
+    CompilerDiagnostic, CompilerDiagnosticCause, CompilerDiagnosticCode, CompilerDiagnostics,
+};
 use crate::hir::{
     HirBinding, HirCommand, HirDecisionAction, HirEffect, HirExpressionRoot, HirObjectField,
     HirOutcome, HirWorkflowLeaseOperation, TypedContractHir,
@@ -305,14 +307,26 @@ fn validate_command(
                     ));
                     continue;
                 };
-                if matches!(state.mode, BindingMode::Read | BindingMode::Delete)
-                    || state.key_fields.contains(field)
-                    || !written.insert((*binding, *field))
-                {
-                    diagnostics.push(CompilerDiagnostic::new(
-                        CompilerDiagnosticCode::InvalidMutation,
-                        *target_span,
-                    ));
+                // Three unrelated author errors shared one message here, and each
+                // has a different repair.
+                let assignment_cause =
+                    if matches!(state.mode, BindingMode::Read | BindingMode::Delete) {
+                        Some(CompilerDiagnosticCause::AssignmentThroughUnwritableBinding)
+                    } else if state.key_fields.contains(field) {
+                        Some(CompilerDiagnosticCause::AssignmentToKeyField)
+                    } else if !written.insert((*binding, *field)) {
+                        Some(CompilerDiagnosticCause::DuplicateFieldAssignment)
+                    } else {
+                        None
+                    };
+                if let Some(cause) = assignment_cause {
+                    diagnostics.push(
+                        CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::InvalidMutation,
+                            *target_span,
+                        )
+                        .with_cause(cause),
+                    );
                     continue;
                 }
                 validate_create_reads(command, &states, value, diagnostics);
@@ -338,14 +352,26 @@ fn validate_command(
                     ));
                     continue;
                 };
-                if matches!(state.mode, BindingMode::Read | BindingMode::Delete)
-                    || state.key_fields.contains(field)
-                    || !written.insert((*binding, *field))
-                {
-                    diagnostics.push(CompilerDiagnostic::new(
-                        CompilerDiagnosticCode::InvalidMutation,
-                        *target_span,
-                    ));
+                // Three unrelated author errors shared one message here, and each
+                // has a different repair.
+                let assignment_cause =
+                    if matches!(state.mode, BindingMode::Read | BindingMode::Delete) {
+                        Some(CompilerDiagnosticCause::AssignmentThroughUnwritableBinding)
+                    } else if state.key_fields.contains(field) {
+                        Some(CompilerDiagnosticCause::AssignmentToKeyField)
+                    } else if !written.insert((*binding, *field)) {
+                        Some(CompilerDiagnosticCause::DuplicateFieldAssignment)
+                    } else {
+                        None
+                    };
+                if let Some(cause) = assignment_cause {
+                    diagnostics.push(
+                        CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::InvalidMutation,
+                            *target_span,
+                        )
+                        .with_cause(cause),
+                    );
                     continue;
                 }
                 for root in [value, model_identity, model_version] {
@@ -629,14 +655,26 @@ fn analyze_decision_action<'a>(
                             ));
                             continue;
                         };
-                        if matches!(state.mode, BindingMode::Read | BindingMode::Delete)
-                            || state.key_fields.contains(field)
-                            || !written.insert((*binding, *field))
-                        {
-                            diagnostics.push(CompilerDiagnostic::new(
-                                CompilerDiagnosticCode::InvalidMutation,
-                                *target_span,
-                            ));
+                        // Three unrelated author errors shared one message here, and each
+                        // has a different repair.
+                        let assignment_cause =
+                            if matches!(state.mode, BindingMode::Read | BindingMode::Delete) {
+                                Some(CompilerDiagnosticCause::AssignmentThroughUnwritableBinding)
+                            } else if state.key_fields.contains(field) {
+                                Some(CompilerDiagnosticCause::AssignmentToKeyField)
+                            } else if !written.insert((*binding, *field)) {
+                                Some(CompilerDiagnosticCause::DuplicateFieldAssignment)
+                            } else {
+                                None
+                            };
+                        if let Some(cause) = assignment_cause {
+                            diagnostics.push(
+                                CompilerDiagnostic::new(
+                                    CompilerDiagnosticCode::InvalidMutation,
+                                    *target_span,
+                                )
+                                .with_cause(cause),
+                            );
                             continue;
                         }
                         validate_create_reads(command, &states, value, diagnostics);
@@ -662,14 +700,26 @@ fn analyze_decision_action<'a>(
                             ));
                             continue;
                         };
-                        if matches!(state.mode, BindingMode::Read | BindingMode::Delete)
-                            || state.key_fields.contains(field)
-                            || !written.insert((*binding, *field))
-                        {
-                            diagnostics.push(CompilerDiagnostic::new(
-                                CompilerDiagnosticCode::InvalidMutation,
-                                *target_span,
-                            ));
+                        // Three unrelated author errors shared one message here, and each
+                        // has a different repair.
+                        let assignment_cause =
+                            if matches!(state.mode, BindingMode::Read | BindingMode::Delete) {
+                                Some(CompilerDiagnosticCause::AssignmentThroughUnwritableBinding)
+                            } else if state.key_fields.contains(field) {
+                                Some(CompilerDiagnosticCause::AssignmentToKeyField)
+                            } else if !written.insert((*binding, *field)) {
+                                Some(CompilerDiagnosticCause::DuplicateFieldAssignment)
+                            } else {
+                                None
+                            };
+                        if let Some(cause) = assignment_cause {
+                            diagnostics.push(
+                                CompilerDiagnostic::new(
+                                    CompilerDiagnosticCode::InvalidMutation,
+                                    *target_span,
+                                )
+                                .with_cause(cause),
+                            );
                             continue;
                         }
                         for root in [value, model_identity, model_version] {
@@ -801,18 +851,25 @@ fn validate_cascade_binding(
     let Some(failure) = binding.cascade_failure.as_ref() else {
         return;
     };
-    if binding.mode != BindingMode::Delete
+    let cascade_cause = if binding.mode != BindingMode::Delete
         || !binding.collection_local
         || command.collection_expansion.is_none()
-        || binding
-            .failure
-            .as_ref()
-            .is_some_and(|ordinary| failure.id == ordinary.id)
     {
-        diagnostics.push(CompilerDiagnostic::new(
-            CompilerDiagnosticCode::InvalidDeletePolicy,
-            failure.span,
-        ));
+        Some(CompilerDiagnosticCause::CascadeFailureOutsideCollectionDelete)
+    } else if binding
+        .failure
+        .as_ref()
+        .is_some_and(|ordinary| failure.id == ordinary.id)
+    {
+        Some(CompilerDiagnosticCause::CascadeFailureDuplicatesOrdinaryFailure)
+    } else {
+        None
+    };
+    if let Some(cause) = cascade_cause {
+        diagnostics.push(
+            CompilerDiagnostic::new(CompilerDiagnosticCode::InvalidDeletePolicy, failure.span)
+                .with_cause(cause),
+        );
         return;
     }
     let root_maximum = command
