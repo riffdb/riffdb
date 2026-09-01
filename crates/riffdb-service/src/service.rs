@@ -182,6 +182,7 @@ pub struct ServiceProviders {
     pub(crate) contextual_causation: Option<ContextualCausationTokenCodec>,
     pub(crate) columnar: Option<Arc<dyn ColumnarProjectionPort>>,
     pub(crate) exact_text: Option<Arc<dyn crate::ExactTextProjectionPort>>,
+    pub(crate) long_pattern: Option<Arc<dyn crate::LongPatternProjectionPort>>,
     pub(crate) tokenized_text: Option<Arc<dyn crate::TokenizedTextProjectionPort>>,
     pub(crate) exact_predicate: Option<Arc<dyn crate::ExactPredicateProjectionPort>>,
     pub(crate) vector_projection: Option<Arc<dyn crate::VectorProjectionPort>>,
@@ -239,6 +240,7 @@ impl ServiceProviders {
             contextual_causation: None,
             columnar: None,
             exact_text: None,
+            long_pattern: None,
             tokenized_text: None,
             exact_predicate: None,
             vector_projection: None,
@@ -249,6 +251,16 @@ impl ServiceProviders {
     #[must_use]
     pub fn with_query_executor(mut self, query_executor: Arc<dyn QueryExecutionPort>) -> Self {
         self.query_executor = Some(query_executor);
+        self
+    }
+
+    /// Installs the compiler-sealed long-pattern candidate provider.
+    #[must_use]
+    pub fn with_long_pattern(
+        mut self,
+        long_pattern: Arc<dyn crate::LongPatternProjectionPort>,
+    ) -> Self {
+        self.long_pattern = Some(long_pattern);
         self
     }
 

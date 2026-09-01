@@ -26,12 +26,12 @@ use riffdb_policy::{
     OfflineMaintenanceAuthorizationRequest, OfflineMaintenanceDecision, OperationRequest,
     ProvenanceSelector,
 };
-use riffdb_query_ir::{ExactParameterValueV1, ExactPredicateFamilyMemberV1};
+use riffdb_query_ir::{ExactParameterValueV1, ExactPredicateFamilyMemberV1, QueryAccessStep};
 use riffdb_types::{
     ApplicationRoleHash, CanonicalRecord, CanonicalValue, CapabilityId, CommandId, CommitSequence,
-    ContractBundleHash, ContractLineage, ContractMigrationOperationId, ContractVersion,
-    DistanceMetric, EmbeddingMetadata, EntityKey, EntityTypeId, FieldId, FrontierPosition,
-    PartitionKey, PlanHash, ProjectionFrontier, ProjectionGeneration,
+    CompiledLongPatternV1, ContractBundleHash, ContractLineage, ContractMigrationOperationId,
+    ContractVersion, DistanceMetric, EmbeddingMetadata, EntityKey, EntityTypeId, FieldId,
+    FrontierPosition, PartitionKey, PlanHash, ProjectionFrontier, ProjectionGeneration,
     ProjectionProviderDescriptorHash, QueryModuleHash, QueryOperationName, ReactiveModuleHash,
     RequestId,
 };
@@ -1793,6 +1793,117 @@ pub trait ExactTextProjectionPort: Send + Sync {
         &self,
         request: ExactTextProjectionRequest,
     ) -> Result<ExactTextProjectionResult, ExactTextProjectionPortError>;
+}
+
+/// One compiler-owned long-pattern candidate request formed only after authorization.
+#[derive(Clone)]
+pub struct LongPatternProjectionRequest {
+    program: Arc<riffdb_query_ir::QueryAccessProgramV1>,
+    step: QueryAccessStep,
+    partition_key: PartitionKey,
+    partition_value: CanonicalValue,
+    policy_shape: ApplicationRoleHash,
+    row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+    pattern: CompiledLongPatternV1,
+    minimum_epoch: Option<CommitSequence>,
+    pinned_epoch: Option<CommitSequence>,
+}
+
+impl LongPatternProjectionRequest {
+    /// Seals the checked step, pattern, route, policy, and epoch requirements.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn new(
+        program: Arc<riffdb_query_ir::QueryAccessProgramV1>,
+        step: QueryAccessStep,
+        partition_key: PartitionKey,
+        partition_value: CanonicalValue,
+        policy_shape: ApplicationRoleHash,
+        row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+        pattern: CompiledLongPatternV1,
+        minimum_epoch: Option<CommitSequence>,
+        pinned_epoch: Option<CommitSequence>,
+    ) -> Self {
+        Self {
+            program,
+            step,
+            partition_key,
+            partition_value,
+            policy_shape,
+            row_policy,
+            pattern,
+            minimum_epoch,
+            pinned_epoch,
+        }
+    }
+
+    /// Exact executable plan identity.
+    #[must_use]
+    pub fn plan(&self) -> riffdb_types::QueryPlanHash {
+        self.program.identity().hash()
+    }
+    /// Complete immutable compiler-owned program used for field identity lookup.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn program(&self) -> &Arc<riffdb_query_ir::QueryAccessProgramV1> {
+        &self.program
+    }
+    /// Exact compiler-owned provider access step.
+    #[must_use]
+    pub const fn step(&self) -> &QueryAccessStep {
+        &self.step
+    }
+    /// Authorization-routed partition key.
+    #[must_use]
+    pub const fn partition_key(&self) -> &PartitionKey {
+        &self.partition_key
+    }
+    /// Canonical route value used to rebuild the provider partition.
+    #[must_use]
+    pub const fn partition_value(&self) -> &CanonicalValue {
+        &self.partition_value
+    }
+    /// Current role/policy shape identity.
+    #[must_use]
+    pub const fn policy_shape(&self) -> ApplicationRoleHash {
+        self.policy_shape
+    }
+    /// Current compiler-owned row policy, when protected.
+    #[must_use]
+    pub const fn row_policy(&self) -> Option<&Arc<AuthorizedQueryRowPolicyContextV1>> {
+        self.row_policy.as_ref()
+    }
+    /// Fully validated exact pattern machine.
+    #[must_use]
+    pub const fn pattern(&self) -> &CompiledLongPatternV1 {
+        &self.pattern
+    }
+    /// Optional causal lower frontier.
+    #[must_use]
+    pub const fn minimum_epoch(&self) -> Option<CommitSequence> {
+        self.minimum_epoch
+    }
+    /// Exact retained epoch required by a continuation.
+    #[must_use]
+    pub const fn pinned_epoch(&self) -> Option<CommitSequence> {
+        self.pinned_epoch
+    }
+}
+
+impl fmt::Debug for LongPatternProjectionRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("LongPatternProjectionRequest([REDACTED])")
+    }
+}
+
+/// Least-authority boundary for complete, policy-filtered pattern candidates.
+pub trait LongPatternProjectionPort: Send + Sync {
+    /// Returns one complete candidate population and exact provider observation.
+    fn execute(
+        &self,
+        request: LongPatternProjectionRequest,
+    ) -> Result<riffdb_query_executor::LongPatternCandidateBatch, ExactTextProjectionPortError>;
 }
 
 /// One compiler-owned tokenized request constructed only after current authorization.

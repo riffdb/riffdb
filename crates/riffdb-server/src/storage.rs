@@ -1610,6 +1610,13 @@ impl PartitionEventRouteReader for SharedRedbOperationalPorts {
 }
 
 impl AuthoritativeScanReader for SharedRedbOperationalPorts {
+    fn scan_entity_partition(
+        &self,
+        request: riffdb_storage_api::AuthoritativeEntityPartitionScanRequest,
+    ) -> Result<riffdb_storage_api::AuthoritativeEntityPartitionScanPage, StorageError> {
+        AuthoritativeScanReader::scan_entity_partition(&self.shared, request)
+    }
+
     fn scan_index(
         &self,
         request: AuthoritativeIndexScanRequest,

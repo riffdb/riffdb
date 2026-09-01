@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use riffdb_contract_ir::KeyComponentCodecV1;
 use riffdb_policy::{AuthorizedProjectedRowAdmissionV1, AuthorizedQueryRowPolicyContextV1};
+use riffdb_projection::ResultSetEpochProofV1;
 use riffdb_query_ir::{
     AccessDirection, CandidateBindingV1, CoveredResultLayoutV1, NamedTypeSchema,
     OperationalAggregateV1, PageBound, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep,
@@ -25,10 +26,11 @@ use riffdb_query_ir::{
 };
 use riffdb_riffql_syntax::Cardinality;
 use riffdb_types::{
-    AggregateSemanticIdentityV1, CanonicalList, CanonicalValue, CommitSequence,
-    CompiledLongPatternV1, ContractLineage, EmbeddingMetadata, EntityKey, EntityTypeId, FieldId,
-    PartitionKey, PartitionKeyHash, ProjectionGeneration, ProjectionProviderDescriptorHash,
-    QueryCostVectorV1, canonical_value_encoded_len, encode_canonical_value, hash_partition_key,
+    AggregateSemanticIdentityV1, ApplicationRoleHash, CanonicalList, CanonicalValue,
+    CommitSequence, CompiledLongPatternV1, ContractLineage, EmbeddingMetadata, EntityKey,
+    EntityTypeId, FieldId, PartitionKey, PartitionKeyHash, ProjectionGeneration,
+    ProjectionProviderDescriptorHash, QueryCostVectorV1, canonical_value_encoded_len,
+    encode_canonical_value, hash_partition_key,
 };
 
 /// Maximum checked submitted parameters.
@@ -1108,6 +1110,7 @@ pub struct QueryScanPage {
 /// One complete, policy-filtered long-pattern candidate population observed at an exact epoch.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LongPatternCandidateBatch {
+    binding: String,
     rows: Vec<QueryRow>,
     descriptor: ProjectionProviderDescriptorHash,
     state_schema_hash: [u8; 32],
@@ -1124,6 +1127,7 @@ impl LongPatternCandidateBatch {
     #[allow(clippy::too_many_arguments)]
     #[doc(hidden)]
     pub fn checked(
+        binding: String,
         rows: Vec<QueryRow>,
         descriptor: ProjectionProviderDescriptorHash,
         state_schema_hash: [u8; 32],
@@ -1134,17 +1138,42 @@ impl LongPatternCandidateBatch {
         scanned_rows: u64,
         verification_bytes: u64,
     ) -> Option<Self> {
-        (floor <= ceiling && rows.len() as u64 <= scanned_rows).then_some(Self {
-            rows,
-            descriptor,
-            state_schema_hash,
-            history_incarnation,
-            generation,
-            floor,
-            ceiling,
-            scanned_rows,
-            verification_bytes,
-        })
+        (!binding.is_empty() && floor <= ceiling && rows.len() as u64 <= scanned_rows).then_some(
+            Self {
+                binding,
+                rows,
+                descriptor,
+                state_schema_hash,
+                history_incarnation,
+                generation,
+                floor,
+                ceiling,
+                scanned_rows,
+                verification_bytes,
+            },
+        )
+    }
+
+    /// Query-local provider source binding.
+    #[must_use]
+    pub fn binding(&self) -> &str {
+        &self.binding
+    }
+
+    /// Exact provider observation represented by this batch.
+    pub fn observation(
+        &self,
+    ) -> Result<riffdb_projection::ProviderEpochObservationV1, riffdb_projection::ResultSetEpochError>
+    {
+        riffdb_projection::ProviderEpochObservationV1::new(
+            self.descriptor,
+            self.state_schema_hash,
+            self.history_incarnation,
+            self.generation,
+            self.floor,
+            self.ceiling,
+            riffdb_projection::ProviderLifecycleV1::Ready,
+        )
     }
 }
 
@@ -1376,20 +1405,6 @@ pub trait QueryReadView {
         policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryScanPage, Self::Error>;
 
-    /// Executes one compiler-sealed long-pattern provider at this view's exact admission head.
-    ///
-    /// `None` means the adapter has no matching first-party provider participant. The executor
-    /// refuses; it never falls back to an authoritative entity scan.
-    fn long_pattern_candidate(
-        &mut self,
-        _step: &QueryAccessStep,
-        _pattern: &CompiledLongPatternV1,
-        _predicates: &[BoundPredicate],
-        _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
-    ) -> Result<Option<LongPatternCandidateBatch>, Self::Error> {
-        Ok(None)
-    }
-
     /// Executes one compiler-sealed covered positional index step.
     ///
     /// `None` means this adapter cannot prove the exact cover. The executor
@@ -1459,6 +1474,20 @@ impl QueryContinuation {
             index_epochs,
         })
     }
+
+    /// Exact lower binding retained by the opaque service cursor.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn binding(&self) -> &str {
+        &self.binding
+    }
+
+    /// Compiler-sealed ordinary and provider epoch identities.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn index_epochs(&self) -> &BTreeMap<String, u64> {
+        &self.index_epochs
+    }
 }
 
 /// Engine-owned one-snapshot execution boundary.
@@ -1513,6 +1542,35 @@ pub trait QueryExecutionPort: Send + Sync {
         _parameters: &QueryParameters,
         _prior: Option<&QueryContinuation>,
         _policy: &AuthorizedQueryRowPolicyContextV1,
+    ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+        Err(QueryExecutionError::InvalidProgram)
+    }
+
+    /// Executes a provider-participating page against one exact authoritative
+    /// snapshot and one service-negotiated provider epoch proof.
+    fn execute_provider_query_page(
+        &self,
+        _program: &QueryAccessProgramV1,
+        _parameters: &QueryParameters,
+        _prior: Option<&QueryContinuation>,
+        _policy_shape: ApplicationRoleHash,
+        _proof: &ResultSetEpochProofV1,
+        _batches: &[LongPatternCandidateBatch],
+    ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+        Err(QueryExecutionError::InvalidProgram)
+    }
+
+    /// Policy-protected provider-participating execution. The default denies.
+    #[allow(clippy::too_many_arguments)]
+    fn execute_policy_provider_query_page(
+        &self,
+        _program: &QueryAccessProgramV1,
+        _parameters: &QueryParameters,
+        _prior: Option<&QueryContinuation>,
+        _policy: &AuthorizedQueryRowPolicyContextV1,
+        _policy_shape: ApplicationRoleHash,
+        _proof: &ResultSetEpochProofV1,
+        _batches: &[LongPatternCandidateBatch],
     ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
         Err(QueryExecutionError::InvalidProgram)
     }
@@ -1893,7 +1951,15 @@ pub fn execute_page_in_snapshot<V: QueryReadView>(
     prior: Option<&QueryContinuation>,
     view: &mut V,
 ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
-    execute_operational_page_in_snapshot_with_policy(program, &[], parameters, prior, view, None)
+    execute_operational_page_in_snapshot_with_policy(
+        program,
+        &[],
+        parameters,
+        prior,
+        view,
+        None,
+        None,
+    )
 }
 
 /// Executes one policy-protected page in an already-open authoritative view.
@@ -1911,6 +1977,7 @@ pub fn execute_policy_page_in_snapshot<V: QueryReadView>(
         prior,
         view,
         Some(policy),
+        None,
     )
 }
 
@@ -1924,7 +1991,7 @@ pub fn execute_operational_page_in_snapshot<V: QueryReadView>(
     view: &mut V,
 ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
     execute_operational_page_in_snapshot_with_policy(
-        program, aggregates, parameters, prior, view, None,
+        program, aggregates, parameters, prior, view, None, None,
     )
 }
 
@@ -1944,7 +2011,123 @@ pub fn execute_policy_operational_page_in_snapshot<V: QueryReadView>(
         prior,
         view,
         Some(policy),
+        None,
     )
+}
+
+/// Executes one provider-participating page in the same authoritative view as
+/// root hydration and final ordering.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_provider_page_in_snapshot<V: QueryReadView>(
+    program: &QueryAccessProgramV1,
+    parameters: &QueryParameters,
+    prior: Option<&QueryContinuation>,
+    view: &mut V,
+    policy_shape: ApplicationRoleHash,
+    proof: &ResultSetEpochProofV1,
+    batches: &[LongPatternCandidateBatch],
+) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+    let mut providers = ProviderExecutionContext::new(program, policy_shape, proof, batches, view)?;
+    execute_operational_page_in_snapshot_with_policy(
+        program,
+        &[],
+        parameters,
+        prior,
+        view,
+        None,
+        Some(&mut providers),
+    )
+}
+
+/// Policy-protected provider-participating execution in one authoritative view.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_policy_provider_page_in_snapshot<V: QueryReadView>(
+    program: &QueryAccessProgramV1,
+    parameters: &QueryParameters,
+    prior: Option<&QueryContinuation>,
+    view: &mut V,
+    policy: &AuthorizedQueryRowPolicyContextV1,
+    policy_shape: ApplicationRoleHash,
+    proof: &ResultSetEpochProofV1,
+    batches: &[LongPatternCandidateBatch],
+) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+    let mut providers = ProviderExecutionContext::new(program, policy_shape, proof, batches, view)?;
+    execute_operational_page_in_snapshot_with_policy(
+        program,
+        &[],
+        parameters,
+        prior,
+        view,
+        Some(policy),
+        Some(&mut providers),
+    )
+}
+
+struct ProviderExecutionContext<'a> {
+    proof: &'a ResultSetEpochProofV1,
+    batches: &'a [LongPatternCandidateBatch],
+    used: BTreeSet<String>,
+}
+
+impl<'a> ProviderExecutionContext<'a> {
+    fn new<V: QueryReadView>(
+        program: &QueryAccessProgramV1,
+        policy_shape: ApplicationRoleHash,
+        proof: &'a ResultSetEpochProofV1,
+        batches: &'a [LongPatternCandidateBatch],
+        view: &V,
+    ) -> Result<Self, QueryExecutionError> {
+        let provider_steps = program
+            .steps()
+            .iter()
+            .filter(|step| matches!(step.access(), QueryAccessKind::LongPatternCandidate { .. }))
+            .count();
+        if provider_steps == 0
+            || batches.len() != provider_steps
+            || proof.plan_identity() != program.identity().hash()
+            || proof.policy_shape_identity() != policy_shape
+            || proof.selected_epoch().get() != view.application_head()
+        {
+            return Err(QueryExecutionError::BackendUnavailable);
+        }
+        Ok(Self {
+            proof,
+            batches,
+            used: BTreeSet::new(),
+        })
+    }
+
+    fn batch(
+        &mut self,
+        step: &QueryAccessStep,
+        descriptor: ProjectionProviderDescriptorHash,
+    ) -> Result<LongPatternCandidateBatch, QueryExecutionError> {
+        if !self.used.insert(step.binding().to_owned()) {
+            return Err(QueryExecutionError::InvalidProgram);
+        }
+        let batch = self
+            .batches
+            .iter()
+            .find(|batch| batch.binding == step.binding())
+            .ok_or(QueryExecutionError::BackendIntegrity)?;
+        let participant = self
+            .proof
+            .participants()
+            .find(|participant| participant.descriptor() == descriptor)
+            .ok_or(QueryExecutionError::BackendIntegrity)?;
+        if batch.descriptor != descriptor
+            || batch.observation().ok().as_ref() != Some(participant)
+            || self.proof.selected_epoch() < batch.floor
+            || self.proof.selected_epoch() > batch.ceiling
+        {
+            return Err(QueryExecutionError::BackendIntegrity);
+        }
+        Ok(batch.clone())
+    }
+
+    fn is_complete(&self) -> bool {
+        self.used.len() == self.batches.len()
+    }
 }
 
 fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
@@ -1954,6 +2137,7 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
     prior: Option<&QueryContinuation>,
     view: &mut V,
     policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+    mut providers: Option<&mut ProviderExecutionContext<'_>>,
 ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
     if aggregates != program.surface().aggregates() {
         return Err(QueryExecutionError::InvalidProgram);
@@ -2185,10 +2369,10 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                 })?;
                 let predicates =
                     bind_predicates(step, parameters, &bindings, program.surface().candidates())?;
-                let batch = view
-                    .long_pattern_candidate(step, &compiled, &predicates, policy)
-                    .map_err(|error| map_view_error(view, &error))?
-                    .ok_or(QueryExecutionError::BackendUnavailable)?;
+                let batch = providers
+                    .as_deref_mut()
+                    .ok_or(QueryExecutionError::BackendUnavailable)?
+                    .batch(step, pattern.descriptor().digest())?;
                 let head = view.application_head();
                 let bounds = pattern.bounds();
                 if batch.descriptor != pattern.descriptor().digest()
@@ -2200,6 +2384,17 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                     || batch.rows.len() as u32 > bounds.candidates()
                     || batch.scanned_rows > u64::from(bounds.rows())
                     || batch.verification_bytes > bounds.verification_bytes()
+                    || batch.rows.iter().any(|row| {
+                        row.entity() != step.entity()
+                            || predicates_match(row, &predicates) != Ok(true)
+                            || row
+                                .field(pattern.field())
+                                .and_then(|value| match value {
+                                    CanonicalValue::String(value) => Some(value.as_str()),
+                                    _ => None,
+                                })
+                                .is_none_or(|value| !compiled.matches_source(value))
+                    })
                 {
                     return Err(QueryExecutionError::BoundExceeded);
                 }
@@ -2435,6 +2630,12 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
         }
     }
 
+    if providers
+        .as_deref()
+        .is_some_and(|providers| !providers.is_complete())
+    {
+        return Err(QueryExecutionError::InvalidProgram);
+    }
     if let Some(prior) = prior {
         if !program
             .steps()

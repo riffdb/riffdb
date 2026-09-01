@@ -266,6 +266,27 @@ impl KeySchema {
         })
     }
 
+    /// Encodes a validated leading-component prefix for a bounded derived-state rebuild scan.
+    #[doc(hidden)]
+    pub fn encode_entity_prefix(
+        &self,
+        values: &[CanonicalValue],
+    ) -> Result<Vec<u8>, IrValidationError> {
+        let KeyPurpose::Entity(owner) = self.purpose else {
+            return Err(IrValidationError::InvalidKey {
+                reason: "not an entity key schema",
+            });
+        };
+        if values.is_empty() || values.len() > self.components.len() {
+            return Err(IrValidationError::InvalidKey {
+                reason: "entity prefix must contain leading components",
+            });
+        }
+        let mut builder = EntityKeyBuilder::new(owner);
+        append_components(&mut builder, &self.components[..values.len()], values)?;
+        Ok(builder.as_bytes().to_vec())
+    }
+
     /// Decodes and validates a complete entity primary key.
     pub fn decode_entity(&self, key: &EntityKey) -> Result<Vec<CanonicalValue>, IrValidationError> {
         let KeyPurpose::Entity(owner) = self.purpose else {

@@ -57,6 +57,16 @@ impl RedbMigrationProjectionPorts {
 }
 
 impl riffdb_storage_api::AuthoritativeScanReader for RedbMigrationProjectionPorts {
+    fn scan_entity_partition(
+        &self,
+        request: riffdb_storage_api::AuthoritativeEntityPartitionScanRequest,
+    ) -> Result<riffdb_storage_api::AuthoritativeEntityPartitionScanPage, StorageError> {
+        riffdb_storage_api::AuthoritativeScanReader::scan_entity_partition(
+            &self.operational(),
+            request,
+        )
+    }
+
     fn scan_index(
         &self,
         request: riffdb_storage_api::AuthoritativeIndexScanRequest,

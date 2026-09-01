@@ -4,15 +4,15 @@ use std::fmt;
 use std::num::NonZeroU16;
 
 use riffdb_types::{
-    CommitSequence, ContractLineage, EventId, FrontierPosition, IndexEntryKey, PartitionKey,
-    ProvenanceId,
+    CommitSequence, ContractLineage, EntityKey, EntityTypeId, EventId, FrontierPosition,
+    IndexEntryKey, MAX_KEY_BYTES, PartitionKey, ProvenanceId,
 };
 
 use crate::{
     DurableKeySchemaBindingV1, EncodedPageItem, EntityTarget, IdempotencyIdentity,
     IndexEpochPosition, IndexRangeEntry, IndexRangeTarget, MAX_COMMIT_SCAN_PAGE_BYTES,
     MAX_INDEX_PARTITION_FILTER_BYTES, MAX_INDEX_PARTITION_FILTER_KEYS, MAX_SCAN_PAGE_BYTES,
-    MAX_SCAN_PAGE_ENTRIES, StorageError, StorageValueError, StoredCommitRecordV1,
+    MAX_SCAN_PAGE_ENTRIES, StorageError, StorageErrorKind, StorageValueError, StoredCommitRecordV1,
     StoredDurableEventV1, StoredEntityRecordV1, StoredIndexEntryV2, StoredOutcomeV1,
     StoredProvenanceRecordV1, checked_encoded_page_content, framed_bytes,
 };
@@ -38,6 +38,138 @@ impl StorageScanLimit {
     #[must_use]
     pub const fn get(self) -> u16 {
         self.0.get()
+    }
+}
+
+/// One checked entity-key prefix scan used only by background derived-state rebuilds.
+#[derive(Clone, Eq, PartialEq)]
+pub struct AuthoritativeEntityPartitionScanRequest {
+    entity: EntityTypeId,
+    prefix: Vec<u8>,
+    after: Option<EntityKey>,
+    limit: StorageScanLimit,
+}
+
+impl AuthoritativeEntityPartitionScanRequest {
+    /// Checks the entity envelope, bounded prefix, continuation, and page limit.
+    pub fn new(
+        entity: EntityTypeId,
+        prefix: Vec<u8>,
+        after: Option<EntityKey>,
+        limit: StorageScanLimit,
+    ) -> Result<Self, StorageValueError> {
+        let entity_prefix = [
+            0x45,
+            0x01,
+            entity.to_be_bytes()[0],
+            entity.to_be_bytes()[1],
+            entity.to_be_bytes()[2],
+            entity.to_be_bytes()[3],
+        ];
+        if prefix.len() <= entity_prefix.len()
+            || prefix.len() > MAX_KEY_BYTES
+            || !prefix.starts_with(&entity_prefix)
+            || after.as_ref().is_some_and(|key| {
+                key.entity_type_id() != entity || !key.as_bytes().starts_with(&prefix)
+            })
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        Ok(Self {
+            entity,
+            prefix,
+            after,
+            limit,
+        })
+    }
+
+    /// Exact entity type selected by the compiled provider.
+    #[must_use]
+    pub const fn entity(&self) -> EntityTypeId {
+        self.entity
+    }
+    /// Canonical leading entity-key bytes.
+    #[must_use]
+    pub fn prefix(&self) -> &[u8] {
+        &self.prefix
+    }
+    /// Exclusive complete-key continuation.
+    #[must_use]
+    pub const fn after(&self) -> Option<&EntityKey> {
+        self.after.as_ref()
+    }
+    /// Checked physical page size.
+    #[must_use]
+    pub const fn limit(&self) -> StorageScanLimit {
+        self.limit
+    }
+}
+
+/// One bounded authoritative entity page observed at one application frontier.
+#[derive(Clone, Eq, PartialEq)]
+pub struct AuthoritativeEntityPartitionScanPage {
+    records: Vec<EncodedPageItem<StoredEntityRecordV1>>,
+    application_head: FrontierPosition,
+    next_after: Option<EntityKey>,
+}
+
+impl AuthoritativeEntityPartitionScanPage {
+    /// Checks canonical ordering, prefix membership, row/byte bounds, and continuation shape.
+    pub fn new(
+        request: &AuthoritativeEntityPartitionScanRequest,
+        application_head: FrontierPosition,
+        records: Vec<EncodedPageItem<StoredEntityRecordV1>>,
+        has_more: bool,
+    ) -> Result<Self, StorageValueError> {
+        if records.len() > usize::from(request.limit().get()) {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        checked_encoded_page_content(&records, MAX_SCAN_PAGE_BYTES)?;
+        let mut prior = request.after().map(EntityKey::as_bytes);
+        for record in &records {
+            let key = record.value().target().key();
+            if record.value().target().entity_type_id() != request.entity()
+                || !key.as_bytes().starts_with(request.prefix())
+                || prior.is_some_and(|prior| prior >= key.as_bytes())
+            {
+                return Err(StorageValueError::NonCanonicalOrder);
+            }
+            prior = Some(key.as_bytes());
+        }
+        let next_after = if has_more {
+            Some(
+                records
+                    .last()
+                    .ok_or(StorageValueError::InvalidShape)?
+                    .value()
+                    .target()
+                    .key()
+                    .clone(),
+            )
+        } else {
+            None
+        };
+        Ok(Self {
+            records,
+            application_head,
+            next_after,
+        })
+    }
+
+    /// Complete records in canonical entity-key order.
+    #[must_use]
+    pub fn records(&self) -> &[EncodedPageItem<StoredEntityRecordV1>] {
+        &self.records
+    }
+    /// Exact application frontier of this read transaction.
+    #[must_use]
+    pub const fn application_head(&self) -> FrontierPosition {
+        self.application_head
+    }
+    /// Continuation when another matching record exists.
+    #[must_use]
+    pub const fn next_after(&self) -> Option<&EntityKey> {
+        self.next_after.as_ref()
     }
 }
 
@@ -599,6 +731,14 @@ pub trait AuthoritativePointReader {
 
 /// Narrow synchronous bounded scans over authoritative state.
 pub trait AuthoritativeScanReader {
+    /// Reads one entity-key-prefix page for background rebuild, never request-path filtering.
+    fn scan_entity_partition(
+        &self,
+        _request: AuthoritativeEntityPartitionScanRequest,
+    ) -> Result<AuthoritativeEntityPartitionScanPage, StorageError> {
+        Err(StorageError::new(StorageErrorKind::Unavailable, None))
+    }
+
     /// Reads one exact-prefix index page and its epoch from one consistent read transaction.
     fn scan_index(
         &self,
