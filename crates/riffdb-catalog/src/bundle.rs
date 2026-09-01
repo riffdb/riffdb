@@ -11,19 +11,20 @@ use riffdb_contract_ir::{
     BUNDLE_FORMAT_VERSION_V10, BUNDLE_FORMAT_VERSION_V11, BUNDLE_FORMAT_VERSION_V12,
     BUNDLE_FORMAT_VERSION_V13, BUNDLE_FORMAT_VERSION_V14, BUNDLE_FORMAT_VERSION_V15,
     BUNDLE_FORMAT_VERSION_V16, BUNDLE_FORMAT_VERSION_V17, BUNDLE_FORMAT_VERSION_V18,
-    BUNDLE_FORMAT_VERSION_V19, CommandPlan, ContractBundle, EXECUTABLE_IR_VERSION_V1,
-    EXECUTABLE_IR_VERSION_V2, EXECUTABLE_IR_VERSION_V3, EXECUTABLE_IR_VERSION_V4,
-    EXECUTABLE_IR_VERSION_V5, EXECUTABLE_IR_VERSION_V6, EXECUTABLE_IR_VERSION_V7,
-    EXECUTABLE_IR_VERSION_V8, EXECUTABLE_IR_VERSION_V9, EXECUTABLE_IR_VERSION_V10,
-    EXECUTABLE_IR_VERSION_V11, EXECUTABLE_IR_VERSION_V12, EXECUTABLE_IR_VERSION_V13,
-    EXECUTABLE_IR_VERSION_V14, EXECUTABLE_IR_VERSION_V15, EXECUTABLE_IR_VERSION_V16,
-    EXECUTABLE_IR_VERSION_V17, EXECUTABLE_IR_VERSION_V18, EXECUTABLE_IR_VERSION_V19,
+    BUNDLE_FORMAT_VERSION_V19, BUNDLE_FORMAT_VERSION_V20, BUNDLE_FORMAT_VERSION_V21, CommandPlan,
+    ContractBundle, EXECUTABLE_IR_VERSION_V1, EXECUTABLE_IR_VERSION_V2, EXECUTABLE_IR_VERSION_V3,
+    EXECUTABLE_IR_VERSION_V4, EXECUTABLE_IR_VERSION_V5, EXECUTABLE_IR_VERSION_V6,
+    EXECUTABLE_IR_VERSION_V7, EXECUTABLE_IR_VERSION_V8, EXECUTABLE_IR_VERSION_V9,
+    EXECUTABLE_IR_VERSION_V10, EXECUTABLE_IR_VERSION_V11, EXECUTABLE_IR_VERSION_V12,
+    EXECUTABLE_IR_VERSION_V13, EXECUTABLE_IR_VERSION_V14, EXECUTABLE_IR_VERSION_V15,
+    EXECUTABLE_IR_VERSION_V16, EXECUTABLE_IR_VERSION_V17, EXECUTABLE_IR_VERSION_V18,
+    EXECUTABLE_IR_VERSION_V19, EXECUTABLE_IR_VERSION_V20, EXECUTABLE_IR_VERSION_V21,
     GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V2, GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4,
     GRAMMAR_VERSION_V5, GRAMMAR_VERSION_V6, GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8,
     GRAMMAR_VERSION_V9, GRAMMAR_VERSION_V10, GRAMMAR_VERSION_V11, GRAMMAR_VERSION_V12,
     GRAMMAR_VERSION_V13, GRAMMAR_VERSION_V14, GRAMMAR_VERSION_V15, GRAMMAR_VERSION_V16,
-    GRAMMAR_VERSION_V17, GRAMMAR_VERSION_V18, GRAMMAR_VERSION_V19,
-    MCP_COMMAND_NAME_REGISTRY_VERSION_V2, McpCommandToolNameV2,
+    GRAMMAR_VERSION_V17, GRAMMAR_VERSION_V18, GRAMMAR_VERSION_V19, GRAMMAR_VERSION_V20,
+    GRAMMAR_VERSION_V21, MCP_COMMAND_NAME_REGISTRY_VERSION_V2, McpCommandToolNameV2,
 };
 use riffdb_storage_api::{
     ActiveCatalogPointerV1, CatalogRepository, ExecutablePlanRef, StoredContractBundleV1,
@@ -495,6 +496,14 @@ fn validate_supported_versions(bundle: &ContractBundle) -> Result<(), CatalogErr
             BUNDLE_FORMAT_VERSION_V19,
             GRAMMAR_VERSION_V19,
             EXECUTABLE_IR_VERSION_V19
+        ) | (
+            BUNDLE_FORMAT_VERSION_V20,
+            GRAMMAR_VERSION_V20,
+            EXECUTABLE_IR_VERSION_V20
+        ) | (
+            BUNDLE_FORMAT_VERSION_V21,
+            GRAMMAR_VERSION_V21,
+            EXECUTABLE_IR_VERSION_V21
         )
     ) {
         return Err(CatalogError::new(
@@ -578,6 +587,66 @@ contract CatalogEmbedding version 1 {
         );
         assert_eq!(validated.bundle().grammar_version(), GRAMMAR_VERSION_V15);
         assert_eq!(validated.bundle().ir_version(), EXECUTABLE_IR_VERSION_V15);
+    }
+
+    #[test]
+    fn text_index_v20_crosses_the_catalog_version_boundary() {
+        let validated = ValidatedContractBundle::decode(include_bytes!(
+            "../../../fixtures/compiler/text-index/bundle.bin"
+        ))
+        .expect("V20 text-index bundle crosses the catalog trust boundary");
+        assert_eq!(
+            validated.bundle().format_version(),
+            BUNDLE_FORMAT_VERSION_V20
+        );
+        assert_eq!(validated.bundle().grammar_version(), GRAMMAR_VERSION_V20);
+        assert_eq!(validated.bundle().ir_version(), EXECUTABLE_IR_VERSION_V20);
+    }
+
+    #[test]
+    fn long_pattern_v21_crosses_the_catalog_version_boundary() {
+        let compiled = compile_contract_source(
+            r#"
+contract CatalogLongPattern version 1 {
+  entity Experiment {
+    key (scope: string<32>, experiment_id: u64)
+    field name: string<500>
+    pattern_index by_name(
+      name,
+      profile unicode_fold_v1,
+      operators (equals, starts_with, ends_with, contains, like, ilike, not_like, not_ilike),
+      max_source_bytes 500,
+      max_matched_bytes 9000,
+      max_rows 65535,
+      max_total_matched_bytes 268435456,
+      max_grams_per_row 500,
+      max_distinct_grams 65535,
+      max_postings 1048576,
+      max_postings_bytes 67108864,
+      max_pattern_bytes 500,
+      max_pattern_atoms 500,
+      max_candidates 65535,
+      max_verification_bytes 268435456,
+      max_results 65534,
+      staleness_slo 60,
+      replay_age_seconds 86400,
+      replay_bytes 1073741824,
+      replay_backlog 100000,
+      retained_generations 8
+    )
+  }
+}
+"#,
+        )
+        .expect("V21 long-pattern contract compiles");
+        let validated = ValidatedContractBundle::from_compiler_bundle(compiled)
+            .expect("V21 bundle crosses the catalog trust boundary");
+        assert_eq!(
+            validated.bundle().format_version(),
+            BUNDLE_FORMAT_VERSION_V21
+        );
+        assert_eq!(validated.bundle().grammar_version(), GRAMMAR_VERSION_V21);
+        assert_eq!(validated.bundle().ir_version(), EXECUTABLE_IR_VERSION_V21);
     }
 
     #[test]
