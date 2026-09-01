@@ -83,6 +83,8 @@ pub const QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1: u32 = 14;
 pub const QUERY_IR_VERSION_ORDER_FAMILY_V1: u32 = 15;
 /// Canonical explicitly bounded submitted-set and finite partition-route IR.
 pub const QUERY_IR_VERSION_PARTITION_SET_V1: u32 = 16;
+/// Additive partition-set IR with invariant exact index-prefix predicates.
+pub const QUERY_IR_VERSION_PARTITION_SET_EXACT_PREFIX_V1: u32 = 17;
 /// Maximum public query schema and canonical IR bytes.
 pub const MAX_QUERY_ARTIFACT_BYTES: usize = 4_194_304;
 /// Maximum source-map entries.

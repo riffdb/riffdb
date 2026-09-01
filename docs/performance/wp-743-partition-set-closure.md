@@ -44,3 +44,13 @@ No application code performed partition fan-out, filtering, sorting, merge,
 counting, cursor walking, hidden-state retention, or a partition-model rewrite.
 The checked value-free receipt is
 [`release/evidence/partition-set-mlflow-loopback-v1.json`](../../release/evidence/partition-set-mlflow-loopback-v1.json).
+
+Follow-up lifecycle search found that V16 admitted only a route immediately
+followed by its order suffix. The correction uses additive query IR/module V17
+for a compiler-proved invariant exact prefix, keeps V16 bytes unchanged, and
+binds the exact filter outside the compact global marker. Parameter and enum
+constant forms compile, the cursor resumes from page size 1 to 3 across two
+partitions with deleted rows excluded before merge, and the original
+application completes `application lock --write`. The value-free follow-up
+receipt is
+[`release/evidence/partition-set-exact-prefix-repro-v1.json`](../../release/evidence/partition-set-exact-prefix-repro-v1.json).

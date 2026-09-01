@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 1.24
+**Version:** 1.25
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
 **Date:** 1 September 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 1.25 | 2026-09-01 | Completed ADR-0175's ordinary index-prefix semantics: a finite partition-set route may be followed by one or more compiler-proved invariant exact predicates before the declared order suffix. Such a plan selects additive query IR/module V17, encodes the exact prefix width, binds every prefix parameter into cursor identity, and reconstructs the complete physical seek prefix on continuation. Partition-set plans with no invariant prefix retain byte-exact V16 artifacts. |
 | 1.24 | 2026-09-01 | Accepted ADR-0175 and registered `RQL-007`, `QRY-010`, `OQ-101` through `OQ-112`, and WP-739 through WP-743 for bounded partition-set operational queries. Additive `Set<T, MAX>` source may route one immutable compiler-sealed partition-local plan across an explicit finite set of at most 65,535 partitions in one authoritative snapshot. RiffDB globally merges the declared partition-prefixed total order before limit and one opaque cursor; the cursor binds normalized routes, filters, authority, frontier, last global order key, and a digest of every required partition/index/provider epoch. Partition, per-partition, global row, probe, candidate, policy, provider, merge, byte, result, cursor, and total-work ceilings remain independent and whole-operation fail-closed. Existing `Set<T>`, single-partition artifacts, storage keys, mutations, commits, and cursors retain exact bytes and meaning. Cross-partition joins, writes, discovery, caller plans, and adapter merge semantics remain forbidden. |
 | 1.23 | 2026-08-31 | Accepted ADR-0174 and registered `OQ-084` through `OQ-100` plus WP-733 through WP-738 for one compiler-sealed bounded filtered-result pipeline. A non-output candidate binding completes finite same-partition source/intersection/union/difference sets under independent all-or-refusal budgets before root hydration, authorization, total ordering, limit, and cursor selection. A new rebuildable `long_pattern_v1` provider supports exact binary and Unicode-fold equality, prefix, suffix, substring, LIKE/ILIKE, negation, `%`, `_`, and escaping for source values through 8,000 bytes using bounded gram candidates plus exact retained-value verification rather than widening 4,096-byte storage keys or the quadratic exact-text V1 format. The global scan ceiling becomes 65,535 rows with one probe, admitting bounded pages through 65,534 while retaining the independent 4 MiB encoded-result and every query-specific cost/authority ceiling. Existing artifacts, exact/tokenized providers, keys, and pages through 499 retain their meanings and least-sufficient bytes. |
 | 1.22 | 2026-08-31 | Registered `FTS-005` through `FTS-015` and WP-730 through WP-732 for ADR-0173's remaining stages. The tokenized provider first persists one canonical partition-scoped V1 segment carrying authoritative keys, compiler-shaped outputs, postings, per-field term frequencies, field-length norms, and positions with exact rebuild/replay/recovery behavior. Named RiffQL then admits only compiler-sealed conjunction, capped disjunction, phrase, and bounded proximity over one declared `text_index`, with typed term/candidate/result refusals and no request-time field, operator, analyzer, provider, boost, score, or cost selection. Ranked search uses the provider-owned `riff_bm25_v1` fixed-point order over the caller's complete authorized set at one ADR-0164 admission-head fence, with primary-key tie-breaking and snapshot-bound cursors. Existing exact-text behavior and declaration-free artifacts remain byte-exact. |
@@ -8523,10 +8524,13 @@ behavior:
   unobservable. No per-partition public request, authorization, or snapshot is
   permitted.
 - `OQ-104`: Ordinary partition-set execution MUST use a declared
-  partition-prefixed index whose remaining suffix supplies the complete total
-  order and unique root-key tie-breaker. RiffDB MUST perform one deterministic
-  bounded global merge before limit, continuation probing, and cursor creation;
-  partition order MUST NOT affect result order.
+  partition-prefixed index. Zero or more compiler-proved invariant exact
+  predicates MAY follow the partition component; the remaining suffix MUST
+  supply the complete total order and unique root-key tie-breaker. Every fixed
+  prefix value is applied before ordering and bound into cursor identity, and
+  continuation MUST reconstruct the same complete physical prefix. RiffDB MUST
+  perform one deterministic bounded global merge before limit, continuation
+  probing, and cursor creation; partition order MUST NOT affect result order.
 - `OQ-105`: One opaque partition-set cursor MUST bind normalized routes,
   predicates, plan/order/role identities, every ceiling, history and admission
   semantics, the last complete global order key, and a collision-resistant

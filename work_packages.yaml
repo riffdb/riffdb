@@ -1,4 +1,4 @@
-spec_version: '1.24'
+spec_version: '1.25'
 product: RiffDB
 repository: riffdb
 status: deployable-application-alpha-architecture-accepted
@@ -3452,8 +3452,11 @@ work_packages:
       experiment partitions and traverse one global start_time-desc/run_id-asc cursor from page
       size 1 to 100. Reversing route order and adding a duplicate preserved continuation and the
       independent oracle. Atomic experiment/tag creation and revision-guarded tag update/delete
-      also passed. The value-free receipt records that no adapter fan-out, filtering, sorting,
-      merge, cursor chains, hidden state, or partition rewrite occurred.
+      also passed. Follow-up exact lifecycle coverage proves both parameter and enum-constant
+      predicates over `(partition, lifecycle, order...)`, V17 module round-trip, physical cursor
+      resume, and the original application lock reproduction. The value-free receipts record that
+      no adapter fan-out, filtering, sorting, merge, cursor chains, hidden state, or partition
+      rewrite occurred.
     known_limitations: This capability is deliberately limited to explicit finite read routes and
       one single-node snapshot. Cross-partition relationships, writes, partition discovery, and
       caller-authored plans remain rejected. Query-specific route, row, work, byte, response, and

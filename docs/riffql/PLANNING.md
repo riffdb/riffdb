@@ -78,6 +78,10 @@ local index plan over caller-submitted bounded routes in one read view. Uniform
 orders use a bounded k-way heap; mixed physical directions use a bounded
 complete-group path. Both produce one globally ordered page and one opaque
 cursor only after whole-set policy and epoch observation succeeds.
+Compiler-proved exact predicates may consume index components between the
+partition route and order suffix. Those values form each local physical prefix
+and are applied before merge, limit, and cursor selection; an absent compatible
+covering index remains a typed `RDB-QP003` refusal rather than a residual filter.
 
 ## Candidate-set plans
 

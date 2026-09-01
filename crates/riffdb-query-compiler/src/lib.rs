@@ -3780,6 +3780,17 @@ fn choose_access(
         let Some(shape) = operational_access_shape(entity, index, comparisons, binding) else {
             continue;
         };
+        if context.finite_partition_route
+            && shape.order_start > 1
+            && index.fields()[1..shape.order_start].iter().any(|field| {
+                !comparisons.iter().any(|comparison| {
+                    comparison.field == field
+                        && comparison.operator.is_binary(BinaryOperator::Equal)
+                })
+            })
+        {
+            continue;
+        }
         if !index.fields()[..shape.order_start]
             .iter()
             .any(|field| field == entity.partition_field())

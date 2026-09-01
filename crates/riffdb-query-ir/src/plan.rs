@@ -902,7 +902,14 @@ impl QueryAccessStep {
                     && !fields.is_empty()
                     && !key_fields.is_empty()
                     && !order.is_empty()
-                    && order.len() == fields.len().saturating_sub(1)
+                    && partition_set_order_start(fields, order).is_some_and(|order_start| {
+                        fields[1..order_start].iter().all(|field| {
+                            predicates.iter().any(|predicate| {
+                                predicate.field == *field
+                                    && predicate.operator == QueryPredicateOperator::Equal
+                            })
+                        })
+                    })
                     && u64::from(*scan_ceiling) > maximum_rows
                     && u64::from(*scan_ceiling) <= MAX_QUERY_SCANNED_ROWS
                     && cardinality == Cardinality::Many
@@ -1311,7 +1318,7 @@ impl QueryAccessProgramV1 {
             return None;
         }
         let ir_version = if surface.ir_version() == crate::QUERY_IR_VERSION_PARTITION_SET_V1 {
-            crate::QUERY_IR_VERSION_PARTITION_SET_V1
+            partition_set_ir_version(&steps)
         } else if surface.ir_version() == crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1 {
             crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1
         } else if surface.has_bounded_limit() {
@@ -1436,7 +1443,7 @@ impl QueryAccessProgramV1 {
     #[must_use]
     pub fn ir_version(&self) -> u32 {
         if self.surface.ir_version() == crate::QUERY_IR_VERSION_PARTITION_SET_V1 {
-            crate::QUERY_IR_VERSION_PARTITION_SET_V1
+            partition_set_ir_version(&self.steps)
         } else if self.surface.ir_version() == crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1 {
             crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1
         } else if self.surface.has_bounded_limit() {
@@ -1706,7 +1713,11 @@ fn encode_program(
     } else if projected_source.is_some() {
         return None;
     }
-    if surface.ir_version == crate::QUERY_IR_VERSION_PARTITION_SET_V1 {
+    if matches!(
+        surface.ir_version,
+        crate::QUERY_IR_VERSION_PARTITION_SET_V1
+            | crate::QUERY_IR_VERSION_PARTITION_SET_EXACT_PREFIX_V1
+    ) {
         match partition_route {
             QueryPartitionRouteV1::Exact { parameter } => {
                 out.push(1);
@@ -1788,6 +1799,10 @@ fn encode_program(
                 out.push(7);
                 write_text(&mut out, index)?;
                 write_strings(&mut out, fields)?;
+                if surface.ir_version == crate::QUERY_IR_VERSION_PARTITION_SET_EXACT_PREFIX_V1 {
+                    let order_start = partition_set_order_start(fields, order)?;
+                    out.extend_from_slice(&u16::try_from(order_start).ok()?.to_be_bytes());
+                }
                 out.push(match direction {
                     AccessDirection::Forward => 1,
                     AccessDirection::Reverse => 2,
@@ -1920,6 +1935,30 @@ fn encode_program(
     out.extend_from_slice(&cost.projected_values().to_be_bytes());
     out.extend_from_slice(&cost.encoded_result_bytes().to_be_bytes());
     (out.len() <= MAX_QUERY_ARTIFACT_BYTES).then_some(out)
+}
+
+fn partition_set_order_start(fields: &[String], order: &[QueryRootOrderTermV1]) -> Option<usize> {
+    let order_start = fields.len().checked_sub(order.len())?;
+    (order_start > 0
+        && fields[order_start..]
+            .iter()
+            .map(String::as_str)
+            .eq(order.iter().map(QueryRootOrderTermV1::field)))
+    .then_some(order_start)
+}
+
+fn partition_set_ir_version(steps: &[QueryAccessStep]) -> u32 {
+    if steps.iter().any(|step| {
+        matches!(
+            step.access(),
+            QueryAccessKind::PartitionSetIndex { fields, order, .. }
+                if partition_set_order_start(fields, order).is_some_and(|start| start > 1)
+        )
+    }) {
+        crate::QUERY_IR_VERSION_PARTITION_SET_EXACT_PREFIX_V1
+    } else {
+        crate::QUERY_IR_VERSION_PARTITION_SET_V1
+    }
 }
 
 fn predicate_operator_tag(operator: QueryPredicateOperator) -> u8 {

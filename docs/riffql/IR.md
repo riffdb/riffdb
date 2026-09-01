@@ -75,6 +75,15 @@ plus multiplied cost and authority. Canonical cursor parameters retain the
 normalized complete set. Existing V1 through V15 query plans and modules are
 unchanged.
 
+When the partition component is followed by one or more invariant exact
+predicate components before the order suffix, the same RiffQL V13 source
+selects additive query IR V17 and query-module V17. V17 additionally encodes
+the fixed prefix width so continuation reconstructs the partition, every exact
+filter value, and the global order key without placing invariant filter values
+in the public cursor marker. Exact-filter parameters remain cursor-identity
+bearing. A partition-set plan without this prefix retains byte-exact V16 plan
+and module artifacts.
+
 Resolution diagnostics are bounded and value-free:
 
 | Code | Meaning |
