@@ -111,6 +111,12 @@ ordered `seed_inputs`; use `riffdb dev --run` for an intentionally seedless
 application. The seeded form fails before startup when the list is empty and
 names up to eight unreferenced JSONL files as an actionable correction.
 
+The source-tree development runner uses Cargo's effective target directory for
+all RiffDB binaries. A workspace Cargo `target-dir` setting or an inherited
+`CARGO_TARGET_DIR` therefore applies consistently to `riffdb`, `riffdbd`, the
+driver host, and development-only benchmark binaries; no unset or repository-
+local target-directory workaround is required.
+
 Generated query calls pin the compiler-owned plan hash as well as the contract
 and module. Successful Rust, Go, TypeScript, and Python results expose the
 verified contract and operation identity. Native transports verify the server
