@@ -16,13 +16,13 @@ use riffdb_types::{
     CapabilityVectorInspectionGrantV1, CapabilityVectorInspectionTargetV1, ContractLineage,
     ContractMigrationOperationId, DatabaseId, EntityKey, EntityTypeId, EventConsumerName, FieldId,
     IndexEntryKey, MAX_ACTOR_ID_BYTES, MAX_APPLICATION_EXPORT_MODULES,
-    MAX_CAPABILITY_APPLICATION_EXPORT_GRANTS, MAX_CAPABILITY_AUDIENCES,
-    MAX_CAPABILITY_FIELD_VISIBILITY, MAX_CAPABILITY_LIFETIME_SECONDS, MAX_CAPABILITY_PARTITIONS,
-    MAX_CAPABILITY_PAYLOAD_BYTES, MAX_CAPABILITY_PERMISSIONS, MAX_CAPABILITY_ROW_POLICY_BINDINGS,
-    MAX_CAPABILITY_VECTOR_INSPECTION_TARGETS, MAX_COMMAND_CONFLICT_KEYS_V1,
-    MAX_CONTRACT_LINEAGE_BYTES, MAX_IDEMPOTENCY_KEY_BYTES, MAX_KEY_BYTES, MAX_PRINCIPAL_FACTS_V1,
-    MAX_PROJECTION_GROUP_COMPONENTS, MAX_TENANT_ID_BYTES, OfflineMaintenanceOperationId,
-    PartitionKey, ProvenanceId, RequestId, RowPolicyName, Timestamp,
+    MAX_APPLICATION_QUERY_SCANNED_ROWS, MAX_CAPABILITY_APPLICATION_EXPORT_GRANTS,
+    MAX_CAPABILITY_AUDIENCES, MAX_CAPABILITY_FIELD_VISIBILITY, MAX_CAPABILITY_LIFETIME_SECONDS,
+    MAX_CAPABILITY_PARTITIONS, MAX_CAPABILITY_PAYLOAD_BYTES, MAX_CAPABILITY_PERMISSIONS,
+    MAX_CAPABILITY_ROW_POLICY_BINDINGS, MAX_CAPABILITY_VECTOR_INSPECTION_TARGETS,
+    MAX_COMMAND_CONFLICT_KEYS_V1, MAX_CONTRACT_LINEAGE_BYTES, MAX_IDEMPOTENCY_KEY_BYTES,
+    MAX_KEY_BYTES, MAX_PRINCIPAL_FACTS_V1, MAX_PROJECTION_GROUP_COMPONENTS, MAX_TENANT_ID_BYTES,
+    OfflineMaintenanceOperationId, PartitionKey, ProvenanceId, RequestId, RowPolicyName, Timestamp,
     canonical_application_export_page_preimage, hash_application_export_manifest,
     hash_application_export_page, hash_application_export_receipt,
     hash_application_installation_plan, hash_application_installation_receipt,
@@ -3390,7 +3390,7 @@ fn validate_capability_grant(grant: Option<&v1::CapabilityGrant>) -> Result<(), 
     if grant.permissions.len() > MAX_CAPABILITY_PERMISSIONS
         || grant.field_visibility.len() > MAX_CAPABILITY_FIELD_VISIBILITY
         || grant.approval_required.len() > 25
-        || !(1..=500).contains(&grant.max_scan_rows)
+        || !(1..=MAX_APPLICATION_QUERY_SCANNED_ROWS).contains(&u64::from(grant.max_scan_rows))
     {
         return Err(PublicWireError::TooManyItems);
     }
