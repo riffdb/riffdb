@@ -3519,12 +3519,18 @@ work_packages:
       1 MiB, and the graph at 16 MiB, with independent count, depth, mutation, index, partition,
       concurrency, retry, response, and diagnostic ceilings tested at exact and plus-one bounds.
   closure:
-    status: partial
-    requirements_satisfied: []
-    evidence: Implementation and acceptance are in progress under the maintainer-approved ADR-0176
-      boundary.
-    known_limitations: Closure requires the complete workspace and downstream gates plus a fresh
-      value-free real MLflow 100-tag atomic loopback receipt.
+    status: complete
+    requirements_satisfied: [BLK-058, BLK-059, BLK-060, BLK-061, BLK-062, BLK-063, BLK-064]
+    evidence: release/evidence/large-atomic-command-envelope-v1.json records implementation
+      revision b72463e7d1f8e3293bcfd1f9454e18671394c549, exact fixed bounds, least-sufficient V22
+      identity, negative and compatibility coverage, every acceptance gate, all-language remote
+      conformance, three downstream adapter checks, and the value-free real MLflow 100-tag atomic
+      commit plus same-commit replay.
+    known_limitations: The wider envelope is command-root-only and fixed at 4 MiB decoded or
+      canonical bytes inside an 8 MiB frame; individual and nested documents remain 1 MiB,
+      complete command graphs remain 16 MiB, and ordinary query responses remain 4 MiB. The
+      MLflow adapter therefore coalesces compiler-bounded four-row internal pages to satisfy
+      larger finite caller pages without client-side filtering, sorting, or cursor invention.
     follow_ups: []
   human_review_triggers: &id0176
   - Any decoded root command limit above 4 MiB, command frame above 8 MiB, complete graph above
