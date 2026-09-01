@@ -163,6 +163,37 @@ pub fn format_query(document: &Document) -> String {
             }
             output.push('\n');
         }
+        if let Some(family) = &binding.order_family {
+            writeln!(
+                output,
+                "        order by ${} {{",
+                family.parameter.value.as_str()
+            )
+            .expect("String writes cannot fail");
+            for variant in &family.variants {
+                write!(output, "            {}: ", variant.variant.value.as_str())
+                    .expect("String writes cannot fail");
+                for (index, term) in variant.order.iter().enumerate() {
+                    if index > 0 {
+                        output.push_str(", ");
+                    }
+                    output.push_str(&format_path(&term.path.value));
+                    output.push(' ');
+                    output.push_str(match term.direction.value {
+                        Direction::Ascending => "asc",
+                        Direction::Descending => "desc",
+                    });
+                    if let Some(placement) = &term.null_placement {
+                        output.push_str(match placement.value {
+                            NullPlacement::First => " nulls first",
+                            NullPlacement::Last => " nulls last",
+                        });
+                    }
+                }
+                output.push_str(";\n");
+            }
+            output.push_str("        }\n");
+        }
         if let Some(take) = &binding.take {
             write!(
                 output,

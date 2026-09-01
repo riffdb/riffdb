@@ -937,7 +937,7 @@ fn generate_all_query_tools(
             for parameter in schemas.parameters() {
                 properties.insert(
                     parameter.name().to_owned(),
-                    mcp_type_schema(parameter.value_type()),
+                    mcp_query_parameter_schema(query, parameter),
                 );
                 if !parameter.has_default()
                     && !is_cursor_type(parameter.value_type())
@@ -1017,7 +1017,7 @@ pub(crate) fn generated_query_driver_operations(
             for parameter in schemas.parameters() {
                 properties.insert(
                     parameter.name().to_owned(),
-                    mcp_type_schema(parameter.value_type()),
+                    mcp_query_parameter_schema(query, parameter),
                 );
                 if !parameter.has_default()
                     && !is_cursor_type(parameter.value_type())
@@ -1311,6 +1311,21 @@ fn mcp_type_schema(value_type: &NamedTypeSchema) -> Value {
     }
 }
 
+fn mcp_query_parameter_schema(
+    query: &crate::CompiledNamedQuery,
+    parameter: &riffdb_query_ir::NamedParameterSchema,
+) -> Value {
+    if let Some(family) = query.order_family()
+        && family.selector_parameter() == parameter.name()
+    {
+        return json!({
+            "type": "string",
+            "enum": family.members().iter().map(|member| member.variant_name()).collect::<Vec<_>>(),
+        });
+    }
+    mcp_type_schema(parameter.value_type())
+}
+
 fn is_cursor_type(value_type: &NamedTypeSchema) -> bool {
     matches!(value_type, NamedTypeSchema::Cursor)
         || matches!(
@@ -1363,11 +1378,31 @@ pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> 
     }
     emit_rust_identity(&mut output, module);
     emit_rust_common_value_types(&mut output);
+    if module
+        .queries()
+        .iter()
+        .any(|query| query.order_family().is_some())
+    {
+        emit_rust_contract_enums(&mut output, contract);
+    }
 
     for query in module.queries() {
         let name = query.name();
         let schemas = query.plan().schemas();
         let params_name = format!("{name}Params");
+        let order_selector = query.order_family().and_then(|family| {
+            schemas
+                .parameters()
+                .iter()
+                .find(|parameter| parameter.name() == family.selector_parameter())
+                .and_then(|parameter| {
+                    if let NamedTypeSchema::Scalar(name) = parameter.value_type() {
+                        Some((parameter.name(), name.as_str()))
+                    } else {
+                        None
+                    }
+                })
+        });
         emit_rust_fields_struct(
             &mut output,
             &params_name,
@@ -1376,6 +1411,7 @@ pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> 
                 .iter()
                 .map(|parameter| (parameter.name(), parameter.value_type())),
             false,
+            order_selector,
         );
         let redacted_debug = !query.plan().secret_outputs().is_empty();
         if redacted_debug {
@@ -1407,6 +1443,7 @@ pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> 
                     .iter()
                     .map(|field| (field.name(), field.value_type())),
                 redacted_debug,
+                None,
             );
         }
         writeln!(
@@ -1426,6 +1463,7 @@ pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> 
             query.plan().identity().as_bytes(),
             query.plan().common_covered_result().as_ref(),
             contract,
+            order_selector.map(|(parameter, _)| parameter),
         );
     }
 
@@ -1947,6 +1985,7 @@ fn emit_rust_generated_query_impl(
     plan_hash: &[u8; 32],
     covered_result: Option<&(String, CoveredResultLayoutV1, Vec<String>)>,
     contract: &ContractBundle,
+    order_selector: Option<&str>,
 ) {
     let params_name = format!("{name}Params");
     let query_type = format!("{name}Query");
@@ -1998,10 +2037,12 @@ fn emit_rust_generated_query_impl(
         if is_cursor_type(parameter.value_type()) {
             continue;
         }
-        let expression = rust_encode_application_expr(
-            parameter.value_type(),
-            &format!("self.0.{}", rust_identifier(parameter.name())),
-        );
+        let access = format!("self.0.{}", rust_identifier(parameter.name()));
+        let expression = if order_selector == Some(parameter.name()) {
+            format!("ApplicationValue::Enum({access}.as_str().to_owned())")
+        } else {
+            rust_encode_application_expr(parameter.value_type(), &access)
+        };
         writeln!(
             output,
             "        parameters.insert(\"{}\".to_owned(), {expression});",
@@ -3876,7 +3917,7 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
                 "  readonly {}{}: {};",
                 ts_identifier(parameter.name()),
                 optional,
-                ts_query_type(parameter.value_type())
+                ts_query_parameter_type(query, parameter)
             )
             .expect("string");
         }
@@ -4909,11 +4950,55 @@ fn emit_rust_identity(output: &mut String, module: &QueryModule) {
     writeln!(output, "];\n").expect("string");
 }
 
+fn emit_rust_contract_enums(output: &mut String, contract: &ContractBundle) {
+    for enumeration in contract.schema().enums() {
+        let name = pascal(enumeration.name());
+        writeln!(
+            output,
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub enum {name} {{"
+        )
+        .expect("string");
+        for variant in enumeration.variants() {
+            writeln!(output, "    {},", pascal(variant.name())).expect("string");
+        }
+        writeln!(
+            output,
+            "}}\nimpl {name} {{\n    pub const fn as_str(self) -> &'static str {{ match self {{"
+        )
+        .expect("string");
+        for variant in enumeration.variants() {
+            writeln!(
+                output,
+                "        Self::{} => {:?},",
+                pascal(variant.name()),
+                variant.name()
+            )
+            .expect("string");
+        }
+        writeln!(
+            output,
+            "    }} }}\n    pub fn from_name(value: &str) -> Option<Self> {{ match value {{"
+        )
+        .expect("string");
+        for variant in enumeration.variants() {
+            writeln!(
+                output,
+                "        {:?} => Some(Self::{}),",
+                variant.name(),
+                pascal(variant.name())
+            )
+            .expect("string");
+        }
+        writeln!(output, "        _ => None,\n    }} }}\n}}\n").expect("string");
+    }
+}
+
 fn emit_rust_fields_struct<'a>(
     output: &mut String,
     name: &str,
     fields: impl Iterator<Item = (&'a str, &'a NamedTypeSchema)>,
     redacted_debug: bool,
+    order_selector: Option<(&str, &str)>,
 ) {
     let fields = fields.collect::<Vec<_>>();
     for (field, value_type) in &fields {
@@ -4942,7 +5027,13 @@ fn emit_rust_fields_struct<'a>(
             output,
             "    pub {}: {},",
             rust_identifier(field),
-            rust_query_type(value_type, &format!("{name}{}", pascal(field)))
+            if let Some((_, enumeration)) =
+                order_selector.filter(|(selector, _)| selector == &field)
+            {
+                pascal(enumeration)
+            } else {
+                rust_query_type(value_type, &format!("{name}{}", pascal(field)))
+            }
         )
         .expect("string");
     }
@@ -5023,6 +5114,7 @@ fn rust_query_type(value_type: &NamedTypeSchema, nested_name: &str) -> String {
             value if value.starts_with("vector<") => "CanonicalVector".to_owned(),
             value if value.starts_with("decimal<") => "DecimalValue".to_owned(),
             value if value.starts_with("money<") => "MoneyValue".to_owned(),
+            value if value.starts_with("string<") => "String".to_owned(),
             _ => "String".to_owned(),
         },
         NamedTypeSchema::Optional(inner) => {
@@ -5069,6 +5161,23 @@ fn rust_contract_type(value_type: &ValueType, contract: &ContractBundle) -> Stri
         _ => "String",
     }
     .to_owned()
+}
+
+fn ts_query_parameter_type(
+    query: &crate::CompiledNamedQuery,
+    parameter: &riffdb_query_ir::NamedParameterSchema,
+) -> String {
+    if let Some(family) = query.order_family()
+        && family.selector_parameter() == parameter.name()
+    {
+        return family
+            .members()
+            .iter()
+            .map(|member| format!("{:?}", member.variant_name()))
+            .collect::<Vec<_>>()
+            .join(" | ");
+    }
+    ts_query_type(parameter.value_type())
 }
 
 fn ts_query_type(value_type: &NamedTypeSchema) -> String {

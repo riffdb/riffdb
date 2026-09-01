@@ -24,6 +24,8 @@ pub const RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1: u32 = 9;
 pub const RIFFQL_LANGUAGE_VERSION_TOKENIZED_TEXT_V1: u32 = 10;
 /// Candidate and independently widened bounded-result pipeline language.
 pub const RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1: u32 = 11;
+/// Finite compiler-owned result-order family selected by a contract enum.
+pub const RIFFQL_LANGUAGE_VERSION_ORDER_FAMILY_V1: u32 = 12;
 /// Maximum compiler-declared causal projection wait.
 pub const MAX_PROJECTED_CAUSAL_WAIT_MS: u32 = 30_000;
 /// Maximum compiler-declared bounded projection lag.
@@ -299,6 +301,9 @@ pub struct Binding {
     pub predicate: Spanned<Expression>,
     /// Stable ordering.
     pub order: Vec<OrderTerm>,
+    /// Optional finite compiler-owned order family. Exactly one enum value
+    /// selects one complete immutable order; callers never submit structure.
+    pub order_family: Option<OrderFamily>,
     /// Explicit bound for `many`, optional cursor for all cardinalities.
     pub take: Option<Take>,
     /// Nearest-neighbor search clause (ADR-0091). When present, replaces
@@ -311,6 +316,26 @@ pub struct Binding {
     /// This is required by `one`; the planner also requires it for a bounded
     /// dependent point batch sourced from an earlier `many`.
     pub absence_outcome: Option<Spanned<Identifier>>,
+}
+
+/// One finite order family selected by a typed contract-enum parameter.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrderFamily {
+    /// Enum parameter selecting a precompiled member.
+    pub parameter: Spanned<Identifier>,
+    /// Complete closed variant inventory.
+    pub variants: Vec<OrderFamilyVariant>,
+    /// Complete clause span.
+    pub span: Span,
+}
+
+/// One enum variant and its immutable total order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrderFamilyVariant {
+    /// Exact contract enum variant name.
+    pub variant: Spanned<Identifier>,
+    /// Complete fixed order, including the unique tie-breaker.
+    pub order: Vec<OrderTerm>,
 }
 
 /// One compiler-owned tokenized match over a declared text index.

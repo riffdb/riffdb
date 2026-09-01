@@ -2911,12 +2911,33 @@ async fn execute_named_query(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let program = query.select_program(&presence).ok_or_else(|| {
-        application_validation_failure(
-            ValidationCode::InvalidValue,
-            ApplicationErrorCode::QueryInvalid,
-        )
-    })?;
+    let order_program = query.order_family().and_then(|family| {
+        let submitted = request.parameters.get(family.selector_parameter())?;
+        let member = match submitted {
+            SubmittedValue::Enum(value) => match (value.type_id(), value.variant_id()) {
+                (Some(type_id), Some(variant_id)) => family.select(type_id, variant_id),
+                _ => value
+                    .name()
+                    .and_then(|name| family.select_name(name.as_str())),
+            },
+            SubmittedValue::String(value) => family.select_name(value.as_str()),
+            _ => None,
+        }?;
+        Some(member.shared_program())
+    });
+    let program = order_program
+        .or_else(|| query.select_program(&presence))
+        .ok_or_else(|| {
+            application_validation_failure(
+                ValidationCode::InvalidValue,
+                ApplicationErrorCode::QueryInvalid,
+            )
+        })?;
+    let selected_plan_hash = if query.order_family().is_some() {
+        program.identity().hash()
+    } else {
+        query.plan().identity()
+    };
     if program.projected_source().is_some() {
         return execute_projected_vector_named_query(
             service,
@@ -2925,7 +2946,7 @@ async fn execute_named_query(
             program,
             query.shared_document(),
             module_hash,
-            query.plan().identity(),
+            selected_plan_hash,
             query_name,
             request.parameters,
             request.cursor,
@@ -2955,7 +2976,7 @@ async fn execute_named_query(
         aggregates,
         query.shared_document(),
         Some(module_hash),
-        Some(query.plan().identity()),
+        Some(selected_plan_hash),
         QueryAuthority::Named {
             module_hash,
             query_name,
@@ -5238,6 +5259,17 @@ fn resume_query_consistency(
     ))
 }
 
+fn effective_query_consistency(
+    has_candidates: bool,
+    requested: Option<QueryConsistencyV1>,
+) -> Option<QueryConsistencyV1> {
+    if has_candidates {
+        Some(QueryConsistencyV1::AdmissionHead)
+    } else {
+        requested
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn execute_compiled_query(
     service: Arc<RiffDbServiceInner>,
@@ -5260,6 +5292,11 @@ async fn execute_compiled_query(
     if program.steps().len() > MAX_SYMBOLIC_QUERY_STEPS {
         return Err(validation_failure(ValidationCode::InvalidValue));
     }
+    // Candidate sources must observe one admission-fenced participant set.
+    // This is compiler-derived consistency, never an optional caller
+    // downgrade. Ordinary queries preserve the submitted consistency mode.
+    let consistency =
+        effective_query_consistency(!program.surface().candidates().is_empty(), consistency);
     let param_materialize_started = Instant::now();
     let parameters =
         materialize_query_parameters(&service, OPERATION, bundle.bundle(), &document, &submitted)?;
@@ -5653,6 +5690,19 @@ mod admission_head_cursor_tests {
             None,
             "a legacy cursor cannot be upgraded in place"
         );
+    }
+
+    #[test]
+    fn candidate_queries_cannot_downgrade_the_admission_fence() {
+        assert_eq!(
+            effective_query_consistency(true, None),
+            Some(QueryConsistencyV1::AdmissionHead)
+        );
+        assert_eq!(
+            effective_query_consistency(true, Some(QueryConsistencyV1::AdmissionHead)),
+            Some(QueryConsistencyV1::AdmissionHead)
+        );
+        assert_eq!(effective_query_consistency(false, None), None);
     }
 }
 

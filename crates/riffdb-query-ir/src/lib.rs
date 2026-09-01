@@ -9,6 +9,7 @@ mod exact_predicate;
 mod exact_text;
 mod live;
 mod operational;
+mod order_family;
 mod plan;
 mod reactive;
 mod resolver;
@@ -29,6 +30,7 @@ pub use exact_predicate::*;
 pub use exact_text::*;
 pub use live::*;
 pub use operational::*;
+pub use order_family::*;
 pub use plan::{
     AccessDirection, AuthorizationEntityAccess, CoveredResultFieldV1, CoveredResultLayoutV1,
     CoveredResultSourceV1, ProjectedVectorFreshnessV1, ProjectedVectorSourceV1, QueryAccessKind,
@@ -77,6 +79,8 @@ pub const QUERY_IR_VERSION_BOUNDED_LIMIT_V1: u32 = 12;
 pub const QUERY_IR_VERSION_TOKENIZED_TEXT_V1: u32 = 13;
 /// Canonical bounded filtered-result pipeline and enlarged page-limit IR.
 pub const QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1: u32 = 14;
+/// Canonical finite compiler-owned root-order family IR.
+pub const QUERY_IR_VERSION_ORDER_FAMILY_V1: u32 = 15;
 /// Maximum public query schema and canonical IR bytes.
 pub const MAX_QUERY_ARTIFACT_BYTES: usize = 4_194_304;
 /// Maximum source-map entries.

@@ -4045,7 +4045,7 @@ mod tests {
     }
 
     #[test]
-    fn application_check_rejects_a_role_whose_complete_scan_budget_is_unsafe() {
+    fn application_check_accepts_a_role_above_the_predecessor_scan_ceiling() {
         let parent = tempfile::TempDir::with_prefix("riffdb-role-budget-test-complete-scan-")
             .expect("scratch directory");
         let base = parent.path().join("app");
@@ -4087,8 +4087,8 @@ mod tests {
             base.join("riffdb/queries/item_page.riffq"),
             br#"query ItemPage(
     $tenant_id: Item.tenant_id,
-    $first_limit: Limit<499> = 25,
-    $second_limit: Limit<499> = 25,
+    $first_limit: Limit<3000> = 25,
+    $second_limit: Limit<3000> = 25,
 ) {
     many first from Item
         where tenant_id == $tenant_id
@@ -4109,25 +4109,16 @@ mod tests {
 }
 "#,
         )
-        .expect("write unsafe complete budget");
+        .expect("write bounded high-volume query");
 
-        let error = check_application(&base.join("riffdb.application.json"))
-            .expect_err("complete worst-case scan exceeds the role bound");
-        let diagnostics = error.diagnostics().expect("structured role diagnostic");
-        let [diagnostic] = diagnostics.as_slice() else {
-            panic!("role failure returns exactly one diagnostic");
+        let status = check_application(&base.join("riffdb.application.json"))
+            .expect("the shared scan ceiling admits more than 499 rows");
+        let [query] = status.queries() else {
+            panic!("application check reports exactly one query");
         };
-        assert_eq!(diagnostic.stage().as_str(), "role");
-        assert_eq!(diagnostic.code().as_str(), "RDB-AR007");
-        assert_eq!(diagnostic.symbol_path(), ["SafeAppApplication", "ItemPage"]);
-        assert_eq!(
-            diagnostics.render_json().expect("JSON"),
-            include_str!("../../../fixtures/application-diagnostics/role-budget-v1.json")
-        );
-        assert_eq!(
-            diagnostics.render_human().expect("human"),
-            include_str!("../../../fixtures/application-diagnostics/role-budget-v1.txt")
-        );
+        assert_eq!(query.name, "ItemPage");
+        assert!(query.result_bytes > 3_000_000);
+        assert!(query.result_bytes < query.result_bytes_maximum);
     }
 
     #[cfg(unix)]
