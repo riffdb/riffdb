@@ -4600,44 +4600,77 @@ async fn execute_exact_named_query(
     Ok(result)
 }
 
-async fn execute_exact_provider_with_readiness<T>(
-    service: &RiffDbServiceInner,
-    context: &RequestContext,
-    begun: &crate::orchestration::BegunInvocation,
-    mut execute: impl FnMut() -> Result<T, ExactTextProjectionPortError>,
-) -> ServiceResult<Result<T, ExactTextProjectionPortError>> {
+async fn execute_provider_with_readiness<T, E, Execute, Classify, Reauthorize, ReauthorizeFuture>(
+    control: &crate::RequestControl,
+    deadline_scheduler: &dyn crate::RequestDeadlineScheduler,
+    mut execute: Execute,
+    classify: Classify,
+    mut reauthorize: Reauthorize,
+) -> ServiceResult<Result<T, E>>
+where
+    Execute: FnMut() -> Result<T, E>,
+    Classify: Fn(&E) -> Option<ExactTextProjectionPortError>,
+    Reauthorize: FnMut() -> ReauthorizeFuture,
+    ReauthorizeFuture: std::future::Future<Output = ServiceResult<()>>,
+{
     let readiness_deadline = Instant::now()
         .checked_add(EXACT_PROVIDER_READINESS_WAIT)
-        .unwrap_or_else(|| context.control().deadline())
-        .min(context.control().deadline());
+        .unwrap_or_else(|| control.deadline())
+        .min(control.deadline());
     let mut observations = 0_u16;
     loop {
         observations = observations.saturating_add(1);
         match execute() {
             Ok(result) => return Ok(Ok(result)),
-            Err(
-                ExactTextProjectionPortError::Building
-                | ExactTextProjectionPortError::Rebuilding
-                | ExactTextProjectionPortError::FreshnessUnsatisfied,
-            ) if observations < MAX_EXACT_PROVIDER_READINESS_OBSERVATIONS
-                && Instant::now() < readiness_deadline =>
+            Err(error)
+                if classify(&error).is_some_and(exact_provider_readiness_pending)
+                    && observations < MAX_EXACT_PROVIDER_READINESS_OBSERVATIONS
+                    && Instant::now() < readiness_deadline =>
             {
                 let wake_at = Instant::now()
                     .checked_add(EXACT_PROVIDER_READINESS_POLL)
                     .unwrap_or(readiness_deadline)
                     .min(readiness_deadline);
                 wait_with_control(
-                    context.control(),
-                    service.providers.deadline_scheduler.as_ref(),
-                    service.providers.deadline_scheduler.wait_until(wake_at),
+                    control,
+                    deadline_scheduler,
+                    deadline_scheduler.wait_until(wake_at),
                 )
                 .await
                 .map_err(controlled_failure)?;
-                begun.reauthorize_read(service, context).await?;
+                reauthorize().await?;
             }
             Err(error) => return Ok(Err(error)),
         }
     }
+}
+
+const fn exact_provider_readiness_pending(error: ExactTextProjectionPortError) -> bool {
+    matches!(
+        error,
+        ExactTextProjectionPortError::Building
+            | ExactTextProjectionPortError::Rebuilding
+            | ExactTextProjectionPortError::FreshnessUnsatisfied
+    )
+}
+
+async fn execute_exact_provider_with_readiness<T>(
+    service: &RiffDbServiceInner,
+    context: &RequestContext,
+    begun: &crate::orchestration::BegunInvocation,
+    execute: impl FnMut() -> Result<T, ExactTextProjectionPortError>,
+) -> ServiceResult<Result<T, ExactTextProjectionPortError>> {
+    execute_provider_with_readiness(
+        context.control(),
+        service.providers.deadline_scheduler.as_ref(),
+        execute,
+        |error| Some(*error),
+        || async {
+            begun.reauthorize_read(service, context).await?;
+            Ok(())
+        },
+    )
+    .await
 }
 
 const fn exact_projection_application_code(
@@ -5316,17 +5349,131 @@ fn continuation_provider_epoch(
     Ok(epoch)
 }
 
-fn map_long_pattern_port_error(error: ExactTextProjectionPortError) -> QueryExecutionError {
+enum LongPatternPreparationError {
+    Query(QueryExecutionError),
+    Provider(ExactTextProjectionPortError),
+}
+
+impl From<QueryExecutionError> for LongPatternPreparationError {
+    fn from(error: QueryExecutionError) -> Self {
+        Self::Query(error)
+    }
+}
+
+const fn long_pattern_readiness_error(
+    error: &LongPatternPreparationError,
+) -> Option<ExactTextProjectionPortError> {
     match error {
-        ExactTextProjectionPortError::InputInvalid => QueryExecutionError::InvalidProgram,
-        ExactTextProjectionPortError::ResponseTooLarge => QueryExecutionError::BoundExceeded,
-        ExactTextProjectionPortError::Building
-        | ExactTextProjectionPortError::Rebuilding
-        | ExactTextProjectionPortError::FreshnessUnsatisfied
-        | ExactTextProjectionPortError::Diverged
-        | ExactTextProjectionPortError::Unavailable => QueryExecutionError::BackendUnavailable,
-        ExactTextProjectionPortError::SnapshotRetired => QueryExecutionError::StaleCursor,
-        ExactTextProjectionPortError::Integrity => QueryExecutionError::BackendIntegrity,
+        LongPatternPreparationError::Provider(error) => Some(*error),
+        LongPatternPreparationError::Query(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod provider_readiness_tests {
+    use super::*;
+
+    struct ImmediateReadinessScheduler {
+        request_deadline: Instant,
+    }
+
+    impl crate::RequestDeadlineScheduler for ImmediateReadinessScheduler {
+        fn wait_until(&self, deadline: Instant) -> crate::RequestDeadlineFuture<'_> {
+            if deadline == self.request_deadline {
+                Box::pin(std::future::pending())
+            } else {
+                Box::pin(async {})
+            }
+        }
+    }
+
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("runtime")
+            .block_on(future)
+    }
+
+    #[test]
+    fn first_long_pattern_candidate_waits_for_worker_publication() {
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(1))
+            .expect("deadline");
+        let (control, _cancellation) = crate::RequestControl::new(deadline);
+        let scheduler = ImmediateReadinessScheduler {
+            request_deadline: deadline,
+        };
+        let mut attempts = 0_u8;
+        let mut reauthorizations = 0_u8;
+
+        let result = block_on(execute_provider_with_readiness(
+            &control,
+            &scheduler,
+            || {
+                attempts = attempts.saturating_add(1);
+                if attempts < 3 {
+                    Err(LongPatternPreparationError::Provider(
+                        ExactTextProjectionPortError::Building,
+                    ))
+                } else {
+                    Ok(17_u8)
+                }
+            },
+            long_pattern_readiness_error,
+            || {
+                reauthorizations = reauthorizations.saturating_add(1);
+                async { Ok(()) }
+            },
+        ))
+        .expect("bounded readiness wait");
+        let result = match result {
+            Ok(result) => result,
+            Err(_) => panic!("provider did not publish within the readiness wait"),
+        };
+
+        assert_eq!(result, 17);
+        assert_eq!(attempts, 3);
+        assert_eq!(reauthorizations, 2);
+    }
+
+    #[test]
+    fn query_preparation_failure_is_not_a_provider_readiness_retry() {
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(1))
+            .expect("deadline");
+        let (control, _cancellation) = crate::RequestControl::new(deadline);
+        let scheduler = ImmediateReadinessScheduler {
+            request_deadline: deadline,
+        };
+        let mut attempts = 0_u8;
+        let mut reauthorizations = 0_u8;
+
+        let result = block_on(execute_provider_with_readiness(
+            &control,
+            &scheduler,
+            || {
+                attempts = attempts.saturating_add(1);
+                Err::<u8, _>(LongPatternPreparationError::Query(
+                    QueryExecutionError::InvalidProgram,
+                ))
+            },
+            long_pattern_readiness_error,
+            || {
+                reauthorizations = reauthorizations.saturating_add(1);
+                async { Ok(()) }
+            },
+        ))
+        .expect("closed preparation result");
+
+        assert!(matches!(
+            result,
+            Err(LongPatternPreparationError::Query(
+                QueryExecutionError::InvalidProgram
+            ))
+        ));
+        assert_eq!(attempts, 1);
+        assert_eq!(reauthorizations, 0);
     }
 }
 
@@ -5344,7 +5491,7 @@ fn prepare_long_pattern_participants(
         Vec<LongPatternCandidateBatch>,
         riffdb_types::ApplicationRoleHash,
     ),
-    QueryExecutionError,
+    LongPatternPreparationError,
 > {
     let policy_shape = authorization
         .application_role_hash()
@@ -5362,19 +5509,21 @@ fn prepare_long_pattern_participants(
             let CanonicalValue::List(values) = partition_value else {
                 return Err(QueryExecutionError::InvalidParameter {
                     parameter: program.partition_parameter().to_owned(),
-                });
+                }
+                .into());
             };
             if values.values().is_empty() || values.values().len() > usize::from(*maximum) {
                 return Err(QueryExecutionError::InvalidParameter {
                     parameter: program.partition_parameter().to_owned(),
-                });
+                }
+                .into());
             }
             values.values()
         }
     };
     let target_partitions = authorization.target().partitions();
     if target_partitions.len() != route_values.len() {
-        return Err(QueryExecutionError::InvalidProgram);
+        return Err(QueryExecutionError::InvalidProgram.into());
     }
     let minimum_epoch = match minimum_application_head {
         Some(value) => Some(CommitSequence::new(value).ok_or(QueryExecutionError::InvalidProgram)?),
@@ -5383,6 +5532,7 @@ fn prepare_long_pattern_participants(
     let pinned_epoch = continuation_provider_epoch(prior)?;
     let mut batches = Vec::new();
     let mut participants = Vec::<ProviderEpochObservationV1>::new();
+    let mut pending_provider = None;
     for step in program.steps() {
         let QueryAccessKind::LongPatternCandidate { pattern, .. } = step.access() else {
             continue;
@@ -5395,7 +5545,8 @@ fn prepare_long_pattern_participants(
         else {
             return Err(QueryExecutionError::InvalidParameter {
                 parameter: pattern.pattern_parameter().to_owned(),
-            });
+            }
+            .into());
         };
         let compiled = CompiledLongPatternV1::compile_bounded(
             pattern.operator(),
@@ -5407,6 +5558,7 @@ fn prepare_long_pattern_participants(
             parameter: pattern.pattern_parameter().to_owned(),
         })?;
         let mut partition_batches = Vec::with_capacity(route_values.len());
+        let mut step_pending = false;
         for (partition, partition_value) in target_partitions.iter().zip(route_values) {
             let request = LongPatternProjectionRequest::new(
                 Arc::new(program.clone()),
@@ -5419,13 +5571,22 @@ fn prepare_long_pattern_participants(
                 minimum_epoch,
                 pinned_epoch,
             );
-            let batch = provider
-                .execute(request)
-                .map_err(map_long_pattern_port_error)?;
+            let batch = match provider.execute(request) {
+                Ok(batch) => batch,
+                Err(error) if exact_provider_readiness_pending(error) => {
+                    pending_provider.get_or_insert(error);
+                    step_pending = true;
+                    continue;
+                }
+                Err(error) => return Err(LongPatternPreparationError::Provider(error)),
+            };
             if batch.binding() != step.binding() {
-                return Err(QueryExecutionError::BackendIntegrity);
+                return Err(QueryExecutionError::BackendIntegrity.into());
             }
             partition_batches.push(batch);
+        }
+        if step_pending {
+            continue;
         }
         let route_count =
             u64::try_from(route_values.len()).map_err(|_| QueryExecutionError::BoundExceeded)?;
@@ -5450,12 +5611,15 @@ fn prepare_long_pattern_participants(
             .find(|existing| existing.descriptor() == observation.descriptor())
         {
             if existing != &observation {
-                return Err(QueryExecutionError::BackendIntegrity);
+                return Err(QueryExecutionError::BackendIntegrity.into());
             }
         } else {
             participants.push(observation);
         }
         batches.push(batch);
+    }
+    if let Some(error) = pending_provider {
+        return Err(LongPatternPreparationError::Provider(error));
     }
     let requirement = pinned_epoch.map_or_else(
         || {
@@ -5686,21 +5850,40 @@ async fn execute_compiled_query(
             let executor = executor.as_ref();
             let cursors = &service.cursors;
             let service = &service;
+            let context = &context;
+            let begun = &begun;
             let telemetry = service.providers.telemetry.as_ref();
             let captured_minimum_application_head = minimum_application_head;
             let long_pattern_provider = long_pattern_provider.as_deref();
             async move {
                 let execute_started = Instant::now();
                 let executed = if let Some(provider) = long_pattern_provider {
-                    match prepare_long_pattern_participants(
-                        execution_authorization,
-                        provider,
-                        program,
-                        parameters,
-                        prior_cont,
-                        row_policy.as_ref(),
-                        captured_minimum_application_head,
-                    ) {
+                    let prepared = execute_provider_with_readiness(
+                        context.control(),
+                        service.providers.deadline_scheduler.as_ref(),
+                        || {
+                            prepare_long_pattern_participants(
+                                execution_authorization,
+                                provider,
+                                program,
+                                parameters,
+                                prior_cont,
+                                row_policy.as_ref(),
+                                captured_minimum_application_head,
+                            )
+                        },
+                        long_pattern_readiness_error,
+                        || async {
+                            begun.reauthorize_read(service, context).await?;
+                            Ok(())
+                        },
+                    )
+                    .await;
+                    let prepared = match prepared {
+                        Ok(prepared) => prepared,
+                        Err(failure) => return Err(Err(failure)),
+                    };
+                    match prepared {
                         Ok((proof, batches, policy_shape)) => {
                             execute_authorized_provider_query_page(
                                 execution_authorization,
@@ -5715,7 +5898,17 @@ async fn execute_compiled_query(
                                 &batches,
                             )
                         }
-                        Err(error) => Err(error),
+                        Err(LongPatternPreparationError::Query(error)) => Err(error),
+                        Err(LongPatternPreparationError::Provider(error)) => {
+                            let Some(code) = exact_projection_application_code(error) else {
+                                return Err(Err(service
+                                    .internal_failure(OPERATION, InternalDefect::ProofMismatch)));
+                            };
+                            return Err(Err(application_validation_failure(
+                                ValidationCode::InvalidValue,
+                                code,
+                            )));
+                        }
                     }
                 } else {
                     execute_authorized_query_page(

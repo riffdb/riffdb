@@ -112,9 +112,18 @@ Background workers build policy-aligned provider state from one exact
 authoritative snapshot and atomically activate a checksummed generation. A
 request uses only a ready generation whose descriptor, schema, policy shape,
 plan, history incarnation, frontier, and work observation match the compiled
-query. Building, rebuilding, capacity exhaustion, corruption, stale state, or a
-retired generation returns a typed refusal; there is no request-time rebuild or
-fallback.
+query. On first use or catch-up, RiffDB registers every compiler-bounded
+provider participant together and waits within the request deadline and its
+finite server-owned readiness ceiling for the background worker to publish a
+sufficient generation. Current authority is revalidated after every wait.
+Callers cannot select the worker, cadence, ceiling, provider, or fallback, and
+the request path never performs the rebuild itself.
+
+If building, rebuilding, or freshness work does not finish inside that bound,
+or if capacity exhaustion, corruption, stale state, or generation retirement
+is observed, the query returns the corresponding typed refusal. It never
+reports provider activation as generic storage unavailability and never serves
+a lower frontier or partial candidate population.
 
 The provider and ordinary candidate sources share one admission-head-fenced
 participant proof. A cursor binds that participant set and the complete root
