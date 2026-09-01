@@ -4636,7 +4636,7 @@ Missing, duplicate, or inconsistent cross-links are integrity failures.
 
 `CapabilityGrantV1` has one tenant scope, one all-or-explicit partition scope,
 a canonical set of closed permission atoms, canonical entity-field visibility,
-`max_scan_rows` in `1..=500`, and the canonical set of permission tags requiring
+`max_scan_rows` in `1..=65,535`, and the canonical set of permission tags requiring
 validated approval. Grammar v1 has no tenant mapping, so commands are authorized
 only under global tenant scope unless separately reviewed static metadata exists.
 Unknown permission, lifecycle, scope, reason, or obligation tags fail closed.

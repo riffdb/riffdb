@@ -774,6 +774,23 @@ fn capability_audiences_are_visible_ascii() {
 }
 
 #[test]
+fn capability_scan_authority_uses_the_shared_application_query_ceiling() {
+    for maximum in [500, 501, 50_000, 65_535] {
+        let mut request = create_request(v1::CapabilityCreateMode::Normal);
+        request.grant.as_mut().expect("grant").max_scan_rows = maximum;
+        validate_public_message(&request)
+            .unwrap_or_else(|error| panic!("scan authority {maximum} rejected: {error}"));
+    }
+
+    let mut excessive = create_request(v1::CapabilityCreateMode::Normal);
+    excessive.grant.as_mut().expect("grant").max_scan_rows = 65_536;
+    assert_eq!(
+        validate_public_message(&excessive),
+        Err(PublicWireError::TooManyItems)
+    );
+}
+
+#[test]
 fn capability_grant_uses_the_complete_semantic_byte_bound() {
     let visibility = |lineage_bytes: usize, entity_type_id: u32| v1::EntityFieldVisibility {
         contract_lineage: "a".repeat(lineage_bytes),

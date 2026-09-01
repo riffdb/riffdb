@@ -8835,18 +8835,10 @@ fn compile_role_from_workspace(
         read_file(requested_path, MAX_INPUT_BYTES).map_err(|_| RoleWorkspaceError::Invalid)?;
     let requested_value: serde_json::Value =
         serde_json::from_slice(&requested_bytes).map_err(|_| RoleWorkspaceError::Invalid)?;
-    let requested_is_source = matches!(
+    let requested_is_source = is_application_source_schema(
         requested_value
             .get("schema")
             .and_then(serde_json::Value::as_str),
-        Some(
-            "riffdb.application-source/v1"
-                | "riffdb.application-source/v2"
-                | "riffdb.application-source/v3"
-                | "riffdb.application-source/v4"
-                | "riffdb.application-source/v5"
-                | "riffdb.application-source/v6"
-        )
     );
     let source_locked = requested_is_source
         .then(|| load_locked_application(requested_path, None))
@@ -8960,6 +8952,21 @@ fn compile_role_from_workspace(
         .and_then(|path| AuthoringDiagnostics::from_role(path, error.kind(), Some(role_name)).ok())
         .map_or(RoleWorkspaceError::Invalid, RoleWorkspaceError::Authoring)
     })
+}
+
+fn is_application_source_schema(schema: Option<&str>) -> bool {
+    matches!(
+        schema,
+        Some(
+            "riffdb.application-source/v1"
+                | "riffdb.application-source/v2"
+                | "riffdb.application-source/v3"
+                | "riffdb.application-source/v4"
+                | "riffdb.application-source/v5"
+                | "riffdb.application-source/v6"
+                | "riffdb.application-source/v7"
+        )
+    )
 }
 
 fn role_workspace_lock_error(error: crate::scaffold::ScaffoldError) -> RoleWorkspaceError {
@@ -13610,6 +13617,24 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn role_workspace_recognizes_every_supported_application_source_schema() {
+        for version in 1..=7 {
+            let schema = format!("riffdb.application-source/v{version}");
+            assert!(
+                is_application_source_schema(Some(&schema)),
+                "supported source schema V{version} was not recognized"
+            );
+        }
+        assert!(!is_application_source_schema(Some(
+            "riffdb.application-manifest/v5"
+        )));
+        assert!(!is_application_source_schema(Some(
+            "riffdb.application-source/v8"
+        )));
+        assert!(!is_application_source_schema(None));
     }
 
     #[test]
