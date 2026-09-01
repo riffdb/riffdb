@@ -3,16 +3,21 @@
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_compiler::{PlannerDiagnosticCode, compile_operational_query_family};
 use riffdb_query_ir::{
-    QUERY_IR_VERSION_PARTITION_SET_V1, QueryAccessKind, QueryPartitionRouteV1, SymbolicCatalog,
+    QUERY_IR_VERSION_PARTITION_SET_EXACT_PREFIX_V1, QUERY_IR_VERSION_PARTITION_SET_V1,
+    QueryAccessKind, QueryPartitionRouteV1, SymbolicCatalog,
 };
 use riffdb_riffql_syntax::{RIFFQL_LANGUAGE_VERSION_PARTITION_SET_V1, parse_query};
 
 const CONTRACT: &str = r#"
 contract PartitionSetRuns version 1 {
+  enum LifecycleStage { Active, Deleted }
+
   entity Run {
     key (experiment_id: u64, run_id: string<32>)
     field start_time: i64
+    field lifecycle_stage: LifecycleStage
     index by_start (experiment_id, start_time, run_id)
+    index by_lifecycle_start (experiment_id, lifecycle_stage, start_time, run_id)
   }
 
   aggregate Runs {
@@ -20,6 +25,25 @@ contract PartitionSetRuns version 1 {
     partition_by experiment_id
     conflict_key (experiment_id, run_id)
   }
+}
+"#;
+
+const FILTERED_QUERY: &str = r#"
+query SearchRunsByLifecycle(
+    $experiment_ids: Set<Run.experiment_id, 1000>,
+    $lifecycle_stage: Run.lifecycle_stage,
+    $limit: Limit<50> = 50,
+    $after: Cursor?,
+) {
+    many runs from Run
+        where experiment_id in $experiment_ids
+          && lifecycle_stage == $lifecycle_stage
+        order by start_time desc, run_id asc
+        take $limit after $after
+        else IntegrityFailure
+
+    return Found { runs: runs { experiment_id run_id start_time lifecycle_stage } }
+    outcomes Found | IntegrityFailure
 }
 "#;
 
@@ -64,6 +88,54 @@ fn bounded_partition_membership_is_the_one_compiler_sealed_route() {
         }
     );
     assert!(program.explain().lines()[0].contains("within 1000"));
+}
+
+#[test]
+fn partition_set_route_accepts_an_invariant_exact_index_prefix() {
+    let document = parse_query(FILTERED_QUERY).expect("query");
+    let family = compile_operational_query_family(&document, &catalog())
+        .expect("partition-set route plus exact lifecycle prefix compiles");
+    let program = family.select(&[]).expect("only member").program();
+    assert_eq!(
+        program.ir_version(),
+        QUERY_IR_VERSION_PARTITION_SET_EXACT_PREFIX_V1
+    );
+    let QueryAccessKind::PartitionSetIndex {
+        index,
+        fields,
+        order,
+        ..
+    } = program.steps()[0].access()
+    else {
+        panic!("partition-set index")
+    };
+    assert_eq!(index, "by_lifecycle_start");
+    assert_eq!(
+        fields,
+        &["experiment_id", "lifecycle_stage", "start_time", "run_id"]
+    );
+    assert_eq!(
+        order.iter().map(|term| term.field()).collect::<Vec<_>>(),
+        ["start_time", "run_id"]
+    );
+}
+
+#[test]
+fn partition_set_route_accepts_an_invariant_exact_enum_constant() {
+    let source = FILTERED_QUERY
+        .replace("    $lifecycle_stage: Run.lifecycle_stage,\n", "")
+        .replace("$lifecycle_stage", "LifecycleStage.Active");
+    let family =
+        compile_operational_query_family(&parse_query(&source).expect("query"), &catalog())
+            .expect("partition-set route plus exact lifecycle constant compiles");
+    assert_eq!(
+        family
+            .select(&[])
+            .expect("only member")
+            .program()
+            .ir_version(),
+        QUERY_IR_VERSION_PARTITION_SET_EXACT_PREFIX_V1
+    );
 }
 
 #[test]

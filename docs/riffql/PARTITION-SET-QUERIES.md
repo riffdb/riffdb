@@ -34,6 +34,16 @@ count. Values discovered by another binding, an index, a provider, or a
 relationship cannot become routes. Cross-partition joins, writes, aggregates,
 caller-selected plans, and partial per-partition results remain unavailable.
 
+Invariant exact filters may occupy index components between the partition and
+order suffix. For example, MLflow lifecycle filtering uses
+`(experiment_id, lifecycle_stage, start_time, run_id)` with
+`experiment_id in $experiment_ids`, `lifecycle_stage == $lifecycle_stage`, and
+`order by start_time desc, run_id asc`. RiffDB applies lifecycle membership
+inside every partition scan before the global merge. Enum constants such as
+`LifecycleStage.Active` have the same semantics. The filter value is bound into
+the plan or cursor parameter identity; the adapter never fetches and discards
+the opposite lifecycle.
+
 Execution opens one storage read view for the complete operation. Uniform
 index orders use a bounded k-way heap: one initial row is observed from each
 selected partition, then only the winning stream is advanced. Mixed-direction
@@ -60,8 +70,10 @@ whole-operation ceiling, enough to retain the full 65,535-row local scan domain
 through 1,024 declared partitions; larger declared route sets receive a
 proportionally smaller per-partition allowance.
 
-This surface uses RiffQL V13, query IR V16, and query-module V16. Existing
-scalar-route queries and their modules, locks, roles, generated bindings, and
-cursors retain their prior exact bytes. Adopting a bounded partition set
-requires normal query recompilation, module deployment, role binding, and
-binding regeneration; authoritative stored data does not migrate.
+This surface uses RiffQL V13. A route followed directly by its order suffix uses
+query IR/module V16; a route followed by invariant exact index-prefix predicates
+uses additive query IR/module V17. Existing V16 and scalar-route queries and
+their modules, locks, roles, generated bindings, and cursors retain their prior
+exact bytes. Adopting either bounded partition-set shape requires normal query
+recompilation, module deployment, role binding, and binding regeneration;
+authoritative stored data does not migrate.

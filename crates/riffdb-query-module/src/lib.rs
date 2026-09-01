@@ -80,10 +80,10 @@ use riffdb_query_ir::{
     QUERY_IR_VERSION_EXACT_PREDICATE_V1, QUERY_IR_VERSION_EXACT_RESULT_SET_V1,
     QUERY_IR_VERSION_NULLABLE_EXACT_ORDER_V1, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1,
     QUERY_IR_VERSION_OPERATIONAL_V1, QUERY_IR_VERSION_ORDER_FAMILY_V1,
-    QUERY_IR_VERSION_PARTITION_SET_V1, QUERY_IR_VERSION_PROJECTED_VECTOR_V1,
-    QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_TOKENIZED_TEXT_V1, QUERY_IR_VERSION_V1,
-    QueryAccessProgramV1, QuerySourceMap, SecretOutputRequirement, SourceSymbolKind,
-    SymbolicCatalog,
+    QUERY_IR_VERSION_PARTITION_SET_EXACT_PREFIX_V1, QUERY_IR_VERSION_PARTITION_SET_V1,
+    QUERY_IR_VERSION_PROJECTED_VECTOR_V1, QUERY_IR_VERSION_SECRET_OUTPUT_V1,
+    QUERY_IR_VERSION_TOKENIZED_TEXT_V1, QUERY_IR_VERSION_V1, QueryAccessProgramV1, QuerySourceMap,
+    SecretOutputRequirement, SourceSymbolKind, SymbolicCatalog,
 };
 use riffdb_riffql_syntax::{
     Document, MAX_IDENTIFIER_BYTES, MAX_SOURCE_BYTES, ParseDiagnostics, RIFFQL_LANGUAGE_VERSION,
@@ -141,6 +141,8 @@ pub const QUERY_MODULE_FORMAT_VERSION_BOUNDED_RESULT_PIPELINE_V1: u32 = 14;
 pub const QUERY_MODULE_FORMAT_VERSION_ORDER_FAMILY_V1: u32 = 15;
 /// Additive module codec for explicitly bounded finite partition-set routes.
 pub const QUERY_MODULE_FORMAT_VERSION_PARTITION_SET_V1: u32 = 16;
+/// Additive module codec for partition-set routes with invariant exact index prefixes.
+pub const QUERY_MODULE_FORMAT_VERSION_PARTITION_SET_EXACT_PREFIX_V1: u32 = 17;
 /// Maximum queries retained in one immutable module.
 pub const MAX_MODULE_QUERIES: usize = 4_096;
 /// Maximum canonical bytes for one immutable module.
@@ -945,6 +947,11 @@ impl QueryModule {
     #[must_use]
     pub fn format_version(&self) -> u32 {
         if self.queries.iter().any(|query| {
+            query.plan().representative_program().ir_version()
+                == QUERY_IR_VERSION_PARTITION_SET_EXACT_PREFIX_V1
+        }) {
+            QUERY_MODULE_FORMAT_VERSION_PARTITION_SET_EXACT_PREFIX_V1
+        } else if self.queries.iter().any(|query| {
             query
                 .plan()
                 .representative_program()
@@ -1589,7 +1596,13 @@ fn encode_module(
             .surface()
             .has_bounded_set()
     });
-    let format_version = if partition_set {
+    let partition_set_exact_prefix = queries.iter().any(|query| {
+        query.plan().representative_program().ir_version()
+            == QUERY_IR_VERSION_PARTITION_SET_EXACT_PREFIX_V1
+    });
+    let format_version = if partition_set_exact_prefix {
+        QUERY_MODULE_FORMAT_VERSION_PARTITION_SET_EXACT_PREFIX_V1
+    } else if partition_set {
         QUERY_MODULE_FORMAT_VERSION_PARTITION_SET_V1
     } else if order_family {
         QUERY_MODULE_FORMAT_VERSION_ORDER_FAMILY_V1
@@ -1661,7 +1674,9 @@ fn encode_module(
         .to_be_bytes(),
     );
     output.extend_from_slice(
-        &if partition_set {
+        &if partition_set_exact_prefix {
+            QUERY_IR_VERSION_PARTITION_SET_EXACT_PREFIX_V1
+        } else if partition_set {
             QUERY_IR_VERSION_PARTITION_SET_V1
         } else if order_family {
             QUERY_IR_VERSION_ORDER_FAMILY_V1
@@ -1778,6 +1793,7 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
             | QUERY_MODULE_FORMAT_VERSION_BOUNDED_RESULT_PIPELINE_V1
             | QUERY_MODULE_FORMAT_VERSION_ORDER_FAMILY_V1
             | QUERY_MODULE_FORMAT_VERSION_PARTITION_SET_V1
+            | QUERY_MODULE_FORMAT_VERSION_PARTITION_SET_EXACT_PREFIX_V1
     ) {
         return Err(QueryModuleError::new(
             QueryModuleErrorKind::UnsupportedVersion,
@@ -1863,6 +1879,10 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
             language_version == RIFFQL_LANGUAGE_VERSION_PARTITION_SET_V1
                 && ir_version == QUERY_IR_VERSION_PARTITION_SET_V1
         }
+        QUERY_MODULE_FORMAT_VERSION_PARTITION_SET_EXACT_PREFIX_V1 => {
+            language_version == RIFFQL_LANGUAGE_VERSION_PARTITION_SET_V1
+                && ir_version == QUERY_IR_VERSION_PARTITION_SET_EXACT_PREFIX_V1
+        }
         _ => false,
     };
     if !versions_match {
@@ -1887,11 +1907,13 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
                     | QUERY_MODULE_FORMAT_VERSION_BOUNDED_RESULT_PIPELINE_V1
                     | QUERY_MODULE_FORMAT_VERSION_ORDER_FAMILY_V1
                     | QUERY_MODULE_FORMAT_VERSION_PARTITION_SET_V1
+                    | QUERY_MODULE_FORMAT_VERSION_PARTITION_SET_EXACT_PREFIX_V1
             ) {
                 if matches!(
                     format_version,
                     QUERY_MODULE_FORMAT_VERSION_ORDER_FAMILY_V1
                         | QUERY_MODULE_FORMAT_VERSION_PARTITION_SET_V1
+                        | QUERY_MODULE_FORMAT_VERSION_PARTITION_SET_EXACT_PREFIX_V1
                 ) {
                     7
                 } else {
@@ -1925,7 +1947,8 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
                 | QUERY_MODULE_FORMAT_VERSION_TOKENIZED_TEXT_V1 => 10,
                 QUERY_MODULE_FORMAT_VERSION_BOUNDED_RESULT_PIPELINE_V1
                 | QUERY_MODULE_FORMAT_VERSION_ORDER_FAMILY_V1
-                | QUERY_MODULE_FORMAT_VERSION_PARTITION_SET_V1 => 12,
+                | QUERY_MODULE_FORMAT_VERSION_PARTITION_SET_V1
+                | QUERY_MODULE_FORMAT_VERSION_PARTITION_SET_EXACT_PREFIX_V1 => 12,
                 QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1 => 10,
                 QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1 => 9,
                 _ => 7,
