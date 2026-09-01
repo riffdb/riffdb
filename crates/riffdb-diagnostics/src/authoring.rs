@@ -968,7 +968,7 @@ fn query_plan_class(
         // The author already declared a bound; it is too large. Telling them to
         // "add a bound" sends them looking for something that is already there.
         Code::CostCeilingExceeded => (AuthoringCause::LimitExceeded, AuthoringFix::ReduceInput),
-        Code::ExactTextProvider => (
+        Code::ExactTextProvider | Code::CandidateInvalid | Code::LongPatternInvalid => (
             AuthoringCause::InvalidSyntax,
             AuthoringFix::UseLanguageReference,
         ),

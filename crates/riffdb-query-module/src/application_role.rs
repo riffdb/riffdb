@@ -27,6 +27,7 @@ const ROLE_FORMAT_VERSION_V2: u32 = 2;
 const ROLE_FORMAT_VERSION_V3: u32 = 3;
 const ROLE_FORMAT_VERSION_V4: u32 = 4;
 const ROLE_FORMAT_VERSION_V5: u32 = 5;
+const ROLE_FORMAT_VERSION_V6: u32 = 6;
 const MAX_ROLE_BYTES: usize = 1024 * 1024;
 
 /// Symbolic operation kind exposed by a compiled application role.
@@ -563,6 +564,7 @@ fn compile_application_role_inner(
     let mut secret_fields_by_entity = BTreeMap::<_, BTreeSet<_>>::new();
     let mut secret_output_atoms = BTreeSet::new();
     let mut vector_inspection_atoms = BTreeMap::new();
+    let mut candidate_authority = false;
     let mut maximum_rows = 1_u64;
     let mut operations = Vec::with_capacity(role.queries().len() + role.commands().len());
 
@@ -575,10 +577,19 @@ fn compile_application_role_inner(
             .ok_or_else(|| ApplicationRoleError::new(ApplicationRoleErrorKind::UnknownOperation))?;
         let operation_name = QueryOperationName::new(query_name.clone())
             .map_err(|_| ApplicationRoleError::new(ApplicationRoleErrorKind::RequirementLimit))?;
+        let query_has_candidates = !query
+            .plan()
+            .representative_program()
+            .surface()
+            .candidates()
+            .is_empty();
+        candidate_authority |= query_has_candidates;
         let mut requires_row_policy = false;
-        maximum_rows = maximum_rows.max(minimum_scan_budget_for_cost(
-            query.plan().authorization_cost(),
-        ));
+        maximum_rows = maximum_rows.max(if query_has_candidates {
+            minimum_scan_budget_for_candidate_program(query.plan().representative_program())
+        } else {
+            minimum_scan_budget_for_cost(query.plan().authorization_cost())
+        });
         for access in query.plan().authorization() {
             let entity = contract
                 .schema()
@@ -908,7 +919,7 @@ fn compile_application_role_inner(
     let maximum_rows = u16::try_from(maximum_rows)
         .ok()
         .and_then(NonZeroU16::new)
-        .filter(|value| value.get() <= 500)
+        .filter(|value| u64::from(value.get()) <= riffdb_types::MAX_APPLICATION_QUERY_SCANNED_ROWS)
         .ok_or_else(|| ApplicationRoleError::new(ApplicationRoleErrorKind::RequirementLimit))?;
     let base_grant = CapabilityGrantV1::new(
         tenant_scope.clone(),
@@ -943,6 +954,7 @@ fn compile_application_role_inner(
         &principal_fact_schemas,
         &secret_outputs,
         &vector_inspections,
+        candidate_authority,
         &base_grant,
     )?;
     let identity = hash_application_role(&canonical);
@@ -1025,6 +1037,22 @@ fn minimum_scan_budget_for_cost(cost: riffdb_types::QueryCostVectorV1) -> u64 {
     .max()
     .unwrap_or(1)
     .max(1)
+}
+
+/// Candidate plans deliberately charge aggregate work in the sealed cost
+/// vector while the capability grant remains a per-access admission ceiling.
+/// Summing complete candidate sources here would make two independently valid
+/// 65,535-row accesses impossible to authorize with the public `u16` grant.
+fn minimum_scan_budget_for_candidate_program(
+    program: &riffdb_query_ir::QueryAccessProgramV1,
+) -> u64 {
+    program
+        .steps()
+        .iter()
+        .map(riffdb_query_ir::QueryAccessStep::maximum_rows)
+        .max()
+        .unwrap_or(1)
+        .max(1)
 }
 
 type SelectedPolicyMap<'a> = BTreeMap<riffdb_types::EntityTypeId, &'a RowPolicyPlanV1>;
@@ -1394,12 +1422,15 @@ fn encode_role(
     principal_fact_schemas: &[ApplicationRoleFactSchema],
     secret_outputs: &[ApplicationRoleSecretOutput],
     vector_inspections: &[ApplicationRoleVectorInspection],
+    candidate_authority: bool,
     grant: &CapabilityGrantV1,
 ) -> Result<Vec<u8>, ApplicationRoleError> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(ROLE_MAGIC);
     bytes.extend_from_slice(
-        &(if !vector_inspections.is_empty() {
+        &(if candidate_authority {
+            ROLE_FORMAT_VERSION_V6
+        } else if !vector_inspections.is_empty() {
             ROLE_FORMAT_VERSION_V5
         } else if !secret_outputs.is_empty() {
             ROLE_FORMAT_VERSION_V4

@@ -1,9 +1,10 @@
 use std::fmt::Write;
 
 use crate::{
-    AggregateFunction, BinaryOperator, Cardinality, Direction, Document, Expression,
-    FieldSelection, Literal, NullPlacement, Path, ProjectedFreshness, Selection,
-    TokenizedMatchKind, TokenizedRanking, TypeReference, UnaryOperator,
+    AggregateFunction, BinaryOperator, CandidateSetExpression, CandidateSource, Cardinality,
+    Direction, Document, Expression, FieldSelection, Literal, NullPlacement, Path,
+    ProjectedFreshness, Selection, TokenizedMatchKind, TokenizedRanking, TypeReference,
+    UnaryOperator,
 };
 
 /// Emits the canonical, idempotent RiffQL source spelling for the document version.
@@ -56,6 +57,49 @@ pub fn format_query(document: &Document) -> String {
                     .expect("String writes cannot fail");
             }
         }
+    }
+    for candidate in &document.body.candidates {
+        writeln!(
+            output,
+            "    candidates {}: {}",
+            candidate.name.value.as_str(),
+            format_path(&candidate.root_key.value)
+        )
+        .expect("String writes cannot fail");
+        output.push_str("        from ");
+        match &candidate.expression {
+            CandidateSetExpression::Single(source) => {
+                format_candidate_source(&mut output, source, 0);
+                output.push('\n');
+            }
+            CandidateSetExpression::Intersection(sources) => {
+                format_candidate_sources(&mut output, "intersect", sources);
+            }
+            CandidateSetExpression::Union(sources) => {
+                format_candidate_sources(&mut output, "union", sources);
+            }
+            CandidateSetExpression::Difference { positive, negative } => {
+                output.push_str("difference {\n            ");
+                format_candidate_source(&mut output, positive, 12);
+                output.push_str(";\n");
+                for (index, source) in negative.iter().enumerate() {
+                    output.push_str("            ");
+                    format_candidate_source(&mut output, source, 12);
+                    if index + 1 != negative.len() {
+                        output.push(',');
+                    }
+                    output.push('\n');
+                }
+                output.push_str("        }\n");
+            }
+        }
+        writeln!(output, "        within {}", candidate.within).expect("String writes cannot fail");
+        writeln!(
+            output,
+            "        else {}\n",
+            candidate.refusal_outcome.value.as_str()
+        )
+        .expect("String writes cannot fail");
     }
     for binding in &document.body.bindings {
         let cardinality = match binding.cardinality.value {
@@ -213,6 +257,31 @@ pub fn format_query(document: &Document) -> String {
     }
     output.push_str("}\n");
     output
+}
+
+fn format_candidate_sources(output: &mut String, operator: &str, sources: &[CandidateSource]) {
+    writeln!(output, "{operator} {{").expect("String writes cannot fail");
+    for (index, source) in sources.iter().enumerate() {
+        output.push_str("            ");
+        format_candidate_source(output, source, 12);
+        if index + 1 != sources.len() {
+            output.push(',');
+        }
+        output.push('\n');
+    }
+    output.push_str("        }\n");
+}
+
+fn format_candidate_source(output: &mut String, source: &CandidateSource, indent: usize) {
+    write!(
+        output,
+        "{} using {}\n{}where {}",
+        format_path(&source.projected_key.value),
+        source.access.value.as_str(),
+        " ".repeat(indent + 4),
+        format_expression(&source.predicate.value, 0)
+    )
+    .expect("String writes cannot fail");
 }
 
 fn format_selection(output: &mut String, selection: &Selection, indentation: usize) {

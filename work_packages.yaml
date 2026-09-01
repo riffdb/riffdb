@@ -2887,6 +2887,27 @@ work_packages:
       root binding may consume it, and every source/operator/bound is compiler-owned.
     scale: At most eight sources and 65,535 distinct keys execute inside independent source, set,
       byte, probe, hydration, policy, and total-work ceilings with typed refusal.
+  closure:
+    status: complete
+    completed_at: "2026-08-31"
+    requirements_satisfied: [OQ-084, OQ-085, OQ-086, OQ-087, OQ-088, OQ-090,
+      OQ-098]
+    evidence: RiffQL V11, checked query IR/plan/module V14, and compiled-role V6 now seal one
+      non-output candidate binding with at most eight ordinary same-partition declared-index
+      sources, exact relationship/root-key proof, single/intersection/union/authorized-difference
+      algebra, independent all-or-refusal ceilings, and exactly one root consumer. The executor
+      completes and deduplicates every source before set evaluation, root hydration, policy,
+      mixed total ordering, page, and cursor selection; a source continuation or bound failure
+      releases no root read, partial row, count, or cursor. Memory and redb use the shared exact
+      scan and candidate-root batch contracts. Canonical round-trip, generated-surface,
+      role-authority, source-span, reference-algebra, cursor, storage, topology, generated,
+      handbook, downstream-adapter, formatting, and strict workspace Clippy gates pass.
+    known_limitations: WP-734 activates ordinary exact-index candidate sources only. Provider
+      participant admission and finite multi-order public selection close in WP-735, and
+      long_pattern_v1 sources close in WP-737. Candidate V1 intentionally remains one binding,
+      eight sources, one type-exact single-field root key, same partition, and closed set algebra;
+      it is not a general join or recursive query surface.
+    follow_ups: [WP-735, WP-737, WP-738]
   human_review_triggers: *id0174
 
 - id: WP-735

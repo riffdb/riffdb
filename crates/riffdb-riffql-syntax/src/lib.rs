@@ -12,10 +12,11 @@ pub use diagnostic::{DiagnosticCode, ParseDiagnostic, ParseDiagnostics};
 pub use formatter::format_query;
 pub use parser::{document_query_shape_language_version, parse_query, parse_query_bytes};
 pub use syntax::{
-    AggregateBinding, AggregateFunction, AggregateMeasure, BinaryOperator, Binding, Cardinality,
-    Direction, Document, Expression, FieldSelection, Identifier, Literal,
-    MAX_PROJECTED_CAUSAL_WAIT_MS, MAX_PROJECTED_LAG_MS, NearestClause, NullPlacement, OrderTerm,
-    Parameter, Path, ProjectedFreshness, ProjectedSource, QueryBody, RIFFQL_LANGUAGE_VERSION,
+    AggregateBinding, AggregateFunction, AggregateMeasure, BinaryOperator, Binding,
+    CandidateBinding, CandidateSetExpression, CandidateSource, Cardinality, Direction, Document,
+    Expression, FieldSelection, Identifier, Literal, MAX_PROJECTED_CAUSAL_WAIT_MS,
+    MAX_PROJECTED_LAG_MS, NearestClause, NullPlacement, OrderTerm, Parameter, Path,
+    ProjectedFreshness, ProjectedSource, QueryBody, RIFFQL_LANGUAGE_VERSION,
     RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1, RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1,
     RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1, RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1,
     RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1, RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1,
@@ -35,6 +36,8 @@ pub const MAX_SYNTAX_ITEMS: usize = 131_072;
 pub const MAX_NESTING: usize = 32;
 /// Maximum bindings in one query.
 pub const MAX_BINDINGS: usize = 4_096;
+/// Maximum compiler-owned candidate sources in one binding.
+pub const MAX_CANDIDATE_SOURCES: usize = 8;
 /// Maximum aggregate declarations in one query.
 pub const MAX_AGGREGATE_BINDINGS: usize = 16;
 /// Maximum measures in one aggregate declaration.

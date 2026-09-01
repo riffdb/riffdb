@@ -14,6 +14,7 @@ pub(crate) enum TokenKind {
     RightParen,
     Colon,
     Comma,
+    Semicolon,
     Dot,
     Question,
     Equal,
@@ -111,6 +112,7 @@ pub(crate) fn lex(source: &str) -> Result<Vec<Token>, ParseDiagnostics> {
                     b')' => TokenKind::RightParen,
                     b':' => TokenKind::Colon,
                     b',' => TokenKind::Comma,
+                    b';' => TokenKind::Semicolon,
                     b'.' => TokenKind::Dot,
                     b'?' => TokenKind::Question,
                     b'=' if bytes.get(offset) == Some(&b'=') => {

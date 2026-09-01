@@ -2,9 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use riffdb_contract_ir::{ValueType, ValueTypeTag};
 use riffdb_riffql_syntax::{
-    Cardinality, Document, Expression, FieldSelection, Literal, Path,
-    RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1, RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1,
-    RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1, Selection, Span, TypeReference, format_query,
+    BinaryOperator, CandidateSetExpression, CandidateSource, Cardinality, Document, Expression,
+    FieldSelection, Literal, Path, RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1,
+    RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1, RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1,
+    Selection, Span, TypeReference, format_query,
 };
 use riffdb_types::{
     AggregateSemanticIdentityV1, ContractBundleHash, ContractLineage, ContractVersion,
@@ -12,12 +13,13 @@ use riffdb_types::{
 };
 
 use crate::{
-    AggregateExecutionBudgetV1, EntitySymbol, MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1,
-    MAX_AGGREGATE_DISTINCT_VALUES_V1, MAX_AGGREGATE_STATE_BYTES_V1, MAX_QUERY_ARTIFACT_BYTES,
-    MAX_SOURCE_MAP_ENTRIES, NamedFieldSchema, NamedParameterSchema, NamedQuerySchemas,
-    NamedResultBranchSchema, NamedTypeSchema, OperationalAggregateFunctionV1,
-    OperationalAggregateGroupKeyV1, OperationalAggregateMeasureV1, OperationalAggregateV1,
-    PageBound, QUERY_IR_VERSION_BOUNDED_LIMIT_V1, QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1,
+    AggregateExecutionBudgetV1, CandidateBindingV1, CandidateSetOperatorV1, CandidateSourceV1,
+    EntitySymbol, MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1, MAX_AGGREGATE_DISTINCT_VALUES_V1,
+    MAX_AGGREGATE_STATE_BYTES_V1, MAX_QUERY_ARTIFACT_BYTES, MAX_SOURCE_MAP_ENTRIES,
+    NamedFieldSchema, NamedParameterSchema, NamedQuerySchemas, NamedResultBranchSchema,
+    NamedTypeSchema, OperationalAggregateFunctionV1, OperationalAggregateGroupKeyV1,
+    OperationalAggregateMeasureV1, OperationalAggregateV1, PageBound,
+    QUERY_IR_VERSION_BOUNDED_LIMIT_V1, QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1,
     QUERY_IR_VERSION_EXACT_AGGREGATE_V1, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1,
     QUERY_IR_VERSION_PROJECTED_VECTOR_V1, QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_V1,
     QueryDiagnostic, QueryDiagnosticCode, QueryDiagnosticStage, QueryDiagnostics, SymbolicCatalog,
@@ -26,6 +28,7 @@ use crate::{
 
 const IR_MAGIC: &[u8] = b"RIFFDB-QUERY-SURFACE\0";
 const OPERATIONAL_AGGREGATES_MAGIC: &[u8] = b"OPERATIONAL-AGGREGATES\0";
+const CANDIDATE_BINDINGS_MAGIC: &[u8] = b"CANDIDATE-BINDINGS\0";
 
 /// Exact contract identity repeated by resolved query artifacts.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -135,6 +138,10 @@ pub enum SourceSymbolKind {
     Aggregate,
     /// Aggregate measure alias.
     AggregateMeasure,
+    /// Query-local non-output candidate binding.
+    Candidate,
+    /// Declared ordinary/provider candidate access.
+    CandidateAccess,
     /// Returned field alias.
     ResultField,
     /// Exact stored secret field intentionally returned by one result slot.
@@ -245,6 +252,7 @@ pub struct ResolvedQueryV1 {
     identity: ExactContractIdentity,
     name: Option<String>,
     bindings: Vec<BindingSymbol>,
+    candidates: Vec<CandidateBindingV1>,
     aggregates: Vec<OperationalAggregateV1>,
     secret_outputs: Vec<SecretOutputRequirement>,
     projected: bool,
@@ -261,6 +269,7 @@ impl std::fmt::Debug for ResolvedQueryV1 {
             .field("contract_version", &self.identity.version())
             .field("name", &self.name)
             .field("bindings", &self.bindings)
+            .field("candidates", &self.candidates)
             .field("aggregates", &self.aggregates)
             .field("secret_outputs", &self.secret_outputs)
             .field("projected", &self.projected)
@@ -275,7 +284,7 @@ impl ResolvedQueryV1 {
     /// Query IR version.
     #[must_use]
     pub fn ir_version(&self) -> u32 {
-        if self.has_extended_bounded_limit() {
+        if !self.candidates.is_empty() || self.has_extended_bounded_limit() {
             QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1
         } else if self.has_bounded_limit() {
             QUERY_IR_VERSION_BOUNDED_LIMIT_V1
@@ -314,6 +323,12 @@ impl ResolvedQueryV1 {
         })
     }
 
+    /// Whether this surface requires ADR-0174's V11/V14 bounded-result family.
+    #[must_use]
+    pub fn has_bounded_result_pipeline(&self) -> bool {
+        !self.candidates.is_empty() || self.has_extended_bounded_limit()
+    }
+
     /// Whether the surface contains an ADR-0152 additive aggregate semantic.
     #[must_use]
     pub fn has_exact_aggregate_core(&self) -> bool {
@@ -348,6 +363,12 @@ impl ResolvedQueryV1 {
     #[must_use]
     pub fn bindings(&self) -> &[BindingSymbol] {
         &self.bindings
+    }
+
+    /// Compiler-checked non-output candidate bindings in source order.
+    #[must_use]
+    pub fn candidates(&self) -> &[CandidateBindingV1] {
+        &self.candidates
     }
 
     /// Compiler-resolved bounded aggregate declarations.
@@ -415,6 +436,8 @@ struct Resolver<'a> {
     catalog: &'a SymbolicCatalog,
     parameters: BTreeMap<String, NamedTypeSchema>,
     bindings: BTreeMap<String, ResolvedBinding<'a>>,
+    candidates: BTreeMap<String, CandidateBindingV1>,
+    candidate_consumers: BTreeMap<String, usize>,
     aggregates: BTreeMap<String, ResolvedAggregateSelection>,
     source_map: Vec<SourceMapEntry>,
     secret_outputs: Vec<SecretOutputRequirement>,
@@ -426,6 +449,8 @@ impl<'a> Resolver<'a> {
             catalog,
             parameters: BTreeMap::new(),
             bindings: BTreeMap::new(),
+            candidates: BTreeMap::new(),
+            candidate_consumers: BTreeMap::new(),
             aggregates: BTreeMap::new(),
             source_map: Vec::new(),
             secret_outputs: Vec::new(),
@@ -519,10 +544,120 @@ impl<'a> Resolver<'a> {
             ));
         }
 
+        let mut candidate_symbols = Vec::with_capacity(document.body.candidates.len());
+        for candidate in &document.body.candidates {
+            let name = candidate.name.value.as_str();
+            if self.parameters.contains_key(name) || self.candidates.contains_key(name) {
+                return Err(self.diagnostic(
+                    QueryDiagnosticCode::DuplicateName,
+                    candidate.name.span,
+                    vec![name.to_owned()],
+                    "duplicate query-local candidate name",
+                ));
+            }
+            let root = names(&candidate.root_key.value);
+            let [root_entity_name, root_key_name] = root.as_slice() else {
+                return Err(self.diagnostic(
+                    QueryDiagnosticCode::InvalidPath,
+                    candidate.root_key.span,
+                    root,
+                    "candidate root key must be Entity.primary_key_field",
+                ));
+            };
+            let root_entity = self.catalog.entity(root_entity_name).ok_or_else(|| {
+                self.diagnostic(
+                    QueryDiagnosticCode::UnknownSymbol,
+                    candidate.root_key.span,
+                    vec![root_entity_name.clone()],
+                    "unknown candidate root entity",
+                )
+            })?;
+            let root_field = root_entity.field(root_key_name).ok_or_else(|| {
+                self.diagnostic(
+                    QueryDiagnosticCode::UnknownSymbol,
+                    candidate.root_key.span,
+                    root.clone(),
+                    "unknown candidate root-key field",
+                )
+            })?;
+            let partition_local_key = root_entity
+                .primary_key()
+                .iter()
+                .filter(|field| field.as_str() != root_entity.partition_field())
+                .collect::<Vec<_>>();
+            if partition_local_key.as_slice() != [root_key_name] {
+                return Err(self.diagnostic(
+                    QueryDiagnosticCode::InvalidPath,
+                    candidate.root_key.span,
+                    root,
+                    "candidate V1 requires one complete scalar root key",
+                ));
+            }
+            let (operator, source_nodes, positive_source_count) = match &candidate.expression {
+                CandidateSetExpression::Single(source) => {
+                    (CandidateSetOperatorV1::Single, vec![source], 1)
+                }
+                CandidateSetExpression::Intersection(sources) => (
+                    CandidateSetOperatorV1::Intersection,
+                    sources.iter().collect(),
+                    sources.len() as u8,
+                ),
+                CandidateSetExpression::Union(sources) => (
+                    CandidateSetOperatorV1::Union,
+                    sources.iter().collect(),
+                    sources.len() as u8,
+                ),
+                CandidateSetExpression::Difference { positive, negative } => {
+                    let mut sources = Vec::with_capacity(negative.len() + 1);
+                    sources.push(positive);
+                    sources.extend(negative);
+                    (CandidateSetOperatorV1::Difference, sources, 1)
+                }
+            };
+            let mut sources = Vec::with_capacity(source_nodes.len());
+            for source in source_nodes {
+                sources.push(self.resolve_candidate_source(
+                    source,
+                    root_entity,
+                    root_key_name,
+                    root_field.value_type(),
+                )?);
+            }
+            let symbol = CandidateBindingV1::checked(
+                name.to_owned(),
+                root_entity_name.clone(),
+                root_key_name.clone(),
+                operator,
+                sources,
+                positive_source_count,
+                candidate.within,
+                candidate.refusal_outcome.value.as_str().to_owned(),
+            )
+            .ok_or_else(|| {
+                self.diagnostic(
+                    QueryDiagnosticCode::ArtifactLimit,
+                    candidate.span,
+                    vec![name.to_owned()],
+                    "candidate binding exceeds its closed V1 shape",
+                )
+            })?;
+            self.push_map(
+                candidate.name.span,
+                SourceSymbolKind::Candidate,
+                vec![name.to_owned()],
+            )?;
+            self.candidate_consumers.insert(name.to_owned(), 0);
+            self.candidates.insert(name.to_owned(), symbol.clone());
+            candidate_symbols.push(symbol);
+        }
+
         let mut binding_symbols = Vec::with_capacity(document.body.bindings.len());
         for binding in &document.body.bindings {
             let name = binding.name.value.as_str();
-            if self.bindings.contains_key(name) || self.parameters.contains_key(name) {
+            if self.bindings.contains_key(name)
+                || self.parameters.contains_key(name)
+                || self.candidates.contains_key(name)
+            {
                 return Err(self.diagnostic(
                     QueryDiagnosticCode::DuplicateName,
                     binding.name.span,
@@ -584,6 +719,22 @@ impl<'a> Resolver<'a> {
             );
             binding_symbols.push(symbol);
             self.resolve_expression(&binding.predicate.value, binding.predicate.span, entity)?;
+        }
+
+        for candidate in &candidate_symbols {
+            if self.candidate_consumers.get(candidate.name()) != Some(&1) {
+                return Err(self.diagnostic(
+                    QueryDiagnosticCode::InvalidPath,
+                    document
+                        .body
+                        .candidates
+                        .iter()
+                        .find(|source| source.name.value.as_str() == candidate.name())
+                        .map_or(Span { start: 0, end: 0 }, |source| source.name.span),
+                    vec![candidate.name().to_owned()],
+                    "candidate binding must have exactly one root consumer",
+                ));
+            }
         }
 
         let mut aggregate_symbols = Vec::with_capacity(document.body.aggregates.len());
@@ -931,6 +1082,7 @@ impl<'a> Resolver<'a> {
             document,
             self.catalog.identity(),
             &binding_symbols,
+            &candidate_symbols,
             &aggregate_symbols,
             &schemas,
             &self.secret_outputs,
@@ -944,6 +1096,7 @@ impl<'a> Resolver<'a> {
                 .as_ref()
                 .map(|name| name.value.as_str().to_owned()),
             bindings: binding_symbols,
+            candidates: candidate_symbols,
             aggregates: aggregate_symbols,
             secret_outputs: self.secret_outputs,
             projected: document.projected_source.is_some(),
@@ -1175,6 +1328,119 @@ impl<'a> Resolver<'a> {
         Ok(NamedTypeSchema::Scalar(scalar))
     }
 
+    fn resolve_candidate_source(
+        &mut self,
+        source: &CandidateSource,
+        root_entity: &EntitySymbol,
+        root_key_name: &str,
+        root_key_type: &ValueType,
+    ) -> Result<CandidateSourceV1, QueryDiagnostics> {
+        let projected = names(&source.projected_key.value);
+        let [entity_name, field_name] = projected.as_slice() else {
+            return Err(self.diagnostic(
+                QueryDiagnosticCode::InvalidPath,
+                source.projected_key.span,
+                projected,
+                "candidate source projection must be Entity.field",
+            ));
+        };
+        let entity = self.catalog.entity(entity_name).ok_or_else(|| {
+            self.diagnostic(
+                QueryDiagnosticCode::UnknownSymbol,
+                source.projected_key.span,
+                vec![entity_name.clone()],
+                "unknown candidate source entity",
+            )
+        })?;
+        let field = entity.field(field_name).ok_or_else(|| {
+            self.diagnostic(
+                QueryDiagnosticCode::UnknownSymbol,
+                source.projected_key.span,
+                projected.clone(),
+                "unknown candidate projected-key field",
+            )
+        })?;
+        if field.value_type() != root_key_type {
+            return Err(self.diagnostic(
+                QueryDiagnosticCode::InvalidType,
+                source.projected_key.span,
+                projected,
+                "candidate source and root key types differ",
+            ));
+        }
+        let declared_mapping = entity.name() == root_entity.name()
+            || entity.relationships().any(|relationship| {
+                relationship.target_entity() == root_entity.name()
+                    && relationship
+                        .source_fields()
+                        .iter()
+                        .zip(relationship.target_fields())
+                        .any(|(source, target)| source == field_name && target == root_key_name)
+                    && relationship
+                        .source_fields()
+                        .iter()
+                        .zip(relationship.target_fields())
+                        .any(|(source, target)| {
+                            source == entity.partition_field()
+                                && target == root_entity.partition_field()
+                        })
+            });
+        if !declared_mapping {
+            return Err(self.diagnostic(
+                QueryDiagnosticCode::InvalidPath,
+                source.projected_key.span,
+                vec![entity_name.clone(), field_name.clone()],
+                "candidate source lacks a declared same-partition relationship to its root",
+            ));
+        }
+        let access_name = source.access.value.as_str();
+        let access = entity.index(access_name).ok_or_else(|| {
+            self.diagnostic(
+                QueryDiagnosticCode::UnknownSymbol,
+                source.access.span,
+                vec![entity_name.clone(), access_name.to_owned()],
+                "candidate source must name one declared ordinary index",
+            )
+        })?;
+        if !access
+            .fields()
+            .iter()
+            .chain(access.cover_fields())
+            .any(|name| name == field_name)
+        {
+            return Err(self.diagnostic(
+                QueryDiagnosticCode::InvalidPath,
+                source.projected_key.span,
+                vec![entity_name.clone(), field_name.clone()],
+                "candidate index does not carry the complete projected root key",
+            ));
+        }
+        self.push_map(
+            source.projected_key.span,
+            SourceSymbolKind::Field,
+            vec![entity_name.clone(), field_name.clone()],
+        )?;
+        self.push_map(
+            source.access.span,
+            SourceSymbolKind::CandidateAccess,
+            vec![entity_name.clone(), access_name.to_owned()],
+        )?;
+        self.resolve_expression(&source.predicate.value, source.predicate.span, entity)?;
+        CandidateSourceV1::checked(
+            entity_name.clone(),
+            field_name.clone(),
+            access_name.to_owned(),
+        )
+        .ok_or_else(|| {
+            self.diagnostic(
+                QueryDiagnosticCode::ArtifactLimit,
+                source.span,
+                vec![entity_name.clone(), access_name.to_owned()],
+                "candidate source exceeds its closed V1 shape",
+            )
+        })
+    }
+
     fn resolve_expression(
         &mut self,
         expression: &Expression,
@@ -1224,6 +1490,61 @@ impl<'a> Resolver<'a> {
             }
             Expression::Unary { operand, .. } => {
                 self.resolve_expression(&operand.value, operand.span, current_entity)
+            }
+            Expression::Binary {
+                operator,
+                left,
+                right,
+            } if matches!(operator.value, BinaryOperator::In | BinaryOperator::NotIn)
+                && matches!(&right.value, Expression::Path(path) if path.0.len() == 1) =>
+            {
+                let Expression::Path(path) = &right.value else {
+                    unreachable!("guarded candidate path")
+                };
+                let candidate_name = path.0[0].value.as_str();
+                let Some(candidate) = self.candidates.get(candidate_name).cloned() else {
+                    self.resolve_expression(&left.value, left.span, current_entity)?;
+                    return self.resolve_expression(&right.value, right.span, current_entity);
+                };
+                if operator.value != BinaryOperator::In {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::InvalidPath,
+                        operator.span,
+                        vec![candidate_name.to_owned()],
+                        "candidate bindings are consumed only by positive root-key membership",
+                    ));
+                }
+                let Expression::Path(left_path) = &left.value else {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::InvalidPath,
+                        left.span,
+                        vec![candidate_name.to_owned()],
+                        "candidate consumer must be the complete root-key field",
+                    ));
+                };
+                let left_names = names(left_path);
+                if current_entity.name() != candidate.root_entity()
+                    || left_names.last().map(String::as_str) != Some(candidate.root_key())
+                {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::InvalidPath,
+                        left.span,
+                        vec![candidate_name.to_owned()],
+                        "candidate consumer must be its declared root entity and complete key",
+                    ));
+                }
+                self.resolve_expression(&left.value, left.span, current_entity)?;
+                self.push_map(
+                    right.span,
+                    SourceSymbolKind::Candidate,
+                    vec![candidate_name.to_owned()],
+                )?;
+                let count = self
+                    .candidate_consumers
+                    .get_mut(candidate_name)
+                    .expect("resolved candidate has a consumer counter");
+                *count = count.saturating_add(1);
+                Ok(())
             }
             Expression::Binary { left, right, .. } => {
                 self.resolve_expression(&left.value, left.span, current_entity)?;
@@ -1780,6 +2101,7 @@ fn canonical_surface(
     document: &Document,
     identity: &ExactContractIdentity,
     bindings: &[BindingSymbol],
+    candidates: &[CandidateBindingV1],
     aggregates: &[OperationalAggregateV1],
     schemas: &NamedQuerySchemas,
     secret_outputs: &[SecretOutputRequirement],
@@ -1821,6 +2143,25 @@ fn canonical_surface(
             Cardinality::Maybe => 2,
             Cardinality::Many => 3,
         });
+    }
+    if !candidates.is_empty() {
+        bytes.extend_from_slice(CANDIDATE_BINDINGS_MAGIC);
+        push_count(&mut bytes, candidates.len())?;
+        for candidate in candidates {
+            push_bytes(&mut bytes, candidate.name().as_bytes())?;
+            push_bytes(&mut bytes, candidate.root_entity().as_bytes())?;
+            push_bytes(&mut bytes, candidate.root_key().as_bytes())?;
+            bytes.push(candidate.operator().durable_tag());
+            bytes.push(candidate.positive_source_count());
+            bytes.extend_from_slice(&candidate.maximum_distinct_keys().to_be_bytes());
+            push_bytes(&mut bytes, candidate.refusal_outcome().as_bytes())?;
+            push_count(&mut bytes, candidate.sources().len())?;
+            for source in candidate.sources() {
+                push_bytes(&mut bytes, source.entity().as_bytes())?;
+                push_bytes(&mut bytes, source.projected_key().as_bytes())?;
+                push_bytes(&mut bytes, source.access().as_bytes())?;
+            }
+        }
     }
     if !aggregates.is_empty() {
         bytes.extend_from_slice(OPERATIONAL_AGGREGATES_MAGIC);

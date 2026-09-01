@@ -260,7 +260,11 @@ impl QueryReadView for MemoryQueryView<'_> {
         predicates: &[Vec<BoundPredicate>],
         policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<Vec<Option<QueryRow>>, Self::Error> {
-        if !matches!(step.access(), QueryAccessKind::DependentPointBatch { .. }) {
+        if !matches!(
+            step.access(),
+            QueryAccessKind::DependentPointBatch { .. }
+                | QueryAccessKind::CandidateRootHydration { .. }
+        ) {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         // One plan for the whole batch (not per predicate/row).
@@ -445,7 +449,8 @@ impl MemoryQueryView<'_> {
     ) -> Result<Option<QueryRow>, StorageError> {
         let key_fields = match step.access() {
             QueryAccessKind::Point { key_fields }
-            | QueryAccessKind::DependentPointBatch { key_fields, .. } => key_fields,
+            | QueryAccessKind::DependentPointBatch { key_fields, .. }
+            | QueryAccessKind::CandidateRootHydration { key_fields, .. } => key_fields,
             QueryAccessKind::Index { .. } => {
                 return Err(storage_error(StorageErrorKind::InvariantViolation));
             }

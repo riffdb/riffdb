@@ -1,8 +1,9 @@
 use crate::lexer::{Token, TokenKind, lex};
 use crate::{
-    AggregateBinding, AggregateFunction, AggregateMeasure, BinaryOperator, Binding, Cardinality,
-    DiagnosticCode, Direction, Document, Expression, FieldSelection, Identifier, Literal,
-    MAX_AGGREGATE_BINDINGS, MAX_AGGREGATE_GROUP_KEYS, MAX_AGGREGATE_MEASURES, MAX_BINDINGS,
+    AggregateBinding, AggregateFunction, AggregateMeasure, BinaryOperator, Binding,
+    CandidateBinding, CandidateSetExpression, CandidateSource, Cardinality, DiagnosticCode,
+    Direction, Document, Expression, FieldSelection, Identifier, Literal, MAX_AGGREGATE_BINDINGS,
+    MAX_AGGREGATE_GROUP_KEYS, MAX_AGGREGATE_MEASURES, MAX_BINDINGS, MAX_CANDIDATE_SOURCES,
     MAX_COLLECTION_ITEMS, MAX_NESTING, MAX_PROJECTED_CAUSAL_WAIT_MS, MAX_PROJECTED_LAG_MS,
     MAX_SYNTAX_ITEMS, NullPlacement, OrderTerm, Parameter, ParseDiagnostic, ParseDiagnostics, Path,
     ProjectedFreshness, ProjectedSource, QueryBody, RIFFQL_LANGUAGE_VERSION,
@@ -93,6 +94,10 @@ impl Parser {
         } else {
             None
         };
+        let mut candidates = Vec::new();
+        while self.peek_word("candidates") {
+            candidates.push(self.candidate_binding()?);
+        }
         let mut bindings = Vec::new();
         while self.peek_word("one") || self.peek_word("maybe") || self.peek_word("many") {
             if bindings.len() == MAX_BINDINGS {
@@ -140,6 +145,7 @@ impl Parser {
             ));
         }
         let body = QueryBody {
+            candidates,
             bindings,
             aggregates,
             outcome,
@@ -153,7 +159,7 @@ impl Parser {
                     if maximum > riffdb_types::MAX_APPLICATION_QUERY_PAGE_ROWS_BOUNDED_LIMIT_V1
             )
         });
-        let language_version = if extended_limit {
+        let language_version = if extended_limit || !body.candidates.is_empty() {
             RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1
         } else if body
             .bindings
@@ -175,6 +181,139 @@ impl Parser {
             parameters,
             projected_source,
             body,
+        })
+    }
+
+    fn candidate_binding(&mut self) -> Result<CandidateBinding, ParseDiagnostics> {
+        let start = self.expect_word("candidates")?.start as usize;
+        let name = self.identifier()?;
+        self.expect(TokenKind::Colon)?;
+        let key_start = self.current_start();
+        let root_key = Spanned {
+            value: self.path()?,
+            span: self.span_from(key_start),
+        };
+        self.expect_word("from")?;
+        let expression = if self.take_word("intersect").is_some() {
+            CandidateSetExpression::Intersection(self.candidate_source_list()?)
+        } else if self.take_word("union").is_some() {
+            CandidateSetExpression::Union(self.candidate_source_list()?)
+        } else if self.take_word("difference").is_some() {
+            self.expect(TokenKind::LeftBrace)?;
+            let positive = self.candidate_source()?;
+            self.expect(TokenKind::Semicolon)?;
+            let mut negative = Vec::new();
+            loop {
+                if negative.len() + 1 == MAX_CANDIDATE_SOURCES {
+                    return Err(self.error(
+                        DiagnosticCode::TooManyItems,
+                        "candidate source limit exceeded",
+                        Some("use at most eight candidate sources"),
+                    ));
+                }
+                negative.push(self.candidate_source()?);
+                if self.take(TokenKind::Comma).is_none() {
+                    break;
+                }
+                if self.peek(TokenKind::RightBrace) {
+                    break;
+                }
+            }
+            if negative.is_empty() {
+                return Err(self.error(
+                    DiagnosticCode::UnexpectedToken,
+                    "candidate difference requires a negative source",
+                    None,
+                ));
+            }
+            self.expect(TokenKind::RightBrace)?;
+            CandidateSetExpression::Difference { positive, negative }
+        } else {
+            CandidateSetExpression::Single(self.candidate_source()?)
+        };
+        self.expect_word("within")?;
+        let bound = self.next()?.clone();
+        let TokenKind::Unsigned(value) = bound.kind else {
+            return Err(ParseDiagnostics::one(ParseDiagnostic::new(
+                DiagnosticCode::UnexpectedToken,
+                bound.span,
+                "candidate bound must be a positive unsigned literal",
+                Some("use one canonical literal from 1 through 65535"),
+            )));
+        };
+        let canonical = value == "0" || !value.starts_with('0');
+        let within = value
+            .parse::<u16>()
+            .ok()
+            .filter(|value| canonical && *value > 0)
+            .ok_or_else(|| {
+                ParseDiagnostics::one(ParseDiagnostic::new(
+                    DiagnosticCode::InvalidToken,
+                    bound.span,
+                    "candidate bound is outside the supported range",
+                    Some("use one canonical literal from 1 through 65535"),
+                ))
+            })?;
+        self.expect_word("else")?;
+        let refusal_outcome = self.identifier()?;
+        self.node()?;
+        Ok(CandidateBinding {
+            name,
+            root_key,
+            expression,
+            within,
+            refusal_outcome,
+            span: self.span_from(start),
+        })
+    }
+
+    fn candidate_source_list(&mut self) -> Result<Vec<CandidateSource>, ParseDiagnostics> {
+        self.expect(TokenKind::LeftBrace)?;
+        let mut sources = Vec::new();
+        loop {
+            if sources.len() == MAX_CANDIDATE_SOURCES {
+                return Err(self.error(
+                    DiagnosticCode::TooManyItems,
+                    "candidate source limit exceeded",
+                    Some("use at most eight candidate sources"),
+                ));
+            }
+            sources.push(self.candidate_source()?);
+            if self.take(TokenKind::Comma).is_none() {
+                break;
+            }
+            if self.peek(TokenKind::RightBrace) {
+                break;
+            }
+        }
+        self.expect(TokenKind::RightBrace)?;
+        if sources.len() < 2 {
+            return Err(self.error(
+                DiagnosticCode::UnexpectedToken,
+                "candidate set operator requires at least two sources",
+                Some("use a single source without intersect or union"),
+            ));
+        }
+        Ok(sources)
+    }
+
+    fn candidate_source(&mut self) -> Result<CandidateSource, ParseDiagnostics> {
+        let start = self.current_start();
+        let key_start = self.current_start();
+        let projected_key = Spanned {
+            value: self.path()?,
+            span: self.span_from(key_start),
+        };
+        self.expect_word("using")?;
+        let access = self.identifier()?;
+        self.expect_word("where")?;
+        let predicate = self.expression(0)?;
+        self.node()?;
+        Ok(CandidateSource {
+            projected_key,
+            access,
+            predicate,
+            span: self.span_from(start),
         })
     }
 

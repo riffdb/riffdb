@@ -79,6 +79,15 @@ windowing; and typed output. Applications cannot select or alter a provider,
 capability, policy mode, precision, epoch, stage, scan, fallback, or bridge.
 Unsupported combinations are rejected while constructing the compiler artifact.
 
+For compiler-sealed candidate queries, “candidates” is itself a complete
+bounded phase. Every same-partition ordinary/provider source must reach an
+exact end, normalize, and participate in the sealed set algebra before root
+hydration begins. Root policy and predicates then precede a complete finite
+total-order sort; page and cursor selection are last. A source continuation,
+overflow, cancellation, stale participant, or authority failure releases no
+intermediate row or cursor. This preserves the semantic order even when the
+caller-selected root order cannot be supplied by a candidate-source index.
+
 The existing columnar engine advertises exact partition-scoped candidates,
 filters, ordering, whole-set measures/facets, windows, and output. It does not
 advertise relevance ranking. The existing per-organization vector engine

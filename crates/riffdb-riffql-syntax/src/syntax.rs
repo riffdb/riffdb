@@ -162,6 +162,8 @@ pub enum TypeReference {
 /// Ordered query body.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QueryBody {
+    /// Compiler-owned, non-output complete candidate bindings.
+    pub candidates: Vec<CandidateBinding>,
     /// Cardinality-declared bindings.
     pub bindings: Vec<Binding>,
     /// Bounded exact aggregate declarations over prior collection bindings.
@@ -172,6 +174,54 @@ pub struct QueryBody {
     pub selection: Selection,
     /// Closed declared outcome union.
     pub outcomes: Vec<Spanned<Identifier>>,
+}
+
+/// One bounded, non-output set of complete root keys.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CandidateBinding {
+    /// Query-local candidate name.
+    pub name: Spanned<Identifier>,
+    /// Complete root-key field produced by every source.
+    pub root_key: Spanned<Path>,
+    /// Closed compiler-visible set expression.
+    pub expression: CandidateSetExpression,
+    /// Maximum distinct keys before whole-binding refusal.
+    pub within: u16,
+    /// Outcome returned on refusal.
+    pub refusal_outcome: Spanned<Identifier>,
+    /// Complete declaration span.
+    pub span: Span,
+}
+
+/// Closed V1 candidate-set algebra.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CandidateSetExpression {
+    /// One complete source.
+    Single(CandidateSource),
+    /// Intersection of two through eight complete sources.
+    Intersection(Vec<CandidateSource>),
+    /// Union of two through eight complete sources.
+    Union(Vec<CandidateSource>),
+    /// One positive authorized universe minus one or more complete sources.
+    Difference {
+        /// Compiler-proven positive authorized universe.
+        positive: CandidateSource,
+        /// Complete negative sources.
+        negative: Vec<CandidateSource>,
+    },
+}
+
+/// One compiler-sealed ordinary or provider candidate source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CandidateSource {
+    /// Projected root-key field (`Entity.field`).
+    pub projected_key: Spanned<Path>,
+    /// Declared access/provider source name.
+    pub access: Spanned<Identifier>,
+    /// Compiler-checked source predicate.
+    pub predicate: Spanned<Expression>,
+    /// Complete source span.
+    pub span: Span,
 }
 
 /// One bounded aggregate result derived from a prior collection binding.
