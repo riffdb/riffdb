@@ -229,6 +229,21 @@ fn development_runners_bind_native_configuration_and_sealed_typescript_tooling()
     }
     let installed =
         fs::read_to_string(root.join("scripts/riffdb-dev-installed")).expect("installed runner");
+    let source = fs::read_to_string(root.join("scripts/riffdb-dev")).expect("source runner");
+    assert!(
+        source.contains("cargo metadata --quiet --format-version 1 --no-deps"),
+        "the source runner must derive Cargo's effective target directory"
+    );
+    for binary in ["riffdb", "riffdbd", "riffdb-driverd", "benchmark"] {
+        assert!(
+            source.contains(&format!("$cargo_target_dir/$profile/{binary}")),
+            "the source runner does not resolve {binary} through Cargo's effective target directory"
+        );
+        assert!(
+            !source.contains(&format!("$repo_root/target/$profile/{binary}")),
+            "the source runner still hard-codes {binary} under the repository target directory"
+        );
+    }
     assert!(installed.contains("tooling/typescript/bin:$PATH"));
     assert!(installed.contains("tooling/typescript/node_modules"));
     assert!(

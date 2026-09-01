@@ -221,10 +221,19 @@ fi
 if ((generic_application == 0)); then
     build_packages+=(-p riffdb-ticketdesk --bin benchmark)
 fi
+cargo_target_dir="$(cargo metadata --quiet --format-version 1 --no-deps \
+    | jq -er '.target_directory | select(type == "string" and length > 0)')" || {
+    echo "Cargo target directory could not be resolved" >&2
+    exit 1
+}
+[[ "$cargo_target_dir" == /* ]] || {
+    echo "Cargo returned a non-absolute target directory" >&2
+    exit 1
+}
 cargo build --quiet "${profile_args[@]}" "${build_packages[@]}"
-riffdbd="$repo_root/target/$profile/riffdbd"
-riffdb="$repo_root/target/$profile/riffdb"
-driverd="$repo_root/target/$profile/riffdb-driverd"
+riffdbd="$cargo_target_dir/$profile/riffdbd"
+riffdb="$cargo_target_dir/$profile/riffdb"
+driverd="$cargo_target_dir/$profile/riffdb-driverd"
 dev_tls_root="$repo_root/crates/riffdb-server/tests/fixtures"
 bootstrap_request="$repo_root/release/config/bootstrap-ticketdesk-dev.json"
 if ((generic_application)); then
@@ -257,7 +266,7 @@ if ((generic_application)); then
     }
 else
     application_root="$repo_root"
-    benchmark="$repo_root/target/$profile/benchmark"
+    benchmark="$cargo_target_dir/$profile/benchmark"
     contract="$repo_root/examples/app-baseline/contracts/ticketdesk.riff"
     queries="$repo_root/queries/ticketdesk"
     application_manifest="$repo_root/fixtures/application-manifests/ticketdesk-v1.json"
@@ -769,7 +778,7 @@ if ((acceptance)) && ((generic_application)); then
         RIFFDB_ENDPOINT="$endpoint" \
             RIFFDB_CREDENTIAL_FILE="$work_root/profile.credential" \
             RIFFDB_DATABASE=default \
-            CARGO_TARGET_DIR="$repo_root/target/application-alpha" \
+            CARGO_TARGET_DIR="$cargo_target_dir/application-alpha" \
             cargo run --quiet --offline \
             --manifest-path "$application_root/Cargo.toml" \
             --config "$app_patch" \
@@ -842,7 +851,7 @@ if ((run)); then
         RIFFDB_ENDPOINT="$endpoint" \
             RIFFDB_CREDENTIAL_FILE="$work_root/profile.credential" \
             RIFFDB_DATABASE=default \
-            CARGO_TARGET_DIR="$repo_root/target/application-alpha" \
+            CARGO_TARGET_DIR="$cargo_target_dir/application-alpha" \
             cargo run --quiet --offline \
             --manifest-path "$application_root/Cargo.toml" \
             --config "$app_patch" \
