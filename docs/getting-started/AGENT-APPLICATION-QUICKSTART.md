@@ -117,6 +117,14 @@ all RiffDB binaries. A workspace Cargo `target-dir` setting or an inherited
 driver host, and development-only benchmark binaries; no unset or repository-
 local target-directory workaround is required.
 
+For a Python application, the source-tree runner also builds the current
+`riffdb_application` wheel with Maturin and adds it as an ephemeral `uv run`
+overlay. The application's exact lock remains unchanged, while the disposable
+loopback cannot mix a current server and generated client with an older
+registry-pinned native runtime. This source workflow requires `python3`, `uv`,
+and the `maturin` module; installed release runners continue to use the matching
+wheel shipped with the release.
+
 Generated query calls pin the compiler-owned plan hash as well as the contract
 and module. Successful Rust, Go, TypeScript, and Python results expose the
 verified contract and operation identity. Native transports verify the server
@@ -124,6 +132,12 @@ tuple directly; driver-host transports first bind the exact manifest and
 catalog handshake, then return the matching compiler-owned result identity. A
 missing or different identity rejects the response; application code never
 assembles an identity from numeric IDs or unreviewed server state.
+
+For a finite order family, that public operation identity is the complete
+family hash pinned by the generated catalog. Continuation state additionally
+binds the selected immutable order member, so changing the enum choice rejects
+the cursor without making successful responses appear to be a different named
+operation.
 
 Complete public references:
 

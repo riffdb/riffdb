@@ -852,19 +852,26 @@ impl ExactTextRuntime {
     }
 }
 
+const fn provider_policy_binding_is_exact(
+    policy_mode: ProjectionProviderPolicyModeV1,
+    has_row_policy: bool,
+) -> bool {
+    match policy_mode {
+        ProjectionProviderPolicyModeV1::PartitionAligned => !has_row_policy,
+        ProjectionProviderPolicyModeV1::BoundedRowAdmission => has_row_policy,
+        ProjectionProviderPolicyModeV1::PolicySubpartition => false,
+    }
+}
+
 impl ExactTextProjectionPort for ExactTextRuntime {
     fn execute(
         &self,
         request: ExactTextProjectionRequest,
     ) -> Result<ExactTextProjectionResult, ExactTextProjectionPortError> {
-        let policy_binding_is_exact =
-            match request.query().binding().plan().provider().policy_mode() {
-                ProjectionProviderPolicyModeV1::PartitionAligned => request.row_policy().is_none(),
-                ProjectionProviderPolicyModeV1::BoundedRowAdmission => {
-                    request.row_policy().is_some()
-                }
-                ProjectionProviderPolicyModeV1::PolicySubpartition => false,
-            };
+        let policy_binding_is_exact = provider_policy_binding_is_exact(
+            request.query().binding().plan().provider().policy_mode(),
+            request.row_policy().is_some(),
+        );
         if !policy_binding_is_exact {
             return Err(ExactTextProjectionPortError::Integrity);
         }
@@ -997,9 +1004,10 @@ impl LongPatternProjectionPort for ExactTextRuntime {
         let QueryAccessKind::LongPatternCandidate { pattern, .. } = request.step().access() else {
             return Err(ExactTextProjectionPortError::Integrity);
         };
-        if pattern.descriptor().policy_mode() != ProjectionProviderPolicyModeV1::BoundedRowAdmission
-            || request.row_policy().is_none()
-            || request.plan() != request.program().identity().hash()
+        if !provider_policy_binding_is_exact(
+            pattern.descriptor().policy_mode(),
+            request.row_policy().is_some(),
+        ) || request.plan() != request.program().identity().hash()
         {
             return Err(ExactTextProjectionPortError::Integrity);
         }
@@ -1092,11 +1100,10 @@ impl TokenizedTextProjectionPort for ExactTextRuntime {
         request: TokenizedTextProjectionRequest,
     ) -> Result<ExactTextProjectionResult, ExactTextProjectionPortError> {
         let plan = request.query().tokenized_plan();
-        let policy_binding_is_exact = match plan.descriptor().policy_mode() {
-            ProjectionProviderPolicyModeV1::PartitionAligned => request.row_policy().is_none(),
-            ProjectionProviderPolicyModeV1::BoundedRowAdmission => request.row_policy().is_some(),
-            ProjectionProviderPolicyModeV1::PolicySubpartition => false,
-        };
+        let policy_binding_is_exact = provider_policy_binding_is_exact(
+            plan.descriptor().policy_mode(),
+            request.row_policy().is_some(),
+        );
         if !policy_binding_is_exact {
             return Err(ExactTextProjectionPortError::Integrity);
         }
@@ -1214,11 +1221,8 @@ impl ExactPredicateProjectionPort for ExactTextRuntime {
             .program()
             .provider_requirement()
             .policy_mode();
-        let policy_binding_is_exact = match policy_mode {
-            ProjectionProviderPolicyModeV1::PartitionAligned => request.row_policy().is_none(),
-            ProjectionProviderPolicyModeV1::BoundedRowAdmission => request.row_policy().is_some(),
-            ProjectionProviderPolicyModeV1::PolicySubpartition => false,
-        };
+        let policy_binding_is_exact =
+            provider_policy_binding_is_exact(policy_mode, request.row_policy().is_some());
         if !policy_binding_is_exact {
             return Err(ExactTextProjectionPortError::Integrity);
         }
@@ -1305,16 +1309,14 @@ impl ExactPredicateProjectionPort for ExactTextRuntime {
         &self,
         request: NullableExactPredicateProjectionRequest,
     ) -> Result<ExactPredicateProjectionResult, ExactTextProjectionPortError> {
-        let policy_binding_is_exact = match request
-            .query()
-            .program()
-            .provider_requirement()
-            .policy_mode()
-        {
-            ProjectionProviderPolicyModeV1::PartitionAligned => request.row_policy().is_none(),
-            ProjectionProviderPolicyModeV1::BoundedRowAdmission => request.row_policy().is_some(),
-            ProjectionProviderPolicyModeV1::PolicySubpartition => false,
-        };
+        let policy_binding_is_exact = provider_policy_binding_is_exact(
+            request
+                .query()
+                .program()
+                .provider_requirement()
+                .policy_mode(),
+            request.row_policy().is_some(),
+        );
         if !policy_binding_is_exact {
             return Err(ExactTextProjectionPortError::Integrity);
         }
@@ -3262,6 +3264,37 @@ impl Error for ExactTextWorkerShutdownError {}
 
 #[cfg(test)]
 mod tests {
+    use super::provider_policy_binding_is_exact;
+    use riffdb_types::ProjectionProviderPolicyModeV1;
+
+    #[test]
+    fn provider_policy_binding_requires_the_compiled_mode() {
+        assert!(provider_policy_binding_is_exact(
+            ProjectionProviderPolicyModeV1::PartitionAligned,
+            false
+        ));
+        assert!(!provider_policy_binding_is_exact(
+            ProjectionProviderPolicyModeV1::PartitionAligned,
+            true
+        ));
+        assert!(provider_policy_binding_is_exact(
+            ProjectionProviderPolicyModeV1::BoundedRowAdmission,
+            true
+        ));
+        assert!(!provider_policy_binding_is_exact(
+            ProjectionProviderPolicyModeV1::BoundedRowAdmission,
+            false
+        ));
+        assert!(!provider_policy_binding_is_exact(
+            ProjectionProviderPolicyModeV1::PolicySubpartition,
+            false
+        ));
+        assert!(!provider_policy_binding_is_exact(
+            ProjectionProviderPolicyModeV1::PolicySubpartition,
+            true
+        ));
+    }
+
     use super::*;
     use riffdb_types::{ApplicationRoleHash, PartitionKeyBuilder, QueryPlanHash};
 
@@ -3384,7 +3417,7 @@ mod tests {
         assert!(execute.contains("query_observed"));
         assert!(execute.contains("request.pinned_epoch()"));
         assert!(execute.contains("SnapshotRetired"));
-        assert!(execute.contains("request.row_policy().is_none()"));
+        assert!(execute.contains("provider_policy_binding_is_exact"));
     }
 
     #[test]

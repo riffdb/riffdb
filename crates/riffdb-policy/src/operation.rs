@@ -645,6 +645,7 @@ pub struct ApplicationQueryTarget {
     scope: ExactDataScope,
     accesses: Vec<ApplicationQueryAccessRequirement>,
     cost: QueryCostVectorV1,
+    bounded_candidate_sources: bool,
 }
 
 impl ApplicationQueryTarget {
@@ -677,7 +678,18 @@ impl ApplicationQueryTarget {
             scope,
             accesses,
             cost,
+            bounded_candidate_sources: false,
         })
+    }
+
+    /// Marks a compiler-proved candidate pipeline whose independent index
+    /// sources each use the grant's per-access scan ceiling. The service sets
+    /// this only from sealed candidate IR; callers cannot select the shape.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_bounded_candidate_sources(mut self) -> Self {
+        self.bounded_candidate_sources = true;
+        self
     }
 
     /// Exact contract lineage.
@@ -733,6 +745,14 @@ impl ApplicationQueryTarget {
     #[must_use]
     pub const fn cost(&self) -> QueryCostVectorV1 {
         self.cost
+    }
+
+    /// Whether scan authority is the checked sum of independent candidate
+    /// source ceilings rather than the ordinary whole-request row ceiling.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn has_bounded_candidate_sources(&self) -> bool {
+        self.bounded_candidate_sources
     }
 }
 

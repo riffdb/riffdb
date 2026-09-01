@@ -283,6 +283,39 @@ fi
 task_tmp_root="${TMPDIR:-$HOME/tmp}"
 mkdir -p "$task_tmp_root"
 work_root="$(mktemp -d "$task_tmp_root/riffdb-dev.XXXXXX")"
+source_python_wheel=
+prepare_source_python_wheel() {
+    [[ -z "$source_python_wheel" ]] || return 0
+    for tool in python3 uv; do
+        command -v "$tool" >/dev/null 2>&1 || {
+            echo "required Python runner tool is missing: $tool" >&2
+            exit 1
+        }
+    done
+    python3 -m maturin --version >/dev/null 2>&1 || {
+        echo "source Python runner requires the maturin module" >&2
+        exit 1
+    }
+    local wheel_root="$work_root/source-python-wheel"
+    mkdir -p "$wheel_root"
+    local -a maturin_profile=()
+    if [[ "$profile" == release ]]; then
+        maturin_profile=(--release)
+    fi
+    (
+        cd "$repo_root/clients/python/runtime"
+        CARGO_TARGET_DIR="$cargo_target_dir" python3 -m maturin build --quiet \
+            "${maturin_profile[@]}" --interpreter python3 \
+            --compatibility linux --out "$wheel_root"
+    )
+    local -a wheels
+    mapfile -t wheels < <(find "$wheel_root" -maxdepth 1 -type f -name '*.whl' -print)
+    if ((${#wheels[@]} != 1)); then
+        echo "source Python runner did not build exactly one current RiffDB wheel" >&2
+        exit 1
+    fi
+    source_python_wheel="${wheels[0]}"
+}
 dev_tls_key="$dev_tls_root/localhost-key.pem"
 if ((driver_runner)); then
     dev_tls_key="$work_root/server.key"
@@ -789,10 +822,7 @@ if ((acceptance)) && ((generic_application)); then
             exit 1
         }
     elif [[ -f "$application_root/pyproject.toml" ]]; then
-        command -v uv >/dev/null 2>&1 || {
-            echo "required Python runner tool is missing: uv" >&2
-            exit 1
-        }
+        prepare_source_python_wheel
         python_package="$(jq -er '.application | gsub("-"; "_")' "$application_manifest")"
         (
             cd "$application_root"
@@ -800,7 +830,8 @@ if ((acceptance)) && ((generic_application)); then
             RIFFDB_ENDPOINT="$endpoint" \
                 RIFFDB_CREDENTIAL_FILE="$work_root/profile.credential" \
                 RIFFDB_DATABASE=default \
-                PYTHONPATH=src uv run --locked python -m "$python_package" \
+                PYTHONPATH=src uv run --locked --with "$source_python_wheel" \
+                python -m "$python_package" \
                 "$endpoint" "$work_root/profile.credential" default
         ) >"$work_root/generated-application-client.stdout"
         [[ -s "$work_root/generated-application-client.stdout" ]] || {
@@ -876,10 +907,7 @@ if ((run)); then
             npm run --silent start -- "${driver_arguments[@]}"
         )
     elif [[ -f "$application_root/pyproject.toml" ]]; then
-        command -v uv >/dev/null 2>&1 || {
-            echo "required Python runner tool is missing: uv" >&2
-            exit 1
-        }
+        prepare_source_python_wheel
         python_package="$(jq -er '.application | gsub("-"; "_")' "$application_manifest")"
         (
             cd "$application_root"
@@ -887,7 +915,8 @@ if ((run)); then
             RIFFDB_ENDPOINT="$endpoint" \
                 RIFFDB_CREDENTIAL_FILE="$work_root/profile.credential" \
                 RIFFDB_DATABASE=default \
-                PYTHONPATH=src uv run --locked python -m "$python_package" \
+                PYTHONPATH=src uv run --locked --with "$source_python_wheel" \
+                python -m "$python_package" \
                 "$endpoint" "$work_root/profile.credential" default
         )
     else

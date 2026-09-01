@@ -2938,12 +2938,9 @@ async fn execute_named_query(
                 ApplicationErrorCode::QueryInvalid,
             )
         })?;
-    let selected_plan_hash = if query.order_family().is_some() {
-        program.identity().hash()
-    } else {
-        query.plan().identity()
-    };
+    let (response_plan_hash, cursor_plan_hash) = named_query_plan_hashes(query, &program);
     if program.projected_source().is_some() {
+        let authorization_plan_hash = program.identity().hash();
         return execute_projected_vector_named_query(
             service,
             context,
@@ -2951,7 +2948,8 @@ async fn execute_named_query(
             program,
             query.shared_document(),
             module_hash,
-            selected_plan_hash,
+            authorization_plan_hash,
+            response_plan_hash,
             query_name,
             request.parameters,
             request.cursor,
@@ -2981,7 +2979,8 @@ async fn execute_named_query(
         aggregates,
         query.shared_document(),
         Some(module_hash),
-        Some(selected_plan_hash),
+        Some(response_plan_hash),
+        Some(cursor_plan_hash),
         QueryAuthority::Named {
             module_hash,
             query_name,
@@ -2996,6 +2995,23 @@ async fn execute_named_query(
     .await
 }
 
+/// Separates the stable public named-operation identity from the selected
+/// order member used to bind continuation state. The generated application
+/// catalog pins the complete finite family; the cursor additionally pins the
+/// immutable member selected by the closed enum parameter.
+fn named_query_plan_hashes(
+    query: &riffdb_query_module::CompiledNamedQuery,
+    program: &QueryAccessProgramV1,
+) -> (QueryPlanHash, QueryPlanHash) {
+    let response = query.plan().identity();
+    let cursor = if query.order_family().is_some() {
+        program.identity().hash()
+    } else {
+        response
+    };
+    (response, cursor)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn execute_projected_vector_named_query(
     service: Arc<RiffDbServiceInner>,
@@ -3004,7 +3020,8 @@ async fn execute_projected_vector_named_query(
     program: Arc<QueryAccessProgramV1>,
     document: Arc<Document>,
     module_hash: QueryModuleHash,
-    plan_hash: QueryPlanHash,
+    authorization_plan_hash: QueryPlanHash,
+    response_plan_hash: QueryPlanHash,
     query_name: QueryOperationName,
     submitted: SymbolicQueryParameters,
     cursor: Option<CursorToken>,
@@ -3034,7 +3051,7 @@ async fn execute_projected_vector_named_query(
         &program,
         &parameters,
         context.ingress(),
-        plan_hash,
+        authorization_plan_hash,
         program.cost(),
         None,
     )
@@ -3282,7 +3299,7 @@ async fn execute_projected_vector_named_query(
         &program,
         document.as_ref(),
         module_hash,
-        plan_hash,
+        response_plan_hash,
         observed,
         Arc::clone(bundle.enum_variant_names()),
         entity,
@@ -5224,6 +5241,7 @@ async fn execute_query(
         Arc::new(compiled.document),
         None,
         None,
+        None,
         QueryAuthority::AdHoc,
         request.parameters,
         request.cursor,
@@ -5439,7 +5457,8 @@ async fn execute_compiled_query(
     aggregates: Arc<[riffdb_query_ir::OperationalAggregateV1]>,
     document: Arc<Document>,
     module_hash: Option<QueryModuleHash>,
-    named_plan_hash: Option<QueryPlanHash>,
+    named_response_plan_hash: Option<QueryPlanHash>,
+    named_cursor_plan_hash: Option<QueryPlanHash>,
     authority: QueryAuthority,
     submitted: SymbolicQueryParameters,
     cursor: Option<CursorToken>,
@@ -5485,7 +5504,7 @@ async fn execute_compiled_query(
             program.contract().bundle_hash(),
         ),
         module_hash,
-        named_plan_hash.unwrap_or_else(|| program.identity().hash()),
+        named_cursor_plan_hash.unwrap_or_else(|| program.identity().hash()),
         cursor_parameter_hash,
         context.principal().capability_id(),
         context.principal().capability_revision(),
@@ -5757,7 +5776,7 @@ async fn execute_compiled_query(
         result.identity = SymbolicQueryIdentity::from_named_plan(
             &program,
             module_hash,
-            named_plan_hash.unwrap_or_else(|| program.identity().hash()),
+            named_response_plan_hash.unwrap_or_else(|| program.identity().hash()),
         );
     }
     service
@@ -6297,7 +6316,7 @@ fn application_query_target_with_identity(
             .ok()?,
         );
     }
-    ApplicationQueryTarget::new(
+    let target = ApplicationQueryTarget::new(
         program.contract().lineage().clone(),
         program.contract().version(),
         program.contract().bundle_hash(),
@@ -6308,7 +6327,12 @@ fn application_query_target_with_identity(
         accesses,
         cost,
     )
-    .ok()
+    .ok()?;
+    Some(if program.surface().candidates().is_empty() {
+        target
+    } else {
+        target.with_bounded_candidate_sources()
+    })
 }
 
 pub(crate) fn execute_authorized_query_page(
@@ -6638,6 +6662,9 @@ mod operational_cursor_identity_tests {
     use riffdb_contract_compiler::compile_contract_source;
     use riffdb_query_compiler::compile_query;
     use riffdb_query_ir::SymbolicCatalog;
+    use riffdb_query_module::{
+        NamedQuerySource, QueryModule, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
+    };
     use riffdb_riffql_syntax::parse_query;
 
     const CONTRACT: &str = r#"
@@ -6661,12 +6688,16 @@ query CursorItems(
   $limit: Limit<100> = 50,
   $after: Cursor?,
 ) {
-  many items from Item
+  candidates matching: Item.item_id
+    from Item.item_id using by_item
     where organization_id == $organization_id
+    within 65535 else IntegrityFailure
+  many items from Item
+    where organization_id == $organization_id && item_id in matching
     order by item_id asc
     take $limit after $after
   return Found { items: items { item_id label } }
-  outcomes Found
+  outcomes Found | IntegrityFailure
 }
 "#;
 
@@ -6681,6 +6712,46 @@ query UnpagedItems(
     take $limit
   return Found { items: items { item_id label } }
   outcomes Found
+}
+"#;
+
+    const ORDER_FAMILY_CONTRACT: &str = r#"
+contract OrderIdentity version 1 {
+  enum ItemOrder { LabelAsc, IdDesc }
+  entity Item {
+    key (organization_id: uuid, item_id: uuid)
+    field label: string<32>
+    index by_item (organization_id, item_id)
+    index by_label (organization_id, label, item_id)
+  }
+  aggregate Items {
+    root Item
+    partition_by organization_id
+    conflict_key (organization_id, item_id)
+  }
+}
+"#;
+
+    const ORDER_FAMILY_QUERY: &str = r#"
+query OrderedItems(
+  $organization_id: Item.organization_id,
+  $order: ItemOrder,
+  $limit: Limit<100> = 50,
+  $after: Cursor?,
+) {
+  candidates matching: Item.item_id
+    from Item.item_id using by_item
+    where organization_id == $organization_id
+    within 65535 else IntegrityFailure
+  many items from Item
+    where organization_id == $organization_id && item_id in matching
+    order by $order {
+      LabelAsc: label asc, item_id asc;
+      IdDesc: item_id desc;
+    }
+    take $limit after $after
+  return Found { items: items { item_id label } }
+  outcomes Found | IntegrityFailure
 }
 "#;
 
@@ -6762,6 +6833,44 @@ query UnpagedItems(
             wider_program.identity(),
             "the declared maximum remains bound by immutable plan identity"
         );
+    }
+
+    #[test]
+    fn order_family_response_pins_family_while_cursor_pins_selected_member() {
+        let bundle = compile_contract_source(ORDER_FAMILY_CONTRACT).expect("contract");
+        let module = QueryModule::compile(
+            QueryModuleCandidate::new(
+                QueryModuleName::new("ordered_items").expect("module name"),
+                QueryModuleVersion::new(1).expect("module version"),
+                vec![
+                    NamedQuerySource::new("OrderedItems", ORDER_FAMILY_QUERY)
+                        .expect("query source"),
+                ],
+            )
+            .expect("module candidate"),
+            &bundle,
+        )
+        .expect("module");
+        let query = module.query("OrderedItems").expect("query");
+        let family = query.order_family().expect("order family");
+        let label = family.select_name("LabelAsc").expect("label member");
+        let id = family.select_name("IdDesc").expect("id member");
+
+        assert_eq!(
+            label.program().cursor_page_cardinality_parameters(),
+            ["limit"],
+            "candidate-root pagination must permit a different valid continuation page size"
+        );
+        assert_eq!(id.program().cursor_page_cardinality_parameters(), ["limit"]);
+
+        let (label_response, label_cursor) = named_query_plan_hashes(query, label.program());
+        let (id_response, id_cursor) = named_query_plan_hashes(query, id.program());
+
+        assert_eq!(label_response, query.plan().identity());
+        assert_eq!(id_response, query.plan().identity());
+        assert_ne!(label_cursor, id_cursor);
+        assert_eq!(label_cursor, label.program().identity().hash());
+        assert_eq!(id_cursor, id.program().identity().hash());
     }
 }
 

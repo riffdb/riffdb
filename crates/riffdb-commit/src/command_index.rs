@@ -14,11 +14,13 @@ use riffdb_contract_ir::{
     EXECUTABLE_IR_VERSION_V11, EXECUTABLE_IR_VERSION_V12, EXECUTABLE_IR_VERSION_V13,
     EXECUTABLE_IR_VERSION_V14, EXECUTABLE_IR_VERSION_V15, EXECUTABLE_IR_VERSION_V16,
     EXECUTABLE_IR_VERSION_V17, EXECUTABLE_IR_VERSION_V18, EXECUTABLE_IR_VERSION_V19,
-    ExecutionClass, GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V2, GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4,
-    GRAMMAR_VERSION_V5, GRAMMAR_VERSION_V6, GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8,
-    GRAMMAR_VERSION_V9, GRAMMAR_VERSION_V10, GRAMMAR_VERSION_V11, GRAMMAR_VERSION_V12,
-    GRAMMAR_VERSION_V13, GRAMMAR_VERSION_V14, GRAMMAR_VERSION_V15, GRAMMAR_VERSION_V16,
-    GRAMMAR_VERSION_V17, GRAMMAR_VERSION_V18, GRAMMAR_VERSION_V19, IndexSchema, SchemaIr,
+    EXECUTABLE_IR_VERSION_V20, EXECUTABLE_IR_VERSION_V21, ExecutionClass, GRAMMAR_VERSION_V1,
+    GRAMMAR_VERSION_V2, GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4, GRAMMAR_VERSION_V5,
+    GRAMMAR_VERSION_V6, GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8, GRAMMAR_VERSION_V9,
+    GRAMMAR_VERSION_V10, GRAMMAR_VERSION_V11, GRAMMAR_VERSION_V12, GRAMMAR_VERSION_V13,
+    GRAMMAR_VERSION_V14, GRAMMAR_VERSION_V15, GRAMMAR_VERSION_V16, GRAMMAR_VERSION_V17,
+    GRAMMAR_VERSION_V18, GRAMMAR_VERSION_V19, GRAMMAR_VERSION_V20, GRAMMAR_VERSION_V21,
+    IndexSchema, SchemaIr,
 };
 use riffdb_invariant::{InputDerivedCommandFacts, derive_input_command_facts};
 #[cfg(test)]
@@ -1582,6 +1584,22 @@ impl IndexDerivationBuilder {
 //   aggregate ceiling.
 // - The commit path neither observes nor recomputes caller byte budgets and
 //   does not split, truncate, or otherwise reinterpret the atomic command.
+//
+// (V20, V20) — tokenized text-search declarations (ADR-0173 / WP-729).
+// - `TextIndexSpecV1` is schema metadata for a rebuildable derived provider.
+//   It adds no ordinary `IndexSchema`, binding, instruction, mutation, cover,
+//   key codec, or authoritative write. Command index derivation is therefore
+//   byte-identical to V19.
+// - Evidence: `tokenized_text_v20_preserves_authoritative_index_derivation`
+//   compiles a real V20 entity whose command also writes ordinary indexes and
+//   proves those exact authoritative entries remain derivable.
+//
+// (V21, V21) — long-pattern declarations (ADR-0174 / WP-737).
+// - `LongPatternSpecV1` likewise configures a rebuildable provider and does
+//   not participate in the authoritative index catalog consumed here. The
+//   command's ordinary index keys, covers, and epoch targets are unchanged.
+// - Evidence: `long_pattern_v21_preserves_authoritative_index_derivation`
+//   exercises a real V21 mutation and pins the same ordinary entry set.
 const fn index_derivation_version_supported(grammar: u32, ir: u32) -> bool {
     matches!(
         (grammar, ir),
@@ -1604,6 +1622,8 @@ const fn index_derivation_version_supported(grammar: u32, ir: u32) -> bool {
             | (GRAMMAR_VERSION_V17, EXECUTABLE_IR_VERSION_V17)
             | (GRAMMAR_VERSION_V18, EXECUTABLE_IR_VERSION_V18)
             | (GRAMMAR_VERSION_V19, EXECUTABLE_IR_VERSION_V19)
+            | (GRAMMAR_VERSION_V20, EXECUTABLE_IR_VERSION_V20)
+            | (GRAMMAR_VERSION_V21, EXECUTABLE_IR_VERSION_V21)
     )
 }
 
@@ -2016,10 +2036,10 @@ mod tests {
     // gate.
     #[test]
     fn index_derivation_admits_exactly_the_audited_identity_pairs() {
-        for grammar in 0..=17_u32 {
-            for ir in 0..=17_u32 {
+        for grammar in 0..=GRAMMAR_VERSION_V21 + 1 {
+            for ir in 0..=EXECUTABLE_IR_VERSION_V21 + 1 {
                 let audited_identity_pair =
-                    grammar == ir && (GRAMMAR_VERSION_V1..=GRAMMAR_VERSION_V17).contains(&grammar);
+                    grammar == ir && (GRAMMAR_VERSION_V1..=GRAMMAR_VERSION_V21).contains(&grammar);
                 assert_eq!(
                     index_derivation_version_supported(grammar, ir),
                     audited_identity_pair,
@@ -3492,6 +3512,79 @@ contract VectorAnnIndexedRows version 1 {
         .expect("V12 ANN metadata cannot perturb authoritative index derivation");
         assert_eq!(derived.entry_mutations.len(), 4);
         assert_eq!(derived.affected_targets.as_slice().len(), 2);
+    }
+
+    fn provider_era_index_fixture(declaration: &str, request_key: &str) -> Fixture {
+        let source = INDEXED_SOURCE.replace(
+            "    index by_score (score)",
+            &format!("    index by_score (score)\n    {declaration}"),
+        );
+        fixture_from_source(
+            &source,
+            "CreateRow",
+            request_key,
+            ([0x21; 16], "new", 10),
+            None,
+        )
+    }
+
+    fn assert_provider_era_preserves_indexes(fixture: &Fixture) {
+        let derived = derive_grammar_v1_indexes(
+            &fixture.resolved,
+            &fixture.input,
+            &fixture.evaluated,
+            &fixture.current,
+            &[Some(0)],
+            &fixture.partition,
+        )
+        .expect("derived-provider metadata cannot perturb authoritative index derivation");
+        assert_eq!(derived.entry_mutations.len(), 2);
+        assert!(
+            derived
+                .entry_mutations
+                .iter()
+                .all(|mutation| matches!(mutation, IndexEntryMutationV1::Put(_)))
+        );
+        let tenant = index(fixture, "by_tenant_category");
+        let score = index(fixture, "by_score");
+        assert_eq!(
+            actual_generation_ids(&derived),
+            expected_generation_ids(&[tenant, score])
+        );
+    }
+
+    #[test]
+    fn tokenized_text_v20_preserves_authoritative_index_derivation() {
+        let fixture = provider_era_index_fixture(
+            "text_index search((category weight 1), analyzer keyword_v1, staleness_slo 60, replay_age_seconds 86400, replay_bytes 1073741824, replay_backlog 100000, result boolean_v1, max_terms 8, max_candidates 128, max_results 128)",
+            "text-v20-create-1",
+        );
+        assert_eq!(
+            fixture.resolved.bundle().bundle().grammar_version(),
+            GRAMMAR_VERSION_V20
+        );
+        assert_eq!(
+            fixture.resolved.bundle().bundle().ir_version(),
+            EXECUTABLE_IR_VERSION_V20
+        );
+        assert_provider_era_preserves_indexes(&fixture);
+    }
+
+    #[test]
+    fn long_pattern_v21_preserves_authoritative_index_derivation() {
+        let fixture = provider_era_index_fixture(
+            "pattern_index by_category_pattern(category, profile binary_utf8_v1, operators (equals, starts_with, ends_with, contains, like, not_like), max_source_bytes 32, max_matched_bytes 32, max_rows 128, max_total_matched_bytes 4096, max_grams_per_row 32, max_distinct_grams 4096, max_postings 4096, max_postings_bytes 65536, max_pattern_bytes 32, max_pattern_atoms 32, max_candidates 128, max_verification_bytes 4096, max_results 128, staleness_slo 60, replay_age_seconds 86400, replay_bytes 1073741824, replay_backlog 100000, retained_generations 4)",
+            "pattern-v21-create-1",
+        );
+        assert_eq!(
+            fixture.resolved.bundle().bundle().grammar_version(),
+            GRAMMAR_VERSION_V21
+        );
+        assert_eq!(
+            fixture.resolved.bundle().bundle().ir_version(),
+            EXECUTABLE_IR_VERSION_V21
+        );
+        assert_provider_era_preserves_indexes(&fixture);
     }
 
     // WP-606 V8 delete evidence: ADR-0107's delete-aware entry derivation on

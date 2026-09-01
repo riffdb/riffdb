@@ -6,6 +6,7 @@ use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_compiler::{PlannerDiagnosticCode, compile_order_query_family, compile_query};
 use riffdb_query_ir::{QueryAccessKind, SymbolicCatalog, resolve_query_surface};
 use riffdb_riffql_syntax::parse_query;
+use riffdb_types::ProjectionProviderPolicyModeV1;
 
 const CONTRACT: &str =
     include_str!("../../../fixtures/riffql/bounded-filtered-result-v1/contract.riff");
@@ -48,6 +49,23 @@ fn frozen_combined_source_compiles_to_an_explicit_provider_step() {
                 && pattern.pattern_parameter() == "name_pattern"
                 && pattern.field() == "name"
     ));
+}
+
+#[test]
+fn long_pattern_without_a_row_policy_is_partition_aligned() {
+    let bundle = compile_contract_source(CONTRACT).expect("contract corpus");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+    assert_eq!(catalog.row_policies().count(), 0);
+    let compilable_query = QUERY.replace("Limit<50000>", "Limit<1000>");
+    let document = parse_query(&compilable_query).expect("query corpus");
+    let program = compile_query(&document, &catalog).expect("provider candidate plan");
+    let QueryAccessKind::LongPatternCandidate { pattern, .. } = program.steps()[1].access() else {
+        panic!("second step must use the declared long-pattern provider");
+    };
+    assert_eq!(
+        pattern.descriptor().policy_mode(),
+        ProjectionProviderPolicyModeV1::PartitionAligned
+    );
 }
 
 #[test]
