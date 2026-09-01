@@ -110,3 +110,18 @@ fn uniform_heap_plan_supports_pages_well_above_the_predecessor_499_limit() {
     );
     assert!(program.cost().scanned_index_rows() >= 4_194_304);
 }
+
+#[test]
+fn mlflow_mixed_order_supports_large_pages_across_one_thousand_routes() {
+    let source = QUERY.replace("Limit<50>", "Limit<5000>");
+    let family =
+        compile_operational_query_family(&parse_query(&source).expect("query"), &catalog())
+            .expect("large mixed-order page compiles");
+    let program = family.select(&[]).expect("member").program();
+    let QueryAccessKind::PartitionSetIndex { scan_ceiling, .. } = program.steps()[0].access()
+    else {
+        panic!("partition-set index")
+    };
+    assert_eq!(*scan_ceiling, 65_535);
+    assert_eq!(program.cost().scanned_index_rows(), 65_535_000);
+}

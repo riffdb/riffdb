@@ -6864,6 +6864,36 @@ query UnpagedItems(
 }
 "#;
 
+    const PARTITION_SET_CONTRACT: &str = r#"
+contract CursorPartitionSet version 1 {
+  entity Run {
+    key (experiment_id: u64, run_id: string<32>)
+    field start_time: timestamp
+    index by_start (experiment_id, start_time, run_id)
+  }
+  aggregate Runs {
+    root Run
+    partition_by experiment_id
+    conflict_key (experiment_id, run_id)
+  }
+}
+"#;
+
+    const PARTITION_SET_QUERY: &str = r#"
+query SearchRuns(
+  $experiment_ids: Set<Run.experiment_id, 1000>,
+  $limit: Limit<5000> = 100,
+  $after: Cursor?,
+) {
+  many runs from Run
+    where experiment_id in $experiment_ids
+    order by start_time desc, run_id asc
+    take $limit after $after
+  return Found { runs: runs { experiment_id run_id start_time } }
+  outcomes Found
+}
+"#;
+
     const ORDER_FAMILY_CONTRACT: &str = r#"
 contract OrderIdentity version 1 {
   enum ItemOrder { LabelAsc, IdDesc }
@@ -6981,6 +7011,41 @@ query OrderedItems(
             cursor_program.identity(),
             wider_program.identity(),
             "the declared maximum remains bound by immutable plan identity"
+        );
+    }
+
+    #[test]
+    fn partition_set_cursor_hash_normalizes_routes_and_excludes_page_cardinality() {
+        let bundle = compile_contract_source(PARTITION_SET_CONTRACT).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let program = compile_query(
+            &parse_query(PARTITION_SET_QUERY).expect("query source"),
+            &catalog,
+        )
+        .expect("query plan");
+        let parameters = |routes, limit| {
+            QueryParameters::checked(BTreeMap::from([
+                (
+                    "experiment_ids".to_owned(),
+                    CanonicalValue::list(routes).expect("routes"),
+                ),
+                ("limit".to_owned(), CanonicalValue::U64(limit)),
+            ]))
+            .expect("parameters")
+        };
+        let first = parameters(vec![CanonicalValue::U64(2), CanonicalValue::U64(1)], 1);
+        let resumed = parameters(
+            vec![
+                CanonicalValue::U64(1),
+                CanonicalValue::U64(2),
+                CanonicalValue::U64(1),
+            ],
+            100,
+        );
+        assert_eq!(program.cursor_page_cardinality_parameters(), ["limit"]);
+        assert_eq!(
+            query_cursor_parameter_hash(&program, &first),
+            query_cursor_parameter_hash(&program, &resumed)
         );
     }
 

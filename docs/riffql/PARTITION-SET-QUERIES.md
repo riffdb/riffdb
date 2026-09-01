@@ -55,8 +55,10 @@ The structural page ceiling remains 65,534 rows, not the predecessor 499-row
 limit. Query-specific result-byte, route-byte, partition, scan, policy,
 candidate, provider, merge, and response ceilings remain independent. Uniform
 heap execution therefore supports large pages without work proportional to
-`partitions × page size`; mixed orders may require a lower maximum when their
-complete-group proof would exceed the whole-operation scan ceiling.
+`partitions × page size`. Mixed orders use a separate 67,107,840-physical-row
+whole-operation ceiling, enough to retain the full 65,535-row local scan domain
+through 1,024 declared partitions; larger declared route sets receive a
+proportionally smaller per-partition allowance.
 
 This surface uses RiffQL V13, query IR V16, and query-module V16. Existing
 scalar-route queries and their modules, locks, roles, generated bindings, and
