@@ -81,6 +81,9 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   correlated subquery language, recursive expression, cross-partition plan, or
   caller-supplied set. Long-value wildcard candidate sources and multi-provider
   admission are staged separately; ordinary exact-index sources are available.
+  A query may expose at most 32 compiler-expanded root orders through one
+  complete contract enum. Callers cannot submit arbitrary sort structure, and
+  changing the enum choice starts a different cursor family.
 - An ordinary command may atomically delete and return the transaction-current preimage of exactly
   one complete-key, partition-local `no_inbound` entity. Multiple ordinary deletes, inbound
   `restrict` or `cascade`, set-null, orphaning, cross-partition deletion, and physical erasure are

@@ -226,6 +226,41 @@ appear in SDK or MCP schemas. They are immutable module/plan/role identity,
 not request data. This is bounded same-partition existence filtering, not a
 general join, recursive query, caller-selected plan, or runtime optimizer.
 
+### Finite root-order families (language V12)
+
+When one public operation needs several caller-selected orders, the query may
+bind a contract enum to a finite family of complete immutable orders:
+
+```riffql
+$order: ExperimentOrder,
+
+many experiments from Experiment
+    where scope == $scope && experiment_id in matching
+    order by $order {
+        NameAsc: name asc, experiment_id asc;
+        NameDesc: name desc, experiment_id asc;
+        CreatedDesc: creation_time desc, experiment_id asc;
+        UpdatedDesc: last_update_time desc, experiment_id asc;
+    }
+    take $limit after $after
+    else IntegrityFailure
+```
+
+The family must declare every variant of its contract enum exactly once and is
+limited to 32 members. The compiler expands each member before deployment and
+checks its fields, directions, null placement, unique tie-breaker, authority,
+cost, and candidate/root semantics independently. The service resolves the
+enum to a compiled member before storage work. Generated Rust, Go, Python,
+TypeScript, MCP, CLI, gRPC, local, and remote paths carry only that closed enum;
+there is no public field list, expression, index hint, collation, direction, or
+tie-breaker input.
+
+Order families use additive RiffQL V12, query-family IR V15, and module V15.
+The selected member plan and the enum parameter are both cursor-bound, so a
+cursor cannot be resumed under another order. Candidate families always capture
+one admission head; all sources complete at the resulting snapshot before root
+policy, total sorting, paging, and cursor formation.
+
 ## Nearest-neighbor bindings (alpha)
 
 A `many` binding over an entity that declares a contract `vector_field` may

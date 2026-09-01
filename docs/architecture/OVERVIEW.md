@@ -87,6 +87,12 @@ total-order sort; page and cursor selection are last. A source continuation,
 overflow, cancellation, stale participant, or authority failure releases no
 intermediate row or cursor. This preserves the semantic order even when the
 caller-selected root order cannot be supplied by a candidate-source index.
+Candidate operations that expose several orders compile a finite contract-enum
+family. Selection occurs before storage, the selected member has its own plan
+and cursor identity, and callers cannot submit ordering structure. Candidate
+execution is always admission-head fenced; ordinary index epochs remain in the
+continuation, while provider generations use the retained result-set epoch
+proof, so continuation cannot combine incompatible participant observations.
 
 The existing columnar engine advertises exact partition-scoped candidates,
 filters, ordering, whole-set measures/facets, windows, and output. It does not

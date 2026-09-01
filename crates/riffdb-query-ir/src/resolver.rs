@@ -2112,7 +2112,11 @@ fn canonical_surface(
     );
     bytes.extend_from_slice(IR_MAGIC);
     bytes.extend_from_slice(
-        &if document.language_version == RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1 {
+        &if matches!(
+            document.language_version,
+            riffdb_riffql_syntax::RIFFQL_LANGUAGE_VERSION_ORDER_FAMILY_V1
+                | RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1
+        ) {
             QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1
         } else if document.language_version == RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1 {
             QUERY_IR_VERSION_BOUNDED_LIMIT_V1

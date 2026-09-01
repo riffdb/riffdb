@@ -19,12 +19,13 @@ use riffdb_query_ir::{
     CoveredResultLayoutV1, CoveredResultSourceV1, EntitySymbol, ExactTextOperatorSetV1,
     ExactTextOrderSetV1, ExactTextPlanFamilyErrorV1, ExactTextPlanFamilyV1,
     MAX_OPERATIONAL_PRESENCE_PARAMETERS, OperationalPlanMemberV1, OperationalQueryFamilyV1,
-    ProjectedVectorFreshnessV1, ProjectedVectorSourceV1, ProjectionResultSetPlanError,
-    ProjectionResultSetPlanV1, ProjectionResultSetPlanV2, ProjectionResultSetPlanV2Error,
-    QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryLiteral, QueryPredicate,
-    QueryPredicateOperator, QueryPredicateValue, QueryRootOrderTermV1, QueryRowLimit,
-    ResultSetOutputShapeV1, ResultSetWindowBoundsV2, ResultSetWindowV1, SymbolicCatalog,
-    candidate_source_binding_name, resolve_query_surface, source_aggregate_semantic_identity,
+    OrderFamilyMemberV1, OrderQueryFamilyV1, ProjectedVectorFreshnessV1, ProjectedVectorSourceV1,
+    ProjectionResultSetPlanError, ProjectionResultSetPlanV1, ProjectionResultSetPlanV2,
+    ProjectionResultSetPlanV2Error, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep,
+    QueryLiteral, QueryPredicate, QueryPredicateOperator, QueryPredicateValue,
+    QueryRootOrderTermV1, QueryRowLimit, ResultSetOutputShapeV1, ResultSetWindowBoundsV2,
+    ResultSetWindowV1, SymbolicCatalog, candidate_source_binding_name, resolve_query_surface,
+    source_aggregate_semantic_identity,
 };
 use riffdb_riffql_syntax::{
     AggregateFunction, BinaryOperator, Cardinality, Direction, Document, Expression,
@@ -1151,6 +1152,20 @@ pub fn compile_query(
     catalog: &SymbolicCatalog,
 ) -> Result<QueryAccessProgramV1, PlannerDiagnostics> {
     reject_unlowered_aggregates(document)?;
+    if let Some(family) = document
+        .body
+        .bindings
+        .iter()
+        .find_map(|binding| binding.order_family.as_ref())
+    {
+        return Err(one(
+            PlannerDiagnosticCode::OperationalFamilyRequired,
+            family.span,
+            vec![family.parameter.value.as_str().to_owned()],
+            "order-family syntax requires finite family compilation",
+            None,
+        ));
+    }
     if let Some(span) = document
         .body
         .bindings
@@ -1166,6 +1181,140 @@ pub fn compile_query(
         ));
     }
     compile_query_member(document, catalog, BTreeSet::new())
+}
+
+/// Expands one contract-enum selector into complete immutable order programs.
+pub fn compile_order_query_family(
+    document: &Document,
+    catalog: &SymbolicCatalog,
+) -> Result<OrderQueryFamilyV1, PlannerDiagnostics> {
+    let surface = resolve_query_surface(document, catalog).map_err(|_| {
+        one(
+            PlannerDiagnosticCode::InternalInvariant,
+            Span { start: 0, end: 0 },
+            Vec::new(),
+            "symbolic resolution failed before order-family planning",
+            None,
+        )
+    })?;
+    let families = document
+        .body
+        .bindings
+        .iter()
+        .enumerate()
+        .filter_map(|(index, binding)| binding.order_family.as_ref().map(|family| (index, family)))
+        .collect::<Vec<_>>();
+    let [(binding_index, family)] = families.as_slice() else {
+        return Err(one(
+            PlannerDiagnosticCode::OperationalFamilyRequired,
+            Span { start: 0, end: 0 },
+            Vec::new(),
+            "exactly one order family is required",
+            None,
+        ));
+    };
+    if document
+        .body
+        .bindings
+        .iter()
+        .any(|binding| first_operational_expression_span(&binding.predicate.value).is_some())
+    {
+        return Err(one(
+            PlannerDiagnosticCode::OperationalFamilyRequired,
+            family.span,
+            Vec::new(),
+            "order and optional-presence families cannot be combined in V1",
+            None,
+        ));
+    }
+    let parameter = document
+        .parameters
+        .iter()
+        .find(|parameter| parameter.name.value == family.parameter.value)
+        .ok_or_else(|| {
+            one(
+                PlannerDiagnosticCode::TypeMismatch,
+                family.parameter.span,
+                vec![family.parameter.value.as_str().to_owned()],
+                "unknown order-family selector parameter",
+                None,
+            )
+        })?;
+    let TypeReference::Named(path) = &parameter.ty.value else {
+        return Err(one(
+            PlannerDiagnosticCode::TypeMismatch,
+            parameter.ty.span,
+            Vec::new(),
+            "order-family selector must be a contract enum",
+            None,
+        ));
+    };
+    let [enum_name] = path.0.as_slice() else {
+        return Err(one(
+            PlannerDiagnosticCode::TypeMismatch,
+            parameter.ty.span,
+            Vec::new(),
+            "order-family selector must be a contract enum",
+            None,
+        ));
+    };
+    let enumeration = catalog
+        .enumeration(enum_name.value.as_str())
+        .ok_or_else(|| {
+            one(
+                PlannerDiagnosticCode::TypeMismatch,
+                parameter.ty.span,
+                Vec::new(),
+                "order-family selector must name a contract enum",
+                None,
+            )
+        })?;
+    let declared = family
+        .variants
+        .iter()
+        .map(|variant| variant.variant.value.as_str())
+        .collect::<BTreeSet<_>>();
+    let expected = enumeration.variants().collect::<BTreeSet<_>>();
+    if declared != expected || declared.len() != family.variants.len() {
+        return Err(one(
+            PlannerDiagnosticCode::TypeMismatch,
+            family.span,
+            Vec::new(),
+            "order family must declare every enum variant exactly once",
+            None,
+        ));
+    }
+    if family.variants.len() > riffdb_query_ir::MAX_ORDER_FAMILY_MEMBERS_V1 {
+        return Err(one(
+            PlannerDiagnosticCode::Unbounded,
+            family.span,
+            Vec::new(),
+            "order family exceeds the finite member bound",
+            None,
+        ));
+    }
+    let mut members = Vec::with_capacity(family.variants.len());
+    for variant in &family.variants {
+        let mut expanded = document.clone();
+        let binding = &mut expanded.body.bindings[*binding_index];
+        binding.order.clone_from(&variant.order);
+        binding.order_family = None;
+        let program = compile_query_member(&expanded, catalog, BTreeSet::new())?;
+        members.push(OrderFamilyMemberV1::checked(
+            variant.variant.value.as_str().to_owned(),
+            enumeration
+                .variant(variant.variant.value.as_str())
+                .ok_or_else(internal)?,
+            program,
+        ));
+    }
+    OrderQueryFamilyV1::checked(
+        surface,
+        family.parameter.value.as_str().to_owned(),
+        enumeration.internal_id(),
+        members,
+    )
+    .ok_or_else(internal)
 }
 
 /// Compiles every optional-presence combination into one closed bounded family.

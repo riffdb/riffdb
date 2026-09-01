@@ -159,7 +159,13 @@ impl Parser {
                     if maximum > riffdb_types::MAX_APPLICATION_QUERY_PAGE_ROWS_BOUNDED_LIMIT_V1
             )
         });
-        let language_version = if extended_limit || !body.candidates.is_empty() {
+        let language_version = if body
+            .bindings
+            .iter()
+            .any(|binding| binding.order_family.is_some())
+        {
+            crate::RIFFQL_LANGUAGE_VERSION_ORDER_FAMILY_V1
+        } else if extended_limit || !body.candidates.is_empty() {
             RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1
         } else if body
             .bindings
@@ -601,63 +607,55 @@ impl Parser {
             None
         };
         let mut order = Vec::new();
+        let mut order_family = None;
         if self.take_word("order").is_some() {
             self.expect_word("by")?;
-            loop {
-                if order.len() == MAX_COLLECTION_ITEMS {
-                    return Err(self.too_many());
+            if matches!(self.peek_kind(), Some(TokenKind::Parameter(_))) {
+                let family_start = self.current_start();
+                let parameter = self.parameter_name()?;
+                self.expect(TokenKind::LeftBrace)?;
+                let mut variants = Vec::new();
+                while !self.peek(TokenKind::RightBrace) {
+                    if variants.len() == crate::MAX_COLLECTION_ITEMS {
+                        return Err(self.too_many());
+                    }
+                    let variant = self.identifier()?;
+                    self.expect(TokenKind::Colon)?;
+                    let mut variant_order = Vec::new();
+                    loop {
+                        variant_order.push(self.order_term()?);
+                        if self.take(TokenKind::Comma).is_none() {
+                            break;
+                        }
+                    }
+                    self.expect(TokenKind::Semicolon)?;
+                    variants.push(crate::OrderFamilyVariant {
+                        variant,
+                        order: variant_order,
+                    });
                 }
-                let path_start = self.current_start();
-                let path = self.path()?;
-                let path = Spanned {
-                    value: path,
-                    span: self.span_from(path_start),
-                };
-                let direction = if let Some(span) = self.take_word("asc") {
-                    Spanned {
-                        value: Direction::Ascending,
-                        span,
-                    }
-                } else if let Some(span) = self.take_word("desc") {
-                    Spanned {
-                        value: Direction::Descending,
-                        span,
-                    }
-                } else {
+                self.expect(TokenKind::RightBrace)?;
+                if variants.is_empty() {
                     return Err(self.error(
                         DiagnosticCode::UnexpectedToken,
-                        "order term requires asc or desc",
+                        "order family requires at least one variant",
                         None,
                     ));
-                };
-                let null_placement = if self.take_word("nulls").is_some() {
-                    if let Some(span) = self.take_word("first") {
-                        Some(Spanned {
-                            value: NullPlacement::First,
-                            span,
-                        })
-                    } else if let Some(span) = self.take_word("last") {
-                        Some(Spanned {
-                            value: NullPlacement::Last,
-                            span,
-                        })
-                    } else {
-                        return Err(self.error(
-                            DiagnosticCode::UnexpectedToken,
-                            "null placement requires first or last",
-                            Some("use nulls first or nulls last"),
-                        ));
-                    }
-                } else {
-                    None
-                };
-                order.push(OrderTerm {
-                    path,
-                    direction,
-                    null_placement,
+                }
+                order_family = Some(crate::OrderFamily {
+                    parameter,
+                    variants,
+                    span: self.span_from(family_start),
                 });
-                if self.take(TokenKind::Comma).is_none() {
-                    break;
+            } else {
+                loop {
+                    if order.len() == MAX_COLLECTION_ITEMS {
+                        return Err(self.too_many());
+                    }
+                    order.push(self.order_term()?);
+                    if self.take(TokenKind::Comma).is_none() {
+                        break;
+                    }
                 }
             }
         }
@@ -776,6 +774,7 @@ impl Parser {
             entity,
             predicate,
             order,
+            order_family,
             take,
             nearest,
             tokenized_match,
@@ -885,6 +884,58 @@ impl Parser {
             },
             field,
             alias,
+        })
+    }
+
+    fn order_term(&mut self) -> Result<OrderTerm, ParseDiagnostics> {
+        let path_start = self.current_start();
+        let path = self.path()?;
+        let path = Spanned {
+            value: path,
+            span: self.span_from(path_start),
+        };
+        let direction = if let Some(span) = self.take_word("asc") {
+            Spanned {
+                value: Direction::Ascending,
+                span,
+            }
+        } else if let Some(span) = self.take_word("desc") {
+            Spanned {
+                value: Direction::Descending,
+                span,
+            }
+        } else {
+            return Err(self.error(
+                DiagnosticCode::UnexpectedToken,
+                "order term requires asc or desc",
+                None,
+            ));
+        };
+        let null_placement = if self.take_word("nulls").is_some() {
+            if let Some(span) = self.take_word("first") {
+                Some(Spanned {
+                    value: NullPlacement::First,
+                    span,
+                })
+            } else if let Some(span) = self.take_word("last") {
+                Some(Spanned {
+                    value: NullPlacement::Last,
+                    span,
+                })
+            } else {
+                return Err(self.error(
+                    DiagnosticCode::UnexpectedToken,
+                    "null placement requires first or last",
+                    Some("use nulls first or nulls last"),
+                ));
+            }
+        } else {
+            None
+        };
+        Ok(OrderTerm {
+            path,
+            direction,
+            null_placement,
         })
     }
 
@@ -1518,6 +1569,12 @@ fn query_shape_language_version(
     projected_source: Option<&ProjectedSource>,
 ) -> u32 {
     if body
+        .bindings
+        .iter()
+        .any(|binding| binding.order_family.is_some())
+    {
+        crate::RIFFQL_LANGUAGE_VERSION_ORDER_FAMILY_V1
+    } else if body
         .bindings
         .iter()
         .any(|binding| binding.tokenized_match.is_some())
