@@ -103,7 +103,12 @@ pub const MAX_QUERY_SCANNED_ROWS: u64 = riffdb_types::MAX_APPLICATION_QUERY_SCAN
 /// minted, while `scanned_rows` still counts the probe.
 pub const QUERY_CONTINUATION_PROBE_ROWS: u64 = 1;
 /// Whole-request physical-row ceiling for ADR-0175 partition-set execution.
-pub const MAX_PARTITION_SET_TOTAL_SCANNED_ROWS_V1: u64 = 4_194_304;
+///
+/// This admits the full 65,535-row local scan domain across 1,024 explicitly
+/// authorized partitions while remaining an independent finite operation
+/// ceiling. Queries declaring more routes receive a proportionally smaller
+/// per-partition scan allowance.
+pub const MAX_PARTITION_SET_TOTAL_SCANNED_ROWS_V1: u64 = 65_535 * 1_024;
 
 /// Inclusive maximum legal page `take` (static literal or runtime `Limit`).
 ///

@@ -1417,7 +1417,9 @@ impl QueryAccessProgramV1 {
                 && step.cursor_parameter.is_some()
                 && matches!(
                     step.access,
-                    QueryAccessKind::Index { .. } | QueryAccessKind::CandidateRootHydration { .. }
+                    QueryAccessKind::Index { .. }
+                        | QueryAccessKind::PartitionSetIndex { .. }
+                        | QueryAccessKind::CandidateRootHydration { .. }
                 );
             eligibility
                 .entry(name)
