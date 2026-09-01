@@ -22,10 +22,10 @@ use riffdb_query_ir::{
     OrderFamilyMemberV1, OrderQueryFamilyV1, ProjectedVectorFreshnessV1, ProjectedVectorSourceV1,
     ProjectionResultSetPlanError, ProjectionResultSetPlanV1, ProjectionResultSetPlanV2,
     ProjectionResultSetPlanV2Error, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep,
-    QueryLiteral, QueryPredicate, QueryPredicateOperator, QueryPredicateValue,
-    QueryRootOrderTermV1, QueryRowLimit, ResultSetOutputShapeV1, ResultSetWindowBoundsV2,
-    ResultSetWindowV1, SymbolicCatalog, candidate_source_binding_name, resolve_query_surface,
-    source_aggregate_semantic_identity,
+    QueryDiagnosticCode, QueryDiagnostics, QueryLiteral, QueryPredicate, QueryPredicateOperator,
+    QueryPredicateValue, QueryRootOrderTermV1, QueryRowLimit, ResultSetOutputShapeV1,
+    ResultSetWindowBoundsV2, ResultSetWindowV1, SymbolicCatalog, candidate_source_binding_name,
+    resolve_query_surface, source_aggregate_semantic_identity,
 };
 use riffdb_riffql_syntax::{
     AggregateFunction, BinaryOperator, Cardinality, Direction, Document, Expression,
@@ -1146,6 +1146,33 @@ impl PlannerDiagnostics {
     }
 }
 
+fn planner_resolution_diagnostics(diagnostics: QueryDiagnostics) -> PlannerDiagnostics {
+    PlannerDiagnostics(
+        diagnostics
+            .as_slice()
+            .iter()
+            .map(|diagnostic| PlannerDiagnostic {
+                code: match diagnostic.code() {
+                    QueryDiagnosticCode::ArtifactLimit => PlannerDiagnosticCode::Unbounded,
+                    QueryDiagnosticCode::UnknownSymbol
+                    | QueryDiagnosticCode::AmbiguousSymbol
+                    | QueryDiagnosticCode::DuplicateName
+                    | QueryDiagnosticCode::InvalidType
+                    | QueryDiagnosticCode::InvalidPath
+                    | QueryDiagnosticCode::SecretOutputDeclaration => {
+                        PlannerDiagnosticCode::TypeMismatch
+                    }
+                },
+                primary: diagnostic.primary(),
+                symbol_path: diagnostic.symbol_path().to_vec(),
+                summary: diagnostic.summary(),
+                suggested_index: None,
+                bound: None,
+            })
+            .collect(),
+    )
+}
+
 /// Resolves, type checks, authorizes, and plans one parsed query against one exact catalog.
 pub fn compile_query(
     document: &Document,
@@ -1188,15 +1215,8 @@ pub fn compile_order_query_family(
     document: &Document,
     catalog: &SymbolicCatalog,
 ) -> Result<OrderQueryFamilyV1, PlannerDiagnostics> {
-    let surface = resolve_query_surface(document, catalog).map_err(|_| {
-        one(
-            PlannerDiagnosticCode::InternalInvariant,
-            Span { start: 0, end: 0 },
-            Vec::new(),
-            "symbolic resolution failed before order-family planning",
-            None,
-        )
-    })?;
+    let surface =
+        resolve_query_surface(document, catalog).map_err(planner_resolution_diagnostics)?;
     let families = document
         .body
         .bindings
@@ -1322,15 +1342,8 @@ pub fn compile_operational_query_family(
     document: &Document,
     catalog: &SymbolicCatalog,
 ) -> Result<OperationalQueryFamilyV1, PlannerDiagnostics> {
-    let surface = resolve_query_surface(document, catalog).map_err(|_| {
-        one(
-            PlannerDiagnosticCode::InternalInvariant,
-            Span { start: 0, end: 0 },
-            Vec::new(),
-            "symbolic resolution failed before operational planning",
-            None,
-        )
-    })?;
+    let surface =
+        resolve_query_surface(document, catalog).map_err(planner_resolution_diagnostics)?;
     let declared_optional = document
         .parameters
         .iter()
@@ -1388,15 +1401,8 @@ fn compile_query_member(
     catalog: &SymbolicCatalog,
     unwrapped_optional_parameters: BTreeSet<String>,
 ) -> Result<QueryAccessProgramV1, PlannerDiagnostics> {
-    let surface = resolve_query_surface(document, catalog).map_err(|_| {
-        one(
-            PlannerDiagnosticCode::InternalInvariant,
-            Span { start: 0, end: 0 },
-            Vec::new(),
-            "symbolic resolution failed before planning",
-            None,
-        )
-    })?;
+    let surface =
+        resolve_query_surface(document, catalog).map_err(planner_resolution_diagnostics)?;
     Planner::new(document, catalog, unwrapped_optional_parameters).compile(surface)
 }
 

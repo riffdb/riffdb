@@ -489,6 +489,10 @@ enum PageBoundClause {
 struct Resolver<'a> {
     catalog: &'a SymbolicCatalog,
     parameters: BTreeMap<String, NamedTypeSchema>,
+    // Keep semantic parameter types separate from compatibility-preserved
+    // name-addressed schemas so field references and direct bounded strings
+    // participate in provider checks identically.
+    parameter_value_types: BTreeMap<String, ValueType>,
     bindings: BTreeMap<String, ResolvedBinding<'a>>,
     candidates: BTreeMap<String, CandidateBindingV1>,
     candidate_consumers: BTreeMap<String, usize>,
@@ -502,6 +506,7 @@ impl<'a> Resolver<'a> {
         Self {
             catalog,
             parameters: BTreeMap::new(),
+            parameter_value_types: BTreeMap::new(),
             bindings: BTreeMap::new(),
             candidates: BTreeMap::new(),
             candidate_consumers: BTreeMap::new(),
@@ -534,6 +539,10 @@ impl<'a> Resolver<'a> {
                 ));
             }
             let ty = self.resolve_type(&parameter.ty.value, parameter.ty.span)?;
+            if let Some(value_type) = self.resolve_parameter_value_type(&parameter.ty.value) {
+                self.parameter_value_types
+                    .insert(name.to_owned(), value_type);
+            }
             if matches!(
                 ty,
                 NamedTypeSchema::Limit | NamedTypeSchema::BoundedLimit { .. }
@@ -1317,6 +1326,32 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    fn resolve_parameter_value_type(&self, ty: &TypeReference) -> Option<ValueType> {
+        match ty {
+            TypeReference::Named(path) => match path.0.as_slice() {
+                [name] if name.value.as_str() == "u64" => Some(ValueType::u64()),
+                [name] => self
+                    .catalog
+                    .enumeration(name.value.as_str())
+                    .map(|enumeration| ValueType::enumeration(enumeration.internal_id())),
+                [entity, field] => self
+                    .catalog
+                    .entity(entity.value.as_str())?
+                    .field(field.value.as_str())
+                    .map(|field| field.value_type().clone()),
+                _ => None,
+            },
+            TypeReference::Optional(inner) => {
+                ValueType::optional(self.resolve_parameter_value_type(&inner.value)?).ok()
+            }
+            TypeReference::BoundedString(maximum) => ValueType::string(*maximum as usize).ok(),
+            TypeReference::Set(_)
+            | TypeReference::Cursor
+            | TypeReference::Limit
+            | TypeReference::BoundedLimit(_) => None,
+        }
+    }
+
     fn named_type(
         &self,
         value_type: &ValueType,
@@ -1491,10 +1526,10 @@ impl<'a> Resolver<'a> {
             }
             if pattern_field != provider.field()
                 || !provider.operators().contains(operator)
-                || !matches!(
-                    self.parameters.get(parameter.as_str()),
-                    Some(NamedTypeSchema::Scalar(name)) if name == "string"
-                )
+                || self.parameter_value_types.get(parameter.as_str())
+                    != entity
+                        .field(provider.field())
+                        .map(|field| field.value_type())
             {
                 return Err(self.diagnostic(
                     QueryDiagnosticCode::InvalidType,

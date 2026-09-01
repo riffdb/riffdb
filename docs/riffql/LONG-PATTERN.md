@@ -50,6 +50,12 @@ The provider is named only in compiled query source. Generated clients submit
 the typed pattern, ordinary invariant parameters, page limit, and opaque cursor;
 they cannot choose a provider, gram, matcher, scan, sort field, or budget.
 
+Declare the pattern parameter with the provider field's type, for example
+`$name_pattern: Experiment.name`. An explicit bounded string with the same
+bound, such as `$name_pattern: string<500>`, is equivalent. RiffDB resolves
+both forms to the exact contract value type and rejects an unknown field or a
+mismatched bound at the parameter or predicate source span.
+
 ```riffql
 candidates matching_experiments: Experiment.experiment_id
     from intersect {
