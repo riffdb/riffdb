@@ -3216,6 +3216,19 @@ work_packages:
       submit partitions discovered from data, a plan, index, join, order expression, or budget.
     scale: The structural ceiling is 65,535 explicit routes, with independent query-specific
       partition, byte, row, probe, merge, result, and total-work maxima specified before runtime.
+  closure:
+    status: complete
+    completed_at: "2026-09-01"
+    requirements_satisfied: [RQL-007, QRY-010, OQ-101, OQ-102, OQ-106, OQ-109, OQ-112]
+    evidence: ADR-0175 is accepted and discoverable from the handbook. The specification,
+      work-package graph, version topology, compatibility fixtures, and negative compiler corpus
+      freeze the explicit finite-route source shape, independent bounds, identity successors, and
+      fail-closed locality boundary. Legacy artifacts remain byte-exact, and ADR, requirement,
+      topology, handbook, formatting, and downstream source gates pass.
+    known_limitations: V1 accepts only caller-supplied explicit finite partition identities for
+      read-only operational queries. It does not discover partitions from data, perform
+      cross-partition joins or writes, or define a distributed snapshot protocol.
+    follow_ups: []
   human_review_triggers: &id0175
   - Partition discovery, cross-partition relationships, mutation, caller-authored plans,
     partial results, or a distributed snapshot protocol would be introduced.
@@ -3263,6 +3276,20 @@ work_packages:
       maxima, cost, and authority; generated callers submit only the bounded typed list.
     scale: Checked multiplication covers declared maximum partitions and every per-partition
       row/probe/candidate/policy/provider/merge dimension before a plan can activate.
+  closure:
+    status: complete
+    completed_at: "2026-09-01"
+    requirements_satisfied: [RQL-007, OQ-101, OQ-102, OQ-104, OQ-106, OQ-107, OQ-109]
+    evidence: RiffQL V13 parses and formats Set<T, MAX> with source-spanned 1..65,535 bounds.
+      Query IR and module V16 carry the compiler-sealed finite route, generated schemas expose
+      only typed bounded values, policy receives checked whole-operation authority, and compiler
+      cost uses declared maxima with checked multiplication. Compiler, syntax, IR, module,
+      policy, generation, application-binding, topology, compatibility, and diagnostic tests pass,
+      including the MLflow Run shape with Set<Run.experiment_id, 1000> and Limit<5000>.
+    known_limitations: Each named query fixes its element type and maximum at compile time; callers
+      cannot select route fields, indexes, orders, costs, or budgets dynamically. The structural
+      set ceiling is 65,535 and stricter query-specific authority and work limits still apply.
+    follow_ups: []
   human_review_triggers: *id0175
 
 - id: WP-741
@@ -3301,6 +3328,20 @@ work_packages:
       parameters; no iterator, transaction, per-partition result, or fallback crosses the port.
     scale: V1 uses a bounded merge heap or bounded candidate materialization and does not require
       all authoritative rows or all database partitions in memory.
+  closure:
+    status: complete
+    completed_at: "2026-09-01"
+    requirements_satisfied: [QRY-010, OQ-103, OQ-104, OQ-106, OQ-107, OQ-108, OQ-110]
+    evidence: Memory and redb execute all normalized routes inside one engine-owned snapshot and
+      frontier. Uniform-order plans use a bounded k-way heap; mixed-order and candidate-root plans
+      use compiler-bounded complete groups. Candidate identities include partition and key,
+      provider batches merge across routes, policy is evaluated before observation, and duplicate
+      routes normalize deterministically. Independent-oracle, parity, cancellation, concurrency,
+      maximum/over-maximum, service, storage, and recovery tests pass without partial results.
+    known_limitations: Mixed-direction ordering uses the separately bounded complete-group path
+      rather than the streaming heap. Execution is single-node and one-snapshot; it does not imply
+      a snapshot spanning independent RiffDB processes.
+    follow_ups: []
   human_review_triggers: *id0175
 
 - id: WP-742
@@ -3339,6 +3380,19 @@ work_packages:
       surface exposes merge streams, epoch maps, partition cursors, plan knobs, or fallback.
     scale: Cursor bytes stay constant with partition count through a complete observation digest;
       request, work, response, and frame ceilings stay independent.
+  closure:
+    status: complete
+    completed_at: "2026-09-01"
+    requirements_satisfied: [QRY-010, OQ-105, OQ-106, OQ-107, OQ-109, OQ-111]
+    evidence: One opaque global cursor binds the canonical distinct route set, query identity,
+      invariant filters, complete observation digest, and last global key while excluding page
+      cardinality from cursor identity. Reordered and duplicate routes resume identically, changed
+      routes and tampered or stale observations fail closed, and Rust, Go, TypeScript, Python,
+      local, remote, gRPC, generated binding, service, policy, CLI, and MCP conformance gates pass.
+    known_limitations: Cursor size remains constant by retaining a digest rather than exposing
+      per-partition cursors. The structural response page ceiling is 65,534 rows, the response
+      envelope remains bounded to 4 MiB, and a named query may declare a lower maximum.
+    follow_ups: []
   human_review_triggers: *id0175
 
 - id: WP-743
@@ -3386,6 +3440,26 @@ work_packages:
       database filtering, sorting, merge, snapshot, authority, or cursor semantics.
     scale: Partition count, route bytes, every local/global row and work class, merge state,
       provider/candidate state, output, cursor, and process resource are finite and tested at max+1.
+  closure:
+    status: complete
+    completed_at: "2026-09-01"
+    requirements_satisfied: [RQL-007, QRY-010, OQ-101, OQ-102, OQ-103, OQ-104,
+      OQ-105, OQ-106, OQ-107, OQ-108, OQ-109, OQ-110, OQ-111, OQ-112]
+    evidence: The generic workspace, documentation, dependency, generation, compatibility,
+      application-binding, policy, recovery, and four-language remote conformance gates pass. A
+      disposable copy of the current MLflow adapter deployed its contract, eleven-query module,
+      and exact role, then used generated authenticated Python bindings to create three Runs in two
+      experiment partitions and traverse one global start_time-desc/run_id-asc cursor from page
+      size 1 to 100. Reversing route order and adding a duplicate preserved continuation and the
+      independent oracle. Atomic experiment/tag creation and revision-guarded tag update/delete
+      also passed. The value-free receipt records that no adapter fan-out, filtering, sorting,
+      merge, cursor chains, hidden state, or partition rewrite occurred.
+    known_limitations: This capability is deliberately limited to explicit finite read routes and
+      one single-node snapshot. Cross-partition relationships, writes, partition discovery, and
+      caller-authored plans remain rejected. Query-specific route, row, work, byte, response, and
+      page maxima remain mandatory; the validated MLflow query declares 1,000 partitions and 5,000
+      results rather than relying on the former 499-row planning ceiling.
+    follow_ups: []
   human_review_triggers: *id0175
 
 - id: WP-721
