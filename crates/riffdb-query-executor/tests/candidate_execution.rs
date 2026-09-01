@@ -5,13 +5,16 @@ use std::collections::BTreeMap;
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_compiler::compile_query;
 use riffdb_query_executor::{
-    BoundPredicate, QueryBackendFault, QueryContinuation, QueryExecutionError, QueryNearestPage,
-    QueryParameters, QueryReadView, QueryResultValue, QueryRow, QueryScanPage,
-    execute_page_in_snapshot,
+    BoundPredicate, LongPatternCandidateBatch, QueryBackendFault, QueryContinuation,
+    QueryExecutionError, QueryNearestPage, QueryParameters, QueryReadView, QueryResultValue,
+    QueryRow, QueryScanPage, execute_page_in_snapshot, execute_provider_page_in_snapshot,
 };
-use riffdb_query_ir::{QueryAccessStep, SymbolicCatalog};
+use riffdb_query_ir::{QueryAccessKind, QueryAccessStep, SymbolicCatalog};
 use riffdb_riffql_syntax::parse_query;
-use riffdb_types::{CanonicalValue, MAX_BYTES_VALUE_BYTES};
+use riffdb_types::{
+    ApplicationRoleHash, CanonicalValue, CommitSequence, MAX_BYTES_VALUE_BYTES,
+    ProjectionGeneration,
+};
 
 const CONTRACT: &str = r#"
 contract CandidateExecution version 1 {
@@ -111,6 +114,8 @@ impl QueryReadView for CandidateView {
                                 CanonicalValue::I64(if id == 1 { 10 } else { 20 })
                             },
                         ),
+                        ("name", text(if id == 1 { "Zeta" } else { "Alpha" })),
+                        ("creation_time", CanonicalValue::I64(id as i64)),
                     ],
                 ))
             })
@@ -243,6 +248,120 @@ fn explicit_null_placement_is_independent_from_descending_direction() {
     let page = execute_page_in_snapshot(&program, &parameters, None, &mut view).expect("page");
     assert_eq!(page_ids(&page), vec![2, 1, 3]);
     assert!(page.continuation().is_none());
+}
+
+#[test]
+fn provider_candidates_share_one_exact_head_before_root_order_and_page() {
+    let contract =
+        include_str!("../../../fixtures/riffql/bounded-filtered-result-v1/contract.riff");
+    let query = include_str!(
+        "../../../fixtures/riffql/bounded-filtered-result-v1/queries/combined_tag_pattern.riffq"
+    )
+    .replace("Limit<50000>", "Limit<10>")
+    .replace("= 1000", "= 1");
+    let bundle = compile_contract_source(contract).expect("contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+    let program = compile_query(&parse_query(&query).expect("query"), &catalog).expect("plan");
+    let parameters = QueryParameters::checked(BTreeMap::from([
+        ("scope".to_owned(), text("org")),
+        ("tag_key".to_owned(), text("kind")),
+        ("tag_digest".to_owned(), bytes(&[9; 32])),
+        ("name_pattern".to_owned(), text("%a%")),
+        ("limit".to_owned(), CanonicalValue::U64(1)),
+    ]))
+    .expect("parameters");
+    let provider_step = program
+        .steps()
+        .iter()
+        .find(|step| matches!(step.access(), QueryAccessKind::LongPatternCandidate { .. }))
+        .expect("provider step");
+    let QueryAccessKind::LongPatternCandidate { pattern, .. } = provider_step.access() else {
+        panic!("provider")
+    };
+    let epoch = CommitSequence::new(7).expect("epoch");
+    let generation = ProjectionGeneration::first();
+    let batch = LongPatternCandidateBatch::checked(
+        provider_step.binding().to_owned(),
+        vec![
+            row(
+                "Experiment",
+                [
+                    ("scope", text("org")),
+                    ("experiment_id", CanonicalValue::U64(1)),
+                    ("name", text("Zeta")),
+                ],
+            ),
+            row(
+                "Experiment",
+                [
+                    ("scope", text("org")),
+                    ("experiment_id", CanonicalValue::U64(2)),
+                    ("name", text("Alpha")),
+                ],
+            ),
+        ],
+        pattern.descriptor().digest(),
+        pattern.descriptor().state_identity().schema_hash(),
+        1,
+        generation,
+        epoch,
+        epoch,
+        2,
+        9,
+    )
+    .expect("batch");
+    let policy_shape = ApplicationRoleHash::from_bytes([3; 32]);
+    let proof = riffdb_projection::negotiate_result_set_epoch_v1(
+        riffdb_projection::ResultSetEpochContextV1::new(program.identity().hash(), policy_shape),
+        &[batch.observation().expect("observation")],
+        riffdb_projection::ResultSetEpochRequirementV1::Exact(epoch),
+    )
+    .expect("proof");
+    let mut view = CandidateView::default();
+    let page = execute_provider_page_in_snapshot(
+        &program,
+        &parameters,
+        None,
+        &mut view,
+        policy_shape,
+        &proof,
+        &[batch],
+    )
+    .expect("provider page");
+    assert_eq!(page_ids(&page), vec![2]);
+    assert_eq!(
+        view.root_reads, 2,
+        "all intersected roots hydrate before paging"
+    );
+
+    let stale = CommitSequence::new(6).expect("stale");
+    let stale_proof = riffdb_projection::negotiate_result_set_epoch_v1(
+        riffdb_projection::ResultSetEpochContextV1::new(program.identity().hash(), policy_shape),
+        &[riffdb_projection::ProviderEpochObservationV1::new(
+            pattern.descriptor().digest(),
+            pattern.descriptor().state_identity().schema_hash(),
+            1,
+            generation,
+            stale,
+            stale,
+            riffdb_projection::ProviderLifecycleV1::Ready,
+        )
+        .expect("stale observation")],
+        riffdb_projection::ResultSetEpochRequirementV1::Exact(stale),
+    )
+    .expect("stale proof");
+    assert_eq!(
+        execute_provider_page_in_snapshot(
+            &program,
+            &parameters,
+            None,
+            &mut CandidateView::default(),
+            policy_shape,
+            &stale_proof,
+            &[],
+        ),
+        Err(QueryExecutionError::BackendUnavailable)
+    );
 }
 
 fn page_ids(snapshot: &riffdb_query_executor::QueryOwnedSnapshot) -> Vec<u64> {

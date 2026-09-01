@@ -96,6 +96,13 @@ impl AuthoritativePointReader for ServerColumnarApplySource {
 }
 
 impl AuthoritativeScanReader for ServerColumnarApplySource {
+    fn scan_entity_partition(
+        &self,
+        request: riffdb_storage_api::AuthoritativeEntityPartitionScanRequest,
+    ) -> Result<riffdb_storage_api::AuthoritativeEntityPartitionScanPage, StorageError> {
+        AuthoritativeScanReader::scan_entity_partition(&self.storage, request)
+    }
+
     fn scan_index(
         &self,
         request: AuthoritativeIndexScanRequest,

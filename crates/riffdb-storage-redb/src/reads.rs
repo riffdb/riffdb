@@ -2,13 +2,15 @@
 
 use redb::{ReadOnlyTable, ReadableTableMetadata};
 use riffdb_storage_api::{
-    ApplicationSequenceAllocator, AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest,
-    AuthoritativePointReader, AuthoritativeScanReader, CommandDerivedIndexKindV1,
-    CommandDerivedMemberV1, CommitScanPageV1, CommitScanRequest, EncodedContentCharge,
-    EncodedPageItem, EntityObservation, EntityTarget, EventRouteScanRequestV1, EventRouteScanV1,
-    EventRouteUpperFenceV1, FilteredAuthoritativeIndexScanPage,
-    FilteredAuthoritativeIndexScanRequest, FilteredAuthoritativeScanReader, IdempotencyIdentity,
-    IndexEpochPosition, IndexPartitionFilterScope, IndexRangeEntry, MAX_COMMIT_SCAN_PAGE_BYTES,
+    ApplicationSequenceAllocator, AuthoritativeEntityPartitionScanPage,
+    AuthoritativeEntityPartitionScanRequest, AuthoritativeIndexScanPage,
+    AuthoritativeIndexScanRequest, AuthoritativePointReader, AuthoritativeScanReader,
+    CommandDerivedIndexKindV1, CommandDerivedMemberV1, CommitScanPageV1, CommitScanRequest,
+    EncodedContentCharge, EncodedPageItem, EntityObservation, EntityTarget,
+    EventRouteScanRequestV1, EventRouteScanV1, EventRouteUpperFenceV1,
+    FilteredAuthoritativeIndexScanPage, FilteredAuthoritativeIndexScanRequest,
+    FilteredAuthoritativeScanReader, IdempotencyIdentity, IndexEpochPosition,
+    IndexPartitionFilterScope, IndexRangeEntry, MAX_COMMIT_SCAN_PAGE_BYTES,
     MAX_INDEX_SCAN_INSPECTED_BYTES, MAX_INDEX_SCAN_INSPECTED_ENTRIES, MAX_SCAN_PAGE_BYTES,
     PartitionEventRouteReader, PartitionIndexTarget, ReadSnapshot, ReadSnapshotBuilder,
     SnapshotReader, SnapshotRequest, StorageError, StorageErrorKind, StorageValueError,
@@ -412,6 +414,49 @@ impl PartitionEventRouteReader for RedbOperationalPorts {
 }
 
 impl AuthoritativeScanReader for RedbOperationalPorts {
+    fn scan_entity_partition(
+        &self,
+        request: AuthoritativeEntityPartitionScanRequest,
+    ) -> Result<AuthoritativeEntityPartitionScanPage, StorageError> {
+        let transaction = self.begin_composite_read()?;
+        let application_head = transaction.application_frontier()?.map_or(
+            FrontierPosition::BeforeFirst,
+            FrontierPosition::AppliedThrough,
+        );
+        let upper = exclusive_prefix_end(request.prefix()).ok_or_else(corrupt)?;
+        let start = request
+            .after()
+            .map_or(request.prefix(), riffdb_types::EntityKey::as_bytes);
+        let scan = transaction.read_range(
+            JournalTable::Entities,
+            start,
+            &upper,
+            usize::from(request.limit().get()).saturating_add(2),
+        )?;
+        let wanted = usize::from(request.limit().get());
+        let mut records = Vec::with_capacity(wanted);
+        let mut has_more = false;
+        for (physical_key, encoded) in scan {
+            if request
+                .after()
+                .is_some_and(|after| physical_key.as_ref() == after.as_bytes())
+            {
+                continue;
+            }
+            if records.len() == wanted {
+                has_more = true;
+                break;
+            }
+            let record = decode_entity_record_v1(&encoded)?;
+            if record.value().target().key().as_bytes() != physical_key.as_ref() {
+                return Err(corrupt());
+            }
+            records.push(record);
+        }
+        AuthoritativeEntityPartitionScanPage::new(&request, application_head, records, has_more)
+            .map_err(corrupt_value)
+    }
+
     fn scan_index(
         &self,
         request: AuthoritativeIndexScanRequest,

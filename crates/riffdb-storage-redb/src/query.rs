@@ -13,13 +13,14 @@ use riffdb_policy::{
     ProjectedPolicyCandidateObservationV1,
 };
 use riffdb_query_executor::{
-    BoundPredicate, CoveredResultBatch, MAX_QUERY_SCANNED_ROWS, QueryBackendFault,
-    QueryContinuation, QueryExecutionError, QueryExecutionPort, QueryExecutionRequest,
-    QueryNearestPage, QueryOwnedSnapshot, QueryParameters, QueryReadView, QueryRow, QueryScanPage,
-    VectorInspectionCandidateV1, VectorInspectionSnapshotV1, VectorInspectionTargetV1,
-    covered_row_matches_predicates_v1, execute_in_snapshot, execute_page_in_snapshot,
-    execute_policy_operational_page_in_snapshot, execute_policy_page_in_snapshot,
-    validate_query_execution_group,
+    BoundPredicate, CoveredResultBatch, LongPatternCandidateBatch, MAX_QUERY_SCANNED_ROWS,
+    QueryBackendFault, QueryContinuation, QueryExecutionError, QueryExecutionPort,
+    QueryExecutionRequest, QueryNearestPage, QueryOwnedSnapshot, QueryParameters, QueryReadView,
+    QueryRow, QueryScanPage, VectorInspectionCandidateV1, VectorInspectionSnapshotV1,
+    VectorInspectionTargetV1, covered_row_matches_predicates_v1, execute_in_snapshot,
+    execute_page_in_snapshot, execute_policy_operational_page_in_snapshot,
+    execute_policy_page_in_snapshot, execute_policy_provider_page_in_snapshot,
+    execute_provider_page_in_snapshot, validate_query_execution_group,
 };
 use riffdb_query_ir::{
     AccessDirection, CoveredResultSourceV1, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep,
@@ -28,7 +29,9 @@ use riffdb_query_ir::{
 use riffdb_storage_api::{
     EntityTarget, PartitionIndexTarget, StorageError, StorageErrorKind, VectorObservationTargetV1,
 };
-use riffdb_types::{CanonicalValue, EntityKey, EntityTypeId, FieldId, IndexEntryKey};
+use riffdb_types::{
+    ApplicationRoleHash, CanonicalValue, EntityKey, EntityTypeId, FieldId, IndexEntryKey,
+};
 
 use crate::codec::{
     decode_entity_record_v1, decode_entity_record_v1_profiled, decode_index_entry_v2,
@@ -770,6 +773,84 @@ impl QueryExecutionPort for RedbOperationalPorts {
             program, aggregates, parameters, prior, &mut view, policy,
         )
     }
+
+    fn execute_provider_query_page(
+        &self,
+        program: &QueryAccessProgramV1,
+        parameters: &QueryParameters,
+        prior: Option<&QueryContinuation>,
+        policy_shape: ApplicationRoleHash,
+        proof: &riffdb_projection::ResultSetEpochProofV1,
+        batches: &[LongPatternCandidateBatch],
+    ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+        let transaction = self
+            .begin_composite_read()
+            .map_err(map_storage_query_error)?;
+        note_query_table_open(QueryTableKind::Commits);
+        let head = transaction
+            .application_frontier()
+            .map_err(map_storage_query_error)?
+            .map_or(0, riffdb_types::CommitSequence::get);
+        let mut view = RedbQueryView {
+            transaction: &transaction,
+            entities_touched: false,
+            indexes_touched: false,
+            epochs_touched: false,
+            head,
+            program,
+            parameters,
+            profile: None,
+        };
+        execute_provider_page_in_snapshot(
+            program,
+            parameters,
+            prior,
+            &mut view,
+            policy_shape,
+            proof,
+            batches,
+        )
+    }
+
+    fn execute_policy_provider_query_page(
+        &self,
+        program: &QueryAccessProgramV1,
+        parameters: &QueryParameters,
+        prior: Option<&QueryContinuation>,
+        policy: &AuthorizedQueryRowPolicyContextV1,
+        policy_shape: ApplicationRoleHash,
+        proof: &riffdb_projection::ResultSetEpochProofV1,
+        batches: &[LongPatternCandidateBatch],
+    ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+        let transaction = self
+            .begin_composite_read()
+            .map_err(map_storage_query_error)?;
+        note_query_table_open(QueryTableKind::Commits);
+        let head = transaction
+            .application_frontier()
+            .map_err(map_storage_query_error)?
+            .map_or(0, riffdb_types::CommitSequence::get);
+        let mut view = RedbQueryView {
+            transaction: &transaction,
+            entities_touched: false,
+            indexes_touched: false,
+            epochs_touched: false,
+            head,
+            program,
+            parameters,
+            profile: None,
+        };
+        execute_policy_provider_page_in_snapshot(
+            program,
+            parameters,
+            prior,
+            &mut view,
+            policy,
+            policy_shape,
+            proof,
+            batches,
+        )
+    }
 }
 
 fn map_storage_query_error(error: StorageError) -> QueryExecutionError {
@@ -1425,7 +1506,9 @@ impl RedbQueryView<'_> {
             QueryAccessKind::Point { key_fields }
             | QueryAccessKind::DependentPointBatch { key_fields, .. }
             | QueryAccessKind::CandidateRootHydration { key_fields, .. } => key_fields,
-            QueryAccessKind::Index { .. } => return Err(invariant()),
+            QueryAccessKind::Index { .. } | QueryAccessKind::LongPatternCandidate { .. } => {
+                return Err(invariant());
+            }
             QueryAccessKind::Nearest { .. } => return Err(invariant()),
         };
         let values = key_fields

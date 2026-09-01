@@ -39,11 +39,11 @@ use riffdb_service::{
     AuthoritativeReadPort, BuildInfo, CapabilityTokenIssuer, CatalogReadPort,
     ColumnarProjectionPort, ContractMigrationApplication, CurrentPolicyPort, CursorMonotonicClock,
     CursorTokenGenerator, EventConsumerClock, EventConsumerPort, EventLeaseTokenSource,
-    ExactPredicateProjectionPort, ExactTextProjectionPort, OperationalStatusPort,
-    ProjectionQueryPort, QueryModuleReadPort, ReactiveModuleReadPort, RequestDeadlineScheduler,
-    RiffDbServiceActivator, ServiceDiagnostics, ServiceExecutors, ServiceHealthHooks,
-    ServiceIdentity, ServiceJobSpawner, ServiceProcessMetadata, ServiceProviders, ServiceTelemetry,
-    TokenizedTextProjectionPort,
+    ExactPredicateProjectionPort, ExactTextProjectionPort, LongPatternProjectionPort,
+    OperationalStatusPort, ProjectionQueryPort, QueryModuleReadPort, ReactiveModuleReadPort,
+    RequestDeadlineScheduler, RiffDbServiceActivator, ServiceDiagnostics, ServiceExecutors,
+    ServiceHealthHooks, ServiceIdentity, ServiceJobSpawner, ServiceProcessMetadata,
+    ServiceProviders, ServiceTelemetry, TokenizedTextProjectionPort,
 };
 use riffdb_storage_api::{
     OutboxDestinationIdV1, OutboxPageLimit, ReadableDigestKey, ReadableIdempotencyDigestInventory,
@@ -647,6 +647,7 @@ impl ProductionGraphBuilder {
         };
         let exact_text: Arc<dyn ExactTextProjectionPort> = exact_runtime.clone();
         let exact_predicate: Arc<dyn ExactPredicateProjectionPort> = exact_runtime.clone();
+        let long_pattern: Arc<dyn LongPatternProjectionPort> = exact_runtime.clone();
         let tokenized_text: Arc<dyn TokenizedTextProjectionPort> = exact_runtime;
 
         let executors = ServiceExecutors::new(
@@ -735,6 +736,7 @@ impl ProductionGraphBuilder {
         .with_live_query_clock(live_query_clock)
         .with_columnar(columnar)
         .with_exact_text(exact_text)
+        .with_long_pattern(long_pattern)
         .with_exact_predicate(exact_predicate)
         .with_tokenized_text(tokenized_text)
         .with_vector_projection(vector_projection)

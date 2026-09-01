@@ -15,36 +15,42 @@ use riffdb_policy::{AuthorizedQueryRowPolicyContextV1, MAX_PROJECTED_POLICY_CAND
 use riffdb_projection::{
     ExactPredicatePartitionIndexV4, ExactPredicatePartitionIndexV5,
     ExactPredicateProviderBindingV1, ExactPredicateProviderBindingV2, ExactPredicateProviderRowV1,
-    ExactTextPartitionIndexV2, ExactTextPartitionIndexV3, MAX_EXACT_PREDICATE_CHECKPOINT_BYTES_V4,
-    ProviderEpochObservationV1, ProviderLifecycleV1, ResultSetEpochContextV1,
-    ResultSetEpochRequirementV1, TokenizedTextConfigV1, TokenizedTextFieldV1,
-    TokenizedTextMutationV1, TokenizedTextPartitionIndexV1, negotiate_result_set_epoch_v1,
+    ExactTextPartitionIndexV2, ExactTextPartitionIndexV3, LongPatternPartitionV1,
+    LongPatternProviderErrorV1, MAX_EXACT_PREDICATE_CHECKPOINT_BYTES_V4,
+    MAX_LONG_PATTERN_CHECKPOINT_BYTES_V1, ProviderEpochObservationV1, ProviderLifecycleV1,
+    ResultSetEpochContextV1, ResultSetEpochRequirementV1, TokenizedTextConfigV1,
+    TokenizedTextFieldV1, TokenizedTextMutationV1, TokenizedTextPartitionIndexV1,
+    negotiate_result_set_epoch_v1,
 };
 use riffdb_query_executor::{
-    ExactTextResultSetV1, QueryExecutionError, QueryExecutionPort,
-    execute_exact_predicate_result_set_v1, execute_exact_text_filtered_result_set_v1,
+    ExactTextResultSetV1, LongPatternCandidateBatch, QueryExecutionError, QueryExecutionPort,
+    QueryRow, execute_exact_predicate_result_set_v1, execute_exact_text_filtered_result_set_v1,
     execute_exact_text_result_set_v1, execute_nullable_exact_predicate_result_set_v1,
     execute_tokenized_text_v1,
 };
 use riffdb_query_ir::{
     ExactComparisonProfileV1, ExactPredicateNodeV1, ExactReferenceCellV1, ExactScalarV1,
+    QueryAccessKind, QueryAccessStep,
 };
 use riffdb_service::{
     ExactPredicateProjectionPort, ExactPredicateProjectionRequest, ExactPredicateProjectionResult,
     ExactTextProjectionPort, ExactTextProjectionPortError, ExactTextProjectionRequest,
-    ExactTextProjectionResult, ExactTextProjectionRow, NullableExactPredicateProjectionRequest,
+    ExactTextProjectionResult, ExactTextProjectionRow, LongPatternProjectionPort,
+    LongPatternProjectionRequest, NullableExactPredicateProjectionRequest,
     TokenizedTextProjectionPort, TokenizedTextProjectionRequest,
 };
 use riffdb_storage_api::{
-    ApplicationExportSnapshotPort, ApplicationExportSourceRecordV1, AuthoritativeIndexScanPage,
+    ApplicationExportSnapshotPort, ApplicationExportSourceRecordV1,
+    AuthoritativeEntityPartitionScanRequest, AuthoritativeIndexScanPage,
     AuthoritativeIndexScanRequest, AuthoritativePointReader, AuthoritativeScanReader, EntityTarget,
     IndexRangePrefixBuilder, IndexRangeTarget, StorageScanLimit,
 };
 use riffdb_types::{
     CanonicalRecord, CanonicalValue, CapabilityId, CommitSequence,
-    EXACT_PREDICATE_PROVIDER_STATE_SCHEMA_HASH_V5, ExactTextProfileV1, FieldId, FrontierPosition,
-    HashDomain, PartitionKey, PartitionKeyHash, ProjectionGeneration,
-    ProjectionProviderPolicyModeV1, hash, hash_partition_key,
+    EXACT_PREDICATE_PROVIDER_STATE_SCHEMA_HASH_V5, EntityKey, ExactTextProfileV1, FieldId,
+    FrontierPosition, HashDomain, PartitionKey, PartitionKeyHash, ProjectionGeneration,
+    ProjectionProviderPolicyModeV1, decode_canonical_value, encode_canonical_value, hash,
+    hash_entity_key, hash_partition_key,
 };
 
 use crate::columnar_adapter::read_application_head;
@@ -61,7 +67,13 @@ const CHECKPOINT_LENGTH_OFFSET: usize = CHECKPOINT_SLOT_OFFSET + SLOT_KEY_BYTES;
 const CHECKPOINT_HEADER_BYTES: usize = CHECKPOINT_LENGTH_OFFSET + 4;
 const CHECKPOINT_DIGEST_BYTES: usize = 32;
 const MAX_ACTIVATION_CHECKPOINT_BYTES: usize =
-    CHECKPOINT_HEADER_BYTES + MAX_EXACT_PREDICATE_CHECKPOINT_BYTES_V4 + CHECKPOINT_DIGEST_BYTES;
+    CHECKPOINT_HEADER_BYTES + MAX_PROVIDER_CHECKPOINT_BYTES + CHECKPOINT_DIGEST_BYTES;
+const MAX_PROVIDER_CHECKPOINT_BYTES: usize =
+    if MAX_EXACT_PREDICATE_CHECKPOINT_BYTES_V4 > MAX_LONG_PATTERN_CHECKPOINT_BYTES_V1 {
+        MAX_EXACT_PREDICATE_CHECKPOINT_BYTES_V4
+    } else {
+        MAX_LONG_PATTERN_CHECKPOINT_BYTES_V1
+    };
 
 type SlotKey = Vec<u8>;
 type ExactTextSourceRow = (String, Option<CanonicalValue>, CanonicalRecord);
@@ -98,6 +110,64 @@ struct NullableExactPredicateRegistration {
     partition_value: CanonicalValue,
     policy_shape: riffdb_types::ApplicationRoleHash,
     row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+}
+
+struct LongPatternRegistration {
+    program: Arc<riffdb_query_ir::QueryAccessProgramV1>,
+    step: QueryAccessStep,
+    partition_key: PartitionKey,
+    partition_value: CanonicalValue,
+    policy_shape: riffdb_types::ApplicationRoleHash,
+    row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+}
+
+impl LongPatternRegistration {
+    fn from_request(request: &LongPatternProjectionRequest) -> Self {
+        Self {
+            program: Arc::clone(request.program()),
+            step: request.step().clone(),
+            partition_key: request.partition_key().clone(),
+            partition_value: request.partition_value().clone(),
+            policy_shape: request.policy_shape(),
+            row_policy: request.row_policy().cloned(),
+        }
+    }
+
+    fn row_policy_identity(&self) -> Option<(CapabilityId, NonZeroU64)> {
+        self.row_policy
+            .as_deref()
+            .and_then(AuthorizedQueryRowPolicyContextV1::internal_capability_identity)
+    }
+
+    fn synthetic_plan_identity(&self) -> riffdb_types::QueryPlanHash {
+        let mut bytes = Vec::with_capacity(64);
+        bytes.extend_from_slice(self.program.identity().hash().as_bytes());
+        if let QueryAccessKind::LongPatternCandidate { pattern, .. } = self.step.access() {
+            bytes.extend_from_slice(pattern.descriptor().digest().as_bytes());
+        }
+        riffdb_types::QueryPlanHash::from_bytes(*hash(HashDomain::QueryPlan, &bytes).as_bytes())
+    }
+
+    fn key(&self) -> SlotKey {
+        slot_key(
+            self.synthetic_plan_identity(),
+            hash_partition_key(self.partition_key.as_bytes()),
+            self.policy_shape,
+            self.row_policy_identity(),
+        )
+    }
+
+    fn matches(&self, request: &LongPatternProjectionRequest) -> bool {
+        self.program.identity() == request.program().identity()
+            && self.step == *request.step()
+            && self.partition_key == *request.partition_key()
+            && self.partition_value == *request.partition_value()
+            && self.policy_shape == request.policy_shape()
+            && self.row_policy_identity()
+                == request
+                    .row_policy()
+                    .and_then(|policy| policy.internal_capability_identity())
+    }
 }
 
 impl NullableExactPredicateRegistration {
@@ -458,6 +528,74 @@ struct NullableExactPredicateSlot {
     state: Mutex<NullableExactPredicateSlotState>,
 }
 
+struct LongPatternProviderState {
+    provider: LongPatternPartitionV1,
+    generation: ProjectionGeneration,
+    frontier: CommitSequence,
+}
+
+struct LongPatternEpochs {
+    providers: VecDeque<Box<LongPatternProviderState>>,
+}
+
+impl LongPatternEpochs {
+    fn one(provider: LongPatternProviderState) -> Self {
+        Self {
+            providers: VecDeque::from([Box::new(provider)]),
+        }
+    }
+
+    fn current(&self) -> Option<&LongPatternProviderState> {
+        self.providers.back().map(Box::as_ref)
+    }
+
+    fn select(&self, pinned: Option<CommitSequence>) -> Option<&LongPatternProviderState> {
+        pinned.map_or_else(
+            || self.current(),
+            |epoch| {
+                self.providers
+                    .iter()
+                    .find(|provider| provider.frontier == epoch)
+                    .map(Box::as_ref)
+            },
+        )
+    }
+
+    fn push(&mut self, provider: LongPatternProviderState, retained: usize) {
+        self.providers.push_back(Box::new(provider));
+        while self.providers.len() > retained.max(1) {
+            self.providers.pop_front();
+        }
+    }
+}
+
+enum LongPatternSlotState {
+    Building,
+    Rebuilding(LongPatternEpochs),
+    Ready(LongPatternEpochs),
+    Unavailable {
+        observed_head: CommitSequence,
+        prior_generation: ProjectionGeneration,
+    },
+    IntegrityFailure,
+}
+
+struct LongPatternSlot {
+    registration: LongPatternRegistration,
+    checkpoint: PathBuf,
+    state: Mutex<LongPatternSlotState>,
+}
+
+impl LongPatternSlot {
+    fn new(registration: LongPatternRegistration, checkpoint: PathBuf) -> Self {
+        Self {
+            registration,
+            checkpoint,
+            state: Mutex::new(LongPatternSlotState::Building),
+        }
+    }
+}
+
 impl ExactTextSlot {
     fn new(registration: ExactTextRegistration, checkpoint: PathBuf) -> Self {
         Self {
@@ -510,6 +648,8 @@ pub(crate) struct ExactTextRuntime {
     nullable_predicate_slots: Mutex<BTreeMap<SlotKey, Arc<NullableExactPredicateSlot>>>,
     tokenized_root: PathBuf,
     tokenized_slots: Mutex<BTreeMap<SlotKey, Arc<TokenizedTextSlot>>>,
+    long_pattern_root: PathBuf,
+    long_pattern_slots: Mutex<BTreeMap<SlotKey, Arc<LongPatternSlot>>>,
 }
 
 impl ExactTextRuntime {
@@ -525,6 +665,8 @@ impl ExactTextRuntime {
         fs::create_dir_all(&predicate_root).map_err(|_| ExactTextRuntimeOpenError)?;
         let tokenized_root = projections_root.join("tokenized-text-v1");
         fs::create_dir_all(&tokenized_root).map_err(|_| ExactTextRuntimeOpenError)?;
+        let long_pattern_root = projections_root.join("long-pattern-v1");
+        fs::create_dir_all(&long_pattern_root).map_err(|_| ExactTextRuntimeOpenError)?;
         Ok(Arc::new(Self {
             storage,
             root,
@@ -536,6 +678,8 @@ impl ExactTextRuntime {
             nullable_predicate_slots: Mutex::new(BTreeMap::new()),
             tokenized_root,
             tokenized_slots: Mutex::new(BTreeMap::new()),
+            long_pattern_root,
+            long_pattern_slots: Mutex::new(BTreeMap::new()),
         }))
     }
 
@@ -646,6 +790,40 @@ impl ExactTextRuntime {
             .lock()
             .map(|slots| slots.values().cloned().collect())
             .map_err(|_| ExactTextProjectionPortError::Integrity)
+    }
+
+    fn registered_long_pattern_slots(
+        &self,
+    ) -> Result<Vec<Arc<LongPatternSlot>>, ExactTextProjectionPortError> {
+        self.long_pattern_slots
+            .lock()
+            .map(|slots| slots.values().cloned().collect())
+            .map_err(|_| ExactTextProjectionPortError::Integrity)
+    }
+
+    fn long_pattern_slot_for(
+        &self,
+        request: &LongPatternProjectionRequest,
+    ) -> Result<Arc<LongPatternSlot>, ExactTextProjectionPortError> {
+        let registration = LongPatternRegistration::from_request(request);
+        let key = registration.key();
+        let mut slots = self
+            .long_pattern_slots
+            .lock()
+            .map_err(|_| ExactTextProjectionPortError::Integrity)?;
+        if let Some(slot) = slots.get(&key) {
+            if !slot.registration.matches(request) {
+                return Err(ExactTextProjectionPortError::Integrity);
+            }
+            return Ok(Arc::clone(slot));
+        }
+        if slots.len() >= MAX_REGISTERED_EXACT_PARTITIONS {
+            return Err(ExactTextProjectionPortError::Unavailable);
+        }
+        let checkpoint = self.long_pattern_root.join(format!("{}.rlpv", hex(&key)));
+        let slot = Arc::new(LongPatternSlot::new(registration, checkpoint));
+        slots.insert(key, Arc::clone(&slot));
+        Ok(slot)
     }
 
     fn tokenized_slot_for(
@@ -808,6 +986,103 @@ impl ExactTextProjectionPort for ExactTextRuntime {
             result.provider(),
             result.history_incarnation(),
         ))
+    }
+}
+
+impl LongPatternProjectionPort for ExactTextRuntime {
+    fn execute(
+        &self,
+        request: LongPatternProjectionRequest,
+    ) -> Result<LongPatternCandidateBatch, ExactTextProjectionPortError> {
+        let QueryAccessKind::LongPatternCandidate { pattern, .. } = request.step().access() else {
+            return Err(ExactTextProjectionPortError::Integrity);
+        };
+        if pattern.descriptor().policy_mode() != ProjectionProviderPolicyModeV1::BoundedRowAdmission
+            || request.row_policy().is_none()
+            || request.plan() != request.program().identity().hash()
+        {
+            return Err(ExactTextProjectionPortError::Integrity);
+        }
+        let head = read_application_head(&self.storage)
+            .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
+        let FrontierPosition::AppliedThrough(head) = head else {
+            return Err(ExactTextProjectionPortError::Building);
+        };
+        if request.pinned_epoch().is_some_and(|epoch| epoch != head) {
+            return Err(ExactTextProjectionPortError::SnapshotRetired);
+        }
+        let slot = self.long_pattern_slot_for(&request)?;
+        let state = slot
+            .state
+            .lock()
+            .map_err(|_| ExactTextProjectionPortError::Integrity)?;
+        let epochs = match &*state {
+            LongPatternSlotState::Building => {
+                return Err(ExactTextProjectionPortError::Building);
+            }
+            LongPatternSlotState::Rebuilding(_) => {
+                return Err(ExactTextProjectionPortError::Rebuilding);
+            }
+            LongPatternSlotState::Ready(epochs) => epochs,
+            LongPatternSlotState::Unavailable { .. } => {
+                return Err(ExactTextProjectionPortError::Unavailable);
+            }
+            LongPatternSlotState::IntegrityFailure => {
+                return Err(ExactTextProjectionPortError::Integrity);
+            }
+        };
+        let provider = epochs
+            .select(request.pinned_epoch())
+            .ok_or(ExactTextProjectionPortError::SnapshotRetired)?;
+        if provider.frontier != head
+            || request
+                .minimum_epoch()
+                .is_some_and(|minimum| provider.frontier < minimum)
+        {
+            return Err(ExactTextProjectionPortError::FreshnessUnsatisfied);
+        }
+        let observed = provider
+            .provider
+            .query_observed(request.pattern(), None)
+            .map_err(map_long_pattern_error)?;
+        let rows = observed
+            .results()
+            .iter()
+            .map(|result| {
+                decode_long_pattern_release(&slot.registration, result.key(), result.release())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        LongPatternCandidateBatch::checked(
+            request.step().binding().to_owned(),
+            rows,
+            pattern.descriptor().digest(),
+            pattern.descriptor().state_identity().schema_hash(),
+            self.history_incarnation,
+            provider.generation,
+            provider.frontier,
+            provider.frontier,
+            observed.scanned_rows(),
+            observed.verification_bytes(),
+        )
+        .ok_or(ExactTextProjectionPortError::Integrity)
+    }
+}
+
+const fn map_long_pattern_error(error: LongPatternProviderErrorV1) -> ExactTextProjectionPortError {
+    match error {
+        LongPatternProviderErrorV1::CandidateBound
+        | LongPatternProviderErrorV1::VerificationBound
+        | LongPatternProviderErrorV1::ResultBound
+        | LongPatternProviderErrorV1::PartitionBound
+        | LongPatternProviderErrorV1::RowBound
+        | LongPatternProviderErrorV1::CheckpointBound => {
+            ExactTextProjectionPortError::ResponseTooLarge
+        }
+        LongPatternProviderErrorV1::ProfileMismatch
+        | LongPatternProviderErrorV1::UniverseRequired
+        | LongPatternProviderErrorV1::UniverseInvalid
+        | LongPatternProviderErrorV1::InvalidBounds
+        | LongPatternProviderErrorV1::CheckpointInvalid => ExactTextProjectionPortError::Integrity,
     }
 }
 
@@ -1259,10 +1534,244 @@ fn refresh_registered_slots(runtime: &ExactTextRuntime) -> Result<(), ()> {
             }
         }
     }
+    refresh_registered_long_pattern_slots(runtime)?;
     refresh_registered_predicate_slots(runtime)?;
     refresh_registered_nullable_predicate_slots(runtime)?;
     refresh_registered_tokenized_slots(runtime)?;
     Ok(())
+}
+
+fn refresh_registered_long_pattern_slots(runtime: &ExactTextRuntime) -> Result<(), ()> {
+    let slots = runtime.registered_long_pattern_slots().map_err(|_| ())?;
+    for slot in slots {
+        let head = read_application_head(&runtime.storage).map_err(|_| ())?;
+        let FrontierPosition::AppliedThrough(head) = head else {
+            continue;
+        };
+        let prior_generation = {
+            let mut state = slot.state.lock().map_err(|_| ())?;
+            match &*state {
+                LongPatternSlotState::Ready(epochs)
+                    if epochs
+                        .current()
+                        .is_some_and(|provider| provider.frontier == head) =>
+                {
+                    continue;
+                }
+                LongPatternSlotState::Ready(_) => {
+                    let previous =
+                        std::mem::replace(&mut *state, LongPatternSlotState::IntegrityFailure);
+                    let LongPatternSlotState::Ready(epochs) = previous else {
+                        return Err(());
+                    };
+                    let generation = epochs
+                        .current()
+                        .map(|provider| provider.generation)
+                        .ok_or(())?;
+                    *state = LongPatternSlotState::Rebuilding(epochs);
+                    Some(generation)
+                }
+                LongPatternSlotState::Rebuilding(epochs) => Some(
+                    epochs
+                        .current()
+                        .map(|provider| provider.generation)
+                        .ok_or(())?,
+                ),
+                LongPatternSlotState::Building => None,
+                LongPatternSlotState::Unavailable {
+                    observed_head,
+                    prior_generation,
+                } => {
+                    if *observed_head == head {
+                        continue;
+                    }
+                    let generation = *prior_generation;
+                    *state = LongPatternSlotState::Building;
+                    Some(generation)
+                }
+                LongPatternSlotState::IntegrityFailure => continue,
+            }
+        };
+        match rebuild_long_pattern_slot(runtime, &slot, head, prior_generation) {
+            Ok(Some(provider)) => {
+                let QueryAccessKind::LongPatternCandidate { pattern, .. } =
+                    slot.registration.step.access()
+                else {
+                    return Err(());
+                };
+                let retained =
+                    usize::try_from(pattern.descriptor().static_bounds().retained_epochs)
+                        .map_err(|_| ())?;
+                let mut state = slot.state.lock().map_err(|_| ())?;
+                let previous =
+                    std::mem::replace(&mut *state, LongPatternSlotState::IntegrityFailure);
+                *state = match previous {
+                    LongPatternSlotState::Rebuilding(mut epochs) => {
+                        if epochs
+                            .current()
+                            .is_none_or(|current| current.frontier != head)
+                        {
+                            epochs.push(provider, retained);
+                        }
+                        LongPatternSlotState::Ready(epochs)
+                    }
+                    LongPatternSlotState::Building => {
+                        LongPatternSlotState::Ready(LongPatternEpochs::one(provider))
+                    }
+                    _ => return Err(()),
+                };
+            }
+            Ok(None) | Err(RebuildFailure::Transient) => {}
+            Err(RebuildFailure::Capacity(prior_generation)) => {
+                let mut state = slot.state.lock().map_err(|_| ())?;
+                *state = LongPatternSlotState::Unavailable {
+                    observed_head: head,
+                    prior_generation,
+                };
+            }
+            Err(RebuildFailure::Integrity) => {
+                let mut state = slot.state.lock().map_err(|_| ())?;
+                *state = LongPatternSlotState::IntegrityFailure;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn rebuild_long_pattern_slot(
+    runtime: &ExactTextRuntime,
+    slot: &LongPatternSlot,
+    head: CommitSequence,
+    prior_generation: Option<ProjectionGeneration>,
+) -> Result<Option<LongPatternProviderState>, RebuildFailure> {
+    if prior_generation.is_none()
+        && let Some(bytes) = read_checkpoint(&slot.checkpoint)?
+        && let Ok(provider_bytes) = decode_activation_checkpoint(
+            &bytes,
+            &slot.registration.key(),
+            runtime.history_incarnation,
+        )
+        && let Ok(recovered) = decode_long_pattern_checkpoint(provider_bytes)
+    {
+        if recovered.frontier == head {
+            return Ok(Some(recovered));
+        }
+        return rebuild_long_pattern_slot(runtime, slot, head, Some(recovered.generation));
+    }
+    let generation = prior_generation
+        .map_or(
+            Some(runtime.initial_generation),
+            ProjectionGeneration::checked_next,
+        )
+        .ok_or(RebuildFailure::Integrity)?;
+    let provider = rebuild_long_pattern_partition(runtime, &slot.registration, head, generation)?;
+    let provider_bytes = encode_long_pattern_checkpoint(&provider)?;
+    persist_predicate_checkpoint_bytes(
+        &slot.checkpoint,
+        &slot.registration.key(),
+        runtime.history_incarnation,
+        &provider_bytes,
+    )
+    .map_err(|_| RebuildFailure::Transient)?;
+    Ok(Some(provider))
+}
+
+fn rebuild_long_pattern_partition(
+    runtime: &ExactTextRuntime,
+    registration: &LongPatternRegistration,
+    expected_head: CommitSequence,
+    generation: ProjectionGeneration,
+) -> Result<LongPatternProviderState, RebuildFailure> {
+    let QueryAccessKind::LongPatternCandidate { pattern, .. } = registration.step.access() else {
+        return Err(RebuildFailure::Integrity);
+    };
+    let prefix = registration
+        .step
+        .internal_entity_key_schema()
+        .encode_entity_prefix(std::slice::from_ref(&registration.partition_value))
+        .map_err(|_| RebuildFailure::Integrity)?;
+    let limit = StorageScanLimit::new(REBUILD_PAGE_ROWS).ok_or(RebuildFailure::Integrity)?;
+    let mut records = BTreeMap::<EntityKey, riffdb_storage_api::StoredEntityRecordV1>::new();
+    let mut after = None;
+    loop {
+        let request = AuthoritativeEntityPartitionScanRequest::new(
+            registration.step.internal_entity_id(),
+            prefix.clone(),
+            after,
+            limit,
+        )
+        .map_err(|_| RebuildFailure::Integrity)?;
+        let page = AuthoritativeScanReader::scan_entity_partition(&runtime.storage, request)
+            .map_err(|_| RebuildFailure::Transient)?;
+        if page.application_head() != FrontierPosition::AppliedThrough(expected_head) {
+            return Err(RebuildFailure::Transient);
+        }
+        for item in page.records() {
+            let record = item.value();
+            if records.len() >= pattern.bounds().rows() as usize
+                || records
+                    .insert(record.target().key().clone(), record.clone())
+                    .is_some()
+            {
+                return Err(RebuildFailure::Capacity(generation));
+            }
+        }
+        let Some(next) = page.next_after().cloned() else {
+            break;
+        };
+        after = Some(next);
+    }
+    if let Some(policy) = registration.row_policy.as_deref() {
+        let candidates = records.keys().cloned().collect::<Vec<_>>();
+        let candidate_set = records.keys().cloned().collect::<BTreeSet<_>>();
+        let admission = QueryExecutionPort::authorize_projected_candidates(
+            &runtime.storage,
+            registration.step.internal_entity_id(),
+            &candidates,
+            policy,
+        )
+        .map_err(|error| map_policy_admission_error(error, generation))?;
+        if !admission.covers(registration.step.internal_entity_id(), &candidate_set) {
+            return Err(RebuildFailure::Integrity);
+        }
+        records.retain(|key, _| admission.admits(key));
+    }
+    let access = registration
+        .program
+        .internal_entity_access(registration.step.entity())
+        .ok_or(RebuildFailure::Integrity)?;
+    let field_ids = access.internal_fields().collect::<BTreeMap<_, _>>();
+    let text_field = *field_ids
+        .get(pattern.field())
+        .ok_or(RebuildFailure::Integrity)?;
+    let mut provider = LongPatternPartitionV1::new(pattern.profile(), pattern.bounds());
+    for (key, record) in records {
+        let source = record
+            .fields()
+            .fields()
+            .binary_search_by_key(&text_field, |(field, _)| *field)
+            .ok()
+            .and_then(|index| match &record.fields().fields()[index].1 {
+                CanonicalValue::String(value) => Some(value.as_str()),
+                _ => None,
+            })
+            .ok_or(RebuildFailure::Integrity)?;
+        let release = encode_long_pattern_release(&key, record.fields())?;
+        provider
+            .upsert(hash_entity_key(key.as_bytes()), source, release)
+            .map_err(|error| match error {
+                LongPatternProviderErrorV1::RowBound
+                | LongPatternProviderErrorV1::PartitionBound => {
+                    RebuildFailure::Capacity(generation)
+                }
+                _ => RebuildFailure::Integrity,
+            })?;
+    }
+    Ok(LongPatternProviderState {
+        provider,
+        generation,
+        frontier: expected_head,
+    })
 }
 
 fn refresh_registered_tokenized_slots(runtime: &ExactTextRuntime) -> Result<(), ()> {
@@ -2380,6 +2889,150 @@ fn persist_checkpoint(
     .sync_all()
 }
 
+fn encode_long_pattern_release(
+    key: &EntityKey,
+    fields: &CanonicalRecord,
+) -> Result<Vec<u8>, RebuildFailure> {
+    let encoded = encode_canonical_value(&CanonicalValue::Record(fields.clone()))
+        .map_err(|_| RebuildFailure::Integrity)?;
+    let key_len = u32::try_from(key.as_bytes().len()).map_err(|_| RebuildFailure::Integrity)?;
+    let value_len = u32::try_from(encoded.len()).map_err(|_| RebuildFailure::Integrity)?;
+    let mut output = Vec::with_capacity(8 + key.as_bytes().len() + encoded.len());
+    output.extend_from_slice(&key_len.to_be_bytes());
+    output.extend_from_slice(key.as_bytes());
+    output.extend_from_slice(&value_len.to_be_bytes());
+    output.extend_from_slice(&encoded);
+    Ok(output)
+}
+
+fn decode_long_pattern_release(
+    registration: &LongPatternRegistration,
+    expected_hash: riffdb_types::EntityKeyHash,
+    release: &[u8],
+) -> Result<QueryRow, ExactTextProjectionPortError> {
+    let key_len = release
+        .get(..4)
+        .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+        .map(u32::from_be_bytes)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or(ExactTextProjectionPortError::Integrity)?;
+    let key_end = 4_usize
+        .checked_add(key_len)
+        .ok_or(ExactTextProjectionPortError::Integrity)?;
+    let key = EntityKey::from_bytes(
+        release
+            .get(4..key_end)
+            .ok_or(ExactTextProjectionPortError::Integrity)?
+            .to_vec(),
+    )
+    .map_err(|_| ExactTextProjectionPortError::Integrity)?;
+    if key.entity_type_id() != registration.step.internal_entity_id()
+        || hash_entity_key(key.as_bytes()) != expected_hash
+    {
+        return Err(ExactTextProjectionPortError::Integrity);
+    }
+    let length_end = key_end
+        .checked_add(4)
+        .ok_or(ExactTextProjectionPortError::Integrity)?;
+    let value_len = release
+        .get(key_end..length_end)
+        .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+        .map(u32::from_be_bytes)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or(ExactTextProjectionPortError::Integrity)?;
+    let value_end = length_end
+        .checked_add(value_len)
+        .ok_or(ExactTextProjectionPortError::Integrity)?;
+    if value_end != release.len() {
+        return Err(ExactTextProjectionPortError::Integrity);
+    }
+    let CanonicalValue::Record(record) = decode_canonical_value(
+        release
+            .get(length_end..value_end)
+            .ok_or(ExactTextProjectionPortError::Integrity)?,
+    )
+    .map_err(|_| ExactTextProjectionPortError::Integrity)?
+    else {
+        return Err(ExactTextProjectionPortError::Integrity);
+    };
+    let access = registration
+        .program
+        .internal_entity_access(registration.step.entity())
+        .ok_or(ExactTextProjectionPortError::Integrity)?;
+    let mut fields = BTreeMap::new();
+    for (name, field) in access.internal_fields() {
+        if let Ok(index) = record
+            .fields()
+            .binary_search_by_key(&field, |(field, _)| *field)
+        {
+            fields.insert(name.to_owned(), record.fields()[index].1.clone());
+        }
+    }
+    QueryRow::checked(registration.step.entity().to_owned(), fields)
+        .ok_or(ExactTextProjectionPortError::Integrity)
+}
+
+const LONG_PATTERN_EPOCH_MAGIC: &[u8; 4] = b"RLPE";
+
+fn encode_long_pattern_checkpoint(
+    provider: &LongPatternProviderState,
+) -> Result<Vec<u8>, RebuildFailure> {
+    let state = provider
+        .provider
+        .checkpoint_bytes()
+        .map_err(|_| RebuildFailure::Integrity)?;
+    let state_len = u32::try_from(state.len()).map_err(|_| RebuildFailure::Integrity)?;
+    let mut output = Vec::with_capacity(24 + state.len());
+    output.extend_from_slice(LONG_PATTERN_EPOCH_MAGIC);
+    output.extend_from_slice(&1_u16.to_be_bytes());
+    output.extend_from_slice(&0_u16.to_be_bytes());
+    output.extend_from_slice(&provider.generation.to_be_bytes());
+    output.extend_from_slice(&provider.frontier.to_be_bytes());
+    output.extend_from_slice(&state_len.to_be_bytes());
+    output.extend_from_slice(&state);
+    Ok(output)
+}
+
+fn decode_long_pattern_checkpoint(
+    bytes: &[u8],
+) -> Result<LongPatternProviderState, RebuildFailure> {
+    if bytes.len() < 28
+        || &bytes[..4] != LONG_PATTERN_EPOCH_MAGIC
+        || bytes[4..6] != 1_u16.to_be_bytes()
+        || bytes[6..8] != [0, 0]
+    {
+        return Err(RebuildFailure::Integrity);
+    }
+    let generation = ProjectionGeneration::new(u64::from_be_bytes(
+        bytes[8..16]
+            .try_into()
+            .map_err(|_| RebuildFailure::Integrity)?,
+    ))
+    .ok_or(RebuildFailure::Integrity)?;
+    let frontier = CommitSequence::new(u64::from_be_bytes(
+        bytes[16..24]
+            .try_into()
+            .map_err(|_| RebuildFailure::Integrity)?,
+    ))
+    .ok_or(RebuildFailure::Integrity)?;
+    let state_len = usize::try_from(u32::from_be_bytes(
+        bytes[24..28]
+            .try_into()
+            .map_err(|_| RebuildFailure::Integrity)?,
+    ))
+    .map_err(|_| RebuildFailure::Integrity)?;
+    if 28_usize.checked_add(state_len) != Some(bytes.len()) {
+        return Err(RebuildFailure::Integrity);
+    }
+    let provider = LongPatternPartitionV1::from_checkpoint_bytes(&bytes[28..])
+        .map_err(|_| RebuildFailure::Integrity)?;
+    Ok(LongPatternProviderState {
+        provider,
+        generation,
+        frontier,
+    })
+}
+
 fn persist_predicate_checkpoint(
     path: &Path,
     slot_key: &[u8],
@@ -2399,7 +3052,7 @@ fn persist_predicate_checkpoint_bytes(
     provider_bytes: &[u8],
 ) -> Result<(), std::io::Error> {
     let pending = path.with_extension("pending");
-    if provider_bytes.len() > MAX_EXACT_PREDICATE_CHECKPOINT_BYTES_V4 {
+    if provider_bytes.len() > MAX_PROVIDER_CHECKPOINT_BYTES {
         return Err(std::io::Error::other("exact predicate checkpoint capacity"));
     }
     let bytes = encode_activation_checkpoint(slot_key, history_incarnation, provider_bytes)
@@ -2455,8 +3108,7 @@ fn encode_activation_checkpoint(
     history_incarnation: u64,
     provider: &[u8],
 ) -> Result<Vec<u8>, RebuildFailure> {
-    if slot_key.len() != SLOT_KEY_BYTES || provider.len() > MAX_EXACT_PREDICATE_CHECKPOINT_BYTES_V4
-    {
+    if slot_key.len() != SLOT_KEY_BYTES || provider.len() > MAX_PROVIDER_CHECKPOINT_BYTES {
         return Err(RebuildFailure::Integrity);
     }
     let provider_length = u32::try_from(provider.len()).map_err(|_| RebuildFailure::Integrity)?;

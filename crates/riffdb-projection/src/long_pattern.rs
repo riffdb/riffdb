@@ -8,6 +8,8 @@ use riffdb_types::{
 };
 
 const MAGIC: &[u8] = b"RLPV\x01";
+/// Durable rebuildable provider-state format identity.
+pub const LONG_PATTERN_PROVIDER_STATE_FORMAT_V1: u16 = 1;
 /// Maximum opaque release bytes retained per row.
 pub const MAX_LONG_PATTERN_RELEASE_BYTES_PER_ROW_V1: usize = 64 * 1024;
 /// Maximum provider checkpoint bytes.
@@ -21,11 +23,39 @@ struct LongPatternRowV1 {
     release: Vec<u8>,
 }
 
+type LongPatternPostingsV1 = BTreeMap<[u8; 3], BTreeSet<EntityKeyHash>>;
+
 /// One exact verified provider result.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LongPatternResultV1 {
     key: EntityKeyHash,
     release: Vec<u8>,
+}
+
+/// Exact bounded provider work and verified result observation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LongPatternQueryObservationV1 {
+    results: Vec<LongPatternResultV1>,
+    scanned_rows: u64,
+    verification_bytes: u64,
+}
+
+impl LongPatternQueryObservationV1 {
+    /// Verified result rows in canonical key order.
+    #[must_use]
+    pub fn results(&self) -> &[LongPatternResultV1] {
+        &self.results
+    }
+    /// Provider rows inspected after policy-aligned admission.
+    #[must_use]
+    pub const fn scanned_rows(&self) -> u64 {
+        self.scanned_rows
+    }
+    /// Complete matched bytes charged to exact verification.
+    #[must_use]
+    pub const fn verification_bytes(&self) -> u64 {
+        self.verification_bytes
+    }
 }
 
 impl LongPatternResultV1 {
@@ -47,7 +77,7 @@ pub struct LongPatternPartitionV1 {
     profile: LongPatternProfileV1,
     bounds: LongPatternBoundsV1,
     rows: BTreeMap<EntityKeyHash, LongPatternRowV1>,
-    postings: BTreeMap<[u8; 3], BTreeSet<EntityKeyHash>>,
+    postings: LongPatternPostingsV1,
     total_matched_bytes: u64,
 }
 
@@ -136,6 +166,16 @@ impl LongPatternPartitionV1 {
         pattern: &CompiledLongPatternV1,
         universe: Option<&[EntityKeyHash]>,
     ) -> Result<Vec<LongPatternResultV1>, LongPatternProviderErrorV1> {
+        self.query_observed(pattern, universe)
+            .map(|observation| observation.results)
+    }
+
+    /// Selects and verifies while retaining exact bounded work evidence.
+    pub fn query_observed(
+        &self,
+        pattern: &CompiledLongPatternV1,
+        universe: Option<&[EntityKeyHash]>,
+    ) -> Result<LongPatternQueryObservationV1, LongPatternProviderErrorV1> {
         if pattern.profile() != self.profile
             && !(pattern.operator().is_case_insensitive()
                 && self.profile == LongPatternProfileV1::UnicodeFoldV1)
@@ -164,6 +204,7 @@ impl LongPatternPartitionV1 {
         if candidates.len() > self.bounds.candidates() as usize {
             return Err(LongPatternProviderErrorV1::CandidateBound);
         }
+        let scanned_rows = candidates.len() as u64;
         let mut verification_bytes = 0_u64;
         let mut results = Vec::new();
         for key in candidates {
@@ -191,7 +232,11 @@ impl LongPatternPartitionV1 {
                 }
             }
         }
-        Ok(results)
+        Ok(LongPatternQueryObservationV1 {
+            results,
+            scanned_rows,
+            verification_bytes,
+        })
     }
 
     /// Canonical byte-frozen checkpoint containing values, digests, grams and release data.
@@ -278,7 +323,7 @@ impl LongPatternPartitionV1 {
 fn rebuild(
     rows: &BTreeMap<EntityKeyHash, LongPatternRowV1>,
     bounds: LongPatternBoundsV1,
-) -> Result<(BTreeMap<[u8; 3], BTreeSet<EntityKeyHash>>, u64), LongPatternProviderErrorV1> {
+) -> Result<(LongPatternPostingsV1, u64), LongPatternProviderErrorV1> {
     if rows.len() > bounds.rows() as usize {
         return Err(LongPatternProviderErrorV1::PartitionBound);
     }
@@ -531,5 +576,40 @@ mod tests {
             Err(LongPatternProviderErrorV1::RowBound)
         );
         assert_eq!(state.checkpoint_bytes().expect("after"), before);
+    }
+
+    #[test]
+    fn maximum_mlflow_value_and_checkpoint_corruption_are_fail_closed() {
+        let mut state = LongPatternPartitionV1::new(LongPatternProfileV1::UnicodeFoldV1, bounds());
+        let source = "A".repeat(8_000);
+        state
+            .upsert(key(1), &source, b"release".to_vec())
+            .expect("maximum source value");
+        let pattern = CompiledLongPatternV1::compile_bounded(
+            LongPatternOperatorV1::Like,
+            LongPatternProfileV1::UnicodeFoldV1,
+            "%aaa%",
+            bounds(),
+        )
+        .expect("bounded pattern");
+        let observed = state.query_observed(&pattern, None).expect("observation");
+        assert_eq!(observed.results().len(), 1);
+        assert_eq!(observed.scanned_rows(), 1);
+        assert_eq!(observed.verification_bytes(), 8_000);
+
+        let bytes = state.checkpoint_bytes().expect("checkpoint");
+        for truncated in [0, 1, bytes.len() / 2, bytes.len() - 1] {
+            assert_eq!(
+                LongPatternPartitionV1::from_checkpoint_bytes(&bytes[..truncated]),
+                Err(LongPatternProviderErrorV1::CheckpointInvalid)
+            );
+        }
+        let mut corrupted = bytes;
+        let index = MAGIC.len() + 1 + (10 * 4) + (4 * 8) + 4 + 32 + 4 + source.len();
+        corrupted[index] ^= 1;
+        assert_eq!(
+            LongPatternPartitionV1::from_checkpoint_bytes(&corrupted),
+            Err(LongPatternProviderErrorV1::CheckpointInvalid)
+        );
     }
 }

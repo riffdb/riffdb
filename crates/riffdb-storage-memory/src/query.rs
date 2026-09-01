@@ -11,18 +11,22 @@ use riffdb_policy::{
     ProjectedPolicyCandidateObservationV1,
 };
 use riffdb_query_executor::{
-    BoundPredicate, QueryBackendFault, QueryContinuation, QueryExecutionError, QueryExecutionPort,
-    QueryExecutionRequest, QueryNearestPage, QueryOwnedSnapshot, QueryParameters, QueryReadView,
-    QueryRow, QueryScanPage, execute_in_snapshot, execute_operational_page_in_snapshot,
-    execute_page_in_snapshot, execute_policy_operational_page_in_snapshot,
-    execute_policy_page_in_snapshot, validate_query_execution_group,
+    BoundPredicate, LongPatternCandidateBatch, QueryBackendFault, QueryContinuation,
+    QueryExecutionError, QueryExecutionPort, QueryExecutionRequest, QueryNearestPage,
+    QueryOwnedSnapshot, QueryParameters, QueryReadView, QueryRow, QueryScanPage,
+    execute_in_snapshot, execute_operational_page_in_snapshot, execute_page_in_snapshot,
+    execute_policy_operational_page_in_snapshot, execute_policy_page_in_snapshot,
+    execute_policy_provider_page_in_snapshot, execute_provider_page_in_snapshot,
+    validate_query_execution_group,
 };
 use riffdb_query_ir::{
     AccessDirection, OperationalAggregateV1, QueryAccessKind, QueryAccessProgramV1,
     QueryAccessStep, QueryPredicateOperator,
 };
 use riffdb_storage_api::{EntityTarget, PartitionIndexTarget, StorageError, StorageErrorKind};
-use riffdb_types::{CanonicalValue, EntityKey, EntityTypeId, FieldId, IndexEntryKey};
+use riffdb_types::{
+    ApplicationRoleHash, CanonicalValue, EntityKey, EntityTypeId, FieldId, IndexEntryKey,
+};
 
 use crate::state::{MemoryIndexEntry, MemoryState, unique_binary_search_by};
 use crate::store::{MemoryOperationalPorts, storage_error};
@@ -196,6 +200,64 @@ impl QueryExecutionPort for MemoryOperationalPorts {
             };
             Ok(execute_policy_operational_page_in_snapshot(
                 program, aggregates, parameters, prior, &mut view, policy,
+            ))
+        })
+        .map_err(map_storage_query_error)?
+    }
+
+    fn execute_provider_query_page(
+        &self,
+        program: &QueryAccessProgramV1,
+        parameters: &QueryParameters,
+        prior: Option<&QueryContinuation>,
+        policy_shape: ApplicationRoleHash,
+        proof: &riffdb_projection::ResultSetEpochProofV1,
+        batches: &[LongPatternCandidateBatch],
+    ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+        self.read(|state| {
+            let mut view = MemoryQueryView {
+                state,
+                program,
+                parameters,
+            };
+            Ok(execute_provider_page_in_snapshot(
+                program,
+                parameters,
+                prior,
+                &mut view,
+                policy_shape,
+                proof,
+                batches,
+            ))
+        })
+        .map_err(map_storage_query_error)?
+    }
+
+    fn execute_policy_provider_query_page(
+        &self,
+        program: &QueryAccessProgramV1,
+        parameters: &QueryParameters,
+        prior: Option<&QueryContinuation>,
+        policy: &AuthorizedQueryRowPolicyContextV1,
+        policy_shape: ApplicationRoleHash,
+        proof: &riffdb_projection::ResultSetEpochProofV1,
+        batches: &[LongPatternCandidateBatch],
+    ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+        self.read(|state| {
+            let mut view = MemoryQueryView {
+                state,
+                program,
+                parameters,
+            };
+            Ok(execute_policy_provider_page_in_snapshot(
+                program,
+                parameters,
+                prior,
+                &mut view,
+                policy,
+                policy_shape,
+                proof,
+                batches,
             ))
         })
         .map_err(map_storage_query_error)?
@@ -451,7 +513,7 @@ impl MemoryQueryView<'_> {
             QueryAccessKind::Point { key_fields }
             | QueryAccessKind::DependentPointBatch { key_fields, .. }
             | QueryAccessKind::CandidateRootHydration { key_fields, .. } => key_fields,
-            QueryAccessKind::Index { .. } => {
+            QueryAccessKind::Index { .. } | QueryAccessKind::LongPatternCandidate { .. } => {
                 return Err(storage_error(StorageErrorKind::InvariantViolation));
             }
             QueryAccessKind::Nearest { .. } => {

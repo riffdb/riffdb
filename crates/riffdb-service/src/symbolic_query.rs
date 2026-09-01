@@ -36,11 +36,15 @@ use riffdb_policy::{
     OperationRequest, OperationTenantScope, OutputClassification, PartitionConstraint,
     resolve_authorized_query_row_policy_context,
 };
+use riffdb_projection::{
+    ProviderEpochObservationV1, ResultSetEpochContextV1, ResultSetEpochRequirementV1,
+    negotiate_result_set_epoch_v1,
+};
 use riffdb_query_compiler::{PlannerDiagnostic, compile_query};
 pub use riffdb_query_executor::CoveredQueryResultV1;
 use riffdb_query_executor::{
-    QueryAggregateCell, QueryAggregateRow, QueryContinuation, QueryExecutionError,
-    QueryOwnedSnapshot, QueryParameters, QueryResultValue, QueryRow,
+    LongPatternCandidateBatch, QueryAggregateCell, QueryAggregateRow, QueryContinuation,
+    QueryExecutionError, QueryOwnedSnapshot, QueryParameters, QueryResultValue, QueryRow,
 };
 use riffdb_query_ir::{
     ExactParameterValueV1, ExactScalarV1, NamedTypeSchema, ProjectedVectorFreshnessV1,
@@ -55,11 +59,11 @@ use riffdb_riffql_syntax::{
     Document, Literal, MAX_IDENTIFIER_BYTES, ParseDiagnostic, Span, TypeReference, parse_query,
 };
 use riffdb_types::{
-    CanonicalValue, CommitSequence, ContractBundleHash, ContractLineage, ContractVersion,
-    ExactTextProfileV1, FieldId, FrontierPosition, QueryModuleHash, QueryModuleName,
-    QueryModuleVersion, QueryOperationName, QueryPlanHash, ReactiveModuleHash, ServiceAuditLinkV1,
-    ServiceAuditPhaseV1, ServiceOperationV1, encode_canonical_value, hash_generated_artifact,
-    hash_query_parameters,
+    CanonicalValue, CommitSequence, CompiledLongPatternV1, ContractBundleHash, ContractLineage,
+    ContractVersion, ExactTextProfileV1, FieldId, FrontierPosition, QueryModuleHash,
+    QueryModuleName, QueryModuleVersion, QueryOperationName, QueryPlanHash, ReactiveModuleHash,
+    ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceOperationV1, encode_canonical_value,
+    hash_generated_artifact, hash_query_parameters,
 };
 
 use crate::command_operations::{SubmittedValueMaterializationError, materialize_submitted_value};
@@ -74,11 +78,12 @@ use crate::{
     ContractSelection, CursorAccessError, CursorContractIdentity, CursorToken,
     ExactPredicateProjectionRequest, ExactPredicateProjectionResult, ExactTextProjectionPortError,
     ExactTextProjectionRequest, ExactTextProjectionResult, InternalDefect,
-    NullableExactPredicateProjectionRequest, PortAdmissionError, PortDriverStopped,
-    QueryCursorLookup, QueryCursorState, ReadPipelineStage, RequestContext, RiffDbService,
-    RiffDbServiceInner, ServiceAuditTargetMap, ServiceFailure, ServiceFuture, ServiceResult,
-    ServiceTelemetryEvent, SourceName, SubmittedEnum, SubmittedValue, TokenizedTextCursorState,
-    TokenizedTextProjectionRequest, VectorProjectionPortError, VectorProjectionRequest,
+    LongPatternProjectionRequest, NullableExactPredicateProjectionRequest, PortAdmissionError,
+    PortDriverStopped, QueryCursorLookup, QueryCursorState, ReadPipelineStage, RequestContext,
+    RiffDbService, RiffDbServiceInner, ServiceAuditTargetMap, ServiceFailure, ServiceFuture,
+    ServiceResult, ServiceTelemetryEvent, SourceName, SubmittedEnum, SubmittedValue,
+    TokenizedTextCursorState, TokenizedTextProjectionRequest, VectorProjectionPortError,
+    VectorProjectionRequest,
 };
 
 async fn resolve_admission_head_floor(
@@ -5270,6 +5275,161 @@ fn effective_query_consistency(
     }
 }
 
+fn continuation_provider_epoch(
+    prior: Option<&QueryContinuation>,
+) -> Result<Option<CommitSequence>, QueryExecutionError> {
+    let mut epoch = None;
+    if let Some(prior) = prior {
+        for (identity, value) in prior.index_epochs() {
+            if !identity.starts_with("provider.") {
+                continue;
+            }
+            let observed = CommitSequence::new(*value).ok_or(QueryExecutionError::StaleCursor)?;
+            match epoch {
+                None => epoch = Some(observed),
+                Some(existing) if existing == observed => {}
+                Some(_) => return Err(QueryExecutionError::StaleCursor),
+            }
+        }
+    }
+    Ok(epoch)
+}
+
+fn map_long_pattern_port_error(error: ExactTextProjectionPortError) -> QueryExecutionError {
+    match error {
+        ExactTextProjectionPortError::InputInvalid => QueryExecutionError::InvalidProgram,
+        ExactTextProjectionPortError::ResponseTooLarge => QueryExecutionError::BoundExceeded,
+        ExactTextProjectionPortError::Building
+        | ExactTextProjectionPortError::Rebuilding
+        | ExactTextProjectionPortError::FreshnessUnsatisfied
+        | ExactTextProjectionPortError::Diverged
+        | ExactTextProjectionPortError::Unavailable => QueryExecutionError::BackendUnavailable,
+        ExactTextProjectionPortError::SnapshotRetired => QueryExecutionError::StaleCursor,
+        ExactTextProjectionPortError::Integrity => QueryExecutionError::BackendIntegrity,
+    }
+}
+
+fn prepare_long_pattern_participants(
+    authorization: &AuthorizedApplicationQuery,
+    provider: &dyn crate::LongPatternProjectionPort,
+    program: &QueryAccessProgramV1,
+    parameters: &QueryParameters,
+    prior: Option<&QueryContinuation>,
+    row_policy: Option<&Arc<AuthorizedQueryRowPolicyContextV1>>,
+    minimum_application_head: Option<u64>,
+) -> Result<
+    (
+        riffdb_projection::ResultSetEpochProofV1,
+        Vec<LongPatternCandidateBatch>,
+        riffdb_types::ApplicationRoleHash,
+    ),
+    QueryExecutionError,
+> {
+    let policy_shape = authorization
+        .application_role_hash()
+        .ok_or(QueryExecutionError::InvalidProgram)?;
+    let partition_value = parameters
+        .get(program.partition_parameter())
+        .cloned()
+        .ok_or_else(|| QueryExecutionError::MissingParameter {
+            parameter: program.partition_parameter().to_owned(),
+        })?;
+    let partition_key = authorization.target().partition().partition_key().clone();
+    let minimum_epoch = match minimum_application_head {
+        Some(value) => Some(CommitSequence::new(value).ok_or(QueryExecutionError::InvalidProgram)?),
+        None => None,
+    };
+    let pinned_epoch = continuation_provider_epoch(prior)?;
+    let mut batches = Vec::new();
+    let mut participants = Vec::<ProviderEpochObservationV1>::new();
+    for step in program.steps() {
+        let QueryAccessKind::LongPatternCandidate { pattern, .. } = step.access() else {
+            continue;
+        };
+        let CanonicalValue::String(source_pattern) = parameters
+            .get(pattern.pattern_parameter())
+            .ok_or_else(|| QueryExecutionError::MissingParameter {
+                parameter: pattern.pattern_parameter().to_owned(),
+            })?
+        else {
+            return Err(QueryExecutionError::InvalidParameter {
+                parameter: pattern.pattern_parameter().to_owned(),
+            });
+        };
+        let compiled = CompiledLongPatternV1::compile_bounded(
+            pattern.operator(),
+            pattern.profile(),
+            source_pattern.as_str(),
+            pattern.bounds(),
+        )
+        .map_err(|_| QueryExecutionError::InvalidParameter {
+            parameter: pattern.pattern_parameter().to_owned(),
+        })?;
+        let request = LongPatternProjectionRequest::new(
+            Arc::new(program.clone()),
+            step.clone(),
+            partition_key.clone(),
+            partition_value.clone(),
+            policy_shape,
+            row_policy.cloned(),
+            compiled,
+            minimum_epoch,
+            pinned_epoch,
+        );
+        let batch = provider
+            .execute(request)
+            .map_err(map_long_pattern_port_error)?;
+        if batch.binding() != step.binding() {
+            return Err(QueryExecutionError::BackendIntegrity);
+        }
+        let observation = batch
+            .observation()
+            .map_err(|_| QueryExecutionError::BackendIntegrity)?;
+        if let Some(existing) = participants
+            .iter()
+            .find(|existing| existing.descriptor() == observation.descriptor())
+        {
+            if existing != &observation {
+                return Err(QueryExecutionError::BackendIntegrity);
+            }
+        } else {
+            participants.push(observation);
+        }
+        batches.push(batch);
+    }
+    let requirement = pinned_epoch.map_or_else(
+        || {
+            minimum_epoch.map_or(
+                ResultSetEpochRequirementV1::Latest,
+                ResultSetEpochRequirementV1::AtLeast,
+            )
+        },
+        ResultSetEpochRequirementV1::Exact,
+    );
+    let proof = negotiate_result_set_epoch_v1(
+        ResultSetEpochContextV1::new(program.identity().hash(), policy_shape),
+        &participants,
+        requirement,
+    )
+    .map_err(|error| match error {
+        riffdb_projection::ResultSetEpochError::EpochExpired => QueryExecutionError::StaleCursor,
+        riffdb_projection::ResultSetEpochError::InvalidInterval
+        | riffdb_projection::ResultSetEpochError::IncarnationMismatch
+        | riffdb_projection::ResultSetEpochError::EmptyParticipants
+        | riffdb_projection::ResultSetEpochError::TooManyParticipants => {
+            QueryExecutionError::BackendIntegrity
+        }
+        riffdb_projection::ResultSetEpochError::Diverged
+        | riffdb_projection::ResultSetEpochError::FreshnessUnavailable
+        | riffdb_projection::ResultSetEpochError::Rebuilding
+        | riffdb_projection::ResultSetEpochError::Retired
+        | riffdb_projection::ResultSetEpochError::Unavailable => {
+            QueryExecutionError::BackendUnavailable
+        }
+    })?;
+    Ok((proof, batches, policy_shape))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn execute_compiled_query(
     service: Arc<RiffDbServiceInner>,
@@ -5374,6 +5534,19 @@ async fn execute_compiled_query(
         let failure = PublicError::storage_unavailable().into();
         return Err(finish_failure(&service, &context, &begun, failure).await);
     };
+    let has_long_pattern = program
+        .steps()
+        .iter()
+        .any(|step| matches!(step.access(), QueryAccessKind::LongPatternCandidate { .. }));
+    let long_pattern_provider = if has_long_pattern {
+        let Some(provider) = service.providers.long_pattern.as_ref() else {
+            let failure = PublicError::storage_unavailable().into();
+            return Err(finish_failure(&service, &context, &begun, failure).await);
+        };
+        Some(Arc::clone(provider))
+    } else {
+        None
+    };
     let authorize_pre_started = Instant::now();
     // Read safe point 2. Revision-checked: reissues the begin proof only when
     // the capability view, the validity window, and the request are unchanged.
@@ -5417,7 +5590,8 @@ async fn execute_compiled_query(
     };
     let row_policy =
         resolve_authorized_query_row_policy_context(&execution_authorization, bundle.bundle())
-            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?
+            .map(Arc::new);
     service
         .providers
         .telemetry
@@ -5447,17 +5621,47 @@ async fn execute_compiled_query(
             let service = &service;
             let telemetry = service.providers.telemetry.as_ref();
             let captured_minimum_application_head = minimum_application_head;
+            let long_pattern_provider = long_pattern_provider.as_deref();
             async move {
                 let execute_started = Instant::now();
-                let snapshot = match execute_authorized_query_page(
-                    execution_authorization,
-                    executor,
-                    program,
-                    aggregates,
-                    parameters,
-                    prior_cont,
-                    row_policy.as_ref(),
-                ) {
+                let executed = if let Some(provider) = long_pattern_provider {
+                    match prepare_long_pattern_participants(
+                        execution_authorization,
+                        provider,
+                        program,
+                        parameters,
+                        prior_cont,
+                        row_policy.as_ref(),
+                        captured_minimum_application_head,
+                    ) {
+                        Ok((proof, batches, policy_shape)) => {
+                            execute_authorized_provider_query_page(
+                                execution_authorization,
+                                executor,
+                                program,
+                                aggregates,
+                                parameters,
+                                prior_cont,
+                                row_policy.as_deref(),
+                                policy_shape,
+                                &proof,
+                                &batches,
+                            )
+                        }
+                        Err(error) => Err(error),
+                    }
+                } else {
+                    execute_authorized_query_page(
+                        execution_authorization,
+                        executor,
+                        program,
+                        aggregates,
+                        parameters,
+                        prior_cont,
+                        row_policy.as_deref(),
+                    )
+                };
+                let snapshot = match executed {
                     Ok(snapshot) => {
                         telemetry.record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
                             stage: ReadPipelineStage::Execute,
@@ -5899,6 +6103,9 @@ fn query_value_type(
         TypeReference::Optional(inner) => {
             riffdb_contract_ir::ValueType::optional(query_value_type(bundle, &inner.value)?).ok()
         }
+        TypeReference::BoundedString(maximum) => {
+            riffdb_contract_ir::ValueType::string((*maximum).try_into().ok()?).ok()
+        }
         TypeReference::Set(_)
         | TypeReference::Cursor
         | TypeReference::Limit
@@ -6042,7 +6249,9 @@ fn application_query_target_with_identity(
             }
         };
         let index_id = match step.access() {
-            QueryAccessKind::Index { .. } => Some(step.internal_index_id()?),
+            QueryAccessKind::Index { .. } | QueryAccessKind::LongPatternCandidate { .. } => {
+                Some(step.internal_index_id()?)
+            }
             QueryAccessKind::Point { .. }
             | QueryAccessKind::DependentPointBatch { .. }
             | QueryAccessKind::Nearest { .. }
@@ -6111,6 +6320,13 @@ pub(crate) fn execute_authorized_query_page(
     prior: Option<&QueryContinuation>,
     row_policy: Option<&AuthorizedQueryRowPolicyContextV1>,
 ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+    if program
+        .steps()
+        .iter()
+        .any(|step| matches!(step.access(), QueryAccessKind::LongPatternCandidate { .. }))
+    {
+        return Err(QueryExecutionError::BackendUnavailable);
+    }
     let target = authorization.target();
     let obligations = authorization.obligations();
     let exact_target = target.lineage() == program.contract().lineage()
@@ -6136,6 +6352,55 @@ pub(crate) fn execute_authorized_query_page(
         (false, None) => {
             executor.execute_operational_query_page(program, aggregates, parameters, prior)
         }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_authorized_provider_query_page(
+    authorization: &AuthorizedApplicationQuery,
+    executor: &dyn riffdb_query_executor::QueryExecutionPort,
+    program: &QueryAccessProgramV1,
+    aggregates: &[riffdb_query_ir::OperationalAggregateV1],
+    parameters: &QueryParameters,
+    prior: Option<&QueryContinuation>,
+    row_policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+    policy_shape: riffdb_types::ApplicationRoleHash,
+    proof: &riffdb_projection::ResultSetEpochProofV1,
+    batches: &[LongPatternCandidateBatch],
+) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+    let target = authorization.target();
+    let obligations = authorization.obligations();
+    let exact_target = target.lineage() == program.contract().lineage()
+        && target.version() == program.contract().version()
+        && target.bundle_hash() == program.contract().bundle_hash()
+        && target.plan_hash() == program.identity().hash()
+        && target.cost() == program.cost()
+        && target.accesses().len() == program.steps().len()
+        && obligations.output_classification()
+            == OutputClassification::PolicyFilteredApplicationData
+        && obligations.partition_constraint()
+            == Some(&PartitionConstraint::Exact(target.partition().clone()));
+    if !exact_target || !aggregates.is_empty() {
+        return Err(QueryExecutionError::InvalidProgram);
+    }
+    match row_policy {
+        Some(policy) => executor.execute_policy_provider_query_page(
+            program,
+            parameters,
+            prior,
+            policy,
+            policy_shape,
+            proof,
+            batches,
+        ),
+        None => executor.execute_provider_query_page(
+            program,
+            parameters,
+            prior,
+            policy_shape,
+            proof,
+            batches,
+        ),
     }
 }
 

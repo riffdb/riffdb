@@ -8,6 +8,7 @@ use riffdb_storage_api::{
     AffectedIndexEpochTargets, ApplicationCommandTransactionPort, AssignedCommandSequence,
     AtomicCommandRecordSet, AuditedAdmissionRepository, AuditedAdmissionRequestV1,
     AuditedAdmissionResultV1, AuditedCommittedBatchV1, AuditedExecutionFailureV1,
+    AuthoritativeEntityPartitionScanPage, AuthoritativeEntityPartitionScanRequest,
     AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest, AuthoritativePointReader,
     AuthoritativeScanReader, CandidateAdmissionResult, CandidateCapacityResult,
     CandidateStartResult, CandidateValidationRejection, CommandAdmissionExpectationV1,
@@ -2572,6 +2573,41 @@ impl PartitionEventRouteReader for MemoryOperationalPorts {
 }
 
 impl AuthoritativeScanReader for MemoryOperationalPorts {
+    fn scan_entity_partition(
+        &self,
+        request: AuthoritativeEntityPartitionScanRequest,
+    ) -> Result<AuthoritativeEntityPartitionScanPage, StorageError> {
+        self.read(|state| {
+            let prefix = request.prefix();
+            let start = match request.after() {
+                Some(after) => state
+                    .entities
+                    .partition_point(|record| record.target().key().as_bytes() <= after.as_bytes()),
+                None => state
+                    .entities
+                    .partition_point(|record| record.target().key().as_bytes() < prefix),
+            };
+            let wanted = usize::from(request.limit().get());
+            let mut records = state.entities[start..]
+                .iter()
+                .take_while(|record| record.target().key().as_bytes().starts_with(prefix))
+                .take(wanted.saturating_add(1))
+                .cloned()
+                .map(|record| EncodedPageItem::new(record, memory_record_charge()))
+                .collect::<Vec<_>>();
+            let has_more = records.len() > wanted;
+            records.truncate(wanted);
+            let application_head = state
+                .commits
+                .last()
+                .map_or(FrontierPosition::BeforeFirst, |record| {
+                    FrontierPosition::AppliedThrough(record.commit_sequence())
+                });
+            AuthoritativeEntityPartitionScanPage::new(&request, application_head, records, has_more)
+                .map_err(corrupt_value)
+        })
+    }
+
     fn scan_index(
         &self,
         request: AuthoritativeIndexScanRequest,

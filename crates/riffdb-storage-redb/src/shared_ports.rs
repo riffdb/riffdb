@@ -9,14 +9,15 @@ use std::sync::Arc;
 use redb::ReadableDatabase;
 use riffdb_policy::{AuthorizedProjectedRowAdmissionV1, AuthorizedQueryRowPolicyContextV1};
 use riffdb_query_executor::{
-    QueryContinuation, QueryExecutionError, QueryExecutionPort, QueryExecutionRequest,
-    QueryOwnedSnapshot, QueryParameters,
+    LongPatternCandidateBatch, QueryContinuation, QueryExecutionError, QueryExecutionPort,
+    QueryExecutionRequest, QueryOwnedSnapshot, QueryParameters,
 };
 use riffdb_query_ir::QueryAccessProgramV1;
 use riffdb_storage_api::{
     ActiveCatalogPointerV1, ActiveQueryModulePointerV1, AdmissionLookupResultV1,
     AdmissionRepository, AdmissionRequestV1, AdmissionResultV1, ApplicationCommandTransactionPort,
     AuditedAdmissionRepository, AuditedAdmissionRequestV1, AuditedAdmissionResultV1,
+    AuthoritativeEntityPartitionScanPage, AuthoritativeEntityPartitionScanRequest,
     AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest, AuthoritativePointReader,
     AuthoritativeScanReader, CapabilityAdministrationTransactionPort, CapabilityCreateCandidateV1,
     CapabilityInventoryPageV1, CapabilityInventoryReader, CapabilityLookupResult, CapabilityReader,
@@ -42,8 +43,8 @@ use riffdb_storage_api::{
     VectorProjectionControlWriteResultV1, VectorProjectionSourceV1,
 };
 use riffdb_types::{
-    CapabilityId, CapabilityTokenDigest, CommitSequence, ContractBundleHash, ContractLineage,
-    ContractVersion, EventId, ProjectionIdentity, ProvenanceId, QueryModuleHash,
+    ApplicationRoleHash, CapabilityId, CapabilityTokenDigest, CommitSequence, ContractBundleHash,
+    ContractLineage, ContractVersion, EventId, ProjectionIdentity, ProvenanceId, QueryModuleHash,
 };
 
 use crate::store::{RedbOperationalPorts, SharedRedb};
@@ -181,6 +182,48 @@ impl QueryExecutionPort for RedbSharedPorts {
             parameters,
             prior,
             policy,
+        )
+    }
+
+    fn execute_provider_query_page(
+        &self,
+        program: &QueryAccessProgramV1,
+        parameters: &QueryParameters,
+        prior: Option<&QueryContinuation>,
+        policy_shape: ApplicationRoleHash,
+        proof: &riffdb_projection::ResultSetEpochProofV1,
+        batches: &[LongPatternCandidateBatch],
+    ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+        QueryExecutionPort::execute_provider_query_page(
+            &self.operational(),
+            program,
+            parameters,
+            prior,
+            policy_shape,
+            proof,
+            batches,
+        )
+    }
+
+    fn execute_policy_provider_query_page(
+        &self,
+        program: &QueryAccessProgramV1,
+        parameters: &QueryParameters,
+        prior: Option<&QueryContinuation>,
+        policy: &AuthorizedQueryRowPolicyContextV1,
+        policy_shape: ApplicationRoleHash,
+        proof: &riffdb_projection::ResultSetEpochProofV1,
+        batches: &[LongPatternCandidateBatch],
+    ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+        QueryExecutionPort::execute_policy_provider_query_page(
+            &self.operational(),
+            program,
+            parameters,
+            prior,
+            policy,
+            policy_shape,
+            proof,
+            batches,
         )
     }
 
@@ -476,6 +519,13 @@ impl AuthoritativePointReader for RedbSharedPorts {
 }
 
 impl AuthoritativeScanReader for RedbSharedPorts {
+    fn scan_entity_partition(
+        &self,
+        request: AuthoritativeEntityPartitionScanRequest,
+    ) -> Result<AuthoritativeEntityPartitionScanPage, StorageError> {
+        AuthoritativeScanReader::scan_entity_partition(&self.operational(), request)
+    }
+
     fn scan_index(
         &self,
         request: AuthoritativeIndexScanRequest,
