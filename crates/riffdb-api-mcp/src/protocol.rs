@@ -16,7 +16,10 @@ pub const MCP_SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const MCP_ROUTE: &str = "/mcp";
 
 /// Maximum bytes in one complete inbound MCP message.
-pub const MCP_INBOUND_MESSAGE_MAX_BYTES: usize = 1_048_576;
+///
+/// This includes bounded JSON/base64 overhead for a 4 MiB decoded atomic
+/// command. Non-command operations retain their independent service limits.
+pub const MCP_INBOUND_MESSAGE_MAX_BYTES: usize = riffdb_types::MAX_ATOMIC_COMMAND_FRAME_BYTES_V2;
 
 /// Maximum bytes in one complete outbound MCP message, including framing.
 pub const MCP_OUTBOUND_MESSAGE_MAX_BYTES: usize = 4_194_304;

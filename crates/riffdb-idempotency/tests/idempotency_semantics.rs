@@ -19,7 +19,8 @@ use riffdb_types::{
     CanonicalValue, CommandId, CommitSequence, ContractBundleHash, ContractLineage,
     ContractVersion, DatabaseId, DigestKeyId, Environment, ExecutionFailureCode, FieldId,
     IdempotencyKey, LogicalTime, OutcomeId, PartitionKeyBuilder, PlanHash, ProvenanceId, RequestId,
-    TenantId, TenantScope, Timestamp, encode_canonical_record, hash_command_input,
+    TenantId, TenantScope, Timestamp, encode_canonical_command_input, encode_canonical_record,
+    hash_command_input,
 };
 
 struct FixedProvider {
@@ -256,6 +257,52 @@ fn canonical_input_hash_omits_only_the_declared_key_field_and_matches_golden() {
             0x43, 0xaa, 0x82, 0xce,
         ]
     );
+}
+
+#[test]
+fn large_atomic_input_hashes_once_and_remains_input_sensitive() {
+    let provider = FixedProvider::new(&[1]);
+    let key = IdempotencyKey::new("large-retry").expect("checked caller key");
+    let record = |last: u8| {
+        CanonicalRecord::new(vec![
+            (
+                field(7),
+                CanonicalValue::string("large-retry").expect("idempotency key"),
+            ),
+            (
+                field(2),
+                CanonicalValue::bytes(vec![0xa5; 900_000]).expect("first bounded value"),
+            ),
+            (
+                field(9),
+                CanonicalValue::bytes(vec![last; 900_000]).expect("second bounded value"),
+            ),
+        ])
+        .expect("large canonical command input")
+    };
+    let lookup =
+        || prepare_idempotency_lookup(&scope(), &key, &provider).expect("lookup preparation");
+    let first = confirm_command_idempotency(lookup(), &record(0x5a), field(7), &key)
+        .expect("large input confirmation");
+    let same = confirm_command_idempotency(lookup(), &record(0x5a), field(7), &key)
+        .expect("large input replay confirmation");
+    let changed = confirm_command_idempotency(lookup(), &record(0x5b), field(7), &key)
+        .expect("changed large input confirmation");
+
+    assert_eq!(first.canonical_input_hash(), same.canonical_input_hash());
+    assert_ne!(first.canonical_input_hash(), changed.canonical_input_hash());
+    let hash_record = CanonicalRecord::new(
+        record(0x5a)
+            .fields()
+            .iter()
+            .filter(|(id, _)| *id != field(7))
+            .cloned()
+            .collect(),
+    )
+    .expect("hash record");
+    let encoded = encode_canonical_command_input(&hash_record).expect("large command encoding");
+    assert!(encoded.len() > riffdb_types::MAX_CANONICAL_DOCUMENT_BYTES);
+    assert_eq!(first.canonical_input_hash(), hash_command_input(&encoded));
 }
 
 #[test]

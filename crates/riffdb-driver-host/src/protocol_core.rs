@@ -19,7 +19,7 @@ use crate::{
     DriverValue, DriverVector, FrameCodec, InvokeOptions,
 };
 
-const MAX_BINDING_REQUEST_BYTES: usize = 4 * 1_024 * 1_024;
+const MAX_BINDING_REQUEST_BYTES: usize = riffdb_types::MAX_ATOMIC_COMMAND_FRAME_BYTES_V2;
 const SYNTHETIC_SCHEMA_HASH: &str =
     "0000000000000000000000000000000000000000000000000000000000000000";
 

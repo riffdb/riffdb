@@ -36,8 +36,9 @@ The application boundary deliberately has these semantics:
 - one separately authenticated public command request per line;
 - one stable idempotency key, typed outcome, provenance record, and commit
   decision per item;
-- at most 32 in-flight items, 4,096 items, 64 MiB of source, and 1 MiB per
-  line;
+- at most 32 in-flight items, 4,096 items, 64 MiB of source, and an 8 MiB
+  command frame per line (with the decoded input still limited to 4 MiB and
+  the exact compiler-proved command maximum);
 - no collection atomicity, generic entity mutation, storage batch, or
   authorization shortcut;
 - a checksummed checkpoint containing only source/item digests and safe public

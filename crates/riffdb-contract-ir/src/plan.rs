@@ -5,10 +5,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use riffdb_types::{
     AggregateTypeId, CommandId, ContractLineage, ContractVersion, EntityTypeId, EnumVariantId,
     EventTypeId, FieldId, IndexId, InvariantId, MAX_APPLICATION_REQUEST_BYTES_V1,
-    MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1, MAX_COMMAND_CONFLICT_KEYS_V1,
-    MAX_COMMAND_INDEX_DELTAS_V1, MAX_COMMAND_INDEX_VALIDATION_POSITIONS_V1,
-    MAX_COMMAND_INDEX_WORK_UNITS_V1, MAX_COMMAND_READ_STATE_SEMANTIC_BYTES_V1, MAX_KEY_BYTES,
-    OutcomeId, PlanHash,
+    MAX_ATOMIC_COMMAND_REQUEST_BYTES_V2, MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1,
+    MAX_COMMAND_CONFLICT_KEYS_V1, MAX_COMMAND_INDEX_DELTAS_V1,
+    MAX_COMMAND_INDEX_VALIDATION_POSITIONS_V1, MAX_COMMAND_INDEX_WORK_UNITS_V1,
+    MAX_COMMAND_READ_STATE_SEMANTIC_BYTES_V1, MAX_KEY_BYTES, OutcomeId, PlanHash,
 };
 
 use crate::{
@@ -1687,6 +1687,7 @@ pub struct CommandPlan {
     name: String,
     contract_version: ContractVersion,
     input: CommandInputSchema,
+    maximum_request_bytes: usize,
     service_values: Vec<ServiceValueSchema>,
     outcomes: Vec<OutcomeSchema>,
     success_outcome: OutcomeId,
@@ -2223,7 +2224,7 @@ impl CommandPlan {
                 kind: "command plan",
             });
         }
-        if let Some(expansion) = &collection_expansion {
+        let maximum_request_bytes = if let Some(expansion) = &collection_expansion {
             validate_collection_expansion(
                 expansion,
                 &input,
@@ -2231,7 +2232,7 @@ impl CommandPlan {
                 &instructions,
                 contract_schema,
             )?;
-            let coefficient = validate_collection_graph_bytes(
+            let proof = validate_collection_graph_bytes(
                 expansion,
                 &name,
                 &input,
@@ -2241,12 +2242,13 @@ impl CommandPlan {
                 &decisions,
                 contract_schema,
             )?;
-            if let Some(coefficient) = coefficient {
+            if let Some(coefficient) = proof.maximum_copy_coefficient {
                 collection_expansion
                     .as_mut()
                     .expect("validated collection expansion")
                     .set_maximum_copy_coefficient(coefficient)?;
             }
+            proof.maximum_request_bytes
         } else {
             let deletes = bindings
                 .iter()
@@ -2274,7 +2276,13 @@ impl CommandPlan {
                     });
                 }
             }
-        }
+            maximum_command_request_bytes(&name, &input, contract_schema)?
+        };
+        checked_len(
+            "command public request bytes",
+            maximum_request_bytes,
+            MAX_ATOMIC_COMMAND_REQUEST_BYTES_V2,
+        )?;
         for outcome in &outcomes {
             for field in outcome.payload().fields() {
                 crate::schema::validate_payload_field_type(field.value_type(), contract_schema)?;
@@ -2543,6 +2551,7 @@ impl CommandPlan {
             name,
             contract_version,
             input,
+            maximum_request_bytes,
             service_values,
             outcomes,
             success_outcome,
@@ -2591,6 +2600,11 @@ impl CommandPlan {
     #[must_use]
     pub const fn input(&self) -> &CommandInputSchema {
         &self.input
+    }
+    /// Compiler-proved maximum structural bytes for one complete invocation.
+    #[must_use]
+    pub const fn maximum_request_bytes(&self) -> usize {
+        self.maximum_request_bytes
     }
     /// Complete compiler-declared service-owned values in stable-ID order.
     #[must_use]
@@ -2670,6 +2684,11 @@ impl CommandPlan {
     #[must_use]
     pub fn requires_ir_v19(&self) -> bool {
         self.locality.spans_aggregates()
+    }
+    /// Whether this command requires the additive large atomic-input envelope.
+    #[must_use]
+    pub const fn requires_ir_v22(&self) -> bool {
+        self.maximum_request_bytes > MAX_APPLICATION_REQUEST_BYTES_V1
     }
     /// Whether this command requires the distinct reimport invocation class in IR v10.
     #[must_use]
@@ -3502,7 +3521,7 @@ fn validate_collection_graph_bytes(
     instructions: &[Instruction],
     decisions: &[CommandDecisionPlanV1],
     schema: &SchemaIr,
-) -> Result<Option<usize>, IrValidationError> {
+) -> Result<CollectionGraphProof, IrValidationError> {
     if expansion.maximum_aggregate_element_bytes().is_some() {
         if !decisions.is_empty() {
             return validate_decision_aggregate_collection_graph_bytes(
@@ -3514,8 +3533,7 @@ fn validate_collection_graph_bytes(
                 instructions,
                 decisions,
                 schema,
-            )
-            .map(Some);
+            );
         }
         return validate_aggregate_collection_graph_bytes(
             expansion,
@@ -3525,19 +3543,21 @@ fn validate_collection_graph_bytes(
             bindings,
             instructions,
             schema,
-        )
-        .map(Some);
+        );
     }
     if !decisions.is_empty() {
-        return validate_decision_collection_graph_bytes(
+        validate_decision_collection_graph_bytes(
             expansion,
             input,
             bindings,
             instructions,
             decisions,
             schema,
-        )
-        .map(|()| None);
+        )?;
+        return Ok(CollectionGraphProof {
+            maximum_copy_coefficient: None,
+            maximum_request_bytes: maximum_command_request_bytes(command_name, input, schema)?,
+        });
     }
     let mut total = maximum_record_value_bytes(input.record(), schema, 0)?;
     let first_binding = expansion.first_binding().get() as usize;
@@ -3666,7 +3686,43 @@ fn validate_collection_graph_bytes(
         total,
         MAX_COLLECTION_COMMAND_GRAPH_BYTES_V1,
     )?;
-    Ok(None)
+    Ok(CollectionGraphProof {
+        maximum_copy_coefficient: None,
+        maximum_request_bytes: maximum_command_request_bytes(command_name, input, schema)?,
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CollectionGraphProof {
+    maximum_copy_coefficient: Option<usize>,
+    maximum_request_bytes: usize,
+}
+
+fn maximum_command_request_bytes(
+    command_name: &str,
+    input: &CommandInputSchema,
+    schema: &SchemaIr,
+) -> Result<usize, IrValidationError> {
+    let mut request_bytes = 4usize
+        .checked_add(command_name.len())
+        .and_then(|bytes| bytes.checked_add(1 + 8 + 4 + 4))
+        .ok_or(IrValidationError::SizeOverflow {
+            kind: "command public request bytes",
+        })?;
+    for field in input.record().fields() {
+        request_bytes = request_bytes
+            .checked_add(5 + field.name().len())
+            .and_then(|bytes| {
+                maximum_submitted_value_bytes(field.value_type(), schema, 0)
+                    .ok()
+                    .and_then(|value| bytes.checked_add(value))
+            })
+            .ok_or(IrValidationError::SizeOverflow {
+                kind: "command public request bytes",
+            })?;
+    }
+    let canonical_bytes = maximum_record_value_bytes(input.record(), schema, 0)?;
+    Ok(request_bytes.max(canonical_bytes))
 }
 
 fn validate_decision_collection_graph_bytes(
@@ -3938,7 +3994,7 @@ fn validate_decision_aggregate_collection_graph_bytes(
     instructions: &[Instruction],
     decisions: &[CommandDecisionPlanV1],
     schema: &SchemaIr,
-) -> Result<usize, IrValidationError> {
+) -> Result<CollectionGraphProof, IrValidationError> {
     let aggregate_bytes =
         expansion
             .maximum_aggregate_element_bytes()
@@ -3947,10 +4003,15 @@ fn validate_decision_aggregate_collection_graph_bytes(
             })?;
     let (mut fixed_bytes, request_bytes) =
         aggregate_collection_input_charge(expansion, command_name, input, aggregate_bytes, schema)?;
+    let maximum_request_bytes = request_bytes.max(fixed_bytes.checked_add(aggregate_bytes).ok_or(
+        IrValidationError::SizeOverflow {
+            kind: "collection aggregate public request bytes",
+        },
+    )?);
     checked_len(
         "collection aggregate public request bytes",
-        request_bytes,
-        MAX_APPLICATION_REQUEST_BYTES_V1,
+        maximum_request_bytes,
+        MAX_ATOMIC_COMMAND_REQUEST_BYTES_V2,
     )?;
     let mut coefficient = 1usize;
     let branch_bindings = decisions
@@ -4055,7 +4116,10 @@ fn validate_decision_aggregate_collection_graph_bytes(
         total,
         MAX_COLLECTION_COMMAND_GRAPH_BYTES_V1,
     )?;
-    Ok(coefficient)
+    Ok(CollectionGraphProof {
+        maximum_copy_coefficient: Some(coefficient),
+        maximum_request_bytes,
+    })
 }
 
 fn aggregate_collection_input_charge(
@@ -4285,7 +4349,7 @@ fn validate_aggregate_collection_graph_bytes(
     bindings: &[BindingPlan],
     instructions: &[Instruction],
     schema: &SchemaIr,
-) -> Result<usize, IrValidationError> {
+) -> Result<CollectionGraphProof, IrValidationError> {
     let aggregate_bytes =
         expansion
             .maximum_aggregate_element_bytes()
@@ -4348,10 +4412,15 @@ fn validate_aggregate_collection_graph_bytes(
                 })?;
         }
     }
+    let maximum_request_bytes = request_bytes.max(fixed_bytes.checked_add(aggregate_bytes).ok_or(
+        IrValidationError::SizeOverflow {
+            kind: "collection aggregate public request bytes",
+        },
+    )?);
     checked_len(
         "collection aggregate public request bytes",
-        request_bytes,
-        MAX_APPLICATION_REQUEST_BYTES_V1,
+        maximum_request_bytes,
+        MAX_ATOMIC_COMMAND_REQUEST_BYTES_V2,
     )?;
 
     let first_binding = expansion.first_binding().get() as usize;
@@ -4556,7 +4625,10 @@ fn validate_aggregate_collection_graph_bytes(
         total,
         MAX_COLLECTION_COMMAND_GRAPH_BYTES_V1,
     )?;
-    Ok(coefficient)
+    Ok(CollectionGraphProof {
+        maximum_copy_coefficient: Some(coefficient),
+        maximum_request_bytes,
+    })
 }
 
 fn aggregate_structural_overhead(

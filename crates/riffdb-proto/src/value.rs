@@ -8,9 +8,9 @@ use prost::Message;
 use riffdb_types::{
     CanonicalBytes, CanonicalList, CanonicalRecord, CanonicalString, CanonicalValue,
     CanonicalVector, CanonicalVectorError, CurrencyCode, Date, Decimal as CanonicalDecimal,
-    DecimalSpec, EnumTypeId, EnumVariantId, FieldId, MAX_BYTES_VALUE_BYTES,
-    MAX_CANONICAL_DOCUMENT_BYTES, MAX_LIST_ENTRIES, MAX_NESTING_DEPTH, MAX_RECORD_FIELDS,
-    MAX_STRING_BYTES, Money as CanonicalMoney, Timestamp,
+    DecimalSpec, EnumTypeId, EnumVariantId, FieldId, MAX_ATOMIC_COMMAND_FRAME_BYTES_V2,
+    MAX_BYTES_VALUE_BYTES, MAX_CANONICAL_DOCUMENT_BYTES, MAX_LIST_ENTRIES, MAX_NESTING_DEPTH,
+    MAX_RECORD_FIELDS, MAX_STRING_BYTES, Money as CanonicalMoney, Timestamp,
 };
 
 use crate::v1;
@@ -45,6 +45,51 @@ pub fn validate_value(value: &v1::Value) -> Result<(), ValueValidationError> {
     validate_value_at_depth(value, 0)?;
     if value.encoded_len() > MAX_CANONICAL_DOCUMENT_BYTES {
         return Err(ValueValidationError::DocumentTooLarge);
+    }
+    Ok(())
+}
+
+/// Applies structural checks to one complete atomic-command input value.
+///
+/// Only the root record receives the wider command envelope. Every nested
+/// value retains the ordinary canonical document ceiling.
+pub fn validate_command_input_value(value: &v1::Value) -> Result<(), ValueValidationError> {
+    validate_value_at_depth(value, 0)?;
+    // The 4 MiB decoded/canonical ceiling is enforced by the API-neutral
+    // service and the compiled command plan. The public Protobuf value is a
+    // transport representation, so it receives the 8 MiB command-frame
+    // allowance while every nested document remains capped at 1 MiB below.
+    if value.encoded_len() > MAX_ATOMIC_COMMAND_FRAME_BYTES_V2 {
+        return Err(ValueValidationError::DocumentTooLarge);
+    }
+    validate_nested_document_bounds(value, true)
+}
+
+fn validate_nested_document_bounds(
+    value: &v1::Value,
+    is_root: bool,
+) -> Result<(), ValueValidationError> {
+    if !is_root && value.encoded_len() > MAX_CANONICAL_DOCUMENT_BYTES {
+        return Err(ValueValidationError::DocumentTooLarge);
+    }
+    match value.kind.as_ref() {
+        Some(v1::value::Kind::ListValue(list)) => {
+            for child in &list.values {
+                validate_nested_document_bounds(child, false)?;
+            }
+        }
+        Some(v1::value::Kind::RecordValue(record)) => {
+            for field in &record.fields {
+                validate_nested_document_bounds(
+                    field
+                        .value
+                        .as_ref()
+                        .ok_or(ValueValidationError::MissingNestedValue)?,
+                    false,
+                )?;
+            }
+        }
+        _ => {}
     }
     Ok(())
 }

@@ -7,7 +7,7 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{
     ActorId, CanonicalInputHash, CanonicalRecord, CanonicalValue, CommandId, ContractLineage,
-    DatabaseId, Environment, FieldId, IdempotencyKey, TenantScope, encode_canonical_record,
+    DatabaseId, Environment, FieldId, IdempotencyKey, TenantScope, encode_canonical_command_input,
     hash_command_input,
 };
 
@@ -277,7 +277,7 @@ pub fn confirm_command_idempotency(
             .collect(),
     )
     .map_err(|_| IdempotencyPreparationError::InvalidCanonicalInput)?;
-    let encoded = encode_canonical_record(&hash_input)
+    let encoded = encode_canonical_command_input(&hash_input)
         .map_err(|_| IdempotencyPreparationError::InvalidCanonicalInput)?;
     let canonical_input_hash = hash_command_input(&encoded);
 
@@ -314,7 +314,7 @@ pub fn confirm_server_derived_command_idempotency(
     lookup: PreparedIdempotencyLookupV1,
     normalized_input: &CanonicalRecord,
 ) -> Result<PreparedCommandIdempotencyV1, IdempotencyPreparationError> {
-    let encoded = encode_canonical_record(normalized_input)
+    let encoded = encode_canonical_command_input(normalized_input)
         .map_err(|_| IdempotencyPreparationError::InvalidCanonicalInput)?;
     let canonical_input_hash = hash_command_input(&encoded);
 

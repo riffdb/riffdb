@@ -4,11 +4,12 @@ use std::fmt;
 
 use riffdb_types::{
     CanonicalBytes, CanonicalRecord, CanonicalString, CanonicalValue, CurrencyCode, Date, Decimal,
-    DecimalSpec, EnumTypeId, EnumVariantId, FieldId, MAX_DECIMAL_PRECISION, MAX_LIST_ENTRIES,
-    MAX_NESTING_DEPTH, MAX_RECORD_FIELDS, Money, Timestamp,
+    DecimalSpec, EnumTypeId, EnumVariantId, FieldId, MAX_ATOMIC_COMMAND_REQUEST_BYTES_V2,
+    MAX_CANONICAL_DOCUMENT_BYTES, MAX_DECIMAL_PRECISION, MAX_LIST_ENTRIES, MAX_NESTING_DEPTH,
+    MAX_RECORD_FIELDS, Money, Timestamp,
 };
 
-use crate::{MAX_SERVICE_REQUEST_BYTES, ServiceDtoError, SourceName};
+use crate::{ServiceDtoError, SourceName};
 
 const LENGTH_BYTES: usize = 4;
 const COLLECTION_COUNT_BYTES: usize = 4;
@@ -294,7 +295,7 @@ impl SubmittedList {
         }
         ensure_child_depth(values.iter())?;
         let list = Self(values);
-        ensure_document_bound(list.structural_size()?)?;
+        ensure_value_document_bound(list.structural_size()?)?;
         Ok(list)
     }
 
@@ -341,12 +342,27 @@ pub struct SubmittedRecord(Vec<SubmittedField>);
 impl SubmittedRecord {
     /// Creates a record without sorting or resolving names and IDs.
     pub fn new(fields: Vec<SubmittedField>) -> Result<Self, ServiceDtoError> {
+        Self::new_with_bound(fields, MAX_CANONICAL_DOCUMENT_BYTES)
+    }
+
+    /// Creates the complete root record of one atomic command invocation.
+    ///
+    /// Every child value has already passed the unchanged individual-value
+    /// bound. This constructor alone admits the wider command-input envelope.
+    pub fn new_command_input(fields: Vec<SubmittedField>) -> Result<Self, ServiceDtoError> {
+        Self::new_with_bound(fields, MAX_ATOMIC_COMMAND_REQUEST_BYTES_V2)
+    }
+
+    fn new_with_bound(
+        fields: Vec<SubmittedField>,
+        maximum_bytes: usize,
+    ) -> Result<Self, ServiceDtoError> {
         if fields.len() > MAX_RECORD_FIELDS {
             return Err(ServiceDtoError::TooManyItems);
         }
         ensure_child_depth(fields.iter().map(SubmittedField::value))?;
         let record = Self(fields);
-        ensure_document_bound(record.structural_size()?)?;
+        ensure_document_bound(record.structural_size()?, maximum_bytes)?;
         Ok(record)
     }
 
@@ -446,7 +462,7 @@ impl SubmittedValue {
         let value = CanonicalString::new(value)
             .map(Self::String)
             .map_err(|_| ServiceDtoError::TooLong)?;
-        ensure_document_bound(value.structural_size()?)?;
+        ensure_value_document_bound(value.structural_size()?)?;
         Ok(value)
     }
 
@@ -455,7 +471,7 @@ impl SubmittedValue {
         let value = CanonicalBytes::new(value)
             .map(Self::Bytes)
             .map_err(|_| ServiceDtoError::TooLong)?;
-        ensure_document_bound(value.structural_size()?)?;
+        ensure_value_document_bound(value.structural_size()?)?;
         Ok(value)
     }
 
@@ -558,7 +574,7 @@ impl TryFrom<CanonicalValue> for SubmittedValue {
             CanonicalValue::Record(record) => Self::Record(SubmittedRecord::try_from(record)?),
             CanonicalValue::Vector(vector) => Self::Vector(vector),
         };
-        ensure_document_bound(submitted.structural_size()?)?;
+        ensure_value_document_bound(submitted.structural_size()?)?;
         Ok(submitted)
     }
 }
@@ -618,8 +634,12 @@ fn ensure_child_depth<'a>(
     Ok(())
 }
 
-fn ensure_document_bound(size: usize) -> Result<(), ServiceDtoError> {
-    if size > MAX_SERVICE_REQUEST_BYTES {
+fn ensure_value_document_bound(size: usize) -> Result<(), ServiceDtoError> {
+    ensure_document_bound(size, MAX_CANONICAL_DOCUMENT_BYTES)
+}
+
+fn ensure_document_bound(size: usize, maximum: usize) -> Result<(), ServiceDtoError> {
+    if size > maximum {
         Err(ServiceDtoError::TooLong)
     } else {
         Ok(())
@@ -628,7 +648,7 @@ fn ensure_document_bound(size: usize) -> Result<(), ServiceDtoError> {
 
 fn checked_add(total: &mut usize, value: usize) -> Result<(), ServiceDtoError> {
     *total = total.checked_add(value).ok_or(ServiceDtoError::TooLong)?;
-    ensure_document_bound(*total)
+    Ok(())
 }
 
 fn framed_size(payload: usize) -> Result<usize, ServiceDtoError> {
@@ -716,8 +736,8 @@ mod tests {
     }
 
     #[test]
-    fn submitted_scalar_constructors_include_framing_in_the_document_bound() {
-        let exact_payload = MAX_SERVICE_REQUEST_BYTES - TAG_BYTES - LENGTH_BYTES;
+    fn submitted_scalar_constructors_retain_the_individual_value_bound() {
+        let exact_payload = MAX_CANONICAL_DOCUMENT_BYTES - TAG_BYTES - LENGTH_BYTES;
         assert!(SubmittedValue::string("x".repeat(exact_payload)).is_ok());
         assert_eq!(
             SubmittedValue::string("x".repeat(exact_payload + 1)),
@@ -726,6 +746,31 @@ mod tests {
         assert!(SubmittedValue::bytes(vec![0; exact_payload]).is_ok());
         assert_eq!(
             SubmittedValue::bytes(vec![0; exact_payload + 1]),
+            Err(ServiceDtoError::TooLong)
+        );
+    }
+
+    #[test]
+    fn only_the_complete_command_input_may_cross_the_value_document_bound() {
+        let fields = || {
+            [1_u32, 2]
+                .into_iter()
+                .map(|id| {
+                    SubmittedField::new(
+                        SubmittedFieldIdentity::Id(FieldId::new(id).expect("field ID")),
+                        SubmittedValue::bytes(vec![0xa5; 600_000]).expect("bounded child value"),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            SubmittedRecord::new(fields()),
+            Err(ServiceDtoError::TooLong)
+        );
+        assert!(SubmittedRecord::new_command_input(fields()).is_ok());
+        assert_eq!(
+            SubmittedValue::record(fields()),
             Err(ServiceDtoError::TooLong)
         );
     }

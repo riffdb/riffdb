@@ -6698,11 +6698,12 @@ async fn command_command(
             application,
         } => {
             let application_command_name = command_name.clone();
-            let natural_input =
-                match read_json::<serde_json::Map<String, serde_json::Value>>(&input, stdin) {
-                    Ok(input) => input,
-                    Err(error) => return input_terminal(CommandIdentity::CommandRun, error),
-                };
+            let natural_input = match read_command_json::<serde_json::Map<String, serde_json::Value>>(
+                &input, stdin,
+            ) {
+                Ok(input) => input,
+                Err(error) => return input_terminal(CommandIdentity::CommandRun, error),
+            };
             let collection_constraint = match collection_input_constraint(
                 application.as_deref(),
                 &command_name,
@@ -6757,7 +6758,7 @@ async fn command_command(
             input,
             expected_version,
         } => {
-            let input = match read_json::<RecordInput>(&input, stdin)
+            let input = match read_command_json::<RecordInput>(&input, stdin)
                 .and_then(|input| input.into_proto().map_err(|_| InputError::Invalid))
             {
                 Ok(input) => input,
@@ -7429,8 +7430,10 @@ async fn contextual_command(
                 Ok(value) if value.len() > 32 => value,
                 _ => return invalid_input(identity),
             };
-            let input = match read_json::<serde_json::Map<String, serde_json::Value>>(&input, stdin)
-                .and_then(|input| natural_command_record(input).map_err(|()| InputError::Invalid))
+            let input = match read_command_json::<serde_json::Map<String, serde_json::Value>>(
+                &input, stdin,
+            )
+            .and_then(|input| natural_command_record(input).map_err(|()| InputError::Invalid))
             {
                 Ok(input) => input,
                 Err(error) => return input_terminal(identity, error),
@@ -10738,9 +10741,28 @@ fn read_json<T: for<'de> Deserialize<'de>>(
     source: &OsString,
     stdin: &mut dyn Read,
 ) -> Result<T, InputError> {
+    read_json_with_limit(source, stdin, MAX_INPUT_BYTES)
+}
+
+fn read_command_json<T: for<'de> Deserialize<'de>>(
+    source: &OsString,
+    stdin: &mut dyn Read,
+) -> Result<T, InputError> {
+    read_json_with_limit(
+        source,
+        stdin,
+        riffdb_types::MAX_ATOMIC_COMMAND_FRAME_BYTES_V2,
+    )
+}
+
+fn read_json_with_limit<T: for<'de> Deserialize<'de>>(
+    source: &OsString,
+    stdin: &mut dyn Read,
+    maximum: usize,
+) -> Result<T, InputError> {
     let encoded = source.as_encoded_bytes();
     let bytes = if encoded.first() == Some(&b'{') || encoded.first() == Some(&b'[') {
-        if encoded.len() > MAX_INPUT_BYTES {
+        if encoded.len() > maximum {
             return Err(InputError::TooLarge);
         }
         encoded.to_vec()
@@ -10749,9 +10771,9 @@ fn read_json<T: for<'de> Deserialize<'de>>(
             .to_str()
             .and_then(|value| value.strip_prefix('@'))
             .ok_or(InputError::PathInvalid)?;
-        read_path_or_stdin(OsStr::new(path), stdin, MAX_INPUT_BYTES)?
+        read_path_or_stdin(OsStr::new(path), stdin, maximum)?
     } else {
-        read_path_or_stdin(source, stdin, MAX_INPUT_BYTES)?
+        read_path_or_stdin(source, stdin, maximum)?
     };
     serde_json::from_slice(&bytes).map_err(|_| InputError::Invalid)
 }
@@ -13328,7 +13350,10 @@ mod tests {
             },
             &config,
             &environment,
-            &mut Cursor::new(vec![b'x'; MAX_INPUT_BYTES + 1]),
+            &mut Cursor::new(vec![
+                b'x';
+                riffdb_types::MAX_ATOMIC_COMMAND_FRAME_BYTES_V2 + 1
+            ]),
         )
         .await;
         assert_local_code(oversized_json, "input_too_large");

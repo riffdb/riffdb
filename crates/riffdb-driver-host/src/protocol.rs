@@ -4,7 +4,9 @@ use std::io;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use riffdb_types::decode_canonical_value;
+use riffdb_types::{
+    MAX_ATOMIC_COMMAND_FRAME_BYTES_V2, MAX_BYTES_VALUE_BYTES, decode_canonical_value,
+};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -14,7 +16,8 @@ pub(crate) const DRIVER_PROTOCOL_VERSION_V1: u32 = 1;
 pub(crate) const DRIVER_PROTOCOL_VERSION_V2: u32 = 2;
 pub(crate) const DRIVER_PROTOCOL_VERSION_V3: u32 = 3;
 /// Hard bound for one complete local request or response body.
-pub const MAX_DRIVER_FRAME_BYTES: usize = 1_048_576;
+pub const MAX_DRIVER_FRAME_BYTES: usize = MAX_ATOMIC_COMMAND_FRAME_BYTES_V2;
+const MAX_BASE64_BYTES_VALUE_BYTES: usize = MAX_BYTES_VALUE_BYTES.div_ceil(3) * 4;
 const MAX_COLLECTION_ITEMS: usize = 4_096;
 const MAX_VALUE_DEPTH: usize = 32;
 
@@ -956,7 +959,7 @@ fn validate_values<'a>(
             // representation is larger than the canonical value checked by the
             // generated facade and application service. The frame ceiling remains
             // the authoritative local-transport allocation bound.
-            DriverValue::Bytes(value) if value.len() > MAX_DRIVER_FRAME_BYTES => {
+            DriverValue::Bytes(value) if value.len() > MAX_BASE64_BYTES_VALUE_BYTES => {
                 return Err(ProtocolError::InvalidBounds);
             }
             DriverValue::I64(value) if value.len() > 20 || value.parse::<i64>().is_err() => {

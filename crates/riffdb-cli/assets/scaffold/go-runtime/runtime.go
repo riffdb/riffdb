@@ -29,7 +29,7 @@ const (
 	ProtocolVersion   = uint32(4)
 	ValueRegistryHash = "8e1681ddf5e6a82e7fa646f9737128ad7e36f54f8b5846ac6e33e732125407e5"
 	ErrorRegistryHash = "b94d685ecbc18f2369a2bfa1a53139d06100699c4ee41b31c86d6a7e17039850"
-	maxFrameBytes     = 1_048_576
+	maxFrameBytes     = 8 * 1_024 * 1_024
 	maxPending        = 256
 	maxCollection     = 4_096
 	maxDepth          = 32

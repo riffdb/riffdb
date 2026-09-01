@@ -7,8 +7,8 @@ use crate::{
     CanonicalVector, CurrencyCode, Date, Decimal, DecimalSpec, EnumTypeId, EnumVariantId, FieldId,
     Money, Timestamp,
     limits::{
-        MAX_BYTES_VALUE_BYTES, MAX_CANONICAL_DOCUMENT_BYTES, MAX_LIST_ENTRIES, MAX_NESTING_DEPTH,
-        MAX_RECORD_FIELDS, MAX_STRING_BYTES,
+        MAX_ATOMIC_COMMAND_REQUEST_BYTES_V2, MAX_BYTES_VALUE_BYTES, MAX_CANONICAL_DOCUMENT_BYTES,
+        MAX_LIST_ENTRIES, MAX_NESTING_DEPTH, MAX_RECORD_FIELDS, MAX_STRING_BYTES,
     },
 };
 
@@ -72,6 +72,7 @@ pub fn encode_canonical_value_into(
     let mut encoder = Encoder {
         output: std::mem::take(output),
         document_start,
+        maximum_document_bytes: MAX_CANONICAL_DOCUMENT_BYTES,
     };
     let result = encoder.encode_value(value, 0);
     *output = encoder.output;
@@ -87,7 +88,7 @@ pub fn encode_canonical_value_into(
 /// the same bound, nesting, and structural faults so callers can treat length
 /// and encode as interchangeable for fuel and charge accounting.
 pub fn canonical_value_encoded_len(value: &CanonicalValue) -> Result<usize, CanonicalCodecError> {
-    let mut counter = LengthCounter::default();
+    let mut counter = LengthCounter::new(MAX_CANONICAL_DOCUMENT_BYTES);
     counter.encode_value(value, 0)?;
     Ok(counter.len)
 }
@@ -102,7 +103,7 @@ pub fn canonical_value_encoded_len(value: &CanonicalValue) -> Result<usize, Cano
 pub fn canonical_record_encoded_len(
     record: &CanonicalRecord,
 ) -> Result<usize, CanonicalCodecError> {
-    let mut counter = LengthCounter::default();
+    let mut counter = LengthCounter::new(MAX_CANONICAL_DOCUMENT_BYTES);
     counter.encode_record_value(record, 0)?;
     Ok(counter.len)
 }
@@ -117,6 +118,36 @@ pub fn encode_canonical_record(record: &CanonicalRecord) -> Result<Vec<u8>, Cano
     let mut encoder = Encoder {
         output: Vec::with_capacity(reserve_hint(canonical_record_encoded_len(record))),
         document_start: 0,
+        maximum_document_bytes: MAX_CANONICAL_DOCUMENT_BYTES,
+    };
+    encoder.encode_record_value(record, 0)?;
+    Ok(encoder.output)
+}
+
+/// Exact encoded byte length of one canonical atomic-command input record.
+///
+/// Canonical value encoding remains V1 and every nested scalar retains its
+/// ordinary bound. Only the complete command-input record receives the
+/// independently bounded V2 envelope.
+pub fn canonical_command_input_encoded_len(
+    record: &CanonicalRecord,
+) -> Result<usize, CanonicalCodecError> {
+    let mut counter = LengthCounter::new(MAX_ATOMIC_COMMAND_REQUEST_BYTES_V2);
+    counter.encode_record_value(record, 0)?;
+    Ok(counter.len)
+}
+
+/// Encodes one canonical atomic-command input under its fixed V2 envelope.
+///
+/// Inputs that fit the legacy 1 MiB envelope produce byte-identical output to
+/// [`encode_canonical_record`].
+pub fn encode_canonical_command_input(
+    record: &CanonicalRecord,
+) -> Result<Vec<u8>, CanonicalCodecError> {
+    let mut encoder = Encoder {
+        output: Vec::with_capacity(reserve_hint(canonical_command_input_encoded_len(record))),
+        document_start: 0,
+        maximum_document_bytes: MAX_ATOMIC_COMMAND_REQUEST_BYTES_V2,
     };
     encoder.encode_record_value(record, 0)?;
     Ok(encoder.output)
@@ -145,11 +176,21 @@ struct Encoder {
     output: Vec<u8>,
     /// Start index of the document currently being written (for size bounds).
     document_start: usize,
+    maximum_document_bytes: usize,
 }
 
-#[derive(Default)]
 struct LengthCounter {
     len: usize,
+    maximum_document_bytes: usize,
+}
+
+impl LengthCounter {
+    const fn new(maximum_document_bytes: usize) -> Self {
+        Self {
+            len: 0,
+            maximum_document_bytes,
+        }
+    }
 }
 
 impl Encoder {
@@ -320,12 +361,12 @@ impl Encoder {
                 .checked_add(bytes.len())
                 .ok_or(CanonicalCodecError::DocumentTooLarge {
                     actual: usize::MAX,
-                    maximum: MAX_CANONICAL_DOCUMENT_BYTES,
+                    maximum: self.maximum_document_bytes,
                 })?;
-        if new_length > MAX_CANONICAL_DOCUMENT_BYTES {
+        if new_length > self.maximum_document_bytes {
             return Err(CanonicalCodecError::DocumentTooLarge {
                 actual: new_length,
-                maximum: MAX_CANONICAL_DOCUMENT_BYTES,
+                maximum: self.maximum_document_bytes,
             });
         }
         self.output.extend_from_slice(bytes);
@@ -464,12 +505,12 @@ impl LengthCounter {
                 .checked_add(bytes)
                 .ok_or(CanonicalCodecError::DocumentTooLarge {
                     actual: usize::MAX,
-                    maximum: MAX_CANONICAL_DOCUMENT_BYTES,
+                    maximum: self.maximum_document_bytes,
                 })?;
-        if new_length > MAX_CANONICAL_DOCUMENT_BYTES {
+        if new_length > self.maximum_document_bytes {
             return Err(CanonicalCodecError::DocumentTooLarge {
                 actual: new_length,
-                maximum: MAX_CANONICAL_DOCUMENT_BYTES,
+                maximum: self.maximum_document_bytes,
             });
         }
         self.len = new_length;
@@ -912,6 +953,41 @@ mod tests {
             encode_canonical_record(&record).expect("borrowed encoding")[..2],
             [CANONICAL_VALUE_VERSION, TAG_RECORD]
         );
+    }
+
+    #[test]
+    fn atomic_command_input_envelope_is_additive_and_preserves_v1_bytes() {
+        let legacy = one_bytes_field(128);
+        assert_eq!(
+            encode_canonical_command_input(&legacy).expect("command input"),
+            encode_canonical_record(&legacy).expect("legacy record")
+        );
+
+        let large = CanonicalRecord::new(vec![
+            (
+                FieldId::new(1).expect("field ID"),
+                CanonicalValue::bytes(vec![0xa5; 900_000]).expect("first value"),
+            ),
+            (
+                FieldId::new(2).expect("field ID"),
+                CanonicalValue::bytes(vec![0x5a; 900_000]).expect("second value"),
+            ),
+        ])
+        .expect("large command input");
+        assert!(matches!(
+            encode_canonical_record(&large),
+            Err(CanonicalCodecError::DocumentTooLarge {
+                maximum: MAX_CANONICAL_DOCUMENT_BYTES,
+                ..
+            })
+        ));
+        let encoded = encode_canonical_command_input(&large).expect("large command input encode");
+        assert_eq!(
+            canonical_command_input_encoded_len(&large).expect("large command input length"),
+            encoded.len()
+        );
+        assert!(encoded.len() > MAX_CANONICAL_DOCUMENT_BYTES);
+        assert!(encoded.len() <= MAX_ATOMIC_COMMAND_REQUEST_BYTES_V2);
     }
 
     #[test]

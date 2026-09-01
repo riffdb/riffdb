@@ -87,7 +87,13 @@ fn generated_servers_are_wrapped_with_exact_public_message_limits() {
         source
             .matches(".max_decoding_message_size(MAX_PUBLIC_REQUEST_BYTES)")
             .count(),
-        7
+        4
+    );
+    assert_eq!(
+        source
+            .matches(".max_decoding_message_size(MAX_EXECUTE_REQUEST_BYTES)")
+            .count(),
+        3
     );
     assert_eq!(
         source

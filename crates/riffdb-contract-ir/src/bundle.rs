@@ -89,6 +89,8 @@ pub const BUNDLE_FORMAT_VERSION_V19: u32 = 19;
 pub const BUNDLE_FORMAT_VERSION_V20: u32 = 20;
 /// Bundle framing containing long-value exact-pattern declarations.
 pub const BUNDLE_FORMAT_VERSION_V21: u32 = 21;
+/// Bundle framing containing compiler-bounded large atomic command envelopes.
+pub const BUNDLE_FORMAT_VERSION_V22: u32 = 22;
 /// Canonical grammar version represented by a bundle.
 pub const GRAMMAR_VERSION_V1: u32 = 1;
 /// Contract grammar containing compiled workflows and service-owned values.
@@ -131,6 +133,8 @@ pub const GRAMMAR_VERSION_V19: u32 = 19;
 pub const GRAMMAR_VERSION_V20: u32 = 20;
 /// Contract grammar containing `pattern_index` declarations.
 pub const GRAMMAR_VERSION_V21: u32 = 21;
+/// Contract grammar whose compiler may select a large atomic command envelope.
+pub const GRAMMAR_VERSION_V22: u32 = 22;
 /// Executable IR version represented by a bundle.
 pub const EXECUTABLE_IR_VERSION_V1: u32 = 1;
 /// Executable IR containing compiled workflow transitions and service values.
@@ -180,6 +184,8 @@ pub const EXECUTABLE_IR_VERSION_V19: u32 = 19;
 pub const EXECUTABLE_IR_VERSION_V20: u32 = 20;
 /// Executable IR whose schema carries long-pattern declarations.
 pub const EXECUTABLE_IR_VERSION_V21: u32 = 21;
+/// Executable IR carrying a compiler-proved maximum atomic command request.
+pub const EXECUTABLE_IR_VERSION_V22: u32 = 22;
 
 const RELATIONSHIP_SCHEMA_EXTENSION: u32 = 0xffff_fffe;
 const UNIQUE_KEY_SCHEMA_EXTENSION: u32 = 0xffff_fffd;
@@ -1109,7 +1115,9 @@ impl ContractBundle {
         mcp_command_names: McpCommandNameRegistryV2,
         compatibility: CompatibilityReport,
     ) -> Result<Self, IrValidationError> {
-        let version = if schema.requires_ir_v21() {
+        let version = if commands.iter().any(CommandPlan::requires_ir_v22) {
+            BUNDLE_FORMAT_VERSION_V22
+        } else if schema.requires_ir_v21() {
             BUNDLE_FORMAT_VERSION_V21
         } else if schema.requires_ir_v20() {
             BUNDLE_FORMAT_VERSION_V20
@@ -1279,6 +1287,10 @@ impl ContractBundle {
                 BUNDLE_FORMAT_VERSION_V21,
                 GRAMMAR_VERSION_V21,
                 EXECUTABLE_IR_VERSION_V21
+            ) | (
+                BUNDLE_FORMAT_VERSION_V22,
+                GRAMMAR_VERSION_V22,
+                EXECUTABLE_IR_VERSION_V22
             )
         ) || (ir_version < EXECUTABLE_IR_VERSION_V2
             && (!workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2)))
@@ -1312,6 +1324,8 @@ impl ContractBundle {
                 && commands.iter().any(CommandPlan::requires_ir_v19))
             || (ir_version < EXECUTABLE_IR_VERSION_V20 && schema.requires_ir_v20())
             || (ir_version < EXECUTABLE_IR_VERSION_V21 && schema.requires_ir_v21())
+            || (ir_version < EXECUTABLE_IR_VERSION_V22
+                && commands.iter().any(CommandPlan::requires_ir_v22))
             || (ir_version >= EXECUTABLE_IR_VERSION_V6
                 && commands
                     .iter()
@@ -2033,7 +2047,9 @@ pub(crate) fn compute_command_plan_hash(
 ) -> Result<PlanHash, IrValidationError> {
     let mut writer = Writer::new(MAX_BUNDLE_BYTES);
     writer.raw(COMMAND_PLAN_MAGIC)?;
-    let ir_version = if plan.requires_ir_v18() {
+    let ir_version = if plan.requires_ir_v22() {
+        EXECUTABLE_IR_VERSION_V22
+    } else if plan.requires_ir_v18() {
         EXECUTABLE_IR_VERSION_V18
     } else if plan.requires_ir_v17() {
         EXECUTABLE_IR_VERSION_V17
@@ -3227,7 +3243,9 @@ fn encode_command_bundle_entry(
     command: &CommandPlan,
     schema: &SchemaIr,
 ) -> Result<(), IrValidationError> {
-    let ir_version = if command.requires_ir_v18() {
+    let ir_version = if command.requires_ir_v22() {
+        EXECUTABLE_IR_VERSION_V22
+    } else if command.requires_ir_v18() {
         EXECUTABLE_IR_VERSION_V18
     } else if command.requires_ir_v17() {
         EXECUTABLE_IR_VERSION_V17
@@ -3271,7 +3289,9 @@ fn encode_command_semantics(
     schema: &SchemaIr,
     include_display_names: bool,
 ) -> Result<(), IrValidationError> {
-    let ir_version = if command.requires_ir_v18() {
+    let ir_version = if command.requires_ir_v22() {
+        EXECUTABLE_IR_VERSION_V22
+    } else if command.requires_ir_v18() {
         EXECUTABLE_IR_VERSION_V18
     } else if command.requires_ir_v17() {
         EXECUTABLE_IR_VERSION_V17
@@ -3343,6 +3363,13 @@ fn encode_command_semantics_versioned(
         if let Some(expansion) = command.collection_expansion() {
             encode_collection_expansion(writer, expansion, ir_version)?;
         }
+    }
+    if ir_version >= EXECUTABLE_IR_VERSION_V22 {
+        writer.u32(u32::try_from(command.maximum_request_bytes()).map_err(|_| {
+            IrValidationError::SizeOverflow {
+                kind: "command public request bytes",
+            }
+        })?)?;
     }
 
     encode_expression_arena(writer, command.expressions())?;
@@ -4083,6 +4110,10 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
             BUNDLE_FORMAT_VERSION_V21,
             GRAMMAR_VERSION_V21,
             EXECUTABLE_IR_VERSION_V21
+        ) | (
+            BUNDLE_FORMAT_VERSION_V22,
+            GRAMMAR_VERSION_V22,
+            EXECUTABLE_IR_VERSION_V22
         )
     ) {
         return Err(IrValidationError::UnsupportedVersion {
@@ -5653,6 +5684,9 @@ fn decode_command_versioned(
     } else {
         None
     };
+    let stored_maximum_request_bytes = (ir_version >= EXECUTABLE_IR_VERSION_V22)
+        .then(|| reader.u32().map(|value| value as usize))
+        .transpose()?;
     let expressions = decode_expression_arena_versioned(reader, ir_version)?;
     let binding_count = decode_len(reader, "command bindings", crate::MAX_COMMAND_ITEMS)?;
     let mut bindings = Vec::with_capacity(binding_count);
@@ -6020,6 +6054,11 @@ fn decode_command_versioned(
     {
         return Err(IrValidationError::InvalidDependency {
             reason: "delete proof does not match the derived command plan",
+        });
+    }
+    if stored_maximum_request_bytes.is_some_and(|maximum| maximum != plan.maximum_request_bytes()) {
+        return Err(IrValidationError::InvalidDependency {
+            reason: "command request bound does not match the derived command plan",
         });
     }
     if plan.plan_hash() != stored_plan_hash {

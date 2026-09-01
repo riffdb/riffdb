@@ -219,8 +219,8 @@ it is not JSON, Protobuf, compressed, or in-memory size. Every element still obe
 type and byte bounds, and the list still obeys its count bound.
 
 The compiler derives how many times element-variable bytes can appear in the canonical command
-input, entity mutations, and events. It proves both the unchanged 1 MiB public request envelope
-and `fixed bytes + aggregate bytes * derived copy coefficient <= 16 MiB`. Unsupported flows,
+input, entity mutations, and events. It proves both the command's least-sufficient root request
+envelope and `fixed bytes + aggregate bytes * derived copy coefficient <= 16 MiB`. Unsupported flows,
 arithmetic overflow, or either excessive result fails at the source clause. The coefficient is
 stored in executable IR V16 and cannot be selected by an application or caller.
 
@@ -238,6 +238,29 @@ generated MCP JSON Schema carries the same `minItems`, `maxItems`, and any compi
 canonical-element-byte extension. Canonical command encoding
 also enforces the fixed document-byte ceiling before a request is sent; no client silently splits
 one atomic collection command into smaller writes.
+
+## Large atomic command inputs
+
+Most commands retain the original 1 MiB complete input ceiling. When the compiler proves that a
+command's typed maximum is greater than 1 MiB but no greater than 4 MiB, that command selects the
+additive V22 contract identity and carries its exact maximum in the executable plan. There is no
+source flag or caller option for this behavior.
+
+Only the complete root command-input record receives this headroom. Every string, bytes value,
+list, nested record, entity, event, and outcome retains the ordinary 1 MiB canonical document
+ceiling, and the complete input-and-write graph retains its independent 16 MiB ceiling. The
+service materializes the exact canonical input and enforces the plan maximum before evaluation or
+effects. Small command inputs keep byte-identical canonical encoding and idempotency hashes.
+
+Command-bearing gRPC, application-session, contextual-reaction, MCP, CLI, command-batch, and local
+driver messages have a fixed 8 MiB frame ceiling to hold bounded Protobuf, JSON, field-name, and
+base64 overhead. The frame is not decoded command capacity: ordinary services still accept 1 MiB,
+and large commands still stop at both 4 MiB and their lower compiler-proved plan maximum.
+
+For example, one MLflow-shaped command may create a Run, up to 100 indexed tag children whose
+values are individually bounded to 8,000 bytes, and one packed hydration field atomically. RiffDB
+does not split the command, reduce the legal tag count, omit search rows, or make the adapter
+coordinate multiple writes.
 
 The CLI accepts inline JSON, `@file`, a file path, or `-` for stdin. Nested collection elements are
 ordinary symbolic JSON records; scalar tags remain explicit where JSON has no lossless native

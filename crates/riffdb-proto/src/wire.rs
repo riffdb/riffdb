@@ -2,8 +2,8 @@
 
 use riffdb_errors::{MAX_VALIDATION_ISSUES, MAX_VALIDATION_PATH_SEGMENTS};
 use riffdb_types::{
-    MAX_BYTES_VALUE_BYTES, MAX_CANONICAL_DOCUMENT_BYTES, MAX_LIST_ENTRIES, MAX_NESTING_DEPTH,
-    MAX_RECORD_FIELDS, MAX_STRING_BYTES, MAX_VECTOR_DIMENSION,
+    MAX_ATOMIC_COMMAND_FRAME_BYTES_V2, MAX_BYTES_VALUE_BYTES, MAX_CANONICAL_DOCUMENT_BYTES,
+    MAX_LIST_ENTRIES, MAX_NESTING_DEPTH, MAX_RECORD_FIELDS, MAX_STRING_BYTES, MAX_VECTOR_DIMENSION,
 };
 
 use crate::{
@@ -205,8 +205,15 @@ pub(crate) fn value(input: &[u8]) -> Result<(), PreflightError> {
     value_at_depth(input, 0)
 }
 
+fn command_input_value(input: &[u8]) -> Result<(), PreflightError> {
+    if input.len() > MAX_ATOMIC_COMMAND_FRAME_BYTES_V2 {
+        return Err(PreflightError::LimitExceeded);
+    }
+    value_at_depth(input, 0)
+}
+
 fn value_at_depth(input: &[u8], depth: usize) -> Result<(), PreflightError> {
-    if depth > MAX_NESTING_DEPTH {
+    if depth > MAX_NESTING_DEPTH || (depth > 0 && input.len() > MAX_CANONICAL_DOCUMENT_BYTES) {
         return Err(PreflightError::LimitExceeded);
     }
     let mut cursor = Cursor::new(input);
@@ -466,6 +473,7 @@ pub(crate) fn execute_request(input: &[u8]) -> Result<(), PreflightError> {
         MAX_EXECUTE_REQUEST_BYTES,
         4,
         &[(1, 16), (2, MAX_PROTOCOL_NAME_BYTES)],
+        true,
     )
 }
 
@@ -481,6 +489,7 @@ pub(crate) fn execute_response(input: &[u8]) -> Result<(), PreflightError> {
             (8, MAX_DURABILITY_MODE_BYTES),
             (9, MAX_OUTCOME_RESOURCE_LOCATOR_BYTES),
         ],
+        false,
     )
 }
 
@@ -489,6 +498,7 @@ fn execute(
     maximum: usize,
     value_field_number: u32,
     byte_limits: &[(u32, usize)],
+    large_command_input: bool,
 ) -> Result<(), PreflightError> {
     if input.len() > maximum {
         return Err(PreflightError::LimitExceeded);
@@ -507,7 +517,12 @@ fn execute(
             claim_singular(seen.get_mut(index).ok_or(PreflightError::Malformed)?)?;
         }
         if field.number == value_field_number {
-            value(field.require_wire(2)?.bytes)?;
+            let value_bytes = field.require_wire(2)?.bytes;
+            if large_command_input {
+                command_input_value(value_bytes)?;
+            } else {
+                value(value_bytes)?;
+            }
         } else if let Some((_, limit)) = byte_limits
             .iter()
             .find(|(number, _)| *number == field.number)

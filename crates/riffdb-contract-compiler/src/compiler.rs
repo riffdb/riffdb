@@ -232,7 +232,9 @@ mod tests {
         CommandExplain, CompatibilityClass, CompatibilityCode, ContractBundle, ExpressionKind,
         Instruction, LineageEntryState, ServiceValueKind, UnaryOperator, ValueType, ValueTypeTag,
     };
-    use riffdb_types::CanonicalValue;
+    use riffdb_types::{
+        CanonicalValue, MAX_APPLICATION_REQUEST_BYTES_V1, MAX_ATOMIC_COMMAND_REQUEST_BYTES_V2,
+    };
 
     #[test]
     fn migration_aware_global_enum_rename_allocates_one_alias() {
@@ -877,6 +879,61 @@ contract AggregateBulk version 1 {
     }
 
     #[test]
+    fn aggregate_collection_budget_selects_v22_for_a_large_atomic_command() {
+        let source = r#"
+contract AtomicTagsRepro version 1 {
+  entity Run {
+    key (run_id: string<32>)
+    field packed_tags: bytes<900000>
+  }
+  entity RunTag {
+    key (run_id: string<32>, tag_key: string<250>)
+    field value: string<8000>
+    field value_digest: bytes<32>
+    reference run (run_id) -> Run(run_id)
+    delete_policy no_inbound
+  }
+  aggregate Runs {
+    root Run
+    child RunTag
+    partition_by run_id
+    conflict_key (run_id)
+  }
+  bulk command CreateRunWithTags {
+    input request_id: string<128>
+    input run_id: string<32>
+    input packed_tags: bytes<900000>
+    input tags: list<RunTag, 1..100> aggregate_bytes <= 900000
+    idempotency_key request_id
+    create Run(run_id) as run else RunExists {}
+    for candidate in tags {
+      create RunTag(run_id, candidate.tag_key) as tag else RunTagExists {}
+      set tag.value = candidate.value
+      set tag.value_digest = candidate.value_digest
+    }
+    set run.packed_tags = packed_tags
+    return RunCreated { run: run }
+  }
+}
+"#;
+        let bundle = compile_contract_source(source).expect("large atomic command compiles");
+        assert_eq!(bundle.format_version(), 22);
+        assert_eq!(bundle.grammar_version(), 22);
+        assert_eq!(bundle.ir_version(), 22);
+        let plan = &bundle.commands()[0];
+        assert!(plan.maximum_request_bytes() > MAX_APPLICATION_REQUEST_BYTES_V1);
+        assert!(plan.maximum_request_bytes() <= MAX_ATOMIC_COMMAND_REQUEST_BYTES_V2);
+        assert!(plan.requires_ir_v22());
+        let decoded = riffdb_contract_ir::ContractBundle::decode(bundle.canonical_bytes())
+            .expect("V22 bundle decodes");
+        assert_eq!(decoded.canonical_bytes(), bundle.canonical_bytes());
+        assert_eq!(
+            decoded.commands()[0].maximum_request_bytes(),
+            plan.maximum_request_bytes()
+        );
+    }
+
+    #[test]
     fn aggregate_collection_budget_counts_optional_event_copies_conservatively() {
         let source = r#"
 contract AggregateEventBulk version 1 {
@@ -911,8 +968,8 @@ contract AggregateEventBulk version 1 {
             .expect("collection expansion");
         assert_eq!(expansion.maximum_copy_coefficient(), Some(3));
 
-        let oversized = source.replace("900000", "1048576");
-        assert_semantic_diagnostic_at(&oversized, CompilerDiagnosticCode::BoundExceeded, "1048576");
+        let oversized = source.replace("900000", "4194304");
+        assert_semantic_diagnostic_at(&oversized, CompilerDiagnosticCode::BoundExceeded, "4194304");
     }
 
     #[test]
