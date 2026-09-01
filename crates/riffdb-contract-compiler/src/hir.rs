@@ -188,6 +188,7 @@ pub(crate) struct HirEntity {
     pub(crate) delete_policy: Option<HirDeletePolicy>,
     pub(crate) vector_fields: Vec<HirVectorField>,
     pub(crate) text_indexes: Vec<HirTextIndex>,
+    pub(crate) long_patterns: Vec<HirLongPattern>,
 }
 
 /// One validated vector-field search configuration (ADR-0091): the resolved
@@ -227,6 +228,22 @@ pub(crate) struct HirTextIndex {
     pub(crate) max_terms: u32,
     pub(crate) max_candidates: u32,
     pub(crate) max_results: u32,
+    pub(crate) span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct HirLongPattern {
+    pub(crate) index_id: IndexId,
+    pub(crate) name: String,
+    pub(crate) field_id: FieldId,
+    pub(crate) profile: riffdb_types::LongPatternProfileV1,
+    pub(crate) operators: Vec<riffdb_types::LongPatternOperatorV1>,
+    pub(crate) bounds: riffdb_types::LongPatternBoundsV1,
+    pub(crate) replay_age_seconds: u64,
+    pub(crate) replay_bytes: u64,
+    pub(crate) replay_backlog: u64,
+    pub(crate) retained_generations: u32,
+    pub(crate) stale_entity_count_threshold: u32,
     pub(crate) span: Span,
 }
 
@@ -827,6 +844,7 @@ fn lower_entities(
                 | EntityItem::Unique(_)
                 | EntityItem::Reference(_)
                 | EntityItem::TextIndex(_)
+                | EntityItem::LongPattern(_)
                 | EntityItem::DeletePolicy(_) => {}
                 EntityItem::VectorField(vector_field) => {
                     let field_id = symbols
@@ -1186,7 +1204,8 @@ fn lower_entities(
                 EntityItem::Key(_)
                 | EntityItem::Field(_)
                 | EntityItem::VectorField(_)
-                | EntityItem::TextIndex(_) => {}
+                | EntityItem::TextIndex(_)
+                | EntityItem::LongPattern(_) => {}
             }
         }
         // Validate vector field declarations and retain the resolved search
@@ -1624,6 +1643,170 @@ fn lower_entities(
                 });
             }
         }
+        let mut long_patterns = Vec::new();
+        for item in &source.items {
+            let EntityItem::LongPattern(pattern) = &item.value else {
+                continue;
+            };
+            let invalid =
+                || CompilerDiagnostic::new(CompilerDiagnosticCode::InvalidProjection, item.span);
+            let Some(index_id) = symbols
+                .indexes
+                .get(&(id, pattern.name.value.clone()))
+                .copied()
+            else {
+                diagnostics.push(invalid());
+                continue;
+            };
+            let Some((field_id, value_type)) = field_scope.get(&pattern.field.value).cloned()
+            else {
+                diagnostics.push(CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::UnknownName,
+                    pattern.field.span,
+                ));
+                continue;
+            };
+            if value_type.tag() != ValueTypeTag::String {
+                diagnostics.push(invalid());
+                continue;
+            }
+            let profile = match pattern.profile.value.as_str() {
+                "binary_utf8_v1" => riffdb_types::LongPatternProfileV1::BinaryUtf8V1,
+                "unicode_fold_v1" => riffdb_types::LongPatternProfileV1::UnicodeFoldV1,
+                _ => {
+                    diagnostics.push(invalid());
+                    continue;
+                }
+            };
+            let mut operators = pattern
+                .operators
+                .iter()
+                .filter_map(|operator| match operator.value.as_str() {
+                    "equals" => Some(riffdb_types::LongPatternOperatorV1::Equals),
+                    "starts_with" => Some(riffdb_types::LongPatternOperatorV1::StartsWith),
+                    "ends_with" => Some(riffdb_types::LongPatternOperatorV1::EndsWith),
+                    "contains" => Some(riffdb_types::LongPatternOperatorV1::Contains),
+                    "like" => Some(riffdb_types::LongPatternOperatorV1::Like),
+                    "ilike" => Some(riffdb_types::LongPatternOperatorV1::ILike),
+                    "not_like" => Some(riffdb_types::LongPatternOperatorV1::NotLike),
+                    "not_ilike" => Some(riffdb_types::LongPatternOperatorV1::NotILike),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            if operators.len() != pattern.operators.len() {
+                diagnostics.push(invalid());
+                continue;
+            }
+            operators.sort_unstable();
+            operators.dedup();
+            let values = pattern
+                .bounds
+                .iter()
+                .filter_map(|bound| {
+                    bound
+                        .value
+                        .value
+                        .parse::<u64>()
+                        .ok()
+                        .map(|value| (bound.name.value.as_str(), value))
+                })
+                .collect::<BTreeMap<_, _>>();
+            const NAMES: [&str; 18] = [
+                "max_source_bytes",
+                "max_matched_bytes",
+                "max_rows",
+                "max_total_matched_bytes",
+                "max_grams_per_row",
+                "max_distinct_grams",
+                "max_postings",
+                "max_postings_bytes",
+                "max_pattern_bytes",
+                "max_pattern_atoms",
+                "max_candidates",
+                "max_verification_bytes",
+                "max_results",
+                "staleness_slo",
+                "replay_age_seconds",
+                "replay_bytes",
+                "replay_backlog",
+                "retained_generations",
+            ];
+            if values.len() != NAMES.len() || NAMES.iter().any(|name| !values.contains_key(name)) {
+                diagnostics.push(invalid());
+                continue;
+            }
+            let u32_value = |name| values[name].try_into().ok();
+            let bounds = u32_value("max_source_bytes")
+                .zip(u32_value("max_matched_bytes"))
+                .zip(u32_value("max_rows"))
+                .zip(u32_value("max_distinct_grams"))
+                .zip(u32_value("max_grams_per_row"))
+                .zip(u32_value("max_pattern_bytes"))
+                .zip(u32_value("max_pattern_atoms"))
+                .zip(u32_value("max_candidates"))
+                .zip(u32_value("max_results"))
+                .and_then(
+                    |(
+                        (
+                            (
+                                (((((source, matched), rows), distinct), grams), pattern_bytes),
+                                atoms,
+                            ),
+                            candidates,
+                        ),
+                        results,
+                    )| {
+                        riffdb_types::LongPatternBoundsV1::new(
+                            source,
+                            matched,
+                            rows,
+                            values["max_total_matched_bytes"],
+                            distinct,
+                            values["max_postings"],
+                            values["max_postings_bytes"],
+                            grams,
+                            pattern_bytes,
+                            atoms,
+                            atoms,
+                            candidates,
+                            values["max_verification_bytes"],
+                            results,
+                        )
+                        .ok()
+                    },
+                );
+            let Some(bounds) = bounds else {
+                diagnostics.push(invalid());
+                continue;
+            };
+            if value_type
+                .byte_bound()
+                .is_none_or(|maximum| maximum > bounds.source_bytes() as usize)
+            {
+                diagnostics.push(invalid());
+                continue;
+            }
+            let Some((retained_generations, stale_entity_count_threshold)) =
+                u32_value("retained_generations").zip(u32_value("staleness_slo"))
+            else {
+                diagnostics.push(invalid());
+                continue;
+            };
+            long_patterns.push(HirLongPattern {
+                index_id,
+                name: pattern.name.value.clone(),
+                field_id,
+                profile,
+                operators,
+                bounds,
+                replay_age_seconds: values["replay_age_seconds"],
+                replay_bytes: values["replay_bytes"],
+                replay_backlog: values["replay_backlog"],
+                retained_generations,
+                stale_entity_count_threshold,
+                span: item.span,
+            });
+        }
         result.push(HirEntity {
             id,
             name: source.name.value.clone(),
@@ -1636,6 +1819,7 @@ fn lower_entities(
             delete_policy,
             vector_fields,
             text_indexes,
+            long_patterns,
         });
     }
     result

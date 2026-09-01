@@ -439,6 +439,13 @@ pub enum QueryAccessKind {
         /// Whole-index traversal direction.
         direction: AccessDirection,
     },
+    /// Complete bounded key production from one exact long-pattern provider.
+    LongPatternCandidate {
+        /// Exact contract provider name.
+        provider: String,
+        /// Compiler-sealed operator, parameter, descriptor, and bounds.
+        pattern: crate::LongPatternCandidateV1,
+    },
     /// Nearest-neighbor search on a declared vector field (ADR-0091).
     ///
     /// Returns the top-K entities closest to a query vector by the field's
@@ -750,6 +757,18 @@ impl QueryAccessStep {
                                 | QueryPredicateOperator::Exists
                                 | QueryPredicateOperator::Prefix
                         )
+                    })
+            }
+            QueryAccessKind::LongPatternCandidate { provider, pattern } => {
+                !provider.is_empty()
+                    && matches!(row_limit, QueryRowLimit::CandidateComplete { .. })
+                    && cardinality == Cardinality::Many
+                    && maximum_rows <= u64::from(pattern.bounds().candidates())
+                    && cursor_parameter.is_none()
+                    && absence_outcome.is_some()
+                    && predicates.iter().all(|predicate| {
+                        predicate.operator == QueryPredicateOperator::Equal
+                            && predicate.field != pattern.field()
                     })
             }
             QueryAccessKind::DependentPointBatch {
@@ -1388,6 +1407,17 @@ fn candidate_composition_is_valid(surface: &ResolvedQueryV1, steps: &[QueryAcces
                 return false;
             };
             let expected = candidate_source_binding_name(candidate.name(), source_index);
+            let access_matches = match step.access() {
+                QueryAccessKind::Index { index, .. } => {
+                    source.long_pattern().is_none() && index == source.access()
+                }
+                QueryAccessKind::LongPatternCandidate { provider, pattern } => {
+                    source.long_pattern().is_some_and(|source_pattern| {
+                        provider == source.access() && pattern == source_pattern
+                    })
+                }
+                _ => false,
+            };
             if expected.as_deref() != Some(step.binding())
                 || step.entity() != source.entity()
                 || step.maximum_rows() != u64::from(candidate.maximum_distinct_keys())
@@ -1399,10 +1429,7 @@ fn candidate_composition_is_valid(surface: &ResolvedQueryV1, steps: &[QueryAcces
                 || step.selected_fields() != [source.projected_key()]
                 || !step.result_names().is_empty()
                 || step.cursor_parameter().is_some()
-                || !matches!(
-                    step.access(),
-                    QueryAccessKind::Index { index, .. } if index == source.access()
-                )
+                || !access_matches
             {
                 return false;
             }
@@ -1552,6 +1579,15 @@ fn encode_program(
                     AccessDirection::Forward => 1,
                     AccessDirection::Reverse => 2,
                 });
+            }
+            QueryAccessKind::LongPatternCandidate { provider, pattern } => {
+                out.push(6);
+                write_text(&mut out, provider)?;
+                write_text(&mut out, pattern.field())?;
+                out.push(pattern.operator() as u8);
+                out.push(pattern.profile() as u8);
+                write_text(&mut out, pattern.pattern_parameter())?;
+                out.extend_from_slice(&pattern.descriptor().to_canonical_bytes());
             }
             QueryAccessKind::DependentPointBatch {
                 key_fields,
@@ -1786,6 +1822,11 @@ fn build_explain(
                     AccessDirection::Forward => "forward",
                     AccessDirection::Reverse => "reverse",
                 }
+            ),
+            QueryAccessKind::LongPatternCandidate { provider, pattern } => format!(
+                "long-pattern {provider}.{} {:?}",
+                pattern.field(),
+                pattern.operator()
             ),
             QueryAccessKind::Nearest {
                 vector_field, k, ..

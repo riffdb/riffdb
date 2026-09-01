@@ -160,6 +160,7 @@ pub struct EntitySymbol {
     fields: BTreeMap<String, FieldSymbol>,
     indexes: BTreeMap<String, IndexSymbol>,
     text_indexes: BTreeMap<String, TextIndexSymbol>,
+    long_pattern_indexes: BTreeMap<String, LongPatternSymbol>,
     relationships: BTreeMap<String, RelationshipSymbol>,
     primary_key: Vec<String>,
     partition_field: String,
@@ -208,6 +209,18 @@ impl EntitySymbol {
     #[must_use]
     pub fn text_indexes(&self) -> impl ExactSizeIterator<Item = &TextIndexSymbol> {
         self.text_indexes.values()
+    }
+
+    /// Resolves one compiler-owned exact long-pattern provider by source name.
+    #[must_use]
+    pub fn long_pattern_index(&self, name: &str) -> Option<&LongPatternSymbol> {
+        self.long_pattern_indexes.get(name)
+    }
+
+    /// Exact long-pattern providers in source-name order.
+    #[must_use]
+    pub fn long_pattern_indexes(&self) -> impl ExactSizeIterator<Item = &LongPatternSymbol> {
+        self.long_pattern_indexes.values()
     }
 
     /// Resolves an exact required relationship name.
@@ -317,6 +330,82 @@ impl TextIndexSymbol {
     #[must_use]
     pub const fn max_results(&self) -> u32 {
         self.max_results
+    }
+}
+
+/// Safe compiler-visible exact long-pattern provider declaration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LongPatternSymbol {
+    id: IndexId,
+    state_schema_hash: [u8; 32],
+    name: String,
+    field: String,
+    field_id: FieldId,
+    profile: riffdb_types::LongPatternProfileV1,
+    operators: Vec<riffdb_types::LongPatternOperatorV1>,
+    bounds: riffdb_types::LongPatternBoundsV1,
+    replay_age_seconds: u64,
+    retained_generations: u32,
+    staleness_slo: u32,
+}
+
+impl LongPatternSymbol {
+    /// Exact contract source name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    /// Stable index identity.
+    #[must_use]
+    pub const fn id(&self) -> IndexId {
+        self.id
+    }
+    /// Exact matched source field.
+    #[must_use]
+    pub fn field(&self) -> &str {
+        &self.field
+    }
+    /// Stable matched field identity.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_field_id(&self) -> FieldId {
+        self.field_id
+    }
+    /// Frozen matching profile.
+    #[must_use]
+    pub const fn profile(&self) -> riffdb_types::LongPatternProfileV1 {
+        self.profile
+    }
+    /// Closed declared operator family.
+    #[must_use]
+    pub fn operators(&self) -> &[riffdb_types::LongPatternOperatorV1] {
+        &self.operators
+    }
+    /// Complete provider bounds.
+    #[must_use]
+    pub const fn bounds(&self) -> riffdb_types::LongPatternBoundsV1 {
+        self.bounds
+    }
+    /// Immutable provider-state schema identity.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn state_schema_hash(&self) -> [u8; 32] {
+        self.state_schema_hash
+    }
+    /// Minimum retained provider generations.
+    #[must_use]
+    pub const fn retained_generations(&self) -> u32 {
+        self.retained_generations
+    }
+    /// Maximum deterministic retained epoch lease.
+    #[must_use]
+    pub const fn replay_age_seconds(&self) -> u64 {
+        self.replay_age_seconds
+    }
+    /// Compiler-declared staleness ceiling.
+    #[must_use]
+    pub const fn staleness_slo(&self) -> u32 {
+        self.staleness_slo
     }
 }
 
@@ -560,6 +649,43 @@ impl SymbolicCatalog {
                     return Err(invariant("duplicate tokenized text index"));
                 }
             }
+            let mut long_pattern_indexes = BTreeMap::new();
+            for spec in bundle
+                .schema()
+                .long_pattern_specs()
+                .iter()
+                .filter(|spec| spec.entity() == entity.id())
+            {
+                let name = spec.name().to_owned();
+                let field = entity
+                    .record()
+                    .field(spec.field())
+                    .ok_or_else(|| invariant("long-pattern provider field is absent"))?;
+                let state_schema_hash = {
+                    let mut preimage = Vec::with_capacity(96);
+                    preimage.extend_from_slice(b"RIFFDB-LONG-PATTERN-STATE-V1\0");
+                    preimage.extend_from_slice(bundle.bundle_hash().as_bytes());
+                    preimage.extend_from_slice(&entity.id().to_be_bytes());
+                    preimage.extend_from_slice(&spec.index().to_be_bytes());
+                    *hash(HashDomain::ProjectionPlan, &preimage).as_bytes()
+                };
+                let symbol = LongPatternSymbol {
+                    id: spec.index(),
+                    state_schema_hash,
+                    name: name.clone(),
+                    field: field.name().to_owned(),
+                    field_id: spec.field(),
+                    profile: spec.profile(),
+                    operators: spec.operators().to_vec(),
+                    bounds: spec.bounds(),
+                    replay_age_seconds: spec.replay_age_seconds(),
+                    retained_generations: spec.retained_generations(),
+                    staleness_slo: spec.stale_entity_count_threshold(),
+                };
+                if long_pattern_indexes.insert(name, symbol).is_some() {
+                    return Err(invariant("duplicate exact long-pattern provider"));
+                }
+            }
             let mut relationships = BTreeMap::new();
             for relationship in bundle
                 .schema()
@@ -607,6 +733,7 @@ impl SymbolicCatalog {
                 fields,
                 indexes,
                 text_indexes,
+                long_pattern_indexes,
                 relationships,
                 primary_key: key_ids
                     .iter()

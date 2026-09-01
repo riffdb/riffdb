@@ -1680,7 +1680,24 @@ impl<'a> Planner<'a> {
             {
                 let entity = self.catalog.entity(source.entity()).ok_or_else(internal)?;
                 let comparisons = comparisons(&source_ast.predicate.value);
-                self.type_check_candidate(entity, source_ast.predicate.span, &comparisons)?;
+                let ordinary_comparisons = comparisons
+                    .iter()
+                    .filter(|comparison| {
+                        source.long_pattern().is_none_or(|pattern| {
+                            !comparison_is_long_pattern_invocation(comparison, pattern)
+                        })
+                    })
+                    .map(|comparison| Comparison {
+                        field: comparison.field,
+                        operator: comparison.operator,
+                        value: comparison.value,
+                    })
+                    .collect::<Vec<_>>();
+                self.type_check_candidate(
+                    entity,
+                    source_ast.predicate.span,
+                    &ordinary_comparisons,
+                )?;
                 if candidate.operator() == riffdb_query_ir::CandidateSetOperatorV1::Difference
                     && source_index == 0
                     && (source.entity() != candidate.root_entity()
@@ -1727,20 +1744,61 @@ impl<'a> Planner<'a> {
                         ));
                     }
                 }
-                let index = entity.index(source.access()).ok_or_else(internal)?;
-                if !candidate_index_is_complete_prefix(index, &comparisons) {
-                    return Err(one(
-                        PlannerDiagnosticCode::CandidateInvalid,
-                        source_ast.span,
-                        vec![entity.name().to_owned(), source.access().to_owned()],
-                        "candidate source predicates are not a complete bounded index prefix",
+                let (access, index_id, index_key_schema) = if let Some(pattern) =
+                    source.long_pattern()
+                {
+                    let provider = entity
+                        .long_pattern_index(source.access())
+                        .ok_or_else(internal)?;
+                    if u32::from(candidate.maximum_distinct_keys()) > pattern.bounds().candidates()
+                    {
+                        return Err(one(
+                            PlannerDiagnosticCode::CandidateInvalid,
+                            source_ast.span,
+                            vec![entity.name().to_owned(), source.access().to_owned()],
+                            "candidate ceiling exceeds the declared pattern provider ceiling",
+                            None,
+                        ));
+                    }
+                    (
+                        QueryAccessKind::LongPatternCandidate {
+                            provider: source.access().to_owned(),
+                            pattern: pattern.clone(),
+                        },
+                        Some(provider.id()),
                         None,
-                    ));
-                }
-                let predicates = self.normalize_predicates(&comparisons)?;
-                let predicate_fields = comparisons
+                    )
+                } else {
+                    let index = entity.index(source.access()).ok_or_else(internal)?;
+                    if !candidate_index_is_complete_prefix(index, &comparisons) {
+                        return Err(one(
+                            PlannerDiagnosticCode::CandidateInvalid,
+                            source_ast.span,
+                            vec![entity.name().to_owned(), source.access().to_owned()],
+                            "candidate source predicates are not a complete bounded index prefix",
+                            None,
+                        ));
+                    }
+                    (
+                        QueryAccessKind::Index {
+                            index: index.name().to_owned(),
+                            fields: index.fields().to_vec(),
+                            direction: AccessDirection::Forward,
+                        },
+                        Some(index.internal_id()),
+                        Some(index.internal_key_schema().clone()),
+                    )
+                };
+                let predicates = self.normalize_predicates(&ordinary_comparisons)?;
+                let predicate_fields = ordinary_comparisons
                     .iter()
                     .map(|comparison| comparison.field.to_owned())
+                    .chain(
+                        source
+                            .long_pattern()
+                            .into_iter()
+                            .map(|pattern| pattern.field().to_owned()),
+                    )
                     .chain(std::iter::once(source.projected_key().to_owned()))
                     .collect::<BTreeSet<_>>()
                     .into_iter()
@@ -1755,11 +1813,7 @@ impl<'a> Planner<'a> {
                     QueryRowLimit::CandidateComplete {
                         maximum: candidate.maximum_distinct_keys(),
                     },
-                    QueryAccessKind::Index {
-                        index: index.name().to_owned(),
-                        fields: index.fields().to_vec(),
-                        direction: AccessDirection::Forward,
-                    },
+                    access,
                     predicates,
                     predicate_fields.clone(),
                     vec![source.projected_key().to_owned()],
@@ -1768,10 +1822,10 @@ impl<'a> Planner<'a> {
                     None,
                     Vec::new(),
                     entity.internal_id(),
-                    Some(index.internal_id()),
+                    index_id,
                     entity.internal_partition_key_schema().clone(),
                     entity.internal_primary_key_schema().clone(),
-                    Some(index.internal_key_schema().clone()),
+                    index_key_schema,
                     None,
                 )
                 .ok_or_else(internal)?;
@@ -1784,7 +1838,7 @@ impl<'a> Planner<'a> {
                     .checked_add(u64::from(candidate.maximum_distinct_keys()))
                     .ok_or_else(internal)?;
                 accumulator.fields.extend(predicate_fields);
-                accumulator.indexes.insert(index.name().to_owned());
+                accumulator.indexes.insert(source.access().to_owned());
                 steps.push(step);
             }
         }
@@ -2004,6 +2058,7 @@ impl<'a> Planner<'a> {
                 QueryAccessKind::Index { fields, .. } => {
                     predicate_fields.extend(fields.iter().cloned());
                 }
+                QueryAccessKind::LongPatternCandidate { .. } => return Err(internal()),
                 QueryAccessKind::Nearest { vector_field, .. } => {
                     predicate_fields.insert(vector_field.clone());
                 }
@@ -2130,6 +2185,7 @@ impl<'a> Planner<'a> {
                     QueryAccessKind::Index { index, .. } => entity
                         .index(index)
                         .map(|symbol| symbol.internal_key_schema().clone()),
+                    QueryAccessKind::LongPatternCandidate { .. } => None,
                     QueryAccessKind::Nearest { .. } => None,
                     QueryAccessKind::CandidateRootHydration { .. } => None,
                 },
@@ -2497,6 +2553,7 @@ impl<'a> Planner<'a> {
                     .enumeration(name)
                     .map(|enumeration| ValueType::enumeration(enumeration.internal_id())),
             },
+            TypeReference::BoundedString(maximum) => ValueType::string(*maximum as usize).ok(),
             TypeReference::Set(_)
             | TypeReference::Cursor
             | TypeReference::Limit
@@ -2718,6 +2775,14 @@ impl QueryCostAccumulator {
             QueryAccessKind::Index { .. } => {
                 self.scanned_index_rows =
                     checked_cost_add(self.scanned_index_rows, rows, self.primary_span)?;
+                self.point_reads = checked_cost_add(self.point_reads, rows, self.primary_span)?;
+            }
+            QueryAccessKind::LongPatternCandidate { pattern, .. } => {
+                self.scanned_index_rows = checked_cost_add(
+                    self.scanned_index_rows,
+                    u64::from(pattern.bounds().rows()),
+                    self.primary_span,
+                )?;
                 self.point_reads = checked_cost_add(self.point_reads, rows, self.primary_span)?;
             }
             QueryAccessKind::Nearest { .. } => {
@@ -2983,7 +3048,13 @@ fn predicate_operator(
         SourcePredicateOperator::Binary(BinaryOperator::NotIn) => return Err(internal()),
         SourcePredicateOperator::Binary(BinaryOperator::Prefix) => QueryPredicateOperator::Prefix,
         SourcePredicateOperator::Binary(
-            BinaryOperator::StartsWith | BinaryOperator::EndsWith | BinaryOperator::Contains,
+            BinaryOperator::StartsWith
+            | BinaryOperator::EndsWith
+            | BinaryOperator::Contains
+            | BinaryOperator::Like
+            | BinaryOperator::ILike
+            | BinaryOperator::NotLike
+            | BinaryOperator::NotILike,
         ) => return Err(internal()),
         SourcePredicateOperator::Unary(UnaryOperator::IsNull) => QueryPredicateOperator::IsNull,
         SourcePredicateOperator::Unary(UnaryOperator::IsNotNull) => {
@@ -3040,6 +3111,11 @@ impl<'a> AuthAccumulator<'a> {
                 self.entity
                     .index(name)
                     .map(|index| index.internal_id())
+                    .or_else(|| {
+                        self.entity
+                            .long_pattern_index(name)
+                            .map(riffdb_query_ir::LongPatternSymbol::id)
+                    })
                     .ok_or_else(internal)
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -3072,6 +3148,46 @@ impl SourcePredicateOperator {
     fn is_binary(self, expected: BinaryOperator) -> bool {
         matches!(self, Self::Binary(actual) if actual == expected)
     }
+}
+
+fn comparison_is_long_pattern_invocation(
+    comparison: &Comparison<'_>,
+    pattern: &riffdb_query_ir::LongPatternCandidateV1,
+) -> bool {
+    let operator = match comparison.operator {
+        SourcePredicateOperator::Binary(BinaryOperator::Equal) => {
+            Some(riffdb_types::LongPatternOperatorV1::Equals)
+        }
+        SourcePredicateOperator::Binary(BinaryOperator::StartsWith) => {
+            Some(riffdb_types::LongPatternOperatorV1::StartsWith)
+        }
+        SourcePredicateOperator::Binary(BinaryOperator::EndsWith) => {
+            Some(riffdb_types::LongPatternOperatorV1::EndsWith)
+        }
+        SourcePredicateOperator::Binary(BinaryOperator::Contains) => {
+            Some(riffdb_types::LongPatternOperatorV1::Contains)
+        }
+        SourcePredicateOperator::Binary(BinaryOperator::Like) => {
+            Some(riffdb_types::LongPatternOperatorV1::Like)
+        }
+        SourcePredicateOperator::Binary(BinaryOperator::ILike) => {
+            Some(riffdb_types::LongPatternOperatorV1::ILike)
+        }
+        SourcePredicateOperator::Binary(BinaryOperator::NotLike) => {
+            Some(riffdb_types::LongPatternOperatorV1::NotLike)
+        }
+        SourcePredicateOperator::Binary(BinaryOperator::NotILike) => {
+            Some(riffdb_types::LongPatternOperatorV1::NotILike)
+        }
+        _ => None,
+    };
+    comparison.field == pattern.field()
+        && operator == Some(pattern.operator())
+        && matches!(
+            comparison.value,
+            Some(Expression::Parameter(parameter))
+                if parameter.value.as_str() == pattern.pattern_parameter()
+        )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

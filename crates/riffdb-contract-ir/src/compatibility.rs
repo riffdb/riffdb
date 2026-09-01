@@ -1884,6 +1884,20 @@ fn candidate_identities(
                 field.id().get(),
             )?;
         }
+        for provider in next
+            .schema
+            .long_pattern_specs()
+            .iter()
+            .filter(|provider| provider.entity() == entity.id())
+        {
+            push(
+                StableIdNamespaceTag::Index,
+                index_owner_tag::ENTITY,
+                vec![entity.id().get()],
+                provider.name(),
+                provider.index().get(),
+            )?;
+        }
         for invariant in entity.invariants() {
             push(
                 StableIdNamespaceTag::Invariant,

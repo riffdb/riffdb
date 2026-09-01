@@ -341,7 +341,8 @@ fn list_and_detail_choose_expected_physical_accesses() {
                 step.maximum_rows()
             }
             QueryAccessKind::Nearest { .. } => 0,
-            QueryAccessKind::CandidateRootHydration { .. } => 0,
+            QueryAccessKind::CandidateRootHydration { .. }
+            | QueryAccessKind::LongPatternCandidate { .. } => 0,
         })
         .sum::<u64>();
     let expected_dependent_keys = detail

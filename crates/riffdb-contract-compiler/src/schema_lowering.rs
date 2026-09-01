@@ -261,6 +261,30 @@ pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerD
         })
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| CompilerDiagnostics::single(ir_diagnostic(hir.span)))?;
+    let long_pattern_specs = hir
+        .entities
+        .iter()
+        .flat_map(|entity| {
+            entity.long_patterns.iter().map(|pattern| {
+                riffdb_contract_ir::LongPatternSpecV1::new(
+                    entity.id,
+                    pattern.index_id,
+                    pattern.name.clone(),
+                    pattern.field_id,
+                    pattern.profile,
+                    pattern.operators.clone(),
+                    pattern.bounds,
+                    pattern.replay_age_seconds,
+                    pattern.replay_bytes,
+                    pattern.replay_backlog,
+                    pattern.retained_generations,
+                    pattern.stale_entity_count_threshold,
+                )
+                .map(|spec| (spec, pattern.span))
+                .map_err(|_| CompilerDiagnostics::single(ir_diagnostic(pattern.span)))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     // Probe each spec individually so a schema-validation failure carries the
     // offending `vector_field`'s span, not the whole-contract span (the same
     // per-item probe the delete-policy path above uses).
@@ -307,9 +331,15 @@ pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerD
                 .map(|field| riffdb_contract_ir::SecretFieldSpecV1::new(entity.id, field.id))
         })
         .collect::<Vec<_>>();
+    for (spec, span) in &long_pattern_specs {
+        schema
+            .clone()
+            .with_long_pattern_specs(vec![spec.clone()])
+            .map_err(|_| CompilerDiagnostics::single(ir_diagnostic(*span)))?;
+    }
     // Cross-spec failures (duplicate specs for one field) have no single
     // offending declaration; only those fall back to the contract span.
-    schema
+    let schema = schema
         .with_vector_field_specs(
             vector_field_specs
                 .into_iter()
@@ -333,7 +363,18 @@ pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerD
             schema
                 .with_text_index_specs(text_index_specs.into_iter().map(|(spec, _)| spec).collect())
         })
-        .map_err(|_| CompilerDiagnostics::single(ir_diagnostic(hir.span)))
+        .map_err(|_| CompilerDiagnostics::single(ir_diagnostic(hir.span)))?;
+    let long_pattern_span = long_pattern_specs
+        .first()
+        .map_or(hir.span, |(_, span)| *span);
+    schema
+        .with_long_pattern_specs(
+            long_pattern_specs
+                .into_iter()
+                .map(|(spec, _)| spec)
+                .collect(),
+        )
+        .map_err(|_| CompilerDiagnostics::single(ir_diagnostic(long_pattern_span)))
 }
 
 fn lower_delete_policies(

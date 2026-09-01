@@ -177,6 +177,14 @@ pub(crate) fn stable_identities(
             name,
         )?;
     }
+    for spec in schema.long_pattern_specs() {
+        push(
+            StableIdNamespaceTag::Index,
+            0x01,
+            vec![spec.entity().get()],
+            spec.name(),
+        )?;
+    }
     for event in schema.events() {
         push(StableIdNamespaceTag::Event, 0, vec![], event.name())?;
         for field in event.payload().fields() {
