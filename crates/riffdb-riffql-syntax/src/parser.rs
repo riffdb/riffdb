@@ -159,7 +159,12 @@ impl Parser {
                     if maximum > riffdb_types::MAX_APPLICATION_QUERY_PAGE_ROWS_BOUNDED_LIMIT_V1
             )
         });
-        let language_version = if body
+        let bounded_set = parameters
+            .iter()
+            .any(|parameter| type_contains_bounded_set(&parameter.ty.value));
+        let language_version = if bounded_set {
+            crate::RIFFQL_LANGUAGE_VERSION_PARTITION_SET_V1
+        } else if body
             .bindings
             .iter()
             .any(|binding| binding.order_family.is_some())
@@ -441,8 +446,38 @@ impl Parser {
                     Some("declare Limit<MAX> directly and use it only for take or nearest"),
                 )));
             }
-            self.expect(TokenKind::Greater)?;
-            TypeReference::Set(Box::new(inner))
+            if self.take(TokenKind::Comma).is_some() {
+                let maximum = self.next()?.clone();
+                let TokenKind::Unsigned(value) = maximum.kind else {
+                    return Err(ParseDiagnostics::one(ParseDiagnostic::new(
+                        DiagnosticCode::UnexpectedToken,
+                        maximum.span,
+                        "bounded set maximum must be an unsigned literal",
+                        Some("use Set<T, MAX> where MAX is from 1 through 65535"),
+                    )));
+                };
+                let canonical = value == "0" || !value.starts_with('0');
+                let maximum = value
+                    .parse::<u16>()
+                    .ok()
+                    .filter(|maximum| canonical && *maximum > 0)
+                    .ok_or_else(|| {
+                        ParseDiagnostics::one(ParseDiagnostic::new(
+                            DiagnosticCode::InvalidToken,
+                            maximum.span,
+                            "bounded set maximum must be a canonical integer from 1 through 65535",
+                            Some("choose an explicit positive maximum no greater than 65535"),
+                        ))
+                    })?;
+                self.expect(TokenKind::Greater)?;
+                TypeReference::BoundedSet {
+                    element: Box::new(inner),
+                    maximum,
+                }
+            } else {
+                self.expect(TokenKind::Greater)?;
+                TypeReference::Set(Box::new(inner))
+            }
         } else if self.take_word("Cursor").is_some() {
             TypeReference::Cursor
         } else if self.take_word("string").is_some() {
@@ -1584,9 +1619,24 @@ fn type_contains_bounded_limit(value: &TypeReference) -> bool {
         TypeReference::Optional(inner) | TypeReference::Set(inner) => {
             type_contains_bounded_limit(&inner.value)
         }
+        TypeReference::BoundedSet { element, .. } => type_contains_bounded_limit(&element.value),
         TypeReference::Named(_)
         | TypeReference::Cursor
         | TypeReference::Limit
+        | TypeReference::BoundedString(_) => false,
+    }
+}
+
+fn type_contains_bounded_set(value: &TypeReference) -> bool {
+    match value {
+        TypeReference::BoundedSet { .. } => true,
+        TypeReference::Optional(inner) | TypeReference::Set(inner) => {
+            type_contains_bounded_set(&inner.value)
+        }
+        TypeReference::Named(_)
+        | TypeReference::Cursor
+        | TypeReference::Limit
+        | TypeReference::BoundedLimit(_)
         | TypeReference::BoundedString(_) => false,
     }
 }

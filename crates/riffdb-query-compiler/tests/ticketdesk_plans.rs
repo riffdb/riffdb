@@ -337,9 +337,9 @@ fn list_and_detail_choose_expected_physical_accesses() {
         .iter()
         .map(|step| match step.access() {
             QueryAccessKind::Point { .. } => 1,
-            QueryAccessKind::Index { .. } | QueryAccessKind::DependentPointBatch { .. } => {
-                step.maximum_rows()
-            }
+            QueryAccessKind::Index { .. }
+            | QueryAccessKind::PartitionSetIndex { .. }
+            | QueryAccessKind::DependentPointBatch { .. } => step.maximum_rows(),
             QueryAccessKind::Nearest { .. } => 0,
             QueryAccessKind::CandidateRootHydration { .. }
             | QueryAccessKind::LongPatternCandidate { .. } => 0,

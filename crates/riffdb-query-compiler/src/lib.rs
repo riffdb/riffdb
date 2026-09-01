@@ -22,10 +22,10 @@ use riffdb_query_ir::{
     OrderFamilyMemberV1, OrderQueryFamilyV1, ProjectedVectorFreshnessV1, ProjectedVectorSourceV1,
     ProjectionResultSetPlanError, ProjectionResultSetPlanV1, ProjectionResultSetPlanV2,
     ProjectionResultSetPlanV2Error, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep,
-    QueryDiagnosticCode, QueryDiagnostics, QueryLiteral, QueryPredicate, QueryPredicateOperator,
-    QueryPredicateValue, QueryRootOrderTermV1, QueryRowLimit, ResultSetOutputShapeV1,
-    ResultSetWindowBoundsV2, ResultSetWindowV1, SymbolicCatalog, candidate_source_binding_name,
-    resolve_query_surface, source_aggregate_semantic_identity,
+    QueryDiagnosticCode, QueryDiagnostics, QueryLiteral, QueryPartitionRouteV1, QueryPredicate,
+    QueryPredicateOperator, QueryPredicateValue, QueryRootOrderTermV1, QueryRowLimit,
+    ResultSetOutputShapeV1, ResultSetWindowBoundsV2, ResultSetWindowV1, SymbolicCatalog,
+    candidate_source_binding_name, resolve_query_surface, source_aggregate_semantic_identity,
 };
 use riffdb_riffql_syntax::{
     AggregateFunction, BinaryOperator, Cardinality, Direction, Document, Expression,
@@ -1652,7 +1652,7 @@ impl<'a> Planner<'a> {
             .map(|candidate| (candidate.name().to_owned(), candidate))
             .collect();
         let projected_source = compile_projected_vector_source(self.document, self.catalog)?;
-        let mut partition_parameter: Option<String> = None;
+        let mut partition_route: Option<QueryPartitionRouteV1> = None;
         let selections = selected_fields(self.document);
         let dependency_fields = dependency_fields(self.document);
         let result_names = result_names(self.document);
@@ -1704,30 +1704,8 @@ impl<'a> Planner<'a> {
                     source_ast.predicate.span,
                     &ordinary_comparisons,
                 )?;
-                if candidate.operator() == riffdb_query_ir::CandidateSetOperatorV1::Difference
-                    && source_index == 0
-                    && (source.entity() != candidate.root_entity()
-                        || source.projected_key() != candidate.root_key()
-                        || comparisons.len() != 1
-                        || comparisons[0].field != entity.partition_field()
-                        || !comparisons[0].operator.is_binary(BinaryOperator::Equal)
-                        || comparisons[0].value.and_then(parameter_name).is_none())
-                {
-                    return Err(one(
-                        PlannerDiagnosticCode::CandidateInvalid,
-                        source_ast.span,
-                        vec![candidate.name().to_owned()],
-                        "candidate difference requires one policy-filtered partition-complete positive root universe",
-                        None,
-                    ));
-                }
                 let partition_field = entity.partition_field();
-                let route = comparisons.iter().find_map(|comparison| {
-                    (comparison.field == partition_field
-                        && comparison.operator.is_binary(BinaryOperator::Equal))
-                    .then(|| comparison.value.and_then(parameter_name))
-                    .flatten()
-                });
+                let route = self.partition_route(&comparisons, partition_field);
                 let Some(route) = route else {
                     return Err(one(
                         PlannerDiagnosticCode::CandidateInvalid,
@@ -1737,9 +1715,26 @@ impl<'a> Planner<'a> {
                         None,
                     ));
                 };
-                match &partition_parameter {
-                    None => partition_parameter = Some(route.to_owned()),
-                    Some(existing) if existing == route => {}
+                if candidate.operator() == riffdb_query_ir::CandidateSetOperatorV1::Difference
+                    && source_index == 0
+                    && (source.entity() != candidate.root_entity()
+                        || source.projected_key() != candidate.root_key()
+                        || comparisons.len() != 1
+                        || comparisons[0].field != partition_field
+                        || comparisons[0].value.and_then(parameter_name).is_none())
+                {
+                    return Err(one(
+                        PlannerDiagnosticCode::CandidateInvalid,
+                        source_ast.span,
+                        vec![candidate.name().to_owned()],
+                        "candidate difference requires one policy-filtered route-complete positive root universe",
+                        None,
+                    ));
+                }
+                let partition_route_maximum = u64::from(route.maximum_partitions());
+                match &partition_route {
+                    None => partition_route = Some(route),
+                    Some(existing) if existing == &route => {}
                     Some(_) => {
                         return Err(one(
                             PlannerDiagnosticCode::CandidateInvalid,
@@ -1835,13 +1830,17 @@ impl<'a> Planner<'a> {
                     None,
                 )
                 .ok_or_else(internal)?;
-                cost.add_step(entity, &step)?;
+                cost.add_step_repeated(entity, &step, partition_route_maximum)?;
                 let accumulator = auth
                     .entry(entity.name().to_owned())
                     .or_insert_with(|| AuthAccumulator::new(entity));
                 accumulator.maximum_rows = accumulator
                     .maximum_rows
-                    .checked_add(u64::from(candidate.maximum_distinct_keys()))
+                    .checked_add(
+                        u64::from(candidate.maximum_distinct_keys())
+                            .checked_mul(partition_route_maximum)
+                            .ok_or_else(internal)?,
+                    )
                     .ok_or_else(internal)?;
                 accumulator.fields.extend(predicate_fields);
                 accumulator.indexes.insert(source.access().to_owned());
@@ -1859,12 +1858,7 @@ impl<'a> Planner<'a> {
             self.type_check(entity, binding, &comparisons)?;
 
             let partition_field = entity.partition_field();
-            let route = comparisons.iter().find_map(|comparison| {
-                (comparison.field == partition_field
-                    && comparison.operator.is_binary(BinaryOperator::Equal))
-                .then(|| comparison.value.and_then(parameter_name))
-                .flatten()
-            });
+            let route = self.partition_route(&comparisons, partition_field);
             let Some(route) = route else {
                 return Err(one(
                     PlannerDiagnosticCode::NonLocal,
@@ -1874,9 +1868,11 @@ impl<'a> Planner<'a> {
                     None,
                 ));
             };
-            match &partition_parameter {
-                None => partition_parameter = Some(route.to_owned()),
-                Some(existing) if existing == route => {}
+            let finite_partition_route = route.is_finite_set();
+            let partition_route_maximum = u64::from(route.maximum_partitions());
+            match &partition_route {
+                None => partition_route = Some(route),
+                Some(existing) if existing == &route => {}
                 Some(_) => {
                     return Err(one(
                         PlannerDiagnosticCode::NonLocal,
@@ -1916,7 +1912,7 @@ impl<'a> Planner<'a> {
                 };
                 self.candidates.get(name.value.as_str())
             });
-            let (access, index_id) = if let Some(candidate) = candidate_membership {
+            let (mut access, index_id) = if let Some(candidate) = candidate_membership {
                 let order = binding
                     .order
                     .iter()
@@ -2028,9 +2024,71 @@ impl<'a> Planner<'a> {
                         document: self.document,
                         maximum_rows,
                         cover_required_fields: &cover_required_fields,
+                        finite_partition_route,
                     },
                 )?
             };
+            if finite_partition_route {
+                access = match access {
+                    QueryAccessKind::Index {
+                        index,
+                        fields,
+                        direction,
+                    } => {
+                        let order = binding
+                            .order
+                            .iter()
+                            .map(|term| {
+                                QueryRootOrderTermV1::checked(
+                                    path_field(&term.path.value)
+                                        .ok_or_else(internal)?
+                                        .to_owned(),
+                                    match term.direction.value {
+                                        Direction::Ascending => AccessDirection::Forward,
+                                        Direction::Descending => AccessDirection::Reverse,
+                                    },
+                                    matches!(
+                                        term.null_placement
+                                            .as_ref()
+                                            .map(|placement| placement.value),
+                                        Some(NullPlacement::First)
+                                    ),
+                                )
+                                .ok_or_else(internal)
+                            })
+                            .collect::<Result<Vec<_>, PlannerDiagnostics>>()?;
+                        let mixed_order = order.iter().any(|term| term.direction() != direction);
+                        let scan_ceiling = if mixed_order {
+                            riffdb_query_ir::MAX_PARTITION_SET_TOTAL_SCANNED_ROWS_V1
+                                .checked_div(partition_route_maximum)
+                                .unwrap_or(0)
+                                .min(riffdb_query_ir::MAX_QUERY_SCANNED_ROWS)
+                        } else {
+                            riffdb_query_ir::MAX_QUERY_SCANNED_ROWS
+                        };
+                        QueryAccessKind::PartitionSetIndex {
+                        index,
+                        fields,
+                        direction,
+                        order,
+                        scan_ceiling: u32::try_from(scan_ceiling)
+                        .ok()
+                        .filter(|ceiling| u64::from(*ceiling) > maximum_rows)
+                        .ok_or_else(|| {
+                            one(
+                                PlannerDiagnosticCode::Unbounded,
+                                binding.predicate.span,
+                                vec![binding.name.value.as_str().to_owned()],
+                                "partition-set route and page maxima exceed the whole-request scan ceiling",
+                                None,
+                            )
+                        })?,
+                        key_fields: entity.primary_key().to_vec(),
+                    }
+                    }
+                    other => other,
+                };
+            }
             let predicates = self.normalize_predicates(&comparisons)?;
             let mut predicate_fields = comparisons
                 .iter()
@@ -2063,6 +2121,12 @@ impl<'a> Planner<'a> {
                 }
                 QueryAccessKind::Index { fields, .. } => {
                     predicate_fields.extend(fields.iter().cloned());
+                }
+                QueryAccessKind::PartitionSetIndex {
+                    fields, key_fields, ..
+                } => {
+                    predicate_fields.extend(fields.iter().cloned());
+                    predicate_fields.extend(key_fields.iter().cloned());
                 }
                 QueryAccessKind::LongPatternCandidate { .. } => return Err(internal()),
                 QueryAccessKind::Nearest { vector_field, .. } => {
@@ -2191,6 +2255,9 @@ impl<'a> Planner<'a> {
                     QueryAccessKind::Index { index, .. } => entity
                         .index(index)
                         .map(|symbol| symbol.internal_key_schema().clone()),
+                    QueryAccessKind::PartitionSetIndex { index, .. } => entity
+                        .index(index)
+                        .map(|symbol| symbol.internal_key_schema().clone()),
                     QueryAccessKind::LongPatternCandidate { .. } => None,
                     QueryAccessKind::Nearest { .. } => None,
                     QueryAccessKind::CandidateRootHydration { .. } => None,
@@ -2208,7 +2275,9 @@ impl<'a> Planner<'a> {
                     maximum_candidates, ..
                 } => u64::from(*maximum_candidates),
                 _ => maximum_rows,
-            };
+            }
+            .checked_mul(partition_route_maximum)
+            .ok_or_else(internal)?;
             accumulator.maximum_rows = accumulator
                 .maximum_rows
                 .checked_add(authorized_rows)
@@ -2246,29 +2315,70 @@ impl<'a> Planner<'a> {
             .name
             .as_ref()
             .map(|name| name.value.as_str().to_owned());
-        let partition_parameter = partition_parameter.ok_or_else(internal)?;
+        let partition_route = partition_route.ok_or_else(internal)?;
         match projected_source {
             Some(source) => QueryAccessProgramV1::checked_projected(
                 self.catalog.identity().clone(),
                 surface,
                 name,
-                partition_parameter,
+                partition_route.parameter().to_owned(),
                 steps,
                 authorization,
                 cost,
                 source,
             ),
-            None => QueryAccessProgramV1::checked(
-                self.catalog.identity().clone(),
-                surface,
-                name,
-                partition_parameter,
-                steps,
-                authorization,
-                cost,
-            ),
+            None => match partition_route {
+                QueryPartitionRouteV1::Exact { parameter } => QueryAccessProgramV1::checked(
+                    self.catalog.identity().clone(),
+                    surface,
+                    name,
+                    parameter,
+                    steps,
+                    authorization,
+                    cost,
+                ),
+                QueryPartitionRouteV1::FiniteSet { parameter, maximum } => {
+                    QueryAccessProgramV1::checked_partition_set(
+                        self.catalog.identity().clone(),
+                        surface,
+                        name,
+                        parameter,
+                        maximum,
+                        steps,
+                        authorization,
+                        cost,
+                    )
+                }
+            },
         }
         .ok_or_else(internal)
+    }
+
+    fn partition_route(
+        &self,
+        comparisons: &[Comparison<'_>],
+        partition_field: &str,
+    ) -> Option<QueryPartitionRouteV1> {
+        let mut routes = comparisons.iter().filter_map(|comparison| {
+            if comparison.field != partition_field {
+                return None;
+            }
+            let parameter = comparison.value.and_then(parameter_name)?.to_owned();
+            if comparison.operator.is_binary(BinaryOperator::Equal) {
+                return QueryPartitionRouteV1::exact(parameter);
+            }
+            if !comparison.operator.is_binary(BinaryOperator::In) {
+                return None;
+            }
+            let TypeReference::BoundedSet { maximum, .. } =
+                self.parameters.get(parameter.as_str())?
+            else {
+                return None;
+            };
+            QueryPartitionRouteV1::finite_set(parameter, *maximum)
+        });
+        let route = routes.next()?;
+        routes.next().is_none().then_some(route)
     }
 
     fn type_check(
@@ -2311,6 +2421,9 @@ impl<'a> Planner<'a> {
                 let actual = if comparison.operator.is_binary(BinaryOperator::In) {
                     match effective_parameter_type {
                         TypeReference::Set(inner) => self.resolve_parameter_type(&inner.value),
+                        TypeReference::BoundedSet { element, .. } => {
+                            self.resolve_parameter_type(&element.value)
+                        }
                         _ => None,
                     }
                 } else {
@@ -2415,7 +2528,9 @@ impl<'a> Planner<'a> {
     ) -> Result<(), PlannerDiagnostics> {
         for comparison in comparisons {
             let field = entity.field(comparison.field).ok_or_else(internal)?;
-            if !comparison.operator.is_binary(BinaryOperator::Equal) {
+            let finite_partition_route = comparison.field == entity.partition_field()
+                && comparison.operator.is_binary(BinaryOperator::In);
+            if !comparison.operator.is_binary(BinaryOperator::Equal) && !finite_partition_route {
                 return Err(one(
                     PlannerDiagnosticCode::TypeMismatch,
                     span,
@@ -2429,7 +2544,18 @@ impl<'a> Planner<'a> {
                     let actual = self
                         .parameters
                         .get(parameter.value.as_str())
-                        .and_then(|value| self.resolve_parameter_type(value));
+                        .and_then(|value| {
+                            if finite_partition_route {
+                                match value {
+                                    TypeReference::BoundedSet { element, .. } => {
+                                        self.resolve_parameter_type(&element.value)
+                                    }
+                                    _ => None,
+                                }
+                            } else {
+                                self.resolve_parameter_type(value)
+                            }
+                        });
                     if actual.as_ref() != Some(field.value_type()) {
                         return Err(one(
                             PlannerDiagnosticCode::TypeMismatch,
@@ -2561,6 +2687,7 @@ impl<'a> Planner<'a> {
             },
             TypeReference::BoundedString(maximum) => ValueType::string(*maximum as usize).ok(),
             TypeReference::Set(_)
+            | TypeReference::BoundedSet { .. }
             | TypeReference::Cursor
             | TypeReference::Limit
             | TypeReference::BoundedLimit(_) => None,
@@ -2716,6 +2843,7 @@ fn compact_result_type_supported(value_type: &ValueType) -> bool {
 
 struct QueryCostAccumulator {
     primary_span: Span,
+    partition_maximums: BTreeMap<String, u16>,
     scanned_index_rows: u64,
     point_reads: u64,
     dependent_keys: u64,
@@ -2754,6 +2882,16 @@ impl QueryCostAccumulator {
             .saturating_add(1_024);
         Self {
             primary_span,
+            partition_maximums: document
+                .parameters
+                .iter()
+                .filter_map(|parameter| match &parameter.ty.value {
+                    TypeReference::BoundedSet { maximum, .. } => {
+                        Some((parameter.name.value.as_str().to_owned(), *maximum))
+                    }
+                    _ => None,
+                })
+                .collect(),
             scanned_index_rows: 0,
             point_reads: 0,
             dependent_keys: 0,
@@ -2768,7 +2906,19 @@ impl QueryCostAccumulator {
         entity: &EntitySymbol,
         step: &QueryAccessStep,
     ) -> Result<(), PlannerDiagnostics> {
-        let rows = step.maximum_rows();
+        self.add_step_repeated(entity, step, 1)
+    }
+
+    fn add_step_repeated(
+        &mut self,
+        entity: &EntitySymbol,
+        step: &QueryAccessStep,
+        repetitions: u64,
+    ) -> Result<(), PlannerDiagnostics> {
+        if repetitions == 0 {
+            return Err(internal());
+        }
+        let rows = checked_cost_product(step.maximum_rows(), repetitions, self.primary_span)?;
         match step.access() {
             QueryAccessKind::Point { .. } => {
                 self.point_reads = checked_cost_add(self.point_reads, 1, self.primary_span)?;
@@ -2783,10 +2933,62 @@ impl QueryCostAccumulator {
                     checked_cost_add(self.scanned_index_rows, rows, self.primary_span)?;
                 self.point_reads = checked_cost_add(self.point_reads, rows, self.primary_span)?;
             }
+            QueryAccessKind::PartitionSetIndex {
+                order,
+                direction,
+                scan_ceiling,
+                ..
+            } => {
+                if repetitions != 1 {
+                    return Err(internal());
+                }
+                // Uniform streams use an engine-owned heap: one initial row per
+                // declared route plus one refill per emitted row. Mixed physical
+                // direction must complete bounded order groups and retains the
+                // conservative per-partition scan ceiling.
+                let partitions = u64::from(
+                    step.predicates()
+                        .iter()
+                        .find_map(|predicate| match predicate.value() {
+                            QueryPredicateValue::Parameter(name)
+                                if predicate.operator() == QueryPredicateOperator::In =>
+                            {
+                                Some(name)
+                            }
+                            _ => None,
+                        })
+                        .and_then(|name| self.partition_maximums.get(name.as_str()).copied())
+                        .ok_or_else(internal)?,
+                );
+                let mixed_order = order.iter().any(|term| term.direction() != *direction);
+                let (scanned, hydrated) = if mixed_order {
+                    let work = checked_cost_product(
+                        u64::from(*scan_ceiling),
+                        partitions,
+                        self.primary_span,
+                    )?;
+                    (work, work)
+                } else {
+                    let hydrated = checked_cost_add(rows, partitions, self.primary_span)?;
+                    (
+                        riffdb_query_ir::MAX_PARTITION_SET_TOTAL_SCANNED_ROWS_V1,
+                        hydrated,
+                    )
+                };
+                self.scanned_index_rows =
+                    checked_cost_add(self.scanned_index_rows, scanned, self.primary_span)?;
+                self.point_reads = checked_cost_add(self.point_reads, hydrated, self.primary_span)?;
+                self.intermediate_rows =
+                    checked_cost_add(self.intermediate_rows, hydrated, self.primary_span)?;
+            }
             QueryAccessKind::LongPatternCandidate { pattern, .. } => {
                 self.scanned_index_rows = checked_cost_add(
                     self.scanned_index_rows,
-                    u64::from(pattern.bounds().rows()),
+                    checked_cost_product(
+                        u64::from(pattern.bounds().rows()),
+                        repetitions,
+                        self.primary_span,
+                    )?,
                     self.primary_span,
                 )?;
                 self.point_reads = checked_cost_add(self.point_reads, rows, self.primary_span)?;
@@ -3304,7 +3506,10 @@ fn candidate_index_is_complete_prefix(
     }
     index.fields().iter().take(comparisons.len()).all(|field| {
         comparisons.iter().any(|comparison| {
-            comparison.field == field && comparison.operator.is_binary(BinaryOperator::Equal)
+            comparison.field == field
+                && (comparison.operator.is_binary(BinaryOperator::Equal)
+                    || (index.fields().first().is_some_and(|first| first == field)
+                        && comparison.operator.is_binary(BinaryOperator::In)))
         })
     }) && comparisons.iter().all(|comparison| {
         index
@@ -3358,6 +3563,7 @@ struct AccessContext<'a, 'query> {
     document: &'a Document,
     maximum_rows: u64,
     cover_required_fields: &'a BTreeSet<String>,
+    finite_partition_route: bool,
 }
 
 fn choose_access(
@@ -3554,10 +3760,11 @@ fn choose_access(
         .filter_map(|term| path_field(&term.path.value))
         .collect::<Vec<_>>();
     let first_direction = binding.order[0].direction.value;
-    if binding
-        .order
-        .iter()
-        .any(|term| term.direction.value != first_direction)
+    if !context.finite_partition_route
+        && binding
+            .order
+            .iter()
+            .any(|term| term.direction.value != first_direction)
     {
         return Err(one(
             PlannerDiagnosticCode::Unordered,
@@ -3792,6 +3999,12 @@ fn operational_access_shape(
         };
         match comparison.operator {
             SourcePredicateOperator::Binary(BinaryOperator::Equal) if capabilities.exact => {
+                consumed[*comparison_index] = true;
+                order_start += 1;
+            }
+            SourcePredicateOperator::Binary(BinaryOperator::In)
+                if field == entity.partition_field() && capabilities.membership =>
+            {
                 consumed[*comparison_index] = true;
                 order_start += 1;
             }

@@ -204,6 +204,7 @@ impl QueryReadView for NearestView {
         _predicates: &[BoundPredicate],
         _limit: u64,
         _after: Option<&[u8]>,
+        _after_inclusive: bool,
         _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryScanPage, Self::Error> {
         Err(())

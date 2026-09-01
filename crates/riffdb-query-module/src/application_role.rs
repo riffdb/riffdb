@@ -585,11 +585,20 @@ fn compile_application_role_inner(
             .is_empty();
         candidate_authority |= query_has_candidates;
         let mut requires_row_policy = false;
-        maximum_rows = maximum_rows.max(if query_has_candidates {
-            minimum_scan_budget_for_candidate_program(query.plan().representative_program())
-        } else {
-            minimum_scan_budget_for_cost(query.plan().authorization_cost())
-        });
+        maximum_rows = maximum_rows.max(
+            if query
+                .plan()
+                .representative_program()
+                .partition_route()
+                .is_finite_set()
+            {
+                minimum_scan_budget_for_partition_set_program(query.plan().representative_program())
+            } else if query_has_candidates {
+                minimum_scan_budget_for_candidate_program(query.plan().representative_program())
+            } else {
+                minimum_scan_budget_for_cost(query.plan().authorization_cost())
+            },
+        );
         for access in query.plan().authorization() {
             let entity = contract
                 .schema()
@@ -1050,6 +1059,26 @@ fn minimum_scan_budget_for_candidate_program(
         .steps()
         .iter()
         .map(riffdb_query_ir::QueryAccessStep::maximum_rows)
+        .max()
+        .unwrap_or(1)
+        .max(1)
+}
+
+fn minimum_scan_budget_for_partition_set_program(
+    program: &riffdb_query_ir::QueryAccessProgramV1,
+) -> u64 {
+    program
+        .steps()
+        .iter()
+        .map(|step| match step.access() {
+            riffdb_query_ir::QueryAccessKind::PartitionSetIndex { scan_ceiling, .. } => {
+                u64::from(*scan_ceiling)
+            }
+            riffdb_query_ir::QueryAccessKind::LongPatternCandidate { pattern, .. } => {
+                u64::from(pattern.bounds().rows())
+            }
+            _ => step.maximum_rows(),
+        })
         .max()
         .unwrap_or(1)
         .max(1)

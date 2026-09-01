@@ -3784,6 +3784,9 @@ fn partition_allowed(
         PartitionConstraint::Filter(PartitionScopeV1::Explicit(entries)) => {
             entries.iter().any(|candidate| candidate == &scoped)
         }
+        PartitionConstraint::Explicit(entries) => {
+            entries.iter().any(|candidate| candidate == &scoped)
+        }
     }
 }
 

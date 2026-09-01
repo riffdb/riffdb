@@ -61,6 +61,7 @@ const QUERY: &str = r#"query MatchTags(
 struct CandidateView {
     continue_first_source: bool,
     include_null_root: bool,
+    one_per_partition: bool,
     root_reads: usize,
 }
 
@@ -94,6 +95,13 @@ impl QueryReadView for CandidateView {
         Ok(predicates
             .iter()
             .map(|predicates| {
+                let scope = predicates
+                    .iter()
+                    .find(|predicate| predicate.field() == "scope")
+                    .and_then(|predicate| match predicate.value() {
+                        CanonicalValue::String(value) => Some(value.as_str()),
+                        _ => None,
+                    })?;
                 let id = predicates
                     .iter()
                     .find(|predicate| predicate.field() == "experiment_id")
@@ -104,7 +112,7 @@ impl QueryReadView for CandidateView {
                 Some(row(
                     "Experiment",
                     [
-                        ("scope", text("org")),
+                        ("scope", text(scope)),
                         ("experiment_id", CanonicalValue::U64(id)),
                         (
                             "last_update_time",
@@ -125,12 +133,23 @@ impl QueryReadView for CandidateView {
     fn scan(
         &mut self,
         step: &QueryAccessStep,
-        _predicates: &[BoundPredicate],
+        predicates: &[BoundPredicate],
         _limit: u64,
         _after: Option<&[u8]>,
+        _after_inclusive: bool,
         _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryScanPage, Self::Error> {
-        let ids: &[u64] = if step.binding().ends_with(":0") || self.include_null_root {
+        let scope = predicates
+            .iter()
+            .find(|predicate| predicate.field() == "scope")
+            .and_then(|predicate| match predicate.value() {
+                CanonicalValue::String(value) => Some(value.as_str()),
+                _ => None,
+            })
+            .ok_or(())?;
+        let ids: &[u64] = if self.one_per_partition {
+            &[1]
+        } else if step.binding().ends_with(":0") || self.include_null_root {
             &[1, 2, 3]
         } else {
             &[1, 2]
@@ -141,7 +160,7 @@ impl QueryReadView for CandidateView {
                 row(
                     "ExperimentTag",
                     [
-                        ("scope", text("org")),
+                        ("scope", text(scope)),
                         ("experiment_id", CanonicalValue::U64(*id)),
                         ("tag_key", text("kind")),
                         ("value_digest", bytes(&[9; 32])),
@@ -164,6 +183,64 @@ impl QueryReadView for CandidateView {
     ) -> Result<QueryNearestPage, Self::Error> {
         Err(())
     }
+}
+
+#[test]
+fn partition_set_candidates_remain_scoped_before_global_root_order() {
+    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+    let query = QUERY
+        .replace(
+            "$scope: Experiment.scope",
+            "$scopes: Set<Experiment.scope, 2>",
+        )
+        .replace("scope == $scope", "scope in $scopes")
+        .replace("within 65535", "within 10")
+        .replace(
+            "experiments { experiment_id, last_update_time }",
+            "experiments { scope, experiment_id, last_update_time }",
+        );
+    let program = compile_query(&parse_query(&query).expect("query"), &catalog).expect("plan");
+    let parameters = QueryParameters::checked(BTreeMap::from([
+        (
+            "scopes".to_owned(),
+            CanonicalValue::list(vec![text("org-b"), text("org-a")]).expect("set"),
+        ),
+        ("key".to_owned(), text("kind")),
+        ("digest".to_owned(), bytes(&[9; 32])),
+        ("limit".to_owned(), CanonicalValue::U64(1)),
+    ]))
+    .expect("parameters");
+
+    let first = execute_page_in_snapshot(
+        &program,
+        &parameters,
+        None,
+        &mut CandidateView {
+            one_per_partition: true,
+            ..CandidateView::default()
+        },
+    )
+    .expect("first scoped candidate page");
+    assert_eq!(page_scopes(&first), vec!["org-a"]);
+    let prior = QueryContinuation::checked(
+        first.continuation_binding().expect("binding").to_owned(),
+        first.continuation().expect("continuation").to_vec(),
+        first.index_epochs().clone(),
+    )
+    .expect("continuation");
+    let second = execute_page_in_snapshot(
+        &program,
+        &parameters,
+        Some(&prior),
+        &mut CandidateView {
+            one_per_partition: true,
+            ..CandidateView::default()
+        },
+    )
+    .expect("second scoped candidate page");
+    assert_eq!(page_scopes(&second), vec!["org-b"]);
+    assert!(second.continuation().is_none());
 }
 
 #[test]
@@ -215,6 +292,7 @@ fn incomplete_candidate_source_refuses_before_any_root_hydration() {
     let mut view = CandidateView {
         continue_first_source: true,
         include_null_root: false,
+        one_per_partition: false,
         root_reads: 0,
     };
     assert_eq!(
@@ -243,6 +321,7 @@ fn explicit_null_placement_is_independent_from_descending_direction() {
     let mut view = CandidateView {
         continue_first_source: false,
         include_null_root: true,
+        one_per_partition: false,
         root_reads: 0,
     };
     let page = execute_page_in_snapshot(&program, &parameters, None, &mut view).expect("page");
@@ -364,6 +443,98 @@ fn provider_candidates_share_one_exact_head_before_root_order_and_page() {
     );
 }
 
+#[test]
+fn partition_provider_batches_merge_before_scoped_candidate_hydration() {
+    let contract =
+        include_str!("../../../fixtures/riffql/bounded-filtered-result-v1/contract.riff");
+    let query = include_str!(
+        "../../../fixtures/riffql/bounded-filtered-result-v1/queries/combined_tag_pattern.riffq"
+    )
+    .replace(
+        "$scope: Experiment.scope",
+        "$scopes: Set<Experiment.scope, 2>",
+    )
+    .replace("scope == $scope", "scope in $scopes")
+    .replace("Limit<50000>", "Limit<10>")
+    .replace("= 1000", "= 10")
+    .replace(
+        "experiments { experiment_id, name, last_update_time }",
+        "experiments { scope, experiment_id, name, last_update_time }",
+    );
+    let bundle = compile_contract_source(contract).expect("contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+    let program = compile_query(&parse_query(&query).expect("query"), &catalog).expect("plan");
+    let parameters = QueryParameters::checked(BTreeMap::from([
+        (
+            "scopes".to_owned(),
+            CanonicalValue::list(vec![text("org-b"), text("org-a")]).expect("set"),
+        ),
+        ("tag_key".to_owned(), text("kind")),
+        ("tag_digest".to_owned(), bytes(&[9; 32])),
+        ("name_pattern".to_owned(), text("%a%")),
+        ("limit".to_owned(), CanonicalValue::U64(10)),
+    ]))
+    .expect("parameters");
+    let provider_step = program
+        .steps()
+        .iter()
+        .find(|step| matches!(step.access(), QueryAccessKind::LongPatternCandidate { .. }))
+        .expect("provider step");
+    let QueryAccessKind::LongPatternCandidate { pattern, .. } = provider_step.access() else {
+        panic!("provider")
+    };
+    let epoch = CommitSequence::new(7).expect("epoch");
+    let generation = ProjectionGeneration::first();
+    let batches = ["org-a", "org-b"]
+        .into_iter()
+        .map(|scope| {
+            LongPatternCandidateBatch::checked(
+                provider_step.binding().to_owned(),
+                vec![row(
+                    "Experiment",
+                    [
+                        ("scope", text(scope)),
+                        ("experiment_id", CanonicalValue::U64(1)),
+                        ("name", text("Alpha")),
+                    ],
+                )],
+                pattern.descriptor().digest(),
+                pattern.descriptor().state_identity().schema_hash(),
+                1,
+                generation,
+                epoch,
+                epoch,
+                1,
+                9,
+            )
+            .expect("partition batch")
+        })
+        .collect::<Vec<_>>();
+    let merged = LongPatternCandidateBatch::merge_partition_batches(batches, 2, 2, 18)
+        .expect("merged provider batch");
+    let policy_shape = ApplicationRoleHash::from_bytes([4; 32]);
+    let proof = riffdb_projection::negotiate_result_set_epoch_v1(
+        riffdb_projection::ResultSetEpochContextV1::new(program.identity().hash(), policy_shape),
+        &[merged.observation().expect("observation")],
+        riffdb_projection::ResultSetEpochRequirementV1::Exact(epoch),
+    )
+    .expect("proof");
+    let page = execute_provider_page_in_snapshot(
+        &program,
+        &parameters,
+        None,
+        &mut CandidateView {
+            one_per_partition: true,
+            ..CandidateView::default()
+        },
+        policy_shape,
+        &proof,
+        &[merged],
+    )
+    .expect("partition provider page");
+    assert_eq!(page_scopes(&page), vec!["org-a", "org-b"]);
+}
+
 fn page_ids(snapshot: &riffdb_query_executor::QueryOwnedSnapshot) -> Vec<u64> {
     let QueryResultValue::Many(rows) = &snapshot.fields()["experiments"] else {
         panic!("many result")
@@ -372,6 +543,18 @@ fn page_ids(snapshot: &riffdb_query_executor::QueryOwnedSnapshot) -> Vec<u64> {
         .map(|row| match row.field("experiment_id") {
             Some(CanonicalValue::U64(value)) => *value,
             _ => panic!("experiment id"),
+        })
+        .collect()
+}
+
+fn page_scopes(snapshot: &riffdb_query_executor::QueryOwnedSnapshot) -> Vec<&str> {
+    let QueryResultValue::Many(rows) = &snapshot.fields()["experiments"] else {
+        panic!("many result")
+    };
+    rows.iter()
+        .map(|row| match row.field("scope") {
+            Some(CanonicalValue::String(value)) => value.as_str(),
+            _ => panic!("scope"),
         })
         .collect()
 }

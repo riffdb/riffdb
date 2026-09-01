@@ -6,9 +6,9 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 1.23
+**Version:** 1.24
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
-**Date:** 31 August 2026
+**Date:** 1 September 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
 **Working URI scheme:** `riffdb://`  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 1.24 | 2026-09-01 | Accepted ADR-0175 and registered `RQL-007`, `QRY-010`, `OQ-101` through `OQ-112`, and WP-739 through WP-743 for bounded partition-set operational queries. Additive `Set<T, MAX>` source may route one immutable compiler-sealed partition-local plan across an explicit finite set of at most 65,535 partitions in one authoritative snapshot. RiffDB globally merges the declared partition-prefixed total order before limit and one opaque cursor; the cursor binds normalized routes, filters, authority, frontier, last global order key, and a digest of every required partition/index/provider epoch. Partition, per-partition, global row, probe, candidate, policy, provider, merge, byte, result, cursor, and total-work ceilings remain independent and whole-operation fail-closed. Existing `Set<T>`, single-partition artifacts, storage keys, mutations, commits, and cursors retain exact bytes and meaning. Cross-partition joins, writes, discovery, caller plans, and adapter merge semantics remain forbidden. |
 | 1.23 | 2026-08-31 | Accepted ADR-0174 and registered `OQ-084` through `OQ-100` plus WP-733 through WP-738 for one compiler-sealed bounded filtered-result pipeline. A non-output candidate binding completes finite same-partition source/intersection/union/difference sets under independent all-or-refusal budgets before root hydration, authorization, total ordering, limit, and cursor selection. A new rebuildable `long_pattern_v1` provider supports exact binary and Unicode-fold equality, prefix, suffix, substring, LIKE/ILIKE, negation, `%`, `_`, and escaping for source values through 8,000 bytes using bounded gram candidates plus exact retained-value verification rather than widening 4,096-byte storage keys or the quadratic exact-text V1 format. The global scan ceiling becomes 65,535 rows with one probe, admitting bounded pages through 65,534 while retaining the independent 4 MiB encoded-result and every query-specific cost/authority ceiling. Existing artifacts, exact/tokenized providers, keys, and pages through 499 retain their meanings and least-sufficient bytes. |
 | 1.22 | 2026-08-31 | Registered `FTS-005` through `FTS-015` and WP-730 through WP-732 for ADR-0173's remaining stages. The tokenized provider first persists one canonical partition-scoped V1 segment carrying authoritative keys, compiler-shaped outputs, postings, per-field term frequencies, field-length norms, and positions with exact rebuild/replay/recovery behavior. Named RiffQL then admits only compiler-sealed conjunction, capped disjunction, phrase, and bounded proximity over one declared `text_index`, with typed term/candidate/result refusals and no request-time field, operator, analyzer, provider, boost, score, or cost selection. Ranked search uses the provider-owned `riff_bm25_v1` fixed-point order over the caller's complete authorized set at one ADR-0164 admission-head fence, with primary-key tie-breaking and snapshot-bound cursors. Existing exact-text behavior and declaration-free artifacts remain byte-exact. |
 | 1.21 | 2026-08-31 | Accepted ADR-0173 and registered `FTS-001` through `FTS-004` plus WP-729 for the tokenized-text declaration and analyzer stage. ADR-0173 explicitly refines ADR-0092: tokenized-search v1 has exactly `keyword_v1` and Unicode-17 `standard_v1`, ranking statistics are scoped to the caller's authorized set at the fenced snapshot, and the boolean vocabulary is conjunction, compiler-capped disjunction, phrase, and bounded proximity. The declaration freezes positive integer per-field weights, analyzer identity, staleness and replay bounds, the `boolean_v1` result model, and compiler-owned term/candidate/result ceilings into additive contract IR identity. Durable segments, matching, and ranking remain separately staged. |
@@ -6977,6 +6978,13 @@ ADR-0055.
   outcome MUST be statically proven. Collection-as-scalar use, singular-as-set
   use, non-key fan-out, Cartesian products, and unbounded nested access MUST be
   rejected with source-spanned diagnostics.
+- `RQL-007`: Query source MAY declare `Set<T, MAX>` for a positive maximum no
+  greater than 65,535. A predicate `partition_field in $routes` MAY establish
+  one finite partition-set route only when the parameter is exactly
+  `Set<Entity.partition_field, MAX>`. The compiler MUST reject optional,
+  discovered, expression-derived, non-partition, differently typed, multiple,
+  or unbounded routes and MUST carry the maximum into generated schemas, plan
+  identity, cost, and authority. Existing `Set<T>` retains its exact meaning.
 
 - `QRY-001`: One query request MUST execute its complete closed access program
   against one authoritative storage snapshot and return only owned bounded
@@ -7032,6 +7040,13 @@ ADR-0055.
   construct a generic per-row map, expose ordinals, or accept a caller-supplied
   decoder or layout. Generic clients, CLI, and MCP MUST preserve symbolic output
   through bounded conversion.
+- `QRY-010`: A finite partition-set query MUST execute every selected route
+  inside one engine-owned authoritative read snapshot and one captured
+  application frontier, then release only one owned globally ordered result.
+  It MUST NOT open a public request, authorization decision, snapshot, or
+  caller-visible continuation per partition. Continuation MUST either revalidate
+  the complete selected partition/index/provider observation digest or fail
+  typed; it MUST NOT silently resume across a changed member.
 
 - `DX-001`: The implementation MUST add an additive versioned application gRPC
   API over the same API-neutral service, authorization, compiler, query
@@ -8492,6 +8507,64 @@ behavior:
   adapter filtering, sorting, counting, deduplication, restart, or framework
   branch. ADR-0159 exact ordered page assembly remains the only larger-logical-
   page adapter translation until a separately accepted framed query stream.
+- `OQ-101`: `Set<T, MAX>` MUST accept only a scalar, enum, or field-referenced
+  scalar `T` and a canonical positive `MAX` through 65,535. Submitted values
+  MUST be type-checked, encoded, sorted, and deduplicated once and refuse above
+  the declared maximum before authorization or storage. Existing `Set<T>`
+  source and artifacts retain exact semantics and bytes.
+- `OQ-102`: Exactly one predicate `partition_field in $routes` MAY establish a
+  finite partition-set route when `$routes` is the exact bounded field type.
+  Every binding and dependency MUST use that same route shape; optional,
+  discovered, expression-derived, non-partition, differently typed, multiple,
+  and unbounded routes MUST fail with source-spanned diagnostics.
+- `OQ-103`: The engine MUST evaluate one immutable compiler-sealed local plan
+  for all canonical selected partitions at one authoritative snapshot and one
+  admission head. Empty sets return the declared empty result; duplicates are
+  unobservable. No per-partition public request, authorization, or snapshot is
+  permitted.
+- `OQ-104`: Ordinary partition-set execution MUST use a declared
+  partition-prefixed index whose remaining suffix supplies the complete total
+  order and unique root-key tie-breaker. RiffDB MUST perform one deterministic
+  bounded global merge before limit, continuation probing, and cursor creation;
+  partition order MUST NOT affect result order.
+- `OQ-105`: One opaque partition-set cursor MUST bind normalized routes,
+  predicates, plan/order/role identities, every ceiling, history and admission
+  semantics, the last complete global order key, and a collision-resistant
+  digest of all selected partition/index/provider observations. Drift or
+  retirement MUST fail typed without process-global cursor state.
+- `OQ-106`: Partition-set plans MUST independently bound and checked-charge
+  partitions, route bytes, per-partition and total rows, scans, probes, seeks,
+  epoch observations, candidates, relationships, hydration, policy, provider,
+  merge heap, sort, retained bytes, comparisons, output, cursor, and total work.
+  Overflow MUST release no row, cursor, count, or partial result.
+- `OQ-107`: Shared policy MUST authorize the complete compiler-derived entity,
+  field, index, provider, partition-count, row, and work union before execution.
+  A partition scope that cannot cover the complete submitted route set MUST
+  deny the request as a whole; unauthorized members MUST NOT affect observable
+  results, order, cursor, overflow, statistics, diagnostics, or timing labels.
+- `OQ-108`: ADR-0174 candidate, relationship, and provider work MAY be
+  replicated per selected partition only when every source and edge remains
+  local, every partition executes the identical sealed algebra, all providers
+  satisfy one common admission head, and complete multiplied bounds pass.
+- `OQ-109`: Partition-set source MUST use least-sufficient additive language,
+  checked IR, plan, module, role, lock, generated-schema, explain, cursor, and
+  topology identities. Existing single-partition queries, cursors, keys,
+  commands, entities, commits, events, and provider checkpoints MUST NOT be
+  reinterpreted.
+- `OQ-110`: Memory and redb MUST implement one semantic partition-set scan and
+  merge contract with parity for forward/reverse order, empty/one/many routes,
+  page-size changes, epoch drift, cancellation, bounds, policy, and exact
+  failure. The storage port returns owned observations and exposes no engine
+  iterator or transaction handle.
+- `OQ-111`: Rust, Go, TypeScript, Python, gRPC, MCP, CLI, local, and remote
+  generated operations MUST carry the same bounded route input, result order,
+  cursor, errors, authority, and compatibility identities. No surface may
+  substitute fan-out, client sorting, page walking, or reduced semantics.
+- `OQ-112`: Generic and real MLflow acceptance MUST prove globally ordered Run
+  search over multiple experiment partitions, continuation with a changed page
+  cardinality, concurrent-change typed behavior, revision-safe writes before
+  and after search, and no adapter filter, sort, merge, snapshot, or cursor
+  state. The value-free receipt MUST identify exact core and adapter artifacts.
 
 ### 24.5.5 Compiled workflow concurrency
 

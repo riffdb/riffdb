@@ -72,7 +72,12 @@ post-scan filtering: doing so could apply `take`, an ordinal offset, or a
 continuation before the predicate and silently omit matches.
 
 RiffQL v1 does not perform an unbounded fallback scan, client-side sort,
-cross-partition join, or optimizer-dependent plan choice.
+cross-partition join, or optimizer-dependent plan choice. ADR-0175's additive
+finite partition-set route is not a join: it replicates one compiler-sealed
+local index plan over caller-submitted bounded routes in one read view. Uniform
+orders use a bounded k-way heap; mixed physical directions use a bounded
+complete-group path. Both produce one globally ordered page and one opaque
+cursor only after whole-set policy and epoch observation succeeds.
 
 ## Candidate-set plans
 

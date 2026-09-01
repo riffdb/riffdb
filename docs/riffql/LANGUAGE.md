@@ -190,6 +190,14 @@ source, or by any mixed semantic shape remains cursor-identity-bearing. There
 is no source annotation for this distinction; the compiler derives it from the
 closed plan.
 
+For an explicit finite set of aggregate partitions, use
+`Set<Entity.partition_field, MAX>` and route the binding with
+`partition_field in $parameter`. `MAX` is 1 through 65,535; the empty submitted
+set is valid. The database executes one sealed local plan at one snapshot and
+applies global order, limit, and cursor selection after merging the selected
+partitions. See [Bounded partition-set queries](PARTITION-SET-QUERIES.md) for
+the complete locality, scale, authorization, candidate, and cursor rules.
+
 ## Complete candidate sets before root ordering (language V11)
 
 A query may declare one compiler-owned, non-output candidate binding before its

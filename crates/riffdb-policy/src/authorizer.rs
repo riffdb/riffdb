@@ -9,7 +9,7 @@ use riffdb_types::{
     ActorId, ActorKind, ApplicationExportSelectionV1, Audience, CapabilityApplicationExportScopeV1,
     CapabilityApplicationReimportScopeV1, CapabilityGrantV1, CapabilityId,
     CapabilityPermissionKindV1, CapabilityPermissionV1, DatabaseId, Environment, PartitionScopeV1,
-    ServiceOperationV1, TenantScope, Timestamp,
+    ScopedPartitionV1, ServiceOperationV1, TenantScope, Timestamp,
 };
 
 use crate::decision::{PermissionCheck, check_permission, derive_field_mask};
@@ -866,10 +866,36 @@ fn evaluate(
     }
     if let Some(target) = request.application_query_target() {
         let rows = u64::from(current.grant.max_scan_rows().get());
-        let row_work = rows.saturating_mul(riffdb_types::MAX_APPLICATION_QUERY_STEPS);
+        let partition_factor = if target.has_partition_set() {
+            target
+                .accesses()
+                .iter()
+                .map(|access| u64::from(access.maximum_partitions().get()))
+                .max()
+                .unwrap_or(1)
+        } else {
+            1
+        };
+        let row_work = rows
+            .saturating_mul(riffdb_types::MAX_APPLICATION_QUERY_STEPS)
+            .saturating_mul(partition_factor);
         let projected_values =
             row_work.saturating_mul(riffdb_types::MAX_CAPABILITY_FIELD_VISIBILITY as u64);
-        let scanned_index_rows = if target.has_bounded_candidate_sources() {
+        let scanned_index_rows = if target.has_partition_set() {
+            target.accesses().iter().try_fold(0_u64, |total, access| {
+                let maximum = u64::from(access.maximum_rows().get());
+                if maximum > rows {
+                    return None;
+                }
+                if access.index_id().is_some() {
+                    total.checked_add(
+                        maximum.checked_mul(u64::from(access.maximum_partitions().get()))?,
+                    )
+                } else {
+                    Some(total)
+                }
+            })
+        } else if target.has_bounded_candidate_sources() {
             target.accesses().iter().try_fold(0_u64, |total, access| {
                 let maximum = u64::from(access.maximum_rows().get());
                 if maximum > rows {
@@ -930,6 +956,23 @@ fn evaluate(
             }
             PartitionScopeV1::Explicit(_) => return Err(PolicyCode::PartitionScopeMismatch),
         },
+        PartitionRequirement::Explicit(required) => {
+            let allowed = match current.grant.partition_scope() {
+                PartitionScopeV1::All => true,
+                PartitionScopeV1::Explicit(entries) => required.iter().all(|partition| {
+                    entries
+                        .binary_search_by_key(
+                            &partition.canonical_key(),
+                            ScopedPartitionV1::canonical_key,
+                        )
+                        .is_ok()
+                }),
+            };
+            if !allowed {
+                return Err(PolicyCode::PartitionScopeMismatch);
+            }
+            Some(crate::PartitionConstraint::Explicit(required.to_vec()))
+        }
         PartitionRequirement::Filter => Some(crate::PartitionConstraint::Filter(
             current.grant.partition_scope().clone(),
         )),

@@ -362,6 +362,9 @@ fn format_type(value: &TypeReference) -> String {
         TypeReference::Named(path) => format_path(path),
         TypeReference::Optional(inner) => format!("{}?", format_type(&inner.value)),
         TypeReference::Set(inner) => format!("Set<{}>", format_type(&inner.value)),
+        TypeReference::BoundedSet { element, maximum } => {
+            format!("Set<{}, {maximum}>", format_type(&element.value))
+        }
         TypeReference::Cursor => "Cursor".to_owned(),
         TypeReference::Limit => "Limit".to_owned(),
         TypeReference::BoundedLimit(maximum) => format!("Limit<{maximum}>"),

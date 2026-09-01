@@ -26,6 +26,10 @@ pub const RIFFQL_LANGUAGE_VERSION_TOKENIZED_TEXT_V1: u32 = 10;
 pub const RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1: u32 = 11;
 /// Finite compiler-owned result-order family selected by a contract enum.
 pub const RIFFQL_LANGUAGE_VERSION_ORDER_FAMILY_V1: u32 = 12;
+/// Canonical explicitly bounded submitted-set and partition-route language version.
+pub const RIFFQL_LANGUAGE_VERSION_PARTITION_SET_V1: u32 = 13;
+/// Structural maximum for one explicitly bounded submitted set.
+pub const MAX_BOUNDED_SET_ITEMS_V1: u16 = u16::MAX;
 /// Maximum compiler-declared causal projection wait.
 pub const MAX_PROJECTED_CAUSAL_WAIT_MS: u32 = 30_000;
 /// Maximum compiler-declared bounded projection lag.
@@ -153,6 +157,13 @@ pub enum TypeReference {
     Optional(Box<Spanned<Self>>),
     /// Query-only bounded submitted set.
     Set(Box<Spanned<Self>>),
+    /// Query-only submitted set with an explicit inclusive distinct-item maximum.
+    BoundedSet {
+        /// Element type.
+        element: Box<Spanned<Self>>,
+        /// Inclusive maximum distinct canonical values.
+        maximum: u16,
+    },
     /// Opaque cursor token.
     Cursor,
     /// Positive row limit.

@@ -1584,6 +1584,7 @@ fn emit_named_nested(
     match value_type {
         NamedTypeSchema::Optional(inner)
         | NamedTypeSchema::Set(inner)
+        | NamedTypeSchema::BoundedSet { element: inner, .. }
         | NamedTypeSchema::List { element: inner, .. } => {
             emit_named_nested(output, name, inner, contract, redacted_debug);
         }
@@ -1666,7 +1667,9 @@ fn python_named_type(
         NamedTypeSchema::Optional(inner) => {
             format!("{} | None", python_named_type(inner, nested_name, contract))
         }
-        NamedTypeSchema::Set(inner) | NamedTypeSchema::List { element: inner, .. } => {
+        NamedTypeSchema::Set(inner)
+        | NamedTypeSchema::BoundedSet { element: inner, .. }
+        | NamedTypeSchema::List { element: inner, .. } => {
             format!(
                 "tuple[{}, ...]",
                 python_named_type(inner, nested_name, contract)
@@ -1964,6 +1967,7 @@ fn register_nested_names(
     match value_type {
         NamedTypeSchema::Optional(inner)
         | NamedTypeSchema::Set(inner)
+        | NamedTypeSchema::BoundedSet { element: inner, .. }
         | NamedTypeSchema::List { element: inner, .. } => {
             register_nested_names(top_level, name, inner, origin)
         }

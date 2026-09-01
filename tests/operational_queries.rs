@@ -276,6 +276,7 @@ impl QueryReadView for IndexedView {
         predicates: &[BoundPredicate],
         limit: u64,
         after: Option<&[u8]>,
+        _after_inclusive: bool,
         _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryScanPage, Self::Error> {
         let schedule =

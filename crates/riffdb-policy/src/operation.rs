@@ -540,6 +540,12 @@ struct ExactDataScope {
     partition: ScopedPartitionV1,
 }
 
+#[derive(Clone, Eq, PartialEq)]
+struct QueryDataScope {
+    tenant_scope: OperationTenantScope,
+    partitions: Vec<ScopedPartitionV1>,
+}
+
 /// One compiler-derived storage requirement retained inside an application-query proof.
 #[derive(Clone, Eq, PartialEq)]
 pub struct ApplicationQueryAccessRequirement {
@@ -547,6 +553,7 @@ pub struct ApplicationQueryAccessRequirement {
     index_id: Option<IndexId>,
     non_key_fields: Vec<FieldId>,
     maximum_rows: NonZeroU16,
+    maximum_partitions: NonZeroU16,
     /// Secret-classified fields this access PROJECTS into results
     /// (ADR-0118). Predicate-only secret use is deliberately excluded: the
     /// value is compared, never returned, so it needs no read visibility.
@@ -573,8 +580,23 @@ impl ApplicationQueryAccessRequirement {
             index_id,
             non_key_fields,
             maximum_rows,
+            maximum_partitions: NonZeroU16::MIN,
             projected_secret_fields: Vec::new(),
         })
+    }
+
+    /// Constructs one partition-set access with independent per-partition rows.
+    #[doc(hidden)]
+    pub fn new_partition_set(
+        entity_type_id: EntityTypeId,
+        index_id: Option<IndexId>,
+        non_key_fields: Vec<FieldId>,
+        maximum_rows: NonZeroU16,
+        maximum_partitions: NonZeroU16,
+    ) -> Result<Self, OperationRequestError> {
+        let mut access = Self::new(entity_type_id, index_id, non_key_fields, maximum_rows)?;
+        access.maximum_partitions = maximum_partitions;
+        Ok(access)
     }
 
     /// Declares which secret-classified fields this access projects into
@@ -626,6 +648,12 @@ impl ApplicationQueryAccessRequirement {
     pub const fn maximum_rows(&self) -> NonZeroU16 {
         self.maximum_rows
     }
+
+    /// Maximum compiler-declared selected partitions for this access.
+    #[must_use]
+    pub const fn maximum_partitions(&self) -> NonZeroU16 {
+        self.maximum_partitions
+    }
 }
 
 impl fmt::Debug for ApplicationQueryAccessRequirement {
@@ -642,7 +670,7 @@ pub struct ApplicationQueryTarget {
     bundle_hash: ContractBundleHash,
     plan_hash: QueryPlanHash,
     ingress: ServiceIngressKindV1,
-    scope: ExactDataScope,
+    scope: QueryDataScope,
     accesses: Vec<ApplicationQueryAccessRequirement>,
     cost: QueryCostVectorV1,
     bounded_candidate_sources: bool,
@@ -668,7 +696,41 @@ impl ApplicationQueryTarget {
         {
             return Err(OperationRequestError::TooManyQueryAccesses);
         }
-        let scope = ExactDataScope::new(tenant_scope, lineage.clone(), partition);
+        let scope = QueryDataScope::new(tenant_scope, lineage.clone(), vec![partition])?;
+        Ok(Self {
+            lineage,
+            version,
+            bundle_hash,
+            plan_hash,
+            ingress,
+            scope,
+            accesses,
+            cost,
+            bounded_candidate_sources: false,
+        })
+    }
+
+    /// Constructs a query target over one canonical explicit finite route set.
+    #[allow(clippy::too_many_arguments)]
+    #[doc(hidden)]
+    pub fn new_partition_set(
+        lineage: ContractLineage,
+        version: ContractVersion,
+        bundle_hash: ContractBundleHash,
+        plan_hash: QueryPlanHash,
+        ingress: ServiceIngressKindV1,
+        tenant_scope: OperationTenantScope,
+        partitions: Vec<PartitionKey>,
+        accesses: Vec<ApplicationQueryAccessRequirement>,
+        cost: QueryCostVectorV1,
+    ) -> Result<Self, OperationRequestError> {
+        if accesses.is_empty()
+            || accesses.len() > 64
+            || cost.access_steps() != accesses.len() as u64
+        {
+            return Err(OperationRequestError::TooManyQueryAccesses);
+        }
+        let scope = QueryDataScope::new(tenant_scope, lineage.clone(), partitions)?;
         Ok(Self {
             lineage,
             version,
@@ -724,8 +786,17 @@ impl ApplicationQueryTarget {
 
     /// Exact routed partition.
     #[must_use]
-    pub const fn partition(&self) -> &ScopedPartitionV1 {
-        &self.scope.partition
+    pub fn partition(&self) -> Option<&ScopedPartitionV1> {
+        let [partition] = self.scope.partitions.as_slice() else {
+            return None;
+        };
+        Some(partition)
+    }
+
+    /// Canonically ordered complete submitted route set.
+    #[must_use]
+    pub fn partitions(&self) -> &[ScopedPartitionV1] {
+        &self.scope.partitions
     }
 
     /// Exact compiler-declared tenant scope.
@@ -753,6 +824,15 @@ impl ApplicationQueryTarget {
     #[must_use]
     pub const fn has_bounded_candidate_sources(&self) -> bool {
         self.bounded_candidate_sources
+    }
+
+    /// Whether this exact target uses ADR-0175 finite partition-set authority.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn has_partition_set(&self) -> bool {
+        self.accesses
+            .iter()
+            .any(|access| access.maximum_partitions().get() > 1)
     }
 }
 
@@ -868,6 +948,33 @@ impl ExactDataScope {
             tenant_scope,
             partition: ScopedPartitionV1::new(lineage, partition),
         }
+    }
+}
+
+impl QueryDataScope {
+    fn new(
+        tenant_scope: OperationTenantScope,
+        lineage: ContractLineage,
+        partitions: Vec<PartitionKey>,
+    ) -> Result<Self, OperationRequestError> {
+        if partitions.len() > usize::from(u16::MAX) {
+            return Err(OperationRequestError::TooManyQueryAccesses);
+        }
+        let mut partitions = partitions
+            .into_iter()
+            .map(|partition| ScopedPartitionV1::new(lineage.clone(), partition))
+            .collect::<Vec<_>>();
+        partitions.sort_by_key(ScopedPartitionV1::canonical_key);
+        if partitions
+            .windows(2)
+            .any(|pair| pair[0].canonical_key() == pair[1].canonical_key())
+        {
+            return Err(OperationRequestError::TooManyQueryAccesses);
+        }
+        Ok(Self {
+            tenant_scope,
+            partitions,
+        })
     }
 }
 
@@ -2009,7 +2116,10 @@ impl OperationRequest {
             | OperationKind::ExecuteNamedQuery { target, .. }
             | OperationKind::WatchNamedQuery { target, .. }
             | OperationKind::ExecuteProjectedQuery { target } => {
-                PartitionRequirement::Exact(&target.scope.partition)
+                match target.scope.partitions.as_slice() {
+                    [partition] => PartitionRequirement::Exact(partition),
+                    partitions => PartitionRequirement::Explicit(partitions),
+                }
             }
             OperationKind::ConsumeEventStream { target, .. }
             | OperationKind::AcknowledgeEventStream { target }
@@ -2344,6 +2454,7 @@ pub(crate) enum PermissionRequirement {
 pub(crate) enum PartitionRequirement<'a> {
     None,
     Exact(&'a ScopedPartitionV1),
+    Explicit(&'a [ScopedPartitionV1]),
     Filter,
     AllOnly,
 }

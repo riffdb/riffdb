@@ -4755,6 +4755,7 @@ impl riffdb_query_executor::QueryExecutionPort for ContinuedEmptyQueryExecutor {
                 _predicates: &[riffdb_query_executor::BoundPredicate],
                 _limit: u64,
                 _after: Option<&[u8]>,
+                _after_inclusive: bool,
                 _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
             ) -> Result<riffdb_query_executor::QueryScanPage, Self::Error> {
                 Ok(riffdb_query_executor::QueryScanPage::continued(
@@ -4845,6 +4846,7 @@ impl riffdb_query_executor::QueryExecutionPort for EmptyQueryExecutor {
                 _predicates: &[riffdb_query_executor::BoundPredicate],
                 _limit: u64,
                 _after: Option<&[u8]>,
+                _after_inclusive: bool,
                 _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
             ) -> Result<riffdb_query_executor::QueryScanPage, Self::Error> {
                 Ok(riffdb_query_executor::QueryScanPage::exact_end(
@@ -4912,6 +4914,7 @@ impl riffdb_query_executor::QueryExecutionPort for EmptyQueryExecutor {
                 _predicates: &[riffdb_query_executor::BoundPredicate],
                 _limit: u64,
                 _after: Option<&[u8]>,
+                _after_inclusive: bool,
                 _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
             ) -> Result<riffdb_query_executor::QueryScanPage, Self::Error> {
                 Ok(riffdb_query_executor::QueryScanPage::exact_end(
@@ -4992,6 +4995,7 @@ impl riffdb_query_executor::QueryExecutionPort for EmptyQueryExecutor {
                 _predicates: &[riffdb_query_executor::BoundPredicate],
                 _limit: u64,
                 _after: Option<&[u8]>,
+                _after_inclusive: bool,
                 _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
             ) -> Result<riffdb_query_executor::QueryScanPage, Self::Error> {
                 Ok(riffdb_query_executor::QueryScanPage::exact_end(

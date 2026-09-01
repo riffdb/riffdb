@@ -134,7 +134,16 @@ npm --prefix examples/ticketdesk/web run check
 npm --prefix examples/ticketdesk/web run build
 npm --prefix examples/ticketdesk/web test
 ./scripts/check-application-boundary examples/ticketdesk/web
-node --experimental-strip-types --check clients/typescript/ticketdesk/client.ts
+typescript_tsc="clients/typescript/runtime/node_modules/.bin/tsc"
+if [[ -x "$typescript_tsc" ]]; then
+    "$typescript_tsc" --noEmit --strict --noUnusedLocals --noUnusedParameters \
+        --target ES2022 clients/typescript/ticketdesk/client.ts
+elif command -v tsc >/dev/null 2>&1; then
+    tsc --noEmit --strict --noUnusedLocals --noUnusedParameters --target ES2022 \
+        clients/typescript/ticketdesk/client.ts
+else
+    node --experimental-strip-types --check clients/typescript/ticketdesk/client.ts
+fi
 cargo test --quiet -p riffdb-query-module --all-features
 cargo test --quiet -p riffdb-client-rust --all-features
 cargo test --quiet -p riffdb-ticketdesk

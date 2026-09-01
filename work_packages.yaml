@@ -1,4 +1,4 @@
-spec_version: '1.23'
+spec_version: '1.24'
 product: RiffDB
 repository: riffdb
 status: deployable-application-alpha-architecture-accepted
@@ -3184,6 +3184,209 @@ work_packages:
       sources remain owned by the external adapter agent and are not claimed by this closure.
     follow_ups: [external-riffdb-mlflow-search-migration]
   human_review_triggers: *id0174
+
+- id: WP-739
+  name: Partition-set compatibility inventory and accepted boundary
+  depends_on: [WP-738]
+  objective: Freeze ADR-0175's real-consumer source shape, explicit bounds, identity inventory,
+    architecture amendments, and failing generic/downstream fixtures before executable changes.
+  requirements: [RQL-007, QRY-010, OQ-101, OQ-102, OQ-106, OQ-109, OQ-112]
+  required_adrs: [ADR-0035, ADR-0038, ADR-0051, ADR-0053, ADR-0055, ADR-0108,
+    ADR-0111, ADR-0124, ADR-0134, ADR-0150, ADR-0159, ADR-0164, ADR-0174, ADR-0175]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0175-bounded-partition-set-operational-queries.md, adr/README.md,
+    release/version-topology-v1.json, fixtures/**, tests/**, scripts/**, docs/**,
+    crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**,
+    crates/riffdb-query-compiler/**, crates/riffdb-query-module/**]
+  deliverables:
+  - Accepted ADR, normative requirements, work-package graph, and handbook discoverability
+  - Exact failing multi-experiment Run source plus negative locality/bound/type corpus
+  - Inventory of least-sufficient language, IR, module, plan, role, lock, generated-schema,
+    explain, cursor, and topology successors with old-artifact byte-equality assertions
+  acceptance_commands:
+  - ./scripts/check-adr-obligations
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-version-topology
+  - ./scripts/handbook check
+  - cargo fmt --all -- --check
+  exit_gate: The accepted source and identity inventory fail only because executable
+    partition-set routing is not yet active, while every legacy artifact remains exact.
+  standing_design_tests:
+    interface_safety: Source exposes only typed values and a literal maximum; callers cannot
+      submit partitions discovered from data, a plan, index, join, order expression, or budget.
+    scale: The structural ceiling is 65,535 explicit routes, with independent query-specific
+      partition, byte, row, probe, merge, result, and total-work maxima specified before runtime.
+  human_review_triggers: &id0175
+  - Partition discovery, cross-partition relationships, mutation, caller-authored plans,
+    partial results, or a distributed snapshot protocol would be introduced.
+  - An existing language, IR, module, plan, role, cursor, key, or durable identity would be
+    reinterpreted rather than selecting a least-sufficient successor.
+  - Any bound, authorization, snapshot, order, cursor, redaction, or fail-closed guarantee in
+    ADR-0175 would be weakened.
+
+- id: WP-740
+  name: Bounded set syntax and compiler-sealed partition routes
+  depends_on: [WP-739]
+  objective: Implement additive Set<T, MAX> syntax, checked type and query identities, locality,
+    access/index proof, exact diagnostics, cost, authority, and generated input schemas.
+  requirements: [RQL-007, OQ-101, OQ-102, OQ-104, OQ-106, OQ-107, OQ-109]
+  required_adrs: [ADR-0051, ADR-0055, ADR-0108, ADR-0111, ADR-0124, ADR-0134,
+    ADR-0150, ADR-0159, ADR-0174, ADR-0175]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0175-bounded-partition-set-operational-queries.md,
+    release/version-topology-v1.json, proto/**, crates/riffdb-types/**,
+    crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**,
+    crates/riffdb-query-compiler/**, crates/riffdb-query-module/**,
+    crates/riffdb-policy/**, crates/riffdb-errors/**, crates/riffdb-application/**,
+    crates/riffdb-client-rust/**, crates/riffdb-driver-host/**, clients/**,
+    templates/**, examples/**, fixtures/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Parser/formatter/resolver support for Set<T, MAX> with 1..65,535 source-spanned checks
+  - Checked scalar-or-set route descriptor and compiler proof of one exact partition field,
+    one route shape, compatible partition-prefixed total-order index, and closed local plan
+  - Additive language/IR/module/plan/role/lock/generated-schema/topology identities and old-byte
+    compatibility fixtures
+  - Whole-operation authority and checked multiplied cost using declared rather than submitted max
+  acceptance_commands:
+  - cargo test -p riffdb-riffql-syntax -p riffdb-query-ir -p riffdb-query-compiler
+    -p riffdb-query-module -p riffdb-policy --all-features
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-application-bindings
+  - ./scripts/check-requirement-coverage
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: The real Run query compiles into additive exact artifacts with complete bounded
+    authority, while unsafe route shapes fail at precise source spans and legacy bytes do not move.
+  standing_design_tests:
+    interface_safety: The compiler alone chooses route role, index, replicated plan, order,
+      maxima, cost, and authority; generated callers submit only the bounded typed list.
+    scale: Checked multiplication covers declared maximum partitions and every per-partition
+      row/probe/candidate/policy/provider/merge dimension before a plan can activate.
+  human_review_triggers: *id0175
+
+- id: WP-741
+  name: One-snapshot partition-set execution and global merge
+  depends_on: [WP-740]
+  objective: Execute the sealed local plan over explicit routes in one memory/redb snapshot,
+    apply policy before observation, and produce one bounded globally ordered page.
+  requirements: [QRY-010, OQ-103, OQ-104, OQ-106, OQ-107, OQ-108, OQ-110]
+  required_adrs: [ADR-0035, ADR-0038, ADR-0053, ADR-0070, ADR-0111, ADR-0130,
+    ADR-0150, ADR-0164, ADR-0174, ADR-0175]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0175-bounded-partition-set-operational-queries.md,
+    crates/riffdb-types/**, crates/riffdb-query-ir/**,
+    crates/riffdb-query-compiler/**, crates/riffdb-query-executor/**,
+    crates/riffdb-projection/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-policy/**, crates/riffdb-service/**, crates/riffdb-server/**,
+    crates/riffdb-testkit/**, fixtures/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - One engine-owned snapshot and frontier around all partition scans in memory and redb
+  - Deterministic bounded k-way merge for ordered index streams plus bounded complete-sort path
+    for candidate-root results, with limit/probe only after global order
+  - Whole-set row-policy execution and refusal without per-partition counts or partial output
+  - Independent oracle, memory/redb parity, cancellation, maximum/over-maximum, and concurrent
+    mutation schedules without sleep-based synchronization
+  acceptance_commands:
+  - cargo test -p riffdb-query-executor -p riffdb-storage-memory
+    -p riffdb-storage-redb -p riffdb-policy -p riffdb-service --all-features
+  - cargo test --test operational_queries
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Empty, one, duplicate, many, maximum, and excessive partition sets have memory/redb
+    parity and exact global order under one snapshot with no partial result on every failure.
+  standing_design_tests:
+    interface_safety: Storage receives only the compiler-sealed route descriptor and owned typed
+      parameters; no iterator, transaction, per-partition result, or fallback crosses the port.
+    scale: V1 uses a bounded merge heap or bounded candidate materialization and does not require
+      all authoritative rows or all database partitions in memory.
+  human_review_triggers: *id0175
+
+- id: WP-742
+  name: Partition-set cursor, service, policy, and generated surface parity
+  depends_on: [WP-741]
+  objective: Bind global continuation to normalized routes and complete epoch observations, then
+    carry exact semantics through service, transports, drivers, generated clients, CLI, and MCP.
+  requirements: [QRY-010, OQ-105, OQ-106, OQ-107, OQ-109, OQ-111]
+  required_adrs: [ADR-0007, ADR-0008, ADR-0027, ADR-0052, ADR-0053, ADR-0055,
+    ADR-0111, ADR-0124, ADR-0134, ADR-0137, ADR-0148, ADR-0159, ADR-0164, ADR-0175]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0175-bounded-partition-set-operational-queries.md,
+    release/version-topology-v1.json, proto/**, crates/**, clients/**,
+    templates/**, examples/**, fixtures/**, tests/**, scripts/**, docs/**,
+    release/distribution/**]
+  deliverables:
+  - One compact cursor carrying the last global key and domain-separated complete observation digest
+  - Whole-route canonical parameter hashing, page-cardinality independence, tamper/drift/expiry
+    refusal, policy revalidation, and no process-global continuation state
+  - Exact Rust/Go/TypeScript/Python, gRPC, MCP, CLI, local/remote schemas and conformance
+  - Handbook authoring, planning, operations, compatibility, and diagnostic guidance
+  acceptance_commands:
+  - cargo test --workspace --all-features
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-application-bindings
+  - ./scripts/check-generated
+  - ./scripts/check-version-topology
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every public surface returns the same globally ordered cursor page and refuses the
+    same changed/tampered route or epoch without exposing physical per-partition state.
+  standing_design_tests:
+    interface_safety: Public callers receive one generated bounded list and opaque cursor; no
+      surface exposes merge streams, epoch maps, partition cursors, plan knobs, or fallback.
+    scale: Cursor bytes stay constant with partition count through a complete observation digest;
+      request, work, response, and frame ceilings stay independent.
+  human_review_triggers: *id0175
+
+- id: WP-743
+  name: Partition-set generic and MLflow downstream closure
+  depends_on: [WP-742]
+  objective: Close ADR-0175 with generic cross-process evidence and a fresh real MLflow Run search
+    receipt proving exact multi-experiment order, cursor, writes, policy, compatibility, and recovery.
+  requirements: [RQL-007, QRY-010, OQ-101, OQ-102, OQ-103, OQ-104, OQ-105,
+    OQ-106, OQ-107, OQ-108, OQ-109, OQ-110, OQ-111, OQ-112]
+  required_adrs: [ADR-0035, ADR-0051, ADR-0053, ADR-0055, ADR-0108, ADR-0111,
+    ADR-0124, ADR-0130, ADR-0134, ADR-0150, ADR-0159, ADR-0164, ADR-0174, ADR-0175]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0175-bounded-partition-set-operational-queries.md,
+    release/version-topology-v1.json, proto/**, crates/**, clients/**,
+    templates/**, examples/**, fixtures/**, tests/**, scripts/**, docs/**,
+    release/distribution/**]
+  deliverables:
+  - Generic experiment/run-like multi-partition corpus with local tag/metric/parameter candidates,
+    multiple total orders, page-size changes, concurrent writes, policy, and typed stale cursors
+  - Cross-language local/remote, gRPC, MCP, CLI, recovery, compatibility, cancellation, and maximum
+    boundary evidence
+  - Fresh value-free downstream receipt proving no adapter fan-out, filtering, sorting, merge,
+    counting, cursor chains, hidden state, partition-model rewrite, or snapshot workaround
+  - Complete documentation, generated references, topology, requirements, policy, dependency,
+    formatting, lint, and workspace evidence with a clean committed main branch
+  acceptance_commands:
+  - cargo test --workspace --all-features
+  - cargo doc --workspace --no-deps
+  - cargo deny check
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-application-bindings
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-adr-obligations
+  - ./scripts/handbook check
+  - ./scripts/downstream-adapter-check
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Real MLflow Run search over multiple experiment partitions passes one global ordered
+    cursor loopback with surrounding revision-safe writes and no RiffDB or adapter blocker.
+  standing_design_tests:
+    interface_safety: Acceptance invokes generated named operations only; no application code owns
+      database filtering, sorting, merge, snapshot, authority, or cursor semantics.
+    scale: Partition count, route bytes, every local/global row and work class, merge state,
+      provider/candidate state, output, cursor, and process resource are finite and tested at max+1.
+  human_review_triggers: *id0175
 
 - id: WP-721
   closure:

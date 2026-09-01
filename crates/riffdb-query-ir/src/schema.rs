@@ -7,6 +7,13 @@ pub enum NamedTypeSchema {
     Optional(Box<Self>),
     /// Query-only submitted set.
     Set(Box<Self>),
+    /// Query-only submitted set with an explicit inclusive distinct-item maximum.
+    BoundedSet {
+        /// Element schema.
+        element: Box<Self>,
+        /// Inclusive maximum distinct canonical values.
+        maximum: u16,
+    },
     /// Nested returned object.
     Record(Vec<NamedFieldSchema>),
     /// Bounded returned list.

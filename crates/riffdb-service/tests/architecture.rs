@@ -815,7 +815,7 @@ fn dependent_query_batches_cannot_escape_identity_scope_or_final_reauthorization
         "target.cost() == program.cost()",
         "target.accesses().len() == program.steps().len()",
         "OutputClassification::PolicyFilteredApplicationData",
-        "PartitionConstraint::Exact(target.partition().clone())",
+        "query_partition_constraint(target)",
     ] {
         assert!(
             proof_consumer.contains(exact_requirement),
