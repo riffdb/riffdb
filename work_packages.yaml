@@ -2963,6 +2963,22 @@ work_packages:
       complete immutable plan and authority already exist; callers cannot build an order or set.
     scale: Candidate, hydration, policy, sort-key, output, cursor, retained epoch, wait, and total
       work remain independently bounded and cancellation releases transient state.
+  closure:
+    status: complete
+    completed_at: "2026-08-31"
+    requirements_satisfied: [OQ-085, OQ-087, OQ-088, OQ-089, OQ-090, OQ-091,
+      OQ-098, OQ-099]
+    evidence: Query IR/module V15 and RiffQL V12 freeze finite complete order families, while the
+      shared service obtains compiler-sealed provider batches, negotiates one plan/policy-bound
+      result-set epoch proof, and invokes memory/redb final root hydration, policy, total sort,
+      page, and cursor formation only after every source completes. Candidate execution tests
+      combine an ordinary tag source and a provider source before a mixed root order; cursor,
+      role, topology, generated-surface, cross-language remote, workspace, and architecture gates
+      pass.
+    known_limitations: Candidate V1 remains one same-partition root-key binding with at most eight
+      sources and 32 order members. A continuation whose authoritative snapshot is no longer
+      servable fails typed even when a derived provider generation remains retained.
+    follow_ups: [WP-737, WP-738]
   human_review_triggers: *id0174
 
 - id: WP-736
@@ -3084,6 +3100,23 @@ work_packages:
       they cannot choose provider structure, grams, matcher, scan, budget, collation, or fallback.
     scale: Source/matched bytes, rows, grams, postings, candidates, verification, matcher states,
       result, checkpoint, replay, retained epochs, and diagnostics are independently bounded.
+  closure:
+    status: complete
+    completed_at: "2026-08-31"
+    requirements_satisfied: [OQ-085, OQ-087, OQ-089, OQ-090, OQ-092, OQ-093,
+      OQ-094, OQ-095, OQ-096, OQ-098, OQ-099]
+    evidence: Contract grammar/executable IR/bundle V21 compile checked pattern_index declarations;
+      the exact binary and Unicode-fold matcher freezes literal, percent, underscore, escape,
+      short-pattern, collision-verification, and 8,000-byte semantics. Rebuildable provider-state
+      V1 has a byte-frozen fixture and topology domain; the production worker performs bounded
+      policy admission and atomic checksummed activation, while an architecture-negative test
+      proves the request port reads only retained epochs. Combined ordinary-tag and long-pattern
+      candidate execution, corruption, work-observation, storage, service, server, workspace,
+      handbook, generated, and strict Clippy gates pass.
+    known_limitations: Direct negative provider sources remain forbidden; compiled difference
+      requires an authorized positive universe. Provider lifecycle failures never fall back to an
+      authoritative request-time scan.
+    follow_ups: [WP-738]
   human_review_triggers: *id0174
 
 - id: WP-738
@@ -3133,6 +3166,23 @@ work_packages:
       policy bypass, or partial semantics.
     scale: Every candidate, provider, sort, page, byte, work, epoch, response, process, and external
       assembly dimension is finite and independently tested at its maximum and one over.
+  closure:
+    status: partial
+    completed_at: "2026-08-31"
+    requirements_satisfied: [OQ-084, OQ-085, OQ-086, OQ-087, OQ-088, OQ-089,
+      OQ-090, OQ-091, OQ-092, OQ-093, OQ-094, OQ-095, OQ-096, OQ-097,
+      OQ-098, OQ-099]
+    evidence: The generic bounded-filtered corpus, compiler/runtime semantic tests, byte-frozen
+      provider fixture, full workspace tests and docs, cargo-deny, generated/application binding,
+      topology, requirements, policy, ADR, handbook, four-language remote driver, standard
+      downstream adapter, explicit current MLflow repository, formatting, and strict Clippy gates
+      pass. The capability receipt records the exact core commits and distinguishes the current
+      two-query MLflow manifest from its unmerged search work.
+    known_limitations: OQ-100's fresh real-consumer search receipt is not complete. The sibling
+      riffdb-mlflow repository currently compiles only GetExperiment and GetExperimentByName; its
+      tag-intersection, finite Experiment ordering, wildcard, large-value, and high-page search
+      sources remain owned by the external adapter agent and are not claimed by this closure.
+    follow_ups: [external-riffdb-mlflow-search-migration]
   human_review_triggers: *id0174
 
 - id: WP-721
