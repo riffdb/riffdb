@@ -179,14 +179,16 @@ a projection provider's separately declared candidate or full-population work
 remains unchanged. This is not a general integer refinement and cannot be used
 for offsets, byte budgets, or contract fields.
 
-For an ordinary ordered `take $limit after $cursor` page, the submitted limit
-controls only that invocation's cardinality. A continuation may be resumed
-with another valid value in the same `Limit` or `Limit<MAX>` domain. The cursor
-still binds the immutable plan—including the declared maximum—and every
-invariant parameter, predicate, order, authority, snapshot, physical profile,
-and provider epoch. A limit used by `nearest`, by an unpaged binding, or by any
-mixed semantic shape remains cursor-identity-bearing. There is no source
-annotation for this distinction; the compiler derives it from the closed plan.
+For an ordinary ordered `take $limit after $cursor` page, including the final
+root page after a complete candidate pipeline, the submitted limit controls
+only that invocation's cardinality. A continuation may be resumed with another
+valid value in the same `Limit` or `Limit<MAX>` domain. The cursor still binds
+the immutable plan—including the declared maximum—and every invariant
+parameter, predicate, order, authority, snapshot, physical profile, and
+provider epoch. A limit used by `nearest`, by an unpaged binding, by a candidate
+source, or by any mixed semantic shape remains cursor-identity-bearing. There
+is no source annotation for this distinction; the compiler derives it from the
+closed plan.
 
 ## Complete candidate sets before root ordering (language V11)
 
@@ -220,6 +222,12 @@ sort, work, or output bound returns only the declared refusal; no partial set,
 row, hidden count, or cursor is observable. A difference expression must name
 the complete policy-filtered root-key universe first, followed by its negative
 sources separated by `;`, so denied rows cannot be inferred through complement.
+
+Authorization retains each compiler-declared candidate source as an
+independent scan ceiling. A role must cover every source individually, and the
+authorizer checks their bounded sum against the sealed plan cost; one source
+cannot borrow unused authority from another. Ordinary non-candidate queries
+continue to use one whole-request scan ceiling.
 
 The compiler proves the relationship mapping, common partition parameter,
 declared source index, exact key type, finite source count, and exactly one root
@@ -266,10 +274,12 @@ there is no public field list, expression, index hint, collation, direction, or
 tie-breaker input.
 
 Order families use additive RiffQL V12, query-family IR V15, and module V15.
-The selected member plan and the enum parameter are both cursor-bound, so a
-cursor cannot be resumed under another order. Candidate families always capture
-one admission head; all sources complete at the resulting snapshot before root
-policy, total sorting, paging, and cursor formation.
+A successful result reports the complete finite family's compiler identity,
+which is the identity pinned by generated clients and application catalogs.
+The selected member plan and the enum parameter are additionally cursor-bound,
+so a cursor cannot be resumed under another order. Candidate families always
+capture one admission head; all sources complete at the resulting snapshot
+before root policy, total sorting, paging, and cursor formation.
 
 ## Nearest-neighbor bindings (alpha)
 

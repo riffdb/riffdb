@@ -869,9 +869,25 @@ fn evaluate(
         let row_work = rows.saturating_mul(riffdb_types::MAX_APPLICATION_QUERY_STEPS);
         let projected_values =
             row_work.saturating_mul(riffdb_types::MAX_CAPABILITY_FIELD_VISIBILITY as u64);
+        let scanned_index_rows = if target.has_bounded_candidate_sources() {
+            target.accesses().iter().try_fold(0_u64, |total, access| {
+                let maximum = u64::from(access.maximum_rows().get());
+                if maximum > rows {
+                    return None;
+                }
+                if access.index_id().is_some() {
+                    total.checked_add(maximum)
+                } else {
+                    Some(total)
+                }
+            })
+        } else {
+            Some(rows)
+        }
+        .ok_or(PolicyCode::MissingPermission)?;
         let budget = riffdb_types::QueryCostVectorV1::new(
             riffdb_types::MAX_APPLICATION_QUERY_STEPS,
-            rows,
+            scanned_index_rows,
             row_work,
             row_work,
             row_work,
@@ -2026,7 +2042,7 @@ mod tests {
         let amplified = OperationRequest::execute_named_query(
             lineage(),
             module_hash,
-            query_name,
+            query_name.clone(),
             repeated_target(6, 12),
         )
         .expect("matching amplified target");
@@ -2040,6 +2056,46 @@ mod tests {
                 &amplified,
             ),
             Err(PolicyCode::MissingPermission)
+        );
+
+        let independent_candidate_sources = OperationRequest::execute_named_query(
+            lineage(),
+            module_hash,
+            query_name.clone(),
+            repeated_target(6, 12).with_bounded_candidate_sources(),
+        )
+        .expect("candidate-source target");
+        assert!(
+            evaluate(
+                &principal,
+                &current,
+                current.database_id,
+                &environment,
+                timestamp(15),
+                &independent_candidate_sources,
+            )
+            .is_ok(),
+            "independently bounded candidate sources use the grant as a per-access ceiling"
+        );
+
+        let amplified_candidate_source = OperationRequest::execute_named_query(
+            lineage(),
+            module_hash,
+            query_name,
+            repeated_target(11, 22).with_bounded_candidate_sources(),
+        )
+        .expect("amplified candidate-source target");
+        assert_eq!(
+            evaluate(
+                &principal,
+                &current,
+                current.database_id,
+                &environment,
+                timestamp(15),
+                &amplified_candidate_source,
+            ),
+            Err(PolicyCode::MissingPermission),
+            "no candidate source may exceed the grant's per-access ceiling"
         );
     }
 

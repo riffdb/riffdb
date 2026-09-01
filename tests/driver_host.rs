@@ -234,6 +234,11 @@ fn development_runners_bind_native_configuration_and_sealed_typescript_tooling()
         source.contains("cargo metadata --quiet --format-version 1 --no-deps"),
         "the source runner must derive Cargo's effective target directory"
     );
+    assert!(
+        source.contains("python3 -m maturin build --quiet")
+            && source.contains("uv run --locked --with \"$source_python_wheel\""),
+        "the source runner must execute Python applications against the current source-tree native runtime"
+    );
     for binary in ["riffdb", "riffdbd", "riffdb-driverd", "benchmark"] {
         assert!(
             source.contains(&format!("$cargo_target_dir/$profile/{binary}")),

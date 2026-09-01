@@ -1539,6 +1539,15 @@ impl<'a> Resolver<'a> {
                 ));
             }
             let bounds = provider.bounds();
+            let policy_mode = if self
+                .catalog
+                .row_policies()
+                .any(|policy| policy.entity() == entity.name())
+            {
+                ProjectionProviderPolicyModeV1::BoundedRowAdmission
+            } else {
+                ProjectionProviderPolicyModeV1::PartitionAligned
+            };
             let maximum_state_bytes = bounds
                 .matched_bytes()
                 .saturating_add(bounds.grams_per_row().saturating_mul(3))
@@ -1550,7 +1559,7 @@ impl<'a> Resolver<'a> {
                     | ProjectionProviderCapabilitiesV1::FILTER
                     | ProjectionProviderCapabilitiesV1::WINDOW
                     | ProjectionProviderCapabilitiesV1::OUTPUT,
-                ProjectionProviderPolicyModeV1::BoundedRowAdmission,
+                policy_mode,
                 ProjectionProviderStaticBoundsV1 {
                     max_candidates: bounds.candidates(),
                     max_output_rows: bounds.results(),

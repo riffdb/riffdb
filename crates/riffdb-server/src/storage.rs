@@ -336,6 +336,48 @@ impl QueryExecutionPort for SharedRedbOperationalPorts {
         )
     }
 
+    fn execute_provider_query_page(
+        &self,
+        program: &QueryAccessProgramV1,
+        parameters: &QueryParameters,
+        prior: Option<&QueryContinuation>,
+        policy_shape: riffdb_types::ApplicationRoleHash,
+        proof: &riffdb_projection::ResultSetEpochProofV1,
+        batches: &[riffdb_query_executor::LongPatternCandidateBatch],
+    ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+        QueryExecutionPort::execute_provider_query_page(
+            &self.shared,
+            program,
+            parameters,
+            prior,
+            policy_shape,
+            proof,
+            batches,
+        )
+    }
+
+    fn execute_policy_provider_query_page(
+        &self,
+        program: &QueryAccessProgramV1,
+        parameters: &QueryParameters,
+        prior: Option<&QueryContinuation>,
+        policy: &AuthorizedQueryRowPolicyContextV1,
+        policy_shape: riffdb_types::ApplicationRoleHash,
+        proof: &riffdb_projection::ResultSetEpochProofV1,
+        batches: &[riffdb_query_executor::LongPatternCandidateBatch],
+    ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+        QueryExecutionPort::execute_policy_provider_query_page(
+            &self.shared,
+            program,
+            parameters,
+            prior,
+            policy,
+            policy_shape,
+            proof,
+            batches,
+        )
+    }
+
     fn authorize_projected_candidates(
         &self,
         entity: riffdb_types::EntityTypeId,
@@ -2159,6 +2201,27 @@ mod tests {
         }
 
         assert_boundaries::<SharedRedbOperationalPorts>();
+    }
+
+    #[test]
+    fn production_query_bridge_delegates_provider_pages() {
+        let source = include_str!("storage.rs");
+        let implementation = source
+            .split_once("impl QueryExecutionPort for SharedRedbOperationalPorts")
+            .expect("query bridge implementation")
+            .1
+            .split_once("impl fmt::Debug for SharedRedbOperationalPorts")
+            .expect("query bridge boundary")
+            .0;
+
+        assert!(implementation.contains("fn execute_provider_query_page"));
+        assert!(implementation.contains("fn execute_policy_provider_query_page"));
+        assert!(implementation.contains(
+            "QueryExecutionPort::execute_provider_query_page(\n            &self.shared"
+        ));
+        assert!(implementation.contains(
+            "QueryExecutionPort::execute_policy_provider_query_page(\n            &self.shared"
+        ));
     }
 
     #[test]

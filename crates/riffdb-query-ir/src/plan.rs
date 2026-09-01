@@ -1263,9 +1263,10 @@ impl QueryAccessProgramV1 {
 
     /// Compiler-derived runtime page-cardinality parameters that do not identify a cursor position.
     ///
-    /// A parameter is eligible only when every access-step use is the limit of an ordinary
-    /// cursor-paged index traversal. Mixed use, unpaged limits, dependent access, and nearest K
-    /// remain identity-bearing. The returned names are canonical and bounded by the step count.
+    /// A parameter is eligible only when every access-step use is the result limit of an ordinary
+    /// cursor-paged index traversal or a completed candidate-root pipeline. Mixed use, unpaged
+    /// limits, candidate-source limits, dependent access, and nearest K remain identity-bearing.
+    /// The returned names are canonical and bounded by the step count.
     #[must_use]
     pub fn cursor_page_cardinality_parameters(&self) -> Vec<&str> {
         let mut eligibility = std::collections::BTreeMap::<&str, bool>::new();
@@ -1277,7 +1278,10 @@ impl QueryAccessProgramV1 {
             };
             let is_cursor_page_cardinality = step.cardinality == Cardinality::Many
                 && step.cursor_parameter.is_some()
-                && matches!(step.access, QueryAccessKind::Index { .. });
+                && matches!(
+                    step.access,
+                    QueryAccessKind::Index { .. } | QueryAccessKind::CandidateRootHydration { .. }
+                );
             eligibility
                 .entry(name)
                 .and_modify(|eligible| *eligible &= is_cursor_page_cardinality)
