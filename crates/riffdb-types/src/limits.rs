@@ -6,6 +6,20 @@ pub const MAX_CANONICAL_DOCUMENT_BYTES: usize = 1024 * 1024;
 /// Maximum structurally decoded bytes in one public application-service request.
 pub const MAX_APPLICATION_REQUEST_BYTES_V1: usize = 1024 * 1024;
 
+/// Maximum structurally decoded bytes in one compiler-bounded atomic command request.
+///
+/// Other application-service requests and every individual canonical value retain
+/// their 1 MiB ceilings. The compiler may select this larger envelope only when
+/// the complete command input and write graph remain within their independent
+/// static limits.
+pub const MAX_ATOMIC_COMMAND_REQUEST_BYTES_V2: usize = 4 * 1024 * 1024;
+
+/// Maximum wire or JSON frame for one atomic command request.
+///
+/// The headroom covers protocol framing and base64 expansion while the decoded
+/// command remains subject to [`MAX_ATOMIC_COMMAND_REQUEST_BYTES_V2`].
+pub const MAX_ATOMIC_COMMAND_FRAME_BYTES_V2: usize = 8 * 1024 * 1024;
+
 /// Maximum UTF-8 byte length of one canonical string value.
 pub const MAX_STRING_BYTES: usize = 1024 * 1024;
 
@@ -131,6 +145,8 @@ mod tests {
     fn limits_match_the_v1_contract() {
         assert_eq!(MAX_CANONICAL_DOCUMENT_BYTES, 1_048_576);
         assert_eq!(MAX_APPLICATION_REQUEST_BYTES_V1, 1_048_576);
+        assert_eq!(MAX_ATOMIC_COMMAND_REQUEST_BYTES_V2, 4_194_304);
+        assert_eq!(MAX_ATOMIC_COMMAND_FRAME_BYTES_V2, 8_388_608);
         assert_eq!(MAX_STRING_BYTES, 1_048_576);
         assert_eq!(MAX_BYTES_VALUE_BYTES, 1_048_576);
         assert_eq!(MAX_LIST_ENTRIES, 65_535);

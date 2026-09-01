@@ -1674,10 +1674,11 @@ pub fn execute_command_request_from_proto(
         .expected_contract_version
         .map(|version| ContractVersion::new(version).ok_or_else(invalid_request))
         .transpose()?;
-    let input = submitted_value_from_proto(request.input.ok_or_else(invalid_request)?)?;
-    let SubmittedValue::Record(input) = input else {
+    let input = request.input.ok_or_else(invalid_request)?;
+    let Some(v1::value::Kind::RecordValue(input)) = input.kind else {
         return Err(invalid_request());
     };
+    let input = submitted_command_record_from_proto(input)?;
     let request = ExecuteCommandRequest::new(command, expected_contract_version, input)
         .map_err(|_| invalid_request())?;
     Ok((request_id, request))
@@ -5621,6 +5622,16 @@ pub fn submitted_value_from_proto(value: v1::Value) -> Result<SubmittedValue, St
 
 /// Converts one public record while preserving unresolved names and IDs.
 pub fn submitted_record_from_proto(record: v1::ValueRecord) -> Result<SubmittedRecord, Status> {
+    let fields = submitted_fields_from_proto(record)?;
+    SubmittedRecord::new(fields).map_err(|_| invalid_request())
+}
+
+fn submitted_command_record_from_proto(record: v1::ValueRecord) -> Result<SubmittedRecord, Status> {
+    let fields = submitted_fields_from_proto(record)?;
+    SubmittedRecord::new_command_input(fields).map_err(|_| invalid_request())
+}
+
+fn submitted_fields_from_proto(record: v1::ValueRecord) -> Result<Vec<SubmittedField>, Status> {
     let fields = record
         .fields
         .into_iter()
@@ -5643,7 +5654,7 @@ pub fn submitted_record_from_proto(record: v1::ValueRecord) -> Result<SubmittedR
             Ok(SubmittedField::new(identity, value))
         })
         .collect::<Result<Vec<_>, Status>>()?;
-    SubmittedRecord::new(fields).map_err(|_| invalid_request())
+    Ok(fields)
 }
 
 /// Converts a canonical service value to its already validated public form.

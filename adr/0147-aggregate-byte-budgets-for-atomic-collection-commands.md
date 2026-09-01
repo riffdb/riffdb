@@ -13,6 +13,9 @@
 - **Defines or blocks:** WP-678 through WP-681 and resumption of external
   adapters whose atomic collection count and per-element value bounds cannot
   be multiplied independently
+- **Amended by:** ADR-0176 permits a compiler-proved 4 MiB root atomic-command
+  input while retaining every individual 1 MiB value and the 16 MiB graph
+  ceiling.
 
 Direction, package boundaries, and this exact text were accepted on
 2026-08-24.

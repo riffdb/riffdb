@@ -1486,7 +1486,7 @@ impl HostedServiceMcpBackend {
                     expected_contract_version
                         .map(contract_version_from_u64)
                         .transpose()?,
-                    SubmittedRecord::new(fields).map_err(invalid_response)?,
+                    SubmittedRecord::new_command_input(fields).map_err(invalid_response)?,
                 )
                 .map_err(invalid_response)?;
                 let mut call = self.prepare_call(
@@ -1779,7 +1779,7 @@ impl HostedServiceMcpBackend {
                     expected_contract_version
                         .map(contract_version_from_u64)
                         .transpose()?,
-                    SubmittedRecord::new(fields).map_err(invalid_response)?,
+                    SubmittedRecord::new_command_input(fields).map_err(invalid_response)?,
                 )
                 .map_err(invalid_response)?;
                 let request = ExecuteContextualReactionRequest::new(
@@ -3342,7 +3342,7 @@ fn submitted_record_from_mcp(value: McpSubmittedValue) -> Result<SubmittedRecord
             ))
         })
         .collect::<Result<Vec<_>, McpBackendError>>()?;
-    SubmittedRecord::new(fields).map_err(invalid_response)
+    SubmittedRecord::new_command_input(fields).map_err(invalid_response)
 }
 
 fn submitted_value_from_mcp(value: McpSubmittedValue) -> Result<SubmittedValue, McpBackendError> {

@@ -48,6 +48,9 @@ use crate::{
 
 /// Maximum bytes accepted in one structurally decoded service request.
 pub const MAX_SERVICE_REQUEST_BYTES: usize = riffdb_types::MAX_APPLICATION_REQUEST_BYTES_V1;
+/// Maximum bytes accepted for one compiler-bounded atomic command request.
+pub const MAX_SERVICE_COMMAND_REQUEST_BYTES: usize =
+    riffdb_types::MAX_ATOMIC_COMMAND_REQUEST_BYTES_V2;
 
 const STRUCTURAL_LENGTH_BYTES: usize = 4;
 const STRUCTURAL_OPTION_BYTES: usize = 1;
@@ -59,18 +62,34 @@ trait ServiceRequestCharge {
     fn structural_charge(&self) -> Result<usize, ServiceDtoError>;
 }
 
-#[derive(Default)]
 struct RequestCharge {
     bytes: usize,
+    maximum: usize,
+}
+
+impl Default for RequestCharge {
+    fn default() -> Self {
+        Self {
+            bytes: 0,
+            maximum: MAX_SERVICE_REQUEST_BYTES,
+        }
+    }
 }
 
 impl RequestCharge {
+    const fn command() -> Self {
+        Self {
+            bytes: 0,
+            maximum: MAX_SERVICE_COMMAND_REQUEST_BYTES,
+        }
+    }
+
     fn add(&mut self, bytes: usize) -> Result<(), ServiceDtoError> {
         self.bytes = self
             .bytes
             .checked_add(bytes)
             .ok_or(ServiceDtoError::TooLong)?;
-        if self.bytes > MAX_SERVICE_REQUEST_BYTES {
+        if self.bytes > self.maximum {
             return Err(ServiceDtoError::TooLong);
         }
         Ok(())
@@ -9591,7 +9610,7 @@ impl ServiceRequestCharge for GetContractVersionRequest {
 
 impl ServiceRequestCharge for ExecuteCommandRequest {
     fn structural_charge(&self) -> Result<usize, ServiceDtoError> {
-        let mut charge = RequestCharge::default();
+        let mut charge = RequestCharge::command();
         charge.add_framed_bytes(self.command.as_str().len())?;
         charge.add(STRUCTURAL_OPTION_BYTES)?;
         if self.expected_contract_version.is_some() {
@@ -9823,6 +9842,7 @@ mod tests {
     use std::num::{NonZeroU16, NonZeroU32};
 
     use super::*;
+    use crate::{SubmittedField, SubmittedFieldIdentity};
     use riffdb_catalog::ValidatedContractBundle;
     use riffdb_contract_compiler::{compile_contract_source, compile_contract_successor};
     use riffdb_contract_ir::{
@@ -10133,43 +10153,44 @@ contract OutcomeShapes version 1 {
         );
     }
 
-    fn nested_bytes_input(payload_bytes: usize) -> SubmittedRecord {
-        SubmittedRecord::try_from(
-            CanonicalRecord::new(vec![(
-                FieldId::first(),
-                CanonicalValue::list(vec![
-                    CanonicalValue::bytes(vec![0xa5; payload_bytes]).expect("bounded bytes value"),
-                ])
-                .expect("bounded nested list"),
-            )])
-            .expect("bounded nested record"),
-        )
-        .expect("bounded submitted record")
+    fn command_bytes_input(total_payload_bytes: usize) -> SubmittedRecord {
+        let quotient = total_payload_bytes / 4;
+        let remainder = total_payload_bytes % 4;
+        let fields = (0_u32..4)
+            .map(|offset| {
+                let payload = quotient + usize::from((offset as usize) < remainder);
+                SubmittedField::new(
+                    SubmittedFieldIdentity::Id(FieldId::new(offset + 1).expect("command field ID")),
+                    SubmittedValue::bytes(vec![0xa5; payload]).expect("bounded bytes value"),
+                )
+            })
+            .collect();
+        SubmittedRecord::new_command_input(fields).expect("bounded command input")
     }
 
     #[test]
     fn complete_command_request_charges_nested_submitted_input_at_the_boundary() {
-        // Command frame (5), absent version (1), record frame (4), root
-        // record count (4), ID field identity (5), list (5), and bytes (5).
-        const NON_PAYLOAD_BYTES: usize = 29;
+        // Command frame (5), absent version (1), record frame/count (8), and
+        // four ID identities plus bytes tags/lengths (40).
+        const NON_PAYLOAD_BYTES: usize = 54;
         let command = || SourceName::new("C").expect("checked command name");
         let exact = ExecuteCommandRequest::new(
             command(),
             None,
-            nested_bytes_input(MAX_SERVICE_REQUEST_BYTES - NON_PAYLOAD_BYTES),
+            command_bytes_input(MAX_SERVICE_COMMAND_REQUEST_BYTES - NON_PAYLOAD_BYTES),
         )
         .expect("exact-limit command request");
         assert_eq!(
             exact
                 .structural_charge()
                 .expect("bounded structural charge"),
-            MAX_SERVICE_REQUEST_BYTES
+            MAX_SERVICE_COMMAND_REQUEST_BYTES
         );
         assert_eq!(
             ExecuteCommandRequest::new(
                 command(),
                 None,
-                nested_bytes_input(MAX_SERVICE_REQUEST_BYTES - NON_PAYLOAD_BYTES + 1),
+                command_bytes_input(MAX_SERVICE_COMMAND_REQUEST_BYTES - NON_PAYLOAD_BYTES + 1),
             ),
             Err(ServiceDtoError::TooLong)
         );

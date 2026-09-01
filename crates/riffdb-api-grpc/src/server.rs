@@ -21,8 +21,9 @@ use riffdb_errors::{
     PublicError, PublicErrorKind,
 };
 use riffdb_proto::{
-    MAX_CONTRACT_MIGRATION_REQUEST_BYTES, MAX_PUBLIC_REQUEST_BYTES, MAX_PUBLIC_RESPONSE_BYTES,
-    PublicWireError, app::v1 as app_v1, application_error_to_proto, v1, validate_public_message,
+    MAX_CONTRACT_MIGRATION_REQUEST_BYTES, MAX_EXECUTE_REQUEST_BYTES, MAX_PUBLIC_REQUEST_BYTES,
+    MAX_PUBLIC_RESPONSE_BYTES, PublicWireError, app::v1 as app_v1, application_error_to_proto, v1,
+    validate_public_message,
 };
 use riffdb_service::{
     ApplicationErrorContextBuilder, ApplicationExportApplication, ApplicationReimportApplication,
@@ -552,7 +553,7 @@ impl GrpcApplication {
     #[must_use]
     pub fn command_server(&self) -> CommandServiceServer<Self> {
         CommandServiceServer::new(self.clone())
-            .max_decoding_message_size(MAX_PUBLIC_REQUEST_BYTES)
+            .max_decoding_message_size(MAX_EXECUTE_REQUEST_BYTES)
             .max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES)
     }
 
@@ -560,7 +561,7 @@ impl GrpcApplication {
     #[must_use]
     pub fn application_session_server(&self) -> ApplicationSessionServiceServer<Self> {
         ApplicationSessionServiceServer::new(self.clone())
-            .max_decoding_message_size(MAX_PUBLIC_REQUEST_BYTES)
+            .max_decoding_message_size(MAX_EXECUTE_REQUEST_BYTES)
             .max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES)
     }
 
@@ -584,7 +585,7 @@ impl GrpcApplication {
     #[must_use]
     pub fn event_server(&self) -> EventServiceServer<Self> {
         EventServiceServer::new(self.clone())
-            .max_decoding_message_size(MAX_PUBLIC_REQUEST_BYTES)
+            .max_decoding_message_size(MAX_EXECUTE_REQUEST_BYTES)
             .max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES)
     }
 

@@ -35,7 +35,7 @@ use riffdb_types::{
     CanonicalCodecError, CanonicalList, CanonicalRecord, CanonicalValue, CommandId, Decimal,
     DecimalSpec, FieldId, GeneratedArtifactHash, IdempotencyKey, MAX_DECIMAL_PRECISION, Money,
     OutcomeId, ScopedPartitionV1, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetsV1,
-    ServiceOperationV1, TenantScope, encode_canonical_record, encode_canonical_value,
+    ServiceOperationV1, TenantScope, encode_canonical_command_input, encode_canonical_value,
     hash_generated_artifact,
 };
 
@@ -1717,8 +1717,11 @@ fn normalize_command_input(
         CanonicalRecord::new(normalized).map_err(|_| InputPreparationError::Integrity)?;
     validate_embedding_metadata_inputs(selected, selected_schema, &normalized)?;
     validate_collection_aggregate_bytes(selected, &normalized)?;
-    match encode_canonical_record(&normalized) {
-        Ok(_) => Ok(normalized),
+    match encode_canonical_command_input(&normalized) {
+        Ok(encoded) if encoded.len() <= selected.maximum_request_bytes() => Ok(normalized),
+        Ok(_) => Err(InputPreparationError::Public(invalid_root(
+            ValidationCode::TooLong,
+        ))),
         Err(CanonicalCodecError::DocumentTooLarge { .. }) => Err(InputPreparationError::Public(
             invalid_root(ValidationCode::TooLong),
         )),
@@ -3642,7 +3645,8 @@ contract EmbeddingInput version 1 {
             )
             .expect("canonical hash record");
             hash_command_input(
-                &encode_canonical_record(&hash_record).expect("encodable canonical input"),
+                &riffdb_types::encode_canonical_record(&hash_record)
+                    .expect("encodable canonical input"),
             )
         };
 
@@ -4188,7 +4192,7 @@ contract EmbeddingInput version 1 {
     }
 
     #[test]
-    fn materialized_canonical_document_overflow_is_public_root_too_long() {
+    fn materialized_large_command_input_uses_its_compiler_proved_envelope() {
         const DECIMAL_COUNT: usize = 55_000;
 
         let bundle = compile_contract_source(large_decimal_list_source())
@@ -4210,12 +4214,14 @@ contract EmbeddingInput version 1 {
         ])
         .expect("submitted record remains within one MiB");
 
-        let issue = issue(
-            normalize_command_input(plan, bundle.schema(), plan, &submitted)
-                .expect_err("unencodable canonical document must reject before downstream use"),
-        );
-        assert_eq!(issue.code(), ValidationCode::TooLong);
-        assert!(issue.path().segments().is_empty());
+        let Ok(normalized) = normalize_command_input(plan, bundle.schema(), plan, &submitted)
+        else {
+            panic!("compiler-proved large command input");
+        };
+        let encoded = encode_canonical_command_input(&normalized).expect("large command encoding");
+        assert!(encoded.len() > riffdb_types::MAX_CANONICAL_DOCUMENT_BYTES);
+        assert!(encoded.len() <= plan.maximum_request_bytes());
+        assert!(plan.requires_ir_v22());
     }
 
     #[test]

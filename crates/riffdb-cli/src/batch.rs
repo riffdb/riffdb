@@ -18,7 +18,7 @@ use crate::app::natural_command_record;
 use crate::input::{InputError, validate_path};
 
 pub(crate) const MAX_BATCH_SOURCE_BYTES: usize = 64 * 1_048_576;
-pub(crate) const MAX_BATCH_ITEM_BYTES: usize = 1_048_576;
+pub(crate) const MAX_BATCH_ITEM_BYTES: usize = riffdb_types::MAX_ATOMIC_COMMAND_FRAME_BYTES_V2;
 pub(crate) const MAX_BATCH_ITEMS: usize = 4_096;
 pub(crate) const MAX_BATCH_CONCURRENCY: usize = 32;
 const MAX_IDEMPOTENCY_KEY_BYTES: usize = 1_024;

@@ -2878,7 +2878,8 @@ pub(crate) fn bind_reaction_idempotency(
         1 => {}
         _ => return Err(PublicError::authorization_denied().into()),
     }
-    let input = crate::SubmittedRecord::new(fields).map_err(|_| invalid_consumer_request())?;
+    let input = crate::SubmittedRecord::new_command_input(fields)
+        .map_err(|_| invalid_consumer_request())?;
     crate::ExecuteCommandRequest::new(
         request.command().clone(),
         request.expected_contract_version(),

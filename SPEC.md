@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 1.25
+**Version:** 1.26
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
 **Date:** 1 September 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 1.26 | 2026-09-01 | Accepted ADR-0176 and registered `BLK-058` through `BLK-064` plus WP-744 for one compiler-bounded large atomic-command envelope. Only a complete root command input may use 4 MiB decoded/canonical bytes; individual and nested values, entity/event/outcome records, and non-command requests retain 1 MiB, while the complete command graph retains 16 MiB. Commands proven above the legacy envelope select least-sufficient contract grammar/executable IR/bundle V22 carrying the exact maximum; old commands retain byte-exact artifacts and idempotency hashes. Command-bearing gRPC, application-session, reaction, MCP, CLI, batch-item, and local-driver framing is fixed at 8 MiB for Protobuf/JSON/base64 overhead, with the shared service enforcing 4 MiB and the exact plan maximum before effects. |
 | 1.25 | 2026-09-01 | Completed ADR-0175's ordinary index-prefix semantics: a finite partition-set route may be followed by one or more compiler-proved invariant exact predicates before the declared order suffix. Such a plan selects additive query IR/module V17, encodes the exact prefix width, binds every prefix parameter into cursor identity, and reconstructs the complete physical seek prefix on continuation. Partition-set plans with no invariant prefix retain byte-exact V16 artifacts. |
 | 1.24 | 2026-09-01 | Accepted ADR-0175 and registered `RQL-007`, `QRY-010`, `OQ-101` through `OQ-112`, and WP-739 through WP-743 for bounded partition-set operational queries. Additive `Set<T, MAX>` source may route one immutable compiler-sealed partition-local plan across an explicit finite set of at most 65,535 partitions in one authoritative snapshot. RiffDB globally merges the declared partition-prefixed total order before limit and one opaque cursor; the cursor binds normalized routes, filters, authority, frontier, last global order key, and a digest of every required partition/index/provider epoch. Partition, per-partition, global row, probe, candidate, policy, provider, merge, byte, result, cursor, and total-work ceilings remain independent and whole-operation fail-closed. Existing `Set<T>`, single-partition artifacts, storage keys, mutations, commits, and cursors retain exact bytes and meaning. Cross-partition joins, writes, discovery, caller plans, and adapter merge semantics remain forbidden. |
 | 1.23 | 2026-08-31 | Accepted ADR-0174 and registered `OQ-084` through `OQ-100` plus WP-733 through WP-738 for one compiler-sealed bounded filtered-result pipeline. A non-output candidate binding completes finite same-partition source/intersection/union/difference sets under independent all-or-refusal budgets before root hydration, authorization, total ordering, limit, and cursor selection. A new rebuildable `long_pattern_v1` provider supports exact binary and Unicode-fold equality, prefix, suffix, substring, LIKE/ILIKE, negation, `%`, `_`, and escaping for source values through 8,000 bytes using bounded gram candidates plus exact retained-value verification rather than widening 4,096-byte storage keys or the quadratic exact-text V1 format. The global scan ceiling becomes 65,535 rows with one probe, admitting bounded pages through 65,534 while retaining the independent 4 MiB encoded-result and every query-specific cost/authority ceiling. Existing artifacts, exact/tokenized providers, keys, and pages through 499 retain their meanings and least-sufficient bytes. |
@@ -3635,7 +3636,8 @@ sleep. Cursor time is process-relative, non-durable, and disjoint from the four
 wall-clock domains. Regression or arithmetic overflow fails closed, and restart
 invalidates every cursor.
 
-Service hard bounds are 1 MiB per structurally decoded unary request, 4 MiB per
+Service hard bounds are 1 MiB per structurally decoded non-command unary
+request, 4 MiB per compiler-bounded root atomic-command input, 4 MiB per
 service unary response, 500 page items (default 50 when omitted), 30 seconds per
 projection/read wait, 128 commit subscribers, 256 buffered items per subscriber,
 500 commits per catch-up batch, and 900 seconds per subscription. Command
@@ -3918,9 +3920,14 @@ fields are frozen by WP-127 before WP-130 implements them.
 
 ## 11.4 Limits
 
-- Maximum unary request size: configurable; default 1 MiB.
+- Maximum ordinary unary request size: fixed at 1 MiB in the POC.
+- Maximum decoded/canonical root atomic-command input: fixed at 4 MiB; its
+  compiler-proved plan maximum may be lower.
+- Maximum command-bearing transport frame: fixed at 8 MiB for bounded
+  Protobuf, JSON, and base64 overhead.
 - Maximum unary response size: configurable; default 4 MiB.
-- Command input values are bounded by contract types.
+- Individual and nested command values retain the ordinary 1 MiB canonical
+  document ceiling and are additionally bounded by contract types.
 - Scan operations require explicit limit and opaque cursor.
 - Server deadlines cap lock wait, command evaluation, commit queue wait, and projection wait separately.
 - Compression is disabled for every POC gRPC message, including contract
@@ -5370,10 +5377,13 @@ are forbidden. Only `RIFFDB_CONFIG`, `RIFFDB_ENDPOINT`, `RIFFDB_OUTPUT`,
 All CLI paths are nonempty, NUL-free, and at most 4,096 platform bytes; argv
 paths need not be UTF-8. The endpoint is at most 512 ASCII bytes and exactly
 lowercase `http://<loopback-IP-literal>:<port-1..65535>` with no DNS, user info,
-path, query, fragment, whitespace, implicit port, TLS, or normalization. Contract
-source, CLI JSON, and general stdin are streamed with a 1,048,576-byte limit and
-one-byte excess probe; configuration and the exact 132-byte bootstrap document
-retain tighter bounds. The checked terminal model and fully staged rendering
+path, query, fragment, whitespace, implicit port, TLS, or normalization.
+Contract source, ordinary CLI JSON, and general stdin are streamed with a
+1,048,576-byte limit and one-byte excess probe. Command execution/reaction JSON
+and one command-batch line use the fixed 8,388,608-byte command framing limit;
+the service still enforces the decoded 4 MiB and exact compiled-plan maximum.
+Configuration and the exact 132-byte bootstrap document retain tighter bounds.
+The checked terminal model and fully staged rendering
 are each at most 4,194,304 bytes; any oversize/rendering failure leaves stdout
 empty.
 
@@ -7968,6 +7978,48 @@ does not create a kernel or storage escape hatch.
   racy pre-read/omit sequence with one generated atomic decision command while
   keeping its schema, routes, adapter source, business-policy names, generated
   profile, and framework packages outside RiffDB.
+- `BLK-058`: One complete root atomic-command input MAY contain at most
+  4,194,304 decoded and canonical bytes. Every individual or nested canonical
+  value, list, record, entity, event, outcome, and every non-command request
+  MUST retain the 1,048,576-byte document ceiling; the complete canonical
+  input-and-write graph MUST retain the independent 16 MiB ceiling. No caller,
+  contract literal, role, deployment setting, or configuration may raise or
+  negotiate these limits.
+- `BLK-059`: Compilation MUST conservatively derive the maximum complete
+  command request from typed input bounds and any proved ADR-0147 aggregate
+  correlation, use checked arithmetic, and reject a maximum above 4 MiB with a
+  safe source-spanned resource diagnostic. A maximum through 1 MiB MUST retain
+  the least-sufficient legacy identity; a maximum above 1 MiB MUST select
+  contract grammar, executable IR, and bundle V22 carrying the exact derived
+  maximum in command-plan identity.
+- `BLK-060`: Canonical command-input encoding MUST change only the fixed root
+  document ceiling. Inputs through the legacy ceiling MUST produce byte-exact
+  ADR-0011 bytes and canonical input hashes. Idempotency preparation, retry,
+  duplicate detection, outcome recovery, and replay MUST hash and reuse the
+  complete unsplit input without newly persisting or exposing its values.
+- `BLK-061`: Command-bearing gRPC, application-session, contextual-reaction,
+  MCP, CLI JSON, command-batch item, and local-driver framing MUST use one fixed
+  8,388,608-byte ceiling for bounded Protobuf/JSON/base64 overhead. This framing
+  limit MUST NOT widen individual decoded values, non-command service requests,
+  responses, or the exact compiler-proved command maximum; compression and
+  partial/subset submission remain forbidden.
+- `BLK-062`: The shared first-party service MUST charge the decoded request
+  against 4 MiB, resolve the exact plan, materialize canonical input, and
+  require its encoded length not exceed the plan's derived maximum before
+  evaluation, conflict acquisition, staging, journaling, or authoritative
+  effect. Runtime MUST retain every collection, graph, mutation, index,
+  partition, policy, output, cancellation, and uncertainty guard.
+- `BLK-063`: Rust, Go, TypeScript, Python, CLI, MCP, local-driver, and remote
+  gRPC command surfaces MUST agree on typed value, individual-document,
+  aggregate, decoded-request, plan, and frame boundaries. Generated callers
+  MUST NOT select an envelope version, limit, encoder, transaction, split
+  policy, fallback, or framework-specific workaround.
+- `BLK-064`: Acceptance MUST prove exact/plus-one boundaries, least-sufficient
+  old/V22 bytes, legacy hash equality, large-input idempotency and replay,
+  memory/redb atomicity and crash recovery, audit/provenance redaction, and one
+  real 100-tag MLflow Run creation retaining indexed children plus packed
+  hydration with complete-or-absent visibility and no adapter split, filtering,
+  reduced limit, or storage bypass.
 
 Compiler-bounded one-hop cascade deletion extends that closed bulk-command
 model without introducing recursive graph traversal or caller-selected delete

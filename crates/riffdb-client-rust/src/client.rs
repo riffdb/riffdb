@@ -13,22 +13,23 @@ use riffdb_api_grpc::generated::{
 };
 use riffdb_api_grpc::generated_app::application_query_service_client::ApplicationQueryServiceClient;
 use riffdb_proto::{
-    PublicMessage, validate_apply_application_reimport_page_exchange,
-    validate_apply_contract_migration_exchange, validate_cancel_application_export_exchange,
-    validate_cancel_application_reimport_exchange, validate_check_contract_migration_exchange,
-    validate_contract_validation_exchange, validate_create_capability_exchange,
-    validate_create_offline_backup_exchange, validate_discover_command_tools_exchange,
-    validate_discover_resources_exchange, validate_explain_command_exchange,
-    validate_get_application_export_exchange, validate_get_application_export_page_exchange,
-    validate_get_application_installation_exchange, validate_get_application_reimport_exchange,
-    validate_get_contract_migration_operation_exchange, validate_get_contract_version_exchange,
-    validate_get_offline_maintenance_operation_exchange, validate_get_outcome_exchange,
-    validate_get_projection_status_exchange, validate_list_pending_outbox_deliveries_exchange,
-    validate_public_message, validate_query_projection_exchange,
-    validate_restore_offline_backup_exchange, validate_retire_offline_backup_exchange,
-    validate_scan_commits_exchange, validate_scan_index_exchange,
-    validate_start_application_export_exchange, validate_start_application_installation_exchange,
-    validate_start_application_reimport_exchange, validate_trace_provenance_exchange,
+    MAX_EXECUTE_REQUEST_BYTES, MAX_EXECUTE_RESPONSE_BYTES, PublicMessage,
+    validate_apply_application_reimport_page_exchange, validate_apply_contract_migration_exchange,
+    validate_cancel_application_export_exchange, validate_cancel_application_reimport_exchange,
+    validate_check_contract_migration_exchange, validate_contract_validation_exchange,
+    validate_create_capability_exchange, validate_create_offline_backup_exchange,
+    validate_discover_command_tools_exchange, validate_discover_resources_exchange,
+    validate_explain_command_exchange, validate_get_application_export_exchange,
+    validate_get_application_export_page_exchange, validate_get_application_installation_exchange,
+    validate_get_application_reimport_exchange, validate_get_contract_migration_operation_exchange,
+    validate_get_contract_version_exchange, validate_get_offline_maintenance_operation_exchange,
+    validate_get_outcome_exchange, validate_get_projection_status_exchange,
+    validate_list_pending_outbox_deliveries_exchange, validate_public_message,
+    validate_query_projection_exchange, validate_restore_offline_backup_exchange,
+    validate_retire_offline_backup_exchange, validate_scan_commits_exchange,
+    validate_scan_index_exchange, validate_start_application_export_exchange,
+    validate_start_application_installation_exchange, validate_start_application_reimport_exchange,
+    validate_trace_provenance_exchange,
 };
 use riffdb_proto::{app::v1 as app_v1, v1};
 use riffdb_types::{
@@ -218,13 +219,19 @@ impl RiffDbClient {
     pub fn from_channel(channel: Channel) -> Self {
         Self {
             contract: ContractServiceClient::new(channel.clone()),
-            command: CommandServiceClient::new(channel.clone()),
+            command: CommandServiceClient::new(channel.clone())
+                .max_encoding_message_size(MAX_EXECUTE_REQUEST_BYTES)
+                .max_decoding_message_size(MAX_EXECUTE_RESPONSE_BYTES),
             query: QueryServiceClient::new(channel.clone()),
             commit: CommitServiceClient::new(channel.clone()),
-            event: EventServiceClient::new(channel.clone()),
+            event: EventServiceClient::new(channel.clone())
+                .max_encoding_message_size(MAX_EXECUTE_REQUEST_BYTES)
+                .max_decoding_message_size(MAX_EXECUTE_RESPONSE_BYTES),
             admin: AdminServiceClient::new(channel.clone()),
             application_query: ApplicationQueryServiceClient::new(channel.clone()),
-            application_session: ApplicationSessionServiceClient::new(channel),
+            application_session: ApplicationSessionServiceClient::new(channel)
+                .max_encoding_message_size(MAX_EXECUTE_REQUEST_BYTES)
+                .max_decoding_message_size(MAX_EXECUTE_RESPONSE_BYTES),
             bounded_application_session: None,
             observed_history_incarnation: None,
         }
@@ -2993,12 +3000,10 @@ mod tests {
         assert!(!carries_uncertainty(&error));
     }
 
-    /// A legal max-sized command input can assemble an ExecuteCommandRequest
-    /// over MAX_EXECUTE_REQUEST_BYTES. Local validate_outbound must reject with
-    /// zero server submissions (no retry-budget burn / OutcomeUnknown).
+    /// The command transport admits framing overhead above the unchanged
+    /// individual canonical-value ceiling.
     #[test]
-    fn max_canonical_input_that_overflows_execute_request_fails_locally() {
-        use crate::status::{carries_uncertainty, is_retryable};
+    fn max_canonical_value_inside_the_command_frame_validates_locally() {
         use riffdb_types::MAX_CANONICAL_DOCUMENT_BYTES;
 
         let payload_len = MAX_CANONICAL_DOCUMENT_BYTES - 32;
@@ -3021,37 +3026,12 @@ mod tests {
             expected_contract_version: Some(1),
             input: Some(input.clone()),
         };
-        let error = validate_outbound(&execute)
-            .expect_err("oversize execute request must fail locally before encode/RPC");
-        match &error {
-            ClientError::Protocol(failure) => {
-                assert_eq!(failure.kind(), ProtocolFailureKind::InvalidOutboundMessage);
-            }
-            other => panic!("expected Protocol(InvalidOutboundMessage), got {other:?}"),
-        }
-        assert!(!is_retryable(&error));
-        assert!(!carries_uncertainty(&error));
+        validate_outbound(&execute).expect("bounded command frame");
 
         let command = IdempotentCommand::new("CreateTicket", Some(1), input)
             .expect("max-bound input is a legal command document");
         let built = command.request(request_id);
-        let error = validate_outbound(&built).expect_err(
-            "execute_with_retry would call validate_outbound via execute() before submit",
-        );
-        match &error {
-            ClientError::Protocol(failure) => {
-                assert_eq!(
-                    failure.kind(),
-                    ProtocolFailureKind::InvalidOutboundMessage,
-                    "without local outbound validation this becomes OutcomeUnknown"
-                );
-            }
-            other => panic!("expected Protocol(InvalidOutboundMessage), got {other:?}"),
-        }
-        assert!(!is_retryable(&error));
-        assert!(!carries_uncertainty(&error));
-        assert!(!matches!(error, ClientError::OutcomeUnknown(_)));
-        let _budget = AttemptBudget::new(5).expect("budget");
+        validate_outbound(&built).expect("retry path retains the bounded command frame");
     }
 }
 

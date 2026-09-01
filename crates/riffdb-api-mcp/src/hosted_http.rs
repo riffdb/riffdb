@@ -1740,9 +1740,16 @@ mod tests {
     fn content_length_is_canonical_and_distinguishes_excess() {
         let mut headers = HeaderMap::new();
         assert!(validate_declared_body_length(&headers).is_ok());
-        headers.insert(CONTENT_LENGTH, HeaderValue::from_static("1048576"));
+        headers.insert(
+            CONTENT_LENGTH,
+            HeaderValue::from_str(&MCP_INBOUND_MESSAGE_MAX_BYTES.to_string()).expect("limit"),
+        );
         assert!(validate_declared_body_length(&headers).is_ok());
-        headers.insert(CONTENT_LENGTH, HeaderValue::from_static("1048577"));
+        headers.insert(
+            CONTENT_LENGTH,
+            HeaderValue::from_str(&(MCP_INBOUND_MESSAGE_MAX_BYTES + 1).to_string())
+                .expect("excess"),
+        );
         assert!(matches!(
             validate_declared_body_length(&headers),
             Err(DeclaredBodyLengthError::TooLarge)

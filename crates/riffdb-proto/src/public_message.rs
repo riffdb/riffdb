@@ -9914,7 +9914,7 @@ impl_public_message!(
 );
 impl_public_message!(
     v1::ExecuteContextualReactionRequest,
-    MAX_PUBLIC_REQUEST_BYTES,
+    crate::MAX_EXECUTE_REQUEST_BYTES,
     5,
     &[],
     &[],
@@ -10994,7 +10994,7 @@ fn validate_application_session_response(
 
 impl_public_message!(
     v1::ApplicationSessionRequest,
-    MAX_PUBLIC_REQUEST_BYTES,
+    crate::MAX_EXECUTE_REQUEST_BYTES,
     5,
     &[],
     &[&[2, 3, 4, 5]],
@@ -11039,7 +11039,7 @@ impl PublicMessage for v1::ExecuteCommandResponse {
 }
 
 impl PublicMessage for v1::ExecuteCommandBatchRequest {
-    const MAX_ENCODED_BYTES: usize = MAX_PUBLIC_REQUEST_BYTES;
+    const MAX_ENCODED_BYTES: usize = crate::MAX_EXECUTE_REQUEST_BYTES;
 
     fn preflight(input: &[u8]) -> Result<(), PublicWireError> {
         preflight_root(input, Self::MAX_ENCODED_BYTES, 1, &[1], &[])?;

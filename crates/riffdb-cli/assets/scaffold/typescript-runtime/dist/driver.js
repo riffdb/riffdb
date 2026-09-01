@@ -1,5 +1,6 @@
 import { createConnection } from "node:net";
-const MAX_FRAME_BYTES = 1_048_576;
+const MAX_FRAME_BYTES = 8 * 1_024 * 1_024;
+const MAX_ENCODED_BYTES_VALUE = 1_398_104;
 const MAX_PENDING_REQUESTS = 256;
 /** Decimal digits always inside `Number.MAX_SAFE_INTEGER` (9007199254740991). */
 const SAFE_INTEGER_DIGITS = 15;
@@ -786,7 +787,7 @@ function validateDriverValue(value, depth) {
     // Byte values use padded Base64 on this bounded JSON protocol. Their
     // canonical decoded size is checked by the generated facade and service;
     // the unchanged frame limit bounds the local representation.
-    if (type === "bytes" && typeof item.value === "string" && item.value.length <= MAX_FRAME_BYTES)
+    if (type === "bytes" && typeof item.value === "string" && item.value.length <= MAX_ENCODED_BYTES_VALUE)
         return item;
     if (type === "uuid" && typeof item.value === "string" && UUID.test(item.value))
         return item;

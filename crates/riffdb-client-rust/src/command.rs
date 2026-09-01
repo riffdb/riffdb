@@ -6,8 +6,8 @@ use std::num::NonZeroU32;
 use std::time::Duration;
 
 use riffdb_errors::{ApplicationErrorCode, PublicErrorKind};
+use riffdb_proto::MAX_PROTOCOL_NAME_BYTES;
 use riffdb_proto::v1;
-use riffdb_proto::{MAX_PROTOCOL_NAME_BYTES, validate_value};
 use riffdb_types::RequestId;
 
 use crate::status::{ClientError, OutcomeUnknown, carries_uncertainty, is_retryable};
@@ -99,7 +99,7 @@ impl IdempotentCommand {
         if expected_contract_version == Some(0) {
             return Err(CommandShapeError::InvalidContractVersion);
         }
-        if validate_value(&input).is_err()
+        if riffdb_proto::validate_command_input_value(&input).is_err()
             || !matches!(input.kind.as_ref(), Some(v1::value::Kind::RecordValue(_)))
         {
             return Err(CommandShapeError::InvalidCommandInput);

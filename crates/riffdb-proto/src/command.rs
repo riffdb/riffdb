@@ -6,16 +6,16 @@ use std::fmt;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use prost::Message;
 use riffdb_types::{
-    CommitSequence, ContractVersion, MAX_ACTOR_ID_BYTES, MAX_CONTRACT_LINEAGE_BYTES, ProvenanceId,
-    RequestId,
+    CommitSequence, ContractVersion, MAX_ACTOR_ID_BYTES, MAX_ATOMIC_COMMAND_FRAME_BYTES_V2,
+    MAX_CONTRACT_LINEAGE_BYTES, ProvenanceId, RequestId,
 };
 
 use crate::v1;
-use crate::value::{MAX_PROTOCOL_NAME_BYTES, validate_value};
+use crate::value::{MAX_PROTOCOL_NAME_BYTES, validate_command_input_value, validate_value};
 use crate::wire::{self, PreflightError};
 
 /// Default maximum encoded unary command request size.
-pub const MAX_EXECUTE_REQUEST_BYTES: usize = 1024 * 1024;
+pub const MAX_EXECUTE_REQUEST_BYTES: usize = MAX_ATOMIC_COMMAND_FRAME_BYTES_V2;
 
 /// Default maximum encoded unary command response size.
 pub const MAX_EXECUTE_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
@@ -58,7 +58,7 @@ pub fn validate_execute_request(
         return Err(ExecuteWireError::InvalidContractVersion);
     }
     validate_protocol_name(&request.command_name)?;
-    validate_value(
+    validate_command_input_value(
         request
             .input
             .as_ref()
@@ -369,6 +369,28 @@ mod tests {
     use crate::canonical_value_to_proto;
     use riffdb_types::CanonicalValue;
 
+    fn bytes_value(length: usize) -> v1::Value {
+        v1::Value {
+            kind: Some(v1::value::Kind::BytesValue(vec![0x5a; length])),
+        }
+    }
+
+    fn record_value(fields: Vec<v1::Value>) -> v1::Value {
+        v1::Value {
+            kind: Some(v1::value::Kind::RecordValue(v1::ValueRecord {
+                fields: fields
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, value)| v1::ValueField {
+                        field_id: Some(u32::try_from(index + 1).expect("bounded field id")),
+                        name: String::new(),
+                        value: Some(value),
+                    })
+                    .collect(),
+            })),
+        }
+    }
+
     fn request_id() -> Vec<u8> {
         vec![
             0x01, 0x9b, 0xf6, 0xaa, 0xa6, 0x40, 0x7d, 0xe6, 0x89, 0xc9, 0x8a, 0x7f, 0x70, 0xbb,
@@ -387,6 +409,37 @@ mod tests {
         validate_execute_request(&request).expect("valid request");
         let decoded = decode_execute_request(&request.encode_to_vec()).expect("valid encoding");
         assert_eq!(decoded.expected_contract_version, None);
+    }
+
+    #[test]
+    fn execute_request_accepts_a_large_root_but_not_a_large_nested_document() {
+        let large_root = record_value(vec![bytes_value(600_000), bytes_value(600_000)]);
+        assert!(large_root.encoded_len() > riffdb_types::MAX_CANONICAL_DOCUMENT_BYTES);
+        let request = v1::ExecuteCommandRequest {
+            request_id: request_id(),
+            command_name: "run.create_with_tags".to_owned(),
+            expected_contract_version: Some(1),
+            input: Some(large_root),
+        };
+        validate_execute_request(&request).expect("large atomic-command root is valid");
+        decode_execute_request(&request.encode_to_vec())
+            .expect("wire preflight accepts the large atomic-command root");
+
+        let large_nested = record_value(vec![bytes_value(600_000), bytes_value(600_000)]);
+        let nested_request = v1::ExecuteCommandRequest {
+            request_id: request_id(),
+            command_name: "run.create_with_tags".to_owned(),
+            expected_contract_version: Some(1),
+            input: Some(record_value(vec![large_nested])),
+        };
+        assert_eq!(
+            validate_execute_request(&nested_request),
+            Err(ExecuteWireError::InvalidValue)
+        );
+        assert_eq!(
+            decode_execute_request(&nested_request.encode_to_vec()),
+            Err(ExecuteWireError::PreflightLimitExceeded)
+        );
     }
 
     #[test]

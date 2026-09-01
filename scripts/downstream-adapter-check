@@ -41,8 +41,23 @@ if ((${#requested[@]} == 0)); then
     requested=(riffdb-openfga riffdb-better-auth riffdb-mlflow)
 fi
 
+for tool in cargo jq; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo "required downstream check tool is missing: $tool" >&2
+        exit 1
+    }
+done
+cargo_target_dir="$(cargo metadata --quiet --format-version 1 --no-deps \
+    | jq -er '.target_directory | select(type == "string" and length > 0)')" || {
+    echo "Cargo target directory could not be resolved" >&2
+    exit 1
+}
+[[ "$cargo_target_dir" == /* ]] || {
+    echo "Cargo returned a non-absolute target directory" >&2
+    exit 1
+}
 cargo build --release -p riffdb-cli --bin riffdb
-riffdb="$repo_root/target/release/riffdb"
+riffdb="$cargo_target_dir/release/riffdb"
 
 status=0
 checked=0
