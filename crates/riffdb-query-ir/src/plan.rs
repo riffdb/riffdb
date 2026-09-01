@@ -246,6 +246,11 @@ pub enum QueryRowLimit {
         /// Positive default, when declared.
         default: Option<u64>,
     },
+    /// Compiler-owned complete candidate-source scan with no page semantics.
+    CandidateComplete {
+        /// Whole-source distinct-row refusal ceiling.
+        maximum: u16,
+    },
 }
 
 /// Closed normalized predicate operator.
@@ -313,6 +318,11 @@ pub enum QueryPredicateValue {
         /// Contract field supplying one target-key component.
         field: String,
     },
+    /// One compiler-owned completed candidate binding.
+    CandidateBinding {
+        /// Query-local non-output candidate name.
+        name: String,
+    },
     /// Exact contract enum variant.
     EnumVariant {
         /// Enum declaration name.
@@ -343,6 +353,10 @@ impl std::fmt::Debug for QueryPredicateValue {
                 .debug_struct("BindingFieldSet")
                 .field("binding", binding)
                 .field("field", field)
+                .finish(),
+            Self::CandidateBinding { name } => formatter
+                .debug_struct("CandidateBinding")
+                .field("name", name)
                 .finish(),
             Self::EnumVariant {
                 enumeration,
@@ -439,6 +453,52 @@ pub enum QueryAccessKind {
         /// `Limit` parameter this is the shared page-take ceiling.
         k: u32,
     },
+    /// Complete candidate-key hydration followed by compiler-owned in-memory total ordering.
+    CandidateRootHydration {
+        /// Checked non-output candidate binding.
+        candidate: String,
+        /// Maximum complete candidate keys hydrated before sorting.
+        maximum_candidates: u16,
+        /// Complete primary-key fields in contract order.
+        key_fields: Vec<String>,
+        /// Finite compiler-declared root total order.
+        order: Vec<QueryRootOrderTermV1>,
+    },
+}
+
+/// One closed root-order term used only after complete candidate hydration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QueryRootOrderTermV1 {
+    field: String,
+    direction: AccessDirection,
+    nulls_first: bool,
+}
+
+impl QueryRootOrderTermV1 {
+    /// Constructs one compiler-checked order term.
+    #[must_use]
+    pub fn checked(field: String, direction: AccessDirection, nulls_first: bool) -> Option<Self> {
+        (!field.is_empty()).then_some(Self {
+            field,
+            direction,
+            nulls_first,
+        })
+    }
+    /// Ordered root field.
+    #[must_use]
+    pub fn field(&self) -> &str {
+        &self.field
+    }
+    /// Per-term direction.
+    #[must_use]
+    pub const fn direction(&self) -> AccessDirection {
+        self.direction
+    }
+    /// Whether the no-value class precedes present values.
+    #[must_use]
+    pub const fn nulls_first(&self) -> bool {
+        self.nulls_first
+    }
 }
 
 /// One ordered, bounded access in a closed program.
@@ -653,6 +713,9 @@ impl QueryAccessStep {
                         .as_ref()
                         .is_none_or(|value| *value > 0 && *value <= *maximum)
             }
+            QueryRowLimit::CandidateComplete { maximum } => {
+                *maximum > 0 && u64::from(*maximum) == maximum_rows
+            }
         };
         let access_is_valid = match &access {
             QueryAccessKind::Point { key_fields } => {
@@ -752,8 +815,38 @@ impl QueryAccessStep {
                         QueryRowLimit::Literal(value) => *value == u64::from(*k),
                         QueryRowLimit::Parameter { .. }
                         | QueryRowLimit::BoundedParameter { .. } => true,
+                        QueryRowLimit::CandidateComplete { .. } => false,
                     }
                     && cardinality == Cardinality::Many
+            }
+            QueryAccessKind::CandidateRootHydration {
+                candidate,
+                maximum_candidates,
+                key_fields,
+                order,
+            } => {
+                !candidate.is_empty()
+                    && !key_fields.is_empty()
+                    && !order.is_empty()
+                    && *maximum_candidates > 0
+                    && u64::from(*maximum_candidates) >= maximum_rows
+                    && cardinality == Cardinality::Many
+                    && !matches!(row_limit, QueryRowLimit::CandidateComplete { .. })
+                    && predicates
+                        .iter()
+                        .filter(|predicate| {
+                            predicate.operator == QueryPredicateOperator::In
+                                && matches!(
+                                    &predicate.value,
+                                    QueryPredicateValue::CandidateBinding { name }
+                                        if name == candidate
+                                )
+                        })
+                        .count()
+                        == 1
+                    && order
+                        .last()
+                        .is_some_and(|term| key_fields.last().is_some_and(|key| term.field == *key))
             }
         };
         let covered_layout_is_valid = covered_result_layout.as_ref().is_none_or(|layout| {
@@ -1064,23 +1157,25 @@ impl QueryAccessProgramV1 {
                 .any(|pair| pair[0].entity >= pair[1].entity)
             || cost.access_steps() != steps.len() as u64
             || !relationship_composition_is_valid(&steps)
+            || !candidate_composition_is_valid(&surface, &steps)
         {
             return None;
         }
-        let ir_version = if surface.has_extended_bounded_limit() {
-            crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1
-        } else if surface.has_bounded_limit() {
-            crate::QUERY_IR_VERSION_BOUNDED_LIMIT_V1
-        } else if projected_source.is_some() {
-            crate::QUERY_IR_VERSION_PROJECTED_VECTOR_V1
-        } else if steps
-            .iter()
-            .any(|step| step.covered_result_layout.is_some())
-        {
-            crate::QUERY_IR_VERSION_COVERED_RESULT_V1
-        } else {
-            surface.ir_version()
-        };
+        let ir_version =
+            if surface.ir_version() == crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1 {
+                crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1
+            } else if surface.has_bounded_limit() {
+                crate::QUERY_IR_VERSION_BOUNDED_LIMIT_V1
+            } else if projected_source.is_some() {
+                crate::QUERY_IR_VERSION_PROJECTED_VECTOR_V1
+            } else if steps
+                .iter()
+                .any(|step| step.covered_result_layout.is_some())
+            {
+                crate::QUERY_IR_VERSION_COVERED_RESULT_V1
+            } else {
+                surface.ir_version()
+            };
         let canonical_bytes = encode_program(
             ProgramSurface {
                 contract: &contract,
@@ -1159,7 +1254,7 @@ impl QueryAccessProgramV1 {
             let name = match &step.row_limit {
                 QueryRowLimit::Parameter { name, .. }
                 | QueryRowLimit::BoundedParameter { name, .. } => name.as_str(),
-                QueryRowLimit::Literal(_) => continue,
+                QueryRowLimit::Literal(_) | QueryRowLimit::CandidateComplete { .. } => continue,
             };
             let is_cursor_page_cardinality = step.cardinality == Cardinality::Many
                 && step.cursor_parameter.is_some()
@@ -1178,7 +1273,7 @@ impl QueryAccessProgramV1 {
     /// Least-sufficient executable IR identity for this exact program.
     #[must_use]
     pub fn ir_version(&self) -> u32 {
-        if self.surface.has_extended_bounded_limit() {
+        if self.surface.ir_version() == crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1 {
             crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1
         } else if self.surface.has_bounded_limit() {
             crate::QUERY_IR_VERSION_BOUNDED_LIMIT_V1
@@ -1267,7 +1362,8 @@ fn relationship_composition_is_valid(steps: &[QueryAccessStep]) -> bool {
                 }
                 QueryPredicateValue::Parameter(_)
                 | QueryPredicateValue::Literal(_)
-                | QueryPredicateValue::EnumVariant { .. } => {}
+                | QueryPredicateValue::EnumVariant { .. }
+                | QueryPredicateValue::CandidateBinding { .. } => {}
             }
         }
         if let QueryAccessKind::DependentPointBatch { source_binding, .. } = &step.access
@@ -1282,6 +1378,67 @@ fn relationship_composition_is_valid(steps: &[QueryAccessStep]) -> bool {
         prior.insert(step.binding.as_str(), step);
     }
     true
+}
+
+fn candidate_composition_is_valid(surface: &ResolvedQueryV1, steps: &[QueryAccessStep]) -> bool {
+    let mut source_offset = 0usize;
+    for candidate in surface.candidates() {
+        for (source_index, source) in candidate.sources().iter().enumerate() {
+            let Some(step) = steps.get(source_offset) else {
+                return false;
+            };
+            let expected = candidate_source_binding_name(candidate.name(), source_index);
+            if expected.as_deref() != Some(step.binding())
+                || step.entity() != source.entity()
+                || step.maximum_rows() != u64::from(candidate.maximum_distinct_keys())
+                || step.row_limit()
+                    != &(QueryRowLimit::CandidateComplete {
+                        maximum: candidate.maximum_distinct_keys(),
+                    })
+                || step.cardinality() != Cardinality::Many
+                || step.selected_fields() != [source.projected_key()]
+                || !step.result_names().is_empty()
+                || step.cursor_parameter().is_some()
+                || !matches!(
+                    step.access(),
+                    QueryAccessKind::Index { index, .. } if index == source.access()
+                )
+            {
+                return false;
+            }
+            source_offset += 1;
+        }
+        let consumers = steps[source_offset..]
+            .iter()
+            .filter(|step| {
+                matches!(
+                    step.access(),
+                    QueryAccessKind::CandidateRootHydration {
+                        candidate: name,
+                        maximum_candidates,
+                        ..
+                    } if name == candidate.name()
+                        && *maximum_candidates == candidate.maximum_distinct_keys()
+                ) && step.entity() == candidate.root_entity()
+                    && step.predicates().iter().any(|predicate| {
+                        predicate.field() == candidate.root_key()
+                            && predicate.operator() == QueryPredicateOperator::In
+                            && matches!(
+                                predicate.value(),
+                                QueryPredicateValue::CandidateBinding { name }
+                                    if name == candidate.name()
+                            )
+                    })
+            })
+            .count();
+        if consumers != 1 {
+            return false;
+        }
+    }
+    steps[source_offset..].iter().all(|step| {
+        !matches!(step.row_limit(), QueryRowLimit::CandidateComplete { .. })
+            && !step.binding().starts_with("@candidate:")
+    })
 }
 
 struct ProgramSurface<'a> {
@@ -1373,6 +1530,10 @@ fn encode_program(
                 out.extend_from_slice(&maximum.to_be_bytes());
                 out.extend_from_slice(&default.unwrap_or(0).to_be_bytes());
             }
+            QueryRowLimit::CandidateComplete { maximum } => {
+                out.push(4);
+                out.extend_from_slice(&maximum.to_be_bytes());
+            }
         }
         match &step.access {
             QueryAccessKind::Point { key_fields } => {
@@ -1411,6 +1572,26 @@ fn encode_program(
                 write_text(&mut out, vector_field)?;
                 write_text(&mut out, vector_parameter)?;
                 out.extend_from_slice(&k.to_be_bytes());
+            }
+            QueryAccessKind::CandidateRootHydration {
+                candidate,
+                maximum_candidates,
+                key_fields,
+                order,
+            } => {
+                out.push(5);
+                write_text(&mut out, candidate)?;
+                out.extend_from_slice(&maximum_candidates.to_be_bytes());
+                write_strings(&mut out, key_fields)?;
+                write_count(&mut out, order.len())?;
+                for term in order {
+                    write_text(&mut out, term.field())?;
+                    out.push(match term.direction() {
+                        AccessDirection::Forward => 1,
+                        AccessDirection::Reverse => 2,
+                    });
+                    out.push(u8::from(term.nulls_first()));
+                }
             }
         }
         write_count(&mut out, step.predicates.len())?;
@@ -1548,7 +1729,19 @@ fn encode_predicate_value(out: &mut Vec<u8>, value: &QueryPredicateValue) -> Opt
             write_text(out, binding)?;
             write_text(out, field)
         }
+        QueryPredicateValue::CandidateBinding { name } => {
+            out.push(6);
+            write_text(out, name)
+        }
     }
+}
+
+/// Canonical internal binding name for one compiler-owned candidate source.
+#[doc(hidden)]
+#[must_use]
+pub fn candidate_source_binding_name(candidate: &str, source_index: usize) -> Option<String> {
+    (!candidate.is_empty() && source_index < crate::MAX_CANDIDATE_SOURCES_V1)
+        .then(|| format!("@candidate:{candidate}:{source_index}"))
 }
 
 fn write_count(out: &mut Vec<u8>, value: usize) -> Option<()> {
@@ -1597,6 +1790,16 @@ fn build_explain(
             QueryAccessKind::Nearest {
                 vector_field, k, ..
             } => format!("nearest({vector_field}, k={k})"),
+            QueryAccessKind::CandidateRootHydration {
+                candidate, order, ..
+            } => format!(
+                "candidate {candidate} hydrate then order [{}]",
+                order
+                    .iter()
+                    .map(|term| term.field())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
         };
         lines.push(format!(
             "{}: {} via {} max {}",

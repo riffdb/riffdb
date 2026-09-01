@@ -186,6 +186,46 @@ and provider epoch. A limit used by `nearest`, by an unpaged binding, or by any
 mixed semantic shape remains cursor-identity-bearing. There is no source
 annotation for this distinction; the compiler derives it from the closed plan.
 
+## Complete candidate sets before root ordering (language V11)
+
+A query may declare one compiler-owned, non-output candidate binding before its
+ordinary root binding. The binding projects one type-exact root-key component
+from up to eight declared, same-partition indexes and applies exactly one of
+single-source deduplication, intersection, union, or authorized difference:
+
+```riffql
+candidates matching: Experiment.experiment_id
+    from intersect {
+        ExperimentTag.experiment_id using by_tag_digest
+            where scope == $scope && tag_key == $first_key && value_digest == $first_digest,
+        ExperimentTag.experiment_id using by_tag_digest
+            where scope == $scope && tag_key == $second_key && value_digest == $second_digest,
+    }
+    within 65535
+    else IntegrityFailure
+
+many experiments from Experiment
+    where scope == $scope && experiment_id in matching
+    order by last_update_time desc, experiment_id asc
+    take $limit after $after
+    else IntegrityFailure
+```
+
+Every source completes and deduplicates independently, then the set operation
+completes, before any root entity is hydrated, policy-checked, ordered, paged,
+or assigned a cursor. Exceeding a source, distinct-key, key-byte, hydration,
+sort, work, or output bound returns only the declared refusal; no partial set,
+row, hidden count, or cursor is observable. A difference expression must name
+the complete policy-filtered root-key universe first, followed by its negative
+sources separated by `;`, so denied rows cannot be inferred through complement.
+
+The compiler proves the relationship mapping, common partition parameter,
+declared source index, exact key type, finite source count, and exactly one root
+`in` consumer. Candidate names, sources, operators, indexes, and budgets do not
+appear in SDK or MCP schemas. They are immutable module/plan/role identity,
+not request data. This is bounded same-partition existence filtering, not a
+general join, recursive query, caller-selected plan, or runtime optimizer.
+
 ## Nearest-neighbor bindings (alpha)
 
 A `many` binding over an entity that declares a contract `vector_field` may

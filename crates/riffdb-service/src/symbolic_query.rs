@@ -3127,6 +3127,9 @@ async fn execute_projected_vector_named_query(
             .or(*default)
             .filter(|value| *value > 0 && *value <= *maximum)
             .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?,
+        riffdb_query_ir::QueryRowLimit::CandidateComplete { .. } => {
+            return Err(service.internal_failure(OPERATION, InternalDefect::ProofMismatch));
+        }
     };
     let k = u32::try_from(k)
         .ok()
@@ -5992,7 +5995,8 @@ fn application_query_target_with_identity(
             QueryAccessKind::Index { .. } => Some(step.internal_index_id()?),
             QueryAccessKind::Point { .. }
             | QueryAccessKind::DependentPointBatch { .. }
-            | QueryAccessKind::Nearest { .. } => None,
+            | QueryAccessKind::Nearest { .. }
+            | QueryAccessKind::CandidateRootHydration { .. } => None,
         };
         // ADR-0118: secret-classified fields are gated on PROJECTION only.
         // The step's selected fields — the ones its released rows carry —

@@ -15,20 +15,22 @@ use std::num::NonZeroU32;
 
 use riffdb_contract_ir::{IndexFieldEncodingV1, TextKeyProfileV1, ValueType, ValueTypeTag};
 use riffdb_query_ir::{
-    AccessDirection, AuthorizationEntityAccess, CoveredResultFieldV1, CoveredResultLayoutV1,
-    CoveredResultSourceV1, EntitySymbol, ExactTextOperatorSetV1, ExactTextOrderSetV1,
-    ExactTextPlanFamilyErrorV1, ExactTextPlanFamilyV1, MAX_OPERATIONAL_PRESENCE_PARAMETERS,
-    OperationalPlanMemberV1, OperationalQueryFamilyV1, ProjectedVectorFreshnessV1,
-    ProjectedVectorSourceV1, ProjectionResultSetPlanError, ProjectionResultSetPlanV1,
-    ProjectionResultSetPlanV2, ProjectionResultSetPlanV2Error, QueryAccessKind,
-    QueryAccessProgramV1, QueryAccessStep, QueryLiteral, QueryPredicate, QueryPredicateOperator,
-    QueryPredicateValue, QueryRowLimit, ResultSetOutputShapeV1, ResultSetWindowBoundsV2,
-    ResultSetWindowV1, SymbolicCatalog, resolve_query_surface, source_aggregate_semantic_identity,
+    AccessDirection, AuthorizationEntityAccess, CandidateBindingV1, CoveredResultFieldV1,
+    CoveredResultLayoutV1, CoveredResultSourceV1, EntitySymbol, ExactTextOperatorSetV1,
+    ExactTextOrderSetV1, ExactTextPlanFamilyErrorV1, ExactTextPlanFamilyV1,
+    MAX_OPERATIONAL_PRESENCE_PARAMETERS, OperationalPlanMemberV1, OperationalQueryFamilyV1,
+    ProjectedVectorFreshnessV1, ProjectedVectorSourceV1, ProjectionResultSetPlanError,
+    ProjectionResultSetPlanV1, ProjectionResultSetPlanV2, ProjectionResultSetPlanV2Error,
+    QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryLiteral, QueryPredicate,
+    QueryPredicateOperator, QueryPredicateValue, QueryRootOrderTermV1, QueryRowLimit,
+    ResultSetOutputShapeV1, ResultSetWindowBoundsV2, ResultSetWindowV1, SymbolicCatalog,
+    candidate_source_binding_name, resolve_query_surface, source_aggregate_semantic_identity,
 };
 use riffdb_riffql_syntax::{
     AggregateFunction, BinaryOperator, Cardinality, Direction, Document, Expression,
-    FieldSelection, Literal, Path, ProjectedFreshness, RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1,
-    RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1, Span, Spanned, TypeReference, UnaryOperator,
+    FieldSelection, Literal, NullPlacement, Path, ProjectedFreshness,
+    RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1, RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1, Span,
+    Spanned, TypeReference, UnaryOperator,
 };
 use riffdb_types::{
     AggregateResultSchemaV1, AggregateSemanticIdentityV1, EXACT_TEXT_PROVIDER_STATE_SCHEMA_HASH_V1,
@@ -1000,6 +1002,10 @@ pub enum PlannerDiagnosticCode {
     /// a closed planner ceiling. Distinct from `Unbounded`: the author declared
     /// a bound and the fix is to lower it, not to add one.
     CostCeilingExceeded,
+    /// Candidate algebra, root-key, partition, universe, or consumer proof failed.
+    CandidateInvalid,
+    /// Long-pattern source/provider proof failed.
+    LongPatternInvalid,
 }
 
 impl PlannerDiagnosticCode {
@@ -1017,6 +1023,8 @@ impl PlannerDiagnosticCode {
             Self::OperationalFamilyRequired => "RDB-QP008",
             Self::ExactTextProvider => "RDB-QP009",
             Self::CostCeilingExceeded => "RDB-QP010",
+            Self::CandidateInvalid => "RDB-QP011",
+            Self::LongPatternInvalid => "RDB-QP012",
         }
     }
 }
@@ -1453,6 +1461,7 @@ struct Planner<'a> {
     binding_cardinalities: BTreeMap<&'a str, Cardinality>,
     binding_maximum_rows: BTreeMap<&'a str, u64>,
     unwrapped_optional_parameters: BTreeSet<String>,
+    candidates: BTreeMap<String, CandidateBindingV1>,
 }
 
 impl<'a> Planner<'a> {
@@ -1473,6 +1482,7 @@ impl<'a> Planner<'a> {
             binding_cardinalities: BTreeMap::new(),
             binding_maximum_rows: BTreeMap::new(),
             unwrapped_optional_parameters,
+            candidates: BTreeMap::new(),
         }
     }
 
@@ -1480,14 +1490,155 @@ impl<'a> Planner<'a> {
         mut self,
         surface: riffdb_query_ir::ResolvedQueryV1,
     ) -> Result<QueryAccessProgramV1, PlannerDiagnostics> {
+        self.candidates = surface
+            .candidates()
+            .iter()
+            .cloned()
+            .map(|candidate| (candidate.name().to_owned(), candidate))
+            .collect();
         let projected_source = compile_projected_vector_source(self.document, self.catalog)?;
         let mut partition_parameter: Option<String> = None;
         let selections = selected_fields(self.document);
         let dependency_fields = dependency_fields(self.document);
         let result_names = result_names(self.document);
-        let mut steps = Vec::with_capacity(self.document.body.bindings.len());
+        let candidate_source_count = surface
+            .candidates()
+            .iter()
+            .map(|candidate| candidate.sources().len())
+            .sum::<usize>();
+        let mut steps = Vec::with_capacity(
+            self.document
+                .body
+                .bindings
+                .len()
+                .saturating_add(candidate_source_count),
+        );
         let mut auth = BTreeMap::<String, AuthAccumulator>::new();
         let mut cost = QueryCostAccumulator::new(self.document);
+
+        for (candidate_ast, candidate) in self
+            .document
+            .body
+            .candidates
+            .iter()
+            .zip(surface.candidates())
+        {
+            let source_nodes = candidate_ast_sources(&candidate_ast.expression);
+            for (source_index, (source_ast, source)) in source_nodes
+                .into_iter()
+                .zip(candidate.sources())
+                .enumerate()
+            {
+                let entity = self.catalog.entity(source.entity()).ok_or_else(internal)?;
+                let comparisons = comparisons(&source_ast.predicate.value);
+                self.type_check_candidate(entity, source_ast.predicate.span, &comparisons)?;
+                if candidate.operator() == riffdb_query_ir::CandidateSetOperatorV1::Difference
+                    && source_index == 0
+                    && (source.entity() != candidate.root_entity()
+                        || source.projected_key() != candidate.root_key()
+                        || comparisons.len() != 1
+                        || comparisons[0].field != entity.partition_field()
+                        || !comparisons[0].operator.is_binary(BinaryOperator::Equal)
+                        || comparisons[0].value.and_then(parameter_name).is_none())
+                {
+                    return Err(one(
+                        PlannerDiagnosticCode::CandidateInvalid,
+                        source_ast.span,
+                        vec![candidate.name().to_owned()],
+                        "candidate difference requires one policy-filtered partition-complete positive root universe",
+                        None,
+                    ));
+                }
+                let partition_field = entity.partition_field();
+                let route = comparisons.iter().find_map(|comparison| {
+                    (comparison.field == partition_field
+                        && comparison.operator.is_binary(BinaryOperator::Equal))
+                    .then(|| comparison.value.and_then(parameter_name))
+                    .flatten()
+                });
+                let Some(route) = route else {
+                    return Err(one(
+                        PlannerDiagnosticCode::CandidateInvalid,
+                        source_ast.predicate.span,
+                        vec![entity.name().to_owned(), partition_field.to_owned()],
+                        "candidate source is not routed by an exact partition parameter",
+                        None,
+                    ));
+                };
+                match &partition_parameter {
+                    None => partition_parameter = Some(route.to_owned()),
+                    Some(existing) if existing == route => {}
+                    Some(_) => {
+                        return Err(one(
+                            PlannerDiagnosticCode::CandidateInvalid,
+                            source_ast.predicate.span,
+                            vec![candidate.name().to_owned()],
+                            "candidate sources do not share one partition route",
+                            None,
+                        ));
+                    }
+                }
+                let index = entity.index(source.access()).ok_or_else(internal)?;
+                if !candidate_index_is_complete_prefix(index, &comparisons) {
+                    return Err(one(
+                        PlannerDiagnosticCode::CandidateInvalid,
+                        source_ast.span,
+                        vec![entity.name().to_owned(), source.access().to_owned()],
+                        "candidate source predicates are not a complete bounded index prefix",
+                        None,
+                    ));
+                }
+                let predicates = self.normalize_predicates(&comparisons)?;
+                let predicate_fields = comparisons
+                    .iter()
+                    .map(|comparison| comparison.field.to_owned())
+                    .chain(std::iter::once(source.projected_key().to_owned()))
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                let binding = candidate_source_binding_name(candidate.name(), source_index)
+                    .ok_or_else(internal)?;
+                let step = QueryAccessStep::checked(
+                    binding,
+                    entity.name().to_owned(),
+                    Cardinality::Many,
+                    u64::from(candidate.maximum_distinct_keys()),
+                    QueryRowLimit::CandidateComplete {
+                        maximum: candidate.maximum_distinct_keys(),
+                    },
+                    QueryAccessKind::Index {
+                        index: index.name().to_owned(),
+                        fields: index.fields().to_vec(),
+                        direction: AccessDirection::Forward,
+                    },
+                    predicates,
+                    predicate_fields.clone(),
+                    vec![source.projected_key().to_owned()],
+                    Vec::new(),
+                    Some(candidate.refusal_outcome().to_owned()),
+                    None,
+                    Vec::new(),
+                    entity.internal_id(),
+                    Some(index.internal_id()),
+                    entity.internal_partition_key_schema().clone(),
+                    entity.internal_primary_key_schema().clone(),
+                    Some(index.internal_key_schema().clone()),
+                    None,
+                )
+                .ok_or_else(internal)?;
+                cost.add_step(entity, &step)?;
+                let accumulator = auth
+                    .entry(entity.name().to_owned())
+                    .or_insert_with(|| AuthAccumulator::new(entity));
+                accumulator.maximum_rows = accumulator
+                    .maximum_rows
+                    .checked_add(u64::from(candidate.maximum_distinct_keys()))
+                    .ok_or_else(internal)?;
+                accumulator.fields.extend(predicate_fields);
+                accumulator.indexes.insert(index.name().to_owned());
+                steps.push(step);
+            }
+        }
 
         for binding in &self.document.body.bindings {
             let entity = self
@@ -1544,7 +1695,51 @@ impl<'a> Planner<'a> {
                     cover_required_fields.insert(field.to_owned());
                 }
             }
-            let (access, index_id) = if let Some(nearest) = &binding.nearest {
+            let candidate_membership = comparisons.iter().find_map(|comparison| {
+                if !comparison.operator.is_binary(BinaryOperator::In) {
+                    return None;
+                }
+                let Some(Expression::Path(path)) = comparison.value else {
+                    return None;
+                };
+                let [name] = path.0.as_slice() else {
+                    return None;
+                };
+                self.candidates.get(name.value.as_str())
+            });
+            let (access, index_id) = if let Some(candidate) = candidate_membership {
+                let order = binding
+                    .order
+                    .iter()
+                    .map(|term| {
+                        QueryRootOrderTermV1::checked(
+                            path_field(&term.path.value)
+                                .ok_or_else(internal)?
+                                .to_owned(),
+                            match term.direction.value {
+                                Direction::Ascending => AccessDirection::Forward,
+                                Direction::Descending => AccessDirection::Reverse,
+                            },
+                            matches!(
+                                term.null_placement
+                                    .as_ref()
+                                    .map(|placement| placement.value),
+                                Some(NullPlacement::First)
+                            ),
+                        )
+                        .ok_or_else(internal)
+                    })
+                    .collect::<Result<Vec<_>, PlannerDiagnostics>>()?;
+                (
+                    QueryAccessKind::CandidateRootHydration {
+                        candidate: candidate.name().to_owned(),
+                        maximum_candidates: candidate.maximum_distinct_keys(),
+                        key_fields: entity.primary_key().to_vec(),
+                        order,
+                    },
+                    None,
+                )
+            } else if let Some(nearest) = &binding.nearest {
                 // ADR-0091: nearest clause produces a Nearest access kind.
                 let vector_field_name = nearest.field.value.as_str();
                 // Validate the field exists and is a vector type.
@@ -1662,6 +1857,12 @@ impl<'a> Planner<'a> {
                 }
                 QueryAccessKind::Nearest { vector_field, .. } => {
                     predicate_fields.insert(vector_field.clone());
+                }
+                QueryAccessKind::CandidateRootHydration {
+                    key_fields, order, ..
+                } => {
+                    predicate_fields.extend(key_fields.iter().cloned());
+                    predicate_fields.extend(order.iter().map(|term| term.field().to_owned()));
                 }
             }
             let predicate_fields = predicate_fields.into_iter().collect::<Vec<_>>();
@@ -1781,6 +1982,7 @@ impl<'a> Planner<'a> {
                         .index(index)
                         .map(|symbol| symbol.internal_key_schema().clone()),
                     QueryAccessKind::Nearest { .. } => None,
+                    QueryAccessKind::CandidateRootHydration { .. } => None,
                 },
                 covered_result_layout,
             )
@@ -1790,9 +1992,15 @@ impl<'a> Planner<'a> {
             let accumulator = auth
                 .entry(entity.name().to_owned())
                 .or_insert_with(|| AuthAccumulator::new(entity));
+            let authorized_rows = match &access {
+                QueryAccessKind::CandidateRootHydration {
+                    maximum_candidates, ..
+                } => u64::from(*maximum_candidates),
+                _ => maximum_rows,
+            };
             accumulator.maximum_rows = accumulator
                 .maximum_rows
-                .checked_add(maximum_rows)
+                .checked_add(authorized_rows)
                 .ok_or_else(|| {
                     one(
                         PlannerDiagnosticCode::Unbounded,
@@ -1912,6 +2120,22 @@ impl<'a> Planner<'a> {
                     ));
                 }
             } else if let Some(Expression::Path(path)) = comparison.value
+                && path.0.len() == 1
+                && let Some(candidate) = self.candidates.get(path.0[0].value.as_str())
+            {
+                if !comparison.operator.is_binary(BinaryOperator::In)
+                    || entity.name() != candidate.root_entity()
+                    || comparison.field != candidate.root_key()
+                {
+                    return Err(one(
+                        PlannerDiagnosticCode::TypeMismatch,
+                        path.0[0].span,
+                        vec![candidate.name().to_owned()],
+                        "candidate membership does not target its declared complete root key",
+                        None,
+                    ));
+                }
+            } else if let Some(Expression::Path(path)) = comparison.value
                 && path.0.len() == 2
                 && let Some(source_entity) = self.binding_entities.get(path.0[0].value.as_str())
             {
@@ -1972,6 +2196,55 @@ impl<'a> Planner<'a> {
         Ok(())
     }
 
+    fn type_check_candidate(
+        &self,
+        entity: &EntitySymbol,
+        span: Span,
+        comparisons: &[Comparison<'_>],
+    ) -> Result<(), PlannerDiagnostics> {
+        for comparison in comparisons {
+            let field = entity.field(comparison.field).ok_or_else(internal)?;
+            if !comparison.operator.is_binary(BinaryOperator::Equal) {
+                return Err(one(
+                    PlannerDiagnosticCode::TypeMismatch,
+                    span,
+                    vec![entity.name().to_owned(), comparison.field.to_owned()],
+                    "ordinary candidate V1 sources require exact equality predicates",
+                    None,
+                ));
+            }
+            match comparison.value {
+                Some(Expression::Parameter(parameter)) => {
+                    let actual = self
+                        .parameters
+                        .get(parameter.value.as_str())
+                        .and_then(|value| self.resolve_parameter_type(value));
+                    if actual.as_ref() != Some(field.value_type()) {
+                        return Err(one(
+                            PlannerDiagnosticCode::TypeMismatch,
+                            parameter.span,
+                            vec![entity.name().to_owned(), comparison.field.to_owned()],
+                            "candidate predicate parameter type does not match its field",
+                            None,
+                        ));
+                    }
+                }
+                Some(Expression::Literal(literal))
+                    if literal_compatible(field.value_type(), literal) => {}
+                _ => {
+                    return Err(one(
+                        PlannerDiagnosticCode::TypeMismatch,
+                        span,
+                        vec![entity.name().to_owned(), comparison.field.to_owned()],
+                        "candidate predicate must compare a field to a typed parameter or literal",
+                        None,
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn normalize_predicates(
         &self,
         comparisons: &[Comparison<'_>],
@@ -2010,6 +2283,16 @@ impl<'a> Planner<'a> {
                                 variant: second.to_owned(),
                                 type_id,
                                 variant_id,
+                            }
+                        } else {
+                            return Err(internal());
+                        }
+                    }
+                    Some(Expression::Path(path)) if path.0.len() == 1 => {
+                        let name = path.0[0].value.as_str();
+                        if self.candidates.contains_key(name) {
+                            QueryPredicateValue::CandidateBinding {
+                                name: name.to_owned(),
                             }
                         } else {
                             return Err(internal());
@@ -2295,6 +2578,25 @@ impl QueryCostAccumulator {
                 self.scanned_index_rows = checked_cost_add(
                     self.scanned_index_rows,
                     riffdb_types::MAX_EXACT_VECTOR_PARTITION_ROWS_V1,
+                    self.primary_span,
+                )?;
+            }
+            QueryAccessKind::CandidateRootHydration {
+                maximum_candidates, ..
+            } => {
+                self.point_reads = checked_cost_add(
+                    self.point_reads,
+                    u64::from(*maximum_candidates),
+                    self.primary_span,
+                )?;
+                self.dependent_keys = checked_cost_add(
+                    self.dependent_keys,
+                    u64::from(*maximum_candidates),
+                    self.primary_span,
+                )?;
+                self.intermediate_rows = checked_cost_add(
+                    self.intermediate_rows,
+                    u64::from(*maximum_candidates),
                     self.primary_span,
                 )?;
             }
@@ -2704,6 +3006,42 @@ fn comparisons(expression: &Expression) -> Vec<Comparison<'_>> {
     let mut output = Vec::new();
     collect_comparisons(expression, &mut output);
     output
+}
+
+fn candidate_ast_sources(
+    expression: &riffdb_riffql_syntax::CandidateSetExpression,
+) -> Vec<&riffdb_riffql_syntax::CandidateSource> {
+    match expression {
+        riffdb_riffql_syntax::CandidateSetExpression::Single(source) => vec![source],
+        riffdb_riffql_syntax::CandidateSetExpression::Intersection(sources)
+        | riffdb_riffql_syntax::CandidateSetExpression::Union(sources) => sources.iter().collect(),
+        riffdb_riffql_syntax::CandidateSetExpression::Difference { positive, negative } => {
+            let mut sources = Vec::with_capacity(negative.len() + 1);
+            sources.push(positive);
+            sources.extend(negative);
+            sources
+        }
+    }
+}
+
+fn candidate_index_is_complete_prefix(
+    index: &riffdb_query_ir::IndexSymbol,
+    comparisons: &[Comparison<'_>],
+) -> bool {
+    if comparisons.is_empty() || comparisons.len() >= index.fields().len() {
+        return false;
+    }
+    index.fields().iter().take(comparisons.len()).all(|field| {
+        comparisons.iter().any(|comparison| {
+            comparison.field == field && comparison.operator.is_binary(BinaryOperator::Equal)
+        })
+    }) && comparisons.iter().all(|comparison| {
+        index
+            .fields()
+            .iter()
+            .take(comparisons.len())
+            .any(|field| field == comparison.field)
+    })
 }
 
 fn collect_comparisons<'a>(expression: &'a Expression, output: &mut Vec<Comparison<'a>>) {

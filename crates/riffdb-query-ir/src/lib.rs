@@ -2,6 +2,7 @@
 
 //! Exact-contract symbolic catalog and canonical typed RiffQL surface IR.
 
+mod candidate;
 mod catalog;
 mod diagnostic;
 mod exact_predicate;
@@ -16,6 +17,7 @@ mod result_set_v2;
 mod schema;
 mod tokenized_text;
 
+pub use candidate::*;
 pub use catalog::{
     EntitySymbol, EnumSymbol, FieldSymbol, IndexSymbol, PrincipalFactSymbol, RowPolicySymbol,
     SymbolicCatalog,
@@ -31,7 +33,8 @@ pub use plan::{
     AccessDirection, AuthorizationEntityAccess, CoveredResultFieldV1, CoveredResultLayoutV1,
     CoveredResultSourceV1, ProjectedVectorFreshnessV1, ProjectedVectorSourceV1, QueryAccessKind,
     QueryAccessProgramV1, QueryAccessStep, QueryLiteral, QueryPlanExplain, QueryPlanIdentity,
-    QueryPredicate, QueryPredicateOperator, QueryPredicateValue, QueryRowLimit,
+    QueryPredicate, QueryPredicateOperator, QueryPredicateValue, QueryRootOrderTermV1,
+    QueryRowLimit, candidate_source_binding_name,
 };
 pub use reactive::*;
 pub use resolver::{

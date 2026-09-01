@@ -74,6 +74,33 @@ continuation before the predicate and silently omit matches.
 RiffQL v1 does not perform an unbounded fallback scan, client-side sort,
 cross-partition join, or optimizer-dependent plan choice.
 
+## Candidate-set plans
+
+Language V11 candidate bindings compile to complete internal source steps plus
+one root-hydration step. Each ordinary source uses the exact declared index,
+partition equality, predicate prefix, projected root key, and independent
+`within` ceiling. Source steps have no page or cursor semantics: a backend
+continuation means the complete source exceeded its bound and the whole query
+refuses before root work.
+
+The executor canonicalizes and deduplicates every complete source, evaluates
+the sealed single/intersection/union/difference operator, then batch-hydrates
+every surviving root key in the same read view. Missing and policy-hidden roots
+are indistinguishable and are removed before the compiler-declared mixed root
+order is evaluated. Only after the complete authorized root population has
+been sorted does the executor apply the requested bounded page and one
+continuation marker. Resume repeats candidate completion at the cursor-bound
+snapshot and epochs, locates the complete root-key marker, and continues in the
+same total order; it does not filter or sort a pre-paginated index page.
+
+The plan and role retain source indexes, relationship proof, operator, bounds,
+root order, cost, and authority. Aggregate query fuel charges all complete
+sources plus hydration. Role format V6 records that candidate authority is
+present; its `max_scan_rows` remains the per-access ceiling representable by
+the public `u16` grant, while the sealed whole-query cost independently limits
+the sum across sources. There is no scan fallback, intermediate output, or
+application-supplied set.
+
 ## Finite operational plan families
 
 Language-version-2 optional predicates compile at deployment into a closed
@@ -202,9 +229,13 @@ The complete vector is appended to the canonical access-program bytes before
 the `riffdb.query-plan/v1` hash is computed. Changing any component therefore
 changes plan identity and invalidates substitution.
 
-The current compatible capability record has one `max_scan_rows` field. It is
-the whole-query aggregate allowance for index-scan rows; every scan step is
-summed and no step may independently reuse it. Point reads, dependent keys, and
+The predecessor compatible capability record has one `max_scan_rows` field. For
+ordinary non-candidate plans it is the whole-query aggregate allowance for
+index-scan rows; every scan step is summed and no step may independently reuse
+it. Candidate-aware role V6 instead treats the same bounded field as a
+per-access ceiling, because candidate plans can contain several independently
+complete 65,535-row sources; their aggregate is still sealed and enforced by
+the whole-query cost vector and fuel. Point reads, dependent keys, and
 retained intermediate rows have separate conservative ceilings derived as that
 scan bound times the fixed maximum query-step count. Projected values add the
 existing maximum visible-field multiplier, and encoded bytes retain the fixed

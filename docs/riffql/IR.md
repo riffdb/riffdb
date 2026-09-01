@@ -55,6 +55,17 @@ ordered cursor-page limit. The declared `MAX` remains identity-bearing in the
 IR and plan; only the validated submitted value is omitted from the separate
 process-local cursor lookup hash.
 
+Candidate syntax selects additive query IR V14 and query-module V14. The
+resolved surface canonically records each non-output binding's name, root
+entity/key, closed set operator, ordered source entity/key/access triples,
+positive-source count, distinct-key maximum, and refusal outcome. The access
+program adds complete candidate-source row limits, candidate predicate
+references, and one root-hydration access with its maximum, complete key, and
+finite total-order terms. Source-map tags 11 and 12 identify the declaration
+and each source access. These fields are plan and role identity only; public
+parameter and result schemas remain ordinary business values and never expose
+candidate structure.
+
 Resolution diagnostics are bounded and value-free:
 
 | Code | Meaning |

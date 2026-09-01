@@ -84,7 +84,8 @@ fn every_real_point_dependency_and_dependent_batch_matches_the_frozen_inventory(
                         }
                         QueryPredicateValue::Parameter(_)
                         | QueryPredicateValue::Literal(_)
-                        | QueryPredicateValue::EnumVariant { .. } => continue,
+                        | QueryPredicateValue::EnumVariant { .. }
+                        | QueryPredicateValue::CandidateBinding { .. } => continue,
                     };
                     let source_step = program.steps()[..step_index]
                         .iter()
@@ -133,6 +134,9 @@ fn every_real_point_dependency_and_dependent_batch_matches_the_frozen_inventory(
                             )
                         }
                         QueryAccessKind::Nearest { .. } => unreachable!("filtered above"),
+                        QueryAccessKind::CandidateRootHydration { .. } => {
+                            unreachable!("relationship corpus has no candidate root")
+                        }
                     };
                     let total_key_bytes = access_key_bytes
                         .checked_mul(usize::try_from(step.maximum_rows()).expect("bounded rows"))

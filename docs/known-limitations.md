@@ -74,6 +74,13 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   ceilings often make the practical maximum smaller for wide rows, as can
   provider, policy, cost, hydration, or role bounds. RiffDB has no hidden
   multi-page response or streaming query protocol.
+- Candidate algebra supports one compiler-sealed non-output binding, at most
+  eight same-partition declared-index sources, and only single-source
+  deduplication, intersection, union, or authorized root-universe difference.
+  It is complete-before-order and all-or-refusal, but it is not a general join,
+  correlated subquery language, recursive expression, cross-partition plan, or
+  caller-supplied set. Long-value wildcard candidate sources and multi-provider
+  admission are staged separately; ordinary exact-index sources are available.
 - An ordinary command may atomically delete and return the transaction-current preimage of exactly
   one complete-key, partition-local `no_inbound` entity. Multiple ordinary deletes, inbound
   `restrict` or `cascade`, set-null, orphaning, cross-partition deletion, and physical erasure are

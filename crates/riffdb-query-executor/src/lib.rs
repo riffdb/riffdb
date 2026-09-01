@@ -18,13 +18,14 @@ use std::sync::Arc;
 use riffdb_contract_ir::KeyComponentCodecV1;
 use riffdb_policy::{AuthorizedProjectedRowAdmissionV1, AuthorizedQueryRowPolicyContextV1};
 use riffdb_query_ir::{
-    AccessDirection, CoveredResultLayoutV1, NamedTypeSchema, OperationalAggregateV1, PageBound,
-    QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryLiteral, QueryPredicateOperator,
-    QueryPredicateValue, QueryRowLimit,
+    AccessDirection, CandidateBindingV1, CoveredResultLayoutV1, NamedTypeSchema,
+    OperationalAggregateV1, PageBound, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep,
+    QueryLiteral, QueryPredicateOperator, QueryPredicateValue, QueryRootOrderTermV1, QueryRowLimit,
+    candidate_source_binding_name, evaluate_candidate_set_v1,
 };
 use riffdb_riffql_syntax::Cardinality;
 use riffdb_types::{
-    AggregateSemanticIdentityV1, CanonicalValue, CommitSequence, ContractLineage,
+    AggregateSemanticIdentityV1, CanonicalList, CanonicalValue, CommitSequence, ContractLineage,
     EmbeddingMetadata, EntityKey, EntityTypeId, FieldId, PartitionKey, PartitionKeyHash,
     QueryCostVectorV1, canonical_value_encoded_len, encode_canonical_value, hash_partition_key,
 };
@@ -350,10 +351,11 @@ pub fn bind_live_query_dependencies(
                             predicate.value(),
                             QueryPredicateValue::BindingField { .. }
                                 | QueryPredicateValue::BindingFieldSet { .. }
+                                | QueryPredicateValue::CandidateBinding { .. }
                         )
                     }) =>
                 {
-                    let predicates = bind_predicates(step, parameters, &empty_bindings)?;
+                    let predicates = bind_predicates(step, parameters, &empty_bindings, &[])?;
                     let values = key_fields
                         .iter()
                         .map(|field| {
@@ -376,7 +378,8 @@ pub fn bind_live_query_dependencies(
                 QueryAccessKind::Point { .. }
                 | QueryAccessKind::DependentPointBatch { .. }
                 | QueryAccessKind::Index { .. }
-                | QueryAccessKind::Nearest { .. } => None,
+                | QueryAccessKind::Nearest { .. }
+                | QueryAccessKind::CandidateRootHydration { .. } => None,
             };
             Ok(BoundLiveQueryDependency {
                 entity_type_id: step.internal_entity_id(),
@@ -1928,7 +1931,8 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
             .collect();
         let (mut rows, scalar_predicates, predicates_must_match) = match step.access() {
             riffdb_query_ir::QueryAccessKind::Point { .. } => {
-                let predicates = bind_predicates(step, parameters, &bindings)?;
+                let predicates =
+                    bind_predicates(step, parameters, &bindings, program.surface().candidates())?;
                 fuel.points(1)?;
                 (
                     view.point(step, &predicates, policy)
@@ -2000,7 +2004,8 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                 (rows, None, false)
             }
             riffdb_query_ir::QueryAccessKind::Index { index, .. } => {
-                let predicates = bind_predicates(step, parameters, &bindings)?;
+                let predicates =
+                    bind_predicates(step, parameters, &bindings, program.surface().candidates())?;
                 let (page, predicates_already_applied) =
                     if let Some(expected_layout) = step.covered_result_layout() {
                         let batch = view
@@ -2053,6 +2058,8 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                             false,
                         )
                     };
+                let complete_candidate_source =
+                    matches!(step.row_limit(), QueryRowLimit::CandidateComplete { .. });
                 if page.scanned_rows > MAX_QUERY_SCANNED_ROWS
                     || page.rows.len() as u64 > limit
                     || page.point_reads
@@ -2069,6 +2076,9 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                 {
                     return Err(QueryExecutionError::BoundExceeded);
                 }
+                if complete_candidate_source && page.continuation.is_some() {
+                    return Err(QueryExecutionError::BoundExceeded);
+                }
                 fuel.scans(page.scanned_rows)?;
                 fuel.points(page.point_reads)?;
                 // Borrow entity/index names into one key; avoid format! per scan step.
@@ -2077,7 +2087,7 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                 epoch_key.push('.');
                 epoch_key.push_str(index);
                 index_epochs.insert(epoch_key, page.epoch);
-                if page.continuation.is_some() {
+                if page.continuation.is_some() && !complete_candidate_source {
                     if continuation.is_some() {
                         return Err(QueryExecutionError::InvalidProgram);
                     }
@@ -2100,7 +2110,8 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                 // and bounded before this backend call.
                 let runtime_k =
                     u32::try_from(limit).map_err(|_| QueryExecutionError::BoundExceeded)?;
-                let predicates = bind_predicates(step, parameters, &bindings)?;
+                let predicates =
+                    bind_predicates(step, parameters, &bindings, program.surface().candidates())?;
                 let page = view
                     .nearest(step, &predicates, runtime_k, policy)
                     .map_err(|error| map_view_error(&*view, &error))?;
@@ -2112,6 +2123,77 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                 }
                 fuel.scans(page.scanned_rows)?;
                 (page.rows, Some(predicates), false)
+            }
+            riffdb_query_ir::QueryAccessKind::CandidateRootHydration {
+                candidate,
+                maximum_candidates,
+                key_fields,
+                order,
+            } => {
+                let predicates = bind_candidate_root_hydrations(
+                    step,
+                    parameters,
+                    &bindings,
+                    program.surface().candidates(),
+                    candidate,
+                )?;
+                if predicates.len() > usize::from(*maximum_candidates) {
+                    return Err(QueryExecutionError::BoundExceeded);
+                }
+                let key_count = u64::try_from(predicates.len())
+                    .map_err(|_| QueryExecutionError::BoundExceeded)?;
+                fuel.dependent_keys(key_count)?;
+                let observations = view
+                    .dependent_point_batch(step, &predicates, policy)
+                    .map_err(|error| map_view_error(view, &error))?;
+                if observations.len() != predicates.len() {
+                    return Err(QueryExecutionError::InvalidProgram);
+                }
+                fuel.points(
+                    u64::try_from(observations.len())
+                        .map_err(|_| QueryExecutionError::BoundExceeded)?,
+                )?;
+                let mut hydrated = observations
+                    .into_iter()
+                    .zip(&predicates)
+                    .filter_map(|(row, predicates)| row.map(|row| (row, predicates)))
+                    .map(|(row, predicates)| {
+                        if row.entity() != step.entity() || !predicates_match(&row, predicates)? {
+                            return Err(QueryExecutionError::InvalidProgram);
+                        }
+                        Ok(row)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                fuel.intermediates(
+                    u64::try_from(hydrated.len())
+                        .map_err(|_| QueryExecutionError::BoundExceeded)?,
+                )?;
+                hydrated.sort_by(|left, right| candidate_root_row_order(left, right, order));
+                if let Some(lower) = after {
+                    let position = hydrated
+                        .iter()
+                        .position(|row| {
+                            candidate_root_marker(row, key_fields)
+                                .is_ok_and(|marker| marker == lower)
+                        })
+                        .ok_or(QueryExecutionError::InvalidContinuation)?;
+                    hydrated.drain(..=position);
+                }
+                let limit =
+                    usize::try_from(limit).map_err(|_| QueryExecutionError::BoundExceeded)?;
+                if hydrated.len() > limit {
+                    hydrated.truncate(limit);
+                    let lower = hydrated
+                        .last()
+                        .ok_or(QueryExecutionError::InvalidProgram)
+                        .and_then(|row| candidate_root_marker(row, key_fields))?;
+                    if lower.len() > MAX_QUERY_CONTINUATION_BYTES || continuation.is_some() {
+                        return Err(QueryExecutionError::BoundExceeded);
+                    }
+                    continuation_binding = Some(step.binding().to_owned());
+                    continuation = Some(lower);
+                }
+                (hydrated, None, false)
             }
         };
         fuel.intermediates(
@@ -2290,7 +2372,7 @@ fn execute_covered_page_in_snapshot<V: QueryReadView>(
     let after = prior
         .filter(|cursor| cursor.binding == step.binding())
         .map(|cursor| cursor.lower.as_slice());
-    let predicates = bind_predicates(step, parameters, &BTreeMap::new())?;
+    let predicates = bind_predicates(step, parameters, &BTreeMap::new(), &[])?;
     let batch = view
         .scan_covered(step, &predicates, limit, after, policy)
         .map_err(|error| map_view_error(view, &error))?
@@ -2913,6 +2995,17 @@ fn binding_referenced_later(
                     | QueryPredicateValue::BindingFieldSet {
                         binding: source, ..
                     } => source == binding,
+                    QueryPredicateValue::CandidateBinding { name } => program
+                        .surface()
+                        .candidates()
+                        .iter()
+                        .find(|candidate| candidate.name() == name)
+                        .is_some_and(|candidate| {
+                            (0..candidate.sources().len()).any(|source_index| {
+                                candidate_source_binding_name(name, source_index).as_deref()
+                                    == Some(binding)
+                            })
+                        }),
                     QueryPredicateValue::Parameter(_)
                     | QueryPredicateValue::Literal(_)
                     | QueryPredicateValue::EnumVariant { .. } => false,
@@ -3090,8 +3183,14 @@ fn resolve_row_limit(
             }
             value
         }
+        QueryRowLimit::CandidateComplete { maximum } => u64::from(*maximum),
     };
-    if limit == 0 || limit > step.maximum_rows() || !page_take_within_scan_bound(limit) {
+    if limit == 0
+        || limit > step.maximum_rows()
+        || (!matches!(step.row_limit(), QueryRowLimit::CandidateComplete { .. })
+            && !page_take_within_scan_bound(limit))
+        || limit > MAX_QUERY_SCANNED_ROWS
+    {
         return Err(QueryExecutionError::BoundExceeded);
     }
     Ok(limit)
@@ -3101,6 +3200,7 @@ fn bind_predicates(
     step: &QueryAccessStep,
     parameters: &QueryParameters,
     bindings: &BTreeMap<String, Vec<QueryRow>>,
+    candidates: &[CandidateBindingV1],
 ) -> Result<Vec<BoundPredicate>, QueryExecutionError> {
     step.predicates()
         .iter()
@@ -3130,6 +3230,9 @@ fn bind_predicates(
                 QueryPredicateValue::BindingFieldSet { .. } => {
                     return Err(QueryExecutionError::InvalidProgram);
                 }
+                QueryPredicateValue::CandidateBinding { name } => {
+                    bind_candidate_value(name, candidates, bindings)?
+                }
                 QueryPredicateValue::Literal(literal) => literal_value(literal)?,
                 QueryPredicateValue::EnumVariant {
                     type_id,
@@ -3141,15 +3244,17 @@ fn bind_predicates(
                 },
             };
             if predicate.operator() == QueryPredicateOperator::In {
-                let parameter = match predicate.value() {
-                    QueryPredicateValue::Parameter(name) => name,
-                    _ => return Err(QueryExecutionError::InvalidProgram),
-                };
-                validate_canonical_set(&value).map_err(|()| {
-                    QueryExecutionError::InvalidParameter {
-                        parameter: parameter.clone(),
+                match predicate.value() {
+                    QueryPredicateValue::Parameter(parameter) => {
+                        validate_canonical_set(&value).map_err(|()| {
+                            QueryExecutionError::InvalidParameter {
+                                parameter: parameter.clone(),
+                            }
+                        })?;
                     }
-                })?;
+                    QueryPredicateValue::CandidateBinding { .. } => {}
+                    _ => return Err(QueryExecutionError::InvalidProgram),
+                }
             }
             Ok(BoundPredicate {
                 field: predicate.field().to_owned(),
@@ -3158,6 +3263,202 @@ fn bind_predicates(
             })
         })
         .collect()
+}
+
+fn bind_candidate_value(
+    name: &str,
+    candidates: &[CandidateBindingV1],
+    bindings: &BTreeMap<String, Vec<QueryRow>>,
+) -> Result<CanonicalValue, QueryExecutionError> {
+    let candidate = candidates
+        .iter()
+        .find(|candidate| candidate.name() == name)
+        .ok_or(QueryExecutionError::InvalidProgram)?;
+    let mut source_keys = Vec::with_capacity(candidate.sources().len());
+    let mut canonical_values = BTreeMap::<Vec<u8>, CanonicalValue>::new();
+    for (source_index, source) in candidate.sources().iter().enumerate() {
+        let binding = candidate_source_binding_name(name, source_index)
+            .ok_or(QueryExecutionError::InvalidProgram)?;
+        let rows = bindings
+            .get(&binding)
+            .ok_or(QueryExecutionError::InvalidProgram)?;
+        if rows.len() > usize::from(candidate.maximum_distinct_keys()) {
+            return Err(QueryExecutionError::BoundExceeded);
+        }
+        let keys = rows
+            .iter()
+            .map(|row| {
+                let value = row
+                    .field(source.projected_key())
+                    .cloned()
+                    .filter(|value| !matches!(value, CanonicalValue::Null))
+                    .ok_or(QueryExecutionError::InvalidProgram)?;
+                let encoded = encode_canonical_value(&value)
+                    .map_err(|_| QueryExecutionError::InvalidProgram)?;
+                canonical_values.entry(encoded.clone()).or_insert(value);
+                Ok(encoded)
+            })
+            .collect::<Result<Vec<_>, QueryExecutionError>>()?;
+        source_keys.push(keys);
+    }
+    let maximum_key_bytes = u64::from(candidate.maximum_distinct_keys())
+        .checked_mul(riffdb_types::MAX_KEY_BYTES as u64)
+        .ok_or(QueryExecutionError::BoundExceeded)?;
+    let selected = evaluate_candidate_set_v1(
+        candidate.operator(),
+        &source_keys,
+        candidate.maximum_distinct_keys(),
+        maximum_key_bytes,
+    )
+    .map_err(|_| QueryExecutionError::BoundExceeded)?;
+    let values = selected
+        .into_iter()
+        .map(|encoded| {
+            canonical_values
+                .remove(&encoded)
+                .ok_or(QueryExecutionError::InvalidProgram)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    CanonicalList::new(values)
+        .map(CanonicalValue::List)
+        .map_err(|_| QueryExecutionError::BoundExceeded)
+}
+
+fn bind_candidate_root_hydrations(
+    step: &QueryAccessStep,
+    parameters: &QueryParameters,
+    bindings: &BTreeMap<String, Vec<QueryRow>>,
+    candidates: &[CandidateBindingV1],
+    candidate_name: &str,
+) -> Result<Vec<Vec<BoundPredicate>>, QueryExecutionError> {
+    let candidate_value = bind_candidate_value(candidate_name, candidates, bindings)?;
+    let CanonicalValue::List(keys) = candidate_value else {
+        return Err(QueryExecutionError::InvalidProgram);
+    };
+    keys.values()
+        .iter()
+        .map(|candidate_key| {
+            step.predicates()
+                .iter()
+                .map(|predicate| {
+                    let (operator, value) = match predicate.value() {
+                        QueryPredicateValue::CandidateBinding { name }
+                            if name == candidate_name =>
+                        {
+                            (QueryPredicateOperator::Equal, candidate_key.clone())
+                        }
+                        QueryPredicateValue::CandidateBinding { .. }
+                        | QueryPredicateValue::BindingFieldSet { .. } => {
+                            return Err(QueryExecutionError::InvalidProgram);
+                        }
+                        QueryPredicateValue::Parameter(name) => (
+                            predicate.operator(),
+                            parameters.get(name).cloned().ok_or_else(|| {
+                                QueryExecutionError::MissingParameter {
+                                    parameter: name.clone(),
+                                }
+                            })?,
+                        ),
+                        QueryPredicateValue::BindingField { binding, field } => (
+                            predicate.operator(),
+                            bindings
+                                .get(binding)
+                                .and_then(|rows| rows.first())
+                                .and_then(|row| row.field(field))
+                                .cloned()
+                                .unwrap_or(CanonicalValue::Null),
+                        ),
+                        QueryPredicateValue::Literal(literal) => {
+                            (predicate.operator(), literal_value(literal)?)
+                        }
+                        QueryPredicateValue::EnumVariant {
+                            type_id,
+                            variant_id,
+                            ..
+                        } => (
+                            predicate.operator(),
+                            CanonicalValue::Enum {
+                                type_id: *type_id,
+                                variant_id: *variant_id,
+                            },
+                        ),
+                    };
+                    Ok(BoundPredicate {
+                        field: predicate.field().to_owned(),
+                        operator,
+                        value,
+                    })
+                })
+                .collect()
+        })
+        .collect()
+}
+
+fn candidate_root_row_order(
+    left: &QueryRow,
+    right: &QueryRow,
+    order: &[QueryRootOrderTermV1],
+) -> Ordering {
+    for term in order {
+        let left = left.field(term.field()).unwrap_or(&CanonicalValue::Null);
+        let right = right.field(term.field()).unwrap_or(&CanonicalValue::Null);
+        let ordering = match (
+            matches!(left, CanonicalValue::Null),
+            matches!(right, CanonicalValue::Null),
+        ) {
+            (true, true) => Ordering::Equal,
+            (true, false) => {
+                if term.nulls_first() {
+                    Ordering::Less
+                } else {
+                    Ordering::Greater
+                }
+            }
+            (false, true) => {
+                if term.nulls_first() {
+                    Ordering::Greater
+                } else {
+                    Ordering::Less
+                }
+            }
+            (false, false) => {
+                let ordering = aggregate_scalar_order(left, right).unwrap_or(Ordering::Equal);
+                if term.direction() == AccessDirection::Reverse {
+                    ordering.reverse()
+                } else {
+                    ordering
+                }
+            }
+        };
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+    }
+    Ordering::Equal
+}
+
+fn candidate_root_marker(
+    row: &QueryRow,
+    key_fields: &[String],
+) -> Result<Vec<u8>, QueryExecutionError> {
+    let mut marker = Vec::new();
+    for field in key_fields {
+        let value = row
+            .field(field)
+            .ok_or_else(|| QueryExecutionError::MissingField {
+                entity: row.entity().to_owned(),
+                field: field.clone(),
+            })?;
+        let encoded =
+            encode_canonical_value(value).map_err(|_| QueryExecutionError::InvalidProgram)?;
+        marker.extend_from_slice(
+            &u32::try_from(encoded.len())
+                .map_err(|_| QueryExecutionError::BoundExceeded)?
+                .to_be_bytes(),
+        );
+        marker.extend_from_slice(&encoded);
+    }
+    Ok(marker)
 }
 
 fn bind_dependent_point_batch(
@@ -3245,6 +3546,9 @@ fn bind_dependent_point_batch(
                             (QueryPredicateOperator::Equal, dependent_value.clone())
                         }
                         QueryPredicateValue::BindingFieldSet { .. } => {
+                            return Err(QueryExecutionError::InvalidProgram);
+                        }
+                        QueryPredicateValue::CandidateBinding { .. } => {
                             return Err(QueryExecutionError::InvalidProgram);
                         }
                         QueryPredicateValue::Literal(literal) => {
@@ -3758,7 +4062,7 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
         )]))
         .expect("parameters");
         let (bundle, null_step) = compiled_operational_step(NULL_DOCUMENTS);
-        let null_predicates = bind_predicates(&null_step, &parameters, &BTreeMap::new())
+        let null_predicates = bind_predicates(&null_step, &parameters, &BTreeMap::new(), &[])
             .expect("bound null predicates");
         let null_ranges =
             bound_index_range_schedule_v1(&null_step, &null_predicates).expect("null ranges");
@@ -3820,7 +4124,7 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
         }
 
         let (_, exists_step) = compiled_operational_step(EXISTING_DOCUMENTS);
-        let exists_predicates = bind_predicates(&exists_step, &parameters, &BTreeMap::new())
+        let exists_predicates = bind_predicates(&exists_step, &parameters, &BTreeMap::new(), &[])
             .expect("bound exists predicates");
         let missing_row = row("Document", &[("organization_id", organization.clone())]);
         let null_row = row(
@@ -3860,7 +4164,7 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
         .expect("parameters");
         let (bundle, step) = compiled_operational_step(PREFIX_DOCUMENTS);
         let predicates =
-            bind_predicates(&step, &parameters, &BTreeMap::new()).expect("bound predicates");
+            bind_predicates(&step, &parameters, &BTreeMap::new(), &[]).expect("bound predicates");
         let ranges = bound_index_range_schedule_v1(&step, &predicates).expect("prefix range");
         assert_eq!(ranges.ranges().len(), 1);
         let entity = &bundle.schema().entities()[0];

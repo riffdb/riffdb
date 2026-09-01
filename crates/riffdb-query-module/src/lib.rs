@@ -892,7 +892,7 @@ impl QueryModule {
                 .plan()
                 .representative_program()
                 .surface()
-                .has_extended_bounded_limit()
+                .has_bounded_result_pipeline()
         }) {
             QUERY_MODULE_FORMAT_VERSION_BOUNDED_RESULT_PIPELINE_V1
         } else if self
@@ -1491,7 +1491,7 @@ fn encode_module(
             .plan()
             .representative_program()
             .surface()
-            .has_extended_bounded_limit()
+            .has_bounded_result_pipeline()
     });
     let format_version = if extended_bounded_limit {
         QUERY_MODULE_FORMAT_VERSION_BOUNDED_RESULT_PIPELINE_V1
@@ -1792,8 +1792,8 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
                 | QUERY_MODULE_FORMAT_VERSION_EXACT_PREDICATE_V1
                 | QUERY_MODULE_FORMAT_VERSION_NULLABLE_EXACT_ORDER_V1
                 | QUERY_MODULE_FORMAT_VERSION_EXACT_AGGREGATE_V1
-                | QUERY_MODULE_FORMAT_VERSION_TOKENIZED_TEXT_V1
-                | QUERY_MODULE_FORMAT_VERSION_BOUNDED_RESULT_PIPELINE_V1 => 10,
+                | QUERY_MODULE_FORMAT_VERSION_TOKENIZED_TEXT_V1 => 10,
+                QUERY_MODULE_FORMAT_VERSION_BOUNDED_RESULT_PIPELINE_V1 => 12,
                 QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1 => 10,
                 QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1 => 9,
                 _ => 7,
@@ -1830,6 +1830,8 @@ fn source_kind_tag(kind: SourceSymbolKind) -> u8 {
         SourceSymbolKind::Aggregate => 8,
         SourceSymbolKind::AggregateMeasure => 9,
         SourceSymbolKind::SecretOutput => 10,
+        SourceSymbolKind::Candidate => 11,
+        SourceSymbolKind::CandidateAccess => 12,
     }
 }
 
