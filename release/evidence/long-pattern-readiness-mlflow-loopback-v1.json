@@ -1,0 +1,56 @@
+{
+  "schema": "riffdb.long-pattern-readiness-mlflow-loopback/v1",
+  "work_package": "WP-738",
+  "requirements": ["OQ-079", "OQ-080", "OQ-081", "OQ-089", "OQ-100"],
+  "recorded_at": "2026-09-01",
+  "implementation_revision": "f2291dfb7ee8ddd23278fd44ebc8e5e65cf2a79d",
+  "adapter_revision": "804b29aa2d53312e8b1342d7df312f6692f7bb77",
+  "pre_fix_reproduction": {
+    "fresh_process_runs": 3,
+    "storage_unavailable_failures": 2,
+    "operation": "SearchExperimentsByNameILike",
+    "after_acknowledged_writes": true,
+    "read_after_commit_supplied": true
+  },
+  "correction": {
+    "all_bounded_participants_registered_before_wait": true,
+    "background_worker_remains_rebuild_owner": true,
+    "wait_uses_original_request_deadline": true,
+    "wait_has_finite_server_owned_ceiling": true,
+    "authorization_revalidated_after_wait": true,
+    "provider_lifecycle_preserved_as_typed_query_failure": true,
+    "adapter_retry_or_sleep_added": false,
+    "authoritative_request_time_scan_added": false,
+    "partial_candidates_released": false
+  },
+  "post_fix_loopback": {
+    "fresh_process_runs": 5,
+    "passed": 5,
+    "application_queries": 13,
+    "unit_tests": 19,
+    "folded_name_matches": 2,
+    "two_tag_intersection_matches": 1,
+    "experiment_page_rows": [1, 1],
+    "run_page_rows": [1, 2],
+    "run_total": 3,
+    "deleted_run_matches": 1,
+    "final_experiment_tag_revision": 2
+  },
+  "acceptance": {
+    "workspace_tests": "passed",
+    "workspace_docs": "passed",
+    "cargo_deny": "passed_with_accepted_duplicate_warnings",
+    "remote_driver_languages": ["rust", "go", "typescript", "python"],
+    "application_bindings": "passed",
+    "version_topology": "passed",
+    "generated_artifacts": "passed",
+    "requirement_coverage": "passed",
+    "workspace_policy": "passed",
+    "adr_obligations": "passed",
+    "handbook": "passed",
+    "downstream_adapters": ["riffdb-openfga", "riffdb-better-auth", "riffdb-mlflow"],
+    "format": "passed",
+    "strict_clippy": "passed"
+  },
+  "business_values_in_receipt": false
+}
