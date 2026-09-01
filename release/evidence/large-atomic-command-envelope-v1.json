@@ -1,0 +1,85 @@
+{
+  "schema": "riffdb.large-atomic-command-envelope/v1",
+  "work_package": "WP-744",
+  "adr": "ADR-0176",
+  "requirements": [
+    "BLK-058",
+    "BLK-059",
+    "BLK-060",
+    "BLK-061",
+    "BLK-062",
+    "BLK-063",
+    "BLK-064"
+  ],
+  "implementation_revision": "b72463e7d1f8e3293bcfd1f9454e18671394c549",
+  "accepted_limits": {
+    "decoded_or_canonical_command_root_bytes": 4194304,
+    "command_bearing_frame_bytes": 8388608,
+    "individual_or_nested_document_bytes": 1048576,
+    "complete_command_graph_bytes": 16777216
+  },
+  "compiler_identity": {
+    "contract_bundle_version": 22,
+    "contract_grammar_version": 22,
+    "contract_ir_version": 22,
+    "least_sufficient_selection": true,
+    "legacy_bytes_and_hashes_unchanged": true,
+    "decoded_proof_is_recomputed": true
+  },
+  "mlflow_loopback": {
+    "date": "2026-09-01",
+    "surface": "generated Python binding through the local driver, authenticated gRPC, shared application service, command runtime, commit coordinator, and redb",
+    "contract_bundle_hash": "7a49c3b900ce22b486fc901acd3bbfaa5221d74a80479cc239a7a87e5b005c85",
+    "create_run_with_tags_plan_hash": "cb8da895445b60a53a1477b16a0183bfdb2da1b3e8b00b9af8953478fa340422",
+    "tag_count": 100,
+    "characters_per_tag_value": 8000,
+    "packed_hydration_bytes": 801301,
+    "indexed_tag_rows": 100,
+    "atomic_commit_succeeded": true,
+    "same_input_replayed_same_commit": true,
+    "post_commit_checks": {
+      "folded_name_matches": 2,
+      "two_tag_intersection_matches": 1,
+      "exact_tag_matches": 1,
+      "cursor_page_one_rows": 1,
+      "cursor_page_two_rows": 1,
+      "final_parent_revision": 2
+    },
+    "attempts": 2,
+    "first_attempt_observation": "the large command and replay completed before an unrelated retryable storage_unavailable query result; a fresh complete run passed",
+    "values_retained": false
+  },
+  "negative_and_compatibility_evidence": [
+    "a command whose compiler-proved request maximum exceeds 4 MiB is rejected with a source-spanned bounded diagnostic",
+    "an oversized nested document is rejected before Protobuf allocation and again by semantic validation",
+    "ordinary canonical values and non-command requests retain the 1 MiB ceiling",
+    "the complete command graph retains the 16 MiB ceiling",
+    "legacy command canonical bytes and idempotency hashes remain byte-identical",
+    "changed large input produces a distinct idempotency hash while exact replay retains the original hash",
+    "gRPC, application sessions, reactions, MCP, CLI, batches, and local drivers share the bounded command envelope"
+  ],
+  "acceptance_commands": [
+    {"command": "cargo +1.97.0 test --workspace --all-features", "status": "passed"},
+    {"command": "cargo +1.97.0 doc --workspace --no-deps", "status": "passed"},
+    {"command": "cargo +1.97.0 deny check", "status": "passed"},
+    {"command": "./scripts/driver-conformance --all-languages --remote", "status": "passed"},
+    {"command": "./scripts/check-application-bindings", "status": "passed"},
+    {"command": "./scripts/check-version-topology", "status": "passed"},
+    {"command": "./scripts/check-generated", "status": "passed"},
+    {"command": "./scripts/check-requirement-coverage", "status": "passed"},
+    {"command": "./scripts/check-workspace-policy", "status": "passed"},
+    {"command": "./scripts/check-adr-obligations", "status": "passed"},
+    {"command": "./scripts/handbook check", "status": "passed"},
+    {"command": "./scripts/downstream-adapter-check", "status": "passed"},
+    {"command": "cargo +1.97.0 fmt --all -- --check", "status": "passed"},
+    {"command": "cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings", "status": "passed"},
+    {"command": "make check", "scope": "riffdb-mlflow", "status": "passed", "tests": 16}
+  ],
+  "downstream": {
+    "riffdb_openfga": "compiles",
+    "riffdb_better_auth": "compiles",
+    "riffdb_mlflow": "compiles",
+    "mlflow_internal_fetch_rows": 4,
+    "mlflow_external_page_coalescing": "retains caller-selected larger finite pages and opaque continuation"
+  }
+}
