@@ -278,6 +278,23 @@
       "durable_manifest": {"readable_key":"readable_journal_frame_versions","writable_key":"writable_journal_frame_versions"}
     },
     {
+      "id": "durable.long_pattern_provider_state",
+      "title": "Long-pattern provider checkpoint",
+      "classification": "durable",
+      "owner": "riffdb-projection",
+      "source_assertions": [{"kind":"identity_regex","path":"crates/riffdb-projection/src/long_pattern.rs","pattern":"pub const LONG_PATTERN_PROVIDER_STATE_FORMAT_V([0-9]+): u16 = ([0-9]+);","identities":["1"]}],
+      "readable_identities": ["1"], "writable_identities": ["1"], "current_identities": ["1"],
+      "writer_policy": "single_current",
+      "compatibility_rule": "V1 binds the exact matching profile and every compiler-owned bound, then canonically retains each entity-key digest, complete matched value, value digest, distinct byte trigrams, and compiler-shaped release bytes. Postings are rebuilt and revalidated from these rows before publication.",
+      "breaking_when": "RLPV framing, canonical row or gram order, bound meaning, matched-value/digest/gram semantics, release meaning, or recovery/refusal behavior changes under V1.",
+      "supported_release_posture": "Long-pattern provider-state V1 is current, derived, rebuildable, and activated only through the checksummed generation checkpoint owned by the server projection runtime.",
+      "lifecycle": {"active":["1"],"read_only":[],"retirement_candidate":[],"retired":[]},
+      "reserved_identity_policy": "Checkpoint versions, magic bytes, field order, profile tags, and framing widths are never reused.",
+      "evidence": ["fixtures/projection/long-pattern-provider-state-v1.txt", "crates/riffdb-projection/src/long_pattern.rs", "crates/riffdb-server/src/exact_text_adapter.rs", "crates/riffdb-query-executor/tests/candidate_execution.rs"],
+      "checks": ["./scripts/check-version-topology"],
+      "last_change": {"classification":"new_domain_identity","decision":"ADR-0174/WP-737 long-pattern provider-state V1"}
+    },
+    {
       "id": "durable.maintenance_receipt",
       "title": "Offline maintenance receipt",
       "classification": "durable",

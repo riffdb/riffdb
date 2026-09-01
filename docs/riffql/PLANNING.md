@@ -101,6 +101,16 @@ the public `u16` grant, while the sealed whole-query cost independently limits
 the sum across sources. There is no scan fallback, intermediate output, or
 application-supplied set.
 
+A `pattern_index` candidate step is a provider participant rather than an
+ordinary row-store scan. The service obtains its complete, exactly verified
+candidate batch before opening final root execution, validates the compiler
+descriptor, policy shape, plan, generation, frontier, and observed work, and
+negotiates one result-set epoch proof for the whole query. Final root hydration,
+policy, mixed total ordering, page selection, and cursor formation still occur
+inside the authoritative storage snapshot. The request path cannot scan
+entities to decide pattern membership; only the bounded background rebuild
+worker may populate provider state from an exact authoritative snapshot.
+
 ## Finite operational plan families
 
 Language-version-2 optional predicates compile at deployment into a closed

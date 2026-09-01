@@ -79,11 +79,21 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   deduplication, intersection, union, or authorized root-universe difference.
   It is complete-before-order and all-or-refusal, but it is not a general join,
   correlated subquery language, recursive expression, cross-partition plan, or
-  caller-supplied set. Long-value wildcard candidate sources and multi-provider
-  admission are staged separately; ordinary exact-index sources are available.
+  caller-supplied set. Ordinary exact-index and declared `long_pattern_v1`
+  sources are available and may participate in one common fenced result set;
+  this does not make every other provider kind an interchangeable candidate
+  source.
   A query may expose at most 32 compiler-expanded root orders through one
   complete contract enum. Callers cannot submit arbitrary sort structure, and
   changing the enum choice starts a different cursor family.
+- `long_pattern_v1` provides exact binary or Unicode-fold equality, literal
+  prefix/suffix/substring, and LIKE/ILIKE matching for source values through
+  8,000 bytes. It is a compiler-declared, rebuildable candidate provider, not a
+  general regular-expression or ad hoc search endpoint. A direct negated
+  provider source is unavailable: negation must be compiled as candidate
+  difference from an authorized positive root universe. Provider generations
+  are finite, and a continuation whose authoritative snapshot or provider
+  generation is no longer servable fails typed instead of switching epochs.
 - An ordinary command may atomically delete and return the transaction-current preimage of exactly
   one complete-key, partition-local `no_inbound` entity. Multiple ordinary deletes, inbound
   `restrict` or `cascade`, set-null, orphaning, cross-partition deletion, and physical erasure are

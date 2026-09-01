@@ -92,8 +92,10 @@ provider-independent semantic family. See
 [Exact Predicate and Order Families](EXACT-PREDICATES.md) for its stricter
 shape and current activation status. Tokenized-text language V10 adds four
 compiler-sealed `matching` shapes and the optional fixed `riff_bm25_v1` order;
-see [Tokenized Text Search](TOKENIZED-TEXT.md). RiffQL has no mutation, SQL escape,
-function call, recursion,
+see [Tokenized Text Search](TOKENIZED-TEXT.md). Candidate language V11 adds
+complete-before-order set sources, including declared long-value exact pattern
+providers; see [Long-Value Pattern Search](LONG-PATTERN.md). RiffQL has no
+mutation, SQL escape, function call, recursion,
 loop, callback, clock, randomness, network, filesystem, group-by, unrestricted
 scan, or arbitrary join.
 
@@ -225,6 +227,14 @@ declared source index, exact key type, finite source count, and exactly one root
 appear in SDK or MCP schemas. They are immutable module/plan/role identity,
 not request data. This is bounded same-partition existence filtering, not a
 general join, recursive query, caller-selected plan, or runtime optimizer.
+
+A candidate source may instead name a compatible contract `pattern_index` and
+one compiled exact pattern predicate. That source is supplied by one ready,
+policy-aligned provider epoch and is completed under the same participant proof
+as ordinary sources before root work. Pattern postings only choose candidates;
+the provider verifies complete retained matched values. See
+[Long-Value Pattern Search](LONG-PATTERN.md) for declaration, matching, bounds,
+freshness, and negation rules.
 
 ### Finite root-order families (language V12)
 
