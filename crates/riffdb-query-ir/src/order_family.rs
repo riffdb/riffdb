@@ -89,7 +89,7 @@ impl OrderQueryFamilyV1 {
                 member.variant_name.is_empty()
                     || member.program.contract() != surface.contract()
                     || member.program.name() != first.program.name()
-                    || member.program.partition_parameter() != first.program.partition_parameter()
+                    || member.program.partition_route() != first.program.partition_route()
                     || member.program.surface().schemas() != surface.schemas()
             })
         {

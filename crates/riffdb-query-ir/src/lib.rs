@@ -34,9 +34,9 @@ pub use order_family::*;
 pub use plan::{
     AccessDirection, AuthorizationEntityAccess, CoveredResultFieldV1, CoveredResultLayoutV1,
     CoveredResultSourceV1, ProjectedVectorFreshnessV1, ProjectedVectorSourceV1, QueryAccessKind,
-    QueryAccessProgramV1, QueryAccessStep, QueryLiteral, QueryPlanExplain, QueryPlanIdentity,
-    QueryPredicate, QueryPredicateOperator, QueryPredicateValue, QueryRootOrderTermV1,
-    QueryRowLimit, candidate_source_binding_name,
+    QueryAccessProgramV1, QueryAccessStep, QueryLiteral, QueryPartitionRouteV1, QueryPlanExplain,
+    QueryPlanIdentity, QueryPredicate, QueryPredicateOperator, QueryPredicateValue,
+    QueryRootOrderTermV1, QueryRowLimit, candidate_source_binding_name,
 };
 pub use reactive::*;
 pub use resolver::{
@@ -81,6 +81,8 @@ pub const QUERY_IR_VERSION_TOKENIZED_TEXT_V1: u32 = 13;
 pub const QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1: u32 = 14;
 /// Canonical finite compiler-owned root-order family IR.
 pub const QUERY_IR_VERSION_ORDER_FAMILY_V1: u32 = 15;
+/// Canonical explicitly bounded submitted-set and finite partition-route IR.
+pub const QUERY_IR_VERSION_PARTITION_SET_V1: u32 = 16;
 /// Maximum public query schema and canonical IR bytes.
 pub const MAX_QUERY_ARTIFACT_BYTES: usize = 4_194_304;
 /// Maximum source-map entries.
@@ -100,6 +102,8 @@ pub const MAX_QUERY_SCANNED_ROWS: u64 = riffdb_types::MAX_APPLICATION_QUERY_SCAN
 /// is observed the page is truncated to `page_limit` and a continuation is
 /// minted, while `scanned_rows` still counts the probe.
 pub const QUERY_CONTINUATION_PROBE_ROWS: u64 = 1;
+/// Whole-request physical-row ceiling for ADR-0175 partition-set execution.
+pub const MAX_PARTITION_SET_TOTAL_SCANNED_ROWS_V1: u64 = 4_194_304;
 
 /// Inclusive maximum legal page `take` (static literal or runtime `Limit`).
 ///

@@ -66,6 +66,15 @@ and each source access. These fields are plan and role identity only; public
 parameter and result schemas remain ordinary business values and never expose
 candidate structure.
 
+Bounded `Set<T, MAX>` syntax selects RiffQL V13. A query using that value as
+the exact partition-field membership route selects query IR V16 and
+query-module V16. The program encodes the parameter name and declared partition
+maximum, one partition-set index access with its physical direction, complete
+global order, per-partition scan ceiling, and hidden entity-key tie fields,
+plus multiplied cost and authority. Canonical cursor parameters retain the
+normalized complete set. Existing V1 through V15 query plans and modules are
+unchanged.
+
 Resolution diagnostics are bounded and value-free:
 
 | Code | Meaning |

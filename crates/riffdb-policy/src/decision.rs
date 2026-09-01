@@ -171,6 +171,8 @@ pub enum PartitionConstraint {
     Exact(ScopedPartitionV1),
     /// The capability's complete all-or-explicit filter scope.
     Filter(PartitionScopeV1),
+    /// One compiler/caller-bound canonical finite partition set.
+    Explicit(Vec<ScopedPartitionV1>),
 }
 
 impl fmt::Debug for PartitionConstraint {
@@ -613,18 +615,22 @@ impl AuthorizedApplicationQuery {
             return Err(BindingError::OperationMismatch);
         }
         let obligations = authorization.obligations();
+        let Some(target_partition) = target.partition() else {
+            return Err(BindingError::ObligationMismatch);
+        };
         let partition_allowed = match obligations.partition_constraint() {
             None => true,
             Some(crate::PartitionConstraint::Filter(PartitionScopeV1::All)) => true,
             Some(crate::PartitionConstraint::Filter(PartitionScopeV1::Explicit(entries))) => {
                 entries
                     .binary_search_by_key(
-                        &target.partition().canonical_key(),
+                        &target_partition.canonical_key(),
                         ScopedPartitionV1::canonical_key,
                     )
                     .is_ok()
             }
             Some(crate::PartitionConstraint::Exact(_)) => false,
+            Some(crate::PartitionConstraint::Explicit(_)) => false,
         };
         let Some(row_limit) = obligations.row_limit() else {
             return Err(BindingError::ObligationMismatch);
@@ -655,9 +661,7 @@ impl AuthorizedApplicationQuery {
         );
         let exact_obligations = Obligations::new(
             obligations.effective_tenant_scope().clone(),
-            Some(crate::PartitionConstraint::Exact(
-                target.partition().clone(),
-            )),
+            Some(crate::PartitionConstraint::Exact(target_partition.clone())),
             None,
             Some(row_limit),
             None,

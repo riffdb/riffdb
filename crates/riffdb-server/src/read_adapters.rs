@@ -1547,6 +1547,20 @@ fn lower_index_partition_filter(
                 IndexPartitionFilterScope::Explicit(keys)
             }
         }
+        PartitionConstraint::Explicit(entries) => {
+            if entries.is_empty() {
+                IndexPartitionFilterScope::None
+            } else {
+                let mut keys = Vec::with_capacity(entries.len());
+                for entry in entries {
+                    if entry.lineage() != target_lineage {
+                        return Err(AuthoritativeReadError::Integrity);
+                    }
+                    keys.push(entry.partition_key().clone());
+                }
+                IndexPartitionFilterScope::Explicit(keys)
+            }
+        }
         PartitionConstraint::Exact(_) => return Err(AuthoritativeReadError::Integrity),
     };
     IndexPartitionFilter::new(target_lineage.clone(), scope)

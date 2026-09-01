@@ -68,6 +68,7 @@
 # RiffQL
 
 - [RiffQL Language](riffql/LANGUAGE.md)
+- [Bounded Partition-Set Queries](riffql/PARTITION-SET-QUERIES.md)
 - [Long-Value Pattern Search](riffql/LONG-PATTERN.md)
 - [Tokenized Text Search](riffql/TOKENIZED-TEXT.md)
 - [Exact Predicate and Order Families](riffql/EXACT-PREDICATES.md)

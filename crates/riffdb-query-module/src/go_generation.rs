@@ -1425,7 +1425,9 @@ fn go_named_type(value: &NamedTypeSchema, contract: &ContractBundle) -> String {
                 .map_or_else(|| "string".into(), |item| go_public(item.name())),
         },
         NamedTypeSchema::Optional(inner) => format!("*{}", go_named_type(inner, contract)),
-        NamedTypeSchema::Set(inner) | NamedTypeSchema::List { element: inner, .. } => {
+        NamedTypeSchema::Set(inner)
+        | NamedTypeSchema::BoundedSet { element: inner, .. }
+        | NamedTypeSchema::List { element: inner, .. } => {
             format!("[]{}", go_named_type(inner, contract))
         }
         NamedTypeSchema::Record(fields) => format!(
@@ -1453,7 +1455,9 @@ fn encode_named_expr(value: &str, ty: &NamedTypeSchema, contract: &ContractBundl
             go_named_type(inner, contract),
             encode_named_expr("item", inner, contract)
         ),
-        NamedTypeSchema::Set(inner) | NamedTypeSchema::List { element: inner, .. } => format!(
+        NamedTypeSchema::Set(inner)
+        | NamedTypeSchema::BoundedSet { element: inner, .. }
+        | NamedTypeSchema::List { element: inner, .. } => format!(
             "riffdb.Values({value}, func(item {}) riffdb.Value {{ return {} }})",
             go_named_type(inner, contract),
             encode_named_expr("item", inner, contract)
@@ -1508,7 +1512,9 @@ fn decode_named_expr(value: &str, ty: &NamedTypeSchema, contract: &ContractBundl
             go_named_type(inner, contract),
             decode_named_expr("item", inner, contract)
         ),
-        NamedTypeSchema::Set(inner) | NamedTypeSchema::List { element: inner, .. } => format!(
+        NamedTypeSchema::Set(inner)
+        | NamedTypeSchema::BoundedSet { element: inner, .. }
+        | NamedTypeSchema::List { element: inner, .. } => format!(
             "riffdb.DecodeValues({value}, func(item riffdb.Value) ({}, error) {{ return {} }})",
             go_named_type(inner, contract),
             decode_named_expr("item", inner, contract)

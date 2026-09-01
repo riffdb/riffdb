@@ -6,7 +6,8 @@ use riffdb_types::{
 };
 
 use crate::{
-    ExactContractIdentity, MAX_QUERY_ARTIFACT_BYTES, ResolvedQueryV1, max_query_page_take,
+    ExactContractIdentity, MAX_QUERY_ARTIFACT_BYTES, MAX_QUERY_SCANNED_ROWS, ResolvedQueryV1,
+    max_query_page_take,
 };
 
 const PROGRAM_MAGIC: &[u8] = b"RIFFDB-QUERY-ACCESS-PROGRAM\0";
@@ -439,6 +440,21 @@ pub enum QueryAccessKind {
         /// Whole-index traversal direction.
         direction: AccessDirection,
     },
+    /// One declared partition-prefixed index replicated over a bounded route set.
+    PartitionSetIndex {
+        /// Exact contract index name.
+        index: String,
+        /// Index fields in contract order; the partition field is first.
+        fields: Vec<String>,
+        /// Whole-index traversal direction within every partition.
+        direction: AccessDirection,
+        /// Complete caller-visible order, including per-term direction/null placement.
+        order: Vec<QueryRootOrderTermV1>,
+        /// Maximum physical rows inspected in any one selected partition.
+        scan_ceiling: u32,
+        /// Complete owning entity key used for global tie-breaking and cursors.
+        key_fields: Vec<String>,
+    },
     /// Complete bounded key production from one exact long-pattern provider.
     LongPatternCandidate {
         /// Exact contract provider name.
@@ -767,9 +783,16 @@ impl QueryAccessStep {
                     && cursor_parameter.is_none()
                     && absence_outcome.is_some()
                     && predicates.iter().all(|predicate| {
-                        predicate.operator == QueryPredicateOperator::Equal
+                        (predicate.operator == QueryPredicateOperator::Equal
+                            || (predicate.operator == QueryPredicateOperator::In
+                                && matches!(predicate.value, QueryPredicateValue::Parameter(_))))
                             && predicate.field != pattern.field()
                     })
+                    && predicates
+                        .iter()
+                        .filter(|predicate| predicate.operator == QueryPredicateOperator::In)
+                        .count()
+                        <= 1
             }
             QueryAccessKind::DependentPointBatch {
                 key_fields,
@@ -866,6 +889,32 @@ impl QueryAccessStep {
                     && order
                         .last()
                         .is_some_and(|term| key_fields.last().is_some_and(|key| term.field == *key))
+            }
+            QueryAccessKind::PartitionSetIndex {
+                index,
+                fields,
+                key_fields,
+                order,
+                scan_ceiling,
+                ..
+            } => {
+                !index.is_empty()
+                    && !fields.is_empty()
+                    && !key_fields.is_empty()
+                    && !order.is_empty()
+                    && order.len() == fields.len().saturating_sub(1)
+                    && u64::from(*scan_ceiling) > maximum_rows
+                    && u64::from(*scan_ceiling) <= MAX_QUERY_SCANNED_ROWS
+                    && cardinality == Cardinality::Many
+                    && covered_result_layout.is_none()
+                    && fields[0]
+                        == predicates
+                            .iter()
+                            .find(|predicate| {
+                                predicate.operator == QueryPredicateOperator::In
+                                    && matches!(predicate.value, QueryPredicateValue::Parameter(_))
+                            })
+                            .map_or("", |predicate| predicate.field.as_str())
             }
         };
         let covered_layout_is_valid = covered_result_layout.as_ref().is_none_or(|layout| {
@@ -1068,6 +1117,60 @@ pub struct QueryPlanExplain {
     lines: Vec<String>,
 }
 
+/// Compiler-sealed route supplying every partition-local access in one query.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum QueryPartitionRouteV1 {
+    /// Existing one-scalar exact route.
+    Exact {
+        /// Parameter name without `$`.
+        parameter: String,
+    },
+    /// ADR-0175 finite explicitly bounded route set.
+    FiniteSet {
+        /// Parameter name without `$`.
+        parameter: String,
+        /// Inclusive maximum distinct canonical partition values.
+        maximum: u16,
+    },
+}
+
+impl QueryPartitionRouteV1 {
+    /// Constructs the predecessor exact route.
+    #[must_use]
+    pub fn exact(parameter: String) -> Option<Self> {
+        (!parameter.is_empty()).then_some(Self::Exact { parameter })
+    }
+
+    /// Constructs one finite explicitly bounded partition route.
+    #[must_use]
+    pub fn finite_set(parameter: String, maximum: u16) -> Option<Self> {
+        (!parameter.is_empty() && maximum > 0).then_some(Self::FiniteSet { parameter, maximum })
+    }
+
+    /// Submitted parameter supplying the route.
+    #[must_use]
+    pub fn parameter(&self) -> &str {
+        match self {
+            Self::Exact { parameter } | Self::FiniteSet { parameter, .. } => parameter,
+        }
+    }
+
+    /// Inclusive maximum selected partitions.
+    #[must_use]
+    pub const fn maximum_partitions(&self) -> u32 {
+        match self {
+            Self::Exact { .. } => 1,
+            Self::FiniteSet { maximum, .. } => *maximum as u32,
+        }
+    }
+
+    /// Whether this is ADR-0175's finite-set route.
+    #[must_use]
+    pub const fn is_finite_set(&self) -> bool {
+        matches!(self, Self::FiniteSet { .. })
+    }
+}
+
 impl QueryPlanExplain {
     /// Stable explain lines.
     #[must_use]
@@ -1083,7 +1186,7 @@ pub struct QueryAccessProgramV1 {
     surface: ResolvedQueryV1,
     name: Option<String>,
     projected_source: Option<ProjectedVectorSourceV1>,
-    partition_parameter: String,
+    partition_route: QueryPartitionRouteV1,
     steps: Vec<QueryAccessStep>,
     authorization: Vec<AuthorizationEntityAccess>,
     cost: QueryCostVectorV1,
@@ -1099,7 +1202,7 @@ impl std::fmt::Debug for QueryAccessProgramV1 {
             .field("contract_lineage", &self.contract.lineage().as_str())
             .field("contract_version", &self.contract.version())
             .field("name", &self.name)
-            .field("partition_parameter", &self.partition_parameter)
+            .field("partition_route", &self.partition_route)
             .field("steps", &self.steps)
             .field("authorization", &self.authorization)
             .field("cost", &self.cost)
@@ -1123,7 +1226,32 @@ impl QueryAccessProgramV1 {
             contract,
             surface,
             name,
-            partition_parameter,
+            QueryPartitionRouteV1::exact(partition_parameter)?,
+            steps,
+            authorization,
+            cost,
+            None,
+        )
+    }
+
+    /// Constructs a program routed by one explicitly bounded finite partition set.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn checked_partition_set(
+        contract: ExactContractIdentity,
+        surface: ResolvedQueryV1,
+        name: Option<String>,
+        partition_parameter: String,
+        maximum_partitions: u16,
+        steps: Vec<QueryAccessStep>,
+        authorization: Vec<AuthorizationEntityAccess>,
+        cost: QueryCostVectorV1,
+    ) -> Option<Self> {
+        Self::checked_with_projected_source(
+            contract,
+            surface,
+            name,
+            QueryPartitionRouteV1::finite_set(partition_parameter, maximum_partitions)?,
             steps,
             authorization,
             cost,
@@ -1148,7 +1276,7 @@ impl QueryAccessProgramV1 {
             contract,
             surface,
             name,
-            partition_parameter,
+            QueryPartitionRouteV1::exact(partition_parameter)?,
             steps,
             authorization,
             cost,
@@ -1161,14 +1289,15 @@ impl QueryAccessProgramV1 {
         contract: ExactContractIdentity,
         surface: ResolvedQueryV1,
         name: Option<String>,
-        partition_parameter: String,
+        partition_route: QueryPartitionRouteV1,
         steps: Vec<QueryAccessStep>,
         authorization: Vec<AuthorizationEntityAccess>,
         cost: QueryCostVectorV1,
         projected_source: Option<ProjectedVectorSourceV1>,
     ) -> Option<Self> {
         if surface.contract() != &contract
-            || partition_parameter.is_empty()
+            || partition_route.parameter().is_empty()
+            || partition_route.is_finite_set() != surface.has_bounded_set()
             || steps.is_empty()
             || authorization.is_empty()
             || authorization
@@ -1177,24 +1306,26 @@ impl QueryAccessProgramV1 {
             || cost.access_steps() != steps.len() as u64
             || !relationship_composition_is_valid(&steps)
             || !candidate_composition_is_valid(&surface, &steps)
+            || !partition_route_composition_is_valid(&partition_route, &steps)
         {
             return None;
         }
-        let ir_version =
-            if surface.ir_version() == crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1 {
-                crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1
-            } else if surface.has_bounded_limit() {
-                crate::QUERY_IR_VERSION_BOUNDED_LIMIT_V1
-            } else if projected_source.is_some() {
-                crate::QUERY_IR_VERSION_PROJECTED_VECTOR_V1
-            } else if steps
-                .iter()
-                .any(|step| step.covered_result_layout.is_some())
-            {
-                crate::QUERY_IR_VERSION_COVERED_RESULT_V1
-            } else {
-                surface.ir_version()
-            };
+        let ir_version = if surface.ir_version() == crate::QUERY_IR_VERSION_PARTITION_SET_V1 {
+            crate::QUERY_IR_VERSION_PARTITION_SET_V1
+        } else if surface.ir_version() == crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1 {
+            crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1
+        } else if surface.has_bounded_limit() {
+            crate::QUERY_IR_VERSION_BOUNDED_LIMIT_V1
+        } else if projected_source.is_some() {
+            crate::QUERY_IR_VERSION_PROJECTED_VECTOR_V1
+        } else if steps
+            .iter()
+            .any(|step| step.covered_result_layout.is_some())
+        {
+            crate::QUERY_IR_VERSION_COVERED_RESULT_V1
+        } else {
+            surface.ir_version()
+        };
         let canonical_bytes = encode_program(
             ProgramSurface {
                 contract: &contract,
@@ -1202,20 +1333,20 @@ impl QueryAccessProgramV1 {
                 canonical_bytes: surface.canonical_bytes(),
                 name: name.as_deref(),
             },
-            &partition_parameter,
+            &partition_route,
             &steps,
             &authorization,
             cost,
             projected_source.as_ref(),
         )?;
         let identity = QueryPlanIdentity(hash_query_plan(&canonical_bytes));
-        let explain = build_explain(&partition_parameter, &steps, &authorization, cost);
+        let explain = build_explain(&partition_route, &steps, &authorization, cost);
         Some(Self {
             contract,
             surface,
             name,
             projected_source,
-            partition_parameter,
+            partition_route,
             steps,
             authorization,
             cost,
@@ -1252,7 +1383,13 @@ impl QueryAccessProgramV1 {
     /// One parameter routing every access to the same partition.
     #[must_use]
     pub fn partition_parameter(&self) -> &str {
-        &self.partition_parameter
+        self.partition_route.parameter()
+    }
+
+    /// Complete compiler-sealed exact or finite-set partition route.
+    #[must_use]
+    pub const fn partition_route(&self) -> &QueryPartitionRouteV1 {
+        &self.partition_route
     }
 
     /// Ordered access steps.
@@ -1296,7 +1433,9 @@ impl QueryAccessProgramV1 {
     /// Least-sufficient executable IR identity for this exact program.
     #[must_use]
     pub fn ir_version(&self) -> u32 {
-        if self.surface.ir_version() == crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1 {
+        if self.surface.ir_version() == crate::QUERY_IR_VERSION_PARTITION_SET_V1 {
+            crate::QUERY_IR_VERSION_PARTITION_SET_V1
+        } else if self.surface.ir_version() == crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1 {
             crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1
         } else if self.surface.has_bounded_limit() {
             crate::QUERY_IR_VERSION_BOUNDED_LIMIT_V1
@@ -1352,6 +1491,41 @@ impl QueryAccessProgramV1 {
     pub const fn explain(&self) -> &QueryPlanExplain {
         &self.explain
     }
+}
+
+fn partition_route_composition_is_valid(
+    route: &QueryPartitionRouteV1,
+    steps: &[QueryAccessStep],
+) -> bool {
+    if !route.is_finite_set() {
+        return true;
+    }
+    steps.iter().all(|step| {
+        let route_predicates = step
+            .predicates()
+            .iter()
+            .filter(|predicate| {
+                predicate.operator() == QueryPredicateOperator::In
+                    && matches!(
+                        predicate.value(),
+                        QueryPredicateValue::Parameter(parameter)
+                            if parameter == route.parameter()
+                    )
+            })
+            .count();
+        route_predicates == 1
+            && match step.access() {
+                QueryAccessKind::PartitionSetIndex { .. }
+                | QueryAccessKind::CandidateRootHydration { .. }
+                | QueryAccessKind::LongPatternCandidate { .. } => true,
+                QueryAccessKind::Index { .. } => {
+                    matches!(step.row_limit(), QueryRowLimit::CandidateComplete { .. })
+                }
+                QueryAccessKind::Point { .. }
+                | QueryAccessKind::DependentPointBatch { .. }
+                | QueryAccessKind::Nearest { .. } => false,
+            }
+    })
 }
 
 fn relationship_composition_is_valid(steps: &[QueryAccessStep]) -> bool {
@@ -1481,7 +1655,7 @@ struct ProgramSurface<'a> {
 
 fn encode_program(
     surface: ProgramSurface<'_>,
-    partition_parameter: &str,
+    partition_route: &QueryPartitionRouteV1,
     steps: &[QueryAccessStep],
     authorization: &[AuthorizationEntityAccess],
     cost: QueryCostVectorV1,
@@ -1530,7 +1704,24 @@ fn encode_program(
     } else if projected_source.is_some() {
         return None;
     }
-    write_text(&mut out, partition_parameter)?;
+    if surface.ir_version == crate::QUERY_IR_VERSION_PARTITION_SET_V1 {
+        match partition_route {
+            QueryPartitionRouteV1::Exact { parameter } => {
+                out.push(1);
+                write_text(&mut out, parameter)?;
+            }
+            QueryPartitionRouteV1::FiniteSet { parameter, maximum } => {
+                out.push(2);
+                write_text(&mut out, parameter)?;
+                out.extend_from_slice(&maximum.to_be_bytes());
+            }
+        }
+    } else {
+        let QueryPartitionRouteV1::Exact { parameter } = partition_route else {
+            return None;
+        };
+        write_text(&mut out, parameter)?;
+    }
     write_count(&mut out, steps.len())?;
     for step in steps {
         write_text(&mut out, &step.binding)?;
@@ -1583,6 +1774,33 @@ fn encode_program(
                     AccessDirection::Forward => 1,
                     AccessDirection::Reverse => 2,
                 });
+            }
+            QueryAccessKind::PartitionSetIndex {
+                index,
+                fields,
+                direction,
+                order,
+                scan_ceiling,
+                key_fields,
+            } => {
+                out.push(7);
+                write_text(&mut out, index)?;
+                write_strings(&mut out, fields)?;
+                out.push(match direction {
+                    AccessDirection::Forward => 1,
+                    AccessDirection::Reverse => 2,
+                });
+                write_count(&mut out, order.len())?;
+                for term in order {
+                    write_text(&mut out, term.field())?;
+                    out.push(match term.direction() {
+                        AccessDirection::Forward => 1,
+                        AccessDirection::Reverse => 2,
+                    });
+                    out.push(u8::from(term.nulls_first()));
+                }
+                out.extend_from_slice(&scan_ceiling.to_be_bytes());
+                write_strings(&mut out, key_fields)?;
             }
             QueryAccessKind::LongPatternCandidate { provider, pattern } => {
                 out.push(6);
@@ -1804,12 +2022,17 @@ fn write_strings(out: &mut Vec<u8>, values: &[String]) -> Option<()> {
 }
 
 fn build_explain(
-    partition_parameter: &str,
+    partition_route: &QueryPartitionRouteV1,
     steps: &[QueryAccessStep],
     authorization: &[AuthorizationEntityAccess],
     cost: QueryCostVectorV1,
 ) -> QueryPlanExplain {
-    let mut lines = vec![format!("partition ${partition_parameter}")];
+    let mut lines = vec![match partition_route {
+        QueryPartitionRouteV1::Exact { parameter } => format!("partition ${parameter}"),
+        QueryPartitionRouteV1::FiniteSet { parameter, maximum } => {
+            format!("partitions ${parameter} within {maximum}")
+        }
+    }];
     for step in steps {
         let access = match &step.access {
             QueryAccessKind::Point { .. } => "primary-key".to_owned(),
@@ -1822,6 +2045,15 @@ fn build_explain(
                 index, direction, ..
             } => format!(
                 "index {index} {}",
+                match direction {
+                    AccessDirection::Forward => "forward",
+                    AccessDirection::Reverse => "reverse",
+                }
+            ),
+            QueryAccessKind::PartitionSetIndex {
+                index, direction, ..
+            } => format!(
+                "partition-set index {index} {} global-merge",
                 match direction {
                     AccessDirection::Forward => "forward",
                     AccessDirection::Reverse => "reverse",

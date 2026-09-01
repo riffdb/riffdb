@@ -193,6 +193,7 @@ direction, merged draft, or implementation choice.
 | [0172](0172-case-insensitive-text-matching.md) | Case-Insensitive Text Matching | Accepted |
 | [0173](0173-tokenized-text-search-provider.md) | Tokenized Text Search Provider | Accepted |
 | [0174](0174-bounded-filtered-result-pipelines.md) | Bounded Filtered Result Pipelines | Accepted |
+| [0175](0175-bounded-partition-set-operational-queries.md) | Bounded Partition-Set Operational Queries | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through

@@ -6,7 +6,7 @@ use riffdb_riffql_syntax::{
     BinaryOperator, CandidateSetExpression, CandidateSource, Cardinality, Document, Expression,
     FieldSelection, Literal, Path, RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1,
     RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1, RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1,
-    Selection, Span, TypeReference, format_query,
+    RIFFQL_LANGUAGE_VERSION_PARTITION_SET_V1, Selection, Span, TypeReference, format_query,
 };
 use riffdb_types::{
     AggregateSemanticIdentityV1, ContractBundleHash, ContractLineage, ContractVersion,
@@ -25,9 +25,10 @@ use crate::{
     OperationalAggregateGroupKeyV1, OperationalAggregateMeasureV1, OperationalAggregateV1,
     PageBound, QUERY_IR_VERSION_BOUNDED_LIMIT_V1, QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1,
     QUERY_IR_VERSION_EXACT_AGGREGATE_V1, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1,
-    QUERY_IR_VERSION_PROJECTED_VECTOR_V1, QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_V1,
-    QueryDiagnostic, QueryDiagnosticCode, QueryDiagnosticStage, QueryDiagnostics, SymbolicCatalog,
-    page_take_within_scan_bound, source_aggregate_semantic_identity,
+    QUERY_IR_VERSION_PARTITION_SET_V1, QUERY_IR_VERSION_PROJECTED_VECTOR_V1,
+    QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_V1, QueryDiagnostic, QueryDiagnosticCode,
+    QueryDiagnosticStage, QueryDiagnostics, SymbolicCatalog, page_take_within_scan_bound,
+    source_aggregate_semantic_identity,
 };
 
 const IR_MAGIC: &[u8] = b"RIFFDB-QUERY-SURFACE\0";
@@ -338,7 +339,9 @@ impl ResolvedQueryV1 {
     /// Query IR version.
     #[must_use]
     pub fn ir_version(&self) -> u32 {
-        if !self.candidates.is_empty() || self.has_extended_bounded_limit() {
+        if self.has_bounded_set() {
+            QUERY_IR_VERSION_PARTITION_SET_V1
+        } else if !self.candidates.is_empty() || self.has_extended_bounded_limit() {
             QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1
         } else if self.has_bounded_limit() {
             QUERY_IR_VERSION_BOUNDED_LIMIT_V1
@@ -354,6 +357,15 @@ impl ResolvedQueryV1 {
         } else {
             QUERY_IR_VERSION_SECRET_OUTPUT_V1
         }
+    }
+
+    /// Whether any public parameter uses ADR-0175's explicitly bounded set type.
+    #[must_use]
+    pub fn has_bounded_set(&self) -> bool {
+        self.schemas
+            .parameters()
+            .iter()
+            .any(|parameter| matches!(parameter.value_type(), NamedTypeSchema::BoundedSet { .. }))
     }
 
     /// Whether any public parameter uses ADR-0158's bounded page-limit type.
@@ -1317,6 +1329,21 @@ impl<'a> Resolver<'a> {
                 }
                 Ok(NamedTypeSchema::Set(Box::new(inner)))
             }
+            TypeReference::BoundedSet { element, maximum } => {
+                let inner = self.resolve_type(&element.value, element.span)?;
+                if !matches!(inner, NamedTypeSchema::Scalar(_)) {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::InvalidType,
+                        span,
+                        Vec::new(),
+                        "bounded query set element must be a contract scalar or enum",
+                    ));
+                }
+                Ok(NamedTypeSchema::BoundedSet {
+                    element: Box::new(inner),
+                    maximum: *maximum,
+                })
+            }
             TypeReference::Cursor => Ok(NamedTypeSchema::Cursor),
             TypeReference::Limit => Ok(NamedTypeSchema::Limit),
             TypeReference::BoundedLimit(maximum) => {
@@ -1346,6 +1373,7 @@ impl<'a> Resolver<'a> {
             }
             TypeReference::BoundedString(maximum) => ValueType::string(*maximum as usize).ok(),
             TypeReference::Set(_)
+            | TypeReference::BoundedSet { .. }
             | TypeReference::Cursor
             | TypeReference::Limit
             | TypeReference::BoundedLimit(_) => None,
@@ -2318,7 +2346,9 @@ fn canonical_surface(
     );
     bytes.extend_from_slice(IR_MAGIC);
     bytes.extend_from_slice(
-        &if matches!(
+        &if document.language_version == RIFFQL_LANGUAGE_VERSION_PARTITION_SET_V1 {
+            QUERY_IR_VERSION_PARTITION_SET_V1
+        } else if matches!(
             document.language_version,
             riffdb_riffql_syntax::RIFFQL_LANGUAGE_VERSION_ORDER_FAMILY_V1
                 | RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1
@@ -2540,6 +2570,11 @@ fn encode_named_type(
         NamedTypeSchema::Set(inner) => {
             output.push(3);
             encode_named_type(output, inner)?;
+        }
+        NamedTypeSchema::BoundedSet { element, maximum } => {
+            output.push(9);
+            encode_named_type(output, element)?;
+            output.extend_from_slice(&maximum.to_be_bytes());
         }
         NamedTypeSchema::Record(fields) => {
             output.push(4);

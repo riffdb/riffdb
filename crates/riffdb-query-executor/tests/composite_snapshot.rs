@@ -202,6 +202,7 @@ impl QueryReadView for FakeView {
         _predicates: &[BoundPredicate],
         limit: u64,
         after: Option<&[u8]>,
+        _after_inclusive: bool,
         _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryScanPage, Self::Error> {
         self.scan_calls += 1;
@@ -653,6 +654,7 @@ impl QueryReadView for ReportedWorkView {
         _predicates: &[BoundPredicate],
         _limit: u64,
         _after: Option<&[u8]>,
+        _after_inclusive: bool,
         _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryScanPage, Self::Error> {
         QueryScanPage::reported(
@@ -852,6 +854,7 @@ impl QueryReadView for ProbeScanView {
         _predicates: &[BoundPredicate],
         limit: u64,
         _after: Option<&[u8]>,
+        _after_inclusive: bool,
         _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryScanPage, Self::Error> {
         self.scan_calls += 1;

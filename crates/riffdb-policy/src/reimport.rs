@@ -476,7 +476,14 @@ mod tests {
         )
         .into_query_execution(query_target(7, 1))
         .expect("in-scope bounded query");
-        assert_eq!(query.target().partition().partition_key(), &partition(7));
+        assert_eq!(
+            query
+                .target()
+                .partition()
+                .expect("single partition")
+                .partition_key(),
+            &partition(7)
+        );
         assert!(query.internal_row_policy_authority().is_some());
 
         assert_eq!(

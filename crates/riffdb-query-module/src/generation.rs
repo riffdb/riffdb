@@ -1276,6 +1276,14 @@ fn mcp_type_schema(value_type: &NamedTypeSchema) -> Value {
                 "uniqueItems": true
             })
         }
+        NamedTypeSchema::BoundedSet { element, maximum } => {
+            json!({
+                "type": "array",
+                "items": mcp_type_schema(element),
+                "maxItems": maximum,
+                "uniqueItems": true
+            })
+        }
         NamedTypeSchema::List { element, maximum } => {
             let maximum = match maximum {
                 PageBound::Literal(maximum) => *maximum,
@@ -2696,6 +2704,7 @@ fn emit_rust_query_decoder(output: &mut String, name: &str, value_type: &NamedTy
     match value_type {
         NamedTypeSchema::Optional(inner)
         | NamedTypeSchema::Set(inner)
+        | NamedTypeSchema::BoundedSet { element: inner, .. }
         | NamedTypeSchema::List { element: inner, .. } => {
             emit_rust_query_decoder(output, name, inner);
         }
@@ -2790,7 +2799,9 @@ fn rust_encode_application_expr(value_type: &NamedTypeSchema, access: &str) -> S
             "match {access} {{ Some(value) => {}, None => ApplicationValue::Null }}",
             rust_encode_application_expr(inner, "value")
         ),
-        NamedTypeSchema::Set(inner) | NamedTypeSchema::List { element: inner, .. } => {
+        NamedTypeSchema::Set(inner)
+        | NamedTypeSchema::BoundedSet { element: inner, .. }
+        | NamedTypeSchema::List { element: inner, .. } => {
             let element = rust_encode_application_expr(inner, "value");
             if let Some(constructor) = element
                 .strip_suffix("(value)")
@@ -2869,7 +2880,9 @@ fn rust_decode_application_expr(
             "match {access} {{ ApplicationValue::Null => None, value => Some({}) }}",
             rust_decode_application_expr(inner, "value", nested_name)
         ),
-        NamedTypeSchema::Set(inner) | NamedTypeSchema::List { element: inner, .. } => format!(
+        NamedTypeSchema::Set(inner)
+        | NamedTypeSchema::BoundedSet { element: inner, .. }
+        | NamedTypeSchema::List { element: inner, .. } => format!(
             "application_list({access})?.into_iter().map(|value| Ok({})).collect::<Result<Vec<_>, ApplicationClientError>>()?",
             rust_decode_application_expr(inner, "value", nested_name)
         ),
@@ -5052,6 +5065,7 @@ fn emit_rust_nested_type(
     match value_type {
         NamedTypeSchema::Optional(inner)
         | NamedTypeSchema::Set(inner)
+        | NamedTypeSchema::BoundedSet { element: inner, .. }
         | NamedTypeSchema::List { element: inner, .. } => {
             emit_rust_nested_type(output, name, inner, redacted_debug);
         }
@@ -5120,7 +5134,9 @@ fn rust_query_type(value_type: &NamedTypeSchema, nested_name: &str) -> String {
         NamedTypeSchema::Optional(inner) => {
             format!("Option<{}>", rust_query_type(inner, nested_name))
         }
-        NamedTypeSchema::Set(inner) | NamedTypeSchema::List { element: inner, .. } => {
+        NamedTypeSchema::Set(inner)
+        | NamedTypeSchema::BoundedSet { element: inner, .. }
+        | NamedTypeSchema::List { element: inner, .. } => {
             format!("Vec<{}>", rust_query_type(inner, nested_name))
         }
         NamedTypeSchema::Record(_) => nested_name.to_owned(),
@@ -5198,7 +5214,9 @@ fn ts_query_type(value_type: &NamedTypeSchema) -> String {
             _ => "string".to_owned(),
         },
         NamedTypeSchema::Optional(inner) => format!("{} | null", ts_query_type(inner)),
-        NamedTypeSchema::Set(inner) | NamedTypeSchema::List { element: inner, .. } => {
+        NamedTypeSchema::Set(inner)
+        | NamedTypeSchema::BoundedSet { element: inner, .. }
+        | NamedTypeSchema::List { element: inner, .. } => {
             format!("ReadonlyArray<{}>", ts_query_type(inner))
         }
         NamedTypeSchema::Record(fields) => {
@@ -5277,6 +5295,14 @@ fn ts_named_value_schema(value_type: &NamedTypeSchema, contract: &ContractBundle
         }
         NamedTypeSchema::Set(inner) => {
             json!({"kind": "list", "value": ts_named_value_schema(inner, contract)})
+        }
+        NamedTypeSchema::BoundedSet { element, maximum } => {
+            json!({
+                "kind": "list",
+                "value": ts_named_value_schema(element, contract),
+                "maximum": maximum,
+                "unique": true
+            })
         }
         NamedTypeSchema::Record(fields) => ts_named_record_schema(
             fields

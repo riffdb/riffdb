@@ -138,6 +138,6 @@ fn difference_rejects_a_non_root_positive_universe_with_its_source_span() {
     assert!(diagnostic.primary().end > diagnostic.primary().start);
     assert_eq!(
         diagnostic.summary(),
-        "candidate difference requires one policy-filtered partition-complete positive root universe"
+        "candidate difference requires one policy-filtered route-complete positive root universe"
     );
 }

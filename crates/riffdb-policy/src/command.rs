@@ -155,6 +155,7 @@ impl AuthorizedCommandExecution {
                 .binary_search_by_key(&partition.canonical_key(), ScopedPartitionV1::canonical_key)
                 .is_ok(),
             Some(PartitionConstraint::Exact(_)) => false,
+            Some(PartitionConstraint::Explicit(_)) => false,
         };
         if authorization.request().operation() != crate::ApplicationReimportPolicyOperationV1::Page
             || !partition_allowed

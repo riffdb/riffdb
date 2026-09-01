@@ -289,6 +289,7 @@ const fn storage_query_fault(error: &StorageError) -> QueryBackendFault {
 struct MemoryQueryView<'a> {
     state: &'a MemoryState,
     program: &'a QueryAccessProgramV1,
+    #[allow(dead_code)]
     parameters: &'a QueryParameters,
 }
 
@@ -343,19 +344,35 @@ impl QueryReadView for MemoryQueryView<'_> {
         predicates: &[BoundPredicate],
         limit: u64,
         after: Option<&[u8]>,
+        after_inclusive: bool,
         policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryScanPage, Self::Error> {
-        let QueryAccessKind::Index { direction, .. } = step.access() else {
-            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        let direction = match step.access() {
+            QueryAccessKind::Index { direction, .. }
+            | QueryAccessKind::PartitionSetIndex { direction, .. } => direction,
+            _ => return Err(storage_error(StorageErrorKind::InvariantViolation)),
         };
         let schema = step
             .internal_index_key_schema()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
         let schedule = riffdb_query_executor::bound_index_range_schedule_v1(step, predicates)
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        let partition_value = self
-            .parameters
-            .get(self.program.partition_parameter())
+        let partition_value = predicates
+            .iter()
+            .find(|predicate| {
+                predicate.operator() == riffdb_query_ir::QueryPredicateOperator::Equal
+            })
+            .filter(|predicate| {
+                step.predicates().iter().any(|source| {
+                    source.field() == predicate.field()
+                        && matches!(
+                            source.value(),
+                            riffdb_query_ir::QueryPredicateValue::Parameter(name)
+                                if name == self.program.partition_parameter()
+                        )
+                })
+            })
+            .map(BoundPredicate::value)
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
         let partition = step
             .internal_partition_key_schema()
@@ -382,7 +399,7 @@ impl QueryReadView for MemoryQueryView<'_> {
             .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
         let plan = RowMaterializePlan::for_step(self.program, step)?;
         'ranges: for range in schedule.ranges() {
-            let Some(window) = range.resume_window(*direction, after) else {
+            let Some(window) = range.resume_window(*direction, after, after_inclusive) else {
                 continue;
             };
             let start = self.state.index_entries.partition_point(|entry| {
@@ -390,10 +407,11 @@ impl QueryReadView for MemoryQueryView<'_> {
                     || (window.skip_start_equal()
                         && entry.key().as_bytes() == window.start_inclusive())
             });
-            let end = self
-                .state
-                .index_entries
-                .partition_point(|entry| entry.key().as_bytes() < window.end_exclusive());
+            let end = self.state.index_entries.partition_point(|entry| {
+                entry.key().as_bytes() < window.end_exclusive()
+                    || (window.include_end_equal()
+                        && entry.key().as_bytes() == window.end_exclusive())
+            });
             let matching = self
                 .state
                 .index_entries
@@ -513,7 +531,9 @@ impl MemoryQueryView<'_> {
             QueryAccessKind::Point { key_fields }
             | QueryAccessKind::DependentPointBatch { key_fields, .. }
             | QueryAccessKind::CandidateRootHydration { key_fields, .. } => key_fields,
-            QueryAccessKind::Index { .. } | QueryAccessKind::LongPatternCandidate { .. } => {
+            QueryAccessKind::Index { .. }
+            | QueryAccessKind::PartitionSetIndex { .. }
+            | QueryAccessKind::LongPatternCandidate { .. } => {
                 return Err(storage_error(StorageErrorKind::InvariantViolation));
             }
             QueryAccessKind::Nearest { .. } => {

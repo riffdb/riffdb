@@ -16,9 +16,10 @@ use crate::{
     ContractPlanRootHash, DigestKey, DigestKeyId, EntityKeyHash, EntityRecordHash,
     EntityTransitionHash, EventConsumerIdentityHash, EventHash, GeneratedArtifactHash,
     MigrationBundleHash, MigrationSourceHash, OfflineMaintenanceInputHash, PartitionKeyHash,
-    PlanHash, ProjectionApplyHash, ProjectionPlanHash, ProjectionProviderDescriptorHash,
-    QueryModuleHash, QueryParameterHash, QueryPlanHash, QuerySourceHash, ReactiveModuleHash,
-    ReactiveOperationHash, ReactiveSourceHash, ScheduledAttemptHash, SchemaHash, SourceHash,
+    PartitionSetObservationHash, PlanHash, ProjectionApplyHash, ProjectionPlanHash,
+    ProjectionProviderDescriptorHash, QueryModuleHash, QueryParameterHash, QueryPlanHash,
+    QuerySourceHash, ReactiveModuleHash, ReactiveOperationHash, ReactiveSourceHash,
+    ScheduledAttemptHash, SchemaHash, SourceHash,
 };
 
 /// Hash framing and algorithm scheme defined by ADR-0011.
@@ -48,6 +49,8 @@ pub enum HashDomain {
     ProjectionProviderDescriptor,
     /// Closed RiffQL query access program.
     QueryPlan,
+    /// Ordered selected partition/index/provider epoch observations.
+    PartitionSetObservation,
     /// Canonical immutable query module.
     QueryModule,
     /// Exact reactive source document.
@@ -134,7 +137,7 @@ pub enum HashDomain {
 
 impl HashDomain {
     /// Every registered unkeyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 50] = [
+    pub const ALL: [Self; 51] = [
         Self::CanonicalValue,
         Self::Source,
         Self::MigrationSource,
@@ -144,6 +147,7 @@ impl HashDomain {
         Self::ProjectionPlan,
         Self::ProjectionProviderDescriptor,
         Self::QueryPlan,
+        Self::PartitionSetObservation,
         Self::QueryModule,
         Self::ReactiveSource,
         Self::ReactiveOperation,
@@ -199,6 +203,7 @@ impl HashDomain {
             Self::ProjectionPlan => "riffdb.projection-plan/v1",
             Self::ProjectionProviderDescriptor => "riffdb.projection-provider-descriptor/v1",
             Self::QueryPlan => "riffdb.query-plan/v1",
+            Self::PartitionSetObservation => "riffdb.partition-set-observation/v1",
             Self::QueryModule => "riffdb.query-module/v1",
             Self::ReactiveSource => "riffdb.reactive-source/v1",
             Self::ReactiveOperation => "riffdb.reactive-operation/v1",
@@ -439,6 +444,12 @@ typed_hash_function!(
     hash_query_plan,
     QueryPlan,
     QueryPlanHash
+);
+typed_hash_function!(
+    /// Hashes ordered bounded partition/index/provider epoch observations.
+    hash_partition_set_observation,
+    PartitionSetObservation,
+    PartitionSetObservationHash
 );
 typed_hash_function!(
     /// Hashes a canonical immutable query module in its immutable v1 domain.

@@ -30,7 +30,8 @@ use riffdb_types::{
     CommitSequence, CompiledLongPatternV1, ContractLineage, EmbeddingMetadata, EntityKey,
     EntityTypeId, FieldId, PartitionKey, PartitionKeyHash, ProjectionGeneration,
     ProjectionProviderDescriptorHash, QueryCostVectorV1, canonical_value_encoded_len,
-    encode_canonical_value, hash_partition_key,
+    decode_canonical_value, encode_canonical_value, hash_partition_key,
+    hash_partition_set_observation,
 };
 
 /// Maximum checked submitted parameters.
@@ -338,60 +339,83 @@ pub fn bind_live_query_dependencies(
         .ok_or_else(|| QueryExecutionError::MissingParameter {
             parameter: program.partition_parameter().to_owned(),
         })?;
+    let partition_values = match program.partition_route() {
+        riffdb_query_ir::QueryPartitionRouteV1::Exact { .. } => {
+            std::slice::from_ref(partition_value)
+        }
+        riffdb_query_ir::QueryPartitionRouteV1::FiniteSet { maximum, .. } => {
+            let CanonicalValue::List(values) = partition_value else {
+                return Err(QueryExecutionError::InvalidParameter {
+                    parameter: program.partition_parameter().to_owned(),
+                });
+            };
+            if values.values().len() > usize::from(*maximum) {
+                return Err(QueryExecutionError::BoundExceeded);
+            }
+            values.values()
+        }
+    };
     let empty_bindings = BTreeMap::new();
-    program
-        .steps()
-        .iter()
-        .map(|step| {
+    let mut dependencies = Vec::with_capacity(
+        program
+            .steps()
+            .len()
+            .checked_mul(partition_values.len())
+            .ok_or(QueryExecutionError::BoundExceeded)?,
+    );
+    for step in program.steps() {
+        let entity_key = match step.access() {
+            QueryAccessKind::Point { key_fields }
+                if step.predicates().iter().all(|predicate| {
+                    !matches!(
+                        predicate.value(),
+                        QueryPredicateValue::BindingField { .. }
+                            | QueryPredicateValue::BindingFieldSet { .. }
+                            | QueryPredicateValue::CandidateBinding { .. }
+                    )
+                }) =>
+            {
+                let predicates = bind_predicates(step, parameters, &empty_bindings, &[])?;
+                let values = key_fields
+                    .iter()
+                    .map(|field| {
+                        predicates
+                            .iter()
+                            .find(|predicate| {
+                                predicate.field() == field
+                                    && predicate.operator() == QueryPredicateOperator::Equal
+                            })
+                            .map(|predicate| predicate.value().clone())
+                            .ok_or(QueryExecutionError::InvalidProgram)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Some(
+                    step.internal_entity_key_schema()
+                        .encode_entity(&values)
+                        .map_err(|_| QueryExecutionError::InvalidProgram)?,
+                )
+            }
+            QueryAccessKind::Point { .. }
+            | QueryAccessKind::DependentPointBatch { .. }
+            | QueryAccessKind::Index { .. }
+            | QueryAccessKind::PartitionSetIndex { .. }
+            | QueryAccessKind::LongPatternCandidate { .. }
+            | QueryAccessKind::Nearest { .. }
+            | QueryAccessKind::CandidateRootHydration { .. } => None,
+        };
+        for partition_value in partition_values {
             let partition = step
                 .internal_partition_key_schema()
                 .encode_partition(std::slice::from_ref(partition_value))
                 .map_err(|_| QueryExecutionError::InvalidProgram)?;
-            let entity_key = match step.access() {
-                QueryAccessKind::Point { key_fields }
-                    if step.predicates().iter().all(|predicate| {
-                        !matches!(
-                            predicate.value(),
-                            QueryPredicateValue::BindingField { .. }
-                                | QueryPredicateValue::BindingFieldSet { .. }
-                                | QueryPredicateValue::CandidateBinding { .. }
-                        )
-                    }) =>
-                {
-                    let predicates = bind_predicates(step, parameters, &empty_bindings, &[])?;
-                    let values = key_fields
-                        .iter()
-                        .map(|field| {
-                            predicates
-                                .iter()
-                                .find(|predicate| {
-                                    predicate.field() == field
-                                        && predicate.operator() == QueryPredicateOperator::Equal
-                                })
-                                .map(|predicate| predicate.value().clone())
-                                .ok_or(QueryExecutionError::InvalidProgram)
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
-                    Some(
-                        step.internal_entity_key_schema()
-                            .encode_entity(&values)
-                            .map_err(|_| QueryExecutionError::InvalidProgram)?,
-                    )
-                }
-                QueryAccessKind::Point { .. }
-                | QueryAccessKind::DependentPointBatch { .. }
-                | QueryAccessKind::Index { .. }
-                | QueryAccessKind::LongPatternCandidate { .. }
-                | QueryAccessKind::Nearest { .. }
-                | QueryAccessKind::CandidateRootHydration { .. } => None,
-            };
-            Ok(BoundLiveQueryDependency {
+            dependencies.push(BoundLiveQueryDependency {
                 entity_type_id: step.internal_entity_id(),
                 partition_hash: hash_partition_key(partition.as_bytes()),
-                entity_key,
-            })
-        })
-        .collect()
+                entity_key: entity_key.clone(),
+            });
+        }
+    }
+    Ok(dependencies)
 }
 
 /// One owned, name-addressed authoritative entity row.
@@ -623,12 +647,14 @@ impl BoundIndexRangeV1 {
         &'a self,
         direction: AccessDirection,
         after: Option<&'a [u8]>,
+        after_inclusive: bool,
     ) -> Option<BoundIndexRangeWindowV1<'a>> {
         let Some(after) = after else {
             return Some(BoundIndexRangeWindowV1 {
                 start_inclusive: &self.start_inclusive,
                 end_exclusive: &self.end_exclusive,
                 skip_start_equal: false,
+                include_end_equal: false,
             });
         };
         match direction {
@@ -638,25 +664,34 @@ impl BoundIndexRangeV1 {
                     start_inclusive: &self.start_inclusive,
                     end_exclusive: &self.end_exclusive,
                     skip_start_equal: false,
+                    include_end_equal: false,
                 })
             }
             AccessDirection::Forward => Some(BoundIndexRangeWindowV1 {
                 start_inclusive: after,
                 end_exclusive: &self.end_exclusive,
-                skip_start_equal: true,
+                skip_start_equal: !after_inclusive,
+                include_end_equal: false,
             }),
-            AccessDirection::Reverse if after <= self.start_inclusive.as_slice() => None,
+            AccessDirection::Reverse
+                if after < self.start_inclusive.as_slice()
+                    || (!after_inclusive && after == self.start_inclusive.as_slice()) =>
+            {
+                None
+            }
             AccessDirection::Reverse if after >= self.end_exclusive.as_slice() => {
                 Some(BoundIndexRangeWindowV1 {
                     start_inclusive: &self.start_inclusive,
                     end_exclusive: &self.end_exclusive,
                     skip_start_equal: false,
+                    include_end_equal: false,
                 })
             }
             AccessDirection::Reverse => Some(BoundIndexRangeWindowV1 {
                 start_inclusive: &self.start_inclusive,
                 end_exclusive: after,
                 skip_start_equal: false,
+                include_end_equal: after_inclusive,
             }),
         }
     }
@@ -669,6 +704,7 @@ pub struct BoundIndexRangeWindowV1<'a> {
     start_inclusive: &'a [u8],
     end_exclusive: &'a [u8],
     skip_start_equal: bool,
+    include_end_equal: bool,
 }
 
 impl<'a> BoundIndexRangeWindowV1<'a> {
@@ -691,6 +727,13 @@ impl<'a> BoundIndexRangeWindowV1<'a> {
     #[must_use]
     pub const fn skip_start_equal(self) -> bool {
         self.skip_start_equal
+    }
+
+    /// Whether a reverse adapter includes the exact supplied upper key.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn include_end_equal(self) -> bool {
+        self.include_end_equal
     }
 }
 
@@ -716,11 +759,14 @@ pub fn bound_index_range_schedule_v1(
     step: &QueryAccessStep,
     predicates: &[BoundPredicate],
 ) -> Result<BoundIndexRangeScheduleV1, QueryExecutionError> {
-    let QueryAccessKind::Index {
-        fields, direction, ..
-    } = step.access()
-    else {
-        return Err(QueryExecutionError::InvalidProgram);
+    let (fields, direction) = match step.access() {
+        QueryAccessKind::Index {
+            fields, direction, ..
+        }
+        | QueryAccessKind::PartitionSetIndex {
+            fields, direction, ..
+        } => (fields, direction),
+        _ => return Err(QueryExecutionError::InvalidProgram),
     };
     let schema = step
         .internal_index_key_schema()
@@ -1175,6 +1221,45 @@ impl LongPatternCandidateBatch {
             riffdb_projection::ProviderLifecycleV1::Ready,
         )
     }
+
+    /// Combines one provider invocation per selected partition into one bounded source batch.
+    #[doc(hidden)]
+    pub fn merge_partition_batches(
+        mut batches: Vec<Self>,
+        maximum_candidates: u64,
+        maximum_scanned_rows: u64,
+        maximum_verification_bytes: u64,
+    ) -> Option<Self> {
+        let mut merged = batches.pop()?;
+        for batch in batches {
+            if batch.binding != merged.binding
+                || batch.descriptor != merged.descriptor
+                || batch.state_schema_hash != merged.state_schema_hash
+                || batch.history_incarnation != merged.history_incarnation
+                || batch.generation != merged.generation
+            {
+                return None;
+            }
+            merged.floor = merged.floor.max(batch.floor);
+            merged.ceiling = merged.ceiling.min(batch.ceiling);
+            merged.scanned_rows = merged.scanned_rows.checked_add(batch.scanned_rows)?;
+            merged.verification_bytes = merged
+                .verification_bytes
+                .checked_add(batch.verification_bytes)?;
+            merged.rows.extend(batch.rows);
+            if merged.floor > merged.ceiling
+                || merged.rows.len() as u64 > maximum_candidates
+                || merged.scanned_rows > maximum_scanned_rows
+                || merged.verification_bytes > maximum_verification_bytes
+            {
+                return None;
+            }
+        }
+        (merged.rows.len() as u64 <= maximum_candidates
+            && merged.scanned_rows <= maximum_scanned_rows
+            && merged.verification_bytes <= maximum_verification_bytes)
+            .then_some(merged)
+    }
 }
 
 impl QueryScanPage {
@@ -1402,6 +1487,7 @@ pub trait QueryReadView {
         predicates: &[BoundPredicate],
         limit: u64,
         after: Option<&[u8]>,
+        after_inclusive: bool,
         policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryScanPage, Self::Error>;
 
@@ -2247,6 +2333,56 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                     .collect::<Result<Vec<_>, _>>()?;
                 (rows, None, false)
             }
+            riffdb_query_ir::QueryAccessKind::Index { index, .. }
+                if program.partition_route().is_finite_set()
+                    && matches!(step.row_limit(), QueryRowLimit::CandidateComplete { .. }) =>
+            {
+                if after.is_some() || step.covered_result_layout().is_some() {
+                    return Err(QueryExecutionError::InvalidProgram);
+                }
+                let predicates =
+                    bind_predicates(step, parameters, &bindings, program.surface().candidates())?;
+                let routes = partition_set_routes(program, parameters)?;
+                let mut rows = Vec::new();
+                let mut observations = Vec::new();
+                for route in routes {
+                    let local = partition_local_predicates(
+                        step,
+                        &predicates,
+                        program.partition_parameter(),
+                        route,
+                    )?;
+                    let page = view
+                        .scan(step, &local, limit, None, false, policy)
+                        .map_err(|error| map_view_error(view, &error))?;
+                    if page.scanned_rows > MAX_QUERY_SCANNED_ROWS
+                        || page.rows.len() as u64 > limit
+                        || page.point_reads != page.rows.len() as u64
+                        || page.rows.len() as u64 > page.scanned_rows
+                        || page.continuation.is_some()
+                        || page.rows.iter().any(|row| {
+                            row.entity() != step.entity()
+                                || predicates_match(row, &local) != Ok(true)
+                        })
+                    {
+                        return Err(QueryExecutionError::BoundExceeded);
+                    }
+                    fuel.scans(page.scanned_rows)?;
+                    fuel.points(page.point_reads)?;
+                    append_partition_observation(&mut observations, route, page.epoch)?;
+                    rows.extend(page.rows);
+                    if rows.len() as u64 > limit {
+                        return Err(QueryExecutionError::BoundExceeded);
+                    }
+                }
+                insert_partition_set_observation(
+                    &mut index_epochs,
+                    step.entity(),
+                    index,
+                    &observations,
+                )?;
+                (rows, Some(predicates), true)
+            }
             riffdb_query_ir::QueryAccessKind::Index { index, .. } => {
                 let predicates =
                     bind_predicates(step, parameters, &bindings, program.surface().candidates())?;
@@ -2297,7 +2433,7 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                         )
                     } else {
                         (
-                            view.scan(step, &predicates, limit, after, policy)
+                            view.scan(step, &predicates, limit, after, false, policy)
                                 .map_err(|error| map_view_error(view, &error))?,
                             false,
                         )
@@ -2344,75 +2480,194 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                     true,
                 )
             }
+            riffdb_query_ir::QueryAccessKind::PartitionSetIndex {
+                index,
+                fields,
+                direction,
+                order,
+                scan_ceiling,
+                key_fields,
+            } => {
+                if step.covered_result_layout().is_some() || fields.len() < 2 {
+                    return Err(QueryExecutionError::InvalidProgram);
+                }
+                let predicates =
+                    bind_predicates(step, parameters, &bindings, program.surface().candidates())?;
+                let routes = partition_set_routes(program, parameters)?;
+                let prior_marker = after
+                    .map(|lower| {
+                        decode_partition_set_marker(lower, fields.len() + key_fields.len())
+                    })
+                    .transpose()?;
+                let merge_limit =
+                    usize::try_from(limit).map_err(|_| QueryExecutionError::BoundExceeded)?;
+                let uniform_order = order.iter().all(|term| term.direction() == *direction);
+                let (merged, observations, has_more) = if uniform_order {
+                    execute_partition_set_uniform_merge(
+                        view,
+                        &mut fuel,
+                        step,
+                        &predicates,
+                        program.partition_parameter(),
+                        routes,
+                        fields,
+                        order,
+                        key_fields,
+                        *scan_ceiling,
+                        limit,
+                        prior_marker.as_deref(),
+                        policy,
+                    )?
+                } else {
+                    let mut merged = Vec::new();
+                    let mut has_more = false;
+                    let mut observations = Vec::new();
+                    for route in routes {
+                        let local_predicates = partition_local_predicates(
+                            step,
+                            &predicates,
+                            program.partition_parameter(),
+                            route,
+                        )?;
+                        let (stream, epoch, stream_has_more) = execute_partition_set_stream(
+                            view,
+                            &mut fuel,
+                            step,
+                            &local_predicates,
+                            route,
+                            fields,
+                            order,
+                            key_fields,
+                            *direction,
+                            *scan_ceiling,
+                            limit,
+                            prior_marker.as_deref(),
+                            policy,
+                        )?;
+                        append_partition_observation(&mut observations, route, epoch)?;
+                        has_more |= stream_has_more;
+                        let (next, discarded) = merge_partition_streams(
+                            merged,
+                            stream,
+                            merge_limit,
+                            fields,
+                            order,
+                            key_fields,
+                        )?;
+                        merged = next;
+                        has_more |= discarded;
+                    }
+                    (merged, observations, has_more)
+                };
+                insert_partition_set_observation(
+                    &mut index_epochs,
+                    step.entity(),
+                    index,
+                    &observations,
+                )?;
+                if has_more {
+                    let lower = merged
+                        .last()
+                        .ok_or(QueryExecutionError::InvalidProgram)
+                        .and_then(|row| partition_set_marker(row, fields, key_fields))?;
+                    if lower.len() > MAX_QUERY_CONTINUATION_BYTES || continuation.is_some() {
+                        return Err(QueryExecutionError::BoundExceeded);
+                    }
+                    continuation_binding = Some(step.binding().to_owned());
+                    continuation = Some(lower);
+                }
+                (merged, Some(predicates), true)
+            }
             riffdb_query_ir::QueryAccessKind::LongPatternCandidate { provider, pattern } => {
                 if after.is_some() {
                     return Err(QueryExecutionError::InvalidProgram);
                 }
-                let CanonicalValue::String(source_pattern) = parameters
-                    .get(pattern.pattern_parameter())
-                    .ok_or_else(|| QueryExecutionError::MissingParameter {
-                        parameter: pattern.pattern_parameter().to_owned(),
-                    })?
-                else {
-                    return Err(QueryExecutionError::InvalidParameter {
-                        parameter: pattern.pattern_parameter().to_owned(),
-                    });
+                let route_count = if program.partition_route().is_finite_set() {
+                    u64::try_from(partition_set_routes(program, parameters)?.len())
+                        .map_err(|_| QueryExecutionError::BoundExceeded)?
+                } else {
+                    1
                 };
-                let compiled = CompiledLongPatternV1::compile_bounded(
-                    pattern.operator(),
-                    pattern.profile(),
-                    source_pattern.as_str(),
-                    pattern.bounds(),
-                )
-                .map_err(|_| QueryExecutionError::InvalidParameter {
-                    parameter: pattern.pattern_parameter().to_owned(),
-                })?;
-                let predicates =
-                    bind_predicates(step, parameters, &bindings, program.surface().candidates())?;
-                let batch = providers
-                    .as_deref_mut()
-                    .ok_or(QueryExecutionError::BackendUnavailable)?
-                    .batch(step, pattern.descriptor().digest())?;
-                let head = view.application_head();
-                let bounds = pattern.bounds();
-                if batch.descriptor != pattern.descriptor().digest()
-                    || batch.state_schema_hash
-                        != pattern.descriptor().state_identity().schema_hash()
-                    || batch.floor.get() > head
-                    || batch.ceiling.get() < head
-                    || batch.rows.len() as u64 > limit
-                    || batch.rows.len() as u32 > bounds.candidates()
-                    || batch.scanned_rows > u64::from(bounds.rows())
-                    || batch.verification_bytes > bounds.verification_bytes()
-                    || batch.rows.iter().any(|row| {
-                        row.entity() != step.entity()
-                            || predicates_match(row, &predicates) != Ok(true)
-                            || row
-                                .field(pattern.field())
-                                .and_then(|value| match value {
-                                    CanonicalValue::String(value) => Some(value.as_str()),
-                                    _ => None,
-                                })
-                                .is_none_or(|value| !compiled.matches_source(value))
-                    })
-                {
-                    return Err(QueryExecutionError::BoundExceeded);
+                if route_count == 0 {
+                    (Vec::new(), None, false)
+                } else {
+                    let CanonicalValue::String(source_pattern) = parameters
+                        .get(pattern.pattern_parameter())
+                        .ok_or_else(|| QueryExecutionError::MissingParameter {
+                            parameter: pattern.pattern_parameter().to_owned(),
+                        })?
+                    else {
+                        return Err(QueryExecutionError::InvalidParameter {
+                            parameter: pattern.pattern_parameter().to_owned(),
+                        });
+                    };
+                    let compiled = CompiledLongPatternV1::compile_bounded(
+                        pattern.operator(),
+                        pattern.profile(),
+                        source_pattern.as_str(),
+                        pattern.bounds(),
+                    )
+                    .map_err(|_| QueryExecutionError::InvalidParameter {
+                        parameter: pattern.pattern_parameter().to_owned(),
+                    })?;
+                    let predicates = bind_predicates(
+                        step,
+                        parameters,
+                        &bindings,
+                        program.surface().candidates(),
+                    )?;
+                    let batch = providers
+                        .as_deref_mut()
+                        .ok_or(QueryExecutionError::BackendUnavailable)?
+                        .batch(step, pattern.descriptor().digest())?;
+                    let head = view.application_head();
+                    let bounds = pattern.bounds();
+                    if batch.descriptor != pattern.descriptor().digest()
+                        || batch.state_schema_hash
+                            != pattern.descriptor().state_identity().schema_hash()
+                        || batch.floor.get() > head
+                        || batch.ceiling.get() < head
+                        || batch.rows.len() as u64 > limit
+                        || batch.rows.len() as u32 > bounds.candidates()
+                        || batch.scanned_rows
+                            > u64::from(bounds.rows())
+                                .checked_mul(route_count)
+                                .ok_or(QueryExecutionError::BoundExceeded)?
+                        || batch.verification_bytes
+                            > bounds
+                                .verification_bytes()
+                                .checked_mul(route_count)
+                                .ok_or(QueryExecutionError::BoundExceeded)?
+                        || batch.rows.iter().any(|row| {
+                            row.entity() != step.entity()
+                                || predicates_match(row, &predicates) != Ok(true)
+                                || row
+                                    .field(pattern.field())
+                                    .and_then(|value| match value {
+                                        CanonicalValue::String(value) => Some(value.as_str()),
+                                        _ => None,
+                                    })
+                                    .is_none_or(|value| !compiled.matches_source(value))
+                        })
+                    {
+                        return Err(QueryExecutionError::BoundExceeded);
+                    }
+                    match provider_history_incarnation {
+                        None => provider_history_incarnation = Some(batch.history_incarnation),
+                        Some(existing) if existing == batch.history_incarnation => {}
+                        Some(_) => return Err(QueryExecutionError::StaleCursor),
+                    }
+                    fuel.scans(batch.scanned_rows)?;
+                    fuel.points(batch.rows.len() as u64)?;
+                    let epoch_key = format!(
+                        "provider.{}.{}.{}",
+                        step.entity(),
+                        provider,
+                        batch.generation.get()
+                    );
+                    index_epochs.insert(epoch_key, head);
+                    (batch.rows, None, false)
                 }
-                match provider_history_incarnation {
-                    None => provider_history_incarnation = Some(batch.history_incarnation),
-                    Some(existing) if existing == batch.history_incarnation => {}
-                    Some(_) => return Err(QueryExecutionError::StaleCursor),
-                }
-                fuel.scans(batch.scanned_rows)?;
-                fuel.points(batch.rows.len() as u64)?;
-                let epoch_key = format!(
-                    "provider.{}.{}.{}",
-                    step.entity(),
-                    provider,
-                    batch.generation.get()
-                );
-                index_epochs.insert(epoch_key, head);
-                (batch.rows, None, false)
             }
             riffdb_query_ir::QueryAccessKind::Nearest { .. } => {
                 // WP-593: exact KNN execution path. The adapter applies the
@@ -2446,6 +2701,7 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
             } => {
                 let predicates = bind_candidate_root_hydrations(
                     step,
+                    program,
                     parameters,
                     &bindings,
                     program.surface().candidates(),
@@ -2482,12 +2738,15 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                     u64::try_from(hydrated.len())
                         .map_err(|_| QueryExecutionError::BoundExceeded)?,
                 )?;
-                hydrated.sort_by(|left, right| candidate_root_row_order(left, right, order));
+                let partition_field = candidate_root_partition_field(step, program)?;
+                hydrated.sort_by(|left, right| {
+                    candidate_root_row_order(left, right, order, partition_field, key_fields)
+                });
                 if let Some(lower) = after {
                     let position = hydrated
                         .iter()
                         .position(|row| {
-                            candidate_root_marker(row, key_fields)
+                            candidate_root_marker(row, partition_field, key_fields)
                                 .is_ok_and(|marker| marker == lower)
                         })
                         .ok_or(QueryExecutionError::InvalidContinuation)?;
@@ -2500,7 +2759,7 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                     let lower = hydrated
                         .last()
                         .ok_or(QueryExecutionError::InvalidProgram)
-                        .and_then(|row| candidate_root_marker(row, key_fields))?;
+                        .and_then(|row| candidate_root_marker(row, partition_field, key_fields))?;
                     if lower.len() > MAX_QUERY_CONTINUATION_BYTES || continuation.is_some() {
                         return Err(QueryExecutionError::BoundExceeded);
                     }
@@ -3646,17 +3905,14 @@ fn bind_candidate_value(
 
 fn bind_candidate_root_hydrations(
     step: &QueryAccessStep,
+    program: &QueryAccessProgramV1,
     parameters: &QueryParameters,
     bindings: &BTreeMap<String, Vec<QueryRow>>,
     candidates: &[CandidateBindingV1],
     candidate_name: &str,
 ) -> Result<Vec<Vec<BoundPredicate>>, QueryExecutionError> {
-    let candidate_value = bind_candidate_value(candidate_name, candidates, bindings)?;
-    let CanonicalValue::List(keys) = candidate_value else {
-        return Err(QueryExecutionError::InvalidProgram);
-    };
-    keys.values()
-        .iter()
+    let keys = bind_scoped_candidate_keys(candidate_name, candidates, bindings, program)?;
+    keys.iter()
         .map(|candidate_key| {
             step.predicates()
                 .iter()
@@ -3665,11 +3921,23 @@ fn bind_candidate_root_hydrations(
                         QueryPredicateValue::CandidateBinding { name }
                             if name == candidate_name =>
                         {
-                            (QueryPredicateOperator::Equal, candidate_key.clone())
+                            (QueryPredicateOperator::Equal, candidate_key.key.clone())
                         }
                         QueryPredicateValue::CandidateBinding { .. }
                         | QueryPredicateValue::BindingFieldSet { .. } => {
                             return Err(QueryExecutionError::InvalidProgram);
+                        }
+                        QueryPredicateValue::Parameter(name)
+                            if name == program.partition_parameter()
+                                && predicate.operator() == QueryPredicateOperator::In =>
+                        {
+                            (
+                                QueryPredicateOperator::Equal,
+                                candidate_key
+                                    .partition
+                                    .clone()
+                                    .ok_or(QueryExecutionError::InvalidProgram)?,
+                            )
                         }
                         QueryPredicateValue::Parameter(name) => (
                             predicate.operator(),
@@ -3714,10 +3982,139 @@ fn bind_candidate_root_hydrations(
         .collect()
 }
 
+#[derive(Clone)]
+struct ScopedCandidateKey {
+    partition: Option<CanonicalValue>,
+    key: CanonicalValue,
+}
+
+fn bind_scoped_candidate_keys(
+    name: &str,
+    candidates: &[CandidateBindingV1],
+    bindings: &BTreeMap<String, Vec<QueryRow>>,
+    program: &QueryAccessProgramV1,
+) -> Result<Vec<ScopedCandidateKey>, QueryExecutionError> {
+    let candidate = candidates
+        .iter()
+        .find(|candidate| candidate.name() == name)
+        .ok_or(QueryExecutionError::InvalidProgram)?;
+    let finite = program.partition_route().is_finite_set();
+    let mut source_keys = Vec::with_capacity(candidate.sources().len());
+    let mut canonical_values = BTreeMap::<Vec<u8>, ScopedCandidateKey>::new();
+    for (source_index, source) in candidate.sources().iter().enumerate() {
+        let binding = candidate_source_binding_name(name, source_index)
+            .ok_or(QueryExecutionError::InvalidProgram)?;
+        let rows = bindings
+            .get(&binding)
+            .ok_or(QueryExecutionError::InvalidProgram)?;
+        if rows.len() > usize::from(candidate.maximum_distinct_keys()) {
+            return Err(QueryExecutionError::BoundExceeded);
+        }
+        let source_step = program
+            .steps()
+            .iter()
+            .find(|step| step.binding() == binding)
+            .ok_or(QueryExecutionError::InvalidProgram)?;
+        let partition_field = finite
+            .then(|| {
+                source_step.predicates().iter().find_map(|predicate| {
+                    (predicate.operator() == QueryPredicateOperator::In
+                        && matches!(
+                            predicate.value(),
+                            QueryPredicateValue::Parameter(parameter)
+                                if parameter == program.partition_parameter()
+                        ))
+                    .then_some(predicate.field())
+                })
+            })
+            .flatten()
+            .ok_or(QueryExecutionError::InvalidProgram)
+            .or_else(|error| if finite { Err(error) } else { Ok("") })?;
+        let keys = rows
+            .iter()
+            .map(|row| {
+                let key = row
+                    .field(source.projected_key())
+                    .cloned()
+                    .filter(|value| !matches!(value, CanonicalValue::Null))
+                    .ok_or(QueryExecutionError::InvalidProgram)?;
+                let partition = finite
+                    .then(|| row.field(partition_field).cloned())
+                    .flatten()
+                    .ok_or(QueryExecutionError::InvalidProgram)
+                    .or_else(|error| {
+                        if finite {
+                            Err(error)
+                        } else {
+                            Ok(CanonicalValue::Null)
+                        }
+                    })?;
+                let scoped = ScopedCandidateKey {
+                    partition: finite.then_some(partition.clone()),
+                    key: key.clone(),
+                };
+                let identity = if finite {
+                    CanonicalValue::list(vec![partition, key])
+                        .map_err(|_| QueryExecutionError::BoundExceeded)?
+                } else {
+                    key
+                };
+                let encoded = encode_canonical_value(&identity)
+                    .map_err(|_| QueryExecutionError::InvalidProgram)?;
+                canonical_values.entry(encoded.clone()).or_insert(scoped);
+                Ok(encoded)
+            })
+            .collect::<Result<Vec<_>, QueryExecutionError>>()?;
+        source_keys.push(keys);
+    }
+    let maximum_key_bytes = u64::from(candidate.maximum_distinct_keys())
+        .checked_mul(riffdb_types::MAX_KEY_BYTES as u64)
+        .and_then(|value| value.checked_mul(if finite { 2 } else { 1 }))
+        .ok_or(QueryExecutionError::BoundExceeded)?;
+    evaluate_candidate_set_v1(
+        candidate.operator(),
+        &source_keys,
+        candidate.maximum_distinct_keys(),
+        maximum_key_bytes,
+    )
+    .map_err(|_| QueryExecutionError::BoundExceeded)?
+    .into_iter()
+    .map(|encoded| {
+        canonical_values
+            .remove(&encoded)
+            .ok_or(QueryExecutionError::InvalidProgram)
+    })
+    .collect()
+}
+
+fn candidate_root_partition_field<'a>(
+    step: &'a QueryAccessStep,
+    program: &QueryAccessProgramV1,
+) -> Result<Option<&'a str>, QueryExecutionError> {
+    if !program.partition_route().is_finite_set() {
+        return Ok(None);
+    }
+    step.predicates()
+        .iter()
+        .find_map(|predicate| {
+            (predicate.operator() == QueryPredicateOperator::In
+                && matches!(
+                    predicate.value(),
+                    QueryPredicateValue::Parameter(parameter)
+                        if parameter == program.partition_parameter()
+                ))
+            .then_some(predicate.field())
+        })
+        .map(Some)
+        .ok_or(QueryExecutionError::InvalidProgram)
+}
+
 fn candidate_root_row_order(
     left: &QueryRow,
     right: &QueryRow,
     order: &[QueryRootOrderTermV1],
+    partition_field: Option<&str>,
+    key_fields: &[String],
 ) -> Ordering {
     for term in order {
         let left = left.field(term.field()).unwrap_or(&CanonicalValue::Null);
@@ -3754,20 +4151,39 @@ fn candidate_root_row_order(
             return ordering;
         }
     }
+    for field in partition_field
+        .into_iter()
+        .chain(key_fields.iter().map(String::as_str))
+    {
+        let Some(left) = left.field(field) else {
+            return Ordering::Equal;
+        };
+        let Some(right) = right.field(field) else {
+            return Ordering::Equal;
+        };
+        let ordering = aggregate_scalar_order(left, right).unwrap_or(Ordering::Equal);
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+    }
     Ordering::Equal
 }
 
 fn candidate_root_marker(
     row: &QueryRow,
+    partition_field: Option<&str>,
     key_fields: &[String],
 ) -> Result<Vec<u8>, QueryExecutionError> {
     let mut marker = Vec::new();
-    for field in key_fields {
+    for field in partition_field
+        .into_iter()
+        .chain(key_fields.iter().map(String::as_str))
+    {
         let value = row
             .field(field)
             .ok_or_else(|| QueryExecutionError::MissingField {
                 entity: row.entity().to_owned(),
-                field: field.clone(),
+                field: field.to_owned(),
             })?;
         let encoded =
             encode_canonical_value(value).map_err(|_| QueryExecutionError::InvalidProgram)?;
@@ -3779,6 +4195,843 @@ fn candidate_root_marker(
         marker.extend_from_slice(&encoded);
     }
     Ok(marker)
+}
+
+fn partition_set_routes<'a>(
+    program: &QueryAccessProgramV1,
+    parameters: &'a QueryParameters,
+) -> Result<&'a [CanonicalValue], QueryExecutionError> {
+    let value = parameters
+        .get(program.partition_parameter())
+        .ok_or_else(|| QueryExecutionError::MissingParameter {
+            parameter: program.partition_parameter().to_owned(),
+        })?;
+    let CanonicalValue::List(routes) = value else {
+        return Err(QueryExecutionError::InvalidParameter {
+            parameter: program.partition_parameter().to_owned(),
+        });
+    };
+    if !program.partition_route().is_finite_set()
+        || routes.values().len() as u32 > program.partition_route().maximum_partitions()
+        || routes.values().iter().any(|value| {
+            matches!(
+                value,
+                CanonicalValue::Null
+                    | CanonicalValue::List(_)
+                    | CanonicalValue::Record(_)
+                    | CanonicalValue::Vector(_)
+            )
+        })
+    {
+        return Err(QueryExecutionError::InvalidParameter {
+            parameter: program.partition_parameter().to_owned(),
+        });
+    }
+    Ok(routes.values())
+}
+
+fn partition_local_predicates(
+    step: &QueryAccessStep,
+    predicates: &[BoundPredicate],
+    route_parameter: &str,
+    route: &CanonicalValue,
+) -> Result<Vec<BoundPredicate>, QueryExecutionError> {
+    if step.predicates().len() != predicates.len() {
+        return Err(QueryExecutionError::InvalidProgram);
+    }
+    let mut found = false;
+    let local = step
+        .predicates()
+        .iter()
+        .zip(predicates)
+        .map(|(source, bound)| {
+            let is_route = source.operator() == QueryPredicateOperator::In
+                && matches!(source.value(), QueryPredicateValue::Parameter(name) if name == route_parameter);
+            if is_route {
+                if found {
+                    return Err(QueryExecutionError::InvalidProgram);
+                }
+                found = true;
+                Ok(BoundPredicate {
+                    field: bound.field.clone(),
+                    operator: QueryPredicateOperator::Equal,
+                    value: route.clone(),
+                })
+            } else {
+                Ok(bound.clone())
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    found
+        .then_some(local)
+        .ok_or(QueryExecutionError::InvalidProgram)
+}
+
+fn partition_set_marker_values(
+    row: &QueryRow,
+    fields: &[String],
+    key_fields: &[String],
+) -> Result<Vec<CanonicalValue>, QueryExecutionError> {
+    fields[1..]
+        .iter()
+        .chain(fields.first())
+        .chain(key_fields)
+        .map(|field| {
+            row.field(field)
+                .cloned()
+                .ok_or_else(|| QueryExecutionError::MissingField {
+                    entity: row.entity().to_owned(),
+                    field: field.clone(),
+                })
+        })
+        .collect()
+}
+
+fn partition_set_marker(
+    row: &QueryRow,
+    fields: &[String],
+    key_fields: &[String],
+) -> Result<Vec<u8>, QueryExecutionError> {
+    let values = partition_set_marker_values(row, fields, key_fields)?;
+    let value = CanonicalValue::list(values).map_err(|_| QueryExecutionError::BoundExceeded)?;
+    encode_canonical_value(&value).map_err(|_| QueryExecutionError::BoundExceeded)
+}
+
+fn decode_partition_set_marker(
+    marker: &[u8],
+    expected: usize,
+) -> Result<Vec<CanonicalValue>, QueryExecutionError> {
+    let CanonicalValue::List(values) =
+        decode_canonical_value(marker).map_err(|_| QueryExecutionError::InvalidContinuation)?
+    else {
+        return Err(QueryExecutionError::InvalidContinuation);
+    };
+    (values.values().len() == expected)
+        .then(|| values.values().to_vec())
+        .ok_or(QueryExecutionError::InvalidContinuation)
+}
+
+fn partition_set_value_order(
+    left: &[CanonicalValue],
+    right: &[CanonicalValue],
+    order: &[QueryRootOrderTermV1],
+    key_fields: &[String],
+) -> Result<Ordering, QueryExecutionError> {
+    if left.len() != right.len() || left.len() != order.len() + 1 + key_fields.len() {
+        return Err(QueryExecutionError::InvalidProgram);
+    }
+    for (position, term) in order.iter().enumerate() {
+        let left = &left[position];
+        let right = &right[position];
+        let ordering = match (
+            matches!(left, CanonicalValue::Null),
+            matches!(right, CanonicalValue::Null),
+        ) {
+            (true, true) => Ordering::Equal,
+            (true, false) => {
+                if term.nulls_first() {
+                    Ordering::Less
+                } else {
+                    Ordering::Greater
+                }
+            }
+            (false, true) => {
+                if term.nulls_first() {
+                    Ordering::Greater
+                } else {
+                    Ordering::Less
+                }
+            }
+            (false, false) => {
+                let ordering = aggregate_scalar_order(left, right)?;
+                if term.direction() == AccessDirection::Reverse {
+                    ordering.reverse()
+                } else {
+                    ordering
+                }
+            }
+        };
+        if ordering != Ordering::Equal {
+            return Ok(ordering);
+        }
+    }
+    for (left, right) in left[order.len()..].iter().zip(&right[order.len()..]) {
+        let ordering = aggregate_scalar_order(left, right)?;
+        if ordering != Ordering::Equal {
+            return Ok(ordering);
+        }
+    }
+    Ok(Ordering::Equal)
+}
+
+fn partition_set_row_order(
+    left: &QueryRow,
+    right: &QueryRow,
+    fields: &[String],
+    order: &[QueryRootOrderTermV1],
+    key_fields: &[String],
+) -> Result<Ordering, QueryExecutionError> {
+    for term in order {
+        let left_value = left.field(term.field()).unwrap_or(&CanonicalValue::Null);
+        let right_value = right.field(term.field()).unwrap_or(&CanonicalValue::Null);
+        let ordering = match (
+            matches!(left_value, CanonicalValue::Null),
+            matches!(right_value, CanonicalValue::Null),
+        ) {
+            (true, true) => Ordering::Equal,
+            (true, false) => {
+                if term.nulls_first() {
+                    Ordering::Less
+                } else {
+                    Ordering::Greater
+                }
+            }
+            (false, true) => {
+                if term.nulls_first() {
+                    Ordering::Greater
+                } else {
+                    Ordering::Less
+                }
+            }
+            (false, false) => {
+                let ordering = aggregate_scalar_order(left_value, right_value)?;
+                if term.direction() == AccessDirection::Reverse {
+                    ordering.reverse()
+                } else {
+                    ordering
+                }
+            }
+        };
+        if ordering != Ordering::Equal {
+            return Ok(ordering);
+        }
+    }
+    let partition_field = fields.first().ok_or(QueryExecutionError::InvalidProgram)?;
+    let left_partition = left
+        .field(partition_field)
+        .ok_or(QueryExecutionError::InvalidProgram)?;
+    let right_partition = right
+        .field(partition_field)
+        .ok_or(QueryExecutionError::InvalidProgram)?;
+    let partition_ordering = aggregate_scalar_order(left_partition, right_partition)?;
+    if partition_ordering != Ordering::Equal {
+        return Ok(partition_ordering);
+    }
+    for field in key_fields {
+        let left_value = left
+            .field(field)
+            .ok_or(QueryExecutionError::InvalidProgram)?;
+        let right_value = right
+            .field(field)
+            .ok_or(QueryExecutionError::InvalidProgram)?;
+        let ordering = aggregate_scalar_order(left_value, right_value)?;
+        if ordering != Ordering::Equal {
+            return Ok(ordering);
+        }
+    }
+    Ok(Ordering::Equal)
+}
+
+fn partition_set_physical_row_order(
+    left: &QueryRow,
+    right: &QueryRow,
+    fields: &[String],
+    key_fields: &[String],
+    direction: AccessDirection,
+) -> Result<Ordering, QueryExecutionError> {
+    for field in fields.iter().skip(1).chain(key_fields) {
+        let left = left
+            .field(field)
+            .ok_or(QueryExecutionError::InvalidProgram)?;
+        let right = right
+            .field(field)
+            .ok_or(QueryExecutionError::InvalidProgram)?;
+        let ordering = aggregate_scalar_order(left, right)?;
+        if ordering != Ordering::Equal {
+            return Ok(if direction == AccessDirection::Reverse {
+                ordering.reverse()
+            } else {
+                ordering
+            });
+        }
+    }
+    Ok(Ordering::Equal)
+}
+
+fn merge_partition_streams(
+    left: Vec<QueryRow>,
+    right: Vec<QueryRow>,
+    limit: usize,
+    fields: &[String],
+    order: &[QueryRootOrderTermV1],
+    key_fields: &[String],
+) -> Result<(Vec<QueryRow>, bool), QueryExecutionError> {
+    let total = left
+        .len()
+        .checked_add(right.len())
+        .ok_or(QueryExecutionError::BoundExceeded)?;
+    let mut left = left.into_iter().peekable();
+    let mut right = right.into_iter().peekable();
+    let mut merged = Vec::with_capacity(total.min(limit));
+    while merged.len() < limit {
+        let take_left = match (left.peek(), right.peek()) {
+            (Some(left), Some(right)) => {
+                partition_set_row_order(left, right, fields, order, key_fields)?
+                    != Ordering::Greater
+            }
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            (None, None) => break,
+        };
+        merged.push(if take_left {
+            left.next().ok_or(QueryExecutionError::InvalidProgram)?
+        } else {
+            right.next().ok_or(QueryExecutionError::InvalidProgram)?
+        });
+    }
+    let discarded = left.peek().is_some() || right.peek().is_some();
+    Ok((merged, discarded))
+}
+
+fn partition_set_physical_resume(
+    step: &QueryAccessStep,
+    fields: &[String],
+    key_fields: &[String],
+    order: &[QueryRootOrderTermV1],
+    route: &CanonicalValue,
+    marker: &[CanonicalValue],
+) -> Result<(Vec<u8>, bool), QueryExecutionError> {
+    if marker.len() != fields.len() + key_fields.len() {
+        return Err(QueryExecutionError::InvalidContinuation);
+    }
+    let partition_field = fields.first().ok_or(QueryExecutionError::InvalidProgram)?;
+    let mut logical_index = Vec::with_capacity(fields.len());
+    logical_index.push(route.clone());
+    logical_index.extend_from_slice(&marker[..fields.len() - 1]);
+    let schema = step
+        .internal_index_key_schema()
+        .ok_or(QueryExecutionError::InvalidProgram)?;
+    let mut physical_index = Vec::new();
+    for value in &logical_index {
+        push_exact_index_prefix_value(schema, &mut physical_index, value)?;
+    }
+    if physical_index.len() != schema.components().len() {
+        return Err(QueryExecutionError::InvalidProgram);
+    }
+    let mut entity_values = marker[fields.len()..].to_vec();
+    let mut synthetic = marker.to_vec();
+    synthetic[fields.len() - 1] = route.clone();
+    for (offset, field) in key_fields.iter().enumerate() {
+        if field == partition_field {
+            entity_values[offset] = route.clone();
+            synthetic[fields.len() + offset] = route.clone();
+        }
+    }
+    let entity_key = step
+        .internal_entity_key_schema()
+        .encode_entity(&entity_values)
+        .map_err(|_| QueryExecutionError::InvalidProgram)?;
+    let lower = schema
+        .encode_index(&physical_index, entity_key)
+        .map_err(|_| QueryExecutionError::InvalidProgram)?
+        .as_bytes()
+        .to_vec();
+    let inclusive =
+        partition_set_value_order(&synthetic, marker, order, key_fields)? == Ordering::Greater;
+    Ok((lower, inclusive))
+}
+
+fn append_partition_observation(
+    output: &mut Vec<u8>,
+    route: &CanonicalValue,
+    epoch: u64,
+) -> Result<(), QueryExecutionError> {
+    let route = encode_canonical_value(route).map_err(|_| QueryExecutionError::InvalidProgram)?;
+    output.extend_from_slice(
+        &u32::try_from(route.len())
+            .map_err(|_| QueryExecutionError::BoundExceeded)?
+            .to_be_bytes(),
+    );
+    output.extend_from_slice(&route);
+    output.extend_from_slice(&epoch.to_be_bytes());
+    Ok(())
+}
+
+fn insert_partition_set_observation(
+    index_epochs: &mut BTreeMap<String, u64>,
+    entity: &str,
+    index: &str,
+    observations: &[u8],
+) -> Result<(), QueryExecutionError> {
+    let digest = hash_partition_set_observation(observations);
+    let mut epoch_key =
+        String::with_capacity(16 + entity.len() + index.len() + digest.as_bytes().len() * 2);
+    use std::fmt::Write as _;
+    write!(&mut epoch_key, "partition-set.{entity}.{index}.")
+        .map_err(|_| QueryExecutionError::BoundExceeded)?;
+    for byte in digest.as_bytes() {
+        write!(&mut epoch_key, "{byte:02x}").map_err(|_| QueryExecutionError::BoundExceeded)?;
+    }
+    index_epochs.insert(epoch_key, 1);
+    Ok(())
+}
+
+struct PartitionMergeStream {
+    route: CanonicalValue,
+    predicates: Vec<BoundPredicate>,
+    row: Option<QueryRow>,
+    resume: Option<Vec<u8>>,
+    after_inclusive: bool,
+    started: bool,
+    epoch: Option<u64>,
+    scanned_rows: u64,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_partition_set_uniform_merge<V: QueryReadView>(
+    view: &mut V,
+    fuel: &mut QueryExecutionFuel,
+    step: &QueryAccessStep,
+    predicates: &[BoundPredicate],
+    route_parameter: &str,
+    routes: &[CanonicalValue],
+    fields: &[String],
+    order: &[QueryRootOrderTermV1],
+    key_fields: &[String],
+    scan_ceiling: u32,
+    limit: u64,
+    prior_marker: Option<&[CanonicalValue]>,
+    policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+) -> Result<(Vec<QueryRow>, Vec<u8>, bool), QueryExecutionError> {
+    let output_limit = usize::try_from(limit).map_err(|_| QueryExecutionError::BoundExceeded)?;
+    let mut heap = Vec::<PartitionMergeStream>::with_capacity(routes.len());
+    let mut observations = Vec::new();
+    for route in routes {
+        let local = partition_local_predicates(step, predicates, route_parameter, route)?;
+        let resume = prior_marker
+            .map(|marker| {
+                partition_set_physical_resume(step, fields, key_fields, order, route, marker)
+            })
+            .transpose()?;
+        let mut stream = PartitionMergeStream {
+            route: route.clone(),
+            predicates: local,
+            row: None,
+            resume: resume.as_ref().map(|value| value.0.clone()),
+            after_inclusive: resume.is_some_and(|value| value.1),
+            started: false,
+            epoch: None,
+            scanned_rows: 0,
+        };
+        load_partition_merge_row(
+            view,
+            fuel,
+            step,
+            &mut stream,
+            fields,
+            order,
+            key_fields,
+            scan_ceiling,
+            prior_marker,
+            policy,
+        )?;
+        append_partition_observation(
+            &mut observations,
+            &stream.route,
+            stream.epoch.ok_or(QueryExecutionError::BackendIntegrity)?,
+        )?;
+        if stream.row.is_some() {
+            partition_heap_push(&mut heap, stream, fields, order, key_fields)?;
+        }
+    }
+
+    let mut rows = Vec::with_capacity(output_limit);
+    while rows.len() < output_limit {
+        let Some(mut stream) = partition_heap_pop(&mut heap, fields, order, key_fields)? else {
+            break;
+        };
+        let row = stream
+            .row
+            .take()
+            .ok_or(QueryExecutionError::InvalidProgram)?;
+        if let Some(previous) = rows.last()
+            && partition_set_row_order(previous, &row, fields, order, key_fields)? != Ordering::Less
+        {
+            return Err(QueryExecutionError::BackendIntegrity);
+        }
+        rows.push(row);
+        load_partition_merge_row(
+            view,
+            fuel,
+            step,
+            &mut stream,
+            fields,
+            order,
+            key_fields,
+            scan_ceiling,
+            prior_marker,
+            policy,
+        )?;
+        if stream.row.is_some() {
+            partition_heap_push(&mut heap, stream, fields, order, key_fields)?;
+        }
+    }
+    Ok((rows, observations, !heap.is_empty()))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn load_partition_merge_row<V: QueryReadView>(
+    view: &mut V,
+    fuel: &mut QueryExecutionFuel,
+    step: &QueryAccessStep,
+    stream: &mut PartitionMergeStream,
+    fields: &[String],
+    order: &[QueryRootOrderTermV1],
+    key_fields: &[String],
+    scan_ceiling: u32,
+    prior_marker: Option<&[CanonicalValue]>,
+    policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+) -> Result<(), QueryExecutionError> {
+    stream.row = None;
+    loop {
+        if stream.started && stream.resume.is_none() {
+            return Ok(());
+        }
+        let remaining = u64::from(scan_ceiling)
+            .checked_sub(stream.scanned_rows)
+            .ok_or(QueryExecutionError::BoundExceeded)?;
+        if remaining == 0 {
+            return Err(QueryExecutionError::BoundExceeded);
+        }
+        let page = view
+            .scan(
+                step,
+                &stream.predicates,
+                1,
+                stream.resume.as_deref(),
+                stream.after_inclusive,
+                policy,
+            )
+            .map_err(|error| map_view_error(view, &error))?;
+        if page.scanned_rows > remaining
+            || page.rows.len() > 1
+            || page.point_reads != page.rows.len() as u64
+            || page.rows.len() as u64 > page.scanned_rows
+            || page
+                .continuation
+                .as_ref()
+                .is_some_and(|value| value.is_empty() || value.len() > MAX_QUERY_CONTINUATION_BYTES)
+            || page.rows.iter().any(|row| {
+                row.entity() != step.entity()
+                    || predicates_match(row, &stream.predicates) != Ok(true)
+            })
+        {
+            return Err(QueryExecutionError::BoundExceeded);
+        }
+        match stream.epoch {
+            None => stream.epoch = Some(page.epoch),
+            Some(existing) if existing == page.epoch => {}
+            Some(_) => return Err(QueryExecutionError::BackendIntegrity),
+        }
+        stream.started = true;
+        stream.after_inclusive = false;
+        stream.scanned_rows = stream
+            .scanned_rows
+            .checked_add(page.scanned_rows)
+            .ok_or(QueryExecutionError::BoundExceeded)?;
+        fuel.scans(page.scanned_rows)?;
+        fuel.points(page.point_reads)?;
+        stream.resume = page.continuation;
+        let Some(row) = page.rows.into_iter().next() else {
+            if stream.resume.is_none() {
+                return Ok(());
+            }
+            continue;
+        };
+        if prior_marker.is_some_and(|marker| {
+            partition_set_marker_values(&row, fields, key_fields)
+                .and_then(|values| partition_set_value_order(&values, marker, order, key_fields))
+                != Ok(Ordering::Greater)
+        }) {
+            if stream.resume.is_none() {
+                return Ok(());
+            }
+            continue;
+        }
+        stream.row = Some(row);
+        return Ok(());
+    }
+}
+
+fn partition_heap_push(
+    heap: &mut Vec<PartitionMergeStream>,
+    stream: PartitionMergeStream,
+    fields: &[String],
+    order: &[QueryRootOrderTermV1],
+    key_fields: &[String],
+) -> Result<(), QueryExecutionError> {
+    heap.push(stream);
+    let mut child = heap.len() - 1;
+    while child > 0 {
+        let parent = (child - 1) / 2;
+        let child_row = heap[child]
+            .row
+            .as_ref()
+            .ok_or(QueryExecutionError::InvalidProgram)?;
+        let parent_row = heap[parent]
+            .row
+            .as_ref()
+            .ok_or(QueryExecutionError::InvalidProgram)?;
+        if partition_set_row_order(child_row, parent_row, fields, order, key_fields)?
+            != Ordering::Less
+        {
+            break;
+        }
+        heap.swap(child, parent);
+        child = parent;
+    }
+    Ok(())
+}
+
+fn partition_heap_pop(
+    heap: &mut Vec<PartitionMergeStream>,
+    fields: &[String],
+    order: &[QueryRootOrderTermV1],
+    key_fields: &[String],
+) -> Result<Option<PartitionMergeStream>, QueryExecutionError> {
+    let Some(last) = heap.pop() else {
+        return Ok(None);
+    };
+    if heap.is_empty() {
+        return Ok(Some(last));
+    }
+    let result = std::mem::replace(&mut heap[0], last);
+    let mut parent = 0;
+    loop {
+        let left = parent * 2 + 1;
+        if left >= heap.len() {
+            break;
+        }
+        let right = left + 1;
+        let child = if right < heap.len() {
+            let left_row = heap[left]
+                .row
+                .as_ref()
+                .ok_or(QueryExecutionError::InvalidProgram)?;
+            let right_row = heap[right]
+                .row
+                .as_ref()
+                .ok_or(QueryExecutionError::InvalidProgram)?;
+            if partition_set_row_order(right_row, left_row, fields, order, key_fields)?
+                == Ordering::Less
+            {
+                right
+            } else {
+                left
+            }
+        } else {
+            left
+        };
+        let parent_row = heap[parent]
+            .row
+            .as_ref()
+            .ok_or(QueryExecutionError::InvalidProgram)?;
+        let child_row = heap[child]
+            .row
+            .as_ref()
+            .ok_or(QueryExecutionError::InvalidProgram)?;
+        if partition_set_row_order(parent_row, child_row, fields, order, key_fields)?
+            != Ordering::Greater
+        {
+            break;
+        }
+        heap.swap(parent, child);
+        parent = child;
+    }
+    Ok(Some(result))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_partition_set_stream<V: QueryReadView>(
+    view: &mut V,
+    fuel: &mut QueryExecutionFuel,
+    step: &QueryAccessStep,
+    predicates: &[BoundPredicate],
+    route: &CanonicalValue,
+    fields: &[String],
+    order: &[QueryRootOrderTermV1],
+    key_fields: &[String],
+    direction: AccessDirection,
+    scan_ceiling: u32,
+    limit: u64,
+    prior_marker: Option<&[CanonicalValue]>,
+    policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+) -> Result<(Vec<QueryRow>, u64, bool), QueryExecutionError> {
+    let mixed = order.iter().any(|term| term.direction() != direction);
+    let mut resume = prior_marker
+        .map(|marker| {
+            if mixed {
+                partition_set_group_resume(step, fields, direction, route, marker)
+            } else {
+                partition_set_physical_resume(step, fields, key_fields, order, route, marker)
+            }
+        })
+        .transpose()?;
+    let mut rows = Vec::new();
+    let mut total_scanned = 0_u64;
+    let mut epoch = None;
+    let mut stopped_with_more = false;
+    loop {
+        let remaining = u64::from(scan_ceiling)
+            .checked_sub(total_scanned)
+            .ok_or(QueryExecutionError::BoundExceeded)?;
+        if remaining <= QUERY_CONTINUATION_PROBE_ROWS {
+            return Err(QueryExecutionError::BoundExceeded);
+        }
+        let page_limit = limit.min(
+            remaining
+                .checked_sub(QUERY_CONTINUATION_PROBE_ROWS)
+                .ok_or(QueryExecutionError::BoundExceeded)?,
+        );
+        let page = view
+            .scan(
+                step,
+                predicates,
+                page_limit,
+                resume.as_ref().map(|resume| resume.0.as_slice()),
+                resume.as_ref().is_some_and(|resume| resume.1),
+                policy,
+            )
+            .map_err(|error| map_view_error(view, &error))?;
+        if page.scanned_rows > remaining
+            || page.rows.len() as u64 > page_limit
+            || page.point_reads != page.rows.len() as u64
+            || page.rows.len() as u64 > page.scanned_rows
+            || page
+                .continuation
+                .as_ref()
+                .is_some_and(|value| value.is_empty() || value.len() > MAX_QUERY_CONTINUATION_BYTES)
+            || page.rows.iter().any(|row| {
+                row.entity() != step.entity() || predicates_match(row, predicates) != Ok(true)
+            })
+        {
+            return Err(QueryExecutionError::BoundExceeded);
+        }
+        match epoch {
+            None => epoch = Some(page.epoch),
+            Some(existing) if existing == page.epoch => {}
+            Some(_) => return Err(QueryExecutionError::BackendIntegrity),
+        }
+        total_scanned = total_scanned
+            .checked_add(page.scanned_rows)
+            .ok_or(QueryExecutionError::BoundExceeded)?;
+        fuel.scans(page.scanned_rows)?;
+        fuel.points(page.point_reads)?;
+        fuel.intermediates(page.rows.len() as u64)?;
+        rows.extend(page.rows);
+
+        let next = page.continuation;
+        if !mixed {
+            stopped_with_more = next.is_some();
+            break;
+        }
+        rows.sort_by(|left, right| {
+            partition_set_row_order(left, right, fields, order, key_fields)
+                .unwrap_or(Ordering::Equal)
+        });
+        if rows.windows(2).any(|pair| {
+            partition_set_row_order(&pair[0], &pair[1], fields, order, key_fields)
+                != Ok(Ordering::Less)
+        }) {
+            return Err(QueryExecutionError::BackendIntegrity);
+        }
+        let visible = rows
+            .iter()
+            .filter(|row| {
+                prior_marker.is_none_or(|marker| {
+                    partition_set_marker_values(row, fields, key_fields).and_then(|values| {
+                        partition_set_value_order(&values, marker, order, key_fields)
+                    }) == Ok(Ordering::Greater)
+                })
+            })
+            .collect::<Vec<_>>();
+        let Some(next_physical) = next else {
+            break;
+        };
+        if visible.len() > limit as usize {
+            let cutoff = visible
+                .get(limit as usize)
+                .and_then(|row| row.field(order[0].field()))
+                .ok_or(QueryExecutionError::InvalidProgram)?;
+            let physical_tail = rows
+                .last()
+                .and_then(|row| row.field(order[0].field()))
+                .ok_or(QueryExecutionError::InvalidProgram)?;
+            if aggregate_scalar_order(cutoff, physical_tail)? != Ordering::Equal {
+                stopped_with_more = true;
+                break;
+            }
+        }
+        resume = Some((next_physical, false));
+    }
+
+    if mixed {
+        rows.sort_by(|left, right| {
+            partition_set_row_order(left, right, fields, order, key_fields)
+                .unwrap_or(Ordering::Equal)
+        });
+    } else if rows.windows(2).any(|pair| {
+        partition_set_physical_row_order(&pair[0], &pair[1], fields, key_fields, direction)
+            != Ok(Ordering::Less)
+    }) {
+        return Err(QueryExecutionError::BackendIntegrity);
+    }
+    if let Some(marker) = prior_marker {
+        rows.retain(|row| {
+            partition_set_marker_values(row, fields, key_fields)
+                .and_then(|values| partition_set_value_order(&values, marker, order, key_fields))
+                == Ok(Ordering::Greater)
+        });
+    }
+    let limit = usize::try_from(limit).map_err(|_| QueryExecutionError::BoundExceeded)?;
+    if rows.len() > limit {
+        rows.truncate(limit);
+        stopped_with_more = true;
+    }
+    Ok((rows, epoch.unwrap_or(0), stopped_with_more))
+}
+
+fn partition_set_group_resume(
+    step: &QueryAccessStep,
+    fields: &[String],
+    direction: AccessDirection,
+    route: &CanonicalValue,
+    marker: &[CanonicalValue],
+) -> Result<(Vec<u8>, bool), QueryExecutionError> {
+    let first_order = marker
+        .first()
+        .ok_or(QueryExecutionError::InvalidContinuation)?;
+    let schema = step
+        .internal_index_key_schema()
+        .ok_or(QueryExecutionError::InvalidProgram)?;
+    let mut physical = Vec::new();
+    push_exact_index_prefix_value(schema, &mut physical, route)?;
+    push_exact_index_prefix_value(schema, &mut physical, first_order)?;
+    if fields.len() < 2 || physical.len() > schema.components().len() {
+        return Err(QueryExecutionError::InvalidProgram);
+    }
+    let prefix = schema
+        .encode_index_prefix(&physical)
+        .map_err(|_| QueryExecutionError::InvalidProgram)?
+        .as_bytes()
+        .to_vec();
+    match direction {
+        AccessDirection::Forward => Ok((prefix, true)),
+        AccessDirection::Reverse => Ok((
+            exclusive_prefix_end_v1(&prefix).ok_or(QueryExecutionError::InvalidProgram)?,
+            false,
+        )),
+    }
 }
 
 fn bind_dependent_point_batch(
@@ -4257,6 +5510,36 @@ query PrefixDocuments(
 }
 "#;
 
+    const PARTITION_SET_CONTRACT: &str = r#"
+contract PartitionSetExecution version 1 {
+  entity Run {
+    key (experiment_id: u64, run_id: string<32>)
+    field start_time: i64
+    index by_start (experiment_id, start_time, run_id)
+  }
+  aggregate Runs {
+    root Run
+    partition_by experiment_id
+    conflict_key (experiment_id, run_id)
+  }
+}
+"#;
+
+    const PARTITION_SET_QUERY: &str = r#"
+query SearchRuns(
+    $experiment_ids: Set<Run.experiment_id, 4>,
+    $limit: Limit<3> = 1,
+    $after: Cursor?,
+) {
+    many runs from Run
+        where experiment_id in $experiment_ids
+        order by start_time desc, run_id asc
+        take $limit after $after
+    return Found { runs: runs { experiment_id run_id start_time } }
+    outcomes Found
+}
+"#;
+
     const OPTIONAL_MINIMUM_SUMMARY: &str = r#"
 query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
     many tickets from Ticket
@@ -4317,13 +5600,39 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
         fn scan(
             &mut self,
             step: &QueryAccessStep,
-            _predicates: &[BoundPredicate],
-            _limit: u64,
-            _after: Option<&[u8]>,
+            predicates: &[BoundPredicate],
+            limit: u64,
+            after: Option<&[u8]>,
+            after_inclusive: bool,
             _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
         ) -> Result<QueryScanPage, Self::Error> {
-            let rows = self.rows.get(step.binding()).cloned().unwrap_or_default();
-            Ok(QueryScanPage::exact_end(rows, 1))
+            let route = predicates.iter().find_map(|predicate| {
+                (predicate.operator() == QueryPredicateOperator::Equal
+                    && predicate.field() == "experiment_id")
+                    .then(|| match predicate.value() {
+                        CanonicalValue::U64(value) => Some(*value),
+                        _ => None,
+                    })
+                    .flatten()
+            });
+            let route_key = route.map(|route| format!("{}#{route}", step.binding()));
+            let mut rows = route_key
+                .as_ref()
+                .and_then(|key| self.rows.get(key))
+                .or_else(|| self.rows.get(step.binding()))
+                .cloned()
+                .unwrap_or_default();
+            if after.is_some() && !after_inclusive && limit == 1 && !rows.is_empty() {
+                rows.remove(0);
+            }
+            let limit = usize::try_from(limit).expect("test limit");
+            if rows.len() > limit {
+                rows.truncate(limit);
+                QueryScanPage::continued(rows, route.unwrap_or(1), limit as u64 + 1, vec![1])
+                    .ok_or(())
+            } else {
+                Ok(QueryScanPage::exact_end(rows, route.unwrap_or(1)))
+            }
         }
 
         fn nearest(
@@ -4371,6 +5680,112 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
             .ranges()
             .iter()
             .any(|range| key >= range.start_inclusive() && key < range.end_exclusive())
+    }
+
+    #[test]
+    fn bounded_partition_streams_merge_globally_and_resume_with_one_cursor() {
+        let bundle = compile_contract_source(PARTITION_SET_CONTRACT).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let family = compile_operational_query_family(
+            &parse_query(PARTITION_SET_QUERY).expect("query"),
+            &catalog,
+        )
+        .expect("partition-set plan");
+        let program = family.select(&[]).expect("member").program();
+        let run = |experiment_id, run_id: &str, start_time| {
+            row(
+                "Run",
+                &[
+                    ("experiment_id", CanonicalValue::U64(experiment_id)),
+                    ("run_id", CanonicalValue::string(run_id).expect("run id")),
+                    ("start_time", CanonicalValue::I64(start_time)),
+                ],
+            )
+        };
+        let rows = BTreeMap::from([
+            ("runs#1".to_owned(), vec![run(1, "c", 30), run(1, "a", 10)]),
+            ("runs#2".to_owned(), vec![run(2, "d", 40), run(2, "b", 20)]),
+        ]);
+        let parameters = |limit| {
+            QueryParameters::checked(BTreeMap::from([
+                (
+                    "experiment_ids".to_owned(),
+                    CanonicalValue::list(vec![CanonicalValue::U64(2), CanonicalValue::U64(1)])
+                        .expect("routes"),
+                ),
+                ("limit".to_owned(), CanonicalValue::U64(limit)),
+            ]))
+            .expect("parameters")
+        };
+
+        let mut first_view = FakeView { rows: rows.clone() };
+        let first = execute_operational_page_in_snapshot(
+            program,
+            &[],
+            &parameters(1),
+            None,
+            &mut first_view,
+        )
+        .expect("first page");
+        let QueryResultValue::Many(first_rows) = &first.fields()["runs"] else {
+            panic!("runs");
+        };
+        assert_eq!(
+            first_rows[0].field("run_id"),
+            Some(&CanonicalValue::string("d").unwrap())
+        );
+        let cursor = QueryContinuation::checked(
+            first.continuation_binding().expect("binding").to_owned(),
+            first.continuation().expect("continuation").to_vec(),
+            first.index_epochs().clone(),
+        )
+        .expect("cursor");
+
+        let mut second_view = FakeView { rows };
+        let second = execute_operational_page_in_snapshot(
+            program,
+            &[],
+            &parameters(3),
+            Some(&cursor),
+            &mut second_view,
+        )
+        .expect("second page");
+        let QueryResultValue::Many(second_rows) = &second.fields()["runs"] else {
+            panic!("runs");
+        };
+        let ids = second_rows
+            .iter()
+            .map(|row| match row.field("run_id") {
+                Some(CanonicalValue::String(value)) => value.as_str(),
+                _ => panic!("run id"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["c", "b", "a"]);
+        assert!(second.continuation().is_none());
+
+        let mut empty_view = FakeView {
+            rows: BTreeMap::new(),
+        };
+        let empty_parameters = QueryParameters::checked(BTreeMap::from([
+            (
+                "experiment_ids".to_owned(),
+                CanonicalValue::list(Vec::new()).expect("empty routes"),
+            ),
+            ("limit".to_owned(), CanonicalValue::U64(3)),
+        ]))
+        .expect("parameters");
+        let empty = execute_operational_page_in_snapshot(
+            program,
+            &[],
+            &empty_parameters,
+            None,
+            &mut empty_view,
+        )
+        .expect("empty route set");
+        let QueryResultValue::Many(empty_rows) = &empty.fields()["runs"] else {
+            panic!("runs");
+        };
+        assert!(empty_rows.is_empty());
     }
 
     #[test]

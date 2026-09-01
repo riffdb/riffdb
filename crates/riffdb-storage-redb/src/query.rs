@@ -1086,10 +1086,11 @@ impl QueryReadView for RedbQueryView<'_> {
         predicates: &[BoundPredicate],
         limit: u64,
         after: Option<&[u8]>,
+        after_inclusive: bool,
         policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryScanPage, Self::Error> {
         let call = self.begin_view_call();
-        let result = self.scan_inner(step, predicates, limit, after, policy);
+        let result = self.scan_inner(step, predicates, limit, after, after_inclusive, policy);
         self.end_view_call(call);
         result
     }
@@ -1171,17 +1172,33 @@ impl RedbQueryView<'_> {
         predicates: &[BoundPredicate],
         limit: u64,
         after: Option<&[u8]>,
+        after_inclusive: bool,
         policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryScanPage, StorageError> {
         self.note_program_step();
         let setup_started = self.profile.as_ref().map(|_| Instant::now());
-        let QueryAccessKind::Index { direction, .. } = step.access() else {
-            return Err(invariant());
+        let direction = match step.access() {
+            QueryAccessKind::Index { direction, .. }
+            | QueryAccessKind::PartitionSetIndex { direction, .. } => direction,
+            _ => return Err(invariant()),
         };
         let schema = step.internal_index_key_schema().ok_or_else(invariant)?;
-        let partition_value = self
-            .parameters
-            .get(self.program.partition_parameter())
+        let partition_value = predicates
+            .iter()
+            .find(|predicate| {
+                predicate.operator() == riffdb_query_ir::QueryPredicateOperator::Equal
+            })
+            .filter(|predicate| {
+                step.predicates().iter().any(|source| {
+                    source.field() == predicate.field()
+                        && matches!(
+                            source.value(),
+                            riffdb_query_ir::QueryPredicateValue::Parameter(name)
+                                if name == self.program.partition_parameter()
+                        )
+                })
+            })
+            .map(BoundPredicate::value)
             .ok_or_else(invariant)?;
         let partition = step
             .internal_partition_key_schema()
@@ -1213,17 +1230,24 @@ impl RedbQueryView<'_> {
 
         self.touch_indexes();
         'ranges: for range in schedule.ranges() {
-            let Some(window) = range.resume_window(*direction, after) else {
+            let Some(window) = range.resume_window(*direction, after, after_inclusive) else {
                 continue;
             };
             let remaining_scan = scan_ceiling.saturating_sub(inspected);
             if remaining_scan == 0 {
                 return Err(storage_error(StorageErrorKind::LimitExceeded));
             }
+            let inclusive_end = window.include_end_equal().then(|| {
+                let mut end = window.end_exclusive().to_vec();
+                end.push(0);
+                end
+            });
             let rows = self.read_index_range(
                 *direction,
                 window.start_inclusive(),
-                window.end_exclusive(),
+                inclusive_end
+                    .as_deref()
+                    .unwrap_or_else(|| window.end_exclusive()),
                 remaining_scan,
             )?;
             let inspected_this_prefix = rows.len();
@@ -1383,7 +1407,7 @@ impl RedbQueryView<'_> {
 
         self.touch_indexes();
         'ranges: for range in schedule.ranges() {
-            let Some(window) = range.resume_window(*direction, after) else {
+            let Some(window) = range.resume_window(*direction, after, false) else {
                 continue;
             };
             let remaining_scan = scan_ceiling.saturating_sub(inspected);
@@ -1506,7 +1530,9 @@ impl RedbQueryView<'_> {
             QueryAccessKind::Point { key_fields }
             | QueryAccessKind::DependentPointBatch { key_fields, .. }
             | QueryAccessKind::CandidateRootHydration { key_fields, .. } => key_fields,
-            QueryAccessKind::Index { .. } | QueryAccessKind::LongPatternCandidate { .. } => {
+            QueryAccessKind::Index { .. }
+            | QueryAccessKind::PartitionSetIndex { .. }
+            | QueryAccessKind::LongPatternCandidate { .. } => {
                 return Err(invariant());
             }
             QueryAccessKind::Nearest { .. } => return Err(invariant()),

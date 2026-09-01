@@ -3670,6 +3670,7 @@ async fn execute_exact_predicate_named_query(
         execution_authorization
             .target()
             .partition()
+            .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?
             .partition_key()
             .clone(),
         partition_value,
@@ -4188,6 +4189,7 @@ async fn execute_tokenized_named_query(
         execution_authorization
             .target()
             .partition()
+            .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?
             .partition_key()
             .clone(),
         partition_value,
@@ -4498,6 +4500,7 @@ async fn execute_exact_named_query(
         execution_authorization
             .target()
             .partition()
+            .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?
             .partition_key()
             .clone(),
         partition_value,
@@ -5348,11 +5351,31 @@ fn prepare_long_pattern_participants(
         .ok_or(QueryExecutionError::InvalidProgram)?;
     let partition_value = parameters
         .get(program.partition_parameter())
-        .cloned()
         .ok_or_else(|| QueryExecutionError::MissingParameter {
             parameter: program.partition_parameter().to_owned(),
         })?;
-    let partition_key = authorization.target().partition().partition_key().clone();
+    let route_values = match program.partition_route() {
+        riffdb_query_ir::QueryPartitionRouteV1::Exact { .. } => {
+            std::slice::from_ref(partition_value)
+        }
+        riffdb_query_ir::QueryPartitionRouteV1::FiniteSet { maximum, .. } => {
+            let CanonicalValue::List(values) = partition_value else {
+                return Err(QueryExecutionError::InvalidParameter {
+                    parameter: program.partition_parameter().to_owned(),
+                });
+            };
+            if values.values().is_empty() || values.values().len() > usize::from(*maximum) {
+                return Err(QueryExecutionError::InvalidParameter {
+                    parameter: program.partition_parameter().to_owned(),
+                });
+            }
+            values.values()
+        }
+    };
+    let target_partitions = authorization.target().partitions();
+    if target_partitions.len() != route_values.len() {
+        return Err(QueryExecutionError::InvalidProgram);
+    }
     let minimum_epoch = match minimum_application_head {
         Some(value) => Some(CommitSequence::new(value).ok_or(QueryExecutionError::InvalidProgram)?),
         None => None,
@@ -5383,23 +5406,42 @@ fn prepare_long_pattern_participants(
         .map_err(|_| QueryExecutionError::InvalidParameter {
             parameter: pattern.pattern_parameter().to_owned(),
         })?;
-        let request = LongPatternProjectionRequest::new(
-            Arc::new(program.clone()),
-            step.clone(),
-            partition_key.clone(),
-            partition_value.clone(),
-            policy_shape,
-            row_policy.cloned(),
-            compiled,
-            minimum_epoch,
-            pinned_epoch,
-        );
-        let batch = provider
-            .execute(request)
-            .map_err(map_long_pattern_port_error)?;
-        if batch.binding() != step.binding() {
-            return Err(QueryExecutionError::BackendIntegrity);
+        let mut partition_batches = Vec::with_capacity(route_values.len());
+        for (partition, partition_value) in target_partitions.iter().zip(route_values) {
+            let request = LongPatternProjectionRequest::new(
+                Arc::new(program.clone()),
+                step.clone(),
+                partition.partition_key().clone(),
+                partition_value.clone(),
+                policy_shape,
+                row_policy.cloned(),
+                compiled.clone(),
+                minimum_epoch,
+                pinned_epoch,
+            );
+            let batch = provider
+                .execute(request)
+                .map_err(map_long_pattern_port_error)?;
+            if batch.binding() != step.binding() {
+                return Err(QueryExecutionError::BackendIntegrity);
+            }
+            partition_batches.push(batch);
         }
+        let route_count =
+            u64::try_from(route_values.len()).map_err(|_| QueryExecutionError::BoundExceeded)?;
+        let batch = LongPatternCandidateBatch::merge_partition_batches(
+            partition_batches,
+            step.maximum_rows(),
+            u64::from(pattern.bounds().rows())
+                .checked_mul(route_count)
+                .ok_or(QueryExecutionError::BoundExceeded)?,
+            pattern
+                .bounds()
+                .verification_bytes()
+                .checked_mul(route_count)
+                .ok_or(QueryExecutionError::BoundExceeded)?,
+        )
+        .ok_or(QueryExecutionError::BoundExceeded)?;
         let observation = batch
             .observation()
             .map_err(|_| QueryExecutionError::BackendIntegrity)?;
@@ -5553,10 +5595,16 @@ async fn execute_compiled_query(
         let failure = PublicError::storage_unavailable().into();
         return Err(finish_failure(&service, &context, &begun, failure).await);
     };
-    let has_long_pattern = program
-        .steps()
-        .iter()
-        .any(|step| matches!(step.access(), QueryAccessKind::LongPatternCandidate { .. }));
+    let empty_partition_set = program.partition_route().is_finite_set()
+        && matches!(
+            parameters.get(program.partition_parameter()),
+            Some(CanonicalValue::List(values)) if values.values().is_empty()
+        );
+    let has_long_pattern = !empty_partition_set
+        && program
+            .steps()
+            .iter()
+            .any(|step| matches!(step.access(), QueryAccessKind::LongPatternCandidate { .. }));
     let long_pattern_provider = if has_long_pattern {
         let Some(provider) = service.providers.long_pattern.as_ref() else {
             let failure = PublicError::storage_unavailable().into();
@@ -6027,6 +6075,47 @@ fn materialize_query_parameters(
             (TypeReference::Set(_), Some(_)) => {
                 return Err(validation_failure(ValidationCode::TypeMismatch));
             }
+            (
+                TypeReference::BoundedSet { element, maximum },
+                Some(SubmittedValue::List(values)),
+            ) if values.values().len() <= usize::from(*maximum) => {
+                let value_type = query_value_type(bundle, &element.value).ok_or_else(|| {
+                    service.internal_failure(operation, InternalDefect::ProofMismatch)
+                })?;
+                let mut values = values
+                    .values()
+                    .iter()
+                    .map(|value| {
+                        materialize_natural_query_value(
+                            bundle,
+                            &value_type,
+                            value,
+                            service,
+                            operation,
+                        )
+                    })
+                    .collect::<ServiceResult<Vec<_>>>()?
+                    .into_iter()
+                    .map(|value| {
+                        let encoded = encode_canonical_value(&value).map_err(|_| {
+                            service.internal_failure(operation, InternalDefect::ProofMismatch)
+                        })?;
+                        Ok((encoded, value))
+                    })
+                    .collect::<ServiceResult<Vec<_>>>()?;
+                values.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+                values.dedup_by(|left, right| left.0 == right.0);
+                if values.len() > usize::from(*maximum) {
+                    return Err(validation_failure(ValidationCode::InvalidValue));
+                }
+                let value =
+                    CanonicalValue::list(values.into_iter().map(|(_, value)| value).collect())
+                        .map_err(|_| validation_failure(ValidationCode::InvalidValue))?;
+                canonical.insert(name.to_owned(), value);
+            }
+            (TypeReference::BoundedSet { .. }, Some(_)) => {
+                return Err(validation_failure(ValidationCode::TypeMismatch));
+            }
             (ty, Some(value)) => {
                 let value_type = query_value_type(bundle, ty).ok_or_else(|| {
                     service.internal_failure(operation, InternalDefect::ProofMismatch)
@@ -6126,6 +6215,7 @@ fn query_value_type(
             riffdb_contract_ir::ValueType::string((*maximum).try_into().ok()?).ok()
         }
         TypeReference::Set(_)
+        | TypeReference::BoundedSet { .. }
         | TypeReference::Cursor
         | TypeReference::Limit
         | TypeReference::BoundedLimit(_) => None,
@@ -6215,7 +6305,21 @@ fn application_query_target_with_identity(
     maximum_access_rows_override: Option<NonZeroU16>,
 ) -> Option<ApplicationQueryTarget> {
     let partition_value = parameters.get(program.partition_parameter())?;
-    let mut routed_partition = None;
+    let partition_values = match program.partition_route() {
+        riffdb_query_ir::QueryPartitionRouteV1::Exact { .. } => {
+            std::slice::from_ref(partition_value)
+        }
+        riffdb_query_ir::QueryPartitionRouteV1::FiniteSet { maximum, .. } => {
+            let CanonicalValue::List(values) = partition_value else {
+                return None;
+            };
+            if values.values().len() > usize::from(*maximum) {
+                return None;
+            }
+            values.values()
+        }
+    };
+    let mut routed_partitions = None;
     let mut accesses = Vec::with_capacity(program.steps().len());
     for step in program.steps() {
         let entity = program
@@ -6231,26 +6335,28 @@ fn application_query_target_with_identity(
             .collect::<Vec<_>>();
         non_key_fields.sort_unstable();
         non_key_fields.dedup();
-        let partition = {
+        let partitions = {
             let aggregate = bundle
                 .schema()
                 .aggregate_for_entity(step.internal_entity_id())?;
-            let Ok(partition) = aggregate
-                .keys()
-                .partition_schema()
-                .encode_partition(std::slice::from_ref(partition_value))
-            else {
-                return None;
-            };
-            partition
+            partition_values
+                .iter()
+                .map(|partition_value| {
+                    aggregate
+                        .keys()
+                        .partition_schema()
+                        .encode_partition(std::slice::from_ref(partition_value))
+                        .ok()
+                })
+                .collect::<Option<Vec<_>>>()?
         };
         // PartitionKey retains the aggregate owner as a namespace. A
         // compiler-proved composite query may cross aggregate owners while
         // every step is still routed by this exact canonical parameter. Keep
         // the first key as the authorization route anchor; successful encoding
         // through every aggregate schema proves the shared typed route value.
-        if routed_partition.is_none() {
-            routed_partition = Some(partition);
+        if routed_partitions.is_none() {
+            routed_partitions = Some(partitions);
         }
         // Exact provider execution performs no authoritative entity/index
         // scan on the request path. Its access requirement names the entity,
@@ -6261,16 +6367,22 @@ fn application_query_target_with_identity(
         let rows = match maximum_access_rows_override {
             Some(rows) => rows,
             None => {
-                let Ok(rows) = u16::try_from(step.maximum_rows()) else {
+                let maximum = match step.access() {
+                    QueryAccessKind::PartitionSetIndex { scan_ceiling, .. } => {
+                        u64::from(*scan_ceiling)
+                    }
+                    _ => step.maximum_rows(),
+                };
+                let Ok(rows) = u16::try_from(maximum) else {
                     return None;
                 };
                 NonZeroU16::new(rows)?
             }
         };
         let index_id = match step.access() {
-            QueryAccessKind::Index { .. } | QueryAccessKind::LongPatternCandidate { .. } => {
-                Some(step.internal_index_id()?)
-            }
+            QueryAccessKind::Index { .. }
+            | QueryAccessKind::PartitionSetIndex { .. }
+            | QueryAccessKind::LongPatternCandidate { .. } => Some(step.internal_index_id()?),
             QueryAccessKind::Point { .. }
             | QueryAccessKind::DependentPointBatch { .. }
             | QueryAccessKind::Nearest { .. }
@@ -6305,28 +6417,57 @@ fn application_query_target_with_identity(
                 .collect();
             (projected, ordinary)
         };
+        let access = match program.partition_route() {
+            riffdb_query_ir::QueryPartitionRouteV1::Exact { .. } => {
+                ApplicationQueryAccessRequirement::new(
+                    step.internal_entity_id(),
+                    index_id,
+                    non_key_fields,
+                    rows,
+                )
+            }
+            riffdb_query_ir::QueryPartitionRouteV1::FiniteSet { maximum, .. } => {
+                ApplicationQueryAccessRequirement::new_partition_set(
+                    step.internal_entity_id(),
+                    index_id,
+                    non_key_fields,
+                    rows,
+                    NonZeroU16::new(*maximum)?,
+                )
+            }
+        };
         accesses.push(
-            ApplicationQueryAccessRequirement::new(
-                step.internal_entity_id(),
-                index_id,
-                non_key_fields,
-                rows,
-            )
-            .and_then(|access| access.with_projected_secret_fields(projected_secret_fields))
-            .ok()?,
+            access
+                .and_then(|access| access.with_projected_secret_fields(projected_secret_fields))
+                .ok()?,
         );
     }
-    let target = ApplicationQueryTarget::new(
-        program.contract().lineage().clone(),
-        program.contract().version(),
-        program.contract().bundle_hash(),
-        plan_hash,
-        ingress,
-        OperationTenantScope::global_only(),
-        routed_partition?,
-        accesses,
-        cost,
-    )
+    let target = match program.partition_route() {
+        riffdb_query_ir::QueryPartitionRouteV1::Exact { .. } => ApplicationQueryTarget::new(
+            program.contract().lineage().clone(),
+            program.contract().version(),
+            program.contract().bundle_hash(),
+            plan_hash,
+            ingress,
+            OperationTenantScope::global_only(),
+            routed_partitions?.into_iter().next()?,
+            accesses,
+            cost,
+        ),
+        riffdb_query_ir::QueryPartitionRouteV1::FiniteSet { .. } => {
+            ApplicationQueryTarget::new_partition_set(
+                program.contract().lineage().clone(),
+                program.contract().version(),
+                program.contract().bundle_hash(),
+                plan_hash,
+                ingress,
+                OperationTenantScope::global_only(),
+                routed_partitions?,
+                accesses,
+                cost,
+            )
+        }
+    }
     .ok()?;
     Some(if program.surface().candidates().is_empty() {
         target
@@ -6361,8 +6502,7 @@ pub(crate) fn execute_authorized_query_page(
         && target.accesses().len() == program.steps().len()
         && obligations.output_classification()
             == OutputClassification::PolicyFilteredApplicationData
-        && obligations.partition_constraint()
-            == Some(&PartitionConstraint::Exact(target.partition().clone()));
+        && obligations.partition_constraint() == Some(&query_partition_constraint(target));
     if !exact_target {
         return Err(QueryExecutionError::InvalidProgram);
     }
@@ -6376,6 +6516,13 @@ pub(crate) fn execute_authorized_query_page(
         (false, None) => {
             executor.execute_operational_query_page(program, aggregates, parameters, prior)
         }
+    }
+}
+
+fn query_partition_constraint(target: &ApplicationQueryTarget) -> PartitionConstraint {
+    match target.partitions() {
+        [partition] => PartitionConstraint::Exact(partition.clone()),
+        partitions => PartitionConstraint::Explicit(partitions.to_vec()),
     }
 }
 
@@ -6402,8 +6549,7 @@ fn execute_authorized_provider_query_page(
         && target.accesses().len() == program.steps().len()
         && obligations.output_classification()
             == OutputClassification::PolicyFilteredApplicationData
-        && obligations.partition_constraint()
-            == Some(&PartitionConstraint::Exact(target.partition().clone()));
+        && obligations.partition_constraint() == Some(&query_partition_constraint(target));
     if !exact_target || !aggregates.is_empty() {
         return Err(QueryExecutionError::InvalidProgram);
     }
@@ -6521,6 +6667,9 @@ fn render_named_type(value: &NamedTypeSchema) -> String {
         NamedTypeSchema::Scalar(name) => name.clone(),
         NamedTypeSchema::Optional(inner) => format!("{}?", render_named_type(inner)),
         NamedTypeSchema::Set(inner) => format!("Set<{}>", render_named_type(inner)),
+        NamedTypeSchema::BoundedSet { element, maximum } => {
+            format!("Set<{}, {maximum}>", render_named_type(element))
+        }
         NamedTypeSchema::Record(fields) => {
             let fields = fields
                 .iter()

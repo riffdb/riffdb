@@ -133,6 +133,9 @@ fn every_real_point_dependency_and_dependent_batch_matches_the_frozen_inventory(
                                     .maximum_encoded_bytes(),
                             )
                         }
+                        QueryAccessKind::PartitionSetIndex { .. } => {
+                            unreachable!("relationship corpus has no partition-set route")
+                        }
                         QueryAccessKind::Nearest { .. } => unreachable!("filtered above"),
                         QueryAccessKind::CandidateRootHydration { .. } => {
                             unreachable!("relationship corpus has no candidate root")

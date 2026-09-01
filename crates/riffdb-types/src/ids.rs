@@ -344,6 +344,10 @@ hash_id!(
     QueryPlanHash
 );
 hash_id!(
+    /// The digest of one ordered bounded partition-set epoch observation.
+    PartitionSetObservationHash
+);
+hash_id!(
     /// The identity of one canonical immutable query module.
     QueryModuleHash
 );
