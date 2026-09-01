@@ -445,6 +445,36 @@ impl Parser {
             TypeReference::Set(Box::new(inner))
         } else if self.take_word("Cursor").is_some() {
             TypeReference::Cursor
+        } else if self.take_word("string").is_some() {
+            self.expect(TokenKind::Less)?;
+            let maximum = self.next()?.clone();
+            let TokenKind::Unsigned(value) = maximum.kind else {
+                return Err(ParseDiagnostics::one(ParseDiagnostic::new(
+                    DiagnosticCode::UnexpectedToken,
+                    maximum.span,
+                    "bounded string maximum must be an unsigned literal",
+                    Some("use string<MAX> where MAX is from 1 through 8000"),
+                )));
+            };
+            let canonical = value == "0" || !value.starts_with('0');
+            let maximum = value
+                .parse::<u32>()
+                .ok()
+                .filter(|maximum| {
+                    canonical
+                        && (1..=riffdb_types::MAX_LONG_PATTERN_SOURCE_BYTES_V1 as u32)
+                            .contains(maximum)
+                })
+                .ok_or_else(|| {
+                    ParseDiagnostics::one(ParseDiagnostic::new(
+                        DiagnosticCode::InvalidToken,
+                        maximum.span,
+                        "bounded string maximum is outside the supported range",
+                        Some("use one canonical unsigned literal from 1 through 8000"),
+                    ))
+                })?;
+            self.close_bounded_maximum()?;
+            TypeReference::BoundedString(maximum)
         } else if self.take_word("Limit").is_some() {
             if self.take(TokenKind::Less).is_some() {
                 let maximum = self.next()?.clone();
@@ -1289,6 +1319,10 @@ impl Parser {
             TokenKind::Ident(word) if word == "starts_with" => (BinaryOperator::StartsWith, 3),
             TokenKind::Ident(word) if word == "ends_with" => (BinaryOperator::EndsWith, 3),
             TokenKind::Ident(word) if word == "contains" => (BinaryOperator::Contains, 3),
+            TokenKind::Ident(word) if word == "like" => (BinaryOperator::Like, 3),
+            TokenKind::Ident(word) if word == "ilike" => (BinaryOperator::ILike, 3),
+            TokenKind::Ident(word) if word == "not_like" => (BinaryOperator::NotLike, 3),
+            TokenKind::Ident(word) if word == "not_ilike" => (BinaryOperator::NotILike, 3),
             _ => return None,
         };
         Some((pair.0, pair.1, token.span))
@@ -1550,7 +1584,10 @@ fn type_contains_bounded_limit(value: &TypeReference) -> bool {
         TypeReference::Optional(inner) | TypeReference::Set(inner) => {
             type_contains_bounded_limit(&inner.value)
         }
-        TypeReference::Named(_) | TypeReference::Cursor | TypeReference::Limit => false,
+        TypeReference::Named(_)
+        | TypeReference::Cursor
+        | TypeReference::Limit
+        | TypeReference::BoundedString(_) => false,
     }
 }
 
@@ -1786,6 +1823,10 @@ fn reserved(value: &str) -> bool {
             | "is"
             | "not"
             | "prefix"
+            | "like"
+            | "ilike"
+            | "not_like"
+            | "not_ilike"
             | "true"
             | "false"
             | "null"

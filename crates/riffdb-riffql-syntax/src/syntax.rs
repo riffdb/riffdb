@@ -159,6 +159,8 @@ pub enum TypeReference {
     Limit,
     /// Positive row limit with a compiler-declared inclusive maximum.
     BoundedLimit(u64),
+    /// Exact UTF-8 query text with a compiler-declared byte maximum.
+    BoundedString(u32),
 }
 
 /// Ordered query body.
@@ -528,6 +530,14 @@ pub enum BinaryOperator {
     EndsWith,
     /// Exact binary UTF-8 contiguous-byte match through an ADR-0131 provider.
     Contains,
+    /// SQL-shaped wildcard match through a declared exact pattern provider.
+    Like,
+    /// Unicode-folded SQL-shaped wildcard match through a declared exact pattern provider.
+    ILike,
+    /// Authorized-universe negated wildcard match through a declared exact pattern provider.
+    NotLike,
+    /// Authorized-universe negated folded wildcard match through a declared exact pattern provider.
+    NotILike,
     /// Boolean conjunction.
     And,
     /// Boolean disjunction.

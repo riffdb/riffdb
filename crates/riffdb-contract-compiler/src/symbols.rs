@@ -234,6 +234,16 @@ fn allocate_symbols(
                                 .collect::<Vec<_>>();
                             validate_unique_spanned_names(&source_names, &mut diagnostics);
                         }
+                        EntityItem::LongPattern(pattern) => {
+                            indexes.insert(&pattern.name, &mut diagnostics);
+                            validate_unique_spanned_names(&pattern.operators, &mut diagnostics);
+                            let bound_names = pattern
+                                .bounds
+                                .iter()
+                                .map(|bound| bound.name.clone())
+                                .collect::<Vec<_>>();
+                            validate_unique_spanned_names(&bound_names, &mut diagnostics);
+                        }
                         EntityItem::DeletePolicy(_) => {}
                     }
                 }

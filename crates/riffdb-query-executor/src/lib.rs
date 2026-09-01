@@ -25,8 +25,9 @@ use riffdb_query_ir::{
 };
 use riffdb_riffql_syntax::Cardinality;
 use riffdb_types::{
-    AggregateSemanticIdentityV1, CanonicalList, CanonicalValue, CommitSequence, ContractLineage,
-    EmbeddingMetadata, EntityKey, EntityTypeId, FieldId, PartitionKey, PartitionKeyHash,
+    AggregateSemanticIdentityV1, CanonicalList, CanonicalValue, CommitSequence,
+    CompiledLongPatternV1, ContractLineage, EmbeddingMetadata, EntityKey, EntityTypeId, FieldId,
+    PartitionKey, PartitionKeyHash, ProjectionGeneration, ProjectionProviderDescriptorHash,
     QueryCostVectorV1, canonical_value_encoded_len, encode_canonical_value, hash_partition_key,
 };
 
@@ -378,6 +379,7 @@ pub fn bind_live_query_dependencies(
                 QueryAccessKind::Point { .. }
                 | QueryAccessKind::DependentPointBatch { .. }
                 | QueryAccessKind::Index { .. }
+                | QueryAccessKind::LongPatternCandidate { .. }
                 | QueryAccessKind::Nearest { .. }
                 | QueryAccessKind::CandidateRootHydration { .. } => None,
             };
@@ -1103,6 +1105,49 @@ pub struct QueryScanPage {
     continuation: Option<Vec<u8>>,
 }
 
+/// One complete, policy-filtered long-pattern candidate population observed at an exact epoch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LongPatternCandidateBatch {
+    rows: Vec<QueryRow>,
+    descriptor: ProjectionProviderDescriptorHash,
+    state_schema_hash: [u8; 32],
+    history_incarnation: u64,
+    generation: ProjectionGeneration,
+    floor: CommitSequence,
+    ceiling: CommitSequence,
+    scanned_rows: u64,
+    verification_bytes: u64,
+}
+
+impl LongPatternCandidateBatch {
+    /// Constructs one bounded provider observation. Semantic ceilings are rechecked by the executor.
+    #[allow(clippy::too_many_arguments)]
+    #[doc(hidden)]
+    pub fn checked(
+        rows: Vec<QueryRow>,
+        descriptor: ProjectionProviderDescriptorHash,
+        state_schema_hash: [u8; 32],
+        history_incarnation: u64,
+        generation: ProjectionGeneration,
+        floor: CommitSequence,
+        ceiling: CommitSequence,
+        scanned_rows: u64,
+        verification_bytes: u64,
+    ) -> Option<Self> {
+        (floor <= ceiling && rows.len() as u64 <= scanned_rows).then_some(Self {
+            rows,
+            descriptor,
+            state_schema_hash,
+            history_incarnation,
+            generation,
+            floor,
+            ceiling,
+            scanned_rows,
+            verification_bytes,
+        })
+    }
+}
+
 impl QueryScanPage {
     /// Constructs an exact-end page.
     #[must_use]
@@ -1330,6 +1375,20 @@ pub trait QueryReadView {
         after: Option<&[u8]>,
         policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryScanPage, Self::Error>;
+
+    /// Executes one compiler-sealed long-pattern provider at this view's exact admission head.
+    ///
+    /// `None` means the adapter has no matching first-party provider participant. The executor
+    /// refuses; it never falls back to an authoritative entity scan.
+    fn long_pattern_candidate(
+        &mut self,
+        _step: &QueryAccessStep,
+        _pattern: &CompiledLongPatternV1,
+        _predicates: &[BoundPredicate],
+        _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+    ) -> Result<Option<LongPatternCandidateBatch>, Self::Error> {
+        Ok(None)
+    }
 
     /// Executes one compiler-sealed covered positional index step.
     ///
@@ -1908,6 +1967,7 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
     let mut index_epochs = BTreeMap::new();
     let mut continuation_binding = None;
     let mut continuation = None;
+    let mut provider_history_incarnation = None;
     // Hoist once: outcome name is a program constant, not per-step work.
     let default_outcome = program
         .surface()
@@ -2099,6 +2159,65 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                     (!predicates_already_applied).then_some(predicates),
                     true,
                 )
+            }
+            riffdb_query_ir::QueryAccessKind::LongPatternCandidate { provider, pattern } => {
+                if after.is_some() {
+                    return Err(QueryExecutionError::InvalidProgram);
+                }
+                let CanonicalValue::String(source_pattern) = parameters
+                    .get(pattern.pattern_parameter())
+                    .ok_or_else(|| QueryExecutionError::MissingParameter {
+                        parameter: pattern.pattern_parameter().to_owned(),
+                    })?
+                else {
+                    return Err(QueryExecutionError::InvalidParameter {
+                        parameter: pattern.pattern_parameter().to_owned(),
+                    });
+                };
+                let compiled = CompiledLongPatternV1::compile_bounded(
+                    pattern.operator(),
+                    pattern.profile(),
+                    source_pattern.as_str(),
+                    pattern.bounds(),
+                )
+                .map_err(|_| QueryExecutionError::InvalidParameter {
+                    parameter: pattern.pattern_parameter().to_owned(),
+                })?;
+                let predicates =
+                    bind_predicates(step, parameters, &bindings, program.surface().candidates())?;
+                let batch = view
+                    .long_pattern_candidate(step, &compiled, &predicates, policy)
+                    .map_err(|error| map_view_error(view, &error))?
+                    .ok_or(QueryExecutionError::BackendUnavailable)?;
+                let head = view.application_head();
+                let bounds = pattern.bounds();
+                if batch.descriptor != pattern.descriptor().digest()
+                    || batch.state_schema_hash
+                        != pattern.descriptor().state_identity().schema_hash()
+                    || batch.floor.get() > head
+                    || batch.ceiling.get() < head
+                    || batch.rows.len() as u64 > limit
+                    || batch.rows.len() as u32 > bounds.candidates()
+                    || batch.scanned_rows > u64::from(bounds.rows())
+                    || batch.verification_bytes > bounds.verification_bytes()
+                {
+                    return Err(QueryExecutionError::BoundExceeded);
+                }
+                match provider_history_incarnation {
+                    None => provider_history_incarnation = Some(batch.history_incarnation),
+                    Some(existing) if existing == batch.history_incarnation => {}
+                    Some(_) => return Err(QueryExecutionError::StaleCursor),
+                }
+                fuel.scans(batch.scanned_rows)?;
+                fuel.points(batch.rows.len() as u64)?;
+                let epoch_key = format!(
+                    "provider.{}.{}.{}",
+                    step.entity(),
+                    provider,
+                    batch.generation.get()
+                );
+                index_epochs.insert(epoch_key, head);
+                (batch.rows, None, false)
             }
             riffdb_query_ir::QueryAccessKind::Nearest { .. } => {
                 // WP-593: exact KNN execution path. The adapter applies the

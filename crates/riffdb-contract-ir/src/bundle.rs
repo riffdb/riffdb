@@ -87,6 +87,8 @@ pub const BUNDLE_FORMAT_VERSION_V18: u32 = 18;
 pub const BUNDLE_FORMAT_VERSION_V19: u32 = 19;
 /// Bundle framing containing tokenized text-index declarations.
 pub const BUNDLE_FORMAT_VERSION_V20: u32 = 20;
+/// Bundle framing containing long-value exact-pattern declarations.
+pub const BUNDLE_FORMAT_VERSION_V21: u32 = 21;
 /// Canonical grammar version represented by a bundle.
 pub const GRAMMAR_VERSION_V1: u32 = 1;
 /// Contract grammar containing compiled workflows and service-owned values.
@@ -127,6 +129,8 @@ pub const GRAMMAR_VERSION_V18: u32 = 18;
 pub const GRAMMAR_VERSION_V19: u32 = 19;
 /// Contract grammar containing tokenized text-index declarations.
 pub const GRAMMAR_VERSION_V20: u32 = 20;
+/// Contract grammar containing `pattern_index` declarations.
+pub const GRAMMAR_VERSION_V21: u32 = 21;
 /// Executable IR version represented by a bundle.
 pub const EXECUTABLE_IR_VERSION_V1: u32 = 1;
 /// Executable IR containing compiled workflow transitions and service values.
@@ -174,6 +178,8 @@ pub const EXECUTABLE_IR_VERSION_V18: u32 = 18;
 pub const EXECUTABLE_IR_VERSION_V19: u32 = 19;
 /// Executable IR whose schema carries tokenized text-index declarations.
 pub const EXECUTABLE_IR_VERSION_V20: u32 = 20;
+/// Executable IR whose schema carries long-pattern declarations.
+pub const EXECUTABLE_IR_VERSION_V21: u32 = 21;
 
 const RELATIONSHIP_SCHEMA_EXTENSION: u32 = 0xffff_fffe;
 const UNIQUE_KEY_SCHEMA_EXTENSION: u32 = 0xffff_fffd;
@@ -187,6 +193,7 @@ const SECRET_FIELD_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fff8;
 const VECTOR_ANN_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fff7;
 const VECTOR_PRODUCTION_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fff5;
 const TEXT_INDEX_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fff4;
+const LONG_PATTERN_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fff3;
 // The second word cannot be a valid following source-name length. Keeping the
 // extension magic eight bytes wide prevents a future stable event ID equal to
 // the first word from being misread as a partition extension.
@@ -1102,7 +1109,9 @@ impl ContractBundle {
         mcp_command_names: McpCommandNameRegistryV2,
         compatibility: CompatibilityReport,
     ) -> Result<Self, IrValidationError> {
-        let version = if schema.requires_ir_v20() {
+        let version = if schema.requires_ir_v21() {
+            BUNDLE_FORMAT_VERSION_V21
+        } else if schema.requires_ir_v20() {
             BUNDLE_FORMAT_VERSION_V20
         } else if commands.iter().any(CommandPlan::requires_ir_v19) {
             BUNDLE_FORMAT_VERSION_V19
@@ -1266,6 +1275,10 @@ impl ContractBundle {
                 BUNDLE_FORMAT_VERSION_V20,
                 GRAMMAR_VERSION_V20,
                 EXECUTABLE_IR_VERSION_V20
+            ) | (
+                BUNDLE_FORMAT_VERSION_V21,
+                GRAMMAR_VERSION_V21,
+                EXECUTABLE_IR_VERSION_V21
             )
         ) || (ir_version < EXECUTABLE_IR_VERSION_V2
             && (!workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2)))
@@ -1298,6 +1311,7 @@ impl ContractBundle {
             || (ir_version < EXECUTABLE_IR_VERSION_V19
                 && commands.iter().any(CommandPlan::requires_ir_v19))
             || (ir_version < EXECUTABLE_IR_VERSION_V20 && schema.requires_ir_v20())
+            || (ir_version < EXECUTABLE_IR_VERSION_V21 && schema.requires_ir_v21())
             || (ir_version >= EXECUTABLE_IR_VERSION_V6
                 && commands
                     .iter()
@@ -1743,6 +1757,15 @@ fn validate_ledger(
             index_owner_tag::ENTITY,
             vec![spec.entity().get()],
             &name,
+            spec.index().get(),
+        )?;
+    }
+    for spec in schema.long_pattern_specs() {
+        push(
+            StableIdNamespaceTag::Index,
+            index_owner_tag::ENTITY,
+            vec![spec.entity().get()],
+            spec.name(),
             spec.index().get(),
         )?;
     }
@@ -2838,6 +2861,49 @@ fn encode_schema(writer: &mut Writer, schema: &SchemaIr) -> Result<(), IrValidat
             writer.u32(spec.max_terms())?;
             writer.u32(spec.max_candidates())?;
             writer.u32(spec.max_results())?;
+        }
+    }
+    if !schema.long_pattern_specs().is_empty() {
+        writer.u32(LONG_PATTERN_SPEC_SCHEMA_EXTENSION)?;
+        writer.u32(schema.long_pattern_specs().len() as u32)?;
+        for spec in schema.long_pattern_specs() {
+            writer.u32(spec.entity().get())?;
+            writer.u32(spec.index().get())?;
+            writer.string(spec.name())?;
+            writer.u32(spec.field().get())?;
+            writer.u8(spec.profile() as u8)?;
+            writer.u32(spec.operators().len() as u32)?;
+            for operator in spec.operators() {
+                writer.u8(*operator as u8)?;
+            }
+            let bounds = spec.bounds();
+            for value in [
+                bounds.source_bytes(),
+                bounds.matched_bytes(),
+                bounds.rows(),
+                bounds.distinct_grams(),
+                bounds.grams_per_row(),
+                bounds.pattern_bytes(),
+                bounds.wildcard_atoms(),
+                bounds.literal_runs(),
+                bounds.candidates(),
+                bounds.results(),
+            ] {
+                writer.u32(value)?;
+            }
+            for value in [
+                bounds.total_matched_bytes(),
+                bounds.postings(),
+                bounds.postings_bytes(),
+                bounds.verification_bytes(),
+            ] {
+                writer.u64(value)?;
+            }
+            writer.u64(spec.replay_age_seconds())?;
+            writer.u64(spec.replay_bytes())?;
+            writer.u64(spec.replay_backlog())?;
+            writer.u32(spec.retained_generations())?;
+            writer.u32(spec.stale_entity_count_threshold())?;
         }
     }
     Ok(())
@@ -4013,6 +4079,10 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
             BUNDLE_FORMAT_VERSION_V20,
             GRAMMAR_VERSION_V20,
             EXECUTABLE_IR_VERSION_V20
+        ) | (
+            BUNDLE_FORMAT_VERSION_V21,
+            GRAMMAR_VERSION_V21,
+            EXECUTABLE_IR_VERSION_V21
         )
     ) {
         return Err(IrValidationError::UnsupportedVersion {
@@ -4691,6 +4761,88 @@ fn decode_schema(reader: &mut Reader<'_>) -> Result<SchemaIr, IrValidationError>
             )?);
         }
     }
+    let mut long_pattern_specs = Vec::new();
+    if reader.remaining() >= 4 && reader.peek_u32()? == LONG_PATTERN_SPEC_SCHEMA_EXTENSION {
+        let _marker = reader.u32()?;
+        let count = decode_len(
+            reader,
+            "long pattern specs",
+            crate::MAX_DECLARATIONS_PER_KIND,
+        )?;
+        long_pattern_specs.reserve(count);
+        for _ in 0..count {
+            let entity = decode_entity_id(reader)?;
+            let index = decode_index_id(reader)?;
+            let name = reader.string(256)?;
+            let field = decode_field_id(reader)?;
+            let profile_tag = reader.u8()?;
+            let profile = riffdb_types::LongPatternProfileV1::from_discriminant(profile_tag)
+                .ok_or(IrValidationError::UnknownTag {
+                    kind: "long pattern profile",
+                    tag: profile_tag,
+                })?;
+            let operator_count = decode_len(reader, "long pattern operators", 8)?;
+            let mut operators = Vec::with_capacity(operator_count);
+            for _ in 0..operator_count {
+                let tag = reader.u8()?;
+                operators.push(
+                    riffdb_types::LongPatternOperatorV1::from_discriminant(tag).ok_or(
+                        IrValidationError::UnknownTag {
+                            kind: "long pattern operator",
+                            tag,
+                        },
+                    )?,
+                );
+            }
+            let source_bytes = reader.u32()?;
+            let matched_bytes = reader.u32()?;
+            let rows = reader.u32()?;
+            let distinct_grams = reader.u32()?;
+            let grams_per_row = reader.u32()?;
+            let pattern_bytes = reader.u32()?;
+            let wildcard_atoms = reader.u32()?;
+            let literal_runs = reader.u32()?;
+            let candidates = reader.u32()?;
+            let results = reader.u32()?;
+            let total_matched_bytes = reader.u64()?;
+            let postings = reader.u64()?;
+            let postings_bytes = reader.u64()?;
+            let verification_bytes = reader.u64()?;
+            let bounds = riffdb_types::LongPatternBoundsV1::new(
+                source_bytes,
+                matched_bytes,
+                rows,
+                total_matched_bytes,
+                distinct_grams,
+                postings,
+                postings_bytes,
+                grams_per_row,
+                pattern_bytes,
+                wildcard_atoms,
+                literal_runs,
+                candidates,
+                verification_bytes,
+                results,
+            )
+            .map_err(|_| IrValidationError::InvalidReference {
+                kind: "long pattern bounds",
+            })?;
+            long_pattern_specs.push(crate::LongPatternSpecV1::new(
+                entity,
+                index,
+                name,
+                field,
+                profile,
+                operators,
+                bounds,
+                reader.u64()?,
+                reader.u64()?,
+                reader.u64()?,
+                reader.u32()?,
+                reader.u32()?,
+            )?);
+        }
+    }
     SchemaIr::with_integrity_and_delete_policies(
         entities,
         events,
@@ -4704,7 +4856,8 @@ fn decode_schema(reader: &mut Reader<'_>) -> Result<SchemaIr, IrValidationError>
     .with_secret_field_specs(secret_field_specs)?
     .with_vector_ann_specs(vector_ann_specs)?
     .with_vector_production_specs(vector_production_specs)?
-    .with_text_index_specs(text_index_specs)
+    .with_text_index_specs(text_index_specs)?
+    .with_long_pattern_specs(long_pattern_specs)
 }
 
 fn decode_entity_schema(reader: &mut Reader<'_>) -> Result<EntitySchema, IrValidationError> {

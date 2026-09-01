@@ -1,5 +1,10 @@
 use std::collections::BTreeSet;
 
+use riffdb_types::{
+    LongPatternBoundsV1, LongPatternOperatorV1, LongPatternProfileV1,
+    ProjectionProviderDescriptorV1,
+};
+
 /// Maximum ordinary/provider leaves in one V1 candidate expression.
 pub const MAX_CANDIDATE_SOURCES_V1: usize = 8;
 /// Maximum distinct complete root keys in one V1 candidate binding.
@@ -37,6 +42,7 @@ pub struct CandidateSourceV1 {
     entity: String,
     projected_key: String,
     access: String,
+    long_pattern: Option<LongPatternCandidateV1>,
 }
 
 impl CandidateSourceV1 {
@@ -50,6 +56,26 @@ impl CandidateSourceV1 {
             entity,
             projected_key,
             access,
+            long_pattern: None,
+        })
+    }
+
+    /// Constructs one compiler-proven long-pattern provider source.
+    #[must_use]
+    pub fn checked_long_pattern(
+        entity: String,
+        projected_key: String,
+        access: String,
+        pattern: LongPatternCandidateV1,
+    ) -> Option<Self> {
+        if entity.is_empty() || projected_key.is_empty() || access.is_empty() {
+            return None;
+        }
+        Some(Self {
+            entity,
+            projected_key,
+            access,
+            long_pattern: Some(pattern),
         })
     }
 
@@ -69,6 +95,80 @@ impl CandidateSourceV1 {
     #[must_use]
     pub fn access(&self) -> &str {
         &self.access
+    }
+
+    /// Compiler-sealed pattern invocation, when this is a provider source.
+    #[must_use]
+    pub const fn long_pattern(&self) -> Option<&LongPatternCandidateV1> {
+        self.long_pattern.as_ref()
+    }
+}
+
+/// One exact contract-declared long-pattern provider invocation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LongPatternCandidateV1 {
+    field: String,
+    operator: LongPatternOperatorV1,
+    pattern_parameter: String,
+    profile: LongPatternProfileV1,
+    bounds: LongPatternBoundsV1,
+    descriptor: ProjectionProviderDescriptorV1,
+}
+
+impl LongPatternCandidateV1 {
+    /// Constructs one compiler-owned provider invocation.
+    #[must_use]
+    pub fn checked(
+        field: String,
+        operator: LongPatternOperatorV1,
+        pattern_parameter: String,
+        profile: LongPatternProfileV1,
+        bounds: LongPatternBoundsV1,
+        descriptor: ProjectionProviderDescriptorV1,
+    ) -> Option<Self> {
+        (!field.is_empty()
+            && !pattern_parameter.is_empty()
+            && descriptor.kind() == riffdb_types::ProjectionProviderKindV1::LongPattern
+            && descriptor.max_candidates() == bounds.candidates()
+            && descriptor.max_output_rows() == bounds.results())
+        .then_some(Self {
+            field,
+            operator,
+            pattern_parameter,
+            profile,
+            bounds,
+            descriptor,
+        })
+    }
+    /// Exact matched entity field.
+    #[must_use]
+    pub fn field(&self) -> &str {
+        &self.field
+    }
+    /// Closed pattern operator.
+    #[must_use]
+    pub const fn operator(&self) -> LongPatternOperatorV1 {
+        self.operator
+    }
+    /// Typed query parameter supplying the pattern.
+    #[must_use]
+    pub fn pattern_parameter(&self) -> &str {
+        &self.pattern_parameter
+    }
+    /// Frozen matching profile.
+    #[must_use]
+    pub const fn profile(&self) -> LongPatternProfileV1 {
+        self.profile
+    }
+    /// Complete provider and verification bounds.
+    #[must_use]
+    pub const fn bounds(&self) -> LongPatternBoundsV1 {
+        self.bounds
+    }
+    /// Exact participant descriptor.
+    #[must_use]
+    pub const fn descriptor(&self) -> &ProjectionProviderDescriptorV1 {
+        &self.descriptor
     }
 }
 

@@ -844,6 +844,15 @@ fn predicate_operator(
         BinaryOperator::Prefix | BinaryOperator::StartsWith => ExactPredicateOperatorV1::StartsWith,
         BinaryOperator::EndsWith => ExactPredicateOperatorV1::EndsWith,
         BinaryOperator::Contains => ExactPredicateOperatorV1::Contains,
+        BinaryOperator::Like
+        | BinaryOperator::ILike
+        | BinaryOperator::NotLike
+        | BinaryOperator::NotILike => {
+            return Err(diagnostic(
+                span,
+                "wildcard operators require a declared pattern provider",
+            ));
+        }
         BinaryOperator::And | BinaryOperator::Or => {
             return Err(diagnostic(span, "exact predicate Boolean edge is invalid"));
         }

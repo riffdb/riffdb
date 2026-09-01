@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroU32;
 
 use riffdb_contract_ir::{ValueType, ValueTypeTag};
 use riffdb_riffql_syntax::{
@@ -9,17 +10,20 @@ use riffdb_riffql_syntax::{
 };
 use riffdb_types::{
     AggregateSemanticIdentityV1, ContractBundleHash, ContractLineage, ContractVersion,
-    EntityTypeId, FieldId, MAX_DECIMAL_PRECISION,
+    EntityTypeId, FieldId, LongPatternOperatorV1, MAX_DECIMAL_PRECISION,
+    ProjectionProviderCapabilitiesV1, ProjectionProviderDescriptorV1, ProjectionProviderKindV1,
+    ProjectionProviderPolicyModeV1, ProjectionProviderPostureV1, ProjectionProviderStateIdentityV1,
+    ProjectionProviderStaticBoundsV1,
 };
 
 use crate::{
     AggregateExecutionBudgetV1, CandidateBindingV1, CandidateSetOperatorV1, CandidateSourceV1,
-    EntitySymbol, MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1, MAX_AGGREGATE_DISTINCT_VALUES_V1,
-    MAX_AGGREGATE_STATE_BYTES_V1, MAX_QUERY_ARTIFACT_BYTES, MAX_SOURCE_MAP_ENTRIES,
-    NamedFieldSchema, NamedParameterSchema, NamedQuerySchemas, NamedResultBranchSchema,
-    NamedTypeSchema, OperationalAggregateFunctionV1, OperationalAggregateGroupKeyV1,
-    OperationalAggregateMeasureV1, OperationalAggregateV1, PageBound,
-    QUERY_IR_VERSION_BOUNDED_LIMIT_V1, QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1,
+    EntitySymbol, LongPatternCandidateV1, MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1,
+    MAX_AGGREGATE_DISTINCT_VALUES_V1, MAX_AGGREGATE_STATE_BYTES_V1, MAX_QUERY_ARTIFACT_BYTES,
+    MAX_SOURCE_MAP_ENTRIES, NamedFieldSchema, NamedParameterSchema, NamedQuerySchemas,
+    NamedResultBranchSchema, NamedTypeSchema, OperationalAggregateFunctionV1,
+    OperationalAggregateGroupKeyV1, OperationalAggregateMeasureV1, OperationalAggregateV1,
+    PageBound, QUERY_IR_VERSION_BOUNDED_LIMIT_V1, QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1,
     QUERY_IR_VERSION_EXACT_AGGREGATE_V1, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1,
     QUERY_IR_VERSION_PROJECTED_VECTOR_V1, QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_V1,
     QueryDiagnostic, QueryDiagnosticCode, QueryDiagnosticStage, QueryDiagnostics, SymbolicCatalog,
@@ -29,6 +33,56 @@ use crate::{
 const IR_MAGIC: &[u8] = b"RIFFDB-QUERY-SURFACE\0";
 const OPERATIONAL_AGGREGATES_MAGIC: &[u8] = b"OPERATIONAL-AGGREGATES\0";
 const CANDIDATE_BINDINGS_MAGIC: &[u8] = b"CANDIDATE-BINDINGS\0";
+const LONG_PATTERN_CANDIDATES_MAGIC: &[u8] = b"LONG-PATTERN-CANDIDATES\0";
+
+fn long_pattern_invocations(
+    expression: &Expression,
+) -> Vec<(String, LongPatternOperatorV1, String)> {
+    let mut output = Vec::new();
+    collect_long_pattern_invocations(expression, &mut output);
+    output
+}
+
+fn collect_long_pattern_invocations(
+    expression: &Expression,
+    output: &mut Vec<(String, LongPatternOperatorV1, String)>,
+) {
+    let Expression::Binary {
+        operator,
+        left,
+        right,
+    } = expression
+    else {
+        return;
+    };
+    if operator.value == BinaryOperator::And {
+        collect_long_pattern_invocations(&left.value, output);
+        collect_long_pattern_invocations(&right.value, output);
+        return;
+    }
+    let operator = match operator.value {
+        BinaryOperator::Equal => LongPatternOperatorV1::Equals,
+        BinaryOperator::StartsWith => LongPatternOperatorV1::StartsWith,
+        BinaryOperator::EndsWith => LongPatternOperatorV1::EndsWith,
+        BinaryOperator::Contains => LongPatternOperatorV1::Contains,
+        BinaryOperator::Like => LongPatternOperatorV1::Like,
+        BinaryOperator::ILike => LongPatternOperatorV1::ILike,
+        BinaryOperator::NotLike => LongPatternOperatorV1::NotLike,
+        BinaryOperator::NotILike => LongPatternOperatorV1::NotILike,
+        _ => return,
+    };
+    let (Expression::Path(path), Expression::Parameter(parameter)) = (&left.value, &right.value)
+    else {
+        return;
+    };
+    if let Some(field) = path.0.last() {
+        output.push((
+            field.value.as_str().to_owned(),
+            operator,
+            parameter.value.as_str().to_owned(),
+        ));
+    }
+}
 
 /// Exact contract identity repeated by resolved query artifacts.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1259,6 +1313,7 @@ impl<'a> Resolver<'a> {
             TypeReference::BoundedLimit(maximum) => {
                 Ok(NamedTypeSchema::BoundedLimit { maximum: *maximum })
             }
+            TypeReference::BoundedString(_) => Ok(NamedTypeSchema::Scalar("string".to_owned())),
         }
     }
 
@@ -1394,27 +1449,6 @@ impl<'a> Resolver<'a> {
             ));
         }
         let access_name = source.access.value.as_str();
-        let access = entity.index(access_name).ok_or_else(|| {
-            self.diagnostic(
-                QueryDiagnosticCode::UnknownSymbol,
-                source.access.span,
-                vec![entity_name.clone(), access_name.to_owned()],
-                "candidate source must name one declared ordinary index",
-            )
-        })?;
-        if !access
-            .fields()
-            .iter()
-            .chain(access.cover_fields())
-            .any(|name| name == field_name)
-        {
-            return Err(self.diagnostic(
-                QueryDiagnosticCode::InvalidPath,
-                source.projected_key.span,
-                vec![entity_name.clone(), field_name.clone()],
-                "candidate index does not carry the complete projected root key",
-            ));
-        }
         self.push_map(
             source.projected_key.span,
             SourceSymbolKind::Field,
@@ -1426,12 +1460,140 @@ impl<'a> Resolver<'a> {
             vec![entity_name.clone(), access_name.to_owned()],
         )?;
         self.resolve_expression(&source.predicate.value, source.predicate.span, entity)?;
-        CandidateSourceV1::checked(
-            entity_name.clone(),
-            field_name.clone(),
-            access_name.to_owned(),
-        )
-        .ok_or_else(|| {
+        let checked = if let Some(provider) = entity.long_pattern_index(access_name) {
+            if !entity.primary_key().iter().any(|name| name == field_name) {
+                return Err(self.diagnostic(
+                    QueryDiagnosticCode::InvalidPath,
+                    source.projected_key.span,
+                    vec![entity_name.clone(), field_name.clone()],
+                    "pattern provider can release only a projected key retained in the entity key",
+                ));
+            }
+            let invocations = long_pattern_invocations(&source.predicate.value)
+                .into_iter()
+                .filter(|(field, _, _)| field == provider.field())
+                .collect::<Vec<_>>();
+            let [(pattern_field, operator, parameter)] = invocations.as_slice() else {
+                return Err(self.diagnostic(
+                    QueryDiagnosticCode::InvalidPath,
+                    source.predicate.span,
+                    vec![entity_name.clone(), access_name.to_owned()],
+                    "pattern candidate source requires exactly one field pattern parameter",
+                ));
+            };
+            if operator.is_negated() {
+                return Err(self.diagnostic(
+                    QueryDiagnosticCode::InvalidPath,
+                    source.predicate.span,
+                    vec![entity_name.clone(), access_name.to_owned()],
+                    "NOT LIKE requires an explicit candidate difference with a positive LIKE provider source",
+                ));
+            }
+            if pattern_field != provider.field()
+                || !provider.operators().contains(operator)
+                || !matches!(
+                    self.parameters.get(parameter.as_str()),
+                    Some(NamedTypeSchema::Scalar(name)) if name == "string"
+                )
+            {
+                return Err(self.diagnostic(
+                    QueryDiagnosticCode::InvalidType,
+                    source.predicate.span,
+                    vec![entity_name.clone(), access_name.to_owned()],
+                    "pattern field, operator, or parameter is incompatible with its declared provider",
+                ));
+            }
+            let bounds = provider.bounds();
+            let maximum_state_bytes = bounds
+                .matched_bytes()
+                .saturating_add(bounds.grams_per_row().saturating_mul(3))
+                .saturating_add(128);
+            let descriptor = ProjectionProviderDescriptorV1::new(
+                ProjectionProviderKindV1::LongPattern,
+                ProjectionProviderPostureV1::Exact,
+                ProjectionProviderCapabilitiesV1::CANDIDATE
+                    | ProjectionProviderCapabilitiesV1::FILTER
+                    | ProjectionProviderCapabilitiesV1::WINDOW
+                    | ProjectionProviderCapabilitiesV1::OUTPUT,
+                ProjectionProviderPolicyModeV1::BoundedRowAdmission,
+                ProjectionProviderStaticBoundsV1 {
+                    max_candidates: bounds.candidates(),
+                    max_output_rows: bounds.results(),
+                    max_measures: 0,
+                    max_input_bytes: bounds.pattern_bytes(),
+                    max_work_units: bounds
+                        .verification_bytes()
+                        .saturating_add(bounds.postings()),
+                    max_state_bytes_per_row: maximum_state_bytes,
+                    max_diagnostic_bytes: 1024,
+                    retained_epochs: u64::from(provider.retained_generations()),
+                    max_catchup_lag: u64::from(provider.staleness_slo()),
+                    max_epoch_lease_steps: provider.replay_age_seconds(),
+                },
+                ProjectionProviderStateIdentityV1::new(
+                    NonZeroU32::new(1).expect("one is nonzero"),
+                    provider.state_schema_hash(),
+                ),
+            )
+            .map_err(|_| {
+                self.diagnostic(
+                    QueryDiagnosticCode::ArtifactLimit,
+                    source.span,
+                    vec![entity_name.clone(), access_name.to_owned()],
+                    "pattern provider descriptor is inconsistent",
+                )
+            })?;
+            let pattern = LongPatternCandidateV1::checked(
+                provider.field().to_owned(),
+                *operator,
+                parameter.clone(),
+                provider.profile(),
+                bounds,
+                descriptor,
+            )
+            .ok_or_else(|| {
+                self.diagnostic(
+                    QueryDiagnosticCode::ArtifactLimit,
+                    source.span,
+                    vec![entity_name.clone(), access_name.to_owned()],
+                    "pattern provider invocation exceeds its closed V1 shape",
+                )
+            })?;
+            CandidateSourceV1::checked_long_pattern(
+                entity_name.clone(),
+                field_name.clone(),
+                access_name.to_owned(),
+                pattern,
+            )
+        } else {
+            let access = entity.index(access_name).ok_or_else(|| {
+                self.diagnostic(
+                    QueryDiagnosticCode::UnknownSymbol,
+                    source.access.span,
+                    vec![entity_name.clone(), access_name.to_owned()],
+                    "candidate source must name one declared ordinary index or pattern provider",
+                )
+            })?;
+            if !access
+                .fields()
+                .iter()
+                .chain(access.cover_fields())
+                .any(|name| name == field_name)
+            {
+                return Err(self.diagnostic(
+                    QueryDiagnosticCode::InvalidPath,
+                    source.projected_key.span,
+                    vec![entity_name.clone(), field_name.clone()],
+                    "candidate index does not carry the complete projected root key",
+                ));
+            }
+            CandidateSourceV1::checked(
+                entity_name.clone(),
+                field_name.clone(),
+                access_name.to_owned(),
+            )
+        };
+        checked.ok_or_else(|| {
             self.diagnostic(
                 QueryDiagnosticCode::ArtifactLimit,
                 source.span,
@@ -2164,6 +2326,33 @@ fn canonical_surface(
                 push_bytes(&mut bytes, source.entity().as_bytes())?;
                 push_bytes(&mut bytes, source.projected_key().as_bytes())?;
                 push_bytes(&mut bytes, source.access().as_bytes())?;
+            }
+        }
+        let pattern_sources =
+            candidates
+                .iter()
+                .enumerate()
+                .flat_map(|(candidate_index, candidate)| {
+                    candidate.sources().iter().enumerate().filter_map(
+                        move |(source_index, source)| {
+                            source
+                                .long_pattern()
+                                .map(|pattern| (candidate_index, source_index, pattern))
+                        },
+                    )
+                })
+                .collect::<Vec<_>>();
+        if !pattern_sources.is_empty() {
+            bytes.extend_from_slice(LONG_PATTERN_CANDIDATES_MAGIC);
+            push_count(&mut bytes, pattern_sources.len())?;
+            for (candidate_index, source_index, pattern) in pattern_sources {
+                push_count(&mut bytes, candidate_index)?;
+                push_count(&mut bytes, source_index)?;
+                push_bytes(&mut bytes, pattern.field().as_bytes())?;
+                bytes.push(pattern.operator() as u8);
+                bytes.push(pattern.profile() as u8);
+                push_bytes(&mut bytes, pattern.pattern_parameter().as_bytes())?;
+                bytes.extend_from_slice(&pattern.descriptor().to_canonical_bytes());
             }
         }
     }

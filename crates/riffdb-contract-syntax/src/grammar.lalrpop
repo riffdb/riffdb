@@ -250,6 +250,21 @@ EntityItem: Spanned<EntityItem> = {
             lo,
             hi,
         )),
+    <lo:@L> "pattern_index" <name:Identifier> "(" <field:Identifier>
+        "," <profile_keyword:Identifier> <profile:Identifier>
+        "," <operators_keyword:Identifier> "(" <operators:IdentifierList> ")"
+        "," <bounds:LongPatternBounds> ")" <hi:@R>
+        =>? parser::grammar_result(parser::long_pattern_item(
+            name,
+            field,
+            profile_keyword,
+            profile,
+            operators_keyword,
+            operators,
+            bounds,
+            lo,
+            hi,
+        )),
     <lo:@L> "delete_policy" "no_inbound" <hi:@R>
         => parser::spanned(EntityItem::DeletePolicy(DeletePolicyDeclaration::NoInbound), lo, hi),
     <lo:@L> "delete_policy" "restrict" <source_entity:Identifier> "." <index:Identifier> <hi:@R>
@@ -261,6 +276,18 @@ EntityItem: Spanned<EntityItem> = {
         => parser::spanned(EntityItem::DeletePolicy(DeletePolicyDeclaration::Cascade {
             relationships,
         }), lo, hi),
+};
+
+LongPatternBounds: Vec<LongPatternBoundDeclaration> = {
+    <head:LongPatternBound> <tail:("," <LongPatternBound>)*> => {
+        let mut values = vec![head];
+        values.extend(tail);
+        values
+    },
+};
+
+LongPatternBound: LongPatternBoundDeclaration = {
+    <name:Identifier> <value:UnsignedInteger> => LongPatternBoundDeclaration { name, value },
 };
 
 TextIndexSourceList: Vec<Spanned<TextIndexSourceDeclaration>> = {
@@ -1053,6 +1080,7 @@ extern {
         "reference" => Token::Reference,
         "vector_field" => Token::VectorField,
         "text_index" => Token::TextIndex,
+        "pattern_index" => Token::LongPattern,
         "delete_policy" => Token::DeletePolicy,
         "no_inbound" => Token::NoInbound,
         "restrict" => Token::Restrict,

@@ -137,6 +137,9 @@ fn every_real_point_dependency_and_dependent_batch_matches_the_frozen_inventory(
                         QueryAccessKind::CandidateRootHydration { .. } => {
                             unreachable!("relationship corpus has no candidate root")
                         }
+                        QueryAccessKind::LongPatternCandidate { .. } => {
+                            unreachable!("relationship corpus has no pattern provider")
+                        }
                     };
                     let total_key_bytes = access_key_bytes
                         .checked_mul(usize::try_from(step.maximum_rows()).expect("bounded rows"))

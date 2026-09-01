@@ -1330,6 +1330,7 @@ pub struct SchemaIr {
     vector_ann_specs: Vec<VectorAnnSpecV1>,
     vector_production_specs: Vec<VectorProductionSpecV1>,
     text_index_specs: Vec<TextIndexSpecV1>,
+    long_pattern_specs: Vec<LongPatternSpecV1>,
     secret_field_specs: Vec<SecretFieldSpecV1>,
 }
 
@@ -1533,6 +1534,131 @@ impl TextIndexSpecV1 {
     #[must_use]
     pub const fn max_results(&self) -> u32 {
         self.max_results
+    }
+}
+
+/// Complete identity-bearing declaration for one long-value exact-pattern provider.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LongPatternSpecV1 {
+    entity: EntityTypeId,
+    index: IndexId,
+    name: String,
+    field: FieldId,
+    profile: riffdb_types::LongPatternProfileV1,
+    operators: Vec<riffdb_types::LongPatternOperatorV1>,
+    bounds: riffdb_types::LongPatternBoundsV1,
+    replay_age_seconds: u64,
+    replay_bytes: u64,
+    replay_backlog: u64,
+    retained_generations: u32,
+    stale_entity_count_threshold: u32,
+}
+
+impl LongPatternSpecV1 {
+    /// Constructs one checked, complete provider declaration.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        entity: EntityTypeId,
+        index: IndexId,
+        name: String,
+        field: FieldId,
+        profile: riffdb_types::LongPatternProfileV1,
+        operators: Vec<riffdb_types::LongPatternOperatorV1>,
+        bounds: riffdb_types::LongPatternBoundsV1,
+        replay_age_seconds: u64,
+        replay_bytes: u64,
+        replay_backlog: u64,
+        retained_generations: u32,
+        stale_entity_count_threshold: u32,
+    ) -> Result<Self, IrValidationError> {
+        if name.is_empty()
+            || operators.is_empty()
+            || operators.len() > 8
+            || operators.windows(2).any(|pair| pair[0] >= pair[1])
+            || !(1..=MAX_VECTOR_REPLAY_AGE_SECONDS).contains(&replay_age_seconds)
+            || !(1..=MAX_VECTOR_REPLAY_BYTES).contains(&replay_bytes)
+            || !(1..=MAX_VECTOR_REPLAY_BACKLOG).contains(&replay_backlog)
+            || !(1..=32).contains(&retained_generations)
+            || stale_entity_count_threshold == 0
+        {
+            return Err(IrValidationError::InvalidReference {
+                kind: "long pattern declaration",
+            });
+        }
+        Ok(Self {
+            entity,
+            index,
+            name,
+            field,
+            profile,
+            operators,
+            bounds,
+            replay_age_seconds,
+            replay_bytes,
+            replay_backlog,
+            retained_generations,
+            stale_entity_count_threshold,
+        })
+    }
+    /// Owning entity.
+    #[must_use]
+    pub const fn entity(&self) -> EntityTypeId {
+        self.entity
+    }
+    /// Stable provider index identity.
+    #[must_use]
+    pub const fn index(&self) -> IndexId {
+        self.index
+    }
+    /// Stable contract source name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    /// Exact bounded source field.
+    #[must_use]
+    pub const fn field(&self) -> FieldId {
+        self.field
+    }
+    /// Frozen storage matching profile.
+    #[must_use]
+    pub const fn profile(&self) -> riffdb_types::LongPatternProfileV1 {
+        self.profile
+    }
+    /// Supported closed operators in discriminant order.
+    #[must_use]
+    pub fn operators(&self) -> &[riffdb_types::LongPatternOperatorV1] {
+        &self.operators
+    }
+    /// Complete independent provider/query bounds.
+    #[must_use]
+    pub const fn bounds(&self) -> riffdb_types::LongPatternBoundsV1 {
+        self.bounds
+    }
+    /// Replay age ceiling.
+    #[must_use]
+    pub const fn replay_age_seconds(&self) -> u64 {
+        self.replay_age_seconds
+    }
+    /// Replay byte ceiling.
+    #[must_use]
+    pub const fn replay_bytes(&self) -> u64 {
+        self.replay_bytes
+    }
+    /// Replay backlog ceiling.
+    #[must_use]
+    pub const fn replay_backlog(&self) -> u64 {
+        self.replay_backlog
+    }
+    /// Retained provider generation ceiling.
+    #[must_use]
+    pub const fn retained_generations(&self) -> u32 {
+        self.retained_generations
+    }
+    /// Staleness SLO row threshold.
+    #[must_use]
+    pub const fn stale_entity_count_threshold(&self) -> u32 {
+        self.stale_entity_count_threshold
     }
 }
 
@@ -2078,6 +2204,7 @@ impl SchemaIr {
             vector_ann_specs: Vec::new(),
             vector_production_specs: Vec::new(),
             text_index_specs: Vec::new(),
+            long_pattern_specs: Vec::new(),
             secret_field_specs: Vec::new(),
         };
         result.validate_enum_references()?;
@@ -2316,6 +2443,55 @@ impl SchemaIr {
         &self.text_index_specs
     }
 
+    /// Attaches canonical long-pattern declarations and validates their source fields.
+    pub fn with_long_pattern_specs(
+        mut self,
+        mut specs: Vec<LongPatternSpecV1>,
+    ) -> Result<Self, IrValidationError> {
+        checked_len("long pattern specs", specs.len(), MAX_DECLARATIONS_PER_KIND)?;
+        specs.sort_unstable_by_key(|spec| (spec.entity, spec.index));
+        if specs
+            .windows(2)
+            .any(|pair| (pair[0].entity, pair[0].index) == (pair[1].entity, pair[1].index))
+        {
+            return Err(IrValidationError::NonCanonicalOrder {
+                kind: "duplicate long pattern spec",
+            });
+        }
+        for spec in &specs {
+            let entity = self
+                .entity(spec.entity)
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "long pattern entity",
+                })?;
+            let field =
+                entity
+                    .record()
+                    .field(spec.field)
+                    .ok_or(IrValidationError::InvalidReference {
+                        kind: "long pattern field",
+                    })?;
+            if field.value_type().tag() != ValueTypeTag::String
+                || field
+                    .value_type()
+                    .byte_bound()
+                    .is_none_or(|maximum| maximum > spec.bounds.source_bytes() as usize)
+            {
+                return Err(IrValidationError::TypeMismatch {
+                    context: "long pattern source field",
+                });
+            }
+        }
+        self.long_pattern_specs = specs;
+        Ok(self)
+    }
+
+    /// Long-pattern declarations in canonical `(entity, index)` order.
+    #[must_use]
+    pub fn long_pattern_specs(&self) -> &[LongPatternSpecV1] {
+        &self.long_pattern_specs
+    }
+
     /// Attaches checked secret-field classifications (ADR-0118), validating
     /// that every spec references an existing stored field and never a
     /// primary-key field.
@@ -2496,6 +2672,11 @@ impl SchemaIr {
     #[must_use]
     pub fn requires_ir_v20(&self) -> bool {
         !self.text_index_specs.is_empty()
+    }
+    /// Whether this schema requires V21 long-pattern metadata.
+    #[must_use]
+    pub fn requires_ir_v21(&self) -> bool {
+        !self.long_pattern_specs.is_empty()
     }
     /// Resolves an entity.
     #[must_use]

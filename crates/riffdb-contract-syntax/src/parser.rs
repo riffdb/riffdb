@@ -237,6 +237,44 @@ pub(crate) fn text_index_item(
     ))
 }
 
+/// Builds one atomic ADR-0174 long-pattern declaration while its option names
+/// remain ordinary identifiers elsewhere in the language.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn long_pattern_item(
+    name: Spanned<String>,
+    field: Spanned<String>,
+    profile_keyword: Spanned<String>,
+    profile: Spanned<String>,
+    operators_keyword: Spanned<String>,
+    operators: Vec<Spanned<String>>,
+    bounds: Vec<LongPatternBoundDeclaration>,
+    lo: usize,
+    hi: usize,
+) -> Result<Spanned<EntityItem>, SyntaxDiagnostic> {
+    for (keyword, expected) in [
+        (&profile_keyword, "profile"),
+        (&operators_keyword, "operators"),
+    ] {
+        if keyword.value != expected {
+            return Err(SyntaxDiagnostic::new(
+                SyntaxDiagnosticCode::InvalidToken,
+                keyword.span,
+            ));
+        }
+    }
+    Ok(spanned(
+        EntityItem::LongPattern(LongPatternDeclaration {
+            name,
+            field,
+            profile,
+            operators,
+            bounds,
+        }),
+        lo,
+        hi,
+    ))
+}
+
 /// Builds the atomic production-vector clause while keeping its vocabulary
 /// contextual outside `vector_field(...)`.
 #[allow(clippy::too_many_arguments)]
@@ -1131,6 +1169,17 @@ impl NodeCounter {
                             }
                             self.name(&text_index.analyzer)?;
                             self.name(&text_index.result_model)?;
+                        }
+                        EntityItem::LongPattern(pattern) => {
+                            self.add(1, item.span)?;
+                            self.name(&pattern.name)?;
+                            self.name(&pattern.field)?;
+                            self.name(&pattern.profile)?;
+                            self.names(&pattern.operators, item.span)?;
+                            self.collection(pattern.bounds.len(), MAX_LIST_ITEMS, item.span)?;
+                            for bound in &pattern.bounds {
+                                self.name(&bound.name)?;
+                            }
                         }
                         EntityItem::DeletePolicy(policy) => {
                             self.add(1, item.span)?;

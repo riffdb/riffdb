@@ -20,8 +20,8 @@ mod tokenized_text;
 
 pub use candidate::*;
 pub use catalog::{
-    EntitySymbol, EnumSymbol, FieldSymbol, IndexSymbol, PrincipalFactSymbol, RowPolicySymbol,
-    SymbolicCatalog,
+    EntitySymbol, EnumSymbol, FieldSymbol, IndexSymbol, LongPatternSymbol, PrincipalFactSymbol,
+    RowPolicySymbol, SymbolicCatalog,
 };
 pub use diagnostic::{
     QueryDiagnostic, QueryDiagnosticCode, QueryDiagnosticStage, QueryDiagnostics,

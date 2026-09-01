@@ -209,6 +209,8 @@ pub enum EntityItem {
     VectorField(VectorFieldDeclaration),
     /// A declared tokenized text-search projection.
     TextIndex(TextIndexDeclaration),
+    /// A declared bounded long-value exact-pattern provider.
+    LongPattern(LongPatternDeclaration),
     /// The only compiler-owned policy under which current state may be deleted.
     DeletePolicy(DeletePolicyDeclaration),
 }
@@ -441,6 +443,30 @@ pub struct TextIndexSourceDeclaration {
     pub weight_keyword: Spanned<String>,
     /// Positive integer relevance weight lexeme.
     pub weight: Spanned<String>,
+}
+
+/// One compiler-sealed `long_pattern_v1` provider declaration (ADR-0174).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LongPatternDeclaration {
+    /// Stable provider name in the entity index namespace.
+    pub name: Spanned<String>,
+    /// One existing bounded string field on the same entity.
+    pub field: Spanned<String>,
+    /// `binary_utf8_v1` or `unicode_fold_v1`.
+    pub profile: Spanned<String>,
+    /// Closed supported operator names.
+    pub operators: Vec<Spanned<String>>,
+    /// Complete contextual bound inventory.
+    pub bounds: Vec<LongPatternBoundDeclaration>,
+}
+
+/// One contextual named positive integer bound.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LongPatternBoundDeclaration {
+    /// Exact bound name.
+    pub name: Spanned<String>,
+    /// Positive integer lexeme.
+    pub value: Spanned<String>,
 }
 
 /// The grammar's closed distance metric keywords.

@@ -61,6 +61,8 @@ pub(crate) enum Token {
     VectorField,
     #[token("text_index")]
     TextIndex,
+    #[token("pattern_index")]
+    LongPattern,
     #[token("delete_policy")]
     DeletePolicy,
     #[token("no_inbound")]

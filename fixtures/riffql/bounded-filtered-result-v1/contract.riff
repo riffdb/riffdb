@@ -29,7 +29,6 @@ contract BoundedFilteredResultCorpus version 1 {
     )
     index by_updated (scope, last_update_time, experiment_id)
     index by_created (scope, creation_time, experiment_id)
-    index by_name (scope, name, experiment_id) text_key(name, unicode_fold_v1)
   }
 
   entity ExperimentTag {

@@ -365,6 +365,7 @@ fn format_type(value: &TypeReference) -> String {
         TypeReference::Cursor => "Cursor".to_owned(),
         TypeReference::Limit => "Limit".to_owned(),
         TypeReference::BoundedLimit(maximum) => format!("Limit<{maximum}>"),
+        TypeReference::BoundedString(maximum) => format!("string<{maximum}>"),
     }
 }
 
@@ -412,6 +413,10 @@ fn format_expression(value: &Expression, parent_precedence: u8) -> String {
                 BinaryOperator::StartsWith => ("starts_with", 3),
                 BinaryOperator::EndsWith => ("ends_with", 3),
                 BinaryOperator::Contains => ("contains", 3),
+                BinaryOperator::Like => ("like", 3),
+                BinaryOperator::ILike => ("ilike", 3),
+                BinaryOperator::NotLike => ("not_like", 3),
+                BinaryOperator::NotILike => ("not_ilike", 3),
             };
             let rendered = format!(
                 "{} {text} {}",
