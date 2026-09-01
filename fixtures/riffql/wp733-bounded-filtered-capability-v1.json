@@ -1,7 +1,7 @@
 {
   "schema": "riffdb.external-bounded-filtered-capability/v1",
   "work_package": "WP-733",
-  "status": "blocked_pending_core_implementation",
+  "status": "core_implemented_external_search_migration_pending",
   "consumer_class": "partitioned_experiment_tracking_store",
   "framework_artifacts_retained": false,
   "stored_values_retained": false,
@@ -10,7 +10,7 @@
     "folded_500_byte_name_sha256": "bf58ddddf88a96127f9718a3458ebfa073c7ba928dfc459b06ece9680af302eb"
   },
   "generic_fixtures": {
-    "contract_sha256": "07e75a27d30a9a54379746c23381dc5f8ccd951af978c65f6b1f0ea8964d942d",
+    "contract_sha256": "49fc21a81092456c6f3da13664448ea1833567d9a36519cbf525d4055d7616ed",
     "two_tag_before_root_order_sha256": "e2a63022ff9992272ef33b17a5e890375bd9063d5a0139b84de65e0f60847b0d",
     "combined_tag_pattern_sha256": "39a7c073db1662884eca6707f25d7934e0f14871482f66bb8ccef21dbe6af95a",
     "authorized_pattern_difference_sha256": "198a0b2af6b4497e7e4f1e625546b8e5e43bcbadadfde30ab772a86123fe70af",
@@ -50,5 +50,26 @@
     "tokenized_pattern_substitution",
     "storage_key_widening"
   ],
-  "implementation_receipt": null
+  "implementation_receipt": {
+    "riffdb_commits": [
+      "14a6ddf3",
+      "0172ea32",
+      "dc63bfa0",
+      "c8aa20d7",
+      "9464bf07",
+      "03664934"
+    ],
+    "compiler_sealed_candidate_algebra": true,
+    "finite_root_order_families": true,
+    "maximum_page_rows": 65534,
+    "long_pattern_provider_state": 1,
+    "maximum_long_pattern_source_bytes": 8000,
+    "complete_before_root_order_and_page": true,
+    "request_time_authoritative_pattern_scan": false,
+    "workspace_acceptance": "passed",
+    "four_language_remote_conformance": "passed",
+    "standard_downstream_check": "passed_openfga_better_auth_mlflow",
+    "mlflow_repository_scope": "current_two_lookup_query_manifest_only",
+    "external_search_source_migration": "pending_external_owner"
+  }
 }

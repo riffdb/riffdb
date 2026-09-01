@@ -38,7 +38,7 @@ while (($#)); do
 done
 
 if ((${#requested[@]} == 0)); then
-    requested=(riffdb-openfga riffdb-better-auth)
+    requested=(riffdb-openfga riffdb-better-auth riffdb-mlflow)
 fi
 
 cargo build --release -p riffdb-cli --bin riffdb
