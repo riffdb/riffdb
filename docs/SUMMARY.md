@@ -68,6 +68,7 @@
 # RiffQL
 
 - [RiffQL Language](riffql/LANGUAGE.md)
+- [Long-Value Pattern Search](riffql/LONG-PATTERN.md)
 - [Tokenized Text Search](riffql/TOKENIZED-TEXT.md)
 - [Exact Predicate and Order Families](riffql/EXACT-PREDICATES.md)
 - [Planning and Bounds](riffql/PLANNING.md)

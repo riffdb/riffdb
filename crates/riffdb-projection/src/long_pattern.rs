@@ -502,6 +502,9 @@ mod tests {
     use super::*;
     use riffdb_types::LongPatternOperatorV1;
 
+    const CHECKPOINT_FIXTURE: &str =
+        include_str!("../../../fixtures/projection/long-pattern-provider-state-v1.txt");
+
     fn bounds() -> LongPatternBoundsV1 {
         LongPatternBoundsV1::new(
             8_000, 144_000, 8, 1_000_000, 10_000, 50_000, 2_000_000, 10_000, 8_000, 144_000, 8_000,
@@ -537,6 +540,17 @@ mod tests {
             vec![key(1), key(2)]
         );
         let bytes = state.checkpoint_bytes().expect("checkpoint");
+        let expected = CHECKPOINT_FIXTURE
+            .lines()
+            .find_map(|line| line.strip_prefix("bytes_hex="))
+            .expect("fixture bytes");
+        assert_eq!(
+            bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>(),
+            expected
+        );
         let restored = LongPatternPartitionV1::from_checkpoint_bytes(&bytes).expect("restore");
         assert_eq!(restored, state);
         assert_eq!(restored.checkpoint_bytes().expect("stable bytes"), bytes);

@@ -3362,6 +3362,32 @@ mod tests {
     }
 
     #[test]
+    fn long_pattern_execute_path_uses_only_retained_provider_epochs() {
+        let execute = production_source()
+            .split_once("impl LongPatternProjectionPort for ExactTextRuntime")
+            .expect("long-pattern port implementation")
+            .1
+            .split_once("const fn map_long_pattern_error")
+            .expect("long-pattern execute boundary")
+            .0;
+        for forbidden in [
+            "scan_entity_partition",
+            "scan_index",
+            "read_entity",
+            "read_complete_partition",
+        ] {
+            assert!(
+                !execute.contains(forbidden),
+                "long-pattern request execution must not contain {forbidden}"
+            );
+        }
+        assert!(execute.contains("query_observed"));
+        assert!(execute.contains("request.pinned_epoch()"));
+        assert!(execute.contains("SnapshotRetired"));
+        assert!(execute.contains("request.row_policy().is_none()"));
+    }
+
+    #[test]
     fn worker_is_the_only_owner_of_rebuild_scans() {
         let worker = production_source()
             .split_once("fn refresh_registered_slots")
@@ -3378,6 +3404,12 @@ mod tests {
                 .matches("AuthoritativeScanReader::scan_index")
                 .count(),
             2
+        );
+        assert_eq!(
+            production_source()
+                .matches("AuthoritativeScanReader::scan_entity_partition")
+                .count(),
+            1
         );
     }
 
