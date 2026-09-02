@@ -209,6 +209,13 @@ gates:
   - WP-765
   - WP-766
   - WP-767
+- id: P13
+  name: Relational operators in the candidate algebra
+  requires:
+  - WP-768
+  - WP-769
+  - WP-770
+  - WP-771
 work_packages:
 - id: WP-000
   closure:
@@ -22721,3 +22728,138 @@ work_packages:
       temporary Git history; ci-all and every affected ADR-0179/ADR-0180 package invoke it. The
       public handbook has no internal crate inventory, so no user-facing documentation changed.
   human_review_triggers: *id0184
+
+- id: WP-768
+  name: Operator admission rule, expansion syntax and IR, and refusal classes
+  tier: surface
+  depends_on: [WP-738, WP-743]
+  objective: Establish ADR-0185's operator-before-provider rule in the compiler, add the
+    one-to-many expansion syntax and additive RiffQL V14 / query IR V18 / module V18 identities
+    with least-sufficient selection, and record anonymized refusal classes for every refused
+    operational read shape. Compiler and fixtures only; no execution path changes.
+  requirements: [RQL-008, OQ-113, OQ-116, OQ-118]
+  required_adrs: [ADR-0051, ADR-0054, ADR-0108, ADR-0124, ADR-0174, ADR-0185]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/0185-relational-operators-in-the-candidate-algebra.md,
+    crates/riffdb-types/**, crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**,
+    crates/riffdb-query-compiler/**, crates/riffdb-query-module/**, crates/riffdb-diagnostics/**,
+    crates/riffdb-cli/**, release/version-topology-v1.json, fixtures/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Grammar for `for each <driver> in <binding>` and `take N per <driver>` on a many binding, with
+    exact-span diagnostics for cross-partition, unbounded, non-prefix, and depth-two drivers
+  - Additive IR tag for the expansion access, product-bound proof (driver maximum times per-driver
+    maximum within the 65,535 scan ceiling and the result ceiling), nesting proof against the
+    return block, and least-sufficient V14/V18/V18 selection;
+    expansion_plan_is_least_sufficient_and_legacy_bytes_are_unchanged
+  - Refusal-class recording (operator kind, cardinality class, partition class, no values or
+    names) surfaced by `riffdb application check --refusals` and the alpha campaign event schema;
+    refused_shapes_are_recorded_as_anonymized_refusal_classes
+  - Version-topology registration of the three additive identities and byte-exact legacy fixtures
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-768
+  - ./scripts/ci-all
+  exit_gate: Existing queries keep exact bytes and hashes; an expansion query compiles to the
+    successor identities with a proven product bound; every refusal class is value-free; the
+    topology shows no new provider domain.
+  standing_design_tests:
+    interface_safety: Driver, index, per-driver bound, order, and nesting are compiler identity;
+      no generated schema, MCP tool, or CLI input carries them.
+    scale: The product bound and the existing scan ceiling cap the plan before execution exists.
+  human_review_triggers: &id0185
+  - A shape would be admitted as a new provider family without a written operator refusal.
+  - An operator would read across partitions, consume a caller-supplied plan, or release a
+    partial result.
+  - RiffQL, query IR, or module bytes for existing queries would change rather than selecting a
+    successor identity.
+
+- id: WP-769
+  name: Expansion execution, carriage, and generated bindings
+  tier: surface
+  depends_on: [WP-768]
+  objective: Execute one-to-many expansion in memory and redb inside the existing one-snapshot
+    read, with complete-before-release semantics, policy before observation, nested and flat
+    result carriage, and generated Rust, Go, TypeScript, Python, MCP, and CLI surfaces.
+  requirements: [OQ-114, OQ-115]
+  required_adrs: [ADR-0035, ADR-0053, ADR-0111, ADR-0164, ADR-0174, ADR-0185]
+  allowed_paths: [work_packages.yaml, crates/riffdb-query-executor/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-policy/**, crates/riffdb-service/**,
+    crates/riffdb-server/**, crates/riffdb-query-module/**, crates/riffdb-client-rust/**,
+    crates/riffdb-api-grpc/**, crates/riffdb-api-mcp/**, crates/riffdb-cli/**, clients/**,
+    templates/**, fixtures/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - One executor step that hydrates every driver's bounded target set through the existing
+    authoritative readers at the captured snapshot, ordered by driver order then index order with
+    the primary-key tie-breaker; expansion_completes_every_driver_before_release_or_refuses_whole
+  - Row and field policy applied to targets before membership, count, order, or nesting, with
+    denied targets indistinguishable from absent ones
+  - Nested result carriage under the driver record plus flat carriage with the driver key, through
+    the named-result carriage rules and every generated binding
+  - Independent oracle, memory/redb parity, empty-driver, maximum-fan-out, denied-target,
+    cancellation, and concurrent-mutation schedules without sleep-based synchronization;
+    expansion_memory_redb_parity_matches_independent_oracle
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-769
+  - ./scripts/ci-all
+  exit_gate: Every driver's targets are complete at one snapshot or the whole query refuses;
+    memory and redb agree byte for byte with the oracle; generated bindings expose only typed
+    parameters and nested typed results.
+  standing_design_tests:
+    interface_safety: Storage receives the compiler-sealed expansion step and owned typed keys;
+      no iterator, transaction, per-driver request, or fallback crosses the port.
+    scale: Execution materializes at most the product bound and never a population.
+  human_review_triggers: *id0185
+
+- id: WP-770
+  name: Existence predicates as candidate-algebra lowering
+  tier: surface
+  depends_on: [WP-768]
+  objective: Add `exists` and `not exists` predicates over a declared junction index to root
+    bindings, lowering to the ADR-0174 candidates intersection and authorized root-universe
+    difference with byte-identical plans, so the operators add syntax and diagnostics only.
+  requirements: [OQ-117]
+  required_adrs: [ADR-0111, ADR-0174, ADR-0185]
+  allowed_paths: [work_packages.yaml, crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**,
+    crates/riffdb-query-compiler/**, crates/riffdb-query-module/**, crates/riffdb-diagnostics/**,
+    fixtures/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Grammar and diagnostics for `exists <Junction> using <index> where ...` and its negation on a
+    root binding, restricted to declared same-partition junction indexes projecting the root key
+  - Lowering to the explicit candidates form with plan-byte equality proven per fixture;
+    exists_predicates_lower_to_identical_candidate_plan_bytes
+  - Handbook section in docs/riffql/LANGUAGE.md showing both spellings and the refusal cases
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-770
+  - ./scripts/ci-all
+  exit_gate: Every existence predicate has a byte-identical explicit candidates twin; no new
+    execution path, cursor family, provider, or authority surface exists.
+  standing_design_tests:
+    interface_safety: Existence sources are compiler identity; negation always names the
+      authorized root universe so denied rows cannot be inferred through complement.
+    scale: Lowering reuses the candidate ceilings unchanged.
+  human_review_triggers: *id0185
+
+- id: WP-771
+  name: Refused-shape corpus acceptance and operator backlog ranking
+  tier: internal
+  depends_on: [WP-769, WP-770]
+  objective: Prove the previously refused application shapes compile and execute end to end
+    through every generated binding, rewrite the relationship-composition limitations, and
+    publish the first refusal-class ranking from the alpha campaigns.
+  requirements: [OQ-113, OQ-118]
+  required_adrs: [ADR-0110, ADR-0117, ADR-0185]
+  allowed_paths: [work_packages.yaml, examples/**, evaluations/**, clients/**, fixtures/**,
+    tests/**, scripts/**, release/evidence/**, docs/**]
+  deliverables:
+  - Retained corpus of TicketDesk ticket page with comments per ticket, MLflow runs with tags per
+    run, OpenFGA objects with relations per object, each compiled and executed through Rust, Go,
+    TypeScript, Python, MCP, and CLI; check-operator-acceptance
+  - docs/known-limitations.md relationship paragraph rewritten to the remaining refusals only
+  - Refusal-class ranking receipt from campaign runs under release/evidence/operators/
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-771
+  - ./scripts/ci-all
+  exit_gate: Every corpus shape passes on every binding; the topology shows no provider domain
+    added by WP-768 through WP-771; the ranking receipt names the next operator candidates.
+  standing_design_tests:
+    interface_safety: Corpus applications use only generated typed operations.
+    scale: Not applicable; this package adds evidence, not execution.
+  human_review_triggers: *id0185

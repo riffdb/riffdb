@@ -1603,6 +1603,51 @@ deterministic conflict scheduler.
   coordinator failures MUST be retained and replayed per merge under
   `SIM-004`, and `SIM-007` MUST continue to hold.
 
+### Relational operators in the candidate algebra (ADR-0185)
+
+Operational read shapes grow as operators over existing declared indexes,
+relationships, providers, and the ADR-0174 candidate algebra, not as provider
+families. ADR-0185 adds one-to-many expansion and existence predicates and
+amends ADR-0178 section 1 so operators over existing physical state are exempt
+from the provider freeze.
+
+- `RQL-008`: A `many` binding MAY name an earlier bounded binding as its
+  driver with `for each <driver> in <binding>` and MUST then bound targets with
+  `take N per <driver>`. Its predicate MUST bind one declared same-partition
+  index prefix to the driver row's key components. The compiler MUST reject a
+  cross-partition, unbounded, non-prefix, or depth-two driver. A root binding
+  MAY carry `exists <Junction> using <index> where ...` or its negation only
+  over a declared same-partition junction index that projects the root key.
+- `OQ-113`: An operational read shape expressible as an operator over existing
+  indexes, relationships, providers, or the candidate algebra MUST land as an
+  operator with one grammar addition, one additive IR tag, one executor step,
+  and fixtures. A new provider family MUST NOT be admitted for a shape unless
+  a written refusal of the operator form names the physical state no existing
+  index or provider can supply.
+- `OQ-114`: Expansion MUST prove that the driver maximum times the per-driver
+  maximum is within the 65,535-row scan ceiling and the query result ceiling,
+  MUST hydrate every driver's complete bounded target set at one authorized
+  snapshot before any row, count, or cursor is released, MUST order targets by
+  driver order then index order with the primary-key tie-breaker, and MUST
+  return only the declared typed refusal when any per-driver, product, byte,
+  probe, or work ceiling is exceeded. Paging is the driver binding's cursor;
+  per-driver pages have no cursor.
+- `OQ-115`: Row and field policy MUST apply to every expansion target before
+  it can influence membership, count, order, or nesting, and a denied target
+  MUST be indistinguishable from an absent one.
+- `OQ-116`: A query using an expansion or existence operator MUST select
+  additive RiffQL V14, query IR V18, and module V18 under the least-sufficient
+  rule; every query without one MUST keep its exact bytes, plan hash, and
+  cursors. The operators MUST NOT add a provider descriptor, epoch, provider
+  state, service port, or durable format.
+- `OQ-117`: `exists` and `not exists` MUST lower to the explicit candidates
+  binding, intersection for existence and authorized root-universe difference
+  for negation, with plan bytes identical to the explicit form.
+- `OQ-118`: Every compiler refusal of an operational read shape MUST record an
+  anonymized refusal class naming only the operator kind, cardinality class,
+  and partition class, and `riffdb application check --refusals` plus the alpha
+  campaign event schema MUST report those classes.
+
 ## 4.2 Trust boundaries
 
 1. Network input is untrusted until transport decoding, size checks, authentication, and the shared service's schema-directed validation complete. A transport's structural value validation does not claim compiled-schema materialization.
