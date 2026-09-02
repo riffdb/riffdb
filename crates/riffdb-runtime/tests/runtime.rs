@@ -29,6 +29,10 @@ const AGGREGATE_COLLECTION_BUDGET_SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/compiler/aggregate-collection-budget/contract.riff"
 ));
+const HIGH_CARDINALITY_METRICS_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/contracts/bulk/high-cardinality-metrics.riff"
+));
 const INITIALIZED_STATE_SOURCE: &str = r#"
 contract InitializedStateRuntime version 1 {
   entity State {
@@ -4205,6 +4209,124 @@ fn initialized_state_bulk_executes_one_shared_root_and_element_local_transitions
             &CanonicalValue::U64(1)
         );
     }
+}
+
+#[test]
+fn thousand_collection_elements_plus_root_evaluate_as_one_complete_graph() {
+    let bundle = compile_contract_source(HIGH_CARDINALITY_METRICS_SOURCE)
+        .expect("high-cardinality contract compiles");
+    let plan = command(&bundle, "LogMetrics");
+    let metric = bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "Metric")
+        .expect("metric entity");
+    let metrics = (1_u64..=1_000)
+        .map(|metric_id| {
+            CanonicalValue::Record(input_record(
+                metric.record(),
+                [
+                    (
+                        "run_id",
+                        CanonicalValue::string("run-high-cardinality").expect("run ID"),
+                    ),
+                    ("metric_id", CanonicalValue::U64(metric_id)),
+                    ("value_bits", CanonicalValue::U64(metric_id)),
+                ],
+            ))
+        })
+        .collect::<Vec<_>>();
+    let input = input_record(
+        plan.input().record(),
+        [
+            (
+                "request_id",
+                CanonicalValue::string("high-cardinality-request").expect("request ID"),
+            ),
+            (
+                "run_id",
+                CanonicalValue::string("run-high-cardinality").expect("run ID"),
+            ),
+            (
+                "metrics",
+                CanonicalValue::List(CanonicalList::new(metrics).expect("metrics")),
+            ),
+        ],
+    );
+    let facts = derive_input_command_facts(plan, input.clone()).expect("command facts");
+    assert_eq!(facts.binding_entity_keys().len(), 1_001);
+    let observations = facts
+        .binding_plan_indices()
+        .iter()
+        .zip(facts.binding_entity_keys())
+        .map(|(binding_index, key)| {
+            let entity = bundle
+                .schema()
+                .entity(plan.bindings()[*binding_index as usize].entity_type())
+                .expect("binding entity");
+            let target = EntityTarget::new(entity.id(), key.clone()).expect("binding target");
+            if entity.name() == "RunSummary" {
+                EntityObservation::Present(stored_record(
+                    &bundle,
+                    plan,
+                    target,
+                    input_record(
+                        entity.record(),
+                        [
+                            (
+                                "run_id",
+                                CanonicalValue::string("run-high-cardinality").expect("run ID"),
+                            ),
+                            ("revision", CanonicalValue::U64(0)),
+                        ],
+                    ),
+                ))
+            } else {
+                EntityObservation::Absent(target)
+            }
+        })
+        .collect::<Vec<_>>();
+    let read_snapshot = snapshot(plan_ref(&bundle, plan), observations);
+    let transaction = TransactionContext::new(
+        RequestId::from_unix_milliseconds_and_random(1, [0x77; 10]).expect("request ID"),
+        AdmittedActorContext::new(
+            ActorId::new("high-cardinality-runtime-test").expect("actor"),
+            ActorKind::Service,
+            TenantScope::Global,
+            None,
+        ),
+        plan_ref(&bundle, plan),
+        LogicalTime::new(Timestamp::new(103, 0).expect("time")),
+        facts.partition_key().clone(),
+    );
+    let ExecutionResult::CommitRequired(evaluated) = execute_command(
+        &bundle,
+        &input,
+        &read_snapshot,
+        &transaction,
+        EvaluationBudget::v1(),
+    )
+    .expect("high-cardinality command evaluates") else {
+        panic!("high-cardinality command requires one commit");
+    };
+    assert_eq!(evaluated.mutations().len(), 1_001);
+    assert_eq!(
+        evaluated
+            .mutations()
+            .iter()
+            .filter(|mutation| matches!(mutation, EntityMutation::Replace { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        evaluated
+            .mutations()
+            .iter()
+            .filter(|mutation| matches!(mutation, EntityMutation::Create(_)))
+            .count(),
+        1_000
+    );
 }
 
 fn initialized_state_fixture() -> (ContractBundle, CanonicalRecord) {

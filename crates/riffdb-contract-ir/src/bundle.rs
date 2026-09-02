@@ -91,6 +91,8 @@ pub const BUNDLE_FORMAT_VERSION_V20: u32 = 20;
 pub const BUNDLE_FORMAT_VERSION_V21: u32 = 21;
 /// Bundle framing containing compiler-bounded large atomic command envelopes.
 pub const BUNDLE_FORMAT_VERSION_V22: u32 = 22;
+/// Bundle framing containing compiler-bounded high-cardinality collections.
+pub const BUNDLE_FORMAT_VERSION_V23: u32 = 23;
 /// Canonical grammar version represented by a bundle.
 pub const GRAMMAR_VERSION_V1: u32 = 1;
 /// Contract grammar containing compiled workflows and service-owned values.
@@ -135,6 +137,8 @@ pub const GRAMMAR_VERSION_V20: u32 = 20;
 pub const GRAMMAR_VERSION_V21: u32 = 21;
 /// Contract grammar whose compiler may select a large atomic command envelope.
 pub const GRAMMAR_VERSION_V22: u32 = 22;
+/// Contract grammar whose compiler may select high-cardinality collection semantics.
+pub const GRAMMAR_VERSION_V23: u32 = 23;
 /// Executable IR version represented by a bundle.
 pub const EXECUTABLE_IR_VERSION_V1: u32 = 1;
 /// Executable IR containing compiled workflow transitions and service values.
@@ -186,6 +190,8 @@ pub const EXECUTABLE_IR_VERSION_V20: u32 = 20;
 pub const EXECUTABLE_IR_VERSION_V21: u32 = 21;
 /// Executable IR carrying a compiler-proved maximum atomic command request.
 pub const EXECUTABLE_IR_VERSION_V22: u32 = 22;
+/// Executable IR admitting compiler-proved high-cardinality collections.
+pub const EXECUTABLE_IR_VERSION_V23: u32 = 23;
 
 const RELATIONSHIP_SCHEMA_EXTENSION: u32 = 0xffff_fffe;
 const UNIQUE_KEY_SCHEMA_EXTENSION: u32 = 0xffff_fffd;
@@ -1115,7 +1121,9 @@ impl ContractBundle {
         mcp_command_names: McpCommandNameRegistryV2,
         compatibility: CompatibilityReport,
     ) -> Result<Self, IrValidationError> {
-        let version = if commands.iter().any(CommandPlan::requires_ir_v22) {
+        let version = if commands.iter().any(CommandPlan::requires_ir_v23) {
+            BUNDLE_FORMAT_VERSION_V23
+        } else if commands.iter().any(CommandPlan::requires_ir_v22) {
             BUNDLE_FORMAT_VERSION_V22
         } else if schema.requires_ir_v21() {
             BUNDLE_FORMAT_VERSION_V21
@@ -1291,6 +1299,10 @@ impl ContractBundle {
                 BUNDLE_FORMAT_VERSION_V22,
                 GRAMMAR_VERSION_V22,
                 EXECUTABLE_IR_VERSION_V22
+            ) | (
+                BUNDLE_FORMAT_VERSION_V23,
+                GRAMMAR_VERSION_V23,
+                EXECUTABLE_IR_VERSION_V23
             )
         ) || (ir_version < EXECUTABLE_IR_VERSION_V2
             && (!workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2)))
@@ -1326,6 +1338,8 @@ impl ContractBundle {
             || (ir_version < EXECUTABLE_IR_VERSION_V21 && schema.requires_ir_v21())
             || (ir_version < EXECUTABLE_IR_VERSION_V22
                 && commands.iter().any(CommandPlan::requires_ir_v22))
+            || (ir_version < EXECUTABLE_IR_VERSION_V23
+                && commands.iter().any(CommandPlan::requires_ir_v23))
             || (ir_version >= EXECUTABLE_IR_VERSION_V6
                 && commands
                     .iter()
@@ -2047,7 +2061,9 @@ pub(crate) fn compute_command_plan_hash(
 ) -> Result<PlanHash, IrValidationError> {
     let mut writer = Writer::new(MAX_BUNDLE_BYTES);
     writer.raw(COMMAND_PLAN_MAGIC)?;
-    let ir_version = if plan.requires_ir_v22() {
+    let ir_version = if plan.requires_ir_v23() {
+        EXECUTABLE_IR_VERSION_V23
+    } else if plan.requires_ir_v22() {
         EXECUTABLE_IR_VERSION_V22
     } else if plan.requires_ir_v18() {
         EXECUTABLE_IR_VERSION_V18
@@ -3243,7 +3259,9 @@ fn encode_command_bundle_entry(
     command: &CommandPlan,
     schema: &SchemaIr,
 ) -> Result<(), IrValidationError> {
-    let ir_version = if command.requires_ir_v22() {
+    let ir_version = if command.requires_ir_v23() {
+        EXECUTABLE_IR_VERSION_V23
+    } else if command.requires_ir_v22() {
         EXECUTABLE_IR_VERSION_V22
     } else if command.requires_ir_v18() {
         EXECUTABLE_IR_VERSION_V18
@@ -3289,7 +3307,9 @@ fn encode_command_semantics(
     schema: &SchemaIr,
     include_display_names: bool,
 ) -> Result<(), IrValidationError> {
-    let ir_version = if command.requires_ir_v22() {
+    let ir_version = if command.requires_ir_v23() {
+        EXECUTABLE_IR_VERSION_V23
+    } else if command.requires_ir_v22() {
         EXECUTABLE_IR_VERSION_V22
     } else if command.requires_ir_v18() {
         EXECUTABLE_IR_VERSION_V18
@@ -4114,6 +4134,10 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
             BUNDLE_FORMAT_VERSION_V22,
             GRAMMAR_VERSION_V22,
             EXECUTABLE_IR_VERSION_V22
+        ) | (
+            BUNDLE_FORMAT_VERSION_V23,
+            GRAMMAR_VERSION_V23,
+            EXECUTABLE_IR_VERSION_V23
         )
     ) {
         return Err(IrValidationError::UnsupportedVersion {
@@ -6061,6 +6085,12 @@ fn decode_command_versioned(
             reason: "command request bound does not match the derived command plan",
         });
     }
+    if ir_version < EXECUTABLE_IR_VERSION_V23 && plan.requires_ir_v23() {
+        return Err(IrValidationError::UnsupportedVersion {
+            kind: "high-cardinality collection command",
+            value: ir_version,
+        });
+    }
     if plan.plan_hash() != stored_plan_hash {
         return Err(IrValidationError::HashMismatch {
             kind: "command plan",
@@ -6344,17 +6374,14 @@ fn decode_collection_expansion(
     reader: &mut Reader<'_>,
     ir_version: u32,
 ) -> Result<CollectionExpansionPlanV1, IrValidationError> {
+    let element_ceiling = if ir_version >= EXECUTABLE_IR_VERSION_V23 {
+        crate::MAX_COLLECTION_COMMAND_ELEMENTS_V2
+    } else {
+        crate::MAX_COLLECTION_COMMAND_ELEMENTS_V1
+    };
     let input_field = decode_field_id(reader)?;
-    let minimum_elements = decode_len(
-        reader,
-        "collection minimum elements",
-        crate::MAX_COLLECTION_COMMAND_ELEMENTS_V1,
-    )?;
-    let maximum_elements = decode_len(
-        reader,
-        "collection maximum elements",
-        crate::MAX_COLLECTION_COMMAND_ELEMENTS_V1,
-    )?;
+    let minimum_elements = decode_len(reader, "collection minimum elements", element_ceiling)?;
+    let maximum_elements = decode_len(reader, "collection maximum elements", element_ceiling)?;
     let element_type = decode_value_type(reader, 0)?;
     let first_binding = BindingId::new(reader.u32()?);
     let binding_count = decode_len(

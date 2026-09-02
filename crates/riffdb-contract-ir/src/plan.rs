@@ -23,6 +23,12 @@ pub const MAX_COMMAND_ITEMS: usize = 4_096;
 pub const MAX_OBJECT_FIELDS: usize = 1_024;
 /// Maximum submitted elements in one compiler-owned collection expansion.
 pub const MAX_COLLECTION_COMMAND_ELEMENTS_V1: usize = 256;
+/// Maximum submitted elements in one high-cardinality collection expansion.
+pub const MAX_COLLECTION_COMMAND_ELEMENTS_V2: usize = 1_024;
+/// Maximum possible authoritative mutations under the legacy collection tier.
+pub const MAX_COLLECTION_COMMAND_MUTATION_INSTANCES_V1: usize = 256;
+/// Maximum possible authoritative mutations under the high-cardinality tier.
+pub const MAX_COLLECTION_COMMAND_MUTATION_INSTANCES_V2: usize = 4_096;
 /// Maximum canonical input plus authoritative mutation/event graph for one collection command.
 pub const MAX_COLLECTION_COMMAND_GRAPH_BYTES_V1: usize = 16 * 1024 * 1024;
 /// Maximum ordered predicate arms in one compiler-sealed command decision.
@@ -134,12 +140,12 @@ impl CollectionExpansionPlanV1 {
     ) -> Result<Self, IrValidationError> {
         if minimum_elements == 0
             || minimum_elements > maximum_elements
-            || maximum_elements > MAX_COLLECTION_COMMAND_ELEMENTS_V1
+            || maximum_elements > MAX_COLLECTION_COMMAND_ELEMENTS_V2
         {
             return Err(IrValidationError::LimitExceeded {
                 kind: "collection command elements",
                 actual: maximum_elements,
-                maximum: MAX_COLLECTION_COMMAND_ELEMENTS_V1,
+                maximum: MAX_COLLECTION_COMMAND_ELEMENTS_V2,
             });
         }
         if binding_count == 0 {
@@ -1688,6 +1694,7 @@ pub struct CommandPlan {
     contract_version: ContractVersion,
     input: CommandInputSchema,
     maximum_request_bytes: usize,
+    maximum_mutation_instances: usize,
     service_values: Vec<ServiceValueSchema>,
     outcomes: Vec<OutcomeSchema>,
     success_outcome: OutcomeId,
@@ -2224,60 +2231,64 @@ impl CommandPlan {
                 kind: "command plan",
             });
         }
-        let maximum_request_bytes = if let Some(expansion) = &collection_expansion {
-            validate_collection_expansion(
-                expansion,
-                &input,
-                &bindings,
-                &instructions,
-                contract_schema,
-            )?;
-            let proof = validate_collection_graph_bytes(
-                expansion,
-                &name,
-                &input,
-                &expressions,
-                &bindings,
-                &instructions,
-                &decisions,
-                contract_schema,
-            )?;
-            if let Some(coefficient) = proof.maximum_copy_coefficient {
-                collection_expansion
-                    .as_mut()
-                    .expect("validated collection expansion")
-                    .set_maximum_copy_coefficient(coefficient)?;
-            }
-            proof.maximum_request_bytes
-        } else {
-            let deletes = bindings
-                .iter()
-                .filter(|binding| binding.mode() == BindingMode::Delete)
-                .collect::<Vec<_>>();
-            if deletes.len() > 1 {
-                return Err(IrValidationError::LimitExceeded {
-                    kind: "ordinary delete bindings",
-                    actual: deletes.len(),
-                    maximum: 1,
-                });
-            }
-            if let Some(binding) = deletes.first() {
-                let policy = contract_schema.delete_policy(binding.entity_type()).ok_or(
-                    IrValidationError::InvalidDependency {
-                        reason: "ordinary delete lacks one checked structural deletion policy",
-                    },
+        let (maximum_request_bytes, maximum_mutation_instances) =
+            if let Some(expansion) = &collection_expansion {
+                let maximum_mutation_instances = validate_collection_expansion(
+                    expansion,
+                    &input,
+                    &bindings,
+                    &instructions,
+                    contract_schema,
                 )?;
-                if !matches!(policy.mode(), crate::DeletePolicyModeV1::NoInbound)
-                    || binding.restriction_failure().is_some()
-                    || binding.cascade_failure().is_some()
-                {
-                    return Err(IrValidationError::InvalidDependency {
-                        reason: "ordinary delete requires the no_inbound policy",
+                let proof = validate_collection_graph_bytes(
+                    expansion,
+                    &name,
+                    &input,
+                    &expressions,
+                    &bindings,
+                    &instructions,
+                    &decisions,
+                    contract_schema,
+                )?;
+                if let Some(coefficient) = proof.maximum_copy_coefficient {
+                    collection_expansion
+                        .as_mut()
+                        .expect("validated collection expansion")
+                        .set_maximum_copy_coefficient(coefficient)?;
+                }
+                (proof.maximum_request_bytes, maximum_mutation_instances)
+            } else {
+                let deletes = bindings
+                    .iter()
+                    .filter(|binding| binding.mode() == BindingMode::Delete)
+                    .collect::<Vec<_>>();
+                if deletes.len() > 1 {
+                    return Err(IrValidationError::LimitExceeded {
+                        kind: "ordinary delete bindings",
+                        actual: deletes.len(),
+                        maximum: 1,
                     });
                 }
-            }
-            maximum_command_request_bytes(&name, &input, contract_schema)?
-        };
+                if let Some(binding) = deletes.first() {
+                    let policy = contract_schema.delete_policy(binding.entity_type()).ok_or(
+                        IrValidationError::InvalidDependency {
+                            reason: "ordinary delete lacks one checked structural deletion policy",
+                        },
+                    )?;
+                    if !matches!(policy.mode(), crate::DeletePolicyModeV1::NoInbound)
+                        || binding.restriction_failure().is_some()
+                        || binding.cascade_failure().is_some()
+                    {
+                        return Err(IrValidationError::InvalidDependency {
+                            reason: "ordinary delete requires the no_inbound policy",
+                        });
+                    }
+                }
+                (
+                    maximum_command_request_bytes(&name, &input, contract_schema)?,
+                    0,
+                )
+            };
         checked_len(
             "command public request bytes",
             maximum_request_bytes,
@@ -2534,6 +2545,14 @@ impl CommandPlan {
             &union_instructions,
             contract_schema,
         )?;
+        if let Some(expansion) = collection_expansion.as_ref() {
+            validate_collection_conflict_instances(
+                expansion,
+                &expressions,
+                &locality,
+                &unique_conflicts,
+            )?;
+        }
         checked_len(
             "all command conflict derivations",
             locality
@@ -2552,6 +2571,7 @@ impl CommandPlan {
             contract_version,
             input,
             maximum_request_bytes,
+            maximum_mutation_instances,
             service_values,
             outcomes,
             success_outcome,
@@ -2605,6 +2625,14 @@ impl CommandPlan {
     #[must_use]
     pub const fn maximum_request_bytes(&self) -> usize {
         self.maximum_request_bytes
+    }
+    /// Compiler-proved maximum authoritative mutations for a collection command.
+    ///
+    /// Ordinary commands return zero because the successor identity applies only
+    /// to compiler-owned collection expansion.
+    #[must_use]
+    pub const fn maximum_mutation_instances(&self) -> usize {
+        self.maximum_mutation_instances
     }
     /// Complete compiler-declared service-owned values in stable-ID order.
     #[must_use]
@@ -2689,6 +2717,18 @@ impl CommandPlan {
     #[must_use]
     pub const fn requires_ir_v22(&self) -> bool {
         self.maximum_request_bytes > MAX_APPLICATION_REQUEST_BYTES_V1
+    }
+    /// Whether this collection command requires high-cardinality IR v23.
+    #[must_use]
+    pub const fn requires_ir_v23(&self) -> bool {
+        match self.collection_expansion.as_ref() {
+            Some(expansion) => {
+                expansion.maximum_elements() > MAX_COLLECTION_COMMAND_ELEMENTS_V1
+                    || self.maximum_mutation_instances
+                        > MAX_COLLECTION_COMMAND_MUTATION_INSTANCES_V1
+            }
+            None => false,
+        }
     }
     /// Whether this command requires the distinct reimport invocation class in IR v10.
     #[must_use]
@@ -2871,6 +2911,47 @@ impl CommandPlan {
     pub const fn plan_hash(&self) -> PlanHash {
         self.plan_hash
     }
+}
+
+fn validate_collection_conflict_instances(
+    expansion: &CollectionExpansionPlanV1,
+    expressions: &ExpressionArena,
+    locality: &LocalityPlan,
+    unique_conflicts: &[UniqueConflictPlan],
+) -> Result<(), IrValidationError> {
+    let derivation_instances = |derivation: &[ExprId]| -> Result<usize, IrValidationError> {
+        let element_dependent = derivation.iter().try_fold(false, |dependent, expression| {
+            let dependencies = expressions.dependencies(*expression)?;
+            Ok::<_, IrValidationError>(
+                dependent
+                    || (*expression != locality.partition_expression()
+                        && (dependencies.uses_collection_element()
+                            || !dependencies.collection_element_fields().is_empty())),
+            )
+        })?;
+        Ok(if element_dependent {
+            expansion.maximum_elements()
+        } else {
+            1
+        })
+    };
+    let maximum = locality
+        .conflict_keys()
+        .iter()
+        .map(ConflictDerivationPlan::expressions)
+        .chain(unique_conflicts.iter().map(UniqueConflictPlan::expressions))
+        .try_fold(0usize, |total, derivation| {
+            total.checked_add(derivation_instances(derivation)?).ok_or(
+                IrValidationError::SizeOverflow {
+                    kind: "collection command conflict keys",
+                },
+            )
+        })?;
+    checked_len(
+        "collection command conflict keys",
+        maximum,
+        MAX_COMMAND_CONFLICT_KEYS_V1,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3421,7 +3502,7 @@ fn validate_collection_expansion(
     bindings: &[BindingPlan],
     instructions: &[Instruction],
     schema: &SchemaIr,
-) -> Result<(), IrValidationError> {
+) -> Result<usize, IrValidationError> {
     let field = input.record().field(expansion.input_field()).ok_or(
         IrValidationError::InvalidReference {
             kind: "collection command input",
@@ -3472,43 +3553,64 @@ fn validate_collection_expansion(
             maximum: 1,
         });
     }
-    let mutation_instances = bindings[first_binding..binding_end]
-        .iter()
-        .filter(|binding| binding.mode() != BindingMode::Read)
-        .try_fold(0usize, |total, binding| {
-            let weight = match schema
-                .delete_policy(binding.entity_type())
-                .map(|policy| policy.mode())
-            {
-                Some(crate::DeletePolicyModeV1::Cascade { relationships }) => relationships
-                    .iter()
-                    .try_fold(1usize, |count, relationship| {
-                        count.checked_add(usize::from(relationship.maximum()))
-                    })
-                    .ok_or(IrValidationError::SizeOverflow {
-                        kind: "cascade mutation instances",
-                    })?,
-                _ => 1,
-            };
-            total
-                .checked_add(weight)
-                .ok_or(IrValidationError::SizeOverflow {
-                    kind: "collection mutation instances",
+    let binding_weight = |binding: &BindingPlan| -> Result<usize, IrValidationError> {
+        match schema
+            .delete_policy(binding.entity_type())
+            .map(|policy| policy.mode())
+        {
+            Some(crate::DeletePolicyModeV1::Cascade { relationships }) => relationships
+                .iter()
+                .try_fold(1usize, |count, relationship| {
+                    count.checked_add(usize::from(relationship.maximum()))
                 })
-        })?;
-    let aggregate_instances = mutation_instances
-        .checked_mul(expansion.maximum_elements())
-        .ok_or(IrValidationError::SizeOverflow {
-            kind: "collection aggregate instances",
-        })?;
-    if mutation_instances == 0 || aggregate_instances > MAX_COLLECTION_COMMAND_ELEMENTS_V1 {
+                .ok_or(IrValidationError::SizeOverflow {
+                    kind: "cascade mutation instances",
+                }),
+            _ => Ok(1),
+        }
+    };
+    let mut collection_instances = 0usize;
+    let mut complete_instances = 0usize;
+    for (index, binding) in bindings.iter().enumerate() {
+        if binding.mode() == BindingMode::Read {
+            continue;
+        }
+        let weight = binding_weight(binding)?;
+        if (first_binding..binding_end).contains(&index) {
+            collection_instances = collection_instances.checked_add(weight).ok_or(
+                IrValidationError::SizeOverflow {
+                    kind: "collection mutation instances",
+                },
+            )?;
+            let expanded = weight.checked_mul(expansion.maximum_elements()).ok_or(
+                IrValidationError::SizeOverflow {
+                    kind: "collection mutation instances",
+                },
+            )?;
+            complete_instances = complete_instances.checked_add(expanded).ok_or(
+                IrValidationError::SizeOverflow {
+                    kind: "collection mutation instances",
+                },
+            )?;
+        } else {
+            complete_instances =
+                complete_instances
+                    .checked_add(weight)
+                    .ok_or(IrValidationError::SizeOverflow {
+                        kind: "collection mutation instances",
+                    })?;
+        }
+    }
+    if collection_instances == 0
+        || complete_instances > MAX_COLLECTION_COMMAND_MUTATION_INSTANCES_V2
+    {
         return Err(IrValidationError::LimitExceeded {
-            kind: "collection aggregate instances",
-            actual: aggregate_instances,
-            maximum: MAX_COLLECTION_COMMAND_ELEMENTS_V1,
+            kind: "collection mutation instances",
+            actual: complete_instances,
+            maximum: MAX_COLLECTION_COMMAND_MUTATION_INSTANCES_V2,
         });
     }
-    Ok(())
+    Ok(complete_instances)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -9147,7 +9249,7 @@ pub(crate) mod tests {
             CollectionExpansionPlanV1::new(
                 FieldId::first(),
                 1,
-                MAX_COLLECTION_COMMAND_ELEMENTS_V1 + 1,
+                MAX_COLLECTION_COMMAND_ELEMENTS_V2 + 1,
                 crate::ValueType::u64(),
                 BindingId::new(0),
                 1,

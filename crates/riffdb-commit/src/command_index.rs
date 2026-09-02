@@ -15,12 +15,13 @@ use riffdb_contract_ir::{
     EXECUTABLE_IR_VERSION_V14, EXECUTABLE_IR_VERSION_V15, EXECUTABLE_IR_VERSION_V16,
     EXECUTABLE_IR_VERSION_V17, EXECUTABLE_IR_VERSION_V18, EXECUTABLE_IR_VERSION_V19,
     EXECUTABLE_IR_VERSION_V20, EXECUTABLE_IR_VERSION_V21, EXECUTABLE_IR_VERSION_V22,
-    ExecutionClass, GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V2, GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4,
-    GRAMMAR_VERSION_V5, GRAMMAR_VERSION_V6, GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8,
-    GRAMMAR_VERSION_V9, GRAMMAR_VERSION_V10, GRAMMAR_VERSION_V11, GRAMMAR_VERSION_V12,
-    GRAMMAR_VERSION_V13, GRAMMAR_VERSION_V14, GRAMMAR_VERSION_V15, GRAMMAR_VERSION_V16,
-    GRAMMAR_VERSION_V17, GRAMMAR_VERSION_V18, GRAMMAR_VERSION_V19, GRAMMAR_VERSION_V20,
-    GRAMMAR_VERSION_V21, GRAMMAR_VERSION_V22, IndexSchema, SchemaIr,
+    EXECUTABLE_IR_VERSION_V23, ExecutionClass, GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V2,
+    GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4, GRAMMAR_VERSION_V5, GRAMMAR_VERSION_V6,
+    GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8, GRAMMAR_VERSION_V9, GRAMMAR_VERSION_V10,
+    GRAMMAR_VERSION_V11, GRAMMAR_VERSION_V12, GRAMMAR_VERSION_V13, GRAMMAR_VERSION_V14,
+    GRAMMAR_VERSION_V15, GRAMMAR_VERSION_V16, GRAMMAR_VERSION_V17, GRAMMAR_VERSION_V18,
+    GRAMMAR_VERSION_V19, GRAMMAR_VERSION_V20, GRAMMAR_VERSION_V21, GRAMMAR_VERSION_V22,
+    GRAMMAR_VERSION_V23, IndexSchema, SchemaIr,
 };
 use riffdb_invariant::{InputDerivedCommandFacts, derive_input_command_facts};
 #[cfg(test)]
@@ -1600,6 +1601,15 @@ impl IndexDerivationBuilder {
 //   command's ordinary index keys, covers, and epoch targets are unchanged.
 // - Evidence: `long_pattern_v21_preserves_authoritative_index_derivation`
 //   exercises a real V21 mutation and pins the same ordinary entry set.
+//
+// (V23, V23) — high-cardinality atomic collections (ADR-0177 / WP-745).
+// - V23 changes only the compiler-proved maximum collection expansion and
+//   complete mutation-instance accounting. It adds no index schema, key or
+//   cover encoding, binding mode, or index derivation rule.
+// - Existing index-delta, affected-prefix, validation-position, work, read-
+//   state, and graph-byte ceilings remain authoritative. The 1,000-element
+//   real-redb acceptance uses an unindexed child and proves that V23 reaches
+//   this audited derivation path without inventing hidden index work.
 const fn index_derivation_version_supported(grammar: u32, ir: u32) -> bool {
     matches!(
         (grammar, ir),
@@ -1625,6 +1635,7 @@ const fn index_derivation_version_supported(grammar: u32, ir: u32) -> bool {
             | (GRAMMAR_VERSION_V20, EXECUTABLE_IR_VERSION_V20)
             | (GRAMMAR_VERSION_V21, EXECUTABLE_IR_VERSION_V21)
             | (GRAMMAR_VERSION_V22, EXECUTABLE_IR_VERSION_V22)
+            | (GRAMMAR_VERSION_V23, EXECUTABLE_IR_VERSION_V23)
     )
 }
 
@@ -2037,10 +2048,10 @@ mod tests {
     // gate.
     #[test]
     fn index_derivation_admits_exactly_the_audited_identity_pairs() {
-        for grammar in 0..=GRAMMAR_VERSION_V22 + 1 {
-            for ir in 0..=EXECUTABLE_IR_VERSION_V22 + 1 {
+        for grammar in 0..=GRAMMAR_VERSION_V23 + 1 {
+            for ir in 0..=EXECUTABLE_IR_VERSION_V23 + 1 {
                 let audited_identity_pair =
-                    grammar == ir && (GRAMMAR_VERSION_V1..=GRAMMAR_VERSION_V22).contains(&grammar);
+                    grammar == ir && (GRAMMAR_VERSION_V1..=GRAMMAR_VERSION_V23).contains(&grammar);
                 assert_eq!(
                     index_derivation_version_supported(grammar, ir),
                     audited_identity_pair,

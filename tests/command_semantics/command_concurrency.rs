@@ -27,6 +27,86 @@ use support::{
 };
 
 #[test]
+fn thousand_element_command_plus_root_commits_and_replays_atomically_through_redb() {
+    let database = BulkRowsDatabase::create("high-cardinality-atomic");
+    let ports = database.open();
+    let seed = database.prepare_shared_initialized_put(&ports, &[[0x41; 16]], 0x42, 0x52, 0x62);
+    let row_ids = (1_u64..=1_000)
+        .map(|ordinal| {
+            let mut id = [0_u8; 16];
+            id[8..].copy_from_slice(&ordinal.to_be_bytes());
+            id
+        })
+        .collect::<Vec<_>>();
+    let first = database.prepare_many_rows(&ports, &row_ids, 0x43, 0x53, 0x63);
+    let replay = database.prepare_many_rows(&ports, &row_ids, 0x43, 0x53, 0x64);
+    let coordinator = start_coordinator_with_notifications(
+        ports,
+        Arc::new(FixedAdmissionClock::new(command_timestamp())),
+        Arc::new(IncrementingProvenanceSource::new(0x73)),
+        Arc::new(RecordingApplicationCommitNotifications::default()),
+    );
+    let executor = coordinator.command_executor();
+
+    let (seed, first, replay) = runtime().block_on(async {
+        let seed = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve summary seed")
+            .submit(seed)
+            .expect("submit summary seed")
+            .completion()
+            .await
+            .expect("complete summary seed");
+        let first = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve high-cardinality command")
+            .submit(first)
+            .expect("submit high-cardinality command")
+            .completion()
+            .await
+            .expect("complete high-cardinality command");
+        let replay = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve high-cardinality replay")
+            .submit(replay)
+            .expect("submit high-cardinality replay")
+            .completion()
+            .await
+            .expect("complete high-cardinality replay");
+        (seed, first, replay)
+    });
+
+    assert!(matches!(seed, CommandExecutionResult::Committed(_)));
+    let CommandExecutionResult::Committed(first) = first else {
+        panic!("high-cardinality command must commit");
+    };
+    let CommandExecutionResult::Committed(replay) = replay else {
+        panic!("high-cardinality replay must resolve");
+    };
+    assert_eq!(
+        first.disposition(),
+        CommittedOutcomeDisposition::FirstCommit
+    );
+    assert_eq!(replay.disposition(), CommittedOutcomeDisposition::Replay);
+    assert_eq!(first.stored_outcome(), replay.stored_outcome());
+    assert_eq!(
+        first.stored_outcome().commit_sequence(),
+        CommitSequence::new(2).unwrap()
+    );
+
+    drop(executor);
+    coordinator
+        .shutdown()
+        .expect("drain high-cardinality coordinator");
+    let reopened = database.open();
+    database.assert_many_rows_present(&reopened, &row_ids);
+    database.assert_commit_graph(&reopened, first.stored_outcome(), 0);
+}
+
+#[test]
 fn initialized_transition_revalidates_absent_and_present_races_without_stale_conversion() {
     let database = BulkRowsDatabase::create("initialized-transition-races");
     let ports = database.open();

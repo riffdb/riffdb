@@ -195,6 +195,7 @@ direction, merged draft, or implementation choice.
 | [0174](0174-bounded-filtered-result-pipelines.md) | Bounded Filtered Result Pipelines | Accepted |
 | [0175](0175-bounded-partition-set-operational-queries.md) | Bounded Partition-Set Operational Queries | Accepted |
 | [0176](0176-compiler-bounded-large-atomic-command-envelope.md) | Compiler-Bounded Large Atomic Command Envelope | Accepted |
+| [0177](0177-compiler-bounded-high-cardinality-atomic-collections.md) | Compiler-Bounded High-Cardinality Atomic Collections | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through

@@ -96,7 +96,7 @@ impl InputDerivedCommandFacts {
     /// Borrows the submitted element ordinal for each concrete binding key.
     ///
     /// `None` identifies a non-repeated binding. Ordinals are zero-based and
-    /// bounded by the executable IR's 256-element ceiling.
+    /// bounded by the executable IR's 1,024-element ceiling.
     #[must_use]
     pub fn binding_element_ordinals(&self) -> &[Option<u16>] {
         &self.binding_element_ordinals
