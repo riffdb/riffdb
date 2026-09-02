@@ -1184,7 +1184,8 @@ impl RedbQueryView<'_> {
         let setup_started = self.profile.as_ref().map(|_| Instant::now());
         let direction = match step.access() {
             QueryAccessKind::Index { direction, .. }
-            | QueryAccessKind::PartitionSetIndex { direction, .. } => direction,
+            | QueryAccessKind::PartitionSetIndex { direction, .. }
+            | QueryAccessKind::ExpansionIndex { direction, .. } => direction,
             _ => return Err(invariant()),
         };
         let schema = step.internal_index_key_schema().ok_or_else(invariant)?;
@@ -1775,7 +1776,7 @@ mod tests {
     };
     use riffdb_types::{
         AggregateTypeId, CanonicalRecord, CanonicalValue, CommitSequence, DatabaseId,
-        EntityVersion, PartitionKeyBuilder,
+        EntityVersion, PartitionKeyBuilder, Timestamp,
     };
 
     use super::*;
@@ -1831,6 +1832,118 @@ query ProjectMembersInRange(
 }
 "#;
     const BOARD_QUERY: &str = include_str!("../../../queries/ticketdesk/board_page_450.riffq");
+    const EXPANSION_QUERY: &str =
+        include_str!("../../../fixtures/riffql/ticket_comments_expansion.riffql");
+
+    fn expansion_rows(
+        binding: &DurableKeySchemaBindingV1,
+        status: &CanonicalValue,
+        program: &QueryAccessProgramV1,
+    ) -> (Vec<StoredEntityRecordV1>, Vec<StoredIndexEntryV2>) {
+        let organization = CanonicalValue::Uuid([1; 16]);
+        let project = CanonicalValue::Uuid([2; 16]);
+        let mut entities = Vec::new();
+        let mut indexes = Vec::new();
+        for step in program.steps() {
+            let access = program
+                .internal_entity_access(step.entity())
+                .expect("entity access");
+            let rows = if step.entity() == "Ticket" { 2 } else { 16 };
+            for ordinal in 0..rows {
+                let ticket_ordinal = if step.entity() == "Ticket" {
+                    ordinal + 1
+                } else {
+                    ordinal / 8 + 1
+                };
+                let ticket = CanonicalValue::Uuid([ticket_ordinal as u8 + 2; 16]);
+                let comment = CanonicalValue::Uuid([ordinal as u8 + 20; 16]);
+                let entity_values = if step.entity() == "Ticket" {
+                    vec![organization.clone(), ticket.clone()]
+                } else {
+                    vec![organization.clone(), ticket.clone(), comment.clone()]
+                };
+                let entity_key = step
+                    .internal_entity_key_schema()
+                    .encode_entity(&entity_values)
+                    .expect("entity key");
+                let fields = if step.entity() == "Ticket" {
+                    vec![
+                        ("organization_id", organization.clone()),
+                        ("ticket_id", ticket.clone()),
+                        ("project_id", project.clone()),
+                        ("status", status.clone()),
+                    ]
+                } else {
+                    vec![
+                        ("organization_id", organization.clone()),
+                        ("ticket_id", ticket.clone()),
+                        ("comment_id", comment.clone()),
+                        (
+                            "created_at",
+                            CanonicalValue::Timestamp(
+                                Timestamp::new(1_700_000_000 + i64::from(ordinal), 0)
+                                    .expect("timestamp"),
+                            ),
+                        ),
+                    ]
+                };
+                entities.push(
+                    StoredEntityRecordV1::new(
+                        EntityTarget::new(step.internal_entity_id(), entity_key.clone())
+                            .expect("target"),
+                        EntityVersion::first(),
+                        binding.contract_version(),
+                        binding.clone(),
+                        CanonicalRecord::new(
+                            fields
+                                .into_iter()
+                                .map(|(name, value)| {
+                                    (access.internal_field_id(name).expect("field ID"), value)
+                                })
+                                .collect(),
+                        )
+                        .expect("fields"),
+                    )
+                    .expect("entity"),
+                );
+                let index_values = if step.entity() == "Ticket" {
+                    vec![
+                        organization.clone(),
+                        project.clone(),
+                        status.clone(),
+                        ticket,
+                    ]
+                } else {
+                    vec![
+                        organization.clone(),
+                        ticket,
+                        CanonicalValue::Timestamp(
+                            Timestamp::new(1_700_000_000 + i64::from(ordinal), 0)
+                                .expect("timestamp"),
+                        ),
+                        comment,
+                    ]
+                };
+                let index_key = step
+                    .internal_index_key_schema()
+                    .expect("index schema")
+                    .encode_index(&index_values, entity_key)
+                    .expect("index key");
+                indexes.push(
+                    StoredIndexEntryV2::new(
+                        index_key,
+                        binding.clone(),
+                        CanonicalRecord::new(Vec::new()).expect("cover"),
+                        step.internal_partition_key_schema()
+                            .encode_partition(std::slice::from_ref(&organization))
+                            .expect("partition"),
+                    )
+                    .expect("index"),
+                );
+            }
+        }
+        (entities, indexes)
+    }
     /// Whole-directory scope: the database and every side file it grows live
     /// in one [`crate::test_path::ScopedDirectory`] removed on drop — pass,
     /// fail, or panic.
@@ -1845,6 +1958,107 @@ query ProjectMembersInRange(
             let scope = crate::test_path::ScopedDirectory::new("query");
             Self(scope.join("db.redb"), scope)
         }
+    }
+
+    // req: OQ-114, OQ-115
+    #[test]
+    fn expansion_redb_matches_independent_oracle() {
+        let bundle = compile_contract_source(CONTRACT).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let program = compile_query(&parse_query(EXPANSION_QUERY).expect("query"), &catalog)
+            .expect("program");
+        let status = bundle
+            .schema()
+            .enums()
+            .iter()
+            .find(|enumeration| enumeration.name() == "TicketStatus")
+            .expect("TicketStatus");
+        let status = CanonicalValue::Enum {
+            type_id: status.id(),
+            variant_id: status
+                .variants()
+                .iter()
+                .find(|variant| variant.name() == "Open")
+                .expect("Open")
+                .id(),
+        };
+        let binding = DurableKeySchemaBindingV1::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+        );
+        let (entities, indexes) = expansion_rows(&binding, &status, &program);
+        let path = TestPath::new();
+        let mut store = RedbStore::open(&path.0).expect("store");
+        store
+            .initialize_database(
+                DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x69; 10])
+                    .expect("database ID"),
+            )
+            .expect("initialize");
+        let ports = RedbOperationalPorts {
+            shared: Arc::clone(&store.shared),
+        };
+        let write = ports.begin_write().expect("write");
+        {
+            let mut table = write
+                .transaction()
+                .expect("transaction")
+                .open_table(ENTITIES)
+                .expect("entities");
+            for record in &entities {
+                let encoded = encode_entity_record_v1(record).expect("encoded entity");
+                table
+                    .insert(encode_entity_key(record.target().key()), encoded.as_bytes())
+                    .expect("insert entity");
+            }
+        }
+        {
+            let mut table = write
+                .transaction()
+                .expect("transaction")
+                .open_table(SECONDARY_INDEXES)
+                .expect("indexes");
+            for index in &indexes {
+                let encoded = encode_index_entry_v2(index).expect("encoded index");
+                table
+                    .insert(index.key().as_bytes(), encoded.as_bytes())
+                    .expect("insert index");
+            }
+        }
+        write.commit().expect("seed commit");
+        let parameters = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+            ("project_id".to_owned(), CanonicalValue::Uuid([2; 16])),
+            ("status".to_owned(), status),
+        ]))
+        .expect("parameters");
+        let _table_open_serial = QUERY_TABLE_OPEN_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let snapshot = ports
+            .execute_query(&program, &parameters)
+            .expect("expansion");
+        let Some(QueryResultValue::Many(tickets)) = snapshot.fields().get("tickets") else {
+            panic!("ticket rows")
+        };
+        assert_eq!(tickets.len(), 2);
+        assert_eq!(
+            tickets[0].nested_rows("comments").expect("comments").len(),
+            8
+        );
+        assert_eq!(
+            tickets[1].nested_rows("comments").expect("comments").len(),
+            8
+        );
+        assert_eq!(
+            tickets[0].field("ticket_id"),
+            Some(&CanonicalValue::Uuid([3; 16]))
+        );
+        assert_eq!(
+            tickets[1].nested_rows("comments").expect("comments")[7].field("comment_id"),
+            Some(&CanonicalValue::Uuid([35; 16]))
+        );
     }
 
     #[test]

@@ -4553,13 +4553,25 @@ fn live_patch_operation_payload(
 fn live_record_payload(
     record: &SymbolicResultRecord,
 ) -> Result<serde_json::Value, McpBackendError> {
-    let fields = record
+    let mut fields = record
         .fields()
         .iter()
         .map(|(name, value)| {
             Ok(serde_json::json!({"name": name, "value": presented_value(value)?}))
         })
         .collect::<Result<Vec<_>, McpBackendError>>()?;
+    for (name, rows) in record.nested() {
+        fields.push(serde_json::json!({
+            "name": name,
+            "value": {
+                "kind": "list",
+                "values": rows
+                    .iter()
+                    .map(live_record_payload)
+                    .collect::<Result<Vec<_>, _>>()?,
+            },
+        }));
+    }
     Ok(serde_json::json!({"entity": record.entity(), "fields": fields}))
 }
 
@@ -4627,6 +4639,21 @@ fn named_query_record(
             .insert(
                 name.as_ref().to_owned(),
                 named_query_exact_decimal(value.coefficient(), value.scale()),
+            )
+            .is_some()
+        {
+            return Err(McpBackendError::InvalidResponse);
+        }
+    }
+    for (name, rows) in record.nested() {
+        if fields
+            .insert(
+                name.as_ref().to_owned(),
+                serde_json::Value::Array(
+                    rows.iter()
+                        .map(|row| named_query_record(result, row))
+                        .collect::<Result<Vec<_>, _>>()?,
+                ),
             )
             .is_some()
         {
@@ -4885,8 +4912,29 @@ fn symbolic_record_payload(
             symbolic_exact_decimal(value.coefficient(), value.scale()),
         ))
     });
+    let nested_fields = record.nested().iter().map(|(name, rows)| {
+        Ok((
+            name,
+            serde_json::json!({
+                "kind": "list",
+                "values": rows
+                    .iter()
+                    .map(|row| {
+                        let payload = symbolic_record_payload(result, row)?;
+                        Ok(serde_json::json!({
+                            "kind": "record",
+                            "fields": payload
+                                .get("fields")
+                                .ok_or(McpBackendError::InvalidResponse)?,
+                        }))
+                    })
+                    .collect::<Result<Vec<_>, McpBackendError>>()?,
+            }),
+        ))
+    });
     let mut fields = canonical_fields
         .chain(exact_decimal_fields)
+        .chain(nested_fields)
         .collect::<Result<Vec<_>, McpBackendError>>()?;
     fields.sort_by_key(|(name, _)| *name);
     let fields = fields

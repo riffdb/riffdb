@@ -84,8 +84,9 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   this does not make every other provider kind an interchangeable candidate
   source.
   One-level bounded one-to-many expansion compiles to additive language, plan,
-  and module identities. Depth-two, cross-partition, independent target
-  pagination, and general joins remain unavailable.
+  and module identities and executes in memory and redb with complete-before-
+  release, policy-before-observation semantics. Depth-two, cross-partition,
+  independent target pagination, and general joins remain unavailable.
   A query may expose at most 32 compiler-expanded root orders through one
   complete contract enum. Callers cannot submit arbitrary sort structure, and
   changing the enum choice starts a different cursor family.

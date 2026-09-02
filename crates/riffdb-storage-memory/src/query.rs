@@ -349,7 +349,8 @@ impl QueryReadView for MemoryQueryView<'_> {
     ) -> Result<QueryScanPage, Self::Error> {
         let direction = match step.access() {
             QueryAccessKind::Index { direction, .. }
-            | QueryAccessKind::PartitionSetIndex { direction, .. } => direction,
+            | QueryAccessKind::PartitionSetIndex { direction, .. }
+            | QueryAccessKind::ExpansionIndex { direction, .. } => direction,
             _ => return Err(storage_error(StorageErrorKind::InvariantViolation)),
         };
         let schema = step
@@ -831,6 +832,302 @@ query ProjectMembersInRange(
     outcomes Found
 }
 "#;
+    const EXPANSION_QUERY: &str =
+        include_str!("../../../fixtures/riffql/ticket_comments_expansion.riffql");
+
+    fn expansion_status(bundle: &riffdb_contract_ir::ContractBundle) -> CanonicalValue {
+        let status = bundle
+            .schema()
+            .enums()
+            .iter()
+            .find(|enumeration| enumeration.name() == "TicketStatus")
+            .expect("TicketStatus");
+        CanonicalValue::Enum {
+            type_id: status.id(),
+            variant_id: status
+                .variants()
+                .iter()
+                .find(|variant| variant.name() == "Open")
+                .expect("Open")
+                .id(),
+        }
+    }
+
+    fn expansion_state(
+        bundle: &riffdb_contract_ir::ContractBundle,
+        program: &QueryAccessProgramV1,
+        comments_per_ticket: u8,
+    ) -> MemoryState {
+        let organization = CanonicalValue::Uuid([1; 16]);
+        let project = CanonicalValue::Uuid([2; 16]);
+        let status = expansion_status(bundle);
+        let binding = DurableKeySchemaBindingV1::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+        );
+        let mut state = MemoryState::default();
+        for step in program.steps() {
+            let access = program
+                .internal_entity_access(step.entity())
+                .expect("entity access");
+            let rows = if step.entity() == "Ticket" {
+                2
+            } else {
+                usize::from(comments_per_ticket) * 2
+            };
+            for ordinal in 0..rows {
+                let ticket_ordinal = if step.entity() == "Ticket" {
+                    ordinal + 1
+                } else {
+                    ordinal / usize::from(comments_per_ticket) + 1
+                };
+                let ticket = CanonicalValue::Uuid([ticket_ordinal as u8 + 2; 16]);
+                let comment = CanonicalValue::Uuid([ordinal as u8 + 20; 16]);
+                let created_at = CanonicalValue::Timestamp(
+                    Timestamp::new(
+                        1_700_000_000
+                            + i64::try_from(ordinal % usize::from(comments_per_ticket))
+                                .expect("bounded ordinal"),
+                        0,
+                    )
+                    .expect("timestamp"),
+                );
+                let entity_values = if step.entity() == "Ticket" {
+                    vec![organization.clone(), ticket.clone()]
+                } else {
+                    vec![organization.clone(), ticket.clone(), comment.clone()]
+                };
+                let entity_key = step
+                    .internal_entity_key_schema()
+                    .encode_entity(&entity_values)
+                    .expect("entity key");
+                let fields = if step.entity() == "Ticket" {
+                    vec![
+                        ("organization_id", organization.clone()),
+                        ("ticket_id", ticket.clone()),
+                        ("project_id", project.clone()),
+                        ("status", status.clone()),
+                    ]
+                } else {
+                    vec![
+                        ("organization_id", organization.clone()),
+                        ("ticket_id", ticket.clone()),
+                        ("comment_id", comment.clone()),
+                        ("created_at", created_at.clone()),
+                    ]
+                };
+                let fields = CanonicalRecord::new(
+                    fields
+                        .into_iter()
+                        .map(|(name, value)| {
+                            (access.internal_field_id(name).expect("field ID"), value)
+                        })
+                        .collect(),
+                )
+                .expect("fields");
+                state.entities.push(
+                    StoredEntityRecordV1::new(
+                        EntityTarget::new(step.internal_entity_id(), entity_key.clone())
+                            .expect("target"),
+                        EntityVersion::first(),
+                        bundle.contract_version(),
+                        binding.clone(),
+                        fields,
+                    )
+                    .expect("entity"),
+                );
+                let index_values = if step.entity() == "Ticket" {
+                    vec![
+                        organization.clone(),
+                        project.clone(),
+                        status.clone(),
+                        ticket,
+                    ]
+                } else {
+                    vec![organization.clone(), ticket, created_at, comment]
+                };
+                let index_key = step
+                    .internal_index_key_schema()
+                    .expect("index schema")
+                    .encode_index(&index_values, entity_key)
+                    .expect("index key");
+                let partition = step
+                    .internal_partition_key_schema()
+                    .encode_partition(std::slice::from_ref(&organization))
+                    .expect("partition");
+                let index = StoredIndexEntryV2::new(
+                    index_key,
+                    binding.clone(),
+                    CanonicalRecord::new(Vec::new()).expect("cover"),
+                    partition,
+                )
+                .expect("index");
+                let encoded = encode_index_entry_v2(&index).expect("encoded index");
+                state
+                    .index_entries
+                    .push(MemoryIndexEntry::current_from_encoded(
+                        index,
+                        encoded.as_bytes().to_vec(),
+                        EncodedContentCharge::new(encoded.as_bytes().len()).expect("charge"),
+                    ));
+            }
+        }
+        state
+            .entities
+            .sort_unstable_by(|left, right| left.target().cmp(right.target()));
+        state
+            .index_entries
+            .sort_unstable_by(|left, right| left.key().cmp(right.key()));
+        state
+    }
+
+    // req: OQ-114, OQ-115
+    #[test]
+    fn expansion_memory_matches_independent_oracle() {
+        let bundle = compile_contract_source(CONTRACT).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let program = compile_query(&parse_query(EXPANSION_QUERY).expect("query"), &catalog)
+            .expect("program");
+        let state = expansion_state(&bundle, &program, 8);
+        let parameters = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+            ("project_id".to_owned(), CanonicalValue::Uuid([2; 16])),
+            ("status".to_owned(), expansion_status(&bundle)),
+        ]))
+        .expect("parameters");
+        let mut view = MemoryQueryView {
+            state: &state,
+            program: &program,
+            parameters: &parameters,
+        };
+        let snapshot = execute_in_snapshot(&program, &parameters, &mut view).expect("expansion");
+        let Some(QueryResultValue::Many(tickets)) = snapshot.fields().get("tickets") else {
+            panic!("ticket rows")
+        };
+        assert_eq!(tickets.len(), 2);
+        assert_eq!(
+            tickets[0].nested_rows("comments").expect("comments").len(),
+            8
+        );
+        assert_eq!(
+            tickets[1].nested_rows("comments").expect("comments").len(),
+            8
+        );
+        assert_eq!(
+            tickets[0].field("ticket_id"),
+            Some(&CanonicalValue::Uuid([3; 16]))
+        );
+        assert_eq!(
+            tickets[1].nested_rows("comments").expect("comments")[7].field("comment_id"),
+            Some(&CanonicalValue::Uuid([35; 16]))
+        );
+
+        let empty_parameters = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+            ("project_id".to_owned(), CanonicalValue::Uuid([99; 16])),
+            ("status".to_owned(), expansion_status(&bundle)),
+        ]))
+        .expect("empty parameters");
+        let mut empty = MemoryQueryView {
+            state: &state,
+            program: &program,
+            parameters: &empty_parameters,
+        };
+        let empty =
+            execute_in_snapshot(&program, &empty_parameters, &mut empty).expect("empty expansion");
+        assert!(matches!(
+            empty.fields().get("tickets"),
+            Some(QueryResultValue::Many(rows)) if rows.is_empty()
+        ));
+
+        let policy_state = expansion_state(&bundle, &program, 9);
+        let comment_step = program
+            .steps()
+            .iter()
+            .find(|step| step.entity() == "Comment")
+            .expect("comment step");
+        let created_at = program
+            .internal_entity_access("Comment")
+            .and_then(|access| access.internal_field_id("created_at"))
+            .expect("created_at field");
+        let rule = RowPolicyRuleV1::new(
+            RowPolicyOperationV1::Read,
+            vec![
+                RowPolicyExpressionNodeV1::Operand(RowPolicyOperandV1::new(
+                    RowPolicyValueSourceV1::RowField(created_at),
+                    ValueType::timestamp(),
+                )),
+                RowPolicyExpressionNodeV1::Operand(RowPolicyOperandV1::new(
+                    RowPolicyValueSourceV1::Constant(CanonicalValue::Timestamp(
+                        Timestamp::new(1_700_000_000, 0).expect("denied timestamp"),
+                    )),
+                    ValueType::timestamp(),
+                )),
+                RowPolicyExpressionNodeV1::NotEqual { left: 0, right: 1 },
+            ],
+            2,
+            comment_step.internal_entity_id(),
+            bundle.schema(),
+            &BTreeMap::new(),
+        )
+        .expect("comment policy rule");
+        let policy = RowPolicyPlanV1::new(
+            "HideFirstComment",
+            comment_step.internal_entity_id(),
+            vec![rule],
+            bundle.schema(),
+        )
+        .expect("comment policy");
+        let principal = PrincipalFactBindingV1::new(
+            CapabilityId::from_unix_milliseconds_and_random(1, [0x51; 10]).expect("capability"),
+            NonZeroU64::new(1).expect("revision"),
+            DatabaseId::from_unix_milliseconds_and_random(1, [0x52; 10]).expect("database"),
+            Environment::new("test").expect("environment"),
+            ActorId::new("expansion-policy-test").expect("actor"),
+            ActorKind::Service,
+            vec![Audience::new("riffdb-policy-test").expect("audience")],
+            TenantScope::Global,
+            Timestamp::new(1, 0).expect("issued"),
+            Timestamp::new(10, 0).expect("expires"),
+            CapabilityPrincipalFactsV1::empty(),
+        )
+        .expect("principal facts");
+        let policy = AuthorizedQueryRowPolicyContextV1::test_fixture(
+            principal,
+            vec![policy],
+            bundle.schema(),
+        )
+        .expect("policy context");
+        let mut policy_view = MemoryQueryView {
+            state: &policy_state,
+            program: &program,
+            parameters: &parameters,
+        };
+        let filtered =
+            execute_policy_page_in_snapshot(&program, &parameters, None, &mut policy_view, &policy)
+                .expect("policy-filtered expansion");
+        let Some(QueryResultValue::Many(filtered_tickets)) = filtered.fields().get("tickets")
+        else {
+            panic!("filtered tickets")
+        };
+        assert!(filtered_tickets.iter().all(|ticket| {
+            ticket
+                .nested_rows("comments")
+                .is_some_and(|comments| comments.len() == 8)
+        }));
+        assert!(
+            filtered_tickets
+                .iter()
+                .flat_map(|ticket| { ticket.nested_rows("comments").expect("filtered comments") })
+                .all(|comment| {
+                    comment.field("created_at")
+                        != Some(&CanonicalValue::Timestamp(
+                            Timestamp::new(1_700_000_000, 0).expect("denied timestamp"),
+                        ))
+                })
+        );
+    }
 
     #[test]
     fn point_query_materializes_an_owned_result_from_one_state_view() {

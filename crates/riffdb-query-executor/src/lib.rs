@@ -428,7 +428,15 @@ pub fn bind_live_query_dependencies(
 pub struct QueryRow {
     entity: Arc<str>,
     fields: BTreeMap<Arc<str>, CanonicalValue>,
+    nested: BTreeMap<Arc<str>, Vec<QueryRow>>,
 }
+
+/// Move-only components of one projected query row, including nested expansion rows.
+pub type QueryRowParts = (
+    Arc<str>,
+    BTreeMap<Arc<str>, CanonicalValue>,
+    BTreeMap<Arc<str>, Vec<QueryRow>>,
+);
 
 impl std::fmt::Debug for QueryRow {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -468,7 +476,11 @@ impl QueryRow {
         (!entity.is_empty()
             && fields.len() <= MAX_QUERY_ROW_FIELDS
             && fields.keys().all(|name| !name.is_empty()))
-        .then_some(Self { entity, fields })
+        .then_some(Self {
+            entity,
+            fields,
+            nested: BTreeMap::new(),
+        })
     }
 
     /// Contract entity name.
@@ -490,10 +502,37 @@ impl QueryRow {
             .map(|(name, value)| (name.as_ref(), value))
     }
 
+    /// Resolves one compiler-sealed nested expansion field.
+    #[must_use]
+    pub fn nested_rows(&self, name: &str) -> Option<&[QueryRow]> {
+        self.nested.get(name).map(Vec::as_slice)
+    }
+
+    /// Iterates nested expansion fields in canonical name order.
+    pub fn nested_fields(&self) -> impl ExactSizeIterator<Item = (&str, &[QueryRow])> {
+        self.nested
+            .iter()
+            .map(|(name, rows)| (name.as_ref(), rows.as_slice()))
+    }
+
     /// Consumes the row into entity name and fields.
     #[must_use]
-    pub fn into_parts(self) -> (Arc<str>, BTreeMap<Arc<str>, CanonicalValue>) {
-        (self.entity, self.fields)
+    pub fn into_parts(self) -> QueryRowParts {
+        (self.entity, self.fields, self.nested)
+    }
+
+    fn attach_nested(
+        &mut self,
+        name: Arc<str>,
+        rows: Vec<QueryRow>,
+    ) -> Result<(), QueryExecutionError> {
+        if name.is_empty()
+            || rows.len() > MAX_QUERY_SCANNED_ROWS as usize
+            || self.nested.insert(name, rows).is_some()
+        {
+            return Err(QueryExecutionError::InvalidProgram);
+        }
+        Ok(())
     }
 
     /// Moves selected fields into a projected row (no value clones).
@@ -508,7 +547,10 @@ impl QueryRow {
             })?;
             fields.insert(Arc::clone(name), value);
         }
-        Self::from_shared(self.entity, fields).ok_or(QueryExecutionError::BoundExceeded)
+        let mut projected =
+            Self::from_shared(self.entity, fields).ok_or(QueryExecutionError::BoundExceeded)?;
+        projected.nested = self.nested;
+        Ok(projected)
     }
 
     /// Clones selected fields into a projected row (used only when the full row
@@ -525,8 +567,10 @@ impl QueryRow {
             note_pipeline_value_clone();
             fields.insert(Arc::clone(name), value.clone());
         }
-        Self::from_shared(Arc::clone(&self.entity), fields)
-            .ok_or(QueryExecutionError::BoundExceeded)
+        let mut projected = Self::from_shared(Arc::clone(&self.entity), fields)
+            .ok_or(QueryExecutionError::BoundExceeded)?;
+        projected.nested = self.nested.clone();
+        Ok(projected)
     }
 }
 
@@ -765,6 +809,9 @@ pub fn bound_index_range_schedule_v1(
             fields, direction, ..
         }
         | QueryAccessKind::PartitionSetIndex {
+            fields, direction, ..
+        }
+        | QueryAccessKind::ExpansionIndex {
             fields, direction, ..
         } => (fields, direction),
         _ => return Err(QueryExecutionError::InvalidProgram),
@@ -1860,6 +1907,7 @@ impl CoveredQueryResultV1 {
             .map(|values| QueryRow {
                 entity: Arc::clone(&self.entity),
                 fields: self.fields.iter().cloned().zip(values).collect(),
+                nested: BTreeMap::new(),
             })
             .collect::<Vec<_>>();
         (self.result_name, QueryResultValue::Many(rows))
@@ -2260,6 +2308,23 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
             .iter()
             .map(|name| Arc::<str>::from(name.as_str()))
             .collect();
+        if matches!(step.access(), QueryAccessKind::ExpansionIndex { .. }) {
+            execute_expansion_step(
+                program,
+                step,
+                parameters,
+                after,
+                limit,
+                view,
+                policy,
+                &mut fuel,
+                &bindings,
+                &mut result_fields,
+                &mut index_epochs,
+                &selected_names,
+            )?;
+            continue;
+        }
         let (mut rows, scalar_predicates, predicates_must_match) = match step.access() {
             riffdb_query_ir::QueryAccessKind::ExpansionIndex { .. } => {
                 return Err(QueryExecutionError::InvalidProgram);
@@ -3680,6 +3745,13 @@ fn encoded_query_rows(mut bytes: u64, rows: &[QueryRow]) -> Result<u64, QueryExe
                 .and_then(|value| value.checked_add(160))
                 .ok_or(QueryExecutionError::BoundExceeded)?;
         }
+        for (field, nested) in &row.nested {
+            bytes = bytes
+                .checked_add(field.len() as u64)
+                .and_then(|value| value.checked_add(96))
+                .ok_or(QueryExecutionError::BoundExceeded)?;
+            bytes = encoded_query_rows(bytes, nested)?;
+        }
     }
     Ok(bytes)
 }
@@ -3779,11 +3851,153 @@ fn resolve_row_limit(
     Ok(limit)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn execute_expansion_step<V: QueryReadView>(
+    program: &QueryAccessProgramV1,
+    step: &QueryAccessStep,
+    parameters: &QueryParameters,
+    after: Option<&[u8]>,
+    limit: u64,
+    view: &mut V,
+    policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+    fuel: &mut QueryExecutionFuel,
+    bindings: &BTreeMap<String, Vec<QueryRow>>,
+    result_fields: &mut BTreeMap<String, QueryResultValue>,
+    index_epochs: &mut BTreeMap<String, u64>,
+    selected_names: &[Arc<str>],
+) -> Result<(), QueryExecutionError> {
+    let QueryAccessKind::ExpansionIndex {
+        index,
+        driver_binding,
+        per_driver_maximum,
+        product_maximum,
+        ..
+    } = step.access()
+    else {
+        return Err(QueryExecutionError::InvalidProgram);
+    };
+    if after.is_some()
+        || limit != u64::from(*per_driver_maximum)
+        || *product_maximum != step.maximum_rows()
+        || step.result_names().is_empty()
+    {
+        return Err(QueryExecutionError::InvalidProgram);
+    }
+    let drivers = bindings
+        .get(driver_binding)
+        .ok_or(QueryExecutionError::InvalidProgram)?;
+    let admitted_product = u64::try_from(drivers.len())
+        .ok()
+        .and_then(|drivers| drivers.checked_mul(limit))
+        .ok_or(QueryExecutionError::BoundExceeded)?;
+    if admitted_product > *product_maximum {
+        return Err(QueryExecutionError::BoundExceeded);
+    }
+
+    let mut groups = Vec::with_capacity(drivers.len());
+    let mut total_rows = 0_u64;
+    let mut observed_epoch = None;
+    for driver in drivers {
+        let predicates = bind_predicates_with_driver(
+            step,
+            parameters,
+            bindings,
+            program.surface().candidates(),
+            Some((driver_binding, driver)),
+        )?;
+        let page = view
+            .scan(step, &predicates, limit, None, false, policy)
+            .map_err(|error| map_view_error(view, &error))?;
+        if page.rows.len() as u64 > limit
+            || page.scanned_rows > MAX_QUERY_SCANNED_ROWS
+            || page.point_reads != page.rows.len() as u64
+            || page.rows.len() as u64 > page.scanned_rows
+            || page.continuation.is_some()
+            || page.rows.iter().any(|row| {
+                row.entity() != step.entity() || predicates_match(row, &predicates) != Ok(true)
+            })
+        {
+            return Err(QueryExecutionError::BoundExceeded);
+        }
+        match observed_epoch {
+            None => observed_epoch = Some(page.epoch),
+            Some(epoch) if epoch == page.epoch => {}
+            Some(_) => return Err(QueryExecutionError::BackendIntegrity),
+        }
+        fuel.scans(page.scanned_rows)?;
+        fuel.points(page.point_reads)?;
+        total_rows = total_rows
+            .checked_add(page.rows.len() as u64)
+            .ok_or(QueryExecutionError::BoundExceeded)?;
+        if total_rows > *product_maximum {
+            return Err(QueryExecutionError::BoundExceeded);
+        }
+        groups.push(
+            page.rows
+                .into_iter()
+                .map(|row| row.into_project(selected_names))
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+    }
+    fuel.intermediates(total_rows)?;
+    let projected_values = total_rows
+        .checked_mul(step.selected_fields().len() as u64)
+        .and_then(|value| value.checked_mul(step.result_names().len() as u64))
+        .ok_or(QueryExecutionError::BoundExceeded)?;
+    fuel.projected_values(projected_values)?;
+
+    if let Some(epoch) = observed_epoch {
+        let mut epoch_key = String::with_capacity(step.entity().len() + 1 + index.len());
+        epoch_key.push_str(step.entity());
+        epoch_key.push('.');
+        epoch_key.push_str(index);
+        if index_epochs.insert(epoch_key, epoch).is_some() {
+            return Err(QueryExecutionError::InvalidProgram);
+        }
+    }
+
+    let driver_step = program
+        .steps()
+        .iter()
+        .find(|candidate| candidate.binding() == driver_binding)
+        .ok_or(QueryExecutionError::InvalidProgram)?;
+    if driver_step.result_names().is_empty() {
+        return Err(QueryExecutionError::InvalidProgram);
+    }
+    for driver_result_name in driver_step.result_names() {
+        let QueryResultValue::Many(result_drivers) = result_fields
+            .get_mut(driver_result_name)
+            .ok_or(QueryExecutionError::InvalidProgram)?
+        else {
+            return Err(QueryExecutionError::InvalidProgram);
+        };
+        if result_drivers.len() != groups.len() {
+            return Err(QueryExecutionError::InvalidProgram);
+        }
+        for (driver, targets) in result_drivers.iter_mut().zip(&groups) {
+            for nested_name in step.result_names() {
+                driver.attach_nested(Arc::<str>::from(nested_name.as_str()), targets.clone())?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn bind_predicates(
     step: &QueryAccessStep,
     parameters: &QueryParameters,
     bindings: &BTreeMap<String, Vec<QueryRow>>,
     candidates: &[CandidateBindingV1],
+) -> Result<Vec<BoundPredicate>, QueryExecutionError> {
+    bind_predicates_with_driver(step, parameters, bindings, candidates, None)
+}
+
+fn bind_predicates_with_driver(
+    step: &QueryAccessStep,
+    parameters: &QueryParameters,
+    bindings: &BTreeMap<String, Vec<QueryRow>>,
+    candidates: &[CandidateBindingV1],
+    driver: Option<(&str, &QueryRow)>,
 ) -> Result<Vec<BoundPredicate>, QueryExecutionError> {
     step.predicates()
         .iter()
@@ -3803,9 +4017,10 @@ fn bind_predicates(
                         bindings.contains_key(binding),
                         "binding {binding:?} is read but missing from retained bindings"
                     );
-                    bindings
-                        .get(binding)
-                        .and_then(|rows| rows.first())
+                    driver
+                        .filter(|(driver_binding, _)| *driver_binding == binding)
+                        .map(|(_, row)| row)
+                        .or_else(|| bindings.get(binding).and_then(|rows| rows.first()))
                         .and_then(|row| row.field(field))
                         .cloned()
                         .unwrap_or(CanonicalValue::Null)
