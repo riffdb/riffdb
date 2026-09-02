@@ -34,6 +34,14 @@ pub fn compile_tokenized_text_query_v1(
     document: &Document,
     catalog: &SymbolicCatalog,
 ) -> Result<CompiledTokenizedTextQueryV1, PlannerDiagnostics> {
+    compile_tokenized_text_query_inner_v1(document, catalog)
+        .map_err(|diagnostics| diagnostics.record_operational_refusal(document))
+}
+
+fn compile_tokenized_text_query_inner_v1(
+    document: &Document,
+    catalog: &SymbolicCatalog,
+) -> Result<CompiledTokenizedTextQueryV1, PlannerDiagnostics> {
     if !matches!(
         document.language_version,
         RIFFQL_LANGUAGE_VERSION_TOKENIZED_TEXT_V1

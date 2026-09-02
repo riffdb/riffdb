@@ -398,6 +398,7 @@ pub fn bind_live_query_dependencies(
             QueryAccessKind::Point { .. }
             | QueryAccessKind::DependentPointBatch { .. }
             | QueryAccessKind::Index { .. }
+            | QueryAccessKind::ExpansionIndex { .. }
             | QueryAccessKind::PartitionSetIndex { .. }
             | QueryAccessKind::LongPatternCandidate { .. }
             | QueryAccessKind::Nearest { .. }
@@ -2260,6 +2261,9 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
             .map(|name| Arc::<str>::from(name.as_str()))
             .collect();
         let (mut rows, scalar_predicates, predicates_must_match) = match step.access() {
+            riffdb_query_ir::QueryAccessKind::ExpansionIndex { .. } => {
+                return Err(QueryExecutionError::InvalidProgram);
+            }
             riffdb_query_ir::QueryAccessKind::Point { .. } => {
                 let predicates =
                     bind_predicates(step, parameters, &bindings, program.surface().candidates())?;

@@ -1,0 +1,27 @@
+query TicketComments(
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
+    $status: TicketStatus,
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+            && project_id == $project_id
+            && status == $status
+        order by ticket_id asc
+        take 25
+
+    many comments from Comment
+        for each ticket in tickets
+        where organization_id == $organization_id
+            && ticket_id == ticket.ticket_id
+        order by created_at asc, comment_id asc
+        take 8 per ticket
+
+    return Found {
+        tickets: tickets {
+            ticket_id
+            comments: comments { comment_id created_at }
+        }
+    }
+    outcomes Found
+}

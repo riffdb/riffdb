@@ -244,6 +244,31 @@ appear in SDK or MCP schemas. They are immutable module/plan/role identity,
 not request data. This is bounded same-partition existence filtering, not a
 general join, recursive query, caller-selected plan, or runtime optimizer.
 
+## Bounded one-to-many expansion (language V14)
+
+A later `many` binding may declare one earlier bounded `many` binding as its
+driver and one per-driver target bound:
+
+```riffql
+many comments from Comment
+    for each ticket in tickets
+    where organization_id == $organization_id
+        && ticket_id == ticket.ticket_id
+    order by created_at asc, comment_id asc
+    take 8 per ticket
+```
+
+The target must use one declared same-partition index whose prefix is bound by
+the common partition route and driver key. The compiler rejects an absent or
+later driver, a driver that is itself expanded, a mismatched `per` name, an
+independent target cursor or offset, a non-prefix index shape, a cross-partition
+shape, or a driver-maximum times per-driver-maximum product above 65,535. The
+return block must nest the target binding directly below its driver binding.
+
+Expansion structure is immutable compiler identity. Generated clients, MCP
+tools, and application callers still submit only the declared business
+parameters.
+
 A candidate source may instead name a compatible contract `pattern_index` and
 one compiled exact pattern predicate. That source is supplied by one ready,
 policy-aligned provider epoch and is completed under the same participant proof

@@ -532,6 +532,7 @@ impl MemoryQueryView<'_> {
             | QueryAccessKind::DependentPointBatch { key_fields, .. }
             | QueryAccessKind::CandidateRootHydration { key_fields, .. } => key_fields,
             QueryAccessKind::Index { .. }
+            | QueryAccessKind::ExpansionIndex { .. }
             | QueryAccessKind::PartitionSetIndex { .. }
             | QueryAccessKind::LongPatternCandidate { .. } => {
                 return Err(storage_error(StorageErrorKind::InvariantViolation));

@@ -83,6 +83,15 @@ partition route and order suffix. Those values form each local physical prefix
 and are applied before merge, limit, and cursor selection; an absent compatible
 covering index remains a typed `RDB-QP003` refusal rather than a residual filter.
 
+One-level expansion repeats a compiler-selected same-partition index access for
+each row of an earlier bounded driver. Planning proves the driver maximum,
+per-driver maximum, product ceiling, index-prefix equality, driver-first then
+index order, and direct result nesting before emitting the V18 access tag. An
+expanded binding cannot drive another expansion and has no independent cursor.
+Rejected operational shapes additionally carry an anonymized class containing
+only operator, cardinality, and partition categories; names, identifiers, and
+submitted values are excluded.
+
 ## Candidate-set plans
 
 Language V11 candidate bindings compile to complete internal source steps plus

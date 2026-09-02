@@ -907,6 +907,8 @@ Options:
           Compiles author-owned sources and roles without comparing the exact lock or generated files
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
 
+      --refusals
+          Reports only anonymized operational refusal classes
       --database <DATABASE>
 
       --output <human|json>

@@ -84,6 +84,16 @@ in the public cursor marker. Exact-filter parameters remain cursor-identity
 bearing. A partition-set plan without this prefix retains byte-exact V16 plan
 and module artifacts.
 
+Bounded expansion syntax selects RiffQL V14, query IR V18, and query-module
+V18. The expansion access encodes the selected declared index, physical order,
+driver binding and singular item identity, per-driver maximum, and proven
+whole-expansion product maximum. Its predicate retains an ordinary binding-field
+dependency on the driver, and its result schema nests the bounded target list
+under the driver record. Queries without an expansion keep their predecessor
+surface, plan, module, hash, and cursor bytes. V18 adds no provider descriptor,
+provider epoch, provider state, service port, generated input, or durable
+storage format.
+
 Resolution diagnostics are bounded and value-free:
 
 | Code | Meaning |
