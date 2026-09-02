@@ -8,6 +8,7 @@
     Proof: `assert_readiness_path_rebuild_census`
 - **Direction approved:** 2026-08-26
 - **Exact text accepted:** Yes, 2026-08-26
+- **WP-705/WP-760 ownership amendment accepted:** 2026-09-02 (maintainer)
 - **Accepted:** 2026-08-26
 - **Acceptance reference:** Maintainer exact-text acceptance in the current
   Codex session for upstream commit `c5c73858`
@@ -357,11 +358,14 @@ fails closed before corrupt bytes can influence an operational result.
 
 - **Requirements:** `STO-023`, `REC-004`, and `PERF-019`
 - **Defines or blocks:** WP-704 (durable certificate, startup typestate, local
-  integrity closure, and crash recovery) and WP-705 (operator scrub, scale
-  evidence, handbook, backup/restore, and final conformance)
+  integrity closure, and crash recovery) and WP-705 (sealed internal scrub
+  primitive, scale evidence, handbook, backup/restore, and final conformance).
+  Accepted ADR-0182 and WP-760 solely own the authorized public maintenance
+  service, `riffdb storage scrub`, and its receipt beneath `.maintenance`.
 - **Final evidence:** WP-705 owns this record's finite scale and conformance
-  evidence. WP-578 separately owns the uninterrupted `END-009` run, consumes
-  WP-705's bounded harness handoff, and is not a WP-705 closure condition.
+  evidence and hands the internal primitive to WP-760. WP-578 separately owns
+  the uninterrupted `END-009` run, consumes the completed WP-705 and WP-760
+  handoffs, and is not a WP-705 closure condition.
 
 ## Decision Deadline
 
