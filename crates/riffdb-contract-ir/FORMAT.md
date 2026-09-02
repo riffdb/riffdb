@@ -893,7 +893,7 @@ Fields below are listed in exact byte order. A collection field includes its cou
 |---:|---|---|
 | 1 | `input_field` | FieldId of one bounded list command input |
 | 2 | `minimum_elements` | u32 in 1..=maximum_elements |
-| 3 | `maximum_elements` | u32 <= 256 and equal to the input list maximum |
+| 3 | `maximum_elements` | u32 <= 256 in IR V5-V22 or <= 1024 in IR V23+, equal to the input list maximum |
 | 4 | `element_type` | exact ValueType of the list element |
 | 5 | `first_binding` | dense BindingId |
 | 6 | `binding_count` | nonzero u32 consecutive template bindings |

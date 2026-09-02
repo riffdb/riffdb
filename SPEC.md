@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 1.27 | 2026-09-01 | Accepted ADR-0177 and registered `BLK-065` through `BLK-070` plus WP-745 for a least-sufficient high-cardinality atomic-collection tier. One compiler-owned collection may contain at most 1,024 elements and one command may prove at most 4,096 authoritative mutation instances, while the legacy 256/256 tier retains byte-exact V1-through-V22 artifacts. A plan above either legacy maximum selects grammar/executable IR/bundle V23, counts fixed plus expanded mutations with checked arithmetic, and remains subject to unchanged one-list, one-partition, conflict, index-work, 4 MiB input, 8 MiB frame, and 16 MiB graph ceilings. Adapter subdivision remains forbidden because it would expose partial commits; acceptance includes one atomic 1,000-element command plus a fixed root mutation. |
 | 1.26 | 2026-09-01 | Accepted ADR-0176 and registered `BLK-058` through `BLK-064` plus WP-744 for one compiler-bounded large atomic-command envelope. Only a complete root command input may use 4 MiB decoded/canonical bytes; individual and nested values, entity/event/outcome records, and non-command requests retain 1 MiB, while the complete command graph retains 16 MiB. Commands proven above the legacy envelope select least-sufficient contract grammar/executable IR/bundle V22 carrying the exact maximum; old commands retain byte-exact artifacts and idempotency hashes. Command-bearing gRPC, application-session, reaction, MCP, CLI, batch-item, and local-driver framing is fixed at 8 MiB for Protobuf/JSON/base64 overhead, with the shared service enforcing 4 MiB and the exact plan maximum before effects. |
 | 1.25 | 2026-09-01 | Completed ADR-0175's ordinary index-prefix semantics: a finite partition-set route may be followed by one or more compiler-proved invariant exact predicates before the declared order suffix. Such a plan selects additive query IR/module V17, encodes the exact prefix width, binds every prefix parameter into cursor identity, and reconstructs the complete physical seek prefix on continuation. Partition-set plans with no invariant prefix retain byte-exact V16 artifacts. |
 | 1.24 | 2026-09-01 | Accepted ADR-0175 and registered `RQL-007`, `QRY-010`, `OQ-101` through `OQ-112`, and WP-739 through WP-743 for bounded partition-set operational queries. Additive `Set<T, MAX>` source may route one immutable compiler-sealed partition-local plan across an explicit finite set of at most 65,535 partitions in one authoritative snapshot. RiffDB globally merges the declared partition-prefixed total order before limit and one opaque cursor; the cursor binds normalized routes, filters, authority, frontier, last global order key, and a digest of every required partition/index/provider epoch. Partition, per-partition, global row, probe, candidate, policy, provider, merge, byte, result, cursor, and total-work ceilings remain independent and whole-operation fail-closed. Existing `Set<T>`, single-partition artifacts, storage keys, mutations, commits, and cursors retain exact bytes and meaning. Cross-partition joins, writes, discovery, caller plans, and adapter merge semantics remain forbidden. |
@@ -8020,6 +8021,39 @@ does not create a kernel or storage escape hatch.
   real 100-tag MLflow Run creation retaining indexed children plus packed
   hydration with complete-or-absent visibility and no adapter split, filtering,
   reduced limit, or storage bypass.
+- `BLK-065`: A least-sufficient successor collection tier MAY admit at most
+  1,024 submitted elements and at most 4,096 statically possible authoritative
+  mutation instances. The mutation proof MUST count every fixed non-read
+  binding once plus every collection-local non-read binding times the declared
+  element maximum using checked arithmetic; compiler-bounded cascade deletion
+  retains its independent 256-row `DEL-004` ceiling.
+- `BLK-066`: The successor tier MUST retain exactly one submitted list, one
+  compiler-proved mutation aggregate, one exact partition, one command identity,
+  one outcome, and one atomic complete-or-absent commit. Existing conflict,
+  observation, dependency, index, event, input, frame, graph, deadline,
+  cancellation, audit, provenance, idempotency, and uncertainty bounds MUST
+  remain independent and unchanged.
+- `BLK-067`: A collection plan exceeding either legacy 256 maximum MUST select
+  least-sufficient contract grammar, executable IR, and bundle V23. V1 through
+  V22 MUST retain their exact 256-element and 256-mutation semantics and bytes;
+  decoding MUST recompute the complete mutation maximum and old readers MUST
+  reject V23 before deployment.
+- `BLK-068`: Rust, Go, TypeScript, Python, CLI, MCP, local-driver, remote gRPC,
+  shared-service, deterministic-runtime, and storage paths MUST enforce the
+  exact source-declared count and compiled graph without caller-selected
+  capacity, splitting, paging, truncation, streaming, subset retry, partial
+  outcome, or framework-specific runtime behavior.
+- `BLK-069`: Compiler and runtime acceptance MUST prove 256/257 and
+  1,024/1,025 element boundaries, 256/257 and 4,096/4,097 complete mutation
+  boundaries, fixed-plus-expanded counting, independent resource refusal,
+  least-sufficient old/V23 identity, legacy byte equality, cancellation,
+  business failure, idempotent replay, crash recovery, and complete-or-absent
+  memory/redb visibility.
+- `BLK-070`: Final adapter evidence MUST execute one legal 1,000-entity atomic
+  store operation plus its fixed root-summary mutation through generated
+  bindings and redb, including replay and forced failure, with no adapter-side
+  split, reduced advertised limit, staging protocol, raw storage access, or
+  partially visible prefix.
 
 Compiler-bounded one-hop cascade deletion extends that closed bulk-command
 model without introducing recursive graph traversal or caller-selected delete

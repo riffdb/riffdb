@@ -3544,6 +3544,62 @@ work_packages:
   - Existing grammar, IR, bundle, plan, canonical input, idempotency, durable, protocol, or driver
     identities would be reinterpreted instead of retaining old bytes or selecting V22.
 
+- id: WP-745
+  name: Compiler-bounded high-cardinality atomic collections
+  depends_on: [WP-744]
+  objective: Implement ADR-0177 end to end so one least-sufficient V23 collection plan may prove
+    up to 1,024 submitted elements and 4,096 complete authoritative mutation instances while
+    every legacy identity and independent locality, byte, work, durability, and atomicity bound
+    remains unchanged, then prove one 1,000-element command plus a fixed root mutation.
+  requirements: [BLK-065, BLK-066, BLK-067, BLK-068, BLK-069, BLK-070]
+  required_adrs: [ADR-0002, ADR-0003, ADR-0013, ADR-0031, ADR-0055, ADR-0059,
+    ADR-0107, ADR-0147, ADR-0176, ADR-0177]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0177-compiler-bounded-high-cardinality-atomic-collections.md, adr/README.md,
+    release/version-topology-v1.json, release/evidence/**, crates/**, clients/**,
+    templates/**, examples/**, fixtures/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Separate legacy 256/256 and successor 1,024/4,096 collection bounds with checked complete
+    fixed-plus-expanded mutation-instance proof and the independent 256-row cascade ceiling
+  - Least-sufficient grammar/executable-IR/bundle V23 selection, plan hashing, round-trip proof
+    recomputation, old-version refusal, topology registration, and byte-exact legacy fixtures
+  - Shared generated/service/runtime/storage enforcement with exact/plus-one diagnostics,
+    independent resource refusals, cancellation, idempotency, replay, and no partial effects
+  - Memory/redb atomic 1,000-element-plus-root acceptance, handbook/compatibility updates,
+    downstream adapter compilation, and a value-free real store-loopback receipt
+  acceptance_commands:
+  - cargo +1.97.0 test --workspace --all-features
+  - cargo +1.97.0 doc --workspace --no-deps
+  - cargo +1.97.0 deny check
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-application-bindings
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-adr-obligations
+  - ./scripts/handbook check
+  - ./scripts/downstream-adapter-check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: One compiler-sealed 1,000-element command plus a fixed root mutation commits,
+    replays, and recovers atomically through redb and generated bindings; every exact/plus-one
+    and independent bound is proved, legacy artifacts remain byte-exact, and no adapter split,
+    staging protocol, reduced limit, or storage bypass remains.
+  standing_design_tests:
+    interface_safety: Applications submit only generated typed values and cannot select the
+      process ceiling, V23, mutation count, transaction, split, retry subset, or fallback; the
+      compiler and first-party runtime own all count, locality, authority, and atomicity proofs.
+    scale: The successor caps elements at 1,024 and possible mutations at 4,096 while retaining
+      every independent conflict, observation, dependency, index, event, 4-MiB input, 8-MiB
+      frame, 16-MiB graph, deadline, cancellation, response, and diagnostic ceiling.
+  human_review_triggers: &id0177
+  - More than 1,024 submitted elements or 4,096 possible authoritative mutations would be
+    admitted, or another independent count, byte, work, framing, or graph ceiling would widen.
+  - More than one collection, more than one partition, a caller-selected capacity, adapter
+    staging, partial commit, subset retry, or general transaction surface would be introduced.
+  - V1 through V22 bytes or semantics would be reinterpreted instead of selecting V23.
+
 - id: WP-721
   closure:
     status: partial

@@ -21,7 +21,8 @@ use riffdb_types::{
 };
 
 use crate::diagnostic::{
-    CompilerDiagnostic, CompilerDiagnosticCause, CompilerDiagnosticCode, CompilerDiagnostics,
+    CompilerBoundResource, CompilerDiagnostic, CompilerDiagnosticCause, CompilerDiagnosticCode,
+    CompilerDiagnostics,
 };
 use crate::expression_lowering::{
     BindingExpressionScope, CollectionElementExpressionScope, ExpressionLowerer, ExpressionScope,
@@ -2660,11 +2661,16 @@ fn lower_commands(
                             ));
                             continue;
                         };
-                        if source_maximum != Some(maximum)
-                            || minimum == 0
-                            || minimum > maximum
-                            || maximum > riffdb_contract_ir::MAX_COLLECTION_COMMAND_ELEMENTS_V1
-                        {
+                        if maximum > riffdb_contract_ir::MAX_COLLECTION_COMMAND_ELEMENTS_V2 {
+                            diagnostics.push(CompilerDiagnostic::bound_exceeded(
+                                CompilerBoundResource::CollectionCommandElements,
+                                maximum,
+                                riffdb_contract_ir::MAX_COLLECTION_COMMAND_ELEMENTS_V2,
+                                source_input.value.field.ty.span,
+                            ));
+                            continue;
+                        }
+                        if source_maximum != Some(maximum) || minimum == 0 || minimum > maximum {
                             diagnostics.push(CompilerDiagnostic::new(
                                 CompilerDiagnosticCode::BoundExceeded,
                                 source_input.value.field.ty.span,

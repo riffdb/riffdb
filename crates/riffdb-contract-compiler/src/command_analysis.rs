@@ -882,7 +882,9 @@ fn validate_cascade_binding(
             count.checked_add(relationship.maximum)
         });
     let total = rows_per_root.and_then(|count| count.checked_mul(root_maximum));
-    if total.is_none_or(|total| total > riffdb_contract_ir::MAX_COLLECTION_COMMAND_ELEMENTS_V1) {
+    if total.is_none_or(|total| {
+        total > riffdb_contract_ir::MAX_COLLECTION_COMMAND_MUTATION_INSTANCES_V1
+    }) {
         diagnostics.push(CompilerDiagnostic::new(
             CompilerDiagnosticCode::BoundExceeded,
             failure.span,

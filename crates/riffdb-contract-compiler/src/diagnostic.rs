@@ -8,6 +8,12 @@ use riffdb_contract_syntax::Span;
 /// Closed compiler-owned resource names permitted in bounded diagnostics.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum CompilerBoundResource {
+    /// Submitted elements in one compiler-owned collection expansion.
+    CollectionCommandElements,
+    /// Complete possible authoritative mutations in one collection command.
+    CollectionCommandMutationInstances,
+    /// Maximum distinct upfront conflict keys for one collection command.
+    CommandConflictKeys,
     /// Physical secondary-index removals and additions.
     CommandIndexEntryDeltas,
     /// Mutation-affected complete index-prefix epoch buckets.
@@ -37,6 +43,9 @@ impl CompilerBoundResource {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::CollectionCommandElements => "collection_command_elements",
+            Self::CollectionCommandMutationInstances => "collection_command_mutation_instances",
+            Self::CommandConflictKeys => "command_conflict_keys",
             Self::CommandIndexEntryDeltas => "command_index_entry_deltas",
             Self::CommandAffectedPrefixEpochs => "command_affected_prefix_epochs",
             Self::CommandValidationPositions => "command_validation_positions",
@@ -53,6 +62,9 @@ impl CompilerBoundResource {
 
     pub(crate) fn from_ir_kind(kind: &'static str) -> Self {
         match kind {
+            "collection command elements" => Self::CollectionCommandElements,
+            "collection mutation instances" => Self::CollectionCommandMutationInstances,
+            "collection command conflict keys" => Self::CommandConflictKeys,
             "command worst-case index entry deltas" | "command worst-case index entry puts" => {
                 Self::CommandIndexEntryDeltas
             }

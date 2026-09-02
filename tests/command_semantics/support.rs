@@ -217,6 +217,19 @@ contract BulkRowsRecovery version 1 {
     set partition.revision = partition.revision + 1
     return SharedItemsInitialized { revision: partition.revision }
   }
+  bulk command PutManyItems {
+    input request_id: uuid
+    input tenant_id: uuid
+    input items: list<SharedItem, 1..1000> aggregate_bytes <= 1048576
+    idempotency_key request_id
+    mutate SharedPartition(tenant_id) as partition else SharedPartitionMissing {}
+    for item in items {
+      create SharedItem(tenant_id, item.item_id) as stored else Exists {}
+      set stored.revision = item.revision
+    }
+    set partition.revision = partition.revision + 1
+    return ManyWritten { revision: partition.revision }
+  }
   bulk command DeleteRows {
     input request_id: uuid
     input tenant_id: uuid
@@ -738,6 +751,67 @@ impl BulkRowsDatabase {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_many_rows(
+        &self,
+        ports: &RedbOperationalPorts,
+        row_ids: &[[u8; 16]],
+        input_request_seed: u8,
+        digest_seed: u8,
+        admission_request_seed: u8,
+    ) -> CommandExecutionPreparation {
+        let plan = self.command_plan("PutManyItems");
+        let item_schema = self
+            .checked_bundle
+            .bundle()
+            .schema()
+            .entity(self.shared_item_entity_type)
+            .expect("SharedItem schema")
+            .record();
+        let items = row_ids
+            .iter()
+            .enumerate()
+            .map(|(ordinal, row_id)| {
+                CanonicalValue::Record(input_record(
+                    item_schema,
+                    [
+                        ("tenant_id", CanonicalValue::Uuid(ORGANIZATION_ID)),
+                        ("item_id", CanonicalValue::Uuid(*row_id)),
+                        (
+                            "revision",
+                            CanonicalValue::U64(
+                                u64::try_from(ordinal + 1).expect("bounded item ordinal"),
+                            ),
+                        ),
+                    ],
+                ))
+            })
+            .collect::<Vec<_>>();
+        let input = input_record(
+            plan.input().record(),
+            [
+                (
+                    "request_id",
+                    CanonicalValue::Uuid(uuid_bytes(input_request_seed)),
+                ),
+                ("tenant_id", CanonicalValue::Uuid(ORGANIZATION_ID)),
+                (
+                    "items",
+                    CanonicalValue::List(CanonicalList::new(items).expect("bounded item list")),
+                ),
+            ],
+        );
+        let caller_key = canonical_uuid_text(input_request_seed);
+        self.prepare_command(
+            ports,
+            plan,
+            input,
+            &caller_key,
+            digest_seed,
+            admission_request_seed,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare_delete(
         &self,
         ports: &RedbOperationalPorts,
@@ -1002,6 +1076,30 @@ impl BulkRowsDatabase {
                 .expect("shared initialized item exists");
             assert_eq!(item.entity_version(), expected);
         }
+    }
+
+    pub(crate) fn assert_many_rows_present(
+        &self,
+        ports: &RedbOperationalPorts,
+        row_ids: &[[u8; 16]],
+    ) {
+        for row_id in row_ids {
+            assert!(
+                ports
+                    .read_entity(&self.shared_item_target(*row_id))
+                    .expect("read high-cardinality item")
+                    .is_some(),
+                "all high-cardinality items must share one atomic visibility state"
+            );
+        }
+        let partition = ports
+            .read_entity(&self.shared_partition_target())
+            .expect("read high-cardinality summary")
+            .expect("high-cardinality summary exists");
+        assert_eq!(
+            partition.entity_version(),
+            EntityVersion::new(2).expect("summary version two")
+        );
     }
 
     pub(crate) fn assert_child_present(

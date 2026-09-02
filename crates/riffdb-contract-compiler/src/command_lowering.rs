@@ -769,11 +769,20 @@ fn lower_command(
         )
     };
     result.map_err(|error| {
-        let span = command
-            .collection_expansion
-            .as_ref()
-            .and_then(|expansion| expansion.aggregate_bytes_span)
-            .unwrap_or(command.span);
+        let span = match &error {
+            IrValidationError::LimitExceeded {
+                kind: "collection mutation instances" | "collection command conflict keys",
+                ..
+            } => command
+                .collection_expansion
+                .as_ref()
+                .map_or(command.span, |expansion| expansion.span),
+            _ => command
+                .collection_expansion
+                .as_ref()
+                .and_then(|expansion| expansion.aggregate_bytes_span)
+                .unwrap_or(command.span),
+        };
         vec![ir_error_diagnostic(error, span)]
     })
 }

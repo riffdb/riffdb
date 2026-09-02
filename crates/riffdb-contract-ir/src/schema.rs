@@ -2982,11 +2982,11 @@ pub(crate) fn validate_command_input_field_type(
             context: "collection command list input",
         });
     };
-    if maximum > crate::MAX_COLLECTION_COMMAND_ELEMENTS_V1 {
+    if maximum > crate::MAX_COLLECTION_COMMAND_ELEMENTS_V2 {
         return Err(IrValidationError::LimitExceeded {
             kind: "collection command elements",
             actual: maximum,
-            maximum: crate::MAX_COLLECTION_COMMAND_ELEMENTS_V1,
+            maximum: crate::MAX_COLLECTION_COMMAND_ELEMENTS_V2,
         });
     }
     if let Some(record) = element.record_ref() {

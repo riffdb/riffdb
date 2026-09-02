@@ -1,0 +1,33 @@
+contract HighCardinalityMetrics version 1 {
+  entity RunSummary {
+    key (run_id: string<32>)
+    field revision: u64
+  }
+
+  entity Metric {
+    key (run_id: string<32>, metric_id: u64)
+    field value_bits: u64
+  }
+
+  aggregate Runs {
+    root RunSummary
+    child Metric
+    partition_by run_id
+    conflict_key (run_id)
+  }
+
+  bulk command LogMetrics {
+    input request_id: string<128>
+    input run_id: string<32>
+    input metrics: list<Metric, 1..1000> aggregate_bytes <= 1048576
+    idempotency_key request_id
+
+    mutate RunSummary(run_id) as summary else RunMissing {}
+    for candidate in metrics {
+      create Metric(run_id, candidate.metric_id) as metric else MetricExists {}
+      set metric.value_bits = candidate.value_bits
+    }
+    set summary.revision = summary.revision + 1
+    return MetricsLogged { summary: summary }
+  }
+}

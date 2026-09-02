@@ -1283,7 +1283,7 @@ layout!(SECRET_REVEAL_SPEC_LAYOUT, "SecretRevealSpecV1", {
 layout!(COLLECTION_EXPANSION_LAYOUT, "CollectionExpansionPlanV1", {
     "input_field" => "FieldId of one bounded list command input",
     "minimum_elements" => "u32 in 1..=maximum_elements",
-    "maximum_elements" => "u32 <= 256 and equal to the input list maximum",
+    "maximum_elements" => "u32 <= 256 in IR V5-V22 or <= 1024 in IR V23+, equal to the input list maximum",
     "element_type" => "exact ValueType of the list element",
     "first_binding" => "dense BindingId",
     "binding_count" => "nonzero u32 consecutive template bindings",

@@ -66,8 +66,27 @@ route, generated profile, or authentication policy is retained by RiffDB.
 RiffDB collection writes are compiled commands, not caller-defined transactions. A `bulk command`
 may expand exactly one bounded list, once, with no nesting or data-dependent iteration. The
 compiler proves the complete partition, aggregate, conflict, read, write, index, and capacity
-sets before deployment. The list maximum and total aggregate instances cannot exceed 256, and
-the complete input and mutation graph remains subject to the 16 MiB command bound.
+sets before deployment. The baseline tier admits at most 256 list elements and 256 statically
+possible authoritative mutation instances. The high-cardinality tier admits at most 1,024 list
+elements and 4,096 statically possible authoritative mutation instances. In both tiers, the
+complete input and mutation graph remains subject to the 16 MiB command bound.
+
+Mutation-instance accounting is conservative and closed: every non-read binding outside the loop
+is charged once, every non-read binding inside the loop is charged once per declared maximum
+element, and checked cascade fan-out is charged at its declared maximum. A command crosses into the
+high-cardinality tier if either baseline ceiling is exceeded. The compiler then selects contract,
+executable-IR, and bundle V23 automatically; callers cannot opt in, select a larger limit, or split
+one invocation inside RiffDB. Commands within both baseline ceilings keep their least-sufficient
+pre-V23 identity. Checked cascade deletion retains its independent 256-instance ceiling.
+
+High cardinality changes only the statically admitted envelope. It does not relax the one-list,
+one-partition, conflict, index-maintenance, aggregate-byte, graph-byte, request-byte, durability,
+idempotency, or atomic-commit guarantees. A legal invocation therefore commits its complete
+authoritative mutation set and outcome once, or commits none of it; there is no partial-success or
+application-visible batching surface. A conflict derivation that is exactly the proved partition
+route is charged once because all elements share that partition; any other element-dependent
+conflict derivation is charged once per declared maximum element and must remain within the
+unchanged 256-key conflict ceiling.
 
 ```riff
 entity Row {
