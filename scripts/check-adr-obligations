@@ -145,7 +145,7 @@ def definitions(root)
   @definitions ||= {}
   @definitions[root] ||= begin
     stdout, _stderr, status = Open3.capture3(
-      "git", "-C", root, "grep", "-h", "-oE",
+      "git", "-C", root, "grep", "--untracked", "-h", "-oE",
       '(^|[^A-Za-z0-9_])(fn|def)[ \t]+[A-Za-z_][A-Za-z0-9_]*', "--",
       *excludes_for(root, STRICT_EXCLUDES)
     )
@@ -156,14 +156,45 @@ def definitions(root)
   end
 end
 
+# A script is a proof only when CI runs it: it must be named by scripts/ci-all,
+# governance/tiers.yaml, or a workflow. A tree without any of those (a fixture)
+# keeps the plain file rule. A wrapper script that merely invokes a test is not
+# a proof; the test's own name is.
+WIRING_FILES = %w[scripts/ci-all governance/tiers.yaml .github/workflows].freeze
+def wired_scripts(root)
+  @wired_scripts ||= {}
+  return @wired_scripts[root] if @wired_scripts.key?(root)
+
+  names = Set.new
+  present = false
+  WIRING_FILES.each do |entry|
+    path = File.join(root, entry)
+    files = File.directory?(path) ? Dir.glob(File.join(path, "*.yml")) : [path]
+    files.each do |file|
+      next unless File.file?(file)
+
+      present = true
+      File.read(file, encoding: "UTF-8").scan(%r{(?:\./)?scripts/([A-Za-z0-9_.-]+)}) { |(name)| names << name }
+    end
+  end
+  @wired_scripts[root] = present ? names : nil
+end
+
+def script_proof?(root, token)
+  name = token.delete_prefix("scripts/")
+  return false unless File.file?(File.join(root, "scripts", name))
+
+  wiring = wired_scripts(root)
+  wiring.nil? || wiring.include?(name)
+end
+
 # The strict rule. A script proof may carry a flag suffix ("check-x --self-test");
-# only the script path is matched.
+# only the script path is matched, and it must be wired into CI.
 def strict_proof_exists?(root, proof)
   token = proof.to_s.strip.split(/\s+/).first.to_s
   return false if token.empty?
 
-  return true if File.file?(File.join(root, "scripts", token))
-  return true if token.start_with?("scripts/") && File.file?(File.join(root, token))
+  return true if script_proof?(root, token)
 
   names = definitions(root)
   names.include?(token) || names.include?("test_#{token}")
@@ -273,7 +304,7 @@ def check_v2(root, record, packages, result)
     if RiffdbAdr.complete?(package)
       result["errors"] << <<~MESSAGE.strip
         #{record.basename}: obligation #{id} is undischarged but #{package_id} is closed as #{package.dig('closure', 'status').inspect}.
-          proof: #{proof.inspect} (no `fn`/`def`/`test_` definition and no scripts/#{proof.split(/\s+/).first} in the tree)
+          proof: #{proof.inspect} (no `fn`/`def`/`test_` definition and no scripts/#{proof.split(/\s+/).first} wired into ci-all, governance/tiers.yaml, or a workflow)
           says: #{says[0, 140]}
         Either land the proof or reopen #{package_id}.
       MESSAGE

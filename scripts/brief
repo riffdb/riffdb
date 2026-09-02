@@ -190,6 +190,10 @@ out << "# #{package_id} — #{paragraph(package['name'], empty: '(unnamed)')}"
 out << ""
 out << "- **Tier:** #{tier.empty? ? '_not set in work_packages.yaml_' : tier}"
 out << "- **Closure:** #{closure_of(package)}"
+out << "- **Commit discipline:** commit this package's changes on their own. `acceptance --wp` and " \
+       "`check-allowed-paths --wp` are computed per range, and allowed paths are read at the base " \
+       "commit, so mixing packages in one range or widening your own `allowed_paths` fails the " \
+       "check. Widen paths in a separate reviewed commit."
 out << ""
 out << "## Objective"
 out << ""
@@ -280,6 +284,10 @@ else
 end
 
 out << "## Obligations owed by this package"
+out << ""
+out << "A proof is the exact name of the test that proves it, or a check script that `ci-all`, " \
+       "`governance/tiers.yaml`, or CI runs. If the test splits or is renamed, change the proof in " \
+       "the ADR; a wrapper script named after the proof does not count."
 out << ""
 obligations = obligations_for(ROOT, package_id)
 out.concat(obligations.empty? ? ["_none_"] : obligations)

@@ -5,6 +5,8 @@
 # its work package.
 
 require "json"
+require "open3"
+require "yaml"
 require_relative "lib/riffdb_governance"
 
 USAGE = <<~HELP
@@ -18,6 +20,12 @@ USAGE = <<~HELP
 
   SPEC.md, work_packages.yaml and the package's own ADR files are allowed only
   when the package lists them, exactly as before.
+
+  allowed_paths are read from work_packages.yaml at the base commit of the
+  range, not from the working tree, so a change cannot widen its own scope. A
+  package that edits its own allowed_paths in the range fails with the added
+  and removed globs listed; widen paths in a separate reviewed commit. A
+  package absent at the base commit falls back to the working-tree paths.
 
   Options:
         --wp WP-NNN         work package to check (required)
@@ -76,29 +84,72 @@ unless package
   exit 2
 end
 
-allowed = package.fetch("allowed_paths", [])
-if allowed.empty?
+working_allowed = package.fetch("allowed_paths", [])
+if working_allowed.empty?
   warn "#{options[:wp]} declares no allowed_paths"
   exit 2
 end
 
+# allowed_paths come from the base commit of the range so a change cannot widen
+# its own scope in the same change. A package new in this range falls back to
+# the working tree.
+effective_range = RiffdbGovernance.range_for(range: options[:range], base: options[:base])
+base_ref = effective_range.to_s.split("..").first.to_s
+base_allowed = nil
+base_note = nil
+unless base_ref.empty?
+  stdout, _stderr, status = Open3.capture3(
+    "git", "-C", RiffdbGovernance.root, "show", "#{base_ref}:work_packages.yaml"
+  )
+  if status.success?
+    base_manifest = YAML.safe_load(stdout, aliases: true) || {}
+    base_package = Array(base_manifest["work_packages"]).find { |entry| entry["id"] == options[:wp] }
+    if base_package
+      base_allowed = Array(base_package["allowed_paths"])
+    else
+      base_note = "#{options[:wp]} is not present at #{base_ref}; using the working-tree allowed_paths"
+    end
+  else
+    base_note = "work_packages.yaml is not readable at #{base_ref}; using the working-tree allowed_paths"
+  end
+end
+allowed = base_allowed || working_allowed
+self_edit = !base_allowed.nil? && base_allowed != working_allowed
+added = self_edit ? working_allowed - base_allowed : []
+removed = self_edit ? base_allowed - working_allowed : []
+where = base_ref.empty? || base_allowed.nil? ? "the working tree" : base_ref
+
 files = RiffdbGovernance.touched_files(range: options[:range], base: options[:base], paths: paths)
 offenders = files.reject { |path| RiffdbGovernance::Glob.match_any?(allowed, path) }
+ok = offenders.empty? && !self_edit
 
 if options[:json]
   puts JSON.pretty_generate(
     "package" => options[:wp],
+    "base" => base_ref.empty? ? nil : base_ref,
     "allowed_paths" => allowed,
+    "self_edit" => { "added" => added, "removed" => removed },
     "files" => files,
-    "offenders" => offenders
+    "offenders" => offenders,
+    "note" => base_note
   )
-elsif offenders.empty?
-  puts "#{options[:wp]}: #{files.length} touched file(s) inside #{allowed.length} allowed path(s)."
 else
-  warn "#{options[:wp]} touches #{offenders.length} file(s) outside its allowed_paths:"
-  offenders.each { |path| warn "  #{path}" }
-  warn "allowed_paths:"
-  allowed.each { |pattern| warn "  #{pattern}" }
+  warn base_note if base_note
+  if self_edit
+    warn "#{options[:wp]} edits its own allowed_paths in this change (human review trigger):"
+    added.each { |pattern| warn "  + #{pattern}" }
+    removed.each { |pattern| warn "  - #{pattern}" }
+    warn "Widen a package's paths in a separate reviewed commit; this check uses the paths at #{base_ref}."
+  end
+  if offenders.empty?
+    puts "#{options[:wp]}: #{files.length} touched file(s) inside #{allowed.length} allowed path(s) at #{where}." unless self_edit
+  else
+    warn "#{options[:wp]} touches #{offenders.length} file(s) outside its allowed_paths:"
+    offenders.each { |path| warn "  #{path}" }
+    warn "allowed_paths (at #{where}):"
+    allowed.each { |pattern| warn "  #{pattern}" }
+    warn "Commit one package per change; files from another package in this range count as offenders."
+  end
 end
 
-exit(offenders.empty? ? 0 : 1)
+exit(ok ? 0 : 1)

@@ -68,14 +68,46 @@ ARGV.each do |argument|
   end
 end
 
+# A tag counts only where a test can live: under a tests/ directory, in a file
+# that defines tests, or in a check script that CI actually runs. A tag on a
+# library file or on an ad hoc wrapper script is reported and ignored.
+TEST_MARKER = /#\[(?:tokio::)?test\b|#\[cfg\(test\)\]|^\s*def test_|\bproptest!|^\s*(?:it|test)\(/
+WIRING_FILES = %w[scripts/ci-all governance/tiers.yaml .github/workflows].freeze
+IGNORED_TAGS = []
+
+def wired_scripts(root)
+  @wired_scripts ||= {}
+  @wired_scripts[root] ||= begin
+    names = Set.new
+    WIRING_FILES.each do |entry|
+      path = File.join(root, entry)
+      files = File.directory?(path) ? Dir.glob(File.join(path, "*.yml")) : [path]
+      files.each do |file|
+        next unless File.file?(file)
+
+        File.read(file, encoding: "UTF-8").scan(%r{(?:\./)?scripts/([A-Za-z0-9_.-]+)}) { |(name)| names << name }
+      end
+    end
+    names
+  end
+end
+
+def evidence_file?(root, path)
+  return true if path.match?(%r{(?:\A|/)tests?/})
+  return wired_scripts(root).include?(File.basename(path)) if path.start_with?("scripts/")
+
+  file = File.join(root, path)
+  File.file?(file) && File.read(file, encoding: "UTF-8").match?(TEST_MARKER)
+end
+
 # Requirement tags, one git grep over the directories that can hold evidence.
-# Returns { "REP-002" => ["crates/x/src/lib.rs:41", ...] }.
+# Returns { "REP-002" => ["crates/x/tests/replication.rs:41", ...] }.
 def requirement_tags(root)
   roots = TAG_ROOTS.select { |name| File.exist?(File.join(root, name)) }
   return {} if roots.empty?
 
   stdout, _stderr, status = Open3.capture3(
-    "git", "-C", root, "grep", "-n", "-E", '^[[:space:]]*(//|#)[[:space:]]*req:',
+    "git", "-C", root, "grep", "--untracked", "-n", "-E", '^[[:space:]]*(//|#)[[:space:]]*req:',
     "--", *roots, *TAG_EXCLUDES
   )
   # 1 means "no tags in the tree", which is the state before the cutover.
@@ -85,6 +117,11 @@ def requirement_tags(root)
   stdout.each_line do |line|
     path, number, text = line.chomp.split(":", 3)
     next unless text
+
+    unless evidence_file?(root, path)
+      IGNORED_TAGS << "#{path}:#{number}"
+      next
+    end
 
     body = text[TAG_LINE, 1]
     next unless body
@@ -220,6 +257,11 @@ end
 puts "Requirement coverage is complete: #{active_ids.length} active requirements, " \
      "#{excluded_ids.length} documented exclusion(s), #{packages.length} work packages."
 puts summary
+unless IGNORED_TAGS.empty?
+  shown = IGNORED_TAGS.first(6).join(", ")
+  more = IGNORED_TAGS.length > 6 ? ", ..." : ""
+  puts "tags ignored outside evidence files: #{IGNORED_TAGS.length} (#{shown}#{more})"
+end
 
 if report
   if open_unproven.empty?
