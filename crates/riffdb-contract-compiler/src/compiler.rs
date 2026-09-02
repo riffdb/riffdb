@@ -512,6 +512,7 @@ contract DeleteNoInbound version 1 {
     }
 
     #[test]
+    // req: BLK-065
     fn cascade_delete_lowers_to_one_bounded_v13_plan_and_is_exhaustive() {
         let source = r#"
 contract BetterAuthDelete version 1 {

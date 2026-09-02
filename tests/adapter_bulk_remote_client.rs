@@ -1,5 +1,7 @@
 //! Rust cell for the shared adapter-shaped bounded-command corpus.
 
+// req: BLK-068, BLK-070
+
 #![forbid(unsafe_code)]
 #![allow(dead_code, unreachable_pub)]
 
@@ -116,24 +118,95 @@ async fn run_async() -> TestResult<()> {
         "OpenFGA whole-command atomicity",
     )?;
 
-    let metrics = generated::LogMetricsInput {
-        metrics: vec![generated::Metric {
+    let experiment_id = id(1_000);
+    let metrics = (2_000_u16..3_000)
+        .map(|metric_id| generated::Metric {
             name: "latency".to_owned(),
-            step: 1,
-            metric_id: id(21),
-            value_micros: 125,
-            experiment_id: id(20),
-        }],
-        request_id: id(22),
+            step: i64::from(metric_id),
+            metric_id: id(metric_id),
+            value_micros: i64::from(metric_id),
+            experiment_id: experiment_id.clone(),
+        })
+        .collect::<Vec<_>>();
+    let high_cardinality = generated::LogMetricsInput {
+        metrics: metrics.clone(),
+        request_id: id(1_001),
+        experiment_id: experiment_id.clone(),
     };
+    let first = client.log_metrics(high_cardinality.clone()).await?;
+    let generated::LogMetricsOutcome::MetricsLogged { revision } = first.outcome else {
+        return Err("MLflow 1,000-entity store did not commit".into());
+    };
+    expect(revision == 1, "MLflow fixed root mutation")?;
+    let replay = client.log_metrics(high_cardinality).await?;
+    expect(replay.replayed, "MLflow 1,000-entity replay")?;
     expect(
         matches!(
-            client.log_metrics(metrics.clone()).await?.outcome,
-            generated::LogMetricsOutcome::MetricsLogged
+            replay.outcome,
+            generated::LogMetricsOutcome::MetricsLogged { revision: 1 }
         ),
-        "MLflow metric create",
+        "MLflow replay retained the root outcome",
     )?;
-    expect(client.log_metrics(metrics).await?.replayed, "MLflow replay")?;
+
+    let mut forced_failure = vec![metrics[0].clone()];
+    forced_failure.extend((3_000_u16..3_999).map(|metric_id| generated::Metric {
+        name: "forced-failure".to_owned(),
+        step: i64::from(metric_id),
+        metric_id: id(metric_id),
+        value_micros: i64::from(metric_id),
+        experiment_id: experiment_id.clone(),
+    }));
+    let failed = client
+        .log_metrics(generated::LogMetricsInput {
+            metrics: forced_failure,
+            request_id: id(1_002),
+            experiment_id: experiment_id.clone(),
+        })
+        .await?;
+    expect(
+        matches!(
+            failed.outcome,
+            generated::LogMetricsOutcome::MetricAlreadyExists
+        ),
+        "MLflow forced whole-command failure",
+    )?;
+
+    let recovered_metrics = (3_000_u16..4_000)
+        .map(|metric_id| generated::Metric {
+            name: "after-failure".to_owned(),
+            step: i64::from(metric_id),
+            metric_id: id(metric_id),
+            value_micros: i64::from(metric_id),
+            experiment_id: experiment_id.clone(),
+        })
+        .collect::<Vec<_>>();
+    let recovered = client
+        .log_metrics(generated::LogMetricsInput {
+            metrics: recovered_metrics,
+            request_id: id(1_003),
+            experiment_id,
+        })
+        .await?;
+    expect(
+        matches!(
+            recovered.outcome,
+            generated::LogMetricsOutcome::MetricsLogged { revision: 2 }
+        ),
+        "failed store left neither a row prefix nor a root mutation",
+    )?;
+
+    let mut too_many = metrics;
+    too_many.push(too_many[0].clone());
+    if (generated::LogMetricsInput {
+        metrics: too_many,
+        request_id: id(1_004),
+        experiment_id: id(1_000),
+    })
+    .idempotent_command()
+    .is_ok()
+    {
+        return Err("1,001 generated collection elements crossed Rust preflight".into());
+    }
 
     let documents = generated::CreateDocumentGraphsInput {
         documents: vec![generated::DocumentGraphInput {
@@ -199,7 +272,7 @@ async fn run_async() -> TestResult<()> {
         return Err("aggregate byte overflow crossed Rust preflight".into());
     }
     for (count, start, organization, request) in [
-        (9usize, 70u8, 64u8, 65u8),
+        (9usize, 70u16, 64u16, 65u16),
         (19, 80, 66, 67),
         (100, 100, 68, 69),
     ] {
@@ -208,7 +281,7 @@ async fn run_async() -> TestResult<()> {
             .map(|offset| {
                 policy_mutation(
                     &organization_id,
-                    &id(start + u8::try_from(offset).expect("bounded mutation offset")),
+                    &id(start + u16::try_from(offset).expect("bounded mutation offset")),
                     (count == 100 && offset == 0).then(|| vec![0xa5; 524_288]),
                 )
             })
@@ -340,6 +413,7 @@ async fn run_async() -> TestResult<()> {
             "replayed": true,
             "delete_restrict": true,
             "neutral_aggregate": true,
+            "high_cardinality_atomic": true,
             "adapters": ["mlflow", "openfga", "payload", "woodpecker"],
         })
     );
@@ -369,7 +443,7 @@ fn tuple(store_id: &str, tuple_id: &str) -> generated::FgaTuple {
     }
 }
 
-fn id(suffix: u8) -> String {
+fn id(suffix: u16) -> String {
     format!("018f0f8b-7c6d-7e31-8a4f-00000000{suffix:04x}")
 }
 

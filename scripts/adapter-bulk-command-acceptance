@@ -238,13 +238,20 @@ PYTHONPATH="$work_root/application/generated/python" \
 
 expected='{"adapters":["mlflow","openfga","payload","woodpecker"],"bounded_preflight":true,"neutral_aggregate":true,"replayed":true,"schema":"riffdb.adapter-bulk-observation/v1"}'
 for language in rust go typescript python; do
-    observed="$(jq -cS 'del(.language, .atomic_conflict, .delete_restrict)' "$work_root/$language.json")"
+    observed="$(jq -cS 'del(.language, .atomic_conflict, .delete_restrict, .high_cardinality_atomic)' "$work_root/$language.json")"
     [[ "$observed" == "$expected" ]] || {
         echo "$language produced a divergent adapter observation: $observed" >&2
         exit 1
     }
 done
 jq -e '.atomic_conflict == true and .delete_restrict == true' "$work_root/rust.json" >/dev/null
+jq -e '.high_cardinality_atomic == true' "$work_root/rust.json" >/dev/null
+
+jq -e '.commands[] | select(.name | endswith("log_metrics"))
+       | .input_schema.properties.metrics.minItems == 1
+         and .input_schema.properties.metrics.maxItems == 1000
+         and .input_schema.properties.metrics["x-riffdb-aggregateCanonicalElementBytes"] == 1048576' \
+    fixtures/adapters/bulk-conformance/generated/mcp/tools.json >/dev/null
 
 jq -e '.commands[] | select(.name | endswith("write_tuples"))
        | .input_schema.properties.tuples.minItems == 1

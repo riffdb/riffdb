@@ -83,6 +83,7 @@ def main() -> None:
 
         metrics = LogMetricsInput(
             request_id=uid(772),
+            experiment_id=uid(773),
             metrics=(
                 Metric(
                     experiment_id=uid(773),

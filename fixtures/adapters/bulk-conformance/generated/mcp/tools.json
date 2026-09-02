@@ -1,5 +1,5 @@
 {
-  "application_manifest_hash": "772b8d71c25ec5a92e3ccd41f6d8f669408fa8af6cb2a3f94c1ca369ebda17d1",
+  "application_manifest_hash": "f3adb6e51de5b7792826523de8a0a166aa2806e7079885acb60912cd40ffc42b",
   "commands": [
     {
       "annotations": {
@@ -8,7 +8,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "f01d15f5388a91e74ca01d5a36a35aefd5d0faf4e525480c82b7eef142ab5315",
+      "contract_bundle_hash": "1269c5719677521a90542d72ef51deb48535ec878a5789aa7491ac5917285698",
       "description": "Execute the exact CreateDocumentGraphs compiled command from contract AdapterBulkConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -59,7 +59,7 @@
       },
       "name": "adapter_bulk_conformance_create_document_graphs",
       "operation_name": "CreateDocumentGraphs",
-      "plan_hash": "94d2e95cffe5b23eb5ee7eaede65de0fd6b6517b7121b92d740c41a633ae6fdd",
+      "plan_hash": "83776c67a2365b09265b00ab24f469376b967cc44dcc93588f61c86ae89eb335",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -113,7 +113,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "f01d15f5388a91e74ca01d5a36a35aefd5d0faf4e525480c82b7eef142ab5315",
+      "contract_bundle_hash": "1269c5719677521a90542d72ef51deb48535ec878a5789aa7491ac5917285698",
       "description": "Execute the exact CreatePipelinesWithSteps compiled command from contract AdapterBulkConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -164,7 +164,7 @@
       },
       "name": "adapter_bulk_conformance_create_pipelines_with_steps",
       "operation_name": "CreatePipelinesWithSteps",
-      "plan_hash": "a672e97dc400e84e91801d31f208d6e2e77b0f07bcad30c08063f03e71054ac6",
+      "plan_hash": "a2fb6dcc463387ac79b2273b7a84f3d66c2b52213f883d0ccd7183e185924b00",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -218,7 +218,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "f01d15f5388a91e74ca01d5a36a35aefd5d0faf4e525480c82b7eef142ab5315",
+      "contract_bundle_hash": "1269c5719677521a90542d72ef51deb48535ec878a5789aa7491ac5917285698",
       "description": "Execute the exact CreateRestrictChildren compiled command from contract AdapterBulkConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -261,7 +261,7 @@
       },
       "name": "adapter_bulk_conformance_create_restrict_children",
       "operation_name": "CreateRestrictChildren",
-      "plan_hash": "325122db5811aeefaa498bd3d8d0e05d2879ff4329a7c0fd2f1336cf018e66e1",
+      "plan_hash": "01a982e5aaa6127009c8191dbe6420f5ab42557a672cd6c05f3bd0fabc0271d7",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -315,7 +315,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "f01d15f5388a91e74ca01d5a36a35aefd5d0faf4e525480c82b7eef142ab5315",
+      "contract_bundle_hash": "1269c5719677521a90542d72ef51deb48535ec878a5789aa7491ac5917285698",
       "description": "Execute the exact CreateRestrictParents compiled command from contract AdapterBulkConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -354,7 +354,7 @@
       },
       "name": "adapter_bulk_conformance_create_restrict_parents",
       "operation_name": "CreateRestrictParents",
-      "plan_hash": "477220cf0cb888cf4638de6e08dd3dc3ea2b8bb33230113430538833d78bee1c",
+      "plan_hash": "a52db4ec80b4442fa410e0f561567bcc74c21b63b9d48d312392a9c1d8f84569",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -395,7 +395,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "f01d15f5388a91e74ca01d5a36a35aefd5d0faf4e525480c82b7eef142ab5315",
+      "contract_bundle_hash": "1269c5719677521a90542d72ef51deb48535ec878a5789aa7491ac5917285698",
       "description": "Execute the exact DeleteRestrictParents compiled command from contract AdapterBulkConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -425,7 +425,7 @@
       },
       "name": "adapter_bulk_conformance_delete_restrict_parents",
       "operation_name": "DeleteRestrictParents",
-      "plan_hash": "708fdfb224ee8e0a76940ed05cca04efe4c0a7286d5334f24ed65941192b8cc7",
+      "plan_hash": "eb1c87ff834b675b1d248ca145913e209080fc3b4d69724205ce2b04366d2a2c",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -479,12 +479,15 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "f01d15f5388a91e74ca01d5a36a35aefd5d0faf4e525480c82b7eef142ab5315",
+      "contract_bundle_hash": "1269c5719677521a90542d72ef51deb48535ec878a5789aa7491ac5917285698",
       "description": "Execute the exact LogMetrics compiled command from contract AdapterBulkConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
+          "experiment_id": {
+            "type": "string"
+          },
           "metrics": {
             "items": {
               "additionalProperties": false,
@@ -514,9 +517,10 @@
               ],
               "type": "object"
             },
-            "maxItems": 128,
+            "maxItems": 1000,
             "minItems": 1,
-            "type": "array"
+            "type": "array",
+            "x-riffdb-aggregateCanonicalElementBytes": 1048576
           },
           "request_id": {
             "type": "string"
@@ -524,13 +528,14 @@
         },
         "required": [
           "metrics",
-          "request_id"
+          "request_id",
+          "experiment_id"
         ],
         "type": "object"
       },
       "name": "adapter_bulk_conformance_log_metrics",
       "operation_name": "LogMetrics",
-      "plan_hash": "3bb9a736befa62c07dc56c2c810b1c1fdd520052e4d8ca2f401b31caf2764633",
+      "plan_hash": "e247d29ffdcb1ea3c5af4a2707cc69afd0828883a7ddfd63193b137a38e9c827",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -540,9 +545,13 @@
               "outcome": {
                 "const": "MetricsLogged",
                 "type": "string"
+              },
+              "revision": {
+                "type": "integer"
               }
             },
             "required": [
+              "revision",
               "outcome"
             ],
             "type": "object"
@@ -571,7 +580,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "f01d15f5388a91e74ca01d5a36a35aefd5d0faf4e525480c82b7eef142ab5315",
+      "contract_bundle_hash": "1269c5719677521a90542d72ef51deb48535ec878a5789aa7491ac5917285698",
       "description": "Execute the exact WritePolicyMutations compiled command from contract AdapterBulkConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -627,7 +636,7 @@
       },
       "name": "adapter_bulk_conformance_write_policy_mutations",
       "operation_name": "WritePolicyMutations",
-      "plan_hash": "23bc5e089a0f3f7dcb560f42517cc3eed3a337875c0c63384244b5139eb74083",
+      "plan_hash": "861c3e0769b22e53698cc4e7339ee4315bb5ba9e8e3e401cb6c8fc44e15c5961",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -668,7 +677,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "f01d15f5388a91e74ca01d5a36a35aefd5d0faf4e525480c82b7eef142ab5315",
+      "contract_bundle_hash": "1269c5719677521a90542d72ef51deb48535ec878a5789aa7491ac5917285698",
       "description": "Execute the exact WriteTuples compiled command from contract AdapterBulkConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -782,7 +791,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "037c90a0762bb68c521a2e9f9ff30056c43b0f86df7f19fe9ce8fbc83c05fc45",
+      "module_hash": "54ee2b4f4aafce82698df049391e788ce8669ccba4fdf0fd44d16e3a36678709",
       "name": "adapter_bulk_conformance_get_fga_tuple",
       "operation_name": "GetFgaTuple",
       "result_schema": {

@@ -22,8 +22,8 @@ def _compact_tag(value: object, tag: str, keys: frozenset[str]) -> dict[str, obj
 
 CONTRACT_LINEAGE: Final[str] = "AdapterBulkConformance"
 CONTRACT_VERSION: Final[int] = 1
-CONTRACT_BUNDLE_HASH: Final[str] = "f01d15f5388a91e74ca01d5a36a35aefd5d0faf4e525480c82b7eef142ab5315"
-QUERY_MODULE_HASH: Final[str] = "037c90a0762bb68c521a2e9f9ff30056c43b0f86df7f19fe9ce8fbc83c05fc45"
+CONTRACT_BUNDLE_HASH: Final[str] = "1269c5719677521a90542d72ef51deb48535ec878a5789aa7491ac5917285698"
+QUERY_MODULE_HASH: Final[str] = "54ee2b4f4aafce82698df049391e788ce8669ccba4fdf0fd44d16e3a36678709"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Metric:
@@ -59,6 +59,11 @@ class PipelineStep:
     run_text: str
     pipeline_id: UUID
     organization_id: UUID
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MetricSummary:
+    revision: Annotated[int, "u64"]
+    experiment_id: UUID
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RestrictChild:
@@ -101,7 +106,7 @@ class PipelineGraphInput:
     pipeline_id: UUID
     organization_id: UUID
 
-GET_FGA_TUPLE_QUERY_PLAN_HASH: Final[str] = "3ea9d730dc275ffbbf2b9fc1770baedd82b77778f1a5c13ccce047207bbc3a13"
+GET_FGA_TUPLE_QUERY_PLAN_HASH: Final[str] = "37ef92b3e173c53ebc637903afb7dcea2752192f63c017046c1d0c6148e0fc8b"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetFgaTupleParams:
@@ -132,7 +137,7 @@ class CreateDocumentGraphsInput:
     documents: tuple[DocumentGraphInput, ...]
     request_id: UUID
 
-CREATE_DOCUMENT_GRAPHS_PLAN_HASH: Final[str] = "94d2e95cffe5b23eb5ee7eaede65de0fd6b6517b7121b92d740c41a633ae6fdd"
+CREATE_DOCUMENT_GRAPHS_PLAN_HASH: Final[str] = "83776c67a2365b09265b00ab24f469376b967cc44dcc93588f61c86ae89eb335"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateDocumentGraphsDocumentAlreadyExists:
     outcome: Literal["DocumentAlreadyExists"] = field(default="DocumentAlreadyExists", init=False)
@@ -152,7 +157,7 @@ class CreatePipelinesWithStepsInput:
     pipelines: tuple[PipelineGraphInput, ...]
     request_id: UUID
 
-CREATE_PIPELINES_WITH_STEPS_PLAN_HASH: Final[str] = "a672e97dc400e84e91801d31f208d6e2e77b0f07bcad30c08063f03e71054ac6"
+CREATE_PIPELINES_WITH_STEPS_PLAN_HASH: Final[str] = "a2fb6dcc463387ac79b2273b7a84f3d66c2b52213f883d0ccd7183e185924b00"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreatePipelinesWithStepsPipelinesCreated:
     outcome: Literal["PipelinesCreated"] = field(default="PipelinesCreated", init=False)
@@ -172,7 +177,7 @@ class CreateRestrictChildrenInput:
     children: tuple[RestrictChild, ...]
     request_id: UUID
 
-CREATE_RESTRICT_CHILDREN_PLAN_HASH: Final[str] = "325122db5811aeefaa498bd3d8d0e05d2879ff4329a7c0fd2f1336cf018e66e1"
+CREATE_RESTRICT_CHILDREN_PLAN_HASH: Final[str] = "01a982e5aaa6127009c8191dbe6420f5ab42557a672cd6c05f3bd0fabc0271d7"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateRestrictChildrenChildAlreadyExists:
     outcome: Literal["ChildAlreadyExists"] = field(default="ChildAlreadyExists", init=False)
@@ -192,7 +197,7 @@ class CreateRestrictParentsInput:
     parents: tuple[RestrictParent, ...]
     request_id: UUID
 
-CREATE_RESTRICT_PARENTS_PLAN_HASH: Final[str] = "477220cf0cb888cf4638de6e08dd3dc3ea2b8bb33230113430538833d78bee1c"
+CREATE_RESTRICT_PARENTS_PLAN_HASH: Final[str] = "a52db4ec80b4442fa410e0f561567bcc74c21b63b9d48d312392a9c1d8f84569"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateRestrictParentsParentAlreadyExists:
     outcome: Literal["ParentAlreadyExists"] = field(default="ParentAlreadyExists", init=False)
@@ -209,7 +214,7 @@ class DeleteRestrictParentsInput:
     parent_ids: tuple[UUID, ...]
     request_id: UUID
 
-DELETE_RESTRICT_PARENTS_PLAN_HASH: Final[str] = "708fdfb224ee8e0a76940ed05cca04efe4c0a7286d5334f24ed65941192b8cc7"
+DELETE_RESTRICT_PARENTS_PLAN_HASH: Final[str] = "eb1c87ff834b675b1d248ca145913e209080fc3b4d69724205ce2b04366d2a2c"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DeleteRestrictParentsParentMissing:
     outcome: Literal["ParentMissing"] = field(default="ParentMissing", init=False)
@@ -228,10 +233,12 @@ DeleteRestrictParentsOutcome: TypeAlias = DeleteRestrictParentsParentMissing | D
 class LogMetricsInput:
     metrics: tuple[Metric, ...]
     request_id: UUID
+    experiment_id: UUID
 
-LOG_METRICS_PLAN_HASH: Final[str] = "3bb9a736befa62c07dc56c2c810b1c1fdd520052e4d8ca2f401b31caf2764633"
+LOG_METRICS_PLAN_HASH: Final[str] = "e247d29ffdcb1ea3c5af4a2707cc69afd0828883a7ddfd63193b137a38e9c827"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class LogMetricsMetricsLogged:
+    revision: Annotated[int, "u64"]
     outcome: Literal["MetricsLogged"] = field(default="MetricsLogged", init=False)
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -245,7 +252,7 @@ class WritePolicyMutationsInput:
     mutations: tuple[PolicyMutation, ...]
     request_id: UUID
 
-WRITE_POLICY_MUTATIONS_PLAN_HASH: Final[str] = "23bc5e089a0f3f7dcb560f42517cc3eed3a337875c0c63384244b5139eb74083"
+WRITE_POLICY_MUTATIONS_PLAN_HASH: Final[str] = "861c3e0769b22e53698cc4e7339ee4315bb5ba9e8e3e401cb6c8fc44e15c5961"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class WritePolicyMutationsPolicyMutationExists:
     outcome: Literal["PolicyMutationExists"] = field(default="PolicyMutationExists", init=False)
@@ -410,8 +417,11 @@ class AdapterBulkConformanceClient:
         return self._transport._command_batch(inputs, options, self.delete_restrict_parents, progress)
 
     def log_metrics(self, input: LogMetricsInput) -> TypedCommandResult[LogMetricsOutcome]:
-        if not 1 <= len(input.metrics) <= 128:
+        if not 1 <= len(input.metrics) <= 1000:
             raise ValueError("invalid bounded collection length for LogMetrics.metrics")
+        aggregate_element_bytes = sum(canonical_value_encoded_length(encode_value(item, Metric)) for item in input.metrics)
+        if aggregate_element_bytes > 1048576:
+            raise ValueError("invalid aggregate collection bytes for LogMetrics.metrics")
         raw = self._transport._execute_command(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             command_name="LogMetrics", plan_hash=LOG_METRICS_PLAN_HASH,
@@ -428,8 +438,11 @@ class AdapterBulkConformanceClient:
         progress: Callable[[CommandBatchProgress], None] | None = None,
     ) -> CommandBatchResult[LogMetricsOutcome]:
         for input in inputs:
-            if not 1 <= len(input.metrics) <= 128:
+            if not 1 <= len(input.metrics) <= 1000:
                 raise ValueError("invalid bounded collection length for LogMetrics.metrics")
+            aggregate_element_bytes = sum(canonical_value_encoded_length(encode_value(item, Metric)) for item in input.metrics)
+            if aggregate_element_bytes > 1048576:
+                raise ValueError("invalid aggregate collection bytes for LogMetrics.metrics")
         return self._transport._command_batch(inputs, options, self.log_metrics, progress)
 
     def write_policy_mutations(self, input: WritePolicyMutationsInput) -> TypedCommandResult[WritePolicyMutationsOutcome]:
@@ -622,8 +635,11 @@ class AsyncAdapterBulkConformanceClient:
         return await self._transport._command_batch(inputs, options, self.delete_restrict_parents, progress)
 
     async def log_metrics(self, input: LogMetricsInput) -> TypedCommandResult[LogMetricsOutcome]:
-        if not 1 <= len(input.metrics) <= 128:
+        if not 1 <= len(input.metrics) <= 1000:
             raise ValueError("invalid bounded collection length for LogMetrics.metrics")
+        aggregate_element_bytes = sum(canonical_value_encoded_length(encode_value(item, Metric)) for item in input.metrics)
+        if aggregate_element_bytes > 1048576:
+            raise ValueError("invalid aggregate collection bytes for LogMetrics.metrics")
         raw = await self._transport._execute_command(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             command_name="LogMetrics", plan_hash=LOG_METRICS_PLAN_HASH,
@@ -640,8 +656,11 @@ class AsyncAdapterBulkConformanceClient:
         progress: Callable[[CommandBatchProgress], None] | None = None,
     ) -> CommandBatchResult[LogMetricsOutcome]:
         for input in inputs:
-            if not 1 <= len(input.metrics) <= 128:
+            if not 1 <= len(input.metrics) <= 1000:
                 raise ValueError("invalid bounded collection length for LogMetrics.metrics")
+            aggregate_element_bytes = sum(canonical_value_encoded_length(encode_value(item, Metric)) for item in input.metrics)
+            if aggregate_element_bytes > 1048576:
+                raise ValueError("invalid aggregate collection bytes for LogMetrics.metrics")
         return await self._transport._command_batch(inputs, options, self.log_metrics, progress)
 
     async def write_policy_mutations(self, input: WritePolicyMutationsInput) -> TypedCommandResult[WritePolicyMutationsOutcome]:

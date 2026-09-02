@@ -3640,6 +3640,20 @@ work_packages:
     scale: The successor caps elements at 1,024 and possible mutations at 4,096 while retaining
       every independent conflict, observation, dependency, index, event, 4-MiB input, 8-MiB
       frame, 16-MiB graph, deadline, cancellation, response, and diagnostic ceiling.
+  closure:
+    status: complete
+    completed_at: "2026-09-02"
+    requirements_satisfied: [BLK-065, BLK-066, BLK-067, BLK-068, BLK-069, BLK-070]
+    evidence: release/evidence/high-cardinality-atomic-collections-v1.json records the accepted
+      256/256 legacy and 1,024/4,096 successor limits, V23 identity and compatibility proofs,
+      exact/plus-one compiler/runtime/storage coverage, all-language generated-surface checks,
+      and the value-free real-redb 1,000-entity-plus-root store, replay, forced failure, and
+      complete-or-absent follow-up receipt.
+    known_limitations: The successor remains one compiler-owned list, one exact partition, and
+      one atomic command. Conflict keys, cascade rows, index work, input/frame/graph bytes,
+      deadlines, cancellation, and every other independent resource remain separately bounded;
+      generated callers receive only the exact source-declared maximum.
+    follow_ups: []
   human_review_triggers: &id0177
   - More than 1,024 submitted elements or 4,096 possible authoritative mutations would be
     admitted, or another independent count, byte, work, framing, or graph ceiling would widen.

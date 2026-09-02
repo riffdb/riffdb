@@ -1,0 +1,85 @@
+{
+  "schema": "riffdb.high-cardinality-atomic-collections/v1",
+  "work_package": "WP-745",
+  "adr": "ADR-0177",
+  "requirements": [
+    "BLK-065",
+    "BLK-066",
+    "BLK-067",
+    "BLK-068",
+    "BLK-069",
+    "BLK-070"
+  ],
+  "implementation_foundation_revision": "d41762f297bc311d2c463afb3fb826fec0b64dbe",
+  "recorded_at": "2026-09-02",
+  "accepted_limits": {
+    "legacy_collection_elements": 256,
+    "legacy_possible_mutation_instances": 256,
+    "successor_collection_elements": 1024,
+    "successor_possible_mutation_instances": 4096,
+    "cascade_rows": 256,
+    "conflict_keys": 256,
+    "decoded_or_canonical_command_root_bytes": 4194304,
+    "command_bearing_frame_bytes": 8388608,
+    "complete_command_graph_bytes": 16777216
+  },
+  "compiler_identity": {
+    "contract_bundle_version": 23,
+    "contract_grammar_version": 23,
+    "contract_ir_version": 23,
+    "least_sufficient_selection": true,
+    "fixed_plus_expanded_mutation_count_recomputed_on_decode": true,
+    "v1_through_v22_retain_legacy_collection_semantics": true,
+    "legacy_fixture_bytes_unchanged": true
+  },
+  "generated_store_loopback": {
+    "surface": "generated Rust binding through authenticated gRPC, shared application service, deterministic runtime, commit coordinator, and redb",
+    "contract_bundle_hash": "1269c5719677521a90542d72ef51deb48535ec878a5789aa7491ac5917285698",
+    "plan_root_hash": "ff63030a996f079af45e0023b5c35f5ead3310d36faa79486b15e4e5b71a7f0c",
+    "log_metrics_plan_hash": "e247d29ffdcb1ea3c5af4a2707cc69afd0828883a7ddfd63193b137a38e9c827",
+    "exact_manifest_hash": "f3adb6e51de5b7792826523de8a0a166aa2806e7079885acb60912cd40ffc42b",
+    "role_definition_hash": "14d78cac3baee8b6bab5813178db0f6ea51593568f41d782c53c5b37526fa48d",
+    "submitted_entities": 1000,
+    "fixed_root_mutations": 1,
+    "atomic_commit_succeeded": true,
+    "same_input_replayed_same_outcome": true,
+    "forced_business_failure_submitted_entities": 1000,
+    "forced_business_failure_committed": false,
+    "subsequent_complete_store_succeeded": true,
+    "subsequent_root_revision": 2,
+    "partial_prefix_visible": false,
+    "adapter_split_or_staging": false,
+    "values_retained": false
+  },
+  "proofs": [
+    "thousand_elements_plus_root_selects_v23_and_round_trips",
+    "checked_legacy_collection_fixture_remains_byte_exact",
+    "element_ceiling_has_exact_source_spanned_diagnostic",
+    "four_thousand_ninety_six_mutations_are_admitted",
+    "four_thousand_ninety_seven_mutations_fail_at_the_command_span",
+    "element_dependent_conflict_keys_retain_the_independent_256_ceiling",
+    "thousand_collection_elements_plus_root_evaluate_as_one_complete_graph",
+    "thousand_element_command_plus_root_commits_and_replays_atomically_through_redb",
+    "collection_create_and_delete_are_complete_or_absent_across_process_crash",
+    "scripts/adapter-bulk-command-acceptance"
+  ],
+  "language_and_surface_evidence": {
+    "rust": "generated remote store loopback plus exact/plus-one preflight",
+    "go": "generated client compiled and remote corpus passed",
+    "typescript": "generated client compiled and local-driver corpus passed",
+    "python": "generated client compiled and local-driver corpus passed",
+    "cli": "deployment and checked application surface passed",
+    "mcp": "generated schema advertises exact 1..1000 and aggregate-byte bounds",
+    "local_driver": "Go, TypeScript, and Python corpus passed",
+    "remote_grpc": "Rust corpus passed"
+  },
+  "acceptance_commands": [
+    {"command": "./scripts/acceptance --wp WP-745", "status": "passed", "steps_passed": 13},
+    {"command": "./scripts/adapter-bulk-command-acceptance --all-languages", "status": "passed"}
+  ],
+  "known_limitations": [
+    "The successor remains one compiler-owned collection and one exact partition; it is not a general transaction or batching surface.",
+    "The 1,024/4,096 tier does not widen conflict, cascade, byte, graph, work, deadline, cancellation, or transport limits.",
+    "Only the source-declared maximum is exposed to generated callers; the process ceiling is not configurable."
+  ]
+}
