@@ -6,7 +6,8 @@ use riffdb_riffql_syntax::{
     BinaryOperator, CandidateSetExpression, CandidateSource, Cardinality, Document, Expression,
     FieldSelection, Literal, Path, RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1,
     RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1, RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1,
-    RIFFQL_LANGUAGE_VERSION_PARTITION_SET_V1, Selection, Span, TypeReference, format_query,
+    RIFFQL_LANGUAGE_VERSION_PARTITION_SET_V1, RIFFQL_LANGUAGE_VERSION_RELATIONAL_OPERATORS_V1,
+    Selection, Span, TypeReference, format_query,
 };
 use riffdb_types::{
     AggregateSemanticIdentityV1, ContractBundleHash, ContractLineage, ContractVersion,
@@ -311,6 +312,7 @@ pub struct ResolvedQueryV1 {
     aggregates: Vec<OperationalAggregateV1>,
     secret_outputs: Vec<SecretOutputRequirement>,
     projected: bool,
+    relational_operators: bool,
     schemas: NamedQuerySchemas,
     source_map: QuerySourceMap,
     canonical_bytes: Vec<u8>,
@@ -328,6 +330,7 @@ impl std::fmt::Debug for ResolvedQueryV1 {
             .field("aggregates", &self.aggregates)
             .field("secret_outputs", &self.secret_outputs)
             .field("projected", &self.projected)
+            .field("relational_operators", &self.relational_operators)
             .field("schemas", &self.schemas)
             .field("source_map_entries", &self.source_map.0.len())
             .field("canonical_length", &self.canonical_bytes.len())
@@ -339,7 +342,9 @@ impl ResolvedQueryV1 {
     /// Query IR version.
     #[must_use]
     pub fn ir_version(&self) -> u32 {
-        if self.has_bounded_set() {
+        if self.relational_operators {
+            crate::QUERY_IR_VERSION_RELATIONAL_OPERATORS_V1
+        } else if self.has_bounded_set() {
             QUERY_IR_VERSION_PARTITION_SET_V1
         } else if !self.candidates.is_empty() || self.has_extended_bounded_limit() {
             QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1
@@ -1239,6 +1244,8 @@ impl<'a> Resolver<'a> {
             aggregates: aggregate_symbols,
             secret_outputs: self.secret_outputs,
             projected: document.projected_source.is_some(),
+            relational_operators: document.language_version
+                == RIFFQL_LANGUAGE_VERSION_RELATIONAL_OPERATORS_V1,
             schemas,
             source_map: QuerySourceMap(self.source_map),
             canonical_bytes,
@@ -2420,7 +2427,9 @@ fn canonical_surface(
     );
     bytes.extend_from_slice(IR_MAGIC);
     bytes.extend_from_slice(
-        &if document.language_version == RIFFQL_LANGUAGE_VERSION_PARTITION_SET_V1 {
+        &if document.language_version == RIFFQL_LANGUAGE_VERSION_RELATIONAL_OPERATORS_V1 {
+            crate::QUERY_IR_VERSION_RELATIONAL_OPERATORS_V1
+        } else if document.language_version == RIFFQL_LANGUAGE_VERSION_PARTITION_SET_V1 {
             QUERY_IR_VERSION_PARTITION_SET_V1
         } else if matches!(
             document.language_version,

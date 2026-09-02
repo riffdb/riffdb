@@ -275,6 +275,39 @@ Python clients expose the nested list as a typed field; gRPC, MCP, and CLI use
 the same name-addressed list-of-record carriage. A target has no independent
 cursor: paging remains on the driver binding.
 
+## Root relationship existence (language V14)
+
+A bounded root collection may filter through one declared same-partition
+junction relationship without exposing a join plan:
+
+```riffql
+many experiments from Experiment
+    where scope == $scope
+    exists ExperimentTag using by_tag_digest
+        where scope == $scope && tag_key == $key && value_digest == $digest
+    order by last_update_time desc, experiment_id asc
+    take $limit
+    else IntegrityFailure
+```
+
+Write `not exists ExperimentTag using ...` for the authorized complement. The
+positive form lowers to an intersection of the route-complete authorized root
+universe and the junction's projected root keys. The negated form lowers to
+the same root universe minus those keys. Both use the existing candidate
+algebra, its 65,535-key completion ceiling, the root binding's refusal outcome,
+and its policy-before-observation behavior; they add no executor step, provider,
+cursor family, request field, or authority surface.
+
+The junction must declare exactly one relationship to the root's complete
+scalar key, preserve the root partition, and name an ordinary index that
+carries the projected key after a complete predicate prefix. The root must be
+the first bounded `many` binding, carry an exact partition parameter, select a
+route-complete ordered index, and declare `else`. Unknown or ambiguous
+relationships, cross-partition mappings, incomplete index prefixes, a missing
+root-key projection, generated-name collisions, and existence on a dependent
+binding are source-spanned compilation refusals. The equivalent explicit
+`candidates` spelling compiles to identical V18 plan bytes.
+
 A candidate source may instead name a compatible contract `pattern_index` and
 one compiled exact pattern predicate. That source is supplied by one ready,
 policy-aligned provider epoch and is completed under the same participant proof

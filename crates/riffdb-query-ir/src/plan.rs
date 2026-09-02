@@ -1363,7 +1363,10 @@ impl QueryAccessProgramV1 {
         {
             return None;
         }
-        let ir_version = if surface.ir_version() == crate::QUERY_IR_VERSION_PARTITION_SET_V1 {
+        let ir_version = if surface.ir_version() == crate::QUERY_IR_VERSION_RELATIONAL_OPERATORS_V1
+        {
+            crate::QUERY_IR_VERSION_RELATIONAL_OPERATORS_V1
+        } else if surface.ir_version() == crate::QUERY_IR_VERSION_PARTITION_SET_V1 {
             partition_set_ir_version(&steps)
         } else if surface.ir_version() == crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1 {
             crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1
@@ -1488,7 +1491,9 @@ impl QueryAccessProgramV1 {
     /// Least-sufficient executable IR identity for this exact program.
     #[must_use]
     pub fn ir_version(&self) -> u32 {
-        if self.surface.ir_version() == crate::QUERY_IR_VERSION_PARTITION_SET_V1 {
+        if self.surface.ir_version() == crate::QUERY_IR_VERSION_RELATIONAL_OPERATORS_V1 {
+            crate::QUERY_IR_VERSION_RELATIONAL_OPERATORS_V1
+        } else if self.surface.ir_version() == crate::QUERY_IR_VERSION_PARTITION_SET_V1 {
             partition_set_ir_version(&self.steps)
         } else if self.surface.ir_version() == crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1 {
             crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1

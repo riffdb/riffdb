@@ -88,6 +88,13 @@ impl Identifier {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Builds a validated compiler-owned query-local name during syntax lowering.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn compiler_owned(value: &str) -> Option<Self> {
+        Self::new(value)
+    }
 }
 
 impl fmt::Debug for Identifier {
@@ -314,6 +321,8 @@ pub struct Binding {
     pub entity: Spanned<Identifier>,
     /// Optional earlier bounded binding that drives one level of expansion.
     pub expansion: Option<ExpansionDriver>,
+    /// Optional root-local relationship existence predicate lowered to candidates.
+    pub existence: Option<ExistencePredicate>,
     /// Required predicate.
     pub predicate: Spanned<Expression>,
     /// Stable ordering.
@@ -333,6 +342,21 @@ pub struct Binding {
     /// This is required by `one`; the planner also requires it for a bounded
     /// dependent point batch sourced from an earlier `many`.
     pub absence_outcome: Option<Spanned<Identifier>>,
+}
+
+/// One compiler-lowered same-partition junction existence predicate.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExistencePredicate {
+    /// Whether the projected junction keys are subtracted from the authorized root universe.
+    pub negated: bool,
+    /// Junction entity whose declared relationship projects the root key.
+    pub junction: Spanned<Identifier>,
+    /// Declared junction index.
+    pub access: Spanned<Identifier>,
+    /// Complete bounded junction predicate.
+    pub predicate: Spanned<Expression>,
+    /// Complete `exists` or `not exists` clause span.
+    pub span: Span,
 }
 
 /// One compiler-visible one-to-many expansion driver.

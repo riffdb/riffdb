@@ -129,6 +129,22 @@ pub fn format_query(document: &Document) -> String {
             format_expression(&binding.predicate.value, 0)
         )
         .expect("String writes cannot fail");
+        if let Some(existence) = &binding.existence {
+            writeln!(
+                output,
+                "        {}exists {} using {}",
+                if existence.negated { "not " } else { "" },
+                existence.junction.value.as_str(),
+                existence.access.value.as_str(),
+            )
+            .expect("String writes cannot fail");
+            writeln!(
+                output,
+                "            where {}",
+                format_expression(&existence.predicate.value, 0)
+            )
+            .expect("String writes cannot fail");
+        }
         if let Some(matching) = &binding.tokenized_match {
             write!(
                 output,

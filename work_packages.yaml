@@ -22893,6 +22893,18 @@ work_packages:
     interface_safety: Existence sources are compiler identity; negation always names the
       authorized root universe so denied rows cannot be inferred through complement.
     scale: Lowering reuses the candidate ceilings unchanged.
+  closure:
+    status: complete
+    completed_at: "2026-09-02"
+    requirements_satisfied: [OQ-117]
+    evidence: Root-local exists and not-exists syntax now lowers only through declared
+      same-partition junction relationships and complete index prefixes to the existing bounded
+      candidate intersection or authorized root-universe difference. The named proof compares
+      both forms with their explicit twins byte for byte and pins RiffQL V14 and query IR V18;
+      module round-trip and generated Rust, Go, TypeScript, Python, and MCP checks prove the
+      compiler-owned candidate structure remains hidden. Source-spanned refusals, handbook and
+      limitation updates, regenerated editor artifacts, package scope audit, focused suites, and
+      ci-all pass without adding an executor step, provider, cursor family, or authority surface.
   human_review_triggers: *id0185
 
 - id: WP-771

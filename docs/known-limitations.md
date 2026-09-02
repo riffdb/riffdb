@@ -116,10 +116,12 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   separately bounded index reads, and one ordered dependent complete-key batch
   with zero-or-one target per distinct driver key, plus one compiler-bounded
   same-partition one-to-many expansion nested under its bounded driver.
-  Semijoins, correlated existence tests, cross-partition joins, Cartesian
-  products, recursion, and runtime join optimization are unavailable. Recompile
-  and redeploy a refused named query rather than emulating it in application
-  code.
+  One root-local `exists` or `not exists` predicate may lower through a declared
+  same-partition junction index to the existing candidate algebra. General
+  semijoins, dependent or correlated existence, cross-partition joins,
+  Cartesian products, recursion, and runtime join optimization are unavailable.
+  Recompile and redeploy a refused named query rather than emulating it in
+  application code.
 - The WP-690 external receipt is intentionally a narrow source-compilation
   acceptance for shared bytewise equality, membership, and order. It is not a
   full external application or framework-conformance result. Canonical-string
