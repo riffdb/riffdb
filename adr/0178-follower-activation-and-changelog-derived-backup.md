@@ -1,57 +1,71 @@
+---
+adr: 0178
+title: Follower Activation and Changelog-Derived Incremental Backup
+status: accepted
+tier: guarantee
+date: "2026-09-01"
+accepted: "2026-09-01"
+requires: [ADR-0019, ADR-0050, ADR-0061, ADR-0072, ADR-0082, ADR-0083, ADR-0085,
+  ADR-0086, ADR-0093, ADR-0100, ADR-0101, ADR-0104, ADR-0112, ADR-0124]
+# ADR-0085 is required at Amendments 2 and 3; ADR-0100 at Amendments 1 and 2.
+amends:
+  - SPEC 20.6 Stage B (the asynchronous changelog-shipping tier precedes and does
+    not require OpenRaft or any consensus protocol)
+  - SPEC 18.5 (incremental and remote archive backup move from MVP to alpha)
+  - REP-001 is unchanged
+requirements: [REP-002, REP-003, REP-004, REP-005, REP-006, REP-007, REP-008, REP-009]
+packages: [WP-746, WP-747, WP-748, WP-749, WP-750]
+obligations:
+  - id: OBL-0178-1
+    package: WP-746
+    proof: follower_applies_exact_prefix_byte_faithfully
+    says: A follower driven by the app-baseline workload holds a byte-faithful
+      prefix of every authoritative table at the compared applied sequence.
+  - id: OBL-0178-2
+    package: WP-746
+    proof: replication_stream_resumes_gap_free_after_repeated_kills
+    says: The stream resumes from the acknowledged sequence after repeated
+      mid-flight kills with no gap and no duplicate apply, and the follower passes
+      complete startup validation afterward.
+  - id: OBL-0178-3
+    package: WP-747
+    proof: follower_causal_read_waits_for_token_then_matches_primary
+    says: A Causal read on a follower waits for a fresh primary token and then
+      returns bytes equal to the primary at the same frontier, while every write
+      surface returns the typed follower-mode refusal.
+  - id: OBL-0178-4
+    package: WP-748
+    proof: promotion_mints_incarnation_and_refuses_old_lineage_tokens
+    says: Promotion mints a new history incarnation and leadership epoch, refuses
+      every old-lineage token, cursor, and stream, and reports the sequence-delta
+      RPO.
+  - id: OBL-0178-5
+    package: WP-748
+    proof: retention_prune_refuses_to_pass_registered_follower_frontier
+    says: Offline prune refuses to pass a registered follower's acknowledged
+      frontier until it catches up or its hold budget is released by ceremony.
+  - id: OBL-0178-6
+    package: WP-749
+    proof: archived_suffix_restore_recovers_to_last_archived_sequence
+    says: Restore from a verified full backup plus the archived frame suffix
+      recovers exactly through the last archived sequence and fails closed on any
+      gap, checksum, or incarnation mismatch.
+  - id: OBL-0178-7
+    package: WP-750
+    proof: replication_acceptance_campaign_meets_every_adr_0093_criterion
+    says: The complete ADR-0093 acceptance campaign is a receipted release
+      artifact.
+review_triggers:
+  - Acknowledgement semantics, the commit hot path, or the single-writer property
+    on either node would change.
+  - Automatic election, cascading followers, multi-primary, or a quorum tier would
+    be introduced.
+  - A new provider family, result-set algebra, or performance package would be
+    admitted to the alpha gate before WP-750 closes.
+  - A durable record encoding, the backup manifest V1, changelog frame bytes, or a
+    retention tombstone byte would change.
+---
 # ADR-0178: Follower Activation and Changelog-Derived Incremental Backup
-
-- **Status:** Accepted
-- **Obligations:**
-  - `OBL-0178-1` WP-746 must prove that a follower driven by the
-    app-baseline workload holds a byte-faithful prefix of every
-    authoritative table at the compared applied sequence; planned proof
-    `follower_applies_exact_prefix_byte_faithfully`.
-  - `OBL-0178-2` WP-746 must prove that the stream resumes from the
-    acknowledged sequence after repeated mid-flight kills with no gap and no
-    duplicate apply, and the follower passes complete startup validation
-    afterward; planned proof
-    `replication_stream_resumes_gap_free_after_repeated_kills`.
-  - `OBL-0178-3` WP-747 must prove that a `Causal` read on a follower waits
-    for a fresh primary token and then returns bytes equal to the primary at
-    the same frontier, while every write surface returns the typed
-    follower-mode refusal; planned proof
-    `follower_causal_read_waits_for_token_then_matches_primary`.
-  - `OBL-0178-4` WP-748 must prove that promotion mints a new history
-    incarnation and leadership epoch, refuses every old-lineage token,
-    cursor, and stream, and reports the sequence-delta RPO; planned proof
-    `promotion_mints_incarnation_and_refuses_old_lineage_tokens`.
-  - `OBL-0178-5` WP-748 must prove that offline prune refuses to pass a
-    registered follower's acknowledged frontier until it catches up or its
-    hold budget is released by ceremony; planned proof
-    `retention_prune_refuses_to_pass_registered_follower_frontier`.
-  - `OBL-0178-6` WP-749 must prove that restore from a verified full backup
-    plus the archived frame suffix recovers exactly through the last
-    archived sequence and fails closed on any gap, checksum, or incarnation
-    mismatch; planned proof
-    `archived_suffix_restore_recovers_to_last_archived_sequence`.
-  - `OBL-0178-7` WP-750 must prove that the complete ADR-0093 acceptance
-    campaign is a receipted release artifact; planned proof
-    `replication_acceptance_campaign_meets_every_adr_0093_criterion`.
-- **Direction approved:** 2026-09-01
-- **Exact text accepted:** Yes, 2026-09-01
-- **Accepted:** 2026-09-01
-- **Acceptance reference:** Maintainer acceptance of the exact text in the
-  current Claude Code session on 2026-09-01, all seven consolidation records together
-- **Decision deadline:** Before WP-746 freezes the replication RPC surface,
-  the replication capability kind, or the stream handshake bytes
-- **Requires:** ADR-0019, ADR-0050, ADR-0061, ADR-0072, ADR-0082, ADR-0083,
-  ADR-0085 (Amendments 2 and 3), ADR-0086, ADR-0093, ADR-0100 (Amendments 1
-  and 2), ADR-0101, ADR-0104, ADR-0112, and ADR-0124
-- **Amends:** SPEC 20.6 Stage B (the asynchronous changelog-shipping tier
-  precedes and does not require OpenRaft or any consensus protocol); SPEC 18.5
-  (incremental and remote archive backup move from MVP to alpha); `REP-001` is
-  unchanged
-- **Defines or blocks:** WP-746 through WP-750
-
-The maintainer accepted the exact text of this record on 2026-09-01. Its packages
-may begin. Each deferred obligation above is tracked in
-`adr/obligations-outstanding.yaml` until its planned proof exists, at which
-point the owning package discharges it by declaring the proof.
 
 ## Context
 
@@ -263,3 +277,9 @@ loop and writes receipted evidence under `release/evidence/replication/`.
 Exact acceptance is required before WP-746 merges the replication RPC, the
 capability permission kind, or the handshake framing, because each is a
 public protocol boundary under ADR-0124.
+
+## Acceptance
+
+Direction approved 2026-09-01; exact text accepted 2026-09-01. The maintainer
+accepted the exact text of this record in the Claude Code session of
+2026-09-01, all seven consolidation records together.

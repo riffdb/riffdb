@@ -1,0 +1,193 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Build and run the acceptance plan for a change: the always-on commands, the
+# scoped clippy and test runs for the touched crates, and every path-triggered
+# check from governance/tiers.yaml.
+
+require_relative "lib/riffdb_governance"
+
+USAGE = <<~HELP
+  Usage: acceptance [options]
+
+  Compute and run the acceptance plan for the touched files. The plan is:
+
+    1. ./scripts/check-allowed-paths --wp WP-NNN   (only with --wp)
+    2. the `always` commands from governance/tiers.yaml
+    3. cargo clippy for the touched crates
+    4. tests for the touched crates (cargo nextest when installed, else cargo test)
+    5. every path-triggered check whose `when` globs match a touched file
+
+  Touched crates are the crates owning any touched file; root tests/** files map
+  to the crate that declares them as a [[test]] target. The default range is
+  merge-base(HEAD, main)..HEAD on a branch and HEAD~1..HEAD on main.
+
+  Options:
+        --wp WP-NNN         check allowed_paths first and compare package tier
+        --base <ref>        use merge-base(HEAD, <ref>)..HEAD as the range
+        --range <a>..<b>    use this commit range
+        --dry-run           print the plan and exit without running anything
+        --full              replace the scoped clippy and test runs with ./scripts/ci-all
+        --with-dependents   extend the crate list with its reverse dependencies
+        --no-tests          leave the test run out of the plan
+    -h, --help              show this message
+
+  Exit status: 0 when every step passed, 1 when any step failed or the package
+  tier is below the computed tier, 2 on a usage error.
+HELP
+
+options = {
+  wp: nil, base: nil, range: nil,
+  dry_run: false, full: false, with_dependents: false, no_tests: false
+}
+
+argv = ARGV.dup
+take = lambda do |flag|
+  value = argv.shift
+  next value unless value.nil? || value.empty?
+
+  warn "missing value for #{flag}"
+  exit 2
+end
+
+until argv.empty?
+  argument = argv.shift
+  case argument
+  when "--help", "-h" then (puts USAGE) || exit(0)
+  when "--dry-run" then options[:dry_run] = true
+  when "--full" then options[:full] = true
+  when "--with-dependents" then options[:with_dependents] = true
+  when "--no-tests" then options[:no_tests] = true
+  when "--wp" then options[:wp] = take.call("--wp")
+  when "--base" then options[:base] = take.call("--base")
+  when "--range" then options[:range] = take.call("--range")
+  when /\A--wp=(.+)\z/ then options[:wp] = Regexp.last_match(1)
+  when /\A--base=(.+)\z/ then options[:base] = Regexp.last_match(1)
+  when /\A--range=(.+)\z/ then options[:range] = Regexp.last_match(1)
+  else warn("unknown argument #{argument}\n\n#{USAGE}") || exit(2)
+  end
+end
+
+# cargo-nextest is detected by looking for the cargo subcommand binary, so that
+# building the plan never has to launch cargo.
+def nextest_installed?
+  directories = ENV.fetch("PATH", "").split(File::PATH_SEPARATOR)
+  cargo_home = ENV["CARGO_HOME"] || File.join(Dir.home, ".cargo")
+  directories << File.join(cargo_home, "bin")
+  directories.any? { |directory| !directory.empty? && File.executable?(File.join(directory, "cargo-nextest")) }
+end
+
+started = Time.now
+
+begin
+  range = RiffdbGovernance.range_for(range: options[:range], base: options[:base])
+  files = RiffdbGovernance.touched_files(range: options[:range], base: options[:base])
+  classification = RiffdbGovernance.classify(files, range: range)
+  crates = RiffdbGovernance.crates_for(files)
+  dependents = options[:with_dependents] ? RiffdbGovernance.reverse_dependents(crates) : []
+rescue RiffdbGovernance::Error => error
+  warn error.message
+  exit 2
+end
+
+package = nil
+package_tier = nil
+tier_error = nil
+tier_warning = nil
+if options[:wp]
+  package = RiffdbGovernance.package(options[:wp])
+  unless package
+    warn "unknown work package #{options[:wp]}"
+    exit 2
+  end
+  package_tier = package["tier"]
+  if package_tier.nil?
+    tier_warning = "#{options[:wp]} declares no tier (pre-cutover package); computed tier is #{classification.tier}"
+  elsif RiffdbGovernance.tier_rank(package_tier) < RiffdbGovernance.tier_rank(classification.tier)
+    tier_error = "#{options[:wp]} is tier #{package_tier} but the change computes as #{classification.tier}"
+  elsif package_tier != classification.tier
+    tier_warning = "#{options[:wp]} is tier #{package_tier}; the change only computes as #{classification.tier}"
+  end
+end
+
+selected = (crates + dependents).uniq.sort
+plan = []
+range_arguments = []
+range_arguments.concat(["--range", options[:range]]) if options[:range]
+range_arguments.concat(["--base", options[:base]]) if options[:base]
+
+plan << "./scripts/check-allowed-paths --wp #{options[:wp]} #{range_arguments.join(' ')}".strip if options[:wp]
+
+if options[:full]
+  plan.concat(classification.checks)
+  plan << "./scripts/ci-all"
+else
+  plan.concat(RiffdbGovernance.always_commands)
+  unless selected.empty?
+    scope = selected.map { |crate| "-p #{crate}" }.join(" ")
+    plan << "cargo clippy #{scope} --all-targets --all-features -- -D warnings"
+    unless options[:no_tests]
+      runner = nextest_installed? ? "cargo nextest run" : "cargo test"
+      plan << "#{runner} #{scope} --all-features"
+    end
+  end
+  plan.concat(classification.checks)
+end
+
+puts "range:    #{range || '<none>'}"
+puts "tier:     #{classification.tier}#{package_tier ? " (#{options[:wp]} declares #{package_tier})" : ''}"
+puts "files:    #{files.length}"
+if selected.empty?
+  puts "crates:   none touched; clippy and tests are out of the plan"
+else
+  suffix = dependents.empty? ? "" : " (#{dependents.length} dependent(s) added)"
+  puts "crates:   #{selected.length}#{suffix}: #{selected.join(', ')}"
+end
+puts "warning:  #{tier_warning}" if tier_warning
+puts
+puts "plan (#{plan.length} step(s)), computed in #{format('%.2f', Time.now - started)}s:"
+plan.each_with_index { |command, index| puts format("  %2d  %s", index + 1, command) }
+
+if options[:dry_run]
+  puts
+  puts "dry run: nothing was executed."
+  if tier_error
+    warn tier_error
+    exit 1
+  end
+  exit 0
+end
+
+if tier_error
+  warn tier_error
+  exit 1
+end
+
+puts
+results = []
+aborted = false
+plan.each do |command|
+  if aborted
+    results << ["skip", nil, command]
+    next
+  end
+
+  puts "==> #{command}"
+  step_started = Time.now
+  ok = system(command, chdir: RiffdbGovernance.root)
+  elapsed = Time.now - step_started
+  results << [ok ? "pass" : "fail", elapsed, command]
+  aborted = true if !ok && command.start_with?("./scripts/check-allowed-paths")
+end
+
+width = results.map { |_status, _elapsed, command| command.length }.max || 0
+puts
+puts format("%-6s %8s  %s", "result", "seconds", "step")
+results.each do |status, elapsed, command|
+  puts format("%-6s %8s  %-#{width}s", status, elapsed ? format("%.1f", elapsed) : "-", command)
+end
+failed = results.count { |status, _elapsed, _command| status == "fail" }
+skipped = results.count { |status, _elapsed, _command| status == "skip" }
+puts
+puts "#{results.length - failed - skipped} passed, #{failed} failed, #{skipped} skipped."
+exit(failed.zero? ? 0 : 1)

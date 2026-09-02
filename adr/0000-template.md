@@ -1,45 +1,54 @@
-# ADR-NNNN: Title
+---
+adr: 0000                    # four digits; `./scripts/adr-new` allocates it
+title: Short Title In Title Case
+status: proposed             # proposed | accepted | rejected | superseded
+tier: surface                # surface | guarantee; internal changes need no record
+date: YYYY-MM-DD             # the day the record was written
+accepted: null               # the date a human accepted it; acceptance is a human act
+requires: []                 # [ADR-0093, ...] records this one depends on
+amends: []                   # [ADR-0093, ...] records this one refines
+supersedes: []               # [ADR-0093, ...] records this one replaces
+requirements: []             # [REP-002, ...] SPEC requirement IDs this record binds
+packages: []                 # [WP-746, ...] packages that implement it
+obligations: []              # each entry: id, package, proof, says (see below)
+review_triggers: []          # each entry: one sentence naming a change that needs review
+---
+# ADR-NNNN: Short Title In Title Case
 
-- **Status:** Proposed
-- **Direction approved:** YYYY-MM-DD, if applicable
-- **Exact text accepted:** No
-- **Decision deadline:** Before WP-NNN freezes the affected interface
+<!--
+Body caps: surface tier at most 120 lines; guarantee tier may add
+`## Options considered` and `## Consequences` and is capped at 200 lines.
 
-Direction approval records planning consensus. This ADR is not authoritative
-until a human accepts its exact text and changes the status to Accepted.
+The front matter is the single source. Index rows, package skeletons,
+obligation tracking, and requirement links are derived from it, so state a
+fact once, there, rather than repeating it in prose. An obligation entry is:
+
+obligations:
+  - id: OBL-NNNN-1
+    package: WP-NNN
+    proof: test_function_name        # or scripts/<name>
+    says: One sentence naming what the proof establishes.
+
+The proof must exist in code, not in prose: `./scripts/check-adr-obligations`
+searches outside `adr/`, `docs/`, `work_packages.yaml`, `SPEC.md`, and
+`governance/`, and fails once the owning package closes without it.
+-->
 
 ## Context
 
-Describe the force requiring a durable decision, the current authoritative
-requirements, and any conflict that cannot be left to an implementation package.
+At most two paragraphs. Name the force that requires a durable decision, the
+authoritative requirements in play, and the conflict an implementation package
+cannot settle on its own.
 
-## Proposed Decision
+## Decision
 
-State one testable decision. Distinguish POC constraints from future-compatible
-extension points. Do not use an ADR to weaken `SPEC.md` silently.
+1. One testable statement.
+2. Another testable statement. Distinguish POC constraints from
+   future-compatible extension points, and do not weaken `SPEC.md` silently.
 
-## Options Considered
+## Standing design tests
 
-1. **Option:** Consequences and reason to choose or reject it.
-2. **Option:** Consequences and reason to choose or reject it.
-
-## Consequences
-
-- Positive consequence.
-- Cost or constraint.
-- Explicitly deferred behavior.
-
-## Compatibility
-
-Describe public API, durable data, IR, source-language, and migration effects.
-
-## Security
-
-Describe trust boundaries, redaction, denial behavior, and security dependencies.
-
-## Standing Design Tests
-
-Answer both explicitly; "not applicable" requires one sentence of reasoning.
+Answer both; "not applicable" requires one sentence of reasoning.
 
 - **Interface safety (AGENTS.md boundary 11):** can an application developer or
   agent express an unsafe operation, or silently opt out of a guarantee,
@@ -50,18 +59,8 @@ Answer both explicitly; "not applicable" requires one sentence of reasoning.
   billion-row tier and must be named as a deliberate, reversible POC
   constraint.
 
-## Testing
+## Checks
 
-Name fixtures, property tests, conformance tests, fuzz targets, crash tests, or
-architecture checks that freeze and verify the decision.
-
-## Requirements and Work Packages
-
-- **Requirements:** `REQ-000`
-- **Defines or blocks:** `WP-NNN`
-- **Final evidence:** `WP-NNN`
-
-## Decision Deadline
-
-State whether exact acceptance is required before implementation or before a
-specific public/durable interface merges.
+- The fixtures, property tests, conformance tests, fuzz targets, crash tests,
+  and architecture checks that freeze the decision. Every `obligations[].proof`
+  names one of them.

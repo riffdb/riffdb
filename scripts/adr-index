@@ -1,0 +1,137 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Renders the ADR index table in adr/README.md from the records themselves.
+#
+# The hand-maintained table drifted: thirteen of its 182 rows disagreed with the
+# record they name, including four rows still saying Proposed for an accepted
+# decision. An index that can be wrong about a status is worse than no index, so
+# it is generated.
+#
+# The table is written between two markers, which adr/README.md owns:
+#
+#   <!-- adr-index:start -->
+#   <!-- adr-index:end -->
+#
+# Without them this script refuses to act rather than guess where the index
+# belongs; it will not rewrite prose it did not generate.
+
+require_relative "lib/riffdb_adr"
+
+ROOT = RiffdbAdr.root
+README_PATH = File.join(ROOT, "adr", "README.md")
+START_MARKER = "<!-- adr-index:start -->"
+END_MARKER = "<!-- adr-index:end -->"
+
+USAGE = <<~TEXT
+  usage: adr-index [--check|--write] [--help]
+
+    --check   exit 1 when adr/README.md's generated index differs (default)
+    --write   rewrite the generated index in place
+    --help    this message
+
+  The index is rendered between #{START_MARKER} and #{END_MARKER} in
+  adr/README.md, from the front matter or legacy header of every adr/NNNN-*.md.
+TEXT
+
+MISSING_MARKERS = <<~TEXT.freeze
+  adr/README.md carries no generated-index markers.
+  Add them around the `## Index` table:
+
+    #{START_MARKER}
+    #{END_MARKER}
+
+  Until they exist the index cannot be generated (adr/README.md is owned by the
+  documents change, not by this script).
+TEXT
+
+def escape(text)
+  text.to_s.gsub("|", "\\|").gsub(/\s+/, " ").strip
+end
+
+def row(record)
+  # The template is not a decision; it keeps the identity the README gave it
+  # whatever shape its own header takes.
+  if record.template?
+    return "| [#{record.number}](#{record.basename}) | ADR template | Template | template |"
+  end
+
+  title = record.title.empty? ? "(untitled)" : record.title
+  status = record.status.empty? ? "(unknown)" : record.status
+  tier = record.tier.empty? ? "(unset)" : record.tier
+  "| [#{record.number}](#{record.basename}) | #{escape(title)} | #{escape(status)} | #{escape(tier)} |"
+end
+
+def render(root)
+  rows = RiffdbAdr.records(root).map { |record| row(record) }
+  ["| ADR | Title | Status | Tier |", "|---|---|---|---|", *rows].join("\n")
+end
+
+def slice(text)
+  start = text.index(START_MARKER)
+  finish = text.index(END_MARKER)
+  return nil if start.nil? || finish.nil? || finish < start
+
+  ((start + START_MARKER.length)...finish)
+end
+
+mode = "check"
+ARGV.each do |argument|
+  case argument
+  when "--help", "-h"
+    puts USAGE
+    exit 0
+  when "--check" then mode = "check"
+  when "--write" then mode = "write"
+  else
+    warn "unknown option #{argument.inspect}"
+    warn USAGE
+    exit 2
+  end
+end
+
+unless File.file?(README_PATH)
+  warn "#{README_PATH} does not exist"
+  exit 1
+end
+
+readme = File.read(README_PATH, encoding: "UTF-8")
+range = slice(readme)
+if range.nil?
+  warn MISSING_MARKERS
+  warn "refusing to guess where the index belongs." if mode == "write"
+  exit 1
+end
+
+current = readme[range]
+generated = "\n#{render(ROOT)}\n"
+
+if mode == "write"
+  if current == generated
+    puts "adr/README.md index is already current (#{RiffdbAdr.adr_paths(ROOT).length} records)."
+    exit 0
+  end
+
+  updated = readme.dup
+  updated[range] = generated
+  File.write(README_PATH, updated)
+  puts "Wrote #{RiffdbAdr.adr_paths(ROOT).length} index rows to adr/README.md."
+  exit 0
+end
+
+if current == generated
+  puts "adr/README.md index matches the records (#{RiffdbAdr.adr_paths(ROOT).length} rows)."
+  exit 0
+end
+
+want = generated.lines.map(&:chomp)
+have = current.lines.map(&:chomp)
+differing = (0...[want.length, have.length].max).reject { |index| want[index] == have[index] }
+warn "adr/README.md index is out of date: #{differing.length} line(s) differ."
+differing.first(5).each do |index|
+  warn "  - have: #{have[index].inspect}"
+  warn "    want: #{want[index].inspect}"
+end
+warn "  ... #{differing.length - 5} more" if differing.length > 5
+warn "Run ./scripts/adr-index --write."
+exit 1

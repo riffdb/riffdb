@@ -1,0 +1,163 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Measure how much of the repository's change volume is process paperwork:
+# lines added and deleted in governance_paths versus every other tracked file.
+
+require "json"
+require_relative "lib/riffdb_governance"
+
+USAGE = <<~HELP
+  Usage: governance-cost [options]
+
+  For every commit in the range, count the lines added plus deleted in the
+  governance_paths of governance/tiers.yaml against the lines added plus deleted
+  in every other tracked file, and print the governance share. Generated code,
+  Cargo.lock, fixtures and vendored node_modules are excluded from both sides.
+
+  Merge commits are skipped so that their changes are not counted twice.
+
+  Options:
+        --since <date>      only commits at or after <date>
+        --range <a>..<b>    only commits in this range
+        --limit <n>         rows in the per-commit table (default 20, 0 for all)
+        --json              emit the per-commit rows and the totals as JSON
+    -h, --help              show this message
+
+  Exit status: 0 normally, 2 on a usage error.
+HELP
+
+EXCLUDED_PATHS = ["**/generated/**", "Cargo.lock", "fixtures/**", "**/node_modules/**"].freeze
+DEFAULT_LIMIT = 20
+
+options = { since: nil, range: nil, limit: DEFAULT_LIMIT, json: false }
+
+argv = ARGV.dup
+take = lambda do |flag|
+  value = argv.shift
+  next value unless value.nil? || value.empty?
+
+  warn "missing value for #{flag}"
+  exit 2
+end
+
+until argv.empty?
+  argument = argv.shift
+  case argument
+  when "--help", "-h" then (puts USAGE) || exit(0)
+  when "--json" then options[:json] = true
+  when "--since" then options[:since] = take.call("--since")
+  when "--range" then options[:range] = take.call("--range")
+  when "--limit" then options[:limit] = Integer(take.call("--limit"), exception: false)
+  when /\A--since=(.+)\z/ then options[:since] = Regexp.last_match(1)
+  when /\A--range=(.+)\z/ then options[:range] = Regexp.last_match(1)
+  when /\A--limit=(.+)\z/ then options[:limit] = Integer(Regexp.last_match(1), exception: false)
+  else warn("unknown argument #{argument}\n\n#{USAGE}") || exit(2)
+  end
+end
+
+if options[:limit].nil? || options[:limit].negative?
+  warn "--limit takes a non-negative integer"
+  exit 2
+end
+
+# `git log --numstat` renders renames as `prefix{old => new}suffix` or as
+# `old => new`; both denote one file, counted under its new path.
+def numstat_path(raw)
+  path = raw
+  path = path.sub(/\{(.*?) => (.*?)\}/) { Regexp.last_match(2) } while path.include?(" => ") && path.include?("{")
+  path = path.split(" => ").last if path.include?(" => ")
+  path.gsub(%r{//+}, "/").sub(%r{\A/}, "")
+end
+
+arguments = ["log", "--no-merges", "--numstat", "--format=%x1f%H%x1f%aI%x1f%s"]
+arguments << "--since=#{options[:since]}" if options[:since]
+arguments << (options[:range] || "HEAD")
+
+begin
+  log = RiffdbGovernance.git(*arguments)
+  governance_paths = RiffdbGovernance.governance_paths
+rescue RiffdbGovernance::Error => error
+  warn error.message
+  exit 2
+end
+
+commits = []
+current = nil
+log.each_line do |line|
+  line = line.chomp
+  next if line.empty?
+
+  if line.start_with?("\x1f")
+    _blank, sha, date, subject = line.split("\x1f", 4)
+    current = { "commit" => sha, "date" => date.to_s[0, 10], "subject" => subject.to_s, "governance" => 0, "other" => 0 }
+    commits << current
+    next
+  end
+
+  next unless current
+
+  added, deleted, raw = line.split("\t", 3)
+  next if raw.nil? || added == "-" || deleted == "-"
+
+  path = numstat_path(raw)
+  next if RiffdbGovernance::Glob.match_any?(EXCLUDED_PATHS, path)
+
+  volume = added.to_i + deleted.to_i
+  bucket = RiffdbGovernance::Glob.match_any?(governance_paths, path) ? "governance" : "other"
+  current[bucket] += volume
+end
+
+governance_total = commits.sum { |commit| commit["governance"] }
+other_total = commits.sum { |commit| commit["other"] }
+total = governance_total + other_total
+share = total.zero? ? 0.0 : (governance_total * 100.0 / total)
+touched = commits.count { |commit| commit["governance"].positive? }
+scope = options[:range] || "HEAD#{options[:since] ? " since #{options[:since]}" : ''}"
+
+if options[:json]
+  puts JSON.pretty_generate(
+    "scope" => scope,
+    "since" => options[:since],
+    "range" => options[:range],
+    "excluded" => EXCLUDED_PATHS,
+    "governance_paths" => governance_paths,
+    "commits" => commits,
+    "totals" => {
+      "governance" => governance_total,
+      "other" => other_total,
+      "total" => total,
+      "governance_share_percent" => share.round(2)
+    }
+  )
+  exit 0
+end
+
+rows = if options[:limit].zero?
+         commits
+       else
+         commits.sort_by { |commit| -commit["governance"] }.first(options[:limit])
+       end
+
+puts "scope:    #{scope}"
+puts "commits:  #{commits.length} (#{touched} touched a governance path)"
+puts
+heading = options[:limit].zero? ? "every commit, newest first" : "top #{rows.length} commit(s) by governance lines"
+puts heading
+puts format("  %-9s %-10s %10s %10s %8s  %s", "commit", "date", "governance", "other", "share", "subject")
+rows.each do |commit|
+  commit_total = commit["governance"] + commit["other"]
+  commit_share = commit_total.zero? ? 0.0 : (commit["governance"] * 100.0 / commit_total)
+  puts format(
+    "  %-9s %-10s %10d %10d %7.1f%%  %s",
+    commit["commit"][0, 9], commit["date"], commit["governance"], commit["other"],
+    commit_share, commit["subject"][0, 60]
+  )
+end
+if !options[:limit].zero? && commits.length > rows.length
+  puts "  ... #{commits.length - rows.length} more commit(s); use --limit 0 to list them all"
+end
+puts
+puts format("totals:   governance %d, other %d, total %d", governance_total, other_total, total)
+puts format("governance share: %.1f%% of changed lines", share)
+exit 0

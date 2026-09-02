@@ -1,0 +1,109 @@
+# RiffDB governance tiers (process version 2, cutover 2026-09-02).
+#
+# `rules` classify a change: the first matching rule wins for a single file and
+# a change's tier is the maximum over its files. `checks` are path-triggered;
+# `always` runs for every change. Glob semantics are documented in
+# scripts/lib/riffdb_governance.rb and shared by work-package allowed_paths.
+#
+# Governance-cost baseline (./scripts/governance-cost --since 2026-06-01):
+# 2026-09-01 baseline over 1273 commits: 101,477 governance lines against
+# 1,771,277 other lines (1,872,754 total), a governance share of 5.4% of all
+# changed lines, with 519 of those commits touching a governance path.
+version: 1
+cutover: "2026-09-02"
+tiers:
+  internal:
+    ceremony: tests and acceptance only; no record required; commit message names the tier
+  surface:
+    ceremony: short-form decision record (ADR v2, surface tier) and human review of fixture diffs
+  guarantee:
+    ceremony: full decision record with exact-text acceptance before merge; human review
+rules:            # first match wins per file; a change's tier is the maximum over its files
+  - tier: guarantee
+    paths:
+      - crates/riffdb-commit/src/**
+      - crates/riffdb-conflict/src/**
+      - crates/riffdb-idempotency/src/**
+      - crates/riffdb-auth/src/**
+      - crates/riffdb-policy/src/**
+      - crates/riffdb-runtime/src/**
+      - crates/riffdb-invariant/src/**
+      - crates/riffdb-storage-redb/src/store.rs
+      - crates/riffdb-storage-redb/src/journal.rs
+      - crates/riffdb-storage-redb/src/command_authority.rs
+      - crates/riffdb-storage-redb/src/validated_prefix.rs
+      - crates/riffdb-storage-redb/src/clean_close.rs
+      - crates/riffdb-storage-redb/src/retention.rs
+      - crates/riffdb-storage-redb/src/gate.rs
+      - crates/riffdb-storage-redb/src/startup.rs
+      - crates/riffdb-storage-api/src/command_txn.rs
+      - crates/riffdb-storage-api/src/admission.rs
+      - crates/riffdb-storage-api/src/changelog.rs
+      - crates/riffdb-storage-api/src/changelog_v2.rs
+      - crates/riffdb-storage-api/src/capability.rs
+      - crates/riffdb-storage-api/src/sequence.rs
+      - crates/riffdb-api-mcp/src/handler.rs
+      - crates/riffdb-api-mcp/src/observer.rs
+      - AGENTS.md
+  - tier: surface
+    paths:
+      - proto/**
+      - crates/riffdb-proto/**
+      - crates/riffdb-storage-api/**
+      - crates/riffdb-storage-redb/src/layout.rs
+      - crates/riffdb-storage-redb/src/keys.rs
+      - crates/riffdb-storage-redb/src/codec.rs
+      - crates/riffdb-storage-redb/src/format_upgrade.rs
+      - crates/riffdb-storage-redb/src/format_preflight.rs
+      - crates/riffdb-contract-syntax/**
+      - crates/riffdb-riffql-syntax/**
+      - crates/riffdb-reactive-syntax/**
+      - crates/riffdb-query-syntax/**
+      - crates/riffdb-contract-ir/**
+      - crates/riffdb-query-ir/**
+      - crates/riffdb-contract-compiler/**
+      - crates/riffdb-query-compiler/**
+      - crates/riffdb-query-module/**
+      - crates/riffdb-operation-registry/**
+      - crates/riffdb-api-grpc/**
+      - crates/riffdb-api-mcp/**
+      - crates/riffdb-client-rust/**
+      - crates/riffdb-driver-host/**
+      - crates/riffdb-client-python-native/**
+      - crates/riffdb-cli/src/cli.rs
+      - crates/riffdb-cli/src/output.rs
+      - crates/riffdb-config/**
+      - clients/**
+      - templates/**
+      - fixtures/**
+      - release/**
+      - SPEC.md
+      - adr/**
+  - tier: internal
+    paths: ["**"]
+checks:           # path-triggered checks; `run` entries are executed in order; all `when` globs are OR
+  - when: [proto/**, crates/riffdb-proto/**, fixtures/**, release/**, crates/riffdb-query-module/**, templates/**, clients/**, crates/riffdb-operation-registry/**, crates/riffdb-cli/**]
+    run: [./scripts/check-generated]
+  - when: [release/**, crates/riffdb-storage-api/**, crates/riffdb-proto/**]
+    run: [./scripts/check-version-topology]
+  - when: [docs/**, crates/riffdb-cli/**, README.md]
+    run: [./scripts/handbook check]
+  - when: [crates/riffdb-contract-syntax/**, crates/riffdb-riffql-syntax/**, crates/riffdb-contract-compiler/**, crates/riffdb-query-compiler/**]
+    run: [./scripts/downstream-adapter-check]
+  - when: [Cargo.toml, Cargo.lock, crates/*/Cargo.toml, deny.toml, xtask/**]
+    run: [./scripts/check-workspace-policy, cargo deny check, cargo machete]
+  - when: [adr/**, SPEC.md, work_packages.yaml, governance/**]
+    run: [./scripts/check-requirement-coverage, ./scripts/check-adr-obligations, ./scripts/adr-index --check]
+  - when: [crates/**]
+    run: [./scripts/check-file-size-guard, ./scripts/check-panic-allowances]
+  - when: [release/container/**, release/kubernetes/**, release/helm/**]
+    run: [./scripts/check-container-startup, ./scripts/check-helm-render]
+always:
+  - cargo fmt --all -- --check
+governance_paths:   # used by governance-cost
+  - SPEC.md
+  - work_packages.yaml
+  - adr/**
+  - AGENTS.md
+  - docs/CONTRIBUTING.md
+  - governance/**

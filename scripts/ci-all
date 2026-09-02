@@ -37,5 +37,7 @@ cargo machete
 ./scripts/check-workspace-policy
 ./scripts/check-file-size-guard
 ./scripts/check-requirement-coverage
+./scripts/check-adr-obligations
+./scripts/adr-index --check
 ./scripts/check-generated
 ./scripts/release-source-install-smoke
