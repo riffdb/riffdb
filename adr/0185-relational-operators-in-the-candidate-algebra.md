@@ -1,10 +1,10 @@
 ---
 adr: 0185
 title: Relational Operators in the Candidate Algebra, Not Provider Families
-status: proposed
+status: accepted
 tier: surface
 date: 2026-09-02
-accepted: null
+accepted: "2026-09-02"
 requires: [ADR-0051, ADR-0054, ADR-0108, ADR-0111, ADR-0134, ADR-0150, ADR-0164, ADR-0174, ADR-0175]
 amends: [ADR-0178]
 supersedes: []
