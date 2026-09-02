@@ -10,6 +10,7 @@ from client import (
     ExactDocumentsContainsAscParams,
     ExactDocumentsEndsWithDescParams,
     ExactDocumentsStartsWithAscParams,
+    FgaObjectsWithRelationsParams,
     GetAuthSessionFound,
     GetAuthSessionParams,
     InventoryBySubtitleAscNullsFirstParams,
@@ -17,9 +18,11 @@ from client import (
     ListFgaTuplesParams,
     ListPipelinesParams,
     MetricDashboardParams,
+    MlflowRunsWithTagsParams,
     ReviewedDirectoryUsersParams,
     SearchDirectoryUsersParams,
     SearchDocumentsParams,
+    TicketPageWithCommentsParams,
 )
 from riffdb_application import (
     AttemptBudget,
@@ -68,6 +71,35 @@ def main() -> None:
             dashboard.summary[0].minimum_micros == 125
             and dashboard.summary[0].maximum_micros == 175,
             "MLflow min/max",
+        )
+
+        tickets = client.ticket_page_with_comments(
+            TicketPageWithCommentsParams(organization_id=uid(80), state="open")
+        ).value
+        require(len(tickets.tickets) == 2, "TicketDesk expansion page")
+        require(
+            len(tickets.tickets[0].comments) == 2
+            and len(tickets.tickets[1].comments) == 1,
+            "TicketDesk comments per ticket",
+        )
+
+        runs = client.mlflow_runs_with_tags(
+            MlflowRunsWithTagsParams(experiment_id=uid(90), lifecycle="active")
+        ).value
+        require(len(runs.runs) == 2, "MLflow expansion page")
+        require(
+            len(runs.runs[0].tags) == 2 and len(runs.runs[1].tags) == 1,
+            "MLflow tags per run",
+        )
+
+        objects = client.fga_objects_with_relations(
+            FgaObjectsWithRelationsParams(store_id=uid(100), kind="document")
+        ).value
+        require(len(objects.objects) == 2, "OpenFGA expansion page")
+        require(
+            len(objects.objects[0].relations) == 2
+            and len(objects.objects[1].relations) == 1,
+            "OpenFGA relations per object",
         )
 
         documents = client.search_documents(
@@ -180,6 +212,7 @@ def main() -> None:
                 "nullable_exact_order": True,
                 "exact_total": True,
                 "numeric_offset": True,
+                "operator_expansions": True,
                 "adapters": ["mlflow", "openfga", "better-auth", "woodpecker"],
                 "regression_adapters": ["payload"],
             },

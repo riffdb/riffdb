@@ -211,6 +211,7 @@ impl ServiceHarness {
             false,
             false,
             0,
+            false,
             workload_capacity.max(1),
             true,
             None,
@@ -232,6 +233,7 @@ impl ServiceHarness {
             false,
             false,
             1,
+            false,
             workload_capacity.max(1),
             true,
             None,
@@ -258,6 +260,7 @@ impl ServiceHarness {
             true,
             false,
             0,
+            false,
             8,
             false,
             Some(telemetry),
@@ -285,6 +288,7 @@ impl ServiceHarness {
             true,
             false,
             0,
+            false,
             8,
             false,
             None,
@@ -315,6 +319,27 @@ impl ServiceHarness {
             false,
             true,
             false,
+        )
+    }
+
+    pub(crate) fn reimport_discovery() -> Self {
+        Self::compose_with_additional_commands_and_capacity(
+            ReadCommitMode::ImmediateNotFound,
+            true,
+            false,
+            false,
+            true,
+            false,
+            0,
+            true,
+            8,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
         )
     }
 
@@ -389,6 +414,7 @@ impl ServiceHarness {
             broad_operations,
             pre_bootstrap,
             additional_commands,
+            false,
             8,
             false,
             None,
@@ -409,6 +435,7 @@ impl ServiceHarness {
         broad_operations: bool,
         pre_bootstrap: bool,
         additional_commands: usize,
+        include_reimport_command: bool,
         workload_capacity: u16,
         direct_empty_idempotency: bool,
         telemetry_override: Option<Arc<dyn ServiceTelemetry>>,
@@ -420,6 +447,8 @@ impl ServiceHarness {
     ) -> Self {
         let database = if pre_bootstrap {
             AuditDatabase::create_pre_bootstrap(broad_operations)
+        } else if include_reimport_command {
+            AuditDatabase::create_with_reimport(broad_operations)
         } else {
             AuditDatabase::create_with_additional_commands(broad_operations, additional_commands)
         };
@@ -1668,6 +1697,18 @@ impl AuditDatabase {
     }
 
     fn create_with_additional_commands(with_index: bool, additional_commands: usize) -> Self {
+        Self::create_with_options(with_index, additional_commands, false)
+    }
+
+    fn create_with_reimport(with_index: bool) -> Self {
+        Self::create_with_options(with_index, 0, true)
+    }
+
+    fn create_with_options(
+        with_index: bool,
+        additional_commands: usize,
+        include_reimport_command: bool,
+    ) -> Self {
         let path = next_database_path();
         let mut store = RedbStore::open(&path).expect("create service harness database");
         assert_eq!(
@@ -1695,6 +1736,13 @@ impl AuditDatabase {
             source = source.replacen(
                 "  projection BudgetUtilizationDaily {",
                 &format!("{declarations}  projection BudgetUtilizationDaily {{"),
+                1,
+            );
+        }
+        if include_reimport_command {
+            source = source.replacen(
+                "  projection BudgetUtilizationDaily {",
+                "  reimport command ReconstituteBudgets {\n    input records: list<Budget, 1..32>\n    reconstitute Budget from records else BudgetAlreadyExists {}\n    return BudgetsReconstituted {}\n  }\n\n  projection BudgetUtilizationDaily {",
                 1,
             );
         }

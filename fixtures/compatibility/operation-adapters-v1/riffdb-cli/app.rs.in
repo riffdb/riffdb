@@ -11298,6 +11298,39 @@ fn diagnostics_json(diagnostics: &[app_v1::Diagnostic]) -> Vec<serde_json::Value
         .collect()
 }
 
+fn query_result_value_json(value: &v1::Value) -> Option<serde_json::Value> {
+    use v1::value::Kind;
+
+    match value.kind.as_ref()? {
+        Kind::ListValue(list) => Some(serde_json::json!({
+            "type": "list",
+            "values": list
+                .values
+                .iter()
+                .map(query_result_value_json)
+                .collect::<Option<Vec<_>>>()?,
+        })),
+        Kind::RecordValue(record) if record.fields.iter().all(|field| field.field_id.is_none()) => {
+            let mut names = BTreeSet::new();
+            let fields = record
+                .fields
+                .iter()
+                .map(|field| {
+                    if field.name.is_empty() || !names.insert(field.name.as_str()) {
+                        return None;
+                    }
+                    Some(serde_json::json!({
+                        "name": field.name,
+                        "value": query_result_value_json(field.value.as_ref()?)?,
+                    }))
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(serde_json::json!({"type": "record", "fields": fields}))
+        }
+        _ => serde_json::to_value(crate::value::OutputValue(value)).ok(),
+    }
+}
+
 fn query_execution_json(response: &app_v1::ExecuteQueryResponse) -> Option<serde_json::Value> {
     let identity = response.identity.as_ref()?;
     let fields = response
@@ -11320,9 +11353,7 @@ fn query_execution_json(response: &app_v1::ExecuteQueryResponse) -> Option<serde
                         .map(|field| {
                             Some(serde_json::json!({
                                 "name": field.name,
-                                "value": serde_json::to_value(crate::value::OutputValue(
-                                    field.value.as_ref()?
-                                )).ok()?,
+                                "value": query_result_value_json(field.value.as_ref()?)?,
                             }))
                         })
                         .collect::<Option<Vec<_>>>()?;
@@ -12597,6 +12628,40 @@ mod tests {
         assert_eq!(
             result["identity"]["module_hash"],
             serde_json::Value::String("cc".repeat(32))
+        );
+    }
+
+    // req: OQ-113
+    #[test]
+    fn named_query_json_preserves_bounded_nested_result_records() {
+        let value = v1::Value {
+            kind: Some(v1::value::Kind::ListValue(v1::ValueList {
+                values: vec![v1::Value {
+                    kind: Some(v1::value::Kind::RecordValue(v1::ValueRecord {
+                        fields: vec![v1::ValueField {
+                            field_id: None,
+                            name: "created_at".to_owned(),
+                            value: Some(v1::Value {
+                                kind: Some(v1::value::Kind::U64Value(7)),
+                            }),
+                        }],
+                    })),
+                }],
+            })),
+        };
+
+        assert_eq!(
+            query_result_value_json(&value),
+            Some(serde_json::json!({
+                "type": "list",
+                "values": [{
+                    "type": "record",
+                    "fields": [{
+                        "name": "created_at",
+                        "value": {"type": "u64", "value": "7"},
+                    }],
+                }],
+            }))
         );
     }
 

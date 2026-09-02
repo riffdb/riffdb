@@ -1,4 +1,5 @@
 //! Rust cell for the shared adapter-shaped operational-query corpus.
+// req: OQ-113
 
 #![forbid(unsafe_code)]
 #![allow(dead_code, unreachable_pub)]
@@ -112,6 +113,7 @@ async fn run_async() -> TestResult<()> {
             "nullable_exact_order": true,
             "exact_total": true,
             "numeric_offset": true,
+            "operator_expansions": true,
             "adapters": ["mlflow", "openfga", "better-auth", "woodpecker"],
             "regression_adapters": ["payload"],
         })
@@ -241,6 +243,67 @@ async fn seed(client: &mut generated::AdapterOperationalConformanceClient) -> Te
                     nanos: 0,
                 },
             }],
+        })
+        .await?;
+    client
+        .seed_tickets(generated::SeedTicketsInput {
+            request_id: id(120),
+            tickets: vec![
+                generated::Ticket {
+                    organization_id: id(80),
+                    ticket_id: id(81),
+                    state: "open".to_owned(),
+                    title: "Expansion first".to_owned(),
+                },
+                generated::Ticket {
+                    organization_id: id(80),
+                    ticket_id: id(82),
+                    state: "open".to_owned(),
+                    title: "Expansion second".to_owned(),
+                },
+            ],
+        })
+        .await?;
+    client
+        .seed_ticket_comments(generated::SeedTicketCommentsInput {
+            request_id: id(121),
+            comments: vec![
+                ticket_comment(81, 83, 1, "first comment"),
+                ticket_comment(81, 84, 2, "second comment"),
+                ticket_comment(82, 85, 1, "other ticket"),
+            ],
+        })
+        .await?;
+    client
+        .seed_runs(generated::SeedRunsInput {
+            request_id: id(122),
+            runs: vec![mlflow_run(91, "active"), mlflow_run(92, "active")],
+        })
+        .await?;
+    client
+        .seed_run_tags(generated::SeedRunTagsInput {
+            request_id: id(123),
+            tags: vec![
+                mlflow_tag(91, 93, "model", "alpha"),
+                mlflow_tag(91, 94, "stage", "test"),
+                mlflow_tag(92, 95, "model", "beta"),
+            ],
+        })
+        .await?;
+    client
+        .seed_objects(generated::SeedObjectsInput {
+            request_id: id(124),
+            objects: vec![fga_object(101, "document"), fga_object(102, "document")],
+        })
+        .await?;
+    client
+        .seed_object_relations(generated::SeedObjectRelationsInput {
+            request_id: id(125),
+            relations: vec![
+                fga_relation(101, 103, "viewer", "user:alice"),
+                fga_relation(101, 104, "editor", "team:authors"),
+                fga_relation(102, 105, "viewer", "user:bob"),
+            ],
         })
         .await?;
     Ok(())
@@ -424,6 +487,46 @@ async fn verify_queries(
         "Better Auth typed session graph",
     )?;
 
+    let ticket_page = client
+        .ticket_page_with_comments(generated::TicketPageWithCommentsParams {
+            organization_id: id(80),
+            state: "open".to_owned(),
+        })
+        .await?;
+    let generated::TicketPageWithCommentsResult::Found(ticket_page) = ticket_page;
+    expect(
+        ticket_page.tickets.len() == 2
+            && ticket_page.tickets[0].comments.len() == 2
+            && ticket_page.tickets[1].comments.len() == 1,
+        "TicketDesk tickets carry bounded comments per ticket",
+    )?;
+
+    let runs = client
+        .mlflow_runs_with_tags(generated::MlflowRunsWithTagsParams {
+            experiment_id: id(90),
+            lifecycle: "active".to_owned(),
+        })
+        .await?;
+    let generated::MlflowRunsWithTagsResult::Found(runs) = runs;
+    expect(
+        runs.runs.len() == 2 && runs.runs[0].tags.len() == 2 && runs.runs[1].tags.len() == 1,
+        "MLflow runs carry bounded tags per run",
+    )?;
+
+    let objects = client
+        .fga_objects_with_relations(generated::FgaObjectsWithRelationsParams {
+            store_id: id(100),
+            kind: "document".to_owned(),
+        })
+        .await?;
+    let generated::FgaObjectsWithRelationsResult::Found(objects) = objects;
+    expect(
+        objects.objects.len() == 2
+            && objects.objects[0].relations.len() == 2
+            && objects.objects[1].relations.len() == 1,
+        "OpenFGA objects carry bounded relations per object",
+    )?;
+
     let stale = client
         .list_fga_tuples_with_options(
             generated::ListFgaTuplesParams {
@@ -535,6 +638,62 @@ fn metric(suffix: u8, value_micros: i64, step: i64) -> generated::Metric {
         name: "latency".to_owned(),
         value_micros,
         step,
+    }
+}
+
+fn ticket_comment(
+    ticket_suffix: u8,
+    comment_suffix: u8,
+    created_at: u64,
+    body: &str,
+) -> generated::TicketComment {
+    generated::TicketComment {
+        organization_id: id(80),
+        ticket_id: id(ticket_suffix),
+        comment_id: id(comment_suffix),
+        body: body.to_owned(),
+        created_at,
+    }
+}
+
+fn mlflow_run(run_suffix: u8, lifecycle: &str) -> generated::MlflowRun {
+    generated::MlflowRun {
+        experiment_id: id(90),
+        run_id: id(run_suffix),
+        lifecycle: lifecycle.to_owned(),
+    }
+}
+
+fn mlflow_tag(run_suffix: u8, tag_suffix: u8, name: &str, value: &str) -> generated::MlflowRunTag {
+    generated::MlflowRunTag {
+        experiment_id: id(90),
+        run_id: id(run_suffix),
+        tag_id: id(tag_suffix),
+        name: name.to_owned(),
+        value: value.to_owned(),
+    }
+}
+
+fn fga_object(object_suffix: u8, kind: &str) -> generated::FgaObject {
+    generated::FgaObject {
+        store_id: id(100),
+        object_id: id(object_suffix),
+        kind: kind.to_owned(),
+    }
+}
+
+fn fga_relation(
+    object_suffix: u8,
+    relation_suffix: u8,
+    relation: &str,
+    subject: &str,
+) -> generated::FgaRelation {
+    generated::FgaRelation {
+        store_id: id(100),
+        object_id: id(object_suffix),
+        relation_id: id(relation_suffix),
+        relation: relation.to_owned(),
+        subject: subject.to_owned(),
     }
 }
 

@@ -111,15 +111,10 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   and enum components support the same bounded interval shape. Canonical
   string ranges, multiple branching dimensions, overlapping unions,
   residual post-page filters, index intersections, caller-selected plans, and
-  general joins are unavailable. Relationship composition is limited to
-  compiler-declared same-partition complete-key points, singular-key-driven
-  separately bounded index reads, and one ordered dependent complete-key batch
-  with zero-or-one target per distinct driver key, plus one compiler-bounded
-  same-partition one-to-many expansion nested under its bounded driver.
-  One root-local `exists` or `not exists` predicate may lower through a declared
-  same-partition junction index to the existing candidate algebra. General
-  semijoins, dependent or correlated existence, cross-partition joins,
-  Cartesian products, recursion, and runtime join optimization are unavailable.
+  general joins are unavailable. Remaining relationship refusals are dependent
+  or correlated existence, depth-two expansion, independent target paging,
+  cross-partition joins, Cartesian products, recursion, and runtime join
+  optimization.
   Recompile and redeploy a refused named query rather than emulating it in
   application code.
 - The WP-690 external receipt is intentionally a narrow source-compilation

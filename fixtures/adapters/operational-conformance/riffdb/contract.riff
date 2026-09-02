@@ -77,6 +77,49 @@ contract AdapterOperationalConformance version 1 {
     field expires_at: timestamp
   }
 
+  entity Ticket {
+    key (organization_id: uuid, ticket_id: uuid)
+    field state: string<32>
+    field title: string<128>
+    index by_state (organization_id, state, ticket_id)
+  }
+
+  entity TicketComment {
+    key (organization_id: uuid, ticket_id: uuid, comment_id: uuid)
+    field body: string<256>
+    field created_at: u64
+    index by_ticket (organization_id, ticket_id, created_at, comment_id)
+    reference ticket (organization_id, ticket_id) -> Ticket(organization_id, ticket_id)
+  }
+
+  entity MlflowRun {
+    key (experiment_id: uuid, run_id: uuid)
+    field lifecycle: string<32>
+    index by_lifecycle (experiment_id, lifecycle, run_id)
+  }
+
+  entity MlflowRunTag {
+    key (experiment_id: uuid, run_id: uuid, tag_id: uuid)
+    field name: string<128>
+    field value: string<256>
+    index by_run (experiment_id, run_id, tag_id)
+    reference run (experiment_id, run_id) -> MlflowRun(experiment_id, run_id)
+  }
+
+  entity FgaObject {
+    key (store_id: uuid, object_id: uuid)
+    field kind: string<64>
+    index by_kind (store_id, kind, object_id)
+  }
+
+  entity FgaRelation {
+    key (store_id: uuid, object_id: uuid, relation_id: uuid)
+    field relation: string<64>
+    field subject: string<256>
+    index by_object (store_id, object_id, relation_id)
+    reference object (store_id, object_id) -> FgaObject(store_id, object_id)
+  }
+
   aggregate FgaTuples {
     root FgaTuple
     partition_by store_id
@@ -119,6 +162,27 @@ contract AdapterOperationalConformance version 1 {
     child AuthSignupInput
     partition_by organization_id
     conflict_key (organization_id, user_id)
+  }
+
+  aggregate Tickets {
+    root Ticket
+    child TicketComment
+    partition_by organization_id
+    conflict_key (organization_id, ticket_id)
+  }
+
+  aggregate MlflowRuns {
+    root MlflowRun
+    child MlflowRunTag
+    partition_by experiment_id
+    conflict_key (experiment_id, run_id)
+  }
+
+  aggregate FgaObjects {
+    root FgaObject
+    child FgaRelation
+    partition_by store_id
+    conflict_key (store_id, object_id)
   }
 
   workflow AuthSessionLifecycle {
@@ -243,6 +307,79 @@ contract AdapterOperationalConformance version 1 {
       set session.expires_at = signup.expires_at
     }
     return SessionsCreated {}
+  }
+
+  bulk command SeedTickets {
+    input request_id: uuid
+    input tickets: list<Ticket, 1..8>
+    idempotency_key request_id
+    for candidate in tickets {
+      create Ticket(candidate.organization_id, candidate.ticket_id) as stored else TicketAlreadyExists {}
+      set stored.state = candidate.state
+      set stored.title = candidate.title
+    }
+    return TicketsSeeded {}
+  }
+
+  bulk command SeedTicketComments {
+    input request_id: uuid
+    input comments: list<TicketComment, 1..32>
+    idempotency_key request_id
+    for candidate in comments {
+      read Ticket(candidate.organization_id, candidate.ticket_id) as ticket else TicketMissing {}
+      create TicketComment(candidate.organization_id, candidate.ticket_id, candidate.comment_id) as stored else TicketCommentAlreadyExists {}
+      set stored.body = candidate.body
+      set stored.created_at = candidate.created_at
+    }
+    return TicketCommentsSeeded {}
+  }
+
+  bulk command SeedRuns {
+    input request_id: uuid
+    input runs: list<MlflowRun, 1..8>
+    idempotency_key request_id
+    for candidate in runs {
+      create MlflowRun(candidate.experiment_id, candidate.run_id) as stored else MlflowRunAlreadyExists {}
+      set stored.lifecycle = candidate.lifecycle
+    }
+    return RunsSeeded {}
+  }
+
+  bulk command SeedRunTags {
+    input request_id: uuid
+    input tags: list<MlflowRunTag, 1..32>
+    idempotency_key request_id
+    for candidate in tags {
+      read MlflowRun(candidate.experiment_id, candidate.run_id) as run else MlflowRunMissing {}
+      create MlflowRunTag(candidate.experiment_id, candidate.run_id, candidate.tag_id) as stored else MlflowRunTagAlreadyExists {}
+      set stored.name = candidate.name
+      set stored.value = candidate.value
+    }
+    return RunTagsSeeded {}
+  }
+
+  bulk command SeedObjects {
+    input request_id: uuid
+    input objects: list<FgaObject, 1..8>
+    idempotency_key request_id
+    for candidate in objects {
+      create FgaObject(candidate.store_id, candidate.object_id) as stored else FgaObjectAlreadyExists {}
+      set stored.kind = candidate.kind
+    }
+    return ObjectsSeeded {}
+  }
+
+  bulk command SeedObjectRelations {
+    input request_id: uuid
+    input relations: list<FgaRelation, 1..32>
+    idempotency_key request_id
+    for candidate in relations {
+      read FgaObject(candidate.store_id, candidate.object_id) as object else FgaObjectMissing {}
+      create FgaRelation(candidate.store_id, candidate.object_id, candidate.relation_id) as stored else FgaRelationAlreadyExists {}
+      set stored.relation = candidate.relation
+      set stored.subject = candidate.subject
+    }
+    return ObjectRelationsSeeded {}
   }
 
   reimport command ReconstituteFgaTuples {

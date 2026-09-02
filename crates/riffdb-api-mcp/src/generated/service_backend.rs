@@ -4672,34 +4672,6 @@ fn named_query_value(
     value: &CanonicalValue,
 ) -> Result<serde_json::Value, McpBackendError> {
     match value {
-        CanonicalValue::Null => Ok(serde_json::Value::Null),
-        CanonicalValue::Bool(value) => Ok(serde_json::Value::Bool(*value)),
-        CanonicalValue::I64(value) => Ok(serde_json::Value::Number((*value).into())),
-        CanonicalValue::U64(value) => Ok(serde_json::Value::Number((*value).into())),
-        CanonicalValue::Decimal(value) => Ok(serde_json::Value::String(format!(
-            "{}e-{}",
-            value.coefficient(),
-            value.spec().scale()
-        ))),
-        CanonicalValue::Money(value) => Ok(serde_json::Value::String(format!(
-            "{}:{}e-{}",
-            value.currency(),
-            value.amount().coefficient(),
-            value.amount().spec().scale()
-        ))),
-        CanonicalValue::String(value) => Ok(serde_json::Value::String(value.as_str().to_owned())),
-        CanonicalValue::Bytes(value) => Ok(serde_json::Value::String(
-            base64::engine::general_purpose::STANDARD.encode(value.as_bytes()),
-        )),
-        CanonicalValue::Timestamp(value) => Ok(serde_json::Value::String(format!(
-            "{}.{:09}",
-            value.seconds(),
-            value.nanos()
-        ))),
-        CanonicalValue::Date(value) => Ok(serde_json::Value::String(
-            value.days_since_unix_epoch().to_string(),
-        )),
-        CanonicalValue::Uuid(value) => Ok(serde_json::Value::String(format_uuid(*value))),
         CanonicalValue::Enum {
             type_id,
             variant_id,
@@ -4713,9 +4685,8 @@ fn named_query_value(
             .map(|value| named_query_value(result, value))
             .collect::<Result<Vec<_>, _>>()
             .map(serde_json::Value::Array),
-        CanonicalValue::Record(_) | CanonicalValue::Vector(_) => {
-            Err(McpBackendError::InvalidResponse)
-        }
+        CanonicalValue::Record(_) => Err(McpBackendError::InvalidResponse),
+        _ => canonical_natural_value(value),
     }
 }
 

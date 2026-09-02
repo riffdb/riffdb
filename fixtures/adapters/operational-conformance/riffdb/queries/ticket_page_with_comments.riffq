@@ -1,0 +1,25 @@
+query TicketPageWithComments(
+    $organization_id: Ticket.organization_id,
+    $state: Ticket.state,
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id && state == $state
+        order by ticket_id asc
+        take 4
+
+    many comments from TicketComment
+        for each ticket in tickets
+        where organization_id == $organization_id
+            && ticket_id == ticket.ticket_id
+        order by created_at asc, comment_id asc
+        take 4 per ticket
+
+    return Found {
+        tickets: tickets {
+            ticket_id
+            title
+            comments: comments { comment_id body created_at }
+        }
+    }
+    outcomes Found
+}

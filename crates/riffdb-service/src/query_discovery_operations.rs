@@ -1780,6 +1780,9 @@ async fn discover_command_tools(
     if let Some(bundle) = active.as_ref() {
         let contract = bundle.bundle();
         for command in contract.commands() {
+            if command.is_reimport() {
+                continue;
+            }
             let name = match contract.mcp_command_names().get(command.command_id()) {
                 Some(name) => name,
                 None => {
@@ -2684,6 +2687,9 @@ fn append_contract_resources(
         });
     }
     for command in contract.commands() {
+        if command.is_reimport() {
+            continue;
+        }
         let name = contract
             .mcp_command_names()
             .get(command.command_id())
