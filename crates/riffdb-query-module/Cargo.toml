@@ -10,6 +10,7 @@ publish.workspace = true
 default = []
 
 [dependencies]
+minijinja = { version = "=2.24.0", default-features = false, features = ["serde"] }
 riffdb-contract-ir = { version = "0.1.0", path = "../riffdb-contract-ir", default-features = false }
 riffdb-contract-syntax = { version = "0.1.0", path = "../riffdb-contract-syntax", default-features = false }
 riffdb-query-compiler = { version = "0.1.0", path = "../riffdb-query-compiler", default-features = false }

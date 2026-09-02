@@ -8,11 +8,13 @@ use riffdb_query_module::{
     QUERY_MODULE_FORMAT_VERSION_COVERED_RESULT_V1, QUERY_MODULE_FORMAT_VERSION_EXACT_AGGREGATE_V1,
     QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1,
     QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_V1, QueryModule, QueryModuleCandidate,
-    QueryModuleErrorKind, QueryModuleName, QueryModuleVersion, generate_go_application_client,
-    generate_go_client, generate_mcp_commands, generate_mcp_tools,
+    QueryModuleErrorKind, QueryModuleName, QueryModuleVersion, generate_canonical_generation_model,
+    generate_go_application_client, generate_go_client, generate_mcp_commands, generate_mcp_tools,
     generate_python_application_client, generate_python_client, generate_rust_application_client,
     generate_rust_client, generate_typescript_application_client, generate_typescript_client,
 };
+use std::io::Write as _;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
@@ -66,6 +68,119 @@ fn candidate(reversed: bool) -> QueryModuleCandidate {
         queries,
     )
     .expect("module candidate")
+}
+
+fn golden_candidate() -> QueryModuleCandidate {
+    let queries = [
+        (
+            "BoardPage200",
+            include_str!("../../../queries/ticketdesk/board_page_200.riffq"),
+        ),
+        (
+            "BoardPage450",
+            include_str!("../../../queries/ticketdesk/board_page_450.riffq"),
+        ),
+        (
+            "BoardPage50",
+            include_str!("../../../queries/ticketdesk/board_page_50.riffq"),
+        ),
+        (
+            "GetTicket",
+            include_str!("../../../queries/ticketdesk/get_ticket.riffq"),
+        ),
+        (
+            "GetUser",
+            include_str!("../../../queries/ticketdesk/get_user.riffq"),
+        ),
+        (
+            "ListComments",
+            include_str!("../../../queries/ticketdesk/list_comments.riffq"),
+        ),
+        (
+            "ListTickets",
+            include_str!("../../../queries/ticketdesk/list_tickets.riffq"),
+        ),
+        (
+            "ListTicketsByAssignee",
+            include_str!("../../../queries/ticketdesk/list_tickets_by_assignee.riffq"),
+        ),
+        (
+            "ProjectMembers",
+            include_str!("../../../queries/ticketdesk/project_members.riffq"),
+        ),
+        (
+            "ProjectSummary",
+            include_str!("../../../queries/ticketdesk/project_summary.riffq"),
+        ),
+        (
+            "TicketPage",
+            include_str!("../../../queries/ticketdesk/ticket_page.riffq"),
+        ),
+        (
+            "TicketPagePaged",
+            include_str!("../../../queries/ticketdesk/ticket_page_paged.riffq"),
+        ),
+        (
+            "TicketQueue",
+            include_str!("../../../queries/ticketdesk/ticket_queue.riffq"),
+        ),
+    ];
+    QueryModuleCandidate::new(
+        QueryModuleName::new("ticketdesk").expect("module name"),
+        QueryModuleVersion::new(1).expect("module version"),
+        queries
+            .into_iter()
+            .map(|(name, source)| NamedQuerySource::new(name, source).expect("query source"))
+            .collect(),
+    )
+    .expect("golden module candidate")
+}
+
+// req: GEN-004
+#[test]
+fn template_generators_reproduce_golden_outputs_across_languages() {
+    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let module = QueryModule::compile(golden_candidate(), &bundle).expect("module");
+
+    assert_eq!(
+        generate_rust_client(&module, &bundle),
+        include_str!("../../../fixtures/query-modules/ticketdesk.rs")
+    );
+    assert_eq!(
+        generate_typescript_client(&module, &bundle),
+        include_str!("../../../clients/typescript/ticketdesk/client.ts")
+    );
+    assert_eq!(
+        generate_python_client(&module, &bundle).expect("Python"),
+        include_str!("../../../clients/python/ticketdesk/generated.py")
+    );
+
+    let go = generate_go_client(&module, &bundle);
+    let mut formatter = Command::new("gofmt")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("gofmt must be installed for generator conformance");
+    formatter
+        .stdin
+        .take()
+        .expect("gofmt stdin")
+        .write_all(go.as_bytes())
+        .expect("write Go source");
+    let formatted = formatter.wait_with_output().expect("run gofmt");
+    assert!(formatted.status.success());
+    assert_eq!(
+        formatted.stdout,
+        include_bytes!("../../../clients/go/ticketdesk/client.go")
+    );
+
+    let model = generate_canonical_generation_model(&module, &bundle, &[]);
+    let mut model_bytes = serde_json::to_vec_pretty(&model).expect("generation model JSON");
+    model_bytes.push(b'\n');
+    assert_eq!(
+        model_bytes,
+        include_bytes!("../../../fixtures/query-modules/ticketdesk.generation-model.json")
+    );
 }
 
 #[test]

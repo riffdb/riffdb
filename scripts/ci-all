@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# req: GEN-006
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
@@ -36,6 +37,7 @@ cargo audit
 cargo machete
 ./scripts/check-workspace-policy
 ./scripts/check-file-size-guard
+./scripts/check-three-places --self-test
 ./scripts/check-requirement-coverage
 ./scripts/check-adr-obligations
 ./scripts/adr-index --check

@@ -1,0 +1,135 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# req: GEN-006
+
+require "fileutils"
+require "open3"
+require "pathname"
+require "tmpdir"
+
+ADAPTER_ROOTS = %w[
+  crates/riffdb-proto
+  crates/riffdb-api-grpc
+  crates/riffdb-api-mcp
+  crates/riffdb-cli
+  crates/riffdb-client-rust
+].freeze
+
+def capture!(*command, chdir:)
+  stdout, stderr, status = Open3.capture3(*command, chdir: chdir.to_s)
+  return stdout if status.success?
+
+  warn stderr
+  exit status.exitstatus
+end
+
+def changed_paths(root, base)
+  revision = capture!("git", "merge-base", "HEAD", base, chdir: root).strip
+  tracked = capture!(
+    "git", "diff", "--name-only", "-z", "--diff-filter=ACMR", revision, "--", chdir: root
+  ).split("\0")
+  untracked = capture!(
+    "git", "ls-files", "--others", "--exclude-standard", "-z", chdir: root
+  ).split("\0")
+  (tracked + untracked).reject(&:empty?).uniq.sort
+end
+
+def operation_surface_change?(path)
+  path.end_with?(".proto") || path.start_with?("crates/riffdb-operation-registry/")
+end
+
+def generated_adapter?(path)
+  ADAPTER_ROOTS.any? do |root|
+    path.start_with?("#{root}/src/generated/")
+  end
+end
+
+def hand_written_adapter?(path)
+  ADAPTER_ROOTS.any? { |root| path.start_with?("#{root}/") } && !generated_adapter?(path)
+end
+
+def run_guard(root, base)
+  paths = changed_paths(root, base)
+  return true unless paths.any? { |path| operation_surface_change?(path) }
+
+  violations = paths.select { |path| hand_written_adapter?(path) }
+  return true if violations.empty?
+
+  warn "public-operation diff hand-edits adapter files outside src/generated/:"
+  violations.each { |path| warn "  #{path}" }
+  false
+end
+
+def commit!(root, message)
+  capture!("git", "add", ".", chdir: root)
+  capture!(
+    "git", "-c", "user.name=RiffDB Guard", "-c", "user.email=guard@riffdb.invalid",
+    "commit", "--quiet", "-m", message, chdir: root
+  )
+end
+
+def write(root, relative, contents)
+  path = root.join(relative)
+  FileUtils.mkdir_p(path.dirname)
+  path.write(contents)
+end
+
+def invoke(script, root)
+  Open3.capture3(
+    { "RIFFDB_THREE_PLACES_ROOT" => root.to_s },
+    script.to_s, "--base", "HEAD"
+  )
+end
+
+def self_test(script)
+  Dir.mktmpdir("riffdb-three-places-") do |directory|
+    root = Pathname.new(directory)
+    capture!("git", "init", "--quiet", chdir: root)
+    write(root, "proto/riffdb/v1/example.proto", "syntax = \"proto3\";\n")
+    write(root, "crates/riffdb-operation-registry/src/lib.rs", "// registry\n")
+    write(root, "crates/riffdb-service/src/example_operations.rs", "// service\n")
+    write(root, "crates/riffdb-api-grpc/src/conversion.rs", "// generated wrapper\n")
+    write(root, "crates/riffdb-api-grpc/src/generated/conversion.rs", "// generated\n")
+    write(root, "docs/reference/operations.md", "operations\n")
+    commit!(root, "baseline")
+
+    write(root, "proto/riffdb/v1/example.proto", "syntax = \"proto3\";\nmessage Added {}\n")
+    write(root, "crates/riffdb-operation-registry/src/lib.rs", "// registry\n// added\n")
+    write(root, "crates/riffdb-service/src/example_operations.rs", "// service\n// added\n")
+    write(root, "crates/riffdb-api-grpc/src/generated/conversion.rs", "// generated\n// added\n")
+    write(root, "docs/reference/operations.md", "operations\nadded\n")
+    _, stderr, status = invoke(script, root)
+    unless status.success?
+      warn "three-places self-test rejected the permitted operation diff"
+      warn stderr
+      return false
+    end
+
+    write(root, "crates/riffdb-api-grpc/src/conversion.rs", "// hand-written adapter edit\n")
+    _, stderr, status = invoke(script, root)
+    expected = "crates/riffdb-api-grpc/src/conversion.rs"
+    unless !status.success? && stderr.include?(expected)
+      warn "three-places self-test accepted a hand-written adapter edit"
+      warn stderr
+      return false
+    end
+  end
+
+  puts "Three-places guard self-test passed."
+  true
+end
+
+script = Pathname.new(__FILE__).realpath
+if ARGV == ["--self-test"]
+  exit(self_test(script) ? 0 : 1)
+end
+unless ARGV.length == 2 && ARGV.first == "--base"
+  warn "usage: #{script.basename} --base <revision> | --self-test"
+  exit 2
+end
+
+root = Pathname.new(
+  ENV.fetch("RIFFDB_THREE_PLACES_ROOT", File.expand_path("..", __dir__))
+).realpath
+exit(run_guard(root, ARGV.fetch(1)) ? 0 : 1)

@@ -4,6 +4,7 @@
 require "open3"
 require "pathname"
 require "digest"
+require "json"
 
 def validate_root_mappings!(operation, mappings)
   expected = ["$request=NestedRecord", "$response=NestedRecord"]
@@ -169,6 +170,46 @@ rows = operations.map do |fields|
   ]
 end
 
+corpus_operations = rows.map do |tag, operation, _request, _request_fields, _response, _response_fields, request_bytes, response_bytes|
+  {
+    "tag" => tag,
+    "operation" => operation,
+    "bounds" => [
+      {
+        "target" => "encoded_request_bytes",
+        "maximum" => request_bytes,
+        "cases" => [
+          { "encoded_bytes" => request_bytes, "expected_error_class" => "none" },
+          { "encoded_bytes" => request_bytes + 1, "expected_error_class" => "request_too_large" }
+        ]
+      },
+      {
+        "target" => "encoded_response_bytes",
+        "maximum" => response_bytes,
+        "cases" => [
+          { "encoded_bytes" => response_bytes, "expected_error_class" => "none" },
+          { "encoded_bytes" => response_bytes + 1, "expected_error_class" => "response_too_large" }
+        ]
+      }
+    ]
+  }
+end
+corpus = {
+  "schema" => "riffdb.driver-drift-corpus/v2",
+  "registry_version" => 1,
+  "bindings" => [
+    "rust_client",
+    "driver_host_socket",
+    "python_in_process",
+    "go",
+    "typescript"
+  ],
+  "closed_error_classes" => ["none", "request_too_large", "response_too_large"],
+  "operations" => corpus_operations
+}
+corpus_body = JSON.pretty_generate(corpus) << "\n"
+corpus_target = root.join("fixtures/driver/corpus-v2.json")
+
 inventory = String.new
 inventory << "/// Registry schema version used for this generated validation inventory.\n"
 inventory << "pub const GENERATED_OPERATION_REGISTRY_VERSION: u32 = 1;\n"
@@ -311,10 +352,13 @@ freeze_target = root.join("fixtures/compatibility/public-adapter-freeze-v1.tsv")
 
 if check
   abort "generated operation validation inventory is stale: #{target.relative_path_from(root)}" unless target.file? && File.read(target, encoding: "UTF-8") == body
+  abort "driver drift corpus is stale: #{corpus_target.relative_path_from(root)}" unless corpus_target.file? && File.read(corpus_target, encoding: "UTF-8") == corpus_body
   abort "public-adapter fixture freeze is stale: #{freeze_target.relative_path_from(root)}" unless freeze_target.file? && File.read(freeze_target, encoding: "UTF-8") == freeze_body
 else
   target.dirname.mkpath
   File.write(target, body, encoding: "UTF-8")
+  corpus_target.dirname.mkpath
+  File.write(corpus_target, corpus_body, encoding: "UTF-8")
   freeze_target.dirname.mkpath
   File.write(freeze_target, freeze_body, encoding: "UTF-8")
 end

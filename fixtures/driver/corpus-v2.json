@@ -1,0 +1,1956 @@
+{
+  "schema": "riffdb.driver-drift-corpus/v2",
+  "registry_version": 1,
+  "bindings": [
+    "rust_client",
+    "driver_host_socket",
+    "python_in_process",
+    "go",
+    "typescript"
+  ],
+  "closed_error_classes": [
+    "none",
+    "request_too_large",
+    "response_too_large"
+  ],
+  "operations": [
+    {
+      "tag": 1,
+      "operation": "ValidateContract",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 2,
+      "operation": "ExplainCommand",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 3,
+      "operation": "DeployContract",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 4,
+      "operation": "GetActiveContract",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 5,
+      "operation": "GetContractVersion",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 6,
+      "operation": "ExecuteCommand",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 8388608,
+          "cases": [
+            {
+              "encoded_bytes": 8388608,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 8388609,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 7,
+      "operation": "ResolveCommandOutcome",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 8,
+      "operation": "GetEntity",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 9,
+      "operation": "ScanIndex",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 10,
+      "operation": "QueryProjection",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 11,
+      "operation": "GetProjectionStatus",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 12,
+      "operation": "GetCommit",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 13,
+      "operation": "ScanCommits",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 14,
+      "operation": "SubscribeToCommits",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 15,
+      "operation": "TraceProvenance",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 16,
+      "operation": "GetHealth",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 17,
+      "operation": "GetStatistics",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 18,
+      "operation": "CreateCapability",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 19,
+      "operation": "RevokeCapability",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 20,
+      "operation": "ListPendingOutboxDeliveries",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 21,
+      "operation": "DiscoverCommandTools",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 22,
+      "operation": "DiscoverResources",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 23,
+      "operation": "DescribeContract",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 24,
+      "operation": "CheckQuery",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 25,
+      "operation": "ExplainQuery",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 26,
+      "operation": "ExecuteQuery",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 27,
+      "operation": "DeployQueryModule",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 28,
+      "operation": "ApplyContractMigration",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 33554432,
+          "cases": [
+            {
+              "encoded_bytes": 33554432,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 33554433,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 29,
+      "operation": "DescribeEvent",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 30,
+      "operation": "ReplayEvents",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 31,
+      "operation": "TailEvents",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 32,
+      "operation": "ExecuteProjectedQuery",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 33,
+      "operation": "DeployReactiveModule",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 34,
+      "operation": "ConsumeEventStream",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 35,
+      "operation": "AcknowledgeEventStream",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 36,
+      "operation": "NegativeAcknowledgeEventStream",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 37,
+      "operation": "SeekEventStreamConsumer",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 38,
+      "operation": "RetireEventStreamConsumer",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 39,
+      "operation": "GetEventStreamConsumerStatus",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 40,
+      "operation": "WatchNamedQuery",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 41,
+      "operation": "ConsumeContextualSubscription",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 42,
+      "operation": "AcknowledgeContextualSubscription",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 43,
+      "operation": "NegativeAcknowledgeContextualSubscription",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 44,
+      "operation": "GetContextualSubscriptionStatus",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 45,
+      "operation": "ExecuteContextualReaction",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 8388608,
+          "cases": [
+            {
+              "encoded_bytes": 8388608,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 8388609,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 46,
+      "operation": "GetReactiveWakeup",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 47,
+      "operation": "StartApplicationInstallation",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 4325376,
+          "cases": [
+            {
+              "encoded_bytes": 4325376,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4325377,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 48,
+      "operation": "GetApplicationInstallation",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 49,
+      "operation": "StartApplicationExport",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 50,
+      "operation": "GetApplicationExportPage",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 51,
+      "operation": "GetApplicationExport",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 52,
+      "operation": "CancelApplicationExport",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 53,
+      "operation": "StartApplicationReimport",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 54,
+      "operation": "ApplyApplicationReimportPage",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 4325376,
+          "cases": [
+            {
+              "encoded_bytes": 4325376,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4325377,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 55,
+      "operation": "GetApplicationReimport",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 56,
+      "operation": "CancelApplicationReimport",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": 57,
+      "operation": "InspectVectorState",
+      "bounds": [
+        {
+          "target": "encoded_request_bytes",
+          "maximum": 1048576,
+          "cases": [
+            {
+              "encoded_bytes": 1048576,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 1048577,
+              "expected_error_class": "request_too_large"
+            }
+          ]
+        },
+        {
+          "target": "encoded_response_bytes",
+          "maximum": 4194304,
+          "cases": [
+            {
+              "encoded_bytes": 4194304,
+              "expected_error_class": "none"
+            },
+            {
+              "encoded_bytes": 4194305,
+              "expected_error_class": "response_too_large"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
