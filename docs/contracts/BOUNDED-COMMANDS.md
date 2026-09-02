@@ -281,6 +281,27 @@ values are individually bounded to 8,000 bytes, and one packed hydration field a
 does not split the command, reduce the legal tag count, omit search rows, or make the adapter
 coordinate multiple writes.
 
+## High-cardinality atomic collections
+
+Collection commands retain their original 256-element and 256-possible-mutation tier unless the
+compiler proves that the source needs the additive V23 identity. V23 permits one declared list of
+at most 1,024 elements and at most 4,096 possible authoritative mutations. The mutation proof
+counts each fixed non-read binding once and each collection-local non-read binding once per
+declared element, using checked arithmetic. The independent 256-row cascade ceiling is unchanged.
+
+This is count capacity, not a larger transaction escape hatch. The compiler still proves one
+partition and one mutation aggregate, and the existing conflict, observation, dependency, index,
+event, 4 MiB input, 8 MiB frame, 16 MiB graph, cancellation, and deadline bounds all apply
+independently. A command may therefore fit the 1,024-element tier and still be rejected by another
+closed resource. V1 through V22 retain their exact 256/256 interpretation and bytes.
+
+Generated Rust, Go, TypeScript, and Python bindings expose the source-declared maximum rather than
+the process ceiling. CLI, MCP, local-driver, and remote gRPC submissions use that same sealed plan;
+none can choose V23, split the collection, retry a subset, or stage a partial result. The checked
+adapter corpus executes one 1,000-metric operation plus its fixed summary mutation through a
+generated binding and redb, replays the same outcome, and proves a forced business failure leaves
+neither a visible row prefix nor an extra summary revision.
+
 The CLI accepts inline JSON, `@file`, a file path, or `-` for stdin. Nested collection elements are
 ordinary symbolic JSON records; scalar tags remain explicit where JSON has no lossless native
 form:

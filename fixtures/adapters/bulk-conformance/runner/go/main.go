@@ -80,7 +80,7 @@ func run() error {
 		return errors.New("Go OpenFGA replay")
 	}
 
-	metrics := generated.LogMetricsInput{RequestId: id(260), Metrics: []generated.Metric{{
+	metrics := generated.LogMetricsInput{RequestId: id(260), ExperimentId: id(261), Metrics: []generated.Metric{{
 		ExperimentId: id(261), MetricId: id(262), Name: "latency", Step: 1, ValueMicros: 125,
 	}}}
 	firstMetric, err := client.LogMetrics(ctx, metrics)

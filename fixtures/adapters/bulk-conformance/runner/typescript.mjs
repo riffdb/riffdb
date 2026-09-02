@@ -36,6 +36,7 @@ try {
 
   const metrics = {
     request_id: id(516),
+    experiment_id: id(517),
     metrics: [{ experiment_id: id(517), metric_id: id(518), name: "latency", step: 1n, value_micros: 125n }],
   };
   assert((await client.logMetrics(metrics)).outcome.outcome === "MetricsLogged", "MLflow outcome");

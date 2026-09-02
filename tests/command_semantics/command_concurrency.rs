@@ -27,6 +27,7 @@ use support::{
 };
 
 #[test]
+// req: BLK-066, BLK-069
 fn thousand_element_command_plus_root_commits_and_replays_atomically_through_redb() {
     let database = BulkRowsDatabase::create("high-cardinality-atomic");
     let ports = database.open();

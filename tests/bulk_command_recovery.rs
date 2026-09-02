@@ -105,6 +105,7 @@ impl CrashPhase {
 }
 
 #[test]
+// req: BLK-069
 fn collection_create_and_delete_are_complete_or_absent_across_process_crash() {
     for operation in [
         Operation::Delete,

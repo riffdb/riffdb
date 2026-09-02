@@ -4212,6 +4212,7 @@ fn initialized_state_bulk_executes_one_shared_root_and_element_local_transitions
 }
 
 #[test]
+// req: BLK-066, BLK-068, BLK-069
 fn thousand_collection_elements_plus_root_evaluate_as_one_complete_graph() {
     let bundle = compile_contract_source(HIGH_CARDINALITY_METRICS_SOURCE)
         .expect("high-cardinality contract compiles");

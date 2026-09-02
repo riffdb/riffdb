@@ -2,6 +2,8 @@
 
 //! ADR-0177 high-cardinality collection compilation and compatibility boundaries.
 
+// req: BLK-065, BLK-066, BLK-067, BLK-068, BLK-069
+
 use riffdb_contract_compiler::{
     CompilerBoundResource, CompilerDiagnosticCode, compile_contract_source,
 };
@@ -144,6 +146,21 @@ fn legacy_256_element_plan_keeps_its_pre_v23_identity() {
     assert_eq!(bundle.ir_version(), 22);
     assert_eq!(plan.maximum_mutation_instances(), 256);
     assert!(!plan.requires_ir_v23());
+}
+
+#[test]
+fn checked_legacy_collection_fixture_remains_byte_exact() {
+    let source =
+        include_str!("../../../fixtures/compiler/aggregate-collection-budget/contract.riff");
+    let expected =
+        include_bytes!("../../../fixtures/compiler/aggregate-collection-budget/bundle.bin");
+    let bundle = compile_contract_source(source).expect("legacy collection fixture compiles");
+    assert_eq!(bundle.canonical_bytes(), expected);
+    assert!(bundle.ir_version() < EXECUTABLE_IR_VERSION_V23);
+    assert_eq!(
+        ContractBundle::decode(expected).expect("legacy collection fixture decodes"),
+        bundle
+    );
 }
 
 #[test]

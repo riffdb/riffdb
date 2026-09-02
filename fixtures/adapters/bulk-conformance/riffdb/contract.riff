@@ -13,6 +13,11 @@ contract AdapterBulkConformance version 1 {
     field step: i64
   }
 
+  entity MetricSummary {
+    key (experiment_id: uuid)
+    field revision: u64
+  }
+
   entity Document {
     key (site_id: uuid, document_id: uuid)
     field title: string<256>
@@ -74,9 +79,10 @@ contract AdapterBulkConformance version 1 {
   }
 
   aggregate Metrics {
-    root Metric
+    root MetricSummary
+    child Metric
     partition_by experiment_id
-    conflict_key (experiment_id, metric_id)
+    conflict_key (experiment_id)
   }
 
   aggregate Documents {
@@ -139,15 +145,20 @@ contract AdapterBulkConformance version 1 {
 
   bulk command LogMetrics {
     input request_id: uuid
-    input metrics: list<Metric, 1..128>
+    input experiment_id: uuid
+    input metrics: list<Metric, 1..1000> aggregate_bytes <= 1048576
     idempotency_key request_id
+    init_or_mutate MetricSummary(experiment_id) as summary initialize {
+      revision: 0,
+    }
     for metric in metrics {
-      create Metric(metric.experiment_id, metric.metric_id) as stored else MetricAlreadyExists {}
+      create Metric(experiment_id, metric.metric_id) as stored else MetricAlreadyExists {}
       set stored.name = metric.name
       set stored.value_micros = metric.value_micros
       set stored.step = metric.step
     }
-    return MetricsLogged {}
+    set summary.revision = summary.revision + 1
+    return MetricsLogged { revision: summary.revision }
   }
 
   bulk command CreateDocumentGraphs {
