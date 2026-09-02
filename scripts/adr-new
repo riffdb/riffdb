@@ -1,0 +1,161 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Allocates the next ADR number and writes a v2 skeleton.
+#
+# The front matter is the record's machine-readable half: the index, the package
+# skeletons, the obligation tracking, and the requirement links are all derived
+# from it, so it is written once here rather than restated in four files.
+#
+# Status starts at `proposed` and `accepted` stays null. Acceptance is a human
+# act; no script and no agent may set it.
+
+require "date"
+require_relative "lib/riffdb_adr"
+
+ROOT = RiffdbAdr.root
+
+USAGE = <<~TEXT
+  usage: adr-new --title "Short Title In Title Case" --tier surface|guarantee
+                 [--requires ADR-0093 ...] [--requirements REP-002 ...]
+                 [--packages WP-746 ...] [--date YYYY-MM-DD] [--help]
+
+    --title         the record title, also the body heading and the file slug
+    --tier          surface (short record) or guarantee (may add options and
+                    consequences); an internal change needs no record at all
+    --requires      accepted ADRs this record depends on
+    --requirements  SPEC requirement identifiers this record decides
+    --packages      work packages that will implement it (see ./scripts/wp-new)
+    --date          override the record date, default today
+    --help          this message
+
+  Writes adr/NNNN-<slug>.md with the next free number and prints its path.
+TEXT
+
+def parse_arguments(argv)
+  options = { "requires" => [], "requirements" => [], "packages" => [] }
+  key = nil
+  argv.each do |argument|
+    case argument
+    when "--help", "-h"
+      puts USAGE
+      exit 0
+    when "--title" then key = "title"
+    when "--tier" then key = "tier"
+    when "--date" then key = "date"
+    when "--requires" then key = "requires"
+    when "--requirements" then key = "requirements"
+    when "--packages" then key = "packages"
+    when /\A--/
+      warn "unknown option #{argument.inspect}"
+      warn USAGE
+      exit 2
+    else
+      if key.nil?
+        warn "unexpected argument #{argument.inspect}"
+        warn USAGE
+        exit 2
+      end
+      if options[key].is_a?(Array)
+        options[key] << argument
+      else
+        options[key] = argument
+      end
+    end
+  end
+  options
+end
+
+def slug(title)
+  value = title.downcase.gsub(/[^a-z0-9]+/, "-").gsub(/\A-+|-+\z/, "")
+  value.empty? ? "record" : value
+end
+
+def yaml_list(values)
+  "[#{values.join(', ')}]"
+end
+
+def skeleton(number, options)
+  guarantee = options["tier"] == "guarantee"
+  extra = guarantee ? "\n## Options considered\n\n1. **Option:** consequence, and the reason to choose or reject it.\n\n## Consequences\n\n- Positive consequence.\n- Cost or constraint.\n- Explicitly deferred behavior.\n" : ""
+  <<~MARKDOWN
+    ---
+    adr: #{number}
+    title: #{options['title']}
+    status: proposed
+    tier: #{options['tier']}
+    date: #{options['date']}
+    accepted: null
+    requires: #{yaml_list(options['requires'])}
+    amends: []
+    supersedes: []
+    requirements: #{yaml_list(options['requirements'])}
+    packages: #{yaml_list(options['packages'])}
+    # One entry per deferred obligation. `proof` is a test function name or a
+    # scripts/<name>; ./scripts/check-adr-obligations requires it to exist as a
+    # definition once the owning package is complete.
+    obligations: []
+    review_triggers: []
+    ---
+    # ADR-#{number}: #{options['title']}
+
+    ## Context
+
+    The force requiring a durable decision, the authoritative requirements it
+    touches, and the conflict that cannot be left to an implementation package.
+    At most two paragraphs.
+
+    ## Decision
+
+    1. One testable statement.
+    2. One testable statement.
+    #{extra}
+    ## Standing design tests
+
+    - **Interface safety:** what stays unexpressible on the public surface.
+    - **Scale:** what stays bounded as data or concurrency grows.
+
+    ## Checks
+
+    - The fixtures, tests, scripts, and architecture checks that freeze this decision.
+  MARKDOWN
+end
+
+options = parse_arguments(ARGV)
+options["date"] ||= Date.today.to_s
+
+errors = []
+errors << "--title is required" if options["title"].to_s.strip.empty?
+unless %w[surface guarantee].include?(options["tier"])
+  errors << "--tier must be surface or guarantee (an internal change needs no record)"
+end
+options["requires"].each do |value|
+  errors << "--requires expects ADR-NNNN, got #{value.inspect}" unless value.match?(/\AADR-\d{4}\z/)
+end
+options["packages"].each do |value|
+  errors << "--packages expects WP-NNN, got #{value.inspect}" unless value.match?(/\AWP-\d{3}\z/)
+end
+options["requirements"].each do |value|
+  errors << "--requirements expects an identifier like REP-002, got #{value.inspect}" unless value.match?(/\A[A-Z]{2,5}-\d{3}\z/)
+end
+unless errors.empty?
+  errors.each { |error| warn(error) }
+  warn USAGE
+  exit 2
+end
+
+numbers = RiffdbAdr.adr_paths(ROOT).map { |path| File.basename(path)[/\A(\d{4})/, 1].to_i }
+number = format("%04d", (numbers.max || 0) + 1)
+path = File.join(ROOT, "adr", "#{number}-#{slug(options['title'])}.md")
+
+if File.exist?(path)
+  warn "#{path} already exists"
+  exit 1
+end
+
+File.write(path, skeleton(number, options))
+puts path.sub("#{ROOT}/", "")
+cap = options["tier"] == "guarantee" ? 200 : 120
+warn "#{options['tier']} tier: keep the body at or under #{cap} lines."
+warn "Next: ./scripts/wp-new ADR-#{number} for the package skeletons, " \
+     "then ./scripts/adr-index --write."

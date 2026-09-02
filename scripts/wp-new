@@ -1,0 +1,105 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Prints a work-package skeleton for every package an ADR v2 record names.
+#
+# The record's front matter already says which packages implement it, which
+# requirements they carry, which decisions they depend on, and at what tier. This
+# emits that, once, as YAML the author appends to work_packages.yaml and fills
+# in. It writes nothing: the manifest is edited by a human or by the agent doing
+# the work, not by a generator.
+
+require_relative "lib/riffdb_adr"
+
+ROOT = RiffdbAdr.root
+
+USAGE = <<~TEXT
+  usage: wp-new ADR-NNNN [--help]
+
+  Prints one package skeleton per entry in the record's `packages:` front
+  matter, on stdout, for appending to work_packages.yaml. The tier, the
+  requirements, and the required ADR come from the record.
+TEXT
+
+def yaml_list(values)
+  values.empty? ? "[]" : "[#{values.join(', ')}]"
+end
+
+def skeleton(record, package_id)
+  required = (["ADR-#{record.number}"] + record.front_list("requires")).uniq
+  <<~YAML
+    - id: #{package_id}
+      name: TODO one line naming what this package delivers
+      tier: #{record.tier}
+      depends_on: []
+      objective: TODO what this package activates, in two or three lines, naming the
+        sections of ADR-#{record.number} it implements.
+      requirements: #{yaml_list(record.front_list('requirements'))}
+      required_adrs: #{yaml_list(required)}
+      allowed_paths: [SPEC.md, work_packages.yaml, #{record.basename.sub(/\A/, 'adr/')}]
+      deliverables:
+      - TODO one durable, reviewable artifact per line
+      acceptance_commands:
+      - ./scripts/acceptance --wp #{package_id}
+      - ./scripts/ci-all
+      exit_gate: TODO the one observable fact that closes this package.
+      standing_design_tests:
+        interface_safety: TODO what stays unexpressible on the public surface.
+        scale: TODO what stays bounded as data or concurrency grows.
+      human_review_triggers: *id001
+  YAML
+end
+
+argument = nil
+ARGV.each do |value|
+  case value
+  when "--help", "-h"
+    puts USAGE
+    exit 0
+  when /\A--/
+    warn "unknown option #{value.inspect}"
+    warn USAGE
+    exit 2
+  else
+    argument = value
+  end
+end
+
+if argument.nil?
+  warn USAGE
+  exit 2
+end
+unless argument.match?(/\A(?:ADR-)?\d{4}\z/)
+  warn "expected ADR-NNNN, got #{argument.inspect}"
+  exit 2
+end
+
+record = RiffdbAdr.record_for(ROOT, argument)
+if record.nil?
+  warn "no adr/#{format('%04d', argument[/\d+/].to_i)}-*.md in #{ROOT}"
+  exit 1
+end
+unless record.v2?
+  warn "#{record.basename} is a legacy record with no front matter; " \
+       "wp-new reads `packages:` from ADR v2 front matter"
+  exit 1
+end
+
+packages = record.front_list("packages")
+if packages.empty?
+  warn "#{record.basename} names no packages in its front matter"
+  exit 1
+end
+
+known = RiffdbAdr.packages_by_id(ROOT)
+puts "# Append to work_packages.yaml under `work_packages:` and fill in every TODO."
+puts "# From #{record.basename} (#{record.title}), tier #{record.tier}."
+packages.each do |package_id|
+  if known.key?(package_id)
+    puts "# #{package_id} already exists in work_packages.yaml; skeleton omitted."
+    next
+  end
+
+  puts
+  puts skeleton(record, package_id)
+end

@@ -1,49 +1,67 @@
+---
+adr: 0181
+title: Pre-Alpha Format Epoch Reset and Governance Load
+status: accepted
+tier: surface
+date: "2026-09-01"
+accepted: "2026-09-01"
+requires: [ADR-0006, ADR-0056, ADR-0112, ADR-0122, ADR-0124]
+amends:
+  - ADR-0124 section 4 and VER-006/VER-007 only while no external database is
+    registered
+  - HBK-002 and HBK-005 gain the agent-audience rules in section 6
+  - ADR-0112's ceremony is reused unchanged
+requirements: [GOV-001, GOV-002, GOV-003, GOV-004, GOV-005, GOV-006]
+packages: [WP-757, WP-758, WP-759]
+obligations:
+  - id: OBL-0181-1
+    package: WP-757
+    proof: topology_refuses_second_readable_identity_before_external_database
+    says: Every topology domain carries exactly one readable and one writable
+      identity, and the topology check refuses a second readable identity while no
+      external database is registered.
+  - id: OBL-0181-2
+    package: WP-757
+    proof: epoch_two_ceremony_refuses_in_place_open_and_reconciles_reimport
+    says: An epoch-1 database is refused in place by an epoch-2 binary and crosses
+      only through the complete ADR-0112 ceremony with reconciled export/reimport
+      counts and hashes.
+  - id: OBL-0181-3
+    package: WP-757
+    proof: epoch_two_fixture_inventory_contains_no_epoch_one_identity
+    says: The durable-fixture inventory and release manifest name no epoch-1
+      identity after the reset, and every deleted Protobuf field number and enum
+      value remains reserved.
+  - id: OBL-0181-4
+    package: WP-758
+    proof: check-adr-obligations --self-test
+    says: The obligations ledger is empty and the checker rejects any new ledger
+      entry rather than acknowledging it.
+  - id: OBL-0181-5
+    package: WP-758
+    proof: check-adr-form
+    says: Every ADR carries only the required sections; the form check warns above
+      260 lines and rejects a SPEC document-control row above one paragraph.
+  - id: OBL-0181-6
+    package: WP-759
+    proof: check-handbook-audience
+    says: No public handbook page carries a work-package or ADR number, the
+      limitations page states one sentence per limit, and campaign 04 records the
+      agent-audience metrics against the stated target.
+review_triggers:
+  - A superseded identity would be retained as read_only or retirement_candidate
+    instead of being deleted, or a deleted field number, enum value, tag, or hash
+    would be reused.
+  - An epoch-1 database would be opened, upgraded, or restored in place rather
+    than crossing the ceremony, or the ceremony would skip validation, backup,
+    export, reconciliation, or retention.
+  - The external_databases array would be populated without an operator-provided
+    digest, date, and release label, or the single-identity rule would be relaxed
+    while it is empty.
+  - A ledger entry, ADR section, or public handbook page would be exempted from
+    the new checks without a recorded reason.
+---
 # ADR-0181: Pre-Alpha Format Epoch Reset and Governance Load
-
-- **Status:** Accepted
-- **Obligations:**
-  - `OBL-0181-1` WP-757 must prove that every topology domain carries
-    exactly one readable and one writable identity, and the topology check
-    refuses a second readable identity while no external database is
-    registered; planned proof
-    `topology_refuses_second_readable_identity_before_external_database`.
-  - `OBL-0181-2` WP-757 must prove that an epoch-1 database is refused in
-    place by an epoch-2 binary and crosses only through the complete
-    ADR-0112 ceremony with reconciled export/reimport counts and hashes;
-    planned proof
-    `epoch_two_ceremony_refuses_in_place_open_and_reconciles_reimport`.
-  - `OBL-0181-3` WP-757 must prove that the durable-fixture inventory and
-    release manifest name no epoch-1 identity after the reset, and every
-    deleted Protobuf field number and enum value remains `reserved`; planned
-    proof `epoch_two_fixture_inventory_contains_no_epoch_one_identity`.
-  - `OBL-0181-4` WP-758 must prove that the obligations ledger is empty and
-    the checker rejects any new ledger entry rather than acknowledging it;
-    planned proof `check-adr-obligations --self-test`.
-  - `OBL-0181-5` WP-758 must prove that every ADR carries only the required
-    sections; the form check warns above 260 lines and rejects a SPEC
-    document-control row above one paragraph; planned proof
-    `check-adr-form`.
-  - `OBL-0181-6` WP-759 must prove that no public handbook page carries a
-    work-package or ADR number, the limitations page states one sentence per
-    limit, and campaign 04 records the agent-audience metrics against the
-    stated target; planned proof `check-handbook-audience`.
-- **Direction approved:** 2026-09-01
-- **Exact text accepted:** Yes, 2026-09-01
-- **Accepted:** 2026-09-01
-- **Acceptance reference:** Maintainer acceptance of the exact text in the
-  current Claude Code session on 2026-09-01, all seven consolidation records together
-- **Decision deadline:** Before WP-757 declares alpha format epoch 2 or
-  deletes any decoder, fixture, or topology row
-- **Requires:** ADR-0006, ADR-0056, ADR-0112, ADR-0122, ADR-0124
-- **Amends:** ADR-0124 section 4 and `VER-006`/`VER-007` only while no
-  external database is registered; `HBK-002` and `HBK-005` gain the
-  agent-audience rules in section 6; ADR-0112's ceremony is reused unchanged
-- **Defines or blocks:** WP-757 through WP-759
-
-The maintainer accepted the exact text of this record on 2026-09-01. Its packages
-may begin. Each deferred obligation above is tracked in
-`adr/obligations-outstanding.yaml` until its planned proof exists, at which
-point the owning package discharges it by declaring the proof.
 
 ## Context
 
@@ -270,3 +288,9 @@ Exact acceptance is required before WP-757 declares epoch 2, deletes any
 decoder or fixture, or amends `scripts/check-version-topology`. WP-758 and
 WP-759 may inventory under direction approval but remove no ledger entry and
 publish no rewritten page before acceptance.
+
+## Acceptance
+
+Direction approved 2026-09-01; exact text accepted 2026-09-01. The maintainer
+accepted the exact text of this record in the Claude Code session of
+2026-09-01, all seven consolidation records together.

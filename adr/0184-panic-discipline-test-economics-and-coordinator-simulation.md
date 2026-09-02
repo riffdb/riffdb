@@ -1,64 +1,80 @@
+---
+adr: 0184
+title: Panic Discipline, Test Economics, and Coordinator Simulation
+status: accepted
+tier: surface
+date: "2026-09-01"
+accepted: "2026-09-01"
+requires: [ADR-0012, ADR-0058, ADR-0098, ADR-0101, ADR-0104, ADR-0113, ADR-0124]
+amends:
+  - SPEC 9.8 (fail-fast is made testable)
+  - SPEC 17.10 (adds the ADR-0113 Phase-2 coordinator harness)
+  - SPEC 18.2 (the unit and integration job becomes partitioned and time-recorded)
+  - ADR-0113's "future ADR" for Phase 2
+# ADR-0179 and ADR-0180 are not amended; this record only adds a size guard their
+# packages run.
+requirements: [TEST-002, TEST-003, TEST-004, SIM-008, SIM-009]
+# Builds on TEST-001, SIM-001 through SIM-007, SYS-003, and PERF-007.
+packages: [WP-764, WP-765, WP-766, WP-767]
+obligations:
+  - id: OBL-0184-1
+    package: WP-764
+    proof: check-panic-allowances
+    says: The lib targets of riffdb-commit, riffdb-storage-api, riffdb-storage-redb,
+      riffdb-service, and riffdb-server compile with unwrap_used, expect_used,
+      panic, and unreachable denied, and every surviving allowance is an
+      "#[expect]" with a reason naming the invariant.
+  - id: OBL-0184-2
+    package: WP-764
+    proof: writer_thread_panic_stops_the_coordinator_and_exits_the_daemon_nonzero
+    says: A panic on the riffdb-command-writer thread stops the coordinator,
+      refuses later admission with a typed outcome, and makes riffdbd exit nonzero
+      instead of serving.
+  - id: OBL-0184-3
+    package: WP-764
+    proof: generators_use_the_infallible_writer_and_carry_no_fmt_expect
+    says: The four language generators write through one infallible string-write
+      helper and carry no expect on fmt::Write.
+  - id: OBL-0184-4
+    package: WP-765
+    proof: check-test-partition-coverage
+    says: The CI test job runs under cargo-nextest in fixed partitions, every
+      "[[test]]" target of every workspace crate is scheduled exactly once across
+      the partitions, and the recorded wall time is written to the job summary and
+      to the CI wall-time evidence file under release/evidence.
+  - id: OBL-0184-5
+    package: WP-766
+    proof: coordinator_interleaving_decisions_feed_the_digest
+    says: The coordinator harness reproduces a byte-identical trace digest for one
+      seed and a different digest when any interleaving or crash decision changes.
+  - id: OBL-0184-6
+    package: WP-766
+    proof: every_coordinator_crash_window_recovers_to_the_model
+    says: Every seeded coordinator crash window recovers to the testkit model at
+      the recovered frontier, including windows between epoch seal, durable fence,
+      and publication.
+  - id: OBL-0184-7
+    package: WP-767
+    proof: reactive_module_artifacts_are_byte_identical_after_rename
+    says: riffdb-reactive-syntax replaces riffdb-query-syntax with byte-identical
+      reactive-module artifacts and no production crate depends on riffdb-sim.
+  - id: OBL-0184-8
+    package: WP-767
+    proof: check-file-size-guard
+    says: No source file may grow past 10,000 lines, and growth past 6,000 lines is
+      reported, in every package that touches one of the five largest files.
+review_triggers:
+  - A panic-capable call would be kept in a durable crate without a reason naming
+    the invariant, or a crate-level blanket allowance would be introduced.
+  - The daemon would continue acknowledging commands or reporting readiness after
+    the writer panic flag is set, or the fail-fast test would be weakened to a log
+    assertion.
+  - A production crate would gain a dependency on riffdb-sim, a test clock, or a
+    seed source.
+  - A rename, lint, or CI change would alter any durable byte, artifact hash, or
+    public protocol.
+---
 # ADR-0184: Panic Discipline, Test Economics, and Coordinator Simulation
-
-- **Status:** Accepted
-- **Obligations:**
-  - `OBL-0184-1` WP-764 must prove that the lib targets of `riffdb-commit`,
-    `riffdb-storage-api`, `riffdb-storage-redb`, `riffdb-service`, and
-    `riffdb-server` compile with `unwrap_used`, `expect_used`, `panic`, and
-    `unreachable` denied, and every surviving allowance is an `#[expect]`
-    with a reason naming the invariant. Proof: `scripts/check-panic-allowances`.
-  - `OBL-0184-2` WP-764 must prove that a panic on the
-    `riffdb-command-writer` thread stops the coordinator, refuses later
-    admission with a typed outcome, and makes `riffdbd` exit nonzero instead
-    of serving. Proof:
-    `writer_thread_panic_stops_the_coordinator_and_exits_the_daemon_nonzero`.
-  - `OBL-0184-3` WP-764 must prove that the four language generators write
-    through one infallible string-write helper and carry no `expect` on
-    `fmt::Write`. Proof:
-    `generators_use_the_infallible_writer_and_carry_no_fmt_expect`.
-  - `OBL-0184-4` WP-765 must prove that the CI test job runs under
-    cargo-nextest in fixed partitions, every `[[test]]` target of every
-    workspace crate is scheduled exactly once across the partitions, and the
-    recorded wall time is written to the job summary and to the CI wall-time
-    evidence file under `release/evidence`; planned proof
-    `scripts/check-test-partition-coverage`.
-  - `OBL-0184-5` WP-766 must prove that the coordinator harness reproduces a
-    byte-identical trace digest for one seed and a different digest when any
-    interleaving or crash decision changes; proof
-    `coordinator_interleaving_decisions_feed_the_digest`.
-  - `OBL-0184-6` WP-766 must prove that every seeded coordinator crash
-    window recovers to the testkit model at the recovered frontier,
-    including windows between epoch seal, durable fence, and publication;
-    proof `every_coordinator_crash_window_recovers_to_the_model`.
-  - `OBL-0184-7` WP-767 must prove that `riffdb-reactive-syntax` replaces
-    `riffdb-query-syntax` with byte-identical reactive-module artifacts and
-    no production crate depends on `riffdb-sim`; proof
-    `reactive_module_artifacts_are_byte_identical_after_rename`.
-  - `OBL-0184-8` WP-767 must prove that no source file may grow past 10,000
-    lines, and growth past 6,000 lines is reported, in every package that
-    touches one of the five largest files; proof
-    `scripts/check-file-size-guard`.
-- **Direction approved:** 2026-09-01
-- **Exact text accepted:** Yes, 2026-09-01
-- **Accepted:** 2026-09-01
-- **Acceptance reference:** Maintainer acceptance of the exact text in the
-  current Claude Code session on 2026-09-01, all seven consolidation records together
-- **Decision deadline:** Before WP-764 adds a workspace lint level, before
-  WP-765 changes the required CI test job, and before WP-766 adds a
-  production seam for coordinator step scheduling
-- **Requires:** ADR-0012, ADR-0058, ADR-0098, ADR-0101, ADR-0104, ADR-0113,
-  and ADR-0124
-- **Amends:** SPEC 9.8 (fail-fast is made testable), SPEC 17.10 (adds the
-  ADR-0113 Phase-2 coordinator harness), SPEC 18.2 (the unit and integration
-  job becomes partitioned and time-recorded), and ADR-0113's "future ADR" for
-  Phase 2. ADR-0179 and ADR-0180 are not amended; this record only adds a
-  size guard their packages run.
-- **Defines or blocks:** WP-764 through WP-767
-
-The maintainer accepted the exact text of this record on 2026-09-01. Its packages
-may begin. Each deferred obligation above is tracked in
-`adr/obligations-outstanding.yaml` until its planned proof exists, at which
-point the owning package discharges it by declaring the proof.
 
 ## Context
 
@@ -349,3 +365,9 @@ level, before WP-765 replaces the SPEC 18.2 test job, and before WP-766 adds
 the monotonic-time seam to `riffdb-commit`. WP-767's rename and size guard
 may proceed on direction approval because they change no behavior, but the
 record as a whole is accepted or rejected as one text.
+
+## Acceptance
+
+Direction approved 2026-09-01; exact text accepted 2026-09-01. The maintainer
+accepted the exact text of this record in the Claude Code session of
+2026-09-01, all seven consolidation records together.

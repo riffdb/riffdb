@@ -1,13 +1,6 @@
-Work package:
-Requirement IDs:
-ADRs consulted:
-Upstream revision:
-Allowed paths used:
+Package:                    # WP-NNN, or `none` with the tier of the change
+Tier:                       # internal | surface | guarantee
 Behavior added or changed:
-Compatibility classification:
-Security implications:
-Tests executed:
-Generated artifacts checked:
-Documentation impact:
-Known limitations:
-Follow-up issues:
+Checks run:                 # the ./scripts/acceptance result
+Compatibility:
+Hazards and follow-ups:

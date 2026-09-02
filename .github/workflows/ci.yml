@@ -182,6 +182,26 @@ jobs:
       - name: Check ADR obligations
         run: ./scripts/check-adr-obligations
 
+  governance:
+    name: Governance
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # classify-change needs history to resolve merge-base(HEAD, main).
+          fetch-depth: 0
+      - name: Check requirement coverage
+        run: ./scripts/check-requirement-coverage
+      - name: Check ADR obligations
+        run: ./scripts/check-adr-obligations
+      - name: Check the ADR index
+        run: ./scripts/adr-index --check
+      - name: Classify the change
+        run: ./scripts/classify-change --json
+
   source-convenience:
     name: Source install and bootstrap
     runs-on: ubuntu-24.04

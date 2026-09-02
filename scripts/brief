@@ -1,0 +1,310 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Renders the whole prompt for a work package: the manifest entry, the text of
+# every requirement it carries, the decision it implements, the obligations it
+# owes, the acceptance plan that will judge it, and the review triggers that stop
+# it. One command instead of four files reconciled by hand.
+#
+# Everything here is derived. Nothing in this output is a fifth copy of the
+# intent; if the brief is wrong, the manifest, SPEC, or the record is wrong.
+
+require "open3"
+require_relative "lib/riffdb_adr"
+
+# Agent 1's shared loader carries the tier ceremony text. Absent, the brief still
+# renders; the tier default line is simply omitted.
+begin
+  require_relative "lib/riffdb_governance"
+rescue LoadError, StandardError
+  # optional
+end
+
+ROOT = RiffdbAdr.root
+AGENTS_PATH = File.join(ROOT, "AGENTS.md")
+DEFAULT_ADR_LINES = 80
+
+USAGE = <<~TEXT
+  usage: brief WP-NNN [--adr-lines N] [--help]
+
+    --adr-lines N  truncate each decision record at N lines (default #{DEFAULT_ADR_LINES})
+    --help         this message
+
+  Prints the package brief as Markdown on stdout. The brief is the prompt.
+TEXT
+
+def bullets(values, empty: "_none_")
+  values = Array(values).map(&:to_s).reject { |value| value.strip.empty? }
+  return [empty] if values.empty?
+
+  values.map { |value| "- #{value.gsub(/\s+/, ' ').strip}" }
+end
+
+def paragraph(value, empty: "_not stated_")
+  text = value.to_s.gsub(/\s+/, " ").strip
+  text.empty? ? empty : text
+end
+
+def closure_of(package)
+  return "open" if package.nil?
+
+  status = package.dig("closure", "status")
+  return "open" if status.nil?
+
+  completed = package.dig("closure", "completed_at")
+  completed ? "#{status} (#{completed})" : status.to_s
+end
+
+def truncate(text, limit)
+  lines = text.to_s.lines.map(&:chomp)
+  return [lines, false] if lines.length <= limit
+
+  [lines.first(limit), true]
+end
+
+# The decision half of a record: the whole body for a v2 record (front matter
+# already carried the facts), the Decision section for a legacy one. Headings are
+# demoted one level so a quoted record nests under its brief heading instead of
+# competing with it.
+def decision_text(record)
+  body =
+    if record.v2?
+      record.body.strip
+    else
+      RiffdbAdr.section(record.body, ["Decision", "Proposed Decision"]) ||
+        "_no `## Decision` section in #{record.basename}_"
+    end
+  body.gsub(/^(\#{1,5})(?=[ \t])/) { "##{Regexp.last_match(1)}" }
+end
+
+def tier_default(tier)
+  return nil unless defined?(RiffdbGovernance)
+
+  RiffdbGovernance.ceremony(tier)
+rescue StandardError
+  nil
+end
+
+def acceptance_plan(package_id)
+  script = File.join(ROOT, "scripts", "acceptance")
+  unless File.file?(script)
+    return "_`scripts/acceptance` is not present; run the package's `acceptance_commands`._"
+  end
+
+  stdout, stderr, status = Open3.capture3(script, "--wp", package_id, "--dry-run", chdir: ROOT)
+  body = stdout.strip
+  body = stderr.strip if body.empty?
+  return "_`acceptance --wp #{package_id} --dry-run` printed nothing._" if body.empty?
+
+  prefix = status.success? ? "" : "_(acceptance exited #{status.exitstatus})_\n\n"
+  "#{prefix}```\n#{body}\n```"
+end
+
+def obligations_for(root, package_id)
+  lines = []
+  RiffdbAdr.records(root).each do |record|
+    next unless record.v2?
+
+    record.obligations.each do |obligation|
+      next unless obligation["package"].to_s == package_id
+
+      lines << "- `#{obligation['id']}` (#{record.basename}) proof `#{obligation['proof']}` — " \
+               "#{paragraph(obligation['says'], empty: '(no statement)')}"
+    end
+  end
+  RiffdbAdr.ledger_entries(root).each do |entry|
+    next unless RiffdbAdr.ledger_packages(entry).include?(package_id)
+
+    lines << "- ledger (#{RiffdbAdr.ledger_adr(entry)}): #{paragraph(entry['obligation'])}"
+  end
+  lines
+end
+
+def agents_review_list(path)
+  return [] unless File.file?(path)
+
+  lines = File.read(path, encoding: "UTF-8").lines
+  start = lines.index { |line| line.match?(/\A\#{1,4}[ \t]+Stop and request human review when/i) }
+  return [] unless start
+
+  collected = []
+  index = start + 1
+  while index < lines.length
+    line = lines[index]
+    break if line.match?(/\A\#{1,4}[ \t]/)
+
+    collected << line.chomp.sub(/\A-\s*/, "") if line.start_with?("- ")
+    index += 1
+  end
+  collected
+end
+
+package_id = nil
+adr_lines = DEFAULT_ADR_LINES
+index = 0
+while index < ARGV.length
+  argument = ARGV[index]
+  case argument
+  when "--help", "-h"
+    puts USAGE
+    exit 0
+  when "--adr-lines"
+    index += 1
+    adr_lines = ARGV[index].to_i
+    if adr_lines < 1
+      warn "--adr-lines expects a positive integer"
+      exit 2
+    end
+  when /\A--/
+    warn "unknown option #{argument.inspect}"
+    warn USAGE
+    exit 2
+  else
+    package_id = argument
+  end
+  index += 1
+end
+
+if package_id.nil?
+  warn USAGE
+  exit 2
+end
+package_id = "WP-#{package_id}" if package_id.match?(/\A\d{3}\z/)
+unless package_id.match?(/\AWP-\d{3}\z/)
+  warn "expected WP-NNN, got #{package_id.inspect}"
+  exit 2
+end
+
+packages = RiffdbAdr.packages_by_id(ROOT)
+package = packages[package_id]
+if package.nil?
+  warn "#{package_id} is not in work_packages.yaml"
+  exit 1
+end
+
+tier = package["tier"].to_s
+requirement_texts = RiffdbAdr.spec_requirement_texts(ROOT)
+out = []
+
+out << "# #{package_id} — #{paragraph(package['name'], empty: '(unnamed)')}"
+out << ""
+out << "- **Tier:** #{tier.empty? ? '_not set in work_packages.yaml_' : tier}"
+out << "- **Closure:** #{closure_of(package)}"
+out << ""
+out << "## Objective"
+out << ""
+out << paragraph(package["objective"])
+out << ""
+
+out << "## Dependencies"
+out << ""
+dependencies = Array(package["depends_on"])
+if dependencies.empty?
+  out << "_none_"
+else
+  dependencies.each do |dependency|
+    other = packages[dependency]
+    name = other ? paragraph(other["name"], empty: "(unnamed)") : "**unknown package**"
+    out << "- #{dependency} — #{name} — #{closure_of(other)}"
+  end
+end
+out << ""
+
+out << "## Allowed paths"
+out << ""
+out.concat(bullets(package["allowed_paths"]))
+out << ""
+
+out << "## Deliverables"
+out << ""
+out.concat(bullets(package["deliverables"]))
+out << ""
+
+out << "## Exit gate"
+out << ""
+out << paragraph(package["exit_gate"])
+out << ""
+
+out << "## Standing design tests"
+out << ""
+tests = package["standing_design_tests"]
+if tests.is_a?(Hash) && !tests.empty?
+  tests.each { |name, value| out << "- **#{name.to_s.tr('_', ' ')}:** #{paragraph(value)}" }
+else
+  out << "_none stated_"
+end
+out << ""
+
+out << "## Requirements"
+out << ""
+requirements = Array(package["requirements"])
+if requirements.empty?
+  out << "_none_"
+else
+  requirements.each do |requirement|
+    text = requirement_texts[requirement]
+    out << "### #{requirement}"
+    out << ""
+    out << (text.nil? || text.empty? ? "_no requirement text found in SPEC.md_" : text)
+    out << ""
+  end
+end
+
+out << "## Decision records"
+out << ""
+required = Array(package["required_adrs"])
+if required.empty?
+  out << "_none_"
+  out << ""
+else
+  required.each do |reference|
+    record = RiffdbAdr.record_for(ROOT, reference)
+    if record.nil?
+      out << "### #{reference}"
+      out << ""
+      out << "_no matching adr/NNNN-*.md_"
+      out << ""
+      next
+    end
+
+    out << "### ADR-#{record.number} — #{paragraph(record.title, empty: '(untitled)')}"
+    out << ""
+    out << "_Status #{record.status}, tier #{record.tier}, #{record.basename}_"
+    out << ""
+    body, truncated = truncate(decision_text(record), adr_lines)
+    out.concat(body)
+    out << ""
+    out << "_truncated at #{adr_lines} lines; read adr/#{record.basename} for the rest_" if truncated
+    out << ""
+  end
+end
+
+out << "## Obligations owed by this package"
+out << ""
+obligations = obligations_for(ROOT, package_id)
+out.concat(obligations.empty? ? ["_none_"] : obligations)
+out << ""
+
+out << "## Acceptance plan"
+out << ""
+out << acceptance_plan(package_id)
+out << ""
+
+out << "## Human review triggers"
+out << ""
+triggers = Array(package["human_review_triggers"])
+if triggers.empty?
+  ceremony = tier_default(tier)
+  out << (ceremony ? "_#{tier} tier ceremony:_ #{ceremony}" : "_none stated for this package_")
+else
+  out.concat(bullets(triggers))
+end
+out << ""
+
+out << "## Stop and request human review when (AGENTS.md)"
+out << ""
+review = agents_review_list(AGENTS_PATH)
+out.concat(review.empty? ? ["_AGENTS.md has no review list_"] : bullets(review))
+out << ""
+
+puts out.join("\n")

@@ -39,118 +39,89 @@ The specification and accepted architecture decision records are authoritative. 
 
 ## Authoritative files
 
-- `SPEC.md`
-- `work_packages.yaml`
-- `adr/*.md` with status `Accepted`
-- `.proto` and contract grammar sources once merged
-- Generated compatibility fixtures checked into the repository
+- `SPEC.md`, `work_packages.yaml`, and `governance/tiers.yaml` (the tiers, the
+  path rules that assign them, and the path-triggered checks).
+- Accepted `adr/*.md`: `status: accepted` in v2 front matter, or
+  `- **Status:** Accepted` in a legacy header. A v2 record's front matter owns
+  its tier, requirements, packages, obligations, and review triggers.
+- `.proto` and grammar sources once merged, and their generated fixtures.
 
-When these conflict, stop and request human review. Do not choose whichever interpretation is easiest to implement.
+When these conflict, stop and request human review. Do not choose whichever
+interpretation is easiest to implement.
 
-## Work-package protocol
+## Change protocol
 
-Before editing:
+Every change has a tier. `./scripts/classify-change` computes it from the
+touched paths against `governance/tiers.yaml` as the maximum over them; the
+commit message names it in a `Governance-Tier: <tier>` trailer that may only
+raise it.
 
-1. Read the assigned `WP-*` entry in `work_packages.yaml`.
-2. Read its requirement IDs and ADR dependencies.
-3. Confirm all hard dependencies are merged at the revision named in the task.
-4. Restate the allowed paths and public interfaces in the PR description.
-5. Add or identify a failing test for the behavior being implemented.
+- **internal**: tests and acceptance only; no decision record.
+- **surface**: a short-form decision record (ADR v2, `tier: surface`, body at
+  most 120 lines) and human review of the fixture diffs.
+- **guarantee**: a full record (`tier: guarantee`, body at most 200 lines) whose
+  exact text a human accepts before merge, and human review.
 
-During implementation:
+For a work package, run `./scripts/brief WP-NNN`; the brief is the prompt. It
+carries the objective, tier, dependencies, allowed paths, deliverables, exit
+gate, standing design tests, requirement text, ADR decisions, owned
+obligations, the acceptance plan, and the review triggers. Confirm every hard
+dependency is merged, add or identify a failing test first, keep changes inside
+`allowed_paths` (`./scripts/check-allowed-paths --wp WP-NNN` proves it), and
+run `./scripts/acceptance --wp WP-NNN` while you work. Without a package,
+internal tier needs no record; above it, `./scripts/adr-new --title "..."
+--tier surface|guarantee` writes the v2 skeleton and `./scripts/wp-new
+ADR-NNNN` prints the package skeletons it implies.
 
-- Keep changes inside `allowed_paths` unless an interface change is separately approved.
-- Prefer small interface-first commits when downstream packages depend on new types.
-- Never weaken fail-closed behavior to make a test pass.
-- Never duplicate a semantic type in two crates to avoid coordinating an interface.
-- Use bounded input, output, recursion, collection, scan, wait, and diagnostic sizes.
-- Preserve redaction before logging, metrics, MCP text, or public errors.
+Tag the test that proves a requirement with a comment line immediately above the
+test function, or at the top of the file to cover every test in it:
+`// req: REP-002, REP-003` in Rust, Go, and TypeScript, `# req: REP-002` in
+Python, Ruby, bash, and YAML. Unknown IDs are errors, and every requirement of a
+package completed on or after the cutover MUST be proven by a tag. Each ADR
+obligation names a `proof`: a test function or a `scripts/<name>` that MUST
+exist in code, not in prose. `./scripts/check-adr-obligations` searches outside
+`adr/`, `docs/`, `work_packages.yaml`, `SPEC.md`, and `governance/`, and fails
+once the owning package closes without it.
 
-Before completion:
+Whatever the tier: never weaken fail-closed behavior to make a test pass, never
+duplicate a semantic type in two crates to avoid coordinating an interface, keep
+input, output, recursion, collection, scan, wait, and diagnostic sizes bounded,
+and preserve redaction before logging, metrics, MCP text, or public errors.
 
-1. Run every `acceptance_commands` entry for the work package.
-2. Run formatting and Clippy for changed crates.
-3. Regenerate code and fixtures; verify the worktree is clean.
-4. Update documentation and ADR status where required.
-5. List requirement IDs satisfied by automated tests.
-6. Report known limitations and follow-up issues.
+Before completion: `./scripts/acceptance` passes; docs are updated where public
+behavior changed; the closure block records `completed_at`; and the PR note
+(SPEC 19.7) gives Package (`WP-NNN`, or `none` with the tier), Tier, Behavior
+added or changed, Checks run, Compatibility, and Hazards and follow-ups.
 
 ## Documentation maintenance protocol
 
 - `docs/SUMMARY.md` defines the public handbook. Any user-visible behavior,
-  contract language, public protocol, CLI, configuration, installation,
-  operational, compatibility, or SDK change MUST update the affected handbook
-  page in the same pull request.
-- New public behavior MUST be discoverable from `docs/SUMMARY.md`; do not leave
-  public guidance only in an ADR, work-package report, test, example, or source
-  comment.
-- Generated handbook references and diagrams MUST be regenerated and checked in
-  when their authoritative source changes. Do not hand-edit generated pages.
-- Examples MUST use current public interfaces and identify POC limitations. Do
-  not document proposed or deferred behavior as available.
-- Run `./scripts/handbook check` for changes that affect public behavior or
-  handbook sources. The check includes the book build, generated-reference
-  freshness, links, snippets, and the published Rust API surface.
-- Run `./scripts/check-container-startup` for any change to the release
-  container, its shipped runtime configuration, or a server default that
-  resolves against the working directory. Rendering and YAML checks do not
-  start anything, which is how `release/container/riffdbd.toml` and
-  `release/kubernetes/riffdb.yaml` shipped a configuration that could not start
-  the server: `projections_root` resolved under a read-only path.
-- Run `./scripts/downstream-adapter-check` for any change to the contract or
-  RiffQL language, including its bounds and required syntax. The out-of-tree
-  adapter repositories are the only consumers that exercise those languages end
-  to end, and no test in this repository compiles them, so a language change
-  otherwise lands green here and breaks them silently. ADR-0167 did exactly
-  that. The check is read-only and offline and never writes to a repository it
-  checks; it is not wired into CI because those repositories have no remote.
-- Pull requests MUST state their documentation impact. `Not applicable` is
-  acceptable only with a concrete reason for changes that cannot affect users,
-  operators, application authors, public interfaces, or compatibility.
-
-## Required PR description
-
-```text
-Work package:
-Requirement IDs:
-ADRs consulted:
-Upstream revision:
-Allowed paths used:
-Behavior added or changed:
-Compatibility classification:
-Security implications:
-Tests executed:
-Generated artifacts checked:
-Documentation impact:
-Known limitations:
-Follow-up issues:
-```
-
-## Build hygiene
-
-- Sessions running multiple package worktrees SHOULD export one shared
-  `CARGO_TARGET_DIR` per session (for example `~/dev/.cargo-target-<session>`)
-  and reuse it across that session's worktrees, keeping dependency builds warm
-  instead of paying a cold build per package. Do not share one target directory
-  across concurrent sessions: cargo's target lock serializes builds.
-- Dependency debuginfo is disabled workspace-wide (`[profile.dev.package."*"]
-  debug = false`); workspace crates keep line tables. Do not re-enable it in a
-  package without maintainer approval.
-- Prefer targeted cleanup (`rm -rf <target>/*/incremental`, age-based sweeps)
-  over `cargo clean`; a machine-wide `sccache` wrapper caches dependency
-  compilation, so cold rebuilds are cheap but still wasteful.
+  contract language, protocol, CLI, configuration, installation, operational,
+  compatibility, or SDK change MUST update the affected handbook page in the
+  same pull request, and new public behavior MUST be reachable from
+  `docs/SUMMARY.md`.
+- Regenerate generated references and diagrams when their source changes; never
+  hand-edit one. Examples MUST use current public interfaces and name POC
+  limits, never presenting proposed or deferred behavior as available.
+- `./scripts/acceptance` runs the path-triggered checks, among them
+  `./scripts/handbook check`, `./scripts/check-container-startup`, and
+  `./scripts/downstream-adapter-check`, which `docs/CONTRIBUTING.md` explains.
+- The PR note names the updated pages, or a concrete reason the change cannot
+  affect users, operators, application authors, interfaces, or compatibility.
 
 ## Standard commands
 
 ```bash
+./scripts/acceptance   # per change: the plan for the touched paths
+./scripts/ci-all       # the full battery, required at merge
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
-cargo doc --workspace --no-deps
 cargo deny check
 ```
 
-Package-specific Loom, Shuttle, fuzz, recovery, generation, and conformance commands are defined in `work_packages.yaml` and repository scripts.
+Package-specific Loom, Shuttle, fuzz, recovery, generation, and conformance
+commands are defined in `work_packages.yaml` and reported by `./scripts/brief`.
 
 ## Rust rules
 

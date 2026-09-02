@@ -34,18 +34,52 @@
 # blocks is NEW undeclared obligations, and it turns the existing set into a
 # list that can be worked down rather than prose nobody can enumerate.
 #
-# Declaring an obligation, in the ADR header:
+# Declaring an obligation, in the legacy ADR header:
 #
 #   - **Obligations:**
 #     - `OBL-0156-1` WP-704 adds the fail-closed local check for facts skipped
 #       at clean startup. Proof: `bounded_startup_defers_the_population_rebuild`
 #
 # The proof is a test function name, and it must exist.
+#
+# ---------------------------------------------------------------------------
+# Governance v2
+#
+# An ADR v2 record carries its obligations in YAML front matter instead:
+#
+#   obligations:
+#     - id: OBL-0185-1
+#       package: WP-746
+#       proof: follower_applies_exact_prefix_byte_faithfully
+#       says: A follower driven by the app-baseline workload holds a prefix.
+#
+# Two rules differ for v2 records.
+#
+# The proof rule is strict. A legacy proof counts if `git grep` finds the string
+# anywhere outside adr/ and docs/, which lets a work-package deliverable naming
+# the test stand in for the test. A v2 proof must be a definition -- `fn <proof>`,
+# `def <proof>`, `test_<proof>` -- or an executable `scripts/<proof>`, and the
+# search additionally excludes work_packages.yaml, SPEC.md, and governance/.
+# Legacy records keep the loose rule: they were accepted under it.
+#
+# A missing v2 proof is normally OUTSTANDING, not an error: an accepted record
+# names work its packages have not finished yet. It becomes an error the moment
+# the owning package claims to be complete, which is exactly the failure that
+# motivated this script.
+#
+# Migrating an ADR to front matter supersedes its ledger entries. Those entries
+# are reported and ignored, and `--prune-ledger` splices them out of
+# adr/obligations-outstanding.yaml without rewriting the entries that remain.
 
+require "fileutils"
+require "json"
+require "open3"
 require "set"
+require "tmpdir"
 require "yaml"
+require_relative "lib/riffdb_adr"
 
-ROOT = File.expand_path("..", __dir__)
+ROOT = RiffdbAdr.root
 ADR_DIR = File.join(ROOT, "adr")
 LEDGER_PATH = File.join(ADR_DIR, "obligations-outstanding.yaml")
 
@@ -55,8 +89,21 @@ LEDGER_PATH = File.join(ADR_DIR, "obligations-outstanding.yaml")
 OBLIGATION = /[^.\n]*\bWP-\d{3}\b[^.]*?\bmust\b[^.]*\./i
 DECLARED = /`(OBL-\d{4}-\d+)`.*?Proof:\s*`([^`]+)`/m
 
-errors = []
-warnings = []
+# Legacy records were accepted under this scope. Do not narrow it.
+LEGACY_EXCLUDES = %w[:!adr :!docs].freeze
+# The v2 scope closes the loophole where prose about a test counted as the test.
+STRICT_EXCLUDES = %w[:!adr :!docs :!work_packages.yaml :!SPEC.md :!governance].freeze
+
+USAGE = <<~TEXT
+  usage: check-adr-obligations [--report] [--json] [--prune-ledger] [--self-test] [--help]
+
+    (no flags)      check every accepted ADR and exit nonzero on a problem
+    --report        list outstanding obligations grouped by work package
+    --json          emit the whole result as JSON on stdout
+    --prune-ledger  remove ledger entries superseded by ADR front matter
+    --self-test     check this script against a fabricated tree
+    --help          this message
+TEXT
 
 def obligation_key(adr, sentence)
   # Key on a normalised prefix so incidental rewrapping does not orphan a
@@ -64,78 +111,527 @@ def obligation_key(adr, sentence)
   "#{adr}::#{sentence.gsub(/\s+/, ' ').strip[0, 90]}"
 end
 
+# git refuses an exclude pathspec naming a path that is not in the working tree,
+# and a refused grep would silently read as "proof missing". Drop the pathspecs
+# that do not apply to this tree instead.
+def excludes_for(root, pathspecs)
+  pathspecs.select { |pathspec| File.exist?(File.join(root, pathspec.delete_prefix(":!"))) }
+end
+
 # Proof names are searched for across the tree. Scoped to the repository by
 # construction -- never an unbounded filesystem walk.
-def proof_exists?(name)
-  return false if name.strip.empty?
-
-  # `:!adr` matters: without it the declaration finds itself, and every
-  # obligation would appear discharged by the sentence that declares it. The
-  # proof must exist in code or tests, not in prose.
+def git_grep?(root, needle, excludes)
   system(
-    "git", "-C", ROOT, "grep", "--quiet", "--fixed-strings", "--", name, ":!adr", ":!docs",
+    "git", "-C", root, "grep", "--quiet", "--fixed-strings", "--", needle,
+    *excludes_for(root, excludes),
     out: File::NULL, err: File::NULL
   )
 end
 
-ledger =
-  if File.exist?(LEDGER_PATH)
-    YAML.safe_load(File.read(LEDGER_PATH, encoding: "UTF-8")) || {}
+# `:!adr` matters: without it the declaration finds itself, and every obligation
+# would appear discharged by the sentence that declares it. The proof must exist
+# in code or tests, not in prose.
+def legacy_proof_exists?(root, name)
+  return false if name.to_s.strip.empty?
+
+  git_grep?(root, name.strip, LEGACY_EXCLUDES)
+end
+
+# Every `fn <name>` and `def <name>` in the tree, outside the prose that must
+# not be able to discharge an obligation. One scan answers every strict lookup;
+# a grep per proof costs seconds once a migration lands dozens of them.
+DEFINITION = /(?:\A|[^A-Za-z0-9_])(?:fn|def)[ \t]+([A-Za-z_][A-Za-z0-9_]*)/
+def definitions(root)
+  @definitions ||= {}
+  @definitions[root] ||= begin
+    stdout, _stderr, status = Open3.capture3(
+      "git", "-C", root, "grep", "-h", "-oE",
+      '(^|[^A-Za-z0-9_])(fn|def)[ \t]+[A-Za-z_][A-Za-z0-9_]*', "--",
+      *excludes_for(root, STRICT_EXCLUDES)
+    )
+    # git grep exits 1 when nothing matched; anything else is a real failure.
+    raise "git grep failed in #{root}" unless [0, 1].include?(status.exitstatus)
+
+    stdout.lines.filter_map { |line| line[DEFINITION, 1] }.to_set
+  end
+end
+
+# The strict rule. A script proof may carry a flag suffix ("check-x --self-test");
+# only the script path is matched.
+def strict_proof_exists?(root, proof)
+  token = proof.to_s.strip.split(/\s+/).first.to_s
+  return false if token.empty?
+
+  return true if File.file?(File.join(root, "scripts", token))
+  return true if token.start_with?("scripts/") && File.file?(File.join(root, token))
+
+  names = definitions(root)
+  names.include?(token) || names.include?("test_#{token}")
+end
+
+def check(root)
+  result = {
+    "deferred" => 0,
+    "acknowledged" => 0,
+    "undeclared" => 0,
+    "declared_v2" => 0,
+    "proven_v2" => 0,
+    "outstanding" => [],
+    "superseded_ledger" => [],
+    "stale_ledger" => [],
+    "errors" => []
+  }
+  errors = result["errors"]
+
+  records = RiffdbAdr.records(root)
+  v2_basenames = records.select(&:v2?).map(&:basename).to_set
+  packages = RiffdbAdr.packages_by_id(root)
+
+  entries = RiffdbAdr.ledger_entries(root)
+  superseded, live = entries.partition { |entry| v2_basenames.include?(RiffdbAdr.ledger_adr(entry)) }
+  result["superseded_ledger"] = superseded.map do |entry|
+    { "key" => entry["key"], "adr" => RiffdbAdr.ledger_adr(entry) }
+  end
+  acknowledged = live.to_h { |entry| [entry["key"], entry] }
+  seen_keys = Set.new
+
+  records.each do |record|
+    if record.v2?
+      check_v2(root, record, packages, result)
+      next
+    end
+
+    # Legacy path, unchanged.
+    next unless record.text.match?(/\*\*Status:\*\*\s*Accepted/)
+
+    adr = record.basename
+    declared = record.text.scan(DECLARED).to_h
+
+    declared.each do |id, proof|
+      next if legacy_proof_exists?(root, proof)
+
+      errors << "#{adr}: obligation #{id} names proof #{proof.inspect}, which does not exist in the tree"
+    end
+
+    record.text.scan(OBLIGATION) do |sentence|
+      key = obligation_key(adr, sentence)
+      seen_keys << key
+      next unless declared.empty?
+      next if acknowledged.key?(key)
+
+      result["undeclared"] += 1
+      errors << <<~MESSAGE.strip
+        #{adr}: undeclared deferred obligation.
+          #{sentence.gsub(/\s+/, ' ').strip[0, 140]}
+        Declare it in the ADR header with a proof that exists:
+          - **Obligations:**
+            - `OBL-XXXX-1` <what must be true>. Proof: `<test name>`
+        Or, if it genuinely cannot be discharged yet, add it to
+        adr/obligations-outstanding.yaml with an owner and a reason.
+      MESSAGE
+    end
+  end
+
+  result["deferred"] = seen_keys.size
+  result["acknowledged"] = acknowledged.size
+  result["stale_ledger"] = acknowledged.keys.reject { |key| seen_keys.include?(key) }
+  result
+end
+
+def check_v2(root, record, packages, result)
+  return unless record.accepted?
+
+  record.obligations.each_with_index do |obligation, position|
+    id = obligation["id"].to_s.strip
+    id = "#{record.id}-obligation-#{position + 1}" if id.empty?
+    package_id = obligation["package"].to_s.strip
+    proof = obligation["proof"].to_s.strip
+    says = obligation["says"].to_s.strip
+    result["declared_v2"] += 1
+
+    if package_id.empty?
+      result["errors"] << "#{record.basename}: obligation #{id} names no owning package"
+      next
+    end
+    if proof.empty?
+      result["errors"] << "#{record.basename}: obligation #{id} names no proof"
+      next
+    end
+
+    package = packages[package_id]
+    if package.nil?
+      result["errors"] <<
+        "#{record.basename}: obligation #{id} names unknown work package #{package_id}"
+      next
+    end
+
+    if strict_proof_exists?(root, proof)
+      result["proven_v2"] += 1
+      next
+    end
+
+    if RiffdbAdr.complete?(package)
+      result["errors"] << <<~MESSAGE.strip
+        #{record.basename}: obligation #{id} is undischarged but #{package_id} is closed as #{package.dig('closure', 'status').inspect}.
+          proof: #{proof.inspect} (no `fn`/`def`/`test_` definition and no scripts/#{proof.split(/\s+/).first} in the tree)
+          says: #{says[0, 140]}
+        Either land the proof or reopen #{package_id}.
+      MESSAGE
+    else
+      result["outstanding"] << {
+        "id" => id, "adr" => record.basename, "package" => package_id,
+        "proof" => proof, "says" => says, "source" => "front-matter"
+      }
+    end
+  end
+end
+
+def ledger_outstanding(root, superseded_keys)
+  entries = RiffdbAdr.ledger_entries(root)
+                     .reject { |entry| superseded_keys.include?(entry["key"]) }
+  entries.flat_map do |entry|
+    owners = RiffdbAdr.ledger_packages(entry)
+    owners = ["(no owner)"] if owners.empty?
+    owners.map do |owner|
+      {
+        "id" => entry["key"], "adr" => RiffdbAdr.ledger_adr(entry), "package" => owner,
+        "proof" => nil, "says" => entry["obligation"].to_s, "source" => "ledger"
+      }
+    end
+  end
+end
+
+def print_report(root, result)
+  superseded_keys = result["superseded_ledger"].map { |entry| entry["key"] }.to_set
+  grouped = (result["outstanding"] + ledger_outstanding(root, superseded_keys))
+            .group_by { |entry| entry["package"] }
+  if grouped.empty?
+    puts "No outstanding ADR obligations."
+    return
+  end
+
+  puts "Outstanding ADR obligations by work package:"
+  grouped.keys.sort.each do |package_id|
+    puts "  #{package_id}"
+    grouped[package_id].each do |entry|
+      head = entry["source"] == "ledger" ? entry["adr"] : "#{entry['id']} (#{entry['adr']})"
+      suffix = entry["proof"] ? " proof `#{entry['proof']}`" : " [ledger]"
+      puts "    #{head}#{suffix}"
+      says = entry["says"].to_s.gsub(/\s+/, " ").strip
+      puts "      #{says[0, 160]}" unless says.empty?
+    end
+  end
+end
+
+# Remove superseded entries by splicing whole lines out of the ledger. The file
+# is not re-dumped: every surviving entry keeps its bytes, including the hand
+# wrapping a YAML dump would not reproduce.
+def prune_ledger(path, superseded_keys)
+  return 0 if superseded_keys.empty?
+  return 0 unless File.exist?(path)
+
+  raw = File.read(path, encoding: "UTF-8")
+  document = YAML.safe_load(raw) || {}
+  entries = Array(document["outstanding"])
+  lines = raw.lines
+  start = lines.index { |line| line.start_with?("outstanding:") }
+  raise "#{path}: no `outstanding:` key to prune" unless start
+
+  ranges = []
+  index = start + 1
+  while index < lines.length
+    unless lines[index].start_with?("- ")
+      break if lines[index].match?(/\A\S/)
+
+      index += 1
+      next
+    end
+    finish = index + 1
+    finish += 1 while finish < lines.length && lines[finish].match?(/\A[ \t]/)
+    ranges << (index...finish)
+    index = finish
+  end
+
+  unless ranges.length == entries.length
+    raise "#{path}: found #{ranges.length} entry block(s) for #{entries.length} parsed entries"
+  end
+
+  doomed = entries.each_index.select { |position| superseded_keys.include?(entries[position]["key"]) }
+  kept = lines.dup
+  doomed.reverse_each { |position| kept[ranges[position]] = [] }
+  updated = kept.join
+
+  # Never write a ledger that does not parse back to exactly the entries the
+  # prune meant to keep.
+  reparsed = YAML.safe_load(updated) || {}
+  expected = entries.reject { |entry| superseded_keys.include?(entry["key"]) }
+  raise "#{path}: prune would change entries it must preserve" unless Array(reparsed["outstanding"]) == expected
+
+  File.write(path, updated)
+  doomed.length
+end
+
+def report_lines(root, result)
+  lines = []
+  result["superseded_ledger"].each do |entry|
+    lines << "note: ledger entry superseded by ADR front matter: #{entry['key']}"
+  end
+  unless result["superseded_ledger"].empty?
+    lines << "Run `check-adr-obligations --prune-ledger` to remove " \
+             "#{result['superseded_ledger'].length} superseded entry/entries."
+  end
+  result["stale_ledger"].each do |key|
+    lines << "warning: ledger entry no longer matches any accepted ADR obligation: #{key}"
+  end
+  unless result["stale_ledger"].empty?
+    lines << "Remove stale entries from #{RiffdbAdr.ledger_path(root).sub("#{root}/", '')}."
+  end
+  lines
+end
+
+def summary_lines(result)
+  [
+    "ADR obligations: #{result['deferred']} deferred obligation(s) across accepted records; " \
+    "#{result['acknowledged']} acknowledged outstanding, #{result['undeclared']} undeclared.",
+    "ADR v2 obligations: #{result['declared_v2']} declared across accepted records; " \
+    "#{result['proven_v2']} proven, #{result['outstanding'].length} outstanding."
+  ]
+end
+
+# --------------------------------------------------------------------------
+# Self-test
+
+SELF_TEST_LEGACY_DECLARED = <<~MARKDOWN
+  # ADR-0899: Legacy Declared Fixture
+
+  - **Status:** Accepted
+  - **Obligations:**
+    - `OBL-0899-1` WP-899 must keep the loose rule. Proof: `loose_proof_in_the_manifest_only`
+
+  ## Context
+
+  The legacy proof rule accepts any occurrence outside adr/ and docs/, which
+  includes a work-package deliverable that merely names the test.
+MARKDOWN
+
+SELF_TEST_LEGACY_ACKNOWLEDGED = <<~MARKDOWN
+  # ADR-0900: Legacy Acknowledged Fixture
+
+  - **Status:** Accepted
+
+  ## Context
+
+  WP-900 must keep the legacy rule.
+MARKDOWN
+
+SELF_TEST_V2 = <<~MARKDOWN
+  ---
+  adr: 0901
+  title: V2 Fixture
+  status: accepted
+  tier: surface
+  date: 2026-09-02
+  accepted: 2026-09-02
+  requires: []
+  amends: []
+  supersedes: []
+  requirements: []
+  packages: [WP-901]
+  obligations:
+    - id: OBL-0901-1
+      package: WP-901
+      proof: real_definition_exists
+      says: A real definition discharges the obligation.
+    - id: OBL-0901-2
+      package: WP-901
+      proof: loose_proof_in_the_manifest_only
+      says: A manifest mention must not discharge the obligation.
+  review_triggers: []
+  ---
+  # ADR-0901: V2 Fixture
+
+  ## Decision
+
+  1. The strict proof rule applies.
+MARKDOWN
+
+SELF_TEST_LEDGER = <<~YAML
+  ---
+  purpose: 'Fixture ledger.'
+  outstanding:
+  - key: 0900-legacy-acknowledged-fixture.md::WP-900 must keep the legacy rule.
+    adr: 0900-legacy-acknowledged-fixture.md
+    work_packages:
+    - WP-900
+    obligation: WP-900 must keep the legacy rule.
+    reason: Fixture entry that must survive the prune byte for byte.
+  - key: 0901-v2-fixture.md::WP-901 must do the superseded thing
+    adr: 0901-v2-fixture.md
+    work_packages:
+    - WP-901
+    obligation: WP-901 must do the superseded thing.
+    reason: Superseded once the record grew front matter.
+YAML
+
+SELF_TEST_MANIFEST_OPEN = <<~YAML
+  spec_version: '1.0'
+  source_spec: SPEC.md
+  work_packages:
+  - id: WP-899
+    name: Legacy declared fixture package
+    deliverables:
+    - Test `fn loose_proof_in_the_manifest_only` proves the loophole.
+  - id: WP-900
+    name: Legacy acknowledged fixture package
+  - id: WP-901
+    name: V2 fixture package
+YAML
+
+SELF_TEST_MANIFEST_CLOSED =
+  "#{SELF_TEST_MANIFEST_OPEN}  closure:\n    status: complete\n    evidence: fixture\n"
+
+def self_test_run(script, root, *arguments)
+  Open3.capture3({ "RIFFDB_GOVERNANCE_ROOT" => root.to_s }, script.to_s, *arguments)
+end
+
+def self_test_json(stdout)
+  JSON.parse(stdout)
+rescue JSON::ParserError
+  {}
+end
+
+def build_self_test_tree(directory)
+  %w[adr docs governance].each { |name| FileUtils.mkdir_p(File.join(directory, name)) }
+  FileUtils.mkdir_p(File.join(directory, "crates", "fixture", "src"))
+  File.write(File.join(directory, "docs", "note.md"), "fixture\n")
+  File.write(File.join(directory, "governance", "tiers.yaml"), "version: 1\n")
+  File.write(File.join(directory, "adr", "0899-legacy-declared-fixture.md"), SELF_TEST_LEGACY_DECLARED)
+  File.write(
+    File.join(directory, "adr", "0900-legacy-acknowledged-fixture.md"), SELF_TEST_LEGACY_ACKNOWLEDGED
+  )
+  File.write(File.join(directory, "adr", "0901-v2-fixture.md"), SELF_TEST_V2)
+  File.write(File.join(directory, "adr", "obligations-outstanding.yaml"), SELF_TEST_LEDGER)
+  File.write(File.join(directory, "SPEC.md"), "**Version:** 1.0\n")
+  File.write(File.join(directory, "work_packages.yaml"), SELF_TEST_MANIFEST_OPEN)
+  File.write(
+    File.join(directory, "crates", "fixture", "src", "lib.rs"),
+    "#[test]\nfn real_definition_exists() {}\n"
+  )
+  system("git", "-C", directory, "init", "--quiet", out: File::NULL, err: File::NULL)
+  system("git", "-C", directory, "add", "--all", out: File::NULL, err: File::NULL)
+end
+
+def self_test(script)
+  failures = []
+  Dir.mktmpdir("riffdb-adr-obligations-") do |directory|
+    build_self_test_tree(directory)
+
+    stdout, stderr, status = self_test_run(script, directory, "--json")
+    result = self_test_json(stdout)
+    failures << "the open-package run produced no JSON:\n#{stdout}\n#{stderr}" if result.empty?
+    unless status.success?
+      failures << "an outstanding obligation on an open package must exit 0, got #{status.exitstatus}"
+    end
+
+    outstanding = Array(result["outstanding"]).map { |entry| entry["id"] }
+    unless outstanding == ["OBL-0901-2"]
+      failures << "the strict rule must leave exactly OBL-0901-2 outstanding, got #{outstanding.inspect}"
+    end
+    failures << "`fn real_definition_exists` must discharge OBL-0901-1" unless result["proven_v2"] == 1
+    if Array(result["errors"]).any? { |error| error.include?("OBL-0899-1") }
+      failures << "the legacy loose rule must still accept a proof named only in work_packages.yaml"
+    end
+
+    superseded = Array(result["superseded_ledger"]).map { |entry| entry["key"] }
+    unless superseded == ["0901-v2-fixture.md::WP-901 must do the superseded thing"]
+      failures << "the v2 record must supersede exactly its own ledger entry, got #{superseded.inspect}"
+    end
+    unless Array(result["stale_ledger"]).empty?
+      failures << "a superseded entry must be ignored, not reported stale: #{result['stale_ledger'].inspect}"
+    end
+
+    # Pruning removes the superseded entry and nothing else, byte for byte.
+    ledger = File.join(directory, "adr", "obligations-outstanding.yaml")
+    before = File.read(ledger, encoding: "UTF-8")
+    _out, prune_stderr, prune_status = self_test_run(script, directory, "--prune-ledger")
+    failures << "--prune-ledger failed: #{prune_stderr}" unless prune_status.success?
+    after = File.read(ledger, encoding: "UTF-8")
+    survivor = before[/\A.*?(?=^- key: 0901)/m]
+    unless after == survivor
+      failures << "the prune must preserve the remaining entries byte for byte\n" \
+                  "--- want ---\n#{survivor}--- got ---\n#{after}"
+    end
+    if after.include?("WP-901 must do the superseded thing")
+      failures << "the prune did not remove the superseded entry"
+    end
+
+    # The same tree with the owning package closed must fail.
+    File.write(File.join(directory, "work_packages.yaml"), SELF_TEST_MANIFEST_CLOSED)
+    system("git", "-C", directory, "add", "--all", out: File::NULL, err: File::NULL)
+    closed_stdout, _closed_stderr, closed_status = self_test_run(script, directory, "--json")
+    failures << "an outstanding obligation on a completed package must exit 1" if closed_status.success?
+    unless Array(self_test_json(closed_stdout)["errors"]).any? { |error| error.include?("OBL-0901-2") }
+      failures << "the completed-package error must name OBL-0901-2"
+    end
+  end
+
+  if failures.empty?
+    puts "ADR obligation self-test passed."
+    return true
+  end
+
+  failures.each { |failure| warn(failure) }
+  false
+end
+
+# --------------------------------------------------------------------------
+
+report = false
+json = false
+prune = false
+ARGV.each do |argument|
+  case argument
+  when "--help", "-h"
+    puts USAGE
+    exit 0
+  when "--report" then report = true
+  when "--json" then json = true
+  when "--prune-ledger" then prune = true
+  when "--self-test" then exit(self_test(File.expand_path(__FILE__)) ? 0 : 1)
   else
-    {}
-  end
-acknowledged = (ledger["outstanding"] || []).to_h { |entry| [entry["key"], entry] }
-seen_keys = Set.new
-
-Dir.glob(File.join(ADR_DIR, "*.md")).sort.each do |path|
-  text = File.read(path, encoding: "UTF-8")
-  next unless text.match?(/\*\*Status:\*\*\s*Accepted/)
-
-  adr = File.basename(path)
-  declared = text.scan(DECLARED).to_h
-
-  declared.each do |id, proof|
-    next if proof_exists?(proof)
-
-    errors << "#{adr}: obligation #{id} names proof #{proof.inspect}, which does not exist in the tree"
-  end
-
-  text.scan(OBLIGATION) do |sentence|
-    key = obligation_key(adr, sentence)
-    seen_keys << key
-    next unless declared.empty?
-    next if acknowledged.key?(key)
-
-    errors << <<~MESSAGE.strip
-      #{adr}: undeclared deferred obligation.
-        #{sentence.gsub(/\s+/, ' ').strip[0, 140]}
-      Declare it in the ADR header with a proof that exists:
-        - **Obligations:**
-          - `OBL-XXXX-1` <what must be true>. Proof: `<test name>`
-      Or, if it genuinely cannot be discharged yet, add it to
-      adr/obligations-outstanding.yaml with an owner and a reason.
-    MESSAGE
+    warn "unknown option #{argument.inspect}"
+    warn USAGE
+    exit 2
   end
 end
 
-stale = acknowledged.keys.reject { |key| seen_keys.include?(key) }
-stale.each do |key|
-  warnings << "ledger entry no longer matches any accepted ADR obligation: #{key}"
+result = check(ROOT)
+
+if prune
+  begin
+    keys = result["superseded_ledger"].map { |entry| entry["key"] }.to_set
+    removed = prune_ledger(LEDGER_PATH, keys)
+    result["pruned"] = removed
+    warn "pruned #{removed} superseded ledger entry/entries" unless json
+  rescue StandardError => error
+    result["errors"] << "--prune-ledger: #{error.message}"
+  end
 end
 
-unless warnings.empty?
-  warnings.each { |warning| puts "warning: #{warning}" }
-  puts "Remove stale entries from #{LEDGER_PATH.sub("#{ROOT}/", '')}."
+if json
+  puts JSON.pretty_generate(result)
+  exit(result["errors"].empty? ? 0 : 1)
 end
 
-if errors.empty?
-  outstanding = acknowledged.size
-  puts "ADR obligations: #{seen_keys.size} deferred obligation(s) across accepted records; " \
-       "#{outstanding} acknowledged outstanding, 0 undeclared."
+report_lines(ROOT, result).each { |line| puts line }
+print_report(ROOT, result) if report
+
+if result["errors"].empty?
+  summary_lines(result).each { |line| puts line }
   exit 0
 end
 
-errors.each { |error| warn(error) }
+result["errors"].each { |error| warn(error) }
 warn ""
-warn "#{errors.size} ADR obligation problem(s)."
+warn "#{result['errors'].size} ADR obligation problem(s)."
 exit 1

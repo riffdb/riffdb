@@ -1,61 +1,80 @@
+---
+adr: 0182
+title: Bounded Dirty Recovery and Online Retention
+status: accepted
+tier: guarantee
+date: "2026-09-01"
+accepted: "2026-09-01"
+requires: [ADR-0019, ADR-0050, ADR-0061, ADR-0072, ADR-0073, ADR-0085, ADR-0093,
+  ADR-0101, ADR-0103, ADR-0104, ADR-0112, ADR-0156, ADR-0157, ADR-0163, ADR-0165]
+# ADR-0085 is required at Amendments 1 through 4; ADR-0156 at Amendment 3.
+amends:
+  - ADR-0019's unconditional complete pass on the dirty path
+  - ADR-0073's "validation stays complete" rule for readiness
+  - ADR-0085 Amendment 2's offline-exclusive prune execution and its "never in the
+    hot write path" advancement rule
+  - ADR-0156 sections 6 and 7 where they require the complete exact-end path
+    before dirty readiness
+  - REC-004
+  - the dirty ordering of SPEC section 10.6
+  - the evidence shape of PERF-014
+requirements: [REC-005, REC-006, REC-007, REC-008, STO-030, STO-031, STO-032]
+packages: [WP-760, WP-761]
+obligations:
+  - id: OBL-0182-1
+    package: WP-760
+    proof: dirty_startup_reaches_readiness_without_a_population_walk
+    says: Dirty startup reaches readiness after journal-suffix recovery and
+      bounded-root validation with no entity, index, history, event, audit,
+      provenance, projection, outbox, or idempotency population walk and within the
+      compiled recovery heap ceiling.
+  - id: OBL-0182-2
+    package: WP-760
+    proof: planted_row_corruption_fails_closed_on_first_access_after_dirty_startup
+    says: A corrupt row outside the bounded roots fails closed with the existing
+      typed corruption outcome on first access after a dirty start, and is never
+      reported as absence, a business outcome, partial output, or repaired state.
+  - id: OBL-0182-3
+    package: WP-760
+    proof: background_scrub_health_transitions_are_closed_and_cancellable
+    says: The background scrub exposes only the closed health states, honors its
+      rate bound and cancellation, and records a failure as an incident without
+      repairing or hiding the affected row.
+  - id: OBL-0182-4
+    package: WP-760
+    proof: public_offline_scrub_drives_the_complete_validation_path
+    says: The authorized public offline scrub drives the complete exact-end
+      structural and catalog-semantic path and emits a versioned receipt.
+  - id: OBL-0182-5
+    package: WP-761
+    proof: online_retention_crash_windows_recover_to_a_valid_watermark
+    says: Online retention advances the watermark only under the complete fencing
+      set, in bounded steps, through the sole ordered writer, and every crash
+      window at a step boundary recovers to a valid watermark, tombstone chain, and
+      allocator state.
+  - id: OBL-0182-6
+    package: WP-760
+    proof: check-dirty-recovery-evidence
+    says: Release evidence reports dirty-restart wall time and peak heap separately
+      at the 65,536-row and production-scale checkpoints, and scrub throughput.
+  - id: OBL-0182-7
+    package: WP-761
+    proof: check-online-retention-interference
+    says: Online-prune interference measured against the 32-client interactive p95
+      stays inside the existing five-percent no-regression bound.
+review_triggers:
+  - A validation currently performed before dirty readiness would be removed
+    without an equivalent fail-closed first-access check, or corruption would be
+    reported as absence, a business outcome, partial output, or automatic repair.
+  - A public option to skip validation, force readiness, suppress the scrub, or
+    advance retention past any fencing input would be introduced.
+  - A second writer, an exclusive lease on the online lane, a wall-clock retention
+    target, or a change to acknowledgement semantics, durable formats, or the
+    hardened profile would be introduced.
+  - Recovery-owned state would exceed the 64 MiB ceiling or a prune step would
+    exceed 256 sequences or block the writer for more than one step.
+---
 # ADR-0182: Bounded Dirty Recovery and Online Retention
-
-- **Status:** Accepted
-- **Obligations:**
-  - `OBL-0182-1` WP-760 must prove that dirty startup reaches readiness
-    after journal-suffix recovery and bounded-root validation with no
-    entity, index, history, event, audit, provenance, projection, outbox, or
-    idempotency population walk and within the compiled recovery heap
-    ceiling; planned proof
-    `dirty_startup_reaches_readiness_without_a_population_walk`.
-  - `OBL-0182-2` WP-760 must prove that a corrupt row outside the bounded
-    roots fails closed with the existing typed corruption outcome on first
-    access after a dirty start, and is never reported as absence, a business
-    outcome, partial output, or repaired state; planned proof
-    `planted_row_corruption_fails_closed_on_first_access_after_dirty_startup`.
-  - `OBL-0182-3` WP-760 must prove that the background scrub exposes only
-    the closed health states, honors its rate bound and cancellation, and
-    records a failure as an incident without repairing or hiding the
-    affected row; planned proof
-    `background_scrub_health_transitions_are_closed_and_cancellable`.
-  - `OBL-0182-4` WP-760 must prove that the authorized public offline scrub
-    drives the complete exact-end structural and catalog-semantic path and
-    emits a versioned receipt; planned proof
-    `public_offline_scrub_drives_the_complete_validation_path`.
-  - `OBL-0182-5` WP-761 must prove that online retention advances the
-    watermark only under the complete fencing set, in bounded steps, through
-    the sole ordered writer, and every crash window at a step boundary
-    recovers to a valid watermark, tombstone chain, and allocator state;
-    planned proof
-    `online_retention_crash_windows_recover_to_a_valid_watermark`.
-  - `OBL-0182-6` WP-760 must prove that release evidence reports
-    dirty-restart wall time and peak heap separately at the 65,536-row and
-    production-scale checkpoints, scrub throughput, and online-prune
-    interference with 32-client p95; planned proof
-    `check-dirty-recovery-evidence`.
-- **Direction approved:** 2026-09-01
-- **Exact text accepted:** Yes, 2026-09-01
-- **Accepted:** 2026-09-01
-- **Acceptance reference:** Maintainer acceptance of the exact text in the
-  current Claude Code session on 2026-09-01, all seven consolidation records together
-- **Decision deadline:** Before WP-760 changes the dirty startup readiness
-  path or WP-761 advances a retention watermark while an operational writer
-  is running
-- **Requires:** ADR-0019, ADR-0050, ADR-0061, ADR-0072, ADR-0073, ADR-0085
-  (Amendments 1 through 4), ADR-0093, ADR-0101, ADR-0103, ADR-0104, ADR-0112,
-  ADR-0156 (Amendment 3), ADR-0157, ADR-0163, and ADR-0165
-- **Amends:** ADR-0019's unconditional complete pass on the dirty path;
-  ADR-0073's "validation stays complete" rule for readiness; ADR-0085
-  Amendment 2's offline-exclusive prune execution and its "never in the hot
-  write path" advancement rule; ADR-0156 sections 6 and 7 where they require
-  the complete exact-end path before dirty readiness; `REC-004`; the dirty
-  ordering of SPEC section 10.6; and the evidence shape of `PERF-014`
-- **Defines or blocks:** WP-760 through WP-761
-
-The maintainer accepted the exact text of this record on 2026-09-01. Its packages
-may begin. Each deferred obligation above is tracked in
-`adr/obligations-outstanding.yaml` until its planned proof exists, at which
-point the owning package discharges it by declaring the proof.
 
 ## Context
 
@@ -296,8 +315,10 @@ source. Fail-closed handling of malformed evidence is unchanged.
   step's delete, tombstone append, watermark advance, and checkpoint deletion;
   fencing refusal for each unreadable or mismatched source including a
   registered follower.
-- `check-dirty-recovery-evidence`: the release evidence validator for
-  section 8.
+- `check-dirty-recovery-evidence`: the release evidence validator for the
+  section 8 restart, heap, and scrub measurements.
+- `check-online-retention-interference`: the release evidence validator for
+  the section 7 interference bound.
 - The existing `storage_recovery_matrix`, `full_recovery_matrix`, and
   `offline_maintenance_recovery` arms remain and gain the dirty bounded path.
 
@@ -314,3 +335,9 @@ Exact acceptance is required before WP-760 changes which validation runs
 before dirty readiness and before WP-761 commits a prune step from a running
 process. Until then the complete dirty path and the offline-exclusive
 retention operation remain authoritative.
+
+## Acceptance
+
+Direction approved 2026-09-01; exact text accepted 2026-09-01. The maintainer
+accepted the exact text of this record in the Claude Code session of
+2026-09-01, all seven consolidation records together.

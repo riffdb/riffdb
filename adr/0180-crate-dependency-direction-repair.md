@@ -1,48 +1,61 @@
+---
+adr: 0180
+title: Crate Dependency Direction Repair
+status: accepted
+tier: surface
+date: "2026-09-01"
+accepted: "2026-09-01"
+requires: [ADR-0004, ADR-0035, ADR-0037, ADR-0038, ADR-0042, ADR-0049, ADR-0053,
+  ADR-0111, ADR-0113, ADR-0164, ADR-0175]
+amends:
+  - ADR-0037's client-only riffdb-api-grpc edge
+  - ADR-0004's reference in-memory backend
+  - SPEC Sections 5.1, 5.2, and 5.3 by adding DEP-001 through DEP-006 and the
+    layered allow-list they name
+requirements: [DEP-001, DEP-002, DEP-003, DEP-004, DEP-005, DEP-006]
+packages: [WP-754, WP-755, WP-756]
+obligations:
+  - id: OBL-0180-1
+    package: WP-754
+    proof: storage_backends_depend_only_on_storage_api_types_proto_and_catalog_driver
+    says: Neither concrete storage backend carries a production edge to
+      riffdb-query-executor, riffdb-query-ir, riffdb-policy, or riffdb-projection.
+  - id: OBL-0180-2
+    package: WP-754
+    proof: executor_owned_snapshot_pages_match_pre_inversion_fixtures
+    says: The executor produces byte-identical pages, cursors, counts, and typed
+      refusals over the storage-api readers that it produced when the same
+      programs ran inside the redb transaction.
+  - id: OBL-0180-3
+    package: WP-754
+    proof: redb_startup_produces_evidence_only_and_drives_no_migration
+    says: redb startup produces structural and historical evidence only and issues
+      no index-migration instruction.
+  - id: OBL-0180-4
+    package: WP-755
+    proof: client_depends_only_on_proto_tonic_types_errors_and_config
+    says: The Rust client manifest names exactly the allow-list in section 3 and
+      nothing else from the workspace.
+  - id: OBL-0180-5
+    package: WP-755
+    proof: observability_is_a_leaf_crate
+    says: riffdb-observability has no production edge to any crate above
+      riffdb-errors.
+  - id: OBL-0180-6
+    package: WP-756
+    proof: check-crate-graph
+    says: The workspace crate graph satisfies the layered allow-list on every
+      compile target, driven from cargo metadata.
+review_triggers:
+  - A page, cursor, count, aggregate, or typed refusal would differ from its
+    recorded fixture.
+  - A policy context, executor type, or compiler plan would cross a storage-api
+    trait.
+  - A storage encoding, key, journal frame, or durable record would change.
+  - A layer exception would be added to the crate-graph allow-list without an ADR
+    number.
+---
 # ADR-0180: Crate Dependency Direction Repair
-
-- **Status:** Accepted
-- **Obligations:**
-  - `OBL-0180-1` WP-754 must prove that neither concrete storage backend
-    carries a production edge to `riffdb-query-executor`, `riffdb-query-ir`,
-    `riffdb-policy`, or `riffdb-projection`; planned proof
-    `storage_backends_depend_only_on_storage_api_types_proto_and_catalog_driver`.
-  - `OBL-0180-2` WP-754 must prove that the executor produces byte-identical
-    pages, cursors, counts, and typed refusals over the storage-api readers
-    that it produced when the same programs ran inside the redb transaction;
-    planned proof
-    `executor_owned_snapshot_pages_match_pre_inversion_fixtures`.
-  - `OBL-0180-3` WP-754 must prove that redb startup produces structural and
-    historical evidence only and issues no index-migration instruction;
-    planned proof
-    `redb_startup_produces_evidence_only_and_drives_no_migration`.
-  - `OBL-0180-4` WP-755 must prove that the Rust client manifest names
-    exactly the allow-list in section 3 and nothing else from the workspace;
-    planned proof
-    `client_depends_only_on_proto_tonic_types_errors_and_config`.
-  - `OBL-0180-5` WP-755 must prove that `riffdb-observability` has no
-    production edge to any crate above `riffdb-errors`; planned proof
-    `observability_is_a_leaf_crate`.
-  - `OBL-0180-6` WP-756 must prove that the workspace crate graph satisfies
-    the layered allow-list on every compile target, driven from cargo
-    metadata; planned proof `check-crate-graph`.
-- **Direction approved:** 2026-09-01
-- **Exact text accepted:** Yes, 2026-09-01
-- **Accepted:** 2026-09-01
-- **Acceptance reference:** Maintainer acceptance of the exact text in the
-  current Claude Code session on 2026-09-01, all seven consolidation records together
-- **Decision deadline:** Before WP-754 moves composite-query execution out of
-  a concrete storage backend or changes any storage-api reader trait
-- **Requires:** ADR-0004, ADR-0035, ADR-0037, ADR-0038, ADR-0042, ADR-0049,
-  ADR-0053, ADR-0111, ADR-0113, ADR-0164, and ADR-0175
-- **Amends:** ADR-0037's client-only `riffdb-api-grpc` edge; ADR-0004's
-  reference in-memory backend; SPEC Sections 5.1, 5.2, and 5.3 by adding
-  `DEP-001` through `DEP-006` and the layered allow-list they name
-- **Defines or blocks:** WP-754 through WP-756
-
-The maintainer accepted the exact text of this record on 2026-09-01. Its packages
-may begin. Each deferred obligation above is tracked in
-`adr/obligations-outstanding.yaml` until its planned proof exists, at which
-point the owning package discharges it by declaring the proof.
 
 ## Context
 
@@ -291,3 +304,9 @@ compiler and server internals. No trust boundary widens.
 Exact acceptance is required before WP-754 changes any storage-api reader
 trait or moves `QueryExecutionPort` out of a concrete backend, and before
 WP-755 changes the `riffdb-client-rust` manifest.
+
+## Acceptance
+
+Direction approved 2026-09-01; exact text accepted 2026-09-01. The maintainer
+accepted the exact text of this record in the Claude Code session of
+2026-09-01, all seven consolidation records together.

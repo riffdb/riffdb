@@ -1,12 +1,98 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# Requirement coverage: every normative SPEC requirement is accounted for, and
+# nothing claims a requirement that does not exist.
+#
+# Historically this script answered one question -- is every requirement CLAIMED
+# by a work package -- which is why WP-704 could report coverage complete while
+# the obligation it claimed went undischarged. Governance v2 adds the other half:
+# a requirement can also be PROVEN, by a tag on the test that holds it.
+#
+#   // req: REP-002, REP-003        Rust, Go, TypeScript
+#   # req: REP-002                  Python, Ruby, bash, YAML
+#
+# A tag sits immediately above a test function, or at the top of a test file, in
+# which case it covers every test in that file. Tags are read under crates/,
+# tests/, clients/, examples/, evaluations/, and scripts/.
+#
+# Three rules:
+#
+#   1. Every active requirement is claimed by a package or proven by a tag.
+#   2. A tag naming an identifier SPEC does not define is an error.
+#   3. A package closed on or after work_packages.yaml `governance.cutover` must
+#      have a tag for every requirement it lists. Packages that closed before the
+#      cutover are exempt: they were accepted under the claim-only rule.
+#
+# Rule 3 is what makes the paper trail derived rather than asserted. Until the
+# manifest carries a `governance:` block there is no cutover and the rule sleeps.
+
+require "json"
+require "open3"
 require "set"
 require "yaml"
+require_relative "lib/riffdb_adr"
 
-ROOT = File.expand_path("..", __dir__)
+ROOT = RiffdbAdr.root
 SPEC_PATH = File.join(ROOT, "SPEC.md")
 MANIFEST_PATH = File.join(ROOT, "work_packages.yaml")
+
+# Tag scanning stays inside the repository and inside the directories that hold
+# tests. `target` and `node_modules` are build output, never evidence.
+TAG_ROOTS = %w[crates tests clients examples evaluations scripts].freeze
+TAG_EXCLUDES = %w[:!target :!**/target/** :!**/node_modules/**].freeze
+TAG_LINE = /\A[ \t]*(?:\/\/|\#)[ \t]*req:[ \t]*(.+)\z/
+
+USAGE = <<~TEXT
+  usage: check-requirement-coverage [--report] [--json] [--help]
+
+    (no flags)  check coverage and exit nonzero on a problem
+    --report    list the unproven requirements of each open work package
+    --json      emit the whole result as JSON on stdout
+    --help      this message
+TEXT
+
+report = false
+json = false
+ARGV.each do |argument|
+  case argument
+  when "--help", "-h"
+    puts USAGE
+    exit 0
+  when "--report" then report = true
+  when "--json" then json = true
+  else
+    warn "unknown option #{argument.inspect}"
+    warn USAGE
+    exit 2
+  end
+end
+
+# Requirement tags, one git grep over the directories that can hold evidence.
+# Returns { "REP-002" => ["crates/x/src/lib.rs:41", ...] }.
+def requirement_tags(root)
+  roots = TAG_ROOTS.select { |name| File.exist?(File.join(root, name)) }
+  return {} if roots.empty?
+
+  stdout, _stderr, status = Open3.capture3(
+    "git", "-C", root, "grep", "-n", "-E", '^[[:space:]]*(//|#)[[:space:]]*req:',
+    "--", *roots, *TAG_EXCLUDES
+  )
+  # 1 means "no tags in the tree", which is the state before the cutover.
+  raise "git grep failed in #{root}" unless [0, 1].include?(status.exitstatus)
+
+  tags = Hash.new { |hash, key| hash[key] = [] }
+  stdout.each_line do |line|
+    path, number, text = line.chomp.split(":", 3)
+    next unless text
+
+    body = text[TAG_LINE, 1]
+    next unless body
+
+    body.scan(/[A-Z]{2,5}-\d{3}/).uniq.each { |id| tags[id] << "#{path}:#{number}" }
+  end
+  tags
+end
 
 spec = File.read(SPEC_PATH, encoding: "UTF-8")
 manifest = YAML.safe_load(File.read(MANIFEST_PATH, encoding: "UTF-8"), aliases: true)
@@ -54,6 +140,10 @@ exclusions.each do |entry|
   excluded_ids << id
 end
 
+tags = requirement_tags(ROOT)
+tagged_ids = tags.keys.to_set
+proven_ids = tagged_ids & defined_ids
+
 (assigned_ids - defined_ids).sort.each do |id|
   errors << "work packages reference unknown requirement #{id}"
 end
@@ -63,9 +153,15 @@ end
 (assigned_ids & excluded_ids).sort.each do |id|
   errors << "requirement #{id} is both assigned and excluded"
 end
+# Rule 2: an unknown identifier in a tag is a typo or a deleted requirement, and
+# either way it is silently proving nothing.
+(tagged_ids - defined_ids).sort.each do |id|
+  errors << "requirement tag names unknown requirement #{id} (#{tags[id].first(3).join(', ')})"
+end
 
 active_ids = defined_ids - excluded_ids
-(active_ids - assigned_ids).sort.each do |id|
+# Rule 1: claimed by a package, or proven by a tag.
+(active_ids - assigned_ids - proven_ids).sort.each do |id|
   errors << "uncovered normative requirement #{id}"
 end
 
@@ -75,6 +171,47 @@ manifest.fetch("gates", []).each do |gate|
   end
 end
 
+# Rule 3: post-cutover completed packages owe a tag per listed requirement.
+cutover = RiffdbAdr.to_date(manifest.dig("governance", "cutover"))
+unproven_by_package = {}
+open_unproven = {}
+packages.each do |package|
+  id = package["id"] || "<missing-id>"
+  requirements = package.fetch("requirements", []).select { |requirement| active_ids.include?(requirement) }
+  unproven = requirements.reject { |requirement| proven_ids.include?(requirement) }
+  next if unproven.empty?
+
+  completed = RiffdbAdr.completed_on(package)
+  if cutover && completed && completed >= cutover
+    unproven_by_package[id] = unproven
+    errors << "#{id} completed #{completed} on or after the #{cutover} cutover but has no " \
+              "requirement tag for #{unproven.sort.join(', ')}"
+  elsif !RiffdbAdr.complete?(package)
+    open_unproven[id] = unproven
+  end
+end
+
+summary = "coverage: #{active_ids.length} requirements, claimed #{(active_ids & assigned_ids).length}, " \
+          "proven #{proven_ids.length}, both #{(active_ids & assigned_ids & proven_ids).length}; " \
+          "packages #{packages.length}"
+
+if json
+  puts JSON.pretty_generate(
+    "requirements" => active_ids.length,
+    "claimed" => (active_ids & assigned_ids).length,
+    "proven" => proven_ids.length,
+    "both" => (active_ids & assigned_ids & proven_ids).length,
+    "packages" => packages.length,
+    "exclusions" => excluded_ids.length,
+    "cutover" => cutover&.to_s,
+    "tags" => tags.transform_values(&:length),
+    "unproven_completed_packages" => unproven_by_package,
+    "unproven_open_packages" => open_unproven,
+    "errors" => errors.sort
+  )
+  exit(errors.empty? ? 0 : 1)
+end
+
 unless errors.empty?
   warn errors.sort.join("\n")
   exit 1
@@ -82,3 +219,15 @@ end
 
 puts "Requirement coverage is complete: #{active_ids.length} active requirements, " \
      "#{excluded_ids.length} documented exclusion(s), #{packages.length} work packages."
+puts summary
+
+if report
+  if open_unproven.empty?
+    puts "Every open package's requirements carry a tag."
+  else
+    puts "Unproven requirements by open package:"
+    open_unproven.keys.sort.each do |id|
+      puts "  #{id}: #{open_unproven[id].sort.join(', ')}"
+    end
+  end
+end

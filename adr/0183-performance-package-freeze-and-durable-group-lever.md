@@ -1,49 +1,64 @@
+---
+adr: 0183
+title: Performance Package Freeze and the Durable-Group Lever
+status: accepted
+tier: guarantee
+date: "2026-09-01"
+accepted: "2026-09-01"
+requires: [ADR-0059, ADR-0098, ADR-0101, ADR-0104, ADR-0123, ADR-0129, ADR-0142,
+  ADR-0143, ADR-0146, ADR-0171]
+amends:
+  - PERF-008 only by adding the freeze and the durable-group activation arithmetic
+  - SPEC 19.6 human review triggers by one entry
+requirements: [PERF-020, PERF-021, PERF-022]
+packages: [WP-762, WP-763]
+# The record also blocks every later PERF-* package until the freeze lifts.
+obligations:
+  - id: OBL-0183-1
+    package: WP-762
+    proof: check-performance-freeze
+    says: A work package that lists a PERF-* requirement while the freeze is in
+      force fails repository checks unless it is WP-762, WP-763, or a package named
+      by the accepted lifting record.
+  - id: OBL-0183-2
+    package: WP-762
+    proof: assemble-wp674-unary-manifest --require-both-profiles
+    says: The banked baseline carries interactive c32, write-only, and unary
+      receipts for both N1 and E2, each recording the stability_rule_binds method
+      field set to gated_backend, before the freeze is recorded as started.
+  - id: OBL-0183-3
+    package: WP-763
+    proof: idle_singleton_seals_without_group_formation_wait
+    says: An idle singleton command seals its epoch on the existing immediate path
+      with no group-formation wait.
+  - id: OBL-0183-4
+    package: WP-763
+    proof: group_formation_drains_only_prepared_prefix_within_ceilings
+    says: Group formation consumes only already-admitted, already-prepared commands
+      and stops at the 256-transition and 16 MiB ceilings.
+  - id: OBL-0183-5
+    package: WP-763
+    proof: check-durable-group-activation --self-test
+    says: The durable-group candidate activates only when both profiles satisfy the
+      c32 throughput, c32 p95, and unary low-water gates in one receipt set; a miss
+      on either profile removes the candidate.
+  - id: OBL-0183-6
+    package: WP-763
+    proof: shutdown_evidence_reports_commands_per_durable_flush
+    says: Graceful shutdown evidence reports commands per durable flush as a
+      fixed-cardinality histogram.
+review_triggers:
+  - A performance package other than WP-762 or WP-763 would be registered or
+    activated before WP-750 and WP-760 close, or the freeze would be lifted by
+    anything other than an accepted ADR.
+  - A banked baseline value would be moved upward, a failed generation retried or
+    replaced, or a receipt banked without both inventoried profiles.
+  - PERF-009 acknowledgement, fence, or durability semantics would change, or any
+    fsync, fence, or acknowledgement would be elided or reordered.
+  - Group formation would wait for work that is not already admitted and prepared,
+    or any ceiling of DeferredCommandEpoch would widen.
+---
 # ADR-0183: Performance Package Freeze and the Durable-Group Lever
-
-- **Status:** Accepted
-- **Obligations:**
-  - `OBL-0183-1` WP-762 must prove that a work package that lists a `PERF-*`
-    requirement while the freeze is in force fails repository checks unless
-    it is WP-762, WP-763, or a package named by the accepted lifting record;
-    planned proof `check-performance-freeze`.
-  - `OBL-0183-2` WP-762 must prove that the banked baseline carries
-    interactive c32, write-only, and unary receipts for both N1 and E2, each
-    recording the `stability_rule_binds` method field set to
-    `gated_backend`, before the freeze is recorded as started; planned proof
-    `assemble-wp674-unary-manifest --require-both-profiles`.
-  - `OBL-0183-3` WP-763 must prove that an idle singleton command seals its
-    epoch on the existing immediate path with no group-formation wait;
-    planned proof `idle_singleton_seals_without_group_formation_wait`.
-  - `OBL-0183-4` WP-763 must prove that group formation consumes only
-    already-admitted, already- prepared commands and stops at the
-    256-transition and 16 MiB ceilings; planned proof
-    `group_formation_drains_only_prepared_prefix_within_ceilings`.
-  - `OBL-0183-5` WP-763 must prove that the durable-group candidate
-    activates only when both profiles satisfy the c32 throughput, c32 p95,
-    and unary low-water gates in one receipt set; a miss on either profile
-    removes the candidate; planned proof `check-durable-group-activation
-    --self-test`.
-  - `OBL-0183-6` WP-763 must prove that graceful shutdown evidence reports
-    commands per durable flush as a fixed-cardinality histogram; planned
-    proof `shutdown_evidence_reports_commands_per_durable_flush`.
-- **Direction approved:** 2026-09-01
-- **Exact text accepted:** Yes, 2026-09-01
-- **Accepted:** 2026-09-01
-- **Acceptance reference:** Maintainer acceptance of the exact text in the
-  current Claude Code session on 2026-09-01, all seven consolidation records together
-- **Decision deadline:** Before WP-762 banks a baseline or any package after
-  WP-745 registers a `PERF-*` requirement
-- **Requires:** ADR-0059, ADR-0098, ADR-0101, ADR-0104, ADR-0123, ADR-0129,
-  ADR-0142, ADR-0143, ADR-0146, and ADR-0171
-- **Amends:** `PERF-008` only by adding the freeze and the durable-group
-  activation arithmetic; SPEC 19.6 human review triggers by one entry
-- **Defines or blocks:** WP-762 through WP-763, and every later `PERF-*`
-  package until the freeze lifts
-
-The maintainer accepted the exact text of this record on 2026-09-01. Its packages
-may begin. Each deferred obligation above is tracked in
-`adr/obligations-outstanding.yaml` until its planned proof exists, at which
-point the owning package discharges it by declaring the proof.
 
 ## Context
 
@@ -264,3 +279,9 @@ Exact acceptance is required before WP-762 records the freeze or banks a
 baseline, and before any package registered after WP-745 lists a `PERF-*`
 requirement. Implementation of WP-763 may not begin until acceptance, because
 it changes group formation on the authoritative write path.
+
+## Acceptance
+
+Direction approved 2026-09-01; exact text accepted 2026-09-01. The maintainer
+accepted the exact text of this record in the Claude Code session of
+2026-09-01, all seven consolidation records together.

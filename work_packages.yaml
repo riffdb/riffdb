@@ -1,4 +1,4 @@
-spec_version: '1.29'
+spec_version: '1.30'
 product: RiffDB
 repository: riffdb
 status: deployable-application-alpha-architecture-accepted
@@ -23,6 +23,12 @@ requirement_coverage:
   excluded_ids:
   - id: TXN-004
     reason: Illustrative identifier in the normative-language explanation, not a defined requirement.
+governance:
+  process_version: 2
+  cutover: "2026-09-02"
+  tiers_file: governance/tiers.yaml
+  brief: ./scripts/brief
+  acceptance: ./scripts/acceptance
 gates:
 - id: P0
   name: Executable semantics
@@ -21555,6 +21561,7 @@ work_packages:
 
 - id: WP-746
   name: Replication stream, capability, follower applier, and gap-free resume
+  tier: guarantee
   depends_on: [WP-155, WP-417, WP-486, WP-704]
   objective: Activate ADR-0093 section 1 through 3 and 6 as contracted by ADR-0178. Wire the
     existing redb changelog emitter into production behind one capability-guarded streaming RPC,
@@ -21588,16 +21595,8 @@ work_packages:
     `replication_stream_resumes_gap_free_after_repeated_kills` under
     `tests/replication_follower.rs`, plus crash-matrix arms for stream kill and applier crash
   acceptance_commands:
-  - cargo +1.97.0 test -p riffdb-storage-api -p riffdb-storage-redb -p riffdb-storage-memory
-    -p riffdb-service -p riffdb-api-grpc -p riffdb-server --all-features
-  - cargo +1.97.0 test -p riffdb-testkit --test replication_follower --all-features
-  - cargo +1.97.0 test -p riffdb-testkit --test storage_recovery_matrix --all-features
-  - ./scripts/check-generated
-  - ./scripts/check-version-topology
-  - ./scripts/check-requirement-coverage
-  - ./scripts/check-adr-obligations
-  - cargo +1.97.0 fmt --all -- --check
-  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  - ./scripts/acceptance --wp WP-746
+  - ./scripts/ci-all
   exit_gate: A follower driven by the app-baseline workload holds a byte-faithful prefix of every
     authoritative table at the compared sequence, resumes from its acknowledged sequence after
     repeated mid-flight kills with no gap or duplicate apply, passes complete startup validation
@@ -21619,6 +21618,7 @@ work_packages:
 
 - id: WP-747
   name: Follower reads, typed follower-mode refusal, and sequence-lag health
+  tier: guarantee
   depends_on: [WP-746]
   objective: Serve compiled, projected, and discovery reads on a follower under the existing
     Causal, Bounded, and Available policies against the applied frontier, refuse foreign or
@@ -21647,15 +21647,8 @@ work_packages:
   - Test `follower_causal_read_waits_for_token_then_matches_primary` under
     `tests/replication_follower.rs`
   acceptance_commands:
-  - cargo +1.97.0 test -p riffdb-service -p riffdb-observability -p riffdb-api-grpc
-    -p riffdb-server --all-features
-  - cargo +1.97.0 test -p riffdb-testkit --test replication_follower --all-features
-  - ./scripts/check-generated
-  - ./scripts/handbook check
-  - ./scripts/check-requirement-coverage
-  - ./scripts/check-adr-obligations
-  - cargo +1.97.0 fmt --all -- --check
-  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  - ./scripts/acceptance --wp WP-747
+  - ./scripts/ci-all
   exit_gate: A Causal read on the follower with a fresh primary token waits, then returns bytes
     equal to the primary at the same frontier; a foreign-lineage token is refused; every write
     surface returns the typed follower-mode outcome; and health on both nodes reports lag in
@@ -21669,6 +21662,7 @@ work_packages:
 
 - id: WP-748
   name: Promotion drill, leadership epoch, and follower retention fence
+  tier: guarantee
   depends_on: [WP-747]
   objective: Implement ADR-0093 sections 4 through 6 as contracted by ADR-0178. Add the audited
     promotion operation with old-primary fencing, incarnation mint, and leadership epoch, and
@@ -21698,15 +21692,8 @@ work_packages:
     `retention_prune_refuses_to_pass_registered_follower_frontier` under
     `tests/replication_promotion.rs`
   acceptance_commands:
-  - cargo +1.97.0 test -p riffdb-storage-api -p riffdb-storage-redb -p riffdb-commit
-    -p riffdb-service -p riffdb-server --all-features
-  - cargo +1.97.0 test -p riffdb-testkit --test replication_promotion --all-features
-  - cargo +1.97.0 test -p riffdb-testkit --test storage_recovery_matrix --all-features
-  - ./scripts/check-generated
-  - ./scripts/check-requirement-coverage
-  - ./scripts/check-adr-obligations
-  - cargo +1.97.0 fmt --all -- --check
-  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  - ./scripts/acceptance --wp WP-748
+  - ./scripts/ci-all
   exit_gate: Under load, fencing the primary and promoting the follower yields a new incarnation
     and epoch, a pre-promotion token is refused fail-closed, a post-promotion commit and read
     round-trip succeeds, the receipt's RPO equals the measured sequence delta, and offline prune
@@ -21721,6 +21708,7 @@ work_packages:
 
 - id: WP-749
   name: Changelog-derived incremental and remote backup
+  tier: guarantee
   depends_on: [WP-746]
   objective: Implement ADR-0178 section 7. Persist validated changelog frames to a configured
     archive sink beside periodic offline full backups, publish an additive archive manifest, and
@@ -21750,16 +21738,8 @@ work_packages:
   - Test `archived_suffix_restore_recovers_to_last_archived_sequence` under
     `tests/replication_archive_restore.rs` plus a crash-matrix arm for archive-sink failure
   acceptance_commands:
-  - cargo +1.97.0 test -p riffdb-storage-api -p riffdb-storage-redb -p riffdb-server
-    -p riffdb-cli --all-features
-  - cargo +1.97.0 test -p riffdb-testkit --test replication_archive_restore --all-features
-  - ./scripts/check-durable-format-manifest
-  - ./scripts/check-version-topology
-  - ./scripts/handbook check
-  - ./scripts/check-requirement-coverage
-  - ./scripts/check-adr-obligations
-  - cargo +1.97.0 fmt --all -- --check
-  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  - ./scripts/acceptance --wp WP-749
+  - ./scripts/ci-all
   exit_gate: A database restored from a verified full backup plus its archived suffix equals the
     primary through the last archived sequence, a truncated or reordered archive is refused before
     any state changes, and the archive consumer's presence leaves acknowledgement latency and the
@@ -21773,6 +21753,7 @@ work_packages:
 
 - id: WP-750
   name: Replication acceptance campaign and gate widening
+  tier: guarantee
   depends_on: [WP-748, WP-749]
   objective: Run ADR-0093's six acceptance criteria as one receipted campaign against the
     app-baseline harness with a repeated kill loop on primary, follower, stream, and archive
@@ -21798,14 +21779,8 @@ work_packages:
   - Test `replication_acceptance_campaign_meets_every_adr_0093_criterion` under
     `tests/replication_acceptance.rs` verifying the receipt schema and every criterion result
   acceptance_commands:
-  - ./scripts/replication-acceptance --kill-loop 25 --profiles n1,e2
-  - cargo +1.97.0 test -p riffdb-testkit --test replication_acceptance --all-features
-  - cargo +1.97.0 test -p riffdb-sim --all-features
-  - ./benchmarks/run-app-baseline --full --load interactive --load-clients 32
-    --load-duration-secs 90 --load-warmup-secs 15 --reps 3 --require-stable --emitter-enabled
-  - ./scripts/check-requirement-coverage
-  - ./scripts/check-adr-obligations
-  - ./scripts/handbook check
+  - ./scripts/acceptance --wp WP-750
+  - ./scripts/ci-all
   exit_gate: Every ADR-0093 acceptance criterion passes on both profiles under a repeated kill
     loop with receipted evidence, emitter-enabled throughput and p95 are within the ADR-0171
     stability rule of emitter-disabled runs, and the known-limitations page no longer states that
@@ -21967,6 +21942,7 @@ work_packages:
 
 - id: WP-753
   name: Template-based language generators, shared drift corpus, and the three-places check
+  tier: surface
   depends_on: [WP-752]
   objective: Move the Rust, Go, TypeScript, and Python application generators onto checked-in
     minijinja templates rendering one canonical generation model, extend the WP-682 driver corpus
@@ -21996,21 +21972,8 @@ work_packages:
   - Handbook and compatibility pages describing the three hand-written places and the template
     layout; downstream adapter repositories recompiled with byte-identical generated packages
   acceptance_commands:
-  - cargo +1.97.0 test -p riffdb-query-module -p riffdb-driver-host -p riffdb-client-rust
-    -p riffdb-client-python-native --all-features
-  - ./scripts/driver-conformance --all-languages --remote
-  - ./scripts/check-driver-conformance-manifests
-  - ./scripts/check-application-bindings
-  - ./scripts/check-three-places --base origin/main
-  - ./scripts/generate-query-clients --check
-  - ./scripts/check-generated
-  - ./scripts/downstream-adapter-check
-  - cargo +1.97.0 deny check
-  - ./scripts/check-requirement-coverage
-  - ./scripts/check-adr-obligations
-  - ./scripts/handbook check
-  - cargo +1.97.0 fmt --all -- --check
-  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  - ./scripts/acceptance --wp WP-753
+  - ./scripts/ci-all
   exit_gate: All four language generators render from one golden model through checked-in
     templates and reproduce their golden outputs; every binding returns the identical closed error
     class for every corpus-v2 entry; a rehearsal diff that adds one operation passes
@@ -22026,6 +21989,7 @@ work_packages:
 
 - id: WP-754
   name: Executor-over-storage inversion and startup migration-driver relocation
+  tier: surface
   depends_on: [WP-743, WP-745]
   objective: Move composite-query execution and row-policy admission out of both concrete storage
     backends into riffdb-query-executor, running over the storage-api readers plus one owned-snapshot
@@ -22062,17 +22026,8 @@ work_packages:
     executor_owned_snapshot_pages_match_pre_inversion_fixtures, and
     redb_startup_produces_evidence_only_and_drives_no_migration
   acceptance_commands:
-  - cargo +1.97.0 test -p riffdb-storage-api -p riffdb-storage-redb -p riffdb-storage-memory
-    -p riffdb-query-executor -p riffdb-catalog -p riffdb-service -p riffdb-server --all-features
-  - cargo +1.97.0 test --test operational_queries
-  - cargo +1.97.0 test --test storage_recovery_matrix
-  - cargo +1.97.0 machete
-  - ./scripts/check-workspace-policy
-  - ./scripts/check-file-size-guard
-  - ./scripts/check-requirement-coverage
-  - ./scripts/check-adr-obligations
-  - cargo +1.97.0 fmt --all -- --check
-  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  - ./scripts/acceptance --wp WP-754
+  - ./scripts/ci-all
   exit_gate: Every recorded query fixture replays byte-identically through the executor over the
     redb readers, neither backend manifest names an executor, query-IR, policy, or projection
     dependency, startup.rs issues no migration instruction, and the recovery matrix, simulation
@@ -22091,6 +22046,7 @@ work_packages:
 
 - id: WP-755
   name: Client, observability, and test-kit dependency splits
+  tier: surface
   depends_on: [WP-754]
   objective: Make riffdb-client-rust depend only on riffdb-proto, the Tonic client, and the ADR-0037
     foundational crates, make riffdb-observability a leaf that defines the telemetry types its
@@ -22127,19 +22083,8 @@ work_packages:
   - Existing client and observability architecture tests replaced by cargo-metadata-driven proofs
     client_depends_only_on_proto_tonic_types_errors_and_config and observability_is_a_leaf_crate
   acceptance_commands:
-  - cargo +1.97.0 test -p riffdb-proto -p riffdb-client-rust -p riffdb-observability
-    -p riffdb-testkit -p riffdb-testkit-server -p riffdb-api-grpc -p riffdb-server --all-features
-  - cargo +1.97.0 test -p riffdb-policy -p riffdb-commit --no-run
-  - cargo +1.97.0 machete
-  - ./scripts/driver-conformance --all-languages --remote
-  - ./scripts/check-application-bindings
-  - ./scripts/check-workspace-policy
-  - ./scripts/check-file-size-guard
-  - ./scripts/check-generated
-  - ./scripts/check-requirement-coverage
-  - ./scripts/check-adr-obligations
-  - cargo +1.97.0 fmt --all -- --check
-  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  - ./scripts/acceptance --wp WP-755
+  - ./scripts/ci-all
   exit_gate: The client manifest names exactly the ADR-0180 section 4 allow-list, observability has
     no edge above riffdb-errors, riffdb-policy and riffdb-commit test builds no longer link
     riffdb-server, every generated client package and driver conformance corpus passes unchanged,
@@ -22153,6 +22098,7 @@ work_packages:
 
 - id: WP-756
   name: Crate-graph enforcement, in-memory backend removal, storage-api trim, and build evidence
+  tier: surface
   depends_on: [WP-755]
   objective: Add the cargo-metadata crate-graph check with the ADR-0180 layered allow-list and
     ADR-numbered exceptions, delete riffdb-storage-memory after moving its remaining consumers to a
@@ -22182,20 +22128,8 @@ work_packages:
     riffdb-commit, and riffdb-service before WP-754 and after this package on one host
   - Proof check-crate-graph
   acceptance_commands:
-  - cargo +1.97.0 test --workspace --all-features
-  - cargo +1.97.0 doc --workspace --no-deps
-  - cargo +1.97.0 deny check
-  - cargo +1.97.0 machete
-  - ./scripts/check-crate-graph
-  - ./scripts/check-workspace-policy
-  - ./scripts/check-file-size-guard
-  - ./scripts/check-version-topology
-  - ./scripts/check-generated
-  - ./scripts/check-requirement-coverage
-  - ./scripts/check-adr-obligations
-  - ./scripts/handbook check
-  - cargo +1.97.0 fmt --all -- --check
-  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  - ./scripts/acceptance --wp WP-756
+  - ./scripts/ci-all
   exit_gate: The crate-graph check passes on the full workspace and rejects its injected
     counterexample, the workspace has no riffdb-storage-memory member, every migration gate and
     simulation campaign passes against redb, storage-api carries no trait without a consumer, and
@@ -22209,6 +22143,7 @@ work_packages:
 
 - id: WP-757
   name: Alpha format epoch 2 reset and one-identity-per-domain topology
+  tier: surface
   depends_on: [WP-612, WP-578]
   objective: Declare alpha format epoch 2 through the ADR-0112 ceremony, delete every superseded
     decoder, fixture, generated artifact, and topology row while the pre-external window is open,
@@ -22240,17 +22175,8 @@ work_packages:
     epoch_two_fixture_inventory_contains_no_epoch_one_identity
   - Handbook compatibility, upgrade, and known-limitations updates naming the epoch-2 posture
   acceptance_commands:
-  - cargo +1.97.0 test --workspace --all-features
-  - ./scripts/check-version-topology
-  - ./scripts/check-durable-format-manifest
-  - ./scripts/check-generated
-  - ./scripts/release-poc --verify
-  - ./scripts/check-requirement-coverage
-  - ./scripts/check-adr-obligations
-  - ./scripts/handbook check
-  - ./scripts/downstream-adapter-check
-  - cargo +1.97.0 fmt --all -- --check
-  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  - ./scripts/acceptance --wp WP-757
+  - ./scripts/ci-all
   exit_gate: Every topology domain lists exactly one readable and one writable identity and they are
     equal; the manifest reports one version per family; an epoch-1 database is refused in place and
     crosses only through the ceremony with reconciled counts and hashes; the topology check fails
@@ -22275,6 +22201,7 @@ work_packages:
 
 - id: WP-758
   name: Obligations ledger closure and ADR form governance
+  tier: internal
   depends_on: [WP-757]
   objective: Discharge or strike all 144 entries in adr/obligations-outstanding.yaml, remove the
     ledger, make scripts/check-adr-obligations reject any ledger, and add scripts/check-adr-form with
@@ -22298,10 +22225,7 @@ work_packages:
   - Contributing guidance stating that a new deferred obligation has exactly one form and that an
     ADR whose proof cannot exist at acceptance registers its package first
   acceptance_commands:
-  - ./scripts/check-adr-obligations
-  - ./scripts/check-adr-obligations --self-test
-  - ./scripts/check-adr-form
-  - ./scripts/check-requirement-coverage
+  - ./scripts/acceptance --wp WP-758
   - ./scripts/ci-all
   exit_gate: adr/obligations-outstanding.yaml no longer exists, check-adr-obligations reports zero
     acknowledged and zero undeclared obligations and fails when a ledger or undeclared obligation is
@@ -22315,6 +22239,7 @@ work_packages:
 
 - id: WP-759
   name: Agent-audience handbook rewrite measured by campaign 04
+  tier: internal
   depends_on: [WP-757, WP-758, WP-579]
   objective: Rewrite docs/known-limitations.md as one sentence per limit, remove work-package and
     ADR numbers from every public handbook page, revise the quickstarts in public vocabulary, and
@@ -22340,12 +22265,8 @@ work_packages:
     slowest-cell improvement goal
   - Handbook publication of the epoch-2 compatibility posture in the same public vocabulary
   acceptance_commands:
-  - ./scripts/handbook check
-  - ./scripts/check-handbook-audience
-  - ./scripts/agent-application-alpha-package-acceptance
-  - ./scripts/check-requirement-coverage
-  - ./scripts/check-adr-obligations
-  - ./scripts/check-adr-form
+  - ./scripts/acceptance --wp WP-759
+  - ./scripts/ci-all
   exit_gate: The limitations page has one sentence per entry, no public page carries a WP or ADR
     number, the handbook builds and links cleanly, and the campaign-04 receipt shows median time to
     first committed row and total rescue count not worse than campaign 03 on every retained cell;
@@ -22358,6 +22279,7 @@ work_packages:
 
 - id: WP-760
   name: Bounded dirty recovery, first-access row validation, background scrub, and public scrub
+  tier: guarantee
   depends_on: [WP-704, WP-705]
   objective: Make a startup without a valid clean-close certificate reach readiness through
     journal-suffix recovery plus the bounded-root validation the clean path already performs,
@@ -22399,19 +22321,8 @@ work_packages:
     scrub rows per second, validated by scripts/check-dirty-recovery-evidence; handbook
     startup-integrity, troubleshooting, and known-limitations updates
   acceptance_commands:
-  - cargo +1.97.0 test -p riffdb-storage-api -p riffdb-storage-redb --all-features
-  - cargo +1.97.0 test -p riffdb-server -p riffdb-service -p riffdb-observability -p riffdb-cli
-    --all-features
-  - cargo +1.97.0 test -p riffdb-storage-redb --test storage_recovery_matrix --all-features
-  - ./scripts/recovery_full
-  - ./scripts/check-dirty-recovery-evidence
-  - ./scripts/check-generated
-  - ./scripts/check-requirement-coverage
-  - ./scripts/check-adr-obligations
-  - ./scripts/check-workspace-policy
-  - ./scripts/handbook check
-  - cargo +1.97.0 fmt --all -- --check
-  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  - ./scripts/acceptance --wp WP-760
+  - ./scripts/ci-all
   exit_gate: A real-daemon kill and reopen at the 65,536-row and production-scale checkpoints
     reaches readiness with a pinned zero population-table enumeration count and peak
     recovery-owned heap under 64 MiB; every planted population-row corruption reaches readiness
@@ -22441,6 +22352,7 @@ work_packages:
 
 - id: WP-761
   name: Online retention lane with complete fencing, crash matrix, and interference evidence
+  tier: guarantee
   depends_on: [WP-760]
   objective: Run watermark advancement, prune, and tombstone verification inside the running
     process on a background maintenance lane that submits each bounded sub-range as one
@@ -22474,22 +22386,13 @@ work_packages:
     arms for every source including a lagging follower; proof
     online_retention_crash_windows_recover_to_a_valid_watermark
   - 32-client interactive interference evidence with the lane active against idle inside the
-    existing five-percent p95 no-regression bound, added to scripts/check-dirty-recovery-evidence
-    and the release evidence inventory; handbook operations, retention, backup, and
-    known-limitations updates removing the offline-only statements
+    existing five-percent p95 no-regression bound, validated by
+    scripts/check-online-retention-interference and added to the release evidence inventory;
+    handbook operations, retention, backup, and known-limitations updates removing the
+    offline-only statements
   acceptance_commands:
-  - cargo +1.97.0 test -p riffdb-storage-api -p riffdb-storage-redb -p riffdb-commit
-    --all-features
-  - cargo +1.97.0 test -p riffdb-server -p riffdb-service -p riffdb-sim --all-features
-  - cargo +1.97.0 test -p riffdb-storage-redb --test storage_recovery_matrix --all-features
-  - ./scripts/recovery_full
-  - ./scripts/check-dirty-recovery-evidence
-  - ./scripts/check-requirement-coverage
-  - ./scripts/check-adr-obligations
-  - ./scripts/check-workspace-policy
-  - ./scripts/handbook check
-  - cargo +1.97.0 fmt --all -- --check
-  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  - ./scripts/acceptance --wp WP-761
+  - ./scripts/ci-all
   exit_gate: A database under sustained 32-client load compacts history to its configured
     retained-sequence target with no downtime, no exclusive lease, and p95 inside the
     five-percent bound; every armed crash window reopens with a valid watermark, contiguous
@@ -22508,6 +22411,7 @@ work_packages:
 
 - id: WP-762
   name: Dual-profile baseline bank under ADR-0171 and performance-package freeze
+  tier: internal
   depends_on: [WP-674, WP-745]
   objective: Bank one qualified interactive c32, write-only, and unary baseline receipt set on
     both N1 and E2 under ADR-0171's gated-backend stability rule, then record the ADR-0183
@@ -22533,21 +22437,8 @@ work_packages:
   - SPEC 19.6 human-review trigger entry and docs/performance/wp-762-baseline-bank.md recording
     receipt digests, the freeze start, and the exact c32, p95, seed, and unary values banked
   acceptance_commands:
-  - ./benchmarks/run-app-baseline --full --load interactive --load-clients 32
-    --load-duration-secs 90 --load-warmup-secs 15 --reps 3 --require-stable
-  - ./benchmarks/run-app-baseline --full --load write_only --load-concurrency-sweep
-    --load-duration-secs 90 --load-warmup-secs 15 --reps 3 --require-stable
-  - ./benchmarks/run-wp674-unary-profile --profile n1
-  - ./benchmarks/run-wp674-unary-profile --profile e2
-  - ./scripts/assemble-wp674-unary-manifest --require-both-profiles
-  - ./scripts/check-wp674-unary-baseline
-  - ./scripts/check-wp623-performance-qualification
-  - ./scripts/check-performance-freeze --self-test
-  - ./scripts/check-performance-freeze
-  - ./scripts/check-requirement-coverage
-  - ./scripts/check-adr-obligations
-  - cargo +1.97.0 fmt --all -- --check
-  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  - ./scripts/acceptance --wp WP-762
+  - ./scripts/ci-all
   exit_gate: Both profiles hold qualified c32, write-only, and unary receipts bound to the
     gated-backend rule with matching artifact identities; the freeze is recorded and its check
     fails a synthetic frozen PERF package while passing WP-762 and WP-763; no performance value
@@ -22569,6 +22460,7 @@ work_packages:
 
 - id: WP-763
   name: Durable-group formation from ready prepared work and its activation gate
+  tier: guarantee
   depends_on: [WP-762, WP-640]
   objective: Make every standard-profile epoch seal carry the complete already-admitted,
     already-prepared command prefix up to the existing 256-transition and 16 MiB ceilings, fed
@@ -22604,23 +22496,8 @@ work_packages:
   - docs/performance/wp-763-durable-group-lever.md with the activation or removal verdict; a
     missed gate on either profile removes the candidate code before merge
   acceptance_commands:
-  - cargo +1.97.0 test -p riffdb-commit -p riffdb-storage-api -p riffdb-storage-redb
-    -p riffdb-server -p riffdb-service --all-features
-  - cargo +1.97.0 test -p riffdb-storage-redb --test storage_recovery_matrix
-  - cargo +1.97.0 test -p riffdb-testkit --test bulk_command_recovery
-  - ./benchmarks/run-app-baseline --full --load interactive --load-clients 32
-    --load-duration-secs 90 --load-warmup-secs 15 --reps 3 --require-stable
-  - ./benchmarks/run-app-baseline --full --load write_only --load-concurrency-sweep
-    --load-duration-secs 90 --load-warmup-secs 15 --reps 3 --require-stable
-  - ./benchmarks/run-wp674-unary-profile --profile n1
-  - ./benchmarks/run-wp674-unary-profile --profile e2
-  - ./scripts/check-durable-group-activation --self-test
-  - ./scripts/check-durable-group-activation
-  - ./scripts/check-performance-freeze
-  - ./scripts/check-requirement-coverage
-  - ./scripts/check-adr-obligations
-  - cargo +1.97.0 fmt --all -- --check
-  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  - ./scripts/acceptance --wp WP-763
+  - ./scripts/ci-all
   exit_gate: The candidate either activates with both-profile receipts satisfying every ADR-0183
     section 4 gate and no crash, recovery, replay, uncertainty, or write-p95 regression, or is
     removed with its verdict recorded; in both outcomes an idle singleton seals immediately,
@@ -22701,6 +22578,7 @@ work_packages:
 
 - id: WP-765
   name: Partitioned nextest execution and recorded CI wall time
+  tier: internal
   depends_on: [WP-764]
   objective: Replace the single workspace test job with four fixed cargo-nextest partitions, prove
     every test target is scheduled exactly once, and record the measured wall time before and
@@ -22722,13 +22600,8 @@ work_packages:
   - Evidence file release/evidence/ci-wall-time-v1.json recording the single-job baseline measured before
     this package, the per-partition times after, and the 20-minute longest-partition target
   acceptance_commands:
-  - ./scripts/check-test-partition-coverage
-  - cargo +1.97.0 nextest run --workspace --all-features --partition hash:1/4
-  - cargo +1.97.0 test --workspace --all-features
-  - ./scripts/check-requirement-coverage
-  - ./scripts/check-adr-obligations
-  - cargo +1.97.0 fmt --all -- --check
-  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  - ./scripts/acceptance --wp WP-765
+  - ./scripts/ci-all
   exit_gate: Four partition jobs pass on CI, the coverage script proves exactly-once scheduling
     of every test target, and the evidence file holds a measured before and after with the
     longest partition and the target stated.

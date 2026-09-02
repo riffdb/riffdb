@@ -1,0 +1,123 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Classify a change against governance/tiers.yaml: report its tier, the file
+# that decided the tier, the per-tier file list and the path-triggered checks.
+
+require "json"
+require_relative "lib/riffdb_governance"
+
+USAGE = <<~HELP
+  Usage: classify-change [options] [<path>...]
+
+  Classify the touched files against governance/tiers.yaml. Touched files are the
+  files changed in the range plus staged, unstaged and untracked changes, or the
+  explicit <path> arguments when any are given. The default range is
+  merge-base(HEAD, main)..HEAD on a branch and HEAD~1..HEAD on main.
+
+  A change's tier is the maximum of its files' tiers; each file takes the tier of
+  the first matching rule. A `Governance-Tier: <tier>` trailer on a commit in the
+  range may raise the tier, never lower it.
+
+  Options:
+        --base <ref>        use merge-base(HEAD, <ref>)..HEAD as the range
+        --range <a>..<b>    use this commit range
+        --require <tier>    exit 1 when the computed tier is above <tier>
+        --json              emit {tier, files:[{path,tier,rule}], checks:[...]}
+    -h, --help              show this message
+
+  Exit status: 0 normally, 1 when --require is exceeded, 2 on a usage error.
+HELP
+
+options = { base: nil, range: nil, require_tier: nil, json: false }
+paths = []
+
+argv = ARGV.dup
+take = lambda do |flag|
+  value = argv.shift
+  next value unless value.nil? || value.empty?
+
+  warn "missing value for #{flag}"
+  exit 2
+end
+
+until argv.empty?
+  argument = argv.shift
+  case argument
+  when "--help", "-h" then (puts USAGE) || exit(0)
+  when "--json" then options[:json] = true
+  when "--base" then options[:base] = take.call("--base")
+  when "--range" then options[:range] = take.call("--range")
+  when "--require" then options[:require_tier] = take.call("--require")
+  when /\A--base=(.+)\z/ then options[:base] = Regexp.last_match(1)
+  when /\A--range=(.+)\z/ then options[:range] = Regexp.last_match(1)
+  when /\A--require=(.+)\z/ then options[:require_tier] = Regexp.last_match(1)
+  when "--" then paths.concat(argv).tap { argv.clear }
+  when /\A-/ then warn("unknown option #{argument}\n\n#{USAGE}") || exit(2)
+  else paths << argument
+  end
+end
+
+if options[:require_tier] && !RiffdbGovernance.valid_tier?(options[:require_tier])
+  warn "unknown tier #{options[:require_tier].inspect}; expected one of #{RiffdbGovernance::TIER_ORDER.join(', ')}"
+  exit 2
+end
+
+begin
+  range = paths.empty? ? RiffdbGovernance.range_for(range: options[:range], base: options[:base]) : nil
+  files = RiffdbGovernance.touched_files(range: options[:range], base: options[:base], paths: paths)
+  classification = RiffdbGovernance.classify(files, range: range)
+rescue RiffdbGovernance::Error => error
+  warn error.message
+  exit 2
+end
+
+if options[:json]
+  puts JSON.pretty_generate(
+    "tier" => classification.tier,
+    "range" => range,
+    "decided_by" => classification.deciding_file&.path,
+    "trailer_tier" => classification.trailer_tier,
+    "files" => classification.files.map do |entry|
+      { "path" => entry.path, "tier" => entry.tier, "rule" => entry.rule }
+    end,
+    "checks" => classification.checks
+  )
+else
+  by_tier = classification.files.group_by(&:tier)
+  counts = RiffdbGovernance::TIER_ORDER.reverse.map { |tier| "#{tier} #{by_tier.fetch(tier, []).length}" }
+  puts "tier:       #{classification.tier}"
+  puts "ceremony:   #{RiffdbGovernance.ceremony(classification.tier)}"
+  if classification.deciding_file
+    decider = classification.deciding_file
+    puts "decided by: #{decider.path} (rule #{decider.rule || '<default>'})"
+  end
+  if classification.trailer_tier
+    puts "trailer:    Governance-Tier: #{classification.trailer_tier}"
+  end
+  puts "range:      #{range || '<explicit paths>'}"
+  puts "files:      #{classification.files.length} (#{counts.join(', ')})"
+  RiffdbGovernance::TIER_ORDER.reverse.each do |tier|
+    entries = by_tier.fetch(tier, [])
+    next if entries.empty?
+
+    puts
+    puts "#{tier}:"
+    entries.each { |entry| puts "  #{entry.path}" }
+  end
+  puts
+  if classification.checks.empty?
+    puts "checks:     none triggered"
+  else
+    puts "checks:"
+    classification.checks.each { |command| puts "  #{command}" }
+  end
+end
+
+if options[:require_tier] &&
+   RiffdbGovernance.tier_rank(classification.tier) > RiffdbGovernance.tier_rank(options[:require_tier])
+  warn "computed tier #{classification.tier} is above the required tier #{options[:require_tier]}"
+  exit 1
+end
+
+exit 0

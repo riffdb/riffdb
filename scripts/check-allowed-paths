@@ -1,0 +1,104 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Check that every file touched by a change stays inside the allowed_paths of
+# its work package.
+
+require "json"
+require_relative "lib/riffdb_governance"
+
+USAGE = <<~HELP
+  Usage: check-allowed-paths --wp WP-NNN [options] [<path>...]
+
+  Every touched file must match one of the work package's allowed_paths globs in
+  work_packages.yaml. Touched files are the files changed in the range plus
+  staged, unstaged and untracked changes, or the explicit <path> arguments when
+  any are given. The default range is merge-base(HEAD, main)..HEAD on a branch and
+  HEAD~1..HEAD on main.
+
+  SPEC.md, work_packages.yaml and the package's own ADR files are allowed only
+  when the package lists them, exactly as before.
+
+  Options:
+        --wp WP-NNN         work package to check (required)
+        --base <ref>        use merge-base(HEAD, <ref>)..HEAD as the range
+        --range <a>..<b>    use this commit range
+        --json              emit {package, allowed_paths, files, offenders}
+    -h, --help              show this message
+
+  Exit status: 0 when every touched file is allowed, 1 when any file is not,
+  2 on a usage error.
+HELP
+
+options = { wp: nil, base: nil, range: nil, json: false }
+paths = []
+
+argv = ARGV.dup
+take = lambda do |flag|
+  value = argv.shift
+  next value unless value.nil? || value.empty?
+
+  warn "missing value for #{flag}"
+  exit 2
+end
+
+until argv.empty?
+  argument = argv.shift
+  case argument
+  when "--help", "-h" then (puts USAGE) || exit(0)
+  when "--json" then options[:json] = true
+  when "--wp" then options[:wp] = take.call("--wp")
+  when "--base" then options[:base] = take.call("--base")
+  when "--range" then options[:range] = take.call("--range")
+  when /\A--wp=(.+)\z/ then options[:wp] = Regexp.last_match(1)
+  when /\A--base=(.+)\z/ then options[:base] = Regexp.last_match(1)
+  when /\A--range=(.+)\z/ then options[:range] = Regexp.last_match(1)
+  when "--" then paths.concat(argv).tap { argv.clear }
+  when /\A-/ then warn("unknown option #{argument}\n\n#{USAGE}") || exit(2)
+  else paths << argument
+  end
+end
+
+unless options[:wp]
+  warn "--wp WP-NNN is required\n\n#{USAGE}"
+  exit 2
+end
+
+begin
+  package = RiffdbGovernance.package(options[:wp])
+rescue RiffdbGovernance::Error => error
+  warn error.message
+  exit 2
+end
+
+unless package
+  warn "unknown work package #{options[:wp]}"
+  exit 2
+end
+
+allowed = package.fetch("allowed_paths", [])
+if allowed.empty?
+  warn "#{options[:wp]} declares no allowed_paths"
+  exit 2
+end
+
+files = RiffdbGovernance.touched_files(range: options[:range], base: options[:base], paths: paths)
+offenders = files.reject { |path| RiffdbGovernance::Glob.match_any?(allowed, path) }
+
+if options[:json]
+  puts JSON.pretty_generate(
+    "package" => options[:wp],
+    "allowed_paths" => allowed,
+    "files" => files,
+    "offenders" => offenders
+  )
+elsif offenders.empty?
+  puts "#{options[:wp]}: #{files.length} touched file(s) inside #{allowed.length} allowed path(s)."
+else
+  warn "#{options[:wp]} touches #{offenders.length} file(s) outside its allowed_paths:"
+  offenders.each { |path| warn "  #{path}" }
+  warn "allowed_paths:"
+  allowed.each { |pattern| warn "  #{pattern}" }
+end
+
+exit(offenders.empty? ? 0 : 1)

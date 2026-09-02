@@ -2,8 +2,15 @@
 
 Architecture decision records (ADRs) document decisions that constrain RiffDB's
 public, durable, security, or semantic boundaries. `AGENTS.md`, `SPEC.md`,
-`work_packages.yaml`, and ADRs whose status is **Accepted** are authoritative.
-A Proposed ADR is planning input only and cannot override those sources.
+`work_packages.yaml`, `governance/tiers.yaml`, and accepted ADRs are
+authoritative. A record that is not yet accepted is planning input only and
+cannot override those sources.
+
+A v2 record carries YAML front matter whose `adr:` key opens the file; its
+front matter is the source of its tier, requirements, packages, obligations,
+and review triggers. A legacy record (ADR-0001 through ADR-0177) keeps the
+header form, a `# ADR-NNNN: Title` line followed by a `- **Status:**` list, and
+is read exactly as it was accepted.
 
 ## Statuses
 
@@ -13,196 +20,206 @@ A Proposed ADR is planning input only and cannot override those sources.
 - **Superseded:** a later Accepted ADR replaces the decision; both records link to
   each other.
 
-Changing a status to Accepted, Rejected, or Superseded requires explicit human
-review. Implementation agents must not infer acceptance from an approved planning
-direction, merged draft, or implementation choice.
+Acceptance is a human act. Changing a status to Accepted, Rejected, or
+Superseded requires explicit human review: on a v2 record a human sets
+`status: accepted` and the `accepted:` date in the front matter, and on a
+legacy record a human edits the `- **Status:**` header line. Implementation
+agents must not infer acceptance from an approved planning direction, a merged
+draft, or an implementation choice.
 
 ## Index
 
-| ADR | Title | Status |
-|---|---|---|
-| [0000](0000-template.md) | ADR template | Template |
-| [0001](0001-standalone-database-boundary.md) | Standalone Database Boundary | Accepted |
-| [0002](0002-bounded-typed-dsl-and-versioned-deterministic-ir.md) | Bounded Typed DSL and Deterministic Compilation Boundary | Accepted |
-| [0003](0003-logical-conflict-dependency-validation-and-commit-ordering.md) | Logical Conflict Ownership, Dependency Validation, and Commit Ordering | Accepted |
-| [0004](0004-semantic-storage-api-and-redb-baseline.md) | Semantic Storage API and Redb Baseline | Accepted |
-| [0005](0005-idempotency-identity-terminal-outcomes-and-sequences.md) | Idempotency Identity, Terminal Outcomes, and Sequence Semantics | Accepted |
-| [0006](0006-versioned-protobuf-and-durable-envelope.md) | Versioned Protobuf and Durable Envelope | Accepted |
-| [0007](0007-shared-application-service-boundary.md) | Shared Application-Service Boundary | Accepted |
-| [0008](0008-native-mcp-tool-and-resource-model.md) | Native MCP Tool and Resource Model | Accepted |
-| [0009](0009-opaque-server-side-poc-capabilities.md) | Opaque Server-Side POC Capabilities | Accepted |
-| [0010](0010-event-derived-projection-and-frontiers.md) | Event-Derived Projection and Frontier Semantics | Accepted |
-| [0011](0011-canonical-values-keys-and-hashing.md) | Canonical Values, Fixed-Scale Decimals, Keys, and Hashing | Accepted |
-| [0012](0012-deterministic-transaction-context.md) | Deterministic Transaction Context and Execution-Fault Admission | Accepted |
-| [0013](0013-stable-ids-ir-encoding-and-plan-hash.md) | Stable IDs, IR Encoding, and Plan-Hash Framing | Accepted |
-| [0014](0014-projection-and-contract-plan-hash-domains.md) | Projection and Contract Plan Hash Domains | Accepted |
-| [0015](0015-explicit-binding-outcomes-and-budget-bootstrap.md) | Explicit Binding Outcomes and Budget Bootstrap | Accepted |
-| [0016](0016-canonical-key-components-and-partition-identity.md) | Canonical Key Components and Partition Identity | Accepted |
-| [0017](0017-projection-group-keys-generations-and-frontiers.md) | Projection Group Keys, Generations, and Durable Frontiers | Accepted |
-| [0018](0018-uuidv7-generation-ownership-and-replay-boundaries.md) | UUIDv7 Generation, Ownership, and Replay Boundaries | Accepted |
-| [0019](0019-poc-operational-metadata-deferral.md) | POC Operational Metadata Deferral | Accepted |
-| [0020](0020-mcp-command-tool-name-normalization-and-compiler-ownership.md) | MCP Command Tool-Name Normalization and Compiler Ownership | Accepted |
-| [0021](0021-service-audit-target-registry-and-canonical-ordering.md) | Service-Audit Target Registry and Canonical Ordering | Accepted |
-| [0022](0022-durable-semantic-protobuf-schema-v1.md) | Durable Semantic Protobuf Schema Version 1 | Accepted |
-| [0023](0023-wp100-coordinator-edge-semantics.md) | WP-100 Coordinator Edge Semantics | Accepted |
-| [0024](0024-canonical-provenance-resource-locator.md) | Canonical Provenance Resource Locator | Accepted |
-| [0025](0025-bootstrap-and-service-consumer-boundary-ownership.md) | Bootstrap and Service Consumer Boundary Ownership | Accepted |
-| [0026](0026-wp120-authorization-recovery-and-failure-boundaries.md) | WP-120 Authorization, Recovery, and Failure Boundaries | Accepted |
-| [0027](0027-service-response-budget-and-oversize-disposition.md) | Service Response Budget and Oversize Disposition | Accepted |
-| [0028](0028-phase-zero-public-protobuf-completion.md) | Phase-Zero Public Protobuf Completion | Accepted |
-| [0029](0029-two-stage-public-key-validation.md) | Two-Stage Public Key Validation | Accepted |
-| [0030](0030-capability-partition-startup-evidence.md) | Capability Partition Startup Evidence | Accepted |
-| [0031](0031-schema-directed-submitted-command-values.md) | Schema-Directed Submitted Command Values | Accepted |
-| [0032](0032-same-session-retained-metadata-handoff.md) | Same-Session Retained Metadata Handoff | Accepted |
-| [0033](0033-first-commit-notification-publication.md) | First-Commit Notification Publication | Accepted |
-| [0034](0034-staged-application-service-activation.md) | Staged Application-Service Activation | Accepted |
-| [0035](0035-atomic-authoritative-scan-fences.md) | Atomic Authoritative Scan Fences | Accepted |
-| [0036](0036-schema-directed-submitted-query-components.md) | Schema-Directed Submitted Query Components | Accepted |
-| [0037](0037-rust-sdk-foundational-type-dependencies.md) | Rust SDK Foundational Type Dependencies | Accepted |
-| [0038](0038-partition-filtered-authoritative-index-scans.md) | Partition-Filtered Authoritative Index Scans | Accepted |
-| [0039](0039-v2-index-migration-integration.md) | V2 Index Migration Integration | Accepted |
-| [0040](0040-public-grpc-mcp-parity-bridge.md) | Public gRPC MCP Parity Bridge | Accepted |
-| [0041](0041-cli-public-flow-and-output-contract.md) | CLI Public Flow and Output Contract | Accepted |
-| [0042](0042-sealed-catalog-owned-index-migration-driver.md) | Sealed Catalog-Owned Index Migration Driver | Accepted |
-| [0043](0043-auth-owned-retained-mcp-credential.md) | Auth-Owned Retained MCP Credential | Accepted |
-| [0044](0044-hosted-mcp-context-and-dependency-completion.md) | Hosted MCP Context and Dependency Completion | Accepted |
-| [0045](0045-budget-safety-counterexample-evidence.md) | Budget Safety Counterexample Evidence and Claim Boundary | Accepted |
-| [0046](0046-wp140-public-presentation-and-resource-conformance.md) | WP-140 Public Presentation and Resource Conformance | Accepted |
-| [0047](0047-mcp-object-root-schema-conformance.md) | MCP Object-Root Schema Conformance | Accepted |
-| [0048](0048-mcp-observer-physical-call-accounting.md) | MCP Observer Physical-Call Accounting | Accepted |
-| [0049](0049-p2-derived-recovery-telemetry-and-hosted-composition.md) | P2 Derived Recovery, Telemetry, and Hosted Composition | Accepted |
-| [0050](0050-public-offline-backup-and-restore-maintenance.md) | Public Offline Backup and Restore Maintenance | Accepted |
-| [0051](0051-riffql-bounded-symbolic-query-language.md) | RiffQL Bounded Symbolic Query Language | Accepted |
-| [0052](0052-versioned-query-modules-and-application-surfaces.md) | Versioned Query Modules and Application Surfaces | Accepted |
-| [0053](0053-composite-query-snapshots-and-current-view-publication.md) | Composite Query Snapshots and Current-View Publication | Accepted |
-| [0054](0054-bounded-dependent-key-batches.md) | Bounded Dependent Key Batches | Accepted |
-| [0055](0055-safe-application-surface-and-declared-integrity.md) | Safe Application Surface and Declared Integrity | Accepted |
-| [0056](0056-agent-application-alpha.md) | Agent Application Alpha Before Operational and Distributed Alpha | Accepted |
-| [0057](0057-compiler-owned-application-lock-and-alpha-recovery.md) | Compiler-Owned Application Lock and Agent-Alpha Recovery | Accepted |
-| [0058](0058-bounded-group-durability-and-audited-command-transitions.md) | Bounded Group Durability and Audited Command Transitions | Accepted |
-| [0059](0059-same-partition-read-dependencies-and-write-parity.md) | Same-Partition Read Dependencies and Application Write Parity | Accepted |
-| [0060](0060-bounded-scheduler-storage-lanes-and-parallel-preparation.md) | Bounded Scheduler Windows, Activated Storage Lanes, and Parallel Preparation | Accepted |
-| [0061](0061-semantic-durability-terminal-admission-and-storage-v2.md) | Semantic Durability, Terminal Admission, and Storage Format V2 | Accepted |
-| [0062](0062-generic-deployment-required-capability-administration.md) | Generic Deployment-Required Capability Administration | Accepted |
-| [0063](0063-bounded-multiple-databases-per-process.md) | Bounded Multiple Databases Per Server Process | Accepted |
-| [0064](0064-underscore-mcp-tool-names-and-agent-presentation.md) | Underscore MCP Tool Names and Agent Presentation | Accepted |
-| [0065](0065-first-real-application-experience.md) | First Real Application Experience | Accepted |
-| [0066](0066-additive-contract-evolution-and-deployment-diagnostics.md) | Additive Contract Evolution and Deployment Diagnostics | Accepted |
-| [0070](0070-read-stability-and-internal-retry.md) | Read Stability and Internal Retry | Accepted |
-| [0071](0071-typed-saturation-and-admission.md) | Typed Saturation and Admission | Accepted |
-| [0072](0072-database-history-incarnation.md) | Database History Incarnation | Accepted |
-| [0073](0073-linear-startup-validation-and-bounded-history-access.md) | Linear Startup Validation and Bounded History Access | Accepted |
-| [0074](0074-python-application-driver.md) | Rust-Backed Python Application Driver | Accepted |
-| [0075](0075-successor-application-identity.md) | Exact Successor Application Identity Before Mutation | Accepted |
-| [0076](0076-offline-contract-migration-semantics.md) | Offline Contract Migration Semantics and Cutover | Accepted |
-| [0077](0077-migration-language-ir-and-application-lock.md) | Migration Language, IR, and Application Lock | Accepted |
-| [0078](0078-staged-migration-storage-and-recovery.md) | Staged Migration Storage, Publication, and Recovery | Accepted |
-| [0079](0079-public-contract-migration-administration.md) | Public Contract Migration Administration | Accepted |
-| [0080](0080-partitioned-events-consumers-and-live-queries.md) | Partitioned Events, Durable Consumers, and Live Queries | Accepted |
-| [0081](0081-supported-migration-parent-and-canonical-successor.md) | Supported Migration Parent and Canonical Successor | Accepted |
-| [0082](0082-single-total-order-and-pre-alpha-format-acceptances.md) | Single Total Order and Pre-Alpha Format Acceptances | Accepted |
-| [0083](0083-authoritative-entity-references.md) | Authoritative Entity References | Accepted |
-| [0084](0084-batch-item-results.md) | Batch Item Results | Accepted |
-| [0085](0085-history-retention-and-startup-scaling.md) | History Retention and Startup Scaling | Accepted |
-| [0086](0086-columnar-projection-and-read-freshness-classes.md) | Columnar Projection, Read Sources, and Freshness Policies | Accepted |
-| [0087](0087-projected-ad-hoc-query-surface.md) | Projected Ad-Hoc Query Surface and Resource Governance | Accepted |
-| [0088](0088-contract-migration-check-receipt.md) | Contract Migration Check Receipt | Accepted |
-| [0089](0089-additive-migration-capability-record.md) | Additive Migration Capability Record | Accepted |
-| [0090](0090-stable-id-rename-aliases.md) | Stable-ID Rename Aliases | Accepted |
-| [0091](0091-native-vector-search-projections.md) | Native Vector Search as a Projection | Accepted |
-| [0092](0092-native-full-text-search-projections.md) | Native Full-Text Search as a Projection | Accepted |
-| [0093](0093-replicated-availability-changelog-shipping.md) | Replicated Availability via Authoritative Changelog Shipping | Accepted |
-| [0094](0094-compiler-proved-commutative-child-append-groups.md) | Compiler-Proved Commutative Child-Append Groups | Accepted |
-| [0095](0095-transaction-local-serial-command-micro-batches.md) | Transaction-Local Serial Command Micro-Batches | Accepted |
-| [0096](0096-dynamic-groups-under-static-safety-ceiling.md) | Dynamic Physical Groups Under a Static Safety Ceiling | Accepted |
-| [0097](0097-bounded-generated-batch-writer-feeding.md) | Bounded Generated-Batch Writer Feeding | Accepted |
-| [0098](0098-bounded-redb-durability-epochs.md) | Bounded Redb Durability Epochs | Accepted |
-| [0099](0099-canonical-command-capsules.md) | Canonical Command Capsules and Locator Rows | Accepted |
-| [0100](0100-changelog-frames-follow-published-durable-frontiers.md) | Changelog Frames Follow Published Durable Frontiers | Proposed |
-| [0101](0101-pipelined-standard-durability-journal.md) | Pipelined Standard Durability Journal | Accepted |
-| [0102](0102-segmented-command-authority-and-derived-locators.md) | Segmented Command Authority and Rebuildable Exact Locators | Accepted |
-| [0103](0103-preallocated-recyclable-durability-journal.md) | Preallocated Recyclable Durability Journal | Accepted |
-| [0104](0104-journal-authoritative-state-overlay.md) | Journal-Authoritative Published State Overlay | Accepted |
-| [0105](0105-authenticated-remote-application-ingress.md) | Authenticated Remote Application Ingress | Proposed |
-| [0106](0106-rust-owned-multilanguage-driver-platform.md) | Rust-Owned Multilanguage Driver Platform | Proposed |
-| [0107](0107-compiler-bounded-collection-mutations.md) | Compiler-Bounded Collection Mutations | Proposed |
-| [0108](0108-bounded-operational-riffql.md) | Bounded Operational RiffQL and Safe Catalog Introspection | Proposed |
-| [0109](0109-compiled-workflow-concurrency.md) | Compiled Workflow Concurrency and Fenced Leases | Proposed |
-| [0110](0110-application-installation-and-adapter-conformance.md) | Exact Application Installation and Adapter Conformance | Proposed |
-| [0111](0111-compiled-principal-row-policies.md) | Compiled Principal-Aware Row Policies | Accepted |
-| [0112](0112-alpha-format-compatibility-and-application-portability.md) | Alpha Format Compatibility and Application Portability | Accepted |
-| [0113](0113-deterministic-simulation-testing.md) | Deterministic Simulation Testing for the Durable Engine | Accepted |
-| [0114](0114-row-policy-capability-successor.md) | Row-Policy Capability Successor | Accepted |
-| [0115](0115-application-export-capability-successor.md) | Application Export Capability Successor | Accepted |
-| [0116](0116-current-row-event-policy-anchors.md) | Current-Row Policy Anchors for Durable Events | Accepted |
-| [0117](0117-compiled-external-framework-profiles.md) | Compiled External-Framework Profiles | Accepted |
-| [0118](0118-secret-field-classification.md) | Secret Field Classification and Display-Surface Redaction | Accepted |
-| [0119](0119-compiler-owned-workflow-reconstitution.md) | Compiler-Owned Workflow Reconstitution for Portable Reimport | Accepted |
-| [0120](0120-driver-resident-developer-experience.md) | Driver-Resident Developer Experience | Accepted |
-| [0121](0121-empty-project-schema-and-selected-binding-materialization.md) | Empty Project Schema and Selected Binding Materialization | Accepted |
-| [0122](0122-agent-rails-and-application-guidance-resource.md) | Agent Rails and Application Guidance Resource | Accepted |
-| [0123](0123-portable-cloud-performance-and-compact-writer-frames.md) | Portable Cloud Performance and Compact Command Segments | Accepted |
-| [0124](0124-version-topology-and-retirement-governance.md) | Version Topology and Retirement Governance | Accepted |
-| [0125](0125-command-segment-raw-fallback-compatibility.md) | Command-Segment Raw Fallback Compatibility | Accepted |
-| [0126](0126-compiler-bounded-one-hop-cascade-deletion.md) | Compiler-Bounded One-Hop Cascade Deletion | Accepted |
-| [0127](0127-bounded-multiplexed-application-session.md) | Bounded Multiplexed Application Session | Accepted |
-| [0128](0128-compiler-declared-secret-outputs-for-named-riffql.md) | Compiler-Declared Secret Outputs for Named RiffQL | Accepted |
-| [0129](0129-bounded-prepared-command-finalization.md) | Bounded Prepared Command Finalization and Pay-Once Batch Apply | Accepted |
-| [0130](0130-compiler-planned-projection-result-sets.md) | Compiler-Planned Projection Result Sets and Snapshot-Aligned Composition | Accepted |
-| [0131](0131-exact-indexed-text-cardinality-and-ordinal-windowing.md) | Exact Indexed Text Matching, Cardinality, and Ordinal Windowing | Accepted |
-| [0132](0132-bounded-journal-fence-pipeline.md) | Bounded Journal Fence Pipeline and Ordered Durable-Prefix Publication | Accepted |
-| [0133](0133-compiler-planned-covering-result-batches.md) | Compiler-Planned Covering Result Batches and Compact Named-Query Carriage | Accepted |
-| [0134](0134-compiler-declared-exact-predicate-and-order-families.md) | Compiler-Declared Exact Predicate and Independent Order Families | Accepted |
-| [0135](0135-packed-compiled-result-carriage.md) | Packed Compiler-Bound Named-Result Carriage | Accepted |
-| [0136](0136-authoritative-vector-evidence-and-projected-nearest.md) | Authoritative Vector Evidence and Production Projected Nearest | Accepted |
-| [0137](0137-bounded-framed-application-transport.md) | Bounded Framed Application Transport | Accepted |
-| [0138](0138-direct-exclusive-application-lane.md) | Direct Exclusive Generated-Operation Lane | Accepted |
-| [0139](0139-established-connection-application-lane.md) | Established-Connection Generated-Operation Lane | Accepted |
-| [0140](0140-serial-one-in-flight-grpc-session.md) | Serial Ownership for the Existing One-In-Flight gRPC Application Session | Accepted |
-| [0141](0141-public-gate-first-exclusive-application-lane.md) | Diagnostic-Gate-First Exclusive Application Lane | Accepted |
-| [0142](0142-portable-unary-service-levels-and-comparator-evidence.md) | Portable Unary Service Levels and Comparator Evidence | Accepted |
-| [0143](0143-fixed-generation-unary-stability.md) | Fixed-Generation Unary Stability Without Performance-Selected Retries | Accepted |
-| [0144](0144-release-evidence-durability-mode-reconciliation.md) | Release-Evidence Durability-Mode Reconciliation | Accepted |
-| [0145](0145-compiler-declared-nullable-total-order-placement.md) | Compiler-Declared Nullable Total-Order Placement | Accepted |
-| [0146](0146-fixed-generation-unary-sampling-and-cloud-host-validity.md) | Fixed-Generation Unary Sampling and Whole-Cell Cloud Host Validity | Accepted |
-| [0147](0147-aggregate-byte-budgets-for-atomic-collection-commands.md) | Aggregate Byte Budgets for Atomic Collection Commands | Accepted |
-| [0148](0148-one-driver-protocol-core-for-every-binding.md) | One Driver Protocol Core for Every Binding | Accepted |
-| [0149](0149-correlated-index-validation-work-budgets.md) | Correlated Index-Validation Work Budgets for Atomic Commands | Accepted |
-| [0150](0150-compiler-sealed-operational-access-path-algebra.md) | Compiler-Sealed Operational Access-Path Algebra and Bounded Relationship Composition | Accepted |
-| [0151](0151-atomic-delete-and-return-preimage.md) | Atomic Unary Delete and Return of the Revalidated Preimage | Accepted |
-| [0152](0152-closed-exact-aggregate-function-families.md) | Closed Exact Aggregate Function Families Across Query Providers | Accepted |
-| [0153](0153-compiler-sealed-initialized-state-transitions.md) | Compiler-Sealed Initialized State Transitions | Accepted |
-| [0154](0154-profile-aware-binary-text-intervals.md) | Profile-Aware Binary Text Intervals for Bounded Operational Queries | Accepted |
-| [0155](0155-selectively-declared-generated-application-surfaces.md) | Selectively Declared Generated Application Surfaces | Accepted |
-| [0156](0156-clean-close-certificate-fast-startup.md) | Clean-Close Certificate Fast Startup | Accepted |
-| [0157](0157-clean-close-lifecycle-durable-identity.md) | Clean-Close Lifecycle Durable Identity | Accepted |
-| [0158](0158-compiler-declared-bounded-runtime-page-limits.md) | Compiler-Declared Bounded Runtime Page Limits | Accepted |
-| [0159](0159-page-cardinality-independent-query-cursors.md) | Page-Cardinality-Independent Query Cursors and External Page Coalescing | Accepted |
-| [0160](0160-rebuildable-columnar-segment-v2.md) | Rebuildable Typed Columnar Segment V2 and Exact Segment Pruning | Proposed |
-| [0161](0161-compiler-sealed-vectorized-columnar-execution.md) | Compiler-Sealed Vectorized Columnar Execution and Bounded Parallel Scans | Proposed |
-| [0162](0162-incremental-analytical-provider-structures.md) | Compiler-Declared Incremental Analytical Provider Structures | Proposed |
-| [0163](0163-compiler-sealed-command-decisions.md) | Compiler-Sealed Command Decisions with Exact No-Effect Arms | Accepted |
-| [0164](0164-admission-head-fenced-query-consistency.md) | Admission-Head-Fenced Query Consistency | Accepted |
-| [0165](0165-durable-command-derived-locator-tables.md) | Durable Command-Derived Locator Tables | Accepted |
-| [0166](0166-interruptible-columnar-catch-up-and-shutdown-abandonment.md) | Interruptible Columnar Catch-Up and Graceful-Stop Abandonment | Accepted |
-| [0167](0167-required-bounded-limit-maximum.md) | Required Bounded Limit Maximum | Accepted |
-| [0168](0168-index-cover-evolution-through-migration.md) | Index Cover Evolution Through Migration | Accepted |
-| [0169](0169-optional-aggregate-root-materialization.md) | Optional Aggregate Root Materialization | Accepted |
-| [0170](0170-partition-local-cross-aggregate-writes.md) | Partition-Local Cross-Aggregate Writes | Accepted |
-| [0171](0171-gated-backend-measurement-stability.md) | Measurement Stability Binds the Gated Backend | Accepted |
-| [0172](0172-case-insensitive-text-matching.md) | Case-Insensitive Text Matching | Accepted |
-| [0173](0173-tokenized-text-search-provider.md) | Tokenized Text Search Provider | Accepted |
-| [0174](0174-bounded-filtered-result-pipelines.md) | Bounded Filtered Result Pipelines | Accepted |
-| [0175](0175-bounded-partition-set-operational-queries.md) | Bounded Partition-Set Operational Queries | Accepted |
-| [0176](0176-compiler-bounded-large-atomic-command-envelope.md) | Compiler-Bounded Large Atomic Command Envelope | Accepted |
-| [0177](0177-compiler-bounded-high-cardinality-atomic-collections.md) | Compiler-Bounded High-Cardinality Atomic Collections | Accepted |
-| [0178](0178-follower-activation-and-changelog-derived-backup.md) | Follower Activation and Changelog-Derived Incremental Backup | Accepted |
-| [0179](0179-generated-public-surface-adapters-and-operation-registry.md) | Generated Public-Surface Adapters and the Operation Registry | Accepted |
-| [0180](0180-crate-dependency-direction-repair.md) | Crate Dependency Direction Repair | Accepted |
-| [0181](0181-pre-alpha-format-epoch-reset-and-governance-load.md) | Pre-Alpha Format Epoch Reset and Governance Load | Accepted |
-| [0182](0182-bounded-dirty-recovery-and-online-retention.md) | Bounded Dirty Recovery and Online Retention | Accepted |
-| [0183](0183-performance-package-freeze-and-durable-group-lever.md) | Performance Package Freeze and the Durable-Group Lever | Accepted |
-| [0184](0184-panic-discipline-test-economics-and-coordinator-simulation.md) | Panic Discipline, Test Economics, and Coordinator Simulation | Accepted |
+The table is generated by `./scripts/adr-index --write` from the records
+themselves and is checked by `./scripts/adr-index --check`. Do not hand-edit it;
+add or change a record and regenerate. The `Tier` column is `legacy` for a
+record with no front matter.
+
+<!-- adr-index:start -->
+| ADR | Title | Status | Tier |
+|---|---|---|---|
+| [0000](0000-template.md) | ADR template | Template | template |
+| [0001](0001-standalone-database-boundary.md) | Standalone Database Boundary | Accepted | legacy |
+| [0002](0002-bounded-typed-dsl-and-versioned-deterministic-ir.md) | Bounded Typed DSL and Deterministic Compilation Boundary | Accepted | legacy |
+| [0003](0003-logical-conflict-dependency-validation-and-commit-ordering.md) | Logical Conflict Ownership, Dependency Validation, and Commit Ordering | Accepted | legacy |
+| [0004](0004-semantic-storage-api-and-redb-baseline.md) | Semantic Storage API and Redb Baseline | Accepted | legacy |
+| [0005](0005-idempotency-identity-terminal-outcomes-and-sequences.md) | Idempotency Identity, Terminal Outcomes, and Sequence Semantics | Accepted | legacy |
+| [0006](0006-versioned-protobuf-and-durable-envelope.md) | Versioned Protobuf and Durable Envelope | Accepted | legacy |
+| [0007](0007-shared-application-service-boundary.md) | Shared Application-Service Boundary | Accepted | legacy |
+| [0008](0008-native-mcp-tool-and-resource-model.md) | Native MCP Tool and Resource Model | Accepted | legacy |
+| [0009](0009-opaque-server-side-poc-capabilities.md) | Opaque Server-Side POC Capabilities | Accepted | legacy |
+| [0010](0010-event-derived-projection-and-frontiers.md) | Event-Derived Projection and Frontier Semantics | Accepted | legacy |
+| [0011](0011-canonical-values-keys-and-hashing.md) | Canonical Values, Fixed-Scale Decimals, Keys, and Hashing | Accepted | legacy |
+| [0012](0012-deterministic-transaction-context.md) | Deterministic Transaction Context and Execution-Fault Admission | Accepted | legacy |
+| [0013](0013-stable-ids-ir-encoding-and-plan-hash.md) | Stable IDs, IR Encoding, and Plan-Hash Framing | Accepted | legacy |
+| [0014](0014-projection-and-contract-plan-hash-domains.md) | Projection and Contract Plan Hash Domains | Accepted | legacy |
+| [0015](0015-explicit-binding-outcomes-and-budget-bootstrap.md) | Explicit Binding Outcomes and Budget Bootstrap | Accepted | legacy |
+| [0016](0016-canonical-key-components-and-partition-identity.md) | Canonical Key Components and Partition Identity | Accepted | legacy |
+| [0017](0017-projection-group-keys-generations-and-frontiers.md) | Projection Group Keys, Generations, and Durable Frontiers | Accepted | legacy |
+| [0018](0018-uuidv7-generation-ownership-and-replay-boundaries.md) | UUIDv7 Generation, Ownership, and Replay Boundaries | Accepted | legacy |
+| [0019](0019-poc-operational-metadata-deferral.md) | POC Operational Metadata Deferral | Accepted | legacy |
+| [0020](0020-mcp-command-tool-name-normalization-and-compiler-ownership.md) | MCP Command Tool-Name Normalization and Compiler Ownership | Accepted | legacy |
+| [0021](0021-service-audit-target-registry-and-canonical-ordering.md) | Service-Audit Target Registry and Canonical Ordering | Accepted | legacy |
+| [0022](0022-durable-semantic-protobuf-schema-v1.md) | Durable Semantic Protobuf Schema Version 1 | Accepted | legacy |
+| [0023](0023-wp100-coordinator-edge-semantics.md) | WP-100 Coordinator Edge Semantics | Accepted | legacy |
+| [0024](0024-canonical-provenance-resource-locator.md) | Canonical Provenance Resource Locator | Accepted | legacy |
+| [0025](0025-bootstrap-and-service-consumer-boundary-ownership.md) | Bootstrap and Service Consumer Boundary Ownership | Accepted | legacy |
+| [0026](0026-wp120-authorization-recovery-and-failure-boundaries.md) | WP-120 Authorization, Recovery, and Failure Boundaries | Accepted | legacy |
+| [0027](0027-service-response-budget-and-oversize-disposition.md) | Service Response Budget and Oversize Disposition | Accepted | legacy |
+| [0028](0028-phase-zero-public-protobuf-completion.md) | Phase-Zero Public Protobuf Completion | Accepted | legacy |
+| [0029](0029-two-stage-public-key-validation.md) | Two-Stage Public Key Validation | Accepted | legacy |
+| [0030](0030-capability-partition-startup-evidence.md) | Capability Partition Startup Evidence | Accepted | legacy |
+| [0031](0031-schema-directed-submitted-command-values.md) | Schema-Directed Submitted Command Values | Accepted | legacy |
+| [0032](0032-same-session-retained-metadata-handoff.md) | Same-Session Retained Metadata Handoff | Accepted | legacy |
+| [0033](0033-first-commit-notification-publication.md) | First-Commit Notification Publication | Accepted | legacy |
+| [0034](0034-staged-application-service-activation.md) | Staged Application-Service Activation | Accepted | legacy |
+| [0035](0035-atomic-authoritative-scan-fences.md) | Atomic Authoritative Scan Fences | Accepted | legacy |
+| [0036](0036-schema-directed-submitted-query-components.md) | Schema-Directed Submitted Query Components | Accepted | legacy |
+| [0037](0037-rust-sdk-foundational-type-dependencies.md) | Rust SDK Foundational Type Dependencies | Accepted | legacy |
+| [0038](0038-partition-filtered-authoritative-index-scans.md) | Partition-Filtered Authoritative Index Scans | Accepted | legacy |
+| [0039](0039-v2-index-migration-integration.md) | V2 Index Migration Integration | Accepted | legacy |
+| [0040](0040-public-grpc-mcp-parity-bridge.md) | Public gRPC MCP Parity Bridge | Accepted | legacy |
+| [0041](0041-cli-public-flow-and-output-contract.md) | CLI Public Flow and Output Contract | Accepted | legacy |
+| [0042](0042-sealed-catalog-owned-index-migration-driver.md) | Sealed Catalog-Owned Index Migration Driver | Accepted | legacy |
+| [0043](0043-auth-owned-retained-mcp-credential.md) | Auth-Owned Retained MCP Credential | Accepted | legacy |
+| [0044](0044-hosted-mcp-context-and-dependency-completion.md) | Hosted MCP Context and Dependency Completion | Accepted | legacy |
+| [0045](0045-budget-safety-counterexample-evidence.md) | Budget Safety Counterexample Evidence and Claim Boundary | Accepted | legacy |
+| [0046](0046-wp140-public-presentation-and-resource-conformance.md) | WP-140 Public Presentation and Resource Conformance | Accepted | legacy |
+| [0047](0047-mcp-object-root-schema-conformance.md) | MCP Object-Root Schema Conformance | Accepted | legacy |
+| [0048](0048-mcp-observer-physical-call-accounting.md) | MCP Observer Physical-Call Accounting | Accepted | legacy |
+| [0049](0049-p2-derived-recovery-telemetry-and-hosted-composition.md) | P2 Derived Recovery, Telemetry, and Hosted Composition | Accepted | legacy |
+| [0050](0050-public-offline-backup-and-restore-maintenance.md) | Public Offline Backup and Restore Maintenance | Accepted | legacy |
+| [0051](0051-riffql-bounded-symbolic-query-language.md) | RiffQL Bounded Symbolic Query Language | Accepted | legacy |
+| [0052](0052-versioned-query-modules-and-application-surfaces.md) | Versioned Query Modules and Application Surfaces | Accepted | legacy |
+| [0053](0053-composite-query-snapshots-and-current-view-publication.md) | Composite Query Snapshots and Current-View Publication | Accepted | legacy |
+| [0054](0054-bounded-dependent-key-batches.md) | Bounded Dependent Key Batches | Accepted | legacy |
+| [0055](0055-safe-application-surface-and-declared-integrity.md) | Safe Application Surface and Declared Integrity | Accepted | legacy |
+| [0056](0056-agent-application-alpha.md) | Agent Application Alpha Before Operational and Distributed Alpha | Accepted | legacy |
+| [0057](0057-compiler-owned-application-lock-and-alpha-recovery.md) | Compiler-Owned Application Lock and Alpha Recovery | Accepted | legacy |
+| [0058](0058-bounded-group-durability-and-audited-command-transitions.md) | Bounded Group Durability and Audited Command Transitions | Accepted | legacy |
+| [0059](0059-same-partition-read-dependencies-and-write-parity.md) | Same-Partition Read Dependencies and Application Write Parity | Accepted | legacy |
+| [0060](0060-bounded-scheduler-storage-lanes-and-parallel-preparation.md) | Bounded Scheduler Windows, Activated Storage Lanes, and Parallel Preparation | Accepted | legacy |
+| [0061](0061-semantic-durability-terminal-admission-and-storage-v2.md) | Semantic Durability, Terminal Admission, and Storage Format V2 | Accepted | legacy |
+| [0062](0062-generic-deployment-required-capability-administration.md) | Generic Deployment-Required Capability Administration | Accepted | legacy |
+| [0063](0063-bounded-multiple-databases-per-process.md) | Bounded Multiple Databases Per Server Process | Accepted | legacy |
+| [0064](0064-underscore-mcp-tool-names-and-agent-presentation.md) | Underscore MCP Tool Names and Agent Presentation | Accepted | legacy |
+| [0065](0065-first-real-application-experience.md) | First Real Application Experience | Accepted | legacy |
+| [0066](0066-additive-contract-evolution-and-deployment-diagnostics.md) | Additive Contract Evolution and Deployment Diagnostics | Accepted | legacy |
+| [0070](0070-read-stability-and-internal-retry.md) | Read Stability and Internal Retry | Accepted | legacy |
+| [0071](0071-typed-saturation-and-admission.md) | Typed Saturation and Admission | Accepted | legacy |
+| [0072](0072-database-history-incarnation.md) | Database History Incarnation | Accepted | legacy |
+| [0073](0073-linear-startup-validation-and-bounded-history-access.md) | Linear Startup Validation and Bounded History Access | Accepted | legacy |
+| [0074](0074-python-application-driver.md) | Rust-Backed Python Application Driver | Accepted | legacy |
+| [0075](0075-successor-application-identity.md) | Exact Successor Application Identity Before Mutation | Accepted | legacy |
+| [0076](0076-offline-contract-migration-semantics.md) | Offline Contract Migration Semantics and Cutover | Accepted | legacy |
+| [0077](0077-migration-language-ir-and-application-lock.md) | Migration Language, IR, and Application Lock | Accepted | legacy |
+| [0078](0078-staged-migration-storage-and-recovery.md) | Staged Migration Storage, Publication, and Recovery | Accepted | legacy |
+| [0079](0079-public-contract-migration-administration.md) | Public Contract Migration Administration | Accepted | legacy |
+| [0080](0080-partitioned-events-consumers-and-live-queries.md) | Partitioned Events, Durable Consumers, and Live Queries | Accepted | legacy |
+| [0081](0081-supported-migration-parent-and-canonical-successor.md) | Supported Migration Parent and Canonical Successor | Accepted | legacy |
+| [0082](0082-single-total-order-and-pre-alpha-format-acceptances.md) | Single Total Order and Pre-Alpha Format Acceptances | Accepted | legacy |
+| [0083](0083-authoritative-entity-references.md) | Authoritative Entity References | Accepted | legacy |
+| [0084](0084-batch-item-results.md) | Batch Item Results | Accepted | legacy |
+| [0085](0085-history-retention-and-startup-scaling.md) | History Retention and Startup Scaling | Accepted | legacy |
+| [0086](0086-columnar-projection-and-read-freshness-classes.md) | Columnar Projection, Read Sources, and Freshness Policies | Accepted | legacy |
+| [0087](0087-projected-ad-hoc-query-surface.md) | Projected Ad-Hoc Query Surface and Resource Governance | Accepted | legacy |
+| [0088](0088-contract-migration-check-receipt.md) | Contract Migration Check Receipt | Accepted | legacy |
+| [0089](0089-additive-migration-capability-record.md) | Additive Migration Capability Record | Accepted | legacy |
+| [0090](0090-stable-id-rename-aliases.md) | Stable-ID Rename Aliases | Accepted | legacy |
+| [0091](0091-native-vector-search-projections.md) | Native Vector Search as a Projection | Accepted | legacy |
+| [0092](0092-native-full-text-search-projections.md) | Native Full-Text Search as a Projection | Accepted | legacy |
+| [0093](0093-replicated-availability-changelog-shipping.md) | Replicated Availability via Authoritative Changelog Shipping | Accepted | legacy |
+| [0094](0094-compiler-proved-commutative-child-append-groups.md) | Compiler-Proved Commutative Child-Append Groups | Accepted | legacy |
+| [0095](0095-transaction-local-serial-command-micro-batches.md) | Transaction-Local Serial Command Micro-Batches | Accepted | legacy |
+| [0096](0096-dynamic-groups-under-static-safety-ceiling.md) | Dynamic Physical Groups Under a Static Safety Ceiling | Accepted | legacy |
+| [0097](0097-bounded-generated-batch-writer-feeding.md) | Bounded Generated-Batch Writer Feeding | Accepted | legacy |
+| [0098](0098-bounded-redb-durability-epochs.md) | Bounded Redb Durability Epochs | Accepted | legacy |
+| [0099](0099-canonical-command-capsules.md) | Canonical Command Capsules and Locator Rows | Accepted | legacy |
+| [0100](0100-changelog-frames-follow-published-durable-frontiers.md) | Changelog Frames Follow Published Durable Frontiers (Amendment 1 to ADR-0093) | Accepted | legacy |
+| [0101](0101-pipelined-standard-durability-journal.md) | Pipelined Standard-Profile Writer Journal | Accepted | legacy |
+| [0102](0102-segmented-command-authority-and-derived-locators.md) | Segmented Command Authority and Rebuildable Exact Locators | Accepted | legacy |
+| [0103](0103-preallocated-recyclable-durability-journal.md) | Preallocated Recyclable Durability Journal | Accepted | legacy |
+| [0104](0104-journal-authoritative-state-overlay.md) | Journal-Authoritative Published State Overlay | Accepted | legacy |
+| [0105](0105-authenticated-remote-application-ingress.md) | Authenticated Remote Application Ingress | Accepted | legacy |
+| [0106](0106-rust-owned-multilanguage-driver-platform.md) | Rust-Owned Multilanguage Driver Platform | Accepted | legacy |
+| [0107](0107-compiler-bounded-collection-mutations.md) | Compiler-Bounded Collection Mutations | Accepted | legacy |
+| [0108](0108-bounded-operational-riffql.md) | Bounded Operational RiffQL and Safe Catalog Introspection | Accepted | legacy |
+| [0109](0109-compiled-workflow-concurrency.md) | Compiled Workflow Concurrency and Fenced Leases | Accepted | legacy |
+| [0110](0110-application-installation-and-adapter-conformance.md) | Exact Application Installation and Adapter Conformance | Accepted | legacy |
+| [0111](0111-compiled-principal-row-policies.md) | Compiled Principal-Aware Row Policies | Accepted | legacy |
+| [0112](0112-alpha-format-compatibility-and-application-portability.md) | Alpha Format Compatibility and Application Portability | Accepted | legacy |
+| [0113](0113-deterministic-simulation-testing.md) | Deterministic Simulation Testing for the Durable Engine | Accepted | legacy |
+| [0114](0114-row-policy-capability-successor.md) | Row-Policy Capability Successor and Current-Fact Binding | Accepted | legacy |
+| [0115](0115-application-export-capability-successor.md) | Application Export Capability Successor | Accepted | legacy |
+| [0116](0116-current-row-event-policy-anchors.md) | Current-Row Policy Anchors for Durable Events | Accepted | legacy |
+| [0117](0117-compiled-external-framework-profiles.md) | Compiled External-Framework Profiles | Accepted | legacy |
+| [0118](0118-secret-field-classification.md) | Secret Field Classification and Display-Surface Redaction | Accepted | legacy |
+| [0119](0119-compiler-owned-workflow-reconstitution.md) | Compiler-Owned Workflow Reconstitution for Portable Reimport | Accepted | legacy |
+| [0120](0120-driver-resident-developer-experience.md) | Driver-Resident Developer Experience | Accepted | legacy |
+| [0121](0121-empty-project-schema-and-selected-binding-materialization.md) | Empty Project Schema and Selected Binding Materialization | Accepted | legacy |
+| [0122](0122-agent-rails-and-application-guidance-resource.md) | Agent rails and application guidance resource | Accepted | legacy |
+| [0123](0123-portable-cloud-performance-and-compact-writer-frames.md) | Portable Cloud Performance and Compact Command Segments | Accepted | legacy |
+| [0124](0124-version-topology-and-retirement-governance.md) | Version Topology and Retirement Governance | Accepted | legacy |
+| [0125](0125-command-segment-raw-fallback-compatibility.md) | Command-Segment Raw Fallback Compatibility | Accepted | legacy |
+| [0126](0126-compiler-bounded-one-hop-cascade-deletion.md) | Compiler-Bounded One-Hop Cascade Deletion | Accepted | legacy |
+| [0127](0127-bounded-multiplexed-application-session.md) | Bounded Multiplexed Application Session | Accepted | legacy |
+| [0128](0128-compiler-declared-secret-outputs-for-named-riffql.md) | Compiler-Declared Secret Outputs for Named RiffQL | Accepted | legacy |
+| [0129](0129-bounded-prepared-command-finalization.md) | Bounded Prepared Command Finalization and Pay-Once Batch Apply | Accepted | legacy |
+| [0130](0130-compiler-planned-projection-result-sets.md) | Compiler-Planned Projection Result Sets and Snapshot-Aligned Composition | Accepted | legacy |
+| [0131](0131-exact-indexed-text-cardinality-and-ordinal-windowing.md) | Exact Indexed Text Matching, Cardinality, and Ordinal Windowing | Accepted | legacy |
+| [0132](0132-bounded-journal-fence-pipeline.md) | Bounded Journal Fence Pipeline and Ordered Durable-Prefix Publication | Accepted | legacy |
+| [0133](0133-compiler-planned-covering-result-batches.md) | Compiler-Planned Covering Result Batches and Compact Named-Query Carriage | Accepted | legacy |
+| [0134](0134-compiler-declared-exact-predicate-and-order-families.md) | Compiler-Declared Exact Predicate and Independent Order Families | Accepted | legacy |
+| [0135](0135-packed-compiled-result-carriage.md) | Packed Compiler-Bound Named-Result Carriage | Accepted | legacy |
+| [0136](0136-authoritative-vector-evidence-and-projected-nearest.md) | Authoritative Vector Evidence and Production Projected Nearest | Accepted | legacy |
+| [0137](0137-bounded-framed-application-transport.md) | Bounded Framed Application Transport | Accepted | legacy |
+| [0138](0138-direct-exclusive-application-lane.md) | Direct Exclusive Generated-Operation Lane | Accepted | legacy |
+| [0139](0139-established-connection-application-lane.md) | Established-Connection Generated-Operation Lane | Accepted | legacy |
+| [0140](0140-serial-one-in-flight-grpc-session.md) | Serial Ownership for the Existing One-In-Flight gRPC Application Session | Accepted | legacy |
+| [0141](0141-public-gate-first-exclusive-application-lane.md) | Diagnostic-Gate-First Exclusive Application Lane | Accepted | legacy |
+| [0142](0142-portable-unary-service-levels-and-comparator-evidence.md) | Portable Unary Service Levels and Comparator Evidence | Accepted | legacy |
+| [0143](0143-fixed-generation-unary-stability.md) | Fixed-Generation Unary Stability Without Performance-Selected Retries | Accepted | legacy |
+| [0144](0144-release-evidence-durability-mode-reconciliation.md) | Release-Evidence Durability-Mode Reconciliation | Accepted | legacy |
+| [0145](0145-compiler-declared-nullable-total-order-placement.md) | Compiler-Declared Nullable Total-Order Placement | Accepted | legacy |
+| [0146](0146-fixed-generation-unary-sampling-and-cloud-host-validity.md) | Fixed-Generation Unary Sampling and Whole-Cell Cloud Host Validity | Accepted | legacy |
+| [0147](0147-aggregate-byte-budgets-for-atomic-collection-commands.md) | Aggregate Byte Budgets for Atomic Collection Commands | Accepted | legacy |
+| [0148](0148-one-driver-protocol-core-for-every-binding.md) | One Driver Protocol Core for Every Binding | Accepted | legacy |
+| [0149](0149-correlated-index-validation-work-budgets.md) | Correlated Index-Validation Work Budgets for Atomic Commands | Accepted | legacy |
+| [0150](0150-compiler-sealed-operational-access-path-algebra.md) | Compiler-Sealed Operational Access-Path Algebra and Bounded Relationship Composition | Accepted | legacy |
+| [0151](0151-atomic-delete-and-return-preimage.md) | Atomic Unary Delete and Return of the Revalidated Preimage | Accepted | legacy |
+| [0152](0152-closed-exact-aggregate-function-families.md) | Closed Exact Aggregate Function Families Across Query Providers | Accepted | legacy |
+| [0153](0153-compiler-sealed-initialized-state-transitions.md) | Compiler-Sealed Initialized State Transitions | Accepted | legacy |
+| [0154](0154-profile-aware-binary-text-intervals.md) | Profile-Aware Binary Text Intervals for Bounded Operational Queries | Accepted | legacy |
+| [0155](0155-selectively-declared-generated-application-surfaces.md) | Selectively Declared Generated Application Surfaces | Accepted | legacy |
+| [0156](0156-clean-close-certificate-fast-startup.md) | Clean-Close Certificate Fast Startup | Accepted | legacy |
+| [0157](0157-clean-close-lifecycle-durable-identity.md) | Clean-Close Lifecycle Durable Identity | Accepted | legacy |
+| [0158](0158-compiler-declared-bounded-runtime-page-limits.md) | Compiler-Declared Bounded Runtime Page Limits | Accepted | legacy |
+| [0159](0159-page-cardinality-independent-query-cursors.md) | Page-Cardinality-Independent Query Cursors and External Page Coalescing | Accepted | legacy |
+| [0160](0160-rebuildable-columnar-segment-v2.md) | Rebuildable Typed Columnar Segment V2 and Exact Segment Pruning | Proposed | legacy |
+| [0161](0161-compiler-sealed-vectorized-columnar-execution.md) | Compiler-Sealed Vectorized Columnar Execution and Bounded Parallel Scans | Proposed | legacy |
+| [0162](0162-incremental-analytical-provider-structures.md) | Compiler-Declared Incremental Analytical Provider Structures | Proposed | legacy |
+| [0163](0163-compiler-sealed-command-decisions.md) | Compiler-Sealed Command Decisions with Exact No-Effect Arms | Accepted | legacy |
+| [0164](0164-admission-head-fenced-query-consistency.md) | Admission-Head-Fenced Query Consistency | Accepted | legacy |
+| [0165](0165-durable-command-derived-locator-tables.md) | Durable Command-Derived Locator Tables | Accepted | legacy |
+| [0166](0166-interruptible-columnar-catch-up-and-shutdown-abandonment.md) | Interruptible Columnar Catch-Up and Graceful-Stop Abandonment | Proposed | legacy |
+| [0167](0167-required-bounded-limit-maximum.md) | Required Bounded Limit Maximum | Accepted | legacy |
+| [0168](0168-index-cover-evolution-through-migration.md) | Index Cover Evolution Through Migration | Accepted | legacy |
+| [0169](0169-optional-aggregate-root-materialization.md) | Optional Aggregate Root Materialization | Accepted | legacy |
+| [0170](0170-partition-local-cross-aggregate-writes.md) | Partition-Local Cross-Aggregate Writes | Accepted | legacy |
+| [0171](0171-gated-backend-measurement-stability.md) | Measurement Stability Binds the Gated Backend | Accepted | legacy |
+| [0172](0172-case-insensitive-text-matching.md) | Case-Insensitive Text Matching | Accepted | legacy |
+| [0173](0173-tokenized-text-search-provider.md) | Tokenized Text Search Provider | Accepted | legacy |
+| [0174](0174-bounded-filtered-result-pipelines.md) | Bounded Filtered Result Pipelines | Accepted | legacy |
+| [0175](0175-bounded-partition-set-operational-queries.md) | Bounded Partition-Set Operational Queries | Accepted | legacy |
+| [0176](0176-compiler-bounded-large-atomic-command-envelope.md) | Compiler-Bounded Large Atomic Command Envelope | Accepted | legacy |
+| [0177](0177-compiler-bounded-high-cardinality-atomic-collections.md) | Compiler-Bounded High-Cardinality Atomic Collections | Accepted | legacy |
+| [0178](0178-follower-activation-and-changelog-derived-backup.md) | Follower Activation and Changelog-Derived Incremental Backup | Accepted | guarantee |
+| [0179](0179-generated-public-surface-adapters-and-operation-registry.md) | Generated Public-Surface Adapters and the Operation Registry | Accepted | surface |
+| [0180](0180-crate-dependency-direction-repair.md) | Crate Dependency Direction Repair | Accepted | surface |
+| [0181](0181-pre-alpha-format-epoch-reset-and-governance-load.md) | Pre-Alpha Format Epoch Reset and Governance Load | Accepted | surface |
+| [0182](0182-bounded-dirty-recovery-and-online-retention.md) | Bounded Dirty Recovery and Online Retention | Accepted | guarantee |
+| [0183](0183-performance-package-freeze-and-durable-group-lever.md) | Performance Package Freeze and the Durable-Group Lever | Accepted | guarantee |
+| [0184](0184-panic-discipline-test-economics-and-coordinator-simulation.md) | Panic Discipline, Test Economics, and Coordinator Simulation | Accepted | surface |
+<!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
@@ -409,10 +426,17 @@ deployment diagnostics; and an operator-controlled pre-alpha dogfood reset.
 
 ## Workflow
 
-1. Copy `0000-template.md` to the next four-digit number.
-2. Keep the record Proposed while options and consequences are reviewed.
-3. Link requirements, work packages, fixtures, and superseded records explicitly.
-4. Accept the exact text before a dependent package freezes a public or durable
-   interface.
-5. Amend an Accepted record with a new ADR when compatibility or semantics would
-   change; do not silently rewrite history.
+1. Run `./scripts/adr-new --title "..." --tier surface|guarantee`. It allocates
+   the next number and writes the v2 skeleton; `0000-template.md` shows the
+   form and its body caps.
+2. Keep the record `proposed` while the decision is under review, and record
+   requirements, packages, fixtures, obligations, and superseded records in the
+   front matter rather than in prose.
+3. A guarantee-tier record requires human acceptance of its exact text before
+   the change merges. A surface-tier record is accepted with the change it
+   describes, under human review of the fixture diffs. Direction approval is
+   given once per program, not per record.
+4. Run `./scripts/wp-new ADR-NNNN` to print the package skeletons the front
+   matter implies, and `./scripts/adr-index --write` to regenerate the index.
+5. Amend an accepted record with a new ADR when compatibility or semantics
+   would change; do not silently rewrite history.

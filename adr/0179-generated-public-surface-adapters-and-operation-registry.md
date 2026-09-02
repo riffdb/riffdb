@@ -1,55 +1,69 @@
+---
+adr: 0179
+title: Generated Public-Surface Adapters and the Operation Registry
+status: accepted
+tier: surface
+date: "2026-09-01"
+accepted: "2026-09-01"
+requires: [ADR-0006, ADR-0007, ADR-0008, ADR-0020, ADR-0027, ADR-0028, ADR-0037,
+  ADR-0040, ADR-0041, ADR-0064, ADR-0106, ADR-0118, ADR-0124, ADR-0148]
+amends:
+  - ADR-0007's DTO and interface ownership, ADR-0040's public Rust client surface,
+    and ADR-0041's public-only command flow only where they describe hand-written
+    conversion, validation, or dispatch as the owning implementation
+  - SPEC 5.3's final rule on checked-in generated code is extended from Protobuf,
+    JSON Schema, and SDK output to every public-surface adapter
+requirements: [GEN-001, GEN-002, GEN-003, GEN-004, GEN-005, GEN-006, GEN-007]
+packages: [WP-751, WP-752, WP-753]
+obligations:
+  - id: OBL-0179-1
+    package: WP-751
+    proof: every_public_operation_has_exactly_one_registry_declaration
+    says: Every public operation has exactly one registry declaration, and
+      riffdb-proto contains no hand-written exchange validation outside its
+      generated directory. Ownership fixed to WP-751 by Amendment 1.
+  - id: OBL-0179-2
+    package: WP-751
+    proof: generated_adapters_reproduce_frozen_public_fixtures_byte_for_byte
+    says: Generated validation, conversion, MCP schema, and CLI envelope output
+      reproduces the frozen pre-registry fixtures byte for byte.
+  - id: OBL-0179-3
+    package: WP-753
+    proof: every_binding_returns_the_same_error_class_for_the_shared_corpus
+    says: Every binding returns the same closed public error class for every entry
+      of the shared drift corpus.
+  - id: OBL-0179-4
+    package: WP-753
+    proof: template_generators_reproduce_golden_outputs_across_languages
+    says: The four language generators render from one canonical model and
+      reproduce their golden outputs.
+  - id: OBL-0179-5
+    package: WP-753
+    proof: check-three-places
+    says: A change that adds one public operation hand-touches only the Protobuf
+      source, the registry, the service implementation, and the handbook.
+  - id: OBL-0179-6
+    package: WP-752
+    proof: adapter_path_files_stay_under_the_decomposition_budget
+    says: No file on the adapter path exceeds the decomposition budget.
+  - id: OBL-0179-7
+    package: WP-752
+    proof: five_adapter_crates_contain_no_hand_written_conversion_or_dispatch
+    says: The other five adapter crates contain no hand-written conversion or
+      dispatch outside their generated directories. Ownership fixed to WP-752 by
+      Amendment 1.
+review_triggers:
+  - A generated adapter would change any public Protobuf tag, MCP tool name, CLI
+    envelope field, public error class, or durable byte.
+  - The registry or a template would express an operation, bound, permission, or
+    redaction class absent from the accepted service inventory, or would grant
+    authority.
+  - Generation would run inside riffdbd, riffdb, riffdb-mcp, or a client, or a
+    template would receive application-controlled input.
+  - A hand-written validation, conversion, or dispatch adapter would be
+    reintroduced outside a generated directory.
+---
 # ADR-0179: Generated Public-Surface Adapters and the Operation Registry
-
-- **Status:** Accepted
-- **Obligations:**
-  - `OBL-0179-1` WP-751 must prove that every public operation has exactly
-    one registry declaration and `riffdb-proto` contains no hand-written
-    exchange validation outside its generated directory. Proof:
-    `every_public_operation_has_exactly_one_registry_declaration`.
-  - `OBL-0179-2` WP-751 must prove that generated validation, conversion,
-    MCP schema, and CLI envelope output reproduces the frozen pre-registry
-    fixtures byte for byte. Proof:
-    `generated_adapters_reproduce_frozen_public_fixtures_byte_for_byte`.
-  - `OBL-0179-3` WP-753 must prove that every binding returns the same
-    closed public error class for every entry of the shared drift corpus;
-    planned proof
-    `every_binding_returns_the_same_error_class_for_the_shared_corpus`.
-  - `OBL-0179-4` WP-753 must prove that the four language generators render
-    from one canonical model and reproduce their golden outputs; planned
-    proof `template_generators_reproduce_golden_outputs_across_languages`.
-  - `OBL-0179-5` WP-753 must prove that a change that adds one public
-    operation hand-touches only the Protobuf source, the registry, the
-    service implementation, and the handbook; planned proof
-    `check-three-places`.
-  - `OBL-0179-6` WP-752 must prove that no file on the adapter path exceeds
-    the decomposition budget. Proof:
-    `adapter_path_files_stay_under_the_decomposition_budget`.
-  - `OBL-0179-7` WP-752 must prove that the other five adapter crates contain
-    no hand-written conversion or dispatch outside their generated
-    directories. Proof:
-    `five_adapter_crates_contain_no_hand_written_conversion_or_dispatch`.
-- **Direction approved:** 2026-09-01
-- **Exact text accepted:** Yes, 2026-09-01
-- **Accepted:** 2026-09-01
-- **Acceptance reference:** Maintainer acceptance of the exact text in the
-  current Claude Code session on 2026-09-01, all seven consolidation records together
-- **Decision deadline:** Before WP-751 adds the operation registry or moves
-  any public-message validation bound out of hand-written source
-- **Requires:** ADR-0006, ADR-0007, ADR-0008, ADR-0020, ADR-0027, ADR-0028,
-  ADR-0037, ADR-0040, ADR-0041, ADR-0064, ADR-0106, ADR-0118, ADR-0124, and
-  ADR-0148
-- **Amends:** ADR-0007's DTO and interface ownership, ADR-0040's public Rust
-  client surface, and ADR-0041's public-only command flow only where they
-  describe hand-written conversion, validation, or dispatch as the owning
-  implementation; SPEC 5.3's final rule on checked-in generated code is
-  extended from Protobuf, JSON Schema, and SDK output to every public-surface
-  adapter
-- **Defines or blocks:** WP-751 through WP-753
-
-The maintainer accepted the exact text of this record on 2026-09-01. Its packages
-may begin. Each deferred obligation above is tracked in
-`adr/obligations-outstanding.yaml` until its planned proof exists, at which
-point the owning package discharges it by declaring the proof.
 
 ## Amendment 1 — adapter architecture-proof ownership split (Accepted 2026-09-01)
 
@@ -293,3 +307,9 @@ Exact acceptance is required before WP-751 adds the registry crate or moves
 any validation bound out of `public_message.rs`, because the frozen fixtures
 that prove byte identity are taken from the hand-written layers as they stand
 at acceptance.
+
+## Acceptance
+
+Direction approved 2026-09-01; exact text accepted 2026-09-01. The maintainer
+accepted the exact text of this record in the Claude Code session of
+2026-09-01, all seven consolidation records together.
