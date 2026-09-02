@@ -1403,6 +1403,15 @@ work_packages:
     scale: Clean open and close inspect only fixed metadata plus bounded catalog/authority roots and
       retain no population-sized plan. Dirty and explicit validation stream under existing page,
       byte, migration, diagnostic, and heap bounds rather than materializing live-row locators.
+  closure:
+    status: complete
+    completed_at: "2026-09-02"
+    requirements_satisfied: [STO-001, STO-012, STO-020, STO-021, STO-022, STO-023,
+      REC-001, REC-002, REC-004, PERF-007, PERF-013, PERF-014, PERF-019]
+    evidence: The accepted ADR-0157 lifecycle interface, generated registry successor, sealed
+      startup typestate, Immediate dirty consumption, final clean-close commit, bounded-root
+      readiness proof, unchanged exact-end fallback, deferred fail-closed population checks, and
+      deterministic recovery matrix are implemented and covered by the package acceptance gates.
   human_review_triggers: *id001
 - id: WP-705
   name: Clean-startup scrub operations compatibility and production-scale evidence

@@ -119,6 +119,7 @@ fn message_map(descriptors: &FileDescriptorSet) -> BTreeMap<String, &DescriptorP
 }
 
 #[test]
+// req: STO-020, STO-023
 fn clean_close_lifecycle_descriptor_is_exact() {
     let descriptors = descriptors();
     let source = descriptors
@@ -1041,6 +1042,7 @@ fn schema_hash_hex(schema: &riffdb_proto::envelope::RecordSchema<'_>) -> String 
 }
 
 #[test]
+// req: STO-012
 fn clean_close_successor_registry_digest_is_frozen() {
     let actual = record_registry_digest()
         .as_bytes()
