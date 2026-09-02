@@ -359,7 +359,9 @@ fails closed before corrupt bytes can influence an operational result.
 - **Defines or blocks:** WP-704 (durable certificate, startup typestate, local
   integrity closure, and crash recovery) and WP-705 (operator scrub, scale
   evidence, handbook, backup/restore, and final conformance)
-- **Final evidence:** WP-705
+- **Final evidence:** WP-705 owns this record's finite scale and conformance
+  evidence. WP-578 separately owns the uninterrupted `END-009` run, consumes
+  WP-705's bounded harness handoff, and is not a WP-705 closure condition.
 
 ## Decision Deadline
 
