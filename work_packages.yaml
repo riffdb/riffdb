@@ -22920,7 +22920,8 @@ work_packages:
     tests/**, scripts/**, release/evidence/**, docs/**,
     crates/riffdb-cli/src/generated/app.rs,
     crates/riffdb-service/src/query_discovery_operations.rs,
-    crates/riffdb-api-mcp/src/generated/service_backend.rs]
+    crates/riffdb-api-mcp/src/generated/service_backend.rs,
+    crates/riffdb-query-module/src/generation.rs]
   deliverables:
   - Retained corpus of TicketDesk ticket page with comments per ticket, MLflow runs with tags per
     run, OpenFGA objects with relations per object, each compiled and executed through Rust, Go,
