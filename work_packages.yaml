@@ -22877,7 +22877,7 @@ work_packages:
   required_adrs: [ADR-0111, ADR-0174, ADR-0185]
   allowed_paths: [work_packages.yaml, crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**,
     crates/riffdb-query-compiler/**, crates/riffdb-query-module/**, crates/riffdb-diagnostics/**,
-    fixtures/**, tests/**, scripts/**, docs/**]
+    crates/riffdb-cli/assets/editor/highlights-v1.json, fixtures/**, tests/**, scripts/**, docs/**]
   deliverables:
   - Grammar and diagnostics for `exists <Junction> using <index> where ...` and its negation on a
     root binding, restricted to declared same-partition junction indexes projecting the root key
