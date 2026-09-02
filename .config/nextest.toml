@@ -1,0 +1,17 @@
+nextest-version = "0.9.137"
+experimental = ["wrapper-scripts"]
+
+[scripts.wrapper.harnessless]
+command = { command-line = "scripts/nextest-harnessless", relative-to = "workspace-root" }
+
+[profile.ci]
+fail-fast = false
+retries = 0
+status-level = "slow"
+final-status-level = "slow"
+slow-timeout = { period = "30s", terminate-after = 4, grace-period = "10s" }
+
+[[profile.ci.scripts]]
+filter = 'binary_id(=riffdb-testkit::full_recovery_matrix) | binary_id(=riffdb-testkit::offline_maintenance_matrix) | binary_id(=riffdb-testkit::contract_migration_gate_a) | binary_id(=riffdb-testkit::remote_ingress) | binary_id(=riffdb-testkit::remote_deployment_rotation)'
+list-wrapper = "harnessless"
+run-wrapper = "harnessless"

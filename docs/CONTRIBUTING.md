@@ -145,6 +145,8 @@ unproven.
 | `./scripts/check-three-places --base <ref>` | Reject handwritten adapter edits outside `src/generated/` when Protobuf or the public operation registry changes |
 | `./scripts/generate-operation-adapters --check` | Verify generated public adapters and the registry-derived driver drift corpus |
 | `./scripts/generate-query-clients --check` | Verify the canonical generation model, checked-in templates, and generated application clients |
+| `./scripts/check-test-partition-coverage` | Prove every Cargo test target belongs to exactly one whole-target SHA-256 partition |
+| `./scripts/run-test-partition --mode whole-target --partition N` | Run CI partition `N`, from 1 through 4, through its exact nextest binary filterset |
 
 `./scripts/acceptance` runs the path-triggered checks itself. Three of them are
 worth knowing by name, because each exists for a failure that otherwise lands
@@ -159,6 +161,13 @@ RiffQL languages, because nothing in this repository compiles them and ADR-0167
 broke them silently. The adapter check is read-only, offline, never writes to a
 repository it checks, and is outside CI because those repositories have no
 remote.
+
+CI runs the required unit and integration battery as four whole-target
+cargo-nextest jobs. The SHA-256 assignment is stable from each canonical
+nextest binary ID, so every test within one target stays in the same job; the
+coverage check compares Cargo metadata with all four filtersets before those
+jobs run. `./scripts/ci-all` deliberately retains the unpartitioned
+`cargo test --workspace --all-features` merge check.
 
 ## Legacy records and packages
 

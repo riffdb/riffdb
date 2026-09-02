@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# req: TEST-003
+set -euo pipefail
+
+if [[ $# -lt 1 ]]; then
+  printf '%s\n' 'nextest-harnessless: missing test binary' >&2
+  exit 2
+fi
+
+binary="$1"
+shift
+if [[ ! -x "$binary" ]]; then
+  printf '%s\n' 'nextest-harnessless: test binary is not executable' >&2
+  exit 2
+fi
+
+listing=false
+ignored=false
+for argument in "$@"; do
+  [[ "$argument" == "--list" ]] && listing=true
+  [[ "$argument" == "--ignored" ]] && ignored=true
+done
+if [[ "$listing" == true ]]; then
+  if [[ "$ignored" == false ]]; then
+    printf '%s\n' 'riffdb_harnessless_main: test'
+  fi
+  exit 0
+fi
+
+# Cargo's harness=false contract runs the target once without libtest selector
+# arguments. The synthetic list entry lets nextest schedule that one execution.
+exec "$binary"

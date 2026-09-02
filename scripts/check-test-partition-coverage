@@ -1,0 +1,399 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# req: TEST-003
+
+require "json"
+require "digest"
+require "open3"
+require "pathname"
+require "tmpdir"
+
+PARTITION_COUNT = 4
+REPORT_LIMIT = 20
+
+def capture!(*command, chdir:)
+  stdout, stderr, status = Open3.capture3(*command, chdir: chdir.to_s)
+  return stdout if status.success?
+
+  warn stderr
+  exit status.exitstatus
+end
+
+def binary_id(package_name, target)
+  kind = target.fetch("kind").first
+  name = target.fetch("name")
+  case kind
+  when "lib", "proc-macro"
+    package_name
+  when "test"
+    "#{package_name}::#{name}"
+  else
+    "#{package_name}::#{kind}/#{name}"
+  end
+end
+
+def metadata_targets(root)
+  metadata = JSON.parse(capture!(
+    "cargo", "metadata", "--locked", "--format-version", "1", "--no-deps",
+    chdir: root
+  ))
+  members = metadata.fetch("workspace_members").to_h { |id| [id, true] }
+  targets = {}
+  root_targets = []
+
+  metadata.fetch("packages").each do |package|
+    next unless members.key?(package.fetch("id"))
+
+    package.fetch("targets").each do |target|
+      next unless target.fetch("test")
+      next if target.fetch("kind").include?("custom-build")
+
+      id = binary_id(package.fetch("name"), target)
+      raise "duplicate cargo test binary ID #{id}" if targets.key?(id)
+
+      targets[id] = target.fetch("src_path")
+      source = Pathname.new(target.fetch("src_path")).cleanpath
+      root_tests = root.join("tests").cleanpath
+      root_targets << id if source.to_s.start_with?("#{root_tests}/")
+    end
+  end
+
+  [targets, root_targets.sort]
+end
+
+def scheduled_targets(root)
+  scheduled = Hash.new { |hash, key| hash[key] = [] }
+  scheduled_tests = Hash.new { |hash, key| hash[key] = [] }
+  discovered = nil
+  discovered_tests = nil
+
+  (1..PARTITION_COUNT).each do |partition|
+    listing = JSON.parse(capture!(
+      "cargo", "nextest", "list", "--locked", "--workspace", "--all-features",
+      "--profile", "ci", "--partition", "hash:#{partition}/#{PARTITION_COUNT}",
+      "--message-format", "json", "--cargo-quiet", chdir: root
+    ))
+    suites = listing.fetch("rust-suites")
+    suite_ids = suites.keys.sort
+    test_ids = suites.flat_map do |id, suite|
+      suite.fetch("testcases").filter_map do |name, testcase|
+        [id, name] unless testcase.fetch("ignored")
+      end
+    end.sort
+    discovered ||= suite_ids
+    discovered_tests ||= test_ids
+    unless suite_ids == discovered
+      warn "nextest discovered a different binary inventory in partition #{partition}"
+      exit 1
+    end
+    unless test_ids == discovered_tests
+      warn "nextest discovered a different runnable-test inventory in partition #{partition}"
+      exit 1
+    end
+
+    suites.each do |id, suite|
+      matches = false
+      suite.fetch("testcases").each do |name, testcase|
+        next if testcase.fetch("ignored")
+        next unless testcase.fetch("filter-match").fetch("status") == "matches"
+
+        matches = true
+        scheduled_tests[[id, name]] << partition
+      end
+      scheduled[id] << partition if matches
+    end
+  end
+
+  [scheduled, discovered || [], scheduled_tests, discovered_tests || []]
+end
+
+def inventory_errors(metadata, discovered)
+  errors = []
+  missing_from_nextest = metadata.keys - discovered
+  extra_in_nextest = discovered - metadata.keys
+  errors << "cargo targets absent from nextest: #{missing_from_nextest.sort.join(', ')}" unless missing_from_nextest.empty?
+  errors << "nextest binaries absent from cargo metadata: #{extra_in_nextest.sort.join(', ')}" unless extra_in_nextest.empty?
+  errors
+end
+
+def coverage_errors(metadata, root_targets, scheduled, discovered)
+  errors = inventory_errors(metadata, discovered)
+
+  wrong = metadata.keys.sort.filter_map do |id|
+    partitions = scheduled.fetch(id, [])
+    next if partitions.length == 1
+
+    "#{id} => #{partitions.empty? ? 'none' : partitions.join(',')}"
+  end
+  unless wrong.empty?
+    sample = wrong.first(REPORT_LIMIT).join("; ")
+    suffix = wrong.length > REPORT_LIMIT ? "; ... #{wrong.length - REPORT_LIMIT} more" : ""
+    errors << "#{wrong.length} test target(s) were not scheduled exactly once: #{sample}#{suffix}"
+  end
+
+  missing_roots = root_targets.reject { |id| scheduled.fetch(id, []).length == 1 }
+  unless missing_roots.empty?
+    errors << "root [[test]] target(s) lack exact coverage: #{missing_roots.join(', ')}"
+  end
+  errors
+end
+
+def test_case_errors(metadata, scheduled_tests, discovered_tests, discovered_targets)
+  errors = inventory_errors(metadata, discovered_targets)
+  wrong = discovered_tests.filter_map do |id|
+    partitions = scheduled_tests.fetch(id, [])
+    next if partitions.length == 1
+
+    "#{id.join(' ')} => #{partitions.empty? ? 'none' : partitions.join(',')}"
+  end
+  unless wrong.empty?
+    sample = wrong.first(REPORT_LIMIT).join("; ")
+    suffix = wrong.length > REPORT_LIMIT ? "; ... #{wrong.length - REPORT_LIMIT} more" : ""
+    errors << "#{wrong.length} runnable test case(s) were not scheduled exactly once: #{sample}#{suffix}"
+  end
+  errors
+end
+
+def target_partition(id)
+  Digest::SHA256.digest(id).unpack1("Q>") % PARTITION_COUNT + 1
+end
+
+def target_filter(metadata, partition)
+  ids = metadata.keys.select { |id| target_partition(id) == partition }.sort
+  unsafe = ids.reject { |id| id.match?(/\A[A-Za-z0-9_.:\/-]+\z/) }
+  raise "binary IDs require filter escaping: #{unsafe.join(', ')}" unless unsafe.empty?
+
+  return "none()" if ids.empty?
+
+  ids.map { |id| "binary_id(=#{id})" }.join(" | ")
+end
+
+def whole_target_audit(root, metadata)
+  observed = Hash.new { |hash, key| hash[key] = [] }
+  counts = []
+  (1..PARTITION_COUNT).each do |partition|
+    expected = metadata.keys.select { |id| target_partition(id) == partition }.sort
+    listing = JSON.parse(capture!(
+      "cargo", "nextest", "list", "--locked", "--workspace", "--all-features",
+      "--profile", "ci", "--message-format", "json", "--cargo-quiet",
+      "--filterset", target_filter(metadata, partition), chdir: root
+    ))
+    actual = listing.fetch("rust-suites").filter_map do |id, suite|
+      id if suite.fetch("status") == "listed"
+    end.sort
+    unless actual == expected
+      warn "whole-target partition #{partition} selected a different binary inventory"
+      warn "missing: #{(expected - actual).join(', ')}" unless (expected - actual).empty?
+      warn "extra: #{(actual - expected).join(', ')}" unless (actual - expected).empty?
+      return false
+    end
+    actual.each { |id| observed[id] << partition }
+    counts << actual.length
+  end
+
+  wrong = metadata.keys.select { |id| observed.fetch(id, []).length != 1 }
+  unless wrong.empty?
+    warn "whole-target hashing did not assign exactly once: #{wrong.sort.join(', ')}"
+    return false
+  end
+
+  puts "Whole-target SHA-256 audit assigned all #{metadata.length} Cargo test targets exactly once."
+  puts "Partition target counts: #{counts.each_with_index.map { |count, index| "#{index + 1}=#{count}" }.join(', ')}."
+  true
+end
+
+def wrapper_self_test(root)
+  wrapper = root.join("scripts", "nextest-harnessless")
+  Dir.mktmpdir("riffdb-nextest-harnessless-") do |directory|
+    marker = Pathname.new(directory).join("marker")
+    binary = Pathname.new(directory).join("binary")
+    binary.write(<<~SH, encoding: "UTF-8")
+      #!/usr/bin/env bash
+      set -euo pipefail
+      [[ $\# -eq 0 ]]
+      printf '%s' ran > #{marker}
+    SH
+    binary.chmod(0o755)
+
+    list, list_error, list_status = Open3.capture3(
+      wrapper.to_s, binary.to_s, "--list", "--format", "terse"
+    )
+    unless list_status.success? && list_error.empty? && list == "riffdb_harnessless_main: test\n" && !marker.exist?
+      warn "harnessless wrapper self-test did not synthesize a side-effect-free list"
+      return false
+    end
+
+    ignored, ignored_error, ignored_status = Open3.capture3(
+      wrapper.to_s, binary.to_s, "--list", "--format", "terse", "--ignored"
+    )
+    unless ignored_status.success? && ignored_error.empty? && ignored.empty? && !marker.exist?
+      warn "harnessless wrapper self-test fabricated an ignored test"
+      return false
+    end
+
+    _run, run_error, run_status = Open3.capture3(
+      wrapper.to_s, binary.to_s, "riffdb_harnessless_main", "--exact"
+    )
+    unless run_status.success? && run_error.empty? && marker.read == "ran"
+      warn "harnessless wrapper self-test did not execute the target once without libtest arguments"
+      return false
+    end
+  end
+  true
+end
+
+def runner_self_test(root)
+  runner = root.join("scripts", "run-test-partition")
+  native, native_error, native_status = Open3.capture3(
+    runner.to_s, "--mode", "native", "--partition", "2", "--dry-run"
+  )
+  unless native_status.success? && native_error.empty? && native.include?("--partition hash:2/4")
+    warn "partition runner self-test did not select native hash partition 2/4"
+    return false
+  end
+
+  target, target_error, target_status = Open3.capture3(
+    runner.to_s, "--mode", "whole-target", "--partition", "3", "--dry-run"
+  )
+  unless target_status.success? && target_error.empty? && target.include?("--filterset")
+    warn "partition runner self-test did not select the whole-target filter"
+    return false
+  end
+
+  _invalid, _invalid_error, invalid_status = Open3.capture3(
+    runner.to_s, "--mode", "native", "--partition", "0", "--dry-run"
+  )
+  unless invalid_status.exitstatus == 2
+    warn "partition runner self-test did not reject partition zero"
+    return false
+  end
+
+
+  Dir.mktmpdir("riffdb-partition-runner-") do |directory|
+    fake_cargo = Pathname.new(directory).join("cargo")
+    invocation = Pathname.new(directory).join("invocation")
+    summary = Pathname.new(directory).join("summary")
+    fake_cargo.write(<<~SH, encoding: "UTF-8")
+      #!/usr/bin/env bash
+      printf '%s\n' "$*" > #{invocation}
+      exit 7
+    SH
+    fake_cargo.chmod(0o755)
+    env = {
+      "PATH" => "#{directory}:#{ENV.fetch('PATH')}",
+      "GITHUB_STEP_SUMMARY" => summary.to_s
+    }
+    output, error, status = Open3.capture3(
+      env, runner.to_s, "--mode", "native", "--partition", "1"
+    )
+    expected = "Partition 1/4 (native):"
+    unless status.exitstatus == 7 && error.empty? && output.include?(expected) &&
+           summary.read.include?("#{expected}") &&
+           invocation.read.include?("nextest run")
+      warn "partition runner self-test did not preserve failure status and job summary"
+      return false
+    end
+  end
+  true
+end
+
+def self_test(root)
+  metadata = { "crate" => "lib.rs", "crate::root" => "tests/root.rs" }
+  roots = ["crate::root"]
+  exact = { "crate" => [1], "crate::root" => [4] }
+  return false unless coverage_errors(metadata, roots, exact, metadata.keys.sort).empty?
+
+  overlap = exact.merge("crate::root" => [2, 4])
+  errors = coverage_errors(metadata, roots, overlap, metadata.keys.sort)
+  unless errors.any? { |error| error.include?("crate::root => 2,4") }
+    warn "partition coverage self-test did not detect an overlapping root target"
+    return false
+  end
+
+  missing = exact.merge("crate::root" => [])
+  errors = coverage_errors(metadata, roots, missing, metadata.keys.sort)
+  unless errors.any? { |error| error.include?("root [[test]] target(s)") }
+    warn "partition coverage self-test did not detect a missing root target"
+    return false
+  end
+
+  cases = [["crate", "one"], ["crate::root", "two"]]
+  exact_cases = { cases[0] => [1], cases[1] => [3] }
+  return false unless test_case_errors(metadata, exact_cases, cases, metadata.keys.sort).empty?
+
+  overlap_cases = exact_cases.merge(cases[1] => [2, 3])
+  errors = test_case_errors(metadata, overlap_cases, cases, metadata.keys.sort)
+  unless errors.any? { |error| error.include?("crate::root two => 2,3") }
+    warn "partition coverage self-test did not detect an overlapping test case"
+    return false
+  end
+
+  pinned = {
+    "crate" => 3,
+    "crate::alpha" => 2,
+    "crate::test/root" => 2
+  }
+  unless pinned.all? { |id, partition| target_partition(id) == partition }
+    warn "whole-target SHA-256 assignment changed"
+    return false
+  end
+
+  return false unless wrapper_self_test(root)
+  return false unless runner_self_test(root)
+
+  puts "Test partition coverage, harnessless-wrapper, and runner self-test passed."
+  true
+end
+
+script = Pathname.new(__FILE__).realpath
+if ARGV == ["--self-test"]
+  root = Pathname.new(File.expand_path("..", __dir__)).realpath
+  exit(self_test(root) ? 0 : 1)
+end
+test_case_audit = ARGV == ["--test-case-audit"]
+whole_target_audit_requested = ARGV == ["--whole-target-audit"]
+target_filter_partition = if ARGV.length == 2 && ARGV.first == "--target-filter"
+                            Integer(ARGV.last, exception: false)
+                          end
+valid_filter_partition = target_filter_partition&.between?(1, PARTITION_COUNT)
+unless ARGV.empty? || test_case_audit || whole_target_audit_requested || valid_filter_partition
+  warn "usage: #{script.basename} [--self-test|--test-case-audit|--whole-target-audit|--target-filter 1..#{PARTITION_COUNT}]"
+  exit 2
+end
+
+root = Pathname.new(ENV.fetch("RIFFDB_PARTITION_ROOT", File.expand_path("..", __dir__))).realpath
+metadata, root_targets = metadata_targets(root)
+if valid_filter_partition
+  puts target_filter(metadata, target_filter_partition)
+  exit 0
+end
+if whole_target_audit_requested || ARGV.empty?
+  exit(whole_target_audit(root, metadata) ? 0 : 1)
+end
+
+scheduled, discovered, scheduled_tests, discovered_tests = scheduled_targets(root)
+if test_case_audit
+  errors = test_case_errors(metadata, scheduled_tests, discovered_tests, discovered)
+  unless errors.empty?
+    errors.each { |error| warn error }
+    exit 1
+  end
+
+  overlapping_targets = metadata.keys.count { |id| scheduled.fetch(id, []).length > 1 }
+  empty_targets = metadata.keys.count { |id| scheduled.fetch(id, []).empty? }
+  puts "All #{discovered_tests.length} runnable test cases are scheduled exactly once across #{PARTITION_COUNT} native hash partitions."
+  puts "Nextest discovered all #{metadata.length} Cargo test targets, including #{root_targets.length} explicit root [[test]] targets."
+  puts "#{overlapping_targets} target(s) span partitions because native hashing assigns test cases, not whole targets."
+  puts "#{empty_targets} discovered target(s) contain no runnable non-ignored test case."
+  exit 0
+end
+
+errors = coverage_errors(metadata, root_targets, scheduled, discovered)
+unless errors.empty?
+  errors.each { |error| warn error }
+  exit 1
+end
+
+puts "All #{metadata.length} Cargo test targets are scheduled exactly once across #{PARTITION_COUNT} native hash partitions."
+puts "Included #{root_targets.length} explicit root [[test]] targets."
