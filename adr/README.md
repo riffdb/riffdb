@@ -219,6 +219,7 @@ record with no front matter.
 | [0182](0182-bounded-dirty-recovery-and-online-retention.md) | Bounded Dirty Recovery and Online Retention | Accepted | guarantee |
 | [0183](0183-performance-package-freeze-and-durable-group-lever.md) | Performance Package Freeze and the Durable-Group Lever | Accepted | guarantee |
 | [0184](0184-panic-discipline-test-economics-and-coordinator-simulation.md) | Panic Discipline, Test Economics, and Coordinator Simulation | Accepted | surface |
+| [0185](0185-relational-operators-in-the-candidate-algebra.md) | Relational Operators in the Candidate Algebra, Not Provider Families | Proposed | surface |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
