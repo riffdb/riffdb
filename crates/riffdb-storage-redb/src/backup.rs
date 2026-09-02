@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "verified backup manifests retain required path components and bounded sequence ranges"
+)]
+
 //! Offline redb backup artifacts and destructive restore.
 
 use std::ffi::{OsStr, OsString};

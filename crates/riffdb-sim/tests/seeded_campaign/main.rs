@@ -43,6 +43,7 @@
 //! ```
 
 mod campaign;
+mod coordinator_corpus;
 mod corpus;
 mod generator;
 mod harness;

@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "a running projection worker retains one task and its fixed recovery page is nonzero"
+)]
+
 //! Bounded owner for projection recovery and contiguous live catch-up.
 
 use std::collections::BTreeSet;

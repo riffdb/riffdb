@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "a resolved checkpoint root retains the table handles established by its immutable read transaction"
+)]
+
 //! One immutable redb read snapshot plus the table handles resolved from it.
 //!
 //! `redb::ReadTransaction::open_table` resolves a table by name on every call:

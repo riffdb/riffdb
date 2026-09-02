@@ -13,7 +13,7 @@ ignored = ["rustls-webpki"]
 
 [features]
 default = []
-test-fixtures = []
+test-fixtures = ["riffdb-commit/test-fixtures"]
 
 [dependencies]
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio"] }
@@ -56,6 +56,7 @@ zeroize = { version = "=1.8.1", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 riffdb-client-rust = { version = "0.1.0", path = "../riffdb-client-rust", default-features = false }
+riffdb-commit = { version = "0.1.0", path = "../riffdb-commit", default-features = false, features = ["test-fixtures"] }
 riffdb-contract-compiler = { version = "0.1.0", path = "../riffdb-contract-compiler", default-features = false }
 riffdb-proto = { version = "0.1.0", path = "../riffdb-proto", default-features = false }
 riffdb-storage-redb = { version = "0.1.0", path = "../riffdb-storage-redb", default-features = false, features = ["test-fixtures"] }
@@ -82,6 +83,10 @@ path = "../../tests/server_composition/server_composition.rs"
 [[test]]
 name = "server_configuration"
 path = "../../tests/server_configuration/server_configuration.rs"
+
+[[test]]
+name = "writer_fail_fast"
+path = "../../tests/writer_fail_fast.rs"
 
 [[bin]]
 name = "riffdbd"

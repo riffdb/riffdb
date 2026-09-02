@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "a running restore-retry host retains its sole blocking driver until shutdown"
+)]
+
 //! Least-authority composition for one current-database restore retry.
 
 use std::error::Error;

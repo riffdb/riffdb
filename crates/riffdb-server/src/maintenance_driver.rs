@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "an admitted maintenance operation retains its validated operation-specific input"
+)]
+
 //! Blocking, transport-free execution of one exclusive offline maintenance operation.
 //!
 //! The daemon calls this module only at explicit lifecycle boundaries. No type

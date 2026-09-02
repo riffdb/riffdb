@@ -15,7 +15,7 @@ const COMMAND_SOURCE: &str = include_str!("../src/command_operations.rs");
 const COMMIT_SOURCE: &str = include_str!("../src/commit_operations.rs");
 const CONSUMER_SOURCE: &str = include_str!("../src/consumer_operations.rs");
 const CONTEXT_SOURCE: &str = include_str!("../src/context.rs");
-const DTO_SOURCE: &str = include_str!("../src/dto.rs");
+const DTO_SOURCE: &str = include_str!("../src/generated/dto.rs");
 const EVENT_SOURCE: &str = include_str!("../src/event_operations.rs");
 const MAINTENANCE_SOURCE: &str = include_str!("../src/maintenance_operations.rs");
 const ORCHESTRATION_SOURCE: &str = include_str!("../src/orchestration.rs");
@@ -896,7 +896,8 @@ fn the_revision_checked_reauthorization_shortcut_is_reachable_only_from_the_read
 
 // ─── ADR-0118 secret reveal enumeration (WP-597) ───
 
-const MCP_BACKEND_SOURCE: &str = include_str!("../../riffdb-api-mcp/src/service_backend.rs");
+const MCP_BACKEND_SOURCE: &str =
+    include_str!("../../riffdb-api-mcp/src/generated/service_backend.rs");
 const AUDIT_SOURCE: &str = include_str!("../../riffdb-service/src/audit.rs");
 
 /// Recursively collects every Rust source under `root`, skipping build

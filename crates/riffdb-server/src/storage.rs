@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "the fixed inventory scan page is nonzero and within the storage scan bound"
+)]
+
 //! Private sharing bridge for the one activated production redb port bundle.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};

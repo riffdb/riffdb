@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "the fixed format-upgrade receipt digest key identifier is nonzero"
+)]
+
 //! Restartable, backup-bound offline durable-format transition.
 
 use std::error::Error;

@@ -1,3 +1,10 @@
+#![expect(
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "the sole-writer state machine retains its admitted epoch slots and must stop on invariant breach"
+)]
+
 //! Sole-writer coordinator actor and synchronous service-audit lowering.
 
 use std::collections::VecDeque;
@@ -47,6 +54,7 @@ use crate::{
         drive_capability_revoke, drive_catalog_deployment, drive_query_module_deployment,
         drive_reactive_module_publication,
     },
+    coordinator_time::{CoordinatorMonotonicClock, WallCoordinatorMonotonicClock},
     idempotency_inspection::{
         CommandIdempotencyInspectionError, CommandIdempotencyInspectionRequest,
         InspectedCommandIdempotency, PreparedCommandIdempotencyInspection,
@@ -454,6 +462,20 @@ const POST_COMMIT_COALESCE_BUDGET: Duration = Duration::from_millis(2);
 /// Tokio rounds timer deadlines to its millisecond wheel. Arm one tick early so
 /// that rounding does not intentionally extend the accepted logical budget.
 const POST_COMMIT_COALESCE_TIMER_GUARD: Duration = Duration::from_millis(1);
+
+#[cfg(feature = "test-fixtures")]
+const WRITER_PANIC_FAILPOINT_ENV: &str = "RIFFDB_TEST_WRITER_FAILPOINT";
+#[cfg(feature = "test-fixtures")]
+const WRITER_PANIC_FAILPOINT_ARM_ENV: &str = "RIFFDB_TEST_WRITER_FAILPOINT_ARM";
+
+#[cfg(feature = "test-fixtures")]
+fn writer_panic_after_command_dispatch_is_armed() -> bool {
+    if std::env::var(WRITER_PANIC_FAILPOINT_ENV).as_deref() != Ok("after_command_dispatch") {
+        return false;
+    }
+    std::env::var_os(WRITER_PANIC_FAILPOINT_ARM_ENV)
+        .is_some_and(|path| std::path::Path::new(&path).is_file())
+}
 
 const fn completion_edge_coalescing_enabled(durability: CoordinatorDurability) -> bool {
     matches!(durability, CoordinatorDurability::Sync)
@@ -1743,6 +1765,24 @@ impl RunningCommandCoordinator {
         telemetry: Arc<dyn CommitTelemetry>,
         operations: impl FnOnce(ActorLifecyclePublisher) -> Box<dyn CoordinatorActorOperations>,
     ) -> Result<Self, CoordinatorStartError> {
+        Self::spawn_with_operations_and_clock(
+            workload_capacity,
+            completion_edge_coalescing_enabled,
+            notifications,
+            telemetry,
+            Arc::new(WallCoordinatorMonotonicClock),
+            operations,
+        )
+    }
+
+    fn spawn_with_operations_and_clock(
+        workload_capacity: CoordinatorWorkloadCapacity,
+        completion_edge_coalescing_enabled: bool,
+        notifications: Arc<dyn ApplicationCommitNotificationSink>,
+        telemetry: Arc<dyn CommitTelemetry>,
+        monotonic_clock: Arc<dyn CoordinatorMonotonicClock>,
+        operations: impl FnOnce(ActorLifecyclePublisher) -> Box<dyn CoordinatorActorOperations>,
+    ) -> Result<Self, CoordinatorStartError> {
         let channel_capacity = usize::from(workload_capacity.get()) + 1;
         let (sender, receiver) = mpsc::channel(channel_capacity);
         let shutdown_permit = sender
@@ -1804,6 +1844,7 @@ impl RunningCommandCoordinator {
             telemetry,
             lifecycle: lifecycle_publisher,
             feedback: feedback_rx,
+            monotonic_clock,
             // ADR-0104 makes the Standard journal lane self-coalescing: work
             // accumulated while the prior fence is in flight should dispatch
             // immediately. The accepted two-millisecond completion-edge
@@ -1889,6 +1930,33 @@ impl RunningCommandCoordinator {
             false,
             Arc::new(DiscardApplicationCommitNotifications),
             Arc::new(NoopCommitTelemetry),
+            move |_| Box::new(AuditOnlyCoordinatorOperations { repository, clock }),
+        )
+    }
+
+    /// Starts the real coordinator lanes with a simulator-owned monotonic
+    /// clock and an audit-only durable repository.
+    ///
+    /// This constructor exists only when the development-only `simulation`
+    /// feature is selected. Product binaries never call or expose it.
+    #[cfg(feature = "simulation")]
+    #[doc(hidden)]
+    pub fn start_audit_simulation<Repository, Clock>(
+        workload_capacity: CoordinatorWorkloadCapacity,
+        repository: Repository,
+        clock: Clock,
+        monotonic_clock: Arc<dyn CoordinatorMonotonicClock>,
+    ) -> Result<Self, CoordinatorStartError>
+    where
+        Repository: ServiceAuditAppendRepository + Send + 'static,
+        Clock: AdministrationClock + 'static,
+    {
+        Self::spawn_with_operations_and_clock(
+            workload_capacity,
+            false,
+            Arc::new(DiscardApplicationCommitNotifications),
+            Arc::new(NoopCommitTelemetry),
+            monotonic_clock,
             move |_| Box::new(AuditOnlyCoordinatorOperations { repository, clock }),
         )
     }
@@ -2447,13 +2515,13 @@ where
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "simulation"))]
 struct AuditOnlyCoordinatorOperations<Repository, Clock> {
     repository: Repository,
     clock: Clock,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "simulation"))]
 impl<Repository, Clock> CoordinatorActorOperations
     for AuditOnlyCoordinatorOperations<Repository, Clock>
 where
@@ -2571,10 +2639,10 @@ impl CommandExecutionLifecycle for ActorLifecyclePublisher {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "simulation"))]
 struct DiscardApplicationCommitNotifications;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "simulation"))]
 impl ApplicationCommitNotificationSink for DiscardApplicationCommitNotifications {
     fn publish_first_commit(
         &self,
@@ -2623,6 +2691,7 @@ struct CommandCoordinatorActor {
     telemetry: Arc<dyn CommitTelemetry>,
     lifecycle: ActorLifecyclePublisher,
     feedback: mpsc::Receiver<UnitCompleted>,
+    monotonic_clock: Arc<dyn CoordinatorMonotonicClock>,
     completion_edge_coalescing_enabled: bool,
     #[cfg(test)]
     post_dispatch_hooks: Option<std::sync::mpsc::Receiver<Box<dyn FnOnce() + Send>>>,
@@ -2674,10 +2743,11 @@ fn collect_until_group_deadline(
     workload_capacity: usize,
     deadline: Instant,
     shutting_down: &mut bool,
+    clock: &dyn CoordinatorMonotonicClock,
 ) {
     while pending.len() < workload_capacity
         && command_prefix_can_grow(pending)
-        && Instant::now() < deadline
+        && clock.now() < deadline
     {
         match receiver.try_recv() {
             Ok(message) => pending.push_back(message),
@@ -2696,17 +2766,18 @@ async fn collect_until_coalesce_deadline(
     workload_capacity: usize,
     deadline: Instant,
     shutting_down: &mut bool,
+    clock: &dyn CoordinatorMonotonicClock,
 ) {
     let park_deadline = deadline
         .checked_sub(POST_COMMIT_COALESCE_TIMER_GUARD)
         .unwrap_or(deadline);
     while pending.len() < workload_capacity
         && command_prefix_can_grow(pending)
-        && Instant::now() < deadline
+        && clock.now() < deadline
     {
         tokio::select! {
             biased;
-            () = tokio::time::sleep_until(tokio::time::Instant::from_std(park_deadline)) => return,
+            () = clock.sleep_until(park_deadline) => return,
             message = receiver.recv() => {
                 match message {
                     Some(message) => pending.push_back(message),
@@ -2729,7 +2800,7 @@ impl CommandCoordinatorActor {
         let mut pending = VecDeque::new();
         let mut writer_busy = false;
         let mut shutting_down = false;
-        let mut formation_anchor = Instant::now();
+        let mut formation_anchor = self.monotonic_clock.now();
         let mut formation_deadline = None;
         let mut completion_edge_coalescing = false;
         loop {
@@ -2769,7 +2840,7 @@ impl CommandCoordinatorActor {
                 // Collection-time semantics: reset formation anchor on the first
                 // arrival after an idle park (not only on writer feedback).
                 if pending_was_empty && !pending.is_empty() {
-                    formation_anchor = Instant::now();
+                    formation_anchor = self.monotonic_clock.now();
                     formation_deadline = Some(
                         formation_anchor
                             .checked_add(OLDEST_GROUPABLE_TRANSITION_MAX_AGE)
@@ -2784,6 +2855,7 @@ impl CommandCoordinatorActor {
                             workload_capacity,
                             deadline,
                             &mut shutting_down,
+                            self.monotonic_clock.as_ref(),
                         )
                         .await;
                     } else {
@@ -2793,6 +2865,7 @@ impl CommandCoordinatorActor {
                             workload_capacity,
                             deadline,
                             &mut shutting_down,
+                            self.monotonic_clock.as_ref(),
                         );
                     }
                 }
@@ -2805,7 +2878,7 @@ impl CommandCoordinatorActor {
                     } else {
                         reason
                     };
-                    let elapsed = formation_anchor.elapsed();
+                    let elapsed = self.monotonic_clock.elapsed_since(formation_anchor);
                     match &unit {
                         WorkUnit::Shutdown => {
                             self.receiver.close();
@@ -2899,7 +2972,7 @@ impl CommandCoordinatorActor {
                                 if self.completion_edge_coalescing_enabled
                                     && post_commit_command_window_eligible(&pending)
                                 {
-                                    formation_anchor = Instant::now();
+                                    formation_anchor = self.monotonic_clock.now();
                                     completion_edge_coalescing = true;
                                     formation_deadline = Some(
                                         formation_anchor
@@ -2923,7 +2996,7 @@ impl CommandCoordinatorActor {
                             Some(message) => {
                                 // First message of a new collection after idle.
                                 if pending.is_empty() {
-                                    formation_anchor = Instant::now();
+                                    formation_anchor = self.monotonic_clock.now();
                                     completion_edge_coalescing = false;
                                     formation_deadline = Some(
                                         formation_anchor
@@ -2940,7 +3013,7 @@ impl CommandCoordinatorActor {
             } else if !shutting_down {
                 match self.receiver.recv().await {
                     Some(message) => {
-                        formation_anchor = Instant::now();
+                        formation_anchor = self.monotonic_clock.now();
                         completion_edge_coalescing = false;
                         formation_deadline = Some(
                             formation_anchor
@@ -3259,6 +3332,12 @@ impl CommandWriter {
                 Err(_) => break,
             };
             crate::writer_census::charge(crate::writer_census::LOOP_WORK_RECV, recv_started);
+            #[cfg(feature = "test-fixtures")]
+            if matches!(unit, WorkUnit::CommandGroup(_))
+                && writer_panic_after_command_dispatch_is_armed()
+            {
+                panic!("armed writer-thread test failpoint after command dispatch");
+            }
             let admit_gate_started = crate::writer_census::stage_start();
             let pipeline_transitions = match &unit {
                 WorkUnit::CommandGroup(group) => group.len(),

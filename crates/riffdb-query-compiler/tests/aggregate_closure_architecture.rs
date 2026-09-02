@@ -122,7 +122,7 @@ fn every_exact_semantic_has_cross_plane_and_generated_evidence() {
     let policy = include_str!("../../riffdb-columnar/tests/cp2a.rs");
     let exact_provider = include_str!("../../riffdb-projection/tests/exact_text_provider.rs");
     let module = include_str!("../../riffdb-query-module/tests/module_codec.rs");
-    let grpc = include_str!("../../riffdb-api-grpc/src/conversion.rs");
+    let grpc = include_str!("../../riffdb-api-grpc/src/generated/conversion.rs");
     let evidence = include_str!("../../../docs/architecture/WP-696-AGGREGATE-CLOSURE.md");
 
     for required in [

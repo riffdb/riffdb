@@ -3,13 +3,12 @@
 - **Status:** Accepted
 - **Obligations:**
   - `OBL-0179-1` WP-751 must prove that every public operation has exactly
-    one registry declaration and the six adapter crates contain no
-    hand-written validation, conversion, or dispatch outside their generated
-    directories; planned proof
+    one registry declaration and `riffdb-proto` contains no hand-written
+    exchange validation outside its generated directory. Proof:
     `every_public_operation_has_exactly_one_registry_declaration`.
   - `OBL-0179-2` WP-751 must prove that generated validation, conversion,
     MCP schema, and CLI envelope output reproduces the frozen pre-registry
-    fixtures byte for byte; planned proof
+    fixtures byte for byte. Proof:
     `generated_adapters_reproduce_frozen_public_fixtures_byte_for_byte`.
   - `OBL-0179-3` WP-753 must prove that every binding returns the same
     closed public error class for every entry of the shared drift corpus;
@@ -23,8 +22,12 @@
     service implementation, and the handbook; planned proof
     `check-three-places`.
   - `OBL-0179-6` WP-752 must prove that no file on the adapter path exceeds
-    the decomposition budget; planned proof
+    the decomposition budget. Proof:
     `adapter_path_files_stay_under_the_decomposition_budget`.
+  - `OBL-0179-7` WP-752 must prove that the other five adapter crates contain
+    no hand-written conversion or dispatch outside their generated
+    directories. Proof:
+    `five_adapter_crates_contain_no_hand_written_conversion_or_dispatch`.
 - **Direction approved:** 2026-09-01
 - **Exact text accepted:** Yes, 2026-09-01
 - **Accepted:** 2026-09-01
@@ -47,6 +50,29 @@ The maintainer accepted the exact text of this record on 2026-09-01. Its package
 may begin. Each deferred obligation above is tracked in
 `adr/obligations-outstanding.yaml` until its planned proof exists, at which
 point the owning package discharges it by declaring the proof.
+
+## Amendment 1 — adapter architecture-proof ownership split (Accepted 2026-09-01)
+
+The original `OBL-0179-1` joined two package-sized architecture proofs. This
+amendment splits their ownership without weakening the generated-adapter
+boundary:
+
+- **WP-751 owns `OBL-0179-1`.** Every public operation has exactly one registry
+  declaration, and `riffdb-proto` contains no hand-written exchange validation
+  outside its generated directory. Its proof remains
+  `every_public_operation_has_exactly_one_registry_declaration`.
+- **WP-752 owns `OBL-0179-7`.** The other five adapter crates contain no
+  hand-written conversion or dispatch outside their generated directories. Its
+  proof is
+  `five_adapter_crates_contain_no_hand_written_conversion_or_dispatch`.
+
+Moving the whole original obligation to WP-752 would leave WP-751 with no
+architecture obligation over its main deliverable. Combining WP-751 and WP-752
+would remove the fixture-freeze step that makes replacement of the remaining
+five adapters safe to land. The package boundary and landing order therefore
+remain unchanged; only the proof obligation is split at that boundary.
+
+Status: Accepted by the maintainer on 2026-09-01.
 
 ## Context
 

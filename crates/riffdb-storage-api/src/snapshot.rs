@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "validated snapshots retain required observations and their bounded counts fit canonical encodings"
+)]
+
 //! Owned command snapshots, observations, and canonical read dependencies.
 
 use std::cmp::Ordering;

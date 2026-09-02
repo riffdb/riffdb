@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "validated staged migrations retain the predecessor catalog row selected for replacement"
+)]
+
 //! Private staged-database implementation of commit-owned contract migration.
 
 use std::sync::Arc;

@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "validated migration plans retain the exact command and schema references used during orchestration"
+)]
+
 //! Sole authoritative orchestration for checked contract migrations.
 
 use riffdb_catalog::{

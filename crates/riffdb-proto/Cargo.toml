@@ -21,6 +21,7 @@ prost-build = { version = "0.14.4", default-features = false, features = ["forma
 prost-types = { version = "0.14.4", default-features = false, features = ["std"] }
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 protox = { version = "0.9.1", default-features = false }
+riffdb-operation-registry = { version = "0.1.0", path = "../riffdb-operation-registry" }
 
 [lints]
 workspace = true

@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "validated columnar batches retain the projected entity and generation selected for apply"
+)]
+
 //! Server-side columnar apply source and published projection port.
 
 use std::collections::{BTreeMap, BTreeSet};

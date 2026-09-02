@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "validated startup evidence retains nonzero frontiers and bounded roots in their canonical widths"
+)]
+
 //! Exclusive structural startup evidence and dormant-port handoff.
 
 use std::error::Error;

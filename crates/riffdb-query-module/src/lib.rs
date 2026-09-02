@@ -14,6 +14,7 @@ mod exact_text_result_set;
 mod generated_surface;
 mod generation;
 mod go_generation;
+mod infallible_string_write;
 mod projection_result_set;
 mod python_generation;
 mod reactive_module;

@@ -14,12 +14,17 @@
 #![forbid(unsafe_code)]
 
 mod backend;
+mod coordinator;
 mod disk;
 mod media;
 mod rng;
 mod trace;
 
 pub use backend::SimBackend;
+pub use coordinator::{
+    COORDINATOR_TRACE_FORMAT_VERSION, CoordinatorDecision, CoordinatorPhase, CoordinatorSchedule,
+    CoordinatorScheduleError, MAX_COORDINATOR_LANES, coordinator_decision_digest,
+};
 pub use disk::{FaultConfig, FaultCounters, SimDisk};
 pub use media::SimJournalMedia;
 pub use rng::SplitMix64;

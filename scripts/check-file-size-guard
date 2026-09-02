@@ -1,0 +1,118 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "fileutils"
+require "open3"
+require "pathname"
+require "tmpdir"
+
+REPORT_LINES = 6_000
+MAX_LINES = 10_000
+
+def capture!(*command, chdir:)
+  stdout, stderr, status = Open3.capture3(*command, chdir: chdir.to_s)
+  return stdout if status.success?
+
+  warn stderr
+  exit status.exitstatus
+end
+
+def source_files(root)
+  tracked = capture!("git", "ls-files", "--", "*.rs", chdir: root).lines
+  untracked = capture!(
+    "git", "ls-files", "--others", "--exclude-standard", "--", "*.rs", chdir: root
+  ).lines
+  (tracked + untracked).map(&:strip).reject(&:empty?).uniq.sort.select do |relative|
+    root.join(relative).file?
+  end.reject do |relative|
+    relative.split("/").include?("generated") || generated_source?(root.join(relative))
+  end
+end
+
+def generated_source?(source)
+  File.foreach(source, encoding: "UTF-8").first(5).any? do |line|
+    line.include?("@generated") || line.include?("DO NOT EDIT")
+  end
+rescue Errno::ENOENT
+  false
+end
+
+def line_count(contents)
+  return 0 if contents.empty?
+
+  contents.count("\n") + (contents.end_with?("\n") ? 0 : 1)
+end
+
+def baseline_count(root, revision, relative)
+  stdout, = Open3.capture3("git", "show", "#{revision}:#{relative}", chdir: root.to_s)
+  line_count(stdout)
+end
+
+def run_guard(root, base)
+  revision = capture!("git", "merge-base", "HEAD", base, chdir: root).strip
+  violations = []
+  reports = []
+
+  source_files(root).each do |relative|
+    current = line_count(File.binread(root.join(relative)))
+    next unless current > REPORT_LINES
+
+    baseline = baseline_count(root, revision, relative)
+    delta = current - baseline
+    reports << format("%5d lines (%+d): %s", current, delta, relative)
+    if current > MAX_LINES && delta.positive?
+      violations << "#{relative} grew by #{delta} lines above the #{MAX_LINES}-line ceiling"
+    end
+  end
+
+  puts "Non-generated Rust sources above #{REPORT_LINES} lines:"
+  puts reports
+  puts "  none" if reports.empty?
+  return true if violations.empty?
+
+  warn violations.join("\n")
+  false
+end
+
+def self_test(script)
+  Dir.mktmpdir("riffdb-file-size-guard-") do |directory|
+    root = Pathname.new(directory)
+    FileUtils.mkdir_p(root.join("src"))
+    capture!("git", "init", "--quiet", chdir: root)
+    File.write(root.join("src", "large.rs"), "// baseline\n" * (MAX_LINES + 1))
+    capture!("git", "add", "src/large.rs", chdir: root)
+    capture!(
+      "git", "-c", "user.name=RiffDB Guard", "-c", "user.email=guard@riffdb.invalid",
+      "commit", "--quiet", "-m", "baseline", chdir: root
+    )
+    File.open(root.join("src", "large.rs"), "a") { |file| file.write("// growth\n") }
+
+    stdout, stderr, status = Open3.capture3(
+      { "RIFFDB_FILE_SIZE_ROOT" => root.to_s, "RIFFDB_FILE_SIZE_BASE" => "HEAD" },
+      script.to_s
+    )
+    expected = "src/large.rs grew by 1 lines above the #{MAX_LINES}-line ceiling"
+    unless !status.success? && stderr.include?(expected) && stdout.include?("10002 lines (+1)")
+      warn "file-size guard self-test did not reject the fabricated growth"
+      warn stdout
+      warn stderr
+      return false
+    end
+  end
+
+  puts "File-size guard self-test passed."
+  true
+end
+
+script = Pathname.new(__FILE__).realpath
+if ARGV == ["--self-test"]
+  exit(self_test(script) ? 0 : 1)
+end
+unless ARGV.empty?
+  warn "usage: #{script.basename} [--self-test]"
+  exit 2
+end
+
+root = Pathname.new(ENV.fetch("RIFFDB_FILE_SIZE_ROOT", File.expand_path("..", __dir__))).realpath
+base = ENV.fetch("RIFFDB_FILE_SIZE_BASE", "HEAD")
+exit(run_guard(root, base) ? 0 : 1)

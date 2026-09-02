@@ -7,7 +7,7 @@ use riffdb_query_compiler::{
     ReactiveCompileDiagnostic, ReactiveQueryCatalogEntry, compile_reactive_module,
 };
 use riffdb_query_ir::{MAX_REACTIVE_MODULE_BYTES, NamedTypeSchema, ReactiveModulePlanV1};
-use riffdb_query_syntax::{Diagnostic, format_module, parse_module};
+use riffdb_reactive_syntax::{Diagnostic, format_module, parse_module};
 use riffdb_types::{CanonicalValue, decode_canonical_value, encode_canonical_value};
 
 use crate::QueryModule;

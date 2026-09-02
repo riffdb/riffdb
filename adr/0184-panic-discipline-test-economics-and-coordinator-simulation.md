@@ -6,16 +6,15 @@
     `riffdb-storage-api`, `riffdb-storage-redb`, `riffdb-service`, and
     `riffdb-server` compile with `unwrap_used`, `expect_used`, `panic`, and
     `unreachable` denied, and every surviving allowance is an `#[expect]`
-    with a reason naming the invariant; planned proof
-    `scripts/check-panic-allowances`.
+    with a reason naming the invariant. Proof: `scripts/check-panic-allowances`.
   - `OBL-0184-2` WP-764 must prove that a panic on the
     `riffdb-command-writer` thread stops the coordinator, refuses later
     admission with a typed outcome, and makes `riffdbd` exit nonzero instead
-    of serving; planned proof
+    of serving. Proof:
     `writer_thread_panic_stops_the_coordinator_and_exits_the_daemon_nonzero`.
   - `OBL-0184-3` WP-764 must prove that the four language generators write
     through one infallible string-write helper and carry no `expect` on
-    `fmt::Write`; planned proof
+    `fmt::Write`. Proof:
     `generators_use_the_infallible_writer_and_carry_no_fmt_expect`.
   - `OBL-0184-4` WP-765 must prove that the CI test job runs under
     cargo-nextest in fixed partitions, every `[[test]]` target of every
@@ -25,19 +24,19 @@
     `scripts/check-test-partition-coverage`.
   - `OBL-0184-5` WP-766 must prove that the coordinator harness reproduces a
     byte-identical trace digest for one seed and a different digest when any
-    interleaving or crash decision changes; planned proof
+    interleaving or crash decision changes; proof
     `coordinator_interleaving_decisions_feed_the_digest`.
   - `OBL-0184-6` WP-766 must prove that every seeded coordinator crash
     window recovers to the testkit model at the recovered frontier,
     including windows between epoch seal, durable fence, and publication;
-    planned proof `every_coordinator_crash_window_recovers_to_the_model`.
+    proof `every_coordinator_crash_window_recovers_to_the_model`.
   - `OBL-0184-7` WP-767 must prove that `riffdb-reactive-syntax` replaces
     `riffdb-query-syntax` with byte-identical reactive-module artifacts and
-    no production crate depends on `riffdb-sim`; planned proof
+    no production crate depends on `riffdb-sim`; proof
     `reactive_module_artifacts_are_byte_identical_after_rename`.
   - `OBL-0184-8` WP-767 must prove that no source file may grow past 10,000
     lines, and growth past 6,000 lines is reported, in every package that
-    touches one of the five largest files; planned proof
+    touches one of the five largest files; proof
     `scripts/check-file-size-guard`.
 - **Direction approved:** 2026-09-01
 - **Exact text accepted:** Yes, 2026-09-01

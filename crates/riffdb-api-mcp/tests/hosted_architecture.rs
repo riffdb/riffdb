@@ -5,7 +5,7 @@
 const HOSTED_HTTP: &str = include_str!("../src/hosted_http.rs");
 const HOSTED_OBSERVER: &str = include_str!("../src/hosted_observer.rs");
 const HOSTED_SESSION: &str = include_str!("../src/hosted_session.rs");
-const SERVICE_BACKEND: &str = include_str!("../src/service_backend.rs");
+const SERVICE_BACKEND: &str = include_str!("../src/generated/service_backend.rs");
 const SERVER_MAIN: &str = include_str!("../../riffdb-server/src/main.rs");
 
 #[test]

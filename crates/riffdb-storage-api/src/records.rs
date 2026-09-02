@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "the validated command event bound fits the persisted event-count representation"
+)]
+
 //! Engine-neutral semantic records for one atomic application command.
 
 use std::error::Error;

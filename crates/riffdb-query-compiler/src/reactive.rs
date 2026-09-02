@@ -9,7 +9,7 @@ use riffdb_query_ir::{
     ReactiveParameterV1, ReactivePartitionBindingV1, ReactivePredicateNodeV1,
     ReactiveQueryDependencyV1, ReactiveUpdateModeV1,
 };
-use riffdb_query_syntax::{
+use riffdb_reactive_syntax::{
     Argument, BinaryOperator, Expression, Literal, Module, Operand, Span, UpdateMode, format_module,
 };
 use riffdb_types::{
@@ -191,7 +191,7 @@ impl<'a> Compiler<'a> {
 
     fn compile_stream(
         &self,
-        source: &riffdb_query_syntax::Stream,
+        source: &riffdb_reactive_syntax::Stream,
     ) -> Result<CompiledReactiveOperationV1, ReactiveCompileDiagnostic> {
         let parameters = self.parameters(source.parameters())?;
         let parameter_types = parameters
@@ -374,7 +374,7 @@ impl<'a> Compiler<'a> {
 
     fn compile_watch(
         &self,
-        source: &riffdb_query_syntax::Watch,
+        source: &riffdb_reactive_syntax::Watch,
     ) -> Result<CompiledReactiveOperationV1, ReactiveCompileDiagnostic> {
         let parameters = self.parameters(source.parameters())?;
         let query = self.query_dependency(source.query(), source.name(), &[], source.span())?;
@@ -414,7 +414,7 @@ impl<'a> Compiler<'a> {
 
     fn compile_subscription(
         &self,
-        source: &riffdb_query_syntax::Subscription,
+        source: &riffdb_reactive_syntax::Subscription,
     ) -> Result<CompiledReactiveOperationV1, ReactiveCompileDiagnostic> {
         let parameters = self.parameters(source.parameters())?;
         let parameter_types = parameters
@@ -561,7 +561,7 @@ impl<'a> Compiler<'a> {
 
     fn parameters(
         &self,
-        values: &[riffdb_query_syntax::Parameter],
+        values: &[riffdb_reactive_syntax::Parameter],
     ) -> Result<Vec<ReactiveParameterV1>, ReactiveCompileDiagnostic> {
         values
             .iter()

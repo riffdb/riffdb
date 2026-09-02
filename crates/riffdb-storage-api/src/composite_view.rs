@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "balanced overlays retain the iterator cardinality established by their validated lengths"
+)]
+
 //! Closed, bounded checkpoint-plus-journal-overlay read-view primitives.
 //!
 //! These values implement ADR-0104's engine-neutral overlay semantics. They do

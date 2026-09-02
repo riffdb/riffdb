@@ -1,4 +1,13 @@
 #![forbid(unsafe_code)]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::unwrap_used
+    )
+)]
 
 //! Durable redb implementation of RiffDB's semantic storage ports.
 

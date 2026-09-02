@@ -15,6 +15,8 @@ riffdb-storage-redb = { version = "0.1.0", path = "../riffdb-storage-redb", defa
 
 [dev-dependencies]
 riffdb-catalog = { version = "0.1.0", path = "../riffdb-catalog", default-features = false }
+riffdb-commit = { version = "0.1.0", path = "../riffdb-commit", default-features = false, features = ["simulation"] }
+riffdb-conflict = { version = "0.1.0", path = "../riffdb-conflict", default-features = false, features = ["shuttle"] }
 riffdb-contract-compiler = { version = "0.1.0", path = "../riffdb-contract-compiler", default-features = false }
 riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api" }
 riffdb-testkit = { version = "0.1.0", path = "../riffdb-testkit", default-features = false }

@@ -780,7 +780,7 @@ impl ApplicationLock {
                 .expect("compiler formats object");
             formats.insert(
                 "reactive_grammar".to_owned(),
-                json!(riffdb_query_syntax::REACTIVE_GRAMMAR_VERSION_V1),
+                json!(riffdb_reactive_syntax::REACTIVE_GRAMMAR_VERSION_V1),
             );
             formats.insert("reactive_ir".to_owned(), json!(REACTIVE_IR_VERSION_V1));
             formats.insert(

@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "a running columnar worker retains exactly one owned task until shutdown"
+)]
+
 //! Bounded owner for columnar projection apply catch-up and checkpoints.
 
 use std::collections::BTreeMap;

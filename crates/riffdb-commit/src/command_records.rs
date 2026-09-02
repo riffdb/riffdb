@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "successful command-record constructors retain the nonempty event and provenance graph they validated"
+)]
+
 //! Deterministic construction of one successful command's durable record graph.
 
 use std::{error::Error, fmt};

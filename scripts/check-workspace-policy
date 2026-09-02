@@ -31,6 +31,7 @@ EXPECTED_PACKAGES = %w[
   riffdb-invariant
   riffdb-mcp-stdio
   riffdb-observability
+  riffdb-operation-registry
   riffdb-outbox
   riffdb-policy
   riffdb-projection
@@ -38,7 +39,7 @@ EXPECTED_PACKAGES = %w[
   riffdb-query-compiler
   riffdb-query-executor
   riffdb-query-ir
-  riffdb-query-syntax
+  riffdb-reactive-syntax
   riffdb-query-module
   riffdb-riffql-syntax
   riffdb-runtime

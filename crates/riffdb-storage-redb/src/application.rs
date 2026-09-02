@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "validated application transactions retain their nonempty command and canonical state components"
+)]
+
 //! Redb application admission and atomic command transactions.
 
 use std::collections::{BTreeMap, BTreeSet};

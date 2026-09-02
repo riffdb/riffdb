@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "fixed cursor validation issues satisfy the closed public validation and application-code contract"
+)]
+
 //! API-neutral durable event-consumer requests and orchestration.
 
 use std::collections::BTreeMap;

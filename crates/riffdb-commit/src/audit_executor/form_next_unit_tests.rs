@@ -863,6 +863,7 @@ fn post_commit_collector_drains_ready_arrivals_without_reordering() {
             4,
             Instant::now() + POST_COMMIT_COALESCE_BUDGET,
             &mut shutting_down,
+            &WallCoordinatorMonotonicClock,
         )
         .await;
 

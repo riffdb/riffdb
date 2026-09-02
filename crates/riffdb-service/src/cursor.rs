@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "the fixed default cursor page size is nonzero"
+)]
+
 //! Bounded process-local cursor primitives and registry.
 
 use std::collections::BTreeMap;

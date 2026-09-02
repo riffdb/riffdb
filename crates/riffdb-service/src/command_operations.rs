@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "the bounded mutation loop begins exactly once before it can consume the retained invocation"
+)]
+
 //! Checked command execution and uncertainty-recovery orchestration.
 
 use std::collections::{BTreeMap, BTreeSet};

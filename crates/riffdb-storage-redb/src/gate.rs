@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "an owned redb exclusion grant retains its mutex state until release"
+)]
+
 //! Owned exclusion used by redb startup and mutation transactions.
 
 use std::sync::{Arc, Condvar, Mutex};

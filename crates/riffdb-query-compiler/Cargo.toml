@@ -12,7 +12,7 @@ default = []
 [dependencies]
 riffdb-contract-ir = { version = "0.1.0", path = "../riffdb-contract-ir", default-features = false }
 riffdb-query-ir = { version = "0.1.0", path = "../riffdb-query-ir", default-features = false }
-riffdb-query-syntax = { version = "0.1.0", path = "../riffdb-query-syntax", default-features = false }
+riffdb-reactive-syntax = { version = "0.1.0", path = "../riffdb-reactive-syntax", default-features = false }
 riffdb-riffql-syntax = { version = "0.1.0", path = "../riffdb-riffql-syntax", default-features = false }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
 

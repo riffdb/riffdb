@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "a nonterminal live-query state retains its initial update and last published result"
+)]
+
 //! API-neutral live named-query contracts and orchestration.
 
 use std::collections::BTreeMap;
