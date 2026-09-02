@@ -22821,11 +22821,16 @@ work_packages:
     result carriage, and generated Rust, Go, TypeScript, Python, MCP, and CLI surfaces.
   requirements: [OQ-114, OQ-115]
   required_adrs: [ADR-0035, ADR-0053, ADR-0111, ADR-0164, ADR-0174, ADR-0185]
-  allowed_paths: [work_packages.yaml, crates/riffdb-query-executor/**, crates/riffdb-storage-api/**,
-    crates/riffdb-storage-redb/**, crates/riffdb-policy/**, crates/riffdb-service/**,
+  allowed_paths: [work_packages.yaml, crates/riffdb-query-compiler/**,
+    crates/riffdb-query-executor/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**, crates/riffdb-policy/**,
+    crates/riffdb-service/**,
     crates/riffdb-server/**, crates/riffdb-query-module/**, crates/riffdb-client-rust/**,
     crates/riffdb-api-grpc/**, crates/riffdb-api-mcp/**, crates/riffdb-cli/**, clients/**,
     templates/**, fixtures/**, tests/**, scripts/**, docs/**]
+  scope_expansion: Human-approved 2026-09-02. The mandatory memory/redb parity proof requires the
+    memory backend, and nested expansion execution requires the compiler to retain fields selected
+    below the driver record. Both paths remain limited to the accepted expansion semantics.
   deliverables:
   - One executor step that hydrates every driver's bounded target set through the existing
     authoritative readers at the captured snapshot, ordered by driver order then index order with
