@@ -82,6 +82,7 @@ fn production_sized_storage_tests_never_allocate_under_the_ambient_temp_director
 }
 
 #[test]
+// req: STO-001
 fn dependency_surface_keeps_redb_private_and_excludes_infrastructure_assemblies() {
     let manifest = read(crate_root().join("Cargo.toml"));
     assert!(manifest.contains("cap-std = { version = \"=4.0.2\", default-features = false }"));
@@ -231,6 +232,7 @@ fn command_segment_preparation_workers_hold_no_authoritative_port() {
 }
 
 #[test]
+// req: PERF-007
 fn only_operational_ports_implement_semantic_runtime_traits() {
     let sources = rust_sources();
     for forbidden in [
@@ -322,6 +324,7 @@ fn terminal_staging_reuses_the_same_transaction_current_admission_proof() {
 }
 
 #[test]
+// req: PERF-019
 fn startup_fast_path_does_not_rebuild_whole_history_accelerators() {
     let startup = production_source(crate_root().join("src/startup.rs"));
     let samples = startup

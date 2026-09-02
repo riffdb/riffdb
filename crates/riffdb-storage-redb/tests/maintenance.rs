@@ -905,6 +905,7 @@ fn zero_byte_target_needs_no_confirmation_but_every_nonempty_target_does() {
 }
 
 #[test]
+// req: STO-021
 fn receipt_codec_is_canonical_checksummed_and_version_closed() {
     let root = TestRoot::new("receipt-golden");
     let database = root.join("database.redb");

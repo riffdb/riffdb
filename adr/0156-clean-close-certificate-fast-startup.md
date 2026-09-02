@@ -1,6 +1,11 @@
 # ADR-0156: Clean-Close Certificate Fast Startup
 
 - **Status:** Accepted
+- **Obligations:**
+  - `OBL-0156-1` WP-704 moves every population fact skipped by bounded clean
+    startup onto the fail-closed operational path that first uses it, while
+    preserving a zero-rebuild readiness path.
+    Proof: `assert_readiness_path_rebuild_census`
 - **Direction approved:** 2026-08-26
 - **Exact text accepted:** Yes, 2026-08-26
 - **Accepted:** 2026-08-26

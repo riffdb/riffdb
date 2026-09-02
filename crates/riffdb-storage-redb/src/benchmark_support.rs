@@ -2970,6 +2970,7 @@ mod tests {
     }
 
     #[test]
+    // req: PERF-013
     fn clean_startup_linear_matches_plain_measurement_shape() {
         let dir = tempfile_dir();
         let path = dir.join("linear-check.redb");

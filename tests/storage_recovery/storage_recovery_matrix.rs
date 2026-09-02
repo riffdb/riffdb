@@ -2463,6 +2463,7 @@ fn hardened_profile_rejects_deferred_command_epochs() {
 }
 
 #[test]
+// req: STO-022
 fn all_v1_index_rows_migrate_exactly_and_require_a_fresh_clean_pass() {
     let path = TestDatabasePath::new("all-v1-index-migration");
     let (_, current) = prepare_committed_command_database(&path.0);
@@ -2979,6 +2980,7 @@ fn crash_before_fused_command_commit_preserves_complete_absence() {
 }
 
 #[test]
+// req: REC-001, REC-002
 fn crash_after_command_commit_preserves_the_complete_reciprocal_graph() {
     for (label, profile) in [
         ("standard", RedbCommitProfile::Standard),
@@ -3693,6 +3695,7 @@ fn crash_after_shutdown_validated_prefix_checkpoint_reopens_fast_path() {
 }
 
 #[test]
+// req: PERF-014
 fn perf_014_unclean_recovery_vs_clean_startup() {
     // Equivalent seeding: BOTH databases carry the identical committed state
     // (initialization + catalog activation, checkpoint from the preparation
@@ -4180,6 +4183,7 @@ fn durable_locators_are_written_without_populating_the_counted_tables() {
 /// re-executed the command. The bounded clean-close start is what makes the
 /// index dormant, which is exactly the state ADR-0156 readiness leaves it in.
 #[test]
+// req: REC-004
 fn a_committed_command_is_still_recognised_with_the_population_index_dormant() {
     let path = TestDatabasePath::new("locator-admission-dormant");
     let (fixture, _) = prepare_committed_command_database(&path.0);
