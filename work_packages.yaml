@@ -22760,13 +22760,17 @@ work_packages:
   objective: Establish ADR-0185's operator-before-provider rule in the compiler, add the
     one-to-many expansion syntax and additive RiffQL V14 / query IR V18 / module V18 identities
     with least-sufficient selection, and record anonymized refusal classes for every refused
-    operational read shape. Compiler and fixtures only; no execution path changes.
+    operational read shape. Compiler and fixtures plus fail-closed downstream admission only;
+    no expansion execution path changes.
   requirements: [RQL-008, OQ-113, OQ-116, OQ-118]
   required_adrs: [ADR-0051, ADR-0054, ADR-0108, ADR-0124, ADR-0174, ADR-0185]
   allowed_paths: [SPEC.md, work_packages.yaml, adr/0185-relational-operators-in-the-candidate-algebra.md,
     crates/riffdb-types/**, crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**,
     crates/riffdb-query-compiler/**, crates/riffdb-query-module/**, crates/riffdb-diagnostics/**,
-    crates/riffdb-cli/**, release/version-topology-v1.json, fixtures/**, tests/**, scripts/**, docs/**]
+    crates/riffdb-query-executor/**, crates/riffdb-service/**, crates/riffdb-cli/**,
+    crates/riffdb-storage-memory/src/query.rs, crates/riffdb-storage-redb/src/query.rs,
+    clients/editor/tree-sitter-riffql/keywords.json, release/version-topology-v1.json,
+    fixtures/**, tests/**, scripts/**, docs/**]
   deliverables:
   - Grammar for `for each <driver> in <binding>` and `take N per <driver>` on a many binding, with
     exact-span diagnostics for cross-partition, unbounded, non-prefix, and depth-two drivers
