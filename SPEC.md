@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 1.26
+**Version:** 1.29
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
 **Date:** 1 September 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -37,6 +37,8 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 1.29 | 2026-09-01 | Accepted ADR-0178 through ADR-0184 as written, together, and installed their SPEC text. Section 4.10 now records acceptance; 20.6 Stage B places the ADR-0093/ADR-0178 asynchronous changelog-shipping tier before any consensus work; 18.5 moves changelog-derived incremental backup and the archive sink into alpha under `REP-007`; 18.2 runs the unit and integration job under partitioned cargo-nextest per `TEST-003`; 5.3 points to the `DEP-001` through `DEP-006` crate-graph rules. Every deferred obligation of the seven records is tracked in `adr/obligations-outstanding.yaml` with its owning package until its planned proof lands. No durable format, storage key, protocol, language, or provider algorithm changes until the packages close. |
+| 1.28 | 2026-09-01 | Registered the consolidation and availability program: proposed ADR-0178 through ADR-0184 and WP-746 through WP-767, with new requirement families `REP-002` through `REP-009`, `GEN-*`, `DEP-*`, `GOV-*`, `REC-005` through `REC-008`, `STO-030` through `STO-032`, `PERF-020` through `PERF-022`, `TEST-002` through `TEST-004`, and `SIM-008` through `SIM-009` (section 4.10). The records are Proposed and planning input only; no durable format, storage key, protocol, language, or provider algorithm changes until each record is accepted and its packages close. |
 | 1.27 | 2026-09-01 | Accepted ADR-0177 and registered `BLK-065` through `BLK-070` plus WP-745 for a least-sufficient high-cardinality atomic-collection tier. One compiler-owned collection may contain at most 1,024 elements and one command may prove at most 4,096 authoritative mutation instances, while the legacy 256/256 tier retains byte-exact V1-through-V22 artifacts. A plan above either legacy maximum selects grammar/executable IR/bundle V23, counts fixed plus expanded mutations with checked arithmetic, and remains subject to unchanged one-list, one-partition, conflict, index-work, 4 MiB input, 8 MiB frame, and 16 MiB graph ceilings. Adapter subdivision remains forbidden because it would expose partial commits; acceptance includes one atomic 1,000-element command plus a fixed root mutation. |
 | 1.26 | 2026-09-01 | Accepted ADR-0176 and registered `BLK-058` through `BLK-064` plus WP-744 for one compiler-bounded large atomic-command envelope. Only a complete root command input may use 4 MiB decoded/canonical bytes; individual and nested values, entity/event/outcome records, and non-command requests retain 1 MiB, while the complete command graph retains 16 MiB. Commands proven above the legacy envelope select least-sufficient contract grammar/executable IR/bundle V22 carrying the exact maximum; old commands retain byte-exact artifacts and idempotency hashes. Command-bearing gRPC, application-session, reaction, MCP, CLI, batch-item, and local-driver framing is fixed at 8 MiB for Protobuf/JSON/base64 overhead, with the shared service enforcing 4 MiB and the exact plan maximum before effects. |
 | 1.25 | 2026-09-01 | Completed ADR-0175's ordinary index-prefix semantics: a finite partition-set route may be followed by one or more compiler-proved invariant exact predicates before the declared order suffix. Such a plan selects additive query IR/module V17, encodes the exact prefix width, binds every prefix parameter into cursor identity, and reconstructs the complete physical seek prefix on continuation. Partition-set plans with no invariant prefix retain byte-exact V16 artifacts. |
@@ -1200,6 +1202,404 @@ RiffDB-owned durable consumer truth.
 | MCP API | Dynamic tools, resources, prompts, progress, cancellation, and agent-safe result shaping | Direct storage access |
 | CLI | Local operator and demo workflows over public APIs | Hidden privileged mutation path |
 
+## 4.10 Consolidation and availability program
+
+The 2026-09-01 architecture review ranked seven improvements against the
+product thesis in `docs/VISION.md`. Proposed ADR-0178 through ADR-0184 record
+them; WP-746 through WP-767 implement them behind gate P12. The maintainer
+accepted all seven records as written on 2026-09-01, so their requirements are
+normative now and their packages may begin. No requirement in this section
+weakens an existing normative guarantee.
+
+### Follower activation and changelog-derived backup (ADR-0178)
+
+ADR-0093 contracted the asynchronous changelog-shipping tier and ADR-0100
+aligned its frames to published durable frontiers, but no follower, replication
+transport, promotion, retention fence, or incremental backup exists. The
+following requirements activate that tier before further provider families and
+amend Stage B so the asynchronous tier precedes and does not require consensus.
+`REP-001` is unchanged.
+
+- `REP-002`: `riffdbd` MUST offer a follower mode that opens the same database
+  format, runs unchanged startup validation including the validated-prefix
+  checkpoint, and applies changelog frames through one applier that is the
+  follower's sole writer, one frame per storage transaction in strict sequence
+  order, advancing the applied frontier only after local durability. Every
+  command, administration, migration, maintenance, and export surface on a
+  follower MUST return one typed follower-mode refusal and MUST NOT mutate
+  authoritative state.
+- `REP-003`: Replication MUST be one capability-guarded server-streaming RPC
+  whose handshake binds database identity, history incarnation, leadership
+  epoch, and resume sequence. Frames MUST be the existing checksummed,
+  sequence-addressed changelog frames; resume MUST be possible from any
+  acknowledged sequence the primary retains and MUST answer a pruned resume
+  with the typed `history_pruned` outcome. A stream or acknowledgement carrying
+  a stale epoch or foreign incarnation MUST be refused with a typed outcome.
+  The replication permission MUST be administrative and MUST NOT be bindable to
+  an application role. The emitter MUST read only published durable snapshots
+  and MUST NOT hold the exclusive write gate.
+- `REP-004`: A follower MUST serve compiled, projected, and discovery reads
+  under the existing `Causal`, `Bounded`, and `Available` policies with its
+  applied frontier in the local-frontier role, waiting for a `Causal` token
+  inside the existing bounded register-before-read discipline. A token, cursor,
+  or fence from another lineage or a pre-promotion incarnation MUST be refused
+  fail-closed. Replication lag MUST be measured in sequences, never wall-clock
+  time, and MUST be exported as one typed health component and statistics on
+  both nodes.
+- `REP-005`: Promotion MUST be one explicit audited administrative operation
+  that requires proof the old primary is fenced, drains the received prefix,
+  mints a new history incarnation at the applied head through the ADR-0072
+  stamp path, and increments the leadership epoch so every old-lineage frontier,
+  token, cursor, and stream fails closed. The promotion receipt MUST record the
+  applied sequence and the RPO as the exact sequence delta at fencing.
+  Automatic election MUST NOT exist in this tier.
+- `REP-006`: A registered follower's acknowledged frontier MUST join the
+  retention fencing set as an additive input so offline prune never passes it.
+  Each registration MUST carry a hold budget in sequences; exhausting it MUST
+  degrade typed health first and MUST release the fence only through the
+  audited retire operation or configured expiry.
+- `REP-007`: A first-party archive consumer MUST persist every validated
+  changelog frame with checksum and sequence range to a configured archive sink
+  beside periodic offline full backups, without changing acknowledgement, the
+  write gate, or backup manifest V1. Restore MUST be a verified full backup
+  followed by exact replay of the archived suffix through the follower applier,
+  stopping at the last archived or an operator-supplied earlier sequence, and
+  MUST fail closed on any gap, checksum, or incarnation mismatch. An additive
+  archive manifest MUST bind database identity, history incarnation, covered
+  range, frame digests, encryption posture, and the full-backup manifest
+  digest. Recovery granularity is one commit sequence; no wall-clock
+  point-in-time promise MAY be published.
+- `REP-008`: Enabling the emitter, archive consumer, and follower registration
+  MUST leave acknowledgement latency, the single-writer property, durable
+  record encodings, and the backup manifest unchanged, and PERF-008 interactive
+  and write-only measurements with the emitter enabled MUST remain within the
+  ADR-0171 stability rule of emitter-disabled runs. Until the follower
+  acceptance campaign closes, no new provider family, result-set algebra, or
+  performance package MAY be admitted to the alpha gate.
+- `REP-009`: The six ADR-0093 acceptance criteria MUST be executed as one
+  receipted campaign against the application-baseline harness under a repeated
+  kill loop on primary, follower, stream, and archive sink, on both PERF-018
+  profiles, and MUST be published as release evidence bound to exact source,
+  lock, and binary identity before the single-node availability limitation is
+  retired.
+
+### Generated public-surface adapters and the operation registry (ADR-0179)
+
+Every public operation is declared once and its transport, presentation, and
+client adapters are generated from that declaration. The API-neutral service
+boundary, its hand-written operation semantics, and the checked DTO types are
+unchanged; only the adapters change owner. Public identities and durable bytes
+do not move.
+
+- `GEN-001`: Every public operation MUST have exactly one declaration in the
+  `riffdb-operation-registry` leaf crate naming its `ServiceOperationV1`
+  variant, Protobuf request and response messages, DTO request and result
+  types, every declared bound, permitted ingress kinds, permission kind,
+  idempotency class, redaction class per output field, audiences, and a field
+  map from a closed mapping vocabulary. The registry MUST depend only on
+  `riffdb-types`, MUST perform no I/O, and MUST grant no authority. Adapter
+  crates MUST NOT contain hand-written public-message validation, wire
+  conversion, MCP fixed-tool dispatch, CLI envelope encoding, or client method
+  surfaces outside a generated directory.
+- `GEN-002`: Public-surface adapters MUST be produced by one deterministic
+  offline generator from the registry and the compiled descriptor set, MUST
+  be checked in under `src/generated/`, and MUST be verified current by
+  `check-generated`. Generation MUST fail when a Protobuf field is unmapped,
+  mapped more than once, or mapped to an incompatible DTO kind. No generator
+  or template MAY execute inside `riffdbd`, `riffdb`, `riffdb-mcp`, or any
+  client.
+- `GEN-003`: Before a hand-written adapter layer is replaced, its complete
+  public output MUST be frozen as fixtures, and the generated replacement MUST
+  reproduce those fixtures byte for byte. Replacing an adapter MUST NOT change
+  any Protobuf package, tag, reserved range, MCP tool name, CLI output envelope
+  field, public error code, generated package layout, or durable byte, and
+  MUST be classified as internal under `VER-004` with no domain advance.
+- `GEN-004`: The Rust, Go, TypeScript, and Python application generators MUST
+  render one canonical generation model, itself a golden fixture, through
+  checked-in template files with strict undefined variables, autoescaping
+  disabled, and deterministic iteration. Each language output MUST reproduce
+  its golden fixture, and a template MUST NOT receive application-controlled
+  input.
+- `GEN-005`: One shared drift corpus MUST cover every registry operation and
+  every declared bound reachable from the Rust client, the driver-host socket
+  protocol, the Python in-process path, and the generated Go and TypeScript
+  facades, and every binding MUST return the identical closed public error
+  class for every corpus entry.
+- `GEN-006`: Adding or changing one public operation MUST hand-touch at most
+  the Protobuf source, the registry declaration together with the service
+  implementation, and the handbook. A CI check MUST fail any change to a
+  `.proto` file or the registry whose diff touches an adapter-crate file
+  outside a generated directory, and an architecture test MUST forbid
+  hand-written validation exchanges and `ServiceOperationV1` dispatch outside
+  generated directories.
+- `GEN-007`: Every source file on the public adapter path MUST stay under a
+  4,000-line budget enforced by an architecture test once generated adapters
+  land. Decomposition of the existing files over 10,000 lines MUST occur only
+  as a by-product of adapter generation; a standalone refactoring package is
+  not authorized.
+
+### Crate dependency direction repair (ADR-0180)
+
+Section 5.2 states the intended dependency direction for every crate, but
+no check enforces the table, and four edges have drifted from it: both
+concrete storage backends depend on the query executor, query IR, policy, and
+projection crates and execute composite queries inside their transactions;
+the redb startup module drives index migration; the Rust client links the
+gRPC server crate and the contract compiler; and observability sits at the
+top of the graph. ADR-0180 restores the direction with a machine-checked
+layered allow-list and removes the reference in-memory backend that only the
+test kit consumed.
+
+- `DEP-001`: `riffdb-storage-redb` MUST depend in production only on
+  `riffdb-storage-api`, `riffdb-types`, `riffdb-proto`, `redb`, and the
+  ADR-0042 catalog driver edge. It MUST NOT depend on
+  `riffdb-query-executor`, `riffdb-query-ir`, `riffdb-policy`, or
+  `riffdb-projection`. Composite-query execution and ADR-0111 row-policy
+  admission MUST live in `riffdb-query-executor`, which consumes storage
+  only through the storage-api point, scan, filtered-scan, snapshot, and
+  fence readers plus one owned-snapshot handle that pins the application
+  head, index epochs, and provider generations for one page and its
+  continuation. No policy context, program, or executor type may cross a
+  storage-api trait, and no row, count, measure, or cursor may leave the
+  executor before admission.
+- `DEP-002`: Concrete storage startup modules MUST produce structural and
+  historical evidence only. Index-migration page, apply, and finish driving
+  MUST occur behind the ADR-0042 catalog-owned driver over backend ports
+  that remain private to the backend and expose no migration progress.
+- `DEP-003`: `riffdb-client-rust` MUST depend only on `riffdb-proto`
+  (including its client-only generated Tonic services and shared wire
+  constants), the Tonic client, and the ADR-0037 `riffdb-types`,
+  `riffdb-errors`, `riffdb-config`, entropy, and `zeroize` edges. It MUST
+  NOT depend on `riffdb-api-grpc` or `riffdb-application`. Values the client
+  re-exports MUST keep their serialized form when they move.
+- `DEP-004`: `riffdb-observability` MUST be a leaf crate depending only on
+  `riffdb-types`, `riffdb-errors`, and tracing. It MUST define the telemetry
+  event types, observer traits, health components, and metric names that
+  service, commit, catalog, policy, conflict, auth, and MCP implement or
+  emit; no crate above `riffdb-errors` may be its dependency.
+- `DEP-005`: `riffdb-testkit` MUST carry no edge to `riffdb-service`,
+  `riffdb-server`, or `riffdb-cli`; daemon-linked harnesses and root test
+  targets MUST live in a separate `riffdb-testkit-server` crate, and leaf
+  crates MUST take only the core kit as a dev-dependency. The workspace MUST
+  NOT retain a second single-node storage backend that cannot run
+  `riffdbd`; executor tests MUST use a storage-api reader fake and the test
+  kit's authoritative model as the independent oracle, and `riffdb-storage-api`
+  MUST carry no trait without a production, simulator, or reader-fake
+  consumer.
+- `DEP-006`: A repository check driven by `cargo metadata` over every compile
+  target MUST reject any production or build edge that points upward or
+  sideways across the ADR-0180 layered allow-list. Every exception MUST name
+  its ADR; an exception without one MUST fail the check. Warm incremental
+  rebuild time and leaf-crate test link time MUST be recorded before and
+  after the repair as a non-evidentiary receipt.
+
+### Pre-alpha format epoch reset and governance load (ADR-0181)
+
+Before the first external database exists, every superseded readable identity,
+ledger entry, and decision-record page is carrying cost without a consumer.
+ADR-0181 resets the format ledger once through the accepted breaking-epoch
+ceremony, bounds the process ledger, and writes the public handbook for the
+agents that build on RiffDB.
+
+- `GOV-001`: Exactly one breaking pre-1.0 epoch, alpha format epoch 2, MUST
+  be declared and crossed only through the `AFC-005`/`AFC-006` ceremony. After
+  the reset every version-topology domain MUST list exactly one readable and
+  one writable identity, and they MUST be equal; an epoch-1 database MUST be
+  refused in place with the typed format refusal naming the ceremony.
+- `GOV-002`: An external database is one whose identity was minted outside
+  this repository's harnesses, examples, evaluation bundles, benchmark hosts,
+  and maintainer installs for a party other than the maintainer. While none is
+  registered, decoder retirement MUST NOT require a notice interval or
+  last-readable fixture, and superseded decoders, fixtures, generated
+  artifacts, and topology rows MUST be deleted rather than parked; deleted
+  Protobuf field numbers, enum values, tags, hashes, and symbolic identities
+  MUST remain reserved. Registering the first external database MUST close the
+  window permanently and restore the full `VER-006`/`VER-007` lifecycle.
+- `GOV-003`: The topology check MUST fail on a domain with more than one
+  readable, writable, or current identity or with a lifecycle state other than
+  `active` while the `external_databases` array is empty, and MUST relax that
+  rule without a code change once the array names one operator-provided
+  digest, date, and release label.
+- `GOV-004`: Every acknowledged obligation MUST be discharged with a proof that
+  exists or struck with a recorded one-line reason; the ledger MUST reach zero
+  and be removed, and the obligation check MUST thereafter reject any ledger
+  file, ledger entry, or undeclared obligation in an accepted record.
+- `GOV-005`: A decision record MUST contain only the template's sections, one
+  testable decision per subsection, and glossary references instead of
+  redefinitions of sealed vocabulary; a form check MUST warn above 260 lines,
+  fail on a missing or unknown section, and fail on a `SPEC.md`
+  document-control row longer than one paragraph.
+- `GOV-006`: Public handbook pages MUST carry no work-package or ADR number,
+  the limitations page MUST state one sentence per limit in public vocabulary,
+  and the rewrite MUST be measured by a sealed agent-application campaign
+  whose median time to first committed row and total rescue count are not
+  worse than the preceding campaign on every retained cell, with a published
+  improvement goal that is a target and not a release gate.
+
+### Bounded dirty recovery and online retention (ADR-0182)
+
+A startup without a valid clean-close certificate is the path that runs after
+every host failure, and it is currently proportional to live state. Retention
+is currently an offline exclusive operation. ADR-0182 extends ADR-0156's
+recovery-versus-verification model to the dirty path and moves retention into
+the running process, without changing acknowledgement semantics, durable
+formats, or the hardened profile.
+
+- `REC-005`: A startup without a valid clean-close certificate MUST reach
+  readiness through engine and format identity checks, recovery of every
+  complete durable journal frame, the same bounded-root validation the clean
+  path performs, and durable dirty-generation consumption. It MUST NOT
+  enumerate any entity, index, history, event, audit, provenance, projection,
+  outbox, or idempotency population before readiness, and recovery-owned
+  state MUST remain within a compiled ceiling of 64 MiB, refusing with a typed
+  internal defect rather than spilling. No public request, contract, flag, or
+  transport option MAY select a different validation scope.
+- `REC-006`: Every row outside the bounded readiness roots MUST be validated
+  on first access before it influences authorization, policy, execution,
+  output, delivery, projection, or mutation, and a failing row MUST produce
+  the existing typed corruption outcome and an internal incident. Corruption
+  discovered after readiness MUST NOT be converted into absence, a business
+  outcome, partial output, skipped work, or automatic repair.
+- `REC-007`: After readiness one background scrub MUST drive the complete
+  exact-end structural and catalog-semantic validation over a least-authority
+  reader, exposing exactly the closed health states `pending`, `running`,
+  `complete`, `failed`, and `cancelled`, honoring a rows-per-step rate bound
+  and shutdown cancellation. A failed scrub MUST degrade storage health with
+  an incident identifier and MUST NOT repair, hide, or retry past the
+  incident; progress is process-local and a restart restarts the scrub.
+- `REC-008`: The complete exact-end path MUST be exposed as one authorized
+  public offline maintenance operation with a versioned bounded receipt,
+  reusable by backup verification, restore, format upgrade, and retention
+  preflight. Release evidence MUST report dirty-restart stages, total wall
+  time, and peak recovery-owned heap separately at the 65,536-row and
+  production-scale checkpoints together with scrub throughput; `PERF-014`
+  continues to require a genuine writer kill.
+- `STO-030`: Retention watermark advancement, prune, and tombstone
+  verification MUST be available inside the running process on a background
+  maintenance lane that holds no exclusive lease and opens no second writer.
+  Each step MUST be one administration-class durable transition submitted to
+  the sole ordered writer that atomically deletes one sub-range, appends its
+  tombstone, and advances the watermark, deleting any validated-prefix
+  checkpoint in the first step. The fencing set MUST include every existing
+  input plus every registered follower's acknowledged frontier under its hold
+  budget, and any unreadable, unvalidated, or incarnation-mismatched source
+  MUST refuse advancement.
+- `STO-031`: An online prune step MUST cover at most 256 sequences and MUST
+  block the writer for at most one step; the lane MUST yield after every step
+  and advance at most a configured number of sequences per durability epoch.
+  The retention target MUST be expressed as a retained-sequence count or a
+  hold, never a wall-clock age, and no application principal MAY start, stop,
+  target, or observe the lane beyond closed health. Release evidence MUST
+  measure 32-client interactive p95 with the lane active against idle inside
+  the existing five-percent no-regression bound.
+- `STO-032`: Every online retention step boundary MUST recover to a valid
+  watermark, contiguous tombstone chain, and allocator agreement after a
+  process kill or a seeded simulated crash, creating no command, event,
+  outcome, provenance, audit, projection, outbox, or allocator advance. The
+  offline exclusive retention operation and its Amendment 4 journal rebase
+  MUST remain available and unchanged, and backup and restore MUST derive the
+  watermark exactly as before.
+
+### Performance package freeze and the durable-group lever (ADR-0183)
+
+The write path is at the synchronous-flush floor: fsync is 56 percent of a
+release-build single write and group commit already amortizes it at about
+seven commands per durable flush. ADR-0171 removed the comparator-spread
+blocker on qualification. The remaining performance work is one banked
+baseline, one structural lever with fixed arithmetic, and a freeze that keeps
+engine effort on availability and bounded recovery until they close.
+
+- `PERF-020`: While the ADR-0183 freeze is in force, no work package other
+  than WP-762 and WP-763 MAY register or activate a `PERF-*` requirement. The
+  freeze MUST be recorded in `work_packages.yaml` together with the banked
+  baseline, MUST be enforced by a repository check that fails on any other
+  package listing a `PERF-*` requirement, and MUST lift only through an
+  accepted ADR that carries the banked baseline as its starting receipt after
+  WP-750 and WP-760 close. Registering a performance package during the
+  freeze is a mandatory human review trigger. Sentinel, endurance, and
+  host-validity measurement MUST continue during the freeze, and a detected
+  regression is handled as a defect against the banked baseline.
+- `PERF-021`: The freeze MUST start from one qualified baseline receipt set
+  on both N1 and E2 comprising the `PERF-018` interactive c32 and write-only
+  concurrency sweeps and the complete ADR-0142 unary matrix, each receipt
+  recording `method.stability_rule_binds: gated_backend`, host validity,
+  correctness reconciliation, and exact source, lock, harness, runner, and
+  daemon identities. A previously retained single-profile column MAY be
+  reused only when those identities match the banked revision. A freeze
+  recorded without both profiles banked is invalid, and no banked value MAY
+  move upward without an accepted amendment and overlapping evidence.
+- `PERF-022`: The sole retained structural performance lever is durable-group
+  formation from already-ready work: each standard-profile epoch seal MAY
+  carry the complete already-admitted, already-prepared command prefix up to
+  the existing 256-transition and 16 MiB ceilings, fed by ADR-0129
+  conflict-domain-parallel preparation. Formation MUST NOT wait for work that
+  is not yet admitted and prepared, MUST NOT delay an idle singleton beyond
+  its immediate one-phase path, and MUST retain the 200 µs groupable-
+  transition age bound as its only age rule. Admission-ordered sequencing,
+  sole-writer transaction-current revalidation, private-frontier
+  invisibility, `PERF-009` acknowledgement, fence order, replay, and
+  recovery MUST be unchanged. The candidate MUST activate only when one
+  receipt set on both profiles shows c32 throughput at least 0.90 times and
+  p95 at most 1.25 times same-run safe-application PostgreSQL, write-only
+  p95 within five percent of the banked baseline, and every unary p50 and
+  p95 within 1.10 times its low-water baseline; a miss on either profile
+  MUST remove the candidate. Graceful shutdown evidence MUST report commands
+  per durable flush as a fixed-cardinality histogram. Fsync or fence
+  elision, acknowledgement before the covering fence, device-level I/O
+  experiments, and CPU micro-optimization packages are excluded from the
+  lever.
+
+### Panic discipline, test economics, and coordinator simulation (ADR-0184)
+
+SPEC 9.8's fail-fast rule, the SPEC 18.2 test job, and ADR-0113's Phase 2
+become machine-checked repository properties. The durable crates deny
+panic-capable calls behind a reasoned allowance ledger, the required test
+job runs in fixed partitions with recorded wall time, and `riffdb-sim` gains
+a seeded coordinator harness that composes the simulated disk with the
+deterministic conflict scheduler.
+
+- `TEST-002`: The library targets of `riffdb-commit`, `riffdb-storage-api`,
+  `riffdb-storage-redb`, `riffdb-service`, and `riffdb-server` MUST compile
+  with `clippy::unwrap_used`, `clippy::expect_used`, `clippy::panic`, and
+  `clippy::unreachable` denied. Every remaining allowance MUST be an
+  `#[expect]` whose reason names the invariant, and a repository check MUST
+  enumerate the allowances and fail on one without a reason. A panic on the
+  command-writer thread MUST stop the coordinator, MUST NOT acknowledge any
+  later or in-flight command, MUST NOT report readiness, and MUST exit the
+  daemon nonzero within the drain deadline; a named integration test MUST
+  prove all four. Generators MUST write through an infallible helper and
+  MUST NOT call `expect` on `fmt::Write`.
+- `TEST-003`: The required unit and integration job MUST run under
+  cargo-nextest in a fixed number of hash partitions, each test target MUST
+  be scheduled exactly once across the partitions as proved by a check that
+  enumerates targets from `cargo metadata`, and every root `[[test]]` target
+  MUST remain an explicit target in its owning crate manifest. Measured wall
+  time MUST be written to the job summary and to a release-evidence file
+  that records the pre-partition baseline, per-partition times, and the
+  longest-partition target. The target is disclosure, not a gate.
+- `TEST-004`: The reactive-module grammar crate MUST be named
+  `riffdb-reactive-syntax`, and the rename MUST leave every reactive-module
+  artifact, fixture, hash, and grammar version byte-identical. A repository
+  guard MUST report every non-generated Rust source file above 6,000 lines
+  and MUST refuse growth of any file already above 10,000 lines relative to
+  the merge base; the guard MUST run in `scripts/ci-all` and in every
+  package that touches such a file.
+- `SIM-008`: The coordinator simulation harness MUST choose every lane
+  interleaving and crash placement across admission, preparation, epoch
+  seal, durable fence, publication, completion, and changelog emission from
+  the seed alone, MUST fold every decision into the versioned trace digest so
+  that one seed reproduces one digest and any decision change produces a
+  different digest, and MUST reach the production coordinator only through
+  a monotonic-time port whose release implementation is the unchanged wall
+  clock.
+- `SIM-009`: After every simulated coordinator crash, including a crash
+  between a sealed epoch and its durable fence and between a fence and its
+  publication, the reopened engine MUST pass startup validation and MUST
+  equal `AuthoritativeCommandModel` at the recovered durable frontier,
+  extending the model where its coverage is narrower. Simulator-found
+  coordinator failures MUST be retained and replayed per merge under
+  `SIM-004`, and `SIM-007` MUST continue to hold.
+
 ## 4.2 Trust boundaries
 
 1. Network input is untrusted until transport decoding, size checks, authentication, and the shared service's schema-directed validation complete. A transport's structural value validation does not claim compiled-schema materialization.
@@ -1384,6 +1784,14 @@ The binary targets are `riffdbd` from `riffdb-server`, `riffdb` from `riffdb-cli
   trait.
 - gRPC and MCP HTTP MAY call only the auth-owned `CredentialAuthenticator` before constructing service request context; production MCP stdio, CLI, and SDK use public gRPC.
 - Generated code MUST be checked in only when generation is deterministic and CI verifies it is current.
+- ADR-0180 (`DEP-001` through `DEP-006`, section 4.10) additionally fixes the
+  crate graph: concrete storage backends depend only on `riffdb-storage-api`,
+  `riffdb-types`, `riffdb-proto`, and the ADR-0042 catalog driver edge; the
+  query executor owns composite-query execution over storage-api readers;
+  `riffdb-client-rust` depends on the protocol only; `riffdb-observability` is
+  a leaf; the test kit carries no server edge into leaf-crate tests; and
+  `scripts/check-crate-graph` enforces the layered allow-list from
+  `cargo metadata`.
 
 ## 5.4 Baseline libraries
 
@@ -5947,7 +6355,7 @@ implementing package exists.
 |---|---|
 | Formatting | `cargo fmt --check` |
 | Static analysis | `cargo clippy --workspace --all-targets --all-features -- -D warnings` |
-| Unit and integration | `cargo test --workspace --all-features` |
+| Unit and integration | `cargo nextest run --workspace --all-features` in four fixed hash partitions per ADR-0184 (`TEST-003`); `cargo test --workspace --all-features` remains the local and `scripts/ci-all` form |
 | Documentation | `cargo doc --workspace --no-deps` with warnings denied where practical |
 | Dependency policy | `cargo deny check` for advisories, bans, licenses, and source policy |
 | Supply-chain audit | `cargo audit` or equivalent advisory scan |
@@ -6034,7 +6442,11 @@ sequence may later be reused for a different record. The POC has no
 incarnation/history-epoch fence; documentation and destructive confirmation
 must state that limitation.
 
-Online backup, point-in-time recovery, incremental backup, encrypted backup, and remote object storage are MVP work.
+Encrypted backup and wall-clock point-in-time recovery remain MVP work. ADR-0178
+(`REP-007`, section 4.10) moves changelog-derived incremental backup and the
+filesystem or object-store archive sink into alpha under WP-749: restore is the
+verified full backup plus exact replay of the archived frame suffix, and
+recovery granularity is one commit sequence.
 
 ## 18.6 Release artifacts
 
@@ -6490,7 +6902,12 @@ V4.
 
 **Additions:**
 
-- OpenRaft or equivalent behind `riffdb-replication`.
+- The ADR-0093/ADR-0178 asynchronous changelog-shipping tier first: follower
+  mode, capability-guarded streaming, incarnation-fenced promotion, the
+  follower retention fence, and the changelog-derived archive are alpha work
+  under gate P12 (`REP-002` through `REP-009`) and require no consensus.
+- OpenRaft or equivalent consensus behind `riffdb-replication` only as a later
+  amendment carrying ADR-0093 section 8's five safeguards.
 - Replicated log entry format derived from normalized commit commands or records.
 - Deterministic state-machine application.
 - Snapshots, membership changes, node bootstrap, and catch-up.
@@ -9452,5 +9869,8 @@ The implementation MUST prefer primary project documentation and pin reviewed ve
 | `VEC-*` | Native vector search projections, embedding writes, staleness, and recall contracts |
 | `SECF-*` | Secret-field classification and structural display-surface redaction (ADR-0118's SEC-F family) |
 | `VER-*` | Cross-domain version topology, change classification, and decoder retirement governance |
+| `GEN-*` | Generated public-surface adapters and the operation registry |
+| `DEP-*` | Workspace dependency direction, crate layering, and build-graph enforcement |
+| `GOV-*` | Pre-alpha format epoch reset, obligation-ledger closure, decision-record form, and agent-facing handbook governance |
 
 Every normative requirement MUST be traceable to at least one automated test, review checklist item, or explicitly justified manual verification artifact before its stage can pass.

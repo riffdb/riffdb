@@ -1,4 +1,4 @@
-spec_version: '1.26'
+spec_version: '1.29'
 product: RiffDB
 repository: riffdb
 status: deployable-application-alpha-architecture-accepted
@@ -178,6 +178,31 @@ gates:
   name: Repository ownership notices
   requires:
   - WP-571
+- id: P12
+  name: Consolidation and availability program
+  requires:
+  - WP-746
+  - WP-747
+  - WP-748
+  - WP-749
+  - WP-750
+  - WP-751
+  - WP-752
+  - WP-753
+  - WP-754
+  - WP-755
+  - WP-756
+  - WP-757
+  - WP-758
+  - WP-759
+  - WP-760
+  - WP-761
+  - WP-762
+  - WP-763
+  - WP-764
+  - WP-765
+  - WP-766
+  - WP-767
 work_packages:
 - id: WP-000
   closure:
@@ -21527,3 +21552,1228 @@ work_packages:
       range predicates do not acquire binary text-key prefix semantics.
     follow_ups: []
   human_review_triggers: *id001
+
+- id: WP-746
+  name: Replication stream, capability, follower applier, and gap-free resume
+  depends_on: [WP-155, WP-417, WP-486, WP-704]
+  objective: Activate ADR-0093 section 1 through 3 and 6 as contracted by ADR-0178. Wire the
+    existing redb changelog emitter into production behind one capability-guarded streaming RPC,
+    add riffdbd follower mode whose applier is the sole writer, and prove a byte-faithful,
+    gap-free, resumable prefix across every authoritative table.
+  requirements: [REP-001, REP-002, REP-003, PERF-007, STO-012]
+  required_adrs: [ADR-0019, ADR-0061, ADR-0072, ADR-0082, ADR-0083, ADR-0093, ADR-0100,
+    ADR-0101, ADR-0104, ADR-0124, ADR-0178]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0178-follower-activation-and-changelog-derived-backup.md, adr/README.md,
+    proto/**, crates/riffdb-proto/**, crates/riffdb-types/**, crates/riffdb-auth/**,
+    crates/riffdb-policy/**, crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-service/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-server/**, crates/riffdb-config/**, crates/riffdb-cli/**,
+    crates/riffdb-testkit/**, crates/riffdb-sim/**, release/version-topology-v1.json,
+    fixtures/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - One `ReplicateChangelog` capability permission kind that no application role or bootstrap
+    convenience capability can carry, with create/revoke audit and generated schema updates
+  - One server-streaming `ReplicationService.StreamChangelog` RPC whose handshake binds database
+    id, history incarnation, leadership epoch, and resume sequence, refusing stale epoch or foreign
+    incarnation with typed outcomes and answering a pruned resume with `history_pruned`
+  - Production changelog publication port replacing `NoChangelogPublicationPort`, with the emitter
+    reading only `PublishedDurableSnapshot` and never holding the exclusive write gate
+  - riffdbd --mode follower with startup validation unchanged, one applier as sole writer, one
+    frame per storage transaction in sequence order, durable applied and acknowledged frontiers
+    as retained metadata, and the typed `RDB-REP` follower-mode refusal on every write surface
+  - Storage-api follower apply ports for every authoritative table extending the
+    `DeleteAwareEntityFollowerV2` oracle, implemented by redb and memory backends
+  - Tests `follower_applies_exact_prefix_byte_faithfully` and
+    `replication_stream_resumes_gap_free_after_repeated_kills` under
+    `tests/replication_follower.rs`, plus crash-matrix arms for stream kill and applier crash
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-api -p riffdb-storage-redb -p riffdb-storage-memory
+    -p riffdb-service -p riffdb-api-grpc -p riffdb-server --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test replication_follower --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test storage_recovery_matrix --all-features
+  - ./scripts/check-generated
+  - ./scripts/check-version-topology
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-adr-obligations
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: A follower driven by the app-baseline workload holds a byte-faithful prefix of every
+    authoritative table at the compared sequence, resumes from its acknowledged sequence after
+    repeated mid-flight kills with no gap or duplicate apply, passes complete startup validation
+    afterward, and refuses every write with the typed follower-mode outcome.
+  standing_design_tests:
+    interface_safety: No application surface changes; the replication permission is
+      administrative only, follower writes are unexpressible, and the stream carries only bytes
+      the primary already made durable.
+    scale: Frames are attributable from durable state and the emitter reads pinned published
+      snapshots, so no full-state rewrite or writer-private memory is assumed.
+  human_review_triggers: &id0178
+  - Acknowledgement semantics, the commit hot path, or the single-writer property on either node
+    would change.
+  - Automatic election, cascading followers, multi-primary, or a quorum tier would be introduced.
+  - A new provider family, result-set algebra, or performance package would be admitted to the
+    alpha gate before WP-750 closes.
+  - A durable record encoding, the backup manifest V1, changelog frame bytes, or a retention
+    tombstone byte would change.
+
+- id: WP-747
+  name: Follower reads, typed follower-mode refusal, and sequence-lag health
+  depends_on: [WP-746]
+  objective: Serve compiled, projected, and discovery reads on a follower under the existing
+    Causal, Bounded, and Available policies against the applied frontier, refuse foreign or
+    pre-promotion tokens fail-closed, and export replication lag in sequences as typed health
+    and statistics on both nodes.
+  requirements: [REP-004, REC-002]
+  required_adrs: [ADR-0070, ADR-0072, ADR-0086, ADR-0093, ADR-0164, ADR-0178]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0178-follower-activation-and-changelog-derived-backup.md,
+    crates/riffdb-types/**, crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-service/**, crates/riffdb-observability/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-api-mcp/**, crates/riffdb-server/**, crates/riffdb-client-rust/**,
+    crates/riffdb-cli/**, crates/riffdb-testkit/**, proto/**, crates/riffdb-proto/**,
+    fixtures/**, tests/**, docs/**]
+  deliverables:
+  - Follower read path using the applied frontier in the local-frontier role, with Causal waits
+    inside the existing bounded register-before-read discipline and AdmissionHead reads fenced at
+    the applied head
+  - Fail-closed refusal of tokens, cursors, and fences from another lineage or a pre-promotion
+    incarnation, mapped to the existing `RDB-HISTORY-0101` class
+  - One `replication` health component and additive statistics fields reporting applied and
+    acknowledged frontiers and lag in sequences, present on primary and follower, never in
+    wall-clock units
+  - Handbook pages for follower deployment, read semantics, and health, plus CLI and generated
+    client exposure of the typed follower-mode refusal
+  - Test `follower_causal_read_waits_for_token_then_matches_primary` under
+    `tests/replication_follower.rs`
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-service -p riffdb-observability -p riffdb-api-grpc
+    -p riffdb-server --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test replication_follower --all-features
+  - ./scripts/check-generated
+  - ./scripts/handbook check
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-adr-obligations
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: A Causal read on the follower with a fresh primary token waits, then returns bytes
+    equal to the primary at the same frontier; a foreign-lineage token is refused; every write
+    surface returns the typed follower-mode outcome; and health on both nodes reports lag in
+    sequences.
+  standing_design_tests:
+    interface_safety: Applications keep the existing freshness vocabulary and cannot weaken it,
+      select a node, or observe state beyond the applied frontier.
+    scale: The read path assumes shared contract vocabulary and incarnation-bound tokens, not
+      co-located storage or a shared clock.
+  human_review_triggers: *id0178
+
+- id: WP-748
+  name: Promotion drill, leadership epoch, and follower retention fence
+  depends_on: [WP-747]
+  objective: Implement ADR-0093 sections 4 through 6 as contracted by ADR-0178. Add the audited
+    promotion operation with old-primary fencing, incarnation mint, and leadership epoch, and
+    join the registered follower's acknowledged frontier to the retention fencing set with a
+    hold budget and ceremony-only release.
+  requirements: [REP-005, REP-006]
+  required_adrs: [ADR-0072, ADR-0085, ADR-0093, ADR-0178]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0178-follower-activation-and-changelog-derived-backup.md,
+    proto/**, crates/riffdb-proto/**, crates/riffdb-types/**, crates/riffdb-auth/**,
+    crates/riffdb-policy/**, crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-commit/**, crates/riffdb-service/**,
+    crates/riffdb-api-grpc/**, crates/riffdb-server/**, crates/riffdb-cli/**,
+    crates/riffdb-testkit/**, fixtures/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Audited follower register, retire, and promote administrative operations under administrative
+    capabilities, exposed through gRPC, the Rust client, and CLI only
+  - Fencing of the old primary by stop or replication-lease revocation, with a typed admission
+    refusal on the fenced primary and a promotion receipt recording applied sequence, new
+    incarnation, new leadership epoch, and RPO as the exact sequence delta
+  - Incarnation mint through the ADR-0072 stamp path so every old-lineage frontier, token, cursor,
+    and stream fails closed under the existing contract
+  - Additive `FollowerLowWater` fencing input to the ADR-0085 retention collector with a
+    per-registration hold budget in sequences, health degradation on exhaustion, and release only
+    by audited retire or configured expiry
+  - Tests `promotion_mints_incarnation_and_refuses_old_lineage_tokens` and
+    `retention_prune_refuses_to_pass_registered_follower_frontier` under
+    `tests/replication_promotion.rs`
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-api -p riffdb-storage-redb -p riffdb-commit
+    -p riffdb-service -p riffdb-server --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test replication_promotion --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test storage_recovery_matrix --all-features
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-adr-obligations
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Under load, fencing the primary and promoting the follower yields a new incarnation
+    and epoch, a pre-promotion token is refused fail-closed, a post-promotion commit and read
+    round-trip succeeds, the receipt's RPO equals the measured sequence delta, and offline prune
+    refuses to pass a lagging registered follower until it catches up or is retired.
+  standing_design_tests:
+    interface_safety: Promotion, registration, and retirement are administrative, audited, and
+      capability-gated; no application can trigger or observe them except through fail-closed
+      incarnation refusals it already handles.
+    scale: The fence is one sequence number per registration and the hold budget bounds how long a
+      dead follower pins history; no node-local memory of another node is assumed.
+  human_review_triggers: *id0178
+
+- id: WP-749
+  name: Changelog-derived incremental and remote backup
+  depends_on: [WP-746]
+  objective: Implement ADR-0178 section 7. Persist validated changelog frames to a configured
+    archive sink beside periodic offline full backups, publish an additive archive manifest, and
+    restore from a verified full backup plus the archived suffix through the follower applier
+    path with sequence-granular stopping and fail-closed gap and identity checks.
+  requirements: [REP-007, AFC-007]
+  required_adrs: [ADR-0050, ADR-0072, ADR-0093, ADR-0100, ADR-0112, ADR-0124, ADR-0178]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0178-follower-activation-and-changelog-derived-backup.md,
+    crates/riffdb-types/**, crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-service/**, crates/riffdb-api-grpc/**, crates/riffdb-server/**,
+    crates/riffdb-config/**, crates/riffdb-cli/**, crates/riffdb-testkit/**,
+    proto/**, crates/riffdb-proto/**, release/version-topology-v1.json,
+    release/durable-format-manifest-v1.json, fixtures/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - First-party archive consumer persisting every validated frame with checksum and sequence range
+    to a filesystem or object-store sink, with bounded buffering, typed resync on overflow, and no
+    effect on acknowledgement or the write gate
+  - Additive external `archive-manifest/v1` binding database id, history incarnation, covered
+    sequence range, frame digests, encryption posture, and the full-backup manifest digest, with
+    backup manifest V1 unchanged and the new format registered in the version topology
+  - Offline `riffdb storage restore --archive` replaying the archived suffix through the follower
+    applier after a verified full restore, stopping at the last archived or an operator-supplied
+    earlier sequence and failing closed on any gap, checksum, or incarnation mismatch
+  - Handbook backup/restore pages stating sequence granularity and the absence of a wall-clock
+    point-in-time promise
+  - Test `archived_suffix_restore_recovers_to_last_archived_sequence` under
+    `tests/replication_archive_restore.rs` plus a crash-matrix arm for archive-sink failure
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-api -p riffdb-storage-redb -p riffdb-server
+    -p riffdb-cli --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test replication_archive_restore --all-features
+  - ./scripts/check-durable-format-manifest
+  - ./scripts/check-version-topology
+  - ./scripts/handbook check
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-adr-obligations
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: A database restored from a verified full backup plus its archived suffix equals the
+    primary through the last archived sequence, a truncated or reordered archive is refused before
+    any state changes, and the archive consumer's presence leaves acknowledgement latency and the
+    write gate unchanged.
+  standing_design_tests:
+    interface_safety: Archive configuration is operator-only; applications cannot select, read,
+      or influence archive sinks, and restore remains the offline destructive ceremony of ADR-0050.
+    scale: Archives are append-only frame sequences; restore streams the suffix and never requires
+      the whole history in memory.
+  human_review_triggers: *id0178
+
+- id: WP-750
+  name: Replication acceptance campaign and gate widening
+  depends_on: [WP-748, WP-749]
+  objective: Run ADR-0093's six acceptance criteria as one receipted campaign against the
+    app-baseline harness with a repeated kill loop on primary, follower, stream, and archive
+    sink; prove no hot-path regression; publish release evidence; and record the provider and
+    performance freeze lifting only when the campaign passes.
+  requirements: [REP-008, REP-009, PERF-008, END-003]
+  required_adrs: [ADR-0093, ADR-0142, ADR-0171, ADR-0178]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0178-follower-activation-and-changelog-derived-backup.md, adr/README.md,
+    benchmarks/**, scripts/**, tests/**, crates/riffdb-testkit/**, crates/riffdb-sim/**,
+    release/evidence/replication/**, release/RELEASE_NOTES.md, docs/**]
+  deliverables:
+  - scripts/replication-acceptance driving prefix exactness, gap-free resume, promotion drill,
+    retention fence, follower reads, and no-hot-path-regression cells with a configurable kill
+    loop and a versioned `riffdb.replication-acceptance/v1` receipt
+  - Emitter-enabled PERF-008 interactive and write-only comparison cells on both PERF-018 profiles
+    within the ADR-0171 stability rule, published as disclosure beside the receipt
+  - Deterministic simulator follower cell under a seeded fault schedule covering apply, resume,
+    and archive faults, retained as a seeded campaign
+  - Release evidence under `release/evidence/replication/` bound to the exact source, lock, and
+    binary identity, and release-notes and known-limitations updates retiring the single-node
+    availability statement
+  - Test `replication_acceptance_campaign_meets_every_adr_0093_criterion` under
+    `tests/replication_acceptance.rs` verifying the receipt schema and every criterion result
+  acceptance_commands:
+  - ./scripts/replication-acceptance --kill-loop 25 --profiles n1,e2
+  - cargo +1.97.0 test -p riffdb-testkit --test replication_acceptance --all-features
+  - cargo +1.97.0 test -p riffdb-sim --all-features
+  - ./benchmarks/run-app-baseline --full --load interactive --load-clients 32
+    --load-duration-secs 90 --load-warmup-secs 15 --reps 3 --require-stable --emitter-enabled
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-adr-obligations
+  - ./scripts/handbook check
+  exit_gate: Every ADR-0093 acceptance criterion passes on both profiles under a repeated kill
+    loop with receipted evidence, emitter-enabled throughput and p95 are within the ADR-0171
+    stability rule of emitter-disabled runs, and the known-limitations page no longer states that
+    replication and failover are absent.
+  standing_design_tests:
+    interface_safety: The campaign adds no public surface; it exercises administrative operations
+      and existing application reads and writes only.
+    scale: Evidence is collected per database on one primary and N followers and makes no claim
+      about sharding or quorum durability.
+  human_review_triggers: *id0178
+
+- id: WP-751
+  name: Operation registry and generated public-message validation
+  depends_on: [WP-682, WP-744]
+  objective: Add the riffdb-operation-registry leaf crate holding exactly one declaration per
+    public operation, the deterministic scripts/generate-operation-adapters generator, and the
+    generated bounded validation that replaces the hand-written validate_*_exchange entry points in
+    riffdb-proto, after freezing every current public wire vector, MCP golden, and CLI envelope as
+    fixtures the generated output reproduces byte for byte.
+  requirements: [GEN-001, GEN-002, GEN-003]
+  required_adrs: [ADR-0006, ADR-0007, ADR-0027, ADR-0028, ADR-0040, ADR-0118, ADR-0124,
+    ADR-0179]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0179-generated-public-surface-adapters-and-operation-registry.md, adr/README.md,
+    Cargo.toml, Cargo.lock, deny.toml, crates/riffdb-operation-registry/**,
+    crates/riffdb-types/**, crates/riffdb-errors/**, crates/riffdb-proto/**,
+    crates/riffdb-service/**, proto/**, fixtures/proto/**, fixtures/compatibility/**,
+    fixtures/driver/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - riffdb-operation-registry crate depending only on riffdb-types, with one declaration per
+    ServiceOperationV1 variant naming Protobuf messages, DTO paths, every bound, ingress kinds,
+    permission kind, idempotency class, ADR-0118 redaction classes, audiences, and a closed field
+    map; every_public_operation_has_exactly_one_registry_declaration
+  - scripts/generate-operation-adapters reading the registry plus fixtures/proto/descriptors,
+    failing on an unmapped, doubly mapped, or kind-incompatible field, wired into check-generated
+  - Frozen fixture set for every current operation (public_client_vectors, wire_vectors,
+    fixed-tool-conversion-goldens, riffdb.cli.output/v1 envelopes, generated MCP catalogs) taken
+    before any replacement lands
+  - Generated crates/riffdb-proto/src/generated/public_validation.rs replacing the 35 hand-written
+    validate_*_exchange entry points with identical bounds and error classes;
+    generated_adapters_reproduce_frozen_public_fixtures_byte_for_byte
+  - Version-topology and compatibility record stating the change is internal with no domain advance
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-operation-registry -p riffdb-proto -p riffdb-service
+    --all-features
+  - ./scripts/generate-operation-adapters --check
+  - ./scripts/check-generated
+  - ./scripts/check-version-topology
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-adr-obligations
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every public operation has one registry declaration, generation rejects any field the
+    registry and descriptor set disagree on, the generated validation reproduces every frozen
+    public fixture byte for byte with the same public error classes, and no Protobuf tag, MCP
+    name, CLI envelope field, public error code, or durable byte changed.
+  standing_design_tests:
+    interface_safety: The registry can declare only operations already in the closed
+      ServiceOperationV1 inventory with explicit bounds and redaction classes; it cannot express an
+      unbounded field, a wildcard operation, or an opt-out from authorization or redaction.
+    scale: Generation is an offline build-time step over a registry the size of the operation
+      inventory; nothing assumes co-located storage, single-node memory, or a full-state rewrite.
+  human_review_triggers: &id0179
+  - A generated adapter would change any public Protobuf tag, MCP tool name, CLI envelope field,
+    public error class, or durable byte.
+  - The registry or a template would express an operation, bound, permission, or redaction class
+    absent from the accepted service inventory, or would grant authority.
+  - Generation would run inside riffdbd, riffdb, riffdb-mcp, or a client, or a template would
+    receive application-controlled input.
+  - A hand-written validation, conversion, or dispatch adapter would be reintroduced outside a
+    generated directory.
+
+- id: WP-752
+  name: Generated gRPC, MCP, CLI, and Rust-client adapters
+  depends_on: [WP-751]
+  objective: Replace the hand-written riffdb-api-grpc conversion layer, the riffdb-api-mcp
+    fixed-tool schema and dispatch, the riffdb-cli dispatch and output-envelope encoders, and the
+    riffdb-client-rust typed method surface with generated modules from the registry, holding the
+    hosted MCP context constructor, credential authenticator, and service safe points exactly where
+    ADR-0007 and SPEC 5.3 place them, and shrinking the five files over 10,000 lines as a by-product.
+  requirements: [GEN-002, GEN-003, GEN-007]
+  required_adrs: [ADR-0007, ADR-0008, ADR-0020, ADR-0037, ADR-0040, ADR-0041, ADR-0064,
+    ADR-0124, ADR-0179]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0179-generated-public-surface-adapters-and-operation-registry.md,
+    crates/riffdb-operation-registry/**, crates/riffdb-proto/**, crates/riffdb-service/**,
+    crates/riffdb-api-grpc/**, crates/riffdb-api-mcp/**, crates/riffdb-cli/**,
+    crates/riffdb-client-rust/**, crates/riffdb-mcp-stdio/**, crates/riffdb-driver-host/**,
+    examples/**, fixtures/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Generated crates/riffdb-api-grpc/src/generated/conversion.rs replacing the 187 hand-written
+    conversion functions, with the frozen wire vectors reproduced byte for byte
+  - Generated fixed-tool schema and dispatch in riffdb-api-mcp reproducing
+    fixed-tool-registry-v1.json and fixed-tool-conversion-goldens-v1.json, leaving
+    RequestContext::from_authenticated_mcp_http and the observer budget untouched
+  - Generated riffdb.cli.output/v1 envelope shapes and dispatch table in riffdb-cli, and the
+    generated typed method surface in riffdb-client-rust, each reproducing its frozen fixtures
+  - Architecture test forbidding hand-written validate_*_exchange definitions and
+    ServiceOperationV1 dispatch outside generated directories, extending
+    every_public_operation_has_exactly_one_registry_declaration
+  - app.rs, dto.rs, public_message.rs, conversion.rs, and service_backend.rs each below 4,000
+    lines with no standalone refactor; adapter_path_files_stay_under_the_decomposition_budget
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-api-grpc -p riffdb-api-mcp -p riffdb-cli -p riffdb-client-rust
+    -p riffdb-mcp-stdio --all-features
+  - cargo +1.97.0 test -p riffdb-api-mcp --test mcp_conformance
+  - cargo +1.97.0 test -p riffdb-api-grpc --test grpc_end_to_end
+  - ./scripts/generate-operation-adapters --check
+  - ./scripts/check-generated
+  - ./scripts/check-application-bindings
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-adr-obligations
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: gRPC, MCP, CLI, and Rust-client adapters are generated from the registry and
+    reproduce every frozen fixture byte for byte; the MCP and gRPC conformance suites pass
+    unchanged; no hand-written adapter remains outside a generated directory; and every file on
+    the adapter path is under the 4,000-line budget.
+  standing_design_tests:
+    interface_safety: Every generated adapter calls the same API-neutral service entry point and
+      cannot add an operation, widen a bound, print a secret-classified output, or bypass the
+      per-request authorization safe points.
+    scale: Not applicable to storage; the generated adapters are the same per-request code paths
+      with no new memory retention or state.
+  human_review_triggers: *id0179
+
+- id: WP-753
+  name: Template-based language generators, shared drift corpus, and the three-places check
+  depends_on: [WP-752]
+  objective: Move the Rust, Go, TypeScript, and Python application generators onto checked-in
+    minijinja templates rendering one canonical generation model, extend the WP-682 driver corpus
+    to every registry operation across all bindings, and add the CI check that proves adding one
+    public operation hand-touches only the Protobuf source, the registry with the service
+    implementation, and the handbook.
+  requirements: [GEN-004, GEN-005, GEN-006]
+  required_adrs: [ADR-0074, ADR-0106, ADR-0120, ADR-0124, ADR-0148, ADR-0179]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0179-generated-public-surface-adapters-and-operation-registry.md, Cargo.toml,
+    Cargo.lock, deny.toml, crates/riffdb-operation-registry/**, crates/riffdb-query-module/**,
+    crates/riffdb-driver-host/**, crates/riffdb-client-rust/**,
+    crates/riffdb-client-python-native/**, templates/**, clients/**, examples/**,
+    fixtures/driver/**, fixtures/query-modules/**, fixtures/adapters/**, tests/**, scripts/**,
+    docs/**, .github/workflows/**]
+  deliverables:
+  - minijinja templates under templates/generators/{rust,go,typescript,python}/ rendered with
+    strict undefined variables, autoescape off, and ordered inputs, replacing the write!-assembled
+    generators in generation.rs, go_generation.rs, and python_generation.rs
+  - One canonical JSON generation model per module frozen as a golden fixture, with every language
+    output reproduced from it; template_generators_reproduce_golden_outputs_across_languages
+  - fixtures/driver/corpus-v2.json covering every registry operation and bound for the Rust
+    client, driver-host socket, Python in-process, Go, and TypeScript bindings, run by
+    scripts/driver-conformance; every_binding_returns_the_same_error_class_for_the_shared_corpus
+  - scripts/check-three-places --base <rev> and its CI job, failing when a diff that changes a
+    .proto file or the registry touches any adapter-crate file outside src/generated/
+  - Handbook and compatibility pages describing the three hand-written places and the template
+    layout; downstream adapter repositories recompiled with byte-identical generated packages
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-query-module -p riffdb-driver-host -p riffdb-client-rust
+    -p riffdb-client-python-native --all-features
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-driver-conformance-manifests
+  - ./scripts/check-application-bindings
+  - ./scripts/check-three-places --base origin/main
+  - ./scripts/generate-query-clients --check
+  - ./scripts/check-generated
+  - ./scripts/downstream-adapter-check
+  - cargo +1.97.0 deny check
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-adr-obligations
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: All four language generators render from one golden model through checked-in
+    templates and reproduce their golden outputs; every binding returns the identical closed error
+    class for every corpus-v2 entry; a rehearsal diff that adds one operation passes
+    check-three-places while a diff that hand-edits an adapter fails it; and the generated
+    application packages shipped to clients/ and examples/ are byte-identical to before.
+  standing_design_tests:
+    interface_safety: Templates are data rendered offline in CI from a model the compiler owns;
+      no application input reaches a template, and generated facades still submit only typed
+      values through the one driver protocol core.
+    scale: Not applicable; generation cost is linear in module size and runs outside any daemon
+      or client process.
+  human_review_triggers: *id0179
+
+- id: WP-754
+  name: Executor-over-storage inversion and startup migration-driver relocation
+  depends_on: [WP-743, WP-745]
+  objective: Move composite-query execution and row-policy admission out of both concrete storage
+    backends into riffdb-query-executor, running over the storage-api readers plus one owned-snapshot
+    handle, and move the index-migration page/apply/finish loop out of storage-redb startup.rs behind
+    the ADR-0042 catalog-owned driver, with byte-exact page, cursor, count, and refusal parity proved
+    by recorded fixtures.
+  requirements: [DEP-001, DEP-002]
+  required_adrs: [ADR-0004, ADR-0035, ADR-0038, ADR-0042, ADR-0053, ADR-0111, ADR-0164,
+    ADR-0175, ADR-0180]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/0180-crate-dependency-direction-repair.md,
+    adr/README.md, Cargo.lock, crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-query-executor/**, crates/riffdb-query-ir/**,
+    crates/riffdb-catalog/**, crates/riffdb-policy/**, crates/riffdb-projection/**,
+    crates/riffdb-service/**, crates/riffdb-server/**, crates/riffdb-testkit/**, fixtures/**,
+    tests/**, scripts/**, docs/**]
+  deliverables:
+  - Recorded pre-inversion fixtures for every named-query, operational, provider, partition-set,
+    and admission-head shape (pages, cursors, counts, aggregates, typed refusals) checked in under
+    fixtures/ before any execution code moves
+  - One storage-api owned-snapshot handle pinning application head, index epochs, and provider
+    generations for one page and its continuation, exposed through the existing point, scan,
+    filtered-scan, snapshot, and fence readers with no policy, program, or executor type in its
+    signature
+  - QueryExecutionPort implemented once in riffdb-query-executor over that handle; the redb and
+    in-memory QueryExecutionPort implementations, RedbQueryView, and the executor imports in
+    query.rs, shared_ports.rs, consumer.rs, and application.rs removed; ADR-0111 admission applied
+    by the executor before any row, count, measure, or cursor is released
+  - Index-migration page, apply, and finish driving relocated behind the catalog-owned driver;
+    storage-redb startup.rs reduced to structural and historical evidence with its branded page,
+    point-read, and apply ports kept private
+  - Manifest edges from riffdb-storage-redb and riffdb-storage-memory to riffdb-query-executor,
+    riffdb-query-ir, riffdb-policy, and riffdb-projection removed; cargo machete clean
+  - Proofs storage_backends_depend_only_on_storage_api_types_proto_and_catalog_driver,
+    executor_owned_snapshot_pages_match_pre_inversion_fixtures, and
+    redb_startup_produces_evidence_only_and_drives_no_migration
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-api -p riffdb-storage-redb -p riffdb-storage-memory
+    -p riffdb-query-executor -p riffdb-catalog -p riffdb-service -p riffdb-server --all-features
+  - cargo +1.97.0 test --test operational_queries
+  - cargo +1.97.0 test --test storage_recovery_matrix
+  - cargo +1.97.0 machete
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-adr-obligations
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every recorded query fixture replays byte-identically through the executor over the
+    redb readers, neither backend manifest names an executor, query-IR, policy, or projection
+    dependency, startup.rs issues no migration instruction, and the recovery matrix, simulation
+    campaign, and migration gates pass unchanged.
+  standing_design_tests:
+    interface_safety: No public surface changes; the same compiler-sealed programs, bounds, cursors,
+      and authorization safe points execute from a different crate, and no row leaves the executor
+      before admission.
+    scale: The owned-snapshot handle is single-node and is the named reversible constraint; an
+      executor over narrow readers is the shape a remote reader needs, and no bound widens.
+  human_review_triggers: &id0180
+  - A page, cursor, count, aggregate, or typed refusal would differ from its recorded fixture.
+  - A policy context, executor type, or compiler plan would cross a storage-api trait.
+  - A storage encoding, key, journal frame, or durable record would change.
+  - A layer exception would be added to the crate-graph allow-list without an ADR number.
+
+- id: WP-755
+  name: Client, observability, and test-kit dependency splits
+  depends_on: [WP-754]
+  objective: Make riffdb-client-rust depend only on riffdb-proto, the Tonic client, and the ADR-0037
+    foundational crates, make riffdb-observability a leaf that defines the telemetry types its
+    consumers implement, and split riffdb-testkit into a core kit without server, cli, or service
+    edges plus riffdb-testkit-server that owns temporary servers and daemon-linked root tests.
+  requirements: [DEP-003, DEP-004, DEP-005]
+  required_adrs: [ADR-0037, ADR-0040, ADR-0041, ADR-0049, ADR-0180]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/0180-crate-dependency-direction-repair.md,
+    adr/README.md, Cargo.toml, Cargo.lock, crates/riffdb-proto/**, crates/riffdb-types/**,
+    crates/riffdb-api-grpc/**, crates/riffdb-client-rust/**, crates/riffdb-application/**,
+    crates/riffdb-observability/**, crates/riffdb-service/**, crates/riffdb-commit/**,
+    crates/riffdb-catalog/**, crates/riffdb-policy/**, crates/riffdb-conflict/**,
+    crates/riffdb-auth/**, crates/riffdb-api-mcp/**, crates/riffdb-server/**, crates/riffdb-cli/**,
+    crates/riffdb-mcp-stdio/**, crates/riffdb-driver-host/**, crates/riffdb-testkit/**,
+    crates/riffdb-testkit-server/**, crates/riffdb-sim/**, crates/riffdb-storage-memory/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-query-module/**, tests/**, fixtures/**,
+    scripts/**, docs/**]
+  deliverables:
+  - Generated Tonic service clients and DATABASE_METADATA_KEY moved into riffdb-proto behind a
+    client-only feature; riffdb-api-grpc consumes the same generated messages for the server side;
+    ApplicationPortabilityManifest moved to riffdb-types with its serialized form unchanged
+  - riffdb-client-rust manifest reduced to riffdb-proto, tonic, tonic-prost, riffdb-types,
+    riffdb-errors, riffdb-config, the exact ADR-0018 entropy edge, and the exact zeroize edge; the
+    riffdb-api-grpc and riffdb-application edges removed; generated Rust, Go, TypeScript, and
+    Python client packages unchanged at their public surface
+  - riffdb-observability reduced to riffdb-types, riffdb-errors, and tracing; telemetry event
+    enums, observer traits, health components, and metric names defined there and implemented or
+    emitted by service, commit, catalog, policy, conflict, auth, and MCP; server composition
+    unchanged in behavior
+  - riffdb-testkit retaining model, histories, failpoints, scratch, and inspection with no service,
+    server, or cli edge; new riffdb-testkit-server owning process harnesses, temporary servers, and
+    the thirty root [[test]] targets that link the daemon; policy, commit, conflict, storage, and
+    other leaf crates taking only the core kit as a dev-dependency
+  - Existing client and observability architecture tests replaced by cargo-metadata-driven proofs
+    client_depends_only_on_proto_tonic_types_errors_and_config and observability_is_a_leaf_crate
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-proto -p riffdb-client-rust -p riffdb-observability
+    -p riffdb-testkit -p riffdb-testkit-server -p riffdb-api-grpc -p riffdb-server --all-features
+  - cargo +1.97.0 test -p riffdb-policy -p riffdb-commit --no-run
+  - cargo +1.97.0 machete
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-application-bindings
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-adr-obligations
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: The client manifest names exactly the ADR-0180 section 4 allow-list, observability has
+    no edge above riffdb-errors, riffdb-policy and riffdb-commit test builds no longer link
+    riffdb-server, every generated client package and driver conformance corpus passes unchanged,
+    and the gRPC wire, descriptor, and fixture inventories are byte-identical.
+  standing_design_tests:
+    interface_safety: The SDK gains no authority-bearing dependency and loses transitive access to
+      compiler and server internals; generated packages keep their public surface.
+    scale: Telemetry types at the bottom of the graph are the shape a multi-process deployment
+      needs; nothing here assumes co-located storage or single-node memory.
+  human_review_triggers: *id0180
+
+- id: WP-756
+  name: Crate-graph enforcement, in-memory backend removal, storage-api trim, and build evidence
+  depends_on: [WP-755]
+  objective: Add the cargo-metadata crate-graph check with the ADR-0180 layered allow-list and
+    ADR-numbered exceptions, delete riffdb-storage-memory after moving its remaining consumers to a
+    storage-api reader fake, the testkit model, and the redb migration stage, trim riffdb-storage-api
+    to what redb, the reader fake, and the simulator consume, and record before/after rebuild and
+    link-time evidence.
+  requirements: [DEP-005, DEP-006]
+  required_adrs: [ADR-0004, ADR-0113, ADR-0124, ADR-0180]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/0180-crate-dependency-direction-repair.md,
+    adr/README.md, Cargo.toml, Cargo.lock, crates/**, tests/**, fixtures/**, scripts/**, docs/**,
+    release/version-topology-v1.json]
+  deliverables:
+  - scripts/check-crate-graph resolving the workspace with cargo metadata over every compile
+    target, rejecting any production or build edge that points upward or sideways across the nine
+    ADR-0180 layers, listing each exception with its ADR number, and failing on an exception
+    without one; invoked from scripts/check-workspace-policy and ci-all with a self-test that
+    injects one upward edge into a temporary manifest and expects rejection
+  - riffdb-storage-memory removed from the workspace, SPEC 5.1/5.2, EXPECTED_PACKAGES, and every
+    architecture-test ban list; tests/migrations gate B, gate C, model, and index-cover tests run
+    against the redb migration stage; executor unit tests run against a small storage-api reader
+    fake; the testkit authoritative model remains the independent oracle
+  - riffdb-storage-api trimmed to the traits, records, bounds, and codecs consumed by redb, the
+    reader fake, and riffdb-sim; removed traits and fixtures classified under ADR-0124 with no
+    durable, wire, or IR identity change
+  - Non-evidentiary receipt in docs/performance recording warm incremental rebuild after a
+    one-line riffdb-storage-api change and cargo test --no-run link time for riffdb-policy,
+    riffdb-commit, and riffdb-service before WP-754 and after this package on one host
+  - Proof check-crate-graph
+  acceptance_commands:
+  - cargo +1.97.0 test --workspace --all-features
+  - cargo +1.97.0 doc --workspace --no-deps
+  - cargo +1.97.0 deny check
+  - cargo +1.97.0 machete
+  - ./scripts/check-crate-graph
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-adr-obligations
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: The crate-graph check passes on the full workspace and rejects its injected
+    counterexample, the workspace has no riffdb-storage-memory member, every migration gate and
+    simulation campaign passes against redb, storage-api carries no trait without a consumer, and
+    the recorded rebuild and link-time receipt shows leaf-crate tests no longer linking the daemon.
+  standing_design_tests:
+    interface_safety: No application-facing surface changes; the check is a repository gate and
+      grants no runtime capability.
+    scale: Removing the second single-node backend removes an assumption rather than adding one;
+      the layered allow-list places readers below executors, which a remote reader requires.
+  human_review_triggers: *id0180
+
+- id: WP-757
+  name: Alpha format epoch 2 reset and one-identity-per-domain topology
+  depends_on: [WP-612, WP-578]
+  objective: Declare alpha format epoch 2 through the ADR-0112 ceremony, delete every superseded
+    decoder, fixture, generated artifact, and topology row while the pre-external window is open,
+    and make scripts/check-version-topology refuse a second readable identity per domain until the
+    first external database is registered.
+  requirements: [GOV-001, GOV-002, GOV-003, AFC-005, AFC-006, VER-005]
+  required_adrs: [ADR-0006, ADR-0112, ADR-0124, ADR-0181]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0181-pre-alpha-format-epoch-reset-and-governance-load.md, adr/README.md,
+    release/version-topology-v1.json, release/durable-format-manifest-v1.json,
+    release/RELEASE_NOTES.md, release/evidence/**, proto/**, crates/**, clients/**,
+    templates/**, examples/**, fixtures/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Epoch-2 writer declaration in the durable-format manifest, format marker, and release notes,
+    with RDB-FORMAT-0101 refusal of every epoch-1 database and the ceremony named as the sole
+    safe action
+  - Removal of every non-current reader, fixture, generated artifact, and topology identity across
+    durable, executable-IR, wire, protocol, application-artifact, generated-surface, and evidence
+    domains, with deleted Protobuf field numbers and enum values retained as reserved
+  - external_databases array in the version topology, the open-window single-identity and
+    active-only rules in scripts/check-version-topology, and their relaxation once the array is
+    nonempty, proved by
+    topology_refuses_second_readable_identity_before_external_database
+  - One real ceremony over a seeded TicketDesk epoch-1 database with export receipt, reimport
+    reconciliation, and full epoch-2 startup validation, proved by
+    epoch_two_ceremony_refuses_in_place_open_and_reconciles_reimport
+  - Inventory proof that no epoch-1 identity remains in fixtures/compatibility, the release
+    manifest, or the topology, proved by
+    epoch_two_fixture_inventory_contains_no_epoch_one_identity
+  - Handbook compatibility, upgrade, and known-limitations updates naming the epoch-2 posture
+  acceptance_commands:
+  - cargo +1.97.0 test --workspace --all-features
+  - ./scripts/check-version-topology
+  - ./scripts/check-durable-format-manifest
+  - ./scripts/check-generated
+  - ./scripts/release-poc --verify
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-adr-obligations
+  - ./scripts/handbook check
+  - ./scripts/downstream-adapter-check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every topology domain lists exactly one readable and one writable identity and they are
+    equal; the manifest reports one version per family; an epoch-1 database is refused in place and
+    crosses only through the ceremony with reconciled counts and hashes; the topology check fails
+    on a second identity while external_databases is empty and passes once it is not; no deleted
+    field number or enum value is reused.
+  standing_design_tests:
+    interface_safety: No application or agent surface gains an operation; the ceremony is
+      operator-only, refuses before mutation, and applications cannot select an epoch, decoder, or
+      fallback.
+    scale: One identity per domain is the starting state a billion-row tier would also want; the
+      ceremony is bounded by the existing export and reimport ceilings and assumes no co-located
+      storage.
+  human_review_triggers: &id0181
+  - A superseded identity would be retained as read_only or retirement_candidate instead of being
+    deleted, or a deleted field number, enum value, tag, or hash would be reused.
+  - An epoch-1 database would be opened, upgraded, or restored in place rather than crossing the
+    ceremony, or the ceremony would skip validation, backup, export, reconciliation, or retention.
+  - The external_databases array would be populated without an operator-provided digest, date,
+    and release label, or the single-identity rule would be relaxed while it is empty.
+  - A ledger entry, ADR section, or public handbook page would be exempted from the new checks
+    without a recorded reason.
+
+- id: WP-758
+  name: Obligations ledger closure and ADR form governance
+  depends_on: [WP-757]
+  objective: Discharge or strike all 144 entries in adr/obligations-outstanding.yaml, remove the
+    ledger, make scripts/check-adr-obligations reject any ledger, and add scripts/check-adr-form with
+    the repository glossary so ADR length, sections, and SPEC document-control rows are bounded.
+  requirements: [GOV-004, GOV-005]
+  required_adrs: [ADR-0156, ADR-0181]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/**, scripts/check-adr-obligations,
+    scripts/check-adr-form, scripts/ci-all, scripts/check-workspace-policy, .github/workflows/ci.yml,
+    docs/CONTRIBUTING.md, docs/architecture/**]
+  deliverables:
+  - A discharge record for every ledger entry, either an OBL declaration in its ADR header whose
+    proof exists in the tree or a one-line strike reason, with the ledger file removed at zero
+  - scripts/check-adr-obligations amended to fail on any ledger file or entry and on any undeclared
+    obligation, with a self-test proving both, proved by check-adr-obligations --self-test
+  - adr/GLOSSARY.md defining compiler-sealed, compiler-bounded, bounded, typed refusal,
+    least-sufficient, fail closed, admission-head fenced, rebuildable, epoch, generation, and
+    frontier once, with the ADR template referencing it
+  - scripts/check-adr-form, proved by check-adr-form, that warns above 260 lines, fails on a missing
+    or unknown section, and fails on a SPEC document-control row longer than one paragraph, wired
+    into scripts/ci-all and the CI workflow
+  - Contributing guidance stating that a new deferred obligation has exactly one form and that an
+    ADR whose proof cannot exist at acceptance registers its package first
+  acceptance_commands:
+  - ./scripts/check-adr-obligations
+  - ./scripts/check-adr-obligations --self-test
+  - ./scripts/check-adr-form
+  - ./scripts/check-requirement-coverage
+  - ./scripts/ci-all
+  exit_gate: adr/obligations-outstanding.yaml no longer exists, check-adr-obligations reports zero
+    acknowledged and zero undeclared obligations and fails when a ledger or undeclared obligation is
+    introduced, every ADR passes check-adr-form or carries only the length warning, and the
+    glossary is referenced by the template.
+  standing_design_tests:
+    interface_safety: Not applicable beyond one sentence; this package changes repository
+      governance scripts and records only and adds no application, operator, or agent surface.
+    scale: Not applicable; the package touches no storage, memory, or execution path.
+  human_review_triggers: *id0181
+
+- id: WP-759
+  name: Agent-audience handbook rewrite measured by campaign 04
+  depends_on: [WP-757, WP-758, WP-579]
+  objective: Rewrite docs/known-limitations.md as one sentence per limit, remove work-package and
+    ADR numbers from every public handbook page, revise the quickstarts in public vocabulary, and
+    prove the result with a sealed campaign-04 run against the stated time-to-first-row and rescue
+    targets.
+  requirements: [GOV-006, HBK-002, HBK-005, HBK-011]
+  required_adrs: [ADR-0056, ADR-0122, ADR-0181]
+  allowed_paths: [SPEC.md, work_packages.yaml, docs/**, scripts/handbook,
+    scripts/check-handbook-audience, scripts/check-handbook-source, scripts/ci-all,
+    evaluations/agent-application-alpha/**, release/evidence/**, fixtures/agent-guidance/**,
+    crates/riffdb-cli/src/scaffold.rs]
+  deliverables:
+  - docs/known-limitations.md rewritten as one sentence per limit grouped by task, using only
+    vocabulary defined in the handbook concept pages, with internal provenance moved to source
+    comments or excluded evidence pages
+  - Every non-excluded handbook page free of WP and ADR numbers, and the quickstarts and agent
+    guidance resource revised under the same rule with the same seeded examples
+  - scripts/check-handbook-audience, proved by check-handbook-audience, that fails on a WP or ADR
+    number in a public page or a multi-sentence limitation entry, wired into scripts/handbook check
+  - Campaign 04 under the campaign-03 bundle protocol with the rewritten handbook, its immutable
+    campaign file, and a receipt comparing median time to first committed row and total rescue
+    count against campaign 03 per language and brief cell, plus the published 25 percent
+    slowest-cell improvement goal
+  - Handbook publication of the epoch-2 compatibility posture in the same public vocabulary
+  acceptance_commands:
+  - ./scripts/handbook check
+  - ./scripts/check-handbook-audience
+  - ./scripts/agent-application-alpha-package-acceptance
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-adr-obligations
+  - ./scripts/check-adr-form
+  exit_gate: The limitations page has one sentence per entry, no public page carries a WP or ADR
+    number, the handbook builds and links cleanly, and the campaign-04 receipt shows median time to
+    first committed row and total rescue count not worse than campaign 03 on every retained cell;
+    a regression on either metric blocks closure.
+  standing_design_tests:
+    interface_safety: Documentation changes alter no public operation; the page rewrite cannot
+      describe proposed or deferred behavior as available and cannot expose values or credentials.
+    scale: Not applicable; the package changes documentation and evaluation receipts only.
+  human_review_triggers: *id0181
+
+- id: WP-760
+  name: Bounded dirty recovery, first-access row validation, background scrub, and public scrub
+  depends_on: [WP-704, WP-705]
+  objective: Make a startup without a valid clean-close certificate reach readiness through
+    journal-suffix recovery plus the bounded-root validation the clean path already performs,
+    with no population walk and a compiled recovery heap ceiling. Move exhaustive corruption
+    discovery to first access plus one background scrub with closed health states, and expose
+    the complete exact-end path as one authorized public offline scrub with a receipt.
+  requirements: [REC-005, REC-006, REC-007, REC-008, REC-001, REC-002, REC-004, PERF-014,
+    PERF-019]
+  required_adrs: [ADR-0019, ADR-0050, ADR-0073, ADR-0085, ADR-0156, ADR-0157, ADR-0163,
+    ADR-0165, ADR-0182]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0182-bounded-dirty-recovery-and-online-retention.md, adr/README.md,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**, crates/riffdb-server/**,
+    crates/riffdb-service/**, crates/riffdb-observability/**, crates/riffdb-cli/**,
+    crates/riffdb-sim/**, crates/riffdb-testkit/**, tests/**, fixtures/**, scripts/**,
+    benchmarks/**, release/**, docs/**]
+  deliverables:
+  - Dirty readiness path ordered as engine open, format identity, journal-frame recovery,
+    ADR-0156 section 5 bounded-root validation, dirty-generation consumption, readiness; the
+    complete exact-end evidence stream is not constructed on that path, and health keeps the
+    closed startup modes clean_certificate and complete_validation
+  - A source and test inventory proving every population row class already validates envelope,
+    checksum, canonical encoding, key identity, schema ownership, bounds, and reciprocal
+    evidence on first access, with fail-closed local checks added where a path relied on
+    startup; proof planted_row_corruption_fails_closed_on_first_access_after_dirty_startup
+  - A compiled 64 MiB recovery-owned state ceiling with a typed internal-defect refusal, no
+    population locator index on the dirty path, and the memory-bounded historical evidence
+    cursor retained for the scrub; proof dirty_startup_reaches_readiness_without_a_population_walk
+  - One background scrub over a least-authority reader with the closed scrub health component
+    (pending, running, complete, failed, cancelled), a rows-per-step rate bound, shutdown
+    cancellation, and incident-only failure handling; proof
+    background_scrub_health_transitions_are_closed_and_cancellable
+  - One authorized offline maintenance scrub operation on the ADR-0050 path, surfaced as
+    riffdb storage scrub, with a versioned bounded receipt beneath .maintenance and reuse by
+    backup verification, restore, upgrade, and retention preflight; proof
+    public_offline_scrub_drives_the_complete_validation_path
+  - PERF-013, PERF-014, and PERF-019 evidence reporting dirty-restart stages, total wall time,
+    and peak recovery heap separately at the 65,536-row and production-scale checkpoints plus
+    scrub rows per second, validated by scripts/check-dirty-recovery-evidence; handbook
+    startup-integrity, troubleshooting, and known-limitations updates
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-api -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test -p riffdb-server -p riffdb-service -p riffdb-observability -p riffdb-cli
+    --all-features
+  - cargo +1.97.0 test -p riffdb-storage-redb --test storage_recovery_matrix --all-features
+  - ./scripts/recovery_full
+  - ./scripts/check-dirty-recovery-evidence
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-adr-obligations
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: A real-daemon kill and reopen at the 65,536-row and production-scale checkpoints
+    reaches readiness with a pinned zero population-table enumeration count and peak
+    recovery-owned heap under 64 MiB; every planted population-row corruption reaches readiness
+    and then fails closed on first touch through read, mutation, delivery, projection, and
+    export; the background scrub and the public offline scrub both detect the same planted
+    defects; and repeated dirty restart creates no command, event, outcome, provenance, audit,
+    projection, outbox, or allocator advance.
+  standing_design_tests:
+    interface_safety: No public request, contract, flag, or transport option can skip
+      validation, force readiness, suppress the scrub, or obtain a storage handle; the only
+      public addition is an authorized operator operation that performs more validation and
+      one closed health component that exposes no hash, frontier, count, path, or key.
+    scale: The dirty path no longer walks or rewrites full state before serving and holds a
+      named 64 MiB ceiling regardless of population size; the scrub streams over a bounded
+      cursor and the ceiling is measured at production scale rather than assumed.
+  human_review_triggers: &id0182
+  - A validation currently performed before dirty readiness would be removed without an
+    equivalent fail-closed first-access check, or corruption would be reported as absence,
+    a business outcome, partial output, or automatic repair.
+  - A public option to skip validation, force readiness, suppress the scrub, or advance
+    retention past any fencing input would be introduced.
+  - A second writer, an exclusive lease on the online lane, a wall-clock retention target, or
+    a change to acknowledgement semantics, durable formats, or the hardened profile would be
+    introduced.
+  - Recovery-owned state would exceed the 64 MiB ceiling or a prune step would exceed 256
+    sequences or block the writer for more than one step.
+
+- id: WP-761
+  name: Online retention lane with complete fencing, crash matrix, and interference evidence
+  depends_on: [WP-760]
+  objective: Run watermark advancement, prune, and tombstone verification inside the running
+    process on a background maintenance lane that submits each bounded sub-range as one
+    administration-class transition to the sole ordered writer, under the complete fencing set
+    including registered follower frontiers, and prove every crash window and the interference
+    bound. The offline exclusive operation remains available and unchanged.
+  requirements: [STO-030, STO-031, STO-032, REC-001, REC-002]
+  required_adrs: [ADR-0061, ADR-0072, ADR-0085, ADR-0093, ADR-0101, ADR-0104, ADR-0178,
+    ADR-0182]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0182-bounded-dirty-recovery-and-online-retention.md, adr/README.md,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**, crates/riffdb-commit/**,
+    crates/riffdb-server/**, crates/riffdb-service/**, crates/riffdb-observability/**,
+    crates/riffdb-cli/**, crates/riffdb-sim/**, crates/riffdb-testkit/**, tests/**,
+    fixtures/**, scripts/**, benchmarks/**, release/**, docs/**]
+  deliverables:
+  - One background retention lane in the server that reads the complete fencing set
+    (projection frontiers, consumer low water, undelivered-outbox low water, staged migration
+    frontier, operator holds, and every registered follower's acknowledged frontier under its
+    hold budget) and refuses advancement on any unreadable, unvalidated, or
+    incarnation-mismatched source
+  - One administration-class prune transition submitted to the sole ordered writer that
+    atomically deletes at most 256 sequences, appends the tombstone, advances the watermark,
+    and deletes any validated-prefix checkpoint in the first step; no exclusive lease, no
+    second writer, and no journal rebase on the online path
+  - A riffdbd retention configuration expressed as retained-sequence count or hold, a
+    sequences-per-epoch progress budget, and closed lane health; application principals gain
+    no retention operation and the audited hold, detach, and reattach verbs are unchanged
+  - Process-kill and riffdb-sim seeded crash windows before, during, and after every step's
+    delete, tombstone append, watermark advance, and checkpoint deletion, plus fencing refusal
+    arms for every source including a lagging follower; proof
+    online_retention_crash_windows_recover_to_a_valid_watermark
+  - 32-client interactive interference evidence with the lane active against idle inside the
+    existing five-percent p95 no-regression bound, added to scripts/check-dirty-recovery-evidence
+    and the release evidence inventory; handbook operations, retention, backup, and
+    known-limitations updates removing the offline-only statements
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-api -p riffdb-storage-redb -p riffdb-commit
+    --all-features
+  - cargo +1.97.0 test -p riffdb-server -p riffdb-service -p riffdb-sim --all-features
+  - cargo +1.97.0 test -p riffdb-storage-redb --test storage_recovery_matrix --all-features
+  - ./scripts/recovery_full
+  - ./scripts/check-dirty-recovery-evidence
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-adr-obligations
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: A database under sustained 32-client load compacts history to its configured
+    retained-sequence target with no downtime, no exclusive lease, and p95 inside the
+    five-percent bound; every armed crash window reopens with a valid watermark, contiguous
+    tombstone chain, and allocator agreement and creates no command, event, outcome,
+    provenance, audit, projection, outbox, or allocator advance; pruning never crosses a
+    projection, consumer, outbox, migration, hold, or follower fence; and the offline
+    operation still passes its existing recovery matrix unchanged.
+  standing_design_tests:
+    interface_safety: Retention is driven only by configuration and the existing audited
+      operator verbs; no application principal can start, stop, target, or observe it beyond
+      closed health, and no fence can be bypassed from any surface.
+    scale: Compaction proceeds in bounded 256-sequence steps through the existing ordered
+      writer without whole-database exclusive access, and the fencing set includes replica
+      frontiers so the same rule holds with followers attached.
+  human_review_triggers: *id0182
+
+- id: WP-762
+  name: Dual-profile baseline bank under ADR-0171 and performance-package freeze
+  depends_on: [WP-674, WP-745]
+  objective: Bank one qualified interactive c32, write-only, and unary baseline receipt set on
+    both N1 and E2 under ADR-0171's gated-backend stability rule, then record the ADR-0183
+    performance-package freeze in the same change so the freeze starts from banked receipts rather
+    than the retained failed attempts.
+  requirements: [PERF-020, PERF-021, PERF-018]
+  required_adrs: [ADR-0123, ADR-0142, ADR-0143, ADR-0146, ADR-0171, ADR-0183]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0183-performance-package-freeze-and-durable-group-lever.md, adr/README.md,
+    benchmarks/**, scripts/**, release/evidence/**, docs/performance/**, docs/**]
+  deliverables:
+  - Interactive c32 and write-only concurrency-sweep receipts with three same-run 90-second
+    repetitions on N1 and E2, each carrying V2 host validity, correctness reconciliation, and
+    method.stability_rule_binds recorded as gated_backend
+  - Complete unary matrix on both profiles under ADR-0146 generations; the retained N1 column
+    from commit f4f03bae is reused only when its source, lock, harness, runner, and daemon
+    identities match the banked revision
+  - assemble-wp674-unary-manifest --require-both-profiles, which refuses an N1-only manifest or a
+    receipt whose stability rule is not bound to the gated backend
+  - scripts/check-performance-freeze with its self-test, wired into ci-all and the WP-762 and
+    WP-763 acceptance commands; the freeze record in work_packages.yaml names WP-750 and WP-760
+    as the lifting conditions
+  - SPEC 19.6 human-review trigger entry and docs/performance/wp-762-baseline-bank.md recording
+    receipt digests, the freeze start, and the exact c32, p95, seed, and unary values banked
+  acceptance_commands:
+  - ./benchmarks/run-app-baseline --full --load interactive --load-clients 32
+    --load-duration-secs 90 --load-warmup-secs 15 --reps 3 --require-stable
+  - ./benchmarks/run-app-baseline --full --load write_only --load-concurrency-sweep
+    --load-duration-secs 90 --load-warmup-secs 15 --reps 3 --require-stable
+  - ./benchmarks/run-wp674-unary-profile --profile n1
+  - ./benchmarks/run-wp674-unary-profile --profile e2
+  - ./scripts/assemble-wp674-unary-manifest --require-both-profiles
+  - ./scripts/check-wp674-unary-baseline
+  - ./scripts/check-wp623-performance-qualification
+  - ./scripts/check-performance-freeze --self-test
+  - ./scripts/check-performance-freeze
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-adr-obligations
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Both profiles hold qualified c32, write-only, and unary receipts bound to the
+    gated-backend rule with matching artifact identities; the freeze is recorded and its check
+    fails a synthetic frozen PERF package while passing WP-762 and WP-763; no performance value
+    moved upward relative to the WP-644 baseline without a receipted attribution.
+  standing_design_tests:
+    interface_safety: No application or operator surface changes; the package produces receipts
+      and a repository check, and no caller can select a stability rule, profile, or retry.
+    scale: Baselines are per inventoried single-node profile; the freeze check is a bounded read
+      of the manifest and does not grow with database size or command count.
+  human_review_triggers: &id0183
+  - A performance package other than WP-762 or WP-763 would be registered or activated before
+    WP-750 and WP-760 close, or the freeze would be lifted by anything other than an accepted ADR.
+  - A banked baseline value would be moved upward, a failed generation retried or replaced, or a
+    receipt banked without both inventoried profiles.
+  - PERF-009 acknowledgement, fence, or durability semantics would change, or any fsync, fence,
+    or acknowledgement would be elided or reordered.
+  - Group formation would wait for work that is not already admitted and prepared, or any
+    ceiling of DeferredCommandEpoch would widen.
+
+- id: WP-763
+  name: Durable-group formation from ready prepared work and its activation gate
+  depends_on: [WP-762, WP-640]
+  objective: Make every standard-profile epoch seal carry the complete already-admitted,
+    already-prepared command prefix up to the existing 256-transition and 16 MiB ceilings, fed
+    by WP-640's conflict-domain-parallel preparation mechanics, without any wait an idle singleton
+    or a contended dispatch can observe, then activate only under ADR-0183's fixed arithmetic on
+    both profiles or remove the candidate.
+  requirements: [PERF-022, PERF-008, PERF-007]
+  required_adrs: [ADR-0059, ADR-0098, ADR-0101, ADR-0104, ADR-0129, ADR-0142, ADR-0171,
+    ADR-0183]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0183-performance-package-freeze-and-durable-group-lever.md, adr/README.md,
+    crates/riffdb-commit/**, crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-server/**, crates/riffdb-service/**, crates/riffdb-testkit/**,
+    benchmarks/**, scripts/**, release/evidence/**, tests/**, docs/performance/**, docs/**]
+  deliverables:
+  - Seal-edge group formation in riffdb-commit that drains only the contiguous prepared prefix
+    within DeferredCommandEpoch ceilings, keeps the immediate one-phase path for an idle
+    singleton, and retains the 200 µs OLDEST_GROUPABLE_TRANSITION_MAX_AGE as the only age bound;
+    proofs idle_singleton_seals_without_group_formation_wait and
+    group_formation_drains_only_prepared_prefix_within_ceilings under deterministic schedules
+    with the ADR-0129 frontier-equivalence assertion at every epoch boundary
+  - Fixed-cardinality commands-per-durable-flush histogram and ceiling-reached counter in the
+    graceful-shutdown census, proved by shutdown_evidence_reports_commands_per_durable_flush on
+    both durability profiles
+  - scripts/check-durable-group-activation with --self-test covering pass-both, miss-N1, miss-E2,
+    unary-regression, and write-only-regression receipts; activation requires c32 throughput at
+    least 0.90 times and p95 at most 1.25 times same-run safe PostgreSQL on both profiles, write-
+    only p95 within five percent of the WP-762 bank, and every unary p50/p95 within 1.10 times
+    its low-water baseline
+  - Candidate receipts on N1 and E2 retaining group-size, frame-byte, physical-fence, and
+    ordered-fence-latency evidence; unchanged crash, recovery, replay, uncertainty, and
+    storage-recovery matrices run against the candidate before any activation receipt
+  - docs/performance/wp-763-durable-group-lever.md with the activation or removal verdict; a
+    missed gate on either profile removes the candidate code before merge
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-commit -p riffdb-storage-api -p riffdb-storage-redb
+    -p riffdb-server -p riffdb-service --all-features
+  - cargo +1.97.0 test -p riffdb-storage-redb --test storage_recovery_matrix
+  - cargo +1.97.0 test -p riffdb-testkit --test bulk_command_recovery
+  - ./benchmarks/run-app-baseline --full --load interactive --load-clients 32
+    --load-duration-secs 90 --load-warmup-secs 15 --reps 3 --require-stable
+  - ./benchmarks/run-app-baseline --full --load write_only --load-concurrency-sweep
+    --load-duration-secs 90 --load-warmup-secs 15 --reps 3 --require-stable
+  - ./benchmarks/run-wp674-unary-profile --profile n1
+  - ./benchmarks/run-wp674-unary-profile --profile e2
+  - ./scripts/check-durable-group-activation --self-test
+  - ./scripts/check-durable-group-activation
+  - ./scripts/check-performance-freeze
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-adr-obligations
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: The candidate either activates with both-profile receipts satisfying every ADR-0183
+    section 4 gate and no crash, recovery, replay, uncertainty, or write-p95 regression, or is
+    removed with its verdict recorded; in both outcomes an idle singleton seals immediately,
+    group formation never exceeds a ceiling or waits for unprepared work, and commands per
+    durable flush are reported in shutdown evidence.
+  standing_design_tests:
+    interface_safety: Applications cannot select group size, wait, fence, durability, or
+      activation; acknowledgement still follows the covering durable fence and no partial epoch
+      is observable.
+    scale: Formation is bounded by first-party ceilings and named per conflict domain, so it
+      applies unchanged to a future per-domain leader and holds no state proportional to load.
+  human_review_triggers: *id0183
+
+- id: WP-764
+  name: Panic-lint gates, allowance ledger, and the writer fail-fast proof
+  depends_on: [WP-580, WP-640]
+  objective: Deny unwrap, expect, panic, and unreachable on the library targets of the five durable
+    crates, convert or reason every surviving site, give the generators one infallible writer, and
+    prove that a writer-thread panic stops the coordinator and exits riffdbd nonzero.
+  requirements: [TEST-002]
+  required_adrs: [ADR-0012, ADR-0058, ADR-0101, ADR-0104, ADR-0184]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0184-panic-discipline-test-economics-and-coordinator-simulation.md, adr/README.md,
+    Cargo.toml, crates/riffdb-commit/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-service/**, crates/riffdb-server/**,
+    crates/riffdb-query-module/**, crates/riffdb-testkit/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Crate-level `[lints.clippy]` deny for unwrap_used, expect_used, panic, and unreachable on
+    the library targets of riffdb-commit, riffdb-storage-api, riffdb-storage-redb,
+    riffdb-service, and riffdb-server, with test, example, and bench targets exempt
+  - Every surviving site converted to a typed error or kept behind `#[expect(..., reason)]`
+    naming the invariant; no crate-level blanket allow; `scripts/check-panic-allowances`
+    prints the ledger and fails on an allowance without a reason
+  - One infallible string-write helper in riffdb-query-module used by the Rust, Go, Python, and
+    TypeScript generators; architecture test
+    `generators_use_the_infallible_writer_and_carry_no_fmt_expect`; generated fixtures byte-identical
+  - Test-only writer failpoint and root integration test
+    `writer_thread_panic_stops_the_coordinator_and_exits_the_daemon_nonzero` owned by
+    riffdb-server, asserting no acknowledgement after the panic, a typed unavailable outcome
+    for a later submission, and nonzero daemon exit within the drain deadline
+  acceptance_commands:
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  - ./scripts/check-panic-allowances
+  - cargo +1.97.0 test -p riffdb-commit -p riffdb-storage-api -p riffdb-storage-redb
+    -p riffdb-service -p riffdb-server -p riffdb-query-module --all-features
+  - cargo +1.97.0 test -p riffdb-server --test writer_fail_fast
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-adr-obligations
+  - cargo +1.97.0 fmt --all -- --check
+  exit_gate: The five durable crates compile with the four panic lints denied, every allowance
+    carries a reason the ledger script accepts, generated artifacts are byte-identical, and a
+    forced writer-thread panic yields no acknowledgement, a typed refusal, and nonzero exit.
+  standing_design_tests:
+    interface_safety: No public surface changes; the writer failpoint exists only under a test
+      feature and cannot be selected by configuration, request, or environment in a release
+      binary.
+    scale: Lint levels and the fail-fast path are process-local and independent of database
+      size; no population walk or in-memory state is introduced.
+  human_review_triggers: &id0184
+  - A panic-capable call would be kept in a durable crate without a reason naming the invariant,
+    or a crate-level blanket allowance would be introduced.
+  - The daemon would continue acknowledging commands or reporting readiness after the writer
+    panic flag is set, or the fail-fast test would be weakened to a log assertion.
+  - A production crate would gain a dependency on riffdb-sim, a test clock, or a seed source.
+  - A rename, lint, or CI change would alter any durable byte, artifact hash, or public protocol.
+
+- id: WP-765
+  name: Partitioned nextest execution and recorded CI wall time
+  depends_on: [WP-764]
+  objective: Replace the single workspace test job with four fixed cargo-nextest partitions, prove
+    every test target is scheduled exactly once, and record the measured wall time before and
+    after with a target in release evidence.
+  requirements: [TEST-003]
+  required_adrs: [ADR-0184]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0184-panic-discipline-test-economics-and-coordinator-simulation.md, adr/README.md,
+    .github/workflows/**, .config/**, Cargo.toml, scripts/**, release/evidence/**, docs/**]
+  deliverables:
+  - Nextest configuration in .config/nextest.toml with the pinned nextest version in `scripts/tool-versions`, four
+    hash-based partitions, and per-test timeouts matching the existing slowest root targets
+  - CI workflow change running one job per partition on the pinned toolchain, each writing its
+    measured wall time to the job summary; `cargo test --workspace --all-features` retained in
+    `scripts/ci-all`
+  - Coverage script scripts/check-test-partition-coverage enumerating every test target from `cargo metadata`
+    and asserting each is scheduled exactly once across the partitions, including all root
+    `[[test]]` targets owned by riffdb-testkit and riffdb-server
+  - Evidence file release/evidence/ci-wall-time-v1.json recording the single-job baseline measured before
+    this package, the per-partition times after, and the 20-minute longest-partition target
+  acceptance_commands:
+  - ./scripts/check-test-partition-coverage
+  - cargo +1.97.0 nextest run --workspace --all-features --partition hash:1/4
+  - cargo +1.97.0 test --workspace --all-features
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-adr-obligations
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Four partition jobs pass on CI, the coverage script proves exactly-once scheduling
+    of every test target, and the evidence file holds a measured before and after with the
+    longest partition and the target stated.
+  standing_design_tests:
+    interface_safety: CI layout is repository policy with no application-facing surface.
+    scale: Partition count is fixed and discovered targets are hashed, so adding crates or
+      tests requires no manual shard maintenance.
+  human_review_triggers: *id0184
+
+- id: WP-766
+  name: Deterministic coordinator simulation
+  depends_on: [WP-583, WP-764]
+  objective: Deliver ADR-0113 Phase 2 in riffdb-sim by composing SimDisk, the riffdb-conflict
+    deterministic scheduler, and a seeded step scheduler over admission, preparation, epoch seal,
+    fence, publication, completion, and changelog emission with crash points, checked against
+    the testkit model after every recovery.
+  requirements: [SIM-008, SIM-009]
+  required_adrs: [ADR-0058, ADR-0095, ADR-0098, ADR-0101, ADR-0104, ADR-0113, ADR-0184]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0184-panic-discipline-test-economics-and-coordinator-simulation.md, adr/README.md,
+    crates/riffdb-sim/**, crates/riffdb-commit/**, crates/riffdb-conflict/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-testkit/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Monotonic-time port for the coalescing decisions in riffdb-commit audit_executor with an
+    unchanged production implementation and a harness-driven implementation under test only
+  - Seeded coordinator step scheduler in riffdb-sim choosing lane interleavings and crash
+    placement from the seed alone, with every decision folded into the versioned trace digest
+  - Digest proof coordinator_interleaving_decisions_feed_the_digest proving byte-identical digests per seed
+    and distinct digests when any scheduling or crash decision changes
+  - Recovery proof every_coordinator_crash_window_recovers_to_the_model proving startup validation passes and
+    state equals AuthoritativeCommandModel at the recovered frontier for every crash point,
+    including seal-to-fence and fence-to-publication windows; model extended where narrower
+  - Retained Phase-2 corpus replayed per merge under the existing seeded-campaign harness; the
+    existing `no_production_crate_depends_on_the_simulator` test remains green
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-sim -p riffdb-commit -p riffdb-conflict --all-features
+  - cargo +1.97.0 test -p riffdb-sim --test seeded_campaign
+  - cargo +1.97.0 test -p riffdb-sim --test architecture
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-adr-obligations
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: One seed reproduces one digest, any decision change produces a different digest,
+    every seeded coordinator crash window recovers to the model, and riffdb-sim remains absent
+    from every production dependency graph.
+  standing_design_tests:
+    interface_safety: The time port and step scheduler are test seams; a release binary carries
+      only the wall-clock implementation and no seed, schedule, or failpoint selector.
+    scale: The harness bounds concurrent commands and crash schedules and inherits Phase 1's
+      bounded disk; it assumes single-node composition exactly as ADR-0113 already does.
+  human_review_triggers: *id0184
+
+- id: WP-767
+  name: Reactive-syntax crate rename and file-size guard
+  depends_on: [WP-764]
+  objective: Rename riffdb-query-syntax to riffdb-reactive-syntax with byte-identical reactive
+    artifacts, and add a file-size guard that reports growth above 6,000 lines and refuses growth
+    of any file already above 10,000 lines, wired into the consolidation packages and ci-all.
+  requirements: [TEST-004]
+  required_adrs: [ADR-0184]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0184-panic-discipline-test-economics-and-coordinator-simulation.md, adr/README.md,
+    Cargo.toml, Cargo.lock, crates/riffdb-query-syntax/**, crates/riffdb-reactive-syntax/**,
+    crates/riffdb-query-compiler/**, crates/riffdb-query-module/**, fixtures/**, scripts/**,
+    release/version-topology-v1.json, docs/**]
+  deliverables:
+  - Package, directory, import, workspace-policy, and handbook crate-inventory rename to
+    riffdb-reactive-syntax with REACTIVE_GRAMMAR_VERSION_V1 and every fixture unchanged
+  - Byte-identity proof reactive_module_artifacts_are_byte_identical_after_rename regenerating reactive-module
+    fixtures through the renamed crate and diffing against the checked-in bytes
+  - Guard script scripts/check-file-size-guard reporting non-generated Rust files above 6,000 lines,
+    failing when a file above 10,000 lines has grown relative to the merge base, with a
+    self-test that fabricates a grown file and proves refusal
+  - Guard added to `scripts/ci-all` and to the acceptance commands of the ADR-0179 and ADR-0180
+    packages that touch the six largest files
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-reactive-syntax -p riffdb-query-compiler
+    -p riffdb-query-module --all-features
+  - ./scripts/check-file-size-guard
+  - ./scripts/check-file-size-guard --self-test
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-adr-obligations
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: The workspace builds with riffdb-reactive-syntax and without riffdb-query-syntax,
+    reactive fixtures are byte-identical, and the size guard refuses a fabricated growth of a
+    file above 10,000 lines while passing the current tree.
+  standing_design_tests:
+    interface_safety: A crate rename and a repository script expose nothing to applications.
+    scale: Not applicable; the guard reads source files and no database state.
+  human_review_triggers: *id0184
+

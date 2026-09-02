@@ -196,6 +196,13 @@ direction, merged draft, or implementation choice.
 | [0175](0175-bounded-partition-set-operational-queries.md) | Bounded Partition-Set Operational Queries | Accepted |
 | [0176](0176-compiler-bounded-large-atomic-command-envelope.md) | Compiler-Bounded Large Atomic Command Envelope | Accepted |
 | [0177](0177-compiler-bounded-high-cardinality-atomic-collections.md) | Compiler-Bounded High-Cardinality Atomic Collections | Accepted |
+| [0178](0178-follower-activation-and-changelog-derived-backup.md) | Follower Activation and Changelog-Derived Incremental Backup | Accepted |
+| [0179](0179-generated-public-surface-adapters-and-operation-registry.md) | Generated Public-Surface Adapters and the Operation Registry | Accepted |
+| [0180](0180-crate-dependency-direction-repair.md) | Crate Dependency Direction Repair | Accepted |
+| [0181](0181-pre-alpha-format-epoch-reset-and-governance-load.md) | Pre-Alpha Format Epoch Reset and Governance Load | Accepted |
+| [0182](0182-bounded-dirty-recovery-and-online-retention.md) | Bounded Dirty Recovery and Online Retention | Accepted |
+| [0183](0183-performance-package-freeze-and-durable-group-lever.md) | Performance Package Freeze and the Durable-Group Lever | Accepted |
+| [0184](0184-panic-discipline-test-economics-and-coordinator-simulation.md) | Panic Discipline, Test Economics, and Coordinator Simulation | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
