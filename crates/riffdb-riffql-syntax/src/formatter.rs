@@ -114,6 +114,15 @@ pub fn format_query(document: &Document) -> String {
             binding.entity.value.as_str()
         )
         .expect("String writes cannot fail");
+        if let Some(expansion) = &binding.expansion {
+            writeln!(
+                output,
+                "        for each {} in {}",
+                expansion.item.value.as_str(),
+                expansion.binding.value.as_str()
+            )
+            .expect("String writes cannot fail");
+        }
         writeln!(
             output,
             "        where {}",
@@ -201,6 +210,9 @@ pub fn format_query(document: &Document) -> String {
                 format_expression(&take.limit.value, 0)
             )
             .expect("String writes cannot fail");
+            if let Some(per) = &take.per {
+                write!(output, " per {}", per.value.as_str()).expect("String writes cannot fail");
+            }
             if let Some(after) = &take.after {
                 write!(output, " after ${}", after.value.as_str())
                     .expect("String writes cannot fail");

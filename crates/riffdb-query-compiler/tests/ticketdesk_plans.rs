@@ -338,6 +338,7 @@ fn list_and_detail_choose_expected_physical_accesses() {
         .map(|step| match step.access() {
             QueryAccessKind::Point { .. } => 1,
             QueryAccessKind::Index { .. }
+            | QueryAccessKind::ExpansionIndex { .. }
             | QueryAccessKind::PartitionSetIndex { .. }
             | QueryAccessKind::DependentPointBatch { .. } => step.maximum_rows(),
             QueryAccessKind::Nearest { .. } => 0,

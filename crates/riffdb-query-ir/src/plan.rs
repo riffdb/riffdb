@@ -440,6 +440,23 @@ pub enum QueryAccessKind {
         /// Whole-index traversal direction.
         direction: AccessDirection,
     },
+    /// One declared same-partition index repeated for every row of an earlier bounded binding.
+    ExpansionIndex {
+        /// Exact contract index name.
+        index: String,
+        /// Index fields in contract order.
+        fields: Vec<String>,
+        /// Whole-index traversal direction for each driver row.
+        direction: AccessDirection,
+        /// Earlier bounded collection supplying driver rows.
+        driver_binding: String,
+        /// Singular source name used in the compiled predicate and result nesting.
+        driver_item: String,
+        /// Maximum target rows admitted for each driver row.
+        per_driver_maximum: u32,
+        /// Maximum target rows across the complete driver binding.
+        product_maximum: u64,
+    },
     /// One declared partition-prefixed index replicated over a bounded route set.
     PartitionSetIndex {
         /// Exact contract index name.
@@ -773,6 +790,35 @@ impl QueryAccessStep {
                                 | QueryPredicateOperator::Exists
                                 | QueryPredicateOperator::Prefix
                         )
+                    })
+            }
+            QueryAccessKind::ExpansionIndex {
+                index,
+                fields,
+                driver_binding,
+                driver_item,
+                per_driver_maximum,
+                product_maximum,
+                ..
+            } => {
+                !index.is_empty()
+                    && !fields.is_empty()
+                    && !driver_binding.is_empty()
+                    && !driver_item.is_empty()
+                    && *per_driver_maximum > 0
+                    && *product_maximum == maximum_rows
+                    && *product_maximum >= u64::from(*per_driver_maximum)
+                    && cardinality == Cardinality::Many
+                    && cursor_parameter.is_none()
+                    && dependencies.binary_search(driver_binding).is_ok()
+                    && predicates.iter().any(|predicate| {
+                        fields.contains(&predicate.field)
+                            && predicate.operator == QueryPredicateOperator::Equal
+                            && matches!(
+                                &predicate.value,
+                                QueryPredicateValue::BindingField { binding, .. }
+                                    if binding == driver_binding
+                            )
                     })
             }
             QueryAccessKind::LongPatternCandidate { provider, pattern } => {
@@ -1446,6 +1492,12 @@ impl QueryAccessProgramV1 {
             partition_set_ir_version(&self.steps)
         } else if self.surface.ir_version() == crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1 {
             crate::QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1
+        } else if self
+            .steps
+            .iter()
+            .any(|step| matches!(step.access, QueryAccessKind::ExpansionIndex { .. }))
+        {
+            crate::QUERY_IR_VERSION_RELATIONAL_OPERATORS_V1
         } else if self.surface.has_bounded_limit() {
             crate::QUERY_IR_VERSION_BOUNDED_LIMIT_V1
         } else if self.projected_source.is_some() {
@@ -1532,6 +1584,7 @@ fn partition_route_composition_is_valid(
                 }
                 QueryAccessKind::Point { .. }
                 | QueryAccessKind::DependentPointBatch { .. }
+                | QueryAccessKind::ExpansionIndex { .. }
                 | QueryAccessKind::Nearest { .. } => false,
             }
     })
@@ -1551,8 +1604,13 @@ fn relationship_composition_is_valid(steps: &[QueryAccessStep]) -> bool {
         for predicate in &step.predicates {
             match &predicate.value {
                 QueryPredicateValue::BindingField { binding, .. } => {
+                    let expansion_driver = matches!(
+                        &step.access,
+                        QueryAccessKind::ExpansionIndex { driver_binding, .. }
+                            if driver_binding == binding
+                    );
                     if prior.get(binding.as_str()).is_none_or(|source| {
-                        source.cardinality == Cardinality::Many
+                        (source.cardinality == Cardinality::Many && !expansion_driver)
                             || !step.dependencies.contains(binding)
                     }) {
                         return false;
@@ -1577,6 +1635,23 @@ fn relationship_composition_is_valid(steps: &[QueryAccessStep]) -> bool {
                 source.cardinality != Cardinality::Many
                     || source.maximum_rows < step.maximum_rows
                     || !step.dependencies.contains(source_binding)
+            })
+        {
+            return false;
+        }
+        if let QueryAccessKind::ExpansionIndex {
+            driver_binding,
+            per_driver_maximum,
+            product_maximum,
+            ..
+        } = &step.access
+            && prior.get(driver_binding.as_str()).is_none_or(|source| {
+                source.cardinality != Cardinality::Many
+                    || source
+                        .maximum_rows
+                        .checked_mul(u64::from(*per_driver_maximum))
+                        != Some(*product_maximum)
+                    || !step.dependencies.contains(driver_binding)
             })
         {
             return false;
@@ -1787,6 +1862,27 @@ fn encode_program(
                     AccessDirection::Forward => 1,
                     AccessDirection::Reverse => 2,
                 });
+            }
+            QueryAccessKind::ExpansionIndex {
+                index,
+                fields,
+                direction,
+                driver_binding,
+                driver_item,
+                per_driver_maximum,
+                product_maximum,
+            } => {
+                out.push(8);
+                write_text(&mut out, index)?;
+                write_strings(&mut out, fields)?;
+                out.push(match direction {
+                    AccessDirection::Forward => 1,
+                    AccessDirection::Reverse => 2,
+                });
+                write_text(&mut out, driver_binding)?;
+                write_text(&mut out, driver_item)?;
+                out.extend_from_slice(&per_driver_maximum.to_be_bytes());
+                out.extend_from_slice(&product_maximum.to_be_bytes());
             }
             QueryAccessKind::PartitionSetIndex {
                 index,
@@ -2086,6 +2182,20 @@ fn build_explain(
                 index, direction, ..
             } => format!(
                 "index {index} {}",
+                match direction {
+                    AccessDirection::Forward => "forward",
+                    AccessDirection::Reverse => "reverse",
+                }
+            ),
+            QueryAccessKind::ExpansionIndex {
+                index,
+                direction,
+                driver_binding,
+                per_driver_maximum,
+                product_maximum,
+                ..
+            } => format!(
+                "expansion index {index} {} from {driver_binding} per {per_driver_maximum} product {product_maximum}",
                 match direction {
                     AccessDirection::Forward => "forward",
                     AccessDirection::Reverse => "reverse",

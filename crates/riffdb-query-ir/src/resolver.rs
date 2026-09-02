@@ -506,6 +506,7 @@ struct Resolver<'a> {
     // participate in provider checks identically.
     parameter_value_types: BTreeMap<String, ValueType>,
     bindings: BTreeMap<String, ResolvedBinding<'a>>,
+    expansion_drivers: BTreeMap<String, String>,
     candidates: BTreeMap<String, CandidateBindingV1>,
     candidate_consumers: BTreeMap<String, usize>,
     aggregates: BTreeMap<String, ResolvedAggregateSelection>,
@@ -520,6 +521,7 @@ impl<'a> Resolver<'a> {
             parameters: BTreeMap::new(),
             parameter_value_types: BTreeMap::new(),
             bindings: BTreeMap::new(),
+            expansion_drivers: BTreeMap::new(),
             candidates: BTreeMap::new(),
             candidate_consumers: BTreeMap::new(),
             aggregates: BTreeMap::new(),
@@ -727,6 +729,7 @@ impl<'a> Resolver<'a> {
         }
 
         let mut binding_symbols = Vec::with_capacity(document.body.bindings.len());
+        let mut expanded_bindings = BTreeSet::new();
         for binding in &document.body.bindings {
             let name = binding.name.value.as_str();
             if self.bindings.contains_key(name)
@@ -793,7 +796,68 @@ impl<'a> Resolver<'a> {
                 },
             );
             binding_symbols.push(symbol);
-            self.resolve_expression(&binding.predicate.value, binding.predicate.span, entity)?;
+            if let Some(expansion) = &binding.expansion {
+                let driver_name = expansion.binding.value.as_str();
+                let driver = self.bindings.get(driver_name).cloned().ok_or_else(|| {
+                    self.diagnostic(
+                        QueryDiagnosticCode::InvalidPath,
+                        expansion.binding.span,
+                        vec![driver_name.to_owned()],
+                        "expansion driver must name an earlier binding",
+                    )
+                })?;
+                if driver.symbol.cardinality != Cardinality::Many || driver.take.is_none() {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::InvalidPath,
+                        expansion.binding.span,
+                        vec![driver_name.to_owned()],
+                        "expansion driver must be an earlier bounded many binding",
+                    ));
+                }
+                if expanded_bindings.contains(driver_name) {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::InvalidPath,
+                        expansion.binding.span,
+                        vec![driver_name.to_owned()],
+                        "relational expansion depth is limited to one",
+                    ));
+                }
+                let item_name = expansion.item.value.as_str();
+                if self.bindings.contains_key(item_name)
+                    || self.parameters.contains_key(item_name)
+                    || self.candidates.contains_key(item_name)
+                {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::DuplicateName,
+                        expansion.item.span,
+                        vec![item_name.to_owned()],
+                        "expansion item duplicates a query-local name",
+                    ));
+                }
+                self.push_map(
+                    expansion.item.span,
+                    SourceSymbolKind::Binding,
+                    vec![driver_name.to_owned()],
+                )?;
+                self.push_map(
+                    expansion.binding.span,
+                    SourceSymbolKind::Binding,
+                    vec![driver_name.to_owned()],
+                )?;
+                self.bindings.insert(item_name.to_owned(), driver);
+                let resolved = self.resolve_expression(
+                    &binding.predicate.value,
+                    binding.predicate.span,
+                    entity,
+                );
+                self.bindings.remove(item_name);
+                resolved?;
+                self.expansion_drivers
+                    .insert(name.to_owned(), driver_name.to_owned());
+                expanded_bindings.insert(name.to_owned());
+            } else {
+                self.resolve_expression(&binding.predicate.value, binding.predicate.span, entity)?;
+            }
         }
 
         for candidate in &candidate_symbols {
@@ -1900,6 +1964,16 @@ impl<'a> Resolver<'a> {
                     "unknown nested selection binding or aggregate",
                 )
             })?;
+            if let Some(driver) = self.expansion_drivers.get(binding_name)
+                && context.map(|parent| parent.symbol.name.as_str()) != Some(driver.as_str())
+            {
+                return Err(self.diagnostic(
+                    QueryDiagnosticCode::InvalidPath,
+                    field.source.span,
+                    vec![driver.clone(), binding_name.clone()],
+                    "expanded binding must be nested directly under its declared driver",
+                ));
+            }
             let nested_fields = self.resolve_selection(nested, Some(&binding), result_path)?;
             let record = NamedTypeSchema::Record(nested_fields);
             self.push_map(

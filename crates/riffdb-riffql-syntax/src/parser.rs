@@ -2,18 +2,18 @@ use crate::lexer::{Token, TokenKind, lex};
 use crate::{
     AggregateBinding, AggregateFunction, AggregateMeasure, BinaryOperator, Binding,
     CandidateBinding, CandidateSetExpression, CandidateSource, Cardinality, DiagnosticCode,
-    Direction, Document, Expression, FieldSelection, Identifier, Literal, MAX_AGGREGATE_BINDINGS,
-    MAX_AGGREGATE_GROUP_KEYS, MAX_AGGREGATE_MEASURES, MAX_BINDINGS, MAX_CANDIDATE_SOURCES,
-    MAX_COLLECTION_ITEMS, MAX_NESTING, MAX_PROJECTED_CAUSAL_WAIT_MS, MAX_PROJECTED_LAG_MS,
-    MAX_SYNTAX_ITEMS, NullPlacement, OrderTerm, Parameter, ParseDiagnostic, ParseDiagnostics, Path,
-    ProjectedFreshness, ProjectedSource, QueryBody, RIFFQL_LANGUAGE_VERSION,
-    RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1, RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1,
-    RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1, RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1,
-    RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1, RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1,
-    RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1, RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1,
-    RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1, RIFFQL_LANGUAGE_VERSION_TOKENIZED_TEXT_V1, Selection,
-    Span, Spanned, Take, TokenizedMatchClause, TokenizedMatchKind, TokenizedRanking, TypeReference,
-    UnaryOperator,
+    Direction, Document, ExpansionDriver, Expression, FieldSelection, Identifier, Literal,
+    MAX_AGGREGATE_BINDINGS, MAX_AGGREGATE_GROUP_KEYS, MAX_AGGREGATE_MEASURES, MAX_BINDINGS,
+    MAX_CANDIDATE_SOURCES, MAX_COLLECTION_ITEMS, MAX_NESTING, MAX_PROJECTED_CAUSAL_WAIT_MS,
+    MAX_PROJECTED_LAG_MS, MAX_SYNTAX_ITEMS, NullPlacement, OrderTerm, Parameter, ParseDiagnostic,
+    ParseDiagnostics, Path, ProjectedFreshness, ProjectedSource, QueryBody,
+    RIFFQL_LANGUAGE_VERSION, RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1,
+    RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1, RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1,
+    RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1, RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1,
+    RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1, RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1,
+    RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1, RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1,
+    RIFFQL_LANGUAGE_VERSION_TOKENIZED_TEXT_V1, Selection, Span, Spanned, Take,
+    TokenizedMatchClause, TokenizedMatchKind, TokenizedRanking, TypeReference, UnaryOperator,
 };
 
 /// Parses one UTF-8 RiffQL source document in a supported language version.
@@ -162,7 +162,13 @@ impl Parser {
         let bounded_set = parameters
             .iter()
             .any(|parameter| type_contains_bounded_set(&parameter.ty.value));
-        let language_version = if bounded_set {
+        let language_version = if body
+            .bindings
+            .iter()
+            .any(|binding| binding.expansion.is_some())
+        {
+            crate::RIFFQL_LANGUAGE_VERSION_RELATIONAL_OPERATORS_V1
+        } else if bounded_set {
             crate::RIFFQL_LANGUAGE_VERSION_PARTITION_SET_V1
         } else if body
             .bindings
@@ -597,6 +603,19 @@ impl Parser {
         let name = self.identifier()?;
         self.expect_word("from")?;
         let entity = self.identifier()?;
+        let expansion = if let Some(start) = self.take_word("for") {
+            self.expect_word("each")?;
+            let item = self.identifier()?;
+            self.expect_word("in")?;
+            let binding = self.identifier()?;
+            Some(ExpansionDriver {
+                item,
+                binding,
+                span: self.span_from(start.start as usize),
+            })
+        } else {
+            None
+        };
         self.expect_word("where")?;
         let predicate = self.expression(0)?;
         let tokenized_match = if let Some(start) = self.take_word("matching") {
@@ -726,6 +745,11 @@ impl Parser {
         }
         let take = if self.take_word("take").is_some() {
             let limit = self.take_limit()?;
+            let per = if self.take_word("per").is_some() {
+                Some(self.identifier()?)
+            } else {
+                None
+            };
             let after = if self.take_word("after").is_some() {
                 Some(self.parameter_name()?)
             } else {
@@ -745,6 +769,7 @@ impl Parser {
             };
             Some(Take {
                 limit,
+                per,
                 after,
                 offset,
             })
@@ -783,6 +808,51 @@ impl Parser {
                 Some(
                     "add take with a positive literal or Limit parameter, or nearest(field, $vector, k)",
                 ),
+            )));
+        }
+        if let Some(expansion) = &expansion
+            && cardinality.value != Cardinality::Many
+        {
+            return Err(ParseDiagnostics::one(ParseDiagnostic::new(
+                DiagnosticCode::UnsupportedForm,
+                expansion.span,
+                "expansion driver is only valid on a many binding",
+                Some("change the expanded binding cardinality to many"),
+            )));
+        }
+        match (
+            expansion.as_ref(),
+            take.as_ref().and_then(|take| take.per.as_ref()),
+        ) {
+            (Some(expansion), Some(per)) if expansion.item.value == per.value => {}
+            (Some(expansion), _) => {
+                return Err(ParseDiagnostics::one(ParseDiagnostic::new(
+                    DiagnosticCode::UnsupportedForm,
+                    expansion.span,
+                    "expanded binding requires a matching per-driver take bound",
+                    Some("write take N per <driver> using the for-each driver name"),
+                )));
+            }
+            (None, Some(per)) => {
+                return Err(ParseDiagnostics::one(ParseDiagnostic::new(
+                    DiagnosticCode::UnsupportedForm,
+                    per.span,
+                    "per-driver take requires a for-each expansion driver",
+                    Some("add for each <driver> in <binding> or remove the per clause"),
+                )));
+            }
+            (None, None) => {}
+        }
+        if let Some(expansion) = &expansion
+            && take
+                .as_ref()
+                .is_some_and(|take| take.after.is_some() || take.offset.is_some())
+        {
+            return Err(ParseDiagnostics::one(ParseDiagnostic::new(
+                DiagnosticCode::UnsupportedForm,
+                expansion.span,
+                "expanded targets cannot carry an independent cursor or offset",
+                Some("page the driver binding; expanded targets complete within take N per driver"),
             )));
         }
         if nearest.is_some() && cardinality.value != Cardinality::Many {
@@ -837,6 +907,7 @@ impl Parser {
             cardinality,
             name,
             entity,
+            expansion,
             predicate,
             order,
             order_family,
@@ -1656,6 +1727,12 @@ fn query_shape_language_version(
     projected_source: Option<&ProjectedSource>,
 ) -> u32 {
     if body
+        .bindings
+        .iter()
+        .any(|binding| binding.expansion.is_some())
+    {
+        crate::RIFFQL_LANGUAGE_VERSION_RELATIONAL_OPERATORS_V1
+    } else if body
         .bindings
         .iter()
         .any(|binding| binding.order_family.is_some())

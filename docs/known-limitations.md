@@ -83,6 +83,9 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   sources are available and may participate in one common fenced result set;
   this does not make every other provider kind an interchangeable candidate
   source.
+  One-level bounded one-to-many expansion compiles to additive language, plan,
+  and module identities. Depth-two, cross-partition, independent target
+  pagination, and general joins remain unavailable.
   A query may expose at most 32 compiler-expanded root orders through one
   complete contract enum. Callers cannot submit arbitrary sort structure, and
   changing the enum choice starts a different cursor family.
@@ -110,8 +113,9 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   general joins are unavailable. Relationship composition is limited to
   compiler-declared same-partition complete-key points, singular-key-driven
   separately bounded index reads, and one ordered dependent complete-key batch
-  with zero-or-one target per distinct driver key. Semijoins, correlated
-  existence tests, one-to-many expansion, cross-partition joins, Cartesian
+  with zero-or-one target per distinct driver key, plus one compiler-bounded
+  same-partition one-to-many expansion nested under its bounded driver.
+  Semijoins, correlated existence tests, cross-partition joins, Cartesian
   products, recursion, and runtime join optimization are unavailable. Recompile
   and redeploy a refused named query rather than emulating it in application
   code.

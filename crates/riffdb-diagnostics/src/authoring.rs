@@ -1,5 +1,6 @@
 //! Closed, bounded, value-free diagnostics for local application authoring.
 
+use std::collections::BTreeSet;
 use std::fmt::{self, Write as _};
 
 use riffdb_contract_compiler::CompilationError;
@@ -323,6 +324,7 @@ pub struct AuthoringDiagnostic {
     fixes: Vec<AuthoringFix>,
     file_change: FileChangeDisposition,
     retry: AuthoringRetry,
+    refusal_class: Option<riffdb_query_compiler::OperationalRefusalClass>,
 }
 
 impl AuthoringDiagnostic {
@@ -375,6 +377,21 @@ impl AuthoringDiagnostic {
         self
     }
 
+    #[must_use]
+    fn with_refusal_class(
+        mut self,
+        refusal_class: Option<riffdb_query_compiler::OperationalRefusalClass>,
+    ) -> Self {
+        self.refusal_class = refusal_class;
+        self
+    }
+
+    /// An anonymized operational refusal class, when this diagnostic refused a read shape.
+    #[must_use]
+    pub const fn refusal_class(&self) -> Option<riffdb_query_compiler::OperationalRefusalClass> {
+        self.refusal_class
+    }
+
     /// Closed cause.
     #[must_use]
     pub const fn cause(&self) -> AuthoringCause {
@@ -416,6 +433,60 @@ impl AuthoringDiagnostics {
     #[must_use]
     pub fn as_slice(&self) -> &[AuthoringDiagnostic] {
         &self.0
+    }
+
+    /// Deduplicated anonymized refusal classes in deterministic order.
+    #[must_use]
+    pub fn refusal_classes(&self) -> Vec<riffdb_query_compiler::OperationalRefusalClass> {
+        self.0
+            .iter()
+            .filter_map(AuthoringDiagnostic::refusal_class)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    /// Renders only anonymized refusal classes for human authoring output.
+    pub fn render_refusals_human(&self) -> Result<String, AuthoringDiagnosticBoundsError> {
+        let classes = self.refusal_classes();
+        let mut output = String::new();
+        if classes.is_empty() {
+            output.push_str("operational refusals: none\n");
+        } else {
+            for class in classes {
+                writeln!(
+                    output,
+                    "operational refusal: operator={} cardinality={} partition={}",
+                    class.operator().as_str(),
+                    class.cardinality().as_str(),
+                    class.partition().as_str(),
+                )
+                .map_err(|_| AuthoringDiagnosticBoundsError)?;
+            }
+        }
+        check_render_bound(output)
+    }
+
+    /// Renders only anonymized refusal classes using the alpha campaign event shape.
+    pub fn render_refusals_json(&self) -> Result<String, AuthoringDiagnosticBoundsError> {
+        let refusals = self
+            .refusal_classes()
+            .into_iter()
+            .map(|class| {
+                json!({
+                    "cardinality_class": class.cardinality().as_str(),
+                    "operator_kind": class.operator().as_str(),
+                    "partition_class": class.partition().as_str(),
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut output = serde_json::to_string(&json!({
+            "refusals": refusals,
+            "schema": "riffdb-operational-refusal-classes/v1",
+        }))
+        .map_err(|_| AuthoringDiagnosticBoundsError)?;
+        output.push('\n');
+        check_render_bound(output)
     }
 
     /// Converts contract parser/compiler diagnostics without losing spans.
@@ -510,6 +581,7 @@ impl AuthoringDiagnostics {
                         cause,
                         vec![fix],
                     )
+                    .map(|value| value.with_refusal_class(diagnostic.refusal_class()))
                 })
                 .collect::<Result<Vec<_>, _>>()?,
             None => vec![diagnostic_value(
@@ -850,6 +922,7 @@ fn diagnostic_value(
         } else {
             AuthoringRetry::CorrectSource
         },
+        refusal_class: None,
     })
 }
 
@@ -1590,5 +1663,69 @@ contract Blog version 1 {
             &["entity", "Item", "field", "class_"]
         );
         assert_eq!(diagnostic.fixes(), &[AuthoringFix::CorrectSymbol]);
+    }
+
+    // req: OQ-118
+    #[test]
+    fn application_refusal_rendering_contains_only_the_three_closed_classes() {
+        let bundle = compile_contract_source(CONTRACT).expect("contract");
+        let query = r#"query TicketComments(
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
+    $status: TicketStatus,
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+            && project_id == $project_id
+            && status == $status
+        order by ticket_id asc
+        take 9000
+    many comments from Comment
+        for each ticket in tickets
+        where organization_id == $organization_id
+            && ticket_id == ticket.ticket_id
+        order by created_at asc, comment_id asc
+        take 8 per ticket
+    return Found {
+        tickets: tickets {
+            ticket_id
+            comments: comments { comment_id created_at }
+        }
+    }
+    outcomes Found
+}"#;
+        let candidate = QueryModuleCandidate::new(
+            QueryModuleName::new("refusal_probe").expect("module name"),
+            QueryModuleVersion::new(1).expect("module version"),
+            vec![NamedQuerySource::new("TicketComments", query).expect("query")],
+        )
+        .expect("candidate");
+        let error = QueryModule::compile(candidate, &bundle).expect_err("product refuses");
+        let diagnostics = AuthoringDiagnostics::from_query_module(
+            AuthoringSourcePath::new("riffdb/queries/ticket_comments.riffq").expect("path"),
+            &error,
+        )
+        .expect("authoring diagnostics");
+        let human = diagnostics.render_refusals_human().expect("human refusals");
+        let json = diagnostics.render_refusals_json().expect("JSON refusals");
+        assert_eq!(
+            human,
+            "operational refusal: operator=expansion cardinality=bounded_collection partition=same_partition\n"
+        );
+        assert_eq!(
+            json,
+            "{\"refusals\":[{\"cardinality_class\":\"bounded_collection\",\"operator_kind\":\"expansion\",\"partition_class\":\"same_partition\"}],\"schema\":\"riffdb-operational-refusal-classes/v1\"}\n"
+        );
+        for forbidden in [
+            "TicketComments",
+            "Ticket",
+            "Comment",
+            "organization_id",
+            "refusal_probe",
+            "9000",
+        ] {
+            assert!(!human.contains(forbidden));
+            assert!(!json.contains(forbidden));
+        }
     }
 }

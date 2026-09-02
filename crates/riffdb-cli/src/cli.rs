@@ -448,6 +448,9 @@ pub(crate) enum ApplicationCommand {
         /// Compiles author-owned sources and roles without comparing the exact lock or generated files.
         #[arg(long)]
         source_only: bool,
+        /// Reports only anonymized operational refusal classes.
+        #[arg(long)]
+        refusals: bool,
     },
     /// Compiles and prints the exact proposed lock without writing.
     Preview {
@@ -1944,6 +1947,14 @@ mod tests {
                     source_only: true,
                     ..
                 }
+            }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["riffdb", "application", "check", "--refusals"])
+                .expect("refusal-class check")
+                .command,
+            TopLevel::Application {
+                command: ApplicationCommand::Check { refusals: true, .. }
             }
         ));
         assert!(matches!(

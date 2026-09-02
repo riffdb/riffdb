@@ -22792,6 +22792,19 @@ work_packages:
     interface_safety: Driver, index, per-driver bound, order, and nesting are compiler identity;
       no generated schema, MCP tool, or CLI input carries them.
     scale: The product bound and the existing scan ceiling cap the plan before execution exists.
+  closure:
+    status: complete
+    completed_at: "2026-09-02"
+    requirements_satisfied: [RQL-008, OQ-113, OQ-116, OQ-118]
+    evidence: The RiffQL grammar and exact-span diagnostics admit one bounded same-partition
+      one-to-many expansion and refuse cross-partition, unbounded, non-prefix, and depth-two
+      drivers. The compiler emits the additive expansion access only after proving driver-times-
+      per-driver and result bounds, selects RiffQL V14, query IR V18, and module V18 only when
+      needed, and the named proof keeps every legacy fixture byte and hash exact. Refusal records
+      contain only closed operator, cardinality, and partition classes; application check emits
+      the bounded empty receipt in refusal mode. Downstream executor, service, memory, and redb
+      admission remains fail-closed with no expansion execution path. Version topology remains 59
+      domains with no provider domain, package acceptance passes, and ci-all passes.
   human_review_triggers: &id0185
   - A shape would be admitted as a new provider family without a written operator refusal.
   - An operator would read across partitions, consume a caller-supplied plan, or release a

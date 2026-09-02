@@ -28,6 +28,8 @@ pub const RIFFQL_LANGUAGE_VERSION_BOUNDED_RESULT_PIPELINE_V1: u32 = 11;
 pub const RIFFQL_LANGUAGE_VERSION_ORDER_FAMILY_V1: u32 = 12;
 /// Canonical explicitly bounded submitted-set and partition-route language version.
 pub const RIFFQL_LANGUAGE_VERSION_PARTITION_SET_V1: u32 = 13;
+/// Bounded relational expansion and existence-operator language version.
+pub const RIFFQL_LANGUAGE_VERSION_RELATIONAL_OPERATORS_V1: u32 = 14;
 /// Structural maximum for one explicitly bounded submitted set.
 pub const MAX_BOUNDED_SET_ITEMS_V1: u16 = u16::MAX;
 /// Maximum compiler-declared causal projection wait.
@@ -310,6 +312,8 @@ pub struct Binding {
     pub name: Spanned<Identifier>,
     /// Contract entity symbol.
     pub entity: Spanned<Identifier>,
+    /// Optional earlier bounded binding that drives one level of expansion.
+    pub expansion: Option<ExpansionDriver>,
     /// Required predicate.
     pub predicate: Spanned<Expression>,
     /// Stable ordering.
@@ -329,6 +333,17 @@ pub struct Binding {
     /// This is required by `one`; the planner also requires it for a bounded
     /// dependent point batch sourced from an earlier `many`.
     pub absence_outcome: Option<Spanned<Identifier>>,
+}
+
+/// One compiler-visible one-to-many expansion driver.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpansionDriver {
+    /// Singular query-local name used by the target predicate and nesting proof.
+    pub item: Spanned<Identifier>,
+    /// Earlier bounded binding supplying the driver rows.
+    pub binding: Spanned<Identifier>,
+    /// Complete `for each ... in ...` clause span.
+    pub span: Span,
 }
 
 /// One finite order family selected by a typed contract-enum parameter.
@@ -393,6 +408,8 @@ pub enum TokenizedMatchKind {
 pub struct Take {
     /// Positive literal or `Limit` parameter.
     pub limit: Spanned<Expression>,
+    /// Expansion driver whose targets this bound caps independently.
+    pub per: Option<Spanned<Identifier>>,
     /// Optional cursor parameter.
     pub after: Option<Spanned<Identifier>>,
     /// Optional zero-based ordinal parameter or literal; mutually exclusive with cursor paging.

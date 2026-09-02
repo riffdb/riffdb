@@ -145,6 +145,7 @@ pub fn compile_exact_predicate_query_v1(
     catalog: &SymbolicCatalog,
 ) -> Result<CompiledExactPredicateQueryV1, PlannerDiagnostics> {
     compile_exact_predicate_query_core(document, catalog, false)
+        .map_err(|diagnostics| diagnostics.record_operational_refusal(document))
 }
 
 fn compile_exact_predicate_query_core(
@@ -346,6 +347,14 @@ fn compile_exact_predicate_query_core(
 
 /// Compiles one V7 source into provider-independent nullable-order semantic IR.
 pub fn compile_nullable_exact_predicate_query_v1(
+    document: &Document,
+    catalog: &SymbolicCatalog,
+) -> Result<CompiledExactPredicateQueryV2, PlannerDiagnostics> {
+    compile_nullable_exact_predicate_query_inner_v1(document, catalog)
+        .map_err(|diagnostics| diagnostics.record_operational_refusal(document))
+}
+
+fn compile_nullable_exact_predicate_query_inner_v1(
     document: &Document,
     catalog: &SymbolicCatalog,
 ) -> Result<CompiledExactPredicateQueryV2, PlannerDiagnostics> {

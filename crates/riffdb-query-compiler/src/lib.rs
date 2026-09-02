@@ -1,3 +1,4 @@
+// req: OQ-113, OQ-116
 #![forbid(unsafe_code)]
 
 //! Deterministic type checking, authorization analysis, and bounded planning for RiffQL v1.
@@ -95,6 +96,7 @@ pub fn compile_exact_text_family_v1(
         NonZeroU32::new(1).expect("state layout is nonzero"),
         EXACT_TEXT_PROVIDER_STATE_SCHEMA_HASH_V1,
     )
+    .map_err(record_provider_refusal)
 }
 
 /// Compiles the activated family whose provider retains typed output rows.
@@ -110,6 +112,7 @@ pub fn compile_exact_text_result_family_v1(
         NonZeroU32::new(2).expect("state layout is nonzero"),
         EXACT_TEXT_PROVIDER_STATE_SCHEMA_HASH_V2,
     )
+    .map_err(record_provider_refusal)
 }
 
 /// Compiles the additive filtered family whose V3 provider binds one typed equality dimension.
@@ -121,6 +124,15 @@ pub fn compile_exact_text_filtered_result_family_v1(
         NonZeroU32::new(3).expect("state layout is nonzero"),
         EXACT_TEXT_PROVIDER_STATE_SCHEMA_HASH_V3,
     )
+    .map_err(record_provider_refusal)
+}
+
+fn record_provider_refusal(diagnostics: PlannerDiagnostics) -> PlannerDiagnostics {
+    diagnostics.record_refusal_class(OperationalRefusalClass {
+        operator: OperationalOperatorKind::IndexedRead,
+        cardinality: OperationalCardinalityClass::BoundedCollection,
+        partition: OperationalPartitionClass::SamePartition,
+    })
 }
 
 fn compile_exact_text_family_with_state_v1(
@@ -278,6 +290,14 @@ impl CompiledExactTextFilterV1 {
 /// plus the entity primary-key tie breaker, one bounded ordinal window, and
 /// one whole-set `exact_count` are admitted.
 pub fn compile_exact_text_query_v1(
+    document: &Document,
+    catalog: &SymbolicCatalog,
+) -> Result<CompiledExactTextQueryV1, PlannerDiagnostics> {
+    compile_exact_text_query_inner_v1(document, catalog)
+        .map_err(|diagnostics| diagnostics.record_operational_refusal(document))
+}
+
+fn compile_exact_text_query_inner_v1(
     document: &Document,
     catalog: &SymbolicCatalog,
 ) -> Result<CompiledExactTextQueryV1, PlannerDiagnostics> {
@@ -1094,6 +1114,7 @@ pub struct PlannerDiagnostic {
     summary: &'static str,
     suggested_index: Option<String>,
     bound: Option<PlannerBoundObservation>,
+    refusal_class: Option<OperationalRefusalClass>,
 }
 
 impl PlannerDiagnostic {
@@ -1132,6 +1153,109 @@ impl PlannerDiagnostic {
     pub const fn bound(&self) -> Option<PlannerBoundObservation> {
         self.bound
     }
+
+    /// An anonymized operational-shape class, when this diagnostic refused a read shape.
+    #[must_use]
+    pub const fn refusal_class(&self) -> Option<OperationalRefusalClass> {
+        self.refusal_class
+    }
+}
+
+/// Compiler-visible operational operator family, without source names or values.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum OperationalOperatorKind {
+    /// One-to-many bounded relational expansion.
+    Expansion,
+    /// Candidate-set algebra.
+    CandidateSet,
+    /// Ordinary indexed operational read.
+    IndexedRead,
+}
+
+impl OperationalOperatorKind {
+    /// Stable value-free spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Expansion => "expansion",
+            Self::CandidateSet => "candidate_set",
+            Self::IndexedRead => "indexed_read",
+        }
+    }
+}
+
+/// Closed cardinality classification for refused operational reads.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum OperationalCardinalityClass {
+    /// Only singular bindings participate.
+    Singular,
+    /// At least one collection carries a compiler-proven bound.
+    BoundedCollection,
+    /// A collection lacks a complete compiler proof.
+    UnboundedCollection,
+}
+
+impl OperationalCardinalityClass {
+    /// Stable value-free spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Singular => "singular",
+            Self::BoundedCollection => "bounded_collection",
+            Self::UnboundedCollection => "unbounded_collection",
+        }
+    }
+}
+
+/// Closed partition classification for refused operational reads.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum OperationalPartitionClass {
+    /// One exact partition route was present.
+    SamePartition,
+    /// The compiler could not prove one same-partition route.
+    CrossPartition,
+    /// A finite compiler-bounded partition set was present.
+    FinitePartitionSet,
+}
+
+impl OperationalPartitionClass {
+    /// Stable value-free spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SamePartition => "same_partition",
+            Self::CrossPartition => "cross_partition",
+            Self::FinitePartitionSet => "finite_partition_set",
+        }
+    }
+}
+
+/// The complete value-free refusal record exported to authoring diagnostics.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct OperationalRefusalClass {
+    operator: OperationalOperatorKind,
+    cardinality: OperationalCardinalityClass,
+    partition: OperationalPartitionClass,
+}
+
+impl OperationalRefusalClass {
+    /// Operator family.
+    #[must_use]
+    pub const fn operator(self) -> OperationalOperatorKind {
+        self.operator
+    }
+
+    /// Cardinality family.
+    #[must_use]
+    pub const fn cardinality(self) -> OperationalCardinalityClass {
+        self.cardinality
+    }
+
+    /// Partition family.
+    #[must_use]
+    pub const fn partition(self) -> OperationalPartitionClass {
+        self.partition
+    }
 }
 
 /// Deterministically ordered diagnostics; no partial program accompanies failure.
@@ -1143,6 +1267,27 @@ impl PlannerDiagnostics {
     #[must_use]
     pub fn as_slice(&self) -> &[PlannerDiagnostic] {
         &self.0
+    }
+
+    /// Records the value-free refusal classification derived from one parsed read shape.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn record_operational_refusal(mut self, document: &Document) -> Self {
+        let refusal = operational_refusal_class(document, &self);
+        for diagnostic in &mut self.0 {
+            diagnostic.refusal_class = Some(refusal);
+        }
+        self
+    }
+
+    /// Records one already-closed refusal class without accepting source data.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn record_refusal_class(mut self, refusal: OperationalRefusalClass) -> Self {
+        for diagnostic in &mut self.0 {
+            diagnostic.refusal_class = Some(refusal);
+        }
+        self
     }
 }
 
@@ -1168,6 +1313,7 @@ fn planner_resolution_diagnostics(diagnostics: QueryDiagnostics) -> PlannerDiagn
                 summary: diagnostic.summary(),
                 suggested_index: None,
                 bound: None,
+                refusal_class: None,
             })
             .collect(),
     )
@@ -1175,6 +1321,14 @@ fn planner_resolution_diagnostics(diagnostics: QueryDiagnostics) -> PlannerDiagn
 
 /// Resolves, type checks, authorizes, and plans one parsed query against one exact catalog.
 pub fn compile_query(
+    document: &Document,
+    catalog: &SymbolicCatalog,
+) -> Result<QueryAccessProgramV1, PlannerDiagnostics> {
+    compile_query_inner(document, catalog)
+        .map_err(|diagnostics| diagnostics.record_operational_refusal(document))
+}
+
+fn compile_query_inner(
     document: &Document,
     catalog: &SymbolicCatalog,
 ) -> Result<QueryAccessProgramV1, PlannerDiagnostics> {
@@ -1210,8 +1364,70 @@ pub fn compile_query(
     compile_query_member(document, catalog, BTreeSet::new())
 }
 
+fn operational_refusal_class(
+    document: &Document,
+    diagnostics: &PlannerDiagnostics,
+) -> OperationalRefusalClass {
+    let operator = if document
+        .body
+        .bindings
+        .iter()
+        .any(|binding| binding.expansion.is_some())
+    {
+        OperationalOperatorKind::Expansion
+    } else if !document.body.candidates.is_empty() {
+        OperationalOperatorKind::CandidateSet
+    } else {
+        OperationalOperatorKind::IndexedRead
+    };
+    let cardinality = if document
+        .body
+        .bindings
+        .iter()
+        .all(|binding| binding.cardinality.value != Cardinality::Many)
+    {
+        OperationalCardinalityClass::Singular
+    } else if document.body.bindings.iter().all(|binding| {
+        binding.cardinality.value != Cardinality::Many
+            || binding.take.is_some()
+            || binding.nearest.is_some()
+    }) {
+        OperationalCardinalityClass::BoundedCollection
+    } else {
+        OperationalCardinalityClass::UnboundedCollection
+    };
+    let partition = if diagnostics
+        .as_slice()
+        .iter()
+        .any(|diagnostic| diagnostic.code() == PlannerDiagnosticCode::NonLocal)
+    {
+        OperationalPartitionClass::CrossPartition
+    } else if document
+        .parameters
+        .iter()
+        .any(|parameter| matches!(parameter.ty.value, TypeReference::BoundedSet { .. }))
+    {
+        OperationalPartitionClass::FinitePartitionSet
+    } else {
+        OperationalPartitionClass::SamePartition
+    };
+    OperationalRefusalClass {
+        operator,
+        cardinality,
+        partition,
+    }
+}
+
 /// Expands one contract-enum selector into complete immutable order programs.
 pub fn compile_order_query_family(
+    document: &Document,
+    catalog: &SymbolicCatalog,
+) -> Result<OrderQueryFamilyV1, PlannerDiagnostics> {
+    compile_order_query_family_inner(document, catalog)
+        .map_err(|diagnostics| diagnostics.record_operational_refusal(document))
+}
+
+fn compile_order_query_family_inner(
     document: &Document,
     catalog: &SymbolicCatalog,
 ) -> Result<OrderQueryFamilyV1, PlannerDiagnostics> {
@@ -1339,6 +1555,14 @@ pub fn compile_order_query_family(
 
 /// Compiles every optional-presence combination into one closed bounded family.
 pub fn compile_operational_query_family(
+    document: &Document,
+    catalog: &SymbolicCatalog,
+) -> Result<OperationalQueryFamilyV1, PlannerDiagnostics> {
+    compile_operational_query_family_inner(document, catalog)
+        .map_err(|diagnostics| diagnostics.record_operational_refusal(document))
+}
+
+fn compile_operational_query_family_inner(
     document: &Document,
     catalog: &SymbolicCatalog,
 ) -> Result<OperationalQueryFamilyV1, PlannerDiagnostics> {
@@ -1790,7 +2014,7 @@ impl<'a> Planner<'a> {
                         Some(index.internal_key_schema().clone()),
                     )
                 };
-                let predicates = self.normalize_predicates(&ordinary_comparisons)?;
+                let predicates = self.normalize_predicates(&ordinary_comparisons, None)?;
                 let predicate_fields = ordinary_comparisons
                     .iter()
                     .map(|comparison| comparison.field.to_owned())
@@ -1854,7 +2078,75 @@ impl<'a> Planner<'a> {
                 .entity(binding.entity.value.as_str())
                 .ok_or_else(internal)?;
             let comparisons = comparisons(&binding.predicate.value);
-            let maximum_rows = maximum_rows(binding, self.document)?;
+            let per_binding_maximum = maximum_rows(binding, self.document)?;
+            let expansion_bounds = binding
+                .expansion
+                .as_ref()
+                .map(|expansion| {
+                    let driver = expansion.binding.value.as_str();
+                    let driver_maximum = self
+                        .binding_maximum_rows
+                        .get(driver)
+                        .copied()
+                        .ok_or_else(|| {
+                            one(
+                                PlannerDiagnosticCode::Cardinality,
+                                expansion.binding.span,
+                                vec![driver.to_owned()],
+                                "expansion driver must name an earlier bounded binding",
+                                None,
+                            )
+                        })?;
+                    if self.binding_cardinalities.get(driver) != Some(&Cardinality::Many) {
+                        return Err(one(
+                            PlannerDiagnosticCode::Cardinality,
+                            expansion.binding.span,
+                            vec![driver.to_owned()],
+                            "expansion driver must be an earlier many binding",
+                            None,
+                        ));
+                    }
+                    let driver_binding = self
+                        .document
+                        .body
+                        .bindings
+                        .iter()
+                        .find(|candidate| candidate.name.value.as_str() == driver)
+                        .ok_or_else(internal)?;
+                    if driver_binding.expansion.is_some() {
+                        return Err(one(
+                            PlannerDiagnosticCode::Cardinality,
+                            expansion.binding.span,
+                            vec![driver.to_owned()],
+                            "relational expansion depth is limited to one",
+                            None,
+                        ));
+                    }
+                    let per_driver_maximum = u32::try_from(per_binding_maximum)
+                        .map_err(|_| internal())?;
+                    let product_maximum = driver_maximum
+                        .checked_mul(per_binding_maximum)
+                        .filter(|maximum| *maximum <= riffdb_query_ir::MAX_QUERY_SCANNED_ROWS)
+                        .ok_or_else(|| {
+                            one(
+                                PlannerDiagnosticCode::Unbounded,
+                                expansion.span,
+                                vec![driver.to_owned(), binding.name.value.as_str().to_owned()],
+                                "driver and per-driver maxima exceed the relational expansion ceiling",
+                                None,
+                            )
+                        })?;
+                    Ok::<_, PlannerDiagnostics>((
+                        driver.to_owned(),
+                        expansion.item.value.as_str().to_owned(),
+                        per_driver_maximum,
+                        product_maximum,
+                    ))
+                })
+                .transpose()?;
+            let maximum_rows = expansion_bounds
+                .as_ref()
+                .map_or(per_binding_maximum, |bounds| bounds.3);
             self.type_check(entity, binding, &comparisons)?;
 
             let partition_field = entity.partition_field();
@@ -1862,7 +2154,10 @@ impl<'a> Planner<'a> {
             let Some(route) = route else {
                 return Err(one(
                     PlannerDiagnosticCode::NonLocal,
-                    binding.predicate.span,
+                    binding
+                        .expansion
+                        .as_ref()
+                        .map_or(binding.predicate.span, |expansion| expansion.span),
                     vec![entity.name().to_owned(), partition_field.to_owned()],
                     "query access is not routed by an exact partition parameter",
                     None,
@@ -2014,7 +2309,7 @@ impl<'a> Planner<'a> {
                     None,
                 )
             } else {
-                choose_access(
+                let chosen = choose_access(
                     entity,
                     binding,
                     &comparisons,
@@ -2022,12 +2317,63 @@ impl<'a> Planner<'a> {
                     AccessContext {
                         binding_maximum_rows: &self.binding_maximum_rows,
                         document: self.document,
-                        maximum_rows,
+                        maximum_rows: per_binding_maximum,
                         cover_required_fields: &cover_required_fields,
                         finite_partition_route,
                     },
-                )?
+                );
+                match chosen {
+                    Ok(chosen) => chosen,
+                    Err(diagnostics)
+                        if binding.expansion.is_some()
+                            && diagnostics.as_slice().iter().any(|diagnostic| {
+                                matches!(
+                                    diagnostic.code(),
+                                    PlannerDiagnosticCode::Unindexed
+                                        | PlannerDiagnosticCode::Unordered
+                                )
+                            }) =>
+                    {
+                        let expansion = binding.expansion.as_ref().ok_or_else(internal)?;
+                        return Err(one(
+                            PlannerDiagnosticCode::Unindexed,
+                            expansion.span,
+                            vec![binding.name.value.as_str().to_owned()],
+                            "expansion predicate and order do not bind one declared same-partition index prefix",
+                            None,
+                        ));
+                    }
+                    Err(diagnostics) => return Err(diagnostics),
+                }
             };
+            if let Some((driver_binding, driver_item, per_driver_maximum, product_maximum)) =
+                &expansion_bounds
+            {
+                access = match access {
+                    QueryAccessKind::Index {
+                        index,
+                        fields,
+                        direction,
+                    } => QueryAccessKind::ExpansionIndex {
+                        index,
+                        fields,
+                        direction,
+                        driver_binding: driver_binding.clone(),
+                        driver_item: driver_item.clone(),
+                        per_driver_maximum: *per_driver_maximum,
+                        product_maximum: *product_maximum,
+                    },
+                    _ => {
+                        return Err(one(
+                            PlannerDiagnosticCode::Unindexed,
+                            binding.predicate.span,
+                            vec![binding.name.value.as_str().to_owned()],
+                            "relational expansion requires one declared same-partition index",
+                            None,
+                        ));
+                    }
+                };
+            }
             if finite_partition_route {
                 access = match access {
                     QueryAccessKind::Index {
@@ -2089,7 +2435,7 @@ impl<'a> Planner<'a> {
                     other => other,
                 };
             }
-            let predicates = self.normalize_predicates(&comparisons)?;
+            let predicates = self.normalize_predicates(&comparisons, binding.expansion.as_ref())?;
             let mut predicate_fields = comparisons
                 .iter()
                 .map(|comparison| comparison.field.to_owned())
@@ -2103,6 +2449,9 @@ impl<'a> Planner<'a> {
                 &self.binding_entities,
                 &mut dependencies,
             );
+            if let Some((driver_binding, ..)) = &expansion_bounds {
+                dependencies.insert(driver_binding.as_str());
+            }
             let selected = selections
                 .get(binding.name.value.as_str())
                 .cloned()
@@ -2120,6 +2469,9 @@ impl<'a> Planner<'a> {
                     predicate_fields.extend(key_fields.iter().cloned());
                 }
                 QueryAccessKind::Index { fields, .. } => {
+                    predicate_fields.extend(fields.iter().cloned());
+                }
+                QueryAccessKind::ExpansionIndex { fields, .. } => {
                     predicate_fields.extend(fields.iter().cloned());
                 }
                 QueryAccessKind::PartitionSetIndex {
@@ -2255,6 +2607,9 @@ impl<'a> Planner<'a> {
                     QueryAccessKind::Index { index, .. } => entity
                         .index(index)
                         .map(|symbol| symbol.internal_key_schema().clone()),
+                    QueryAccessKind::ExpansionIndex { index, .. } => entity
+                        .index(index)
+                        .map(|symbol| symbol.internal_key_schema().clone()),
                     QueryAccessKind::PartitionSetIndex { index, .. } => entity
                         .index(index)
                         .map(|symbol| symbol.internal_key_schema().clone()),
@@ -2292,7 +2647,9 @@ impl<'a> Planner<'a> {
                 })?;
             accumulator.fields.extend(predicate_fields);
             accumulator.fields.extend(selected_fields);
-            if let QueryAccessKind::Index { index, .. } = access {
+            if let QueryAccessKind::Index { index, .. }
+            | QueryAccessKind::ExpansionIndex { index, .. } = access
+            {
                 accumulator.indexes.insert(index);
             }
             steps.push(step);
@@ -2461,29 +2818,32 @@ impl<'a> Planner<'a> {
                 }
             } else if let Some(Expression::Path(path)) = comparison.value
                 && path.0.len() == 2
-                && let Some(source_entity) = self.binding_entities.get(path.0[0].value.as_str())
+                && let Some((source_binding, source_entity, expansion_driver)) =
+                    self.predicate_source(binding, path.0[0].value.as_str())
             {
-                let source_binding = path.0[0].value.as_str();
                 let source_cardinality = self
                     .binding_cardinalities
-                    .get(source_binding)
+                    .get(source_binding.as_str())
                     .copied()
                     .ok_or_else(internal)?;
-                let cardinality_is_valid = match comparison.operator {
-                    SourcePredicateOperator::Binary(BinaryOperator::In) => {
-                        source_cardinality == Cardinality::Many
-                            && binding.cardinality.value == Cardinality::Many
+                let cardinality_is_valid = if expansion_driver {
+                    comparison.operator.is_binary(BinaryOperator::Equal)
+                        && source_cardinality == Cardinality::Many
+                        && binding.cardinality.value == Cardinality::Many
+                } else {
+                    match comparison.operator {
+                        SourcePredicateOperator::Binary(BinaryOperator::In) => {
+                            source_cardinality == Cardinality::Many
+                                && binding.cardinality.value == Cardinality::Many
+                        }
+                        _ => source_cardinality != Cardinality::Many,
                     }
-                    _ => source_cardinality != Cardinality::Many,
                 };
                 if !cardinality_is_valid {
                     return Err(one(
                         PlannerDiagnosticCode::Cardinality,
                         path.0[1].span,
-                        vec![
-                            source_binding.to_owned(),
-                            path.0[1].value.as_str().to_owned(),
-                        ],
+                        vec![source_binding.clone(), path.0[1].value.as_str().to_owned()],
                         "predicate consumes a binding field with incompatible cardinality",
                         None,
                     ));
@@ -2518,6 +2878,27 @@ impl<'a> Planner<'a> {
             }
         }
         Ok(())
+    }
+
+    fn predicate_source<'planner>(
+        &'planner self,
+        binding: &riffdb_riffql_syntax::Binding,
+        source_name: &str,
+    ) -> Option<(String, &'planner EntitySymbol, bool)> {
+        if let Some(expansion) = &binding.expansion
+            && expansion.item.value.as_str() == source_name
+        {
+            let driver = expansion.binding.value.as_str();
+            return self
+                .binding_entities
+                .get(driver)
+                .copied()
+                .map(|entity| (driver.to_owned(), entity, true));
+        }
+        self.binding_entities
+            .get(source_name)
+            .copied()
+            .map(|entity| (source_name.to_owned(), entity, false))
     }
 
     fn type_check_candidate(
@@ -2585,6 +2966,7 @@ impl<'a> Planner<'a> {
     fn normalize_predicates(
         &self,
         comparisons: &[Comparison<'_>],
+        expansion: Option<&riffdb_riffql_syntax::ExpansionDriver>,
     ) -> Result<Vec<QueryPredicate>, PlannerDiagnostics> {
         comparisons
             .iter()
@@ -2596,7 +2978,14 @@ impl<'a> Planner<'a> {
                     Some(Expression::Path(path)) if path.0.len() == 2 => {
                         let first = path.0[0].value.as_str();
                         let second = path.0[1].value.as_str();
-                        if self.binding_entities.contains_key(first) {
+                        if let Some(expansion) = expansion
+                            && expansion.item.value.as_str() == first
+                        {
+                            QueryPredicateValue::BindingField {
+                                binding: expansion.binding.value.as_str().to_owned(),
+                                field: second.to_owned(),
+                            }
+                        } else if self.binding_entities.contains_key(first) {
                             if self.binding_cardinalities.get(first) == Some(&Cardinality::Many) {
                                 QueryPredicateValue::BindingFieldSet {
                                     binding: first.to_owned(),
@@ -2932,6 +3321,13 @@ impl QueryCostAccumulator {
                 self.scanned_index_rows =
                     checked_cost_add(self.scanned_index_rows, rows, self.primary_span)?;
                 self.point_reads = checked_cost_add(self.point_reads, rows, self.primary_span)?;
+            }
+            QueryAccessKind::ExpansionIndex { .. } => {
+                self.scanned_index_rows =
+                    checked_cost_add(self.scanned_index_rows, rows, self.primary_span)?;
+                self.point_reads = checked_cost_add(self.point_reads, rows, self.primary_span)?;
+                self.intermediate_rows =
+                    checked_cost_add(self.intermediate_rows, rows, self.primary_span)?;
             }
             QueryAccessKind::PartitionSetIndex {
                 order,
@@ -4236,30 +4632,43 @@ fn selected_fields(document: &Document) -> BTreeMap<String, BTreeSet<String>> {
 fn dependency_fields(document: &Document) -> BTreeMap<String, BTreeSet<String>> {
     let mut output = BTreeMap::new();
     for binding in &document.body.bindings {
-        collect_dependency_fields(&binding.predicate.value, &mut output);
+        let expansion = binding.expansion.as_ref().map(|expansion| {
+            (
+                expansion.item.value.as_str(),
+                expansion.binding.value.as_str(),
+            )
+        });
+        collect_dependency_fields(&binding.predicate.value, expansion, &mut output);
     }
     output
 }
 
 fn collect_dependency_fields(
     expression: &Expression,
+    expansion: Option<(&str, &str)>,
     output: &mut BTreeMap<String, BTreeSet<String>>,
 ) {
     match expression {
         Expression::Path(path) if path.0.len() == 2 => {
+            let source = path.0[0].value.as_str();
+            let source = expansion
+                .filter(|(item, _)| *item == source)
+                .map_or(source, |(_, driver)| driver);
             output
-                .entry(path.0[0].value.as_str().to_owned())
+                .entry(source.to_owned())
                 .or_default()
                 .insert(path.0[1].value.as_str().to_owned());
         }
         Expression::Binary { left, right, .. } => {
-            collect_dependency_fields(&left.value, output);
-            collect_dependency_fields(&right.value, output);
+            collect_dependency_fields(&left.value, expansion, output);
+            collect_dependency_fields(&right.value, expansion, output);
         }
         Expression::PresenceGuard { predicate, .. } => {
-            collect_dependency_fields(&predicate.value, output);
+            collect_dependency_fields(&predicate.value, expansion, output);
         }
-        Expression::Unary { operand, .. } => collect_dependency_fields(&operand.value, output),
+        Expression::Unary { operand, .. } => {
+            collect_dependency_fields(&operand.value, expansion, output);
+        }
         Expression::Path(_) | Expression::Parameter(_) | Expression::Literal(_) => {}
     }
 }
@@ -4376,6 +4785,7 @@ fn one(
         summary,
         suggested_index,
         bound: None,
+        refusal_class: None,
     }])
 }
 
@@ -4391,6 +4801,7 @@ fn ceiling(
         summary,
         suggested_index: None,
         bound: Some(bound),
+        refusal_class: None,
     }])
 }
 

@@ -825,6 +825,7 @@ pub async fn run() -> ExitCode {
         if let ApplicationCommand::Check {
             source,
             source_only,
+            refusals,
         } = command
         {
             let result = if *source_only {
@@ -834,12 +835,20 @@ pub async fn run() -> ExitCode {
             };
             return match result {
                 Ok(status @ ApplicationCheckStatus::ExactLock { .. }) => {
+                    if *refusals {
+                        emit_refusal_report(None, cli.output);
+                        return ExitCode::SUCCESS;
+                    }
                     println!("application sources, exact lock, and generated bindings are exact");
                     print_query_survey(status.queries());
                     println!("{}", application_seed_guidance(status.seed_input_count()));
                     ExitCode::SUCCESS
                 }
                 Ok(status @ ApplicationCheckStatus::SourceOnly { .. }) => {
+                    if *refusals {
+                        emit_refusal_report(None, cli.output);
+                        return ExitCode::SUCCESS;
+                    }
                     println!(
                         "application sources compile; no lock or generated artifacts were checked"
                     );
@@ -848,7 +857,11 @@ pub async fn run() -> ExitCode {
                     ExitCode::SUCCESS
                 }
                 Err(error) => {
-                    emit_scaffold_failure("riffdb application failed", &error, cli.output);
+                    if *refusals {
+                        emit_refusal_report(error.diagnostics(), cli.output);
+                    } else {
+                        emit_scaffold_failure("riffdb application failed", &error, cli.output);
+                    }
                     ExitCode::FAILURE
                 }
             };
@@ -961,6 +974,30 @@ fn emit_scaffold_failure(
         return;
     }
     eprintln!("{prefix}: {error}");
+}
+
+fn emit_refusal_report(
+    diagnostics: Option<&AuthoringDiagnostics>,
+    mode: Option<OutputMode>,
+) {
+    if let Some(rendered) = refusal_report(diagnostics, mode) {
+        print!("{rendered}");
+    }
+}
+
+fn refusal_report(
+    diagnostics: Option<&AuthoringDiagnostics>,
+    mode: Option<OutputMode>,
+) -> Option<String> {
+    match (diagnostics, mode) {
+        (Some(diagnostics), Some(OutputMode::Json)) => diagnostics.render_refusals_json().ok(),
+        (Some(diagnostics), _) => diagnostics.render_refusals_human().ok(),
+        (None, Some(OutputMode::Json)) => Some(
+            "{\"refusals\":[],\"schema\":\"riffdb-operational-refusal-classes/v1\"}\n"
+                .to_owned(),
+        ),
+        (None, _) => Some("operational refusals: none\n".to_owned()),
+    }
 }
 
 fn project_config_path(cli: &Cli) -> PathBuf {
@@ -12294,6 +12331,21 @@ mod tests {
         assert_eq!(
             application_seed_guidance(3),
             "application seed plan: 3 manifest input(s); run `riffdb dev --seed --run`"
+        );
+    }
+
+    // req: OQ-118
+    #[test]
+    fn application_check_refusal_mode_emits_only_the_empty_bounded_receipt() {
+        assert_eq!(
+            refusal_report(None, None).as_deref(),
+            Some("operational refusals: none\n")
+        );
+        assert_eq!(
+            refusal_report(None, Some(OutputMode::Json)).as_deref(),
+            Some(
+                "{\"refusals\":[],\"schema\":\"riffdb-operational-refusal-classes/v1\"}\n"
+            )
         );
     }
 

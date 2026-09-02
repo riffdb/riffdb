@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+cargo +1.97.0 test -p riffdb-query-compiler --test expansion_plans \
+    expansion_plan_is_least_sufficient_and_legacy_bytes_are_unchanged --all-features

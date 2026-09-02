@@ -6579,6 +6579,7 @@ fn application_query_target_with_identity(
         };
         let index_id = match step.access() {
             QueryAccessKind::Index { .. }
+            | QueryAccessKind::ExpansionIndex { .. }
             | QueryAccessKind::PartitionSetIndex { .. }
             | QueryAccessKind::LongPatternCandidate { .. } => Some(step.internal_index_id()?),
             QueryAccessKind::Point { .. }
