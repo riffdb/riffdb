@@ -1418,10 +1418,10 @@ work_packages:
   depends_on: [WP-610, WP-668, WP-704]
   objective: Close ADR-0156 with an explicit offline complete-integrity scrub, backup/restore/
     migration/retention compatibility, operator and handbook guidance, production-scale clean and
-    dirty lifecycle evidence, and endurance integration without presenting asymmetric PostgreSQL
-    process startup as a database-semantic comparison.
+    dirty lifecycle evidence, and a bounded endurance-harness handoff to WP-578 without presenting
+    asymmetric PostgreSQL process startup as a database-semantic comparison.
   requirements: [STO-012, STO-023, REC-001, REC-002, REC-004,
-    PERF-013, PERF-014, PERF-019, END-004, END-006, END-007, END-008, END-009]
+    PERF-013, PERF-014, PERF-019, END-004, END-006, END-007, END-008]
   required_adrs: [ADR-0019, ADR-0041, ADR-0050, ADR-0056, ADR-0073,
     ADR-0085, ADR-0104, ADR-0112, ADR-0123, ADR-0156, ADR-0157]
   allowed_paths: [SPEC.md, work_packages.yaml,
@@ -1449,8 +1449,10 @@ work_packages:
     lifecycle numbers are excluded unless the harness owns equivalent process and integrity work
   - Handbook, troubleshooting, compatibility, backup/restore, maintenance, endurance, and known-
     limitation guidance stating that clean readiness is not a full scrub and latent unrelated
-    corruption may fail closed on access; END-009 restart cycles use the clean path while scheduled
-    scrub and forced-kill arms retain complete evidence
+    corruption may fail closed on access; the bounded WP-578 handoff proves its restart cycles are
+    configured to use the clean path while scheduled scrub and forced-kill arms retain complete
+    evidence. The uninterrupted END-009 run remains solely WP-578's evidence and is not a WP-705
+    closure condition
   acceptance_commands:
   - cargo +1.97.0 test --workspace --all-features
   - ./scripts/recovery_full
@@ -1465,8 +1467,9 @@ work_packages:
   exit_gate: Clean production-scale reopen and shutdown are bounded independently of live and
     retained populations, dirty and explicit scrub paths retain complete fail-closed validation,
     every maintenance and compatibility transition has exact certificate behavior, documentation
-    states the reduced clean-start assurance honestly, and endurance no longer pays a full scrub on
-    every graceful restart or mistakes an asymmetric comparator lifecycle for product evidence.
+    states the reduced clean-start assurance honestly, and the endurance harness handed to WP-578
+    no longer pays a full scrub on every graceful restart or mistakes an asymmetric comparator
+    lifecycle for product evidence; the actual uninterrupted run remains pending in WP-578.
   standing_design_tests:
     interface_safety: The only new operator action requests more validation through an exclusive
       offline scrub; no public surface can request less, force readiness, preserve a stale
@@ -15961,7 +15964,7 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-578
   name: Portability, disaster-recovery, and 72-hour endurance evidence
-  depends_on: [WP-573, WP-575, WP-576, WP-577, WP-609, WP-610, WP-623]
+  depends_on: [WP-573, WP-575, WP-576, WP-577, WP-609, WP-610, WP-623, WP-705]
   objective: Bank release-candidate evidence that every adapter preserves policy and portable data,
     restores after total local disk loss, and remains correct/resource-bounded for 72 continuous
     hours through repeated journal, checkpoint, retention, backup, rotation, and restart cycles.
@@ -22186,7 +22189,7 @@ work_packages:
 - id: WP-757
   name: Alpha format epoch 2 reset and one-identity-per-domain topology
   tier: surface
-  depends_on: [WP-612, WP-578]
+  depends_on: [WP-612]
   objective: Declare alpha format epoch 2 through the ADR-0112 ceremony, delete every superseded
     decoder, fixture, generated artifact, and topology row while the pre-external window is open,
     and make scripts/check-version-topology refuse a second readable identity per domain until the
