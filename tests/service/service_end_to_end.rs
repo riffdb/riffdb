@@ -1013,6 +1013,92 @@ fn contract_and_discovery_operations_share_current_policy_and_checked_catalog_me
     });
 }
 
+// req: OQ-113
+#[test]
+fn mcp_tool_discovery_omits_reimport_commands_without_hiding_application_commands() {
+    run_async(async move {
+        let mut harness = ServiceHarness::reimport_discovery();
+
+        let (tools_context, _cancellation) = harness.context(0x76);
+        let tools = harness
+            .service
+            .discover_command_tools(tools_context, DiscoverCommandToolsRequest::default())
+            .await
+            .expect("a deliberately non-MCP reimport command cannot corrupt tool discovery");
+        let DiscoverCommandToolsResultRef::Page { page: tools, .. } = tools.result() else {
+            panic!("default command discovery must return a full page");
+        };
+        let mut command_names = tools
+            .items()
+            .iter()
+            .filter_map(|item| match item {
+                riffdb_service::CommandToolDiscoveryItem::Command(command) => {
+                    Some(command.source_command().as_str())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        command_names.sort_unstable();
+        assert_eq!(command_names, ["CreateBudget"]);
+
+        harness.stop_coordinator();
+    });
+}
+
+// req: OQ-113
+#[test]
+fn mcp_resource_discovery_omits_reimport_commands_without_hiding_application_commands() {
+    run_async(async move {
+        let mut harness = ServiceHarness::reimport_discovery();
+
+        let (resources_context, _cancellation) = harness.context(0x77);
+        let resources = harness
+            .service
+            .discover_resources(resources_context, DiscoverResourcesRequest::default())
+            .await
+            .expect("a deliberately non-MCP reimport command cannot corrupt resource discovery");
+        let DiscoverResourcesResultRef::Page(resources) = resources.result() else {
+            panic!("default resource discovery must return a full page");
+        };
+        let mut source_command_resources = resources
+            .items()
+            .iter()
+            .filter_map(|item| match item.resource() {
+                ResourceDescriptorRef::CommandPlan { source_command, .. }
+                | ResourceDescriptorRef::CommandDocumentation { source_command, .. } => {
+                    Some(source_command.as_str())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        source_command_resources.sort_unstable();
+        assert_eq!(
+            source_command_resources,
+            [
+                "AllocateBudget",
+                "AllocateBudget",
+                "CreateBudget",
+                "CreateBudget"
+            ],
+            "only ordinary application commands own plans and documentation"
+        );
+        assert_eq!(
+            resources
+                .items()
+                .iter()
+                .filter(|item| matches!(
+                    item.resource(),
+                    ResourceDescriptorRef::CommandOutcome { .. }
+                ))
+                .count(),
+            1,
+            "policy exposes only the authorized application's outcome template"
+        );
+
+        harness.stop_coordinator();
+    });
+}
+
 #[test]
 fn unchanged_command_discovery_observations_repeat_the_authorized_current_catalog_safe_point() {
     run_async(async move {

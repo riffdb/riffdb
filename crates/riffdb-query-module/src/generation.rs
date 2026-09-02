@@ -2581,6 +2581,16 @@ fn rust_decode_application_expr(
         ),
         NamedTypeSchema::Set(inner)
         | NamedTypeSchema::BoundedSet { element: inner, .. }
+        | NamedTypeSchema::List { element: inner, .. }
+            if matches!(inner.as_ref(), NamedTypeSchema::Record(_)) =>
+        {
+            format!(
+                "application_list({access})?.into_iter().map(|value| decode_{}_record(application_record(value)?)).collect::<Result<Vec<_>, ApplicationClientError>>()?",
+                snake(nested_name)
+            )
+        }
+        NamedTypeSchema::Set(inner)
+        | NamedTypeSchema::BoundedSet { element: inner, .. }
         | NamedTypeSchema::List { element: inner, .. } => format!(
             "application_list({access})?.into_iter().map(|value| Ok({})).collect::<Result<Vec<_>, ApplicationClientError>>()?",
             rust_decode_application_expr(inner, "value", nested_name)

@@ -1,0 +1,45 @@
+{
+  "schema": "riffdb-operator-refusal-ranking/v1",
+  "generated_from": "evaluations/agent-application-alpha/runs/*/events.jsonl",
+  "campaign_inventory": {
+    "transcripts": 23,
+    "events": 280,
+    "compiler_failure_events": 47,
+    "unsupported_shape_events": 5,
+    "classified_operator_refusals": 0,
+    "legacy_unclassified_refusals": 52
+  },
+  "classification_policy": "Legacy prose and diagnostic codes are not reclassified. With no classified observations, ties are ordered by same-partition feasibility, then finite partition sets, then cross-partition work.",
+  "next_operator_candidates": [
+    {
+      "rank": 1,
+      "candidate": "dependent_existence",
+      "refusal_class": {
+        "operator": "existence",
+        "cardinality": "bounded_collection",
+        "partition": "same_partition"
+      },
+      "classified_observations": 0
+    },
+    {
+      "rank": 2,
+      "candidate": "finite_partition_expansion",
+      "refusal_class": {
+        "operator": "expansion",
+        "cardinality": "bounded_collection",
+        "partition": "finite_partition_set"
+      },
+      "classified_observations": 0
+    },
+    {
+      "rank": 3,
+      "candidate": "cross_partition_expansion",
+      "refusal_class": {
+        "operator": "expansion",
+        "cardinality": "bounded_collection",
+        "partition": "cross_partition"
+      },
+      "classified_observations": 0
+    }
+  ]
+}

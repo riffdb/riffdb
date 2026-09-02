@@ -378,7 +378,7 @@ while IFS= read -r run; do
           )) | length) == 0)
       )
       and all(.[];
-          (keys - ["schema", "elapsed_ms", "kind", "code", "operation"]
+          (keys - ["schema", "elapsed_ms", "kind", "code", "operation", "refusal_class"]
             | length) == 0
           and .schema == (if $package_first
             then "riffdb-agent-application-alpha-event/v2"
@@ -401,7 +401,18 @@ while IFS= read -r run; do
               and (.code | test("^[A-Za-z0-9_.-]{1,128}$"))))
           and (.operation == null
             or ((.operation | type) == "string"
-              and (.operation | test("^[A-Za-z0-9_.-]{1,256}$")))))
+              and (.operation | test("^[A-Za-z0-9_.-]{1,256}$"))))
+          and (.refusal_class == null or (
+            (.kind == "compiler_failure" or .kind == "unsupported_shape")
+            and (.refusal_class | keys | sort)
+              == ["cardinality", "operator", "partition"]
+            and (["expansion", "existence", "candidate_set", "indexed_read"]
+              | index(.refusal_class.operator)) != null
+            and (["singular", "bounded_collection", "unbounded_collection"]
+              | index(.refusal_class.cardinality)) != null
+            and (["same_partition", "finite_partition_set", "cross_partition"]
+              | index(.refusal_class.partition)) != null
+          )))
     ' "$events" >/dev/null || {
         echo "canary event transcript is incomplete or malformed: $run_id" >&2
         exit 1

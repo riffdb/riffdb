@@ -1,0 +1,29 @@
+{
+  "schema": "riffdb-operator-acceptance-corpus/v1",
+  "application": "fixtures/adapters/operational-conformance/riffdb.application.json",
+  "provider_domains_added": 0,
+  "bindings": ["rust", "go", "typescript", "python", "mcp", "cli"],
+  "shapes": [
+    {
+      "domain": "ticketdesk",
+      "operation": "TicketPageWithComments",
+      "root": "Ticket",
+      "nested": "TicketComment",
+      "query": "fixtures/adapters/operational-conformance/riffdb/queries/ticket_page_with_comments.riffq"
+    },
+    {
+      "domain": "mlflow",
+      "operation": "MlflowRunsWithTags",
+      "root": "MlflowRun",
+      "nested": "MlflowRunTag",
+      "query": "fixtures/adapters/operational-conformance/riffdb/queries/mlflow_runs_with_tags.riffq"
+    },
+    {
+      "domain": "openfga",
+      "operation": "FgaObjectsWithRelations",
+      "root": "FgaObject",
+      "nested": "FgaRelation",
+      "query": "fixtures/adapters/operational-conformance/riffdb/queries/fga_objects_with_relations.riffq"
+    }
+  ]
+}

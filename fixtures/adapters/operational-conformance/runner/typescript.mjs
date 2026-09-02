@@ -25,6 +25,18 @@ try {
   assert(dashboard.value.summary[0].sample_count === 2n, "MLflow exact count");
   assert(dashboard.value.summary[0].minimum_micros === 125n && dashboard.value.summary[0].maximum_micros === 175n, "MLflow min/max");
 
+  const tickets = await client.ticketPageWithComments({ organization_id: id(80), state: "open" });
+  assert(tickets.value.outcome === "Found" && tickets.value.tickets.length === 2, "TicketDesk expansion page");
+  assert(tickets.value.tickets[0].comments.length === 2 && tickets.value.tickets[1].comments.length === 1, "TicketDesk comments per ticket");
+
+  const runs = await client.mlflowRunsWithTags({ experiment_id: id(90), lifecycle: "active" });
+  assert(runs.value.outcome === "Found" && runs.value.runs.length === 2, "MLflow expansion page");
+  assert(runs.value.runs[0].tags.length === 2 && runs.value.runs[1].tags.length === 1, "MLflow tags per run");
+
+  const objects = await client.fgaObjectsWithRelations({ store_id: id(100), kind: "document" });
+  assert(objects.value.outcome === "Found" && objects.value.objects.length === 2, "OpenFGA expansion page");
+  assert(objects.value.objects[0].relations.length === 2 && objects.value.objects[1].relations.length === 1, "OpenFGA relations per object");
+
   const documents = await client.searchDocuments({ site_id: id(30), title_prefix: "Alpha" });
   assert(documents.value.outcome === "Found" && documents.value.documents.length === 2, "Payload binary prefix page");
   const drafts = await client.listDraftDocuments({ site_id: id(30) });
@@ -69,6 +81,7 @@ try {
     nullable_exact_order: true,
     exact_total: true,
     numeric_offset: true,
+    operator_expansions: true,
     adapters: ["mlflow", "openfga", "better-auth", "woodpecker"],
     regression_adapters: ["payload"],
   }));

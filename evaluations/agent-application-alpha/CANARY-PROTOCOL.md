@@ -31,6 +31,12 @@ inputs, entity identifiers, fixture values, returned application records, or
 source text. Stable operation names and compiler/runtime identity hashes are
 required and are not application values.
 
+When `riffdb application check --refusals` classifies an operational read
+refusal, copy only its closed `operator`, `cardinality`, and `partition`
+spelling into the event's `refusal_class`. Do not infer a class from diagnostic
+prose, operation names, source, or application values. Compiler failures that
+are not operational-shape refusals omit the field.
+
 The ordinary event transcript records chronology. Record `first_write` only
 from the original successful command response with `replayed: false`; a later
 idempotent replay proves recovery behavior but cannot substitute for the first

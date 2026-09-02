@@ -24,6 +24,22 @@
       ]
     },
     "operation": {"pattern": "^[A-Za-z0-9_.-]{1,256}$", "type": "string"},
+    "refusal_class": {
+      "additionalProperties": false,
+      "properties": {
+        "operator": {
+          "enum": ["expansion", "existence", "candidate_set", "indexed_read"]
+        },
+        "cardinality": {
+          "enum": ["singular", "bounded_collection", "unbounded_collection"]
+        },
+        "partition": {
+          "enum": ["same_partition", "finite_partition_set", "cross_partition"]
+        }
+      },
+      "required": ["operator", "cardinality", "partition"],
+      "type": "object"
+    },
     "schema": {"const": "riffdb-agent-application-alpha-event/v2"}
   },
   "required": ["schema", "elapsed_ms", "kind"],

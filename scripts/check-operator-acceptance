@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# req: OQ-113, OQ-118
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+corpus="fixtures/operators/acceptance-v1.json"
+ranking="release/evidence/operators/refusal-class-ranking-v1.json"
+
+[[ -f "$corpus" ]] || {
+    echo "operator acceptance corpus is missing: $corpus" >&2
+    exit 1
+}
+[[ -f "$ranking" ]] || {
+    echo "operator refusal ranking is missing: $ranking" >&2
+    exit 1
+}
+
+jq -e '
+  .schema == "riffdb-operator-acceptance-corpus/v1"
+  and .provider_domains_added == 0
+  and .bindings == ["rust", "go", "typescript", "python", "mcp", "cli"]
+  and [.shapes[].domain] == ["ticketdesk", "mlflow", "openfga"]
+  and [.shapes[].operation]
+    == ["TicketPageWithComments", "MlflowRunsWithTags", "FgaObjectsWithRelations"]
+  and all(.shapes[]; (.query | type) == "string")
+' "$corpus" >/dev/null
+
+while IFS= read -r query; do
+    [[ -f "$query" ]] || {
+        echo "operator corpus query is missing: $query" >&2
+        exit 1
+    }
+    rg -q 'for each [a-z_]+ in [a-z_]+' "$query"
+    rg -q 'take [0-9]+ per [a-z_]+' "$query"
+done < <(jq -r '.shapes[].query' "$corpus")
+
+jq -e '
+  . as $catalog
+  | .schema == "riffdb-generated-application-operations/v2"
+  and all(
+    "TicketPageWithComments", "MlflowRunsWithTags", "FgaObjectsWithRelations";
+    . as $operation
+    | any($catalog.tools[];
+        .operation_name == $operation
+        and .annotations.readOnlyHint == true
+        and .annotations.destructiveHint == false
+        and (.result_schema.oneOf[0].properties[]
+             | select(.type == "array")
+             | .maxItems == 4
+               and (.items.properties[] | select(.type == "array") | .maxItems == 4)))
+  )
+' fixtures/adapters/operational-conformance/generated/mcp/tools.json >/dev/null
+
+jq -e '
+  .properties.refusal_class.additionalProperties == false
+  and (.properties.refusal_class.required | sort)
+    == ["cardinality", "operator", "partition"]
+  and .properties.refusal_class.properties.operator.enum
+    == ["expansion", "existence", "candidate_set", "indexed_read"]
+  and .properties.refusal_class.properties.cardinality.enum
+    == ["singular", "bounded_collection", "unbounded_collection"]
+  and .properties.refusal_class.properties.partition.enum
+    == ["same_partition", "finite_partition_set", "cross_partition"]
+' evaluations/agent-application-alpha/event-schema-v2.json >/dev/null
+
+transcripts="$(find evaluations/agent-application-alpha/runs -name events.jsonl -print | wc -l)"
+observed="$(find evaluations/agent-application-alpha/runs -name events.jsonl -print0 \
+    | xargs -0 jq -s '{
+        events: length,
+        compiler_failure_events: (map(select(.kind == "compiler_failure")) | length),
+        unsupported_shape_events: (map(select(.kind == "unsupported_shape")) | length),
+        classified_operator_refusals: (map(select(.refusal_class != null)) | length),
+        legacy_unclassified_refusals: (map(select(
+          (.kind == "compiler_failure" or .kind == "unsupported_shape")
+          and .refusal_class == null
+        )) | length)
+      }' | jq --argjson transcripts "$transcripts" '. + {transcripts: $transcripts}')"
+jq -e --argjson observed "$observed" '
+  .schema == "riffdb-operator-refusal-ranking/v1"
+  and .campaign_inventory == $observed
+  and [.next_operator_candidates[].rank] == [1, 2, 3]
+  and [.next_operator_candidates[].candidate]
+    == ["dependent_existence", "finite_partition_expansion", "cross_partition_expansion"]
+  and all(.next_operator_candidates[];
+      .classified_observations == 0
+      and (.refusal_class | keys | sort) == ["cardinality", "operator", "partition"])
+' "$ranking" >/dev/null
+
+./scripts/check-version-topology
+./scripts/refused_shapes_are_recorded_as_anonymized_refusal_classes
+./scripts/adapter-operational-query-acceptance --all-languages
+
+echo "operator acceptance corpus and refusal ranking passed"

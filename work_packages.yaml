@@ -22922,6 +22922,9 @@ work_packages:
     crates/riffdb-service/src/query_discovery_operations.rs,
     crates/riffdb-api-mcp/src/generated/service_backend.rs,
     crates/riffdb-query-module/src/generation.rs]
+  scope_expansion: Human-approved 2026-09-02. The end-to-end CLI and hosted MCP corpus exposed
+    schema-safe nested-result carriage and generated Rust decoder defects, so the approved paths
+    are limited to their frozen/generated adapters, MCP discovery filtering, and query generator.
   deliverables:
   - Retained corpus of TicketDesk ticket page with comments per ticket, MLflow runs with tags per
     run, OpenFGA objects with relations per object, each compiled and executed through Rust, Go,
@@ -22936,4 +22939,14 @@ work_packages:
   standing_design_tests:
     interface_safety: Corpus applications use only generated typed operations.
     scale: Not applicable; this package adds evidence, not execution.
+  closure:
+    status: complete
+    completed_at: "2026-09-02"
+    requirements_satisfied: [OQ-113, OQ-118]
+    evidence: The retained TicketDesk, MLflow, and OpenFGA expansion shapes compile and execute
+      with bounded nested cardinalities through generated Rust, Go, TypeScript, Python, CLI, and
+      hosted MCP operations. The corpus proves no provider domain was added, preserves MCP
+      authorization and schema validation, and records the remaining anonymized refusal classes
+      and ranked operator candidates from all retained alpha campaign transcripts. Known
+      limitations now describe only the remaining refused relationship shapes.
   human_review_triggers: *id0185

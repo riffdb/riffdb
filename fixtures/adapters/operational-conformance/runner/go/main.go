@@ -86,6 +86,39 @@ func run() error {
 		return errors.New("MLflow exact aggregate dashboard")
 	}
 
+	ticketPage, err := client.TicketPageWithComments(ctx, generated.TicketPageWithCommentsParams{
+		OrganizationId: id(80), State: "open",
+	}, generated.QueryOptions{})
+	if err != nil {
+		return err
+	}
+	tickets, ok := ticketPage.Value.(generated.TicketPageWithCommentsFound)
+	if !ok || len(tickets.Tickets) != 2 || len(tickets.Tickets[0].Comments) != 2 || len(tickets.Tickets[1].Comments) != 1 {
+		return errors.New("TicketDesk tickets with comments per ticket")
+	}
+
+	runPage, err := client.MlflowRunsWithTags(ctx, generated.MlflowRunsWithTagsParams{
+		ExperimentId: id(90), Lifecycle: "active",
+	}, generated.QueryOptions{})
+	if err != nil {
+		return err
+	}
+	runs, ok := runPage.Value.(generated.MlflowRunsWithTagsFound)
+	if !ok || len(runs.Runs) != 2 || len(runs.Runs[0].Tags) != 2 || len(runs.Runs[1].Tags) != 1 {
+		return errors.New("MLflow runs with tags per run")
+	}
+
+	objectPage, err := client.FgaObjectsWithRelations(ctx, generated.FgaObjectsWithRelationsParams{
+		StoreId: id(100), Kind: "document",
+	}, generated.QueryOptions{})
+	if err != nil {
+		return err
+	}
+	objects, ok := objectPage.Value.(generated.FgaObjectsWithRelationsFound)
+	if !ok || len(objects.Objects) != 2 || len(objects.Objects[0].Relations) != 2 || len(objects.Objects[1].Relations) != 1 {
+		return errors.New("OpenFGA objects with relations per object")
+	}
+
 	documents, err := client.SearchDocuments(ctx, generated.SearchDocumentsParams{
 		SiteId: id(30), TitlePrefix: "Alpha",
 	}, generated.QueryOptions{})
@@ -210,6 +243,7 @@ func observation(language string) map[string]any {
 		"catalog_preflight": true, "optional_filters": true, "stable_cursor": true,
 		"null_predicate": true, "binary_prefix": true, "exact_aggregates": true,
 		"exact_text_family": true, "exact_predicate_family": true, "nullable_exact_order": true, "exact_total": true, "numeric_offset": true,
+		"operator_expansions": true,
 		"adapters":            []string{"mlflow", "openfga", "better-auth", "woodpecker"},
 		"regression_adapters": []string{"payload"},
 	}

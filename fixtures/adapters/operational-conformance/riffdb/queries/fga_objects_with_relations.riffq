@@ -1,0 +1,23 @@
+query FgaObjectsWithRelations(
+    $store_id: FgaObject.store_id,
+    $kind: FgaObject.kind,
+) {
+    many objects from FgaObject
+        where store_id == $store_id && kind == $kind
+        order by object_id asc
+        take 4
+
+    many relations from FgaRelation
+        for each object in objects
+        where store_id == $store_id && object_id == object.object_id
+        order by relation_id asc
+        take 4 per object
+
+    return Found {
+        objects: objects {
+            object_id
+            relations: relations { relation_id relation subject }
+        }
+    }
+    outcomes Found
+}

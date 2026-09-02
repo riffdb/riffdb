@@ -22,8 +22,8 @@ def _compact_tag(value: object, tag: str, keys: frozenset[str]) -> dict[str, obj
 
 CONTRACT_LINEAGE: Final[str] = "AdapterOperationalConformance"
 CONTRACT_VERSION: Final[int] = 1
-CONTRACT_BUNDLE_HASH: Final[str] = "5cf309d8ba731173e426e53ec66d41fad99cc95cbbbfd10ad67a2b5db9a86b9c"
-QUERY_MODULE_HASH: Final[str] = "5fd8e72cb766441893389ea140bd62b9ec442df2f14f34eabcf944c7e89dc470"
+CONTRACT_BUNDLE_HASH: Final[str] = "c2e7e4c1bbf2df2b983565888f633aa63b4575e68423a0cd2d1cd57be64c3adf"
+QUERY_MODULE_HASH: Final[str] = "b461ee2f384a4caf685c9f5ca2bd8df3873f9b44d853c4208797608bca190c90"
 
 class AuthSessionState(StrEnum):
     AUTH_ACTIVE = "AuthActive"
@@ -36,6 +36,13 @@ class Metric:
     metric_id: UUID
     value_micros: Annotated[int, "i64"]
     experiment_id: UUID
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Ticket:
+    state: str
+    title: str
+    ticket_id: UUID
+    organization_id: UUID
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AuthUser:
@@ -66,6 +73,18 @@ class Pipeline:
     organization_id: UUID
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class FgaObject:
+    kind: str
+    store_id: UUID
+    object_id: UUID
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MlflowRun:
+    run_id: UUID
+    lifecycle: str
+    experiment_id: UUID
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class AuthSession:
     state: AuthSessionState
     user_id: UUID
@@ -75,12 +94,36 @@ class AuthSession:
     organization_id: UUID
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class FgaRelation:
+    subject: str
+    relation: str
+    store_id: UUID
+    object_id: UUID
+    relation_id: UUID
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MlflowRunTag:
+    name: str
+    value: str
+    run_id: UUID
+    tag_id: UUID
+    experiment_id: UUID
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class DirectoryUser:
     email: str
     state: str
     user_id: UUID
     created_at: Annotated[int, "u64"]
     reviewed_at: Timestamp | None
+    organization_id: UUID
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TicketComment:
+    body: str
+    ticket_id: UUID
+    comment_id: UUID
+    created_at: Annotated[int, "u64"]
     organization_id: UUID
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -100,7 +143,7 @@ class InventoryRecord:
     observed_at: Timestamp | None
     organization_id: UUID
 
-EXACT_DOCUMENTS_CONTAINS_ASC_QUERY_PLAN_HASH: Final[str] = "6e34398b6c071eec9a22739d6c2886c86807f9d5e970976d30179075d5fea51e"
+EXACT_DOCUMENTS_CONTAINS_ASC_QUERY_PLAN_HASH: Final[str] = "e9ab2700a467a65d0119b2b9348d62bde0fefc771b25b0b90a1805711a8a9683"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ExactDocumentsContainsAscParams:
@@ -128,7 +171,7 @@ class ExactDocumentsContainsAscFound:
 
 ExactDocumentsContainsAscResult: TypeAlias = ExactDocumentsContainsAscFound
 
-EXACT_DOCUMENTS_ENDS_WITH_DESC_QUERY_PLAN_HASH: Final[str] = "aad26293f50467749b2ba518510712441d4ad21da654ed5a8f618483847e0d3e"
+EXACT_DOCUMENTS_ENDS_WITH_DESC_QUERY_PLAN_HASH: Final[str] = "3051491f4d5b44e9a1bec0813c45f572ddc6f8439d066b952f5893db48a23ce9"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ExactDocumentsEndsWithDescParams:
@@ -156,7 +199,7 @@ class ExactDocumentsEndsWithDescFound:
 
 ExactDocumentsEndsWithDescResult: TypeAlias = ExactDocumentsEndsWithDescFound
 
-EXACT_DOCUMENTS_STARTS_WITH_ASC_QUERY_PLAN_HASH: Final[str] = "cbc70ee95fe5fafb50ff8e0157a03054022e2314e91217137bf493a36bc7d4a9"
+EXACT_DOCUMENTS_STARTS_WITH_ASC_QUERY_PLAN_HASH: Final[str] = "4257ede9a6913aa3bde6876a558c2c97dc9767f57aa687082d7dd17f468b204a"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ExactDocumentsStartsWithAscParams:
@@ -184,7 +227,32 @@ class ExactDocumentsStartsWithAscFound:
 
 ExactDocumentsStartsWithAscResult: TypeAlias = ExactDocumentsStartsWithAscFound
 
-GET_AUTH_SESSION_QUERY_PLAN_HASH: Final[str] = "5b79305e9145a91d5c27b9769ccc25489614ce483926bf086e5c852bb47c4f5a"
+FGA_OBJECTS_WITH_RELATIONS_QUERY_PLAN_HASH: Final[str] = "cdac987404c335d2790395df670b48af14264bfa02c2f76d726e7a0c0df14261"
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class FgaObjectsWithRelationsParams:
+    store_id: UUID
+    kind: str
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class FgaObjectsWithRelationsFoundObjectsRelations:
+    relation_id: UUID
+    relation: str
+    subject: str
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class FgaObjectsWithRelationsFoundObjects:
+    object_id: UUID
+    relations: tuple[FgaObjectsWithRelationsFoundObjectsRelations, ...]
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class FgaObjectsWithRelationsFound:
+    objects: tuple[FgaObjectsWithRelationsFoundObjects, ...]
+    outcome: Literal["Found"] = field(default="Found", init=False)
+
+FgaObjectsWithRelationsResult: TypeAlias = FgaObjectsWithRelationsFound
+
+GET_AUTH_SESSION_QUERY_PLAN_HASH: Final[str] = "621d2d349b24d4a2113dda5bc685306dd997ad38d859c78dedcb5cccd9aefb0f"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetAuthSessionParams:
@@ -211,7 +279,7 @@ class GetAuthSessionMissing:
 
 GetAuthSessionResult: TypeAlias = GetAuthSessionFound | GetAuthSessionMissing
 
-INVENTORY_BY_OBSERVED_ASC_NULLS_LAST_QUERY_PLAN_HASH: Final[str] = "07736366645887728a8a265a46218e529de64debbad5a207bd5e23b82cc98272"
+INVENTORY_BY_OBSERVED_ASC_NULLS_LAST_QUERY_PLAN_HASH: Final[str] = "34a72055b43ff5bad1ad7032f4917344e5989576c7837625b675a927b4348ab7"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class InventoryByObservedAscNullsLastParams:
@@ -239,7 +307,7 @@ class InventoryByObservedAscNullsLastFound:
 
 InventoryByObservedAscNullsLastResult: TypeAlias = InventoryByObservedAscNullsLastFound
 
-INVENTORY_BY_OBSERVED_DESC_NULLS_FIRST_QUERY_PLAN_HASH: Final[str] = "b7c8616f2dcd1cf44b2bf1a456bf53679a9b9a8801911571fe8aec950527d310"
+INVENTORY_BY_OBSERVED_DESC_NULLS_FIRST_QUERY_PLAN_HASH: Final[str] = "64b44fa0682ec77c49c1f8698a06833215853db02c83a81f4884f36def78405a"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class InventoryByObservedDescNullsFirstParams:
@@ -267,7 +335,7 @@ class InventoryByObservedDescNullsFirstFound:
 
 InventoryByObservedDescNullsFirstResult: TypeAlias = InventoryByObservedDescNullsFirstFound
 
-INVENTORY_BY_SUBTITLE_ASC_NULLS_FIRST_QUERY_PLAN_HASH: Final[str] = "cd8351b80a0cd6ac6f05f4e07b464cac49f1bb42a5b208d53cc2be189aa0c685"
+INVENTORY_BY_SUBTITLE_ASC_NULLS_FIRST_QUERY_PLAN_HASH: Final[str] = "ee536c1ee8d3db3b6b4f844b56c52e3cfc1cdfd542dbb518fab7ea05580b52da"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class InventoryBySubtitleAscNullsFirstParams:
@@ -295,7 +363,7 @@ class InventoryBySubtitleAscNullsFirstFound:
 
 InventoryBySubtitleAscNullsFirstResult: TypeAlias = InventoryBySubtitleAscNullsFirstFound
 
-INVENTORY_BY_SUBTITLE_DESC_NULLS_LAST_QUERY_PLAN_HASH: Final[str] = "3d2dec50fd9e34643ffe0092308c592fbeff261dfeb738b45aec81d17bb88b31"
+INVENTORY_BY_SUBTITLE_DESC_NULLS_LAST_QUERY_PLAN_HASH: Final[str] = "874dfed993df3356130f46e3857fbfb8274e8eb50fb2a28e8af343538a1dc492"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class InventoryBySubtitleDescNullsLastParams:
@@ -323,7 +391,7 @@ class InventoryBySubtitleDescNullsLastFound:
 
 InventoryBySubtitleDescNullsLastResult: TypeAlias = InventoryBySubtitleDescNullsLastFound
 
-LIST_DRAFT_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "1b4a626141fd8f303b465f5e4d0237fe6e7e0d352d0c76adb5b6cef8bfcbb953"
+LIST_DRAFT_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "dd27a6c08ab392d81aca5acef234aec6aa2c2d255e29ab8c0ef5e497196fb232"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListDraftDocumentsParams:
@@ -342,7 +410,7 @@ class ListDraftDocumentsFound:
 
 ListDraftDocumentsResult: TypeAlias = ListDraftDocumentsFound
 
-LIST_FGA_TUPLES_QUERY_PLAN_HASH: Final[str] = "923ceaf6aa4f8627499a9b48a6d8334f93834d3c20ad8c2d8855d7015e49fac0"
+LIST_FGA_TUPLES_QUERY_PLAN_HASH: Final[str] = "5b1048274757b76a6f4bd08cc9fb75c0fd921df7a49e2010361aff6391a6b70a"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListFgaTuplesParams:
@@ -364,7 +432,7 @@ class ListFgaTuplesFound:
 
 ListFgaTuplesResult: TypeAlias = ListFgaTuplesFound
 
-LIST_PIPELINES_QUERY_PLAN_HASH: Final[str] = "7468c5218b334e3c26743f26efd3c880b245d32a5c3a431fcf80941f9bd4edb5"
+LIST_PIPELINES_QUERY_PLAN_HASH: Final[str] = "eb10d13aef51782bc9d9c3c3a7ffbfd413df17a89fa8eb700ffffdb37f4f535b"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListPipelinesParams:
@@ -385,7 +453,7 @@ class ListPipelinesFound:
 
 ListPipelinesResult: TypeAlias = ListPipelinesFound
 
-METRIC_DASHBOARD_QUERY_PLAN_HASH: Final[str] = "e5a09fdec5ad5c364848118af929cf654c58dbb0b5ab59ba04aa9a910139dfa6"
+METRIC_DASHBOARD_QUERY_PLAN_HASH: Final[str] = "a653795586cae65231f0e827ba11c768fed5f73114a5815e5e3072faaf9e8e30"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MetricDashboardParams:
@@ -406,7 +474,32 @@ class MetricDashboardFound:
 
 MetricDashboardResult: TypeAlias = MetricDashboardFound
 
-REVIEWED_DIRECTORY_USERS_QUERY_PLAN_HASH: Final[str] = "4142fe614ea22d173e268ff62ccb30cb47651980a675c2e042b8347d7ed6d7c7"
+MLFLOW_RUNS_WITH_TAGS_QUERY_PLAN_HASH: Final[str] = "917068f618a0a25146f6b70695c823acd60c4c89fd57385d7f88b31ad324684d"
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MlflowRunsWithTagsParams:
+    experiment_id: UUID
+    lifecycle: str
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MlflowRunsWithTagsFoundRunsTags:
+    tag_id: UUID
+    name: str
+    value: str
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MlflowRunsWithTagsFoundRuns:
+    run_id: UUID
+    tags: tuple[MlflowRunsWithTagsFoundRunsTags, ...]
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MlflowRunsWithTagsFound:
+    runs: tuple[MlflowRunsWithTagsFoundRuns, ...]
+    outcome: Literal["Found"] = field(default="Found", init=False)
+
+MlflowRunsWithTagsResult: TypeAlias = MlflowRunsWithTagsFound
+
+REVIEWED_DIRECTORY_USERS_QUERY_PLAN_HASH: Final[str] = "548187b593dfa8cadd276d769f652821b350ed76d1ee3b9262185944b58cf78e"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ReviewedDirectoryUsersParams:
@@ -437,7 +530,7 @@ class ReviewedDirectoryUsersFound:
 
 ReviewedDirectoryUsersResult: TypeAlias = ReviewedDirectoryUsersFound
 
-SEARCH_DIRECTORY_USERS_QUERY_PLAN_HASH: Final[str] = "63eb9bafa6a65130018ab64e53eec2ff79b4d85d38dc2dc1717718e31e1a4587"
+SEARCH_DIRECTORY_USERS_QUERY_PLAN_HASH: Final[str] = "2653ca7b6cb55ef3149f7d4ce76a8225184f452b96e758d3513227f083e2fdb9"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SearchDirectoryUsersParams:
@@ -469,7 +562,7 @@ class SearchDirectoryUsersFound:
 
 SearchDirectoryUsersResult: TypeAlias = SearchDirectoryUsersFound
 
-SEARCH_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "5348741f3bcd9ee91a1e27623f06f9075ae57c3baa926dc9608b738e414b36af"
+SEARCH_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "ea284602476e8a871f7bab0745b4e5839479bb0a4a7ca4b023cb801c5fcf79ad"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SearchDocumentsParams:
@@ -490,6 +583,32 @@ class SearchDocumentsFound:
 
 SearchDocumentsResult: TypeAlias = SearchDocumentsFound
 
+TICKET_PAGE_WITH_COMMENTS_QUERY_PLAN_HASH: Final[str] = "34d57d95f12d47a44141170adb75086fa2daf2dd9844b650f01314f7e653d4c9"
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TicketPageWithCommentsParams:
+    organization_id: UUID
+    state: str
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TicketPageWithCommentsFoundTicketsComments:
+    comment_id: UUID
+    body: str
+    created_at: Annotated[int, "u64"]
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TicketPageWithCommentsFoundTickets:
+    ticket_id: UUID
+    title: str
+    comments: tuple[TicketPageWithCommentsFoundTicketsComments, ...]
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TicketPageWithCommentsFound:
+    tickets: tuple[TicketPageWithCommentsFoundTickets, ...]
+    outcome: Literal["Found"] = field(default="Found", init=False)
+
+TicketPageWithCommentsResult: TypeAlias = TicketPageWithCommentsFound
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ChangeInventoryRecordStateInput:
     subtitle: str | None
@@ -499,7 +618,7 @@ class ChangeInventoryRecordStateInput:
     observed_at: Timestamp | None
     organization_id: UUID
 
-CHANGE_INVENTORY_RECORD_STATE_PLAN_HASH: Final[str] = "a28376c6856cdccf2f36184e5f0eeabe4fa0263678f27dec0207421b840f8682"
+CHANGE_INVENTORY_RECORD_STATE_PLAN_HASH: Final[str] = "0f7a6a862f120299eb6713f6d2b3e9e96d662315799e70c7b6b2f8bedec85b6c"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ChangeInventoryRecordStateInventoryRecordMissing:
     outcome: Literal["InventoryRecordMissing"] = field(default="InventoryRecordMissing", init=False)
@@ -516,7 +635,7 @@ class CreateAuthSessionsInput:
     signups: tuple[AuthSignupInput, ...]
     request_id: UUID
 
-CREATE_AUTH_SESSIONS_PLAN_HASH: Final[str] = "73474d2fe77acd9b299fd90192a51bac9607b68ed1d7be9cb18df1c7e6d7090d"
+CREATE_AUTH_SESSIONS_PLAN_HASH: Final[str] = "0b0bcb84ba52cc46f5db93b28ba39537e8afd2d9844f69f7eab8b27cec46ee68"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateAuthSessionsSessionsCreated:
     outcome: Literal["SessionsCreated"] = field(default="SessionsCreated", init=False)
@@ -536,7 +655,7 @@ class CreateDirectoryUsersInput:
     users: tuple[DirectoryUser, ...]
     request_id: UUID
 
-CREATE_DIRECTORY_USERS_PLAN_HASH: Final[str] = "216b400b1457c5579a962280ca7b85c4ead49b581ff7d84e77c31b2d7e141c18"
+CREATE_DIRECTORY_USERS_PLAN_HASH: Final[str] = "2a3e39df599d812751880300a966a32d4404d2f0521bb9142efaa3b05279ba32"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateDirectoryUsersDirectoryUsersCreated:
     outcome: Literal["DirectoryUsersCreated"] = field(default="DirectoryUsersCreated", init=False)
@@ -552,7 +671,7 @@ class CreateDocumentsInput:
     documents: tuple[Document, ...]
     request_id: UUID
 
-CREATE_DOCUMENTS_PLAN_HASH: Final[str] = "b16dfb609496f92a4a044aa9394d66a233ebb5a54b5b0e0944523f66cd138e53"
+CREATE_DOCUMENTS_PLAN_HASH: Final[str] = "4324ee03928dd4b5a5039963c8a819f941ca9cad0578c7466c5f32f51939f405"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateDocumentsDocumentsCreated:
     outcome: Literal["DocumentsCreated"] = field(default="DocumentsCreated", init=False)
@@ -570,7 +689,7 @@ class CreateInventoryRecordMissingInput:
     request_id: UUID
     organization_id: UUID
 
-CREATE_INVENTORY_RECORD_MISSING_PLAN_HASH: Final[str] = "626eded520ef9d3e2298794687b83e28ee21959f6ffd763d8be7a1f39314e6de"
+CREATE_INVENTORY_RECORD_MISSING_PLAN_HASH: Final[str] = "025813925dbfdbb57080a9ddcf9596979d9183b5da9b0e1f5e41a207abef3f9c"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateInventoryRecordMissingInventoryRecordAlreadyExists:
     outcome: Literal["InventoryRecordAlreadyExists"] = field(default="InventoryRecordAlreadyExists", init=False)
@@ -586,7 +705,7 @@ class CreateInventoryRecordsInput:
     records: tuple[InventoryRecord, ...]
     request_id: UUID
 
-CREATE_INVENTORY_RECORDS_PLAN_HASH: Final[str] = "01c8d5f5476dae0cb2050c240296f9ebe9ba72d882905627b7491c7414abcde6"
+CREATE_INVENTORY_RECORDS_PLAN_HASH: Final[str] = "6a98dab075d87d255bc13b3f3f8f8686fd5285f4986570f90b72e32a4d589f4c"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateInventoryRecordsInventoryRecordsCreated:
     outcome: Literal["InventoryRecordsCreated"] = field(default="InventoryRecordsCreated", init=False)
@@ -602,7 +721,7 @@ class CreatePipelinesInput:
     pipelines: tuple[Pipeline, ...]
     request_id: UUID
 
-CREATE_PIPELINES_PLAN_HASH: Final[str] = "7205fc0d74181a8d32b3ab6026d5917886a306cc232466ab0e6f872eed695236"
+CREATE_PIPELINES_PLAN_HASH: Final[str] = "412f8c63aa8ec4c9ed23b38711e43fe106202291cbd0cff026f8567c77bbf7cd"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreatePipelinesPipelinesCreated:
     outcome: Literal["PipelinesCreated"] = field(default="PipelinesCreated", init=False)
@@ -618,7 +737,7 @@ class LogMetricsInput:
     metrics: tuple[Metric, ...]
     request_id: UUID
 
-LOG_METRICS_PLAN_HASH: Final[str] = "d63e61abfe0826f4bc7e7cf8765213affdbee68041336fbddd9f655c5d4d89ae"
+LOG_METRICS_PLAN_HASH: Final[str] = "602193ee91699ce355a44a63e3b9638a8f681a400a2c728002f09cda08368c0c"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class LogMetricsMetricsLogged:
     outcome: Literal["MetricsLogged"] = field(default="MetricsLogged", init=False)
@@ -630,11 +749,119 @@ class LogMetricsMetricAlreadyExists:
 LogMetricsOutcome: TypeAlias = LogMetricsMetricsLogged | LogMetricsMetricAlreadyExists
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class SeedObjectRelationsInput:
+    relations: tuple[FgaRelation, ...]
+    request_id: UUID
+
+SEED_OBJECT_RELATIONS_PLAN_HASH: Final[str] = "e2e06898dd76918906884dfe8a41d2b6c1c58d9131f6b0cc4c2b7235b76ac782"
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SeedObjectRelationsFgaObjectMissing:
+    outcome: Literal["FgaObjectMissing"] = field(default="FgaObjectMissing", init=False)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SeedObjectRelationsObjectRelationsSeeded:
+    outcome: Literal["ObjectRelationsSeeded"] = field(default="ObjectRelationsSeeded", init=False)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SeedObjectRelationsFgaRelationAlreadyExists:
+    outcome: Literal["FgaRelationAlreadyExists"] = field(default="FgaRelationAlreadyExists", init=False)
+
+SeedObjectRelationsOutcome: TypeAlias = SeedObjectRelationsFgaObjectMissing | SeedObjectRelationsObjectRelationsSeeded | SeedObjectRelationsFgaRelationAlreadyExists
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SeedObjectsInput:
+    objects: tuple[FgaObject, ...]
+    request_id: UUID
+
+SEED_OBJECTS_PLAN_HASH: Final[str] = "47dc67154aa901f62f623b9b6f3c9abbc5f2fdda9af0b44be19e561c010d0ae3"
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SeedObjectsObjectsSeeded:
+    outcome: Literal["ObjectsSeeded"] = field(default="ObjectsSeeded", init=False)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SeedObjectsFgaObjectAlreadyExists:
+    outcome: Literal["FgaObjectAlreadyExists"] = field(default="FgaObjectAlreadyExists", init=False)
+
+SeedObjectsOutcome: TypeAlias = SeedObjectsObjectsSeeded | SeedObjectsFgaObjectAlreadyExists
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SeedRunTagsInput:
+    tags: tuple[MlflowRunTag, ...]
+    request_id: UUID
+
+SEED_RUN_TAGS_PLAN_HASH: Final[str] = "202ca414f73f4c60609171056acbe1068c02505fc529c7bee5845e4f0953e4a4"
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SeedRunTagsRunTagsSeeded:
+    outcome: Literal["RunTagsSeeded"] = field(default="RunTagsSeeded", init=False)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SeedRunTagsMlflowRunMissing:
+    outcome: Literal["MlflowRunMissing"] = field(default="MlflowRunMissing", init=False)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SeedRunTagsMlflowRunTagAlreadyExists:
+    outcome: Literal["MlflowRunTagAlreadyExists"] = field(default="MlflowRunTagAlreadyExists", init=False)
+
+SeedRunTagsOutcome: TypeAlias = SeedRunTagsRunTagsSeeded | SeedRunTagsMlflowRunMissing | SeedRunTagsMlflowRunTagAlreadyExists
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SeedRunsInput:
+    runs: tuple[MlflowRun, ...]
+    request_id: UUID
+
+SEED_RUNS_PLAN_HASH: Final[str] = "8d124970b680fc28a7575831cb08f0350471ff31d221b9a9ebdc5981ad4276f3"
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SeedRunsRunsSeeded:
+    outcome: Literal["RunsSeeded"] = field(default="RunsSeeded", init=False)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SeedRunsMlflowRunAlreadyExists:
+    outcome: Literal["MlflowRunAlreadyExists"] = field(default="MlflowRunAlreadyExists", init=False)
+
+SeedRunsOutcome: TypeAlias = SeedRunsRunsSeeded | SeedRunsMlflowRunAlreadyExists
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SeedTicketCommentsInput:
+    comments: tuple[TicketComment, ...]
+    request_id: UUID
+
+SEED_TICKET_COMMENTS_PLAN_HASH: Final[str] = "4abf5f1f572a773a6e839e339e67e9c939a4ecbd308ef599f41f4e7056a84915"
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SeedTicketCommentsTicketMissing:
+    outcome: Literal["TicketMissing"] = field(default="TicketMissing", init=False)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SeedTicketCommentsTicketCommentsSeeded:
+    outcome: Literal["TicketCommentsSeeded"] = field(default="TicketCommentsSeeded", init=False)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SeedTicketCommentsTicketCommentAlreadyExists:
+    outcome: Literal["TicketCommentAlreadyExists"] = field(default="TicketCommentAlreadyExists", init=False)
+
+SeedTicketCommentsOutcome: TypeAlias = SeedTicketCommentsTicketMissing | SeedTicketCommentsTicketCommentsSeeded | SeedTicketCommentsTicketCommentAlreadyExists
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SeedTicketsInput:
+    tickets: tuple[Ticket, ...]
+    request_id: UUID
+
+SEED_TICKETS_PLAN_HASH: Final[str] = "4d447d21f3592c7eec6725fac5f6c165d942dae139de378d202b1acb2883eb77"
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SeedTicketsTicketsSeeded:
+    outcome: Literal["TicketsSeeded"] = field(default="TicketsSeeded", init=False)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SeedTicketsTicketAlreadyExists:
+    outcome: Literal["TicketAlreadyExists"] = field(default="TicketAlreadyExists", init=False)
+
+SeedTicketsOutcome: TypeAlias = SeedTicketsTicketsSeeded | SeedTicketsTicketAlreadyExists
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class WriteTuplesInput:
     tuples: tuple[FgaTuple, ...]
     request_id: UUID
 
-WRITE_TUPLES_PLAN_HASH: Final[str] = "ab3ed2f7a70b35c12a74d45c6f8aea5b9114649828d8e4a1323712c2ca1b5fe0"
+WRITE_TUPLES_PLAN_HASH: Final[str] = "fa1d3baaabf408338c7aea4bdadd2e0c061e153ce82a363c9ef1e357ce2f6a17"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class WriteTuplesTuplesWritten:
     outcome: Literal["TuplesWritten"] = field(default="TuplesWritten", init=False)
@@ -689,6 +916,18 @@ class AdapterOperationalConformanceClient:
         )
         outcomes = {
             "Found": ExactDocumentsStartsWithAscFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    def fga_objects_with_relations(self, parameters: FgaObjectsWithRelationsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[FgaObjectsWithRelationsResult]:
+        raw = self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="FgaObjectsWithRelations", plan_hash=FGA_OBJECTS_WITH_RELATIONS_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": FgaObjectsWithRelationsFound,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
@@ -823,6 +1062,18 @@ class AdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def mlflow_runs_with_tags(self, parameters: MlflowRunsWithTagsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[MlflowRunsWithTagsResult]:
+        raw = self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="MlflowRunsWithTags", plan_hash=MLFLOW_RUNS_WITH_TAGS_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": MlflowRunsWithTagsFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
     def reviewed_directory_users(self, parameters: ReviewedDirectoryUsersParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ReviewedDirectoryUsersResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
@@ -867,6 +1118,18 @@ class AdapterOperationalConformanceClient:
         )
         outcomes = {
             "Found": SearchDocumentsFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    def ticket_page_with_comments(self, parameters: TicketPageWithCommentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TicketPageWithCommentsResult]:
+        raw = self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="TicketPageWithComments", plan_hash=TICKET_PAGE_WITH_COMMENTS_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": TicketPageWithCommentsFound,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
@@ -1045,6 +1308,147 @@ class AdapterOperationalConformanceClient:
                 raise ValueError("invalid bounded collection length for LogMetrics.metrics")
         return self._transport._command_batch(inputs, options, self.log_metrics, progress)
 
+    def seed_object_relations(self, input: SeedObjectRelationsInput) -> TypedCommandResult[SeedObjectRelationsOutcome]:
+        if not 1 <= len(input.relations) <= 32:
+            raise ValueError("invalid bounded collection length for SeedObjectRelations.relations")
+        raw = self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="SeedObjectRelations", plan_hash=SEED_OBJECT_RELATIONS_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "FgaObjectMissing": SeedObjectRelationsFgaObjectMissing,
+            "ObjectRelationsSeeded": SeedObjectRelationsObjectRelationsSeeded,
+            "FgaRelationAlreadyExists": SeedObjectRelationsFgaRelationAlreadyExists,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    def seed_object_relations_batch(
+        self, inputs: Sequence[SeedObjectRelationsInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[SeedObjectRelationsOutcome]:
+        for input in inputs:
+            if not 1 <= len(input.relations) <= 32:
+                raise ValueError("invalid bounded collection length for SeedObjectRelations.relations")
+        return self._transport._command_batch(inputs, options, self.seed_object_relations, progress)
+
+    def seed_objects(self, input: SeedObjectsInput) -> TypedCommandResult[SeedObjectsOutcome]:
+        if not 1 <= len(input.objects) <= 8:
+            raise ValueError("invalid bounded collection length for SeedObjects.objects")
+        raw = self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="SeedObjects", plan_hash=SEED_OBJECTS_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "ObjectsSeeded": SeedObjectsObjectsSeeded,
+            "FgaObjectAlreadyExists": SeedObjectsFgaObjectAlreadyExists,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    def seed_objects_batch(
+        self, inputs: Sequence[SeedObjectsInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[SeedObjectsOutcome]:
+        for input in inputs:
+            if not 1 <= len(input.objects) <= 8:
+                raise ValueError("invalid bounded collection length for SeedObjects.objects")
+        return self._transport._command_batch(inputs, options, self.seed_objects, progress)
+
+    def seed_run_tags(self, input: SeedRunTagsInput) -> TypedCommandResult[SeedRunTagsOutcome]:
+        if not 1 <= len(input.tags) <= 32:
+            raise ValueError("invalid bounded collection length for SeedRunTags.tags")
+        raw = self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="SeedRunTags", plan_hash=SEED_RUN_TAGS_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "RunTagsSeeded": SeedRunTagsRunTagsSeeded,
+            "MlflowRunMissing": SeedRunTagsMlflowRunMissing,
+            "MlflowRunTagAlreadyExists": SeedRunTagsMlflowRunTagAlreadyExists,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    def seed_run_tags_batch(
+        self, inputs: Sequence[SeedRunTagsInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[SeedRunTagsOutcome]:
+        for input in inputs:
+            if not 1 <= len(input.tags) <= 32:
+                raise ValueError("invalid bounded collection length for SeedRunTags.tags")
+        return self._transport._command_batch(inputs, options, self.seed_run_tags, progress)
+
+    def seed_runs(self, input: SeedRunsInput) -> TypedCommandResult[SeedRunsOutcome]:
+        if not 1 <= len(input.runs) <= 8:
+            raise ValueError("invalid bounded collection length for SeedRuns.runs")
+        raw = self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="SeedRuns", plan_hash=SEED_RUNS_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "RunsSeeded": SeedRunsRunsSeeded,
+            "MlflowRunAlreadyExists": SeedRunsMlflowRunAlreadyExists,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    def seed_runs_batch(
+        self, inputs: Sequence[SeedRunsInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[SeedRunsOutcome]:
+        for input in inputs:
+            if not 1 <= len(input.runs) <= 8:
+                raise ValueError("invalid bounded collection length for SeedRuns.runs")
+        return self._transport._command_batch(inputs, options, self.seed_runs, progress)
+
+    def seed_ticket_comments(self, input: SeedTicketCommentsInput) -> TypedCommandResult[SeedTicketCommentsOutcome]:
+        if not 1 <= len(input.comments) <= 32:
+            raise ValueError("invalid bounded collection length for SeedTicketComments.comments")
+        raw = self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="SeedTicketComments", plan_hash=SEED_TICKET_COMMENTS_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "TicketMissing": SeedTicketCommentsTicketMissing,
+            "TicketCommentsSeeded": SeedTicketCommentsTicketCommentsSeeded,
+            "TicketCommentAlreadyExists": SeedTicketCommentsTicketCommentAlreadyExists,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    def seed_ticket_comments_batch(
+        self, inputs: Sequence[SeedTicketCommentsInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[SeedTicketCommentsOutcome]:
+        for input in inputs:
+            if not 1 <= len(input.comments) <= 32:
+                raise ValueError("invalid bounded collection length for SeedTicketComments.comments")
+        return self._transport._command_batch(inputs, options, self.seed_ticket_comments, progress)
+
+    def seed_tickets(self, input: SeedTicketsInput) -> TypedCommandResult[SeedTicketsOutcome]:
+        if not 1 <= len(input.tickets) <= 8:
+            raise ValueError("invalid bounded collection length for SeedTickets.tickets")
+        raw = self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="SeedTickets", plan_hash=SEED_TICKETS_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "TicketsSeeded": SeedTicketsTicketsSeeded,
+            "TicketAlreadyExists": SeedTicketsTicketAlreadyExists,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    def seed_tickets_batch(
+        self, inputs: Sequence[SeedTicketsInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[SeedTicketsOutcome]:
+        for input in inputs:
+            if not 1 <= len(input.tickets) <= 8:
+                raise ValueError("invalid bounded collection length for SeedTickets.tickets")
+        return self._transport._command_batch(inputs, options, self.seed_tickets, progress)
+
     def write_tuples(self, input: WriteTuplesInput) -> TypedCommandResult[WriteTuplesOutcome]:
         if not 1 <= len(input.tuples) <= 32:
             raise ValueError("invalid bounded collection length for WriteTuples.tuples")
@@ -1112,6 +1516,18 @@ class AsyncAdapterOperationalConformanceClient:
         )
         outcomes = {
             "Found": ExactDocumentsStartsWithAscFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    async def fga_objects_with_relations(self, parameters: FgaObjectsWithRelationsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[FgaObjectsWithRelationsResult]:
+        raw = await self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="FgaObjectsWithRelations", plan_hash=FGA_OBJECTS_WITH_RELATIONS_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": FgaObjectsWithRelationsFound,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
@@ -1246,6 +1662,18 @@ class AsyncAdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def mlflow_runs_with_tags(self, parameters: MlflowRunsWithTagsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[MlflowRunsWithTagsResult]:
+        raw = await self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="MlflowRunsWithTags", plan_hash=MLFLOW_RUNS_WITH_TAGS_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": MlflowRunsWithTagsFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
     async def reviewed_directory_users(self, parameters: ReviewedDirectoryUsersParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ReviewedDirectoryUsersResult]:
         if parameters.limit is not None and (isinstance(parameters.limit, bool) or not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 499):
             raise ValueError("limit must be an integer from 1 through 499")
@@ -1290,6 +1718,18 @@ class AsyncAdapterOperationalConformanceClient:
         )
         outcomes = {
             "Found": SearchDocumentsFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    async def ticket_page_with_comments(self, parameters: TicketPageWithCommentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TicketPageWithCommentsResult]:
+        raw = await self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="TicketPageWithComments", plan_hash=TICKET_PAGE_WITH_COMMENTS_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": TicketPageWithCommentsFound,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
@@ -1467,6 +1907,147 @@ class AsyncAdapterOperationalConformanceClient:
             if not 1 <= len(input.metrics) <= 32:
                 raise ValueError("invalid bounded collection length for LogMetrics.metrics")
         return await self._transport._command_batch(inputs, options, self.log_metrics, progress)
+
+    async def seed_object_relations(self, input: SeedObjectRelationsInput) -> TypedCommandResult[SeedObjectRelationsOutcome]:
+        if not 1 <= len(input.relations) <= 32:
+            raise ValueError("invalid bounded collection length for SeedObjectRelations.relations")
+        raw = await self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="SeedObjectRelations", plan_hash=SEED_OBJECT_RELATIONS_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "FgaObjectMissing": SeedObjectRelationsFgaObjectMissing,
+            "ObjectRelationsSeeded": SeedObjectRelationsObjectRelationsSeeded,
+            "FgaRelationAlreadyExists": SeedObjectRelationsFgaRelationAlreadyExists,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    async def seed_object_relations_batch(
+        self, inputs: Sequence[SeedObjectRelationsInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[SeedObjectRelationsOutcome]:
+        for input in inputs:
+            if not 1 <= len(input.relations) <= 32:
+                raise ValueError("invalid bounded collection length for SeedObjectRelations.relations")
+        return await self._transport._command_batch(inputs, options, self.seed_object_relations, progress)
+
+    async def seed_objects(self, input: SeedObjectsInput) -> TypedCommandResult[SeedObjectsOutcome]:
+        if not 1 <= len(input.objects) <= 8:
+            raise ValueError("invalid bounded collection length for SeedObjects.objects")
+        raw = await self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="SeedObjects", plan_hash=SEED_OBJECTS_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "ObjectsSeeded": SeedObjectsObjectsSeeded,
+            "FgaObjectAlreadyExists": SeedObjectsFgaObjectAlreadyExists,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    async def seed_objects_batch(
+        self, inputs: Sequence[SeedObjectsInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[SeedObjectsOutcome]:
+        for input in inputs:
+            if not 1 <= len(input.objects) <= 8:
+                raise ValueError("invalid bounded collection length for SeedObjects.objects")
+        return await self._transport._command_batch(inputs, options, self.seed_objects, progress)
+
+    async def seed_run_tags(self, input: SeedRunTagsInput) -> TypedCommandResult[SeedRunTagsOutcome]:
+        if not 1 <= len(input.tags) <= 32:
+            raise ValueError("invalid bounded collection length for SeedRunTags.tags")
+        raw = await self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="SeedRunTags", plan_hash=SEED_RUN_TAGS_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "RunTagsSeeded": SeedRunTagsRunTagsSeeded,
+            "MlflowRunMissing": SeedRunTagsMlflowRunMissing,
+            "MlflowRunTagAlreadyExists": SeedRunTagsMlflowRunTagAlreadyExists,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    async def seed_run_tags_batch(
+        self, inputs: Sequence[SeedRunTagsInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[SeedRunTagsOutcome]:
+        for input in inputs:
+            if not 1 <= len(input.tags) <= 32:
+                raise ValueError("invalid bounded collection length for SeedRunTags.tags")
+        return await self._transport._command_batch(inputs, options, self.seed_run_tags, progress)
+
+    async def seed_runs(self, input: SeedRunsInput) -> TypedCommandResult[SeedRunsOutcome]:
+        if not 1 <= len(input.runs) <= 8:
+            raise ValueError("invalid bounded collection length for SeedRuns.runs")
+        raw = await self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="SeedRuns", plan_hash=SEED_RUNS_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "RunsSeeded": SeedRunsRunsSeeded,
+            "MlflowRunAlreadyExists": SeedRunsMlflowRunAlreadyExists,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    async def seed_runs_batch(
+        self, inputs: Sequence[SeedRunsInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[SeedRunsOutcome]:
+        for input in inputs:
+            if not 1 <= len(input.runs) <= 8:
+                raise ValueError("invalid bounded collection length for SeedRuns.runs")
+        return await self._transport._command_batch(inputs, options, self.seed_runs, progress)
+
+    async def seed_ticket_comments(self, input: SeedTicketCommentsInput) -> TypedCommandResult[SeedTicketCommentsOutcome]:
+        if not 1 <= len(input.comments) <= 32:
+            raise ValueError("invalid bounded collection length for SeedTicketComments.comments")
+        raw = await self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="SeedTicketComments", plan_hash=SEED_TICKET_COMMENTS_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "TicketMissing": SeedTicketCommentsTicketMissing,
+            "TicketCommentsSeeded": SeedTicketCommentsTicketCommentsSeeded,
+            "TicketCommentAlreadyExists": SeedTicketCommentsTicketCommentAlreadyExists,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    async def seed_ticket_comments_batch(
+        self, inputs: Sequence[SeedTicketCommentsInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[SeedTicketCommentsOutcome]:
+        for input in inputs:
+            if not 1 <= len(input.comments) <= 32:
+                raise ValueError("invalid bounded collection length for SeedTicketComments.comments")
+        return await self._transport._command_batch(inputs, options, self.seed_ticket_comments, progress)
+
+    async def seed_tickets(self, input: SeedTicketsInput) -> TypedCommandResult[SeedTicketsOutcome]:
+        if not 1 <= len(input.tickets) <= 8:
+            raise ValueError("invalid bounded collection length for SeedTickets.tickets")
+        raw = await self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="SeedTickets", plan_hash=SEED_TICKETS_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "TicketsSeeded": SeedTicketsTicketsSeeded,
+            "TicketAlreadyExists": SeedTicketsTicketAlreadyExists,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    async def seed_tickets_batch(
+        self, inputs: Sequence[SeedTicketsInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[SeedTicketsOutcome]:
+        for input in inputs:
+            if not 1 <= len(input.tickets) <= 8:
+                raise ValueError("invalid bounded collection length for SeedTickets.tickets")
+        return await self._transport._command_batch(inputs, options, self.seed_tickets, progress)
 
     async def write_tuples(self, input: WriteTuplesInput) -> TypedCommandResult[WriteTuplesOutcome]:
         if not 1 <= len(input.tuples) <= 32:

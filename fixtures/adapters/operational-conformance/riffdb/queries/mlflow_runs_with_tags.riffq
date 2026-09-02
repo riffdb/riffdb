@@ -1,0 +1,23 @@
+query MlflowRunsWithTags(
+    $experiment_id: MlflowRun.experiment_id,
+    $lifecycle: MlflowRun.lifecycle,
+) {
+    many runs from MlflowRun
+        where experiment_id == $experiment_id && lifecycle == $lifecycle
+        order by run_id asc
+        take 4
+
+    many tags from MlflowRunTag
+        for each run in runs
+        where experiment_id == $experiment_id && run_id == run.run_id
+        order by tag_id asc
+        take 4 per run
+
+    return Found {
+        runs: runs {
+            run_id
+            tags: tags { tag_id name value }
+        }
+    }
+    outcomes Found
+}

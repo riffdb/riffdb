@@ -127,7 +127,7 @@ else
     scope = selected.map { |crate| "-p #{crate}" }.join(" ")
     plan << "cargo clippy #{scope} --all-targets --all-features -- -D warnings"
     unless options[:no_tests]
-      runner = nextest_installed? ? "cargo nextest run" : "cargo test"
+      runner = nextest_installed? ? "cargo nextest run --profile ci" : "cargo test"
       plan << "#{runner} #{scope} --all-features"
     end
   end

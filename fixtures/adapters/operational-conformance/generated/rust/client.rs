@@ -5,11 +5,11 @@ use riffdb_client_rust::{ApplicationCardinality, ApplicationClientError, Applica
 pub use riffdb_client_rust::QueryOptions;
 use riffdb_client_rust::v1::value::Kind as WireKind;
 
-pub const QUERY_MODULE_HASH: [u8; 32] = [0x5f, 0xd8, 0xe7, 0x2c, 0xb7, 0x66, 0x44, 0x18, 0x93, 0x38, 0x9e, 0xa1, 0x40, 0xbd, 0x62, 0xb9, 0xec, 0x44, 0x2d, 0xf2, 0xf1, 0x4f, 0x34, 0xea, 0xbc, 0xf9, 0x44, 0xc7, 0xe8, 0x9d, 0xc4, 0x70];
+pub const QUERY_MODULE_HASH: [u8; 32] = [0xb4, 0x61, 0xee, 0x2f, 0x38, 0x4a, 0x4c, 0xaf, 0x68, 0x5c, 0x9f, 0x5c, 0xa2, 0xbd, 0x8d, 0xf3, 0x87, 0x3f, 0x9b, 0x44, 0xd8, 0x53, 0xc4, 0x20, 0x87, 0x97, 0x60, 0x8b, 0xca, 0x19, 0x0c, 0x90];
 pub const CONTRACT_LINEAGE: &str = "AdapterOperationalConformance";
 pub const CONTRACT_VERSION: u64 = 1;
 
-pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [0x5c, 0xf3, 0x09, 0xd8, 0xba, 0x73, 0x11, 0x73, 0xe4, 0x26, 0xe5, 0x3e, 0xc6, 0x6d, 0x41, 0xfa, 0xd9, 0x9c, 0xc9, 0x5c, 0xbb, 0xbf, 0xd1, 0x0a, 0xd6, 0x7a, 0x2b, 0x5d, 0xb9, 0xa8, 0x6b, 0x9c];
+pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [0xc2, 0xe7, 0xe4, 0xc1, 0xbb, 0xf2, 0xdf, 0x2b, 0x98, 0x35, 0x65, 0x88, 0x8f, 0x63, 0x3a, 0xa6, 0x3b, 0x45, 0x75, 0xe6, 0x84, 0x23, 0xa0, 0xcd, 0x2d, 0x1c, 0xd5, 0x7b, 0xe6, 0x4c, 0x3a, 0xdf];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DecimalValue {
@@ -60,7 +60,7 @@ pub enum ExactDocumentsContainsAscResult {
     Found(Box<ExactDocumentsContainsAscFound>),
 }
 
-pub const EXACT_DOCUMENTS_CONTAINS_ASC_QUERY_PLAN_HASH: [u8; 32] = [0x6e, 0x34, 0x39, 0x8b, 0x6c, 0x07, 0x1e, 0xec, 0x9a, 0x22, 0x73, 0x9d, 0x6c, 0x28, 0x86, 0xc8, 0x68, 0x07, 0xf9, 0xd5, 0xe9, 0x70, 0x97, 0x6d, 0x30, 0x17, 0x90, 0x75, 0xd5, 0xfe, 0xa5, 0x1e];
+pub const EXACT_DOCUMENTS_CONTAINS_ASC_QUERY_PLAN_HASH: [u8; 32] = [0xe9, 0xab, 0x27, 0x00, 0xa4, 0x67, 0xa6, 0x5d, 0x01, 0x19, 0xb2, 0xb9, 0x34, 0x8d, 0x62, 0xbd, 0xe0, 0xfe, 0xfc, 0x77, 0x1b, 0x25, 0xb0, 0xb9, 0x0a, 0x18, 0x05, 0x71, 0x1a, 0x8a, 0x96, 0x83];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExactDocumentsContainsAscQuery(pub ExactDocumentsContainsAscParams);
 impl GeneratedQuery for ExactDocumentsContainsAscQuery {
@@ -153,7 +153,7 @@ pub enum ExactDocumentsEndsWithDescResult {
     Found(Box<ExactDocumentsEndsWithDescFound>),
 }
 
-pub const EXACT_DOCUMENTS_ENDS_WITH_DESC_QUERY_PLAN_HASH: [u8; 32] = [0xaa, 0xd2, 0x62, 0x93, 0xf5, 0x04, 0x67, 0x74, 0x9b, 0x2b, 0xa5, 0x18, 0x51, 0x07, 0x12, 0x44, 0x1d, 0x4a, 0xd2, 0x1d, 0xa6, 0x54, 0xed, 0x5a, 0x8f, 0x61, 0x84, 0x83, 0x84, 0x7e, 0x0d, 0x3e];
+pub const EXACT_DOCUMENTS_ENDS_WITH_DESC_QUERY_PLAN_HASH: [u8; 32] = [0x30, 0x51, 0x49, 0x1f, 0x4d, 0x5b, 0x44, 0xe9, 0xa1, 0xbe, 0xc0, 0x81, 0x3c, 0x45, 0xf5, 0x72, 0xdd, 0xc6, 0xf8, 0x43, 0x9d, 0x06, 0x6b, 0x95, 0x2f, 0x58, 0x93, 0xdb, 0x48, 0xa2, 0x3c, 0xe9];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExactDocumentsEndsWithDescQuery(pub ExactDocumentsEndsWithDescParams);
 impl GeneratedQuery for ExactDocumentsEndsWithDescQuery {
@@ -246,7 +246,7 @@ pub enum ExactDocumentsStartsWithAscResult {
     Found(Box<ExactDocumentsStartsWithAscFound>),
 }
 
-pub const EXACT_DOCUMENTS_STARTS_WITH_ASC_QUERY_PLAN_HASH: [u8; 32] = [0xcb, 0xc7, 0x0e, 0xe9, 0x5f, 0xe5, 0xfa, 0xfb, 0x50, 0xff, 0x8e, 0x01, 0x57, 0xa0, 0x30, 0x54, 0x02, 0x2e, 0x23, 0x14, 0xe9, 0x12, 0x17, 0x13, 0x7b, 0xf4, 0x93, 0xa3, 0x6b, 0xc7, 0xd4, 0xa9];
+pub const EXACT_DOCUMENTS_STARTS_WITH_ASC_QUERY_PLAN_HASH: [u8; 32] = [0x42, 0x57, 0xed, 0xe9, 0xa6, 0x91, 0x3a, 0xa3, 0xbd, 0xe6, 0x87, 0x6a, 0x55, 0x8c, 0x2c, 0x97, 0xdc, 0x97, 0x67, 0xf5, 0x7a, 0xa6, 0x87, 0x08, 0x2d, 0x7d, 0xd1, 0x7f, 0x46, 0x8b, 0x20, 0x4a];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExactDocumentsStartsWithAscQuery(pub ExactDocumentsStartsWithAscParams);
 impl GeneratedQuery for ExactDocumentsStartsWithAscQuery {
@@ -308,6 +308,92 @@ fn decode_exact_documents_starts_with_asc_found_total_record(mut record: Applica
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FgaObjectsWithRelationsParams {
+    pub store_id: String,
+    pub kind: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FgaObjectsWithRelationsFoundObjectsRelations {
+    pub relation_id: String,
+    pub relation: String,
+    pub subject: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FgaObjectsWithRelationsFoundObjects {
+    pub object_id: String,
+    pub relations: Vec<FgaObjectsWithRelationsFoundObjectsRelations>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FgaObjectsWithRelationsFound {
+    pub objects: Vec<FgaObjectsWithRelationsFoundObjects>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FgaObjectsWithRelationsResult {
+    Found(Box<FgaObjectsWithRelationsFound>),
+}
+
+pub const FGA_OBJECTS_WITH_RELATIONS_QUERY_PLAN_HASH: [u8; 32] = [0xcd, 0xac, 0x98, 0x74, 0x04, 0xc3, 0x35, 0xd2, 0x79, 0x03, 0x95, 0xdf, 0x67, 0x0b, 0x48, 0xaf, 0x14, 0x26, 0x4b, 0xfa, 0x02, 0xc2, 0xf7, 0x6d, 0x72, 0x6e, 0x7a, 0x0c, 0x0d, 0xf1, 0x42, 0x61];
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FgaObjectsWithRelationsQuery(pub FgaObjectsWithRelationsParams);
+impl GeneratedQuery for FgaObjectsWithRelationsQuery {
+    type Output = FgaObjectsWithRelationsResult;
+
+    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
+        let mut parameters = BTreeMap::new();
+        parameters.insert("store_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.store_id)?));
+        parameters.insert("kind".to_owned(), ApplicationValue::String(self.0.kind));
+        NamedQuery::new(
+            ApplicationContract::Exact {
+                lineage: CONTRACT_LINEAGE.to_owned(),
+                version: CONTRACT_VERSION,
+                bundle_hash: Some(CONTRACT_BUNDLE_HASH),
+            },
+            "FgaObjectsWithRelations",
+            Some(QUERY_MODULE_HASH),
+            parameters,
+            None,
+        )?.expect_plan_hash(FGA_OBJECTS_WITH_RELATIONS_QUERY_PLAN_HASH).with_options(options)
+    }
+
+    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
+        let outcome = response.outcome.clone();
+        match outcome.as_str() {
+            "Found" => {
+                let decoded = FgaObjectsWithRelationsFound {
+                    objects: many_result_records(take_result_field(&mut response.fields, "objects")?)?.into_iter().map(decode_fga_objects_with_relations_found_objects_record).collect::<Result<Vec<_>, _>>()?,
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(FgaObjectsWithRelationsResult::Found(Box::new(decoded)))
+            },
+            _ => Err(ApplicationClientError::InvalidResponse),
+        }
+    }
+}
+
+fn decode_fga_objects_with_relations_found_objects_relations_record(mut record: ApplicationRecord) -> Result<FgaObjectsWithRelationsFoundObjectsRelations, ApplicationClientError> {
+    let value = FgaObjectsWithRelationsFoundObjectsRelations {
+        relation_id: application_uuid(take_application_value(&mut record.fields, "relation_id")?)?,
+        relation: application_string(take_application_value(&mut record.fields, "relation")?)?,
+        subject: application_string(take_application_value(&mut record.fields, "subject")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+fn decode_fga_objects_with_relations_found_objects_record(mut record: ApplicationRecord) -> Result<FgaObjectsWithRelationsFoundObjects, ApplicationClientError> {
+    let value = FgaObjectsWithRelationsFoundObjects {
+        object_id: application_uuid(take_application_value(&mut record.fields, "object_id")?)?,
+        relations: application_list(take_application_value(&mut record.fields, "relations")?)?.into_iter().map(|value| decode_fga_objects_with_relations_found_objects_relations_record(application_record(value)?)).collect::<Result<Vec<_>, ApplicationClientError>>()?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GetAuthSessionParams {
     pub organization_id: String,
     pub user_id: String,
@@ -338,7 +424,7 @@ pub enum GetAuthSessionResult {
     Missing(Box<GetAuthSessionMissing>),
 }
 
-pub const GET_AUTH_SESSION_QUERY_PLAN_HASH: [u8; 32] = [0x5b, 0x79, 0x30, 0x5e, 0x91, 0x45, 0xa9, 0x1d, 0x5c, 0x27, 0xb9, 0x76, 0x9c, 0xcc, 0x25, 0x48, 0x96, 0x14, 0xce, 0x48, 0x39, 0x26, 0xbf, 0x08, 0x6e, 0x5c, 0x85, 0x2b, 0xb4, 0x7c, 0x4f, 0x5a];
+pub const GET_AUTH_SESSION_QUERY_PLAN_HASH: [u8; 32] = [0x62, 0x1d, 0x2d, 0x34, 0x9b, 0x24, 0xd4, 0xa2, 0x11, 0x3d, 0xda, 0x5b, 0xc6, 0x85, 0x30, 0x6d, 0xd9, 0x97, 0xad, 0x38, 0xd8, 0x59, 0xc7, 0x8d, 0xed, 0xcb, 0x5c, 0xcc, 0xd9, 0xae, 0xfb, 0x0f];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GetAuthSessionQuery(pub GetAuthSessionParams);
 impl GeneratedQuery for GetAuthSessionQuery {
@@ -427,7 +513,7 @@ pub enum InventoryByObservedAscNullsLastResult {
     Found(Box<InventoryByObservedAscNullsLastFound>),
 }
 
-pub const INVENTORY_BY_OBSERVED_ASC_NULLS_LAST_QUERY_PLAN_HASH: [u8; 32] = [0x07, 0x73, 0x63, 0x66, 0x64, 0x58, 0x87, 0x72, 0x8a, 0x8a, 0x26, 0x5a, 0x46, 0x21, 0x8e, 0x52, 0x9d, 0xe6, 0x4d, 0xeb, 0xba, 0xd5, 0xa2, 0x07, 0xbd, 0x5e, 0x23, 0xb8, 0x2c, 0xc9, 0x82, 0x72];
+pub const INVENTORY_BY_OBSERVED_ASC_NULLS_LAST_QUERY_PLAN_HASH: [u8; 32] = [0x34, 0xa7, 0x20, 0x55, 0xb4, 0x3f, 0xf5, 0xba, 0xd1, 0xad, 0x70, 0x32, 0xf4, 0x91, 0x73, 0x44, 0xe5, 0x98, 0x95, 0x76, 0xc7, 0x83, 0x76, 0x25, 0xb6, 0x75, 0xa9, 0x27, 0xb4, 0x34, 0x8a, 0xb7];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InventoryByObservedAscNullsLastQuery(pub InventoryByObservedAscNullsLastParams);
 impl GeneratedQuery for InventoryByObservedAscNullsLastQuery {
@@ -520,7 +606,7 @@ pub enum InventoryByObservedDescNullsFirstResult {
     Found(Box<InventoryByObservedDescNullsFirstFound>),
 }
 
-pub const INVENTORY_BY_OBSERVED_DESC_NULLS_FIRST_QUERY_PLAN_HASH: [u8; 32] = [0xb7, 0xc8, 0x61, 0x6f, 0x2d, 0xcd, 0x1c, 0xf4, 0x4b, 0x2b, 0xf1, 0xa4, 0x56, 0xbf, 0x53, 0x67, 0x9a, 0x9b, 0x9a, 0x88, 0x01, 0x91, 0x15, 0x71, 0xfe, 0x8a, 0xec, 0x95, 0x05, 0x27, 0xd3, 0x10];
+pub const INVENTORY_BY_OBSERVED_DESC_NULLS_FIRST_QUERY_PLAN_HASH: [u8; 32] = [0x64, 0xb4, 0x4f, 0xa0, 0x68, 0x2e, 0xc7, 0x7c, 0x49, 0xc1, 0xf8, 0x69, 0x8a, 0x06, 0x83, 0x32, 0x15, 0x85, 0x3d, 0xb0, 0x2c, 0x83, 0xa8, 0x1f, 0x48, 0x84, 0xf3, 0x6d, 0xef, 0x78, 0x40, 0x5a];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InventoryByObservedDescNullsFirstQuery(pub InventoryByObservedDescNullsFirstParams);
 impl GeneratedQuery for InventoryByObservedDescNullsFirstQuery {
@@ -613,7 +699,7 @@ pub enum InventoryBySubtitleAscNullsFirstResult {
     Found(Box<InventoryBySubtitleAscNullsFirstFound>),
 }
 
-pub const INVENTORY_BY_SUBTITLE_ASC_NULLS_FIRST_QUERY_PLAN_HASH: [u8; 32] = [0xcd, 0x83, 0x51, 0xb8, 0x0a, 0x0c, 0xd6, 0xac, 0x6f, 0x05, 0xf4, 0xe0, 0x7b, 0x46, 0x4c, 0xac, 0x49, 0xf1, 0xbb, 0x42, 0xa5, 0xb2, 0x08, 0xd5, 0x3c, 0xc2, 0xbe, 0x18, 0x9a, 0xa0, 0xc6, 0x85];
+pub const INVENTORY_BY_SUBTITLE_ASC_NULLS_FIRST_QUERY_PLAN_HASH: [u8; 32] = [0xee, 0x53, 0x6c, 0x1e, 0xe8, 0xd3, 0xdb, 0x3b, 0x6b, 0x4f, 0x84, 0x4b, 0x56, 0xc5, 0x2e, 0x3c, 0xfc, 0x1c, 0xdf, 0xd5, 0x42, 0xdb, 0xb5, 0x18, 0xfa, 0xb7, 0xea, 0x05, 0x58, 0x0b, 0x52, 0xda];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InventoryBySubtitleAscNullsFirstQuery(pub InventoryBySubtitleAscNullsFirstParams);
 impl GeneratedQuery for InventoryBySubtitleAscNullsFirstQuery {
@@ -706,7 +792,7 @@ pub enum InventoryBySubtitleDescNullsLastResult {
     Found(Box<InventoryBySubtitleDescNullsLastFound>),
 }
 
-pub const INVENTORY_BY_SUBTITLE_DESC_NULLS_LAST_QUERY_PLAN_HASH: [u8; 32] = [0x3d, 0x2d, 0xec, 0x50, 0xfd, 0x9e, 0x34, 0x64, 0x3f, 0xfe, 0x00, 0x92, 0x30, 0x8c, 0x59, 0x2f, 0xbe, 0xff, 0x26, 0x1d, 0xfe, 0xb7, 0x38, 0xb4, 0x5a, 0xec, 0x81, 0xd1, 0x7b, 0xb8, 0x8b, 0x31];
+pub const INVENTORY_BY_SUBTITLE_DESC_NULLS_LAST_QUERY_PLAN_HASH: [u8; 32] = [0x87, 0x4d, 0xfe, 0xd9, 0x93, 0xdf, 0x33, 0x56, 0x13, 0x0f, 0x46, 0xe3, 0x85, 0x7f, 0xbf, 0xb8, 0x27, 0x4e, 0x8e, 0xb5, 0x0f, 0xb2, 0xa2, 0x8e, 0x8a, 0xf3, 0x43, 0x53, 0x8a, 0x1d, 0xc4, 0x92];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InventoryBySubtitleDescNullsLastQuery(pub InventoryBySubtitleDescNullsLastParams);
 impl GeneratedQuery for InventoryBySubtitleDescNullsLastQuery {
@@ -789,7 +875,7 @@ pub enum ListDraftDocumentsResult {
     Found(Box<ListDraftDocumentsFound>),
 }
 
-pub const LIST_DRAFT_DOCUMENTS_QUERY_PLAN_HASH: [u8; 32] = [0x1b, 0x4a, 0x62, 0x61, 0x41, 0xfd, 0x8f, 0x30, 0x3b, 0x46, 0x5f, 0x5e, 0x4d, 0x02, 0x37, 0xfe, 0x6e, 0x7e, 0x0d, 0x35, 0x2d, 0x0c, 0x76, 0xad, 0xb5, 0xb6, 0xce, 0xf8, 0xbf, 0xcb, 0xb9, 0x53];
+pub const LIST_DRAFT_DOCUMENTS_QUERY_PLAN_HASH: [u8; 32] = [0xdd, 0x27, 0xa6, 0xc0, 0x8a, 0xb3, 0x92, 0xd8, 0x1a, 0xca, 0x5a, 0xce, 0xf2, 0x34, 0xae, 0xc6, 0xaa, 0x2c, 0x2d, 0x25, 0x5e, 0x29, 0xab, 0x8c, 0x0e, 0xf5, 0xe4, 0x97, 0x19, 0x6f, 0xb2, 0x32];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ListDraftDocumentsQuery(pub ListDraftDocumentsParams);
 impl GeneratedQuery for ListDraftDocumentsQuery {
@@ -861,7 +947,7 @@ pub enum ListFgaTuplesResult {
     Found(Box<ListFgaTuplesFound>),
 }
 
-pub const LIST_FGA_TUPLES_QUERY_PLAN_HASH: [u8; 32] = [0x92, 0x3c, 0xea, 0xf6, 0xaa, 0x4f, 0x86, 0x27, 0x49, 0x9a, 0x9b, 0x48, 0xa6, 0xd8, 0x33, 0x4f, 0x93, 0x83, 0x4d, 0x3c, 0x20, 0xad, 0x8c, 0x2d, 0x88, 0x55, 0xd7, 0x01, 0x5e, 0x49, 0xfa, 0xc0];
+pub const LIST_FGA_TUPLES_QUERY_PLAN_HASH: [u8; 32] = [0x5b, 0x10, 0x48, 0x27, 0x47, 0x57, 0xb7, 0x6a, 0x6f, 0x4b, 0xd0, 0x8c, 0xc9, 0xfb, 0x75, 0xc0, 0xfd, 0x92, 0x1d, 0xf7, 0xa4, 0x9e, 0x20, 0x10, 0x36, 0x1a, 0xff, 0x63, 0x91, 0xa6, 0xb7, 0x0a];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ListFgaTuplesQuery(pub ListFgaTuplesParams);
 impl GeneratedQuery for ListFgaTuplesQuery {
@@ -936,7 +1022,7 @@ pub enum ListPipelinesResult {
     Found(Box<ListPipelinesFound>),
 }
 
-pub const LIST_PIPELINES_QUERY_PLAN_HASH: [u8; 32] = [0x74, 0x68, 0xc5, 0x21, 0x8b, 0x33, 0x4e, 0x3c, 0x26, 0x74, 0x3f, 0x26, 0xef, 0xd3, 0xc8, 0x80, 0xb2, 0x45, 0xd3, 0x2a, 0x5c, 0x3a, 0x43, 0x1f, 0xcf, 0x80, 0x94, 0x1f, 0x9b, 0xd4, 0xed, 0xb5];
+pub const LIST_PIPELINES_QUERY_PLAN_HASH: [u8; 32] = [0xeb, 0x10, 0xd1, 0x3a, 0xef, 0x51, 0x78, 0x2b, 0xc9, 0xd9, 0xc3, 0xc3, 0xa7, 0xff, 0xbf, 0xd4, 0x13, 0xdf, 0x17, 0xa8, 0x9f, 0xa8, 0xeb, 0x70, 0x0f, 0xff, 0xfd, 0xb3, 0x7f, 0x4f, 0x53, 0x5b];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ListPipelinesQuery(pub ListPipelinesParams);
 impl GeneratedQuery for ListPipelinesQuery {
@@ -1010,7 +1096,7 @@ pub enum MetricDashboardResult {
     Found(Box<MetricDashboardFound>),
 }
 
-pub const METRIC_DASHBOARD_QUERY_PLAN_HASH: [u8; 32] = [0xe5, 0xa0, 0x9f, 0xde, 0xc5, 0xad, 0x5c, 0x36, 0x48, 0x48, 0x11, 0x8a, 0xf9, 0x29, 0xcf, 0x65, 0x4c, 0x58, 0xdb, 0xb0, 0xb5, 0xab, 0x59, 0xba, 0x04, 0xaa, 0x9a, 0x91, 0x01, 0x39, 0xdf, 0xa6];
+pub const METRIC_DASHBOARD_QUERY_PLAN_HASH: [u8; 32] = [0xa6, 0x53, 0x79, 0x55, 0x86, 0xca, 0xe6, 0x52, 0x31, 0xf0, 0xe8, 0x27, 0xba, 0x11, 0xc7, 0x68, 0xfe, 0xd5, 0xf7, 0x31, 0x14, 0xa5, 0x81, 0x5e, 0x5e, 0x30, 0x72, 0xfa, 0xaf, 0x9e, 0x8e, 0x30];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MetricDashboardQuery(pub MetricDashboardParams);
 impl GeneratedQuery for MetricDashboardQuery {
@@ -1060,6 +1146,92 @@ fn decode_metric_dashboard_found_summary_record(mut record: ApplicationRecord) -
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MlflowRunsWithTagsParams {
+    pub experiment_id: String,
+    pub lifecycle: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MlflowRunsWithTagsFoundRunsTags {
+    pub tag_id: String,
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MlflowRunsWithTagsFoundRuns {
+    pub run_id: String,
+    pub tags: Vec<MlflowRunsWithTagsFoundRunsTags>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MlflowRunsWithTagsFound {
+    pub runs: Vec<MlflowRunsWithTagsFoundRuns>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MlflowRunsWithTagsResult {
+    Found(Box<MlflowRunsWithTagsFound>),
+}
+
+pub const MLFLOW_RUNS_WITH_TAGS_QUERY_PLAN_HASH: [u8; 32] = [0x91, 0x70, 0x68, 0xf6, 0x18, 0xa0, 0xa2, 0x51, 0x46, 0xf6, 0xb7, 0x06, 0x95, 0xc8, 0x23, 0xac, 0xd6, 0x0c, 0x4c, 0x89, 0xfd, 0x57, 0x38, 0x5d, 0x7f, 0x88, 0xb3, 0x1a, 0xd3, 0x24, 0x68, 0x4d];
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MlflowRunsWithTagsQuery(pub MlflowRunsWithTagsParams);
+impl GeneratedQuery for MlflowRunsWithTagsQuery {
+    type Output = MlflowRunsWithTagsResult;
+
+    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
+        let mut parameters = BTreeMap::new();
+        parameters.insert("experiment_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.experiment_id)?));
+        parameters.insert("lifecycle".to_owned(), ApplicationValue::String(self.0.lifecycle));
+        NamedQuery::new(
+            ApplicationContract::Exact {
+                lineage: CONTRACT_LINEAGE.to_owned(),
+                version: CONTRACT_VERSION,
+                bundle_hash: Some(CONTRACT_BUNDLE_HASH),
+            },
+            "MlflowRunsWithTags",
+            Some(QUERY_MODULE_HASH),
+            parameters,
+            None,
+        )?.expect_plan_hash(MLFLOW_RUNS_WITH_TAGS_QUERY_PLAN_HASH).with_options(options)
+    }
+
+    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
+        let outcome = response.outcome.clone();
+        match outcome.as_str() {
+            "Found" => {
+                let decoded = MlflowRunsWithTagsFound {
+                    runs: many_result_records(take_result_field(&mut response.fields, "runs")?)?.into_iter().map(decode_mlflow_runs_with_tags_found_runs_record).collect::<Result<Vec<_>, _>>()?,
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(MlflowRunsWithTagsResult::Found(Box::new(decoded)))
+            },
+            _ => Err(ApplicationClientError::InvalidResponse),
+        }
+    }
+}
+
+fn decode_mlflow_runs_with_tags_found_runs_tags_record(mut record: ApplicationRecord) -> Result<MlflowRunsWithTagsFoundRunsTags, ApplicationClientError> {
+    let value = MlflowRunsWithTagsFoundRunsTags {
+        tag_id: application_uuid(take_application_value(&mut record.fields, "tag_id")?)?,
+        name: application_string(take_application_value(&mut record.fields, "name")?)?,
+        value: application_string(take_application_value(&mut record.fields, "value")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+fn decode_mlflow_runs_with_tags_found_runs_record(mut record: ApplicationRecord) -> Result<MlflowRunsWithTagsFoundRuns, ApplicationClientError> {
+    let value = MlflowRunsWithTagsFoundRuns {
+        run_id: application_uuid(take_application_value(&mut record.fields, "run_id")?)?,
+        tags: application_list(take_application_value(&mut record.fields, "tags")?)?.into_iter().map(|value| decode_mlflow_runs_with_tags_found_runs_tags_record(application_record(value)?)).collect::<Result<Vec<_>, ApplicationClientError>>()?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReviewedDirectoryUsersParams {
     pub organization_id: String,
     pub states: Vec<String>,
@@ -1094,7 +1266,7 @@ pub enum ReviewedDirectoryUsersResult {
     Found(Box<ReviewedDirectoryUsersFound>),
 }
 
-pub const REVIEWED_DIRECTORY_USERS_QUERY_PLAN_HASH: [u8; 32] = [0x41, 0x42, 0xfe, 0x61, 0x4e, 0xa2, 0x2d, 0x17, 0x3e, 0x26, 0x8f, 0xf6, 0x2c, 0xcb, 0x30, 0xcb, 0x47, 0x65, 0x19, 0x80, 0xa6, 0x75, 0xc2, 0xe0, 0x42, 0xb8, 0x34, 0x7d, 0x7e, 0xd6, 0xd7, 0xc7];
+pub const REVIEWED_DIRECTORY_USERS_QUERY_PLAN_HASH: [u8; 32] = [0x54, 0x81, 0x87, 0xb5, 0x93, 0xdf, 0xa8, 0xca, 0xdd, 0x27, 0x6d, 0x76, 0x9f, 0x65, 0x28, 0x21, 0xb3, 0x50, 0xed, 0x76, 0xd1, 0xee, 0x3b, 0x92, 0x62, 0x18, 0x59, 0x44, 0xb5, 0x8c, 0xf7, 0x8e];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReviewedDirectoryUsersQuery(pub ReviewedDirectoryUsersParams);
 impl GeneratedQuery for ReviewedDirectoryUsersQuery {
@@ -1194,7 +1366,7 @@ pub enum SearchDirectoryUsersResult {
     Found(Box<SearchDirectoryUsersFound>),
 }
 
-pub const SEARCH_DIRECTORY_USERS_QUERY_PLAN_HASH: [u8; 32] = [0x63, 0xeb, 0x9b, 0xaf, 0xa6, 0xa6, 0x51, 0x30, 0x01, 0x8a, 0xb6, 0x4e, 0x53, 0xee, 0xc2, 0xff, 0x79, 0xb4, 0xd8, 0x5d, 0x38, 0xdc, 0x2d, 0xc1, 0x71, 0x77, 0x18, 0xe3, 0x1e, 0x1a, 0x45, 0x87];
+pub const SEARCH_DIRECTORY_USERS_QUERY_PLAN_HASH: [u8; 32] = [0x26, 0x53, 0xca, 0x7b, 0x6c, 0xb5, 0x5e, 0xf3, 0x14, 0x9f, 0x7d, 0x4c, 0xe7, 0x6a, 0x82, 0x25, 0x18, 0x4f, 0x45, 0x2b, 0x96, 0xe7, 0x58, 0xd3, 0x51, 0x32, 0x27, 0xf0, 0x83, 0xe2, 0xfd, 0xb9];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchDirectoryUsersQuery(pub SearchDirectoryUsersParams);
 impl GeneratedQuery for SearchDirectoryUsersQuery {
@@ -1283,7 +1455,7 @@ pub enum SearchDocumentsResult {
     Found(Box<SearchDocumentsFound>),
 }
 
-pub const SEARCH_DOCUMENTS_QUERY_PLAN_HASH: [u8; 32] = [0x53, 0x48, 0x74, 0x1f, 0x3b, 0xcd, 0x9e, 0xe9, 0x1a, 0x1e, 0x27, 0x62, 0x3f, 0x06, 0xf9, 0x07, 0x5a, 0xe5, 0x7c, 0x3b, 0xaa, 0x92, 0x6d, 0xc9, 0x60, 0x8b, 0x73, 0x8e, 0x41, 0x4b, 0x36, 0xaf];
+pub const SEARCH_DOCUMENTS_QUERY_PLAN_HASH: [u8; 32] = [0xea, 0x28, 0x46, 0x02, 0x47, 0x6e, 0x8a, 0x87, 0x1f, 0x7b, 0xab, 0x07, 0x45, 0xb4, 0xe5, 0x83, 0x94, 0x79, 0xbb, 0x0a, 0x4a, 0x7c, 0xa4, 0xb0, 0x23, 0xcb, 0x80, 0x1c, 0x5f, 0xcf, 0x79, 0xad];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchDocumentsQuery(pub SearchDocumentsParams);
 impl GeneratedQuery for SearchDocumentsQuery {
@@ -1334,6 +1506,94 @@ fn decode_search_documents_found_documents_record(mut record: ApplicationRecord)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketPageWithCommentsParams {
+    pub organization_id: String,
+    pub state: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketPageWithCommentsFoundTicketsComments {
+    pub comment_id: String,
+    pub body: String,
+    pub created_at: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketPageWithCommentsFoundTickets {
+    pub ticket_id: String,
+    pub title: String,
+    pub comments: Vec<TicketPageWithCommentsFoundTicketsComments>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketPageWithCommentsFound {
+    pub tickets: Vec<TicketPageWithCommentsFoundTickets>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TicketPageWithCommentsResult {
+    Found(Box<TicketPageWithCommentsFound>),
+}
+
+pub const TICKET_PAGE_WITH_COMMENTS_QUERY_PLAN_HASH: [u8; 32] = [0x34, 0xd5, 0x7d, 0x95, 0xf1, 0x2d, 0x47, 0xa4, 0x41, 0x41, 0x17, 0x0a, 0xdb, 0x75, 0x08, 0x6f, 0xa2, 0xda, 0xf2, 0xdd, 0x98, 0x44, 0xb6, 0x50, 0xf0, 0x13, 0x14, 0xf7, 0xe6, 0x53, 0xd4, 0xc9];
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketPageWithCommentsQuery(pub TicketPageWithCommentsParams);
+impl GeneratedQuery for TicketPageWithCommentsQuery {
+    type Output = TicketPageWithCommentsResult;
+
+    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
+        let mut parameters = BTreeMap::new();
+        parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
+        parameters.insert("state".to_owned(), ApplicationValue::String(self.0.state));
+        NamedQuery::new(
+            ApplicationContract::Exact {
+                lineage: CONTRACT_LINEAGE.to_owned(),
+                version: CONTRACT_VERSION,
+                bundle_hash: Some(CONTRACT_BUNDLE_HASH),
+            },
+            "TicketPageWithComments",
+            Some(QUERY_MODULE_HASH),
+            parameters,
+            None,
+        )?.expect_plan_hash(TICKET_PAGE_WITH_COMMENTS_QUERY_PLAN_HASH).with_options(options)
+    }
+
+    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
+        let outcome = response.outcome.clone();
+        match outcome.as_str() {
+            "Found" => {
+                let decoded = TicketPageWithCommentsFound {
+                    tickets: many_result_records(take_result_field(&mut response.fields, "tickets")?)?.into_iter().map(decode_ticket_page_with_comments_found_tickets_record).collect::<Result<Vec<_>, _>>()?,
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(TicketPageWithCommentsResult::Found(Box::new(decoded)))
+            },
+            _ => Err(ApplicationClientError::InvalidResponse),
+        }
+    }
+}
+
+fn decode_ticket_page_with_comments_found_tickets_comments_record(mut record: ApplicationRecord) -> Result<TicketPageWithCommentsFoundTicketsComments, ApplicationClientError> {
+    let value = TicketPageWithCommentsFoundTicketsComments {
+        comment_id: application_uuid(take_application_value(&mut record.fields, "comment_id")?)?,
+        body: application_string(take_application_value(&mut record.fields, "body")?)?,
+        created_at: application_u64(take_application_value(&mut record.fields, "created_at")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+fn decode_ticket_page_with_comments_found_tickets_record(mut record: ApplicationRecord) -> Result<TicketPageWithCommentsFoundTickets, ApplicationClientError> {
+    let value = TicketPageWithCommentsFoundTickets {
+        ticket_id: application_uuid(take_application_value(&mut record.fields, "ticket_id")?)?,
+        title: application_string(take_application_value(&mut record.fields, "title")?)?,
+        comments: application_list(take_application_value(&mut record.fields, "comments")?)?.into_iter().map(|value| decode_ticket_page_with_comments_found_tickets_comments_record(application_record(value)?)).collect::<Result<Vec<_>, ApplicationClientError>>()?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Metric {
     pub name: String,
     pub step: i64,
@@ -1361,6 +1621,36 @@ fn decode_metric_entity(value: v1::Value) -> Result<Metric, GeneratedCommandErro
         metric_id: decode_wire_uuid(take_wire_field(&mut fields, 3)?)?,
         value_micros: decode_wire_i64(take_wire_field(&mut fields, 4)?)?,
         experiment_id: decode_wire_uuid(take_wire_field(&mut fields, 5)?)?,
+    };
+    if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+    Ok(entity)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Ticket {
+    pub state: String,
+    pub title: String,
+    pub ticket_id: String,
+    pub organization_id: String,
+}
+
+fn encode_ticket_entity(value: &Ticket) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_string(Clone::clone(&value.state))) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_string(Clone::clone(&value.title))) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_uuid(&value.ticket_id)?) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_uuid(&value.organization_id)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
+}
+
+fn decode_ticket_entity(value: v1::Value) -> Result<Ticket, GeneratedCommandError> {
+    let mut fields = wire_record_fields(value)?;
+    let entity = Ticket {
+        state: decode_wire_string(take_wire_field(&mut fields, 1)?)?,
+        title: decode_wire_string(take_wire_field(&mut fields, 2)?)?,
+        ticket_id: decode_wire_uuid(take_wire_field(&mut fields, 3)?)?,
+        organization_id: decode_wire_uuid(take_wire_field(&mut fields, 4)?)?,
     };
     if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
     Ok(entity)
@@ -1487,6 +1777,60 @@ fn decode_pipeline_entity(value: v1::Value) -> Result<Pipeline, GeneratedCommand
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FgaObject {
+    pub kind: String,
+    pub store_id: String,
+    pub object_id: String,
+}
+
+fn encode_fga_object_entity(value: &FgaObject) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_string(Clone::clone(&value.kind))) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_uuid(&value.store_id)?) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_uuid(&value.object_id)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
+}
+
+fn decode_fga_object_entity(value: v1::Value) -> Result<FgaObject, GeneratedCommandError> {
+    let mut fields = wire_record_fields(value)?;
+    let entity = FgaObject {
+        kind: decode_wire_string(take_wire_field(&mut fields, 1)?)?,
+        store_id: decode_wire_uuid(take_wire_field(&mut fields, 2)?)?,
+        object_id: decode_wire_uuid(take_wire_field(&mut fields, 3)?)?,
+    };
+    if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+    Ok(entity)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MlflowRun {
+    pub run_id: String,
+    pub lifecycle: String,
+    pub experiment_id: String,
+}
+
+fn encode_mlflow_run_entity(value: &MlflowRun) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_uuid(&value.run_id)?) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_string(Clone::clone(&value.lifecycle))) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_uuid(&value.experiment_id)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
+}
+
+fn decode_mlflow_run_entity(value: v1::Value) -> Result<MlflowRun, GeneratedCommandError> {
+    let mut fields = wire_record_fields(value)?;
+    let entity = MlflowRun {
+        run_id: decode_wire_uuid(take_wire_field(&mut fields, 1)?)?,
+        lifecycle: decode_wire_string(take_wire_field(&mut fields, 2)?)?,
+        experiment_id: decode_wire_uuid(take_wire_field(&mut fields, 3)?)?,
+    };
+    if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+    Ok(entity)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthSession {
     pub state: String,
     pub user_id: String,
@@ -1523,6 +1867,72 @@ fn decode_auth_session_entity(value: v1::Value) -> Result<AuthSession, Generated
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FgaRelation {
+    pub subject: String,
+    pub relation: String,
+    pub store_id: String,
+    pub object_id: String,
+    pub relation_id: String,
+}
+
+fn encode_fga_relation_entity(value: &FgaRelation) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_string(Clone::clone(&value.subject))) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_string(Clone::clone(&value.relation))) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_uuid(&value.store_id)?) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_uuid(&value.object_id)?) },
+        v1::ValueField { field_id: Some(5), name: String::new(), value: Some(wire_uuid(&value.relation_id)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
+}
+
+fn decode_fga_relation_entity(value: v1::Value) -> Result<FgaRelation, GeneratedCommandError> {
+    let mut fields = wire_record_fields(value)?;
+    let entity = FgaRelation {
+        subject: decode_wire_string(take_wire_field(&mut fields, 1)?)?,
+        relation: decode_wire_string(take_wire_field(&mut fields, 2)?)?,
+        store_id: decode_wire_uuid(take_wire_field(&mut fields, 3)?)?,
+        object_id: decode_wire_uuid(take_wire_field(&mut fields, 4)?)?,
+        relation_id: decode_wire_uuid(take_wire_field(&mut fields, 5)?)?,
+    };
+    if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+    Ok(entity)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MlflowRunTag {
+    pub name: String,
+    pub value: String,
+    pub run_id: String,
+    pub tag_id: String,
+    pub experiment_id: String,
+}
+
+fn encode_mlflow_run_tag_entity(value: &MlflowRunTag) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_string(Clone::clone(&value.name))) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_string(Clone::clone(&value.value))) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_uuid(&value.run_id)?) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_uuid(&value.tag_id)?) },
+        v1::ValueField { field_id: Some(5), name: String::new(), value: Some(wire_uuid(&value.experiment_id)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
+}
+
+fn decode_mlflow_run_tag_entity(value: v1::Value) -> Result<MlflowRunTag, GeneratedCommandError> {
+    let mut fields = wire_record_fields(value)?;
+    let entity = MlflowRunTag {
+        name: decode_wire_string(take_wire_field(&mut fields, 1)?)?,
+        value: decode_wire_string(take_wire_field(&mut fields, 2)?)?,
+        run_id: decode_wire_uuid(take_wire_field(&mut fields, 3)?)?,
+        tag_id: decode_wire_uuid(take_wire_field(&mut fields, 4)?)?,
+        experiment_id: decode_wire_uuid(take_wire_field(&mut fields, 5)?)?,
+    };
+    if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+    Ok(entity)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DirectoryUser {
     pub email: String,
     pub state: String,
@@ -1553,6 +1963,39 @@ fn decode_directory_user_entity(value: v1::Value) -> Result<DirectoryUser, Gener
         created_at: decode_wire_u64(take_wire_field(&mut fields, 4)?)?,
         reviewed_at: decode_wire_optional(take_wire_field(&mut fields, 5)?, decode_wire_timestamp)?,
         organization_id: decode_wire_uuid(take_wire_field(&mut fields, 6)?)?,
+    };
+    if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+    Ok(entity)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TicketComment {
+    pub body: String,
+    pub ticket_id: String,
+    pub comment_id: String,
+    pub created_at: u64,
+    pub organization_id: String,
+}
+
+fn encode_ticket_comment_entity(value: &TicketComment) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_string(Clone::clone(&value.body))) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_uuid(&value.ticket_id)?) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_uuid(&value.comment_id)?) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_u64(value.created_at)) },
+        v1::ValueField { field_id: Some(5), name: String::new(), value: Some(wire_uuid(&value.organization_id)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
+}
+
+fn decode_ticket_comment_entity(value: v1::Value) -> Result<TicketComment, GeneratedCommandError> {
+    let mut fields = wire_record_fields(value)?;
+    let entity = TicketComment {
+        body: decode_wire_string(take_wire_field(&mut fields, 1)?)?,
+        ticket_id: decode_wire_uuid(take_wire_field(&mut fields, 2)?)?,
+        comment_id: decode_wire_uuid(take_wire_field(&mut fields, 3)?)?,
+        created_at: decode_wire_u64(take_wire_field(&mut fields, 4)?)?,
+        organization_id: decode_wire_uuid(take_wire_field(&mut fields, 5)?)?,
     };
     if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
     Ok(entity)
@@ -1647,7 +2090,7 @@ pub enum ChangeInventoryRecordStateOutcome {
     },
 }
 
-const CHANGE_INVENTORY_RECORD_STATE_PLAN_HASH: [u8; 32] = [0xa2, 0x83, 0x76, 0xc6, 0x85, 0x6c, 0xdc, 0xcf, 0x2f, 0x36, 0x18, 0x4e, 0x5f, 0x0e, 0xea, 0xbe, 0x4f, 0xa0, 0x26, 0x36, 0x78, 0xf2, 0x7d, 0xec, 0x02, 0x07, 0x42, 0x1b, 0x84, 0x0f, 0x86, 0x82];
+const CHANGE_INVENTORY_RECORD_STATE_PLAN_HASH: [u8; 32] = [0x0f, 0x7a, 0x6a, 0x86, 0x2f, 0x12, 0x02, 0x99, 0xeb, 0x67, 0x13, 0xf6, 0xd2, 0xb3, 0xe9, 0xe9, 0x6d, 0x66, 0x23, 0x15, 0x79, 0x9e, 0x70, 0xc7, 0xb6, 0xb2, 0xf8, 0xbe, 0xde, 0xc8, 0x5b, 0x6c];
 impl GeneratedCommand for ChangeInventoryRecordStateInput {
     type Outcome = ChangeInventoryRecordStateOutcome;
 
@@ -1706,7 +2149,7 @@ pub enum CreateAuthSessionsOutcome {
     SessionAlreadyExists,
 }
 
-const CREATE_AUTH_SESSIONS_PLAN_HASH: [u8; 32] = [0x73, 0x47, 0x4d, 0x2f, 0xe7, 0x7a, 0xcd, 0x9b, 0x29, 0x9f, 0xd9, 0x01, 0x92, 0xa5, 0x1b, 0xac, 0x96, 0x07, 0xb6, 0x8e, 0xd1, 0xd7, 0xbe, 0x9c, 0xb1, 0x8d, 0xf1, 0xc7, 0xe6, 0xd7, 0x09, 0x0d];
+const CREATE_AUTH_SESSIONS_PLAN_HASH: [u8; 32] = [0x0b, 0x0b, 0xcb, 0x84, 0xba, 0x52, 0xcc, 0x46, 0xf5, 0xdb, 0x93, 0xb2, 0x8b, 0xa3, 0x95, 0x37, 0xe8, 0xaf, 0xd2, 0xd9, 0x84, 0x4f, 0x69, 0xf7, 0xea, 0xb8, 0xb2, 0x7c, 0xec, 0x46, 0xee, 0x68];
 impl GeneratedCommand for CreateAuthSessionsInput {
     type Outcome = CreateAuthSessionsOutcome;
 
@@ -1755,7 +2198,7 @@ pub enum CreateDirectoryUsersOutcome {
     DirectoryUserAlreadyExists,
 }
 
-const CREATE_DIRECTORY_USERS_PLAN_HASH: [u8; 32] = [0x21, 0x6b, 0x40, 0x0b, 0x14, 0x57, 0xc5, 0x57, 0x9a, 0x96, 0x22, 0x80, 0xca, 0x7b, 0x85, 0xc4, 0xea, 0xd4, 0x9b, 0x58, 0x1f, 0xf7, 0xd8, 0x4e, 0x77, 0xc3, 0x1b, 0x2d, 0x7e, 0x14, 0x1c, 0x18];
+const CREATE_DIRECTORY_USERS_PLAN_HASH: [u8; 32] = [0x2a, 0x3e, 0x39, 0xdf, 0x59, 0x9d, 0x81, 0x27, 0x51, 0x88, 0x03, 0x00, 0xa9, 0x66, 0xa3, 0x2d, 0x44, 0x04, 0xd2, 0xf0, 0x52, 0x1b, 0xb9, 0x14, 0x2e, 0xfa, 0xa3, 0xb0, 0x52, 0x79, 0xba, 0x32];
 impl GeneratedCommand for CreateDirectoryUsersInput {
     type Outcome = CreateDirectoryUsersOutcome;
 
@@ -1803,7 +2246,7 @@ pub enum CreateDocumentsOutcome {
     DocumentAlreadyExists,
 }
 
-const CREATE_DOCUMENTS_PLAN_HASH: [u8; 32] = [0xb1, 0x6d, 0xfb, 0x60, 0x94, 0x96, 0xf9, 0x2a, 0x4a, 0x04, 0x4a, 0xa9, 0x39, 0x4d, 0x66, 0xa2, 0x33, 0xeb, 0xb5, 0xa5, 0x4b, 0x5b, 0x0e, 0x09, 0x44, 0x52, 0x3f, 0x66, 0xcd, 0x13, 0x8e, 0x53];
+const CREATE_DOCUMENTS_PLAN_HASH: [u8; 32] = [0x43, 0x24, 0xee, 0x03, 0x92, 0x8d, 0xd4, 0xb5, 0xa5, 0x03, 0x99, 0x63, 0xc8, 0xa8, 0x19, 0xf9, 0x41, 0xca, 0x9c, 0xad, 0x05, 0x78, 0xc7, 0x46, 0x6c, 0x5f, 0x32, 0xf5, 0x19, 0x39, 0xf4, 0x05];
 impl GeneratedCommand for CreateDocumentsInput {
     type Outcome = CreateDocumentsOutcome;
 
@@ -1853,7 +2296,7 @@ pub enum CreateInventoryRecordMissingOutcome {
     InventoryRecordMissingCreated,
 }
 
-const CREATE_INVENTORY_RECORD_MISSING_PLAN_HASH: [u8; 32] = [0x62, 0x6e, 0xde, 0xd5, 0x20, 0xef, 0x9d, 0x3e, 0x22, 0x98, 0x79, 0x46, 0x87, 0xb8, 0x3e, 0x28, 0xee, 0x21, 0x95, 0x9f, 0x6f, 0xfd, 0x76, 0x3d, 0x8b, 0xe7, 0xa1, 0xf3, 0x93, 0x14, 0xe6, 0xde];
+const CREATE_INVENTORY_RECORD_MISSING_PLAN_HASH: [u8; 32] = [0x02, 0x58, 0x13, 0x92, 0x5d, 0xbf, 0xdb, 0xb5, 0x70, 0x80, 0xa9, 0xdd, 0xcf, 0x95, 0x96, 0x97, 0x9d, 0x91, 0x83, 0xb5, 0xda, 0x9b, 0x0e, 0x1f, 0x5e, 0x41, 0xa2, 0x07, 0xab, 0xef, 0x3f, 0x9c];
 impl GeneratedCommand for CreateInventoryRecordMissingInput {
     type Outcome = CreateInventoryRecordMissingOutcome;
 
@@ -1902,7 +2345,7 @@ pub enum CreateInventoryRecordsOutcome {
     InventoryRecordBatchAlreadyExists,
 }
 
-const CREATE_INVENTORY_RECORDS_PLAN_HASH: [u8; 32] = [0x01, 0xc8, 0xd5, 0xf5, 0x47, 0x6d, 0xae, 0x0c, 0xb2, 0x05, 0x0c, 0x24, 0x02, 0x96, 0xf9, 0xeb, 0xe9, 0xba, 0x72, 0xd8, 0x82, 0x90, 0x56, 0x27, 0xb7, 0x49, 0x1c, 0x74, 0x14, 0xab, 0xcd, 0xe6];
+const CREATE_INVENTORY_RECORDS_PLAN_HASH: [u8; 32] = [0x6a, 0x98, 0xda, 0xb0, 0x75, 0xd8, 0x7d, 0x25, 0x5b, 0xc1, 0x3b, 0x3f, 0x3f, 0x8f, 0x86, 0x86, 0xfd, 0x52, 0x85, 0xf4, 0x98, 0x65, 0x70, 0xf9, 0x0b, 0x72, 0xe3, 0x2a, 0x4d, 0x58, 0x9f, 0x4c];
 impl GeneratedCommand for CreateInventoryRecordsInput {
     type Outcome = CreateInventoryRecordsOutcome;
 
@@ -1950,7 +2393,7 @@ pub enum CreatePipelinesOutcome {
     PipelineAlreadyExists,
 }
 
-const CREATE_PIPELINES_PLAN_HASH: [u8; 32] = [0x72, 0x05, 0xfc, 0x0d, 0x74, 0x18, 0x1a, 0x8d, 0x32, 0xb3, 0xab, 0x60, 0x26, 0xd5, 0x91, 0x78, 0x86, 0xa3, 0x06, 0xcc, 0x23, 0x24, 0x66, 0xab, 0x0e, 0x6f, 0x87, 0x2e, 0xed, 0x69, 0x52, 0x36];
+const CREATE_PIPELINES_PLAN_HASH: [u8; 32] = [0x41, 0x2f, 0x8c, 0x63, 0xaa, 0x8e, 0xc4, 0xc9, 0xed, 0x23, 0xb3, 0x87, 0x11, 0xe4, 0x3f, 0xe1, 0x06, 0x20, 0x22, 0x91, 0xcb, 0xd0, 0xcf, 0xf0, 0x26, 0xf8, 0x56, 0x7c, 0x77, 0xbb, 0xf7, 0xcd];
 impl GeneratedCommand for CreatePipelinesInput {
     type Outcome = CreatePipelinesOutcome;
 
@@ -1998,7 +2441,7 @@ pub enum LogMetricsOutcome {
     MetricAlreadyExists,
 }
 
-const LOG_METRICS_PLAN_HASH: [u8; 32] = [0xd6, 0x3e, 0x61, 0xab, 0xfe, 0x08, 0x26, 0xf4, 0xbc, 0x7e, 0x7c, 0xf8, 0x76, 0x52, 0x13, 0xaf, 0xfd, 0xbe, 0xe6, 0x80, 0x41, 0x33, 0x6f, 0xbd, 0xdd, 0x9f, 0x65, 0x5c, 0x5d, 0x4d, 0x89, 0xae];
+const LOG_METRICS_PLAN_HASH: [u8; 32] = [0x60, 0x21, 0x93, 0xee, 0x91, 0x69, 0x9c, 0xe3, 0x55, 0xa4, 0x4a, 0x63, 0xe3, 0xb9, 0x63, 0x8a, 0x8f, 0x68, 0x1a, 0x40, 0x0a, 0x2c, 0x72, 0x80, 0x02, 0xf0, 0x9c, 0xda, 0x08, 0x36, 0x8c, 0x0c];
 impl GeneratedCommand for LogMetricsInput {
     type Outcome = LogMetricsOutcome;
 
@@ -2033,6 +2476,303 @@ impl GeneratedCommand for LogMetricsInput {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SeedObjectRelationsInput {
+    pub relations: Vec<FgaRelation>,
+    pub request_id: String,
+}
+
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SeedObjectRelationsOutcome {
+    FgaObjectMissing,
+
+    ObjectRelationsSeeded,
+
+    FgaRelationAlreadyExists,
+}
+
+const SEED_OBJECT_RELATIONS_PLAN_HASH: [u8; 32] = [0xe2, 0xe0, 0x68, 0x98, 0xdd, 0x76, 0x91, 0x89, 0x06, 0x88, 0x4d, 0xfe, 0x8a, 0x41, 0xd2, 0xb6, 0xc1, 0xc5, 0x8d, 0x91, 0x31, 0xf6, 0xb0, 0xcc, 0x4c, 0x2b, 0x72, 0x35, 0xb7, 0x6a, 0xc7, 0x82];
+impl GeneratedCommand for SeedObjectRelationsInput {
+    type Outcome = SeedObjectRelationsOutcome;
+
+    fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
+        if self.relations.is_empty() || self.relations.len() > 32 { return Err(GeneratedCommandError::InvalidInputShape); }
+        let fields = vec![
+            wire_named_field("relations", v1::Value { kind: Some(WireKind::ListValue(v1::ValueList { values: (self.relations).iter().map(encode_fga_relation_entity).collect::<Result<Vec<_>, GeneratedCommandError>>()? })) }),
+            wire_named_field("request_id", wire_uuid(&self.request_id)?),
+        ];
+        IdempotentCommand::new("SeedObjectRelations", Some(CONTRACT_VERSION), wire_record(fields)).map_err(Into::into)
+    }
+
+    fn outcome_request(&self, request_id: riffdb_client_rust::RequestId) -> Result<v1::GetOutcomeRequest, GeneratedCommandError> {
+        Ok(v1::GetOutcomeRequest {
+            request_id: request_id.into_bytes().to_vec(),
+            contract_lineage: CONTRACT_LINEAGE.to_owned(),
+            command_name: "SeedObjectRelations".to_owned(),
+            idempotency_key: self.request_id.clone(),
+            outcome_uri: None,
+        })
+    }
+
+    fn decode_outcome(&self, response: &v1::ExecuteCommandResponse) -> Result<Self::Outcome, GeneratedCommandError> {
+        let fields = wire_outcome_fields(response, &SEED_OBJECT_RELATIONS_PLAN_HASH)?;
+        match response.outcome_type.as_str() {
+            "FgaObjectMissing" => if fields.is_empty() { Ok(Self::Outcome::FgaObjectMissing) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "ObjectRelationsSeeded" => if fields.is_empty() { Ok(Self::Outcome::ObjectRelationsSeeded) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "FgaRelationAlreadyExists" => if fields.is_empty() { Ok(Self::Outcome::FgaRelationAlreadyExists) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SeedObjectsInput {
+    pub objects: Vec<FgaObject>,
+    pub request_id: String,
+}
+
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SeedObjectsOutcome {
+    ObjectsSeeded,
+
+    FgaObjectAlreadyExists,
+}
+
+const SEED_OBJECTS_PLAN_HASH: [u8; 32] = [0x47, 0xdc, 0x67, 0x15, 0x4a, 0xa9, 0x01, 0xf6, 0x2f, 0x62, 0x3b, 0x9b, 0x6f, 0x3c, 0x9a, 0xbb, 0xc5, 0xf2, 0xfd, 0xda, 0x9a, 0xf0, 0xb4, 0x4b, 0xe1, 0x9e, 0x56, 0x1c, 0x01, 0x0d, 0x0a, 0xe3];
+impl GeneratedCommand for SeedObjectsInput {
+    type Outcome = SeedObjectsOutcome;
+
+    fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
+        if self.objects.is_empty() || self.objects.len() > 8 { return Err(GeneratedCommandError::InvalidInputShape); }
+        let fields = vec![
+            wire_named_field("objects", v1::Value { kind: Some(WireKind::ListValue(v1::ValueList { values: (self.objects).iter().map(encode_fga_object_entity).collect::<Result<Vec<_>, GeneratedCommandError>>()? })) }),
+            wire_named_field("request_id", wire_uuid(&self.request_id)?),
+        ];
+        IdempotentCommand::new("SeedObjects", Some(CONTRACT_VERSION), wire_record(fields)).map_err(Into::into)
+    }
+
+    fn outcome_request(&self, request_id: riffdb_client_rust::RequestId) -> Result<v1::GetOutcomeRequest, GeneratedCommandError> {
+        Ok(v1::GetOutcomeRequest {
+            request_id: request_id.into_bytes().to_vec(),
+            contract_lineage: CONTRACT_LINEAGE.to_owned(),
+            command_name: "SeedObjects".to_owned(),
+            idempotency_key: self.request_id.clone(),
+            outcome_uri: None,
+        })
+    }
+
+    fn decode_outcome(&self, response: &v1::ExecuteCommandResponse) -> Result<Self::Outcome, GeneratedCommandError> {
+        let fields = wire_outcome_fields(response, &SEED_OBJECTS_PLAN_HASH)?;
+        match response.outcome_type.as_str() {
+            "ObjectsSeeded" => if fields.is_empty() { Ok(Self::Outcome::ObjectsSeeded) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "FgaObjectAlreadyExists" => if fields.is_empty() { Ok(Self::Outcome::FgaObjectAlreadyExists) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SeedRunTagsInput {
+    pub tags: Vec<MlflowRunTag>,
+    pub request_id: String,
+}
+
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SeedRunTagsOutcome {
+    RunTagsSeeded,
+
+    MlflowRunMissing,
+
+    MlflowRunTagAlreadyExists,
+}
+
+const SEED_RUN_TAGS_PLAN_HASH: [u8; 32] = [0x20, 0x2c, 0xa4, 0x14, 0xf7, 0x3f, 0x4c, 0x60, 0x60, 0x91, 0x71, 0x05, 0x6a, 0xcb, 0xe1, 0x06, 0x8c, 0x02, 0x50, 0x5f, 0xc5, 0x29, 0xc7, 0xbe, 0xe5, 0x84, 0x5e, 0x4f, 0x09, 0x53, 0xe4, 0xa4];
+impl GeneratedCommand for SeedRunTagsInput {
+    type Outcome = SeedRunTagsOutcome;
+
+    fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
+        if self.tags.is_empty() || self.tags.len() > 32 { return Err(GeneratedCommandError::InvalidInputShape); }
+        let fields = vec![
+            wire_named_field("tags", v1::Value { kind: Some(WireKind::ListValue(v1::ValueList { values: (self.tags).iter().map(encode_mlflow_run_tag_entity).collect::<Result<Vec<_>, GeneratedCommandError>>()? })) }),
+            wire_named_field("request_id", wire_uuid(&self.request_id)?),
+        ];
+        IdempotentCommand::new("SeedRunTags", Some(CONTRACT_VERSION), wire_record(fields)).map_err(Into::into)
+    }
+
+    fn outcome_request(&self, request_id: riffdb_client_rust::RequestId) -> Result<v1::GetOutcomeRequest, GeneratedCommandError> {
+        Ok(v1::GetOutcomeRequest {
+            request_id: request_id.into_bytes().to_vec(),
+            contract_lineage: CONTRACT_LINEAGE.to_owned(),
+            command_name: "SeedRunTags".to_owned(),
+            idempotency_key: self.request_id.clone(),
+            outcome_uri: None,
+        })
+    }
+
+    fn decode_outcome(&self, response: &v1::ExecuteCommandResponse) -> Result<Self::Outcome, GeneratedCommandError> {
+        let fields = wire_outcome_fields(response, &SEED_RUN_TAGS_PLAN_HASH)?;
+        match response.outcome_type.as_str() {
+            "RunTagsSeeded" => if fields.is_empty() { Ok(Self::Outcome::RunTagsSeeded) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "MlflowRunMissing" => if fields.is_empty() { Ok(Self::Outcome::MlflowRunMissing) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "MlflowRunTagAlreadyExists" => if fields.is_empty() { Ok(Self::Outcome::MlflowRunTagAlreadyExists) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SeedRunsInput {
+    pub runs: Vec<MlflowRun>,
+    pub request_id: String,
+}
+
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SeedRunsOutcome {
+    RunsSeeded,
+
+    MlflowRunAlreadyExists,
+}
+
+const SEED_RUNS_PLAN_HASH: [u8; 32] = [0x8d, 0x12, 0x49, 0x70, 0xb6, 0x80, 0xfc, 0x28, 0xa7, 0x57, 0x58, 0x31, 0xcb, 0x08, 0xf0, 0x35, 0x04, 0x71, 0xff, 0x31, 0xd2, 0x21, 0xb9, 0xa9, 0xeb, 0xdc, 0x59, 0x81, 0xad, 0x42, 0x76, 0xf3];
+impl GeneratedCommand for SeedRunsInput {
+    type Outcome = SeedRunsOutcome;
+
+    fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
+        if self.runs.is_empty() || self.runs.len() > 8 { return Err(GeneratedCommandError::InvalidInputShape); }
+        let fields = vec![
+            wire_named_field("runs", v1::Value { kind: Some(WireKind::ListValue(v1::ValueList { values: (self.runs).iter().map(encode_mlflow_run_entity).collect::<Result<Vec<_>, GeneratedCommandError>>()? })) }),
+            wire_named_field("request_id", wire_uuid(&self.request_id)?),
+        ];
+        IdempotentCommand::new("SeedRuns", Some(CONTRACT_VERSION), wire_record(fields)).map_err(Into::into)
+    }
+
+    fn outcome_request(&self, request_id: riffdb_client_rust::RequestId) -> Result<v1::GetOutcomeRequest, GeneratedCommandError> {
+        Ok(v1::GetOutcomeRequest {
+            request_id: request_id.into_bytes().to_vec(),
+            contract_lineage: CONTRACT_LINEAGE.to_owned(),
+            command_name: "SeedRuns".to_owned(),
+            idempotency_key: self.request_id.clone(),
+            outcome_uri: None,
+        })
+    }
+
+    fn decode_outcome(&self, response: &v1::ExecuteCommandResponse) -> Result<Self::Outcome, GeneratedCommandError> {
+        let fields = wire_outcome_fields(response, &SEED_RUNS_PLAN_HASH)?;
+        match response.outcome_type.as_str() {
+            "RunsSeeded" => if fields.is_empty() { Ok(Self::Outcome::RunsSeeded) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "MlflowRunAlreadyExists" => if fields.is_empty() { Ok(Self::Outcome::MlflowRunAlreadyExists) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SeedTicketCommentsInput {
+    pub comments: Vec<TicketComment>,
+    pub request_id: String,
+}
+
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SeedTicketCommentsOutcome {
+    TicketMissing,
+
+    TicketCommentsSeeded,
+
+    TicketCommentAlreadyExists,
+}
+
+const SEED_TICKET_COMMENTS_PLAN_HASH: [u8; 32] = [0x4a, 0xbf, 0x5f, 0x1f, 0x57, 0x2a, 0x77, 0x3a, 0x6e, 0x83, 0x9e, 0x33, 0x9e, 0x67, 0xe9, 0xc9, 0x39, 0xa4, 0xec, 0xbd, 0x30, 0x8e, 0xf5, 0x99, 0xf4, 0x1f, 0x4e, 0x70, 0x56, 0xa8, 0x49, 0x15];
+impl GeneratedCommand for SeedTicketCommentsInput {
+    type Outcome = SeedTicketCommentsOutcome;
+
+    fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
+        if self.comments.is_empty() || self.comments.len() > 32 { return Err(GeneratedCommandError::InvalidInputShape); }
+        let fields = vec![
+            wire_named_field("comments", v1::Value { kind: Some(WireKind::ListValue(v1::ValueList { values: (self.comments).iter().map(encode_ticket_comment_entity).collect::<Result<Vec<_>, GeneratedCommandError>>()? })) }),
+            wire_named_field("request_id", wire_uuid(&self.request_id)?),
+        ];
+        IdempotentCommand::new("SeedTicketComments", Some(CONTRACT_VERSION), wire_record(fields)).map_err(Into::into)
+    }
+
+    fn outcome_request(&self, request_id: riffdb_client_rust::RequestId) -> Result<v1::GetOutcomeRequest, GeneratedCommandError> {
+        Ok(v1::GetOutcomeRequest {
+            request_id: request_id.into_bytes().to_vec(),
+            contract_lineage: CONTRACT_LINEAGE.to_owned(),
+            command_name: "SeedTicketComments".to_owned(),
+            idempotency_key: self.request_id.clone(),
+            outcome_uri: None,
+        })
+    }
+
+    fn decode_outcome(&self, response: &v1::ExecuteCommandResponse) -> Result<Self::Outcome, GeneratedCommandError> {
+        let fields = wire_outcome_fields(response, &SEED_TICKET_COMMENTS_PLAN_HASH)?;
+        match response.outcome_type.as_str() {
+            "TicketMissing" => if fields.is_empty() { Ok(Self::Outcome::TicketMissing) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "TicketCommentsSeeded" => if fields.is_empty() { Ok(Self::Outcome::TicketCommentsSeeded) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "TicketCommentAlreadyExists" => if fields.is_empty() { Ok(Self::Outcome::TicketCommentAlreadyExists) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SeedTicketsInput {
+    pub tickets: Vec<Ticket>,
+    pub request_id: String,
+}
+
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SeedTicketsOutcome {
+    TicketsSeeded,
+
+    TicketAlreadyExists,
+}
+
+const SEED_TICKETS_PLAN_HASH: [u8; 32] = [0x4d, 0x44, 0x7d, 0x21, 0xf3, 0x59, 0x2c, 0x7e, 0xec, 0x67, 0x25, 0xfa, 0xc5, 0xf6, 0xc1, 0x65, 0xd9, 0x42, 0xda, 0xe1, 0x39, 0xde, 0x37, 0x8d, 0x20, 0x2b, 0x1a, 0xcb, 0x28, 0x83, 0xeb, 0x77];
+impl GeneratedCommand for SeedTicketsInput {
+    type Outcome = SeedTicketsOutcome;
+
+    fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
+        if self.tickets.is_empty() || self.tickets.len() > 8 { return Err(GeneratedCommandError::InvalidInputShape); }
+        let fields = vec![
+            wire_named_field("tickets", v1::Value { kind: Some(WireKind::ListValue(v1::ValueList { values: (self.tickets).iter().map(encode_ticket_entity).collect::<Result<Vec<_>, GeneratedCommandError>>()? })) }),
+            wire_named_field("request_id", wire_uuid(&self.request_id)?),
+        ];
+        IdempotentCommand::new("SeedTickets", Some(CONTRACT_VERSION), wire_record(fields)).map_err(Into::into)
+    }
+
+    fn outcome_request(&self, request_id: riffdb_client_rust::RequestId) -> Result<v1::GetOutcomeRequest, GeneratedCommandError> {
+        Ok(v1::GetOutcomeRequest {
+            request_id: request_id.into_bytes().to_vec(),
+            contract_lineage: CONTRACT_LINEAGE.to_owned(),
+            command_name: "SeedTickets".to_owned(),
+            idempotency_key: self.request_id.clone(),
+            outcome_uri: None,
+        })
+    }
+
+    fn decode_outcome(&self, response: &v1::ExecuteCommandResponse) -> Result<Self::Outcome, GeneratedCommandError> {
+        let fields = wire_outcome_fields(response, &SEED_TICKETS_PLAN_HASH)?;
+        match response.outcome_type.as_str() {
+            "TicketsSeeded" => if fields.is_empty() { Ok(Self::Outcome::TicketsSeeded) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "TicketAlreadyExists" => if fields.is_empty() { Ok(Self::Outcome::TicketAlreadyExists) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WriteTuplesInput {
     pub tuples: Vec<FgaTuple>,
     pub request_id: String,
@@ -2046,7 +2786,7 @@ pub enum WriteTuplesOutcome {
     TupleAlreadyExists,
 }
 
-const WRITE_TUPLES_PLAN_HASH: [u8; 32] = [0xab, 0x3e, 0xd2, 0xf7, 0xa7, 0x0b, 0x35, 0xc1, 0x2a, 0x74, 0xd4, 0x5c, 0x6f, 0x8a, 0xea, 0x5b, 0x91, 0x14, 0x64, 0x98, 0x28, 0xd8, 0xe4, 0xa1, 0x32, 0x37, 0x12, 0xc2, 0xca, 0x1b, 0x5f, 0xe0];
+const WRITE_TUPLES_PLAN_HASH: [u8; 32] = [0xfa, 0x1d, 0x3b, 0xaa, 0xab, 0xf4, 0x08, 0x33, 0x8c, 0x7a, 0xea, 0x4b, 0xda, 0xdd, 0x2e, 0x0c, 0x06, 0x1e, 0x15, 0x3c, 0xe8, 0x2a, 0x36, 0x3c, 0x9e, 0xf1, 0xe3, 0x57, 0xce, 0x2f, 0x6a, 0x17];
 impl GeneratedCommand for WriteTuplesInput {
     type Outcome = WriteTuplesOutcome;
 
@@ -2139,6 +2879,19 @@ impl AdapterOperationalConformanceClient {
     /// Executes `ExactDocumentsStartsWithAsc` with generated pagination or read-fence options.
     pub async fn exact_documents_starts_with_asc_with_options(&mut self, parameters: ExactDocumentsStartsWithAscParams, options: QueryOptions) -> Result<TypedQueryResult<ExactDocumentsStartsWithAscResult>, ApplicationClientError> {
         self.client.execute_generated_query(ExactDocumentsStartsWithAscQuery(parameters), options, &self.metadata).await
+    }
+
+    /// Executes the generated `FgaObjectsWithRelations` named query.
+    pub async fn fga_objects_with_relations(&mut self, parameters: FgaObjectsWithRelationsParams) -> Result<FgaObjectsWithRelationsResult, ApplicationClientError> {
+        Ok(self.fga_objects_with_relations_with_options(parameters, QueryOptions::new()).await?.value)
+    }
+    /// Executes `FgaObjectsWithRelations` against a snapshot at or after the supplied command commit.
+    pub async fn fga_objects_with_relations_after_commit(&mut self, parameters: FgaObjectsWithRelationsParams, commit_sequence: u64) -> Result<TypedQueryResult<FgaObjectsWithRelationsResult>, ApplicationClientError> {
+        self.fga_objects_with_relations_with_options(parameters, QueryOptions::new().read_after_commit(commit_sequence)).await
+    }
+    /// Executes `FgaObjectsWithRelations` with generated pagination or read-fence options.
+    pub async fn fga_objects_with_relations_with_options(&mut self, parameters: FgaObjectsWithRelationsParams, options: QueryOptions) -> Result<TypedQueryResult<FgaObjectsWithRelationsResult>, ApplicationClientError> {
+        self.client.execute_generated_query(FgaObjectsWithRelationsQuery(parameters), options, &self.metadata).await
     }
 
     /// Executes the generated `GetAuthSession` named query.
@@ -2258,6 +3011,19 @@ impl AdapterOperationalConformanceClient {
         self.client.execute_generated_query(MetricDashboardQuery(parameters), options, &self.metadata).await
     }
 
+    /// Executes the generated `MlflowRunsWithTags` named query.
+    pub async fn mlflow_runs_with_tags(&mut self, parameters: MlflowRunsWithTagsParams) -> Result<MlflowRunsWithTagsResult, ApplicationClientError> {
+        Ok(self.mlflow_runs_with_tags_with_options(parameters, QueryOptions::new()).await?.value)
+    }
+    /// Executes `MlflowRunsWithTags` against a snapshot at or after the supplied command commit.
+    pub async fn mlflow_runs_with_tags_after_commit(&mut self, parameters: MlflowRunsWithTagsParams, commit_sequence: u64) -> Result<TypedQueryResult<MlflowRunsWithTagsResult>, ApplicationClientError> {
+        self.mlflow_runs_with_tags_with_options(parameters, QueryOptions::new().read_after_commit(commit_sequence)).await
+    }
+    /// Executes `MlflowRunsWithTags` with generated pagination or read-fence options.
+    pub async fn mlflow_runs_with_tags_with_options(&mut self, parameters: MlflowRunsWithTagsParams, options: QueryOptions) -> Result<TypedQueryResult<MlflowRunsWithTagsResult>, ApplicationClientError> {
+        self.client.execute_generated_query(MlflowRunsWithTagsQuery(parameters), options, &self.metadata).await
+    }
+
     /// Executes the generated `ReviewedDirectoryUsers` named query.
     pub async fn reviewed_directory_users(&mut self, parameters: ReviewedDirectoryUsersParams) -> Result<ReviewedDirectoryUsersResult, ApplicationClientError> {
         Ok(self.reviewed_directory_users_with_options(parameters, QueryOptions::new()).await?.value)
@@ -2295,6 +3061,19 @@ impl AdapterOperationalConformanceClient {
     /// Executes `SearchDocuments` with generated pagination or read-fence options.
     pub async fn search_documents_with_options(&mut self, parameters: SearchDocumentsParams, options: QueryOptions) -> Result<TypedQueryResult<SearchDocumentsResult>, ApplicationClientError> {
         self.client.execute_generated_query(SearchDocumentsQuery(parameters), options, &self.metadata).await
+    }
+
+    /// Executes the generated `TicketPageWithComments` named query.
+    pub async fn ticket_page_with_comments(&mut self, parameters: TicketPageWithCommentsParams) -> Result<TicketPageWithCommentsResult, ApplicationClientError> {
+        Ok(self.ticket_page_with_comments_with_options(parameters, QueryOptions::new()).await?.value)
+    }
+    /// Executes `TicketPageWithComments` against a snapshot at or after the supplied command commit.
+    pub async fn ticket_page_with_comments_after_commit(&mut self, parameters: TicketPageWithCommentsParams, commit_sequence: u64) -> Result<TypedQueryResult<TicketPageWithCommentsResult>, ApplicationClientError> {
+        self.ticket_page_with_comments_with_options(parameters, QueryOptions::new().read_after_commit(commit_sequence)).await
+    }
+    /// Executes `TicketPageWithComments` with generated pagination or read-fence options.
+    pub async fn ticket_page_with_comments_with_options(&mut self, parameters: TicketPageWithCommentsParams, options: QueryOptions) -> Result<TypedQueryResult<TicketPageWithCommentsResult>, ApplicationClientError> {
+        self.client.execute_generated_query(TicketPageWithCommentsQuery(parameters), options, &self.metadata).await
     }
 
     pub async fn change_inventory_record_state(&mut self, input: ChangeInventoryRecordStateInput) -> Result<TypedCommandResult<ChangeInventoryRecordStateOutcome>, ApplicationClientError> {
@@ -2411,6 +3190,96 @@ impl AdapterOperationalConformanceClient {
     }
 
     pub async fn log_metrics_batch_with_progress<F>(&self, inputs: Vec<LogMetricsInput>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<LogMetricsOutcome>, GeneratedBatchError>
+    where
+        F: FnMut(GeneratedBatchProgress),
+    {
+        self.client.execute_generated_command_batch_with_progress(inputs, options, self.command_attempts, &self.metadata, progress).await
+    }
+
+    pub async fn seed_object_relations(&mut self, input: SeedObjectRelationsInput) -> Result<TypedCommandResult<SeedObjectRelationsOutcome>, ApplicationClientError> {
+        self.client.execute_generated_command(&input, self.command_attempts, &self.metadata).await.map_err(Into::into)
+    }
+
+    pub async fn seed_object_relations_batch(&self, inputs: Vec<SeedObjectRelationsInput>, options: GeneratedBatchOptions) -> Result<GeneratedBatchResult<SeedObjectRelationsOutcome>, GeneratedBatchError> {
+        self.client.execute_generated_command_batch(inputs, options, self.command_attempts, &self.metadata).await
+    }
+
+    pub async fn seed_object_relations_batch_with_progress<F>(&self, inputs: Vec<SeedObjectRelationsInput>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<SeedObjectRelationsOutcome>, GeneratedBatchError>
+    where
+        F: FnMut(GeneratedBatchProgress),
+    {
+        self.client.execute_generated_command_batch_with_progress(inputs, options, self.command_attempts, &self.metadata, progress).await
+    }
+
+    pub async fn seed_objects(&mut self, input: SeedObjectsInput) -> Result<TypedCommandResult<SeedObjectsOutcome>, ApplicationClientError> {
+        self.client.execute_generated_command(&input, self.command_attempts, &self.metadata).await.map_err(Into::into)
+    }
+
+    pub async fn seed_objects_batch(&self, inputs: Vec<SeedObjectsInput>, options: GeneratedBatchOptions) -> Result<GeneratedBatchResult<SeedObjectsOutcome>, GeneratedBatchError> {
+        self.client.execute_generated_command_batch(inputs, options, self.command_attempts, &self.metadata).await
+    }
+
+    pub async fn seed_objects_batch_with_progress<F>(&self, inputs: Vec<SeedObjectsInput>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<SeedObjectsOutcome>, GeneratedBatchError>
+    where
+        F: FnMut(GeneratedBatchProgress),
+    {
+        self.client.execute_generated_command_batch_with_progress(inputs, options, self.command_attempts, &self.metadata, progress).await
+    }
+
+    pub async fn seed_run_tags(&mut self, input: SeedRunTagsInput) -> Result<TypedCommandResult<SeedRunTagsOutcome>, ApplicationClientError> {
+        self.client.execute_generated_command(&input, self.command_attempts, &self.metadata).await.map_err(Into::into)
+    }
+
+    pub async fn seed_run_tags_batch(&self, inputs: Vec<SeedRunTagsInput>, options: GeneratedBatchOptions) -> Result<GeneratedBatchResult<SeedRunTagsOutcome>, GeneratedBatchError> {
+        self.client.execute_generated_command_batch(inputs, options, self.command_attempts, &self.metadata).await
+    }
+
+    pub async fn seed_run_tags_batch_with_progress<F>(&self, inputs: Vec<SeedRunTagsInput>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<SeedRunTagsOutcome>, GeneratedBatchError>
+    where
+        F: FnMut(GeneratedBatchProgress),
+    {
+        self.client.execute_generated_command_batch_with_progress(inputs, options, self.command_attempts, &self.metadata, progress).await
+    }
+
+    pub async fn seed_runs(&mut self, input: SeedRunsInput) -> Result<TypedCommandResult<SeedRunsOutcome>, ApplicationClientError> {
+        self.client.execute_generated_command(&input, self.command_attempts, &self.metadata).await.map_err(Into::into)
+    }
+
+    pub async fn seed_runs_batch(&self, inputs: Vec<SeedRunsInput>, options: GeneratedBatchOptions) -> Result<GeneratedBatchResult<SeedRunsOutcome>, GeneratedBatchError> {
+        self.client.execute_generated_command_batch(inputs, options, self.command_attempts, &self.metadata).await
+    }
+
+    pub async fn seed_runs_batch_with_progress<F>(&self, inputs: Vec<SeedRunsInput>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<SeedRunsOutcome>, GeneratedBatchError>
+    where
+        F: FnMut(GeneratedBatchProgress),
+    {
+        self.client.execute_generated_command_batch_with_progress(inputs, options, self.command_attempts, &self.metadata, progress).await
+    }
+
+    pub async fn seed_ticket_comments(&mut self, input: SeedTicketCommentsInput) -> Result<TypedCommandResult<SeedTicketCommentsOutcome>, ApplicationClientError> {
+        self.client.execute_generated_command(&input, self.command_attempts, &self.metadata).await.map_err(Into::into)
+    }
+
+    pub async fn seed_ticket_comments_batch(&self, inputs: Vec<SeedTicketCommentsInput>, options: GeneratedBatchOptions) -> Result<GeneratedBatchResult<SeedTicketCommentsOutcome>, GeneratedBatchError> {
+        self.client.execute_generated_command_batch(inputs, options, self.command_attempts, &self.metadata).await
+    }
+
+    pub async fn seed_ticket_comments_batch_with_progress<F>(&self, inputs: Vec<SeedTicketCommentsInput>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<SeedTicketCommentsOutcome>, GeneratedBatchError>
+    where
+        F: FnMut(GeneratedBatchProgress),
+    {
+        self.client.execute_generated_command_batch_with_progress(inputs, options, self.command_attempts, &self.metadata, progress).await
+    }
+
+    pub async fn seed_tickets(&mut self, input: SeedTicketsInput) -> Result<TypedCommandResult<SeedTicketsOutcome>, ApplicationClientError> {
+        self.client.execute_generated_command(&input, self.command_attempts, &self.metadata).await.map_err(Into::into)
+    }
+
+    pub async fn seed_tickets_batch(&self, inputs: Vec<SeedTicketsInput>, options: GeneratedBatchOptions) -> Result<GeneratedBatchResult<SeedTicketsOutcome>, GeneratedBatchError> {
+        self.client.execute_generated_command_batch(inputs, options, self.command_attempts, &self.metadata).await
+    }
+
+    pub async fn seed_tickets_batch_with_progress<F>(&self, inputs: Vec<SeedTicketsInput>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<SeedTicketsOutcome>, GeneratedBatchError>
     where
         F: FnMut(GeneratedBatchProgress),
     {

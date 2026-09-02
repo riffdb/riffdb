@@ -16,7 +16,7 @@ export GOPROXY=off
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$task_tmp_root/riffdb-uv-cache}"
 mkdir -p "$GOCACHE" "$GOPATH" "$UV_CACHE_DIR"
 
-for tool in cargo go jq mkfifo mktemp node npm python3 sha256sum uv; do
+for tool in cargo curl go jq mkfifo mktemp node npm python3 sha256sum uv; do
     command -v "$tool" >/dev/null 2>&1 || {
         echo "required adapter-operational tool is missing: $tool" >&2
         exit 1
@@ -47,6 +47,7 @@ cd "$repo_root"
 cargo +1.97.0 build --quiet \
     -p riffdb-server --bin riffdbd \
     -p riffdb-cli --bin riffdb \
+    -p riffdb-mcp-stdio --bin riffdb-mcp \
     -p riffdb-driver-host --bin riffdb-driverd
 cargo +1.97.0 test --quiet -p riffdb-client-rust application_catalog_preflight --all-features
 npm --prefix clients/typescript/runtime run build >/dev/null
@@ -61,6 +62,13 @@ uv venv "$work_root/python-venv" >/dev/null
 uv pip install --offline --python "$work_root/python-venv/bin/python" "$python_wheel" >/dev/null
 
 port="$($work_root/python-venv/bin/python - <<'PY'
+import socket
+with socket.socket() as listener:
+    listener.bind(("127.0.0.1", 0))
+    print(listener.getsockname()[1])
+PY
+)"
+mcp_port="$($work_root/python-venv/bin/python - <<'PY'
 import socket
 with socket.socket() as listener:
     listener.bind(("127.0.0.1", 0))
@@ -88,6 +96,7 @@ environment = "development"
 audience = "riffdb-adapter-operational"
 capability_keys = "$work_root/capability.keys"
 idempotency_keys = "$work_root/idempotency.keys"
+mcp_listen = "127.0.0.1:$mcp_port"
 
 [server.application_listener]
 mode = "direct_tls"
@@ -165,6 +174,11 @@ target/debug/riffdb --config "$work_root/operator-client.toml" role bind \
     --role AdapterOperationalLimited --principal adapter-operational-limited \
     --actor-kind service --audience riffdb-adapter-operational --lifetime-seconds 3600 \
     --credential-output "$work_root/limited.credential" --output json >/dev/null
+target/debug/riffdb --config "$work_root/operator-client.toml" role bind \
+    "$work_root/application/generated/riffdb.application.exact.json" \
+    --role AdapterOperationalApplication --principal adapter-operational-mcp \
+    --actor-kind agent --audience "http://127.0.0.1:$mcp_port/mcp" --lifetime-seconds 3600 \
+    --credential-output "$work_root/mcp.credential" --output json >/dev/null
 
 export RIFFDB_CONFORMANCE_ENDPOINT="https://127.0.0.1:$port"
 export RIFFDB_CONFORMANCE_TRUST_ROOT="$work_root/ca.pem"
@@ -233,15 +247,26 @@ cat >"$work_root/exact-predicate-reviewed-readiness.json" <<'EOF'
   "offset": {"$u64":"0"}
 }
 EOF
-if ! target/debug/riffdb --config "$work_root/application-client.toml" \
-    query run-named SearchDirectoryUsers \
-    --contract-lineage AdapterOperationalConformance --contract-version 1 \
-    --module-hash "$module_hash" --parameters "$work_root/exact-predicate-readiness.json" \
-    --output json >"$work_root/exact-provider-readiness.out" 2>&1; then
+exact_provider_ready=''
+for _attempt in $(seq 1 100); do
+    if target/debug/riffdb --config "$work_root/application-client.toml" \
+        query run-named SearchDirectoryUsers \
+        --contract-lineage AdapterOperationalConformance --contract-version 1 \
+        --module-hash "$module_hash" --parameters "$work_root/exact-predicate-readiness.json" \
+        --output json >"$work_root/exact-provider-readiness.out" 2>&1; then
+        exact_provider_ready=yes
+        break
+    fi
+    if ! rg -q 'RDB-QUERY-0102' "$work_root/exact-provider-readiness.out"; then
+        cat "$work_root/exact-provider-readiness.out" >&2
+        exit 1
+    fi
+done
+[[ "$exact_provider_ready" == yes ]] || {
     cat "$work_root/exact-provider-readiness.out" >&2
-    echo "SearchDirectoryUsers first request did not complete within the service readiness window" >&2
+    echo "SearchDirectoryUsers provider did not become ready within the bounded poll budget" >&2
     exit 1
-fi
+}
 for query_and_file in \
     "ReviewedDirectoryUsers:$work_root/exact-predicate-reviewed-readiness.json"; do
     exact_query="${query_and_file%%:*}"
@@ -317,6 +342,41 @@ target/debug/riffdb --config "$work_root/application-client.toml" query run-name
     --output json >"$work_root/cli.json"
 jq -e '.ok == true and .result.outcome == "Found" and (.result.fields[0].records | length) == 1' \
     "$work_root/cli.json" >/dev/null
+
+cat >"$work_root/ticket-expansion-parameters.json" <<'EOF'
+{"organization_id":{"$uuid":"018f0f8b-7c6d-7e31-8a4f-000000000050"},"state":"open"}
+EOF
+cat >"$work_root/run-expansion-parameters.json" <<'EOF'
+{"experiment_id":{"$uuid":"018f0f8b-7c6d-7e31-8a4f-00000000005a"},"lifecycle":"active"}
+EOF
+cat >"$work_root/object-expansion-parameters.json" <<'EOF'
+{"store_id":{"$uuid":"018f0f8b-7c6d-7e31-8a4f-000000000064"},"kind":"document"}
+EOF
+for query_and_parameters in \
+    "TicketPageWithComments:$work_root/ticket-expansion-parameters.json:tickets:comments" \
+    "MlflowRunsWithTags:$work_root/run-expansion-parameters.json:runs:tags" \
+    "FgaObjectsWithRelations:$work_root/object-expansion-parameters.json:objects:relations"; do
+    query="${query_and_parameters%%:*}"
+    remainder="${query_and_parameters#*:}"
+    parameters="${remainder%%:*}"
+    remainder="${remainder#*:}"
+    root_field="${remainder%%:*}"
+    nested_field="${remainder#*:}"
+    target/debug/riffdb --config "$work_root/application-client.toml" query run-named "$query" \
+        --contract-lineage AdapterOperationalConformance --contract-version 1 \
+        --module-hash "$module_hash" --parameters "$parameters" \
+        --output json >"$work_root/cli-$query.json"
+    jq -e --arg root "$root_field" --arg nested "$nested_field" '
+      .ok == true and .result.outcome == "Found"
+      and (.result.fields[] | select(.name == $root) | .records | length) == 2
+      and (.result.fields[] | select(.name == $root) | .records[0].fields[]
+           | select(.name == $nested) | .value
+           | .type == "list" and (.values | length) == 2)
+      and (.result.fields[] | select(.name == $root) | .records[1].fields[]
+           | select(.name == $nested) | .value
+           | .type == "list" and (.values | length) == 1)
+    ' "$work_root/cli-$query.json" >/dev/null
+done
 
 cat >"$work_root/exact-document-parameters.json" <<'EOF'
 {
@@ -444,7 +504,7 @@ PYTHONPATH="$work_root/application/generated/python" \
     "$work_root/python-venv/bin/python" fixtures/adapters/operational-conformance/runner/python.py \
     >"$work_root/python.json"
 
-expected='{"adapters":["mlflow","openfga","better-auth","woodpecker"],"binary_prefix":true,"catalog_preflight":true,"exact_aggregates":true,"exact_predicate_family":true,"exact_text_family":true,"exact_total":true,"null_predicate":true,"nullable_exact_order":true,"numeric_offset":true,"optional_filters":true,"regression_adapters":["payload"],"schema":"riffdb.adapter-operational-observation/v1","stable_cursor":true}'
+expected='{"adapters":["mlflow","openfga","better-auth","woodpecker"],"binary_prefix":true,"catalog_preflight":true,"exact_aggregates":true,"exact_predicate_family":true,"exact_text_family":true,"exact_total":true,"null_predicate":true,"nullable_exact_order":true,"numeric_offset":true,"operator_expansions":true,"optional_filters":true,"regression_adapters":["payload"],"schema":"riffdb.adapter-operational-observation/v1","stable_cursor":true}'
 for language in rust go typescript python; do
     observed="$(jq -cS 'del(.language)' "$work_root/$language.json")"
     [[ "$observed" == "$expected" ]] || {
@@ -453,10 +513,82 @@ for language in rust go typescript python; do
     }
 done
 
+mcp_endpoint="http://127.0.0.1:$mcp_port/mcp"
+cat >"$work_root/mcp-curl.conf" <<EOF
+url = "$mcp_endpoint"
+header = "Authorization: Bearer $(<"$work_root/mcp.credential")"
+header = "Content-Type: application/json"
+header = "Accept: application/json, text/event-stream"
+header = "Mcp-Protocol-Version: 2025-11-25"
+max-time = 45
+silent
+show-error
+fail-with-body
+EOF
+chmod 0600 "$work_root/mcp-curl.conf"
+normalize_mcp_response() {
+    jq -Rse '
+      [split("\n")[] | select(startswith("data: ")) | ltrimstr("data: ") | fromjson]
+      | if length == 1 then .[0] else error("expected exactly one MCP data event") end
+    ' "$1" >"$2"
+}
+jq -cn '{jsonrpc:"2.0",id:1,method:"initialize",params:{protocolVersion:"2025-11-25",capabilities:{},clientInfo:{name:"riffdb-operator-acceptance",version:"1"}}}' >"$work_root/mcp-initialize.json"
+curl --config "$work_root/mcp-curl.conf" --dump-header "$work_root/mcp-initialize.headers" \
+    --output "$work_root/mcp-initialize-output.sse" \
+    --data-binary @"$work_root/mcp-initialize.json"
+session_id="$(awk 'tolower($1) == "mcp-session-id:" {gsub(/\r/, "", $2); print $2}' "$work_root/mcp-initialize.headers")"
+[[ -n "$session_id" && "$session_id" != *$'\n'* ]] || {
+    echo "hosted MCP initialization omitted its bounded session ID" >&2
+    exit 1
+}
+normalize_mcp_response "$work_root/mcp-initialize-output.sse" \
+    "$work_root/mcp-initialize-output.json"
+jq -e '.result.protocolVersion == "2025-11-25"' "$work_root/mcp-initialize-output.json" >/dev/null
+jq -cn '{jsonrpc:"2.0",method:"notifications/initialized"}' >"$work_root/mcp-notification.json"
+curl --config "$work_root/mcp-curl.conf" --header "Mcp-Session-Id: $session_id" \
+    --output "$work_root/mcp-notification-output.json" \
+    --data-binary @"$work_root/mcp-notification.json"
+run_mcp_call() {
+    local request_id="$1"
+    local tool="$2"
+    local arguments="$3"
+    local root_field="$4"
+    local nested_field="$5"
+    jq -cn --argjson id "$request_id" --arg tool "$tool" --argjson arguments "$arguments" \
+        '{jsonrpc:"2.0",id:$id,method:"tools/call",params:{name:$tool,arguments:$arguments}}' \
+        >"$work_root/mcp-call-$request_id.json"
+    curl --config "$work_root/mcp-curl.conf" --header "Mcp-Session-Id: $session_id" \
+        --dump-header "$work_root/mcp-call-$request_id.headers" \
+        --output "$work_root/mcp-call-$request_id-output.sse" \
+        --data-binary @"$work_root/mcp-call-$request_id.json"
+    normalize_mcp_response "$work_root/mcp-call-$request_id-output.sse" \
+        "$work_root/mcp-call-$request_id-output.json"
+    jq -e --arg root "$root_field" --arg nested "$nested_field" '
+      .result.isError == false
+      and (.result.structuredContent[$root] | map(.[$nested] | length)) == [2, 1]
+    ' "$work_root/mcp-call-$request_id-output.json" >/dev/null
+}
+run_mcp_call 3 adapter_operational_conformance_ticket_page_with_comments \
+    '{"organization_id":"018f0f8b-7c6d-7e31-8a4f-000000000050","state":"open"}' \
+    tickets comments
+run_mcp_call 4 adapter_operational_conformance_mlflow_runs_with_tags \
+    '{"experiment_id":"018f0f8b-7c6d-7e31-8a4f-00000000005a","lifecycle":"active"}' \
+    runs tags
+run_mcp_call 5 adapter_operational_conformance_fga_objects_with_relations \
+    '{"store_id":"018f0f8b-7c6d-7e31-8a4f-000000000064","kind":"document"}' \
+    objects relations
+
+kill -TERM "$driver_pid"
+wait "$driver_pid"
+driver_pid=
+printf 'shutdown\n' >&"$server_input_fd"
+wait "$server_pid"
+server_pid=
+
 jq -e '
   .schema == "riffdb-generated-application-operations/v2"
-  and (.tools | length) == 15
-  and ([.tools[].operation_name] | sort) == ["ExactDocumentsContainsAsc", "ExactDocumentsEndsWithDesc", "ExactDocumentsStartsWithAsc", "GetAuthSession", "InventoryByObservedAscNullsLast", "InventoryByObservedDescNullsFirst", "InventoryBySubtitleAscNullsFirst", "InventoryBySubtitleDescNullsLast", "ListDraftDocuments", "ListFgaTuples", "ListPipelines", "MetricDashboard", "ReviewedDirectoryUsers", "SearchDirectoryUsers", "SearchDocuments"]
+  and (.tools | length) == 18
+  and ([.tools[].operation_name] | sort) == ["ExactDocumentsContainsAsc", "ExactDocumentsEndsWithDesc", "ExactDocumentsStartsWithAsc", "FgaObjectsWithRelations", "GetAuthSession", "InventoryByObservedAscNullsLast", "InventoryByObservedDescNullsFirst", "InventoryBySubtitleAscNullsFirst", "InventoryBySubtitleDescNullsLast", "ListDraftDocuments", "ListFgaTuples", "ListPipelines", "MetricDashboard", "MlflowRunsWithTags", "ReviewedDirectoryUsers", "SearchDirectoryUsers", "SearchDocuments", "TicketPageWithComments"]
   and ([.tools[] | select(.operation_name | startswith("ExactDocuments"))] | length) == 3
   and all(.tools[] | select(.operation_name | startswith("ExactDocuments"));
        (.input_schema.required | sort) == ["needle", "site_id"]
@@ -475,6 +607,10 @@ jq -e '
   and (.tools[] | select(.operation_name == "SearchDocuments")
        | (.input_schema.required | sort) == ["site_id", "title_prefix"]
          and .result_schema.oneOf[0].properties.documents.maxItems == 25)
+  and all(.tools[] | select(.operation_name == "TicketPageWithComments" or .operation_name == "MlflowRunsWithTags" or .operation_name == "FgaObjectsWithRelations");
+       (.result_schema.oneOf[0].properties[] | select(.type == "array")
+        | .maxItems == 4
+          and (.items.properties[] | select(.type == "array") | .maxItems == 4)))
   and (.tools[] | select(.operation_name == "SearchDirectoryUsers")
        | (.input_schema.required | sort) == ["excluded_states", "needle", "organization_id"]
          and .input_schema.properties.excluded_states.maxItems == 64
