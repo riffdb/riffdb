@@ -43,7 +43,7 @@ jq -e '
 
 rg -q "pub struct TicketDeskClient" fixtures/query-modules/ticketdesk.rs
 rg -q "impl GeneratedQuery for TicketPageQuery" fixtures/query-modules/ticketdesk.rs
-rg -q "execute_generated_with_recovery" crates/riffdb-client-rust/src/client.rs
+rg -q "execute_generated_with_recovery" crates/riffdb-client-rust/src/application.rs
 rg -q "export class TicketDeskClient" clients/typescript/ticketdesk/client.ts
 rg -q "RiffDB application identity mismatch" clients/typescript/ticketdesk/client.ts
 jq -e \

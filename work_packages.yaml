@@ -21059,8 +21059,11 @@ work_packages:
       rule with self-test arms in both directions, each drift-checked to be separately load-bearing.
       The receipt records method.stability_rule_binds, so a candidate measured under the old rule
       fails method-drift rather than comparing against a baseline that meant something different.
-      What remains is the qualification run itself -- five generations on N1, E2, and workstation
-      with host-validity preflight and postflight -- which no longer has a known blocker.
+      The profile runner now rejects a stale nested app-baseline lock before retaining its first
+      result, and the app-baseline self-test uses Cargo's locked resolver, preventing a runner build
+      from dirtying the exact source tree between scenarios. What remains is the qualification run
+      itself -- five generations on N1, E2, and workstation with host-validity preflight and
+      postflight -- which has no known in-repository blocker.
   name: Portable unary SLO governance and frozen alpha baseline
   depends_on: [WP-654, WP-670, WP-673]
   objective: After exact acceptance of ADR-0142 and its ADR-0143/ADR-0146 measurement amendments, replace the
