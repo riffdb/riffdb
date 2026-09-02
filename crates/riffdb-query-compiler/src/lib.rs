@@ -2493,12 +2493,16 @@ impl<'a> Planner<'a> {
             }
             let predicate_fields = predicate_fields.into_iter().collect::<Vec<_>>();
             let selected_fields = selected.into_iter().collect::<Vec<_>>();
-            let binding_results = result_names
-                .get(binding.name.value.as_str())
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .collect::<Vec<_>>();
+            let binding_results = if expansion_bounds.is_some() {
+                nested_result_names(self.document, binding.name.value.as_str())
+            } else {
+                result_names
+                    .get(binding.name.value.as_str())
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            };
             let dependencies = dependencies
                 .into_iter()
                 .map(str::to_owned)
@@ -4694,6 +4698,38 @@ fn result_names(document: &Document) -> BTreeMap<String, BTreeSet<String>> {
     output
 }
 
+fn nested_result_names(document: &Document, binding: &str) -> Vec<String> {
+    fn collect(
+        selection: &riffdb_riffql_syntax::Selection,
+        binding: &str,
+        out: &mut BTreeSet<String>,
+    ) {
+        for field in &selection.fields {
+            let Some(nested) = &field.nested else {
+                continue;
+            };
+            if field
+                .source
+                .value
+                .0
+                .first()
+                .is_some_and(|name| name.value.as_str() == binding)
+            {
+                let output_name = field
+                    .alias
+                    .as_ref()
+                    .map_or(binding, |alias| alias.value.as_str());
+                out.insert(output_name.to_owned());
+            }
+            collect(nested, binding, out);
+        }
+    }
+
+    let mut names = BTreeSet::new();
+    collect(&document.body.selection, binding, &mut names);
+    names.into_iter().collect()
+}
+
 fn collect_selected(selection: &FieldSelection, output: &mut BTreeMap<String, BTreeSet<String>>) {
     let Some(nested) = &selection.nested else {
         return;
@@ -4701,12 +4737,20 @@ fn collect_selected(selection: &FieldSelection, output: &mut BTreeMap<String, BT
     let Some(binding) = selection.source.value.0.first() else {
         return;
     };
-    let fields = output.entry(binding.value.as_str().to_owned()).or_default();
+    let selected = nested
+        .fields
+        .iter()
+        .filter(|field| field.nested.is_none())
+        .filter_map(|field| path_field(&field.source.value))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    output
+        .entry(binding.value.as_str().to_owned())
+        .or_default()
+        .extend(selected);
     for field in &nested.fields {
-        if field.nested.is_none()
-            && let Some(name) = path_field(&field.source.value)
-        {
-            fields.insert(name.to_owned());
+        if field.nested.is_some() {
+            collect_selected(field, output);
         }
     }
 }

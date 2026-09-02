@@ -422,6 +422,13 @@ fn charge_symbolic_record(
         charge.bytes(name.len())?;
         charge.nested(value)?;
     }
+    for (name, rows) in record.nested() {
+        charge.bytes(name.len())?;
+        charge.fields(rows.len())?;
+        for row in rows {
+            charge_symbolic_record(charge, row)?;
+        }
+    }
     for name in record.exact_decimals().keys() {
         charge.bytes(name.len())?;
         charge.add(18)?;

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# req: OQ-114, OQ-115
+set -euo pipefail
+
+cargo +1.97.0 test -p riffdb-storage-memory \
+  expansion_memory_matches_independent_oracle \
+  --all-features
+cargo +1.97.0 test -p riffdb-storage-redb \
+  expansion_redb_matches_independent_oracle \
+  --all-features

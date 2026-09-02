@@ -1335,6 +1335,7 @@ impl ExecuteSymbolicQueryRequest {
 pub struct SymbolicResultRecord {
     entity: Arc<str>,
     fields: BTreeMap<Arc<str>, CanonicalValue>,
+    nested: BTreeMap<Arc<str>, Vec<SymbolicResultRecord>>,
     exact_decimals: BTreeMap<Arc<str>, ExactDecimalResult>,
     exact_means: BTreeMap<Arc<str>, ExactMeanResult>,
 }
@@ -1343,6 +1344,7 @@ pub struct SymbolicResultRecord {
 pub type SymbolicResultRecordParts = (
     Arc<str>,
     BTreeMap<Arc<str>, CanonicalValue>,
+    BTreeMap<Arc<str>, Vec<SymbolicResultRecord>>,
     BTreeMap<Arc<str>, ExactDecimalResult>,
     BTreeMap<Arc<str>, ExactMeanResult>,
 );
@@ -1398,10 +1400,14 @@ impl ExactMeanResult {
 
 impl SymbolicResultRecord {
     fn from_row(row: QueryRow) -> Self {
-        let (entity, fields) = row.into_parts();
+        let (entity, fields, nested) = row.into_parts();
         Self {
             entity,
             fields,
+            nested: nested
+                .into_iter()
+                .map(|(name, rows)| (name, rows.into_iter().map(Self::from_row).collect()))
+                .collect(),
             exact_decimals: BTreeMap::new(),
             exact_means: BTreeMap::new(),
         }
@@ -1439,6 +1445,7 @@ impl SymbolicResultRecord {
         Self {
             entity,
             fields,
+            nested: BTreeMap::new(),
             exact_decimals,
             exact_means,
         }
@@ -1454,6 +1461,24 @@ impl SymbolicResultRecord {
         Self {
             entity,
             fields,
+            nested: BTreeMap::new(),
+            exact_decimals: BTreeMap::new(),
+            exact_means: BTreeMap::new(),
+        }
+    }
+
+    /// Test-only constructor for nested expansion carriage fixtures.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[doc(hidden)]
+    pub fn from_nested_for_test(
+        entity: Arc<str>,
+        fields: BTreeMap<Arc<str>, CanonicalValue>,
+        nested: BTreeMap<Arc<str>, Vec<Self>>,
+    ) -> Self {
+        Self {
+            entity,
+            fields,
+            nested,
             exact_decimals: BTreeMap::new(),
             exact_means: BTreeMap::new(),
         }
@@ -1470,6 +1495,7 @@ impl SymbolicResultRecord {
         Self {
             entity,
             fields,
+            nested: BTreeMap::new(),
             exact_decimals: exact_decimals
                 .into_iter()
                 .map(|(name, (coefficient, scale))| {
@@ -1493,6 +1519,7 @@ impl SymbolicResultRecord {
         Self {
             entity,
             fields: BTreeMap::new(),
+            nested: BTreeMap::new(),
             exact_decimals: BTreeMap::new(),
             exact_means: BTreeMap::from([(
                 name,
@@ -1517,6 +1544,12 @@ impl SymbolicResultRecord {
         &self.fields
     }
 
+    /// Nested expansion fields in canonical name and driver order.
+    #[must_use]
+    pub const fn nested(&self) -> &BTreeMap<Arc<str>, Vec<SymbolicResultRecord>> {
+        &self.nested
+    }
+
     /// Full-width decimal fields in canonical name order.
     #[must_use]
     pub const fn exact_decimals(&self) -> &BTreeMap<Arc<str>, ExactDecimalResult> {
@@ -1535,6 +1568,7 @@ impl SymbolicResultRecord {
         (
             self.entity,
             self.fields,
+            self.nested,
             self.exact_decimals,
             self.exact_means,
         )
@@ -3484,6 +3518,7 @@ fn vector_projection_response(
             (fields.len() == names.len()).then_some(SymbolicResultRecord {
                 entity: Arc::from(step.entity()),
                 fields,
+                nested: BTreeMap::new(),
                 exact_decimals: BTreeMap::new(),
                 exact_means: BTreeMap::new(),
             })
@@ -4779,6 +4814,7 @@ fn tokenized_result_response(
             (fields.len() == field_names.len()).then_some(SymbolicResultRecord {
                 entity: Arc::from(step.entity()),
                 fields,
+                nested: BTreeMap::new(),
                 exact_decimals: BTreeMap::new(),
                 exact_means: BTreeMap::new(),
             })
@@ -4841,6 +4877,7 @@ fn exact_result_response(
             (fields.len() == field_names.len()).then_some(SymbolicResultRecord {
                 entity: Arc::from(step.entity()),
                 fields,
+                nested: BTreeMap::new(),
                 exact_decimals: BTreeMap::new(),
                 exact_means: BTreeMap::new(),
             })
@@ -4874,6 +4911,7 @@ fn exact_result_response(
                 Arc::from(measure.alias.value.as_str()),
                 CanonicalValue::U64(exact_total),
             )]),
+            nested: BTreeMap::new(),
             exact_decimals: BTreeMap::new(),
             exact_means: BTreeMap::new(),
         }),
@@ -4926,6 +4964,7 @@ fn exact_predicate_result_response(
             (fields.len() == field_names.len()).then_some(SymbolicResultRecord {
                 entity: Arc::from(step.entity()),
                 fields,
+                nested: BTreeMap::new(),
                 exact_decimals: BTreeMap::new(),
                 exact_means: BTreeMap::new(),
             })
@@ -4958,6 +4997,7 @@ fn exact_predicate_result_response(
                 Arc::from(measure.alias.value.as_str()),
                 CanonicalValue::U64(exact_total),
             )]),
+            nested: BTreeMap::new(),
             exact_decimals: BTreeMap::new(),
             exact_means: BTreeMap::new(),
         }),
@@ -5183,6 +5223,7 @@ fn hash_observation_row(bytes: &mut Vec<u8>, row: &SymbolicResultRecord) -> Opti
     let count = row
         .fields()
         .len()
+        .checked_add(row.nested().len())?
         .checked_add(row.exact_decimals().len())?
         .checked_add(row.exact_means().len())?;
     bytes.extend_from_slice(&u32::try_from(count).ok()?.to_be_bytes());
@@ -5204,6 +5245,14 @@ fn hash_observation_row(bytes: &mut Vec<u8>, row: &SymbolicResultRecord) -> Opti
         bytes.extend_from_slice(&value.coefficient().to_be_bytes());
         bytes.push(value.scale());
         bytes.extend_from_slice(&value.count().to_be_bytes());
+    }
+    for (name, rows) in row.nested() {
+        push_observation_bytes(bytes, name.as_bytes())?;
+        bytes.push(4);
+        bytes.extend_from_slice(&u32::try_from(rows.len()).ok()?.to_be_bytes());
+        for nested in rows {
+            hash_observation_row(bytes, nested)?;
+        }
     }
     Some(())
 }
@@ -7758,6 +7807,7 @@ mod reimport_observation_tests {
                     CanonicalValue::string(title).expect("title"),
                 ),
             ]),
+            nested: BTreeMap::new(),
             exact_decimals: BTreeMap::new(),
             exact_means: BTreeMap::new(),
         };

@@ -267,7 +267,13 @@ return block must nest the target binding directly below its driver binding.
 
 Expansion structure is immutable compiler identity. Generated clients, MCP
 tools, and application callers still submit only the declared business
-parameters.
+parameters. Memory and redb execute every target access inside the driver's
+one authorized snapshot and release a result only after every driver's bounded
+target set is complete. Row and field policy run before a target can affect
+membership, order, count, or nesting. Generated Rust, Go, TypeScript, and
+Python clients expose the nested list as a typed field; gRPC, MCP, and CLI use
+the same name-addressed list-of-record carriage. A target has no independent
+cursor: paging remains on the driver binding.
 
 A candidate source may instead name a compatible contract `pattern_index` and
 one compiled exact pattern predicate. That source is supplied by one ready,
