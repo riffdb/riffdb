@@ -59,8 +59,40 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+  test-partition-coverage:
+    name: Test partition coverage
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt,clippy
+      - name: Cache Cargo registry
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cargo/registry
+          key: cargo-registry-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock') }}
+      - name: Cache Cargo Git sources
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cargo/git
+          key: cargo-git-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock') }}
+      - name: Install pinned cargo-nextest
+        run: |
+          source scripts/tool-versions
+          cargo install --locked --version "$RIFFDB_CARGO_NEXTEST_VERSION" cargo-nextest
+      - name: Prove exactly-once target scheduling
+        run: ./scripts/check-test-partition-coverage
+
   test:
-    name: Tests
+    name: Tests (${{ matrix.partition }}/4)
+    needs: test-partition-coverage
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [1, 2, 3, 4]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -83,9 +115,13 @@ jobs:
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: target
-          key: target-${{ runner.os }}-${{ env.RUST_TARGET }}-${{ env.RUST_TOOLCHAIN }}-test-all-${{ hashFiles('Cargo.lock') }}
-      - name: Run tests
-        run: cargo test --workspace --all-features
+          key: target-${{ runner.os }}-${{ env.RUST_TARGET }}-${{ env.RUST_TOOLCHAIN }}-test-${{ matrix.partition }}-${{ hashFiles('Cargo.lock') }}
+      - name: Install pinned cargo-nextest
+        run: |
+          source scripts/tool-versions
+          cargo install --locked --version "$RIFFDB_CARGO_NEXTEST_VERSION" cargo-nextest
+      - name: Run whole-target partition
+        run: ./scripts/run-test-partition --mode whole-target --partition "${{ matrix.partition }}"
 
   docs:
     name: Documentation

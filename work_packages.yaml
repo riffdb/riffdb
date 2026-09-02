@@ -22628,6 +22628,18 @@ work_packages:
     interface_safety: CI layout is repository policy with no application-facing surface.
     scale: Partition count is fixed and discovered targets are hashed, so adding crates or
       tests requires no manual shard maintenance.
+  closure:
+    status: complete
+    completed_at: "2026-09-02"
+    requirements_satisfied: [TEST-003]
+    evidence: CI uses four exact nextest filtersets derived by SHA-256 whole-target assignment,
+      with the pinned tool version and slow-test timeout policy in repository configuration; the
+      workspace cargo-test path remains in ci-all. The coverage proof assigns all 300 current
+      Cargo test targets exactly once, including the riffdb-testkit and riffdb-server root targets.
+      The retained v1 receipt records the 334.92-second clean baseline, accepted partition
+      measurements, and the 1,200-second longest-partition target. A local four-job rehearsal
+      passed partitions 1 through 3 concurrently and partition 4 in isolation after shared-host
+      timing contention; the combined package acceptance and ci-all merge battery both pass.
   human_review_triggers: *id0184
 
 - id: WP-766

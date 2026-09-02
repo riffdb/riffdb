@@ -1,0 +1,87 @@
+{
+  "schema": "riffdb.ci-wall-time/v1",
+  "package": "WP-765",
+  "measured_at": "2026-09-01",
+  "longest_partition_target_seconds": 1200,
+  "target_is_disclosure_not_gate": true,
+  "baseline": {
+    "revision": "ae5987a6ff5e4e1ba69281ff484ae2514ea4154f",
+    "command": "cargo +1.97.0 test --workspace --all-features",
+    "clean_target_directory": true,
+    "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+    "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+    "host": "Linux x86_64, 32 logical processors",
+    "compiler_cache": "disabled",
+    "elapsed_seconds": 334.92,
+    "maximum_resident_kib": 1432980,
+    "exit_status": 0,
+    "compiled_target_repeat": {
+      "elapsed_seconds": 217.01,
+      "maximum_resident_kib": 333480,
+      "exit_status": 0,
+      "comparison_scope": "same compiled target directory used for the native-hash partition preflight"
+    }
+  },
+  "native_hash_preflight": {
+    "measured_at": "2026-09-01",
+    "revision": "ae5987a6ff5e4e1ba69281ff484ae2514ea4154f",
+    "cargo_test_targets": 295,
+    "root_test_targets": 52,
+    "riffdb_testkit_root_targets": 30,
+    "riffdb_server_root_targets": 6,
+    "runnable_test_cases": 4525,
+    "runnable_test_cases_scheduled_exactly_once": true,
+    "targets_spanning_native_hash_partitions": 238,
+    "targets_without_a_runnable_non_ignored_test": 17,
+    "targets_not_scheduled_exactly_once": 255,
+    "harness_false_test_targets": 5,
+    "harness_false_adapter": "scripts/nextest-harnessless",
+    "harness_false_adapter_probe": "full_recovery_matrix and contract_migration_gate_a passed as one synthetic nextest test each",
+    "result": "historical native-hash preflight; rejected because it splits Cargo test targets across jobs"
+  },
+  "whole_target_hash_preflight": {
+    "measured_at": "2026-09-02",
+    "algorithm": "SHA-256(binary ID), first 64 bits big-endian modulo four",
+    "targets_scheduled_exactly_once": true,
+    "partition_target_counts": [79, 67, 71, 78],
+    "partition_runnable_test_counts": [1047, 1060, 1233, 1185],
+    "compiled_target_elapsed_seconds": [19, 61, 9, 50],
+    "longest_partition": 2,
+    "longest_elapsed_seconds": 61,
+    "within_disclosure_target": true,
+    "result": "accepted whole-target assignment used by CI through exact nextest filtersets"
+  },
+  "partitions": {
+    "status": "accepted whole-target SHA-256 interpretation",
+    "preflight_scope": "runtime from one already compiled clean-revision target directory; directly comparable to baseline.compiled_target_repeat, not to the clean-build baseline",
+    "measurements": [
+      {
+        "partition": 1,
+        "runnable_tests": 1047,
+        "elapsed_seconds": 19,
+        "exit_status": 0
+      },
+      {
+        "partition": 2,
+        "runnable_tests": 1060,
+        "elapsed_seconds": 61,
+        "exit_status": 0
+      },
+      {
+        "partition": 3,
+        "runnable_tests": 1233,
+        "elapsed_seconds": 9,
+        "exit_status": 0
+      },
+      {
+        "partition": 4,
+        "runnable_tests": 1185,
+        "elapsed_seconds": 50,
+        "exit_status": 0
+      }
+    ],
+    "longest_preflight_partition": 2,
+    "longest_preflight_elapsed_seconds": 61,
+    "within_disclosure_target": true
+  }
+}

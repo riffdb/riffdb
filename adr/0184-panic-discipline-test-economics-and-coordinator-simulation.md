@@ -183,9 +183,11 @@ authored, which ADR-0179 decides.
 ### 4. Partition the required test job under cargo-nextest
 
 SPEC 18.2's "Unit and integration" job runs under cargo-nextest with exactly
-four fixed partitions using nextest's hash-based partitioning, one job per
-partition, on the pinned toolchain. Each partition builds the workspace test
-targets once and runs its share. The root `[[test]]` targets remain
+four fixed whole-target partitions, one job per partition, on the pinned
+toolchain. A test target's canonical nextest binary ID is assigned by the
+first eight bytes of its SHA-256 digest modulo four; each job passes the
+resulting exact binary-ID filterset to nextest. No target is split across jobs.
+The root `[[test]]` targets remain
 explicit targets in their owning crate manifests, unchanged, and are
 scheduled by nextest like every other target; `scripts/check-test-partition-coverage`
 enumerates every test target from `cargo metadata` and proves each is

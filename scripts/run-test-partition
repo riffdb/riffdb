@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# req: TEST-003
+set -euo pipefail
+
+usage() {
+  printf '%s\n' 'usage: run-test-partition --mode native|whole-target --partition 1..4 [--dry-run]' >&2
+}
+
+mode=""
+partition=""
+dry_run=false
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --mode)
+      [[ $# -ge 2 ]] || { usage; exit 2; }
+      mode="$2"
+      shift 2
+      ;;
+    --partition)
+      [[ $# -ge 2 ]] || { usage; exit 2; }
+      partition="$2"
+      shift 2
+      ;;
+    --dry-run)
+      dry_run=true
+      shift
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+if [[ "$mode" != "native" && "$mode" != "whole-target" ]]; then
+  usage
+  exit 2
+fi
+if [[ ! "$partition" =~ ^[1-4]$ ]]; then
+  usage
+  exit 2
+fi
+
+script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo_root="${RIFFDB_PARTITION_ROOT:-$(git rev-parse --show-toplevel)}"
+cd "$repo_root"
+
+command=(cargo nextest run --locked --workspace --all-features --profile ci)
+if [[ "$mode" == "native" ]]; then
+  command+=(--partition "hash:${partition}/4")
+else
+  filter="$(RIFFDB_PARTITION_ROOT="$repo_root" "$script_root/scripts/check-test-partition-coverage" --target-filter "$partition")"
+  command+=(--filterset "$filter")
+fi
+
+if [[ "$dry_run" == true ]]; then
+  printf 'mode=%s partition=%s command=' "$mode" "$partition"
+  printf '%q ' "${command[@]}"
+  printf '\n'
+  exit 0
+fi
+
+started_at="$(date +%s)"
+set +e
+"${command[@]}"
+status=$?
+set -e
+finished_at="$(date +%s)"
+elapsed_seconds=$((finished_at - started_at))
+
+summary="Partition ${partition}/4 (${mode}): ${elapsed_seconds}s, exit ${status}"
+printf '%s\n' "$summary"
+if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+  printf -- '- %s\n' "$summary" >> "$GITHUB_STEP_SUMMARY"
+fi
+
+exit "$status"
