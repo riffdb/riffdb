@@ -22919,7 +22919,8 @@ work_packages:
   allowed_paths: [work_packages.yaml, examples/**, evaluations/**, clients/**, fixtures/**,
     tests/**, scripts/**, release/evidence/**, docs/**,
     crates/riffdb-cli/src/generated/app.rs,
-    crates/riffdb-service/src/query_discovery_operations.rs]
+    crates/riffdb-service/src/query_discovery_operations.rs,
+    crates/riffdb-api-mcp/src/generated/service_backend.rs]
   deliverables:
   - Retained corpus of TicketDesk ticket page with comments per ticket, MLflow runs with tags per
     run, OpenFGA objects with relations per object, each compiled and executed through Rust, Go,
