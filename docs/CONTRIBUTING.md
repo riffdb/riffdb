@@ -142,6 +142,9 @@ unproven.
 | `./scripts/check-requirement-coverage [--report] [--json]` | Check that every requirement is claimed by a package or proven by a tag |
 | `./scripts/governance-cost [--since <date>] [--range a..b] [--json]` | Measure governance lines against all other changed lines |
 | `./scripts/ci-all` | The full battery, required at merge |
+| `./scripts/check-three-places --base <ref>` | Reject handwritten adapter edits outside `src/generated/` when Protobuf or the public operation registry changes |
+| `./scripts/generate-operation-adapters --check` | Verify generated public adapters and the registry-derived driver drift corpus |
+| `./scripts/generate-query-clients --check` | Verify the canonical generation model, checked-in templates, and generated application clients |
 
 `./scripts/acceptance` runs the path-triggered checks itself. Three of them are
 worth knowing by name, because each exists for a failure that otherwise lands

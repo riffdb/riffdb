@@ -1,0 +1,151 @@
+use riffdb_client_rust::generated::{GeneratedEventConsumer, GeneratedLiveQuery};
+use riffdb_client_rust::{ApplicationEvent, ApplicationEventCheckpoint, ApplicationEventConsumer, ApplicationEventConsumerPublicStatus, ApplicationEventMutationResult, ApplicationEventProgressCursor, ApplicationLiveQueryUpdate, ApplicationReactiveOperation, EventConsumerOptions, LiveQueryCheckpoint, LiveQueryCursor, TypedContextualBatch, TypedContextualWorkItem, TypedEventBatch, TypedLiveQueryReset, TypedLiveQuerySnapshot, TypedLiveQueryStream};
+{% for reactive in languages.rust.reactive_modules %}
+pub const {{ reactive.constant }}_REACTIVE_MODULE_HASH: [u8; 32] = [{{ reactive.hash_bytes }}];
+{% for operation in reactive.operations %}{% if operation.kind == "stream" %}#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct {{ operation.name }}Params {
+{% for parameter in operation.parameters.fields %}    pub {{ parameter.name }}: {{ parameter.type }},
+{% endfor %}}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct {{ operation.name }}Consumer {
+    pub parameters: {{ operation.name }}Params,
+    pub consumer_name: String,
+}
+{% for event in operation.events %}#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct {{ operation.name }}{{ event.name }} {
+{% for field in event.fields %}    pub {{ field.name }}: {{ field.type }},
+{% endfor %}}
+
+{% endfor %}#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum {{ operation.name }}Event {
+{% for event in operation.events %}    {{ event.name }}({{ operation.name }}{{ event.name }}),
+{% endfor %}}
+pub type {{ operation.name }}Delivery = riffdb_client_rust::TypedEventDelivery<{{ operation.name }}Event>;
+impl GeneratedEventConsumer for {{ operation.name }}Consumer {
+    type Event = {{ operation.name }}Event;
+    fn event_consumer(self) -> Result<ApplicationEventConsumer, ApplicationClientError> {
+        let mut parameters = BTreeMap::new();
+{% for parameter in operation.parameters.fields %}        parameters.insert({{ parameter.wire_name }}.to_owned(), {{ parameter.encode }});
+{% endfor %}        ApplicationEventConsumer::new(ApplicationReactiveOperation::new({{ reactive.constant }}_REACTIVE_MODULE_HASH, {{ operation.wire_name }}, parameters)?, self.consumer_name)
+    }
+    fn decode_event(event: ApplicationEvent) -> Result<Self::Event, ApplicationClientError> {
+        let mut fields = event.fields;
+        let decoded = match event.name.as_str() {
+{% for event in operation.events %}            {{ event.wire_name }} => {{ operation.name }}Event::{{ event.name }}({{ operation.name }}{{ event.name }} {
+{% for field in event.fields %}                {{ field.name }}: {{ field.decoder }}(take_application_value(&mut fields, {{ field.wire_name }})?)?,
+{% endfor %}            }),
+{% endfor %}            _ => return Err(ApplicationClientError::InvalidResponse),
+        };
+        if !fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+        Ok(decoded)
+    }
+}
+impl {{ reactive.client_name }} {
+    pub async fn next_{{ operation.method }}(&mut self, consumer: {{ operation.name }}Consumer, options: EventConsumerOptions) -> Result<TypedEventBatch<{{ operation.name }}Event>, ApplicationClientError> {
+        self.client.consume_generated_events(consumer, options, &self.metadata).await
+    }
+    pub async fn ack_{{ operation.method }}(&mut self, consumer: &{{ operation.name }}Consumer, delivery: &{{ operation.name }}Delivery) -> Result<ApplicationEventMutationResult, ApplicationClientError> {
+        let identity = consumer.clone().event_consumer()?;
+        self.client.acknowledge_event(&identity, delivery.evidence(), &self.metadata).await
+    }
+    pub async fn nack_{{ operation.method }}(&mut self, consumer: &{{ operation.name }}Consumer, delivery: &{{ operation.name }}Delivery, retry_delay_nanos: u64) -> Result<ApplicationEventMutationResult, ApplicationClientError> {
+        let identity = consumer.clone().event_consumer()?;
+        self.client.negative_acknowledge_event(&identity, delivery.evidence(), retry_delay_nanos, &self.metadata).await
+    }
+    pub async fn seek_{{ operation.method }}(&mut self, consumer: &{{ operation.name }}Consumer, checkpoint: ApplicationEventCheckpoint) -> Result<ApplicationEventMutationResult, ApplicationClientError> {
+        let identity = consumer.clone().event_consumer()?;
+        self.client.seek_event_consumer(&identity, checkpoint, &self.metadata).await
+    }
+    pub async fn seek_protected_{{ operation.method }}(&mut self, consumer: &{{ operation.name }}Consumer, cursor: ApplicationEventProgressCursor) -> Result<ApplicationEventMutationResult, ApplicationClientError> {
+        let identity = consumer.clone().event_consumer()?;
+        self.client.seek_protected_event_consumer(&identity, cursor, &self.metadata).await
+    }
+    pub async fn {{ operation.method }}_status(&mut self, consumer: &{{ operation.name }}Consumer) -> Result<Option<ApplicationEventConsumerPublicStatus>, ApplicationClientError> {
+        let identity = consumer.clone().event_consumer()?;
+        self.client.event_consumer_status(&identity, &self.metadata).await
+    }
+}
+{% if not loop.last %}
+{% endif %}{% elif operation.kind == "watch" %}#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct {{ operation.name }}Params {
+{% for parameter in operation.parameters.fields %}    pub {{ parameter.name }}: {{ parameter.type }},
+{% endfor %}}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum {{ operation.name }}Update {
+    Snapshot(TypedLiveQuerySnapshot<{{ operation.query }}Result>),
+    Patch(riffdb_client_rust::LiveQueryPatch),
+    Reset(TypedLiveQueryReset<{{ operation.query }}Result>),
+    Checkpoint(riffdb_client_rust::LiveQueryCheckpoint),
+    Terminal(riffdb_client_rust::LiveQueryTerminal),
+}
+impl GeneratedLiveQuery for {{ operation.name }}Params {
+    type Update = {{ operation.name }}Update;
+    fn live_operation(self) -> Result<ApplicationReactiveOperation, ApplicationClientError> {
+        let mut parameters = BTreeMap::new();
+{% for parameter in operation.parameters.fields %}        parameters.insert({{ parameter.wire_name }}.to_owned(), {{ parameter.encode }});
+{% endfor %}        ApplicationReactiveOperation::new({{ reactive.constant }}_REACTIVE_MODULE_HASH, {{ operation.wire_name }}, parameters)
+    }
+    fn decode_update(update: ApplicationLiveQueryUpdate) -> Result<Self::Update, ApplicationClientError> {
+        match update {
+            ApplicationLiveQueryUpdate::Snapshot { result, cursor, history_incarnation, application_head } => Ok({{ operation.name }}Update::Snapshot(TypedLiveQuerySnapshot { result: <{{ operation.query }}Query as GeneratedQuery>::decode_result(result)?, checkpoint: LiveQueryCheckpoint { history_incarnation, application_head, cursor } })),
+            ApplicationLiveQueryUpdate::Patch(value) => Ok({{ operation.name }}Update::Patch(value)),
+            ApplicationLiveQueryUpdate::Reset { reason, result, cursor, history_incarnation, application_head } => Ok({{ operation.name }}Update::Reset(TypedLiveQueryReset { reason, result: <{{ operation.query }}Query as GeneratedQuery>::decode_result(result)?, checkpoint: LiveQueryCheckpoint { history_incarnation, application_head, cursor } })),
+            ApplicationLiveQueryUpdate::Checkpoint(value) => Ok({{ operation.name }}Update::Checkpoint(value)),
+            ApplicationLiveQueryUpdate::Terminal(value) => Ok({{ operation.name }}Update::Terminal(value)),
+        }
+    }
+}
+impl {{ reactive.client_name }} {
+    pub async fn watch_{{ operation.method }}(&mut self, parameters: {{ operation.name }}Params, cursor: Option<LiveQueryCursor>) -> Result<TypedLiveQueryStream<{{ operation.name }}Params>, ApplicationClientError> {
+        self.client.watch_generated_query(parameters, cursor, &self.metadata).await
+    }
+}
+{% if not loop.last %}
+{% endif %}{% elif operation.kind == "subscription" %}#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct {{ operation.name }}Params {
+{% for parameter in operation.parameters.fields %}    pub {{ parameter.name }}: {{ parameter.type }},
+{% endfor %}}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct {{ operation.name }}Consumer {
+    pub parameters: {{ operation.name }}Params,
+    pub consumer_name: String,
+}
+pub type {{ operation.name }}Item = TypedContextualWorkItem<{{ operation.stream }}Event>;
+impl GeneratedEventConsumer for {{ operation.name }}Consumer {
+    type Event = {{ operation.stream }}Event;
+    fn event_consumer(self) -> Result<ApplicationEventConsumer, ApplicationClientError> {
+        let mut parameters = BTreeMap::new();
+{% for parameter in operation.parameters.fields %}        parameters.insert({{ parameter.wire_name }}.to_owned(), {{ parameter.encode }});
+{% endfor %}        ApplicationEventConsumer::new(ApplicationReactiveOperation::new({{ reactive.constant }}_REACTIVE_MODULE_HASH, {{ operation.wire_name }}, parameters)?, self.consumer_name)
+    }
+    fn decode_event(event: ApplicationEvent) -> Result<Self::Event, ApplicationClientError> {
+        <{{ operation.stream }}Consumer as GeneratedEventConsumer>::decode_event(event)
+    }
+}
+impl {{ reactive.client_name }} {
+    pub async fn next_{{ operation.method }}(&mut self, consumer: {{ operation.name }}Consumer, maximum_wait_nanos: u64) -> Result<TypedContextualBatch<{{ operation.stream }}Event>, ApplicationClientError> {
+        self.client.consume_generated_contextual(consumer, maximum_wait_nanos, &self.metadata).await
+    }
+    pub async fn ack_{{ operation.method }}(&mut self, consumer: &{{ operation.name }}Consumer, item: &{{ operation.name }}Item) -> Result<ApplicationEventMutationResult, ApplicationClientError> {
+        let identity = consumer.clone().event_consumer()?;
+        self.client.acknowledge_contextual_item(&identity, item.evidence(), &self.metadata).await
+    }
+    pub async fn nack_{{ operation.method }}(&mut self, consumer: &{{ operation.name }}Consumer, item: &{{ operation.name }}Item, retry_delay_nanos: u64) -> Result<ApplicationEventMutationResult, ApplicationClientError> {
+        let identity = consumer.clone().event_consumer()?;
+        self.client.negative_acknowledge_contextual_item(&identity, item.evidence(), retry_delay_nanos, &self.metadata).await
+    }
+    pub async fn {{ operation.method }}_status(&mut self, consumer: &{{ operation.name }}Consumer) -> Result<Option<ApplicationEventConsumerPublicStatus>, ApplicationClientError> {
+        let identity = consumer.clone().event_consumer()?;
+        self.client.contextual_subscription_status(&identity, &self.metadata).await
+    }
+{% for reaction in operation.reactions %}    pub async fn react_{{ reaction.method }}(&mut self, consumer: &{{ operation.name }}Consumer, item: &{{ operation.name }}Item, command: &{{ reaction.command }}Input) -> Result<TypedCommandResult<{{ reaction.command }}Outcome>, ApplicationClientError> {
+        let identity = consumer.clone().event_consumer()?;
+        let reaction = item.evidence().available_reactions.iter().find(|reaction| reaction.name == {{ reaction.wire_name }} && reaction.command_name == {{ reaction.command_wire_name }}).ok_or(ApplicationClientError::InvalidResponse)?;
+        self.client.execute_generated_contextual_reaction(&identity, reaction, command, &self.metadata).await.map_err(Into::into)
+    }
+{% endfor %}}
+{% if not loop.last %}
+{% endif %}{% endif %}{% endfor %}{% endfor %}

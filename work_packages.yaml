@@ -21992,6 +21992,18 @@ work_packages:
       values through the one driver protocol core.
     scale: Not applicable; generation cost is linear in module size and runs outside any daemon
       or client process.
+  closure:
+    status: complete
+    completed_at: "2026-09-02"
+    requirements_satisfied: [GEN-004, GEN-005, GEN-006]
+    evidence: Rust, Go, TypeScript, and Python now render checked-in minijinja templates from one
+      ordered canonical JSON model with strict undefined variables and autoescape disabled; the
+      named architecture and golden proofs reproduce every language output and the shipped client
+      packages byte for byte. corpus-v2 covers all 57 registry operations and both request bounds,
+      and the named conformance proof executes Rust-client, driver-host socket, Python, Go, and
+      TypeScript cells and observes one identical closed error class per row. The three-places
+      guard and its self-test are wired into CI, downstream adapters compile unchanged, the
+      handbook documents the ownership rule, package acceptance passes, and ci-all passes.
   human_review_triggers: *id0179
 
 - id: WP-754

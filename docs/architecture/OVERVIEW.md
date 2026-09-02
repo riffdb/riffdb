@@ -13,6 +13,32 @@ semantics or access storage directly. The shared service performs schema-bound
 materialization, authentication, authorization, catalog selection, limits, and
 redaction.
 
+### Generated public surfaces
+
+The public operation registry is the single declarative inventory for gRPC,
+MCP, CLI, and the Rust client. Adding an operation has three handwritten code
+locations: the Protobuf source; the registry declaration together with its
+API-neutral service implementation; and the affected handbook page. Adapter
+validation, conversion, dispatch, envelopes, and typed facades live under
+`src/generated/` and are refreshed by `scripts/generate-operation-adapters`.
+`scripts/check-three-places --base <revision>` rejects a registry or Protobuf
+change that also hand-edits an adapter outside its generated directory.
+
+Shared client headers for Rust, Go, TypeScript, and Python render checked-in
+templates under `templates/generators/` from one compiler-owned, canonically
+ordered JSON model. Templates run offline with strict undefined variables and
+autoescaping disabled; application values never reach them. The frozen model
+and complete language outputs are checked by
+`scripts/generate-query-clients --check`.
+The shared `fixtures/driver/corpus-v2.json` is generated from the operation
+registry and pins the inclusive request and response limits, their rejected
+successors, and the closed error classes used by driver conformance. A locally
+rejected request successor is `request_too_large`; a rejected response
+successor is `response_too_large`, so every binding preserves which side of
+the exchange exceeded its registry-owned bound. `scripts/driver-conformance`
+runs the offline Rust-client, driver-host socket, Python in-process, Go, and
+TypeScript corpus cells before starting its shared remote workload.
+
 ## Semantic core
 
 The contract compiler owns the transition from source syntax to typed IR and

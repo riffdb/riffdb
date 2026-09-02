@@ -18,6 +18,7 @@ mod infallible_string_write;
 mod projection_result_set;
 mod python_generation;
 mod reactive_module;
+mod template_generation;
 mod tokenized_text_result_set;
 
 pub use application_manifest::{
@@ -64,6 +65,7 @@ pub use reactive_module::{
     canonicalize_reactive_source, compile_reactive_source, decode_and_validate_reactive_module,
     reactive_module_query_dependencies, reactive_query_catalog,
 };
+pub use template_generation::generate_canonical_generation_model;
 pub use tokenized_text_result_set::*;
 
 use riffdb_contract_ir::ContractBundle;

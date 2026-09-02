@@ -13,8 +13,9 @@ use riffdb_query_module::{
     ApplicationLock, ApplicationMigrationLockInput, ApplicationSourceManifest,
     GeneratedApplicationArtifact, GeneratedApplicationArtifactKind, NamedQuerySource, QueryModule,
     QueryModuleCandidate, QueryModuleName, QueryModuleVersion, compile_application_role,
-    compile_application_role_v2, generate_go_client, generate_mcp_commands, generate_mcp_tools,
-    generate_python_client, generate_rust_client, generate_typescript_client,
+    compile_application_role_v2, generate_canonical_generation_model, generate_go_client,
+    generate_mcp_commands, generate_mcp_tools, generate_python_client, generate_rust_client,
+    generate_typescript_client,
 };
 
 const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
@@ -157,6 +158,15 @@ fn main() {
         generate_rust_client(&module, &contract),
     )
     .expect("Rust fixture");
+    let generation_model = generate_canonical_generation_model(&module, &contract, &[]);
+    let mut generation_model_bytes =
+        serde_json::to_vec_pretty(&generation_model).expect("generation model JSON");
+    generation_model_bytes.push(b'\n');
+    fs::write(
+        output.join("fixtures/query-modules/ticketdesk.generation-model.json"),
+        generation_model_bytes,
+    )
+    .expect("generation model fixture");
     fs::write(
         output.join("clients/typescript/ticketdesk/client.ts"),
         generate_typescript_client(&module, &contract),

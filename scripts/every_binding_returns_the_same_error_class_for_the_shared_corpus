@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+cargo +1.97.0 test -p riffdb-driver-host --test registry_drift_corpus \
+    every_binding_returns_the_same_error_class_for_the_shared_corpus --all-features

@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
+# req: GEN-005
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+"$repo_root/scripts/generate-operation-adapters" --check
+cargo +1.97.0 test --quiet -p riffdb-driver-host \
+    --test registry_drift_corpus --all-features
 if [[ "$#" -eq 2 && "$1" == "--all-languages" && "$2" == "--row-policy" ]]; then
     exec "$repo_root/scripts/adapter-row-policy-acceptance" \
         --all-languages --domains better-auth,mlflow

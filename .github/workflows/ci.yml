@@ -199,6 +199,12 @@ jobs:
         run: ./scripts/check-adr-obligations
       - name: Check the ADR index
         run: ./scripts/adr-index --check
+      - name: Check the three hand-written operation places
+        if: github.event_name == 'pull_request'
+        run: ./scripts/check-three-places --base "${{ github.event.pull_request.base.sha }}"
+      - name: Self-test the three-places guard
+        if: github.event_name != 'pull_request'
+        run: ./scripts/check-three-places --self-test
       - name: Classify the change
         run: ./scripts/classify-change --json
 
