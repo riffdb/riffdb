@@ -161,7 +161,7 @@ autoescaping disabled, and deterministic iteration over ordered inputs. All four
 render one canonical JSON generation model derived from the `QueryModule` and
 `ContractBundle`; that model is itself a golden fixture. `minijinja` is chosen
 over `askama` because it needs no procedural macro, keeps templates as reviewable
-data files rather than compiled Rust, and is MIT licensed under the existing
+data files rather than compiled Rust, and is Apache-2.0 licensed under the existing
 `deny.toml` allowlist with default features disabled.
 
 ### 5. One drift corpus runs every binding
