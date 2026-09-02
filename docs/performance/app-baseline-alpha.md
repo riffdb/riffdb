@@ -181,6 +181,10 @@ Bank one clean host column with:
 the clean source tree, so an untracked output directory inside it fails the
 first scenario with `--require-stable requires an exact clean source tree`; the
 runner refuses an in-tree path rather than letting that happen mid-profile.
+Before the first measurement, the profile runner also verifies the nested
+app-baseline lock with Cargo's locked resolver. A stale lock is rejected before
+any scenario result is retained, rather than being rewritten by the first
+runner build and making the next clean-tree check fail.
 
 Use `--profile n1` and `--profile e2` on those hosts. Copy each
 `profile-fragment.json` and its reports beneath one evidence root, then assemble

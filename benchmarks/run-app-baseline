@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Application-shaped baseline: live PostgreSQL vs live riffdbd (public gRPC).
+# req: PERF-008, PERF-018
 set -euo pipefail
 export LC_ALL=C
 export TZ=UTC
@@ -109,7 +110,7 @@ if [[ "${1:-}" == "--self-test" ]]; then
     printf 'self-test: cargo test --workspace (dead-peer e2e enforced)\n'
     export RIFFDB_APP_BASELINE_RIFFDBD_BIN="$riffdbd_bin"
     export RUN_RIFFDB_DEAD_PEER=1
-    cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+    cargo +1.97.0 test --locked --manifest-path examples/app-baseline/Cargo.toml --workspace
     printf 'self-test: ok\n'
     exit 0
 fi

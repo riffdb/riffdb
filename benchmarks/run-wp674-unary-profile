@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Bank one host column of ADR-0142/0143's frozen unary corpus.
+# req: PERF-008, PERF-018
 set -euo pipefail
 export LC_ALL=C
 export TZ=UTC
@@ -33,6 +34,14 @@ done
 
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
+
+# Receipt mode executes each scenario in a fresh run, and every run requires a
+# clean source tree. Refuse a stale nested lock before the first measurement:
+# allowing Cargo to rewrite it while building the runner would make the second
+# scenario fail the clean-tree gate after the first result had already been
+# retained.
+cargo +1.97.0 metadata --locked --manifest-path examples/app-baseline/Cargo.toml \
+    --format-version 1 >/dev/null
 if ! git diff --quiet --ignore-submodules -- || \
    ! git diff --cached --quiet --ignore-submodules -- || \
    [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
