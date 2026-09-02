@@ -22909,7 +22909,7 @@ work_packages:
 
 - id: WP-771
   name: Refused-shape corpus acceptance and operator backlog ranking
-  tier: internal
+  tier: surface
   depends_on: [WP-769, WP-770]
   objective: Prove the previously refused application shapes compile and execute end to end
     through every generated binding, rewrite the relationship-composition limitations, and
