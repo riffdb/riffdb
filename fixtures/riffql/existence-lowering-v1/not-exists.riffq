@@ -1,0 +1,16 @@
+query MatchTags(
+    $scope: Experiment.scope,
+    $key: ExperimentTag.tag_key,
+    $digest: ExperimentTag.value_digest,
+    $limit: Limit<5000> = 1000
+) {
+    many experiments from Experiment
+        where scope == $scope
+        not exists ExperimentTag using by_tag_digest
+            where scope == $scope && tag_key == $key && value_digest == $digest
+        order by last_update_time desc, experiment_id asc
+        take $limit
+        else IntegrityFailure
+    return Found { experiments: experiments { experiment_id, last_update_time } }
+    outcomes Found | IntegrityFailure
+}

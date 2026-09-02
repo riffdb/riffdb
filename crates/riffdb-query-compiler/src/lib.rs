@@ -29,10 +29,10 @@ use riffdb_query_ir::{
     candidate_source_binding_name, resolve_query_surface, source_aggregate_semantic_identity,
 };
 use riffdb_riffql_syntax::{
-    AggregateFunction, BinaryOperator, Cardinality, Direction, Document, Expression,
-    FieldSelection, Literal, NullPlacement, Path, ProjectedFreshness,
-    RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1, RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1, Span,
-    Spanned, TypeReference, UnaryOperator,
+    AggregateFunction, BinaryOperator, CandidateBinding, CandidateSetExpression, CandidateSource,
+    Cardinality, Direction, Document, Expression, FieldSelection, Identifier, Literal,
+    NullPlacement, Path, ProjectedFreshness, RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1,
+    RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1, Span, Spanned, TypeReference, UnaryOperator,
 };
 use riffdb_types::{
     AggregateResultSchemaV1, AggregateSemanticIdentityV1, EXACT_TEXT_PROVIDER_STATE_SCHEMA_HASH_V1,
@@ -1166,6 +1166,8 @@ impl PlannerDiagnostic {
 pub enum OperationalOperatorKind {
     /// One-to-many bounded relational expansion.
     Expansion,
+    /// Root-local relationship existence lowered to candidate algebra.
+    Existence,
     /// Candidate-set algebra.
     CandidateSet,
     /// Ordinary indexed operational read.
@@ -1178,6 +1180,7 @@ impl OperationalOperatorKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Expansion => "expansion",
+            Self::Existence => "existence",
             Self::CandidateSet => "candidate_set",
             Self::IndexedRead => "indexed_read",
         }
@@ -1319,6 +1322,369 @@ fn planner_resolution_diagnostics(diagnostics: QueryDiagnostics) -> PlannerDiagn
     )
 }
 
+fn lower_existence_predicates(
+    document: &Document,
+    catalog: &SymbolicCatalog,
+) -> Result<Document, PlannerDiagnostics> {
+    if document
+        .body
+        .bindings
+        .iter()
+        .all(|binding| binding.existence.is_none())
+    {
+        return Ok(document.clone());
+    }
+
+    let mut lowered = document.clone();
+    for binding_index in 0..lowered.body.bindings.len() {
+        let Some(existence) = lowered.body.bindings[binding_index].existence.clone() else {
+            continue;
+        };
+        let binding = lowered.body.bindings[binding_index].clone();
+        if binding_index != 0 || binding.expansion.is_some() {
+            return Err(one(
+                PlannerDiagnosticCode::CandidateInvalid,
+                existence.span,
+                vec![binding.name.value.as_str().to_owned()],
+                "existence predicates are available only on the root binding",
+                None,
+            ));
+        }
+        if binding.cardinality.value != Cardinality::Many {
+            return Err(one(
+                PlannerDiagnosticCode::Cardinality,
+                existence.span,
+                vec![binding.name.value.as_str().to_owned()],
+                "existence predicates require a bounded many root binding",
+                None,
+            ));
+        }
+        let refusal_outcome = binding.absence_outcome.clone().ok_or_else(|| {
+            one(
+                PlannerDiagnosticCode::CandidateInvalid,
+                existence.span,
+                vec![binding.name.value.as_str().to_owned()],
+                "existence predicates require the root binding's declared refusal outcome",
+                None,
+            )
+        })?;
+        let root = catalog
+            .entity(binding.entity.value.as_str())
+            .ok_or_else(|| {
+                one(
+                    PlannerDiagnosticCode::TypeMismatch,
+                    binding.entity.span,
+                    vec![binding.entity.value.as_str().to_owned()],
+                    "unknown existence root entity",
+                    None,
+                )
+            })?;
+        let root_keys = root
+            .primary_key()
+            .iter()
+            .filter(|field| field.as_str() != root.partition_field())
+            .collect::<Vec<_>>();
+        let [root_key] = root_keys.as_slice() else {
+            return Err(one(
+                PlannerDiagnosticCode::CandidateInvalid,
+                existence.span,
+                vec![root.name().to_owned()],
+                "existence V1 requires one complete scalar root key",
+                None,
+            ));
+        };
+        let junction = catalog
+            .entity(existence.junction.value.as_str())
+            .ok_or_else(|| {
+                one(
+                    PlannerDiagnosticCode::TypeMismatch,
+                    existence.junction.span,
+                    vec![existence.junction.value.as_str().to_owned()],
+                    "unknown existence junction entity",
+                    None,
+                )
+            })?;
+        let relationships = junction
+            .relationships()
+            .filter(|relationship| {
+                relationship.target_entity() == root.name()
+                    && relationship.target_fields() == root.primary_key()
+            })
+            .collect::<Vec<_>>();
+        let [relationship] = relationships.as_slice() else {
+            return Err(one(
+                PlannerDiagnosticCode::CandidateInvalid,
+                existence.junction.span,
+                vec![junction.name().to_owned(), root.name().to_owned()],
+                "existence junction must declare one unambiguous relationship to the root key",
+                None,
+            ));
+        };
+        let Some(root_key_position) = relationship
+            .target_fields()
+            .iter()
+            .position(|field| field == *root_key)
+        else {
+            return Err(internal());
+        };
+        let junction_root_key = relationship
+            .source_fields()
+            .get(root_key_position)
+            .ok_or_else(internal)?;
+        let partition_is_local = relationship
+            .source_fields()
+            .iter()
+            .zip(relationship.target_fields())
+            .any(|(source, target)| {
+                source == junction.partition_field() && target == root.partition_field()
+            });
+        if !partition_is_local {
+            return Err(one(
+                PlannerDiagnosticCode::NonLocal,
+                existence.junction.span,
+                vec![junction.name().to_owned(), root.name().to_owned()],
+                "existence junction relationship must preserve the root partition",
+                None,
+            ));
+        }
+        let junction_index = junction
+            .index(existence.access.value.as_str())
+            .ok_or_else(|| {
+                one(
+                    PlannerDiagnosticCode::CandidateInvalid,
+                    existence.access.span,
+                    vec![
+                        junction.name().to_owned(),
+                        existence.access.value.as_str().to_owned(),
+                    ],
+                    "existence predicate must name one declared junction index",
+                    None,
+                )
+            })?;
+        if !junction_index
+            .fields()
+            .iter()
+            .chain(junction_index.cover_fields())
+            .any(|field| field == junction_root_key)
+        {
+            return Err(one(
+                PlannerDiagnosticCode::CandidateInvalid,
+                existence.access.span,
+                vec![junction.name().to_owned(), junction_root_key.clone()],
+                "existence junction index must carry the projected root key",
+                None,
+            ));
+        }
+        let junction_comparisons = comparisons(&existence.predicate.value);
+        if !candidate_index_is_complete_prefix(junction_index, &junction_comparisons) {
+            return Err(one(
+                PlannerDiagnosticCode::CandidateInvalid,
+                existence.predicate.span,
+                vec![junction.name().to_owned(), junction_index.name().to_owned()],
+                "existence predicate must bind one complete same-partition junction index prefix",
+                None,
+            ));
+        }
+        let partition_predicate =
+            partition_route_predicate(&binding.predicate, root.partition_field()).ok_or_else(
+                || {
+                    one(
+                        PlannerDiagnosticCode::NonLocal,
+                        binding.predicate.span,
+                        vec![root.name().to_owned(), root.partition_field().to_owned()],
+                        "existence root must carry one exact partition-parameter predicate",
+                        None,
+                    )
+                },
+            )?;
+        let root_comparisons = comparisons(&binding.predicate.value);
+        let root_index = existence_root_universe_index(root, &binding, &root_comparisons)
+            .ok_or_else(|| {
+                one(
+                    PlannerDiagnosticCode::CandidateInvalid,
+                    binding.predicate.span,
+                    vec![root.name().to_owned()],
+                    "existence root order must select one declared route-complete index universe",
+                    suggested_index(root, &root_comparisons, &binding),
+                )
+            })?;
+        let candidate_name = format!("__riffdb_exists_{binding_index}");
+        if document
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name.value.as_str() == candidate_name)
+            || document
+                .body
+                .candidates
+                .iter()
+                .any(|candidate| candidate.name.value.as_str() == candidate_name)
+            || document
+                .body
+                .bindings
+                .iter()
+                .any(|candidate| candidate.name.value.as_str() == candidate_name)
+        {
+            return Err(one(
+                PlannerDiagnosticCode::CandidateInvalid,
+                existence.span,
+                vec![candidate_name],
+                "query-local name collides with the compiler-owned existence binding",
+                None,
+            ));
+        }
+        let generated_name = Identifier::compiler_owned(&candidate_name).ok_or_else(internal)?;
+        let root_entity = binding.entity.clone();
+        let root_key_ident = Identifier::compiler_owned(root_key).ok_or_else(internal)?;
+        let junction_key_ident =
+            Identifier::compiler_owned(junction_root_key).ok_or_else(internal)?;
+        let positive = CandidateSource {
+            projected_key: Spanned {
+                value: Path(vec![
+                    root_entity.clone(),
+                    Spanned {
+                        value: root_key_ident.clone(),
+                        span: existence.span,
+                    },
+                ]),
+                span: existence.span,
+            },
+            access: Spanned {
+                value: Identifier::compiler_owned(root_index.name()).ok_or_else(internal)?,
+                span: existence.span,
+            },
+            predicate: partition_predicate,
+            span: existence.span,
+        };
+        let junction_source = CandidateSource {
+            projected_key: Spanned {
+                value: Path(vec![
+                    existence.junction.clone(),
+                    Spanned {
+                        value: junction_key_ident,
+                        span: existence.span,
+                    },
+                ]),
+                span: existence.span,
+            },
+            access: existence.access.clone(),
+            predicate: existence.predicate.clone(),
+            span: existence.span,
+        };
+        let expression = if existence.negated {
+            CandidateSetExpression::Difference {
+                positive,
+                negative: vec![junction_source],
+            }
+        } else {
+            CandidateSetExpression::Intersection(vec![positive, junction_source])
+        };
+        lowered.body.candidates.push(CandidateBinding {
+            name: Spanned {
+                value: generated_name.clone(),
+                span: existence.span,
+            },
+            root_key: Spanned {
+                value: Path(vec![
+                    root_entity,
+                    Spanned {
+                        value: root_key_ident.clone(),
+                        span: existence.span,
+                    },
+                ]),
+                span: existence.span,
+            },
+            expression,
+            within: u16::MAX,
+            refusal_outcome,
+            span: existence.span,
+        });
+        let membership = Spanned {
+            span: existence.span,
+            value: Expression::Binary {
+                operator: Spanned {
+                    value: BinaryOperator::In,
+                    span: existence.span,
+                },
+                left: Box::new(Spanned {
+                    span: existence.span,
+                    value: Expression::Path(Path(vec![Spanned {
+                        value: root_key_ident,
+                        span: existence.span,
+                    }])),
+                }),
+                right: Box::new(Spanned {
+                    span: existence.span,
+                    value: Expression::Path(Path(vec![Spanned {
+                        value: generated_name,
+                        span: existence.span,
+                    }])),
+                }),
+            },
+        };
+        lowered.body.bindings[binding_index].predicate = Spanned {
+            span: binding.predicate.span,
+            value: Expression::Binary {
+                operator: Spanned {
+                    value: BinaryOperator::And,
+                    span: existence.span,
+                },
+                left: Box::new(binding.predicate),
+                right: Box::new(membership),
+            },
+        };
+        lowered.body.bindings[binding_index].existence = None;
+    }
+    Ok(lowered)
+}
+
+fn partition_route_predicate(
+    expression: &Spanned<Expression>,
+    partition_field: &str,
+) -> Option<Spanned<Expression>> {
+    match &expression.value {
+        Expression::Binary {
+            operator,
+            left,
+            right,
+        } if operator.value == BinaryOperator::And => {
+            partition_route_predicate(left, partition_field)
+                .or_else(|| partition_route_predicate(right, partition_field))
+        }
+        Expression::Binary {
+            operator,
+            left,
+            right,
+        } if operator.value == BinaryOperator::Equal
+            && matches!(&left.value, Expression::Path(path) if path_field(path) == Some(partition_field))
+            && matches!(right.value, Expression::Parameter(_)) =>
+        {
+            Some(expression.clone())
+        }
+        _ => None,
+    }
+}
+
+fn existence_root_universe_index<'a>(
+    entity: &'a EntitySymbol,
+    binding: &riffdb_riffql_syntax::Binding,
+    comparisons: &[Comparison<'_>],
+) -> Option<&'a riffdb_query_ir::IndexSymbol> {
+    let order_fields = binding
+        .order
+        .iter()
+        .filter_map(|term| path_field(&term.path.value))
+        .collect::<Vec<_>>();
+    entity.indexes().find(|index| {
+        let Some(shape) = operational_access_shape(entity, index, comparisons, binding) else {
+            return false;
+        };
+        index.fields()[shape.order_start..]
+            .iter()
+            .map(String::as_str)
+            .eq(order_fields.iter().copied())
+    })
+}
+
 /// Resolves, type checks, authorizes, and plans one parsed query against one exact catalog.
 pub fn compile_query(
     document: &Document,
@@ -1332,6 +1698,8 @@ fn compile_query_inner(
     document: &Document,
     catalog: &SymbolicCatalog,
 ) -> Result<QueryAccessProgramV1, PlannerDiagnostics> {
+    let lowered = lower_existence_predicates(document, catalog)?;
+    let document = &lowered;
     reject_unlowered_aggregates(document)?;
     if let Some(family) = document
         .body
@@ -1375,6 +1743,13 @@ fn operational_refusal_class(
         .any(|binding| binding.expansion.is_some())
     {
         OperationalOperatorKind::Expansion
+    } else if document
+        .body
+        .bindings
+        .iter()
+        .any(|binding| binding.existence.is_some())
+    {
+        OperationalOperatorKind::Existence
     } else if !document.body.candidates.is_empty() {
         OperationalOperatorKind::CandidateSet
     } else {
@@ -1431,6 +1806,8 @@ fn compile_order_query_family_inner(
     document: &Document,
     catalog: &SymbolicCatalog,
 ) -> Result<OrderQueryFamilyV1, PlannerDiagnostics> {
+    let lowered = lower_existence_predicates(document, catalog)?;
+    let document = &lowered;
     let surface =
         resolve_query_surface(document, catalog).map_err(planner_resolution_diagnostics)?;
     let families = document
@@ -1566,6 +1943,8 @@ fn compile_operational_query_family_inner(
     document: &Document,
     catalog: &SymbolicCatalog,
 ) -> Result<OperationalQueryFamilyV1, PlannerDiagnostics> {
+    let lowered = lower_existence_predicates(document, catalog)?;
+    let document = &lowered;
     let surface =
         resolve_query_surface(document, catalog).map_err(planner_resolution_diagnostics)?;
     let declared_optional = document

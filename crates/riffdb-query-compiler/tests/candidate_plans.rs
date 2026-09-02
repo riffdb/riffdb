@@ -72,6 +72,86 @@ const QUERY: &str = r#"query MatchTags(
     outcomes Found | IntegrityFailure
 }"#;
 
+fn existence_query(negated: bool) -> String {
+    if negated {
+        include_str!("../../../fixtures/riffql/existence-lowering-v1/not-exists.riffq")
+    } else {
+        include_str!("../../../fixtures/riffql/existence-lowering-v1/exists.riffq")
+    }
+    .to_owned()
+}
+
+fn explicit_existence_query(negated: bool) -> String {
+    if negated {
+        include_str!("../../../fixtures/riffql/existence-lowering-v1/not-exists.explicit.riffq")
+    } else {
+        include_str!("../../../fixtures/riffql/existence-lowering-v1/exists.explicit.riffq")
+    }
+    .to_owned()
+}
+
+// req: OQ-117
+#[test]
+fn exists_predicates_lower_to_identical_candidate_plan_bytes() {
+    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+    for negated in [false, true] {
+        let existence_document = parse_query(&existence_query(negated)).expect("existence syntax");
+        assert_eq!(
+            existence_document.language_version,
+            riffdb_riffql_syntax::RIFFQL_LANGUAGE_VERSION_RELATIONAL_OPERATORS_V1
+        );
+        let existence = compile_query(&existence_document, &catalog).expect("existence plan");
+        let mut explicit_document =
+            parse_query(&explicit_existence_query(negated)).expect("explicit candidates syntax");
+        explicit_document.language_version =
+            riffdb_riffql_syntax::RIFFQL_LANGUAGE_VERSION_RELATIONAL_OPERATORS_V1;
+        let explicit =
+            compile_query(&explicit_document, &catalog).expect("explicit candidates plan");
+        assert_eq!(
+            existence.ir_version(),
+            riffdb_query_ir::QUERY_IR_VERSION_RELATIONAL_OPERATORS_V1
+        );
+        assert_eq!(
+            existence.surface().ir_version(),
+            riffdb_query_ir::QUERY_IR_VERSION_RELATIONAL_OPERATORS_V1
+        );
+        assert_eq!(existence.canonical_bytes(), explicit.canonical_bytes());
+        assert_eq!(existence.identity(), explicit.identity());
+    }
+}
+
+// req: OQ-117
+#[test]
+fn existence_refusals_are_source_spanned_and_fail_closed() {
+    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+    let source = existence_query(false).replace("using by_tag_digest", "using missing_index");
+    let document = parse_query(&source).expect("existence syntax");
+    let access_span = document.body.bindings[0]
+        .existence
+        .as_ref()
+        .expect("existence")
+        .access
+        .span;
+    let diagnostics = compile_query(&document, &catalog).expect_err("unknown index must refuse");
+    let diagnostic = &diagnostics.as_slice()[0];
+    assert_eq!(diagnostic.code(), PlannerDiagnosticCode::CandidateInvalid);
+    assert_eq!(diagnostic.primary(), access_span);
+    assert_eq!(
+        diagnostic.summary(),
+        "existence predicate must name one declared junction index"
+    );
+    assert_eq!(
+        diagnostic
+            .refusal_class()
+            .expect("refusal")
+            .operator()
+            .as_str(),
+        "existence"
+    );
+}
+
 #[test]
 fn candidate_sources_precede_the_root_consumer() {
     let bundle = compile_contract_source(CONTRACT).expect("contract");

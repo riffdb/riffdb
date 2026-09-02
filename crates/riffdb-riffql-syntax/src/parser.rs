@@ -165,7 +165,7 @@ impl Parser {
         let language_version = if body
             .bindings
             .iter()
-            .any(|binding| binding.expansion.is_some())
+            .any(|binding| binding.expansion.is_some() || binding.existence.is_some())
         {
             crate::RIFFQL_LANGUAGE_VERSION_RELATIONAL_OPERATORS_V1
         } else if bounded_set {
@@ -618,6 +618,25 @@ impl Parser {
         };
         self.expect_word("where")?;
         let predicate = self.expression(0)?;
+        let existence = if self.peek_word("exists") || self.peek_word("not") {
+            let start = self.current_start();
+            let negated = self.take_word("not").is_some();
+            self.expect_word("exists")?;
+            let junction = self.identifier()?;
+            self.expect_word("using")?;
+            let access = self.identifier()?;
+            self.expect_word("where")?;
+            let predicate = self.expression(0)?;
+            Some(crate::ExistencePredicate {
+                negated,
+                junction,
+                access,
+                predicate,
+                span: self.span_from(start),
+            })
+        } else {
+            None
+        };
         let tokenized_match = if let Some(start) = self.take_word("matching") {
             self.expect(TokenKind::LeftParen)?;
             let index = self.identifier()?;
@@ -908,6 +927,7 @@ impl Parser {
             name,
             entity,
             expansion,
+            existence,
             predicate,
             order,
             order_family,
@@ -1729,7 +1749,7 @@ fn query_shape_language_version(
     if body
         .bindings
         .iter()
-        .any(|binding| binding.expansion.is_some())
+        .any(|binding| binding.expansion.is_some() || binding.existence.is_some())
     {
         crate::RIFFQL_LANGUAGE_VERSION_RELATIONAL_OPERATORS_V1
     } else if body
