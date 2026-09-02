@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "the fixed durable-format digest key identifier is nonzero"
+)]
+
 //! Source-free durable-format comparison before redb may open for mutation.
 
 use std::error::Error;

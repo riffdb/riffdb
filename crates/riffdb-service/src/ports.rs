@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "a completed one-shot service port retains exactly one result until its sole receiver consumes it"
+)]
+
 //! Least-authority consumer ports used by service orchestration.
 
 use std::fmt;

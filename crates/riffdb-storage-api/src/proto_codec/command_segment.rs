@@ -1,3 +1,9 @@
+#![expect(
+    clippy::expect_used,
+    clippy::unreachable,
+    reason = "validated command segments have bounded counts, present identifiers, and closed protobuf tags"
+)]
+
 use prost::Message;
 use riffdb_proto::storage::v1 as wire;
 use riffdb_types::{

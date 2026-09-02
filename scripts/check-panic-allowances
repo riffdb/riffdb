@@ -1,0 +1,85 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Enumerates the narrow panic-lint expectations retained by WP-764 and rejects
+# unreasoned or blanket suppression. Clippy remains the semantic authority for
+# whether every production library site is covered; this check makes the
+# accepted residue reviewable as a stable repository ledger.
+
+require "pathname"
+
+ROOT = Pathname.new(File.expand_path("..", __dir__)).realpath
+CRATES = %w[
+  riffdb-commit
+  riffdb-storage-api
+  riffdb-storage-redb
+  riffdb-service
+  riffdb-server
+].freeze
+LINTS = %w[
+  clippy::expect_used
+  clippy::panic
+  clippy::unreachable
+  clippy::unwrap_used
+].freeze
+ATTRIBUTE = /#(?<inner>!?)\[\s*(?<level>allow|expect)\s*\((?<body>.*?)\)\s*\]/m
+REASON = /\breason\s*=\s*"(?<reason>[^"]+)"/
+
+errors = []
+ledger = []
+
+CRATES.each do |crate|
+  source_root = ROOT.join("crates", crate, "src")
+  lib = source_root.join("lib.rs")
+  lib_source = lib.read(encoding: "UTF-8")
+  deny = lib_source[/#!\[cfg_attr\(\s*not\(test\),\s*deny\((.*?)\)\s*\)\]/m, 1]
+  if deny.nil?
+    errors << "#{lib.relative_path_from(ROOT)} does not deny panic lints for its non-test library target"
+  else
+    LINTS.each do |lint|
+      errors << "#{lib.relative_path_from(ROOT)} does not deny #{lint}" unless deny.include?(lint)
+    end
+  end
+
+  source_root.glob("**/*.rs").sort.each do |path|
+    source = path.read(encoding: "UTF-8")
+    source.to_enum(:scan, ATTRIBUTE).each do
+      match = Regexp.last_match
+      body = match[:body]
+      selected = LINTS.select { |lint| body.match?(/\b#{Regexp.escape(lint)}\b/) }
+      next if selected.empty?
+
+      line = source[0...match.begin(0)].count("\n") + 1
+      relative = path.relative_path_from(ROOT)
+      location = "#{relative}:#{line}"
+      if match[:level] == "allow"
+        errors << "#{location} uses allow for #{selected.join(', ')}; use a reasoned #[expect]"
+        next
+      end
+
+      if path == lib
+        errors << "#{location} is a crate-level panic-lint expectation; scope it to the retaining item or module"
+      end
+
+      reason = body.match(REASON)&.[](:reason)&.strip
+      if reason.nil? || reason.empty?
+        errors << "#{location} expects #{selected.join(', ')} without a nonempty reason"
+        next
+      end
+      ledger << [location, selected.sort.join(", "), reason]
+    end
+  end
+end
+
+unless errors.empty?
+  errors.sort.each { |error| warn error }
+  warn ""
+  warn "#{errors.length} panic-discipline problem(s)."
+  exit 1
+end
+
+puts "Panic-lint allowance ledger (#{ledger.length} scoped expectation(s)):"
+ledger.sort.each do |location, lints, reason|
+  puts "- #{location}: #{lints} — #{reason}"
+end
+puts "All five durable library targets deny #{LINTS.join(', ')} outside test builds."

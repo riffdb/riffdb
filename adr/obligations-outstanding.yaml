@@ -1428,30 +1428,6 @@ outstanding:
     lands with that package; discharge by declaring it with an existing proof, or strike under ADR-0181
     section 4 because the covering requirement IDs of WP-750 already carry it.
   owner: WP-750
-- key: 0179-generated-public-surface-adapters-and-operation-registry.md::- `OBL-0179-1` WP-751 must prove
-    that every public operation has exactly one registry decl
-  adr: 0179-generated-public-surface-adapters-and-operation-registry.md
-  work_packages:
-  - WP-751
-  - WP-752
-  obligation: '- `OBL-0179-1` WP-751 must prove that every public operation has exactly one registry declaration
-    and the six adapter crates contain no hand-written validation, conversion, or dispatch outside their
-    generated directories; planned proof `every_public_operation_has_exactly_one_registry_declaration`.'
-  reason: Accepted 2026-09-01 before WP-751 exists. The planned proof `every_public_operation_has_exactly_one_registry_declaration`
-    lands with that package; discharge by declaring it with an existing proof, or strike under ADR-0181
-    section 4 because the covering requirement IDs of WP-751 already carry it.
-  owner: WP-751
-- key: 0179-generated-public-surface-adapters-and-operation-registry.md::- `OBL-0179-2` WP-751 must prove
-    that generated validation, conversion, MCP schema, and CL
-  adr: 0179-generated-public-surface-adapters-and-operation-registry.md
-  work_packages:
-  - WP-751
-  obligation: '- `OBL-0179-2` WP-751 must prove that generated validation, conversion, MCP schema, and
-    CLI envelope output reproduces the frozen pre-registry fixtures byte for byte; planned proof `generated_adapters_reproduce_frozen_public_fixtures_byte_for_byte`.'
-  reason: Accepted 2026-09-01 before WP-751 exists. The planned proof `generated_adapters_reproduce_frozen_public_fixtures_byte_for_byte`
-    lands with that package; discharge by declaring it with an existing proof, or strike under ADR-0181
-    section 4 because the covering requirement IDs of WP-751 already carry it.
-  owner: WP-751
 - key: 0179-generated-public-surface-adapters-and-operation-registry.md::- `OBL-0179-3` WP-753 must prove
     that every binding returns the same closed public error c
   adr: 0179-generated-public-surface-adapters-and-operation-registry.md
@@ -1486,17 +1462,6 @@ outstanding:
     that package; discharge by declaring it with an existing proof, or strike under ADR-0181 section 4
     because the covering requirement IDs of WP-753 already carry it.
   owner: WP-753
-- key: 0179-generated-public-surface-adapters-and-operation-registry.md::- `OBL-0179-6` WP-752 must prove
-    that no file on the adapter path exceeds the decompositio
-  adr: 0179-generated-public-surface-adapters-and-operation-registry.md
-  work_packages:
-  - WP-752
-  obligation: '- `OBL-0179-6` WP-752 must prove that no file on the adapter path exceeds the decomposition
-    budget; planned proof `adapter_path_files_stay_under_the_decomposition_budget`.'
-  reason: Accepted 2026-09-01 before WP-752 exists. The planned proof `adapter_path_files_stay_under_the_decomposition_budget`
-    lands with that package; discharge by declaring it with an existing proof, or strike under ADR-0181
-    section 4 because the covering requirement IDs of WP-752 already carry it.
-  owner: WP-752
 - key: 0180-crate-dependency-direction-repair.md::- `OBL-0180-1` WP-754 must prove that neither concrete
     storage backend carries a productio
   adr: 0180-crate-dependency-direction-repair.md
@@ -1782,42 +1747,6 @@ outstanding:
     lands with that package; discharge by declaring it with an existing proof, or strike under ADR-0181
     section 4 because the covering requirement IDs of WP-763 already carry it.
   owner: WP-763
-- key: 0184-panic-discipline-test-economics-and-coordinator-simulation.md::- `OBL-0184-1` WP-764 must
-    prove that the lib targets of `riffdb-commit`, `riffdb-storage-
-  adr: 0184-panic-discipline-test-economics-and-coordinator-simulation.md
-  work_packages:
-  - WP-764
-  obligation: '- `OBL-0184-1` WP-764 must prove that the lib targets of `riffdb-commit`, `riffdb-storage-api`,
-    `riffdb-storage-redb`, `riffdb-service`, and `riffdb-server` compile with `unwrap_used`, `expect_used`,
-    `panic`, and `unreachable` denied, and every surviving allowance is an `#[expect]` with a reason naming
-    the invariant; planned proof `scripts/check-panic-allowances`.'
-  reason: Accepted 2026-09-01 before WP-764 exists. The planned proof `scripts/check-panic-allowances`
-    lands with that package; discharge by declaring it with an existing proof, or strike under ADR-0181
-    section 4 because the covering requirement IDs of WP-764 already carry it.
-  owner: WP-764
-- key: '0184-panic-discipline-test-economics-and-coordinator-simulation.md::- `OBL-0184-2` WP-764 must
-    prove that a panic on the `riffdb-command-writer` thread stops '
-  adr: 0184-panic-discipline-test-economics-and-coordinator-simulation.md
-  work_packages:
-  - WP-764
-  obligation: '- `OBL-0184-2` WP-764 must prove that a panic on the `riffdb-command-writer` thread stops
-    the coordinator, refuses later admission with a typed outcome, and makes `riffdbd` exit nonzero instead
-    of serving; planned proof `writer_thread_panic_stops_the_coordinator_and_exits_the_daemon_nonzero`.'
-  reason: Accepted 2026-09-01 before WP-764 exists. The planned proof `writer_thread_panic_stops_the_coordinator_and_exits_the_daemon_nonzero`
-    lands with that package; discharge by declaring it with an existing proof, or strike under ADR-0181
-    section 4 because the covering requirement IDs of WP-764 already carry it.
-  owner: WP-764
-- key: 0184-panic-discipline-test-economics-and-coordinator-simulation.md::- `OBL-0184-3` WP-764 must
-    prove that the four language generators write through one infal
-  adr: 0184-panic-discipline-test-economics-and-coordinator-simulation.md
-  work_packages:
-  - WP-764
-  obligation: '- `OBL-0184-3` WP-764 must prove that the four language generators write through one infallible
-    string-write helper and carry no `expect` on `fmt::Write`; planned proof `generators_use_the_infallible_writer_and_carry_no_fmt_expect`.'
-  reason: Accepted 2026-09-01 before WP-764 exists. The planned proof `generators_use_the_infallible_writer_and_carry_no_fmt_expect`
-    lands with that package; discharge by declaring it with an existing proof, or strike under ADR-0181
-    section 4 because the covering requirement IDs of WP-764 already carry it.
-  owner: WP-764
 - key: 0184-panic-discipline-test-economics-and-coordinator-simulation.md::- `OBL-0184-4` WP-765 must
     prove that the CI test job runs under cargo-nextest in fixed pa
   adr: 0184-panic-discipline-test-economics-and-coordinator-simulation.md
@@ -1831,51 +1760,3 @@ outstanding:
     lands with that package; discharge by declaring it with an existing proof, or strike under ADR-0181
     section 4 because the covering requirement IDs of WP-765 already carry it.
   owner: WP-765
-- key: '0184-panic-discipline-test-economics-and-coordinator-simulation.md::- `OBL-0184-5` WP-766 must
-    prove that the coordinator harness reproduces a byte-identical '
-  adr: 0184-panic-discipline-test-economics-and-coordinator-simulation.md
-  work_packages:
-  - WP-766
-  obligation: '- `OBL-0184-5` WP-766 must prove that the coordinator harness reproduces a byte-identical
-    trace digest for one seed and a different digest when any interleaving or crash decision changes;
-    planned proof `coordinator_interleaving_decisions_feed_the_digest`.'
-  reason: Accepted 2026-09-01 before WP-766 exists. The planned proof `coordinator_interleaving_decisions_feed_the_digest`
-    lands with that package; discharge by declaring it with an existing proof, or strike under ADR-0181
-    section 4 because the covering requirement IDs of WP-766 already carry it.
-  owner: WP-766
-- key: 0184-panic-discipline-test-economics-and-coordinator-simulation.md::- `OBL-0184-6` WP-766 must
-    prove that every seeded coordinator crash window recovers to th
-  adr: 0184-panic-discipline-test-economics-and-coordinator-simulation.md
-  work_packages:
-  - WP-766
-  obligation: '- `OBL-0184-6` WP-766 must prove that every seeded coordinator crash window recovers to
-    the testkit model at the recovered frontier, including windows between epoch seal, durable fence,
-    and publication; planned proof `every_coordinator_crash_window_recovers_to_the_model`.'
-  reason: Accepted 2026-09-01 before WP-766 exists. The planned proof `every_coordinator_crash_window_recovers_to_the_model`
-    lands with that package; discharge by declaring it with an existing proof, or strike under ADR-0181
-    section 4 because the covering requirement IDs of WP-766 already carry it.
-  owner: WP-766
-- key: 0184-panic-discipline-test-economics-and-coordinator-simulation.md::- `OBL-0184-7` WP-767 must
-    prove that `riffdb-reactive-syntax` replaces `riffdb-query-synt
-  adr: 0184-panic-discipline-test-economics-and-coordinator-simulation.md
-  work_packages:
-  - WP-767
-  obligation: '- `OBL-0184-7` WP-767 must prove that `riffdb-reactive-syntax` replaces `riffdb-query-syntax`
-    with byte-identical reactive-module artifacts and no production crate depends on `riffdb-sim`; planned
-    proof `reactive_module_artifacts_are_byte_identical_after_rename`.'
-  reason: Accepted 2026-09-01 before WP-767 exists. The planned proof `reactive_module_artifacts_are_byte_identical_after_rename`
-    lands with that package; discharge by declaring it with an existing proof, or strike under ADR-0181
-    section 4 because the covering requirement IDs of WP-767 already carry it.
-  owner: WP-767
-- key: 0184-panic-discipline-test-economics-and-coordinator-simulation.md::- `OBL-0184-8` WP-767 must
-    prove that no source file may grow past 10,000 lines, and growt
-  adr: 0184-panic-discipline-test-economics-and-coordinator-simulation.md
-  work_packages:
-  - WP-767
-  obligation: '- `OBL-0184-8` WP-767 must prove that no source file may grow past 10,000 lines, and growth
-    past 6,000 lines is reported, in every package that touches one of the five largest files; planned
-    proof `scripts/check-file-size-guard`.'
-  reason: Accepted 2026-09-01 before WP-767 exists. The planned proof `scripts/check-file-size-guard`
-    lands with that package; discharge by declaring it with an existing proof, or strike under ADR-0181
-    section 4 because the covering requirement IDs of WP-767 already carry it.
-  owner: WP-767

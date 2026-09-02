@@ -1972,6 +1972,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "riffdb-operation-registry"
+version = "0.1.0"
+dependencies = [
+ "riffdb-types",
+]
+
+[[package]]
 name = "riffdb-outbox"
 version = "0.1.0"
 dependencies = [
@@ -2015,6 +2022,7 @@ dependencies = [
  "prost-types",
  "protox",
  "riffdb-errors",
+ "riffdb-operation-registry",
  "riffdb-types",
 ]
 
@@ -2025,7 +2033,7 @@ dependencies = [
  "riffdb-contract-compiler",
  "riffdb-contract-ir",
  "riffdb-query-ir",
- "riffdb-query-syntax",
+ "riffdb-reactive-syntax",
  "riffdb-riffql-syntax",
  "riffdb-types",
 ]
@@ -2065,7 +2073,7 @@ dependencies = [
  "riffdb-contract-syntax",
  "riffdb-query-compiler",
  "riffdb-query-ir",
- "riffdb-query-syntax",
+ "riffdb-reactive-syntax",
  "riffdb-riffql-syntax",
  "riffdb-types",
  "serde_json",
@@ -2073,7 +2081,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "riffdb-query-syntax"
+name = "riffdb-reactive-syntax"
 version = "0.1.0"
 
 [[package]]
@@ -2189,6 +2197,8 @@ version = "0.1.0"
 dependencies = [
  "redb",
  "riffdb-catalog",
+ "riffdb-commit",
+ "riffdb-conflict",
  "riffdb-contract-compiler",
  "riffdb-storage-api",
  "riffdb-storage-redb",

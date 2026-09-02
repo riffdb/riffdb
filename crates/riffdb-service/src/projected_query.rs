@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "validated projected-query result sets retain their requested page bound"
+)]
+
 //! Columnar projected-query application surface (ADR-0086 / ADR-0087 / CP2b).
 //!
 //! The trait lives outside the symbolic-query methods of

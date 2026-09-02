@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "validated symbolic plans retain their schema references, result bounds, and closed aggregate shapes"
+)]
+
 //! Symbolic RiffQL application operations over the shared service boundary.
 
 use std::collections::{BTreeMap, BTreeSet};

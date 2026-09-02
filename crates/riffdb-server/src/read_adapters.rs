@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "the fixed one-row application-head observation satisfies the bounded page contract"
+)]
+
 //! Production catalog and authoritative-read adapters for the API-neutral service.
 
 use std::collections::BTreeMap;

@@ -1,0 +1,320 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "open3"
+require "pathname"
+require "digest"
+
+def validate_root_mappings!(operation, mappings)
+  expected = ["$request=NestedRecord", "$response=NestedRecord"]
+  return if mappings == expected
+
+  missing = expected - mappings
+  duplicates = mappings.tally.select { |_, count| count > 1 }.keys
+  incompatible = mappings.reject { |mapping| expected.include?(mapping) }
+  details = []
+  details << "unmapped roots #{missing.join(',')}" unless missing.empty?
+  details << "doubly mapped roots #{duplicates.join(',')}" unless duplicates.empty?
+  details << "kind-incompatible roots #{incompatible.join(',')}" unless incompatible.empty?
+  raise ArgumentError, "#{operation}: #{details.join('; ')}"
+end
+
+def assert_mapping_refusal(expected_text, mappings)
+  validate_root_mappings!("self-test", mappings)
+  abort "mapping self-test unexpectedly accepted #{mappings.inspect}"
+rescue ArgumentError => error
+  abort "mapping self-test produced wrong refusal: #{error.message}" unless error.message.include?(expected_text)
+end
+
+def validate_exchange_bounds!(operation, bounds)
+  expected_request = case operation
+                     when "ExecuteCommand", "ExecuteContextualReaction"
+                       8_388_608
+                     when "ApplyContractMigration"
+                       33_554_432
+                     when "StartApplicationInstallation", "ApplyApplicationReimportPage"
+                       4_325_376
+                     else
+                       1_048_576
+                     end
+  expected = {
+    "EncodedRequestBytes" => expected_request,
+    "EncodedResponseBytes" => 4_194_304
+  }
+  parsed = {}
+  bounds.each do |bound|
+    target, maximum = bound.split("=", 2)
+    raise ArgumentError, "#{operation}: malformed bound #{bound.inspect}" unless target && maximum
+    raise ArgumentError, "#{operation}: doubly declared bound #{target}" if parsed.key?(target)
+    parsed[target] = Integer(maximum, 10)
+  end
+  missing = expected.keys - parsed.keys
+  unexpected = parsed.keys - expected.keys
+  raise ArgumentError, "#{operation}: missing bounds #{missing.join(',')}" unless missing.empty?
+  raise ArgumentError, "#{operation}: unexpected bounds #{unexpected.join(',')}" unless unexpected.empty?
+  expected.each do |target, maximum|
+    next if parsed.fetch(target) == maximum
+
+    raise ArgumentError,
+          "#{operation}: #{target} must remain #{maximum}, found #{parsed.fetch(target)}"
+  end
+  parsed
+rescue ArgumentError => error
+  raise error if error.message.start_with?("#{operation}:")
+
+  raise ArgumentError, "#{operation}: malformed bound maximum: #{error.message}"
+end
+
+assert_mapping_refusal("unmapped roots", ["$request=NestedRecord"])
+assert_mapping_refusal(
+  "doubly mapped roots",
+  ["$request=NestedRecord", "$response=NestedRecord", "$response=NestedRecord"]
+)
+assert_mapping_refusal(
+  "kind-incompatible roots",
+  ["$request=NestedRecord", "$response=Identity"]
+)
+
+begin
+  validate_exchange_bounds!("ValidateContract", ["EncodedRequestBytes=1048576"])
+  abort "bound self-test unexpectedly accepted a missing response bound"
+rescue ArgumentError => error
+  abort "bound self-test produced wrong refusal: #{error.message}" unless error.message.include?("missing bounds")
+end
+begin
+  validate_exchange_bounds!(
+    "ValidateContract",
+    ["EncodedRequestBytes=1048576", "EncodedResponseBytes=4194304", "EncodedResponseBytes=4194304"]
+  )
+  abort "bound self-test unexpectedly accepted a duplicate bound"
+rescue ArgumentError => error
+  abort "bound self-test produced wrong refusal: #{error.message}" unless error.message.include?("doubly declared")
+end
+begin
+  validate_exchange_bounds!(
+    "ExecuteCommand",
+    ["EncodedRequestBytes=1048576", "EncodedResponseBytes=4194304"]
+  )
+  abort "bound self-test unexpectedly accepted an incompatible request maximum"
+rescue ArgumentError => error
+  abort "bound self-test produced wrong refusal: #{error.message}" unless error.message.include?("must remain")
+end
+
+root = Pathname.new(File.expand_path("..", __dir__))
+check = ARGV == ["--check"]
+abort "usage: scripts/generate-operation-adapters [--check]" unless ARGV.empty? || check
+
+registry, registry_error, registry_status = Open3.capture3(
+  "cargo", "run", "--quiet", "-p", "riffdb-operation-registry", "--example",
+  "export_operation_registry", chdir: root.to_s
+)
+abort registry_error unless registry_status.success?
+
+lines = registry.lines(chomp: true)
+version = lines.shift&.split("\t", 2)
+abort "operation registry has no version" unless version == ["version", "1"]
+operations = lines.map { |line| line.split("\t", -1) }
+abort "operation registry must contain exactly 57 declarations" unless operations.length == 57
+tags = operations.map { |fields| Integer(fields.fetch(1), 10) }
+abort "operation registry tags are not exact and ordered" unless tags == (1..57).to_a
+abort "operation registry contains a duplicate semantic operation" unless operations.map { |fields| fields.fetch(2) }.uniq.length == 57
+
+descriptor_path = root.join("fixtures/proto/descriptors/riffdb-v1-descriptor-set.bin")
+descriptor_text, descriptor_error, descriptor_status = Open3.capture3(
+  "protoc", "--decode=google.protobuf.FileDescriptorSet",
+  "google/protobuf/descriptor.proto", stdin_data: descriptor_path.binread
+)
+abort descriptor_error unless descriptor_status.success?
+
+messages = {}
+package = nil
+current = nil
+descriptor_text.each_line do |line|
+  if (match = line.match(/^  package: "([^"]+)"/))
+    package = match[1]
+  elsif line == "  message_type {\n"
+    current = { name: nil, fields: 0 }
+  elsif current && (match = line.match(/^    name: "([^"]+)"/)) && current[:name].nil?
+    current[:name] = match[1]
+  elsif current && line == "    field {\n"
+    current[:fields] += 1
+  elsif current && line == "  }\n"
+    abort "descriptor message appeared before its package" unless package
+    abort "descriptor message has no name" unless current[:name]
+    messages["#{package}.#{current[:name]}"] = current[:fields]
+    current = nil
+  end
+end
+
+rows = operations.map do |fields|
+  abort "malformed operation registry export" unless fields.length == 13 && fields.first == "operation"
+  request = fields.fetch(3)
+  response = fields.fetch(4)
+  request_fields = messages[request]
+  response_fields = messages[response]
+  abort "registry request message is absent from descriptor: #{request}" unless request_fields
+  abort "registry response message is absent from descriptor: #{response}" unless response_fields
+  abort "registry DTO path is empty" if fields.fetch(5).empty? || fields.fetch(6).empty?
+  abort "registry declaration lacks a permission" if fields.fetch(7).empty?
+  abort "registry declaration lacks an idempotency class" if fields.fetch(8).empty?
+  abort "registry declaration lacks a redaction class" if fields.fetch(9).empty?
+  abort "registry declaration lacks an audience" unless Integer(fields.fetch(10), 10).positive?
+  bounds = validate_exchange_bounds!(fields.fetch(2), fields.fetch(11).split(","))
+  mappings = fields.fetch(12).split(",")
+  validate_root_mappings!(fields.fetch(2), mappings)
+  [
+    Integer(fields.fetch(1), 10), fields.fetch(2), request, request_fields,
+    response, response_fields, bounds.fetch("EncodedRequestBytes"),
+    bounds.fetch("EncodedResponseBytes")
+  ]
+end
+
+inventory = String.new
+inventory << "/// Registry schema version used for this generated validation inventory.\n"
+inventory << "pub const GENERATED_OPERATION_REGISTRY_VERSION: u32 = 1;\n"
+inventory << "/// Number of public semantic operations covered by generated validation.\n"
+inventory << "pub const GENERATED_PUBLIC_OPERATION_COUNT: usize = #{rows.length};\n"
+inventory << "/// Descriptor-checked registry row used by generated validation.\n"
+inventory << "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n"
+inventory << "pub struct GeneratedPublicValidationMessage {\n"
+inventory << "    /// Stable semantic operation tag.\n"
+inventory << "    pub tag: u8,\n"
+inventory << "    /// Semantic operation variant name.\n"
+inventory << "    pub operation: &'static str,\n"
+inventory << "    /// Fully qualified Protobuf request message.\n"
+inventory << "    pub request: &'static str,\n"
+inventory << "    /// Descriptor-declared request field count.\n"
+inventory << "    pub request_fields: usize,\n"
+inventory << "    /// Fully qualified Protobuf response or stream-item message.\n"
+inventory << "    pub response: &'static str,\n"
+inventory << "    /// Descriptor-declared response field count.\n"
+inventory << "    pub response_fields: usize,\n"
+inventory << "    /// Inclusive encoded request-byte maximum.\n"
+inventory << "    pub request_bytes: usize,\n"
+inventory << "    /// Inclusive encoded response-byte maximum.\n"
+inventory << "    pub response_bytes: usize,\n"
+inventory << "}\n"
+inventory << "/// Descriptor-checked request and response identities in semantic-tag order.\n"
+inventory << "pub const GENERATED_PUBLIC_VALIDATION_MESSAGES: &[GeneratedPublicValidationMessage] = &[\n"
+rows.each do |tag, operation, request, request_fields, response, response_fields, request_bytes, response_bytes|
+  inventory << "    GeneratedPublicValidationMessage { tag: #{tag}, operation: \"#{operation}\", request: \"#{request}\", request_fields: #{request_fields}, response: \"#{response}\", response_fields: #{response_fields}, request_bytes: #{request_bytes}, response_bytes: #{response_bytes} },\n"
+end
+inventory << "];\n\n"
+
+fixture = root.join("fixtures/proto/public-validation-v1.rs.in")
+abort "frozen pre-registry public validation fixture is missing" unless fixture.file?
+body = String.new("// @generated by scripts/generate-operation-adapters; DO NOT EDIT.\n\n")
+body << File.read(fixture, encoding: "UTF-8").sub(/\A\/\/![^\n]*\n\n/, "")
+body << "\n"
+body << inventory
+
+target = root.join("crates/riffdb-proto/src/generated/public_validation.rs")
+
+adapter_layers = [
+  {
+    name: "service DTO ownership",
+    source: "crates/riffdb-service/src/dto.rs",
+    generated: "crates/riffdb-service/src/generated/dto.rs",
+    frozen: "fixtures/compatibility/operation-adapters-v1/riffdb-service/dto.rs.in"
+  },
+  {
+    name: "gRPC conversion",
+    source: "crates/riffdb-api-grpc/src/conversion.rs",
+    generated: "crates/riffdb-api-grpc/src/generated/conversion.rs",
+    frozen: "fixtures/compatibility/operation-adapters-v1/riffdb-api-grpc/conversion.rs.in"
+  },
+  {
+    name: "MCP fixed-tool dispatch",
+    source: "crates/riffdb-api-mcp/src/service_backend.rs",
+    generated: "crates/riffdb-api-mcp/src/generated/service_backend.rs",
+    frozen: "fixtures/compatibility/operation-adapters-v1/riffdb-api-mcp/service_backend.rs.in"
+  },
+  {
+    name: "CLI dispatch and envelopes",
+    source: "crates/riffdb-cli/src/app.rs",
+    generated: "crates/riffdb-cli/src/generated/app.rs",
+    frozen: "fixtures/compatibility/operation-adapters-v1/riffdb-cli/app.rs.in"
+  },
+  {
+    name: "Rust client typed facade",
+    source: "crates/riffdb-client-rust/src/client.rs",
+    generated: "crates/riffdb-client-rust/src/generated/client.rs",
+    frozen: "fixtures/compatibility/operation-adapters-v1/riffdb-client-rust/client.rs.in"
+  }
+]
+
+adapter_layers.each do |layer|
+  source = root.join(layer.fetch(:source))
+  generated = root.join(layer.fetch(:generated))
+  frozen = root.join(layer.fetch(:frozen))
+  unless frozen.file?
+    abort "frozen #{layer.fetch(:name)} input is missing: #{frozen.relative_path_from(root)}" if check
+    abort "cannot freeze absent adapter source: #{source.relative_path_from(root)}" unless source.file?
+
+    frozen.dirname.mkpath
+    File.write(frozen, File.read(source, encoding: "UTF-8"), encoding: "UTF-8")
+  end
+
+  frozen_source = File.read(frozen, encoding: "UTF-8")
+  module_doc = frozen_source[/\A\/\/![^\n]*\n/]
+  generated_source = String.new("// @generated by scripts/generate-operation-adapters; DO NOT EDIT.\n\n")
+  generated_source << frozen_source.sub(/\A\/\/![^\n]*\n\n?/, "")
+  generated_source.gsub!(/(include_(?:str|bytes)!\(\s*")([^"]+)(")/m) do
+    "#{Regexp.last_match(1)}../#{Regexp.last_match(2)}#{Regexp.last_match(3)}"
+  end
+  relative_generated = generated.relative_path_from(source.dirname)
+  wrapper = String.new
+  wrapper << module_doc << "\n" if module_doc
+  wrapper << "include!(\"#{relative_generated}\");\n"
+
+  if check
+    abort "generated #{layer.fetch(:name)} is stale: #{generated.relative_path_from(root)}" unless generated.file? && File.read(generated, encoding: "UTF-8") == generated_source
+    abort "#{layer.fetch(:name)} wrapper is stale: #{source.relative_path_from(root)}" unless source.file? && File.read(source, encoding: "UTF-8") == wrapper
+  else
+    generated.dirname.mkpath
+    File.write(generated, generated_source, encoding: "UTF-8")
+    File.write(source, wrapper, encoding: "UTF-8")
+  end
+end
+
+freeze_patterns = [
+  "crates/riffdb-proto/fixtures/public-client-vectors.txt",
+  "crates/riffdb-proto/fixtures/wire-vectors.txt",
+  "crates/riffdb-api-mcp/fixtures/fixed-tool-*.json",
+  "crates/riffdb-api-mcp/schema/fixed-tool/v1/*.json",
+  "crates/riffdb-cli/fixtures/output-v1/*",
+  "examples/*/generated/mcp/tools.json",
+  "examples/agent-alpha/domains/*/generated/mcp/tools.json",
+  "fixtures/adapters/*/generated/mcp/tools.json",
+  "fixtures/compatibility/operation-adapters-v1/**/*.rs.in",
+  "fixtures/driver/*/generated/mcp/tools.json",
+  "fixtures/query-modules/*.mcp.json",
+  "fixtures/riffql/*/generated/mcp/tools.json",
+  "fixtures/*/generated/mcp/tools.json",
+  "fixtures/proto/public-client-vectors.txt",
+  "fixtures/proto/public-validation-v1.rs.in",
+  "fixtures/proto/wire-vectors.txt"
+]
+frozen_paths = freeze_patterns
+               .flat_map { |pattern| Dir.glob(root.join(pattern).to_s) }
+               .map { |path| Pathname.new(path) }
+               .select(&:file?)
+               .uniq
+               .sort_by { |path| path.relative_path_from(root).to_s }
+abort "public-adapter fixture freeze is empty" if frozen_paths.empty?
+freeze_body = String.new("# riffdb.public-adapter-freeze/v1\n")
+freeze_body << "# compatibility=no-domain-advance; classification=internal; adr=ADR-0179; work_package=WP-751\n"
+frozen_paths.each do |path|
+  freeze_body << "#{Digest::SHA256.file(path).hexdigest}\t#{path.relative_path_from(root)}\n"
+end
+freeze_target = root.join("fixtures/compatibility/public-adapter-freeze-v1.tsv")
+
+if check
+  abort "generated operation validation inventory is stale: #{target.relative_path_from(root)}" unless target.file? && File.read(target, encoding: "UTF-8") == body
+  abort "public-adapter fixture freeze is stale: #{freeze_target.relative_path_from(root)}" unless freeze_target.file? && File.read(freeze_target, encoding: "UTF-8") == freeze_body
+else
+  target.dirname.mkpath
+  File.write(target, body, encoding: "UTF-8")
+  freeze_target.dirname.mkpath
+  File.write(freeze_target, freeze_body, encoding: "UTF-8")
+end

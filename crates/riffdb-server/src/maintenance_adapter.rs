@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "accepted maintenance admission retains the sole driver receipt until completion"
+)]
+
 //! Receipt-backed admission for the private offline-maintenance driver.
 
 use std::fmt;

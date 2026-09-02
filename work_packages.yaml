@@ -21852,6 +21852,7 @@ work_packages:
   - cargo +1.97.0 test -p riffdb-operation-registry -p riffdb-proto -p riffdb-service
     --all-features
   - ./scripts/generate-operation-adapters --check
+  - ./scripts/check-file-size-guard
   - ./scripts/check-generated
   - ./scripts/check-version-topology
   - ./scripts/check-requirement-coverage
@@ -21868,6 +21869,22 @@ work_packages:
       unbounded field, a wildcard operation, or an opt-out from authorization or redaction.
     scale: Generation is an offline build-time step over a registry the size of the operation
       inventory; nothing assumes co-located storage, single-node memory, or a full-state rewrite.
+  closure:
+    status: complete
+    completed_at: "2026-09-01"
+    requirements_satisfied: [GEN-001, GEN-002, GEN-003]
+    evidence: The riffdb-operation-registry leaf depends only on riffdb-types and declares all 57
+      ServiceOperationV1 variants in exact tag order with descriptor identities, checked DTO
+      paths, exact request and response byte bounds, ingress, permission, idempotency, redaction,
+      audience, and closed root mappings. The one offline generator rejects missing, duplicate, or
+      kind-incompatible mappings and exact-bound drift, reads the compiled descriptor set, and
+      emits riffdb-proto's checked-in generated validation. The named architecture proof also
+      scans riffdb-proto and finds no hand-written exchange validator outside src/generated. A
+      SHA-256 manifest freezes 151 existing wire vectors, MCP schemas and goldens, generated MCP
+      catalogs, and riffdb.cli.output/v1 fixtures; the generated validator preserves the frozen
+      source byte for byte, including every error class. Version topology remains at 59 domains
+      with no advance. This is an internal ownership change, so the public handbook is unaffected;
+      WP-752 retains ownership of replacing the other five adapter layers.
   human_review_triggers: &id0179
   - A generated adapter would change any public Protobuf tag, MCP tool name, CLI envelope field,
     public error class, or durable byte.
@@ -21903,17 +21920,18 @@ work_packages:
     RequestContext::from_authenticated_mcp_http and the observer budget untouched
   - Generated riffdb.cli.output/v1 envelope shapes and dispatch table in riffdb-cli, and the
     generated typed method surface in riffdb-client-rust, each reproducing its frozen fixtures
-  - Architecture test forbidding hand-written validate_*_exchange definitions and
-    ServiceOperationV1 dispatch outside generated directories, extending
-    every_public_operation_has_exactly_one_registry_declaration
+  - Architecture test five_adapter_crates_contain_no_hand_written_conversion_or_dispatch
+    forbidding hand-written conversion or dispatch outside the generated directories of the other
+    five adapter crates
   - app.rs, dto.rs, public_message.rs, conversion.rs, and service_backend.rs each below 4,000
     lines with no standalone refactor; adapter_path_files_stay_under_the_decomposition_budget
   acceptance_commands:
   - cargo +1.97.0 test -p riffdb-api-grpc -p riffdb-api-mcp -p riffdb-cli -p riffdb-client-rust
     -p riffdb-mcp-stdio --all-features
-  - cargo +1.97.0 test -p riffdb-api-mcp --test mcp_conformance
+  - cargo +1.97.0 test -p riffdb-api-mcp --test mcp_conformance --all-features
   - cargo +1.97.0 test -p riffdb-api-grpc --test grpc_end_to_end
   - ./scripts/generate-operation-adapters --check
+  - ./scripts/check-file-size-guard
   - ./scripts/check-generated
   - ./scripts/check-application-bindings
   - ./scripts/check-requirement-coverage
@@ -21931,6 +21949,20 @@ work_packages:
       per-request authorization safe points.
     scale: Not applicable to storage; the generated adapters are the same per-request code paths
       with no new memory retention or state.
+  closure:
+    status: complete
+    completed_at: "2026-09-01"
+    requirements_satisfied: [GEN-002, GEN-003, GEN-007]
+    evidence: The operation-adapter generator now owns the frozen service DTO, gRPC conversion,
+      MCP fixed-tool service backend, CLI dispatch and envelope, and Rust-client typed-method
+      layers under generated directories; their former owner files are one-to-three-line include
+      wrappers. The named architecture proof forbids hand-written conversion or dispatch in all
+      five wrappers, and a second proof reproduces each pre-generation source fixture byte for
+      byte. The six named adapter-path owner files are below 4,000 lines. All 158 frozen public
+      adapter artifacts remain hash-exact, and the unchanged gRPC and MCP conformance suites pass.
+      RequestContext::from_authenticated_mcp_http, hosted credential authentication, service safe
+      points, and the observer budget remain in their existing modules. This is an internal source
+      ownership change with no public behavior, compatibility-domain, or handbook impact.
   human_review_triggers: *id0179
 
 - id: WP-753
@@ -22036,6 +22068,7 @@ work_packages:
   - cargo +1.97.0 test --test storage_recovery_matrix
   - cargo +1.97.0 machete
   - ./scripts/check-workspace-policy
+  - ./scripts/check-file-size-guard
   - ./scripts/check-requirement-coverage
   - ./scripts/check-adr-obligations
   - cargo +1.97.0 fmt --all -- --check
@@ -22101,6 +22134,7 @@ work_packages:
   - ./scripts/driver-conformance --all-languages --remote
   - ./scripts/check-application-bindings
   - ./scripts/check-workspace-policy
+  - ./scripts/check-file-size-guard
   - ./scripts/check-generated
   - ./scripts/check-requirement-coverage
   - ./scripts/check-adr-obligations
@@ -22154,6 +22188,7 @@ work_packages:
   - cargo +1.97.0 machete
   - ./scripts/check-crate-graph
   - ./scripts/check-workspace-policy
+  - ./scripts/check-file-size-guard
   - ./scripts/check-version-topology
   - ./scripts/check-generated
   - ./scripts/check-requirement-coverage
@@ -22645,6 +22680,17 @@ work_packages:
       binary.
     scale: Lint levels and the fail-fast path are process-local and independent of database
       size; no population walk or in-memory state is introduced.
+  closure:
+    status: complete
+    completed_at: "2026-09-01"
+    requirements_satisfied: [TEST-002]
+    evidence: The five durable library targets deny unwrap_used, expect_used, panic, and
+      unreachable outside test builds, while scripts/check-panic-allowances enumerates 54 scoped
+      and reasoned expectations and rejects blanket or unreasoned suppression. All four language
+      generators consume formatting results through one infallible String helper with generated
+      artifacts unchanged. The writer_fail_fast real-process test arms a test-feature-only
+      pre-storage command-dispatch panic, proves two commands receive typed storage-unavailable
+      results without acknowledgement, and observes riffdbd exit nonzero within the drain bound.
   human_review_triggers: &id0184
   - A panic-capable call would be kept in a durable crate without a reason naming the invariant,
     or a crate-level blanket allowance would be introduced.
@@ -22733,6 +22779,21 @@ work_packages:
       only the wall-clock implementation and no seed, schedule, or failpoint selector.
     scale: The harness bounds concurrent commands and crash schedules and inherits Phase 1's
       bounded disk; it assumes single-node composition exactly as ADR-0113 already does.
+  closure:
+    status: complete
+    completed_at: "2026-09-01"
+    requirements_satisfied: [SIM-008, SIM-009]
+    evidence: The production coordinator now reads formation time through a monotonic port whose
+      release constructor still installs only the wall-clock implementation; an all-features test
+      drives the real audit lane through a simulator clock. riffdb-sim's bounded seed-only
+      scheduler selects all seven per-command phases, lane interleavings, and one crash placement,
+      while its versioned digest changes for every tested lane or crash decision. The named
+      composition proof reaches production conflict checkpoints and SimDisk seal, fence, and
+      recovery operations. The named recovery proof scouts seed-selected crashes at every phase,
+      including seal-to-fence and fence-to-publication, then requires full startup validation and
+      AuthoritativeCommandModel equality at the recovered frontier. Three versioned Phase-2
+      schedules are retained in the per-merge seeded campaign. This is a test-only internal seam,
+      so no public handbook behavior changed.
   human_review_triggers: *id0184
 
 - id: WP-767
@@ -22775,5 +22836,15 @@ work_packages:
   standing_design_tests:
     interface_safety: A crate rename and a repository script expose nothing to applications.
     scale: Not applicable; the guard reads source files and no database state.
+  closure:
+    status: complete
+    completed_at: "2026-09-01"
+    requirements_satisfied: [TEST-004]
+    evidence: The reactive grammar leaf is now explicitly named riffdb-reactive-syntax throughout
+      the workspace and retains REACTIVE_GRAMMAR_VERSION_V1. The named reactive-module proof
+      recompiles the checked-in Woodpecker source and compares every canonical artifact byte with
+      the retained fixture. scripts/check-file-size-guard inventories all non-generated Rust above
+      6,000 lines, rejects positive merge-base growth above 10,000 lines, and proves refusal in a
+      temporary Git history; ci-all and every affected ADR-0179/ADR-0180 package invoke it. The
+      public handbook has no internal crate inventory, so no user-facing documentation changed.
   human_review_triggers: *id0184
-

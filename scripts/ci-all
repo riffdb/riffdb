@@ -35,6 +35,7 @@ cargo deny check
 cargo audit
 cargo machete
 ./scripts/check-workspace-policy
+./scripts/check-file-size-guard
 ./scripts/check-requirement-coverage
 ./scripts/check-generated
 ./scripts/release-source-install-smoke

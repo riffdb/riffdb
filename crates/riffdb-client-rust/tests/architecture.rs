@@ -3,7 +3,7 @@
 //! Architecture constraints for the public Rust transport client.
 
 const LIB: &str = include_str!("../src/lib.rs");
-const CLIENT: &str = include_str!("../src/client.rs");
+const CLIENT: &str = include_str!("../src/generated/client.rs");
 const CAPABILITY: &str = include_str!("../src/capability.rs");
 const COMMAND: &str = include_str!("../src/command.rs");
 const CREDENTIAL_FILE: &str = include_str!("../src/credential_file.rs");

@@ -149,7 +149,7 @@ fn auth_access_is_confined_to_the_isolated_bootstrap_module() {
 
 #[test]
 fn bootstrap_durability_and_demo_process_boundaries_are_structural() {
-    let app = fs::read_to_string(root().join("src/app.rs")).expect("app");
+    let app = fs::read_to_string(root().join("src/generated/app.rs")).expect("app");
     let bootstrap = app
         .split("CapabilityCommand::Bootstrap")
         .nth(1)
@@ -286,15 +286,23 @@ fn root() -> PathBuf {
 }
 
 fn production_source() -> String {
-    let mut paths = fs::read_dir(root().join("src"))
-        .expect("src")
-        .map(|entry| entry.expect("entry").path())
-        .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
-        .collect::<Vec<_>>();
+    let mut paths = Vec::new();
+    collect_rust_sources(&root().join("src"), &mut paths);
     paths.sort();
     let mut source = String::new();
     for path in paths {
         source.push_str(&fs::read_to_string(&path).expect("source"));
     }
     source
+}
+
+fn collect_rust_sources(directory: &std::path::Path, paths: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(directory).expect("source directory") {
+        let path = entry.expect("source entry").path();
+        if path.is_dir() {
+            collect_rust_sources(&path, paths);
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            paths.push(path);
+        }
+    }
 }

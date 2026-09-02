@@ -3,6 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
+use crate::infallible_string_write::InfallibleStringWrite as _;
+
 use riffdb_contract_ir::{
     CommandPlan, ContractBundle, ExpressionKind, Instruction, RecordTypeRef,
     SecretRevealDestinationV1, ValueType, ValueTypeTag, WorkflowLeaseOperation,
@@ -1380,9 +1382,9 @@ pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> 
             ""
         },
     )
-    .expect("string");
+    .infallible();
     if has_compact_result {
-        writeln!(output, "use riffdb_client_rust::app_v1;").expect("string");
+        writeln!(output, "use riffdb_client_rust::app_v1;").infallible();
     }
     emit_rust_identity(&mut output, module);
     emit_rust_common_value_types(&mut output);
@@ -1428,7 +1430,7 @@ pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> 
                 "pub const {}_SECRET_OUTPUTS: &[(&str, &str, &str)] = &[",
                 screaming_snake(name)
             )
-            .expect("string");
+            .infallible();
             for secret in query.plan().secret_outputs() {
                 writeln!(
                     output,
@@ -1437,9 +1439,9 @@ pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> 
                     secret.entity(),
                     secret.field()
                 )
-                .expect("string");
+                .infallible();
             }
-            writeln!(output, "];\n").expect("string");
+            writeln!(output, "];\n").infallible();
         }
         for branch in schemas.results() {
             let branch_name = format!("{name}{}", pascal(branch.name()));
@@ -1458,12 +1460,12 @@ pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> 
             output,
             "#[derive(Clone, Debug, Eq, PartialEq)]\npub enum {name}Result {{"
         )
-        .expect("string");
+        .infallible();
         for branch in schemas.results() {
             let variant = pascal(branch.name());
-            writeln!(output, "    {variant}(Box<{name}{variant}>),").expect("string");
+            writeln!(output, "    {variant}(Box<{name}{variant}>),").infallible();
         }
-        writeln!(output, "}}\n").expect("string");
+        writeln!(output, "}}\n").infallible();
         emit_rust_generated_query_impl(
             &mut output,
             name,
@@ -1492,22 +1494,22 @@ pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> 
                 "pub const {}_SECRET_OUTPUTS: &[(&str, &str, &str, &str)] = &[",
                 screaming_snake(name)
             )
-            .expect("string");
+            .infallible();
             for secret in &secret_outputs {
                 writeln!(
                     output,
                     "    ({:?}, {:?}, {:?}, {:?}),",
                     secret.outcome, secret.field, secret.entity, secret.source_field
                 )
-                .expect("string");
+                .infallible();
             }
-            writeln!(output, "];\n").expect("string");
+            writeln!(output, "];\n").infallible();
         }
         writeln!(
             output,
             "#[derive(Clone, Debug, Eq, PartialEq)]\npub struct {input_name} {{"
         )
-        .expect("string");
+        .infallible();
         for field in command.input().record().fields() {
             writeln!(
                 output,
@@ -1515,9 +1517,9 @@ pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> 
                 rust_identifier(field.name()),
                 rust_contract_type(field.value_type(), contract)
             )
-            .expect("string");
+            .infallible();
         }
-        writeln!(output, "}}\n").expect("string");
+        writeln!(output, "}}\n").infallible();
         emit_rust_embedding_constructors(&mut output, command, contract);
         emit_rust_command_outcome(&mut output, command, contract);
         emit_rust_generated_command_impl(&mut output, command, contract);
@@ -1537,7 +1539,7 @@ fn emit_rust_embedding_constructors(
         return;
     }
     let input_name = format!("{}Input", command.name());
-    writeln!(output, "impl {input_name} {{").expect("string");
+    writeln!(output, "impl {input_name} {{").infallible();
     for facade in facades {
         let field_constant = screaming_snake(&facade.vector_field_name);
         let function = rust_identifier(&format!("for_{}", facade.vector_field_name));
@@ -1546,8 +1548,8 @@ fn emit_rust_embedding_constructors(
             "    pub const {field_constant}_MODEL_IDENTITY: &'static str = {:?};\n    pub const {field_constant}_MODEL_VERSION: &'static str = {:?};",
             facade.model_identity, facade.model_version
         )
-        .expect("string");
-        write!(output, "    pub fn {function}(").expect("string");
+        .infallible();
+        write!(output, "    pub fn {function}(").infallible();
         let fields = command
             .input()
             .record()
@@ -1567,9 +1569,9 @@ fn emit_rust_embedding_constructors(
                 rust_identifier(field.name()),
                 rust_contract_type(field.value_type(), contract)
             )
-            .expect("string");
+            .infallible();
         }
-        writeln!(output, ") -> Self {{\n        Self {{").expect("string");
+        writeln!(output, ") -> Self {{\n        Self {{").infallible();
         for field in command.input().record().fields() {
             let name = rust_identifier(field.name());
             if field.name() == facade.model_input_name {
@@ -1577,18 +1579,18 @@ fn emit_rust_embedding_constructors(
                     output,
                     "            {name}: Self::{field_constant}_MODEL_IDENTITY.to_owned(),"
                 )
-                .expect("string");
+                .infallible();
             } else if field.name() == facade.version_input_name {
                 writeln!(
                     output,
                     "            {name}: Self::{field_constant}_MODEL_VERSION.to_owned(),"
                 )
-                .expect("string");
+                .infallible();
             } else {
-                writeln!(output, "            {name},").expect("string");
+                writeln!(output, "            {name},").infallible();
             }
         }
-        writeln!(output, "        }}\n    }}").expect("string");
+        writeln!(output, "        }}\n    }}").infallible();
         writeln!(
             output,
             "    pub fn {field}_model_identity(&self) -> &str {{ &self.{model} }}\n    pub fn {field}_model_version(&self) -> &str {{ &self.{version} }}",
@@ -1596,9 +1598,9 @@ fn emit_rust_embedding_constructors(
             model = rust_identifier(&facade.model_input_name),
             version = rust_identifier(&facade.version_input_name),
         )
-        .expect("string");
+        .infallible();
     }
-    writeln!(output, "}}\n").expect("string");
+    writeln!(output, "}}\n").infallible();
 }
 
 /// Generates one complete Rust application client including exact reactive
@@ -1637,7 +1639,7 @@ fn emit_rust_reactive_module(
         screaming_snake(reactive.name()),
         reactive.identity().as_bytes()
     )
-    .expect("string");
+    .infallible();
     let client_name = format!("{}Client", pascal(module.contract_lineage().as_str()));
     for operation in reactive.operations() {
         match operation.plan() {
@@ -1650,14 +1652,14 @@ fn emit_rust_reactive_module(
                     output,
                     "#[derive(Clone, Debug, Eq, PartialEq)]\npub struct {name}Consumer {{\n    pub parameters: {name}Params,\n    pub consumer_name: String,\n}}"
                 )
-                .expect("string");
+                .infallible();
                 for event in events {
                     writeln!(
                         output,
                         "#[derive(Clone, Debug, Eq, PartialEq)]\npub struct {name}{} {{",
                         pascal(event.name())
                     )
-                    .expect("string");
+                    .infallible();
                     for field in event.fields() {
                         writeln!(
                             output,
@@ -1665,15 +1667,15 @@ fn emit_rust_reactive_module(
                             rust_identifier(field.name()),
                             rust_reactive_type(field.type_name(), contract)
                         )
-                        .expect("string");
+                        .infallible();
                     }
-                    writeln!(output, "}}\n").expect("string");
+                    writeln!(output, "}}\n").infallible();
                 }
                 writeln!(
                     output,
                     "#[derive(Clone, Debug, Eq, PartialEq)]\npub enum {name}Event {{"
                 )
-                .expect("string");
+                .infallible();
                 for event in events {
                     writeln!(
                         output,
@@ -1681,10 +1683,10 @@ fn emit_rust_reactive_module(
                         pascal(event.name()),
                         pascal(event.name())
                     )
-                    .expect("string");
+                    .infallible();
                 }
-                writeln!(output, "}}\npub type {name}Delivery = riffdb_client_rust::TypedEventDelivery<{name}Event>;").expect("string");
-                writeln!(output, "impl GeneratedEventConsumer for {name}Consumer {{\n    type Event = {name}Event;\n    fn event_consumer(self) -> Result<ApplicationEventConsumer, ApplicationClientError> {{\n        let mut parameters = BTreeMap::new();").expect("string");
+                writeln!(output, "}}\npub type {name}Delivery = riffdb_client_rust::TypedEventDelivery<{name}Event>;").infallible();
+                writeln!(output, "impl GeneratedEventConsumer for {name}Consumer {{\n    type Event = {name}Event;\n    fn event_consumer(self) -> Result<ApplicationEventConsumer, ApplicationClientError> {{\n        let mut parameters = BTreeMap::new();").infallible();
                 for parameter in parameters {
                     writeln!(
                         output,
@@ -1696,7 +1698,7 @@ fn emit_rust_reactive_module(
                             contract,
                         )
                     )
-                    .expect("string");
+                    .infallible();
                 }
                 writeln!(
                     output,
@@ -1704,7 +1706,7 @@ fn emit_rust_reactive_module(
                     screaming_snake(reactive.name()),
                     operation.name().as_str()
                 )
-                .expect("string");
+                .infallible();
                 for event in events {
                     writeln!(
                         output,
@@ -1713,7 +1715,7 @@ fn emit_rust_reactive_module(
                         pascal(event.name()),
                         pascal(event.name())
                     )
-                    .expect("string");
+                    .infallible();
                     for field in event.fields() {
                         writeln!(
                             output,
@@ -1722,24 +1724,24 @@ fn emit_rust_reactive_module(
                             rust_reactive_decoder(field.type_name(), contract),
                             field.name()
                         )
-                        .expect("string");
+                        .infallible();
                     }
-                    writeln!(output, "            }}),").expect("string");
+                    writeln!(output, "            }}),").infallible();
                 }
                 writeln!(
                     output,
                     "            _ => return Err(ApplicationClientError::InvalidResponse),\n        }};\n        if !fields.is_empty() {{ return Err(ApplicationClientError::InvalidResponse); }}\n        Ok(decoded)\n    }}\n}}\nimpl {client_name} {{\n    pub async fn next_{method}(&mut self, consumer: {name}Consumer, options: EventConsumerOptions) -> Result<TypedEventBatch<{name}Event>, ApplicationClientError> {{\n        self.client.consume_generated_events(consumer, options, &self.metadata).await\n    }}\n    pub async fn ack_{method}(&mut self, consumer: &{name}Consumer, delivery: &{name}Delivery) -> Result<ApplicationEventMutationResult, ApplicationClientError> {{\n        let identity = consumer.clone().event_consumer()?;\n        self.client.acknowledge_event(&identity, delivery.evidence(), &self.metadata).await\n    }}\n    pub async fn nack_{method}(&mut self, consumer: &{name}Consumer, delivery: &{name}Delivery, retry_delay_nanos: u64) -> Result<ApplicationEventMutationResult, ApplicationClientError> {{\n        let identity = consumer.clone().event_consumer()?;\n        self.client.negative_acknowledge_event(&identity, delivery.evidence(), retry_delay_nanos, &self.metadata).await\n    }}\n    pub async fn seek_{method}(&mut self, consumer: &{name}Consumer, checkpoint: ApplicationEventCheckpoint) -> Result<ApplicationEventMutationResult, ApplicationClientError> {{\n        let identity = consumer.clone().event_consumer()?;\n        self.client.seek_event_consumer(&identity, checkpoint, &self.metadata).await\n    }}\n    pub async fn seek_protected_{method}(&mut self, consumer: &{name}Consumer, cursor: ApplicationEventProgressCursor) -> Result<ApplicationEventMutationResult, ApplicationClientError> {{\n        let identity = consumer.clone().event_consumer()?;\n        self.client.seek_protected_event_consumer(&identity, cursor, &self.metadata).await\n    }}\n    pub async fn {method}_status(&mut self, consumer: &{name}Consumer) -> Result<Option<ApplicationEventConsumerPublicStatus>, ApplicationClientError> {{\n        let identity = consumer.clone().event_consumer()?;\n        self.client.event_consumer_status(&identity, &self.metadata).await\n    }}\n}}\n",
                     method = snake(operation.name().as_str())
                 )
-                .expect("string");
+                .infallible();
             }
             ReactiveOperationPlanV1::Watch {
                 parameters, query, ..
             } => {
                 let name = pascal(operation.name().as_str());
                 emit_rust_reactive_parameters(output, &name, parameters, contract);
-                writeln!(output, "#[derive(Clone, Debug, Eq, PartialEq)]\npub enum {name}Update {{\n    Snapshot(TypedLiveQuerySnapshot<{}Result>),\n    Patch(riffdb_client_rust::LiveQueryPatch),\n    Reset(TypedLiveQueryReset<{}Result>),\n    Checkpoint(riffdb_client_rust::LiveQueryCheckpoint),\n    Terminal(riffdb_client_rust::LiveQueryTerminal),\n}}", pascal(query.query_name()), pascal(query.query_name())).expect("string");
-                writeln!(output, "impl GeneratedLiveQuery for {name}Params {{\n    type Update = {name}Update;\n    fn live_operation(self) -> Result<ApplicationReactiveOperation, ApplicationClientError> {{\n        let mut parameters = BTreeMap::new();").expect("string");
+                writeln!(output, "#[derive(Clone, Debug, Eq, PartialEq)]\npub enum {name}Update {{\n    Snapshot(TypedLiveQuerySnapshot<{}Result>),\n    Patch(riffdb_client_rust::LiveQueryPatch),\n    Reset(TypedLiveQueryReset<{}Result>),\n    Checkpoint(riffdb_client_rust::LiveQueryCheckpoint),\n    Terminal(riffdb_client_rust::LiveQueryTerminal),\n}}", pascal(query.query_name()), pascal(query.query_name())).infallible();
+                writeln!(output, "impl GeneratedLiveQuery for {name}Params {{\n    type Update = {name}Update;\n    fn live_operation(self) -> Result<ApplicationReactiveOperation, ApplicationClientError> {{\n        let mut parameters = BTreeMap::new();").infallible();
                 for parameter in parameters {
                     writeln!(
                         output,
@@ -1751,7 +1753,7 @@ fn emit_rust_reactive_module(
                             contract,
                         )
                     )
-                    .expect("string");
+                    .infallible();
                 }
                 writeln!(
                     output,
@@ -1762,7 +1764,7 @@ fn emit_rust_reactive_module(
                     pascal(query.query_name()),
                     method = snake(operation.name().as_str())
                 )
-                .expect("string");
+                .infallible();
             }
             ReactiveOperationPlanV1::Subscription {
                 parameters,
@@ -1777,8 +1779,8 @@ fn emit_rust_reactive_module(
                     output,
                     "#[derive(Clone, Debug, Eq, PartialEq)]\npub struct {name}Consumer {{\n    pub parameters: {name}Params,\n    pub consumer_name: String,\n}}\npub type {name}Item = TypedContextualWorkItem<{stream}Event>;"
                 )
-                .expect("string");
-                writeln!(output, "impl GeneratedEventConsumer for {name}Consumer {{\n    type Event = {stream}Event;\n    fn event_consumer(self) -> Result<ApplicationEventConsumer, ApplicationClientError> {{\n        let mut parameters = BTreeMap::new();").expect("string");
+                .infallible();
+                writeln!(output, "impl GeneratedEventConsumer for {name}Consumer {{\n    type Event = {stream}Event;\n    fn event_consumer(self) -> Result<ApplicationEventConsumer, ApplicationClientError> {{\n        let mut parameters = BTreeMap::new();").infallible();
                 for parameter in parameters {
                     writeln!(
                         output,
@@ -1790,7 +1792,7 @@ fn emit_rust_reactive_module(
                             contract,
                         )
                     )
-                    .expect("string");
+                    .infallible();
                 }
                 writeln!(
                     output,
@@ -1799,7 +1801,7 @@ fn emit_rust_reactive_module(
                     operation.name().as_str(),
                     method = snake(operation.name().as_str()),
                 )
-                .expect("string");
+                .infallible();
                 for reaction in reactions {
                     let command = reaction.command_name();
                     writeln!(
@@ -1808,9 +1810,9 @@ fn emit_rust_reactive_module(
                         reaction_method = snake(reaction.reaction_name()),
                         reaction_name = reaction.reaction_name(),
                     )
-                    .expect("string");
+                    .infallible();
                 }
-                writeln!(output, "}}\n").expect("string");
+                writeln!(output, "}}\n").infallible();
             }
         }
     }
@@ -1826,7 +1828,7 @@ fn emit_rust_reactive_parameters(
         output,
         "#[derive(Clone, Debug, Eq, PartialEq)]\npub struct {operation}Params {{"
     )
-    .expect("string");
+    .infallible();
     for parameter in parameters {
         writeln!(
             output,
@@ -1834,9 +1836,9 @@ fn emit_rust_reactive_parameters(
             rust_identifier(parameter.name()),
             rust_reactive_type(parameter.type_name(), contract)
         )
-        .expect("string");
+        .infallible();
     }
-    writeln!(output, "}}\n").expect("string");
+    writeln!(output, "}}\n").infallible();
 }
 
 fn rust_reactive_type(type_name: &str, contract: &ContractBundle) -> &'static str {
@@ -1983,7 +1985,7 @@ fn emit_rust_common_value_types(output: &mut String) {
          #[derive(Clone, Copy, Debug, Eq, PartialEq)]\n\
          pub struct TimestampValue {{\n    pub seconds: i64,\n    pub nanos: u32,\n}}\n"
     )
-    .expect("string");
+    .infallible();
 }
 
 fn emit_rust_generated_query_impl(
@@ -1998,14 +2000,14 @@ fn emit_rust_generated_query_impl(
     let params_name = format!("{name}Params");
     let query_type = format!("{name}Query");
     let plan_hash_constant = format!("{}_QUERY_PLAN_HASH", screaming_snake(name));
-    write!(output, "pub const {plan_hash_constant}: [u8; 32] = [").expect("string");
+    write!(output, "pub const {plan_hash_constant}: [u8; 32] = [").infallible();
     for (index, byte) in plan_hash.iter().enumerate() {
         if index != 0 {
-            write!(output, ", ").expect("string");
+            write!(output, ", ").infallible();
         }
-        write!(output, "0x{byte:02x}").expect("string");
+        write!(output, "0x{byte:02x}").infallible();
     }
-    writeln!(output, "];").expect("string");
+    writeln!(output, "];").infallible();
     let compact_shape = covered_result.and_then(|(result_name, layout, selected_fields)| {
         rust_compact_result_shape(schemas, result_name, layout, selected_fields, contract)
     });
@@ -2017,7 +2019,7 @@ fn emit_rust_generated_query_impl(
          \n    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {{\n\
          \x20       let mut parameters = BTreeMap::new();"
     )
-    .expect("string");
+    .infallible();
     for parameter in schemas.parameters() {
         if let NamedTypeSchema::BoundedLimit { maximum } = parameter.value_type() {
             let field = rust_identifier(parameter.name());
@@ -2025,7 +2027,7 @@ fn emit_rust_generated_query_impl(
                 output,
                 "        if self.0.{field} == 0 || self.0.{field} > {maximum} {{ return Err(ApplicationClientError::InvalidInput); }}"
             )
-            .expect("string");
+            .infallible();
         }
     }
     let cursor = schemas
@@ -2039,7 +2041,7 @@ fn emit_rust_generated_query_impl(
         } else {
             format!("self.0.{field}")
         };
-        writeln!(output, "        let generated_cursor = {expression};").expect("string");
+        writeln!(output, "        let generated_cursor = {expression};").infallible();
     }
     for parameter in schemas.parameters() {
         if is_cursor_type(parameter.value_type()) {
@@ -2056,14 +2058,14 @@ fn emit_rust_generated_query_impl(
             "        parameters.insert(\"{}\".to_owned(), {expression});",
             parameter.name()
         )
-        .expect("string");
+        .infallible();
     }
     if cursor.is_some() {
         writeln!(
             output,
             "        let options = options.with_generated_cursor(generated_cursor)?;"
         )
-        .expect("string");
+        .infallible();
     }
     writeln!(
         output,
@@ -2074,7 +2076,7 @@ fn emit_rust_generated_query_impl(
          \n    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {{\n\
          \x20       let outcome = response.outcome.clone();\n        match outcome.as_str() {{"
     )
-    .expect("string");
+    .infallible();
     for branch in schemas.results() {
         let variant = pascal(branch.name());
         writeln!(
@@ -2082,7 +2084,7 @@ fn emit_rust_generated_query_impl(
             "            \"{}\" => {{\n                let decoded = {name}{variant} {{",
             branch.name()
         )
-        .expect("string");
+        .infallible();
         for field in branch.fields() {
             let nested_name = format!("{name}{variant}{}", pascal(field.name()));
             let expression = rust_decode_top_expression(
@@ -2096,24 +2098,24 @@ fn emit_rust_generated_query_impl(
                 "                    {}: {expression},",
                 rust_identifier(field.name())
             )
-            .expect("string");
+            .infallible();
         }
         writeln!(
             output,
             "                }};\n                if !response.fields.is_empty() {{ return Err(ApplicationClientError::InvalidResponse); }}\n\
              \x20               Ok({name}Result::{variant}(Box::new(decoded)))\n            }},"
         )
-        .expect("string");
+        .infallible();
     }
     writeln!(
         output,
         "            _ => Err(ApplicationClientError::InvalidResponse),\n        }}\n    }}"
     )
-    .expect("string");
+    .infallible();
     if let Some(shape) = compact_shape.as_ref() {
         emit_rust_compact_query_decoder(output, name, shape, contract);
     }
-    writeln!(output, "}}\n").expect("string");
+    writeln!(output, "}}\n").infallible();
     for branch in schemas.results() {
         let variant = pascal(branch.name());
         for field in branch.fields() {
@@ -2276,7 +2278,7 @@ fn emit_rust_compact_query_decoder(
             .join(", "),
         width = shape.fields.len(),
     )
-    .expect("string");
+    .infallible();
     for (index, field) in shape.fields.iter().enumerate() {
         let expression =
             rust_decode_compact_wire_expr(&field.value_type, &format!("value_{index}"), contract);
@@ -2285,14 +2287,14 @@ fn emit_rust_compact_query_decoder(
             "                {}: {expression},",
             rust_identifier(&field.name)
         )
-        .expect("string");
+        .infallible();
     }
     writeln!(
         output,
         "            }});\n        }}\n        Ok({query_name}Result::{variant}(Box::new({query_name}{variant} {{ {result}: values }})))\n    }}",
         result = rust_identifier(&shape.result_name),
     )
-    .expect("string");
+    .infallible();
 }
 
 #[allow(dead_code)]
@@ -2337,7 +2339,7 @@ fn emit_rust_packed_query_decoder(
         maximum_rows = shape.maximum_rows,
         width = shape.fields.len(),
     )
-    .expect("string");
+    .infallible();
     for (index, _) in shape.fields.iter().enumerate() {
         writeln!(
             output,
@@ -2346,9 +2348,9 @@ fn emit_rust_packed_query_decoder(
              \x20           let end = column.offsets[row_index + 1] as usize;\n\
              \x20           let value_{index} = decode_canonical_value(&column.data[start..end]).map_err(|_| ApplicationClientError::InvalidResponse)?;"
         )
-        .expect("string");
+        .infallible();
     }
-    writeln!(output, "            values.push({nested_name} {{").expect("string");
+    writeln!(output, "            values.push({nested_name} {{").infallible();
     for (index, field) in shape.fields.iter().enumerate() {
         let expression =
             rust_decode_packed_expr(&field.value_type, &format!("value_{index}"), contract);
@@ -2357,14 +2359,14 @@ fn emit_rust_packed_query_decoder(
             "                {}: {expression},",
             rust_identifier(&field.name)
         )
-        .expect("string");
+        .infallible();
     }
     writeln!(
         output,
         "            }});\n        }}\n        Ok({query_name}Result::{variant}(Box::new({query_name}{variant} {{ {result}: values }})))\n    }}",
         result = rust_identifier(&shape.result_name),
     )
-    .expect("string");
+    .infallible();
 }
 
 #[allow(dead_code)]
@@ -2551,7 +2553,7 @@ fn emit_typescript_compact_query_decoder(
         maximum_rows = shape.maximum_rows,
         result = ts_identifier(&shape.result_name),
     )
-    .expect("string");
+    .infallible();
     for (index, field) in shape.fields.iter().enumerate() {
         let expression =
             ts_decode_compact_wire_expr(&field.value_type, &format!("row[{index}]!"), contract);
@@ -2560,9 +2562,9 @@ fn emit_typescript_compact_query_decoder(
             "      {}: {expression},",
             ts_identifier(&field.name)
         )
-        .expect("string");
+        .infallible();
     }
-    writeln!(output, "    }};\n  }}) }};\n}}\n").expect("string");
+    writeln!(output, "    }};\n  }}) }};\n}}\n").infallible();
 }
 
 #[allow(dead_code)]
@@ -2579,14 +2581,14 @@ fn emit_typescript_packed_query_decoder(
         .map(|field| format!("{:?}", field.name))
         .collect::<Vec<_>>()
         .join(", ");
-    writeln!(output, "function {function}(value: PackedNamedQueryResult): {query_name}Result {{\n  if (value.outcome !== {outcome:?} || value.resultName !== {result_name:?} || value.entity !== {entity:?}\n      || value.fields.length !== {width} || value.fields.some((field, index) => field !== [{fields}][index])\n      || value.columns.length !== {width} || value.rowCount > {maximum_rows}) throw new Error(\"invalid RiffDB packed result\");\n  for (const column of value.columns) {{ if (column.offsets.length !== value.rowCount + 1 || column.offsets[0] !== 0 || column.offsets.at(-1) !== column.data.length || column.offsets.some((offset, index) => !Number.isInteger(offset) || offset < 0 || offset > column.data.length || (index > 0 && column.offsets[index - 1]! > offset))) throw new Error(\"invalid RiffDB packed result\"); }}\n  const rows = [];\n  for (let row = 0; row < value.rowCount; row += 1) {{ rows.push({{", outcome=shape.outcome, result_name=shape.result_name, entity=shape.entity, width=shape.fields.len(), maximum_rows=shape.maximum_rows).expect("string");
+    writeln!(output, "function {function}(value: PackedNamedQueryResult): {query_name}Result {{\n  if (value.outcome !== {outcome:?} || value.resultName !== {result_name:?} || value.entity !== {entity:?}\n      || value.fields.length !== {width} || value.fields.some((field, index) => field !== [{fields}][index])\n      || value.columns.length !== {width} || value.rowCount > {maximum_rows}) throw new Error(\"invalid RiffDB packed result\");\n  for (const column of value.columns) {{ if (column.offsets.length !== value.rowCount + 1 || column.offsets[0] !== 0 || column.offsets.at(-1) !== column.data.length || column.offsets.some((offset, index) => !Number.isInteger(offset) || offset < 0 || offset > column.data.length || (index > 0 && column.offsets[index - 1]! > offset))) throw new Error(\"invalid RiffDB packed result\"); }}\n  const rows = [];\n  for (let row = 0; row < value.rowCount; row += 1) {{ rows.push({{", outcome=shape.outcome, result_name=shape.result_name, entity=shape.entity, width=shape.fields.len(), maximum_rows=shape.maximum_rows).infallible();
     for (index, field) in shape.fields.iter().enumerate() {
         let expression = ts_decode_packed_expr(
             &field.value_type,
             &format!("packedCell(value, {index}, row)"),
             contract,
         );
-        writeln!(output, "    {}: {expression},", ts_identifier(&field.name)).expect("string");
+        writeln!(output, "    {}: {expression},", ts_identifier(&field.name)).infallible();
     }
     writeln!(
         output,
@@ -2594,7 +2596,7 @@ fn emit_typescript_packed_query_decoder(
         shape.outcome,
         ts_identifier(&shape.result_name)
     )
-    .expect("string");
+    .infallible();
 }
 
 #[allow(dead_code)]
@@ -2722,7 +2724,7 @@ fn emit_rust_query_decoder(output: &mut String, name: &str, value_type: &NamedTy
                  \x20   let value = {name} {{",
                 function = snake(name),
             )
-            .expect("string");
+            .infallible();
             for field in fields {
                 let expression = rust_decode_record_field_expr(
                     field.value_type(),
@@ -2734,14 +2736,14 @@ fn emit_rust_query_decoder(output: &mut String, name: &str, value_type: &NamedTy
                     "        {}: {expression},",
                     rust_identifier(field.name())
                 )
-                .expect("string");
+                .infallible();
             }
             writeln!(
                 output,
                 "    }};\n    if !record.fields.is_empty() {{ return Err(ApplicationClientError::InvalidResponse); }}\n\
                  \x20   Ok(value)\n}}\n"
             )
-            .expect("string");
+            .infallible();
         }
         NamedTypeSchema::Scalar(_)
         | NamedTypeSchema::Cursor
@@ -2911,7 +2913,7 @@ fn emit_rust_entity_types(output: &mut String, contract: &ContractBundle) {
             "#[derive(Clone, Debug, Eq, PartialEq)]\npub struct {} {{",
             entity.name()
         )
-        .expect("string");
+        .infallible();
         for field in wire_model_fields(entity.record()) {
             writeln!(
                 output,
@@ -2919,16 +2921,16 @@ fn emit_rust_entity_types(output: &mut String, contract: &ContractBundle) {
                 rust_identifier(field.name()),
                 rust_contract_type(field.value_type(), contract)
             )
-            .expect("string");
+            .infallible();
         }
-        writeln!(output, "}}\n").expect("string");
+        writeln!(output, "}}\n").infallible();
         writeln!(
             output,
             "fn encode_{}_entity(value: &{}) -> Result<v1::Value, GeneratedCommandError> {{\n    let fields = vec![",
             snake(entity.name()),
             entity.name(),
         )
-        .expect("string");
+        .infallible();
         for field in wire_model_fields(entity.record()) {
             let expression = rust_encode_wire_expr(
                 field.value_type(),
@@ -2940,13 +2942,13 @@ fn emit_rust_entity_types(output: &mut String, contract: &ContractBundle) {
                 "        v1::ValueField {{ field_id: Some({}), name: String::new(), value: Some({expression}) }},",
                 field.id().get(),
             )
-            .expect("string");
+            .infallible();
         }
         writeln!(
             output,
             "    ];\n    Ok(v1::Value {{ kind: Some(WireKind::RecordValue(v1::ValueRecord {{ fields }})) }})\n}}\n"
         )
-        .expect("string");
+        .infallible();
         writeln!(
             output,
             "fn decode_{}_entity(value: v1::Value) -> Result<{}, GeneratedCommandError> {{\n\
@@ -2955,7 +2957,7 @@ fn emit_rust_entity_types(output: &mut String, contract: &ContractBundle) {
             entity.name(),
             entity.name(),
         )
-        .expect("string");
+        .infallible();
         for field in wire_model_fields(entity.record()) {
             let expression = rust_decode_wire_expr(
                 field.value_type(),
@@ -2967,14 +2969,14 @@ fn emit_rust_entity_types(output: &mut String, contract: &ContractBundle) {
                 "        {}: {expression},",
                 rust_identifier(field.name())
             )
-            .expect("string");
+            .infallible();
         }
         writeln!(
             output,
             "    }};\n    if !fields.is_empty() {{ return Err(GeneratedCommandError::InvalidOutcomeShape); }}\n\
              \x20   Ok(entity)\n}}\n"
         )
-        .expect("string");
+        .infallible();
     }
 }
 
@@ -2992,13 +2994,13 @@ fn emit_rust_command_outcome(
          pub enum {name}Outcome {{",
         debug = if redacted { "" } else { "Debug, " }
     )
-    .expect("string");
+    .infallible();
     for outcome in command.outcomes() {
         let variant = pascal(outcome.name());
         if outcome.payload().fields().is_empty() {
-            writeln!(output, "\n    {variant},").expect("string");
+            writeln!(output, "\n    {variant},").infallible();
         } else {
-            writeln!(output, "\n    {variant} {{").expect("string");
+            writeln!(output, "\n    {variant} {{").infallible();
             for field in outcome.payload().fields() {
                 writeln!(
                     output,
@@ -3006,14 +3008,14 @@ fn emit_rust_command_outcome(
                     rust_identifier(field.name()),
                     rust_contract_type(field.value_type(), contract)
                 )
-                .expect("string");
+                .infallible();
             }
-            writeln!(output, "    }},").expect("string");
+            writeln!(output, "    }},").infallible();
         }
     }
-    writeln!(output, "}}\n").expect("string");
+    writeln!(output, "}}\n").infallible();
     if redacted {
-        writeln!(output, "impl std::fmt::Debug for {name}Outcome {{\n    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{ formatter.write_str(\"{name}Outcome([REDACTED])\") }}\n}}\n").expect("string");
+        writeln!(output, "impl std::fmt::Debug for {name}Outcome {{\n    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{ formatter.write_str(\"{name}Outcome([REDACTED])\") }}\n}}\n").infallible();
     }
 }
 
@@ -3035,21 +3037,21 @@ fn emit_rust_generated_command_impl(
         "const {}_PLAN_HASH: [u8; 32] = [",
         screaming_snake(name)
     )
-    .expect("string");
+    .infallible();
     for (index, byte) in command.plan_hash().as_bytes().iter().enumerate() {
         if index != 0 {
-            write!(output, ", ").expect("string");
+            write!(output, ", ").infallible();
         }
-        write!(output, "0x{byte:02x}").expect("string");
+        write!(output, "0x{byte:02x}").infallible();
     }
-    writeln!(output, "];").expect("string");
+    writeln!(output, "];").infallible();
     writeln!(
         output,
         "impl GeneratedCommand for {input_name} {{\n    type Outcome = {name}Outcome;\n\
          \n    fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {{\n\
          "
     )
-    .expect("string");
+    .infallible();
     if let Some(expansion) = command.collection_expansion() {
         let field = command
             .input()
@@ -3067,17 +3069,17 @@ fn emit_rust_generated_command_impl(
             "        if {lower_bound} || self.{field}.len() > {maximum} {{ return Err(GeneratedCommandError::InvalidInputShape); }}",
             maximum = expansion.maximum_elements(),
         )
-        .expect("string");
+        .infallible();
         if let Some(maximum) = expansion.maximum_aggregate_element_bytes() {
             let encoded = rust_encode_wire_expr(expansion.element_type(), "value", contract);
             writeln!(
                 output,
                 "        let mut aggregate_element_bytes = 0usize;\n        for value in &self.{field} {{\n            let encoded = {encoded};\n            aggregate_element_bytes = aggregate_element_bytes.checked_add(wire_canonical_value_encoded_len(&encoded)?).ok_or(GeneratedCommandError::InvalidInputShape)?;\n            if aggregate_element_bytes > {maximum} {{ return Err(GeneratedCommandError::InvalidInputShape); }}\n        }}"
             )
-            .expect("string");
+            .infallible();
         }
     }
-    writeln!(output, "        let fields = vec![").expect("string");
+    writeln!(output, "        let fields = vec![").infallible();
     for field in command.input().record().fields() {
         let expression = rust_encode_wire_expr(
             field.value_type(),
@@ -3089,13 +3091,13 @@ fn emit_rust_generated_command_impl(
             "            wire_named_field(\"{}\", {expression}),",
             field.name()
         )
-        .expect("string");
+        .infallible();
     }
     writeln!(
         output,
         "        ];\n        IdempotentCommand::new(\"{name}\", Some(CONTRACT_VERSION), wire_record(fields)).map_err(Into::into)\n    }}"
     )
-    .expect("string");
+    .infallible();
     if let Some(idempotency_field) = idempotency_field {
         writeln!(
             output,
@@ -3104,14 +3106,14 @@ fn emit_rust_generated_command_impl(
              contract_lineage: CONTRACT_LINEAGE.to_owned(),\n            command_name: \"{name}\".to_owned(),\n            \
              idempotency_key: self.{idempotency_field}.clone(),\n            outcome_uri: None,\n        }})\n    }}"
         )
-        .expect("string");
+        .infallible();
     } else {
         writeln!(
             output,
             "\n    fn outcome_request(&self, _request_id: riffdb_client_rust::RequestId) -> Result<v1::GetOutcomeRequest, GeneratedCommandError> {{\n\
              \x20       Err(GeneratedCommandError::InvalidInputShape)\n    }}"
         )
-        .expect("string");
+        .infallible();
     }
     let fields_mutability = if command
         .outcomes()
@@ -3128,7 +3130,7 @@ fn emit_rust_generated_command_impl(
          \x20       let {fields_mutability}fields = wire_outcome_fields(response, &{}_PLAN_HASH)?;\n        match response.outcome_type.as_str() {{",
         screaming_snake(name)
     )
-    .expect("string");
+    .infallible();
     for outcome in command.outcomes() {
         let variant = pascal(outcome.name());
         if outcome.payload().fields().is_empty() {
@@ -3137,14 +3139,14 @@ fn emit_rust_generated_command_impl(
                 "            \"{}\" => if fields.is_empty() {{ Ok(Self::Outcome::{variant}) }} else {{ Err(GeneratedCommandError::InvalidOutcomeShape) }},",
                 outcome.name()
             )
-            .expect("string");
+            .infallible();
         } else {
             writeln!(
                 output,
                 "            \"{}\" => {{\n                let outcome = Self::Outcome::{variant} {{",
                 outcome.name()
             )
-            .expect("string");
+            .infallible();
             for field in outcome.payload().fields() {
                 let expression = rust_decode_wire_expr(
                     field.value_type(),
@@ -3156,27 +3158,27 @@ fn emit_rust_generated_command_impl(
                     "                    {}: {expression},",
                     rust_identifier(field.name())
                 )
-                .expect("string");
+                .infallible();
             }
             writeln!(
                 output,
                 "                }};\n                if !fields.is_empty() {{ return Err(GeneratedCommandError::InvalidOutcomeShape); }}\n\
                  \x20               Ok(outcome)\n            }},"
             )
-            .expect("string");
+            .infallible();
         }
     }
     writeln!(
         output,
         "            _ => Err(GeneratedCommandError::InvalidOutcomeShape),\n        }}\n    }}"
     )
-    .expect("string");
+    .infallible();
     if !workflow_revisions.is_empty() {
         writeln!(
             output,
             "\n    fn workflow_successor_revisions(&self, response: &v1::ExecuteCommandResponse) -> Result<Vec<riffdb_client_rust::generated::WorkflowSuccessorRevision>, GeneratedCommandError> {{\n        if response.outcome_type != {success_outcome:?} {{ return Ok(Vec::new()); }}\n        Ok(vec!["
         )
-        .expect("string");
+        .infallible();
         for revision in workflow_revisions {
             writeln!(
                 output,
@@ -3184,11 +3186,11 @@ fn emit_rust_generated_command_impl(
                 revision.binding_name,
                 rust_identifier(revision.input_name),
             )
-            .expect("string");
+            .infallible();
         }
-        writeln!(output, "        ])\n    }}").expect("string");
+        writeln!(output, "        ])\n    }}").infallible();
     }
-    writeln!(output, "}}\n").expect("string");
+    writeln!(output, "}}\n").infallible();
 }
 
 fn emit_rust_client_facade(
@@ -3206,7 +3208,7 @@ fn emit_rust_client_facade(
          impl {client_name} {{\n    pub const fn new(client: StableApplicationClient, metadata: CallMetadata, \
          command_attempts: AttemptBudget) -> Self {{\n        Self {{ client, metadata, command_attempts }}\n    }}\n"
     )
-    .expect("string");
+    .infallible();
     writeln!(
         output,
         "    /// Selects ADR-0127's optional bounded application-operation session for this exact generated identity.\n\
@@ -3220,7 +3222,7 @@ fn emit_rust_client_facade(
          \x20   /// Closes the optional bounded session and returns to unary transport.\n\
          \x20   pub fn close_bounded_session(&mut self) {{ self.client.close_bounded_session(); }}\n"
     )
-    .expect("string");
+    .infallible();
     for query in module.queries() {
         let name = query.name();
         writeln!(
@@ -3239,7 +3241,7 @@ fn emit_rust_client_facade(
              \x20\x20\x20\x20\x20\x20\x20\x20self.client.execute_generated_query({name}Query(parameters), options, &self.metadata).await\n    }}\n",
             function = snake(name)
         )
-        .expect("string");
+        .infallible();
     }
     for command in commands {
         let name = command.name();
@@ -3250,7 +3252,7 @@ fn emit_rust_client_facade(
              \x20       self.client.execute_generated_command(&input, self.command_attempts, &self.metadata).await.map_err(Into::into)\n    }}\n",
             function = snake(name)
         )
-        .expect("string");
+        .infallible();
         writeln!(
             output,
             "    pub async fn {function}_batch(&self, inputs: Vec<{name}Input>, options: GeneratedBatchOptions) \
@@ -3258,7 +3260,7 @@ fn emit_rust_client_facade(
              \x20       self.client.execute_generated_command_batch(inputs, options, self.command_attempts, &self.metadata).await\n    }}\n",
             function = snake(name)
         )
-        .expect("string");
+        .infallible();
         writeln!(
             output,
             "    pub async fn {function}_batch_with_progress<F>(&self, inputs: Vec<{name}Input>, options: GeneratedBatchOptions, progress: F) \
@@ -3266,7 +3268,7 @@ fn emit_rust_client_facade(
              \x20       self.client.execute_generated_command_batch_with_progress(inputs, options, self.command_attempts, &self.metadata, progress).await\n    }}\n",
             function = snake(name)
         )
-        .expect("string");
+        .infallible();
     }
     for inspection in &vector_inspections {
         let function = format!(
@@ -3293,10 +3295,10 @@ fn emit_rust_client_facade(
                 entity = inspection.entity,
                 field = inspection.field,
             )
-            .expect("string");
+            .infallible();
         }
     }
-    writeln!(output, "}}\n").expect("string");
+    writeln!(output, "}}\n").infallible();
 }
 
 fn rust_application_partition_expr(value_type: &ValueType, access: &str) -> String {
@@ -3799,13 +3801,13 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
         .collect::<BTreeMap<_, _>>();
     let compact_helper_usage = typescript_compact_helper_usage(module, contract);
     let mut output = String::new();
-    writeln!(output, "// @generated by riffdb-query-module; do not edit.").expect("string");
+    writeln!(output, "// @generated by riffdb-query-module; do not edit.").infallible();
     writeln!(
         output,
         "export const QUERY_MODULE_HASH = \"{}\" as const;",
         hex(module.identity().as_bytes())
     )
-    .expect("string");
+    .infallible();
     writeln!(
         output,
         "export const CONTRACT_LINEAGE = \"{}\" as const;\nexport const CONTRACT_VERSION = {} as const;\n\
@@ -3814,7 +3816,7 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
         module.contract_version().get(),
         hex(module.contract_hash().as_bytes())
     )
-    .expect("string");
+    .infallible();
     emit_typescript_application_errors(&mut output);
     let vector_schema = if contract.schema().vector_field_specs().is_empty() {
         ""
@@ -3870,7 +3872,7 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
          export interface VectorModelVersionItem {{ readonly entityKey: Uint8Array; readonly model: string; readonly modelVersion: string; readonly embeddingWrite: bigint; }}\n\
          export type VectorModelVersionResult = {{ readonly kind: \"model_version_summary\"; readonly currentCount: bigint; readonly outdatedCount: bigint }} | {{ readonly kind: \"outdated_model_entities\"; readonly items: ReadonlyArray<VectorModelVersionItem>; readonly observedFrontier: bigint | null }};\n"
     )
-    .expect("string");
+    .infallible();
     emit_typescript_compact_helpers(&mut output, compact_helper_usage);
     for query in module.queries() {
         let name = query.name();
@@ -3895,14 +3897,14 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
             output,
             "export const {constant} = \"{plan_hash}\" as const;"
         )
-        .expect("string");
+        .infallible();
         if !query.plan().secret_outputs().is_empty() {
             writeln!(
                 output,
                 "export const {}_SECRET_OUTPUTS = [",
                 screaming_snake(name)
             )
-            .expect("string");
+            .infallible();
             for secret in query.plan().secret_outputs() {
                 writeln!(
                     output,
@@ -3911,11 +3913,11 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
                     secret.entity(),
                     secret.field()
                 )
-                .expect("string");
+                .infallible();
             }
-            writeln!(output, "] as const;").expect("string");
+            writeln!(output, "] as const;").infallible();
         }
-        writeln!(output, "export interface {name}Params {{").expect("string");
+        writeln!(output, "export interface {name}Params {{").infallible();
         for parameter in schemas.parameters() {
             let optional = if parameter.has_default()
                 || is_cursor_type(parameter.value_type())
@@ -3932,13 +3934,13 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
                 optional,
                 ts_query_parameter_type(query, parameter)
             )
-            .expect("string");
+            .infallible();
         }
-        writeln!(output, "}}\n").expect("string");
+        writeln!(output, "}}\n").infallible();
         for branch in schemas.results() {
             let branch_name = format!("{name}{}", pascal(branch.name()));
-            writeln!(output, "export interface {branch_name} {{").expect("string");
-            writeln!(output, "  readonly outcome: \"{}\";", branch.name()).expect("string");
+            writeln!(output, "export interface {branch_name} {{").infallible();
+            writeln!(output, "  readonly outcome: \"{}\";", branch.name()).infallible();
             for field in branch.fields() {
                 writeln!(
                     output,
@@ -3946,18 +3948,18 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
                     ts_identifier(field.name()),
                     ts_query_type(field.value_type())
                 )
-                .expect("string");
+                .infallible();
             }
-            writeln!(output, "}}\n").expect("string");
+            writeln!(output, "}}\n").infallible();
         }
-        write!(output, "export type {name}Result = ").expect("string");
+        write!(output, "export type {name}Result = ").infallible();
         for (index, branch) in schemas.results().iter().enumerate() {
             if index != 0 {
-                write!(output, " | ").expect("string");
+                write!(output, " | ").infallible();
             }
-            write!(output, "{name}{}", pascal(branch.name())).expect("string");
+            write!(output, "{name}{}", pascal(branch.name())).infallible();
         }
-        writeln!(output, ";\n").expect("string");
+        writeln!(output, ";\n").infallible();
         if let Some(shape) = compact_shape.as_ref() {
             emit_typescript_compact_query_decoder(&mut output, name, shape, contract);
         }
@@ -3970,7 +3972,7 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
                 screaming_snake(name),
                 screaming_snake(name),
             )
-            .expect("string");
+            .infallible();
         }
         let parameter_schema = ts_named_record_schema(
             schemas
@@ -4026,7 +4028,7 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
              }}\n",
             function = camel(name),
         )
-        .expect("string");
+        .infallible();
     }
 
     let mut commands = contract
@@ -4040,7 +4042,7 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
         let (driver_operation_name, driver_input_schema_hash) = command_driver_operations
             .get(name)
             .expect("generated command operation");
-        writeln!(output, "export interface {name}Input {{").expect("string");
+        writeln!(output, "export interface {name}Input {{").infallible();
         for field in command.input().record().fields() {
             writeln!(
                 output,
@@ -4048,9 +4050,9 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
                 ts_identifier(field.name()),
                 ts_contract_type(field.value_type(), contract)
             )
-            .expect("string");
+            .infallible();
         }
-        writeln!(output, "}}\n").expect("string");
+        writeln!(output, "}}\n").infallible();
         let secret_outputs = command_secret_outputs(command, contract);
         if !secret_outputs.is_empty() {
             writeln!(
@@ -4058,24 +4060,24 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
                 "export const {}_SECRET_OUTPUTS = [",
                 screaming_snake(name)
             )
-            .expect("string");
+            .infallible();
             for secret in &secret_outputs {
                 writeln!(
                     output,
                     "  {{ outcome: {:?}, field: {:?}, entity: {:?}, sourceField: {:?} }},",
                     secret.outcome, secret.field, secret.entity, secret.source_field
                 )
-                .expect("string");
+                .infallible();
             }
-            writeln!(output, "] as const;\n").expect("string");
+            writeln!(output, "] as const;\n").infallible();
         }
         emit_typescript_embedding_constructors(&mut output, command, contract);
-        write!(output, "export type {name}Outcome = ").expect("string");
+        write!(output, "export type {name}Outcome = ").infallible();
         for (index, outcome) in command.outcomes().iter().enumerate() {
             if index != 0 {
-                write!(output, " | ").expect("string");
+                write!(output, " | ").infallible();
             }
-            write!(output, "{{ readonly outcome: \"{}\"", outcome.name()).expect("string");
+            write!(output, "{{ readonly outcome: \"{}\"", outcome.name()).infallible();
             for field in outcome.payload().fields() {
                 write!(
                     output,
@@ -4083,11 +4085,11 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
                     ts_identifier(field.name()),
                     ts_contract_type(field.value_type(), contract)
                 )
-                .expect("string");
+                .infallible();
             }
-            write!(output, " }}").expect("string");
+            write!(output, " }}").infallible();
         }
-        writeln!(output, ";\n").expect("string");
+        writeln!(output, ";\n").infallible();
         if !secret_outputs.is_empty() {
             writeln!(
                 output,
@@ -4097,7 +4099,7 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
                 screaming_snake(name),
                 screaming_snake(name),
             )
-            .expect("string");
+            .infallible();
         }
         let idempotency = command
             .idempotency_input()
@@ -4178,7 +4180,7 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
             constant = screaming_snake(name),
             plan_hash = hex(command.plan_hash().as_bytes()),
         )
-        .expect("string");
+        .infallible();
     }
     emit_typescript_client_facade(
         &mut output,
@@ -4212,7 +4214,7 @@ fn emit_typescript_embedding_constructors(
             facade.model_version,
             command = screaming_snake(command_name),
         )
-        .expect("string");
+        .infallible();
         writeln!(
             output,
             "export function {helper}(input: Omit<{command_name}Input, {model:?} | {version:?}>): {command_name}Input {{\n  return {{ ...input, {model_key}: {command}_{field_constant}_MODEL_IDENTITY, {version_key}: {command}_{field_constant}_MODEL_VERSION }};\n}}\nexport function {helper}Model(input: {command_name}Input): {{ readonly identity: string; readonly version: string }} {{\n  return {{ identity: input.{model_key}, version: input.{version_key} }};\n}}\n",
@@ -4220,7 +4222,7 @@ fn emit_typescript_embedding_constructors(
             version = version_key,
             command = screaming_snake(command_name),
         )
-        .expect("string");
+        .infallible();
     }
 }
 
@@ -4264,7 +4266,7 @@ fn emit_typescript_reactive_module(
         screaming_snake(reactive.name()),
         hex(reactive.identity().as_bytes())
     )
-    .expect("string");
+    .infallible();
     output.push_str(
         r#"export type ReactiveParameterSchema =
   | { readonly kind: "bool" | "i64" | "u64" | "string" | "uuid" | "bytes" | "date" | "timestamp" | "cursor" }
@@ -4367,7 +4369,7 @@ async function* applicationSseRelay<T>(authorized: () => Promise<boolean>, updat
                         pascal(event.name()),
                         event.name()
                     )
-                    .expect("string");
+                    .infallible();
                     for field in event.fields() {
                         writeln!(
                             output,
@@ -4375,22 +4377,22 @@ async function* applicationSseRelay<T>(authorized: () => Promise<boolean>, updat
                             ts_identifier(field.name()),
                             ts_reactive_type(field.type_name(), contract)
                         )
-                        .expect("string");
+                        .infallible();
                     }
-                    writeln!(output, "}}\n").expect("string");
+                    writeln!(output, "}}\n").infallible();
                 }
-                write!(output, "export type {name}Event = ").expect("string");
+                write!(output, "export type {name}Event = ").infallible();
                 for (index, event) in events.iter().enumerate() {
                     if index != 0 {
                         output.push_str(" | ");
                     }
-                    write!(output, "{name}{}", pascal(event.name())).expect("string");
+                    write!(output, "{name}{}", pascal(event.name())).infallible();
                 }
                 writeln!(
                     output,
                     ";\nexport type {name}Delivery = ReactiveEventDelivery<{name}Event>;\nexport type {name}Stream = AsyncIterable<ReactiveConsumerBatch<{name}Event>>;"
                 )
-                .expect("string");
+                .infallible();
             }
             ReactiveOperationPlanV1::Watch {
                 parameters, query, ..
@@ -4402,7 +4404,7 @@ async function* applicationSseRelay<T>(authorized: () => Promise<boolean>, updat
                     "export type {name}Update = LiveQueryUpdate<{}Result>;",
                     query.query_name()
                 )
-                .expect("string");
+                .infallible();
             }
             ReactiveOperationPlanV1::Subscription {
                 parameters,
@@ -4416,7 +4418,7 @@ async function* applicationSseRelay<T>(authorized: () => Promise<boolean>, updat
                     output,
                     "export type {name}Item = ContextualWorkItem<{stream}Event>;\nexport type {name}Batch = ContextualBatch<{stream}Event>;"
                 )
-                .expect("string");
+                .infallible();
             }
         }
     }
@@ -4428,7 +4430,7 @@ async function* applicationSseRelay<T>(authorized: () => Promise<boolean>, updat
         output,
         "export class {client_name} {{\n  public constructor(private readonly transport: ReactiveApplicationTransport) {{}}"
     )
-    .expect("string");
+    .infallible();
     for operation in reactive.operations() {
         let operation_driver_map =
             typescript_driver_action_map(operation.name().as_str(), &driver_operations);
@@ -4442,7 +4444,7 @@ async function* applicationSseRelay<T>(authorized: () => Promise<boolean>, updat
                     operation.name().as_str(),
                     method = camel(operation.name().as_str())
                 )
-                .expect("string");
+                .infallible();
                 writeln!(
                     output,
                     "  public ack{method}(parameters: {name}Params, consumerName: string, delivery: {name}Delivery): Promise<ReactiveEventMutationResult> {{ return this.transport.acknowledgeEvent({{ driverOperations: {operation_driver_map}, reactiveModuleHash: {module}_REACTIVE_MODULE_HASH, operationName: {operation:?}, parameters, parameterSchema: {name}ParameterSchema, consumerName }}, delivery); }}\n  public nack{method}(parameters: {name}Params, consumerName: string, delivery: {name}Delivery, retryDelayMs = 0): Promise<ReactiveEventMutationResult> {{ return this.transport.negativeAcknowledgeEvent({{ driverOperations: {operation_driver_map}, reactiveModuleHash: {module}_REACTIVE_MODULE_HASH, operationName: {operation:?}, parameters, parameterSchema: {name}ParameterSchema, consumerName }}, delivery, retryDelayMs); }}\n  public seek{method}(parameters: {name}Params, consumerName: string, checkpoint = \"before-first\"): Promise<ReactiveEventMutationResult> {{ return this.transport.seekEventConsumer({{ driverOperations: {operation_driver_map}, reactiveModuleHash: {module}_REACTIVE_MODULE_HASH, operationName: {operation:?}, parameters, parameterSchema: {name}ParameterSchema, consumerName }}, checkpoint); }}\n  public {status_method}Status(parameters: {name}Params, consumerName: string): Promise<ReactiveConsumerStatus | undefined> {{ return this.transport.eventConsumerStatus({{ driverOperations: {operation_driver_map}, reactiveModuleHash: {module}_REACTIVE_MODULE_HASH, operationName: {operation:?}, parameters, parameterSchema: {name}ParameterSchema, consumerName }}); }}",
@@ -4451,7 +4453,7 @@ async function* applicationSseRelay<T>(authorized: () => Promise<boolean>, updat
                     module = screaming_snake(reactive.name()),
                     operation = operation.name().as_str(),
                 )
-                .expect("string");
+                .infallible();
             }
             ReactiveOperationPlanV1::Watch { .. } => {
                 let name = pascal(operation.name().as_str());
@@ -4462,7 +4464,7 @@ async function* applicationSseRelay<T>(authorized: () => Promise<boolean>, updat
                     operation.name().as_str(),
                     method = pascal(operation.name().as_str())
                 )
-                .expect("string");
+                .infallible();
             }
             ReactiveOperationPlanV1::Subscription { reactions, .. } => {
                 let name = pascal(operation.name().as_str());
@@ -4476,7 +4478,7 @@ async function* applicationSseRelay<T>(authorized: () => Promise<boolean>, updat
                     "  public next{name}(parameters: {name}Params, consumerName: string, maximumWaitMs = 30000, signal?: AbortSignal): Promise<{name}Batch> {{ return this.transport.consumeContextualSubscription({request}, maximumWaitMs, signal); }}\n  public ack{name}(parameters: {name}Params, consumerName: string, item: {name}Item): Promise<ReactiveEventMutationResult> {{ return this.transport.acknowledgeContextualItem({request}, item); }}\n  public nack{name}(parameters: {name}Params, consumerName: string, item: {name}Item, retryDelayMs = 0): Promise<ReactiveEventMutationResult> {{ return this.transport.negativeAcknowledgeContextualItem({request}, item, retryDelayMs); }}\n  public {status}Status(parameters: {name}Params, consumerName: string): Promise<ReactiveConsumerStatus | undefined> {{ return this.transport.contextualSubscriptionStatus({request}); }}",
                     status = camel(operation.name().as_str()),
                 )
-                .expect("string");
+                .infallible();
                 for reaction in reactions {
                     let command = reaction.command_name();
                     let command_plan = contract
@@ -4493,16 +4495,16 @@ async function* applicationSseRelay<T>(authorized: () => Promise<boolean>, updat
                         reaction_name = reaction.reaction_name(),
                         command_function = camel(command),
                     )
-                    .expect("string");
+                    .infallible();
                     if workflow_revisions.is_empty() {
-                        writeln!(output, "    return result; }}").expect("string");
+                        writeln!(output, "    return result; }}").infallible();
                     } else {
-                        writeln!(output, "    if (result.outcome.outcome !== {success_outcome:?}) return {{ ...result, workflowRevisions: [] }};").expect("string");
+                        writeln!(output, "    if (result.outcome.outcome !== {success_outcome:?}) return {{ ...result, workflowRevisions: [] }};").infallible();
                         for revision in &workflow_revisions {
-                            writeln!(output, "    if (input.{} === 18446744073709551615n) throw new Error(\"RiffDB workflow successor revision overflow\");", ts_identifier(revision.input_name)).expect("string");
+                            writeln!(output, "    if (input.{} === 18446744073709551615n) throw new Error(\"RiffDB workflow successor revision overflow\");", ts_identifier(revision.input_name)).infallible();
                         }
                         writeln!(output, "    return {{ ...result, workflowRevisions: [")
-                            .expect("string");
+                            .infallible();
                         for revision in workflow_revisions {
                             writeln!(
                                 output,
@@ -4510,15 +4512,15 @@ async function* applicationSseRelay<T>(authorized: () => Promise<boolean>, updat
                                 revision.binding_name,
                                 ts_identifier(revision.input_name)
                             )
-                            .expect("string");
+                            .infallible();
                         }
-                        writeln!(output, "    ] }}; }}").expect("string");
+                        writeln!(output, "    ] }}; }}").infallible();
                     }
                 }
             }
         }
     }
-    writeln!(output, "}}\n").expect("string");
+    writeln!(output, "}}\n").infallible();
     for operation in reactive.operations() {
         if let ReactiveOperationPlanV1::Watch { query, .. } = operation.plan() {
             let name = pascal(operation.name().as_str());
@@ -4527,7 +4529,7 @@ async function* applicationSseRelay<T>(authorized: () => Promise<boolean>, updat
                 "export function create{name}Store(): LiveStore<{}Result> {{ return createLiveStore(); }}\nexport function create{name}SseRelay(authorized: () => Promise<boolean>, updates: AsyncIterable<{name}Update>): AsyncIterable<string> {{ return applicationSseRelay(authorized, updates); }}",
                 query.query_name()
             )
-            .expect("string");
+            .infallible();
         }
     }
 }
@@ -4538,7 +4540,7 @@ fn emit_typescript_reactive_parameters(
     parameters: &[riffdb_query_ir::ReactiveParameterV1],
     contract: &ContractBundle,
 ) {
-    writeln!(output, "export interface {operation}Params {{").expect("string");
+    writeln!(output, "export interface {operation}Params {{").infallible();
     for parameter in parameters {
         writeln!(
             output,
@@ -4546,14 +4548,14 @@ fn emit_typescript_reactive_parameters(
             ts_identifier(parameter.name()),
             ts_reactive_type(parameter.type_name(), contract)
         )
-        .expect("string");
+        .infallible();
     }
-    writeln!(output, "}}").expect("string");
+    writeln!(output, "}}").infallible();
     writeln!(
         output,
         "export const {operation}ParameterSchema: ReactiveParameterSchema = {{ kind: \"record\", fields: ["
     )
-    .expect("string");
+    .infallible();
     for parameter in parameters {
         writeln!(
             output,
@@ -4561,9 +4563,9 @@ fn emit_typescript_reactive_parameters(
             parameter.name(),
             ts_reactive_schema(parameter.type_name(), contract)
         )
-        .expect("string");
+        .infallible();
     }
-    writeln!(output, "] }};\n").expect("string");
+    writeln!(output, "] }};\n").infallible();
 }
 
 fn typescript_driver_action_map(
@@ -4803,7 +4805,7 @@ fn emit_typescript_client_facade(
          private readonly commandAttemptBudget: number,\n  ) {{\n    if (!Number.isInteger(commandAttemptBudget) || commandAttemptBudget < 1) \
          throw new Error(\"invalid command attempt budget\");\n  }}\n"
     )
-    .expect("string");
+    .infallible();
     for query in module.queries() {
         let name = query.name();
         let cursor = query
@@ -4837,7 +4839,7 @@ fn emit_typescript_client_facade(
              if (!acceptsIdentity(request, result.identity)) throw new Error(\"RiffDB application identity mismatch\");\n    return result;\n  }}\n",
             function = camel(name)
         )
-        .expect("string");
+        .infallible();
     }
     for command in commands {
         let name = command.name();
@@ -4852,24 +4854,24 @@ fn emit_typescript_client_facade(
             function = camel(name),
             constant = screaming_snake(name),
         )
-        .expect("string");
+        .infallible();
         if workflow_revisions.is_empty() {
-            writeln!(output, "    return result;\n  }}\n").expect("string");
+            writeln!(output, "    return result;\n  }}\n").infallible();
         } else {
             writeln!(
                 output,
                 "    if (result.outcome.outcome !== {success_outcome:?}) return {{ ...result, workflowRevisions: [] }};"
             )
-            .expect("string");
+            .infallible();
             for revision in &workflow_revisions {
                 writeln!(
                     output,
                     "    if (input.{} === 18446744073709551615n) throw new Error(\"RiffDB workflow successor revision overflow\");",
                     ts_identifier(revision.input_name),
                 )
-                .expect("string");
+                .infallible();
             }
-            writeln!(output, "    return {{ ...result, workflowRevisions: [").expect("string");
+            writeln!(output, "    return {{ ...result, workflowRevisions: [").infallible();
             for revision in workflow_revisions {
                 writeln!(
                     output,
@@ -4877,9 +4879,9 @@ fn emit_typescript_client_facade(
                     revision.binding_name,
                     ts_identifier(revision.input_name),
                 )
-                .expect("string");
+                .infallible();
             }
-            writeln!(output, "    ] }};\n  }}\n").expect("string");
+            writeln!(output, "    ] }};\n  }}\n").infallible();
         }
         writeln!(
             output,
@@ -4900,7 +4902,7 @@ fn emit_typescript_client_facade(
              items.sort((left, right) => left.index - right.index);\n    return {{ items, checkpoint }};\n  }}\n",
             function = camel(name),
         )
-        .expect("string");
+        .infallible();
     }
     for inspection in vector_inspection_facades(module, contract) {
         let method = format!(
@@ -4931,36 +4933,36 @@ fn emit_typescript_client_facade(
                 entity = inspection.entity,
                 field = inspection.field,
             )
-            .expect("string");
+            .infallible();
         }
     }
-    writeln!(output, "}}").expect("string");
+    writeln!(output, "}}").infallible();
 }
 
 fn emit_rust_identity(output: &mut String, module: &QueryModule) {
-    write!(output, "pub const QUERY_MODULE_HASH: [u8; 32] = [").expect("string");
+    write!(output, "pub const QUERY_MODULE_HASH: [u8; 32] = [").infallible();
     for (index, byte) in module.identity().as_bytes().iter().enumerate() {
         if index != 0 {
-            write!(output, ", ").expect("string");
+            write!(output, ", ").infallible();
         }
-        write!(output, "0x{byte:02x}").expect("string");
+        write!(output, "0x{byte:02x}").infallible();
     }
-    writeln!(output, "];").expect("string");
+    writeln!(output, "];").infallible();
     writeln!(
         output,
         "pub const CONTRACT_LINEAGE: &str = \"{}\";\npub const CONTRACT_VERSION: u64 = {};\n",
         module.contract_lineage().as_str(),
         module.contract_version().get()
     )
-    .expect("string");
-    write!(output, "pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [").expect("string");
+    .infallible();
+    write!(output, "pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [").infallible();
     for (index, byte) in module.contract_hash().as_bytes().iter().enumerate() {
         if index != 0 {
-            write!(output, ", ").expect("string");
+            write!(output, ", ").infallible();
         }
-        write!(output, "0x{byte:02x}").expect("string");
+        write!(output, "0x{byte:02x}").infallible();
     }
-    writeln!(output, "];\n").expect("string");
+    writeln!(output, "];\n").infallible();
 }
 
 fn emit_rust_contract_enums(output: &mut String, contract: &ContractBundle) {
@@ -4970,15 +4972,15 @@ fn emit_rust_contract_enums(output: &mut String, contract: &ContractBundle) {
             output,
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub enum {name} {{"
         )
-        .expect("string");
+        .infallible();
         for variant in enumeration.variants() {
-            writeln!(output, "    {},", pascal(variant.name())).expect("string");
+            writeln!(output, "    {},", pascal(variant.name())).infallible();
         }
         writeln!(
             output,
             "}}\nimpl {name} {{\n    pub const fn as_str(self) -> &'static str {{ match self {{"
         )
-        .expect("string");
+        .infallible();
         for variant in enumeration.variants() {
             writeln!(
                 output,
@@ -4986,13 +4988,13 @@ fn emit_rust_contract_enums(output: &mut String, contract: &ContractBundle) {
                 pascal(variant.name()),
                 variant.name()
             )
-            .expect("string");
+            .infallible();
         }
         writeln!(
             output,
             "    }} }}\n    pub fn from_name(value: &str) -> Option<Self> {{ match value {{"
         )
-        .expect("string");
+        .infallible();
         for variant in enumeration.variants() {
             writeln!(
                 output,
@@ -5000,9 +5002,9 @@ fn emit_rust_contract_enums(output: &mut String, contract: &ContractBundle) {
                 variant.name(),
                 pascal(variant.name())
             )
-            .expect("string");
+            .infallible();
         }
-        writeln!(output, "        _ => None,\n    }} }}\n}}\n").expect("string");
+        writeln!(output, "        _ => None,\n    }} }}\n}}\n").infallible();
     }
 }
 
@@ -5027,13 +5029,13 @@ fn emit_rust_fields_struct<'a>(
             output,
             "#[derive(Clone, Eq, PartialEq)]\npub struct {name} {{"
         )
-        .expect("string");
+        .infallible();
     } else {
         writeln!(
             output,
             "#[derive(Clone, Debug, Eq, PartialEq)]\npub struct {name} {{"
         )
-        .expect("string");
+        .infallible();
     }
     for (field, value_type) in fields {
         writeln!(
@@ -5048,11 +5050,11 @@ fn emit_rust_fields_struct<'a>(
                 rust_query_type(value_type, &format!("{name}{}", pascal(field)))
             }
         )
-        .expect("string");
+        .infallible();
     }
-    writeln!(output, "}}\n").expect("string");
+    writeln!(output, "}}\n").infallible();
     if redacted_debug {
-        writeln!(output, "impl std::fmt::Debug for {name} {{\n    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{\n        formatter.write_str(\"{name} {{ <secret outputs redacted> }}\")\n    }}\n}}\n").expect("string");
+        writeln!(output, "impl std::fmt::Debug for {name} {{\n    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{\n        formatter.write_str(\"{name} {{ <secret outputs redacted> }}\")\n    }}\n}}\n").infallible();
     }
 }
 
@@ -5083,13 +5085,13 @@ fn emit_rust_nested_type(
                     output,
                     "#[derive(Clone, Eq, PartialEq)]\npub struct {name} {{"
                 )
-                .expect("string");
+                .infallible();
             } else {
                 writeln!(
                     output,
                     "#[derive(Clone, Debug, Eq, PartialEq)]\npub struct {name} {{"
                 )
-                .expect("string");
+                .infallible();
             }
             for field in fields {
                 writeln!(
@@ -5101,11 +5103,11 @@ fn emit_rust_nested_type(
                         &format!("{name}{}", pascal(field.name()))
                     )
                 )
-                .expect("string");
+                .infallible();
             }
-            writeln!(output, "}}\n").expect("string");
+            writeln!(output, "}}\n").infallible();
             if redacted_debug {
-                writeln!(output, "impl std::fmt::Debug for {name} {{\n    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{\n        formatter.write_str(\"{name} {{ <secret outputs redacted> }}\")\n    }}\n}}\n").expect("string");
+                writeln!(output, "impl std::fmt::Debug for {name} {{\n    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{\n        formatter.write_str(\"{name} {{ <secret outputs redacted> }}\")\n    }}\n}}\n").infallible();
             }
         }
         NamedTypeSchema::Scalar(_)
@@ -5533,7 +5535,7 @@ fn separated(name: &str, separator: char, upper_words: bool) -> String {
 fn hex(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
-        write!(output, "{byte:02x}").expect("string");
+        write!(output, "{byte:02x}").infallible();
     }
     output
 }

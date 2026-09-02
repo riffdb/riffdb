@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "a running recovery host retains its sole blocking driver until shutdown"
+)]
+
 //! Least-authority service composition for staged-only restore recovery.
 
 // The daemon consumes this owner only when ordinary startup cannot establish a

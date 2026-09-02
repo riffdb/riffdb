@@ -2,7 +2,7 @@
 
 //! Reactive grammar-v1 acceptance tests.
 
-use riffdb_query_syntax::{DiagnosticCode, format_module, parse_module};
+use riffdb_reactive_syntax::{DiagnosticCode, format_module, parse_module};
 
 const SOURCE: &str = r#"
 reactive TicketDeskReactive version 1 {

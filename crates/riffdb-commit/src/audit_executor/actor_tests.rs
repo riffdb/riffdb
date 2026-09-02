@@ -4,6 +4,8 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc as std_mpsc};
 use std::task::{Context, Poll, Waker};
+#[cfg(feature = "simulation")]
+use std::time::{Duration, Instant};
 
 use riffdb_storage_api::{ServiceAuditAppendResult, StorageErrorKind, StoredServiceAuditRecordV1};
 use riffdb_types::{
@@ -63,6 +65,37 @@ impl AdministrationClock for TestClock {
             .expect("clock thread probe")
             .push(thread::current().id());
         self.result
+    }
+}
+
+#[cfg(feature = "simulation")]
+struct SimulationMonotonicClock {
+    base: Instant,
+    ticks: AtomicUsize,
+    calls: Arc<AtomicUsize>,
+}
+
+#[cfg(feature = "simulation")]
+impl SimulationMonotonicClock {
+    fn new(calls: Arc<AtomicUsize>) -> Self {
+        Self {
+            base: Instant::now(),
+            ticks: AtomicUsize::new(0),
+            calls,
+        }
+    }
+}
+
+#[cfg(feature = "simulation")]
+impl CoordinatorMonotonicClock for SimulationMonotonicClock {
+    fn now(&self) -> Instant {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        let tick = self.ticks.fetch_add(1, Ordering::Relaxed);
+        self.base + Duration::from_secs(tick as u64)
+    }
+
+    fn sleep_until(&self, _deadline: Instant) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(std::future::ready(()))
     }
 }
 
@@ -355,6 +388,46 @@ fn poll_once<Output>(future: Pin<&mut impl Future<Output = Output>>) -> Poll<Out
 
 fn fixed_timestamp() -> Timestamp {
     Timestamp::new(71, 13).expect("canonical timestamp")
+}
+
+#[cfg(feature = "simulation")]
+#[test]
+fn simulation_clock_reaches_real_coordinator_formation() {
+    let probe = Probe::new();
+    let repository_calls = Arc::clone(&probe.calls);
+    let monotonic_calls = Arc::new(AtomicUsize::new(0));
+    let running = RunningCommandCoordinator::start_audit_simulation(
+        capacity(2),
+        RecordingRepository::appending(probe),
+        TestClock::fixed(fixed_timestamp()),
+        Arc::new(SimulationMonotonicClock::new(Arc::clone(&monotonic_calls))),
+    )
+    .expect("start coordinator with simulator time port");
+    let executor = running.administration_audit_executor();
+    let receipt = block_on(executor.reserve_capacity())
+        .expect("reserve simulated audit lane")
+        .submit(input(0x76))
+        .expect("submit simulated audit lane");
+    block_on(receipt.completion()).expect("real coordinator completes simulated lane");
+    running.shutdown().expect("clean simulated shutdown");
+
+    assert_eq!(repository_calls.load(Ordering::Relaxed), 1);
+    assert!(
+        monotonic_calls.load(Ordering::Relaxed) >= 2,
+        "the real coordinator did not sample the simulator-owned time port"
+    );
+}
+
+#[test]
+fn release_constructor_installs_only_the_wall_monotonic_clock() {
+    let source = include_str!("../audit_executor.rs");
+    let release_constructor = source
+        .split("fn spawn_with_operations(")
+        .nth(1)
+        .and_then(|tail| tail.split("fn spawn_with_operations_and_clock(").next())
+        .expect("release constructor source interval");
+    assert!(release_constructor.contains("Arc::new(WallCoordinatorMonotonicClock)"));
+    assert!(!release_constructor.contains("simulation"));
 }
 
 #[test]

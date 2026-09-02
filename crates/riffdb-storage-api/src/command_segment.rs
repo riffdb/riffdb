@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "validated command segments are nonempty and retain at least one write sequence"
+)]
+
 //! Bounded segmented successful-command authority and rebuildable exact indexes.
 
 use std::fmt;

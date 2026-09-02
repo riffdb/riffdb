@@ -154,24 +154,26 @@ artifacts=(
     fixtures/proto/wire-vectors.txt
 )
 
-expected_generated=$'crates/riffdb-proto/src/generated/riffdb.app.v1.rs\ncrates/riffdb-proto/src/generated/riffdb.storage.v1.rs\ncrates/riffdb-proto/src/generated/riffdb.v1.rs'
+expected_proto_generated=$'crates/riffdb-proto/src/generated/riffdb.app.v1.rs\ncrates/riffdb-proto/src/generated/riffdb.storage.v1.rs\ncrates/riffdb-proto/src/generated/riffdb.v1.rs'
+expected_repo_generated=$'crates/riffdb-proto/src/generated/public_validation.rs\ncrates/riffdb-proto/src/generated/riffdb.app.v1.rs\ncrates/riffdb-proto/src/generated/riffdb.storage.v1.rs\ncrates/riffdb-proto/src/generated/riffdb.v1.rs'
 
 check_generated_inventory() {
     local root="$1"
+    local expected="$2"
     local actual_generated
     actual_generated="$(
         cd "$root"
         find crates/riffdb-proto/src/generated -maxdepth 1 -type f -print | LC_ALL=C sort
     )"
-    if [[ "$actual_generated" != "$expected_generated" ]]; then
+    if [[ "$actual_generated" != "$expected" ]]; then
         printf 'generated Rust source inventory differs from the accepted package baseline: %s\n' \
             "$root" >&2
         return 1
     fi
 }
 
-check_generated_inventory "$repo_root"
-check_generated_inventory "$output_root"
+check_generated_inventory "$repo_root" "$expected_repo_generated"
+check_generated_inventory "$output_root" "$expected_proto_generated"
 
 if [[ "$mode" == "--check" ]]; then
     failed=0

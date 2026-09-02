@@ -1,3 +1,9 @@
+#![expect(
+    clippy::expect_used,
+    clippy::unreachable,
+    reason = "validated application envelopes have bounded lengths and closed protobuf discriminants"
+)]
+
 use std::fmt;
 
 use prost::Message;

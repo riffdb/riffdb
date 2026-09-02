@@ -56,9 +56,8 @@ fn rust_sources(root: PathBuf) -> Vec<PathBuf> {
 /// SIM-007: the simulator is absent from every production dependency graph.
 ///
 /// Drives from `cargo metadata` rather than hand-parsed manifests, so it sees
-/// the complete cargo-resolved member set (including members cargo promotes
-/// via path dependencies that the root `members` array never names, such as
-/// `riffdb-query-syntax`) and every dependency declaration form — inline
+/// the complete cargo-resolved member set (including newly renamed members
+/// such as `riffdb-reactive-syntax`) and every dependency declaration form — inline
 /// tables, `[dependencies.name]` tables, `workspace = true` inheritance,
 /// `[build-dependencies]`, and target-specific sections. Only `kind == "dev"`
 /// edges are exempt: a build dependency genuinely compiles the simulator into
@@ -117,10 +116,8 @@ fn no_production_crate_depends_on_the_simulator() {
         member_ids.len(),
         "every cargo-resolved workspace member must be dependency-checked"
     );
-    // Canary members: the simulator itself, and the member cargo promotes
-    // into the workspace without a root members-array entry — the exact crate
-    // a manifest-walking parser missed.
-    for canary in ["riffdb-sim", "riffdb-query-syntax"] {
+    // Canary members: the simulator itself and the reactive grammar leaf.
+    for canary in ["riffdb-sim", "riffdb-reactive-syntax"] {
         assert!(
             checked_names.iter().any(|name| name == canary),
             "cargo-resolved member set lost {canary}; the boundary check no \

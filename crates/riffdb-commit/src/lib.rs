@@ -1,4 +1,13 @@
 #![forbid(unsafe_code)]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::unwrap_used
+    )
+)]
 
 //! Coordinator-owned semantic ports and orchestration values for RiffDB.
 //!
@@ -18,6 +27,7 @@ mod command_preparation;
 mod command_records;
 mod command_validation;
 mod control_plane;
+mod coordinator_time;
 mod idempotency_inspection;
 mod initialization;
 mod migration;
@@ -70,6 +80,8 @@ pub use control_plane::{
     ReactiveModulePublicationExecutionResult, ReactiveModulePublicationOutcome,
     ReactiveModulePublicationPreparation,
 };
+#[doc(hidden)]
+pub use coordinator_time::CoordinatorMonotonicClock;
 pub use idempotency_inspection::{
     CommandIdempotencyConfirmationError, CommandIdempotencyInspectionError,
     CommandIdempotencyInspectionErrorKind, CommandIdempotencyInspectionRequest,

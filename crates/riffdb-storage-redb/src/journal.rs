@@ -3,6 +3,11 @@
     dead_code,
     reason = "WP-478 lands the closed frame and lane boundary before production coordinator wiring"
 )]
+#![expect(
+    clippy::expect_used,
+    clippy::unreachable,
+    reason = "validated journal frames have closed tags, bounded widths, and complete segment payloads"
+)]
 
 use std::collections::BTreeMap;
 use std::fs::File;

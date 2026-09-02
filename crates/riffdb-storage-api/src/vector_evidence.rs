@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "validated vector evidence retains a nonzero declared dimension for every production field"
+)]
+
 //! Authoritative, nonduplicating evidence for production vector fields.
 
 use std::{collections::BTreeMap, fmt};

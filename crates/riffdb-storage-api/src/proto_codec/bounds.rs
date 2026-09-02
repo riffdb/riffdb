@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "validated nonzero bounds and capped encoded lengths fit their destination integers"
+)]
+
 //! Canonical-envelope write-set accounting.
 
 use prost::Message as _;

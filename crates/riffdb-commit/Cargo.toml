@@ -8,6 +8,8 @@ publish.workspace = true
 
 [features]
 default = []
+simulation = []
+test-fixtures = []
 
 [dependencies]
 riffdb-catalog = { version = "0.1.0", path = "../riffdb-catalog", default-features = false }

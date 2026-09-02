@@ -196,7 +196,7 @@ fn public_inventory_has_no_generic_application_dml() {
         assert!(!lower.contains(generic_dml), "{generic_dml}");
     }
 
-    let client = include_str!("../../../crates/riffdb-client-rust/src/client.rs");
+    let client = include_str!("../../../crates/riffdb-client-rust/src/generated/client.rs");
     for generic_dml in [
         "pub async fn insert",
         "pub async fn update",

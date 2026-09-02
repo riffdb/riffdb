@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "the bounded blocking driver retains its named worker thread after successful spawn"
+)]
+
 //! Bounded blocking-work driver for production application-service ports.
 
 // The driver is private composition infrastructure assembled during WP-130.

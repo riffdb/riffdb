@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "a running process graph retains every uniquely owned worker and validated fixed bound until orderly shutdown"
+)]
+
 //! Owning production component graph for the runnable P1 server.
 
 use std::error::Error;

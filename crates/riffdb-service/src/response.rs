@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "bounded response accounting retains a nonzero encoded length for every emitted frame"
+)]
+
 //! Versioned, transport-independent service response accounting.
 
 use std::error::Error;

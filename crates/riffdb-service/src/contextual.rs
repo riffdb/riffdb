@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "the fixed contextual causation digest key identifier is nonzero"
+)]
+
 //! Contextual-subscription causation and retry-stable reaction identities.
 
 use std::collections::BTreeMap;

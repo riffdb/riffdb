@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "validated migration plans retain every schema entity referenced by their operations"
+)]
+
 //! Durable identities and closed external state for contract migration.
 
 use riffdb_types::{

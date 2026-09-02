@@ -1760,8 +1760,8 @@ impl RedbStructuralEvidenceSession {
         let audit_bound = checkpoint.audit_sequence_bound;
         match phase {
             10 if s > 0 => {
-                let key =
-                    keys::encode_application_sequence_key(CommitSequence::new(s).expect("s > 0"));
+                let sequence = CommitSequence::new(s).ok_or_else(invariant)?;
+                let key = keys::encode_application_sequence_key(sequence);
                 table
                     .range::<&[u8]>((Excluded(key.as_slice()), Unbounded))
                     .map_err(precommit_storage_error)
@@ -1779,7 +1779,7 @@ impl RedbStructuralEvidenceSession {
             }
             21 if audit_bound > 0 => {
                 let key = keys::encode_audit_key(
-                    riffdb_types::AdministrationSequence::new(audit_bound).expect("bound > 0"),
+                    riffdb_types::AdministrationSequence::new(audit_bound).ok_or_else(invariant)?,
                 );
                 table
                     .range::<&[u8]>((Excluded(key.as_slice()), Unbounded))
@@ -4256,8 +4256,8 @@ fn inspect_projection_apply_row(
             FrontierPosition::AppliedThrough(_) => {}
         }
         if key.commit_sequence() != CommitSequence::first() {
-            let previous = CommitSequence::new(key.commit_sequence().get() - 1)
-                .expect("a non-first commit sequence has a nonzero predecessor");
+            let previous =
+                CommitSequence::new(key.commit_sequence().get() - 1).ok_or_else(invariant)?;
             let predecessor = riffdb_types::ProjectionApplyKey::new(
                 key.identity().clone(),
                 key.generation(),
@@ -6534,22 +6534,22 @@ fn build_entity_chains(
             if commit_sequence.get() <= walk_after {
                 continue;
             }
-            if let EntityHistoryMembers::Transitions(transitions) = members {
-                apply_entity_transitions_to_startup_chains(
-                    &mut chains,
-                    &mut transition_heads,
-                    &mut orphan_targets,
-                    &mut overflow,
-                    entity_count_usize,
-                    walk_after.max(pruned_floor),
-                    pruned_floor > 0 && pruned_floor >= walk_after,
-                    commit_sequence,
-                    &transitions,
-                )?;
-                continue;
-            }
-            let EntityHistoryMembers::References(references) = members else {
-                unreachable!("transition members continue above")
+            let references = match members {
+                EntityHistoryMembers::Transitions(transitions) => {
+                    apply_entity_transitions_to_startup_chains(
+                        &mut chains,
+                        &mut transition_heads,
+                        &mut orphan_targets,
+                        &mut overflow,
+                        entity_count_usize,
+                        walk_after.max(pruned_floor),
+                        pruned_floor > 0 && pruned_floor >= walk_after,
+                        commit_sequence,
+                        &transitions,
+                    )?;
+                    continue;
+                }
+                EntityHistoryMembers::References(references) => references,
             };
             // Frozen predecessor commit formats carry post-image references
             // but no transition heads. Their entities can legitimately have
@@ -7874,9 +7874,9 @@ fn administration_allocator_matches(
             .peek()
             .is_some_and(|sequence| *sequence < expected)
         {
-            let covered = derived_sequences
-                .next()
-                .expect("peeked checkpoint-covered administration sequence");
+            let Some(covered) = derived_sequences.next() else {
+                return Ok(false);
+            };
             if covered.get() > checkpoint.audit_sequence_bound {
                 return Ok(false);
             }
@@ -7913,11 +7913,10 @@ fn administration_allocator_matches(
             .peek()
             .is_some_and(|derived| *derived < physical)
         {
-            if !accept(
-                derived_sequences
-                    .next()
-                    .expect("peeked derived administration sequence"),
-            ) {
+            let Some(derived) = derived_sequences.next() else {
+                return Ok(false);
+            };
+            if !accept(derived) {
                 return Ok(false);
             }
         }
@@ -7930,10 +7929,9 @@ fn administration_allocator_matches(
             // sequences are not disjoint: two-phase admission makes the overlap
             // legitimate. Only a provably equal pair collapses — a disagreeing
             // pair falls through to the refusal below, exactly as a gap does.
-            let derived_record = derived
-                .get(&physical)
-                .map(|cached| &cached.record)
-                .expect("peeked derived administration sequence is a cache key");
+            let Some(derived_record) = derived.get(&physical).map(|cached| &cached.record) else {
+                return Ok(false);
+            };
             if !physical_audit_row_repeats_derived(transaction, value.value(), derived_record)? {
                 return Ok(false);
             }
@@ -7998,14 +7996,13 @@ fn has_application_authoritative_state(
 }
 
 fn push_lineage(output: &mut Vec<u8>, lineage: &ContractLineage) {
-    let length =
-        u32::try_from(lineage.as_bytes().len()).expect("foundational lineage hard bound fits u32");
+    let length = u32::try_from(lineage.as_bytes().len()).unwrap_or_else(|_| std::process::abort());
     output.extend_from_slice(&length.to_be_bytes());
     output.extend_from_slice(lineage.as_bytes());
 }
 
 fn push_bytes(output: &mut Vec<u8>, bytes: &[u8]) {
-    let length = u32::try_from(bytes.len()).expect("foundational key hard bound fits u32");
+    let length = u32::try_from(bytes.len()).unwrap_or_else(|_| std::process::abort());
     output.extend_from_slice(&length.to_be_bytes());
     output.extend_from_slice(bytes);
 }

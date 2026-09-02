@@ -1,3 +1,8 @@
+#![expect(
+    clippy::unreachable,
+    reason = "the closed lifecycle transition table rejects invalid states before status lowering"
+)]
+
 //! Cached operational status for the minimal P1 process graph.
 
 #![allow(

@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "validated command orchestration retains pending admission state and bounded canonical encodings"
+)]
+
 //! Actor-owned completion of admitted command attempts.
 
 use std::sync::{Arc, Mutex, mpsc};

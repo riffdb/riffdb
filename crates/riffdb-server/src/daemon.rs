@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "validated daemon startup retains its selected listener and refusal evidence"
+)]
+
 //! Hosted `riffdbd` process lifecycle for the runnable P1 checkpoint.
 
 use std::error::Error;

@@ -46,7 +46,7 @@ review before changing it.
 | Event route value, physical key, scan fence, and backfill evidence | `riffdb-storage-api` / `riffdb-storage-redb` | WP-415 | catalog replay | Durable V1 bytes, key order, registry entry, and recovery rules frozen |
 | Historical event materialization | `riffdb-catalog` | WP-415 | event service and contextual hydration | Opaque catalog result and fail-closed proof rules stable |
 | Safe symbolic event envelope and replay service | `riffdb-service` | WP-415 | gRPC, CLI, SDK, MCP | API-neutral variants, budgets, redaction, and cursor identity stable |
-| Stream/subscription syntax and reactive typed IR | `riffdb-query-syntax` / `riffdb-query-ir` | WP-416 | query module and policy | Grammar, closed tags, bounds, canonical codec, and hash stable |
+| Stream/subscription syntax and reactive typed IR | `riffdb-reactive-syntax` / `riffdb-query-ir` | WP-416 | query module and policy | Grammar, closed tags, bounds, canonical codec, and hash stable |
 | Reactive module identity | `riffdb-query-module` | WP-416 | policy, consumers, generated clients | Canonical module/operation/parameter identity stable |
 | Application Source V4 and Lock V5 | `riffdb-query-module` | WP-416 | CLI generation/deployment | Prior formats readable; exact successor identity and migration frozen |
 | Stream/watch/subscription permissions | `riffdb-types` / `riffdb-policy` | WP-416 | all reactive service operations | Exact symbolic permission facts and deny behavior stable |

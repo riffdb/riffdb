@@ -37,13 +37,16 @@
 //! The seeded workload GENERATOR and the open-ended campaign are SIM-C2
 //! scope; this harness uses fixed fixtures over the swept windows.
 
-use std::num::NonZeroU64;
+use std::collections::BTreeMap;
+use std::num::{NonZeroU8, NonZeroU64};
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 use riffdb_catalog::{CatalogHistoryOutcome, ValidatedContractBundle, validate_catalog_history};
 use riffdb_contract_compiler::compile_contract_source;
-use riffdb_sim::{FaultConfig, SimBackend, SimDisk, SimJournalMedia};
+use riffdb_sim::{
+    CoordinatorPhase, CoordinatorSchedule, FaultConfig, SimBackend, SimDisk, SimJournalMedia,
+};
 use riffdb_storage_api::{
     AdmissionRequestV1, AdmissionResultV1, AffectedEntityV1, AffectedEpochCurrentState,
     AffectedIndexEpochTargets, ApplicationCommandTransactionPort, AssignedCommandSequence,
@@ -1196,4 +1199,118 @@ fn every_two_phase_crash_window_recovers_pending_or_applied_exactly() {
         saw_present,
         "no swept window recovered with the two-phase command applied"
     );
+}
+
+/// Finds one seed-only crash schedule for every coordinator boundary. This is
+/// deliberately a bounded deterministic scout rather than a hand-selected
+/// failpoint: the seed remains the complete selector and the returned schedule
+/// is replayed below before its crash phase is trusted.
+fn coordinator_phase_seeds() -> BTreeMap<CoordinatorPhase, u64> {
+    let lanes = NonZeroU8::new(3).expect("nonzero coordinator lanes");
+    let mut seeds = BTreeMap::new();
+    for seed in 0x7660_1000_u64..0x7661_1000 {
+        let schedule = CoordinatorSchedule::generate(seed, lanes).expect("bounded schedule");
+        let crash = schedule
+            .decisions()
+            .iter()
+            .find(|decision| decision.crash_after())
+            .expect("one seeded crash decision");
+        seeds.entry(crash.phase()).or_insert(seed);
+        if seeds.len() == CoordinatorPhase::ALL.len() {
+            break;
+        }
+    }
+    assert_eq!(
+        seeds.len(),
+        CoordinatorPhase::ALL.len(),
+        "bounded seed scout did not cover every coordinator crash phase"
+    );
+    seeds
+}
+
+/// SIM-009: every seed-selected coordinator crash phase reopens through the
+/// complete startup validation and equals the independent model at the
+/// recovered durable frontier. `EpochSeal` is the required seal→fence window;
+/// `DurableFence` is the required fence→publication window.
+#[test]
+fn every_coordinator_crash_window_recovers_to_the_model() {
+    let phase_seeds = coordinator_phase_seeds();
+    for phase in CoordinatorPhase::ALL {
+        let seed = phase_seeds[&phase];
+        let replay = CoordinatorSchedule::generate(
+            seed,
+            NonZeroU8::new(3).expect("nonzero coordinator lanes"),
+        )
+        .expect("replay coordinator schedule");
+        assert_eq!(
+            replay
+                .decisions()
+                .iter()
+                .find(|decision| decision.crash_after())
+                .expect("one seeded crash")
+                .phase(),
+            phase,
+            "seed no longer selects its retained crash boundary"
+        );
+
+        let disk = SimDisk::new(FaultConfig::quiet(seed));
+        let ports = prepare_simulated(&disk);
+        let fixtures = oracle_fixtures();
+        let (mut baseline, _snapshots) = commit_workload_with_model(&ports, &fixtures);
+        let four = build_command_fixture(4, 4, None, AdmissionShape::VacantTerminal);
+
+        let crossed_fence = phase >= CoordinatorPhase::DurableFence;
+        if crossed_fence {
+            commit_command_fixture(&ports, &four);
+            baseline
+                .admit_pending(four.pending.clone())
+                .expect("model admits fenced fused command");
+            baseline
+                .apply_command(&four.records)
+                .expect("model applies fenced command");
+        }
+
+        disk.crash();
+        drop(ports);
+        disk.recover_after_crash();
+        let all = [&fixtures[0], &fixtures[1], &fixtures[2], &four];
+        let request = oracle_request(&all);
+        let inspection = inspect_recovered(&disk, &request);
+        let expected_frontier = if crossed_fence { 4 } else { 3 };
+        assert_eq!(
+            frontier_value(inspection.recovered_application_frontier()),
+            expected_frontier,
+            "wrong durable frontier after {phase:?} crash (seed {seed:#x})"
+        );
+        let agreement =
+            verify_model_against_inspection(&baseline, &inspection).unwrap_or_else(|divergence| {
+                panic!(
+                    "coordinator recovery divergence after {phase:?} crash \
+                     (seed {seed:#x}): {divergence}"
+                )
+            });
+        if crossed_fence {
+            assert_agreement_counts(
+                &agreement,
+                4,
+                3,
+                3,
+                3,
+                0,
+                4,
+                "coordinator crash after fence",
+            );
+        } else {
+            assert_agreement_counts(
+                &agreement,
+                3,
+                2,
+                2,
+                2,
+                1,
+                3,
+                "coordinator crash before fence",
+            );
+        }
+    }
 }

@@ -1,3 +1,8 @@
+#![expect(
+    clippy::panic,
+    reason = "exhausting the bounded service-job supervision identity is an internal process invariant breach"
+)]
+
 //! Process-runtime adapters used by the production application service.
 
 // These providers are consumed by the WP-130 production graph assembled in this crate.

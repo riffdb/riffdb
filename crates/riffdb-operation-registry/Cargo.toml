@@ -1,5 +1,5 @@
 [package]
-name = "riffdb-query-syntax"
+name = "riffdb-operation-registry"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,6 +10,7 @@ publish.workspace = true
 default = []
 
 [dependencies]
+riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
 
 [lints]
 workspace = true

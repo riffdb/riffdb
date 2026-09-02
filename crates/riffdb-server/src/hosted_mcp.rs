@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "the fixed loopback MCP authority and URI satisfy the parser's validated grammar"
+)]
+
 //! Owned loopback HTTP transport for the native MCP service.
 
 use std::collections::{BTreeMap, BTreeSet};

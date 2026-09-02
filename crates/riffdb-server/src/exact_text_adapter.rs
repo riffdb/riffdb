@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "validated exact-text batches retain the indexed entity selected for provider work"
+)]
+
 //! Background-owned exact text result-set provider for generated RiffQL.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};

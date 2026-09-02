@@ -1,3 +1,8 @@
+#![expect(
+    clippy::panic,
+    reason = "losing an accepted service job is an uncertain-execution composition breach that must stop the process"
+)]
+
 //! Concrete API-neutral service composition and independent job ownership.
 
 use std::error::Error;

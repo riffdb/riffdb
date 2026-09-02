@@ -1,3 +1,8 @@
+#![expect(
+    clippy::panic,
+    reason = "losing an accepted maintenance job is an uncertain-execution composition breach that must stop the process"
+)]
+
 //! API-neutral offline-maintenance authorization and lifecycle orchestration.
 
 use std::sync::Arc;

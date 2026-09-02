@@ -3,6 +3,8 @@
 use std::collections::BTreeSet;
 use std::fmt::{self, Write as _};
 
+use crate::infallible_string_write::InfallibleStringWrite as _;
+
 use riffdb_contract_ir::{ContractBundle, RecordTypeRef, ValueType, ValueTypeTag};
 use riffdb_contract_syntax::ast::{Declaration, EntityItem, OutcomeExpression};
 use riffdb_query_ir::{
@@ -371,7 +373,7 @@ pub fn generate_python_client(
          )\n\
          from riffdb_application._binding import decode_variant, encode_record{binding_imports}\n"
     )
-    .expect("String writes cannot fail");
+    .infallible();
     output.push_str(
         "def _compact_tag(value: object, tag: str, keys: frozenset[str]) -> dict[str, object]:\n    if not isinstance(value, dict) or value.get(\"$riffdb\") != tag or frozenset(value) != keys:\n        raise ValueError(\"invalid RiffDB compact value\")\n    return value\n\n",
     );
@@ -384,11 +386,10 @@ pub fn generate_python_client(
         hex(module.contract_hash().as_bytes()),
         hex(module.identity().as_bytes()),
     )
-    .expect("String writes cannot fail");
+    .infallible();
 
     for enumeration in contract.schema().enums() {
-        writeln!(output, "class {}(StrEnum):", pascal(enumeration.name()))
-            .expect("String writes cannot fail");
+        writeln!(output, "class {}(StrEnum):", pascal(enumeration.name())).infallible();
         for variant in enumeration.variants() {
             writeln!(
                 output,
@@ -396,7 +397,7 @@ pub fn generate_python_client(
                 screaming_snake(variant.name()),
                 variant.name()
             )
-            .expect("String writes cannot fail");
+            .infallible();
         }
         output.push('\n');
     }
@@ -433,14 +434,14 @@ pub fn generate_python_client(
             screaming_snake(wire_name),
             hex(query.plan().identity().as_bytes())
         )
-        .expect("String writes cannot fail");
+        .infallible();
         if !query.plan().secret_outputs().is_empty() {
             writeln!(
                 output,
                 "{}_SECRET_OUTPUTS: Final[tuple[tuple[str, str, str], ...]] = (",
                 screaming_snake(wire_name)
             )
-            .expect("String writes cannot fail");
+            .infallible();
             for secret in query.plan().secret_outputs() {
                 writeln!(
                     output,
@@ -449,7 +450,7 @@ pub fn generate_python_client(
                     secret.entity(),
                     secret.field()
                 )
-                .expect("String writes cannot fail");
+                .infallible();
             }
             output.push_str(")\n\n");
         }
@@ -457,7 +458,7 @@ pub fn generate_python_client(
             output,
             "\n@dataclass(frozen=True, slots=True, kw_only=True)\nclass {name}Params:"
         )
-        .expect("String writes cannot fail");
+        .infallible();
         if schemas.parameters().is_empty() {
             output.push_str("    pass\n");
         }
@@ -480,7 +481,7 @@ pub fn generate_python_client(
                 "    {}: {value_type}{default}",
                 python_identifier(parameter.name())
             )
-            .expect("String writes cannot fail");
+            .infallible();
         }
         output.push('\n');
         for branch in schemas.results() {
@@ -498,7 +499,7 @@ pub fn generate_python_client(
                 output,
                 "@dataclass(frozen=True, slots=True, kw_only=True)\nclass {branch_name}:"
             )
-            .expect("String writes cannot fail");
+            .infallible();
             for result_field in branch.fields() {
                 let nested = format!("{branch_name}{}", pascal(result_field.name()));
                 writeln!(
@@ -512,7 +513,7 @@ pub fn generate_python_client(
                         " = field(repr=False)"
                     }
                 )
-                .expect("String writes cannot fail");
+                .infallible();
             }
             writeln!(
                 output,
@@ -520,14 +521,14 @@ pub fn generate_python_client(
                 branch.name(),
                 branch.name()
             )
-            .expect("String writes cannot fail");
+            .infallible();
         }
-        write!(output, "{name}Result: TypeAlias = ").expect("String writes cannot fail");
+        write!(output, "{name}Result: TypeAlias = ").infallible();
         for (index, branch) in schemas.results().iter().enumerate() {
             if index != 0 {
                 output.push_str(" | ");
             }
-            write!(output, "{name}{}", pascal(branch.name())).expect("String writes cannot fail");
+            write!(output, "{name}{}", pascal(branch.name())).infallible();
         }
         output.push_str("\n\n");
         if let Some(shape) = query.plan().common_covered_result().and_then(
@@ -561,16 +562,16 @@ pub fn generate_python_client(
                 "{}_SECRET_OUTPUTS: Final[tuple[tuple[str, str, str, str], ...]] = (",
                 screaming_snake(wire_name)
             )
-            .expect("String writes cannot fail");
+            .infallible();
             for secret in secret_outputs {
                 writeln!(
                     output,
                     "    ({:?}, {:?}, {:?}, {:?}),",
                     secret.outcome, secret.field, secret.entity, secret.source_field
                 )
-                .expect("String writes cannot fail");
+                .infallible();
             }
-            writeln!(output, ")\n").expect("String writes cannot fail");
+            writeln!(output, ")\n").infallible();
         }
         emit_contract_record(
             &mut output,
@@ -590,7 +591,7 @@ pub fn generate_python_client(
             screaming_snake(wire_name),
             hex(command.plan_hash().as_bytes())
         )
-        .expect("String writes cannot fail");
+        .infallible();
         for outcome in command.outcomes() {
             let outcome_name = format!("{name}{}", pascal(outcome.name()));
             let redacted = command_secret_outputs(command, contract)
@@ -601,7 +602,7 @@ pub fn generate_python_client(
                 "@dataclass(frozen=True, slots=True, kw_only=True{repr})\nclass {outcome_name}:",
                 repr = if redacted { ", repr=False" } else { "" }
             )
-            .expect("String writes cannot fail");
+            .infallible();
             for payload_field in outcome.payload().fields() {
                 writeln!(
                     output,
@@ -609,7 +610,7 @@ pub fn generate_python_client(
                     python_identifier(payload_field.name()),
                     python_contract_type(payload_field.value_type(), contract)
                 )
-                .expect("String writes cannot fail");
+                .infallible();
             }
             writeln!(
                 output,
@@ -617,17 +618,17 @@ pub fn generate_python_client(
                 outcome.name(),
                 outcome.name()
             )
-            .expect("String writes cannot fail");
+            .infallible();
             if redacted {
-                writeln!(output, "    def __repr__(self) -> str:\n        return \"{outcome_name}(<secret outputs redacted>)\"\n").expect("String writes cannot fail");
+                writeln!(output, "    def __repr__(self) -> str:\n        return \"{outcome_name}(<secret outputs redacted>)\"\n").infallible();
             }
         }
-        write!(output, "{name}Outcome: TypeAlias = ").expect("String writes cannot fail");
+        write!(output, "{name}Outcome: TypeAlias = ").infallible();
         for (index, outcome) in command.outcomes().iter().enumerate() {
             if index != 0 {
                 output.push_str(" | ");
             }
-            write!(output, "{name}{}", pascal(outcome.name())).expect("String writes cannot fail");
+            write!(output, "{name}{}", pascal(outcome.name())).infallible();
         }
         output.push_str("\n\n");
     }
@@ -654,13 +655,13 @@ fn emit_python_embedding_constructors(
             "{prefix}_{field_constant}_MODEL_IDENTITY: Final[str] = {:?}\n{prefix}_{field_constant}_MODEL_VERSION: Final[str] = {:?}",
             facade.model_identity, facade.model_version
         )
-        .expect("String writes cannot fail");
+        .infallible();
         let function = python_identifier(&format!(
             "{}_for_{}",
             command.name(),
             facade.vector_field_name
         ));
-        writeln!(output, "def {function}(*,").expect("String writes cannot fail");
+        writeln!(output, "def {function}(*,").infallible();
         for field in command.input().record().fields().iter().filter(|field| {
             field.name() != facade.model_input_name && field.name() != facade.version_input_name
         }) {
@@ -670,13 +671,13 @@ fn emit_python_embedding_constructors(
                 python_identifier(field.name()),
                 python_contract_type(field.value_type(), contract)
             )
-            .expect("String writes cannot fail");
+            .infallible();
         }
         writeln!(
             output,
             ") -> {command_name}Input:\n    return {command_name}Input("
         )
-        .expect("String writes cannot fail");
+        .infallible();
         for field in command.input().record().fields() {
             let field_name = python_identifier(field.name());
             if field.name() == facade.model_input_name {
@@ -684,26 +685,25 @@ fn emit_python_embedding_constructors(
                     output,
                     "        {field_name}={prefix}_{field_constant}_MODEL_IDENTITY,"
                 )
-                .expect("String writes cannot fail");
+                .infallible();
             } else if field.name() == facade.version_input_name {
                 writeln!(
                     output,
                     "        {field_name}={prefix}_{field_constant}_MODEL_VERSION,"
                 )
-                .expect("String writes cannot fail");
+                .infallible();
             } else {
-                writeln!(output, "        {field_name}={field_name},")
-                    .expect("String writes cannot fail");
+                writeln!(output, "        {field_name}={field_name},").infallible();
             }
         }
-        writeln!(output, "    )\n").expect("String writes cannot fail");
+        writeln!(output, "    )\n").infallible();
         writeln!(
             output,
             "def {function}_model(value: {command_name}Input) -> tuple[str, str]:\n    return (value.{}, value.{})\n",
             python_identifier(&facade.model_input_name),
             python_identifier(&facade.version_input_name),
         )
-        .expect("String writes cannot fail");
+        .infallible();
     }
 }
 
@@ -743,7 +743,7 @@ fn emit_python_reactive_module(
         screaming_snake(reactive.name()),
         hex(reactive.identity().as_bytes())
     )
-    .expect("String writes cannot fail");
+    .infallible();
     for operation in reactive.operations() {
         match operation.plan() {
             ReactiveOperationPlanV1::Stream {
@@ -757,14 +757,14 @@ fn emit_python_reactive_module(
                         "@dataclass(frozen=True, slots=True, kw_only=True)\nclass {name}{}:",
                         pascal(event.name())
                     )
-                    .expect("String writes cannot fail");
+                    .infallible();
                     writeln!(
                         output,
                         "    type: Literal[{:?}] = field(default={:?}, init=False)",
                         event.name(),
                         event.name()
                     )
-                    .expect("String writes cannot fail");
+                    .infallible();
                     for field in event.fields() {
                         writeln!(
                             output,
@@ -772,24 +772,23 @@ fn emit_python_reactive_module(
                             python_identifier(field.name()),
                             python_reactive_type(field.type_name(), contract)
                         )
-                        .expect("String writes cannot fail");
+                        .infallible();
                     }
                     output.push('\n');
                 }
-                write!(output, "{name}Event: TypeAlias = ").expect("String writes cannot fail");
+                write!(output, "{name}Event: TypeAlias = ").infallible();
                 for (index, event) in events.iter().enumerate() {
                     if index != 0 {
                         output.push_str(" | ");
                     }
-                    write!(output, "{name}{}", pascal(event.name()))
-                        .expect("String writes cannot fail");
+                    write!(output, "{name}{}", pascal(event.name())).infallible();
                 }
                 output.push_str("\n\n");
                 writeln!(
                     output,
                     "@dataclass(frozen=True, slots=True, kw_only=True)\nclass {name}Delivery:\n    event: {name}Event\n    event_id: str\n    attempt: int\n    lease_token: str\n    expires_at: dict[str, Any]\n    history_incarnation: int\n\n@dataclass(frozen=True, slots=True, kw_only=True)\nclass {name}Batch:\n    events: tuple[{name}Delivery, ...]\n    status: dict[str, Any]\n    disposition: Literal[\"ready\", \"wait_timed_out\", \"bounded_progress\"]\n    wait_timed_out: bool\n"
                 )
-                .expect("String writes cannot fail");
+                .infallible();
             }
             ReactiveOperationPlanV1::Watch {
                 parameters, query, ..
@@ -804,13 +803,13 @@ fn emit_python_reactive_module(
                         variant.to_ascii_lowercase(),
                         query.query_name()
                     )
-                    .expect("String writes cannot fail");
+                    .infallible();
                 }
                 writeln!(
                     output,
                     "{name}Update: TypeAlias = {name}Snapshot | {name}Patch | {name}Reset | {name}Checkpoint | {name}Terminal\n"
                 )
-                .expect("String writes cannot fail");
+                .infallible();
             }
             ReactiveOperationPlanV1::Subscription {
                 parameters,
@@ -824,7 +823,7 @@ fn emit_python_reactive_module(
                     output,
                     "@dataclass(frozen=True, slots=True, kw_only=True)\nclass {name}Reaction:\n    name: str\n    command_name: str\n    command_id: int\n    causation_token: str\n\n@dataclass(frozen=True, slots=True, kw_only=True)\nclass {name}Item:\n    event: {stream}Event\n    event_id: str\n    attempt: int\n    lease_token: str\n    expires_at: dict[str, Any]\n    history_incarnation: int\n    context_head: int\n    hydrations: tuple[dict[str, Any], ...]\n    available_reactions: tuple[{name}Reaction, ...]\n"
                 )
-                .expect("String writes cannot fail");
+                .infallible();
             }
         }
     }
@@ -833,14 +832,14 @@ fn emit_python_reactive_module(
         output,
         "class Async{base}ReactiveClient(Async{base}Client):"
     )
-    .expect("String writes cannot fail");
+    .infallible();
     let mut emitted = false;
     for operation in reactive.operations() {
         match operation.plan() {
             ReactiveOperationPlanV1::Stream { events, .. } => {
                 emitted = true;
                 let name = pascal(operation.name().as_str());
-                writeln!(output, "    async def next_{method}(self, parameters: {name}Params, consumer_name: str, *, batch_limit: int = 1, in_flight_limit: int = 16, lease_seconds: int = 60, maximum_wait_nanos: int = 0) -> {name}Batch:\n        variants = {{", method = python_identifier(&snake(operation.name().as_str()))).expect("String writes cannot fail");
+                writeln!(output, "    async def next_{method}(self, parameters: {name}Params, consumer_name: str, *, batch_limit: int = 1, in_flight_limit: int = 16, lease_seconds: int = 60, maximum_wait_nanos: int = 0) -> {name}Batch:\n        variants = {{", method = python_identifier(&snake(operation.name().as_str()))).infallible();
                 for event in events {
                     writeln!(
                         output,
@@ -848,7 +847,7 @@ fn emit_python_reactive_module(
                         event.name(),
                         pascal(event.name())
                     )
-                    .expect("String writes cannot fail");
+                    .infallible();
                 }
                 writeln!(
                     output,
@@ -857,7 +856,7 @@ fn emit_python_reactive_module(
                     operation = operation.name().as_str(),
                     method = python_identifier(&snake(operation.name().as_str())),
                 )
-                .expect("String writes cannot fail");
+                .infallible();
                 writeln!(
                     output,
                     "    async def ack_{method}(self, parameters: {name}Params, consumer_name: str, delivery: {name}Delivery) -> str:\n        encoded = encode_reactive_record(parameters, {name}_PARAMETER_SCHEMA)\n        return await self._transport._acknowledge_event(reactive_module_hash={module}_REACTIVE_MODULE_HASH, operation_name={operation:?}, parameters=encoded, consumer_name=consumer_name, event_id=delivery.event_id, lease_token=delivery.lease_token, history_incarnation=delivery.history_incarnation)\n\n    async def nack_{method}(self, parameters: {name}Params, consumer_name: str, delivery: {name}Delivery, retry_delay_nanos: int = 0) -> str:\n        encoded = encode_reactive_record(parameters, {name}_PARAMETER_SCHEMA)\n        return await self._transport._negative_acknowledge_event(reactive_module_hash={module}_REACTIVE_MODULE_HASH, operation_name={operation:?}, parameters=encoded, consumer_name=consumer_name, event_id=delivery.event_id, lease_token=delivery.lease_token, history_incarnation=delivery.history_incarnation, retry_delay_nanos=retry_delay_nanos)\n\n    async def seek_{method}(self, parameters: {name}Params, consumer_name: str, checkpoint: str = \"before-first\") -> str:\n        encoded = encode_reactive_record(parameters, {name}_PARAMETER_SCHEMA)\n        return await self._transport._seek_event_consumer(reactive_module_hash={module}_REACTIVE_MODULE_HASH, operation_name={operation:?}, parameters=encoded, consumer_name=consumer_name, checkpoint=checkpoint)\n\n    async def seek_protected_{method}(self, parameters: {name}Params, consumer_name: str, progress_cursor: str) -> str:\n        encoded = encode_reactive_record(parameters, {name}_PARAMETER_SCHEMA)\n        return await self._transport._seek_event_consumer(reactive_module_hash={module}_REACTIVE_MODULE_HASH, operation_name={operation:?}, parameters=encoded, consumer_name=consumer_name, progress_cursor=progress_cursor)\n\n    async def {method}_status(self, parameters: {name}Params, consumer_name: str) -> dict[str, Any] | None:\n        encoded = encode_reactive_record(parameters, {name}_PARAMETER_SCHEMA)\n        return await self._transport._event_consumer_status(reactive_module_hash={module}_REACTIVE_MODULE_HASH, operation_name={operation:?}, parameters=encoded, consumer_name=consumer_name)\n",
@@ -865,12 +864,12 @@ fn emit_python_reactive_module(
                     module = screaming_snake(reactive.name()),
                     operation = operation.name().as_str(),
                 )
-                .expect("String writes cannot fail");
+                .infallible();
             }
             ReactiveOperationPlanV1::Watch { query, .. } => {
                 emitted = true;
                 let name = pascal(operation.name().as_str());
-                writeln!(output, "    async def watch_{method}(self, parameters: {name}Params, cursor: str | None = None) -> AsyncIterator[{name}Update]:\n        outcomes = {{", method = python_identifier(&snake(operation.name().as_str()))).expect("String writes cannot fail");
+                writeln!(output, "    async def watch_{method}(self, parameters: {name}Params, cursor: str | None = None) -> AsyncIterator[{name}Update]:\n        outcomes = {{", method = python_identifier(&snake(operation.name().as_str()))).infallible();
                 let query_module = module
                     .query(query.query_name())
                     .expect("reactive compiler retained exact query dependency");
@@ -882,7 +881,7 @@ fn emit_python_reactive_module(
                         pascal(query.query_name()),
                         pascal(branch.name())
                     )
-                    .expect("String writes cannot fail");
+                    .infallible();
                 }
                 writeln!(
                     output,
@@ -890,7 +889,7 @@ fn emit_python_reactive_module(
                     screaming_snake(reactive.name()),
                     operation.name().as_str()
                 )
-                .expect("String writes cannot fail");
+                .infallible();
             }
             ReactiveOperationPlanV1::Subscription {
                 stream_name,
@@ -912,7 +911,7 @@ fn emit_python_reactive_module(
                     "    async def next_{method}(self, parameters: {name}Params, consumer_name: str, maximum_wait_nanos: int = 30_000_000_000) -> {name}Item | None:\n        variants = {{",
                     method = python_identifier(&snake(operation.name().as_str())),
                 )
-                .expect("String writes cannot fail");
+                .infallible();
                 for event in events {
                     writeln!(
                         output,
@@ -921,7 +920,7 @@ fn emit_python_reactive_module(
                         pascal(stream_name.as_str()),
                         pascal(event.name()),
                     )
-                    .expect("String writes cannot fail");
+                    .infallible();
                 }
                 writeln!(
                     output,
@@ -930,7 +929,7 @@ fn emit_python_reactive_module(
                     module = screaming_snake(reactive.name()),
                     operation = operation.name().as_str(),
                 )
-                .expect("String writes cannot fail");
+                .infallible();
                 for reaction in reactions {
                     let command = contract
                         .commands()
@@ -950,7 +949,7 @@ fn emit_python_reactive_module(
                         operation = operation.name().as_str(),
                         plan_constant = screaming_snake(command.name()),
                     )
-                    .expect("String writes cannot fail");
+                    .infallible();
                     for outcome in command.outcomes() {
                         writeln!(
                             output,
@@ -958,7 +957,7 @@ fn emit_python_reactive_module(
                             outcome.name(),
                             pascal(outcome.name()),
                         )
-                        .expect("String writes cannot fail");
+                        .infallible();
                     }
                     if workflow_revisions.is_empty() {
                         output.push_str("        }\n        return raw._map_outcome(lambda value: decode_variant(outcomes, value))\n\n");
@@ -967,20 +966,20 @@ fn emit_python_reactive_module(
                             output,
                             "        }}\n        result: TypedCommandResult[{command_name}Outcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))"
                         )
-                        .expect("String writes cannot fail");
+                        .infallible();
                         writeln!(
                             output,
                             "        if not isinstance(result.outcome, {command_name}{}):\n            return result._with_workflow_revisions(())",
                             pascal(success_outcome),
                         )
-                        .expect("String writes cannot fail");
+                        .infallible();
                         for revision in &workflow_revisions {
                             writeln!(
                                 output,
                                 "        if input.{} >= 2**64 - 1:\n            raise ValueError(\"RiffDB workflow successor revision overflow\")",
                                 python_identifier(revision.input_name),
                             )
-                            .expect("String writes cannot fail");
+                            .infallible();
                         }
                         output.push_str("        return result._with_workflow_revisions((\n");
                         for revision in workflow_revisions {
@@ -990,7 +989,7 @@ fn emit_python_reactive_module(
                                 revision.binding_name,
                                 python_identifier(revision.input_name),
                             )
-                            .expect("String writes cannot fail");
+                            .infallible();
                         }
                         output.push_str("        ))\n\n");
                     }
@@ -1013,7 +1012,7 @@ fn emit_python_reactive_parameters(
         output,
         "@dataclass(frozen=True, slots=True, kw_only=True)\nclass {operation}Params:"
     )
-    .expect("String writes cannot fail");
+    .infallible();
     for parameter in parameters {
         writeln!(
             output,
@@ -1021,7 +1020,7 @@ fn emit_python_reactive_parameters(
             python_identifier(parameter.name()),
             python_reactive_type(parameter.type_name(), contract)
         )
-        .expect("String writes cannot fail");
+        .infallible();
     }
     if parameters.is_empty() {
         output.push_str("    pass\n");
@@ -1040,7 +1039,7 @@ fn emit_python_reactive_parameters(
         "\n{operation}_PARAMETER_SCHEMA: dict[str, dict[str, object]] = {}\n",
         serde_json::to_string(&schema).expect("reactive schema JSON")
     )
-    .expect("String writes cannot fail");
+    .infallible();
 }
 
 fn python_reactive_schema(type_name: &str, contract: &ContractBundle) -> serde_json::Value {
@@ -1156,7 +1155,7 @@ fn emit_python_compact_query_decoder(
         .map(|field| format!("{:?}", field.name))
         .collect::<Vec<_>>()
         .join(", ");
-    writeln!(output, "def _decode_{method}_compact(value: object) -> {name}Result:\n    if not isinstance(value, dict) or frozenset(value) != frozenset((\"$riffdb_compact\",)):\n        raise ValueError(\"invalid RiffDB compact result\")\n    compact = value[\"$riffdb_compact\"]\n    if not isinstance(compact, dict) or frozenset(compact) != frozenset((\"outcome\", \"result_name\", \"entity\", \"fields\", \"rows\")) or compact[\"outcome\"] != {:?} or compact[\"result_name\"] != {:?} or compact[\"entity\"] != {:?} or compact[\"fields\"] != [{fields}] or not isinstance(compact[\"rows\"], list) or len(compact[\"rows\"]) > {}:\n        raise ValueError(\"invalid RiffDB compact result\")\n    decoded: list[{nested}] = []\n    for row in compact[\"rows\"]:\n        if not isinstance(row, list) or len(row) != {}:\n            raise ValueError(\"invalid RiffDB compact result\")\n        decoded.append({nested}(\n", shape.outcome, shape.result_name, shape.entity, shape.maximum_rows, shape.fields.len()).expect("String writes cannot fail");
+    writeln!(output, "def _decode_{method}_compact(value: object) -> {name}Result:\n    if not isinstance(value, dict) or frozenset(value) != frozenset((\"$riffdb_compact\",)):\n        raise ValueError(\"invalid RiffDB compact result\")\n    compact = value[\"$riffdb_compact\"]\n    if not isinstance(compact, dict) or frozenset(compact) != frozenset((\"outcome\", \"result_name\", \"entity\", \"fields\", \"rows\")) or compact[\"outcome\"] != {:?} or compact[\"result_name\"] != {:?} or compact[\"entity\"] != {:?} or compact[\"fields\"] != [{fields}] or not isinstance(compact[\"rows\"], list) or len(compact[\"rows\"]) > {}:\n        raise ValueError(\"invalid RiffDB compact result\")\n    decoded: list[{nested}] = []\n    for row in compact[\"rows\"]:\n        if not isinstance(row, list) or len(row) != {}:\n            raise ValueError(\"invalid RiffDB compact result\")\n        decoded.append({nested}(\n", shape.outcome, shape.result_name, shape.entity, shape.maximum_rows, shape.fields.len()).infallible();
     for (index, field) in shape.fields.iter().enumerate() {
         writeln!(
             output,
@@ -1164,14 +1163,14 @@ fn emit_python_compact_query_decoder(
             python_identifier(&field.name),
             python_decode_compact_expr(&format!("row[{index}]"), &field.value_type, contract)
         )
-        .expect("String writes cannot fail");
+        .infallible();
     }
     writeln!(
         output,
         "        ))\n    return {branch}({}=tuple(decoded))\n",
         python_identifier(&shape.result_name)
     )
-    .expect("String writes cannot fail");
+    .infallible();
 }
 
 fn python_decode_compact_expr(value: &str, ty: &ValueType, contract: &ContractBundle) -> String {
@@ -1239,7 +1238,7 @@ fn emit_python_packed_query_decoder(
         .map(|field| format!("{:?}", field.name))
         .collect::<Vec<_>>()
         .join(", ");
-    writeln!(output, "def _decode_{method}_packed(value: object) -> {name}Result:\n    if not isinstance(value, dict) or frozenset(value) != frozenset((\"$riffdb_packed\",)):\n        raise ValueError(\"invalid RiffDB packed result\")\n    packed = value[\"$riffdb_packed\"]\n    if not isinstance(packed, dict) or frozenset(packed) != frozenset((\"outcome\", \"result_name\", \"entity\", \"fields\", \"row_count\", \"columns\")) or packed[\"outcome\"] != {:?} or packed[\"result_name\"] != {:?} or packed[\"entity\"] != {:?} or packed[\"fields\"] != [{fields}] or type(packed[\"row_count\"]) is not int or packed[\"row_count\"] < 0 or packed[\"row_count\"] > {} or not isinstance(packed[\"columns\"], list) or len(packed[\"columns\"]) != {}:\n        raise ValueError(\"invalid RiffDB packed result\")\n    row_count = packed[\"row_count\"]\n    decoded: list[{nested}] = []\n    for row in range(row_count):\n        decoded.append({nested}(\n", shape.outcome, shape.result_name, shape.entity, shape.maximum_rows, shape.fields.len()).expect("String writes cannot fail");
+    writeln!(output, "def _decode_{method}_packed(value: object) -> {name}Result:\n    if not isinstance(value, dict) or frozenset(value) != frozenset((\"$riffdb_packed\",)):\n        raise ValueError(\"invalid RiffDB packed result\")\n    packed = value[\"$riffdb_packed\"]\n    if not isinstance(packed, dict) or frozenset(packed) != frozenset((\"outcome\", \"result_name\", \"entity\", \"fields\", \"row_count\", \"columns\")) or packed[\"outcome\"] != {:?} or packed[\"result_name\"] != {:?} or packed[\"entity\"] != {:?} or packed[\"fields\"] != [{fields}] or type(packed[\"row_count\"]) is not int or packed[\"row_count\"] < 0 or packed[\"row_count\"] > {} or not isinstance(packed[\"columns\"], list) or len(packed[\"columns\"]) != {}:\n        raise ValueError(\"invalid RiffDB packed result\")\n    row_count = packed[\"row_count\"]\n    decoded: list[{nested}] = []\n    for row in range(row_count):\n        decoded.append({nested}(\n", shape.outcome, shape.result_name, shape.entity, shape.maximum_rows, shape.fields.len()).infallible();
     for (index, field) in shape.fields.iter().enumerate() {
         writeln!(
             output,
@@ -1251,14 +1250,14 @@ fn emit_python_packed_query_decoder(
                 contract
             )
         )
-        .expect("String writes cannot fail");
+        .infallible();
     }
     writeln!(
         output,
         "        ))\n    return {branch}({}=tuple(decoded))\n",
         python_identifier(&shape.result_name)
     )
-    .expect("String writes cannot fail");
+    .infallible();
 }
 
 #[allow(dead_code)]
@@ -1329,7 +1328,7 @@ fn emit_client(
         "class {prefix}{}Client:\n    def __init__(self, transport: {transport}, command_attempts: AttemptBudget) -> None:\n        self._transport = transport\n        self._command_attempts = command_attempts\n",
         pascal(module.contract_lineage().as_str())
     )
-    .expect("String writes cannot fail");
+    .infallible();
     for query in module.queries() {
         let wire_name = query.name();
         let name = pascal(wire_name);
@@ -1397,7 +1396,7 @@ fn emit_client(
             "    {async_token}def {method}(self, parameters: {name}Params, options: QueryOptions = QueryOptions()) -> TypedQueryResult[{name}Result]:\n{parameter_prelude}        raw = {await_token}self._transport._execute_named_query(\n            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,\n            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,\n            query_name={wire_name:?}, plan_hash={constant}_QUERY_PLAN_HASH,\n            parameters={parameter_argument}, options=options,\n{compact_argument}        )\n        outcomes = {{",
             constant = screaming_snake(wire_name),
         )
-        .expect("String writes cannot fail");
+        .infallible();
         for branch in query.plan().schemas().results() {
             writeln!(
                 output,
@@ -1405,10 +1404,10 @@ fn emit_client(
                 branch.name(),
                 pascal(branch.name())
             )
-            .expect("String writes cannot fail");
+            .infallible();
         }
         if compact {
-            writeln!(output, "        }}\n        return raw._map_value(lambda value: _decode_{method}_compact(value) if isinstance(value, dict) and \"$riffdb_compact\" in value else decode_variant(outcomes, value))\n").expect("String writes cannot fail");
+            writeln!(output, "        }}\n        return raw._map_value(lambda value: _decode_{method}_compact(value) if isinstance(value, dict) and \"$riffdb_compact\" in value else decode_variant(outcomes, value))\n").infallible();
         } else {
             output.push_str("        }\n        return raw._map_value(lambda value: decode_variant(outcomes, value))\n\n");
         }
@@ -1435,7 +1434,7 @@ fn emit_client(
                 entity = inspection.entity,
                 field = inspection.field,
             )
-            .expect("String writes cannot fail");
+            .infallible();
         }
     }
     for command in commands {
@@ -1474,7 +1473,7 @@ fn emit_client(
                         field.name()
                     ),
                 )
-                .expect("String writes cannot fail");
+                .infallible();
             }
             validation
         });
@@ -1484,7 +1483,7 @@ fn emit_client(
             collection_validation = collection_validation.as_deref().unwrap_or(""),
             constant = screaming_snake(wire_name)
         )
-        .expect("String writes cannot fail");
+        .infallible();
         for outcome in command.outcomes() {
             writeln!(
                 output,
@@ -1492,7 +1491,7 @@ fn emit_client(
                 outcome.name(),
                 pascal(outcome.name())
             )
-            .expect("String writes cannot fail");
+            .infallible();
         }
         if workflow_revisions.is_empty() {
             output.push_str("        }\n        return raw._map_outcome(lambda value: decode_variant(outcomes, value))\n\n");
@@ -1501,20 +1500,20 @@ fn emit_client(
                 output,
                 "        }}\n        result: TypedCommandResult[{name}Outcome] = raw._map_outcome(lambda value: decode_variant(outcomes, value))"
             )
-            .expect("String writes cannot fail");
+            .infallible();
             writeln!(
                 output,
                 "        if not isinstance(result.outcome, {name}{}):\n            return result._with_workflow_revisions(())",
                 pascal(success_outcome),
             )
-            .expect("String writes cannot fail");
+            .infallible();
             for revision in &workflow_revisions {
                 writeln!(
                     output,
                     "        if input.{} >= 2**64 - 1:\n            raise ValueError(\"RiffDB workflow successor revision overflow\")",
                     python_identifier(revision.input_name),
                 )
-                .expect("String writes cannot fail");
+                .infallible();
             }
             output.push_str("        return result._with_workflow_revisions((\n");
             for revision in workflow_revisions {
@@ -1524,7 +1523,7 @@ fn emit_client(
                     revision.binding_name,
                     python_identifier(revision.input_name),
                 )
-                .expect("String writes cannot fail");
+                .infallible();
             }
             output.push_str("        ))\n\n");
         }
@@ -1543,7 +1542,7 @@ fn emit_client(
             output,
             "    {async_token}def {method}_batch(\n        self, inputs: Sequence[{name}Input], options: CommandBatchOptions,\n        progress: Callable[[CommandBatchProgress], None] | None = None,\n    ) -> CommandBatchResult[{name}Outcome]:\n{batch_collection_validation}        return {batch_await}self._transport._command_batch(inputs, options, self.{method}, progress)\n"
         )
-        .expect("String writes cannot fail");
+        .infallible();
     }
 }
 
@@ -1558,7 +1557,7 @@ fn emit_contract_record<'a>(
         output,
         "@dataclass(frozen=True, slots=True, kw_only=True)\nclass {name}:"
     )
-    .expect("String writes cannot fail");
+    .infallible();
     if fields.is_empty() {
         output.push_str("    pass\n");
     }
@@ -1569,7 +1568,7 @@ fn emit_contract_record<'a>(
             python_identifier(field),
             python_contract_type(value_type, contract)
         )
-        .expect("String writes cannot fail");
+        .infallible();
     }
     output.push('\n');
 }
@@ -1602,7 +1601,7 @@ fn emit_named_nested(
                 output,
                 "@dataclass(frozen=True, slots=True, kw_only=True)\nclass {name}:"
             )
-            .expect("String writes cannot fail");
+            .infallible();
             if fields.is_empty() {
                 output.push_str("    pass\n");
             }
@@ -1622,7 +1621,7 @@ fn emit_named_nested(
                         ""
                     }
                 )
-                .expect("String writes cannot fail");
+                .infallible();
             }
             output.push('\n');
         }
@@ -2127,7 +2126,7 @@ fn separated(name: &str, separator: char, uppercase: bool) -> String {
 fn hex(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
-        write!(output, "{byte:02x}").expect("String writes cannot fail");
+        write!(output, "{byte:02x}").infallible();
     }
     output
 }

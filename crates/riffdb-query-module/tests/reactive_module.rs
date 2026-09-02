@@ -35,6 +35,22 @@ contract ReactiveRows version 1 {
 const SOURCE: &str =
     include_str!("../../../fixtures/reactive/module/reactive-v1/row_activity.riffr");
 
+const WOODPECKER_CONTRACT: &str =
+    include_str!("../../../fixtures/adapters/woodpecker/contract.riff");
+const WOODPECKER_REACTIVE: &str =
+    include_str!("../../../fixtures/adapters/woodpecker/reactive/pipeline_activity.riffr");
+const WOODPECKER_REACTIVE_MODULE: &[u8] = include_bytes!(
+    "../../../fixtures/adapters/woodpecker/generated/reactive/PipelineActivity.riffdb.reactive.module"
+);
+
+#[test]
+fn reactive_module_artifacts_are_byte_identical_after_rename() {
+    let contract = compile_contract_source(WOODPECKER_CONTRACT).expect("Woodpecker contract");
+    let module = compile_reactive_source(WOODPECKER_REACTIVE, &contract, &[])
+        .expect("Woodpecker reactive module");
+    assert_eq!(module.canonical_bytes(), WOODPECKER_REACTIVE_MODULE);
+}
+
 #[test]
 fn exact_stream_module_is_reproducible_and_partition_local() {
     let contract = compile_contract_source(CONTRACT).expect("contract");

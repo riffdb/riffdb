@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "validated control-plane preparations retain every operation-specific target and nonzero bound"
+)]
+
 //! Typed control-plane preparations and sole-writer execution.
 
 use std::{error::Error, fmt, num::NonZeroU32, num::NonZeroU64};

@@ -13,6 +13,7 @@ const COMMAND_INDEX_SOURCE: &str = include_str!("../src/command_index.rs");
 const COMMAND_RECORDS_SOURCE: &str = include_str!("../src/command_records.rs");
 const COMMAND_VALIDATION_SOURCE: &str = include_str!("../src/command_validation.rs");
 const COMMAND_PREPARATION_SOURCE: &str = include_str!("../src/command_preparation.rs");
+const COORDINATOR_TIME_SOURCE: &str = include_str!("../src/coordinator_time.rs");
 const LIB_SOURCE: &str = include_str!("../src/lib.rs");
 const CLOCK_SOURCE: &str = include_str!("../src/clock.rs");
 const INITIALIZATION_SOURCE: &str = include_str!("../src/initialization.rs");
@@ -635,7 +636,6 @@ fn production_group_collection_uses_no_submillisecond_tokio_timer() {
         "collect_until_group_deadline(",
         "collect_until_coalesce_deadline(",
         "std::hint::spin_loop()",
-        "tokio::time::sleep_until",
         ".enable_time()",
         "CommitGroupDispatchReason::QueueDrained",
     ] {
@@ -644,6 +644,15 @@ fn production_group_collection_uses_no_submillisecond_tokio_timer() {
             "bounded grouping is missing reviewed mechanism {required}"
         );
     }
+    assert!(
+        production.contains("self.monotonic_clock.sleep_until(")
+            || production.contains("clock.sleep_until("),
+        "bounded grouping does not wait through the reviewed monotonic-time port"
+    );
+    assert!(
+        COORDINATOR_TIME_SOURCE.contains("tokio::time::sleep_until"),
+        "release wall-time implementation lost the reviewed Tokio deadline mechanism"
+    );
 }
 
 #[test]

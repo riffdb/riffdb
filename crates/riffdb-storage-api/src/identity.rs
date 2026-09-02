@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "the fixed database identity digest key identifier is nonzero"
+)]
+
 //! Durable database initialization and canonical idempotency identity.
 
 use std::error::Error;

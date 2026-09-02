@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "validated query snapshots retain the requested bound and resolved generation"
+)]
+
 //! One-transaction owned composite-query snapshots for redb.
 
 use std::collections::BTreeMap;
