@@ -1313,8 +1313,9 @@ work_packages:
     OQ-056, OQ-057, OQ-058, OQ-059, OQ-060, OQ-061, DRV-007, DRV-008,
     DRV-012, DRV-014, SAFE-004, SAFE-005]
   required_adrs: [ADR-0055, ADR-0108, ADR-0112, ADR-0124, ADR-0129,
-    ADR-0148, ADR-0150, ADR-0154, ADR-0193]
-  allowed_paths: [SPEC.md, work_packages.yaml,
+    ADR-0148, ADR-0150, ADR-0154, ADR-0193, ADR-0194]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+    adr/0194-generated-mcp-named-query-pagination-envelope.md,
     release/version-topology-v1.json, crates/**, clients/**, fixtures/**,
     examples/**, tests/**, scripts/**, docs/**]
   deliverables:
@@ -1327,11 +1328,23 @@ work_packages:
     not prove external consumer execution; WP-775 solely owns the fresh external execution receipt
     required by ADR-0154 section 7, and the existing source-only receipt remains historical,
     non-terminal evidence.
+  - Generated paginated named-query MCP V5 catalogs with collision-safe result/page envelopes,
+    protected cursor routing, exact 59/39-byte object and complete outbound-frame budget accounting,
+    and hosted/stdio two-page parity; V5 retains V3 SDK-only and V4 vector registries under exact
+    least-sufficient V2-V5 selection, unpaged entries remain byte-exact, and every generated schema,
+    catalog, application-lock, and fixture rotation receives exact human diff and hash review,
+    proved by
+    generated_application_operations_v5_topology_and_selection_are_exact
+  - MCP agent and operational-query handbook guidance for the required result/page envelope,
+    nullable next_cursor, opaque after reuse, version-skew behavior, and value-free diagnostics
   acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-query-module -p riffdb-api-mcp -p riffdb-mcp-stdio --all-features
   - cargo +1.97.0 test --workspace --all-features
+  - ./scripts/adapter-operational-query-acceptance --all-languages
   - ./scripts/driver-conformance --all-languages --remote
   - ./scripts/check-version-topology
   - ./scripts/check-generated
+  - ./scripts/check-adr-obligations
   - ./scripts/check-requirement-coverage
   - ./scripts/check-workspace-policy
   - ./scripts/handbook check
