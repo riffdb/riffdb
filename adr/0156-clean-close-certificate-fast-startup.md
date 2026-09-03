@@ -12,6 +12,7 @@
 - **WP-705 dirty-evidence boundary direction approved:** 2026-09-02
 - **WP-705 dirty-evidence boundary exact text accepted:** 2026-09-02 (maintainer)
 - **WP-705 atomic crash-evidence interpretation accepted:** 2026-09-02 (maintainer)
+- **WP-705 repair-evidence split accepted:** 2026-09-02 (maintainer)
 - **Accepted:** 2026-08-26
 - **Acceptance reference:** Maintainer exact-text acceptance in the current
   Codex session for upstream commit `c5c73858`
@@ -249,9 +250,13 @@ PERF-013 evidence will report clean-certificate and complete-validation curves
 separately. The million-row reproduction must prove that a clean close reopens
 without a population-sized evidence plan or population-sized validation walk.
 WP-705 must additionally exercise the unchanged complete-validation path after
-a genuine writer-process kill at the 65,536-row checkpoint, including engine
-repair, recovery, idempotency, atomic either-old-or-new resolution, and
-recovery-only no-authority-advance assertions. Its attempted
+a genuine writer-process kill at the 65,536-row checkpoint, including truthful
+engine-repair observation, recovery, idempotency, atomic either-old-or-new
+resolution, and recovery-only no-authority-advance assertions. A separate
+dedicated `PERF-014` process fixture must force a natural engine repair boundary,
+observe the real repair callback, and compare against equivalent clean state;
+the 65,536-row daemon run must not claim repair when redb does not require it.
+Its attempted
 production-scale complete-path run must preserve the fail-closed
 `LimitExceeded` result at the historical-evidence 512 MiB ceiling as a known
 ceiling and handoff, not relabel it as passing evidence. Accepted ADR-0182 and
@@ -442,28 +447,33 @@ this amendment separates the part now satisfied from the part still owed.
 
 ## Amendment 4 — WP-705 complete-path evidence boundary
 
-WP-705 closes ADR-0156's implementation and compatibility work with three
+WP-705 closes ADR-0156's implementation and compatibility work with four
 distinct evidence results:
 
 1. a production-scale clean close and reopen proving bounded heap, zero
    population-table evidence walks, and separately attributed open, readiness,
    drain, and final-certificate stages;
 2. a genuine writer-process kill and reopen at exactly the 65,536-row checkpoint
-   proving that the unchanged complete-validation path invokes engine repair,
-   reaches exact end, preserves the 86-arm recovery matrix, remains idempotent,
-   and resolves the in-flight probe atomically as either wholly absent or wholly
-   committed. A transaction durable before SIGKILL is not required to disappear.
-   The repaired database must exactly match the predeclared equivalently seeded
-   clean twin for the observed atomic outcome, the unclean/clean wall-time ratio
-   is recorded against that twin, and a second restart proves recovery itself
-   creates no additional command, event, outcome, provenance, audit, projection,
-   outbox, or allocator advance; and
-3. a production-scale attempt of that unchanged complete path which records the
+   proving that the unchanged complete-validation path reaches exact end,
+   preserves the 86-arm recovery matrix, remains idempotent, and resolves the
+   in-flight probe atomically as either wholly absent or wholly committed. A
+   transaction durable before SIGKILL is not required to disappear. The database
+   must exactly match the predeclared equivalently seeded clean twin for the
+   observed atomic outcome, the dirty/clean wall-time ratio is recorded against
+   that twin, the real engine-repair callback observation is reported truthfully,
+   and a second restart proves recovery itself creates no additional command,
+   event, outcome, provenance, audit, projection, outbox, or allocator advance;
+3. a dedicated `PERF-014` process fixture using a genuine process kill at a
+   deterministic real-engine crash boundary, proving that the real repair
+   callback is invoked, the recovered state equals its equivalently seeded clean
+   peer, and the repair/clean wall-time ratio is recorded without simulating or
+   relabelling repair; and
+4. a production-scale attempt of that unchanged complete path which records the
    typed fail-closed `LimitExceeded` result at the historical-evidence 512 MiB
    ceiling without retry, a raised ceiling, partial readiness, or a passing
    performance claim, and without application-authority or allocator advance.
 
-The third result is a known-ceiling receipt and an input to WP-760. It does not
+The fourth result is a known-ceiling receipt and an input to WP-760. It does not
 satisfy production-scale dirty readiness, waive `PERF-013`, `PERF-014`, or
 `PERF-019`, or narrow `REC-001`, `REC-002`, or `REC-004`. The existing complete
 path remains authoritative until WP-760 implements the separately accepted
