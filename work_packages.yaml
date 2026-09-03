@@ -1094,6 +1094,23 @@ work_packages:
     scale: Compiler work is bounded by existing binding/field/expression/collection limits and
       charges the maximum of two sealed alternatives once; no population scan, dynamic graph,
       per-index initializer evaluation, or cross-partition state is introduced.
+  closure:
+    status: complete
+    completed_at: '2026-09-03'
+    requirements_satisfied: [BLK-009, BLK-036, BLK-037, BLK-038, BLK-040,
+      BLK-042, BLK-043, BLK-044, DSL-001, DSL-002, DSL-003, DSL-004, DSL-005,
+      DSL-006, DSL-007, DSL-008, DSL-009, DSL-010, DSL-011, DSL-012, SAFE-004,
+      SAFE-005]
+    evidence: Req-tagged parser and compiler tests prove the exact ordinary and bounded-collection
+      syntax, canonical state-independent initializer, source-spanned rejection and absent-path
+      definite assignment. IR estimator tests freeze max-of-create-or-replace charging, the V17
+      fixture and retained V16 fixture remain byte exact, and the application-role proof refuses
+      either incomplete policy operation before accepting the complete create/update union.
+    known_limitations: General upsert, state-specific arms or origin predicates, caller-selected
+      conflict behavior, callbacks, dynamic branching, cross-partition transitions, and runtime or
+      framework-specific behavior remain unavailable; WP-698 and WP-699 own downstream execution,
+      recovery, generation, and external acceptance.
+    follow_ups: [WP-698, WP-699]
   human_review_triggers: *id001
 - id: WP-698
   name: Initialized state-transition runtime coordinator and storage conformance

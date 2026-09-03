@@ -182,6 +182,7 @@ contract DecisionShape version 1 {{
     }
 }
 
+// req: BLK-036, BLK-042
 #[test]
 fn parses_initialized_mutable_bindings_in_ordinary_and_bulk_commands() {
     let source = r#"
