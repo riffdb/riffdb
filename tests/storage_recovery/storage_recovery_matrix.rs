@@ -81,6 +81,8 @@ const CHILD_PRUNE_TARGET: &str = "RIFFDB_STORAGE_RECOVERY_CHILD_PRUNE_TARGET";
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 const SECONDARY_INDEXES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("secondary_indexes");
 const AUDIT: TableDefinition<&[u8], &[u8]> = TableDefinition::new("audit");
+const VALIDATED_PREFIX_ENTITY_HEADS: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("validated_prefix_entity_heads");
 const META_ADMINISTRATION_SEQUENCE: &str = "next_administration_sequence";
 static NEXT_PATH: AtomicU64 = AtomicU64::new(1);
 
@@ -1794,18 +1796,26 @@ fn process_recovery_child() {
         "after-validated-prefix-checkpoint-commit" => {
             RedbTestController::abort_after_commit(RedbTestOperation::ValidatedPrefixCheckpoint)
         }
-        // Shutdown write point (ADR-0019 A1 write point 2): first ValidatedPrefixCheckpoint
-        // hit is the startup finish write (non-fatally rejected so clean=true and no
-        // durable checkpoint), second hit is the public write_validated_prefix_checkpoint.
-        "before-shutdown-validated-prefix-checkpoint-commit" => {
-            RedbTestController::return_before_then_abort_before(
-                RedbTestOperation::ValidatedPrefixCheckpoint,
-            )
+        "before-graceful-close-barrier" => {
+            RedbTestController::abort_before_commit(RedbTestOperation::GracefulCloseBarrier)
         }
-        "after-shutdown-validated-prefix-checkpoint-commit" => {
-            RedbTestController::return_before_then_abort_after(
-                RedbTestOperation::ValidatedPrefixCheckpoint,
-            )
+        "during-graceful-close-barrier" => {
+            RedbTestController::abort_before_commit(RedbTestOperation::GracefulCloseBarrierSuffix)
+        }
+        "after-graceful-close-barrier" => {
+            RedbTestController::abort_after_commit(RedbTestOperation::GracefulCloseBarrier)
+        }
+        "before-graceful-checkpoint-classification" => RedbTestController::abort_before_commit(
+            RedbTestOperation::GracefulCheckpointClassification,
+        ),
+        "after-graceful-checkpoint-classification" => RedbTestController::abort_after_commit(
+            RedbTestOperation::GracefulCheckpointClassification,
+        ),
+        "before-graceful-clean-commit" => {
+            RedbTestController::abort_before_commit(RedbTestOperation::CleanCloseLifecycle)
+        }
+        "after-graceful-clean-commit" => {
+            RedbTestController::abort_after_commit(RedbTestOperation::CleanCloseLifecycle)
         }
         "before-retention-prune-subrange-commit" => {
             RedbTestController::abort_before_commit(RedbTestOperation::RetentionPruneSubrange)
@@ -1879,11 +1889,25 @@ fn process_recovery_child() {
             // Seeded DB reopens and complete_startup_pass writes the checkpoint on finish.
             let _ = complete_startup_pass(store);
         }
-        "before-shutdown-validated-prefix-checkpoint-commit"
-        | "after-shutdown-validated-prefix-checkpoint-commit" => {
-            // Drive the real public entry (write point 2), not the startup finish write.
+        "during-graceful-close-barrier" => {
             let ports = open_operational(store);
-            let _ = ports.write_validated_prefix_checkpoint();
+            let epoch = ports
+                .begin_deferred_command_epoch()
+                .expect("begin acknowledged deferred suffix");
+            let epoch = apply_unpublished_command_fixture(epoch, &command_fixture_at(2));
+            let committed = DeferredCommandEpoch::fence(epoch)
+                .expect("publish acknowledged deferred journal suffix");
+            assert_eq!(committed.len(), 1);
+            let _ = ports.complete_graceful_close();
+        }
+        "before-graceful-close-barrier"
+        | "after-graceful-close-barrier"
+        | "before-graceful-checkpoint-classification"
+        | "after-graceful-checkpoint-classification"
+        | "before-graceful-clean-commit"
+        | "after-graceful-clean-commit" => {
+            let ports = open_operational(store);
+            let _ = ports.complete_graceful_close();
         }
         _ => unreachable!("controller match rejects unknown modes"),
     }
@@ -3639,60 +3663,7 @@ fn crash_after_validated_prefix_checkpoint_commit_reopens_fast_path() {
     );
 }
 
-#[test]
-fn crash_before_shutdown_validated_prefix_checkpoint_leaves_no_fresh_checkpoint() {
-    // ADR-0019 A1 write point (2): abort before the public shutdown-path write.
-    // Child rejects the startup finish write non-fatally, then aborts before the
-    // public write_validated_prefix_checkpoint commit — no durable checkpoint.
-    let path = TestDatabasePath::new("before-shutdown-validated-prefix-checkpoint");
-    let _ = prepare_committed_command_database(&path.0);
-    strip_checkpoint_meta(&path.0);
-    run_crashing_child(
-        "before-shutdown-validated-prefix-checkpoint-commit",
-        &path.0,
-    );
-
-    assert!(
-        !checkpoint_meta_present(&path.0),
-        "abort before the public shutdown checkpoint write must leave no durable checkpoint"
-    );
-    let store = RedbStore::open(&path.0).expect("reopen after before-shutdown-checkpoint crash");
-    let (_, _, outcome, verified, _) = complete_startup_observing_checkpoint(store);
-    assert!(
-        matches!(outcome, StructuralOpenOutcome::Clean(_)),
-        "recovery after pre-shutdown-checkpoint crash must open clean"
-    );
-    assert!(
-        !verified,
-        "first reopen after pre-shutdown-checkpoint crash must full-validate (no checkpoint)"
-    );
-}
-
-#[test]
-fn crash_after_shutdown_validated_prefix_checkpoint_reopens_fast_path() {
-    // ADR-0019 A1 write point (2): public write commits, then process aborts.
-    // Falsifiability (b): skipping the public write leaves no durable checkpoint
-    // and this assertion fails.
-    let path = TestDatabasePath::new("after-shutdown-validated-prefix-checkpoint");
-    let _ = prepare_committed_command_database(&path.0);
-    strip_checkpoint_meta(&path.0);
-    run_crashing_child("after-shutdown-validated-prefix-checkpoint-commit", &path.0);
-
-    assert!(
-        checkpoint_meta_present(&path.0),
-        "public shutdown checkpoint must be durable after the post-commit abort"
-    );
-    let store = RedbStore::open(&path.0).expect("reopen after after-shutdown-checkpoint crash");
-    let (_, _, outcome, verified, _) = complete_startup_observing_checkpoint(store);
-    assert!(
-        matches!(outcome, StructuralOpenOutcome::Clean(_)),
-        "recovery after post-shutdown-checkpoint crash must open clean"
-    );
-    assert!(
-        verified,
-        "checkpoint committed by the public entry before crash must verify on reopen"
-    );
-}
+include!("wp774_graceful_close.rs");
 
 #[test]
 // req: PERF-014
@@ -4040,6 +4011,28 @@ fn checkpoint_meta_present(path: &Path) -> bool {
     let txn = database.begin_read().expect("begin checkpoint probe");
     let meta = txn.open_table(META).expect("open meta");
     meta.get(CHECKPOINT_META_KEY).expect("get").is_some()
+}
+
+fn startup_path_observation(path: &Path) -> (bool, bool) {
+    let store = RedbStore::open(path).expect("open for startup path observation");
+    let inputs = StartupValidationInputs::new(
+        Timestamp::new(1_700_000_000, 0).expect("startup timestamp"),
+        ReadableCapabilityDigestInventory::new(vec![ReadableDigestKey::v1(
+            DigestKeyId::new(1).expect("digest key"),
+        )])
+        .expect("capability digest inventory"),
+        ReadableIdempotencyDigestInventory::new(vec![ReadableDigestKey::v1(
+            DigestKeyId::new(1).expect("digest key"),
+        )])
+        .expect("idempotency digest inventory"),
+    );
+    let session = store
+        .begin_structural_evidence(inputs)
+        .expect("begin startup observation");
+    (
+        session.clean_close_fast_path(),
+        session.checkpoint_verified(),
+    )
 }
 
 /// Deletes the first row of one raw byte-keyed table.
@@ -4973,7 +4966,7 @@ fn retention_prune_deletes_live_checkpoint_first() {
     assert!(
         ports
             .write_validated_prefix_checkpoint()
-            .expect("write clean-shutdown checkpoint"),
+            .expect("write explicit checkpoint fixture"),
         "clean validation must permit the checkpoint"
     );
     drop(ports);
@@ -5017,7 +5010,7 @@ fn retention_prune_deletes_live_checkpoint_first() {
     assert!(
         ports
             .write_validated_prefix_checkpoint()
-            .expect("write successor clean-shutdown checkpoint")
+            .expect("write successor checkpoint fixture")
     );
     drop(ports);
     retention_deliver_outbox_status_raw(&path.0, 2);

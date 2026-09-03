@@ -427,6 +427,7 @@ def stop_server(
     if not process_alive(old_pid):
         fail("endurance server was not running before lifecycle restart")
     before_frontier = health_frontier(environment)
+    checkpoint_before = inspect_checkpoint(environment)
     stdout_path = environment / "server.stdout"
     stdout_offset = stdout_path.stat().st_size
     with (environment / "server.input").open("w", encoding="ascii") as control:
@@ -434,8 +435,8 @@ def stop_server(
         control.flush()
     wait_stopped(old_pid, 45)
     checkpoint = inspect_checkpoint(environment)
-    if checkpoint < before_frontier:
-        fail("graceful shutdown checkpoint precedes the observed application frontier")
+    if checkpoint != checkpoint_before:
+        fail("graceful shutdown changed the retained validated-prefix checkpoint")
     queue_depth = shutdown_writer_queue_depth(stdout_path, stdout_offset)
     return process_state, before_frontier, checkpoint, queue_depth
 
@@ -480,7 +481,7 @@ def start_server(
                 time.sleep(0.1)
         if not ready or after_frontier < minimum_frontier:
             fail(
-                "restarted server did not publish the checkpoint frontier "
+                "restarted server did not publish the required application frontier "
                 f"(required {minimum_frontier}, observed {after_frontier})"
             )
     except BaseException:
@@ -495,7 +496,7 @@ def start_server(
 
 def restart_server(environment: Path, lifecycle: dict[str, Any]) -> tuple[int, int, int]:
     process_state, before_frontier, checkpoint, queue_depth = stop_server(environment)
-    after_frontier = start_server(environment, process_state, checkpoint)
+    after_frontier = start_server(environment, process_state, before_frontier)
     lifecycle["writer_queue_depth"] = max(
         integer(lifecycle["writer_queue_depth"], "writer_queue_depth"), queue_depth
     )
@@ -931,7 +932,7 @@ def certificate_rotation(
     atomic_replace_file(replacement_certificate, active_certificate, 0o444)
     atomic_replace_file(replacement_key, active_key, 0o600)
     process_state, frontier_before, checkpoint, queue_depth = stop_server(environment)
-    frontier_after = start_server(environment, process_state, checkpoint)
+    frontier_after = start_server(environment, process_state, frontier_before)
     if frontier_after < frontier_before:
         fail("endurance certificate rotation regressed the application frontier")
     after = before + 1
@@ -1048,12 +1049,12 @@ def retention(environment: Path, state: dict[str, Any]) -> tuple[int, int, dict[
         )
         if after != target or after <= before:
             fail("endurance retention prune did not publish the fenced target")
-        after_frontier = start_server(environment, process_state, checkpoint)
+        after_frontier = start_server(environment, process_state, application_frontier)
         restarted = True
     finally:
         if not restarted:
             try:
-                start_server(environment, process_state, checkpoint)
+                start_server(environment, process_state, application_frontier)
             except (json.JSONDecodeError, OSError, subprocess.SubprocessError, ValueError):
                 pass
     if after_frontier < application_frontier:

@@ -23243,6 +23243,15 @@ work_packages:
     scale: The suffix barrier is already required, classification reads fixed metadata and
       constant-time engine cardinalities, and close performs no population walk, proof build,
       companion-table replacement, or checkpoint commit.
+  closure:
+    status: complete
+    completed_at: "2026-09-02"
+    requirements_satisfied: [STO-023, REC-001, REC-002, REC-004, PERF-007, PERF-013, PERF-019]
+    evidence: Graceful close now classifies retained checkpoint state from one immutable bounded
+      view after the journal-suffix barrier, retains every checkpoint byte unchanged, and performs
+      exactly one independent final CLEAN transaction. Req-tagged exact-current, unusable-state,
+      failure/crash-matrix, allocator, graph-ordering, and redaction proofs establish dirty exact
+      fallback, closed diagnostic custody, and no population scan or checkpoint mutation.
   human_review_triggers: &id0188
   - Shutdown would create, refresh, delete, repair, or reinterpret a validated-prefix checkpoint.
   - Checkpoint classification would scan population rows or trust unbounded process-local state.

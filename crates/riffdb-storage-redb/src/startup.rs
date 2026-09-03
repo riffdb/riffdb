@@ -12876,10 +12876,11 @@ contract RedbMigration version 1 {
         );
     }
 
-    /// The graceful-shutdown checkpoint write must read row COUNTS, not rows: no
-    /// history row may be iterated to build it, at any history length.
+    include!("startup_graceful_close_tests.rs");
+    /// The retired shutdown-writer fixture reads row COUNTS, not rows. This
+    /// preserves falsifiability of the old builder without a production caller.
     #[test]
-    fn the_shutdown_checkpoint_write_iterates_no_history_rows() {
+    fn the_checkpoint_writer_fixture_iterates_no_history_rows() {
         let path = TestDatabasePath::new("checkpoint-zero-walk");
         let id = database_id(0x9b);
         let (store, _bundle) = checkpointable_history_store(&path, id, 12);
@@ -12910,8 +12911,8 @@ contract RedbMigration version 1 {
         assert!(
             ports
                 .write_validated_prefix_checkpoint()
-                .expect("graceful-shutdown checkpoint write"),
-            "a clean validation must permit the shutdown checkpoint write"
+                .expect("explicit checkpoint-writer fixture"),
+            "a clean validation must permit the compatibility fixture"
         );
         let checkpoint_after = {
             let read = ports.shared.database.begin_read().expect("checkpoint read");
@@ -12929,7 +12930,7 @@ contract RedbMigration version 1 {
         assert_eq!(
             ports.checkpoint_count_rows_walked(),
             0,
-            "the graceful-shutdown checkpoint write must iterate no history row"
+            "the compatibility checkpoint writer must iterate no history row"
         );
         assert_eq!(
             ports.terminal_execution_failure_rows(),
@@ -12958,7 +12959,7 @@ contract RedbMigration version 1 {
     }
 
     #[test]
-    fn startup_republishes_once_and_shutdown_reuses_that_process_proof() {
+    fn startup_republishes_once_and_writer_fixture_reuses_that_process_proof() {
         let path = TestDatabasePath::new("checkpoint-process-proof");
         let id = database_id(0x99);
         let (store, _bundle) = checkpointable_history_store(&path, id, 4);
@@ -13000,24 +13001,24 @@ contract RedbMigration version 1 {
         assert!(
             second_ports
                 .write_validated_prefix_checkpoint()
-                .expect("graceful shutdown checkpoint")
+                .expect("explicit checkpoint-writer fixture")
         );
         let shutdown = {
             let read = second_ports
                 .shared
                 .database
                 .begin_read()
-                .expect("shutdown checkpoint read");
+                .expect("fixture checkpoint read");
             let meta = read.open_table(META).expect("metadata table");
             meta.get(META_VALIDATED_PREFIX_CHECKPOINT)
                 .expect("checkpoint lookup")
-                .expect("shutdown checkpoint")
+                .expect("fixture checkpoint")
                 .value()
                 .to_vec()
         };
         assert_eq!(
             shutdown, second,
-            "graceful shutdown must retain startup's exact process-generation proof"
+            "the exact-current compatibility fixture must retain startup's proof"
         );
     }
 
@@ -13183,13 +13184,13 @@ contract RedbMigration version 1 {
         assert!(
             ports
                 .write_validated_prefix_checkpoint()
-                .expect("graceful-shutdown checkpoint write"),
-            "a clean validation must permit the shutdown checkpoint write"
+                .expect("explicit checkpoint-writer fixture"),
+            "a clean validation must permit the compatibility fixture"
         );
         assert_eq!(
             ports.checkpoint_count_rows_walked(),
             0,
-            "the shutdown write must stay metadata-only with a maintained census"
+            "the compatibility writer must stay metadata-only with a maintained census"
         );
         drop(ports);
 
@@ -13288,15 +13289,14 @@ contract RedbMigration version 1 {
         );
     }
 
-    /// Scale evidence for the record (not a gate): decomposes the shutdown
-    /// checkpoint build over a large synthetic history and times the reference
-    /// walk against the O(1) derivation.
+    /// Historical scale evidence for the retired shutdown writer: decomposes
+    /// the explicit builder fixture over a large synthetic history.
     ///
     /// Rows are raw and share one terminal value, which is faithful for the count
     /// classes (they classify each row independently) and keeps generation cheap.
     #[test]
-    #[ignore = "generates a large synthetic history to time the shutdown checkpoint build"]
-    fn shutdown_checkpoint_build_scale_evidence() {
+    #[ignore = "generates a large synthetic history to time the checkpoint builder fixture"]
+    fn checkpoint_builder_fixture_scale_evidence() {
         use crate::validated_prefix::{CheckpointCountSource, build_checkpoint_from_snapshot};
         use std::time::Instant;
 

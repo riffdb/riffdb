@@ -57,6 +57,85 @@ fn without_whitespace(source: &str) -> String {
 }
 
 #[test]
+// req: STO-023, REC-001, REC-002, REC-004, PERF-019
+fn graceful_close_drops_immutable_classification_before_one_final_write_transaction() {
+    let store_owner = production_source(crate_root().join("src/store.rs"));
+    assert!(store_owner.contains("#[path = \"store_graceful_close.rs\"]"));
+    let store = production_source(crate_root().join("src/store_graceful_close.rs"));
+    let close = store
+        .split_once("fn complete_graceful_close(")
+        .expect("graceful close owner")
+        .1
+        .split_once("fn complete_graceful_close_barrier")
+        .expect("barrier helper follows orchestrator")
+        .0;
+    let read = close
+        .find("self.database.begin_read()")
+        .expect("immutable classification view");
+    let classify = close
+        .find("classify_graceful_checkpoint(")
+        .expect("checkpoint classification");
+    let drop_read = close.find("drop(read)").expect("classification view drop");
+    let begin = close
+        .find("self.database.begin_write()")
+        .expect("one independent final write");
+    let clean = close
+        .find("write_final_clean_close_lifecycle_after_barrier(write)")
+        .expect("same write enters CLEAN");
+    assert!(read < classify && classify < drop_read && drop_read < begin && begin < clean);
+    assert_eq!(close.matches("begin_write()").count(), 1);
+    assert_eq!(close.matches("begin_read()").count(), 1);
+
+    let final_clean = store
+        .split_once("fn write_final_clean_close_lifecycle_after_barrier")
+        .expect("final CLEAN helper")
+        .1
+        .split_once("fn read_commit_tail_from_write")
+        .expect("bounded tail helper")
+        .0;
+    assert!(!final_clean.contains("begin_read()"));
+    assert!(!final_clean.contains("begin_write()"));
+    assert!(final_clean.contains("bounded_state_binding_hash_for_write"));
+
+    let checkpoint = production_source(crate_root().join("src/validated_prefix.rs"));
+    let classifier = checkpoint
+        .split_once("pub(crate) fn classify_graceful_checkpoint")
+        .expect("bounded classifier")
+        .1
+        .split_once("/// Builds and durably writes")
+        .expect("checkpoint writer follows classifier")
+        .0;
+    for forbidden in [
+        ".iter()",
+        ".last()",
+        "command_authority_head",
+        "decode_command_segment",
+        "decode_entity",
+        "build_checkpoint_from_snapshot",
+        "replace_checkpoint_entity_heads",
+        ".to_vec()",
+    ] {
+        assert!(
+            !classifier.contains(forbidden),
+            "classifier must not reach population key/value path {forbidden}"
+        );
+    }
+    let cardinalities = checkpoint
+        .split_once("fn counts_from_durable_cardinalities")
+        .expect("graceful cardinality helper")
+        .1
+        .split_once("fn retained_snapshot")
+        .expect("cardinality helper end")
+        .0;
+    for forbidden in [".iter()", ".last()", "decode_", ".value()"] {
+        assert!(
+            !cardinalities.contains(forbidden),
+            "graceful cardinality helper must not read population content via {forbidden}"
+        );
+    }
+}
+
+#[test]
 fn production_sized_storage_tests_never_allocate_under_the_ambient_temp_directory() {
     let mut paths = Vec::new();
     for relative in [
@@ -590,7 +669,11 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
         let path = entry.expect("source entry").path();
         if path.extension().is_none_or(|extension| extension != "rs")
             || path.file_name().is_some_and(|name| {
-                name == "store.rs"
+                name.to_string_lossy().ends_with("_tests.rs")
+                    || name == "store.rs"
+                    // Extracted store-owned graceful-close boundary; its sole
+                    // final write commits through `SharedRedb::commit_durable`.
+                    || name == "store_graceful_close.rs"
                     || name == "startup.rs"
                     || name == "fixtures.rs"
                     || name == "benchmark_support.rs"
@@ -835,7 +918,7 @@ fn pipelined_writers_resolve_command_audits_from_the_unpublished_exact_index() {
 }
 
 #[test]
-fn the_shutdown_checkpoint_reads_row_counts_and_counts_every_terminal_failure_once() {
+fn the_checkpoint_builder_fixture_reads_row_counts_and_counts_every_terminal_failure_once() {
     let source_dir = crate_root().join("src");
     let checkpoint = without_whitespace(&production_source(source_dir.join("validated_prefix.rs")));
     // The write path selects the metadata-derived counts; nothing in it selects
@@ -903,7 +986,7 @@ fn an_exact_current_checkpoint_returns_before_opening_a_write_transaction() {
     let exact = write
         .find("exact_current_checkpoint_exists(")
         .expect("exact-current decision");
-    assert!(write[..exact].contains("purpose==CheckpointPurpose::GracefulShutdown&&"));
+    assert!(write[..exact].contains("purpose==CheckpointPurpose::TestFixture&&"));
     let early_return = write[exact..]
         .find("returnOk(())")
         .map(|offset| exact + offset)
@@ -1351,6 +1434,11 @@ fn only_commit_durable_advances_a_root_an_operational_reader_can_select() {
         // Engine-mechanics microbenchmarks live behind `benchmark-support` and
         // drive their own `Database` handles; they are not an operational lane.
         if name == "benchmark_support.rs" {
+            continue;
+        }
+        // Extracted `include!` test modules remain wholly under their owner's
+        // `#[cfg(test)]` module and cannot define a production commit lane.
+        if name.ends_with("_tests.rs") {
             continue;
         }
         for (function, body) in production_functions(&production_source(&path)) {

@@ -113,6 +113,7 @@ pub(crate) const PRODUCTION_SHUTDOWN_STAGE_COUNT: usize = 8;
 pub(crate) struct ProductionGraphShutdownStageEvidence {
     graph_elapsed_us: u64,
     elapsed_us: [u64; PRODUCTION_SHUTDOWN_STAGE_COUNT],
+    checkpoint_close: riffdb_storage_redb::GracefulCheckpointCloseReceiptV1,
 }
 
 /// Names for `riffdb-shutdown-stages-v1`'s positional stage values.
@@ -131,6 +132,9 @@ pub(crate) const PRODUCTION_SHUTDOWN_STAGE_LABELS_V1: [&str; PRODUCTION_SHUTDOWN
     "notifications",
     "coordinator",
     "blocking_ports",
+    // Byte-compatible V1 label: ADR-0188 removed the checkpoint write, so this
+    // slot now times the bounded close while the separate closed receipt names
+    // its actual stages.
     "validated_prefix_checkpoint_write",
 ];
 
@@ -155,6 +159,11 @@ impl ProductionGraphShutdownStageEvidence {
             "riffdb-shutdown-stages-v1\t{}\t{values}",
             self.graph_elapsed_us
         )
+    }
+
+    /// Closed checkpoint/lifecycle outcome emitted outside the stable stdout block.
+    pub(crate) fn format_checkpoint_close_v1_line(self) -> String {
+        self.checkpoint_close.format_v1_line()
     }
 }
 
@@ -709,7 +718,7 @@ impl ProductionGraphBuilder {
             storage.clone(),
             &blocking,
         ));
-        // Retained for the graceful-shutdown validated-prefix write (ADR-0019 A1).
+        // Retained for the bounded journal/checkpoint/lifecycle close ceremony.
         let shutdown_storage = storage.clone();
         let providers = ServiceProviders::new(
             catalog,
@@ -909,7 +918,7 @@ pub(crate) struct RunningProductionGraph {
     hosted_request_ids: ServerRequestIdSource,
     mcp_telemetry: Arc<dyn McpTelemetry>,
     observability: Arc<Observability>,
-    /// Activated storage retained for the graceful-shutdown checkpoint write.
+    /// Activated storage retained for the bounded graceful-close ceremony.
     storage: SharedRedbOperationalPorts,
     exact_worker: Option<RunningExactTextWorker>,
     columnar_worker: Option<RunningColumnarWorker>,
@@ -1024,8 +1033,8 @@ impl RunningProductionGraph {
     /// The hosted transport must first stop accepting requests and drain every
     /// handler that already obtained a service clone. This method then proves
     /// that all independently supervised service work and lower workers drain.
-    /// After the writer lane and blocking ports drain, the final engine commit
-    /// is a non-fatal validated-prefix checkpoint write (ADR-0019 Amendment 1).
+    /// After the writer lane and blocking ports drain, storage classifies the
+    /// retained checkpoint without mutation and commits CLEAN last.
     pub(crate) async fn shutdown(self) -> Result<(), ProductionGraphShutdownError> {
         self.shutdown_with_stage_evidence().await.map(|_| ())
     }
@@ -1084,23 +1093,35 @@ impl RunningProductionGraph {
             .shutdown_and_drain()
             .err();
         elapsed_us[6] = elapsed_microseconds(started);
-        // ADR-0019 A1 write point (2): after the writer lane drains, as the
-        // final engine commit. A write failure is non-fatal (lost fast path).
         let started = Instant::now();
-        write_shutdown_validated_prefix_checkpoint(&self.storage);
+        let checkpoint_close = if shutdown_prerequisites_succeeded([
+            exact.is_some(),
+            columnar.is_some(),
+            projection.is_some(),
+            notification_failed,
+            coordinator.is_some(),
+            blocking.is_some(),
+        ]) {
+            self.storage.complete_graceful_close()
+        } else {
+            riffdb_storage_redb::GracefulCheckpointCloseReceiptV1::barrier_failed([0; 3])
+        };
         elapsed_us[7] = elapsed_microseconds(started);
-        shutdown_result(
+        let evidence = ProductionGraphShutdownStageEvidence {
+            graph_elapsed_us: elapsed_microseconds(graph_started),
+            elapsed_us,
+            checkpoint_close,
+        };
+        shutdown_result_with_checkpoint_close(
             exact,
             columnar,
             projection,
             notification_failed,
             coordinator,
             blocking,
+            checkpoint_close,
         )?;
-        Ok(ProductionGraphShutdownStageEvidence {
-            graph_elapsed_us: elapsed_microseconds(graph_started),
-            elapsed_us,
-        })
+        Ok(evidence)
     }
 
     /// Maintenance-only shutdown with a closed boundary between fully drained
@@ -1172,13 +1193,24 @@ impl RunningProductionGraph {
             .shutdown_and_drain()
             .err();
         elapsed_us[6] = elapsed_microseconds(started);
-        // Same non-fatal final checkpoint write as graceful production shutdown.
         let started = Instant::now();
-        write_shutdown_validated_prefix_checkpoint(&self.storage);
+        let checkpoint_close = if shutdown_prerequisites_succeeded([
+            exact.is_some(),
+            columnar.is_some(),
+            projection.is_some(),
+            notification_failed,
+            coordinator.is_some(),
+            blocking.is_some(),
+        ]) {
+            self.storage.complete_graceful_close()
+        } else {
+            riffdb_storage_redb::GracefulCheckpointCloseReceiptV1::barrier_failed([0; 3])
+        };
         elapsed_us[7] = elapsed_microseconds(started);
         let evidence = ProductionGraphShutdownStageEvidence {
             graph_elapsed_us: elapsed_microseconds(graph_started),
             elapsed_us,
+            checkpoint_close,
         };
         // Releasing the graph's storage owners is where `redb::Database::drop`
         // runs, and that drop is not free: redb persists its allocator-state
@@ -1188,20 +1220,21 @@ impl RunningProductionGraph {
         // outside every shutdown receipt this process emits. Dropping it here
         // changes nothing about what is dropped or in what order relative to
         // any live user — every worker above is already joined and the final
-        // checkpoint write is done — it only makes the cost nameable.
+        // graceful close is done — it only makes the cost nameable.
         let release_started = Instant::now();
         drop(self);
         crate::shutdown_census::record(
             crate::shutdown_census::ShutdownReleaseStage::GraphStorageRelease,
             release_started,
         );
-        shutdown_result(
+        shutdown_result_with_checkpoint_close(
             exact,
             columnar,
             projection,
             notification_failed,
             coordinator,
             blocking,
+            checkpoint_close,
         )?;
         Ok(evidence)
     }
@@ -1211,16 +1244,8 @@ fn elapsed_microseconds(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
 }
 
-/// Graceful-shutdown validated-prefix checkpoint write (ADR-0019 Amendment 1).
-///
-/// Non-fatal: a failure costs only the next open's fast path and is counted on
-/// the storage handle. Must never contribute to [`ProductionGraphShutdownError`].
-fn write_shutdown_validated_prefix_checkpoint(storage: &SharedRedbOperationalPorts) {
-    // Deliberately ignore Err — ADR-0019 A1 write-failure semantics.
-    let _ = storage.write_validated_prefix_checkpoint();
-    // Also non-fatal: acknowledged work is already durable. This MUST remain
-    // after the optional checkpoint so CLEAN is the final authoritative write.
-    let _ = storage.write_clean_close_lifecycle();
+fn shutdown_prerequisites_succeeded(failed: [bool; 6]) -> bool {
+    failed.into_iter().all(|failed| !failed)
 }
 
 /// Cloned least-authority inputs for the optional loopback MCP transport.
@@ -1439,8 +1464,39 @@ fn shutdown_result(
             notification_failed,
             coordinator,
             blocking,
+            checkpoint_close_receipt: None,
         })
     }
+}
+
+fn checkpoint_close_succeeded(lifecycle: riffdb_storage_redb::GracefulLifecycleOutcomeV1) -> bool {
+    lifecycle == riffdb_storage_redb::GracefulLifecycleOutcomeV1::CleanCommitted
+}
+
+fn shutdown_result_with_checkpoint_close(
+    exact: Option<ExactTextWorkerShutdownError>,
+    columnar: Option<ColumnarWorkerShutdownError>,
+    projection: Option<ProjectionWorkerShutdownError>,
+    notification_failed: bool,
+    coordinator: Option<CoordinatorShutdownError>,
+    blocking: Option<BlockingPortDriverShutdownError>,
+    checkpoint_close: riffdb_storage_redb::GracefulCheckpointCloseReceiptV1,
+) -> Result<(), ProductionGraphShutdownError> {
+    let prior = shutdown_result(
+        exact,
+        columnar,
+        projection,
+        notification_failed,
+        coordinator,
+        blocking,
+    );
+    if prior.is_ok() && checkpoint_close_succeeded(checkpoint_close.lifecycle()) {
+        return Ok(());
+    }
+    Err(prior
+        .err()
+        .unwrap_or_else(ProductionGraphShutdownError::checkpoint_close_only)
+        .with_checkpoint_close_receipt(checkpoint_close))
 }
 
 /// Closed construction failure with cleanup evidence for any started owner.
@@ -1580,6 +1636,35 @@ pub(crate) struct ProductionGraphShutdownError {
     notification_failed: bool,
     coordinator: Option<CoordinatorShutdownError>,
     blocking: Option<BlockingPortDriverShutdownError>,
+    checkpoint_close_receipt: Option<riffdb_storage_redb::GracefulCheckpointCloseReceiptV1>,
+}
+
+impl ProductionGraphShutdownError {
+    const fn checkpoint_close_only() -> Self {
+        Self {
+            exact: None,
+            columnar: None,
+            projection: None,
+            notification_failed: false,
+            coordinator: None,
+            blocking: None,
+            checkpoint_close_receipt: None,
+        }
+    }
+
+    fn with_checkpoint_close_receipt(
+        mut self,
+        receipt: riffdb_storage_redb::GracefulCheckpointCloseReceiptV1,
+    ) -> Self {
+        self.checkpoint_close_receipt = Some(receipt);
+        self
+    }
+
+    pub(crate) const fn checkpoint_close_receipt(
+        &self,
+    ) -> Option<riffdb_storage_redb::GracefulCheckpointCloseReceiptV1> {
+        self.checkpoint_close_receipt
+    }
 }
 
 impl fmt::Display for ProductionGraphShutdownError {
@@ -1598,8 +1683,13 @@ impl Error for ProductionGraphShutdownError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{P1_COORDINATOR_WORKLOAD_CAPACITY, ProductionGraphShutdownStageEvidence};
+    use super::{
+        P1_COORDINATOR_WORKLOAD_CAPACITY, ProductionGraphShutdownStageEvidence,
+        checkpoint_close_succeeded, shutdown_prerequisites_succeeded,
+        shutdown_result_with_checkpoint_close,
+    };
     use riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS;
+    use riffdb_storage_redb::GracefulCheckpointCloseReceiptV1;
 
     const SOURCE: &str = include_str!("process_graph.rs");
 
@@ -1686,7 +1776,7 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_order_is_route_jobs_workers_notifications_coordinator_ports_then_checkpoint() {
+    fn shutdown_order_is_route_jobs_workers_notifications_coordinator_ports_then_bounded_close() {
         let source = production_source();
         let body = source
             .split_once("pub(crate) async fn shutdown_with_stage_evidence")
@@ -1709,78 +1799,84 @@ mod tests {
             .find("let coordinator = self")
             .expect("coordinator drain");
         let ports = body.find("let blocking = self").expect("port drain");
-        let checkpoint = body
-            .find("write_shutdown_validated_prefix_checkpoint")
-            .expect("shutdown checkpoint write");
+        let bounded_close = body
+            .find("self.storage.complete_graceful_close()")
+            .expect("bounded graceful close");
         assert!(route < jobs);
         assert!(jobs < columnar);
         assert!(columnar < projection);
         assert!(projection < notifications);
         assert!(notifications < coordinator);
         assert!(coordinator < ports);
-        // ADR-0019 A1: after the writer lane drains, as the final engine commit.
-        assert!(ports < checkpoint);
+        assert!(ports < bounded_close);
     }
 
     #[test]
-    fn maintenance_shutdown_writes_the_checkpoint_after_the_final_port_drain() {
-        // ADR-0019 A1 applies to BOTH graceful teardown paths: the maintenance
-        // shutdown must also place the checkpoint write after the blocking
-        // ports drain (the last commit-capable stage) and before the pure
-        // error aggregation.
+    fn maintenance_shutdown_runs_bounded_close_after_the_final_port_drain() {
         let source = production_source();
         let body = source
             .split_once("pub(crate) async fn shutdown_for_maintenance_with_stage_evidence")
             .expect("maintenance shutdown method")
             .1
-            // Bound the body to this method only (the helper definition follows).
-            .split_once("\nfn write_shutdown_validated_prefix_checkpoint")
-            .expect("checkpoint helper follows the maintenance shutdown")
+            .split_once("/// Cloned least-authority inputs")
+            .expect("hosted dependencies follow maintenance shutdown")
             .0;
         let drain_boundary = body
             .find("MaintenanceRecoveryBoundary::DrainComplete")
             .expect("maintenance drain boundary");
         let ports = body.find("let blocking = self").expect("port drain");
-        let checkpoint = body
-            .find("write_shutdown_validated_prefix_checkpoint")
-            .expect("maintenance checkpoint write");
-        let aggregation = body.find("shutdown_result(").expect("error aggregation");
+        let bounded_close = body
+            .find("self.storage.complete_graceful_close()")
+            .expect("maintenance bounded close");
+        let aggregation = body
+            .find("shutdown_result_with_checkpoint_close(")
+            .expect("error aggregation");
         assert!(drain_boundary < ports);
-        assert!(ports < checkpoint);
-        assert!(checkpoint < aggregation);
+        assert!(ports < bounded_close);
+        assert!(bounded_close < aggregation);
     }
 
     #[test]
-    fn shutdown_checkpoint_write_failure_is_non_fatal() {
-        // Falsifiability (a): making the write fatal (propagating Err into
-        // shutdown_result) must fail this pin — the write is deliberately
-        // discarded so a lost fast path never fails graceful shutdown.
+    fn shutdown_has_no_checkpoint_writer_or_proof_builder() {
         let source = production_source();
-        let helper = source
-            .split_once("fn write_shutdown_validated_prefix_checkpoint")
-            .expect("shutdown checkpoint helper")
-            .1;
-        let helper_body = helper.split_once('}').expect("helper body").0;
-        assert!(
-            helper_body.contains("let _ = storage.write_validated_prefix_checkpoint()"),
-            "shutdown checkpoint write must ignore Err (non-fatal)"
-        );
-        assert!(
-            !helper_body.contains('?'),
-            "shutdown checkpoint write must not propagate failure with ?"
-        );
-        let shutdown_body = source
-            .split_once("pub(crate) async fn shutdown_with_stage_evidence")
-            .expect("shutdown method")
-            .1
-            .split_once("pub(crate) async fn shutdown_for_maintenance")
-            .expect("maintenance shutdown")
-            .0;
-        assert!(
-            !shutdown_body.contains("write_shutdown_validated_prefix_checkpoint(&self.storage)?")
-                && !shutdown_body.contains("write_validated_prefix_checkpoint()?"),
-            "checkpoint write failure must not fail the shutdown result"
-        );
+        assert!(!source.contains("write_shutdown_validated_prefix_checkpoint"));
+        assert!(!source.contains("write_validated_prefix_checkpoint"));
+        assert!(!source.contains("build_checkpoint_from_snapshot"));
+        assert!(!source.contains("replace_checkpoint_entity_heads"));
+    }
+
+    #[test]
+    fn every_failed_shutdown_prerequisite_vetoes_clean() {
+        assert!(shutdown_prerequisites_succeeded([false; 6]));
+        for failed in 0..6 {
+            let mut prerequisites = [false; 6];
+            prerequisites[failed] = true;
+            assert!(
+                !shutdown_prerequisites_succeeded(prerequisites),
+                "failed prerequisite {failed} must veto CLEAN"
+            );
+        }
+    }
+
+    #[test]
+    // req: STO-023, REC-004, PERF-019
+    fn every_noncommitted_checkpoint_close_vetoes_graph_success() {
+        use riffdb_storage_redb::GracefulLifecycleOutcomeV1::{
+            CleanCommitted, CleanFailed, CleanNotAttempted, CleanUnknown,
+        };
+
+        assert!(checkpoint_close_succeeded(CleanCommitted));
+        for failure in [CleanNotAttempted, CleanFailed, CleanUnknown] {
+            assert!(!checkpoint_close_succeeded(failure));
+        }
+
+        let receipt = GracefulCheckpointCloseReceiptV1::barrier_failed([3, 0, 0]);
+        let Err(error) =
+            shutdown_result_with_checkpoint_close(None, None, None, false, None, None, receipt)
+        else {
+            panic!("barrier_failed must veto successful graph shutdown")
+        };
+        assert_eq!(error.checkpoint_close_receipt(), Some(receipt));
     }
 
     #[test]
@@ -1788,10 +1884,15 @@ mod tests {
         let evidence = ProductionGraphShutdownStageEvidence {
             graph_elapsed_us: 9,
             elapsed_us: [1, 2, 3, 4, 5, 6, 7, 8],
+            checkpoint_close: GracefulCheckpointCloseReceiptV1::barrier_failed([9, 0, 0]),
         };
         assert_eq!(
             evidence.format_v1_line(),
             "riffdb-shutdown-stages-v1\t9\t1,2,3,4,5,6,7,8"
+        );
+        assert_eq!(
+            evidence.format_checkpoint_close_v1_line(),
+            "riffdb-graceful-checkpoint-close-v1\tbarrier_failed\tclean_not_attempted\t9,0,0"
         );
     }
 }

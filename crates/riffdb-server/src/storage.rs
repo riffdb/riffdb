@@ -201,20 +201,15 @@ impl SharedRedbOperationalPorts {
         error
     }
 
-    /// Writes one proof-carrying validated-prefix checkpoint (ADR-0019 A1 / ADR-0085 A1).
-    ///
-    /// Used by graceful shutdown after the writer lane drains. A write failure
-    /// is non-fatal at the process boundary — only the next open's fast path is
-    /// lost — and is counted on the underlying port.
-    pub(crate) fn write_validated_prefix_checkpoint(&self) -> Result<bool, StorageError> {
+    /// Runs the storage-owned barrier, checkpoint classification, and final CLEAN.
+    pub(crate) fn complete_graceful_close(
+        &self,
+    ) -> riffdb_storage_redb::GracefulCheckpointCloseReceiptV1 {
         self.cell
-            .with_mut(|ports| ports.write_validated_prefix_checkpoint())
-    }
-
-    /// Writes the final private clean-close lifecycle certificate.
-    pub(crate) fn write_clean_close_lifecycle(&self) -> Result<(), StorageError> {
-        self.cell
-            .with_mut(|ports| ports.write_clean_close_lifecycle())
+            .with_mut(|ports| Ok(ports.complete_graceful_close()))
+            .unwrap_or_else(|_| {
+                riffdb_storage_redb::GracefulCheckpointCloseReceiptV1::barrier_failed([0; 3])
+            })
     }
 
     /// Executes protected event selection inside the same redb mutation fence

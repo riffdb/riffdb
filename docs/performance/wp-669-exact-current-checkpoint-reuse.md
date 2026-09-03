@@ -1,5 +1,10 @@
 # WP-669 exact-current validated-prefix checkpoint reuse
 
+> Historical prerequisite: ADR-0188/WP-774 later removed graceful shutdown as
+> a checkpoint write point. The exact-current predicate is now consumed only by
+> the bounded shutdown classifier; it retains matching bytes and never rebuilds
+> a stale or ineligible checkpoint during close.
+
 WP-669 activates a graceful-shutdown-only reuse path for an exact current
 validated-prefix checkpoint. Startup validation still publishes one complete
 proof for each process generation. At graceful shutdown, RiffDB still drains

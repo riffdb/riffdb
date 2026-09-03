@@ -62,10 +62,11 @@ derived worker reaches a barrier while a durable journal frame is still
 awaiting publication, it observes transient writer backpressure and retries
 without degrading authoritative application readiness. A successful barrier
 advances the operational read root to its exact post-barrier state before
-publishing a cache or result. Graceful shutdown drains the suffix before
-optionally writing the validated-prefix checkpoint, then commits the bound
-clean-close lifecycle record as its final authoritative mutation. The next
-startup durably consumes that clean state before activating any writer.
+publishing a cache or result. Graceful shutdown drains the suffix, classifies
+the optional validated-prefix checkpoint without mutating it or walking
+population rows, then commits the bound clean-close lifecycle record as its
+final authoritative mutation. The next startup durably consumes that clean
+state before activating any writer.
 
 ## Current implementation boundary
 
