@@ -1926,32 +1926,109 @@ work_packages:
       rejected evidence, and the 60-second decoder fuzz campaign completed 29,050,758 executions
       without a crash. V2 remains inactive pending WP-711 lifecycle and recovery proof.
   human_review_triggers: *id001
+- id: WP-776
+  name: Schema-bound columnar identity and durable control foundation
+  tier: guarantee
+  depends_on: [WP-010, WP-596, WP-710]
+  objective: Freeze and implement schema-bound scalar/vector columnar source bytes, a complete
+    semantic hash, one specialized durable control/CAS, fresh authoritative V1 initialization,
+    inert legacy validation, and symbolic configuration binding before V2 publication begins.
+  requirements: [PRJ-002, PRJ-004, PRJ-005, PRJ-006, PRJ-007, PRJ-010,
+    OQ-017, OQ-019, OQ-020, OQ-021, OQ-022, OQ-024, OQ-053]
+  required_adrs: [ADR-0006, ADR-0010, ADR-0011, ADR-0017, ADR-0072, ADR-0085, ADR-0086,
+    ADR-0111, ADR-0124, ADR-0130, ADR-0136, ADR-0160, ADR-0181, ADR-0190, ADR-0192]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0192-compiler-bound-columnar-publication-control.md,
+    release/version-topology-v1.json, release/durable-format-manifest-v1.json,
+    proto/riffdb/storage/**, crates/riffdb-proto/**, crates/riffdb-types/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-columnar/**,
+    crates/riffdb-service/**, crates/riffdb-server/**,
+    fixtures/proto/**, fixtures/storage/**,
+    fixtures/compatibility/**, tests/**, scripts/**, templates/**,
+    examples/app-baseline/**, docs/SUMMARY.md, docs/contracts/**,
+    docs/architecture/**, docs/operations/**, docs/compatibility.md,
+    docs/known-limitations.md]
+  deliverables:
+  - Exact ColumnarProjectionSourceV1 union over lineage plus accepted scalar
+    DefinitionFingerprint or existing VectorProjectionSourceV1; exact definition-semantics bytes
+    add primary-key schema and complete types without changing that legacy fingerprint
+  - Dedicated ADR-0011 ColumnarProjectionSpec hash domain, typed semantics/spec hashes, exact
+    frames/golden collision proofs, and complete provider/replay/vector semantic binding; no
+    contract, Bundle, Executable IR, Lineage Ledger, query, or public identity rotates
+  - StoredColumnarProjectionControlV1 tag 67 revision 1 with exact source/key/message/enum bytes,
+    8,192-byte payload and 8,289-byte envelope maxima, columnar_projection_controls table,
+    durable-manifest entry, registry migration, and memory/redb conformance
+  - Closed expected-control operations proving transaction-current frontier checks, monotonic
+    immutable V1 advancement alongside an unchanged V2 candidate, every exact pointer/failure/
+    servability/retention shape, Unprepared/Prepared evidence transition, Candidate/Published-
+    failure transition, semantic-hash rebuild, uncertainty reread, and no generic control
+  - Fresh V1 rebuild from authoritative snapshot plus retained tail after every source begins at a
+    durable BeforeFirst fence and advances it only after its captured snapshot is durably validated;
+    legacy scalar files, name-derived paths, and tag-65 values never seed common control and remain
+    inert until deterministic orphan cleanup or WP-757 removal
+  - Existing symbolic projection_name and scalar configuration resolved through one checked bundle
+    to one schema-bound source, with duplicate aliases and unsafe names rejected, all-or-nothing
+    256-source admission, sibling isolation, bounded remediation, handbook coverage, and example
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-types -p riffdb-storage-api -p riffdb-storage-memory
+    -p riffdb-storage-redb -p riffdb-proto
+    -p riffdb-columnar -p riffdb-service -p riffdb-server --all-features
+  - ./scripts/generate-proto --check
+  - ./scripts/check-version-topology
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy -p riffdb-types -p riffdb-storage-api -p riffdb-storage-memory
+    -p riffdb-storage-redb -p riffdb-proto
+    -p riffdb-columnar -p riffdb-service -p riffdb-server
+    --all-targets --all-features -- -D warnings
+  exit_gate: Every scalar or vector columnar source has one canonical schema-bound identity and one
+    bounded durable selector; V1 advances without disturbing its V2 candidate; common state starts
+    only from authority while legacy state is inert; public callers retain only symbolic names; and
+    every new durable/topology identity plus the temporary tag-65 exception is fixture-frozen.
+  standing_design_tests:
+    interface_safety: Applications keep only accepted symbolic projection names and cannot
+      supply a durable source, control, layout, generation, migration, validation, fallback, or bound.
+    scale: One bundle/database has at most 256 specs/controls, structural legacy scanning stops at
+      4,096 rows, keys are at most 291 bytes, definition semantics at most 1 MiB, control payloads
+      at most 8,192 bytes, and rebuild streams within existing partition/segment/replay limits.
+  human_review_triggers: *id001
 - id: WP-711
   name: Crash-safe columnar V2 rebuild, compaction, and zone-map activation
-  depends_on: [WP-610, WP-667, WP-710]
+  tier: guarantee
+  depends_on: [WP-610, WP-667, WP-710, WP-776]
   objective: Activate ADR-0160's accepted V2 format through disjoint generation rebuild, atomic
     publication, immutable compaction, validate-once reopen, and exact segment pruning while V1
     remains readable and published until a complete matched-frontier V2 candidate succeeds.
-  requirements: [PRJ-001, PRJ-002, PRJ-003, PRJ-004, OQ-017, OQ-019,
-    OQ-020, OQ-021, OQ-022, OQ-024, OQ-053, PERF-007, PERF-008]
-  required_adrs: [ADR-0010, ADR-0017, ADR-0072, ADR-0085, ADR-0086,
-    ADR-0111, ADR-0124, ADR-0130, ADR-0160, ADR-0181, ADR-0190]
+  requirements: [PRJ-002, PRJ-004, PRJ-006, PRJ-008, PRJ-009, PRJ-010,
+    OQ-017, OQ-019, OQ-020, OQ-021, OQ-022, OQ-024, OQ-053,
+    PERF-007, PERF-008]
+  required_adrs: [ADR-0006, ADR-0010, ADR-0017, ADR-0072, ADR-0085, ADR-0086,
+    ADR-0111, ADR-0124, ADR-0130, ADR-0136, ADR-0160, ADR-0181, ADR-0190, ADR-0192]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0160-rebuildable-columnar-segment-v2.md,
     adr/0190-atomic-columnar-v2-generation-root-publication.md,
-    release/version-topology-v1.json, crates/riffdb-columnar/**,
+    adr/0192-compiler-bound-columnar-publication-control.md,
+    release/version-topology-v1.json, crates/riffdb-types/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-columnar/**,
     crates/riffdb-projection/**, crates/riffdb-service/**,
     crates/riffdb-server/**, crates/riffdb-observability/**,
     fixtures/**, tests/**, scripts/**, docs/architecture/**,
     docs/performance/**, docs/operations/**, docs/compatibility.md,
     docs/known-limitations.md]
   deliverables:
+  - Prepared-root publication through one exact-control, transaction-current-head CAS, with a
+    process-local query capture gate, immutable view installation before acknowledgement, and
+    selected-V2 corruption refusing without V1 fallback
   - Canonical bounded ColumnarGenerationRootV1 over the complete partition inventory, with the
     root-only physical-generation fingerprint preserving Segment V2, Manifest V2, provider,
     query-artifact, and WP-710 fixture bytes exactly
-  - Per-database V1/V2 lifecycle using the existing never-reused projection control and
-    transaction-current PublishCandidate compare-and-set; V1 remains the ordinary readable and
-    writable path until that database and projection durably publishes one complete V2 root
+  - Per-database V1/V2 lifecycle using the specialized never-reused common columnar control and
+    transaction-current prepared-generation compare-and-set; V1 remains the ordinary readable and
+    writable path until that database and source durably publishes one complete V2 root
   - V1-published/V2-candidate lifecycle that rebuilds from one authoritative snapshot plus retained
     tail, verifies independent logical equality at a frontier, and atomically publishes one-layout
     V2 generation without mixed manifests or request-visible partial state
@@ -1969,7 +2046,8 @@ work_packages:
   - Current V1/V2 matched-frontier query, recovery, compaction, rebuild, bytes, CPU, allocation,
     projection-lag, and no-projection/no-V2 non-regression receipts
   acceptance_commands:
-  - cargo +1.97.0 test -p riffdb-columnar -p riffdb-projection -p riffdb-service -p riffdb-server --all-features
+  - cargo +1.97.0 test -p riffdb-storage-api -p riffdb-storage-memory -p riffdb-storage-redb
+    -p riffdb-columnar -p riffdb-projection -p riffdb-service -p riffdb-server --all-features
   - ./scripts/recovery_full
   - ./scripts/check-version-topology
   - ./scripts/check-workspace-policy
@@ -22484,8 +22562,8 @@ work_packages:
     decoder, fixture, generated artifact, and topology row while the pre-external window is open,
     and make scripts/check-version-topology refuse a second readable identity per domain until the
     first external database is registered.
-  requirements: [GOV-001, GOV-002, GOV-003, AFC-005, AFC-006, VER-005]
-  required_adrs: [ADR-0006, ADR-0112, ADR-0124, ADR-0181, ADR-0190]
+  requirements: [GOV-001, GOV-002, GOV-003, AFC-005, AFC-006, PRJ-007, VER-005]
+  required_adrs: [ADR-0006, ADR-0112, ADR-0124, ADR-0181, ADR-0190, ADR-0192]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0181-pre-alpha-format-epoch-reset-and-governance-load.md, adr/README.md,
     release/version-topology-v1.json, release/durable-format-manifest-v1.json,
@@ -22498,6 +22576,9 @@ work_packages:
   - Removal of every non-current reader, fixture, generated artifact, and topology identity across
     durable, executable-IR, wire, protocol, application-artifact, generated-surface, and evidence
     domains, with deleted Protobuf field numbers and enum values retained as reserved
+  - Mandatory removal of the ADR-0192 tag-65 migration bridge, including source, decoder, table,
+    generated message, fixture, durable-manifest row, and topology exception, proved by
+    epoch_two_removes_legacy_vector_control_bridge
   - external_databases array in the version topology, the open-window single-identity and
     active-only rules in scripts/check-version-topology, and their relaxation once the array is
     nonempty, proved by
