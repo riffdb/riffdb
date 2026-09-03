@@ -8233,10 +8233,17 @@ does not create a kernel or storage escape hatch.
   Older artifacts, hashes, locks, and bytes MUST remain readable and exact;
   old readers MUST reject the successor before deployment, and no decoder
   retirement or authoritative stored-record format change is authorized.
-- `BLK-019`: Generated Rust, Go, TypeScript, Python, CLI, and MCP collection
-  surfaces MUST publish and preflight the same count, individual-value, and
-  canonical aggregate-byte constraints without splitting, truncating, subset
-  retry, partial outcomes, framework-specific logic, or handwritten encoding.
+- `BLK-019`: Generated Rust, Go, TypeScript, and Python typed collection
+  facades MUST publish and exactly preflight the same count, individual-value,
+  and canonical aggregate-byte constraints. CLI commands holding the exact
+  local application bundle MUST perform the same exact preflight. Raw CLI MUST
+  retain its generic bounded-input validation, and MCP MUST publish the
+  applicable structural/count schema and canonical aggregate-byte annotation
+  and perform ordinary local schema validation. Neither may estimate canonical
+  size without an exact type proof; the shared Rust service MUST enforce the
+  exact typed constraints before effects. No surface may split, truncate, retry
+  a subset, return partial outcomes, add framework-specific logic, or use
+  handwritten encoding.
 - `BLK-020`: The first-party Rust application service MUST canonicalize and
   recompute aggregate bytes with checked arithmetic before effectful
   evaluation, conflict acquisition, staging, or journaling. The deterministic

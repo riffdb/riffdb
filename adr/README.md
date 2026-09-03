@@ -225,6 +225,7 @@ record with no front matter.
 | [0188](0188-bounded-graceful-checkpoint-retention.md) | Bounded Graceful Checkpoint Retention | Accepted | guarantee |
 | [0189](0189-compiler-sealed-operational-index-descriptor-reconstruction.md) | Compiler-Sealed Operational Index Descriptor Reconstruction | Accepted | guarantee |
 | [0190](0190-atomic-columnar-v2-generation-root-publication.md) | Atomic Columnar V2 Generation-Root Publication | Accepted | guarantee |
+| [0191](0191-canonical-aggregate-collection-preflight-and-stable-error-mapping.md) | Canonical Aggregate Collection Preflight and Stable Error Mapping | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
