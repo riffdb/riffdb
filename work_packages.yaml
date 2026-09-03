@@ -1300,6 +1300,18 @@ work_packages:
       the Rust-owned driver and service boundary.
     scale: At most five targets are validated and generated once per compilation beneath existing
       path/artifact/lock byte ceilings, with no runtime, row, query, or database-sized work.
+  closure:
+    status: complete
+    completed_at: "2026-09-03"
+    requirements_satisfied: [DX-004, DX-006, DX-013, DX-014, DX-015, DX-016, DX-017,
+      DX-018, DX-042, DX-043, DX-044, DX-045, DX-047, DX-048, DX-049, VER-001,
+      VER-002, VER-003, VER-004, VER-005, VER-006, VER-007, VER-008]
+    evidence: The closed five-surface registry now owns canonical source and manifest iteration,
+      artifact-kind conversion, exact in-memory generation, local selection, installation mapping,
+      and V8 lock validation. Canonical singleton, representative multi-surface, Manifest V5, and
+      Lock V8 fixtures plus req-tagged migration, identity-invariance, project, installation, and
+      topology proofs retain predecessor readers and exact bytes while absent surfaces perform no
+      generated-artifact work.
   human_review_triggers: *id001
 - id: WP-703
   name: Selective generation project packaging and external conformance

@@ -60,7 +60,7 @@
       "supported_release_posture": "V1 through V7 remain writable for their exact source generations; V8 is current for sparse V7 sources.",
       "lifecycle": {"active":["riffdb.application-lock/v1","riffdb.application-lock/v2","riffdb.application-lock/v3","riffdb.application-lock/v4","riffdb.application-lock/v5","riffdb.application-lock/v6","riffdb.application-lock/v7","riffdb.application-lock/v8"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Published lock schema names and fields remain reserved.",
-      "evidence": ["fixtures/application-locks/policy-surface-v7.json", "crates/riffdb-query-module/tests/application_lock.rs"],
+      "evidence": ["fixtures/application-locks/policy-surface-v7.json", "fixtures/application-locks/go-only-v8.json", "crates/riffdb-query-module/tests/application_lock.rs"],
       "checks": ["./scripts/check-generated"],
       "last_change": {"classification":"new_domain_identity","decision":"ADR-0155 sparse generated-surface lock V8"}
     },
@@ -79,7 +79,7 @@
       "supported_release_posture": "V1 through V4 remain writable for their exact source generations; V5 is current for sparse V7 sources.",
       "lifecycle": {"active":["riffdb.application-manifest/v1","riffdb.application-manifest/v2","riffdb.application-manifest/v3","riffdb.application-manifest/v4","riffdb.application-manifest/v5"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Published manifest schema names and fields remain reserved.",
-      "evidence": ["fixtures/application-manifests/policy-surface-exact-v4.json", "crates/riffdb-query-module/tests/application_lock.rs"],
+      "evidence": ["fixtures/application-manifests/policy-surface-exact-v4.json", "fixtures/application-manifests/go-only-exact-v5.json", "crates/riffdb-query-module/tests/application_lock.rs"],
       "checks": ["./scripts/check-generated"],
       "last_change": {"classification":"new_domain_identity","decision":"ADR-0155 sparse generated-surface manifest V5"}
     },
@@ -117,7 +117,7 @@
       "supported_release_posture": "V1 through V6 remain writable for existing applications; V7 is current for selective package surfaces.",
       "lifecycle": {"active":["riffdb.application-source/v1","riffdb.application-source/v2","riffdb.application-source/v3","riffdb.application-source/v4","riffdb.application-source/v5","riffdb.application-source/v6","riffdb.application-source/v7"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Published source schema names and fields remain reserved.",
-      "evidence": ["fixtures/application-manifests/policy-surface-v6.json", "fixtures/application-manifests/go-only-v7.json"],
+      "evidence": ["fixtures/application-manifests/policy-surface-v6.json", "fixtures/application-manifests/go-only-v7.json", "fixtures/application-manifests/go-rust-typescript-v7.json"],
       "checks": ["./scripts/check-generated"],
       "last_change": {"classification":"new_domain_identity","decision":"ADR-0155 sparse generated-surface source V7"}
     },

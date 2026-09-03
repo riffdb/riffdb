@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# req: VER-001, VER-002, VER-003, VER-004, VER-005, VER-006, VER-007, VER-008
 """Validate the release-significant version topology without third-party modules."""
 
 from __future__ import annotations

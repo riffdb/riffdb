@@ -3252,23 +3252,32 @@ fn deployment_installation_artifacts(
 ) -> Result<(Vec<InstallationArtifact>, Vec<InstallationSeed>), &'static str> {
     let mut expected = Vec::new();
     for artifact in locked.lock().artifacts() {
-        let (kind, name) = match artifact.kind() {
-            GeneratedApplicationArtifactKind::Manifest => {
-                (InstallationArtifactKind::Manifest, "manifest")
+        let (kind, name) = if let Some(surface) = artifact.kind().surface() {
+            let kind = match surface {
+                riffdb_query_module::GeneratedApplicationSurface::Rust => InstallationArtifactKind::Rust,
+                riffdb_query_module::GeneratedApplicationSurface::Go => InstallationArtifactKind::Go,
+                riffdb_query_module::GeneratedApplicationSurface::TypeScript => InstallationArtifactKind::TypeScript,
+                riffdb_query_module::GeneratedApplicationSurface::Python => InstallationArtifactKind::Python,
+                riffdb_query_module::GeneratedApplicationSurface::Mcp => InstallationArtifactKind::Mcp,
+            };
+            (kind, surface.key())
+        } else {
+            match artifact.kind() {
+                GeneratedApplicationArtifactKind::Manifest => {
+                    (InstallationArtifactKind::Manifest, "manifest")
+                }
+                GeneratedApplicationArtifactKind::ContractBundle => {
+                    (InstallationArtifactKind::ContractBundle, "contract")
+                }
+                GeneratedApplicationArtifactKind::ReactiveModule => continue,
+                GeneratedApplicationArtifactKind::Rust
+                | GeneratedApplicationArtifactKind::TypeScript
+                | GeneratedApplicationArtifactKind::Go
+                | GeneratedApplicationArtifactKind::Python
+                | GeneratedApplicationArtifactKind::Mcp => {
+                    unreachable!("generated surface kind was handled by the registry")
+                }
             }
-            GeneratedApplicationArtifactKind::ContractBundle => {
-                (InstallationArtifactKind::ContractBundle, "contract")
-            }
-            GeneratedApplicationArtifactKind::Rust => (InstallationArtifactKind::Rust, "rust"),
-            GeneratedApplicationArtifactKind::TypeScript => {
-                (InstallationArtifactKind::TypeScript, "typescript")
-            }
-            GeneratedApplicationArtifactKind::Go => (InstallationArtifactKind::Go, "go"),
-            GeneratedApplicationArtifactKind::Python => {
-                (InstallationArtifactKind::Python, "python")
-            }
-            GeneratedApplicationArtifactKind::Mcp => (InstallationArtifactKind::Mcp, "mcp"),
-            GeneratedApplicationArtifactKind::ReactiveModule => continue,
         };
         expected.push(installation_artifact(kind, name, artifact.content_hash())?);
     }
@@ -12478,6 +12487,7 @@ mod tests {
         }
     }
 
+    // req: DX-006
     #[test]
     fn exact_installation_plan_matches_every_locked_local_artifact_and_role() {
         let parent = tempfile::TempDir::with_prefix("riffdb-cli-installation-plan-")
@@ -13154,6 +13164,7 @@ mod tests {
         }
     }
 
+    // req: DX-004
     #[test]
     fn symbolic_application_values_cover_every_generated_scalar_without_numeric_ids() {
         let input = serde_json::json!({

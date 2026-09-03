@@ -81,6 +81,18 @@ pub(crate) enum ProjectGenerator {
 }
 
 impl ProjectGenerator {
+    pub(crate) const fn from_surface(
+        surface: riffdb_query_module::GeneratedApplicationSurface,
+    ) -> Self {
+        match surface {
+            riffdb_query_module::GeneratedApplicationSurface::Rust => Self::Rust,
+            riffdb_query_module::GeneratedApplicationSurface::Go => Self::Go,
+            riffdb_query_module::GeneratedApplicationSurface::TypeScript => Self::Typescript,
+            riffdb_query_module::GeneratedApplicationSurface::Python => Self::Python,
+            riffdb_query_module::GeneratedApplicationSurface::Mcp => Self::Mcp,
+        }
+    }
+
     pub(crate) const fn surface(self) -> riffdb_query_module::GeneratedApplicationSurface {
         match self {
             Self::Rust => riffdb_query_module::GeneratedApplicationSurface::Rust,
@@ -92,24 +104,11 @@ impl ProjectGenerator {
     }
 
     pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Rust => "rust",
-            Self::Go => "go",
-            Self::Typescript => "typescript",
-            Self::Python => "python",
-            Self::Mcp => "mcp",
-        }
+        self.surface().key()
     }
 
     fn parse(value: &str) -> Option<Self> {
-        match value {
-            "rust" => Some(Self::Rust),
-            "go" => Some(Self::Go),
-            "typescript" => Some(Self::Typescript),
-            "python" => Some(Self::Python),
-            "mcp" => Some(Self::Mcp),
-            _ => None,
-        }
+        riffdb_query_module::GeneratedApplicationSurface::parse(value).map(Self::from_surface)
     }
 }
 
