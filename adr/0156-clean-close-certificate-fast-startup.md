@@ -9,6 +9,8 @@
 - **Direction approved:** 2026-08-26
 - **Exact text accepted:** Yes, 2026-08-26
 - **WP-705/WP-760 ownership amendment accepted:** 2026-09-02 (maintainer)
+- **WP-705 dirty-evidence boundary direction approved:** 2026-09-02
+- **WP-705 dirty-evidence boundary exact text accepted:** 2026-09-02 (maintainer)
 - **Accepted:** 2026-08-26
 - **Acceptance reference:** Maintainer exact-text acceptance in the current
   Codex session for upstream commit `c5c73858`
@@ -245,7 +247,15 @@ the recovery implications of forced termination.
 PERF-013 evidence will report clean-certificate and complete-validation curves
 separately. The million-row reproduction must prove that a clean close reopens
 without a population-sized evidence plan or population-sized validation walk.
-PERF-014 continues to measure genuine unclean recovery and may not use a clean
+WP-705 must additionally exercise the unchanged complete-validation path after
+a genuine writer-process kill at the 65,536-row checkpoint, including engine
+repair, recovery, idempotency, and no-authority-advance assertions. Its attempted
+production-scale complete-path run must preserve the fail-closed
+`LimitExceeded` result at the historical-evidence 512 MiB ceiling as a known
+ceiling and handoff, not relabel it as passing evidence. Accepted ADR-0182 and
+WP-760 exclusively own production-scale dirty readiness without a population
+walk and under the compiled 64 MiB recovery-owned-state ceiling. PERF-014
+continues to measure genuine unclean recovery and may not use a clean
 certificate. PostgreSQL process startup is not a direct comparator for either
 RiffDB validation mode unless the harness owns equivalent server lifecycle and
 integrity work.
@@ -332,8 +342,10 @@ fails closed before corrupt bytes can influence an operational result.
 - **Scale:** Clean eligibility validation is bounded independently of entity,
   index, history, event, audit, provenance, projection, and idempotency row
   counts. Shutdown writes one bounded record without a population scan. Dirty
-  and explicit full validation remain streaming and memory-bounded rather than
-  materializing population-sized plans.
+  and explicit full validation remain streaming and memory-bounded by refusing
+  with `LimitExceeded` rather than exceeding a compiled ceiling. WP-760, not
+  WP-705, owns production-scale dirty readiness without a population walk under
+  ADR-0182's separate 64 MiB recovery-owned-state ceiling.
 
 ## Testing
 
@@ -351,7 +363,10 @@ fails closed before corrupt bytes can influence an operational result.
 - The unchanged complete-validation golden evidence stream and 86-arm recovery
   matrix.
 - Production-scale clean reopen proving bounded heap and no population-wide
-  evidence walk, plus dirty recovery proving the complete path still runs.
+  evidence walk; genuine 65,536-row kill/reopen evidence proving the unchanged
+  complete path, engine repair, recovery, and idempotency remain exact; and a
+  production-scale complete-path attempt preserving its fail-closed
+  `LimitExceeded` result at the historical-evidence 512 MiB ceiling.
 - Backup, restore, retention, migration, and explicit scrub conformance.
 
 ## Requirements and Work Packages
@@ -362,9 +377,13 @@ fails closed before corrupt bytes can influence an operational result.
   primitive, scale evidence, handbook, backup/restore, and final conformance).
   Accepted ADR-0182 and WP-760 solely own the authorized public maintenance
   service, `riffdb storage scrub`, and its receipt beneath `.maintenance`.
-- **Final evidence:** WP-705 owns this record's finite scale and conformance
-  evidence and hands the internal primitive to WP-760. WP-578 separately owns
-  the uninterrupted `END-009` run, consumes the completed WP-705 and WP-760
+- **Final evidence:** WP-705 owns production-scale clean evidence, genuine
+  65,536-row complete-validation recovery and idempotency evidence, and the
+  fail-closed production-scale complete-path ceiling receipt. It hands that
+  ceiling and the sealed internal scrub primitive to WP-760. WP-760 exclusively
+  owns production-scale dirty readiness without a population walk and under
+  ADR-0182's 64 MiB recovery-owned-state ceiling. WP-578 separately owns the
+  uninterrupted `END-009` run, consumes the completed WP-705 and WP-760
   handoffs, and is not a WP-705 closure condition.
 
 ## Decision Deadline
@@ -418,3 +437,38 @@ this amendment separates the part now satisfied from the part still owed.
   triggers a population rebuild; and a real-daemon restart pins the readiness
   path's rebuild count so both a new accidental rebuild and the eventual fix
   must change it deliberately.
+
+## Amendment 4 — WP-705 complete-path evidence boundary
+
+WP-705 closes ADR-0156's implementation and compatibility work with three
+distinct evidence results:
+
+1. a production-scale clean close and reopen proving bounded heap, zero
+   population-table evidence walks, and separately attributed open, readiness,
+   drain, and final-certificate stages;
+2. a genuine writer-process kill and reopen at exactly the 65,536-row checkpoint
+   proving that the unchanged complete-validation path invokes engine repair,
+   reaches exact end, preserves the 86-arm recovery matrix, remains idempotent,
+   records the unclean/clean wall-time ratio against an equivalently seeded
+   clean database, and creates no command, event, outcome, provenance, audit,
+   projection, outbox, or allocator advance; and
+3. a production-scale attempt of that unchanged complete path which records the
+   typed fail-closed `LimitExceeded` result at the historical-evidence 512 MiB
+   ceiling without retry, a raised ceiling, partial readiness, or a passing
+   performance claim, and without application-authority or allocator advance.
+
+The third result is a known-ceiling receipt and an input to WP-760. It does not
+satisfy production-scale dirty readiness, waive `PERF-013`, `PERF-014`, or
+`PERF-019`, or narrow `REC-001`, `REC-002`, or `REC-004`. The existing complete
+path remains authoritative until WP-760 implements the separately accepted
+ADR-0182 ordering. WP-760 remains downstream of WP-705 and exclusively owns the
+production-scale real-daemon dirty-readiness result with zero population-table
+enumeration and peak recovery-owned state under 64 MiB. Public scrub ownership
+also remains solely with ADR-0182 and WP-760.
+
+This boundary is deliberately non-circular: WP-705 hands WP-760 the sealed
+internal complete-path primitive, exact 65,536-row recovery proof, and observed
+production-scale ceiling; WP-705 neither calls nor waits for WP-760 behavior.
+WP-760 consumes those artifacts to replace the population walk on dirty
+readiness and must independently satisfy its 65,536-row and production-scale
+acceptance gates before WP-578 may consume the bounded dirty path.
