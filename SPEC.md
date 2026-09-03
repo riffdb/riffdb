@@ -5585,6 +5585,45 @@ require exact `ProjectionApplyHash` equality; a mismatch fails closed.
 
 `PRJ-004` Projection state MUST be rebuildable from the authoritative commit log.
 
+`PRJ-005` Every scalar or vector columnar projection MUST have one schema-bound,
+lineage-scoped stable source identity. Scalar identity MUST bind the accepted physical
+definition fingerprint and vector identity MUST retain the accepted lineage/entity/field
+tuple. Canonical source bytes MUST exclude names, paths, registration-list order, bundle
+versions and hashes, provider policy, selected/candidate physical layouts, frontiers,
+and generations. Symbolic application names MUST resolve through one active checked bundle,
+MUST NOT become durable identity, and duplicate aliases for one source MUST refuse before
+columnar-control or filesystem I/O. One separately versioned definition-semantics digest
+MUST bind primary-key field order/schema and every complete projected/org type, including
+vector dimension, into the source's complete semantic hash without changing the accepted
+legacy definition fingerprint.
+
+`PRJ-006` One exact expected-control compare-and-set MUST be the sole durable
+columnar selector and MUST compare the transaction-current authoritative head before
+publication. Published frontier advancement MUST be monotonic and MUST preserve any
+disjoint candidate byte-exact until its own publication or explicit replacement.
+
+`PRJ-007` A common columnar control MUST initialize only from authoritative state after
+its replay and retention fences are durable; no predecessor control, manifest, directory,
+or lifecycle MAY seed it. A temporarily readable predecessor MUST be structurally
+validated and otherwise inert, MUST NOT remain writable, current, selected, or
+authoritative, and MUST be deleted at the end of its exact accepted compatibility window.
+
+`PRJ-008` Columnar publication MUST close new view capture before durable selection,
+resolve every known or uncertain CAS result from durable control, install the exact
+validated selected immutable view, and only then reopen or acknowledge. Existing
+captured predecessor views MAY finish but MUST NOT affect the selected frontier.
+
+`PRJ-009` Missing, corrupt, partial, mixed, stale, excessive, or unknown selected
+columnar state MUST fail closed as unavailable/degraded and MUST NOT fall back to a
+different layout, generation, partition set, source, or frontier. All columnar state
+MUST remain rebuildable from authoritative state within compiler-sealed limits.
+
+`PRJ-010` Every columnar source, spec, semantic hash, durable control, generation
+artifact, compatibility window, and retirement MUST have an exact bounded canonical
+identity, fixture, reader/writer policy, topology registration, and transition proof;
+semantic hashes MUST use a dedicated collision-tested central hash domain, and runtime-only
+prepared witnesses MUST remain nonserializable and below public APIs.
+
 Initial build creates generation 1 as an unpublished candidate and applies the
 log from sequence 1. Publication is one control transition only when its
 frontier equals the transaction-current authoritative head. A same-plan rebuild
