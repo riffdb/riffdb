@@ -4105,6 +4105,7 @@ work_packages:
     crates/riffdb-cli/**, crates/riffdb-server/**, crates/riffdb-observability/**,
     crates/riffdb-testkit/**, clients/**, templates/**,
     fixtures/adapters/bulk-conformance/**, fixtures/application-parity/**,
+    fixtures/compatibility/operation-adapters-v1/riffdb-cli/app.rs.in,
     fixtures/driver/**, examples/**, tests/**, scripts/**, release/**,
     docs/SUMMARY.md, docs/contracts/**, docs/getting-started/**,
     docs/integrations/**, docs/reference/**]
