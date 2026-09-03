@@ -58,6 +58,7 @@ contract InitializedState version 1 {
 }
 "#;
 
+// req: BLK-036, BLK-042
 #[test]
 fn ordinary_and_bulk_initialized_mutation_select_v17_and_round_trip() {
     let bundle = compile_contract_source(SOURCE).expect("initialized mutation compiles");
@@ -78,6 +79,39 @@ fn ordinary_and_bulk_initialized_mutation_select_v17_and_round_trip() {
     );
 }
 
+// req: BLK-037
+#[test]
+fn initializer_fields_are_canonical_by_field_id_not_source_order() {
+    let source = SOURCE.replacen(
+        "      active: false,\n      revision: 0,",
+        "      revision: 0,\n      active: false,",
+        1,
+    );
+    let bundle = compile_contract_source(&source).expect("reordered initializer compiles");
+    let initializer = bundle.commands()[0].bindings()[0].initializer();
+    assert!(
+        initializer
+            .windows(2)
+            .all(|fields| fields[0].field_id() < fields[1].field_id())
+    );
+}
+
+// req: BLK-009
+#[test]
+fn generic_upsert_and_state_specific_binding_arms_remain_unavailable() {
+    let upsert = SOURCE.replacen("init_or_mutate State", "upsert State", 1);
+    compile_contract_source(&upsert).expect_err("generic upsert must remain unavailable");
+
+    let state_arm = SOURCE.replacen(
+        "    }\n    require current_revision:",
+        "    } else AlreadyPresent {}\n    require current_revision:",
+        1,
+    );
+    compile_contract_source(&state_arm)
+        .expect_err("initialized binding must not expose a state-specific arm");
+}
+
+// req: BLK-044
 #[test]
 fn checked_in_v17_fixture_is_byte_exact_and_decodes_canonically() {
     let source =
@@ -104,12 +138,14 @@ fn checked_in_v17_fixture_is_byte_exact_and_decodes_canonically() {
     );
 }
 
+// req: BLK-037
 #[test]
 fn initializer_cannot_read_bound_state() {
     let source = SOURCE.replace("active: false,", "active: state.active,");
     assert_source_diagnostic(&source, CompilerDiagnosticCode::UnknownName, "state.active");
 }
 
+// req: BLK-037
 #[test]
 fn initializer_rejects_key_unknown_duplicate_and_mistyped_fields() {
     for (replacement, code, excerpt) in [
@@ -135,6 +171,7 @@ fn initializer_rejects_key_unknown_duplicate_and_mistyped_fields() {
     }
 }
 
+// req: BLK-038
 #[test]
 fn absent_path_reads_require_initializer_or_dominating_assignment() {
     let source = SOURCE.replacen("      revision: 0,\n", "", 1);
@@ -145,6 +182,7 @@ fn absent_path_reads_require_initializer_or_dominating_assignment() {
     );
 }
 
+// req: BLK-038
 #[test]
 fn empty_initializer_is_valid_when_common_effects_complete_the_absent_postimage() {
     let source = SOURCE
@@ -167,6 +205,7 @@ fn empty_initializer_is_valid_when_common_effects_complete_the_absent_postimage(
     );
 }
 
+// req: BLK-009, SAFE-004, SAFE-005
 #[test]
 fn initializer_values_drive_relationship_and_unique_proofs() {
     let source = r#"

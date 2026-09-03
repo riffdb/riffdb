@@ -8968,7 +8968,7 @@ pub(crate) mod tests {
             })
         );
     }
-    // req: BLK-023
+    // req: BLK-023, BLK-043
     #[test]
     fn worst_case_index_estimator_freezes_create_replace_and_shared_whole_prefix_formulas() {
         let first = FieldId::new(2).expect("field");

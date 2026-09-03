@@ -149,7 +149,7 @@ fn legacy_256_element_plan_keeps_its_pre_v23_identity() {
     assert!(!plan.requires_ir_v23());
 }
 
-// req: BLK-018
+// req: BLK-018, BLK-044
 #[test]
 fn checked_legacy_collection_fixture_remains_byte_exact() {
     let source =

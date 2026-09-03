@@ -7,6 +7,10 @@ use std::num::NonZeroU64;
 use riffdb_auth::PrincipalFactBindingV1;
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_policy::{filter_authorized_rows, policy_visible_count};
+use riffdb_query_module::{
+    ApplicationRoleErrorKind, ApplicationSourceManifest, QueryModule, QueryModuleCandidate,
+    QueryModuleName, QueryModuleVersion, compile_application_role,
+};
 use riffdb_types::{
     ActorId, ActorKind, Audience, CanonicalRecord, CanonicalValue, CapabilityId,
     CapabilityPrincipalFactV1, CapabilityPrincipalFactsV1, DatabaseId, Environment, TenantScope,
@@ -14,6 +18,99 @@ use riffdb_types::{
 };
 
 const SOURCE: &str = include_str!("../fixtures/compiler/row-policy/valid/document-access.riff");
+
+// req: BLK-040
+#[test]
+fn initialized_transition_authority_requires_create_and_update_policy_coverage() {
+    let contract_source = |rules: &str| {
+        format!(
+            r#"
+contract InitializedPolicySurface version 1 {{
+  entity Document {{
+    key (organization_id: uuid, document_id: uuid)
+    field owner_id: uuid
+    field value: u64
+  }}
+  aggregate Documents {{
+    root Document
+    partition_by organization_id
+    conflict_key (organization_id, document_id)
+  }}
+  row policy DocumentAccess on Document {{
+    {rules}
+  }}
+  command PutDocument {{
+    input request_id: uuid
+    input organization_id: uuid
+    input document_id: uuid
+    input owner_id: uuid
+    input value: u64
+    idempotency_key request_id
+    init_or_mutate Document(organization_id, document_id) as document initialize {{
+      owner_id: owner_id,
+      value: 0,
+    }}
+    set document.owner_id = owner_id
+    set document.value = value
+    return Written {{}}
+  }}
+}}
+"#
+        )
+    };
+    let manifest_source = r#"{
+      "application":"init-policy",
+      "contract":{"lineage":"InitializedPolicySurface","source":"contract.riff","version":1},
+      "generation":{"go":"generated/go/client.go","mcp":"generated/mcp/tools.json","python":"generated/python/client.py","rust":"generated/rust/client.rs","typescript":"generated/typescript/client.ts"},
+      "migrations":[],
+      "query_modules":[{"name":"empty","queries":[],"version":1}],
+      "reactive_modules":[],
+      "roles":[{"agent_subscriptions":[],"commands":["PutDocument"],"environment":"development","event_streams":[],"name":"DocumentWriter","queries":[],"row_policies":["DocumentAccess"],"tenant_scope":"global","watch_queries":[]}],
+      "schema":"riffdb.application-source/v6",
+      "seed_inputs":[]
+    }"#;
+    let compile_role = |rules: &str| {
+        let contract = compile_contract_source(&contract_source(rules)).expect("contract compiles");
+        let module = QueryModule::compile(
+            QueryModuleCandidate::new(
+                QueryModuleName::new("empty").expect("module name"),
+                QueryModuleVersion::new(1).expect("module version"),
+                vec![],
+            )
+            .expect("module candidate"),
+            &contract,
+        )
+        .expect("empty module");
+        let manifest = ApplicationSourceManifest::parse(manifest_source)
+            .expect("source manifest")
+            .exact_manifest_v2(&contract, std::slice::from_ref(&module), &[])
+            .expect("exact manifest");
+        compile_application_role(
+            &manifest,
+            "DocumentWriter",
+            None,
+            &contract,
+            std::slice::from_ref(&module),
+        )
+    };
+
+    for incomplete in [
+        "allow create when owner_id == principal.id",
+        "allow update when owner_id == principal.id",
+    ] {
+        assert_eq!(
+            compile_role(incomplete)
+                .expect_err("one operation must not authorize both alternatives")
+                .kind(),
+            ApplicationRoleErrorKind::PolicyCoverage
+        );
+    }
+    let role = compile_role(
+        "allow create when owner_id == principal.id\n    allow update when owner_id == principal.id",
+    )
+    .expect("the complete create/update authority union is accepted");
+    assert_eq!(role.row_policies()[0].operations().len(), 2);
+}
 
 #[test]
 fn hidden_rows_do_not_consume_limit_or_change_count() {
