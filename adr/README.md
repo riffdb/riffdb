@@ -227,6 +227,7 @@ record with no front matter.
 | [0190](0190-atomic-columnar-v2-generation-root-publication.md) | Atomic Columnar V2 Generation-Root Publication | Accepted | guarantee |
 | [0191](0191-canonical-aggregate-collection-preflight-and-stable-error-mapping.md) | Canonical Aggregate Collection Preflight and Stable Error Mapping | Accepted | guarantee |
 | [0193](0193-separated-external-binary-text-interval-evidence.md) | Separated External Binary-Text Interval Evidence | Accepted | surface |
+| [0194](0194-generated-mcp-named-query-pagination-envelope.md) | Generated MCP Named-Query Pagination Envelope | Accepted | surface |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
