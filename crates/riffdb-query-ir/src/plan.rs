@@ -1,4 +1,4 @@
-use riffdb_contract_ir::KeySchema;
+use riffdb_contract_ir::{KeyPurpose, KeySchema};
 use riffdb_riffql_syntax::Cardinality;
 use riffdb_types::{
     ContractBundleHash, ContractLineage, ContractVersion, EntityTypeId, EnumTypeId, EnumVariantId,
@@ -6,8 +6,8 @@ use riffdb_types::{
 };
 
 use crate::{
-    ExactContractIdentity, MAX_QUERY_ARTIFACT_BYTES, MAX_QUERY_SCANNED_ROWS, ResolvedQueryV1,
-    max_query_page_take,
+    ExactContractIdentity, MAX_QUERY_ARTIFACT_BYTES, MAX_QUERY_SCANNED_ROWS,
+    OperationalIndexDescriptorV1, ResolvedQueryV1, max_query_page_take,
 };
 
 const PROGRAM_MAGIC: &[u8] = b"RIFFDB-QUERY-ACCESS-PROGRAM\0";
@@ -562,6 +562,7 @@ pub struct QueryAccessStep {
     partition_key_schema: KeySchema,
     entity_key_schema: KeySchema,
     index_key_schema: Option<KeySchema>,
+    operational_index_descriptor: Option<OperationalIndexDescriptorV1>,
     covered_result_layout: Option<CoveredResultLayoutV1>,
 }
 
@@ -582,6 +583,10 @@ impl std::fmt::Debug for QueryAccessStep {
             .field("dependencies", &self.dependencies)
             .field("absence_outcome", &self.absence_outcome)
             .field("cursor_parameter", &self.cursor_parameter)
+            .field(
+                "has_operational_index_descriptor",
+                &self.operational_index_descriptor.is_some(),
+            )
             .field("covered_result_layout", &self.covered_result_layout)
             .finish()
     }
@@ -695,6 +700,16 @@ impl QueryAccessStep {
         self.index_key_schema.as_ref()
     }
 
+    /// Compiler-sealed operational physical profile reconstructed from the
+    /// exact validated bundle.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_operational_index_descriptor(
+        &self,
+    ) -> Option<&OperationalIndexDescriptorV1> {
+        self.operational_index_descriptor.as_ref()
+    }
+
     /// Compiler-sealed positional cover proof, when this step is eligible.
     #[must_use]
     pub const fn covered_result_layout(&self) -> Option<&CoveredResultLayoutV1> {
@@ -728,6 +743,7 @@ impl QueryAccessStep {
         partition_key_schema: KeySchema,
         entity_key_schema: KeySchema,
         index_key_schema: Option<KeySchema>,
+        operational_index_descriptor: Option<OperationalIndexDescriptorV1>,
         covered_result_layout: Option<CoveredResultLayoutV1>,
     ) -> Option<Self> {
         let row_limit_is_valid = match &row_limit {
@@ -987,12 +1003,48 @@ impl QueryAccessStep {
                         .into_iter()
                         .map(String::as_str))
         });
+        let descriptor_is_valid = match (&access, index_id, index_key_schema.as_ref()) {
+            (
+                QueryAccessKind::Index { index, fields, .. }
+                | QueryAccessKind::ExpansionIndex { index, fields, .. }
+                | QueryAccessKind::PartitionSetIndex { index, fields, .. },
+                Some(index_id),
+                Some(index_key_schema),
+            ) if matches!(index_key_schema.purpose(), KeyPurpose::Index { .. }) => {
+                operational_index_descriptor
+                    .as_ref()
+                    .is_some_and(|descriptor| {
+                        descriptor.matches(
+                            // Exact contract agreement is checked when the complete
+                            // program receives its contract identity below.
+                            descriptor.contract(),
+                            entity_id,
+                            &entity,
+                            index_id,
+                            index,
+                            fields,
+                            &partition_key_schema,
+                            &entity_key_schema,
+                            index_key_schema,
+                        )
+                    })
+            }
+            (
+                QueryAccessKind::Index { .. }
+                | QueryAccessKind::ExpansionIndex { .. }
+                | QueryAccessKind::PartitionSetIndex { .. },
+                Some(_),
+                Some(_),
+            ) => operational_index_descriptor.is_none(),
+            _ => operational_index_descriptor.is_none(),
+        };
         if binding.is_empty()
             || entity.is_empty()
             || maximum_rows == 0
             || !row_limit_is_valid
             || !access_is_valid
             || !covered_layout_is_valid
+            || !descriptor_is_valid
             || predicate_fields.windows(2).any(|pair| pair[0] >= pair[1])
             || selected_fields.windows(2).any(|pair| pair[0] >= pair[1])
             || result_names.windows(2).any(|pair| pair[0] >= pair[1])
@@ -1019,6 +1071,7 @@ impl QueryAccessStep {
             partition_key_schema,
             entity_key_schema,
             index_key_schema,
+            operational_index_descriptor,
             covered_result_layout,
         })
     }
@@ -1357,6 +1410,11 @@ impl QueryAccessProgramV1 {
                 .windows(2)
                 .any(|pair| pair[0].entity >= pair[1].entity)
             || cost.access_steps() != steps.len() as u64
+            || steps.iter().any(|step| {
+                step.operational_index_descriptor
+                    .as_ref()
+                    .is_some_and(|descriptor| descriptor.contract() != &contract)
+            })
             || !relationship_composition_is_valid(&steps)
             || !candidate_composition_is_valid(&surface, &steps)
             || !partition_route_composition_is_valid(&partition_route, &steps)

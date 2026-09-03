@@ -140,8 +140,8 @@ impl ApplicationCatalogFeatureV1 {
             | Self::StableCursorPages
             | Self::NullExistencePredicates
             | Self::BinaryTextPrefix
+            | Self::UnicodeFoldTextPrefixV1
             | Self::ExactAggregates => ApplicationCatalogFeatureStateV1::Available,
-            Self::UnicodeFoldTextPrefixV1 => ApplicationCatalogFeatureStateV1::Unavailable,
         }
     }
 }
@@ -993,18 +993,16 @@ mod tests {
         );
     }
 
+    // req: OQ-032, OQ-043
     #[test]
     fn operational_feature_preflight_matches_the_executable_surface() {
         for feature in [
             ApplicationCatalogFeatureV1::NullExistencePredicates,
             ApplicationCatalogFeatureV1::BinaryTextPrefix,
+            ApplicationCatalogFeatureV1::UnicodeFoldTextPrefixV1,
         ] {
             assert_eq!(feature.state(), ApplicationCatalogFeatureStateV1::Available);
         }
-        assert_eq!(
-            ApplicationCatalogFeatureV1::UnicodeFoldTextPrefixV1.state(),
-            ApplicationCatalogFeatureStateV1::Unavailable
-        );
     }
 
     #[test]

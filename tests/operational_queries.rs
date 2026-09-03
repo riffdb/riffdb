@@ -900,6 +900,7 @@ fn binary_text_membership_uses_bytewise_prefix_order_and_one_global_cursor() {
     assert!(execute_all_membership_cursor_pages(BINARY_COMPONENT_MEMBERSHIP_QUERY, &[]).is_empty());
 }
 
+// req: OQ-036
 #[test]
 fn canonical_intervals_and_complements_share_exact_forward_reverse_cursors() {
     let ascending = execute_all_interval_cursor_pages(CANONICAL_RANGE_QUERY, Some((3, 7)), None);

@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
 use riffdb_contract_ir::{
-    ContractBundle, ExpressionKind, IndexFieldEncodingV1, KeySchema, LineageEntryState,
-    RowPolicyOperationV1, StableIdNamespaceTag, ValueType,
+    ContractBundle, ExpressionKind, IndexFieldEncodingV1, KeyComponentSchema, KeyPurpose,
+    KeySchema, LineageEntryState, RowPolicyOperationV1, StableIdNamespaceTag, TextKeyProfileV1,
+    UNICODE_FOLD_V1_MAXIMUM_EXPANSION, ValueType,
 };
 use riffdb_types::{EntityTypeId, EnumTypeId, EnumVariantId, FieldId, HashDomain, IndexId, hash};
 
@@ -73,10 +74,139 @@ impl FieldSymbol {
 pub struct IndexSymbol {
     id: IndexId,
     name: String,
+    field_ids: Vec<FieldId>,
     fields: Vec<String>,
     cover_fields: Vec<String>,
     encodings: Vec<IndexFieldEncodingV1>,
     key_schema: KeySchema,
+}
+
+/// One compiler-sealed logical-to-physical component mapping.
+///
+/// This is process-local operational evidence. It is deliberately absent from
+/// canonical query encoding and has no public constructor.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OperationalIndexComponentV1 {
+    field_id: FieldId,
+    field: String,
+    encoding: IndexFieldEncodingV1,
+    physical_start: usize,
+    physical: Vec<KeyComponentSchema>,
+}
+
+impl OperationalIndexComponentV1 {
+    /// Stable field identity selected from the exact bundle.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn field_id(&self) -> FieldId {
+        self.field_id
+    }
+
+    /// Exact bundle-declared physical encoding for one logical field.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn encoding(&self) -> IndexFieldEncodingV1 {
+        self.encoding
+    }
+
+    /// First physical component occupied by this logical field.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn physical_start(&self) -> usize {
+        self.physical_start
+    }
+
+    /// Complete checked physical components occupied by this logical field.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn physical(&self) -> &[KeyComponentSchema] {
+        &self.physical
+    }
+}
+
+/// Bounded private reconstruction of one exact ordinary index declaration.
+///
+/// Stable IDs select the declaration. Names, field order, and all retained
+/// schemas are agreement checks. The type is never canonically serialized.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OperationalIndexDescriptorV1 {
+    contract: ExactContractIdentity,
+    entity_id: EntityTypeId,
+    entity: String,
+    index_id: IndexId,
+    index: String,
+    components: Vec<OperationalIndexComponentV1>,
+    partition_key_schema: KeySchema,
+    entity_key_schema: KeySchema,
+    index_key_schema: KeySchema,
+}
+
+impl OperationalIndexDescriptorV1 {
+    /// Exact contract identity from which this descriptor was reconstructed.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn contract(&self) -> &ExactContractIdentity {
+        &self.contract
+    }
+
+    /// Returns one exact logical component only when its symbolic field agrees.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn component(
+        &self,
+        logical_position: usize,
+        field: &str,
+    ) -> Option<&OperationalIndexComponentV1> {
+        self.components
+            .get(logical_position)
+            .filter(|component| component.field == field)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn matches(
+        &self,
+        contract: &ExactContractIdentity,
+        entity_id: EntityTypeId,
+        entity: &str,
+        index_id: IndexId,
+        index: &str,
+        fields: &[String],
+        partition_key_schema: &KeySchema,
+        entity_key_schema: &KeySchema,
+        index_key_schema: &KeySchema,
+    ) -> bool {
+        let mut next_physical = 0usize;
+        let components_match = self.components.len() == fields.len()
+            && self
+                .components
+                .iter()
+                .zip(fields)
+                .all(|(component, field)| {
+                    let end = next_physical.checked_add(component.physical.len());
+                    let matches = !component.physical.is_empty()
+                        && component.field == *field
+                        && component.physical_start == next_physical
+                        && end
+                            .and_then(|end| index_key_schema.components().get(next_physical..end))
+                            == Some(component.physical.as_slice());
+                    if let Some(end) = end {
+                        next_physical = end;
+                    }
+                    matches
+                })
+            && next_physical == index_key_schema.components().len();
+        self.contract == *contract
+            && self.entity_id == entity_id
+            && self.entity == entity
+            && self.index_id == index_id
+            && self.index == index
+            && self.partition_key_schema == *partition_key_schema
+            && self.entity_key_schema == *entity_key_schema
+            && self.index_key_schema == *index_key_schema
+            && components_match
+    }
 }
 
 /// One exact required relationship symbol.
@@ -593,6 +723,7 @@ impl SymbolicCatalog {
                 let symbol = IndexSymbol {
                     id: index.id(),
                     name: index.name().to_owned(),
+                    field_ids: index.fields().to_vec(),
                     fields: component_names,
                     cover_fields: cover_names,
                     encodings: index.encodings().to_vec(),
@@ -872,6 +1003,85 @@ impl SymbolicCatalog {
         &self.identity
     }
 
+    /// Reconstructs one private operational descriptor by stable IDs.
+    ///
+    /// The source bundle was fully validated before this catalog existed. This
+    /// second bounded walk recovers its already-sealed component profile and
+    /// verifies the complete logical/physical mapping before a query step can
+    /// be admitted.
+    #[doc(hidden)]
+    pub fn internal_operational_index_descriptor(
+        &self,
+        entity_id: EntityTypeId,
+        index_id: IndexId,
+    ) -> Option<OperationalIndexDescriptorV1> {
+        let entity = self
+            .entities
+            .values()
+            .find(|candidate| candidate.id == entity_id)?;
+        let index = entity
+            .indexes
+            .values()
+            .find(|candidate| candidate.id == index_id)?;
+        if index.field_ids.len() != index.fields.len()
+            || index.encodings.len() != index.fields.len()
+            || index.key_schema.purpose()
+                != (KeyPurpose::Index {
+                    index_id,
+                    entity_type: entity_id,
+                })
+            || index.key_schema.entity_key_schema() != Some(&entity.primary_key_schema)
+        {
+            return None;
+        }
+
+        let mut physical_start = 0usize;
+        let mut components = Vec::with_capacity(index.fields.len());
+        for ((field_id, field_name), encoding) in index
+            .field_ids
+            .iter()
+            .zip(&index.fields)
+            .zip(&index.encodings)
+        {
+            let field = entity.fields.get(field_name)?;
+            if field.id != *field_id {
+                return None;
+            }
+            let expected = expected_operational_components(self, &field.value_type, *encoding)?;
+            let physical_end = physical_start.checked_add(expected.len())?;
+            let physical = index
+                .key_schema
+                .components()
+                .get(physical_start..physical_end)?;
+            if physical != expected.as_slice() {
+                return None;
+            }
+            components.push(OperationalIndexComponentV1 {
+                field_id: *field_id,
+                field: field_name.clone(),
+                encoding: *encoding,
+                physical_start,
+                physical: physical.to_vec(),
+            });
+            physical_start = physical_end;
+        }
+        if physical_start != index.key_schema.components().len() {
+            return None;
+        }
+
+        Some(OperationalIndexDescriptorV1 {
+            contract: self.identity.clone(),
+            entity_id,
+            entity: entity.name.clone(),
+            index_id,
+            index: index.name.clone(),
+            components,
+            partition_key_schema: entity.partition_key_schema.clone(),
+            entity_key_schema: entity.primary_key_schema.clone(),
+            index_key_schema: index.key_schema.clone(),
+        })
+    }
+
     /// Creates a compiler-private catalog view in which one tokenized index
     /// supplies only the partition-plus-primary-key metadata access witness.
     ///
@@ -895,6 +1105,10 @@ impl SymbolicCatalog {
         let symbol = IndexSymbol {
             id: text.id,
             name: text.name.clone(),
+            field_ids: fields
+                .iter()
+                .map(|name| entity.fields.get(name).map(|field| field.id))
+                .collect::<Option<Vec<_>>>()?,
             encodings: vec![IndexFieldEncodingV1::Canonical; fields.len()],
             fields,
             cover_fields: Vec::new(),
@@ -969,6 +1183,54 @@ impl SymbolicCatalog {
     }
 }
 
+fn expected_operational_components(
+    catalog: &SymbolicCatalog,
+    logical: &ValueType,
+    encoding: IndexFieldEncodingV1,
+) -> Option<Vec<KeyComponentSchema>> {
+    let canonical = |value_type: ValueType| {
+        let enum_variants = if let Some(id) = value_type.enum_type_id() {
+            catalog
+                .enums
+                .values()
+                .find(|enumeration| enumeration.id == id)?
+                .variants
+                .values()
+                .copied()
+                .collect()
+        } else {
+            Vec::new()
+        };
+        KeyComponentSchema::new(value_type, enum_variants).ok()
+    };
+    match encoding {
+        IndexFieldEncodingV1::Canonical => canonical(logical.clone()).map(|value| vec![value]),
+        IndexFieldEncodingV1::Presence => {
+            let inner = logical
+                .optional_inner()
+                .filter(|inner| inner.is_authoritative_key_scalar())?;
+            Some(vec![
+                canonical(ValueType::u64())?,
+                canonical(inner.clone())?,
+            ])
+        }
+        IndexFieldEncodingV1::TextKey(profile) => {
+            let source_maximum = logical
+                .byte_bound()
+                .filter(|_| logical.tag() == riffdb_contract_ir::ValueTypeTag::String)?;
+            let physical_maximum = match profile {
+                TextKeyProfileV1::BinaryUtf8 => source_maximum,
+                TextKeyProfileV1::UnicodeFold => {
+                    source_maximum.checked_mul(UNICODE_FOLD_V1_MAXIMUM_EXPANSION)?
+                }
+            };
+            KeyComponentSchema::ordered_bytes(physical_maximum)
+                .ok()
+                .map(|value| vec![value])
+        }
+    }
+}
+
 fn invariant(summary: &'static str) -> QueryDiagnostics {
     QueryDiagnostics::one(QueryDiagnostic::new(
         QueryDiagnosticCode::ArtifactLimit,
@@ -978,4 +1240,254 @@ fn invariant(summary: &'static str) -> QueryDiagnostics {
         summary,
         None,
     ))
+}
+
+#[cfg(test)]
+mod operational_descriptor_tests {
+    use riffdb_contract_compiler::compile_contract_source;
+    use riffdb_contract_ir::{
+        IndexFieldEncodingV1, KeyComponentSchema, KeySchema, TextKeyProfileV1, ValueType,
+    };
+    use riffdb_types::{EntityTypeId, IndexId};
+
+    use super::{OperationalIndexDescriptorV1, SymbolicCatalog};
+
+    const CONTRACT: &str = r#"
+contract OperationalDescriptorContract version 1 {
+  entity Document {
+    key (organization_id: uuid, document_id: uuid)
+    field title: string<8>
+    index by_title (organization_id, title, document_id) text_key(title, unicode_fold_v1)
+  }
+  aggregate Documents {
+    root Document
+    partition_by organization_id
+    conflict_key (organization_id, document_id)
+  }
+}
+"#;
+
+    fn catalog_from(source: &str) -> SymbolicCatalog {
+        let bundle = compile_contract_source(source).expect("contract");
+        SymbolicCatalog::from_bundle(&bundle).expect("catalog")
+    }
+
+    fn descriptor_matches(
+        catalog: &SymbolicCatalog,
+        descriptor: &OperationalIndexDescriptorV1,
+    ) -> bool {
+        let entity = catalog.entity("Document").expect("entity");
+        let index = entity.index("by_title").expect("index");
+        descriptor.matches(
+            catalog.identity(),
+            entity.internal_id(),
+            entity.name(),
+            index.internal_id(),
+            index.name(),
+            index.fields(),
+            entity.internal_partition_key_schema(),
+            entity.internal_primary_key_schema(),
+            index.internal_key_schema(),
+        )
+    }
+
+    // req: OQ-032, OQ-033, OQ-034, OQ-037, OQ-038, OQ-043
+    #[test]
+    fn operational_descriptor_refuses_mismatched_bundle_index_or_schema_before_storage() {
+        let catalog = catalog_from(CONTRACT);
+        let entity = catalog.entity("Document").expect("entity");
+        let index = entity.index("by_title").expect("index");
+        let descriptor = catalog
+            .internal_operational_index_descriptor(entity.internal_id(), index.internal_id())
+            .expect("descriptor");
+        assert!(descriptor_matches(&catalog, &descriptor));
+
+        let foreign = catalog_from(&CONTRACT.replace(
+            "OperationalDescriptorContract",
+            "ForeignOperationalDescriptorContract",
+        ));
+        assert!(!descriptor.matches(
+            foreign.identity(),
+            entity.internal_id(),
+            entity.name(),
+            index.internal_id(),
+            index.name(),
+            index.fields(),
+            entity.internal_partition_key_schema(),
+            entity.internal_primary_key_schema(),
+            index.internal_key_schema(),
+        ));
+        assert!(!descriptor.matches(
+            catalog.identity(),
+            EntityTypeId::new(entity.internal_id().get() + 1).expect("foreign entity ID"),
+            entity.name(),
+            index.internal_id(),
+            index.name(),
+            index.fields(),
+            entity.internal_partition_key_schema(),
+            entity.internal_primary_key_schema(),
+            index.internal_key_schema(),
+        ));
+        assert!(!descriptor.matches(
+            catalog.identity(),
+            entity.internal_id(),
+            "WrongDocument",
+            IndexId::new(index.internal_id().get() + 1).expect("foreign index ID"),
+            "wrong_index",
+            &[
+                "organization_id".to_owned(),
+                "document_id".to_owned(),
+                "title".to_owned(),
+            ],
+            entity.internal_primary_key_schema(),
+            entity.internal_partition_key_schema(),
+            entity.internal_primary_key_schema(),
+        ));
+
+        let entity_id = entity.internal_id();
+        let index_id = index.internal_id();
+        let entity_key = entity.internal_primary_key_schema().clone();
+        assert!(
+            catalog
+                .internal_operational_index_descriptor(
+                    EntityTypeId::new(entity_id.get() + 1).expect("missing entity"),
+                    index_id,
+                )
+                .is_none()
+        );
+        assert!(
+            catalog
+                .internal_operational_index_descriptor(
+                    entity_id,
+                    IndexId::new(index_id.get() + 1).expect("missing index"),
+                )
+                .is_none()
+        );
+
+        let mut wrong_encoding = catalog.clone();
+        wrong_encoding
+            .entities
+            .get_mut("Document")
+            .expect("entity")
+            .indexes
+            .get_mut("by_title")
+            .expect("index")
+            .encodings[1] = IndexFieldEncodingV1::TextKey(TextKeyProfileV1::BinaryUtf8);
+        assert!(
+            wrong_encoding
+                .internal_operational_index_descriptor(entity_id, index_id)
+                .is_none()
+        );
+
+        let mut wrong_order = catalog.clone();
+        let wrong_order_index = wrong_order
+            .entities
+            .get_mut("Document")
+            .expect("entity")
+            .indexes
+            .get_mut("by_title")
+            .expect("index");
+        wrong_order_index.fields.swap(1, 2);
+        assert!(
+            wrong_order
+                .internal_operational_index_descriptor(entity_id, index_id)
+                .is_none()
+        );
+
+        let mut wrong_field_identity = catalog.clone();
+        wrong_field_identity
+            .entities
+            .get_mut("Document")
+            .expect("entity")
+            .indexes
+            .get_mut("by_title")
+            .expect("index")
+            .field_ids
+            .swap(1, 2);
+        assert!(
+            wrong_field_identity
+                .internal_operational_index_descriptor(entity_id, index_id)
+                .is_none()
+        );
+
+        let mut wrong_arity = catalog.clone();
+        let wrong_arity_index = wrong_arity
+            .entities
+            .get_mut("Document")
+            .expect("entity")
+            .indexes
+            .get_mut("by_title")
+            .expect("index");
+        let mut too_many = wrong_arity_index.key_schema.components().to_vec();
+        too_many.push(KeyComponentSchema::new(ValueType::u64(), Vec::new()).expect("component"));
+        wrong_arity_index.key_schema =
+            KeySchema::index(index_id, entity_id, too_many, entity_key.clone())
+                .expect("wrong-arity schema remains structurally valid");
+        assert!(
+            wrong_arity
+                .internal_operational_index_descriptor(entity_id, index_id)
+                .is_none()
+        );
+
+        let mut wrong_codec = catalog.clone();
+        let wrong_codec_index = wrong_codec
+            .entities
+            .get_mut("Document")
+            .expect("entity")
+            .indexes
+            .get_mut("by_title")
+            .expect("index");
+        let mut wrong_components = wrong_codec_index.key_schema.components().to_vec();
+        wrong_components[1] =
+            KeyComponentSchema::new(ValueType::bytes(8).expect("bytes"), Vec::new())
+                .expect("canonical bytes component");
+        wrong_codec_index.key_schema =
+            KeySchema::index(index_id, entity_id, wrong_components, entity_key.clone())
+                .expect("wrong-codec schema remains structurally valid");
+        assert!(
+            wrong_codec
+                .internal_operational_index_descriptor(entity_id, index_id)
+                .is_none()
+        );
+
+        let mut wrong_bound = catalog.clone();
+        let wrong_bound_index = wrong_bound
+            .entities
+            .get_mut("Document")
+            .expect("entity")
+            .indexes
+            .get_mut("by_title")
+            .expect("index");
+        let mut wrong_components = wrong_bound_index.key_schema.components().to_vec();
+        wrong_components[1] = KeyComponentSchema::ordered_bytes(8).expect("narrow ordered bytes");
+        wrong_bound_index.key_schema =
+            KeySchema::index(index_id, entity_id, wrong_components, entity_key.clone())
+                .expect("wrong-bound schema remains structurally valid");
+        assert!(
+            wrong_bound
+                .internal_operational_index_descriptor(entity_id, index_id)
+                .is_none()
+        );
+
+        let mut wrong_owner = catalog.clone();
+        let wrong_owner_index = wrong_owner
+            .entities
+            .get_mut("Document")
+            .expect("entity")
+            .indexes
+            .get_mut("by_title")
+            .expect("index");
+        wrong_owner_index.key_schema = KeySchema::index(
+            IndexId::new(index_id.get() + 1).expect("wrong owner"),
+            entity_id,
+            wrong_owner_index.key_schema.components().to_vec(),
+            entity_key,
+        )
+        .expect("wrong-owner schema remains structurally valid");
+        assert!(
+            wrong_owner
+                .internal_operational_index_descriptor(entity_id, index_id)
+                .is_none()
+        );
+    }
 }

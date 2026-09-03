@@ -36,6 +36,7 @@ fn authorization_set_contains_predicate_order_key_and_selected_fields() {
     assert_eq!(ticket.indexes(), &["by_board_project_status"]);
 }
 
+// req: OQ-003
 #[test]
 fn unindexed_or_nonlocal_query_fails_with_named_spanned_diagnostic() {
     let bundle = compile_contract_source(CONTRACT).expect("contract");

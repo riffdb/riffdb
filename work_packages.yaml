@@ -485,6 +485,18 @@ work_packages:
       intervals, branches, encodings, indexes, directions, merge strategies, costs, or fallback.
     scale: At most one branching/interval component forms a compiler-bounded disjoint schedule under
       one scan/page/output budget, with no unbounded union, intersection, or materialization.
+  closure:
+    status: complete
+    completed_at: '2026-09-03'
+    requirements_satisfied: [OQ-002, OQ-003, OQ-004, OQ-005, OQ-006, OQ-010,
+      OQ-032, OQ-033, OQ-034, OQ-036, OQ-037, OQ-038, OQ-039, OQ-043]
+    evidence: The three named ADR-0189 obligation proofs cover canonical byte and hash invariance,
+      complete descriptor mismatch refusal before storage, and shared unicode_fold_v1 lowering;
+      package acceptance passed all 8 stages and 290 tests, and generated artifacts remain current.
+    known_limitations: Multiple branching dimensions, overlapping unions, skip scans, intersections,
+      adaptive planning, bitmap bridges, caller-selected fallback, and undeclared profiles remain
+      unavailable and fail closed.
+    follow_ups: [WP-689, WP-690]
   human_review_triggers: *id001
 - id: WP-689
   name: Bounded relationship access-shape inventory and conformance

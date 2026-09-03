@@ -819,9 +819,15 @@ pub fn bound_index_range_schedule_v1(
     let schema = step
         .internal_index_key_schema()
         .ok_or(QueryExecutionError::InvalidProgram)?;
+    let descriptor = step
+        .internal_operational_index_descriptor()
+        .ok_or(QueryExecutionError::InvalidProgram)?;
     let mut leading = vec![Vec::<CanonicalValue>::new()];
     let mut consumed = 0usize;
-    for field in fields {
+    for (logical_position, field) in fields.iter().enumerate() {
+        let component = descriptor
+            .component(logical_position, field)
+            .ok_or(QueryExecutionError::InvalidProgram)?;
         let matching = predicates
             .iter()
             .filter(|predicate| predicate.field() == field)
@@ -847,6 +853,7 @@ pub fn bound_index_range_schedule_v1(
             }
             return encode_interval_schedule(
                 schema,
+                component,
                 leading.pop().ok_or(QueryExecutionError::InvalidProgram)?,
                 &matching,
                 *direction,
@@ -858,7 +865,7 @@ pub fn bound_index_range_schedule_v1(
         match predicate.operator() {
             QueryPredicateOperator::Equal => {
                 for values in &mut leading {
-                    push_exact_index_prefix_value(schema, values, predicate.value())?;
+                    push_exact_index_prefix_value(schema, component, values, predicate.value())?;
                 }
                 consumed += 1;
             }
@@ -873,7 +880,7 @@ pub fn bound_index_range_schedule_v1(
                 for values in prior {
                     for item in items.values() {
                         let mut expanded = values.clone();
-                        push_exact_index_prefix_value(schema, &mut expanded, item)?;
+                        push_exact_index_prefix_value(schema, component, &mut expanded, item)?;
                         leading.push(expanded);
                     }
                 }
@@ -884,6 +891,12 @@ pub fn bound_index_range_schedule_v1(
             }
             QueryPredicateOperator::IsNull => {
                 for values in &mut leading {
+                    if component.encoding() != riffdb_contract_ir::IndexFieldEncodingV1::Presence
+                        || component.physical_start() != values.len()
+                        || component.physical().len() != 2
+                    {
+                        return Err(QueryExecutionError::InvalidProgram);
+                    }
                     let payload = schema
                         .components()
                         .get(values.len() + 1)
@@ -899,6 +912,12 @@ pub fn bound_index_range_schedule_v1(
             }
             QueryPredicateOperator::IsNotNull => {
                 for values in &mut leading {
+                    if component.encoding() != riffdb_contract_ir::IndexFieldEncodingV1::Presence
+                        || component.physical_start() != values.len()
+                        || component.physical().len() != 2
+                    {
+                        return Err(QueryExecutionError::InvalidProgram);
+                    }
                     values.push(CanonicalValue::U64(riffdb_contract_ir::PRESENCE_VALUE_V1));
                 }
                 if consumed + 1 != predicates.len() {
@@ -907,8 +926,16 @@ pub fn bound_index_range_schedule_v1(
                 return encode_prefix_schedule(schema, leading, *direction);
             }
             QueryPredicateOperator::Exists => {
+                if component.encoding() != riffdb_contract_ir::IndexFieldEncodingV1::Presence
+                    || component.physical().len() != 2
+                {
+                    return Err(QueryExecutionError::InvalidProgram);
+                }
                 let prior = std::mem::take(&mut leading);
                 for values in prior {
+                    if component.physical_start() != values.len() {
+                        return Err(QueryExecutionError::InvalidProgram);
+                    }
                     for state in [
                         riffdb_contract_ir::PRESENCE_NULL_V1,
                         riffdb_contract_ir::PRESENCE_VALUE_V1,
@@ -933,8 +960,15 @@ pub fn bound_index_range_schedule_v1(
                 let prefixes = leading
                     .into_iter()
                     .map(|values| {
+                        let transformed =
+                            transform_text_key(component.encoding(), prefix.as_str())?;
+                        if component.physical_start() != values.len()
+                            || component.physical().len() != 1
+                        {
+                            return Err(QueryExecutionError::InvalidProgram);
+                        }
                         schema
-                            .encode_index_ordered_prefix(&values, prefix.as_str().as_bytes())
+                            .encode_index_ordered_prefix(&values, &transformed)
                             .map(|prefix| prefix.as_bytes().to_vec())
                             .map_err(|_| QueryExecutionError::InvalidProgram)
                     })
@@ -958,22 +992,38 @@ pub fn bound_index_range_schedule_v1(
 
 fn push_exact_index_prefix_value(
     schema: &riffdb_contract_ir::KeySchema,
+    descriptor: &riffdb_query_ir::OperationalIndexComponentV1,
     values: &mut Vec<CanonicalValue>,
     logical: &CanonicalValue,
 ) -> Result<(), QueryExecutionError> {
+    if descriptor.physical_start() != values.len() || descriptor.physical().len() != 1 {
+        return Err(QueryExecutionError::InvalidProgram);
+    }
     let component = schema
         .components()
         .get(values.len())
         .ok_or(QueryExecutionError::InvalidProgram)?;
-    let physical = match (component.codec(), logical) {
-        (KeyComponentCodecV1::Canonical, value) => value.clone(),
-        (KeyComponentCodecV1::OrderedBytes, CanonicalValue::String(value)) => {
-            CanonicalValue::bytes(value.as_str().as_bytes().to_vec())
-                .map_err(|_| QueryExecutionError::InvalidProgram)?
+    if descriptor.physical() != std::slice::from_ref(component) {
+        return Err(QueryExecutionError::InvalidProgram);
+    }
+    let physical = match (descriptor.encoding(), component.codec(), logical) {
+        (
+            riffdb_contract_ir::IndexFieldEncodingV1::Canonical,
+            KeyComponentCodecV1::Canonical,
+            value,
+        ) => value.clone(),
+        (
+            riffdb_contract_ir::IndexFieldEncodingV1::TextKey(profile),
+            KeyComponentCodecV1::OrderedBytes,
+            CanonicalValue::String(value),
+        ) => {
+            let bytes = transform_text_key(
+                riffdb_contract_ir::IndexFieldEncodingV1::TextKey(profile),
+                value.as_str(),
+            )?;
+            CanonicalValue::bytes(bytes).map_err(|_| QueryExecutionError::InvalidProgram)?
         }
-        (KeyComponentCodecV1::OrderedBytes, _) => {
-            return Err(QueryExecutionError::InvalidProgram);
-        }
+        _ => return Err(QueryExecutionError::InvalidProgram),
     };
     values.push(physical);
     Ok(())
@@ -1013,6 +1063,7 @@ fn encode_physical_prefix_schedule(
 
 fn encode_interval_schedule(
     schema: &riffdb_contract_ir::KeySchema,
+    descriptor: &riffdb_query_ir::OperationalIndexComponentV1,
     leading: Vec<CanonicalValue>,
     predicates: &[&BoundPredicate],
     direction: AccessDirection,
@@ -1025,7 +1076,9 @@ fn encode_interval_schedule(
         || predicates.len() > 2
         || predicates
             .iter()
-            .any(|predicate| !interval_value_supported(component.codec(), predicate.value()))
+            .any(|predicate| !interval_value_supported(descriptor.encoding(), predicate.value()))
+        || descriptor.physical_start() != leading.len()
+        || descriptor.physical() != std::slice::from_ref(component)
     {
         return Err(QueryExecutionError::InvalidProgram);
     }
@@ -1039,7 +1092,7 @@ fn encode_interval_schedule(
         .iter()
         .map(|predicate| {
             let mut values = leading.clone();
-            push_exact_index_prefix_value(schema, &mut values, predicate.value())?;
+            push_exact_index_prefix_value(schema, descriptor, &mut values, predicate.value())?;
             let exact_start = schema
                 .encode_index_prefix(&values)
                 .map(|prefix| prefix.as_bytes().to_vec())
@@ -1098,9 +1151,12 @@ fn encode_interval_schedule(
     finish_range_schedule(ranges, direction)
 }
 
-fn interval_value_supported(codec: KeyComponentCodecV1, value: &CanonicalValue) -> bool {
-    match codec {
-        KeyComponentCodecV1::Canonical => matches!(
+fn interval_value_supported(
+    encoding: riffdb_contract_ir::IndexFieldEncodingV1,
+    value: &CanonicalValue,
+) -> bool {
+    match encoding {
+        riffdb_contract_ir::IndexFieldEncodingV1::Canonical => matches!(
             value,
             CanonicalValue::I64(_)
                 | CanonicalValue::U64(_)
@@ -1109,7 +1165,25 @@ fn interval_value_supported(codec: KeyComponentCodecV1, value: &CanonicalValue) 
                 | CanonicalValue::Uuid(_)
                 | CanonicalValue::Enum { .. }
         ),
-        KeyComponentCodecV1::OrderedBytes => matches!(value, CanonicalValue::String(_)),
+        riffdb_contract_ir::IndexFieldEncodingV1::TextKey(_) => {
+            matches!(value, CanonicalValue::String(_))
+        }
+        riffdb_contract_ir::IndexFieldEncodingV1::Presence => false,
+    }
+}
+
+fn transform_text_key(
+    encoding: riffdb_contract_ir::IndexFieldEncodingV1,
+    value: &str,
+) -> Result<Vec<u8>, QueryExecutionError> {
+    match encoding {
+        riffdb_contract_ir::IndexFieldEncodingV1::TextKey(
+            riffdb_contract_ir::TextKeyProfileV1::BinaryUtf8,
+        ) => Ok(value.as_bytes().to_vec()),
+        riffdb_contract_ir::IndexFieldEncodingV1::TextKey(
+            riffdb_contract_ir::TextKeyProfileV1::UnicodeFold,
+        ) => Ok(riffdb_types::unicode_fold_v1(value).into_bytes()),
+        _ => Err(QueryExecutionError::InvalidProgram),
     }
 }
 
@@ -4732,9 +4806,27 @@ fn partition_set_physical_resume(
         .internal_index_key_schema()
         .ok_or(QueryExecutionError::InvalidProgram)?;
     let mut physical_index =
-        partition_set_exact_physical_prefix(schema, fields, order, predicates, route)?;
-    for value in &marker[..order.len()] {
-        push_exact_index_prefix_value(schema, &mut physical_index, value)?;
+        partition_set_exact_physical_prefix(step, schema, fields, order, predicates, route)?;
+    let descriptor = step
+        .internal_operational_index_descriptor()
+        .ok_or(QueryExecutionError::InvalidProgram)?;
+    let order_start = fields
+        .len()
+        .checked_sub(order.len())
+        .ok_or(QueryExecutionError::InvalidProgram)?;
+    for (offset, value) in marker[..order.len()].iter().enumerate() {
+        let field_position = order_start
+            .checked_add(offset)
+            .ok_or(QueryExecutionError::BoundExceeded)?;
+        let component = descriptor
+            .component(
+                field_position,
+                fields
+                    .get(field_position)
+                    .ok_or(QueryExecutionError::InvalidProgram)?,
+            )
+            .ok_or(QueryExecutionError::InvalidProgram)?;
+        push_exact_index_prefix_value(schema, component, &mut physical_index, value)?;
     }
     if physical_index.len() != schema.components().len() {
         return Err(QueryExecutionError::InvalidProgram);
@@ -4764,6 +4856,7 @@ fn partition_set_physical_resume(
 }
 
 fn partition_set_exact_physical_prefix(
+    step: &QueryAccessStep,
     schema: &riffdb_contract_ir::KeySchema,
     fields: &[String],
     order: &[QueryRootOrderTermV1],
@@ -4783,8 +4876,17 @@ fn partition_set_exact_physical_prefix(
         return Err(QueryExecutionError::InvalidProgram);
     }
     let mut physical = Vec::with_capacity(fields.len());
-    push_exact_index_prefix_value(schema, &mut physical, route)?;
-    for field in &fields[1..order_start] {
+    let descriptor = step
+        .internal_operational_index_descriptor()
+        .ok_or(QueryExecutionError::InvalidProgram)?;
+    let route_component = descriptor
+        .component(
+            0,
+            fields.first().ok_or(QueryExecutionError::InvalidProgram)?,
+        )
+        .ok_or(QueryExecutionError::InvalidProgram)?;
+    push_exact_index_prefix_value(schema, route_component, &mut physical, route)?;
+    for (field_position, field) in fields.iter().enumerate().take(order_start).skip(1) {
         let mut matching = predicates.iter().filter(|predicate| {
             predicate.field() == field && predicate.operator() == QueryPredicateOperator::Equal
         });
@@ -4792,7 +4894,10 @@ fn partition_set_exact_physical_prefix(
             .next()
             .filter(|_| matching.next().is_none())
             .ok_or(QueryExecutionError::InvalidProgram)?;
-        push_exact_index_prefix_value(schema, &mut physical, predicate.value())?;
+        let component = descriptor
+            .component(field_position, field)
+            .ok_or(QueryExecutionError::InvalidProgram)?;
+        push_exact_index_prefix_value(schema, component, &mut physical, predicate.value())?;
     }
     Ok(physical)
 }
@@ -5279,8 +5384,23 @@ fn partition_set_group_resume(
         .internal_index_key_schema()
         .ok_or(QueryExecutionError::InvalidProgram)?;
     let mut physical =
-        partition_set_exact_physical_prefix(schema, fields, order, predicates, route)?;
-    push_exact_index_prefix_value(schema, &mut physical, first_order)?;
+        partition_set_exact_physical_prefix(step, schema, fields, order, predicates, route)?;
+    let order_start = fields
+        .len()
+        .checked_sub(order.len())
+        .ok_or(QueryExecutionError::InvalidProgram)?;
+    let descriptor = step
+        .internal_operational_index_descriptor()
+        .ok_or(QueryExecutionError::InvalidProgram)?;
+    let component = descriptor
+        .component(
+            order_start,
+            fields
+                .get(order_start)
+                .ok_or(QueryExecutionError::InvalidProgram)?,
+        )
+        .ok_or(QueryExecutionError::InvalidProgram)?;
+    push_exact_index_prefix_value(schema, component, &mut physical, first_order)?;
     if order.is_empty() || physical.len() > schema.components().len() {
         return Err(QueryExecutionError::InvalidProgram);
     }
@@ -5735,6 +5855,35 @@ contract OperationalIndexQueries version 1 {
     partition_by organization_id
     conflict_key (organization_id, document_id)
   }
+}
+"#;
+
+    const UNICODE_FOLD_OPERATIONAL_INDEX_CONTRACT: &str = r#"
+contract UnicodeFoldOperationalIndexQueries version 1 {
+  entity Document {
+    key (organization_id: uuid, document_id: uuid)
+    field title: string<8>
+    index by_title (organization_id, title, document_id) text_key(title, unicode_fold_v1)
+  }
+  aggregate Documents {
+    root Document
+    partition_by organization_id
+    conflict_key (organization_id, document_id)
+  }
+}
+"#;
+
+    const UNICODE_FOLD_EXACT_DOCUMENTS: &str = r#"
+query ExactFoldedDocuments(
+    $organization_id: Document.organization_id,
+    $title: Document.title,
+) {
+    many documents from Document
+        where organization_id == $organization_id && title == $title
+        order by document_id asc
+        take 10
+    return Found { documents: documents { document_id title } }
+    outcomes Found
 }
 "#;
 
@@ -6352,6 +6501,116 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
                 .expect("index key");
             assert_eq!(matching_range(&ranges, key.as_bytes()), expected, "{title}");
         }
+    }
+
+    // req: OQ-032, OQ-033, OQ-034, OQ-037
+    #[test]
+    fn unicode_fold_exact_predicate_uses_the_declared_physical_profile() {
+        let bundle = compile_contract_source(UNICODE_FOLD_OPERATIONAL_INDEX_CONTRACT)
+            .expect("unicode-fold contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let family = compile_operational_query_family(
+            &parse_query(UNICODE_FOLD_EXACT_DOCUMENTS).expect("query"),
+            &catalog,
+        )
+        .expect("unicode-fold exact plan");
+        let step = family.select(&[]).expect("member").program().steps()[0].clone();
+
+        let organization = CanonicalValue::Uuid([7; 16]);
+        let parameters = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), organization.clone()),
+            (
+                "title".to_owned(),
+                CanonicalValue::string("STRASSE").expect("folded needle"),
+            ),
+        ]))
+        .expect("parameters");
+        let predicates =
+            bind_predicates(&step, &parameters, &BTreeMap::new(), &[]).expect("bound predicates");
+        let ranges =
+            bound_index_range_schedule_v1(&step, &predicates).expect("unicode-fold exact range");
+
+        let entity = &bundle.schema().entities()[0];
+        let index = entity
+            .indexes()
+            .iter()
+            .find(|index| index.name() == "by_title")
+            .expect("folded index");
+        let field_id = |name: &str| {
+            entity
+                .record()
+                .fields()
+                .iter()
+                .find(|field| field.name() == name)
+                .expect("field")
+                .id()
+        };
+        let document_id = CanonicalValue::Uuid([9; 16]);
+        let record = CanonicalRecord::new(vec![
+            (field_id("organization_id"), organization.clone()),
+            (field_id("document_id"), document_id.clone()),
+            (
+                field_id("title"),
+                CanonicalValue::string("Straße").expect("stored title"),
+            ),
+        ])
+        .expect("stored record");
+        let values = riffdb_contract_ir::encode_operational_index_values_v1(index, &record)
+            .expect("folded stored values");
+        let entity_key = entity
+            .primary_key()
+            .encode_entity(&[organization, document_id])
+            .expect("entity key");
+        let key = index
+            .key_schema()
+            .encode_index(&values, entity_key)
+            .expect("index key");
+
+        assert!(matching_range(&ranges, key.as_bytes()));
+    }
+
+    // req: OQ-032, OQ-033, OQ-034, OQ-037, OQ-038, OQ-043
+    #[test]
+    fn operational_descriptor_reconstruction_preserves_canonical_plan_bytes_and_hash() {
+        let bundle = compile_contract_source(UNICODE_FOLD_OPERATIONAL_INDEX_CONTRACT)
+            .expect("unicode-fold contract");
+        let first_catalog = SymbolicCatalog::from_bundle(&bundle).expect("first catalog");
+        let second_catalog = SymbolicCatalog::from_bundle(&bundle).expect("second catalog");
+        let document = parse_query(UNICODE_FOLD_EXACT_DOCUMENTS).expect("query");
+        let first = compile_operational_query_family(&document, &first_catalog)
+            .expect("first reconstructed family");
+        let second = compile_operational_query_family(&document, &second_catalog)
+            .expect("second reconstructed family");
+        let first = first.select(&[]).expect("first member").program();
+        let second = second.select(&[]).expect("second member").program();
+
+        assert!(
+            first
+                .steps()
+                .iter()
+                .all(|step| step.internal_operational_index_descriptor().is_some())
+        );
+        assert!(
+            second
+                .steps()
+                .iter()
+                .all(|step| step.internal_operational_index_descriptor().is_some())
+        );
+        assert_eq!(first.canonical_bytes(), second.canonical_bytes());
+        assert_eq!(first.identity(), second.identity());
+
+        let rebuilt = QueryAccessProgramV1::checked(
+            first.contract().clone(),
+            first.surface().clone(),
+            first.name().map(str::to_owned),
+            first.partition_parameter().to_owned(),
+            first.steps().to_vec(),
+            first.authorization().to_vec(),
+            first.cost(),
+        )
+        .expect("reattached private descriptors remain valid");
+        assert_eq!(first.canonical_bytes(), rebuilt.canonical_bytes());
+        assert_eq!(first.identity(), rebuilt.identity());
     }
 
     /// Falsifiability: leaf many-query projection must not clone selected values.

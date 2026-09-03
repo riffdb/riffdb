@@ -2409,6 +2409,10 @@ impl<'a> Planner<'a> {
                     .collect::<Vec<_>>();
                 let binding = candidate_source_binding_name(candidate.name(), source_index)
                     .ok_or_else(internal)?;
+                let operational_index_descriptor = index_id.and_then(|index_id| {
+                    self.catalog
+                        .internal_operational_index_descriptor(entity.internal_id(), index_id)
+                });
                 let step = QueryAccessStep::checked(
                     binding,
                     entity.name().to_owned(),
@@ -2430,6 +2434,7 @@ impl<'a> Planner<'a> {
                     entity.internal_partition_key_schema().clone(),
                     entity.internal_primary_key_schema().clone(),
                     index_key_schema,
+                    operational_index_descriptor,
                     None,
                 )
                 .ok_or_else(internal)?;
@@ -2958,6 +2963,21 @@ impl<'a> Planner<'a> {
                 }
                 _ => None,
             };
+            let index_key_schema = match &access {
+                QueryAccessKind::Point { .. } | QueryAccessKind::DependentPointBatch { .. } => None,
+                QueryAccessKind::Index { index, .. }
+                | QueryAccessKind::ExpansionIndex { index, .. }
+                | QueryAccessKind::PartitionSetIndex { index, .. } => entity
+                    .index(index)
+                    .map(|symbol| symbol.internal_key_schema().clone()),
+                QueryAccessKind::LongPatternCandidate { .. }
+                | QueryAccessKind::Nearest { .. }
+                | QueryAccessKind::CandidateRootHydration { .. } => None,
+            };
+            let operational_index_descriptor = index_id.and_then(|index_id| {
+                self.catalog
+                    .internal_operational_index_descriptor(entity.internal_id(), index_id)
+            });
             let step = QueryAccessStep::checked(
                 binding.name.value.as_str().to_owned(),
                 entity.name().to_owned(),
@@ -2983,23 +3003,8 @@ impl<'a> Planner<'a> {
                 index_id,
                 entity.internal_partition_key_schema().clone(),
                 entity.internal_primary_key_schema().clone(),
-                match &access {
-                    QueryAccessKind::Point { .. } | QueryAccessKind::DependentPointBatch { .. } => {
-                        None
-                    }
-                    QueryAccessKind::Index { index, .. } => entity
-                        .index(index)
-                        .map(|symbol| symbol.internal_key_schema().clone()),
-                    QueryAccessKind::ExpansionIndex { index, .. } => entity
-                        .index(index)
-                        .map(|symbol| symbol.internal_key_schema().clone()),
-                    QueryAccessKind::PartitionSetIndex { index, .. } => entity
-                        .index(index)
-                        .map(|symbol| symbol.internal_key_schema().clone()),
-                    QueryAccessKind::LongPatternCandidate { .. } => None,
-                    QueryAccessKind::Nearest { .. } => None,
-                    QueryAccessKind::CandidateRootHydration { .. } => None,
-                },
+                index_key_schema,
+                operational_index_descriptor,
                 covered_result_layout,
             )
             .ok_or_else(internal)?;
