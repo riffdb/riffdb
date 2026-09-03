@@ -12,6 +12,10 @@ from client import (
     CreatePipelinesWithStepsPipelinesCreated,
     DocumentGraphInput,
     FgaTuple,
+    InputBudgetError,
+    AGGREGATE_CANONICAL_ELEMENT_BYTES,
+    COLLECTION_COUNT,
+    INDIVIDUAL_VALUE_BYTES,
     LogMetricsInput,
     LogMetricsMetricsLogged,
     Metric,
@@ -145,6 +149,67 @@ def main() -> None:
             "Woodpecker replay",
         )
 
+        budget_errors: list[dict[str, object]] = []
+        try:
+            client.write_policy_mutations(
+                WritePolicyMutationsInput(request_id=uid(798), mutations=())
+            )
+        except InputBudgetError as error:
+            require(error.cause == COLLECTION_COUNT, "collection count cause")
+            require(error.collection == "mutations", "collection count path")
+            budget_errors.append({"cause": error.cause, "collection": error.collection})
+        else:
+            raise RuntimeError("Python collection count crossed preflight")
+
+        try:
+            client.write_policy_mutations(
+                WritePolicyMutationsInput(
+                    request_id=uid(799),
+                    mutations=(PolicyMutation(
+                        organization_id=uid(801), mutation_id=uid(802),
+                        relation="viewer", context=bytes(524_289),
+                    ),),
+                )
+            )
+        except InputBudgetError as error:
+            require(error.cause == INDIVIDUAL_VALUE_BYTES, "individual byte cause")
+            require((error.collection, error.index, error.leaf) == ("mutations", 0, "context"), "individual byte path")
+            budget_errors.append({"cause": error.cause, "collection": error.collection, "index": error.index, "leaf": error.leaf})
+        else:
+            raise RuntimeError("Python individual bytes crossed preflight")
+
+        require(
+            isinstance(
+                client.write_policy_mutations(
+                    WritePolicyMutationsInput(
+                        request_id=uid(1982),
+                        mutations=(PolicyMutation(
+                            organization_id=uid(1980), mutation_id=uid(1981),
+                            relation="é" * 32, context=None,
+                        ),),
+                    )
+                ).outcome,
+                WritePolicyMutationsPolicyMutationsWritten,
+            ),
+            "64-byte multibyte leaf",
+        )
+        try:
+            client.write_policy_mutations(
+                WritePolicyMutationsInput(
+                    request_id=uid(1985),
+                    mutations=(PolicyMutation(
+                        organization_id=uid(1983), mutation_id=uid(1984),
+                        relation="é" * 32 + "a", context=None,
+                    ),),
+                )
+            )
+        except InputBudgetError as error:
+            require(error.cause == INDIVIDUAL_VALUE_BYTES, "multibyte individual cause")
+            require((error.collection, error.index, error.leaf) == ("mutations", 0, "relation"), "multibyte individual path")
+            budget_errors.append({"cause": error.cause, "collection": error.collection, "index": error.index, "leaf": error.leaf})
+        else:
+            raise RuntimeError("Python 65-byte multibyte leaf crossed preflight")
+
         try:
             client.write_policy_mutations(
                 WritePolicyMutationsInput(
@@ -165,13 +230,15 @@ def main() -> None:
                     ),
                 )
             )
-        except ValueError:
-            aggregate_bounded = True
+        except InputBudgetError as error:
+            aggregate_bounded = error.cause == AGGREGATE_CANONICAL_ELEMENT_BYTES
+            budget_errors.append({"cause": error.cause, "collection": error.collection})
         else:
             aggregate_bounded = False
         require(aggregate_bounded, "aggregate byte preflight")
 
         for count, start, organization, request in (
+            (1, 880, 888, 889),
             (9, 900, 890, 891),
             (19, 910, 892, 893),
             (100, 1000, 894, 895),
@@ -205,6 +272,7 @@ def main() -> None:
                 "bounded_preflight": True,
                 "replayed": True,
                 "neutral_aggregate": True,
+                "budget_errors": budget_errors,
                 "adapters": ["mlflow", "openfga", "payload", "woodpecker"],
             },
             separators=(",", ":"),

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	generated "riffdb.dev/adapter-bulk-conformance/generated/go"
@@ -128,15 +129,48 @@ func run() error {
 	largeA := make([]byte, 450_000)
 	largeB := make([]byte, 450_000)
 	if _, err = client.WritePolicyMutations(ctx, generated.WritePolicyMutationsInput{
+		RequestId: id(278), Mutations: nil,
+	}); !budgetErrorMatches(err, generated.CollectionCount, "mutations", nil, "") {
+		return errors.New("collection count used the wrong Go preflight error")
+	}
+	individualContext := make([]byte, 524_289)
+	zero := 0
+	if _, err = client.WritePolicyMutations(ctx, generated.WritePolicyMutationsInput{
+		RequestId: id(279),
+		Mutations: []generated.PolicyMutation{{OrganizationId: id(281), MutationId: id(282), Relation: "viewer", Context: &individualContext}},
+	}); !budgetErrorMatches(err, generated.IndividualValueBytes, "mutations", &zero, "context") {
+		return errors.New("individual bytes used the wrong Go preflight error")
+	}
+	multibyteBoundary := generated.WritePolicyMutationsInput{
+		RequestId: id(1282),
+		Mutations: []generated.PolicyMutation{{
+			OrganizationId: id(1280), MutationId: id(1281), Relation: strings.Repeat("é", 32),
+		}},
+	}
+	if result, boundaryErr := client.WritePolicyMutations(ctx, multibyteBoundary); boundaryErr != nil {
+		return fmt.Errorf("64-byte multibyte leaf: %w", boundaryErr)
+	} else if _, ok := result.Outcome.(generated.WritePolicyMutationsPolicyMutationsWritten); !ok {
+		return errors.New("64-byte multibyte leaf used the wrong Go outcome")
+	}
+	if _, err = client.WritePolicyMutations(ctx, generated.WritePolicyMutationsInput{
+		RequestId: id(1285),
+		Mutations: []generated.PolicyMutation{{
+			OrganizationId: id(1283), MutationId: id(1284), Relation: strings.Repeat("é", 32) + "a",
+		}},
+	}); !budgetErrorMatches(err, generated.IndividualValueBytes, "mutations", &zero, "relation") {
+		return errors.New("65-byte multibyte leaf used the wrong Go preflight error")
+	}
+	if _, err = client.WritePolicyMutations(ctx, generated.WritePolicyMutationsInput{
 		RequestId: id(280),
 		Mutations: []generated.PolicyMutation{
 			{OrganizationId: id(281), MutationId: id(282), Relation: "viewer", Context: &largeA},
 			{OrganizationId: id(281), MutationId: id(283), Relation: "viewer", Context: &largeB},
 		},
-	}); err == nil {
-		return errors.New("aggregate byte overflow crossed Go preflight")
+	}); !budgetErrorMatches(err, generated.AggregateCanonicalElementBytes, "mutations", nil, "") {
+		return errors.New("aggregate bytes used the wrong Go preflight error")
 	}
 	for _, item := range []struct{ count, start, organization, request int }{
+		{1, 880, 888, 889},
 		{9, 900, 890, 891},
 		{19, 910, 892, 893},
 		{100, 1000, 894, 895},
@@ -156,8 +190,25 @@ func run() error {
 	return json.NewEncoder(os.Stdout).Encode(map[string]any{
 		"schema": "riffdb.adapter-bulk-observation/v1", "language": "go",
 		"bounded_preflight": true, "replayed": true, "neutral_aggregate": true,
+		"budget_errors": []map[string]any{
+			{"cause": "collection_count", "collection": "mutations"},
+			{"cause": "individual_value_bytes", "collection": "mutations", "index": 0, "leaf": "context"},
+			{"cause": "individual_value_bytes", "collection": "mutations", "index": 0, "leaf": "relation"},
+			{"cause": "aggregate_canonical_element_bytes", "collection": "mutations"},
+		},
 		"adapters": []string{"mlflow", "openfga", "payload", "woodpecker"},
 	})
+}
+
+func budgetErrorMatches(err error, cause generated.InputBudgetCause, collection string, index *int, leaf string) bool {
+	var budget *generated.InputBudgetError
+	if !errors.As(err, &budget) || budget.Cause != cause || budget.Path.Collection != collection || budget.Path.Leaf != leaf {
+		return false
+	}
+	if index == nil {
+		return budget.Path.Index == nil
+	}
+	return budget.Path.Index != nil && *budget.Path.Index == *index
 }
 
 func policyMutations(count, start, organization int) []generated.PolicyMutation {

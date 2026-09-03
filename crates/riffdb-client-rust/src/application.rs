@@ -1767,7 +1767,8 @@ impl From<GeneratedExecutionError> for ApplicationClientError {
             // first as `InvalidResponse` sends callers to audit the decoder for
             // a mistake that is in their own request.
             GeneratedExecutionError::CommandShape(
-                crate::generated::GeneratedCommandError::InvalidInputShape,
+                crate::generated::GeneratedCommandError::InvalidInputShape
+                | crate::generated::GeneratedCommandError::InputBudget(_),
             ) => Self::InvalidInput,
             GeneratedExecutionError::CommandShape(
                 crate::generated::GeneratedCommandError::InvalidOutcomeShape,

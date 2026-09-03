@@ -1,6 +1,7 @@
 import { DriverApplicationTransport, type DriverApplicationError, type DriverCompactQueryResult, type DriverPackedQueryResult, type DriverOperation } from "./driver.js";
 export type ApplicationValueSchema = {
     readonly kind: "bool" | "i64" | "u64" | "string" | "uuid" | "bytes" | "date" | "timestamp" | "cursor" | "limit";
+    readonly maximumBytes?: number;
 } | {
     readonly kind: "vector";
     readonly dimension: number;
@@ -34,6 +35,17 @@ export type ApplicationValueSchema = {
         readonly wireId?: number;
     }>;
 };
+export type InputBudgetCause = "collection_count" | "individual_value_bytes" | "aggregate_canonical_element_bytes";
+export interface InputBudgetPath {
+    readonly collection: string;
+    readonly index?: number;
+    readonly leaf?: string;
+}
+export declare class InputBudgetError extends Error {
+    readonly cause: InputBudgetCause;
+    readonly path: InputBudgetPath;
+    constructor(cause: InputBudgetCause, path: InputBudgetPath);
+}
 /** One exact fixed-point value accepted by generated decimal fields. */
 export interface ExactDecimalValue {
     readonly coefficientTwosComplement: Uint8Array;

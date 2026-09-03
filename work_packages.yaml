@@ -4238,6 +4238,27 @@ work_packages:
     scale: Canonical aggregate sizing is linear in one already count/byte-bounded input and paid
       once per invocation, never per authorization atom, conflict, retry, mutation row, or durable
       transition; allocations and diagnostics remain within existing request/graph ceilings.
+  closure:
+    status: complete
+    completed_at: "2026-09-03"
+    requirements_satisfied: [BLK-006, BLK-007, BLK-008, BLK-009, BLK-013, BLK-014,
+      BLK-019, BLK-020, BLK-021, ID-001, ID-004, OUT-001, OUT-002, REC-001,
+      REC-002, STO-001, STO-002, TXN-001, TXN-010, TXN-011, TXN-012, TXN-013,
+      TXN-040, TXN-041, TXN-042, TXN-043, TXN-044, AAA-001, AAA-002, AAA-003,
+      AAA-004, AAA-005, AAA-009, AAA-010]
+    evidence: Generated Rust, Go, TypeScript, and Python facades and the exact-bundle CLI perform
+      count, UTF-8 or byte-leaf, and exact canonical aggregate preflight before transport, while
+      raw CLI and MCP retain structural validation and the Rust service authoritatively repeats
+      typed validation before effects. Req-tagged exact-bound and plus-one tests, including the
+      multibyte string boundary, complete-graph refusal, memory/redb, concurrency, crash, TLS,
+      driver-host, CLI, MCP, and cross-language observations prove one unsplit atomic command with
+      complete-or-absent durability. Generated facade and application-lock hashes rotate under
+      review while operation, plan, protocol, public-error, and durable identities remain exact.
+    known_limitations: Only ADR-0147's single compiler-owned expanded collection budget is
+      supported; nested or unexpanded pools, multiple pools, and runtime negotiation remain
+      unavailable. Raw CLI and MCP deliberately leave exact canonical sizing to the authoritative
+      service. Correlated index-work runtime and larger command envelopes remain separate packages.
+    follow_ups: [WP-684, WP-744]
   human_review_triggers: *id001
 - id: WP-680
   name: Generated named-query cursor routing correction

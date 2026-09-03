@@ -3779,7 +3779,9 @@ contract AttemptMaterialization version {version} {{
     }
 
     #[test]
-    fn lineage_expansion_overflow_returns_pre_runtime_evidence() {
+    // req: BLK-020, TXN-010, TXN-011, TXN-012, TXN-013, TXN-040, TXN-041,
+    // req: TXN-042, TXN-043, TXN-044
+    fn expanded_graph_resource_limit_is_terminal_without_application_effects() {
         let desired_raw_bytes = MAX_CANONICAL_DOCUMENT_BYTES - 5;
         let (state, raw_snapshot, note) = evolved_row_fixture(Some(desired_raw_bytes));
         let exact_current = TransactionCurrentState::new(
@@ -3844,6 +3846,7 @@ contract AttemptMaterialization version {version} {{
             "overflow evidence must retain raw data, not a normalized value"
         );
         assert_eq!(&*order.borrow(), &["pending-recheck", "snapshot"]);
+        let expected_pending = state.commit_context.pending().clone();
         order.borrow_mut().clear();
         let (port, trace) = instrumented_execution_failure_port(
             exact_current,
@@ -3869,7 +3872,17 @@ contract AttemptMaterialization version {version} {{
             panic!("reproduced lineage overflow must become terminal")
         };
         assert_eq!(failure.code(), ExecutionFailureCode::ResourceLimit);
+        assert_eq!(failure.pending(), &expected_pending);
         assert_eq!(trace.lease_held_at_storage_action.get(), Some(true));
+        assert_eq!(
+            &*order.borrow(),
+            &[
+                "failure-begin",
+                "failure-current-read",
+                "failure-terminalize",
+                "failure-storage-drop",
+            ]
+        );
         acquire_and_release(&runtime, &manager, keys);
     }
 

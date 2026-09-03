@@ -137,6 +137,80 @@ impl WorkflowSuccessorRevision {
     }
 }
 
+/// Closed reason for a generated, exact local collection-budget refusal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GeneratedInputBudgetCause {
+    /// The submitted collection is below its minimum or above its maximum.
+    CollectionCount,
+    /// One bounded string or byte leaf exceeds its declared maximum.
+    IndividualValueBytes,
+    /// The sum of canonical element encodings exceeds the compiled aggregate.
+    AggregateCanonicalElementBytes,
+}
+
+impl GeneratedInputBudgetCause {
+    /// Stable application-facing cause tag.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CollectionCount => "collection_count",
+            Self::IndividualValueBytes => "individual_value_bytes",
+            Self::AggregateCanonicalElementBytes => "aggregate_canonical_element_bytes",
+        }
+    }
+}
+
+/// Symbolic, value-free path for one generated collection-budget refusal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GeneratedInputBudgetError {
+    cause: GeneratedInputBudgetCause,
+    collection: &'static str,
+    index: Option<usize>,
+    leaf: Option<&'static str>,
+}
+
+impl GeneratedInputBudgetError {
+    /// Constructs one compiler-emitted local budget refusal.
+    #[must_use]
+    pub const fn new(
+        cause: GeneratedInputBudgetCause,
+        collection: &'static str,
+        index: Option<usize>,
+        leaf: Option<&'static str>,
+    ) -> Self {
+        Self {
+            cause,
+            collection,
+            index,
+            leaf,
+        }
+    }
+
+    /// Closed cause tag.
+    #[must_use]
+    pub const fn cause(&self) -> GeneratedInputBudgetCause {
+        self.cause
+    }
+
+    /// Symbolic collection field.
+    #[must_use]
+    pub const fn collection(&self) -> &'static str {
+        self.collection
+    }
+
+    /// Submitted element index, when the refusal identifies one element.
+    #[must_use]
+    pub const fn index(&self) -> Option<usize> {
+        self.index
+    }
+
+    /// Symbolic bounded leaf, when the refusal identifies one leaf.
+    #[must_use]
+    pub const fn leaf(&self) -> Option<&'static str> {
+        self.leaf
+    }
+}
+
 /// A closed failure in generated shape-only code.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GeneratedCommandError {
@@ -144,6 +218,23 @@ pub enum GeneratedCommandError {
     InvalidInputShape,
     /// A successful response did not match the generated declared-outcome union.
     InvalidOutcomeShape,
+    /// Exact typed local collection-budget preflight refused the command.
+    InputBudget(GeneratedInputBudgetError),
+}
+
+impl GeneratedCommandError {
+    /// Constructs one compiler-emitted local budget refusal.
+    #[must_use]
+    pub const fn input_budget(
+        cause: GeneratedInputBudgetCause,
+        collection: &'static str,
+        index: Option<usize>,
+        leaf: Option<&'static str>,
+    ) -> Self {
+        Self::InputBudget(GeneratedInputBudgetError::new(
+            cause, collection, index, leaf,
+        ))
+    }
 }
 
 impl From<CommandShapeError> for GeneratedCommandError {
@@ -157,6 +248,7 @@ impl fmt::Display for GeneratedCommandError {
         formatter.write_str(match self {
             Self::InvalidInputShape => "generated command input is invalid",
             Self::InvalidOutcomeShape => "generated command outcome is invalid",
+            Self::InputBudget(_) => "generated command input exceeds its compiled budget",
         })
     }
 }

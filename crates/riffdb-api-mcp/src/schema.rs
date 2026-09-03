@@ -17,6 +17,8 @@ const MAX_INSTANCE_DEPTH: usize = 32;
 const MAX_VALIDATION_NODES: usize = 262_144;
 const MAX_INPUT_VIOLATION_PATH_BYTES: usize = 512;
 const JSON_VECTOR_DIMENSION: &str = "x-riffdb-vectorDimension";
+const JSON_AGGREGATE_CANONICAL_ELEMENT_BYTES: &str = "x-riffdb-aggregateCanonicalElementBytes";
+const MAX_AGGREGATE_CANONICAL_ELEMENT_BYTES: u64 = 16_777_216;
 
 /// The fail-closed validator for the exact JSON Schema subset emitted by RiffDB.
 #[derive(Clone, Copy, Debug, Default)]
@@ -528,6 +530,7 @@ fn is_schema_keyword(key: &str, root: bool) -> bool {
             | "uniqueItems"
             | "x-riffdb-decimalPrecision"
             | "x-riffdb-decimalScale"
+            | "x-riffdb-aggregateCanonicalElementBytes"
             | "x-riffdb-integerMaximum"
             | "x-riffdb-integerType"
             | "x-riffdb-maxDecodedBytes"
@@ -557,6 +560,17 @@ fn validate_nonnegative_keyword(
 }
 
 fn validate_extension_shapes(object: &Map<String, Value>) -> Result<(), SchemaValidationError> {
+    if let Some(value) = object.get(JSON_AGGREGATE_CANONICAL_ELEMENT_BYTES) {
+        let Some(maximum) = value.as_u64() else {
+            return Err(SchemaValidationError);
+        };
+        if !(1..=MAX_AGGREGATE_CANONICAL_ELEMENT_BYTES).contains(&maximum)
+            || object.get("type").and_then(Value::as_str) != Some("array")
+            || !object.contains_key("items")
+        {
+            return Err(SchemaValidationError);
+        }
+    }
     for key in [
         "x-riffdb-decimalPrecision",
         "x-riffdb-decimalScale",
@@ -1298,6 +1312,83 @@ mod tests {
             validate_schema_source(&Value::Object(tool.result_schema().json_object()))
                 .expect("result subset");
         }
+    }
+
+    fn aggregate_annotation_schema(value: Value) -> Value {
+        json!({
+            "$schema": DIALECT,
+            "additionalProperties": false,
+            "properties": {
+                "values": {
+                    "items": {"type": "string"},
+                    "type": "array",
+                    JSON_AGGREGATE_CANONICAL_ELEMENT_BYTES: value,
+                }
+            },
+            "required": ["values"],
+            "type": "object",
+        })
+    }
+
+    // req: BLK-019
+    #[test]
+    fn aggregate_canonical_element_bytes_is_a_bounded_array_annotation_only() {
+        let source = serde_json::to_string(&aggregate_annotation_schema(json!(1024)))
+            .expect("aggregate annotation schema JSON");
+        let schema = SchemaDocument::from_canonical(
+            "test/aggregate-canonical-element-bytes/v1",
+            hash_schema(source.as_bytes()),
+            source,
+        )
+        .expect("bounded aggregate annotation");
+        RiffDbSchemaValidator
+            .validate(&schema, &json!({"values": ["a", "b"]}))
+            .expect("MCP treats the aggregate-byte keyword as annotation-only");
+    }
+
+    // req: BLK-019
+    #[test]
+    fn aggregate_canonical_element_bytes_refuses_zero() {
+        assert_eq!(
+            validate_schema_source(&aggregate_annotation_schema(json!(0))),
+            Err(SchemaValidationError)
+        );
+    }
+
+    // req: BLK-019
+    #[test]
+    fn aggregate_canonical_element_bytes_refuses_values_above_the_global_bound() {
+        assert_eq!(
+            validate_schema_source(&aggregate_annotation_schema(json!(16_777_217))),
+            Err(SchemaValidationError)
+        );
+    }
+
+    // req: BLK-019
+    #[test]
+    fn aggregate_canonical_element_bytes_refuses_nonintegers() {
+        assert_eq!(
+            validate_schema_source(&aggregate_annotation_schema(json!(1.5))),
+            Err(SchemaValidationError)
+        );
+    }
+
+    // req: BLK-019
+    #[test]
+    fn aggregate_canonical_element_bytes_refuses_wrong_placement() {
+        let mut schema = aggregate_annotation_schema(json!(1024));
+        let values = schema["properties"]["values"]
+            .as_object_mut()
+            .expect("values schema");
+        values.insert("type".to_owned(), json!("string"));
+        assert_eq!(validate_schema_source(&schema), Err(SchemaValidationError));
+
+        let mut schema = aggregate_annotation_schema(json!(1024));
+        schema["properties"]["values"]
+            .as_object_mut()
+            .expect("values schema")
+            .remove("items");
+        assert_eq!(validate_schema_source(&schema), Err(SchemaValidationError));
     }
 
     #[test]

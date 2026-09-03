@@ -1685,7 +1685,7 @@ fn rust_command_model(command: &CommandPlan, contract: &ContractBundle) -> Value
             .field(expansion.input_field())
             .expect("validated collection input field");
         let field = rust_identifier(field.name());
-        json!({
+        let mut collection = json!({
             "field": field,
             "lower": if expansion.minimum_elements() == 1 {
                 format!("self.{field}.is_empty()")
@@ -1697,7 +1697,22 @@ fn rust_command_model(command: &CommandPlan, contract: &ContractBundle) -> Value
                 "maximum": maximum,
                 "encode": rust_encode_wire_expr(expansion.element_type(), "value", contract),
             })),
-        })
+        });
+        if expansion.maximum_aggregate_element_bytes().is_some() {
+            let object = collection
+                .as_object_mut()
+                .expect("collection generation model object");
+            object.insert("wire_field".to_owned(), Value::String(field.clone()));
+            object.insert(
+                "individual_checks".to_owned(),
+                json!(rust_collection_individual_checks(
+                    expansion.element_type(),
+                    field.as_str(),
+                    contract,
+                )),
+            );
+        }
+        collection
     });
     let facades = embedding_command_facades(command, contract).into_iter().map(|facade| {
         let constant = screaming_snake(&facade.vector_field_name);
@@ -1784,6 +1799,49 @@ fn rust_command_model(command: &CommandPlan, contract: &ContractBundle) -> Value
             })).collect::<Vec<_>>(),
         },
     })
+}
+
+fn rust_collection_individual_checks(
+    element_type: &ValueType,
+    collection: &str,
+    contract: &ContractBundle,
+) -> Vec<String> {
+    let Some(RecordTypeRef::Entity(entity_id)) = element_type.record_ref() else {
+        return Vec::new();
+    };
+    let entity = contract
+        .schema()
+        .entity(*entity_id)
+        .expect("validated collection element entity");
+    entity
+        .record()
+        .fields()
+        .iter()
+        .filter_map(|field| {
+            let (value_type, optional) = match field.value_type().optional_inner() {
+                Some(inner) => (inner, true),
+                None => (field.value_type(), false),
+            };
+            if !matches!(value_type.tag(), ValueTypeTag::String | ValueTypeTag::Bytes) {
+                return None;
+            }
+            let maximum = value_type.byte_bound().expect("bounded text or bytes");
+            let member = rust_identifier(field.name());
+            let failure = format!(
+                "GeneratedCommandError::input_budget(riffdb_client_rust::generated::GeneratedInputBudgetCause::IndividualValueBytes, {collection:?}, Some(index), Some({:?}))",
+                field.name(),
+            );
+            Some(if optional {
+                format!(
+                    "if let Some(leaf) = value.{member}.as_ref() && leaf.len() > {maximum}usize {{ return Err({failure}); }}"
+                )
+            } else {
+                format!(
+                    "if value.{member}.len() > {maximum}usize {{ return Err({failure}); }}"
+                )
+            })
+        })
+        .collect()
 }
 
 fn rust_compact_model(
@@ -3127,8 +3185,17 @@ pub(crate) fn typescript_generation_model(
                         candidate.get("name") == Some(&Value::String(field.name().to_owned()))
                     })
                     .and_then(|candidate| candidate.get_mut("schema"))
-                    .and_then(Value::as_object_mut)
                     .expect("generated collection input schema");
+                if expansion.maximum_aggregate_element_bytes().is_some() {
+                    *field_schema = ts_contract_value_schema_with_bounds(
+                        field.value_type(),
+                        contract,
+                        true,
+                    );
+                }
+                let field_schema = field_schema
+                    .as_object_mut()
+                    .expect("generated collection input schema object");
                 field_schema.insert(
                     "minimum".to_owned(),
                     Value::from(expansion.minimum_elements()),
@@ -3753,8 +3820,14 @@ fn generate_typescript_source_base(module: &QueryModule, contract: &ContractBund
                     candidate.get("name") == Some(&Value::String(field.name().to_owned()))
                 })
                 .and_then(|candidate| candidate.get_mut("schema"))
-                .and_then(Value::as_object_mut)
                 .expect("generated collection input schema");
+            if expansion.maximum_aggregate_element_bytes().is_some() {
+                *field_schema =
+                    ts_contract_value_schema_with_bounds(field.value_type(), contract, true);
+            }
+            let field_schema = field_schema
+                .as_object_mut()
+                .expect("generated collection input schema object");
             field_schema.insert(
                 "minimum".to_owned(),
                 Value::from(expansion.minimum_elements()),
@@ -4794,12 +4867,24 @@ fn ts_contract_record_schema<'a>(
     contract: &ContractBundle,
     wire_ids: bool,
 ) -> Value {
+    ts_contract_record_schema_with_bounds(fields, contract, wire_ids, false)
+}
+
+fn ts_contract_record_schema_with_bounds<'a>(
+    fields: impl Iterator<Item = (&'a str, u32, &'a ValueType)>,
+    contract: &ContractBundle,
+    wire_ids: bool,
+    include_value_bounds: bool,
+) -> Value {
     json!({
         "kind": "record",
         "fields": fields.map(|(name, wire_id, schema)| {
             let mut field = Map::new();
             field.insert("name".to_owned(), Value::String(name.to_owned()));
-            field.insert("schema".to_owned(), ts_contract_value_schema(schema, contract));
+            field.insert(
+                "schema".to_owned(),
+                ts_contract_value_schema_with_bounds(schema, contract, include_value_bounds),
+            );
             if wire_ids {
                 field.insert("wireId".to_owned(), Value::from(wire_id));
             }
@@ -4809,13 +4894,24 @@ fn ts_contract_record_schema<'a>(
 }
 
 fn ts_contract_value_schema(value_type: &ValueType, contract: &ContractBundle) -> Value {
+    ts_contract_value_schema_with_bounds(value_type, contract, false)
+}
+
+fn ts_contract_value_schema_with_bounds(
+    value_type: &ValueType,
+    contract: &ContractBundle,
+    include_value_bounds: bool,
+) -> Value {
     if let Some(inner) = value_type.optional_inner() {
-        return json!({"kind": "optional", "value": ts_contract_value_schema(inner, contract)});
+        return json!({
+            "kind": "optional",
+            "value": ts_contract_value_schema_with_bounds(inner, contract, include_value_bounds),
+        });
     }
     if let Some((inner, maximum)) = value_type.list_parts() {
         return json!({
             "kind": "list",
-            "value": ts_contract_value_schema(inner, contract),
+            "value": ts_contract_value_schema_with_bounds(inner, contract, include_value_bounds),
             "maximum": maximum,
         });
     }
@@ -4856,11 +4952,12 @@ fn ts_contract_value_schema(value_type: &ValueType, contract: &ContractBundle) -
                     .schema()
                     .entity(*entity_id)
                     .expect("validated record entity");
-                return ts_contract_record_schema(
+                return ts_contract_record_schema_with_bounds(
                     wire_model_fields(entity.record())
                         .map(|field| (field.name(), field.id().get(), field.value_type())),
                     contract,
                     true,
+                    include_value_bounds,
                 );
             }
             "string"
@@ -4870,7 +4967,16 @@ fn ts_contract_value_schema(value_type: &ValueType, contract: &ContractBundle) -
             unreachable!("handled above")
         }
     };
-    json!({"kind": kind})
+    let mut schema = Map::from_iter([("kind".to_owned(), Value::String(kind.to_owned()))]);
+    if include_value_bounds
+        && matches!(value_type.tag(), ValueTypeTag::String | ValueTypeTag::Bytes)
+    {
+        schema.insert(
+            "maximumBytes".to_owned(),
+            Value::from(value_type.byte_bound().expect("bounded text or bytes")),
+        );
+    }
+    Value::Object(schema)
 }
 
 fn ts_contract_type(value_type: &ValueType, contract: &ContractBundle) -> String {

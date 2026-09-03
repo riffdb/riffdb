@@ -1695,6 +1695,7 @@ fn bounded_collection_create_executes_as_one_complete_evaluated_graph() {
 }
 
 #[test]
+// req: BLK-020, TXN-011, TXN-012
 fn aggregate_collection_bytes_reject_before_effect_evaluation() {
     let bundle = compile_contract_source(AGGREGATE_COLLECTION_BUDGET_SOURCE)
         .expect("aggregate collection fixture compiles");

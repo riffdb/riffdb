@@ -475,7 +475,7 @@ pub(crate) fn python_generation_model(module: &QueryModule, contract: &ContractB
                     .record()
                     .field(expansion.input_field())
                     .expect("validated collection input field");
-                json!({
+                let mut collection = json!({
                     "field": python_identifier(field.name()),
                     "minimum": expansion.minimum_elements(),
                     "maximum": expansion.maximum_elements(),
@@ -485,7 +485,25 @@ pub(crate) fn python_generation_model(module: &QueryModule, contract: &ContractB
                         "type": python_contract_type(expansion.element_type(), contract),
                         "message": format!("{:?}", format!("invalid aggregate collection bytes for {}.{}", command.name(), field.name())),
                     })),
-                })
+                });
+                if expansion.maximum_aggregate_element_bytes().is_some() {
+                    let object = collection
+                        .as_object_mut()
+                        .expect("collection generation model object");
+                    object.insert(
+                        "wire_field".to_owned(),
+                        Value::String(field.name().to_owned()),
+                    );
+                    object.insert(
+                        "individual_checks".to_owned(),
+                        json!(python_collection_individual_checks(
+                            expansion.element_type(),
+                            field.name(),
+                            contract,
+                        )),
+                    );
+                }
+                collection
             });
             let facades = embedding_command_facades(command, contract).into_iter().map(|facade| {
                 let field_constant = screaming_snake(&facade.vector_field_name);
@@ -607,6 +625,50 @@ pub(crate) fn python_generation_model(module: &QueryModule, contract: &ContractB
         "commands": commands,
         "vector_inspections": vector_inspections,
     })
+}
+
+fn python_collection_individual_checks(
+    element_type: &ValueType,
+    collection: &str,
+    contract: &ContractBundle,
+) -> Vec<Value> {
+    let Some(RecordTypeRef::Entity(entity_id)) = element_type.record_ref() else {
+        return Vec::new();
+    };
+    contract
+        .schema()
+        .entity(*entity_id)
+        .expect("validated collection element entity")
+        .record()
+        .fields()
+        .iter()
+        .filter_map(|field| {
+            let (value_type, optional) = match field.value_type().optional_inner() {
+                Some(inner) => (inner, true),
+                None => (field.value_type(), false),
+            };
+            if !matches!(value_type.tag(), ValueTypeTag::String | ValueTypeTag::Bytes) {
+                return None;
+            }
+            let maximum = value_type.byte_bound().expect("bounded text or bytes");
+            let member = python_identifier(field.name());
+            let measured = if value_type.tag() == ValueTypeTag::String {
+                format!("item.{member}.encode(\"utf-8\")")
+            } else {
+                format!("item.{member}")
+            };
+            let condition = if optional {
+                format!("item.{member} is not None and len({measured}) > {maximum}")
+            } else {
+                format!("len({measured}) > {maximum}")
+            };
+            Some(json!({
+                "condition": condition,
+                "collection": collection,
+                "leaf": field.name(),
+            }))
+        })
+        .collect()
 }
 
 pub(crate) fn python_reactive_generation_model(

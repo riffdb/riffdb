@@ -1,6 +1,9 @@
 //! Rust cell for the shared adapter-shaped bounded-command corpus.
 
-// req: BLK-068, BLK-070
+// req: AAA-002, AAA-003, AAA-004, AAA-005, BLK-006, BLK-007, BLK-008, BLK-009,
+// req: BLK-013, BLK-014, BLK-019, BLK-021, ID-001, ID-004, OUT-001, OUT-002,
+// req: STO-002, TXN-001, TXN-010, TXN-013, TXN-040, TXN-041, TXN-042, TXN-043,
+// req: TXN-044, BLK-068, BLK-070
 
 #![forbid(unsafe_code)]
 #![allow(dead_code, unreachable_pub)]
@@ -12,6 +15,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use riffdb_client_rust::generated::GeneratedCommand as _;
+use riffdb_client_rust::generated::{GeneratedCommandError, GeneratedInputBudgetCause};
 use riffdb_client_rust::{
     AttemptBudget, CallMetadata, DatabaseAlias, StableApplicationClient,
     load_protected_bearer_credential,
@@ -261,6 +265,69 @@ async fn run_async() -> TestResult<()> {
         "Woodpecker replay",
     )?;
 
+    let empty_budget = generated::WritePolicyMutationsInput {
+        mutations: vec![],
+        request_id: id(60),
+    }
+    .idempotent_command()
+    .expect_err("empty collection refuses locally");
+    expect_budget_error(
+        empty_budget,
+        GeneratedInputBudgetCause::CollectionCount,
+        "mutations",
+        None,
+        None,
+    )?;
+    let individual = generated::WritePolicyMutationsInput {
+        mutations: vec![policy_mutation(&id(60), &id(61), Some(vec![0; 524_289]))],
+        request_id: id(62),
+    }
+    .idempotent_command()
+    .expect_err("individual byte overflow refuses locally");
+    expect_budget_error(
+        individual,
+        GeneratedInputBudgetCause::IndividualValueBytes,
+        "mutations",
+        Some(0),
+        Some("context"),
+    )?;
+    let multibyte_boundary = generated::WritePolicyMutationsInput {
+        mutations: vec![generated::PolicyMutation {
+            context: None,
+            relation: "é".repeat(32),
+            mutation_id: id(1201),
+            organization_id: id(1200),
+        }],
+        request_id: id(1202),
+    };
+    expect(
+        matches!(
+            client
+                .write_policy_mutations(multibyte_boundary)
+                .await?
+                .outcome,
+            generated::WritePolicyMutationsOutcome::PolicyMutationsWritten
+        ),
+        "64-byte multibyte leaf is accepted",
+    )?;
+    let multibyte_overflow = generated::WritePolicyMutationsInput {
+        mutations: vec![generated::PolicyMutation {
+            context: None,
+            relation: format!("{}a", "é".repeat(32)),
+            mutation_id: id(1204),
+            organization_id: id(1203),
+        }],
+        request_id: id(1205),
+    }
+    .idempotent_command()
+    .expect_err("65-byte multibyte leaf refuses locally");
+    expect_budget_error(
+        multibyte_overflow,
+        GeneratedInputBudgetCause::IndividualValueBytes,
+        "mutations",
+        Some(0),
+        Some("relation"),
+    )?;
     let oversized = generated::WritePolicyMutationsInput {
         mutations: vec![
             policy_mutation(&id(60), &id(61), Some(vec![0; 450_000])),
@@ -268,10 +335,18 @@ async fn run_async() -> TestResult<()> {
         ],
         request_id: id(63),
     };
-    if oversized.idempotent_command().is_ok() {
-        return Err("aggregate byte overflow crossed Rust preflight".into());
-    }
+    let aggregate = oversized
+        .idempotent_command()
+        .expect_err("aggregate byte overflow refuses locally");
+    expect_budget_error(
+        aggregate,
+        GeneratedInputBudgetCause::AggregateCanonicalElementBytes,
+        "mutations",
+        None,
+        None,
+    )?;
     for (count, start, organization, request) in [
+        (1usize, 60u16, 62u16, 63u16),
         (9usize, 70u16, 64u16, 65u16),
         (19, 80, 66, 67),
         (100, 100, 68, 69),
@@ -413,11 +488,33 @@ async fn run_async() -> TestResult<()> {
             "replayed": true,
             "delete_restrict": true,
             "neutral_aggregate": true,
+            "budget_errors": [
+                {"cause":"collection_count","collection":"mutations"},
+                {"cause":"individual_value_bytes","collection":"mutations","index":0,"leaf":"context"},
+                {"cause":"individual_value_bytes","collection":"mutations","index":0,"leaf":"relation"},
+                {"cause":"aggregate_canonical_element_bytes","collection":"mutations"},
+            ],
             "high_cardinality_atomic": true,
             "adapters": ["mlflow", "openfga", "payload", "woodpecker"],
         })
     );
     Ok(())
+}
+
+fn expect_budget_error(
+    error: GeneratedCommandError,
+    cause: GeneratedInputBudgetCause,
+    collection: &str,
+    index: Option<usize>,
+    leaf: Option<&str>,
+) -> TestResult<()> {
+    let GeneratedCommandError::InputBudget(error) = error else {
+        return Err("generated Rust budget refusal used the wrong error class".into());
+    };
+    expect(error.cause() == cause, "Rust budget cause")?;
+    expect(error.collection() == collection, "Rust budget collection")?;
+    expect(error.index() == index, "Rust budget index")?;
+    expect(error.leaf() == leaf, "Rust budget leaf")
 }
 
 fn policy_mutation(

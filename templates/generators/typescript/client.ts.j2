@@ -112,7 +112,7 @@ export function decodeApplicationError(value: unknown): RiffDbApplicationError {
 }
 
 export type ApplicationValueSchema =
-  | { readonly kind: "bool" | "i64" | "u64" | "string" | "uuid" | "enum" | "bytes" | "date" | "timestamp" | "cursor" }
+  | { readonly kind: "bool" | "i64" | "u64" | "string" | "uuid" | "enum" | "bytes" | "date" | "timestamp" | "cursor"{% if features.aggregate_collection_budget %}; readonly maximumBytes?: number{% endif %} }
   | { readonly kind: "limit"; readonly maximum?: number }
 {% if features.vector %}  | { readonly kind: "vector"; readonly dimension: number }
 {% endif %}  | { readonly kind: "decimal"; readonly precision?: number; readonly scale?: number }
