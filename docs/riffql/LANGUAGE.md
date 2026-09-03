@@ -562,10 +562,13 @@ three states cannot collapse during planning or execution.
 
 Binary prefix lookup compares the exact UTF-8 bytes of the original string and
 requires `text_key(field, binary_utf8_v1)`. It performs no case folding,
-normalization, locale collation, tokenization, or relevance scoring. The
-`unicode_fold_v1` spelling is reserved but remains unavailable until its frozen
-Unicode tables and migration fixtures ship. A parsed spelling is not an
-executable feature unless every required storage and planning proof exists.
+normalization, locale collation, tokenization, or relevance scoring.
+`text_key(field, unicode_fold_v1)` instead applies the frozen Unicode 17.0.0
+NFKC plus full non-Turkic case fold to stored and submitted strings through one
+shared implementation. Equality, membership, range, complement, prefix, and
+order compare folded bytes, while returned fields retain the original
+authorized string. Neither profile uses a runtime locale or caller-supplied
+normalizer.
 
 That declared text-key component may also provide ordinary bounded ordering
 without a prefix predicate. For example, an index
@@ -574,26 +577,26 @@ without a prefix predicate. For example, an index
 the wholly reversed descending order as well. Ordering is by the original
 canonical UTF-8 bytes: `doc-3` sorts before `doc6`. A plain string index retains
 RiffDB's canonical length-first value order and is not reinterpreted as a text
-key. The compiler still requires the complete index suffix and deterministic
-key tie-breaker, and an opaque continuation remains bound to the exact plan,
+key. With `unicode_fold_v1`, ordering uses the frozen folded bytes instead. The
+compiler still requires the complete index suffix and deterministic key
+tie-breaker, and an opaque continuation remains bound to the exact plan,
 direction, text profile, index epoch, authorization, and snapshot.
 
-Exact equality consumes a complete `binary_utf8_v1` component as an index
+Exact equality consumes one complete declared text-key component as an index
 prefix. This permits progressively narrower compiled queries to reuse one
 declared index: `(organization_id, relation, user, document_id)` with text keys
 on `relation` and `user` proves both `order by relation, user, document_id` and,
-after `relation == $relation`, `order by user, document_id`. Equality retains
-the ordinary typed string truth semantics; the profile transform is used only
-to form the matching physical index prefix.
+after `relation == $relation`, `order by user, document_id`. Binary equality
+compares exact UTF-8; Unicode-fold equality compares the frozen folded bytes.
 
-Bounded `in` may consume one `binary_utf8_v1` component when that component is
-also the first remaining order term. Each canonical set member becomes one
-disjoint exact byte prefix; the complete set shares one page limit, scan
-budget, plus-one continuation probe, and opaque cursor. Submitted sets are
-sorted and deduplicated once, and an empty set returns an exact empty page
-without storage work. Multiple `in` dimensions and an `in` predicate followed
-by another filtered index component are rejected rather than forming a
-Cartesian prefix product or a residual filter.
+Bounded `in` may consume one declared text-key component when that component is
+also the first remaining order term. Each normalized set member becomes one
+exact profile byte prefix; the complete set shares one page limit, scan budget,
+plus-one continuation probe, and opaque cursor. Submitted sets are sorted and
+deduplicated once, and an empty set returns an exact empty page without storage
+work. Multiple `in` dimensions and an `in` predicate followed by another
+filtered index component are rejected rather than forming a Cartesian prefix
+product or a residual filter.
 
 The ordinary executable component matrix is closed: canonical components
 support exact equality, bounded membership at the first remaining order term,
@@ -601,8 +604,8 @@ canonical order, and typed intervals for order-preserving `i64`, `u64`,
 `timestamp`, `date`, `uuid`, and enum components; presence components support
 state selection and explicit state placement; `binary_utf8_v1` supports
 equality, bounded membership, leading-byte prefix, bytewise interval and
-complement predicates, and bytewise order;
-`unicode_fold_v1` remains unavailable. A lower and upper comparison form one
+complement predicates, and bytewise order; `unicode_fold_v1` supports the same
+roles over its frozen folded bytes. A lower and upper comparison form one
 half-open physical interval. `!=` forms at most two disjoint complement
 intervals. Inclusive source bounds are normalized around the complete encoded
 component before storage traversal, and the interval component must be the
@@ -614,6 +617,7 @@ order and the rows inside each interval. Contradictory submitted bounds return
 an exact empty page without scanning. Canonical length-prefixed strings do not
 preserve logical text comparison and therefore cannot prove a range; declare
 `text_key(field, binary_utf8_v1)` for exact valid UTF-8 bytewise interval
+semantics, or `text_key(field, unicode_fold_v1)` for folded-byte interval
 semantics. Physical ordered bytes never replace the returned logical string,
 and the database performs no token parsing, normalization, or collation.
 Multiple interval dimensions, overlapping unions, intersections, skip scans,

@@ -179,6 +179,7 @@ query ReviewedUsers(
     );
 }
 
+// req: OQ-005
 #[test]
 fn nullable_order_requires_and_seals_explicit_state_placement() {
     let contract = CONTRACT

@@ -428,6 +428,7 @@ fn planner_never_selects_an_ordered_index_that_omits_a_filter_predicate() {
     );
 }
 
+// req: OQ-002
 #[test]
 fn every_presence_mask_selects_one_precompiled_bounded_member() {
     let catalog = catalog(CONTRACT);
@@ -469,6 +470,13 @@ fn every_presence_mask_selects_one_precompiled_bounded_member() {
     for member in first.members() {
         assert!(first.maximum_cost().covers(member.program().cost()));
         assert_eq!(member.program().partition_parameter(), "organization_id");
+        assert!(
+            member
+                .program()
+                .steps()
+                .iter()
+                .all(|step| step.maximum_rows() <= 500)
+        );
         assert_eq!(
             member.program().surface().schemas(),
             first.members()[0].program().surface().schemas()
@@ -487,6 +495,7 @@ fn ordinary_compiler_rejects_operational_source_instead_of_ignoring_it() {
     );
 }
 
+// req: OQ-010
 #[test]
 fn null_and_existence_require_a_declared_discriminator_index() {
     let catalog = catalog(CONTRACT);

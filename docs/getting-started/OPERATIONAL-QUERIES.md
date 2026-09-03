@@ -114,22 +114,26 @@ fall back to canonical string ordering.
 | Canonical scalar | yes | first remaining order term | ordered numeric/time/UUID/enum scalars | no | canonical |
 | Presence-aware | state only | no | no | no | explicit accepted state placement |
 | `binary_utf8_v1` | yes | first remaining order term | UTF-8 byte interval / complement | exact leading bytes | UTF-8 bytes |
-| `unicode_fold_v1` | unavailable | unavailable | unavailable | unavailable | unavailable |
+| `unicode_fold_v1` | yes | first remaining order term | folded-byte interval / complement | folded leading bytes | folded bytes |
 
 For an order-preserving canonical `i64`, `u64`, `timestamp`, `date`, `uuid`, or
-enum component, or a bounded string declared as `binary_utf8_v1`, `<`, `<=`,
-`>`, and `>=` compile to inclusive/exclusive physical endpoints. Binary text
-uses exact valid UTF-8 byte order without normalization, collation, case
-folding, or token parsing. One lower and one upper bound may form an interval;
-`!=` forms two disjoint complement intervals. The selected component must
-supply the first remaining order term. Memory and redb traverse the same
-normalized half-open schedule, including reverse continuation across an
-interval boundary, under one page, plus-one probe, scan, hydration, cursor, and
-output budget. Contradictory runtime bounds produce an exact empty page without
-a scan.
+enum component, or a bounded string declared with either text-key profile, `<`,
+`<=`, `>`, and `>=` compile to inclusive/exclusive physical endpoints. Binary
+text uses exact valid UTF-8 byte order without normalization, collation, case
+folding, or token parsing. `unicode_fold_v1` uses the frozen Unicode 17.0.0 NFKC
+plus full non-Turkic case fold and compares the resulting bytes. Index
+maintenance and submitted predicates share that exact transform, while results
+retain the original authorized string. One lower and one upper bound may form
+an interval; `!=` forms two disjoint complement intervals. The selected
+component must supply the first remaining order term. Memory and redb traverse
+the same normalized half-open schedule, including reverse continuation across
+an interval boundary, under one page, plus-one probe, scan, hydration, cursor,
+and output budget. Contradictory runtime bounds produce an exact empty page
+without a scan.
 
 Canonical length-prefixed strings are not logical text-order ranges; use an
-explicit `binary_utf8_v1` component for bytewise string intervals. Multiple
+explicit `binary_utf8_v1` component for bytewise string intervals or
+`unicode_fold_v1` for folded-byte intervals. Multiple
 branching dimensions, overlapping unions, joins, provider bridges,
 caller-selected indexes, and general client page walking remain unsupported. An older
 module whose range was never physically proved is refused as query unavailable
@@ -189,10 +193,11 @@ closed feature states; it contains no raw catalog symbols, numeric compiler
 identities, capability record, IR, or storage key.
 
 `unavailable` is a prohibition, not a request for client emulation. In the
-current alpha, binary UTF-8 prefix lookup is available and
-`unicode_fold_v1` remains explicitly unavailable. Application code must not
-replace an unavailable feature with client filtering, raw reads, N+1 requests,
-or handwritten query text.
+current alpha, binary UTF-8 and `unicode_fold_v1` prefix lookup are available.
+Applications submit only logical strings; the compiler-selected profile owns
+the exact transform and physical range. Application code must not replace an
+unavailable feature with client filtering, raw reads, N+1 requests, or
+handwritten query text.
 
 ## Exact count and numeric offset
 
