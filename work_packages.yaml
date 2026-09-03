@@ -642,6 +642,22 @@ work_packages:
       delete policy, transaction, return field, reveal, validation, retry, durability, or fallback.
     scale: The unary path reads/deletes one partition-local entity and returns one schema-bounded
       outcome with no scan, collection growth, cross-partition work, or row-sized retained state.
+  closure:
+    status: complete
+    completed_at: "2026-08-25"
+    requirements_satisfied: [BLK-028, BLK-029, BLK-030, BLK-031, BLK-032,
+      BLK-033, BLK-034, BLK-035, TXN-001, TXN-010, TXN-011, TXN-012, TXN-013]
+    evidence: Commit 8a40ee9f introduced the checked ordinary no_inbound delete shape, exact
+      preimage runtime materialization, delete/outcome transaction-current validation, typed
+      diagnostics, secret reveal metadata, and deterministic update/delete and delete/delete
+      schedules. Commit a1dd0fbe retained the public generated surfaces and adds the redb
+      race/reopen proof in unary_delete_race_commits_one_preimage_and_replays_after_reopen; the
+      existing shared EntityMutation::Delete storage contract supplies identical memory/redb atomic
+      application, history, changelog, provenance, event, index-removal, and replay semantics.
+    known_limitations: The ordinary path remains exactly one complete-key partition-local
+      no_inbound delete. Indexed restrict and cascade deletion remain compiler-bounded collection
+      operations, and no physical-erasure or caller-selected delete surface is introduced.
+    follow_ups: [WP-692]
   human_review_triggers: *id001
 - id: WP-692
   name: Unary delete recovery generated surfaces and external acceptance
