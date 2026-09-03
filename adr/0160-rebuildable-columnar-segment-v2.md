@@ -1,8 +1,9 @@
 # ADR-0160: Rebuildable Typed Columnar Segment V2 and Exact Segment Pruning
 
-- **Status:** Proposed
-- **Direction approved:** No
-- **Exact text accepted:** No
+- **Status:** Accepted
+- **Direction approved:** Yes, 2026-09-03 (maintainer, in session)
+- **Exact text accepted:** Yes, 2026-09-03 (maintainer, as written)
+- **Accepted date:** 2026-09-03
 - **Decision deadline:** Before WP-710 adds a columnar layout identity, segment
   statistic, physical encoding, or V2 checkpoint artifact
 - **Requires:** ADR-0010, ADR-0017, ADR-0072, ADR-0085, ADR-0086, ADR-0111,
@@ -11,7 +12,8 @@
   without changing its authority, freshness, policy, or rebuildability semantics
 - **Defines or blocks:** WP-710 and WP-711
 
-This record is planning input only until its exact text is accepted.
+The maintainer approved the direction and accepted this exact text on
+2026-09-03. This record is now authoritative for WP-710 and WP-711.
 
 ## Context
 
