@@ -1920,9 +1920,10 @@ work_packages:
   requirements: [PRJ-001, PRJ-002, PRJ-003, PRJ-004, OQ-017, OQ-019,
     OQ-020, OQ-021, OQ-022, OQ-024, OQ-053, PERF-007, PERF-008]
   required_adrs: [ADR-0010, ADR-0017, ADR-0072, ADR-0085, ADR-0086,
-    ADR-0111, ADR-0124, ADR-0130, ADR-0160]
+    ADR-0111, ADR-0124, ADR-0130, ADR-0160, ADR-0181, ADR-0190]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0160-rebuildable-columnar-segment-v2.md,
+    adr/0190-atomic-columnar-v2-generation-root-publication.md,
     release/version-topology-v1.json, crates/riffdb-columnar/**,
     crates/riffdb-projection/**, crates/riffdb-service/**,
     crates/riffdb-server/**, crates/riffdb-observability/**,
@@ -1930,6 +1931,12 @@ work_packages:
     docs/performance/**, docs/operations/**, docs/compatibility.md,
     docs/known-limitations.md]
   deliverables:
+  - Canonical bounded ColumnarGenerationRootV1 over the complete partition inventory, with the
+    root-only physical-generation fingerprint preserving Segment V2, Manifest V2, provider,
+    query-artifact, and WP-710 fixture bytes exactly
+  - Per-database V1/V2 lifecycle using the existing never-reused projection control and
+    transaction-current PublishCandidate compare-and-set; V1 remains the ordinary readable and
+    writable path until that database and projection durably publishes one complete V2 root
   - V1-published/V2-candidate lifecycle that rebuilds from one authoritative snapshot plus retained
     tail, verifies independent logical equality at a frontier, and atomically publishes one-layout
     V2 generation without mixed manifests or request-visible partial state
@@ -22451,13 +22458,13 @@ work_packages:
 - id: WP-757
   name: Alpha format epoch 2 reset and one-identity-per-domain topology
   tier: surface
-  depends_on: [WP-612]
+  depends_on: [WP-612, WP-711]
   objective: Declare alpha format epoch 2 through the ADR-0112 ceremony, delete every superseded
     decoder, fixture, generated artifact, and topology row while the pre-external window is open,
     and make scripts/check-version-topology refuse a second readable identity per domain until the
     first external database is registered.
   requirements: [GOV-001, GOV-002, GOV-003, AFC-005, AFC-006, VER-005]
-  required_adrs: [ADR-0006, ADR-0112, ADR-0124, ADR-0181]
+  required_adrs: [ADR-0006, ADR-0112, ADR-0124, ADR-0181, ADR-0190]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0181-pre-alpha-format-epoch-reset-and-governance-load.md, adr/README.md,
     release/version-topology-v1.json, release/durable-format-manifest-v1.json,
