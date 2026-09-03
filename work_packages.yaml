@@ -1303,29 +1303,30 @@ work_packages:
     follow_ups: [WP-701]
   human_review_triggers: *id001
 - id: WP-701
-  name: Binary text interval generated and external acceptance
+  name: Binary text interval generated and public acceptance
+  tier: surface
   depends_on: [WP-700, WP-565]
-  objective: Close ADR-0154 across generated/public surfaces, handbook and architecture guidance,
-    compatibility gates, and one value-free external consumer receipt while retaining every
+  objective: Close ADR-0154 across repository-local generated/public surfaces, handbook and
+    architecture guidance, compatibility gates, and transport conformance while retaining every
     external schema, route, token convention, and adapter artifact in its owning repository.
   requirements: [OQ-004, OQ-005, OQ-006, OQ-015, OQ-016, OQ-030, OQ-043,
     OQ-056, OQ-057, OQ-058, OQ-059, OQ-060, OQ-061, DRV-007, DRV-008,
     DRV-012, DRV-014, SAFE-004, SAFE-005]
   required_adrs: [ADR-0055, ADR-0108, ADR-0112, ADR-0124, ADR-0129,
-    ADR-0148, ADR-0150, ADR-0154]
+    ADR-0148, ADR-0150, ADR-0154, ADR-0193]
   allowed_paths: [SPEC.md, work_packages.yaml,
-    adr/0154-profile-aware-binary-text-intervals.md,
     release/version-topology-v1.json, crates/**, clients/**, fixtures/**,
     examples/**, tests/**, scripts/**, docs/**]
   deliverables:
   - Framework-neutral changelog-shaped corpus over length-divergent and multibyte strings proving
     raw logical token return, strict horizon exclusion, total bytewise order, page continuation,
     policy, and bounds through every generated and transport surface
-  - Value-free external capability receipt confirming one consumer can compile and execute a strict
-    lower/upper binary-text interval without client filtering, cursor walking, duplicate indexes,
-    or a database-owned external-token conversion
   - Final compatibility, topology, architecture, handbook, limitation, and requirement-coverage
     evidence with no external schema, adapter source, framework-specific branch, or parity claim
+  - Closure of WP-701 proves only repository-local generated/public/transport conformance. It does
+    not prove external consumer execution; WP-775 solely owns the fresh external execution receipt
+    required by ADR-0154 section 7, and the existing source-only receipt remains historical,
+    non-terminal evidence.
   acceptance_commands:
   - cargo +1.97.0 test --workspace --all-features
   - ./scripts/driver-conformance --all-languages --remote
@@ -1336,9 +1337,10 @@ work_packages:
   - ./scripts/handbook check
   - cargo +1.97.0 fmt --all -- --check
   - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
-  exit_gate: Every generated and transport surface agrees with the compiler/storage bytewise
-    interval contract, the external receipt is green and value-free, documentation is complete,
-    and no raw physical bytes, unsafe plan choice, framework code, or unexplained failure remains.
+  exit_gate: Every repository-local generated and transport surface agrees with the compiler/storage
+    bytewise interval contract, documentation is complete, the external execution obligation is
+    explicitly deferred to WP-775 without being claimed here, and no raw physical bytes, unsafe
+    plan choice, framework code, or unexplained failure remains.
   standing_design_tests:
     interface_safety: Generated callers expose only the named query's typed values and opaque RiffDB
       cursor; they cannot select physical semantics, and returning a logical string does not grant
@@ -23487,3 +23489,54 @@ work_packages:
     authority, or advance an application or administration allocator.
   - A receipt, error, log, metric, or public surface would expose checkpoint contents or
     population-derived diagnostics.
+
+- id: WP-775
+  name: External binary-text interval execution receipt
+  tier: surface
+  depends_on: [WP-701]
+  objective: Obtain and validate one fresh, value-free receipt from the owning consumer repository
+    proving that a consumer pinned to the accepted RiffDB/generated identities compiles and executes
+    one strict lower/upper binary_utf8_v1 named query in bytewise ascending order, returns the
+    original logical string and reuses that consumer-owned value as its next request token, with no
+    client filter/sort/page walk, duplicate index, database-owned token conversion, framework claim,
+    or imported external schema/route/source/artifact/value.
+  requirements: [OQ-061]
+  required_adrs: [ADR-0055, ADR-0108, ADR-0112, ADR-0124, ADR-0129,
+    ADR-0148, ADR-0150, ADR-0154, ADR-0193]
+  allowed_paths: [work_packages.yaml,
+    fixtures/riffql/wp775-external-binary-text-interval-execution-v1.json,
+    scripts/generate-operational-query-capability,
+    docs/getting-started/OPERATIONAL-QUERIES.md,
+    docs/integrations/COMPILED-FRAMEWORK-PROFILES.md,
+    docs/riffql/EXACT-PREDICATES.md]
+  deliverables:
+  - Fresh owning-repository receipt checksum-bound to exact consumer and RiffDB revisions and
+    the immutable historical-receipt and V5 hashes, containing only bounded counts, timings,
+    identity hashes, and closed verification facts
+  - Fail-closed receipt validation proving actual strict-lower/strict-upper execution, bytewise
+    ascending logical-string results, returned consumer-token reuse, and the absence of client
+    shaping, token conversion, imported framework vocabulary, values, or parity claims
+  - Terminal execution-v1 receipt status and handbook wording that distinguish this narrow external
+    execution proof from framework or full-application conformance while preserving the historical
+    source-only receipt and V5 capability fixture byte-for-byte
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-775
+  - ./scripts/generate-operational-query-capability --check
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  exit_gate: A fresh owning-repository receipt is checksum-bound to the exact consumer and RiffDB
+    revisions plus the immutable historical-receipt and V5 hashes; it proves actual strict-lower/
+    strict-upper execution, bytewise ascending logical-string results, returned-token reuse, finite
+    page and work bounds, and absence of client shaping or token conversion; the repository validator
+    fails closed on any missing execution, token, or checksum-binding fact; the fresh execution-v1
+    receipt is terminal `passed` evidence while the historical receipt and V5 remain byte-exact;
+    handbook wording accurately distinguishes this narrow proof from framework or full-application
+    parity; and no external vocabulary or value enters RiffDB.
+  standing_design_tests:
+    interface_safety: The receipt observes one compiler-generated named query and consumer-owned
+      logical token only; it cannot authorize a physical comparator, profile, index, cursor,
+      fallback, raw query, framework branch, or storage access.
+    scale: The external run uses one partition, finite endpoints, bounded pages and operation counts,
+      and retains no population-sized, duration-proportional, schema, route, artifact, or value data.
+  human_review_triggers: *id001
