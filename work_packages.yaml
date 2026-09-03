@@ -418,6 +418,21 @@ work_packages:
     scale: Registry work is bounded by declared plan fields; request lowering is bounded by compiled
       set count and bytes; all ranges share one finite scan/page/fuel/output budget; no population-
       sized materialization, page walk, database-wide memory, or per-row proof is introduced.
+  closure:
+    status: complete
+    completed_at: "2026-08-25"
+    requirements_satisfied: [OQ-001, OQ-002, OQ-003, OQ-004, OQ-005, OQ-006,
+      OQ-007, OQ-008, OQ-009, OQ-015, OQ-032, OQ-033, OQ-034, OQ-035, OQ-036,
+      OQ-037, OQ-039, OQ-040, OQ-043]
+    evidence: Commit 0547d368 introduced the compiler registry, sealed access shape, pay-once
+      executor range schedule, binary-text membership/order tests, shared memory/redb cursor
+      contract, and public operational-query documentation; those retained proofs pass the package
+      acceptance commands on the current tree.
+    known_limitations: WP-687 itself deliberately did not activate canonical scalar intervals,
+      multiple branching components, relationship composition, provider bridges, or unicode-fold
+      ordinary access; later accepted successor work may add independently governed cells without
+      changing this retained binary-membership proof.
+    follow_ups: [WP-688, WP-689, WP-690]
   human_review_triggers: *id001
 - id: WP-688
   name: Typed physical intervals and ordinary access-path consolidation
