@@ -766,6 +766,7 @@ contract Board version 1 {
         }
     }
 
+    // req: DSL-001, DSL-002, DSL-003, DSL-004, DSL-008
     #[test]
     fn bounded_collection_create_lowers_to_one_v5_plan() {
         let source = r#"
@@ -837,6 +838,7 @@ contract OversizedBulk version 1 {
         assert_semantic_diagnostic_at(source, CompilerDiagnosticCode::BoundExceeded, "PutItems");
     }
 
+    // req: BLK-015, BLK-016, BLK-017, BLK-018
     #[test]
     fn aggregate_collection_budget_admits_one_hundred_individually_large_elements() {
         let source = r#"
@@ -877,6 +879,15 @@ contract AggregateBulk version 1 {
         let decoded = riffdb_contract_ir::ContractBundle::decode(bundle.canonical_bytes())
             .expect("V16 bundle decodes");
         assert_eq!(decoded.canonical_bytes(), bundle.canonical_bytes());
+
+        let changed = compile_contract_source(&source.replace("900000", "899999"))
+            .expect("changed aggregate maximum compiles");
+        assert_ne!(
+            bundle.commands()[0].plan_hash(),
+            changed.commands()[0].plan_hash()
+        );
+        assert_ne!(bundle.plan_root_hash(), changed.plan_root_hash());
+        assert_ne!(bundle.bundle_hash(), changed.bundle_hash());
     }
 
     #[test]
@@ -934,6 +945,7 @@ contract AtomicTagsRepro version 1 {
         );
     }
 
+    // req: BLK-016, BLK-017
     #[test]
     fn aggregate_collection_budget_counts_optional_event_copies_conservatively() {
         let source = r#"
@@ -973,6 +985,62 @@ contract AggregateEventBulk version 1 {
         assert_semantic_diagnostic_at(&oversized, CompilerDiagnosticCode::BoundExceeded, "4194304");
     }
 
+    // req: BLK-016, BLK-017
+    #[test]
+    fn aggregate_collection_graph_budget_accepts_its_exact_boundary_and_rejects_plus_one() {
+        let source = |maximum: usize| {
+            format!(
+                r#"
+contract AggregateGraphBoundary version 1 {{
+  entity Mutation {{
+    key (tenant_id: uuid, mutation_id: uuid)
+    field context: optional<bytes<524288>>
+    field copy_one: optional<bytes<524288>>
+    field copy_two: optional<bytes<524288>>
+    field copy_three: optional<bytes<524288>>
+  }}
+  aggregate Mutations {{
+    root Mutation
+    partition_by tenant_id
+    conflict_key (tenant_id, mutation_id)
+  }}
+  bulk command WriteMutations {{
+    input request_id: uuid
+    input mutations: list<Mutation, 1..100> aggregate_bytes <= {maximum}
+    idempotency_key request_id
+    for mutation in mutations {{
+      create Mutation(mutation.tenant_id, mutation.mutation_id) as row else Exists {{}}
+      set row.context = mutation.context
+      set row.copy_one = mutation.context
+      set row.copy_two = mutation.context
+      set row.copy_three = mutation.context
+    }}
+    return Written {{}}
+  }}
+}}
+"#
+            )
+        };
+
+        let accepted = 3_354_835;
+        let rejected = accepted + 1;
+        let bundle =
+            compile_contract_source(&source(accepted)).expect("exact graph boundary compiles");
+        assert_eq!(
+            bundle.commands()[0]
+                .collection_expansion()
+                .expect("collection expansion")
+                .maximum_copy_coefficient(),
+            Some(5)
+        );
+        assert_semantic_diagnostic_at(
+            &source(rejected),
+            CompilerDiagnosticCode::BoundExceeded,
+            &rejected.to_string(),
+        );
+    }
+
+    // req: BLK-015, BLK-016, BLK-017
     #[test]
     fn aggregate_collection_budget_rejects_invalid_placement_and_literals_at_the_clause() {
         let ordinary = r#"
@@ -1027,6 +1095,30 @@ contract InvalidBudget version 1 {{
             );
             assert_semantic_diagnostic_at(&source, CompilerDiagnosticCode::BoundExceeded, invalid);
         }
+    }
+
+    // req: BLK-015, BLK-017
+    #[test]
+    fn aggregate_collection_budget_rejects_nested_expanded_lists_at_the_clause() {
+        let source = r#"
+contract NestedAggregateBudget version 1 {
+  entity Row { key (tenant_id: uuid, row_id: uuid) }
+  aggregate Rows { root Row partition_by tenant_id conflict_key (tenant_id, row_id) }
+  bulk command PutRows {
+    input request_id: uuid
+    input tenant_id: uuid
+    input row_id: uuid
+    input rows: list<list<uuid, 1..2>, 1..2> aggregate_bytes <= 777
+    idempotency_key request_id
+    for row in rows {
+      create Row(tenant_id, row_id) as stored else Exists {}
+    }
+    return Written {}
+  }
+}
+"#;
+
+        assert_semantic_diagnostic_at(source, CompilerDiagnosticCode::InvalidType, "777");
     }
 
     #[test]
@@ -1126,6 +1218,7 @@ contract InvalidBudget version 1 {{
         ));
     }
 
+    // req: DSL-006, DSL-007
     #[test]
     fn service_values_require_durable_idempotent_admission() {
         let source = r#"
@@ -1346,6 +1439,7 @@ contract EnumHash version 1 {{
         );
     }
 
+    // req: DSL-011
     #[test]
     fn unknown_aggregate_child_and_command_entity_are_not_silently_dropped() {
         let unknown_root = r#"
@@ -1422,6 +1516,7 @@ contract UnknownBindingPath version 1 {
         );
     }
 
+    // req: DSL-012
     #[test]
     fn commands_without_an_owned_mutable_partition_reject_at_the_required_span() {
         let event_only = r#"
@@ -1656,6 +1751,7 @@ contract InvalidProjectionSum version 1 {
         assert_semantic_diagnostic_at(oversized_key, CompilerDiagnosticCode::BoundExceeded, "Row");
     }
 
+    // req: DSL-009, DSL-010
     #[test]
     fn success_outcome_collision_points_to_success_and_first_rejection() {
         let source = r#"
@@ -2341,6 +2437,7 @@ contract Example version 1 {
         );
     }
 
+    // req: DSL-005
     #[test]
     fn required_relationship_is_canonical_and_exact_read_is_preserved() {
         let source = relationship_source(
@@ -2622,6 +2719,7 @@ contract RelationshipMutation version 1 {{
         )
     }
 
+    // req: SAFE-005
     #[test]
     fn declared_unique_key_adds_input_computable_conflict_to_create_and_change() {
         let source = unique_source("set user.email = email");

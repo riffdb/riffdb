@@ -8,7 +8,8 @@ use riffdb_contract_compiler::{
     CompilerBoundResource, CompilerDiagnosticCode, compile_contract_source,
 };
 use riffdb_contract_ir::{
-    BUNDLE_FORMAT_VERSION_V23, ContractBundle, EXECUTABLE_IR_VERSION_V23, GRAMMAR_VERSION_V23,
+    BUNDLE_FORMAT_VERSION_V23, ContractBundle, EXECUTABLE_IR_VERSION_V16,
+    EXECUTABLE_IR_VERSION_V23, GRAMMAR_VERSION_V23,
 };
 
 const METRICS: &str =
@@ -148,6 +149,7 @@ fn legacy_256_element_plan_keeps_its_pre_v23_identity() {
     assert!(!plan.requires_ir_v23());
 }
 
+// req: BLK-018
 #[test]
 fn checked_legacy_collection_fixture_remains_byte_exact() {
     let source =
@@ -156,7 +158,7 @@ fn checked_legacy_collection_fixture_remains_byte_exact() {
         include_bytes!("../../../fixtures/compiler/aggregate-collection-budget/bundle.bin");
     let bundle = compile_contract_source(source).expect("legacy collection fixture compiles");
     assert_eq!(bundle.canonical_bytes(), expected);
-    assert!(bundle.ir_version() < EXECUTABLE_IR_VERSION_V23);
+    assert_eq!(bundle.ir_version(), EXECUTABLE_IR_VERSION_V16);
     assert_eq!(
         ContractBundle::decode(expected).expect("legacy collection fixture decodes"),
         bundle

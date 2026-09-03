@@ -2,6 +2,7 @@
 
 use riffdb_contract_compiler::compile_contract_source;
 
+// req: BLK-016, BLK-018
 #[test]
 fn adapter_collection_sources_compile_to_one_bounded_v5_plan() {
     for (name, source) in [

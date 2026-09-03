@@ -1290,6 +1290,8 @@ layout!(COLLECTION_EXPANSION_LAYOUT, "CollectionExpansionPlanV1", {
     "first_instruction" => "dense zero-based u32 instruction position",
     "instruction_count" => "u32 consecutive template instructions; zero is valid for delete-only expansion",
     "duplicate_policy" => "u8 = 0x01 (reject)",
+    "maximum_aggregate_element_bytes" => "IR v16+: Boolean presence followed by u32 in 1..=16 MiB when present; omitted in IR v5-v15",
+    "maximum_copy_coefficient" => "IR v16+: u32 in 1..=4096 exactly when maximum_aggregate_element_bytes is present; compiler-derived and revalidated on decode; omitted in IR v5-v15",
 });
 layout!(COMMAND_DECISION_LAYOUT, "CommandDecisionPlanV1", {
     "binding" => "BindingId of one deferred initialized observation",
@@ -2584,6 +2586,19 @@ mod tests {
                 .windows(2)
                 .all(|pair| pair[0].code < pair[1].code)
         );
+    }
+
+    // req: BLK-018
+    #[test]
+    fn aggregate_collection_v16_fields_are_registered_in_exact_byte_order() {
+        let tail = &COLLECTION_EXPANSION_LAYOUT.fields[9..];
+        assert_eq!(tail.len(), 2);
+        assert_eq!(tail[0].name, "maximum_aggregate_element_bytes");
+        assert!(tail[0].encoding.contains("IR v16+"));
+        assert!(tail[0].encoding.contains("Boolean presence"));
+        assert_eq!(tail[1].name, "maximum_copy_coefficient");
+        assert!(tail[1].encoding.contains("compiler-derived"));
+        assert!(tail[1].encoding.contains("revalidated on decode"));
     }
 
     #[test]

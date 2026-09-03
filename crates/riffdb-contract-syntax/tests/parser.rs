@@ -294,6 +294,7 @@ contract BulkSurface version 1 {
     assert_eq!(maximum.value, "256");
 }
 
+// req: BLK-015
 #[test]
 fn parses_one_aggregate_collection_byte_constraint() {
     let source = r#"
@@ -328,6 +329,41 @@ contract AggregateBudget version 1 {
         bound.span.start() as usize,
         source.find("7000000").expect("bound source")
     );
+}
+
+// req: BLK-015
+#[test]
+fn aggregate_collection_byte_constraint_rejects_duplicate_and_nonliteral_bounds_at_the_token() {
+    let prefix = r#"
+contract AggregateBudgetSyntax version 1 {
+  bulk command PutRows {
+    input request_id: uuid
+    input rows: list<uuid, 1..2> "#;
+    let suffix = r#"
+    idempotency_key request_id
+    for row in rows {}
+    return Written {}
+  }
+}
+"#;
+
+    for (clause, rejected) in [
+        (
+            "aggregate_bytes <= 10 aggregate_bytes <= 11",
+            "aggregate_bytes",
+        ),
+        ("aggregate_bytes <= byte_limit", "byte_limit"),
+    ] {
+        let source = format!("{prefix}{clause}{suffix}");
+        let diagnostics = parse_contract(&source).expect_err("invalid bound must fail");
+        let diagnostic = &diagnostics.as_slice()[0];
+        assert_eq!(diagnostic.code(), SyntaxDiagnosticCode::UnexpectedToken);
+        let start = source.rfind(rejected).expect("rejected source token");
+        assert_eq!(
+            diagnostic.span(),
+            Span::new(start, start + rejected.len()).unwrap()
+        );
+    }
 }
 
 #[test]

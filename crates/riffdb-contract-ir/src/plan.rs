@@ -8500,7 +8500,7 @@ fn validate_reimport_shape(
 pub(crate) mod tests {
     use super::*;
     use riffdb_types::{CanonicalValue, ContractVersion};
-
+    mod aggregate_collection_tests;
     pub(crate) fn test_lineage() -> ContractLineage {
         ContractLineage::new("PlanFixture").expect("lineage")
     }

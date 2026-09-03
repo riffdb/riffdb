@@ -6990,6 +6990,28 @@ mod conformance;
 mod tests {
     use super::*;
 
+    // req: BLK-018
+    #[test]
+    fn aggregate_collection_v16_bytes_cannot_be_reinterpreted_as_v15() {
+        let mut bytes =
+            include_bytes!("../../../fixtures/compiler/aggregate-collection-budget/bundle.bin")
+                .to_vec();
+        let mut offset = BUNDLE_MAGIC.len();
+        for version in [
+            BUNDLE_FORMAT_VERSION_V15,
+            GRAMMAR_VERSION_V15,
+            EXECUTABLE_IR_VERSION_V15,
+        ] {
+            bytes[offset..offset + 4].copy_from_slice(&version.to_be_bytes());
+            offset += 4;
+        }
+
+        assert!(
+            ContractBundle::decode(&bytes).is_err(),
+            "V15 must not reinterpret the V16 aggregate proof fields"
+        );
+    }
+
     #[test]
     fn pre_v11_secret_flow_bundle_decodes_without_retroactive_reveal_metadata() {
         let current = ContractBundle::decode(include_bytes!(
