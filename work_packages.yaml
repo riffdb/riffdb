@@ -209,6 +209,7 @@ gates:
   - WP-765
   - WP-766
   - WP-767
+  - WP-772
 - id: P13
   name: Relational operators in the candidate algebra
   requires:
@@ -21617,16 +21618,17 @@ work_packages:
 - id: WP-746
   name: Replication stream, capability, follower applier, and gap-free resume
   tier: guarantee
-  depends_on: [WP-155, WP-417, WP-486, WP-704]
-  objective: Activate ADR-0093 section 1 through 3 and 6 as contracted by ADR-0178. Wire the
-    existing redb changelog emitter into production behind one capability-guarded streaming RPC,
-    add riffdbd follower mode whose applier is the sole writer, and prove a byte-faithful,
-    gap-free, resumable prefix across every authoritative table.
-  requirements: [REP-001, REP-002, REP-003, PERF-007, STO-012]
+  depends_on: [WP-772]
+  objective: Activate the complete ADR-0186 V3 substrate in production behind one
+    capability-guarded RPC. Add riffdbd follower mode whose applier is the sole writer, bootstrap
+    at one exact V3 fence, and prove a byte-faithful, gap-free, resumable prefix across every
+    authoritative namespace without reopening the durable format design.
+  requirements: [REP-001, REP-002, REP-003, PERF-007]
   required_adrs: [ADR-0019, ADR-0061, ADR-0072, ADR-0082, ADR-0083, ADR-0093, ADR-0100,
-    ADR-0101, ADR-0104, ADR-0124, ADR-0178]
+    ADR-0101, ADR-0104, ADR-0124, ADR-0178, ADR-0186]
   allowed_paths: [SPEC.md, work_packages.yaml,
-    adr/0178-follower-activation-and-changelog-derived-backup.md, adr/README.md,
+    adr/0178-follower-activation-and-changelog-derived-backup.md,
+    adr/0186-complete-authoritative-changelog-v3.md, adr/README.md,
     proto/**, crates/riffdb-proto/**, crates/riffdb-types/**, crates/riffdb-auth/**,
     crates/riffdb-policy/**, crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
     crates/riffdb-storage-memory/**, crates/riffdb-service/**, crates/riffdb-api-grpc/**,
@@ -21637,31 +21639,39 @@ work_packages:
   - One `ReplicateChangelog` capability permission kind that no application role or bootstrap
     convenience capability can carry, with create/revoke audit and generated schema updates
   - One server-streaming `ReplicationService.StreamChangelog` RPC whose handshake binds database
-    id, history incarnation, leadership epoch, and resume sequence, refusing stale epoch or foreign
-    incarnation with typed outcomes and answering a pruned resume with `history_pruned`
+    id, history incarnation, leadership epoch, V3 catalog identity, and resume position, refusing
+    stale epoch, foreign incarnation, unsupported catalog or format, and pruned history with typed
+    outcomes
   - Production changelog publication port replacing `NoChangelogPublicationPort`, with the emitter
-    reading only `PublishedDurableSnapshot` and never holding the exclusive write gate
+    reading only the WP-772 receipt cursor from `PublishedDurableSnapshot`, coalescing bounded
+    notifications, resuming from V3 history, and never holding the exclusive write gate
   - riffdbd --mode follower with startup validation unchanged, one applier as sole writer, one
-    frame per storage transaction in sequence order, durable applied and acknowledged frontiers
-    as retained metadata, and the typed `RDB-REP` follower-mode refusal on every write surface
-  - Storage-api follower apply ports for every authoritative table extending the
-    `DeleteAwareEntityFollowerV2` oracle, implemented by redb and memory backends
+    V3 frame per storage transaction in sequence order, lineage-shared and node-local retained
+    metadata kept distinct, and the typed `RDB-REP` follower-mode refusal on every write surface
+  - Paged staged bootstrap at one durable V3 fence with an unprunable hold through exact tail
+    attachment, complete validation before publication, and crash-safe bounded resume
+  - V3 follower apply over every WP-772 replicated-authoritative namespace in redb and memory,
+    with required rebuildable state rebuilt and validated before ready
   - Tests `follower_applies_exact_prefix_byte_faithfully` and
     `replication_stream_resumes_gap_free_after_repeated_kills` under
-    `tests/replication_follower.rs`, plus crash-matrix arms for stream kill and applier crash
+    `tests/replication_follower.rs`, obligation proof
+    `bootstrap_to_tail_fence_is_gap_free_across_crash`, plus crash-matrix arms for bootstrap,
+    stream kill, and applier crash
   acceptance_commands:
   - ./scripts/acceptance --wp WP-746
   - ./scripts/ci-all
-  exit_gate: A follower driven by the app-baseline workload holds a byte-faithful prefix of every
-    authoritative table at the compared sequence, resumes from its acknowledged sequence after
-    repeated mid-flight kills with no gap or duplicate apply, passes complete startup validation
-    afterward, and refuses every write with the typed follower-mode outcome.
+  exit_gate: A follower driven by the app-baseline workload holds a byte-faithful V3 prefix of
+    every replicated-authoritative namespace at the compared position, bootstraps and resumes from
+    its acknowledged position after repeated mid-flight kills with no gap or duplicate apply,
+    passes complete startup validation with required rebuildable state afterward, and refuses every
+    write with the typed follower-mode outcome.
   standing_design_tests:
     interface_safety: No application surface changes; the replication permission is
       administrative only, follower writes are unexpressible, and the stream carries only bytes
       the primary already made durable.
-    scale: Frames are attributable from durable state and the emitter reads pinned published
-      snapshots, so no full-state rewrite or writer-private memory is assumed.
+    scale: Bootstrap is paged and tail work follows bounded changed bytes retained in V3 history;
+      the emitter reads pinned published snapshots, so no writer-private memory or recurring
+      full-state rewrite is assumed.
   human_review_triggers: &id0178
   - Acknowledgement semantics, the commit hot path, or the single-writer property on either node
     would change.
@@ -21680,7 +21690,7 @@ work_packages:
     pre-promotion tokens fail-closed, and export replication lag in sequences as typed health
     and statistics on both nodes.
   requirements: [REP-004, REC-002]
-  required_adrs: [ADR-0070, ADR-0072, ADR-0086, ADR-0093, ADR-0164, ADR-0178]
+  required_adrs: [ADR-0070, ADR-0072, ADR-0086, ADR-0093, ADR-0164, ADR-0178, ADR-0186]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0178-follower-activation-and-changelog-derived-backup.md,
     crates/riffdb-types/**, crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
@@ -21724,7 +21734,7 @@ work_packages:
     join the registered follower's acknowledged frontier to the retention fencing set with a
     hold budget and ceremony-only release.
   requirements: [REP-005, REP-006]
-  required_adrs: [ADR-0072, ADR-0085, ADR-0093, ADR-0178]
+  required_adrs: [ADR-0072, ADR-0085, ADR-0093, ADR-0178, ADR-0186]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0178-follower-activation-and-changelog-derived-backup.md,
     proto/**, crates/riffdb-proto/**, crates/riffdb-types/**, crates/riffdb-auth/**,
@@ -21770,7 +21780,8 @@ work_packages:
     restore from a verified full backup plus the archived suffix through the follower applier
     path with sequence-granular stopping and fail-closed gap and identity checks.
   requirements: [REP-007, AFC-007]
-  required_adrs: [ADR-0050, ADR-0072, ADR-0093, ADR-0100, ADR-0112, ADR-0124, ADR-0178]
+  required_adrs: [ADR-0050, ADR-0072, ADR-0093, ADR-0100, ADR-0112, ADR-0124, ADR-0178,
+    ADR-0186]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0178-follower-activation-and-changelog-derived-backup.md,
     crates/riffdb-types/**, crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
@@ -21779,7 +21790,7 @@ work_packages:
     proto/**, crates/riffdb-proto/**, release/version-topology-v1.json,
     release/durable-format-manifest-v1.json, fixtures/**, tests/**, scripts/**, docs/**]
   deliverables:
-  - First-party archive consumer persisting every validated frame with checksum and sequence range
+  - First-party archive consumer persisting every validated V3 frame with checksum and sequence range
     to a filesystem or object-store sink, with bounded buffering, typed resync on overflow, and no
     effect on acknowledgement or the write gate
   - Additive external `archive-manifest/v1` binding database id, history incarnation, covered
@@ -21815,7 +21826,7 @@ work_packages:
     sink; prove no hot-path regression; publish release evidence; and record the provider and
     performance freeze lifting only when the campaign passes.
   requirements: [REP-008, REP-009, PERF-008, END-003]
-  required_adrs: [ADR-0093, ADR-0142, ADR-0171, ADR-0178]
+  required_adrs: [ADR-0093, ADR-0142, ADR-0171, ADR-0178, ADR-0186]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0178-follower-activation-and-changelog-derived-backup.md, adr/README.md,
     benchmarks/**, scripts/**, tests/**, crates/riffdb-testkit/**, crates/riffdb-sim/**,
@@ -23001,3 +23012,88 @@ work_packages:
       and ranked operator candidates from all retained alpha campaign transcripts. Known
       limitations now describe only the remaining refused relationship shapes.
   human_review_triggers: *id0185
+
+- id: WP-772
+  name: Complete authoritative changelog V3 durable substrate
+  tier: guarantee
+  depends_on: [WP-155, WP-417, WP-486, WP-705]
+  objective: Implement ADR-0186 sections 1 and 2 and the storage-substrate portions of sections 3
+    and 5 through 7 as a prerequisite to replication activation. Freeze the authority inventory
+    and V3 receipt format, make every same-lineage authoritative transaction durably resumable
+    through the existing checkpoint-plus-journal-suffix authority, and prove rotation,
+    reclamation, and crash behavior before any production emitter, RPC, bootstrap, or follower is
+    activated.
+  requirements: [REP-003, REC-001, PERF-007, STO-012]
+  required_adrs: [ADR-0019, ADR-0061, ADR-0072, ADR-0082, ADR-0083, ADR-0085, ADR-0093,
+    ADR-0100, ADR-0101, ADR-0104, ADR-0112, ADR-0124, ADR-0156, ADR-0157, ADR-0178,
+    ADR-0186]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0186-complete-authoritative-changelog-v3.md, adr/README.md,
+    proto/**, crates/riffdb-proto/**, crates/riffdb-types/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-storage-memory/**, crates/riffdb-commit/**,
+    crates/riffdb-catalog/**, crates/riffdb-testkit/**, crates/riffdb-sim/**,
+    release/version-topology-v1.json, release/durable-format-manifest-v1.json,
+    fixtures/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Storage-api-owned `AuthoritativeStateCatalogV1` classifying every table and metadata-key
+    namespace exactly once as replicated-authoritative, rebuildable-local, or replication-control
+    with exact transfer behavior; one generated reviewed fixture cross-checks redb layout,
+    startup, backup, receipt construction, future bootstrap/apply, and exact prefix comparison
+  - Closed `riffdb.changelog-frame/v3` transaction-receipt and checked
+    `ChangelogTransactionSequence` allocator formats with canonical expected-state puts/deletes,
+    complete source attribution, hard bounds, redaction-safe diagnostics, frozen vectors, registry
+    migration, durable-format fixtures, and V1/V2-readable plus V3-writable topology registration
+  - Standard-profile receipt source derived exactly from existing validated Journal V1 mutations
+    and allocator state, exposed only as a bounded storage cursor over `PublishedDurableSnapshot`;
+    Journal V1 identity and bytes remain unchanged
+  - Byte-identical materialization of each journal-sourced receipt by the same known-durable redb
+    checkpoint before suffix reclamation, with overlap equality and crash recovery proving at least
+    one complete source always remains
+  - Atomic materialized receipts in each existing direct, hardened, migration, maintenance, and
+    control-plane `Immediate` transaction, with no second transaction, flush, acknowledgement
+    dependency, allocator lane, or application-visible order
+  - Clean-close integration making each `CLEAN` final close and `DIRTY` activation/consumption one
+    exactly attributed, non-recursive Immediate transaction over lifecycle, V3 allocator, history
+    tail, and materialized control receipt; no write follows clean close, and clean eligibility
+    validates V3 catalog/allocator/tail bounded roots or selects complete validation
+  - Receipted V3 activation/rotation and refusal fixtures proving old inactive or complete V3
+    recovery, exact V1/V2 immutability, no synthesized pre-activation tail, lineage-reset bootstrap
+    after destructive restore, and refusal of unknown, partial, mismatched, exhausted, or oversized
+    state before mutation
+  - Retention implementation proving no Journal V1 suffix receipt source is reclaimed before its
+    byte-identical materialized form is in a known-durable subsuming checkpoint, and no materialized
+    history is reclaimed before a later subsuming checkpoint plus every follower, archive, and
+    bootstrap fence permits it
+  - Obligation proofs `replication_inventory_classifies_every_storage_namespace`,
+    `successor_changelog_receipts_survive_checkpoint_and_recovery`, and
+    `changelog_history_reclamation_respects_checkpoint_and_fences`, with process crash arms at
+    allocator commit, journal flush, checkpoint materialization, rotation, and reclamation
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-772
+  - cargo +1.97.0 test -p riffdb-storage-api -p riffdb-storage-redb -p riffdb-storage-memory
+    -p riffdb-commit --all-features
+  - ./scripts/recovery_full
+  - ./scripts/ci-all
+  exit_gate: Every current storage namespace has one reviewed authority class; journaled and
+    direct/control-plane mutations yield one exact contiguous V3 receipt order through repeated
+    crash, checkpoint, overwrite, delete, rotation, and reclaim edges; Journal V1 and application
+    acknowledgement bytes and semantics remain unchanged; and WP-746 can consume the bounded
+    published receipt cursor without making a durability decision.
+  standing_design_tests:
+    interface_safety: This package adds only internal storage formats and sealed receipt cursors;
+      applications cannot select a class or format, inject a transition, bypass expected-state
+      checks, force reclamation, or opt out of receipt durability.
+    scale: Receipts are bounded by existing transaction ceilings, suffix materialization is folded
+      into the existing checkpoint, and reclamation follows retained changed bytes and consumer
+      fences rather than database population or process memory.
+  human_review_triggers: &id0186
+  - Any authoritative namespace would be omitted, reclassified as rebuildable, or represented by
+    a lossy transition.
+  - Application or administration sequence assignment, command atomicity, acknowledgement, or the
+    single-writer property would change.
+  - Journal V1 or changelog V1/V2 bytes, identity, tags, checksums, receipts, or interpretation
+    would change.
+  - A suffix receipt source or materialized history could be reclaimed before a known-durable
+    subsuming checkpoint and every replication fence permits it.
+  - A public error, diagnostic, log, metric, or receipt would expose replicated keys, values,
+    payload-derived hashes, capability material, or population cardinalities.
