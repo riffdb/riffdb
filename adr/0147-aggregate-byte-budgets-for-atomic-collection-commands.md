@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Direction approved:** 2026-08-24 (maintainer, in session)
 - **Exact text accepted:** Yes, 2026-08-24 (maintainer, in session)
+- **Formatter-scope amendment accepted:** 2026-09-03 (maintainer, in session)
 - **Decision deadline:** Before WP-678 changes contract grammar, command IR,
   plan identity, generated command schemas, or runtime admission
 - **Requires:** ADR-0002, ADR-0003, ADR-0011, ADR-0013, ADR-0031, ADR-0055,
@@ -332,7 +333,7 @@ protected values as the current runner.
 
 ## Testing
 
-- Parser, formatter, source-span, semantic-IR, canonical codec, plan-hash,
+- Parser, source-span, semantic-IR, canonical codec, plan-hash,
   topology, old/current fixture, and least-sufficient writer tests.
 - Independent canonical-size evaluator and property tests across element
   counts, variable payload distributions, boundary/plus-one sizes, checked

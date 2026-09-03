@@ -2642,6 +2642,15 @@ fn lower_commands(
                             .as_ref()
                             .and_then(|bound| bound.value.parse::<usize>().ok());
                         if let Some(bound) = &source_input.value.aggregate_bytes
+                            && element_type.list_parts().is_some()
+                        {
+                            diagnostics.push(CompilerDiagnostic::new(
+                                CompilerDiagnosticCode::InvalidType,
+                                bound.span,
+                            ));
+                            continue;
+                        }
+                        if let Some(bound) = &source_input.value.aggregate_bytes
                             && maximum_aggregate_element_bytes.is_none_or(|bound| {
                                 bound == 0
                                     || bound

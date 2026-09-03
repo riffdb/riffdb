@@ -489,6 +489,8 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
                 "first_instruction",
                 "instruction_count",
                 "duplicate_policy",
+                "maximum_aggregate_element_bytes",
+                "maximum_copy_coefficient",
             ],
         ),
         (

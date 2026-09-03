@@ -280,6 +280,7 @@ fn checked_in_ann_fixture_pins_v12_bytes_and_hash() {
     assert_eq!(decoded.schema().vector_ann_specs().len(), 1);
 }
 
+// req: BLK-018
 #[test]
 fn checked_in_production_embedding_fixture_pins_v15_bytes_hash_and_instruction() {
     let source = include_str!("../../../fixtures/compiler/production-embedding/contract.riff");

@@ -900,6 +900,8 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 7 | `first_instruction` | dense zero-based u32 instruction position |
 | 8 | `instruction_count` | u32 consecutive template instructions; zero is valid for delete-only expansion |
 | 9 | `duplicate_policy` | u8 = 0x01 (reject) |
+| 10 | `maximum_aggregate_element_bytes` | IR v16+: Boolean presence followed by u32 in 1..=16 MiB when present; omitted in IR v5-v15 |
+| 11 | `maximum_copy_coefficient` | IR v16+: u32 in 1..=4096 exactly when maximum_aggregate_element_bytes is present; compiler-derived and revalidated on decode; omitted in IR v5-v15 |
 
 ### CommandDecisionPlanV1
 

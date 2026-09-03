@@ -746,6 +746,7 @@ fn audited_standard_singleton_uses_one_unpublished_root_and_one_journal_tail() {
     );
 }
 
+// req: PERF-004
 #[test]
 fn audited_standard_group_uses_one_unpublished_root_and_one_immediate_tail() {
     let database = UniqueUserDatabase::create("audited-deferred-group");

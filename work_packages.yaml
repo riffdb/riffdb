@@ -3961,7 +3961,7 @@ work_packages:
     fixtures/contracts/**, fuzz/**, tests/**, scripts/**, docs/SUMMARY.md,
     docs/contracts/**, docs/architecture/**]
   deliverables:
-  - Source grammar and formatter for one positive `aggregate_bytes` constraint only on the single
+  - Source grammar for one positive `aggregate_bytes` constraint only on the single
     expanded list, with source-spanned refusals for duplicates, non-literals, zero/excess,
     ordinary commands, unexpanded/nested lists, and multiple pools
   - Independent canonical element-byte semantics retaining every per-value and cardinality bound,
@@ -3995,6 +3995,19 @@ work_packages:
     scale: Cardinality, individual values, aggregate canonical bytes, coefficient, fixed bytes,
       complete graph, IR, fixtures, diagnostics, and compiler work are statically bounded with
       checked arithmetic and no compression or deduplication assumption.
+  closure:
+    status: complete
+    completed_at: "2026-09-03"
+    requirements_satisfied: [BLK-015, BLK-016, BLK-017, BLK-018, DSL-001, DSL-002,
+      DSL-003, DSL-004, DSL-005, DSL-006, DSL-007, DSL-008, DSL-009, DSL-010,
+      DSL-011, DSL-012, SAFE-004, SAFE-005, PERF-004, PERF-005]
+    evidence: The accepted aggregate_bytes language and V16 grammar, executable-IR, and bundle
+      successor now have source-spanned nested-list and syntax refusals, exact graph-boundary,
+      arithmetic/property, plan/root/bundle identity, old-reader rejection, declaration-free
+      writer, and V1-V15 compatibility proofs. The generated format registry documents and
+      conformance-checks both V16 proof fields without changing any runtime, transaction, split
+      policy, or resource ceiling. The accepted formatter-scope amendment records that no new
+      contract formatting operation or semantics is part of this package.
   human_review_triggers: *id001
 - id: WP-679
   name: Aggregate collection-byte runtime and generated acceptance
