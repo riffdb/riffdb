@@ -1017,6 +1017,7 @@ fn clean_close_evidence_json(
 fn shutdown_memory_window_json(
     evidence: &RiffDbShutdownEvidence,
 ) -> Result<serde_json::Value, String> {
+    const HEAP_ENVELOPE_CEILING_BYTES: u64 = 64 * 1024 * 1024;
     let before = evidence
         .process_memory_at_spawn
         .ok_or_else(|| "shutdown evidence omitted the initial process-memory sample".to_owned())?;
@@ -1027,8 +1028,13 @@ fn shutdown_memory_window_json(
         return Err("shutdown memory samples crossed a daemon process generation".to_owned());
     }
     let heap_envelope_bytes = after.vm_data_bytes.saturating_sub(before.vm_data_bytes);
-    if heap_envelope_bytes > 64 * 1024 * 1024 {
-        return Err("shutdown-admission heap envelope exceeded the accepted 64 MiB ceiling".to_owned());
+    if heap_envelope_bytes > HEAP_ENVELOPE_CEILING_BYTES {
+        return Err(format!(
+            "wp705_heap_envelope_refusal stage=process_start_to_shutdown_admission \
+             vm_data_bytes_before={} vm_data_bytes_after={} heap_envelope_bytes={} \
+             heap_envelope_ceiling_bytes={HEAP_ENVELOPE_CEILING_BYTES}",
+            before.vm_data_bytes, after.vm_data_bytes, heap_envelope_bytes
+        ));
     }
     Ok(json!({
         "label": "process_start_to_shutdown_admission",
@@ -1038,7 +1044,7 @@ fn shutdown_memory_window_json(
         "vm_data_bytes_after": after.vm_data_bytes,
         "heap_envelope_bytes": heap_envelope_bytes,
         "vm_hwm_bytes": after.vm_hwm_bytes,
-        "heap_envelope_ceiling_bytes": 64 * 1024 * 1024,
+        "heap_envelope_ceiling_bytes": HEAP_ENVELOPE_CEILING_BYTES,
         "passed": true,
     }))
 }
@@ -1048,13 +1054,17 @@ fn lifecycle_memory_window_json(
     before: RiffDbProcessMemoryEvidence,
     after: ProcessResourceSnapshot,
 ) -> Result<serde_json::Value, String> {
+    const HEAP_ENVELOPE_CEILING_BYTES: u64 = 64 * 1024 * 1024;
     if before.pid != after.pid || before.starttime_ticks != after.starttime_ticks {
         return Err("lifecycle memory sample crossed a daemon process generation".to_owned());
     }
     let heap_envelope_bytes = after.vm_data_bytes.saturating_sub(before.vm_data_bytes);
-    if heap_envelope_bytes > 64 * 1024 * 1024 {
+    if heap_envelope_bytes > HEAP_ENVELOPE_CEILING_BYTES {
         return Err(format!(
-            "{label} heap envelope exceeded the accepted 64 MiB ceiling"
+            "wp705_heap_envelope_refusal stage={label} vm_data_bytes_before={} \
+             vm_data_bytes_after={} heap_envelope_bytes={} \
+             heap_envelope_ceiling_bytes={HEAP_ENVELOPE_CEILING_BYTES}",
+            before.vm_data_bytes, after.vm_data_bytes, heap_envelope_bytes
         ));
     }
     Ok(json!({
@@ -1065,7 +1075,7 @@ fn lifecycle_memory_window_json(
         "vm_data_bytes_after": after.vm_data_bytes,
         "heap_envelope_bytes": heap_envelope_bytes,
         "vm_hwm_bytes": after.peak_rss_bytes,
-        "heap_envelope_ceiling_bytes": 64 * 1024 * 1024,
+        "heap_envelope_ceiling_bytes": HEAP_ENVELOPE_CEILING_BYTES,
         "passed": true,
     }))
 }
@@ -4573,7 +4583,14 @@ mod tests {
             vm_data_bytes: initial.vm_data_bytes + 64 * 1024 * 1024 + 1,
             ..current
         };
-        assert!(super::lifecycle_memory_window_json("test", initial, over_ceiling).is_err());
+        let refusal = super::lifecycle_memory_window_json("test", initial, over_ceiling)
+            .expect_err("over-ceiling window must fail closed");
+        assert_eq!(
+            refusal,
+            "wp705_heap_envelope_refusal stage=test vm_data_bytes_before=1000 \
+             vm_data_bytes_after=67109865 heap_envelope_bytes=67108865 \
+             heap_envelope_ceiling_bytes=67108864"
+        );
 
         let startup = riffdb_app_baseline_riffdb::RiffDbStartupEvidence {
             mode: "clean_certificate".to_owned(),
