@@ -2491,6 +2491,19 @@ work_packages:
   - cargo +1.97.0 test -p riffdb-sim --all-features
   exit_gate: The seeded campaign is green, and a deliberately drifted pin fails with a diagnosis
     rather than a bare assertion.
+  closure:
+    status: complete
+    completed_at: "2026-09-03"
+    requirements_satisfied: [SIM-001, SIM-002, SIM-004]
+    evidence: docs/performance/wp-725-seeded-campaign-regression.md records the bisect, random
+      sweep, exhaustive ordinal walk, frontier analysis, corpus audit, and stable successor scout.
+      The seeded campaign, typed rotation and retirement replays, sweep-level zero-width guard,
+      simulator determinism and fault-arm suites, and deliberately drifted-pin diagnostic all pass
+      under the package acceptance command.
+    known_limitations: The retained shape, ordinal, audit, and successor-scout campaigns remain
+      ignored diagnostics because the per-merge suite runs their bounded standing consequences;
+      they are invoked explicitly when durable-layout work moves a physical operation stream.
+    follow_ups: []
 
 - id: WP-726
   name: Unary transport floor and honest service levels

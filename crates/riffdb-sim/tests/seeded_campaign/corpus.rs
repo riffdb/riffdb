@@ -1,3 +1,4 @@
+// req: SIM-004
 //! D4 (SIM-C2, SPEC SIM-004): the found-seed regression corpus.
 //!
 //! Every seed that ever caught a real defect or exercised interesting
@@ -547,6 +548,21 @@ fn successor_preserves_territory(entry: &CorpusEntry, successor: &CorpusEntry) -
         && retired.iter().all(|gone| wanted.contains(gone))
 }
 
+fn assert_corpus_expectation(
+    entry: &CorpusEntry,
+    expectation: CorpusExpectation,
+    report: &CampaignReport,
+) {
+    assert!(
+        expectation.holds(report),
+        "corpus seed {:#x} (pinned {} for: {}) no longer reproduces \
+         {expectation:?}; observed CampaignReport: {report:?}",
+        entry.seed,
+        entry.pinned,
+        entry.caught
+    );
+}
+
 fn outcome_holds(entry: &CorpusEntry, outcome: &CampaignOutcome) -> bool {
     match (entry.outcome, outcome) {
         (CorpusOutcome::Completes(expectations), CampaignOutcome::Completed(report)) => {
@@ -666,14 +682,7 @@ fn regression_corpus_replays_and_reproduces_its_territory() {
                     );
                 };
                 for expectation in expectations {
-                    assert!(
-                        expectation.holds(&report),
-                        "corpus seed {:#x} (pinned {} for: {}) no longer \
-                         reproduces {expectation:?}; report: {report:?}",
-                        entry.seed,
-                        entry.pinned,
-                        entry.caught
-                    );
+                    assert_corpus_expectation(entry, *expectation, &report);
                 }
                 if let Some(retirement) = entry.retirement {
                     assert!(
@@ -938,4 +947,34 @@ fn corpus_expectations_map_to_their_report_counters() {
         assert!(expectation.holds(&live), "{expectation:?} holds on live");
         assert!(!expectation.holds(&quiet), "{expectation:?} quiet is quiet");
     }
+}
+
+/// SIM-004: a deliberately drifted corpus pin is rejected with enough context
+/// to distinguish the coordinate, territory, and observed counters without
+/// rerunning under a debugger.
+// req: SIM-004
+#[test]
+fn deliberately_drifted_pin_is_rejected_with_a_diagnosis() {
+    let entry = REGRESSION_CORPUS
+        .iter()
+        .find(|entry| {
+            entry.rotation.is_none() && matches!(entry.outcome, CorpusOutcome::Completes(_))
+        })
+        .expect("the corpus retains an active pin");
+    let drifted = CampaignReport::default();
+
+    let panic = std::panic::catch_unwind(|| {
+        assert_corpus_expectation(entry, CorpusExpectation::InFlightCommitAbsent, &drifted);
+    })
+    .expect_err("the deliberately drifted pin must fail");
+    let diagnosis = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .expect("the pin failure carries a text diagnosis");
+
+    assert!(diagnosis.contains(&format!("{:#x}", entry.seed)));
+    assert!(diagnosis.contains("InFlightCommitAbsent"));
+    assert!(diagnosis.contains(entry.caught));
+    assert!(diagnosis.contains("CampaignReport"));
 }
