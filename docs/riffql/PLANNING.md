@@ -190,8 +190,10 @@ recursion, and runtime join optimization remain unavailable.
 WP-689 validates that inventory against three independent applications:
 TicketDesk, agent-blog, and agent-orders. Its checked fixture records every
 current source/target mapping together with the access shape, driver and target
-row maxima, complete access-key byte maximum, missing behavior, cursor
-eligibility, authority ownership, and plan-identity participation. The current
+row maxima, shared partition proof, continuation-probe and complete access-key
+byte maxima, whole-query intermediate/projected-value/result-byte ceilings,
+missing behavior, cursor eligibility, authority ownership, explain evidence,
+and plan-identity participation. The current
 dependent batches are TicketDesk labels (50), blog tags (32), order-line
 products (100), and inventory products (499). Exact point dependencies have a
 one-row driver and target. Singular-key-driven index reads retain their own

@@ -530,6 +530,20 @@ work_packages:
       conditions, targets, fan-out, traversal, missing semantics, costs, or policy bypasses.
     scale: Driver rows, per-edge fan-out, total targets/intermediates/probes/bytes/output are finite
       and independently charged; no cross-partition or unbounded traversal exists.
+  closure:
+    status: complete
+    completed_at: "2026-09-03"
+    requirements_satisfied: [OQ-033, OQ-039, OQ-040, OQ-041, OQ-042, OQ-043]
+    evidence: Historical commit 25ecbc24 introduced the relationship inventory, dependent-batch
+      executor evidence, architecture negatives, and extension guidance. This closure strengthens
+      the frozen inventory with same-partition, probe, intermediate, projected-value, result-byte,
+      authority, and explain assertions; adds executable position, absence, and policy conformance
+      against memory and redb; and carries post-cutover requirement tags. The complete package
+      acceptance matrix passes on the current successor tree.
+    known_limitations: Dependent batches remain ordered, cursor-free, complete-primary-key reads.
+      Later one-to-many expansion is independently governed by accepted ADR-0185 and is not part of
+      this package's runtime or identity surface.
+    follow_ups: [WP-690]
   human_review_triggers: *id001
 - id: WP-690
   name: Operational access-path generic and external acceptance

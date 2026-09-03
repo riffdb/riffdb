@@ -1698,4 +1698,175 @@ query list_members_exact(
             "dependent batch must intern field names once, not per predicate"
         );
     }
+
+    // req: OQ-041, OQ-043
+    #[test]
+    fn dependent_point_batch_preserves_position_missing_and_policy_semantics() {
+        use riffdb_query_executor::BoundPredicate;
+        use riffdb_query_ir::{QueryAccessKind, QueryPredicateOperator};
+
+        let bundle = compile_contract_source(CONTRACT).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let program = compile_query(
+            &parse_query(include_str!(
+                "../../../queries/ticketdesk/ticket_page.riffq"
+            ))
+            .expect("parse"),
+            &catalog,
+        )
+        .expect("program");
+        let step = program
+            .steps()
+            .iter()
+            .find(|step| matches!(step.access(), QueryAccessKind::DependentPointBatch { .. }))
+            .expect("labels dependent batch step");
+        assert!(step.cursor_parameter().is_none());
+        let QueryAccessKind::DependentPointBatch { key_fields, .. } = step.access() else {
+            unreachable!();
+        };
+        let organization = CanonicalValue::Uuid([1; 16]);
+        let binding = DurableKeySchemaBindingV1::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+        );
+        let access = program
+            .internal_entity_access("Label")
+            .expect("Label access");
+        let label_record = |ordinal: u8| {
+            let label = CanonicalValue::Uuid([ordinal; 16]);
+            let key = step
+                .internal_entity_key_schema()
+                .encode_entity(&[organization.clone(), label.clone()])
+                .expect("label key");
+            StoredEntityRecordV1::new(
+                EntityTarget::new(step.internal_entity_id(), key).expect("label target"),
+                EntityVersion::first(),
+                bundle.contract_version(),
+                binding.clone(),
+                CanonicalRecord::new(vec![
+                    (
+                        access
+                            .internal_field_id("organization_id")
+                            .expect("organization field"),
+                        organization.clone(),
+                    ),
+                    (
+                        access.internal_field_id("label_id").expect("label field"),
+                        label,
+                    ),
+                    (
+                        access.internal_field_id("name").expect("name field"),
+                        CanonicalValue::string(format!("label-{ordinal}")).expect("label name"),
+                    ),
+                ])
+                .expect("label fields"),
+            )
+            .expect("label record")
+        };
+        let mut state = MemoryState {
+            entities: vec![label_record(1), label_record(2)],
+            ..MemoryState::default()
+        };
+        state
+            .entities
+            .sort_unstable_by(|left, right| left.target().cmp(right.target()));
+        let predicates = |ordinal: u8| {
+            key_fields
+                .iter()
+                .map(|field| {
+                    BoundPredicate::new(
+                        field.clone(),
+                        QueryPredicateOperator::Equal,
+                        if field == "organization_id" {
+                            organization.clone()
+                        } else {
+                            CanonicalValue::Uuid([ordinal; 16])
+                        },
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let parameters = QueryParameters::checked(BTreeMap::from([(
+            "organization_id".to_owned(),
+            organization.clone(),
+        )]))
+        .expect("parameters");
+        let mut view = MemoryQueryView {
+            state: &state,
+            program: &program,
+            parameters: &parameters,
+        };
+        let observed = view
+            .dependent_point_batch(step, &[predicates(2), predicates(1), predicates(3)], None)
+            .expect("batch");
+        assert_eq!(observed.len(), 3);
+        assert_eq!(
+            observed[0].as_ref().and_then(|row| row.field("label_id")),
+            Some(&CanonicalValue::Uuid([2; 16]))
+        );
+        assert_eq!(
+            observed[1].as_ref().and_then(|row| row.field("label_id")),
+            Some(&CanonicalValue::Uuid([1; 16]))
+        );
+        assert!(observed[2].is_none());
+
+        let label_field = access.internal_field_id("label_id").expect("label field");
+        let rule = RowPolicyRuleV1::new(
+            RowPolicyOperationV1::Read,
+            vec![
+                RowPolicyExpressionNodeV1::Operand(RowPolicyOperandV1::new(
+                    RowPolicyValueSourceV1::RowField(label_field),
+                    ValueType::uuid(),
+                )),
+                RowPolicyExpressionNodeV1::Operand(RowPolicyOperandV1::new(
+                    RowPolicyValueSourceV1::Constant(CanonicalValue::Uuid([2; 16])),
+                    ValueType::uuid(),
+                )),
+                RowPolicyExpressionNodeV1::Equal { left: 0, right: 1 },
+            ],
+            2,
+            step.internal_entity_id(),
+            bundle.schema(),
+            &BTreeMap::new(),
+        )
+        .expect("label policy rule");
+        let policy = RowPolicyPlanV1::new(
+            "OnlySecondLabel",
+            step.internal_entity_id(),
+            vec![rule],
+            bundle.schema(),
+        )
+        .expect("label policy");
+        let principal = PrincipalFactBindingV1::new(
+            CapabilityId::from_unix_milliseconds_and_random(1, [0x61; 10]).expect("capability"),
+            NonZeroU64::new(1).expect("revision"),
+            DatabaseId::from_unix_milliseconds_and_random(1, [0x62; 10]).expect("database"),
+            Environment::new("test").expect("environment"),
+            ActorId::new("dependent-batch-policy-test").expect("actor"),
+            ActorKind::Service,
+            vec![Audience::new("riffdb-policy-test").expect("audience")],
+            TenantScope::Global,
+            Timestamp::new(1, 0).expect("issued"),
+            Timestamp::new(10, 0).expect("expires"),
+            CapabilityPrincipalFactsV1::empty(),
+        )
+        .expect("principal facts");
+        let policy = AuthorizedQueryRowPolicyContextV1::test_fixture(
+            principal,
+            vec![policy],
+            bundle.schema(),
+        )
+        .expect("policy context");
+        let policy_observed = view
+            .dependent_point_batch(step, &[predicates(1), predicates(2)], Some(&policy))
+            .expect("policy batch");
+        assert!(policy_observed[0].is_none());
+        assert_eq!(
+            policy_observed[1]
+                .as_ref()
+                .and_then(|row| row.field("label_id")),
+            Some(&CanonicalValue::Uuid([2; 16]))
+        );
+    }
 }
