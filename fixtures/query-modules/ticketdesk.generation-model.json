@@ -2078,7 +2078,8 @@
         {
           "compact": null,
           "cursor": {
-            "field": "After"
+            "field": "After",
+            "optional": true
           },
           "encoded_params": [
             {
@@ -2151,7 +2152,8 @@
         {
           "compact": null,
           "cursor": {
-            "field": "After"
+            "field": "After",
+            "optional": true
           },
           "encoded_params": [
             {
@@ -2234,7 +2236,8 @@
         {
           "compact": null,
           "cursor": {
-            "field": "After"
+            "field": "After",
+            "optional": true
           },
           "encoded_params": [
             {
@@ -2317,7 +2320,8 @@
         {
           "compact": null,
           "cursor": {
-            "field": "After"
+            "field": "After",
+            "optional": true
           },
           "encoded_params": [
             {
@@ -2543,7 +2547,8 @@
         {
           "compact": null,
           "cursor": {
-            "field": "CommentsAfter"
+            "field": "CommentsAfter",
+            "optional": true
           },
           "encoded_params": [
             {

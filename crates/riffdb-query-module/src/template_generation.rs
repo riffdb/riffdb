@@ -159,6 +159,10 @@ pub fn generate_canonical_generation_model(
             }));
             let cursor = schemas.parameters().iter().find(|parameter| is_cursor(parameter.value_type())).map(|parameter| json!({
                 "field": go_public(parameter.name()),
+                "optional": matches!(
+                    parameter.value_type(),
+                    riffdb_query_ir::NamedTypeSchema::Optional(_)
+                ),
             }));
             json!({
                 "name": name,
@@ -176,8 +180,7 @@ pub fn generate_canonical_generation_model(
                     if (parameter.has_default()
                         || matches!(
                             parameter.value_type(),
-                            riffdb_query_ir::NamedTypeSchema::Cursor
-                                | riffdb_query_ir::NamedTypeSchema::Optional(_)
+                            riffdb_query_ir::NamedTypeSchema::Optional(_)
                         )) && !value_type.starts_with('*')
                     {
                         value_type = format!("*{value_type}");

@@ -1,0 +1,22 @@
+{
+  "schema": "riffdb.generated-cursor-routing/v1",
+  "languages": ["rust", "go", "typescript", "python"],
+  "transport": {
+    "field": "Options.Cursor",
+    "cursor_bytes": "unchanged",
+    "symbolic_parameter": "omitted",
+    "maximum_pages_per_invocation": 1,
+    "generated_page_walks": false
+  },
+  "cases": [
+    {"name": "first_page", "cursor": "absent", "expected": "bounded_page"},
+    {"name": "continuation", "cursor": "prior_next_cursor", "expected": "bounded_page"},
+    {"name": "null", "cursor": "null", "expected": "first_page"},
+    {"name": "malformed", "cursor": "not-a-riffdb-cursor", "expected": "invalid_cursor"},
+    {"name": "wrong_operation", "cursor": "other_operation", "expected": "invalid_cursor"},
+    {"name": "wrong_database_history", "cursor": "other_database_history", "expected": "invalid_cursor"},
+    {"name": "expiry", "cursor": "expired", "expected": "invalid_cursor"},
+    {"name": "cancellation", "cursor": "valid", "expected": "cancelled"},
+    {"name": "bounded_response", "cursor": "valid", "expected": "at_most_declared_take"}
+  ]
+}

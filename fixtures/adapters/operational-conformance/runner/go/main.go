@@ -1,3 +1,4 @@
+// req: OQ-004, OQ-006, OQ-016, OQ-031
 package main
 
 import (
@@ -61,6 +62,27 @@ func run() error {
 		return err
 	}
 
+	first, err := client.ListFgaTuples(ctx, generated.ListFgaTuplesParams{
+		StoreId: id(10),
+	}, generated.QueryOptions{})
+	if err != nil {
+		return err
+	}
+	firstPage, ok := first.Value.(generated.ListFgaTuplesFound)
+	if !ok || len(firstPage.Tuples) != 25 || first.NextCursor == "" {
+		return errors.New("OpenFGA bounded first page")
+	}
+	second, err := client.ListFgaTuples(ctx, generated.ListFgaTuplesParams{
+		StoreId: id(10), After: &first.NextCursor,
+	}, generated.QueryOptions{})
+	if err != nil {
+		return err
+	}
+	secondPage, ok := second.Value.(generated.ListFgaTuplesFound)
+	if !ok || len(secondPage.Tuples) != 1 || second.NextCursor != "" {
+		return errors.New("OpenFGA generated cursor continuation")
+	}
+
 	viewer := "viewer"
 	tuples, err := client.ListFgaTuples(ctx, generated.ListFgaTuplesParams{
 		StoreId: id(10), Relation: &viewer,
@@ -71,6 +93,12 @@ func run() error {
 	tuplePage, ok := tuples.Value.(generated.ListFgaTuplesFound)
 	if !ok || len(tuplePage.Tuples) != 1 {
 		return errors.New("OpenFGA optional relation page")
+	}
+	malformed := "not-a-riffdb-cursor"
+	if _, err := client.ListFgaTuples(ctx, generated.ListFgaTuplesParams{
+		StoreId: id(10), After: &malformed,
+	}, generated.QueryOptions{}); err == nil {
+		return errors.New("malformed generated cursor did not fail closed")
 	}
 
 	dashboard, err := client.MetricDashboard(ctx, generated.MetricDashboardParams{

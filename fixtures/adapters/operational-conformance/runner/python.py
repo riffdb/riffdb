@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# req: OQ-004, OQ-006, OQ-016, OQ-031
 import json
 import os
 from uuid import UUID
@@ -57,10 +58,32 @@ def main() -> None:
     )
     with SyncApplicationTransport.connect_verified_tls(tls, metadata) as transport:
         client = AdapterOperationalConformanceClient(transport, AttemptBudget(3))
+        first = client.list_fga_tuples(ListFgaTuplesParams(store_id=uid(10)))
+        require(
+            len(first.value.tuples) == 25 and first.next_cursor is not None,
+            "OpenFGA bounded first page",
+        )
+        second = client.list_fga_tuples(
+            ListFgaTuplesParams(store_id=uid(10), after=first.next_cursor)
+        )
+        require(
+            len(second.value.tuples) == 1 and second.next_cursor is None,
+            "OpenFGA generated cursor continuation",
+        )
         tuples = client.list_fga_tuples(
             ListFgaTuplesParams(store_id=uid(10), relation="viewer")
         ).value
         require(len(tuples.tuples) == 1, "OpenFGA optional relation page")
+        malformed_failed = False
+        try:
+            client.list_fga_tuples(
+                ListFgaTuplesParams(
+                    store_id=uid(10), after="not-a-riffdb-cursor"
+                )
+            )
+        except Exception:
+            malformed_failed = True
+        require(malformed_failed, "malformed generated cursor fails closed")
 
         dashboard = client.metric_dashboard(
             MetricDashboardParams(experiment_id=uid(20))

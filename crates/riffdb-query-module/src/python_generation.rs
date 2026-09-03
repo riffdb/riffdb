@@ -404,7 +404,6 @@ pub(crate) fn python_generation_model(module: &QueryModule, contract: &ContractB
                 "parameters": schemas.parameters().iter().map(|parameter| {
                     let nested = format!("{name}Params{}", pascal(parameter.name()));
                     let defaulted = parameter.has_default()
-                        || is_cursor(parameter.value_type())
                         || matches!(parameter.value_type(), NamedTypeSchema::Optional(_));
                     let mut value_type = python_named_type(parameter.value_type(), &nested, contract);
                     if defaulted && !value_type.ends_with(" | None") {

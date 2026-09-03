@@ -46,6 +46,13 @@ identity, field-order, cardinality, width, enum, bound, or value mismatch fails
 closed; the same decoder still accepts the legacy named-record response from
 an older compatible server.
 
+A compiler-typed `Cursor?` generated parameter is `Option<String>`; `None`
+requests the first page and a present opaque cursor resumes that exact method.
+An exact `Cursor` remains a required `String`. Generated code routes the value
+through `QueryOptions` without encoding it as symbolic input and rejects a
+simultaneous low-level cursor option. Each method performs one bounded request;
+no generated helper walks pages for count, offset, filtering, or sorting.
+
 ```rust,ignore
 let outcome = client
     .create_item(CreateItemInput {

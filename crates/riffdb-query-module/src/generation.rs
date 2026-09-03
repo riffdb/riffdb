@@ -3059,7 +3059,6 @@ pub(crate) fn typescript_generation_model(
                 "params": schemas.parameters().iter().map(|parameter| json!({
                     "name": ts_identifier(parameter.name()),
                     "optional": parameter.has_default()
-                        || is_cursor_type(parameter.value_type())
                         || is_optional_type(parameter.value_type()),
                     "type": ts_query_parameter_type(query, parameter),
                 })).collect::<Vec<_>>(),
@@ -3545,10 +3544,7 @@ fn generate_typescript_source_base(module: &QueryModule, contract: &ContractBund
         }
         writeln!(output, "export interface {name}Params {{").infallible();
         for parameter in schemas.parameters() {
-            let optional = if parameter.has_default()
-                || is_cursor_type(parameter.value_type())
-                || is_optional_type(parameter.value_type())
-            {
+            let optional = if parameter.has_default() || is_optional_type(parameter.value_type()) {
                 "?"
             } else {
                 ""
@@ -5081,6 +5077,7 @@ mod tests {
         assert!(!generated_typescript.contains("function compactTimestamp("));
     }
 
+    // req: OQ-004, OQ-006, OQ-015, OQ-016, OQ-031, API-001, SAFE-001
     #[test]
     fn generated_facades_route_typed_cursors_only_through_query_options() {
         let contract = compile_contract_source(include_str!(
@@ -5111,17 +5108,120 @@ mod tests {
         assert!(rust.contains("let generated_cursor = self.0.after;"));
         assert!(rust.contains("options.with_generated_cursor(generated_cursor)?"));
         assert!(!rust.contains("parameters.insert(\"after\""));
+        assert!(rust.contains("parameters: ListCommentsParams, options: QueryOptions"));
+        assert!(!rust.contains("list_comments_all"));
 
         assert!(go.contains("options.Cursor = *parameters.After"));
+        assert!(go.contains("if options.Cursor != \"\""));
         assert!(!go.contains("input[\"after\"]"));
+        assert!(!go.contains("ListCommentsAll"));
 
         assert!(typescript.contains("after: generatedCursor, ...routedParameters"));
         assert!(typescript.contains("cursor: generatedCursor"));
+        assert!(typescript.contains("options.cursor !== undefined"));
         assert!(!typescript.contains("const request = listComments(parameters);"));
+        assert!(!typescript.contains("listCommentsAll"));
 
         assert!(python.contains("generated_cursor = parameters.after"));
         assert!(python.contains("encoded_parameters.pop(\"after\", None)"));
         assert!(python.contains("QueryOptions(cursor=generated_cursor"));
+        assert!(python.contains("if options.cursor is not None:"));
+        assert!(!python.contains("list_comments_all"));
+    }
+
+    // req: OQ-031
+    #[test]
+    fn generated_facades_preserve_required_cursor_parameter_types() {
+        let contract = compile_contract_source(include_str!(
+            "../../../examples/app-baseline/contracts/ticketdesk.riff"
+        ))
+        .expect("TicketDesk contract");
+        let source = include_str!("../../../queries/ticketdesk/list_comments.riffq")
+            .replace("$after: Cursor?,", "$after: Cursor,");
+        let module = QueryModule::compile(
+            QueryModuleCandidate::new(
+                QueryModuleName::new("TicketDeskRequiredCursor").expect("module name"),
+                QueryModuleVersion::new(1).expect("module version"),
+                vec![NamedQuerySource::new("ListComments", source).expect("query source")],
+            )
+            .expect("candidate"),
+            &contract,
+        )
+        .expect("required cursor module");
+
+        let rust = generate_rust_client(&module, &contract);
+        let go = crate::generate_go_client(&module, &contract);
+        let typescript = generate_typescript_client(&module, &contract);
+        let python = generate_python_client(&module, &contract).expect("Python");
+
+        assert!(rust.contains("pub after: String,"));
+        assert!(rust.contains("let generated_cursor = Some(self.0.after);"));
+        assert!(go.contains("After string"));
+        assert!(go.contains("options.Cursor = parameters.After"));
+        assert!(typescript.contains("readonly after: string;"));
+        assert!(python.contains("after: str\n"));
+    }
+
+    // req: OQ-031, SAFE-001
+    #[test]
+    fn query_module_rejects_cursor_parameters_without_one_continuation_slot() {
+        let contract = compile_contract_source(include_str!(
+            "../../../examples/app-baseline/contracts/ticketdesk.riff"
+        ))
+        .expect("TicketDesk contract");
+        let source = include_str!("../../../queries/ticketdesk/list_comments.riffq").replace(
+            "$after: Cursor?,",
+            "$after: Cursor?,\n  $unrouted: Cursor?,",
+        );
+        let candidate = QueryModuleCandidate::new(
+            QueryModuleName::new("TicketDeskAmbiguousCursor").expect("module name"),
+            QueryModuleVersion::new(1).expect("module version"),
+            vec![NamedQuerySource::new("ListComments", source).expect("query source")],
+        )
+        .expect("candidate");
+
+        assert!(
+            QueryModule::compile(candidate, &contract).is_err(),
+            "an unbound cursor parameter would have no protected continuation route"
+        );
+    }
+
+    // req: OQ-004, OQ-006, OQ-016, OQ-031
+    #[test]
+    fn generated_cursor_fixture_covers_closed_continuation_failures_and_bounds() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/riffql/generated-cursor-routing-v1.json"
+        ))
+        .expect("cursor routing fixture");
+        assert_eq!(
+            fixture["languages"],
+            serde_json::json!(["rust", "go", "typescript", "python"])
+        );
+        assert_eq!(fixture["transport"]["field"], "Options.Cursor");
+        assert_eq!(fixture["transport"]["cursor_bytes"], "unchanged");
+        assert_eq!(fixture["transport"]["symbolic_parameter"], "omitted");
+        assert_eq!(fixture["transport"]["maximum_pages_per_invocation"], 1);
+        assert_eq!(fixture["transport"]["generated_page_walks"], false);
+        let cases = fixture["cases"]
+            .as_array()
+            .expect("cursor routing cases")
+            .iter()
+            .map(|case| case["name"].as_str().expect("case name"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            cases,
+            [
+                "first_page",
+                "continuation",
+                "null",
+                "malformed",
+                "wrong_operation",
+                "wrong_database_history",
+                "expiry",
+                "cancellation",
+                "bounded_response",
+            ]
+        );
     }
 
     #[test]
