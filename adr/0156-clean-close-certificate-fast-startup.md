@@ -11,6 +11,7 @@
 - **WP-705/WP-760 ownership amendment accepted:** 2026-09-02 (maintainer)
 - **WP-705 dirty-evidence boundary direction approved:** 2026-09-02
 - **WP-705 dirty-evidence boundary exact text accepted:** 2026-09-02 (maintainer)
+- **WP-705 atomic crash-evidence interpretation accepted:** 2026-09-02 (maintainer)
 - **Accepted:** 2026-08-26
 - **Acceptance reference:** Maintainer exact-text acceptance in the current
   Codex session for upstream commit `c5c73858`
@@ -249,7 +250,8 @@ separately. The million-row reproduction must prove that a clean close reopens
 without a population-sized evidence plan or population-sized validation walk.
 WP-705 must additionally exercise the unchanged complete-validation path after
 a genuine writer-process kill at the 65,536-row checkpoint, including engine
-repair, recovery, idempotency, and no-authority-advance assertions. Its attempted
+repair, recovery, idempotency, atomic either-old-or-new resolution, and
+recovery-only no-authority-advance assertions. Its attempted
 production-scale complete-path run must preserve the fail-closed
 `LimitExceeded` result at the historical-evidence 512 MiB ceiling as a known
 ceiling and handoff, not relabel it as passing evidence. Accepted ADR-0182 and
@@ -449,9 +451,13 @@ distinct evidence results:
 2. a genuine writer-process kill and reopen at exactly the 65,536-row checkpoint
    proving that the unchanged complete-validation path invokes engine repair,
    reaches exact end, preserves the 86-arm recovery matrix, remains idempotent,
-   records the unclean/clean wall-time ratio against an equivalently seeded
-   clean database, and creates no command, event, outcome, provenance, audit,
-   projection, outbox, or allocator advance; and
+   and resolves the in-flight probe atomically as either wholly absent or wholly
+   committed. A transaction durable before SIGKILL is not required to disappear.
+   The repaired database must exactly match the predeclared equivalently seeded
+   clean twin for the observed atomic outcome, the unclean/clean wall-time ratio
+   is recorded against that twin, and a second restart proves recovery itself
+   creates no additional command, event, outcome, provenance, audit, projection,
+   outbox, or allocator advance; and
 3. a production-scale attempt of that unchanged complete path which records the
    typed fail-closed `LimitExceeded` result at the historical-evidence 512 MiB
    ceiling without retry, a raised ceiling, partial readiness, or a passing
