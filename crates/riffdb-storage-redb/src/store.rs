@@ -78,6 +78,15 @@ use crate::transient::{
     TransientIndexDelta, TransientIndexState, TransientIndexes, UnpublishedCommandIndexes,
 };
 
+/// Fixed redb page-cache budget for the production adapter.
+///
+/// redb's ambient default is 1 GiB and grows with pages touched. Keeping the
+/// adapter's cache explicit prevents a clean reopen from acquiring
+/// population-sized process-owned memory while retaining one bounded cache for
+/// reads and writes. This is an internal performance bound; it does not alter
+/// the durable format or transaction semantics.
+const REDB_CACHE_SIZE_BYTES: usize = 32 * 1024 * 1024;
+
 #[cfg(feature = "test-fixtures")]
 struct ExternalKillBarrierFileBackend {
     inner: redb::backends::FileBackend,
@@ -1822,6 +1831,7 @@ impl RedbStore {
         let repair_observed = Arc::new(AtomicBool::new(false));
         let repair_observed_callback = Arc::clone(&repair_observed);
         let mut builder = Builder::new();
+        builder.set_cache_size(REDB_CACHE_SIZE_BYTES);
         builder.set_repair_callback(move |session| {
             repair_observed_callback.store(true, Ordering::Release);
             // Bounded progress telemetry only; do not enable quick_repair

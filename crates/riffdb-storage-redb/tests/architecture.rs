@@ -294,6 +294,25 @@ fn redb_startup_produces_evidence_only_and_drives_no_migration() {
     }
 }
 
+// req: PERF-019
+#[test]
+fn production_redb_cache_is_explicitly_bounded_on_every_authoritative_open() {
+    let source = read(crate_root().join("src/store.rs"));
+    assert!(source.contains("const REDB_CACHE_SIZE_BYTES: usize = 32 * 1024 * 1024;"));
+    assert_eq!(
+        source.matches("let mut builder = Builder::new();").count(),
+        1,
+        "authoritative opens must converge on one redb builder"
+    );
+    assert_eq!(
+        source
+            .matches("builder.set_cache_size(REDB_CACHE_SIZE_BYTES);")
+            .count(),
+        1,
+        "the authoritative redb builder must apply exactly one fixed cache budget"
+    );
+}
+
 #[test]
 fn sha256_dependency_is_confined_to_reviewed_integrity_boundaries() {
     let source = crate_root().join("src");
