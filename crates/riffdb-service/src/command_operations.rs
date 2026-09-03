@@ -1670,6 +1670,27 @@ fn normalize_command_input(
             continue;
         };
 
+        if selected
+            .collection_expansion()
+            .is_some_and(|expansion| expansion.input_field() == field_id)
+            && let SubmittedValue::List(values) = field.value()
+        {
+            let expansion = selected
+                .collection_expansion()
+                .expect("checked collection expansion");
+            let count_code = if values.len() < expansion.minimum_elements() {
+                Some(ValidationCode::OutOfRange)
+            } else if values.len() > expansion.maximum_elements() {
+                Some(ValidationCode::TooManyItems)
+            } else {
+                None
+            };
+            if let Some(code) = count_code {
+                push_issue(&mut issues, field_issue(code, field_id));
+                continue;
+            }
+        }
+
         let mut path = vec![ValidationPathSegment::Field(field_id)];
         match materialize_value(
             selected_schema,
@@ -4131,7 +4152,8 @@ contract EmbeddingInput version 1 {
     }
 
     #[test]
-    fn aggregate_collection_byte_failure_uses_the_declared_collection_path() {
+    // req: AAA-004, AAA-005, BLK-020
+    fn aggregate_budget_service_errors_have_exact_paths_and_codes() {
         let bundle = compile_contract_source(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../fixtures/compiler/aggregate-collection-budget/contract.riff"
@@ -4144,7 +4166,7 @@ contract EmbeddingInput version 1 {
             .iter()
             .find(|entity| entity.name() == "PolicyMutation")
             .expect("policy mutation entity");
-        let mutation = |ordinal: u8| {
+        let mutation = |ordinal: u8, context_len: usize| {
             CanonicalValue::Record(
                 CanonicalRecord::new(
                     entity
@@ -4157,8 +4179,8 @@ contract EmbeddingInput version 1 {
                                 "mutation_id" => CanonicalValue::Uuid([ordinal; 16]),
                                 "relation" => CanonicalValue::string("reader").expect("relation"),
                                 "context" => CanonicalValue::Bytes(
-                                    CanonicalBytes::new(vec![ordinal; 475_000])
-                                        .expect("individual context remains valid"),
+                                    CanonicalBytes::new(vec![ordinal; context_len])
+                                        .expect("bounded context fixture"),
                                 ),
                                 other => panic!("unexpected mutation field {other}"),
                             };
@@ -4170,15 +4192,61 @@ contract EmbeddingInput version 1 {
             )
         };
         let mutations = field_id(plan, "mutations");
+        let context = entity
+            .record()
+            .fields()
+            .iter()
+            .find(|field| field.name() == "context")
+            .expect("context field")
+            .id();
+        let request_id = field_id(plan, "request_id");
+        let assert_failure =
+            |values: Vec<CanonicalValue>,
+             expected_code: ValidationCode,
+             expected_path: &[ValidationPathSegment]| {
+                let input = CanonicalRecord::new(vec![
+                    (request_id, CanonicalValue::Uuid([0x21; 16])),
+                    (
+                        mutations,
+                        CanonicalValue::List(
+                            CanonicalList::new(values).expect("bounded mutation list"),
+                        ),
+                    ),
+                ])
+                .expect("command input");
+                let issue = issue(
+                    normalize_command_input(plan, bundle.schema(), plan, &submitted_input(input))
+                        .expect_err("budget failure rejects before admission"),
+                );
+                assert_eq!(issue.code(), expected_code);
+                assert_eq!(issue.path().segments(), expected_path);
+            };
+
+        assert_failure(
+            Vec::new(),
+            ValidationCode::OutOfRange,
+            &[ValidationPathSegment::Field(mutations)],
+        );
+        assert_failure(
+            (0..101).map(|ordinal| mutation(ordinal, 1)).collect(),
+            ValidationCode::TooManyItems,
+            &[ValidationPathSegment::Field(mutations)],
+        );
+        assert_failure(
+            vec![mutation(1, 524_289)],
+            ValidationCode::TooLong,
+            &[
+                ValidationPathSegment::Field(mutations),
+                ValidationPathSegment::ListIndex(0),
+                ValidationPathSegment::Field(context),
+            ],
+        );
         let input = CanonicalRecord::new(vec![
-            (
-                field_id(plan, "request_id"),
-                CanonicalValue::Uuid([0x21; 16]),
-            ),
+            (request_id, CanonicalValue::Uuid([0x21; 16])),
             (
                 mutations,
                 CanonicalValue::List(
-                    CanonicalList::new((1..=2).map(mutation).collect())
+                    CanonicalList::new((1..=2).map(|ordinal| mutation(ordinal, 475_000)).collect())
                         .expect("bounded mutation list"),
                 ),
             ),

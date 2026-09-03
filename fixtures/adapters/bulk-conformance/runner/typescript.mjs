@@ -3,7 +3,7 @@ import { pathToFileURL } from "node:url";
 
 const runtime = await import(pathToFileURL(process.env.RIFFDB_CONFORMANCE_TYPESCRIPT_RUNTIME));
 const generated = await import(pathToFileURL(process.env.RIFFDB_CONFORMANCE_TYPESCRIPT_GENERATED));
-const { DriverApplicationTransport, DriverGeneratedApplicationTransport } = runtime;
+const { DriverApplicationTransport, DriverGeneratedApplicationTransport, InputBudgetError } = runtime;
 const { AdapterBulkConformanceClient } = generated;
 
 const identityDocument = JSON.parse(await readFile(process.env.RIFFDB_CONFORMANCE_IDENTITY, "utf8"));
@@ -19,12 +19,13 @@ const assert = (condition, label) => { if (!condition) throw new Error(`TypeScri
 try {
   const client = new AdapterBulkConformanceClient(new DriverGeneratedApplicationTransport(driver), 3);
   let bounded = false;
+  let multibyteBounded = false;
   try {
     await client.writeTuples({ tuples: [], request_id: id(512) });
   } catch (error) {
-    bounded = String(error).includes("list input");
+    bounded = error instanceof Error && !(error instanceof InputBudgetError);
   }
-  assert(bounded, "empty collection preflight");
+  assert(bounded, "ordinary empty collection keeps generic preflight");
 
   const tuples = {
     request_id: id(513),
@@ -56,6 +57,43 @@ try {
   assert((await client.createPipelinesWithSteps(pipelines)).outcome.outcome === "PipelinesCreated", "Woodpecker outcome");
   assert((await client.createPipelinesWithSteps(pipelines)).replayed, "Woodpecker replay");
 
+  const budgetErrors = [];
+  try {
+    await client.writePolicyMutations({ request_id: id(598), mutations: [] });
+  } catch (error) {
+    assert(error instanceof InputBudgetError && error.cause === "collection_count", "collection count cause");
+    assert(error.path.collection === "mutations" && error.path.index === undefined && error.path.leaf === undefined, "collection count path");
+    budgetErrors.push({ cause: error.cause, collection: error.path.collection });
+  }
+  try {
+    await client.writePolicyMutations({
+      request_id: id(599),
+      mutations: [{ organization_id: id(601), mutation_id: id(602), relation: "viewer", context: new Uint8Array(524_289) }],
+    });
+  } catch (error) {
+    assert(error instanceof InputBudgetError && error.cause === "individual_value_bytes", "individual byte cause");
+    assert(error.path.collection === "mutations" && error.path.index === 0 && error.path.leaf === "context", "individual byte path");
+    budgetErrors.push({ cause: error.cause, collection: error.path.collection, index: error.path.index, leaf: error.path.leaf });
+  }
+  assert(
+    (await client.writePolicyMutations({
+      request_id: id(1582),
+      mutations: [{ organization_id: id(1580), mutation_id: id(1581), relation: "é".repeat(32), context: null }],
+    })).outcome.outcome === "PolicyMutationsWritten",
+    "64-byte multibyte leaf",
+  );
+  try {
+    await client.writePolicyMutations({
+      request_id: id(1585),
+      mutations: [{ organization_id: id(1583), mutation_id: id(1584), relation: `${"é".repeat(32)}a`, context: null }],
+    });
+  } catch (error) {
+    assert(error instanceof InputBudgetError && error.cause === "individual_value_bytes", "multibyte individual cause");
+    assert(error.path.collection === "mutations" && error.path.index === 0 && error.path.leaf === "relation", "multibyte individual path");
+    multibyteBounded = true;
+    budgetErrors.push({ cause: error.cause, collection: error.path.collection, index: error.path.index, leaf: error.path.leaf });
+  }
+  assert(multibyteBounded, "65-byte multibyte leaf preflight");
   let aggregateBounded = false;
   try {
     await client.writePolicyMutations({
@@ -66,11 +104,13 @@ try {
       ],
     });
   } catch (error) {
-    aggregateBounded = String(error).includes("generated RiffDB input");
+    aggregateBounded = error instanceof InputBudgetError && error.cause === "aggregate_canonical_element_bytes";
+    budgetErrors.push({ cause: error.cause, collection: error.path.collection });
   }
   assert(aggregateBounded, "aggregate byte preflight");
 
   for (const [count, start, organization, request] of [
+    [1, 680, 688, 689],
     [9, 700, 690, 691],
     [19, 710, 692, 693],
     [100, 800, 694, 695],
@@ -93,6 +133,7 @@ try {
     bounded_preflight: true,
     replayed: true,
     neutral_aggregate: true,
+    budget_errors: budgetErrors,
     adapters: ["mlflow", "openfga", "payload", "woodpecker"],
   }));
 } finally {

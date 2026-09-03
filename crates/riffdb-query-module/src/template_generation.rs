@@ -1,7 +1,7 @@
 //! Shared, deterministic application-facade template rendering.
 
 use minijinja::{AutoEscape, Environment, UndefinedBehavior};
-use riffdb_contract_ir::ContractBundle;
+use riffdb_contract_ir::{ContractBundle, RecordTypeRef, ValueType, ValueTypeTag};
 use riffdb_query_ir::{ReactiveModulePlanV1, ReactiveOperationPlanV1, ReactiveParameterV1};
 use serde_json::{Value, json};
 
@@ -256,7 +256,7 @@ pub fn generate_canonical_generation_model(
                     .record()
                     .field(expansion.input_field())
                     .expect("validated collection input field");
-                json!({
+                let mut collection = json!({
                     "field": go_public(field.name()),
                     "minimum": expansion.minimum_elements(),
                     "maximum": expansion.maximum_elements(),
@@ -266,7 +266,25 @@ pub fn generate_canonical_generation_model(
                         "encode": encode_expr("item", expansion.element_type(), contract),
                         "message": format!("{:?}", format!("invalid aggregate collection bytes for {}.{}", command.name(), field.name())),
                     })),
-                })
+                });
+                if expansion.maximum_aggregate_element_bytes().is_some() {
+                    let object = collection
+                        .as_object_mut()
+                        .expect("collection generation model object");
+                    object.insert(
+                        "wire_field".to_owned(),
+                        Value::String(field.name().to_owned()),
+                    );
+                    object.insert(
+                        "individual_checks".to_owned(),
+                        json!(go_collection_individual_checks(
+                            expansion.element_type(),
+                            field.name(),
+                            contract,
+                        )),
+                    );
+                }
+                collection
             });
             let vector_checks = command
                 .input()
@@ -608,6 +626,44 @@ pub(crate) fn render_go_client_header(model: &Value) -> Result<String, minijinja
         rendered.push('\n');
         rendered
     })
+}
+
+fn go_collection_individual_checks(
+    element_type: &ValueType,
+    collection: &str,
+    contract: &ContractBundle,
+) -> Vec<String> {
+    let Some(RecordTypeRef::Entity(entity_id)) = element_type.record_ref() else {
+        return Vec::new();
+    };
+    contract
+        .schema()
+        .entity(*entity_id)
+        .expect("validated collection element entity")
+        .record()
+        .fields()
+        .iter()
+        .filter_map(|field| {
+            let (value_type, optional) = match field.value_type().optional_inner() {
+                Some(inner) => (inner, true),
+                None => (field.value_type(), false),
+            };
+            if !matches!(value_type.tag(), ValueTypeTag::String | ValueTypeTag::Bytes) {
+                return None;
+            }
+            let maximum = value_type.byte_bound().expect("bounded text or bytes");
+            let member = go_public(field.name());
+            let condition = if optional {
+                format!("item.{member} != nil && len(*item.{member}) > {maximum}")
+            } else {
+                format!("len(item.{member}) > {maximum}")
+            };
+            Some(format!(
+                "if {condition} {{ return &InputBudgetError{{Cause: IndividualValueBytes, Path: InputBudgetPath{{Collection: {collection:?}, Index: &index, Leaf: {:?}}}}} }}",
+                field.name(),
+            ))
+        })
+        .collect()
 }
 
 pub(crate) fn render_python_client_header(model: &Value) -> Result<String, minijinja::Error> {

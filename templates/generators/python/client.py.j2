@@ -27,7 +27,19 @@ CONTRACT_VERSION: Final[int] = {{ contract.version }}
 CONTRACT_BUNDLE_HASH: Final[str] = "{{ contract.bundle_hash }}"
 QUERY_MODULE_HASH: Final[str] = "{{ module.identity }}"
 
-{% for enumeration in languages.python.enums %}class {{ enumeration.name }}(StrEnum):
+{% if features.aggregate_collection_budget %}COLLECTION_COUNT: Final[str] = "collection_count"
+INDIVIDUAL_VALUE_BYTES: Final[str] = "individual_value_bytes"
+AGGREGATE_CANONICAL_ELEMENT_BYTES: Final[str] = "aggregate_canonical_element_bytes"
+
+class InputBudgetError(ValueError):
+    def __init__(self, cause: str, collection: str, index: int | None = None, leaf: str | None = None) -> None:
+        self.cause = cause
+        self.collection = collection
+        self.index = index
+        self.leaf = leaf
+        super().__init__("generated command input exceeds its compiled budget")
+
+{% endif %}{% for enumeration in languages.python.enums %}class {{ enumeration.name }}(StrEnum):
 {% for variant in enumeration.variants %}    {{ variant.name }} = {{ variant.literal }}
 {% endfor %}
 {% endfor %}{% for entity in languages.python.entities %}@dataclass(frozen=True, slots=True, kw_only=True)
@@ -152,11 +164,17 @@ class {{ outcome.name }}:
         return cast(TypedVectorInspectionResult[{{ inspection.result_type }}], raw)
 
 {% endfor %}{% for command in languages.python.commands %}    {% if client.async %}async {% endif %}def {{ command.method }}(self, input: {{ command.name }}Input) -> TypedCommandResult[{{ command.name }}Outcome]:
-{% if command.collection %}        if not {{ command.collection.minimum }} <= len(input.{{ command.collection.field }}) <= {{ command.collection.maximum }}:
-            raise ValueError({{ command.collection.message }})
-{% if command.collection.aggregate %}        aggregate_element_bytes = sum(canonical_value_encoded_length(encode_value(item, {{ command.collection.aggregate.type }})) for item in input.{{ command.collection.field }})
+{% if command.collection %}{% if command.collection.aggregate %}        if not {{ command.collection.minimum }} <= len(input.{{ command.collection.field }}) <= {{ command.collection.maximum }}:
+            raise InputBudgetError(COLLECTION_COUNT, "{{ command.collection.wire_field }}")
+        for index, item in enumerate(input.{{ command.collection.field }}):
+{% for check in command.collection.individual_checks %}            if {{ check.condition }}:
+                raise InputBudgetError(INDIVIDUAL_VALUE_BYTES, "{{ check.collection }}", index, "{{ check.leaf }}")
+{% endfor %}{% if not command.collection.individual_checks %}            pass
+{% endif %}        aggregate_element_bytes = sum(canonical_value_encoded_length(encode_value(item, {{ command.collection.aggregate.type }})) for item in input.{{ command.collection.field }})
         if aggregate_element_bytes > {{ command.collection.aggregate.maximum }}:
-            raise ValueError({{ command.collection.aggregate.message }})
+            raise InputBudgetError(AGGREGATE_CANONICAL_ELEMENT_BYTES, "{{ command.collection.wire_field }}")
+{% else %}        if not {{ command.collection.minimum }} <= len(input.{{ command.collection.field }}) <= {{ command.collection.maximum }}:
+            raise ValueError({{ command.collection.message }})
 {% endif %}{% endif %}        raw = {{ client.await }}self._transport._execute_command(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             command_name={{ command.wire_name }}, plan_hash={{ command.constant }}_PLAN_HASH,
@@ -181,11 +199,18 @@ class {{ outcome.name }}:
         progress: Callable[[CommandBatchProgress], None] | None = None,
     ) -> CommandBatchResult[{{ command.name }}Outcome]:
 {% if command.collection %}        for input in inputs:
+{% if command.collection.aggregate %}
             if not {{ command.collection.minimum }} <= len(input.{{ command.collection.field }}) <= {{ command.collection.maximum }}:
-                raise ValueError({{ command.collection.message }})
-{% if command.collection.aggregate %}            aggregate_element_bytes = sum(canonical_value_encoded_length(encode_value(item, {{ command.collection.aggregate.type }})) for item in input.{{ command.collection.field }})
+                raise InputBudgetError(COLLECTION_COUNT, "{{ command.collection.wire_field }}")
+            for index, item in enumerate(input.{{ command.collection.field }}):
+{% for check in command.collection.individual_checks %}                if {{ check.condition }}:
+                    raise InputBudgetError(INDIVIDUAL_VALUE_BYTES, "{{ check.collection }}", index, "{{ check.leaf }}")
+{% endfor %}{% if not command.collection.individual_checks %}                pass
+{% endif %}            aggregate_element_bytes = sum(canonical_value_encoded_length(encode_value(item, {{ command.collection.aggregate.type }})) for item in input.{{ command.collection.field }})
             if aggregate_element_bytes > {{ command.collection.aggregate.maximum }}:
-                raise ValueError({{ command.collection.aggregate.message }})
+                raise InputBudgetError(AGGREGATE_CANONICAL_ELEMENT_BYTES, "{{ command.collection.wire_field }}")
+{% else %}            if not {{ command.collection.minimum }} <= len(input.{{ command.collection.field }}) <= {{ command.collection.maximum }}:
+                raise ValueError({{ command.collection.message }})
 {% endif %}{% endif %}        return {{ client.await }}self._transport._command_batch(inputs, options, self.{{ command.method }}, progress)
 
 {% endfor %}{% endfor %}{% if features.reactive %}

@@ -742,12 +742,17 @@ impl GeneratedCommand for LogMetricsInput {
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
 
-        if self.metrics.is_empty() || self.metrics.len() > 1000 { return Err(GeneratedCommandError::InvalidInputShape); }
+        if self.metrics.is_empty() || self.metrics.len() > 1000 { return Err(GeneratedCommandError::input_budget(riffdb_client_rust::generated::GeneratedInputBudgetCause::CollectionCount, "metrics", None, None)); }
+
+        for (index, value) in self.metrics.iter().enumerate() {
+            if value.name.len() > 128usize { return Err(GeneratedCommandError::input_budget(riffdb_client_rust::generated::GeneratedInputBudgetCause::IndividualValueBytes, "metrics", Some(index), Some("name"))); }
+        }
+
         let mut aggregate_element_bytes = 0usize;
         for value in &self.metrics {
             let encoded = encode_metric_entity(value)?;
-            aggregate_element_bytes = aggregate_element_bytes.checked_add(wire_canonical_value_encoded_len(&encoded)?).ok_or(GeneratedCommandError::InvalidInputShape)?;
-            if aggregate_element_bytes > 1048576 { return Err(GeneratedCommandError::InvalidInputShape); }
+            aggregate_element_bytes = aggregate_element_bytes.checked_add(wire_canonical_value_encoded_len(&encoded)?).ok_or(GeneratedCommandError::input_budget(riffdb_client_rust::generated::GeneratedInputBudgetCause::AggregateCanonicalElementBytes, "metrics", None, None))?;
+            if aggregate_element_bytes > 1048576 { return Err(GeneratedCommandError::input_budget(riffdb_client_rust::generated::GeneratedInputBudgetCause::AggregateCanonicalElementBytes, "metrics", None, None)); }
         }
         let fields = vec![
             wire_named_field("metrics", v1::Value { kind: Some(WireKind::ListValue(v1::ValueList { values: (self.metrics).iter().map(encode_metric_entity).collect::<Result<Vec<_>, GeneratedCommandError>>()? })) }),
@@ -803,12 +808,18 @@ impl GeneratedCommand for WritePolicyMutationsInput {
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
 
-        if self.mutations.is_empty() || self.mutations.len() > 100 { return Err(GeneratedCommandError::InvalidInputShape); }
+        if self.mutations.is_empty() || self.mutations.len() > 100 { return Err(GeneratedCommandError::input_budget(riffdb_client_rust::generated::GeneratedInputBudgetCause::CollectionCount, "mutations", None, None)); }
+
+        for (index, value) in self.mutations.iter().enumerate() {
+            if let Some(leaf) = value.context.as_ref() && leaf.len() > 524288usize { return Err(GeneratedCommandError::input_budget(riffdb_client_rust::generated::GeneratedInputBudgetCause::IndividualValueBytes, "mutations", Some(index), Some("context"))); }
+            if value.relation.len() > 64usize { return Err(GeneratedCommandError::input_budget(riffdb_client_rust::generated::GeneratedInputBudgetCause::IndividualValueBytes, "mutations", Some(index), Some("relation"))); }
+        }
+
         let mut aggregate_element_bytes = 0usize;
         for value in &self.mutations {
             let encoded = encode_policy_mutation_entity(value)?;
-            aggregate_element_bytes = aggregate_element_bytes.checked_add(wire_canonical_value_encoded_len(&encoded)?).ok_or(GeneratedCommandError::InvalidInputShape)?;
-            if aggregate_element_bytes > 900000 { return Err(GeneratedCommandError::InvalidInputShape); }
+            aggregate_element_bytes = aggregate_element_bytes.checked_add(wire_canonical_value_encoded_len(&encoded)?).ok_or(GeneratedCommandError::input_budget(riffdb_client_rust::generated::GeneratedInputBudgetCause::AggregateCanonicalElementBytes, "mutations", None, None))?;
+            if aggregate_element_bytes > 900000 { return Err(GeneratedCommandError::input_budget(riffdb_client_rust::generated::GeneratedInputBudgetCause::AggregateCanonicalElementBytes, "mutations", None, None)); }
         }
         let fields = vec![
             wire_named_field("mutations", v1::Value { kind: Some(WireKind::ListValue(v1::ValueList { values: (self.mutations).iter().map(encode_policy_mutation_entity).collect::<Result<Vec<_>, GeneratedCommandError>>()? })) }),

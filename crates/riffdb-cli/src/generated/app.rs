@@ -33,6 +33,7 @@ use riffdb_client_rust::{
     generate_capability_id, generate_offline_maintenance_operation_id, generate_request_id, v1,
 };
 use riffdb_contract_compiler::compile_contract_source;
+use riffdb_contract_ir::{RecordTypeRef, SchemaIr, ValueType, ValueTypeTag};
 use riffdb_diagnostics::{AuthoringDiagnostics, AuthoringSourcePath};
 use riffdb_query_module::{
     ApplicationManifest, ApplicationRoleOperationKind, CompiledApplicationRole,
@@ -41,10 +42,12 @@ use riffdb_query_module::{
     compile_application_role_v2, compile_reactive_source,
 };
 use riffdb_types::{
-    ActorId, CanonicalValue, CapabilityApplicationReimportScopeV1, CapabilityGrantV1, CapabilityId,
+    ActorId, CanonicalBytes, CanonicalList, CanonicalRecord, CanonicalString, CanonicalValue,
+    CapabilityApplicationReimportScopeV1, CapabilityGrantV1, CapabilityId,
     CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPrincipalFactV1,
     CapabilityPrincipalFactsV1, CapabilityRowPolicyOperationV1, ContractLineage,
-    GeneratedArtifactHash, PartitionScopeV1, TenantId, TenantScope, hash_generated_artifact,
+    GeneratedArtifactHash, PartitionScopeV1, TenantId, TenantScope, canonical_value_encoded_len,
+    hash_generated_artifact,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -52,7 +55,7 @@ use std::time::Duration;
 use crate::batch::{
     BatchError, BatchOptions, BatchReport, CollectionInputConstraint, MAX_BATCH_CONCURRENCY,
     MAX_BATCH_SOURCE_BYTES, execute as execute_batch, parse_source as parse_batch_source,
-    parse_source_with_constraint as parse_batch_source_with_constraint,
+    parse_source_with_validator as parse_batch_source_with_validator,
 };
 use crate::cli::{
     AgentCommand, ApplicationCommand, ApplicationLanguage, BackupCommand, CapabilityCommand, Cli,
@@ -976,10 +979,7 @@ fn emit_scaffold_failure(
     eprintln!("{prefix}: {error}");
 }
 
-fn emit_refusal_report(
-    diagnostics: Option<&AuthoringDiagnostics>,
-    mode: Option<OutputMode>,
-) {
+fn emit_refusal_report(diagnostics: Option<&AuthoringDiagnostics>, mode: Option<OutputMode>) {
     if let Some(rendered) = refusal_report(diagnostics, mode) {
         print!("{rendered}");
     }
@@ -993,8 +993,7 @@ fn refusal_report(
         (Some(diagnostics), Some(OutputMode::Json)) => diagnostics.render_refusals_json().ok(),
         (Some(diagnostics), _) => diagnostics.render_refusals_human().ok(),
         (None, Some(OutputMode::Json)) => Some(
-            "{\"refusals\":[],\"schema\":\"riffdb-operational-refusal-classes/v1\"}\n"
-                .to_owned(),
+            "{\"refusals\":[],\"schema\":\"riffdb-operational-refusal-classes/v1\"}\n".to_owned(),
         ),
         (None, _) => Some("operational refusals: none\n".to_owned()),
     }
@@ -3254,11 +3253,21 @@ fn deployment_installation_artifacts(
     for artifact in locked.lock().artifacts() {
         let (kind, name) = if let Some(surface) = artifact.kind().surface() {
             let kind = match surface {
-                riffdb_query_module::GeneratedApplicationSurface::Rust => InstallationArtifactKind::Rust,
-                riffdb_query_module::GeneratedApplicationSurface::Go => InstallationArtifactKind::Go,
-                riffdb_query_module::GeneratedApplicationSurface::TypeScript => InstallationArtifactKind::TypeScript,
-                riffdb_query_module::GeneratedApplicationSurface::Python => InstallationArtifactKind::Python,
-                riffdb_query_module::GeneratedApplicationSurface::Mcp => InstallationArtifactKind::Mcp,
+                riffdb_query_module::GeneratedApplicationSurface::Rust => {
+                    InstallationArtifactKind::Rust
+                }
+                riffdb_query_module::GeneratedApplicationSurface::Go => {
+                    InstallationArtifactKind::Go
+                }
+                riffdb_query_module::GeneratedApplicationSurface::TypeScript => {
+                    InstallationArtifactKind::TypeScript
+                }
+                riffdb_query_module::GeneratedApplicationSurface::Python => {
+                    InstallationArtifactKind::Python
+                }
+                riffdb_query_module::GeneratedApplicationSurface::Mcp => {
+                    InstallationArtifactKind::Mcp
+                }
             };
             (kind, surface.key())
         } else {
@@ -6576,8 +6585,217 @@ async fn contract_command(
 }
 
 struct ApplicationCommandMetadata {
-    collection_constraint: Option<CollectionInputConstraint>,
+    collection_constraint: Option<ExactCollectionInputConstraint>,
     idempotency_field: String,
+}
+
+#[derive(Clone, Debug)]
+struct ExactCollectionInputConstraint {
+    count: CollectionInputConstraint,
+    schema: SchemaIr,
+    element_type: ValueType,
+    aggregate_maximum: Option<usize>,
+}
+
+impl ExactCollectionInputConstraint {
+    fn validate(&self, input: &serde_json::Map<String, serde_json::Value>) -> bool {
+        if !self.count.validate(input) {
+            return false;
+        }
+        let Some(values) = input
+            .get(&self.count.field)
+            .and_then(serde_json::Value::as_array)
+        else {
+            return false;
+        };
+        let mut aggregate = 0usize;
+        for value in values {
+            let Some(canonical) = natural_query_value(value.clone())
+                .ok()
+                .and_then(|value| exact_canonical_value(&self.schema, &self.element_type, &value))
+            else {
+                return false;
+            };
+            let Some(length) = canonical_value_encoded_len(&canonical).ok() else {
+                return false;
+            };
+            let Some(next) = aggregate.checked_add(length) else {
+                return false;
+            };
+            if self.aggregate_maximum.is_some_and(|maximum| next > maximum) {
+                return false;
+            }
+            aggregate = next;
+        }
+        true
+    }
+}
+
+fn exact_canonical_value(
+    schema: &SchemaIr,
+    value_type: &ValueType,
+    value: &v1::Value,
+) -> Option<CanonicalValue> {
+    use v1::value::Kind;
+
+    let kind = value.kind.as_ref()?;
+    if matches!(kind, Kind::NullValue(_)) {
+        return value_type.is_optional().then_some(CanonicalValue::Null);
+    }
+    if let Some(inner) = value_type.optional_inner() {
+        return exact_canonical_value(schema, inner, value);
+    }
+    let canonical = match (value_type.tag(), kind) {
+        (ValueTypeTag::Bool, Kind::BoolValue(value)) => CanonicalValue::Bool(*value),
+        (ValueTypeTag::I64, Kind::I64Value(value)) => CanonicalValue::I64(*value),
+        (ValueTypeTag::I64, Kind::U64Value(value)) => {
+            CanonicalValue::I64(i64::try_from(*value).ok()?)
+        }
+        (ValueTypeTag::U64, Kind::U64Value(value)) => CanonicalValue::U64(*value),
+        (ValueTypeTag::U64, Kind::I64Value(value)) => {
+            CanonicalValue::U64(u64::try_from(*value).ok()?)
+        }
+        (ValueTypeTag::Decimal, Kind::DecimalValue(value)) => {
+            let spec = value_type.decimal_spec()?;
+            let mut wire = value.clone();
+            wire.precision = Some(u32::from(spec.precision()));
+            canonical_value_from_proto(v1::Value {
+                kind: Some(Kind::DecimalValue(wire)),
+            })
+            .ok()?
+        }
+        (ValueTypeTag::Money, Kind::MoneyValue(value)) => {
+            let spec =
+                riffdb_types::DecimalSpec::new(riffdb_types::MAX_DECIMAL_PRECISION, 2).ok()?;
+            let mut wire = value.clone();
+            let amount = wire.amount.as_mut()?;
+            amount.precision = Some(u32::from(spec.precision()));
+            canonical_value_from_proto(v1::Value {
+                kind: Some(Kind::MoneyValue(wire)),
+            })
+            .ok()?
+        }
+        (ValueTypeTag::String, Kind::StringValue(value)) => {
+            if value.len() > value_type.byte_bound()? {
+                return None;
+            }
+            CanonicalValue::String(CanonicalString::new(value.clone()).ok()?)
+        }
+        (ValueTypeTag::Bytes, Kind::BytesValue(value)) => {
+            if value.len() > value_type.byte_bound()? {
+                return None;
+            }
+            CanonicalValue::Bytes(CanonicalBytes::new(value.clone()).ok()?)
+        }
+        (ValueTypeTag::Uuid, Kind::UuidValue(value)) => {
+            CanonicalValue::Uuid(value.as_slice().try_into().ok()?)
+        }
+        (ValueTypeTag::Uuid, Kind::StringValue(value)) => CanonicalValue::Uuid(parse_uuid(value)?),
+        (ValueTypeTag::Date, Kind::DateValue(value)) => {
+            CanonicalValue::Date(riffdb_types::Date::new(value.days_since_unix_epoch))
+        }
+        (ValueTypeTag::Timestamp, Kind::TimestampValue(value)) => CanonicalValue::Timestamp(
+            riffdb_types::Timestamp::new(value.seconds, value.nanos).ok()?,
+        ),
+        (ValueTypeTag::Enum, Kind::EnumValue(value)) => {
+            exact_enum_value(schema, value_type, Some(value), None)?
+        }
+        (ValueTypeTag::Enum, Kind::StringValue(value)) => {
+            exact_enum_value(schema, value_type, None, Some(value))?
+        }
+        (ValueTypeTag::List, Kind::ListValue(value)) => {
+            let (element_type, maximum) = value_type.list_parts()?;
+            if value.values.len() > maximum {
+                return None;
+            }
+            let values = value
+                .values
+                .iter()
+                .map(|value| exact_canonical_value(schema, element_type, value))
+                .collect::<Option<Vec<_>>>()?;
+            CanonicalValue::List(CanonicalList::new(values).ok()?)
+        }
+        (ValueTypeTag::Record, Kind::RecordValue(value)) => {
+            exact_record_value(schema, value_type, value)?
+        }
+        (ValueTypeTag::Vector, Kind::VectorValue(_)) => {
+            canonical_value_from_proto(value.clone()).ok()?
+        }
+        _ => return None,
+    };
+    value_type.validate_value(&canonical).ok()?;
+    Some(canonical)
+}
+
+fn exact_enum_value(
+    schema: &SchemaIr,
+    value_type: &ValueType,
+    identified: Option<&v1::EnumValue>,
+    symbolic: Option<&str>,
+) -> Option<CanonicalValue> {
+    let type_id = value_type.enum_type_id()?;
+    let enumeration = schema.enumeration(type_id)?;
+    let variant = match (identified, symbolic) {
+        (Some(value), None) if value.type_id == 0 && value.variant_id == 0 => enumeration
+            .variants()
+            .iter()
+            .find(|variant| variant.name() == value.name)?,
+        (Some(value), None) if value.type_id == type_id.get() => {
+            enumeration.variants().iter().find(|variant| {
+                variant.id().get() == value.variant_id
+                    && (value.name.is_empty() || variant.name() == value.name)
+            })?
+        }
+        (None, Some(name)) => enumeration
+            .variants()
+            .iter()
+            .find(|variant| variant.name() == name)?,
+        _ => return None,
+    };
+    Some(CanonicalValue::Enum {
+        type_id,
+        variant_id: variant.id(),
+    })
+}
+
+fn exact_record_value(
+    schema: &SchemaIr,
+    value_type: &ValueType,
+    value: &v1::ValueRecord,
+) -> Option<CanonicalValue> {
+    let record = match value_type.record_ref()? {
+        RecordTypeRef::Entity(id) => schema.entity(*id)?.record(),
+        RecordTypeRef::Event(id) => schema.event(*id)?.payload(),
+        RecordTypeRef::CommandInput(_)
+        | RecordTypeRef::CommandOutcome { .. }
+        | RecordTypeRef::ProjectionResult(_) => return None,
+    };
+    let mut submitted = value
+        .fields
+        .iter()
+        .map(|field| {
+            if field.field_id.is_some() || field.name.is_empty() {
+                return None;
+            }
+            Some((field.name.as_str(), field.value.as_ref()?))
+        })
+        .collect::<Option<std::collections::BTreeMap<_, _>>>()?;
+    if submitted.len() != value.fields.len() {
+        return None;
+    }
+    let mut fields = Vec::with_capacity(record.fields().len());
+    for field in record.fields() {
+        let canonical = match submitted.remove(field.name()) {
+            Some(value) => exact_canonical_value(schema, field.value_type(), value)?,
+            None if field.value_type().is_optional() => CanonicalValue::Null,
+            None => return None,
+        };
+        fields.push((field.id(), canonical));
+    }
+    if !submitted.is_empty() {
+        return None;
+    }
+    Some(CanonicalValue::Record(CanonicalRecord::new(fields).ok()?))
 }
 
 fn application_command_metadata(
@@ -6619,10 +6837,15 @@ fn application_command_metadata(
                 .record()
                 .field(expansion.input_field())
                 .ok_or_else(|| invalid_input(identity))?;
-            Ok(CollectionInputConstraint {
-                field: field.name().to_owned(),
-                minimum: expansion.minimum_elements(),
-                maximum: expansion.maximum_elements(),
+            Ok(ExactCollectionInputConstraint {
+                count: CollectionInputConstraint {
+                    field: field.name().to_owned(),
+                    minimum: expansion.minimum_elements(),
+                    maximum: expansion.maximum_elements(),
+                },
+                schema: locked.contract().schema().clone(),
+                element_type: expansion.element_type().clone(),
+                aggregate_maximum: expansion.maximum_aggregate_element_bytes(),
             })
         })
         .transpose()?;
@@ -6630,17 +6853,6 @@ fn application_command_metadata(
         collection_constraint,
         idempotency_field,
     }))
-}
-
-fn collection_input_constraint(
-    application: Option<&std::ffi::OsStr>,
-    command_name: &str,
-    identity: CommandIdentity,
-) -> Result<Option<CollectionInputConstraint>, Terminal> {
-    Ok(
-        application_command_metadata(application, command_name, identity)?
-            .and_then(|metadata| metadata.collection_constraint),
-    )
 }
 
 async fn command_command(
@@ -6696,12 +6908,16 @@ async fn command_command(
             let collection_constraint = application_metadata
                 .as_ref()
                 .and_then(|metadata| metadata.collection_constraint.as_ref());
-            let source = match parse_batch_source_with_constraint(
+            let exact_validator = |input: &serde_json::Map<String, serde_json::Value>| {
+                collection_constraint.is_none_or(|constraint| constraint.validate(input))
+            };
+            let source = match parse_batch_source_with_validator(
                 &source,
                 &command_name,
                 expected_version,
                 &idempotency_field,
-                collection_constraint,
+                collection_constraint.map(|constraint| &constraint.count),
+                Some(&exact_validator),
             ) {
                 Ok(source) => source,
                 Err(error) => return batch_error_terminal(error),
@@ -6752,7 +6968,7 @@ async fn command_command(
                 Ok(input) => input,
                 Err(error) => return input_terminal(CommandIdentity::CommandRun, error),
             };
-            let collection_constraint = match collection_input_constraint(
+            let application_metadata = match application_command_metadata(
                 application.as_deref(),
                 &command_name,
                 CommandIdentity::CommandRun,
@@ -6760,8 +6976,9 @@ async fn command_command(
                 Ok(value) => value,
                 Err(terminal) => return terminal,
             };
-            if collection_constraint
+            if application_metadata
                 .as_ref()
+                .and_then(|metadata| metadata.collection_constraint.as_ref())
                 .is_some_and(|constraint| !constraint.validate(&natural_input))
             {
                 return invalid_input(CommandIdentity::CommandRun);
@@ -12383,9 +12600,7 @@ mod tests {
         );
         assert_eq!(
             refusal_report(None, Some(OutputMode::Json)).as_deref(),
-            Some(
-                "{\"refusals\":[],\"schema\":\"riffdb-operational-refusal-classes/v1\"}\n"
-            )
+            Some("{\"refusals\":[],\"schema\":\"riffdb-operational-refusal-classes/v1\"}\n")
         );
     }
 
@@ -13595,6 +13810,56 @@ mod tests {
             mismatched_installation,
             "installation_plan_local_identity_mismatch",
         );
+        assert_listener_unused(&listener);
+    }
+
+    // req: AAA-004, AAA-005, BLK-019, BLK-021
+    #[tokio::test]
+    async fn exact_bundle_cli_aggregate_preflight_is_transport_free() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+        let mut config = test_config();
+        config.endpoint = format!(
+            "http://{}",
+            listener.local_addr().expect("listener address")
+        );
+        let mut workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        assert!(workspace.pop());
+        assert!(workspace.pop());
+        let application =
+            workspace.join("fixtures/adapters/bulk-conformance/riffdb.application.json");
+        let context = STANDARD.encode(vec![0x61; 450_000]);
+        let input = serde_json::json!({
+            "request_id": {"$uuid": "018f0f8b-7c6d-7e31-8a4f-000000000061"},
+            "mutations": [
+                {
+                    "organization_id": {"$uuid": "018f0f8b-7c6d-7e31-8a4f-000000000062"},
+                    "mutation_id": {"$uuid": "018f0f8b-7c6d-7e31-8a4f-000000000063"},
+                    "relation": "viewer",
+                    "context": {"$bytes": context}
+                },
+                {
+                    "organization_id": {"$uuid": "018f0f8b-7c6d-7e31-8a4f-000000000062"},
+                    "mutation_id": {"$uuid": "018f0f8b-7c6d-7e31-8a4f-000000000064"},
+                    "relation": "viewer",
+                    "context": {"$bytes": context}
+                }
+            ]
+        });
+        let terminal = dispatch(
+            TopLevel::Command {
+                command: CommandCommand::Run {
+                    command_name: "WritePolicyMutations".to_owned(),
+                    input: OsString::from("-"),
+                    expected_version: Some("1".to_owned()),
+                    application: Some(application.into_os_string()),
+                },
+            },
+            &config,
+            &TestEnvironment::default(),
+            &mut Cursor::new(serde_json::to_vec(&input).expect("bounded input JSON")),
+        )
+        .await;
+        assert_local_code(terminal, "input_invalid");
         assert_listener_unused(&listener);
     }
 

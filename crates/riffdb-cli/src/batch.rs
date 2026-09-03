@@ -30,6 +30,7 @@ const CHECKPOINT_SCHEMA: &str = "riffdb.command-batch-checkpoint/v1";
 
 type BatchExecution = (BatchItem, Result<v1::ExecuteCommandResponse, ClientError>);
 type TransportBatchExecution = Result<Vec<BatchExecution>, IdempotentTransportBatchError>;
+type ExactInputValidator<'a> = dyn Fn(&serde_json::Map<String, serde_json::Value>) -> bool + 'a;
 
 #[derive(Debug)]
 pub(crate) enum BatchError {
@@ -214,6 +215,24 @@ pub(crate) fn parse_source_with_constraint(
     idempotency_field: &str,
     collection_constraint: Option<&CollectionInputConstraint>,
 ) -> Result<BatchSource, BatchError> {
+    parse_source_with_validator(
+        source,
+        command_name,
+        expected_contract_version,
+        idempotency_field,
+        collection_constraint,
+        None,
+    )
+}
+
+pub(crate) fn parse_source_with_validator(
+    source: &[u8],
+    command_name: &str,
+    expected_contract_version: Option<u64>,
+    idempotency_field: &str,
+    collection_constraint: Option<&CollectionInputConstraint>,
+    exact_validator: Option<&ExactInputValidator<'_>>,
+) -> Result<BatchSource, BatchError> {
     if source.is_empty()
         || source.len() > MAX_BATCH_SOURCE_BYTES
         || idempotency_field.is_empty()
@@ -234,6 +253,9 @@ pub(crate) fn parse_source_with_constraint(
         let UniqueCommandInput(input) =
             serde_json::from_str(raw_line).map_err(|_| BatchError::Input(InputError::Invalid))?;
         if collection_constraint.is_some_and(|constraint| !constraint.validate(&input)) {
+            return Err(BatchError::Input(InputError::Invalid));
+        }
+        if exact_validator.is_some_and(|validator| !validator(&input)) {
             return Err(BatchError::Input(InputError::Invalid));
         }
         let key = input

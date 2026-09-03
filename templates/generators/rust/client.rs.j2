@@ -220,13 +220,19 @@ impl GeneratedCommand for {{ command.input_name }} {
 
     fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
 
-{% if command.collection %}        if {{ command.collection.lower }} || self.{{ command.collection.field }}.len() > {{ command.collection.maximum }} { return Err(GeneratedCommandError::InvalidInputShape); }
-{% if command.collection.aggregate %}        let mut aggregate_element_bytes = 0usize;
+{% if command.collection %}{% if command.collection.aggregate %}        if {{ command.collection.lower }} || self.{{ command.collection.field }}.len() > {{ command.collection.maximum }} { return Err(GeneratedCommandError::input_budget(riffdb_client_rust::generated::GeneratedInputBudgetCause::CollectionCount, "{{ command.collection.wire_field }}", None, None)); }
+{% if command.collection.individual_checks %}
+        for (index, value) in self.{{ command.collection.field }}.iter().enumerate() {
+{% for check in command.collection.individual_checks %}            {{ check }}
+{% endfor %}        }
+{% endif %}
+        let mut aggregate_element_bytes = 0usize;
         for value in &self.{{ command.collection.field }} {
             let encoded = {{ command.collection.aggregate.encode }};
-            aggregate_element_bytes = aggregate_element_bytes.checked_add(wire_canonical_value_encoded_len(&encoded)?).ok_or(GeneratedCommandError::InvalidInputShape)?;
-            if aggregate_element_bytes > {{ command.collection.aggregate.maximum }} { return Err(GeneratedCommandError::InvalidInputShape); }
+            aggregate_element_bytes = aggregate_element_bytes.checked_add(wire_canonical_value_encoded_len(&encoded)?).ok_or(GeneratedCommandError::input_budget(riffdb_client_rust::generated::GeneratedInputBudgetCause::AggregateCanonicalElementBytes, "{{ command.collection.wire_field }}", None, None))?;
+            if aggregate_element_bytes > {{ command.collection.aggregate.maximum }} { return Err(GeneratedCommandError::input_budget(riffdb_client_rust::generated::GeneratedInputBudgetCause::AggregateCanonicalElementBytes, "{{ command.collection.wire_field }}", None, None)); }
         }
+{% else %}        if {{ command.collection.lower }} || self.{{ command.collection.field }}.len() > {{ command.collection.maximum }} { return Err(GeneratedCommandError::InvalidInputShape); }
 {% endif %}{% endif %}        let fields = vec![
 {% for input in command.inputs %}            wire_named_field("{{ input.wire_name }}", {{ input.encode }}),
 {% endfor %}        ];

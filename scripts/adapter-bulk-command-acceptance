@@ -16,7 +16,7 @@ export GOPROXY=off
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$task_tmp_root/riffdb-uv-cache}"
 mkdir -p "$GOCACHE" "$GOPATH" "$UV_CACHE_DIR"
 
-for tool in cargo go jq mkfifo mktemp node npm python3 sha256sum uv; do
+for tool in cargo curl go jq mkfifo mktemp node npm python3 sha256sum uv; do
     command -v "$tool" >/dev/null 2>&1 || {
         echo "required adapter-bulk tool is missing: $tool" >&2
         exit 1
@@ -66,6 +66,13 @@ with socket.socket() as listener:
     print(listener.getsockname()[1])
 PY
 )"
+mcp_port="$($work_root/python-venv/bin/python - <<'PY'
+import socket
+with socket.socket() as listener:
+    listener.bind(("127.0.0.1", 0))
+    print(listener.getsockname()[1])
+PY
+)"
 cp crates/riffdb-server/tests/fixtures/localhost-cert.pem "$work_root/server.pem"
 cp crates/riffdb-server/tests/fixtures/localhost-key.pem "$work_root/server.key"
 cp crates/riffdb-server/tests/fixtures/test-ca.pem "$work_root/ca.pem"
@@ -87,6 +94,7 @@ environment = "development"
 audience = "riffdb-adapter-bulk"
 capability_keys = "$work_root/capability.keys"
 idempotency_keys = "$work_root/idempotency.keys"
+mcp_listen = "127.0.0.1:$mcp_port"
 
 [server.application_listener]
 mode = "direct_tls"
@@ -163,9 +171,25 @@ credential_file="$(jq -r 'if (.role.credential_file // "") == "" then "applicati
 if [[ "$credential_file" == /* ]]; then credential="$credential_file"; else credential="$deployment_root/$credential_file"; fi
 [[ -f "$credential" ]] || { echo "adapter application credential was not provisioned" >&2; exit 1; }
 
+target/debug/riffdb --config "$work_root/operator-client.toml" role bind \
+    "$work_root/application/generated/riffdb.application.exact.json" \
+    --role AdapterBulkApplication --principal adapter-bulk-mcp \
+    --actor-kind agent --audience "http://127.0.0.1:$mcp_port/mcp" --lifetime-seconds 3600 \
+    --credential-output "$work_root/mcp.credential" --output json >/dev/null
+
 export RIFFDB_CONFORMANCE_ENDPOINT="https://127.0.0.1:$port"
 export RIFFDB_CONFORMANCE_TRUST_ROOT="$work_root/ca.pem"
 export RIFFDB_CONFORMANCE_CREDENTIAL="$credential"
+cat >"$work_root/application-client.toml" <<EOF
+[client]
+endpoint = "https://127.0.0.1:$port"
+database = "default"
+output = "json"
+max_attempts = 3
+credential_file = "$credential"
+tls_trust_root = "$work_root/ca.pem"
+tls_server_name = "127.0.0.1"
+EOF
 cargo +1.97.0 run --quiet -p riffdb-testkit --example adapter_bulk_remote_client -- >"$work_root/rust.json"
 
 socket="$work_root/riffdb-driver.sock"
@@ -236,9 +260,112 @@ PYTHONPATH="$work_root/application/generated/python" \
     "$work_root/python-venv/bin/python" fixtures/adapters/bulk-conformance/runner/python.py \
     >"$work_root/python.json"
 
+python3 - "$work_root/cli-over-budget.json" "$work_root/mcp-over-budget.json" <<'PY'
+import base64
+import json
+import sys
+
+context = base64.b64encode(b"a" * 450_000).decode("ascii")
+mutations = [
+    {
+        "organization_id": "018f0f8b-7c6d-7e31-8a4f-000000000062",
+        "mutation_id": f"018f0f8b-7c6d-7e31-8a4f-{ordinal:012x}",
+        "relation": "viewer",
+        "context": context,
+    }
+    for ordinal in (63, 64)
+]
+mcp = {
+    "request_id": "018f0f8b-7c6d-7e31-8a4f-000000000061",
+    "mutations": mutations,
+}
+cli = {
+    "request_id": {"$uuid": mcp["request_id"]},
+    "mutations": [
+        {
+            **mutation,
+            "organization_id": {"$uuid": mutation["organization_id"]},
+            "mutation_id": {"$uuid": mutation["mutation_id"]},
+            "context": {"$bytes": mutation["context"]},
+        }
+        for mutation in mutations
+    ],
+}
+for path, document in zip(sys.argv[1:], (cli, mcp), strict=True):
+    with open(path, "w", encoding="utf-8") as output:
+        json.dump(document, output, separators=(",", ":"), sort_keys=True)
+PY
+
+if target/debug/riffdb --config "$work_root/application-client.toml" command run \
+    WritePolicyMutations --input "$work_root/cli-over-budget.json" --expected-version 1 \
+    --application "$work_root/application/riffdb.application.json" --output json \
+    >"$work_root/cli-local-error.json"; then
+    echo "exact-bundle CLI accepted an aggregate-overflow command" >&2
+    exit 1
+fi
+if target/debug/riffdb --config "$work_root/application-client.toml" command run \
+    WritePolicyMutations --input "$work_root/cli-over-budget.json" --expected-version 1 \
+    --output json >"$work_root/cli-service-error.json"; then
+    echo "raw CLI command reached effects with an aggregate overflow" >&2
+    exit 1
+fi
+
+mcp_endpoint="http://127.0.0.1:$mcp_port/mcp"
+cat >"$work_root/mcp-curl.conf" <<EOF
+url = "$mcp_endpoint"
+header = "Authorization: Bearer $(<"$work_root/mcp.credential")"
+header = "Content-Type: application/json"
+header = "Accept: application/json, text/event-stream"
+header = "Mcp-Protocol-Version: 2025-11-25"
+max-time = 45
+silent
+show-error
+fail-with-body
+EOF
+chmod 0600 "$work_root/mcp-curl.conf"
+normalize_mcp_response() {
+    jq -Rse '
+      [split("\n")[] | select(startswith("data: ")) | ltrimstr("data: ") | fromjson]
+      | if length == 1 then .[0] else error("expected exactly one MCP data event") end
+    ' "$1" >"$2"
+}
+jq -cn '{jsonrpc:"2.0",id:1,method:"initialize",params:{protocolVersion:"2025-11-25",capabilities:{},clientInfo:{name:"riffdb-bulk-acceptance",version:"1"}}}' >"$work_root/mcp-initialize.json"
+curl --config "$work_root/mcp-curl.conf" --dump-header "$work_root/mcp-initialize.headers" \
+    --output "$work_root/mcp-initialize-output.sse" \
+    --data-binary @"$work_root/mcp-initialize.json"
+session_id="$(awk 'tolower($1) == "mcp-session-id:" {gsub(/\r/, "", $2); print $2}' "$work_root/mcp-initialize.headers")"
+[[ -n "$session_id" && "$session_id" != *$'\n'* ]] || {
+    echo "hosted MCP initialization omitted its bounded session ID" >&2
+    exit 1
+}
+jq -cn '{jsonrpc:"2.0",method:"notifications/initialized"}' >"$work_root/mcp-notification.json"
+curl --config "$work_root/mcp-curl.conf" --header "Mcp-Session-Id: $session_id" \
+    --output "$work_root/mcp-notification-output.json" \
+    --data-binary @"$work_root/mcp-notification.json"
+jq -cn '{jsonrpc:"2.0",id:2,method:"tools/list",params:{}}' >"$work_root/mcp-list.json"
+curl --config "$work_root/mcp-curl.conf" --header "Mcp-Session-Id: $session_id" \
+    --output "$work_root/mcp-list-output.sse" --data-binary @"$work_root/mcp-list.json"
+normalize_mcp_response "$work_root/mcp-list-output.sse" "$work_root/mcp-list-response.json"
+mcp_command_name="riffdb_cmd_adapterbulkconformance_writepolicymutations"
+jq -e --arg name "$mcp_command_name" \
+    '[.result.tools[] | select(.name == $name)] | length == 1' \
+    "$work_root/mcp-list-response.json" >/dev/null
+jq -cn --slurpfile arguments "$work_root/mcp-over-budget.json" \
+    --arg name "$mcp_command_name" \
+    '{jsonrpc:"2.0",id:3,method:"tools/call",params:{name:$name,arguments:$arguments[0]}}' \
+    >"$work_root/mcp-call.json"
+curl --config "$work_root/mcp-curl.conf" --header "Mcp-Session-Id: $session_id" \
+    --output "$work_root/mcp-call-output.sse" --data-binary @"$work_root/mcp-call.json"
+normalize_mcp_response "$work_root/mcp-call-output.sse" "$work_root/mcp-service-error.json"
+
 expected='{"adapters":["mlflow","openfga","payload","woodpecker"],"bounded_preflight":true,"neutral_aggregate":true,"replayed":true,"schema":"riffdb.adapter-bulk-observation/v1"}'
+python3 scripts/adapter_bulk_error_observations.py \
+    "$work_root/rust.json" "$work_root/go.json" \
+    "$work_root/typescript.json" "$work_root/python.json" \
+    "$work_root/cli-local-error.json" "$work_root/cli-service-error.json" \
+    "$work_root/mcp-service-error.json"
 for language in rust go typescript python; do
-    observed="$(jq -cS 'del(.language, .atomic_conflict, .delete_restrict, .high_cardinality_atomic)' "$work_root/$language.json")"
+    observed="$(jq -cS 'del(.language, .atomic_conflict, .delete_restrict, .high_cardinality_atomic, .budget_errors)' "$work_root/$language.json")"
     [[ "$observed" == "$expected" ]] || {
         echo "$language produced a divergent adapter observation: $observed" >&2
         exit 1

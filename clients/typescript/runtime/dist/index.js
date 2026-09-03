@@ -8,6 +8,16 @@ const MAX_OUTPUT_BYTES = 4_194_304;
 const HASH = /^[0-9a-f]{64}$/;
 const SYMBOL = /^[A-Za-z][A-Za-z0-9_.-]{0,255}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+export class InputBudgetError extends Error {
+    cause;
+    path;
+    constructor(cause, path) {
+        super("generated command input exceeds its compiled budget");
+        this.cause = cause;
+        this.path = path;
+        this.name = "InputBudgetError";
+    }
+}
 /**
  * Constructs an exact fixed-point value from decimal text without using a
  * JavaScript floating-point number.
@@ -833,26 +843,31 @@ function encodeDriverRecord(value, schema) {
         throw new Error("invalid generated RiffDB record");
     return encoded.value;
 }
-function encodeDriverValue(value, schema) {
+function encodeDriverValue(value, schema, budgetPath) {
     if (schema.kind === "optional") {
-        return value === null || value === undefined ? { type: "null" } : encodeDriverValue(value, schema.value);
+        return value === null || value === undefined ? { type: "null" } : encodeDriverValue(value, schema.value, budgetPath);
     }
     if (schema.kind === "list") {
         if (!Array.isArray(value)
             || value.length < (schema.minimum ?? 0)
             || value.length > (schema.maximum ?? 4_096)) {
+            if (budgetPath !== undefined)
+                throw new InputBudgetError("collection_count", budgetPath);
             throw new Error("invalid generated RiffDB list input");
         }
+        const encoded = value.map((item, index) => encodeDriverValue(item, schema.value, budgetPath === undefined ? undefined : { ...budgetPath, index }));
         if (schema.aggregateCanonicalElementBytes !== undefined) {
             let aggregate = 0;
             for (const item of value) {
                 aggregate += canonicalValueEncodedLength(item, schema.value);
                 if (!Number.isSafeInteger(aggregate) || aggregate > schema.aggregateCanonicalElementBytes) {
+                    if (budgetPath !== undefined)
+                        throw new InputBudgetError("aggregate_canonical_element_bytes", budgetPath);
                     throw new Error("invalid generated RiffDB input");
                 }
             }
         }
-        return { type: "list", value: value.map((item) => encodeDriverValue(item, schema.value)) };
+        return { type: "list", value: encoded };
     }
     if (schema.kind === "record") {
         const input = exactObject(value);
@@ -866,7 +881,12 @@ function encodeDriverValue(value, schema) {
                 continue;
             if (fieldValue === undefined)
                 throw new Error("generated RiffDB input is missing a field");
-            output[name] = encodeDriverValue(fieldValue, fieldSchema);
+            const childPath = budgetPath === undefined
+                ? (fieldSchema.kind === "list" && fieldSchema.aggregateCanonicalElementBytes !== undefined
+                    ? { collection: name }
+                    : undefined)
+                : { ...budgetPath, leaf: name };
+            output[name] = encodeDriverValue(fieldValue, fieldSchema, childPath);
         }
         return { type: "record", value: output };
     }
@@ -883,7 +903,13 @@ function encodeDriverValue(value, schema) {
             if (typeof value !== "bigint" || value < 0n || value > (1n << 64n) - 1n)
                 throw new Error("invalid generated RiffDB u64 input");
             return { type: "u64", value: value.toString() };
-        case "string":
+        case "string": {
+            const string = expectBoundedString(value, 262_144);
+            if (schema.maximumBytes !== undefined && new TextEncoder().encode(string).length > schema.maximumBytes && budgetPath !== undefined) {
+                throw new InputBudgetError("individual_value_bytes", budgetPath);
+            }
+            return { type: "string", value: string };
+        }
         case "cursor": return { type: "string", value: expectBoundedString(value, 262_144) };
         case "uuid":
             if (typeof value !== "string" || !UUID.test(value))
@@ -893,6 +919,9 @@ function encodeDriverValue(value, schema) {
         case "bytes":
             if (!(value instanceof Uint8Array) || value.byteLength > 1_048_576)
                 throw new Error("invalid generated RiffDB bytes input");
+            if (schema.maximumBytes !== undefined && value.byteLength > schema.maximumBytes && budgetPath !== undefined) {
+                throw new InputBudgetError("individual_value_bytes", budgetPath);
+            }
             return { type: "bytes", value: Buffer.from(value).toString("base64") };
         case "date":
             if (!Number.isInteger(value) || value < -2_147_483_648 || value > 2_147_483_647)
@@ -1267,26 +1296,31 @@ function validateIdentity(value) {
     if (value.commandName !== undefined)
         expectSymbol(value.commandName);
 }
-function encodeValue(value, schema) {
+function encodeValue(value, schema, budgetPath) {
     if (schema.kind === "optional") {
-        return value === null || value === undefined ? null : encodeValue(value, schema.value);
+        return value === null || value === undefined ? null : encodeValue(value, schema.value, budgetPath);
     }
     if (schema.kind === "list") {
         if (!Array.isArray(value)
             || (schema.minimum !== undefined && value.length < schema.minimum)
             || (schema.maximum !== undefined && value.length > schema.maximum)) {
+            if (budgetPath !== undefined)
+                throw new InputBudgetError("collection_count", budgetPath);
             throw new Error("invalid generated application input");
         }
+        const encoded = value.map((item, index) => encodeValue(item, schema.value, budgetPath === undefined ? undefined : { ...budgetPath, index }));
         if (schema.aggregateCanonicalElementBytes !== undefined) {
             let aggregate = 0;
             for (const item of value) {
                 aggregate += canonicalValueEncodedLength(item, schema.value);
                 if (!Number.isSafeInteger(aggregate) || aggregate > schema.aggregateCanonicalElementBytes) {
+                    if (budgetPath !== undefined)
+                        throw new InputBudgetError("aggregate_canonical_element_bytes", budgetPath);
                     throw new Error("invalid generated application input");
                 }
             }
         }
-        return value.map((item) => encodeValue(item, schema.value));
+        return encoded;
     }
     if (schema.kind === "record") {
         const input = exactObject(value);
@@ -1301,7 +1335,12 @@ function encodeValue(value, schema) {
                 continue;
             if (fieldValue === undefined)
                 continue;
-            output[field.name] = encodeValue(fieldValue, field.schema);
+            const childPath = budgetPath === undefined
+                ? (field.schema.kind === "list" && field.schema.aggregateCanonicalElementBytes !== undefined
+                    ? { collection: field.name }
+                    : undefined)
+                : { ...budgetPath, leaf: field.name };
+            output[field.name] = encodeValue(fieldValue, field.schema, childPath);
         }
         return output;
     }
@@ -1312,9 +1351,14 @@ function encodeValue(value, schema) {
             return { $uuid: value };
         case "enum":
             return { $enum: expectSymbol(value) };
-        case "string":
-        case "cursor":
-            return expectBoundedString(value, 262_144);
+        case "string": {
+            const string = expectBoundedString(value, 262_144);
+            if (schema.maximumBytes !== undefined && new TextEncoder().encode(string).length > schema.maximumBytes && budgetPath !== undefined) {
+                throw new InputBudgetError("individual_value_bytes", budgetPath);
+            }
+            return string;
+        }
+        case "cursor": return expectBoundedString(value, 262_144);
         case "bool":
             if (typeof value !== "boolean")
                 throw new Error("invalid boolean input");
@@ -1357,6 +1401,9 @@ function encodeValue(value, schema) {
         case "bytes":
             if (!(value instanceof Uint8Array) || value.byteLength > 1_048_576) {
                 throw new Error("invalid bytes input");
+            }
+            if (schema.maximumBytes !== undefined && value.byteLength > schema.maximumBytes && budgetPath !== undefined) {
+                throw new InputBudgetError("individual_value_bytes", budgetPath);
             }
             return { $bytes: Buffer.from(value).toString("base64") };
         case "date":

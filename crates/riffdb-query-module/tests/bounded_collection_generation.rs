@@ -93,7 +93,9 @@ fn generated_collection_surfaces_preflight_the_exact_compiled_bounds() {
 
     let go = generate_go_application_client(&module, &contract, &[]);
     assert!(go.contains("len(input.Tuples) < 1 || len(input.Tuples) > 128"));
-    assert!(go.contains("invalid bounded collection length for WriteTuples.tuples"));
+    assert!(
+        go.contains("errors.New(\"invalid bounded collection length for WriteTuples.tuples\")")
+    );
 
     let typescript = generate_typescript_application_client(&module, &contract, &[]);
     assert!(typescript.contains(r#""kind":"list""#));
@@ -103,7 +105,9 @@ fn generated_collection_surfaces_preflight_the_exact_compiled_bounds() {
     let python =
         generate_python_application_client(&module, &contract, &[]).expect("Python client");
     assert!(python.contains("if not 1 <= len(input.tuples) <= 128:"));
-    assert!(python.contains("invalid bounded collection length for WriteTuples.tuples"));
+    assert!(
+        python.contains("ValueError(\"invalid bounded collection length for WriteTuples.tuples\")")
+    );
 
     let command_tool = generate_mcp_commands(&module, &contract)
         .expect("MCP commands")
@@ -143,7 +147,8 @@ fn generated_collection_surfaces_expose_no_generic_write_escape_hatch() {
 }
 
 #[test]
-fn generated_collection_surfaces_publish_and_preflight_aggregate_bytes() {
+// req: AAA-001, AAA-003, AAA-009, AAA-010, BLK-014, BLK-019
+fn aggregate_collection_annotation_is_exact_bounded_and_array_only() {
     let (contract, module) = aggregate_budget_application();
 
     let rust = generate_rust_application_client(&module, &contract, &[]);
@@ -173,4 +178,71 @@ fn generated_collection_surfaces_publish_and_preflight_aggregate_bytes() {
         schema["properties"]["mutations"]["x-riffdb-aggregateCanonicalElementBytes"],
         900_000
     );
+    assert_eq!(schema["properties"]["mutations"]["type"], "array");
+    assert!(
+        schema["properties"]["request_id"]
+            .get("x-riffdb-aggregateCanonicalElementBytes")
+            .is_none()
+    );
+}
+
+#[test]
+// req: AAA-001, AAA-002, AAA-003, AAA-009, AAA-010, BLK-014, BLK-019
+fn generated_aggregate_preflight_causes_are_closed_and_transport_free() {
+    let (contract, module) = aggregate_budget_application();
+
+    let rust = generate_rust_application_client(&module, &contract, &[]);
+    let go = generate_go_application_client(&module, &contract, &[]);
+    let typescript = generate_typescript_application_client(&module, &contract, &[]);
+    let python =
+        generate_python_application_client(&module, &contract, &[]).expect("Python client");
+
+    let typescript_runtime = include_str!("../../../clients/typescript/runtime/src/index.ts");
+    let rust_runtime = include_str!("../../riffdb-client-rust/src/generated/mod.rs");
+    for generated in [&go, &python, typescript_runtime, rust_runtime] {
+        assert!(generated.contains("collection_count"));
+        assert!(generated.contains("individual_value_bytes"));
+        assert!(generated.contains("aggregate_canonical_element_bytes"));
+        assert!(!generated.contains("send_on_preflight_failure"));
+    }
+    assert!(rust.contains("GeneratedInputBudgetCause::CollectionCount"));
+    assert!(rust.contains("GeneratedInputBudgetCause::IndividualValueBytes"));
+    assert!(rust.contains("GeneratedInputBudgetCause::AggregateCanonicalElementBytes"));
+    assert!(rust.contains("Some(index)"));
+    assert!(go.contains("Index: &index"));
+    assert!(typescript.contains(r#""maximumBytes":524288"#));
+    assert!(
+        !typescript.contains(r#""name":"object","schema":{"kind":"string","maximumBytes":256}"#)
+    );
+    assert!(typescript_runtime.contains(
+        r#"fieldSchema.kind === "list" && fieldSchema.aggregateCanonicalElementBytes !== undefined"#
+    ));
+    assert!(typescript_runtime.contains("{ ...budgetPath, leaf: field.name }"));
+    assert!(python.contains("index, \"context\""));
+    assert!(python.contains("len(item.relation.encode(\"utf-8\")) > 64"));
+    assert!(!python.contains("len(item.relation) > 64"));
+}
+
+#[test]
+// req: ID-001, ID-004, BLK-019
+fn aggregate_budget_public_and_durable_identities_are_unchanged() {
+    let (contract, module) = aggregate_budget_application();
+    let command = contract
+        .commands()
+        .iter()
+        .find(|command| command.name() == "WritePolicyMutations")
+        .expect("command");
+    assert_eq!(
+        command
+            .plan_hash()
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>(),
+        "f727de9c81e0c211aaaa2054b3c87dba7744c8b639756fb30bdaf673e9bda6ee"
+    );
+    let typescript = generate_typescript_application_client(&module, &contract, &[]);
+    assert!(typescript.contains(
+        r#"inputSchemaHash: "ba2997d742db78a7dabca330fce3c282480b6c02b32397b658868aba87fb1e53""#
+    ));
 }

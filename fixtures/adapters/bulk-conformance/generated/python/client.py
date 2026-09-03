@@ -25,6 +25,18 @@ CONTRACT_VERSION: Final[int] = 1
 CONTRACT_BUNDLE_HASH: Final[str] = "1269c5719677521a90542d72ef51deb48535ec878a5789aa7491ac5917285698"
 QUERY_MODULE_HASH: Final[str] = "54ee2b4f4aafce82698df049391e788ce8669ccba4fdf0fd44d16e3a36678709"
 
+COLLECTION_COUNT: Final[str] = "collection_count"
+INDIVIDUAL_VALUE_BYTES: Final[str] = "individual_value_bytes"
+AGGREGATE_CANONICAL_ELEMENT_BYTES: Final[str] = "aggregate_canonical_element_bytes"
+
+class InputBudgetError(ValueError):
+    def __init__(self, cause: str, collection: str, index: int | None = None, leaf: str | None = None) -> None:
+        self.cause = cause
+        self.collection = collection
+        self.index = index
+        self.leaf = leaf
+        super().__init__("generated command input exceeds its compiled budget")
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Metric:
     name: str
@@ -418,10 +430,13 @@ class AdapterBulkConformanceClient:
 
     def log_metrics(self, input: LogMetricsInput) -> TypedCommandResult[LogMetricsOutcome]:
         if not 1 <= len(input.metrics) <= 1000:
-            raise ValueError("invalid bounded collection length for LogMetrics.metrics")
+            raise InputBudgetError(COLLECTION_COUNT, "metrics")
+        for index, item in enumerate(input.metrics):
+            if len(item.name.encode("utf-8")) > 128:
+                raise InputBudgetError(INDIVIDUAL_VALUE_BYTES, "metrics", index, "name")
         aggregate_element_bytes = sum(canonical_value_encoded_length(encode_value(item, Metric)) for item in input.metrics)
         if aggregate_element_bytes > 1048576:
-            raise ValueError("invalid aggregate collection bytes for LogMetrics.metrics")
+            raise InputBudgetError(AGGREGATE_CANONICAL_ELEMENT_BYTES, "metrics")
         raw = self._transport._execute_command(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             command_name="LogMetrics", plan_hash=LOG_METRICS_PLAN_HASH,
@@ -438,19 +453,28 @@ class AdapterBulkConformanceClient:
         progress: Callable[[CommandBatchProgress], None] | None = None,
     ) -> CommandBatchResult[LogMetricsOutcome]:
         for input in inputs:
+
             if not 1 <= len(input.metrics) <= 1000:
-                raise ValueError("invalid bounded collection length for LogMetrics.metrics")
+                raise InputBudgetError(COLLECTION_COUNT, "metrics")
+            for index, item in enumerate(input.metrics):
+                if len(item.name.encode("utf-8")) > 128:
+                    raise InputBudgetError(INDIVIDUAL_VALUE_BYTES, "metrics", index, "name")
             aggregate_element_bytes = sum(canonical_value_encoded_length(encode_value(item, Metric)) for item in input.metrics)
             if aggregate_element_bytes > 1048576:
-                raise ValueError("invalid aggregate collection bytes for LogMetrics.metrics")
+                raise InputBudgetError(AGGREGATE_CANONICAL_ELEMENT_BYTES, "metrics")
         return self._transport._command_batch(inputs, options, self.log_metrics, progress)
 
     def write_policy_mutations(self, input: WritePolicyMutationsInput) -> TypedCommandResult[WritePolicyMutationsOutcome]:
         if not 1 <= len(input.mutations) <= 100:
-            raise ValueError("invalid bounded collection length for WritePolicyMutations.mutations")
+            raise InputBudgetError(COLLECTION_COUNT, "mutations")
+        for index, item in enumerate(input.mutations):
+            if item.context is not None and len(item.context) > 524288:
+                raise InputBudgetError(INDIVIDUAL_VALUE_BYTES, "mutations", index, "context")
+            if len(item.relation.encode("utf-8")) > 64:
+                raise InputBudgetError(INDIVIDUAL_VALUE_BYTES, "mutations", index, "relation")
         aggregate_element_bytes = sum(canonical_value_encoded_length(encode_value(item, PolicyMutation)) for item in input.mutations)
         if aggregate_element_bytes > 900000:
-            raise ValueError("invalid aggregate collection bytes for WritePolicyMutations.mutations")
+            raise InputBudgetError(AGGREGATE_CANONICAL_ELEMENT_BYTES, "mutations")
         raw = self._transport._execute_command(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             command_name="WritePolicyMutations", plan_hash=WRITE_POLICY_MUTATIONS_PLAN_HASH,
@@ -467,11 +491,17 @@ class AdapterBulkConformanceClient:
         progress: Callable[[CommandBatchProgress], None] | None = None,
     ) -> CommandBatchResult[WritePolicyMutationsOutcome]:
         for input in inputs:
+
             if not 1 <= len(input.mutations) <= 100:
-                raise ValueError("invalid bounded collection length for WritePolicyMutations.mutations")
+                raise InputBudgetError(COLLECTION_COUNT, "mutations")
+            for index, item in enumerate(input.mutations):
+                if item.context is not None and len(item.context) > 524288:
+                    raise InputBudgetError(INDIVIDUAL_VALUE_BYTES, "mutations", index, "context")
+                if len(item.relation.encode("utf-8")) > 64:
+                    raise InputBudgetError(INDIVIDUAL_VALUE_BYTES, "mutations", index, "relation")
             aggregate_element_bytes = sum(canonical_value_encoded_length(encode_value(item, PolicyMutation)) for item in input.mutations)
             if aggregate_element_bytes > 900000:
-                raise ValueError("invalid aggregate collection bytes for WritePolicyMutations.mutations")
+                raise InputBudgetError(AGGREGATE_CANONICAL_ELEMENT_BYTES, "mutations")
         return self._transport._command_batch(inputs, options, self.write_policy_mutations, progress)
 
     def write_tuples(self, input: WriteTuplesInput) -> TypedCommandResult[WriteTuplesOutcome]:
@@ -636,10 +666,13 @@ class AsyncAdapterBulkConformanceClient:
 
     async def log_metrics(self, input: LogMetricsInput) -> TypedCommandResult[LogMetricsOutcome]:
         if not 1 <= len(input.metrics) <= 1000:
-            raise ValueError("invalid bounded collection length for LogMetrics.metrics")
+            raise InputBudgetError(COLLECTION_COUNT, "metrics")
+        for index, item in enumerate(input.metrics):
+            if len(item.name.encode("utf-8")) > 128:
+                raise InputBudgetError(INDIVIDUAL_VALUE_BYTES, "metrics", index, "name")
         aggregate_element_bytes = sum(canonical_value_encoded_length(encode_value(item, Metric)) for item in input.metrics)
         if aggregate_element_bytes > 1048576:
-            raise ValueError("invalid aggregate collection bytes for LogMetrics.metrics")
+            raise InputBudgetError(AGGREGATE_CANONICAL_ELEMENT_BYTES, "metrics")
         raw = await self._transport._execute_command(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             command_name="LogMetrics", plan_hash=LOG_METRICS_PLAN_HASH,
@@ -656,19 +689,28 @@ class AsyncAdapterBulkConformanceClient:
         progress: Callable[[CommandBatchProgress], None] | None = None,
     ) -> CommandBatchResult[LogMetricsOutcome]:
         for input in inputs:
+
             if not 1 <= len(input.metrics) <= 1000:
-                raise ValueError("invalid bounded collection length for LogMetrics.metrics")
+                raise InputBudgetError(COLLECTION_COUNT, "metrics")
+            for index, item in enumerate(input.metrics):
+                if len(item.name.encode("utf-8")) > 128:
+                    raise InputBudgetError(INDIVIDUAL_VALUE_BYTES, "metrics", index, "name")
             aggregate_element_bytes = sum(canonical_value_encoded_length(encode_value(item, Metric)) for item in input.metrics)
             if aggregate_element_bytes > 1048576:
-                raise ValueError("invalid aggregate collection bytes for LogMetrics.metrics")
+                raise InputBudgetError(AGGREGATE_CANONICAL_ELEMENT_BYTES, "metrics")
         return await self._transport._command_batch(inputs, options, self.log_metrics, progress)
 
     async def write_policy_mutations(self, input: WritePolicyMutationsInput) -> TypedCommandResult[WritePolicyMutationsOutcome]:
         if not 1 <= len(input.mutations) <= 100:
-            raise ValueError("invalid bounded collection length for WritePolicyMutations.mutations")
+            raise InputBudgetError(COLLECTION_COUNT, "mutations")
+        for index, item in enumerate(input.mutations):
+            if item.context is not None and len(item.context) > 524288:
+                raise InputBudgetError(INDIVIDUAL_VALUE_BYTES, "mutations", index, "context")
+            if len(item.relation.encode("utf-8")) > 64:
+                raise InputBudgetError(INDIVIDUAL_VALUE_BYTES, "mutations", index, "relation")
         aggregate_element_bytes = sum(canonical_value_encoded_length(encode_value(item, PolicyMutation)) for item in input.mutations)
         if aggregate_element_bytes > 900000:
-            raise ValueError("invalid aggregate collection bytes for WritePolicyMutations.mutations")
+            raise InputBudgetError(AGGREGATE_CANONICAL_ELEMENT_BYTES, "mutations")
         raw = await self._transport._execute_command(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             command_name="WritePolicyMutations", plan_hash=WRITE_POLICY_MUTATIONS_PLAN_HASH,
@@ -685,11 +727,17 @@ class AsyncAdapterBulkConformanceClient:
         progress: Callable[[CommandBatchProgress], None] | None = None,
     ) -> CommandBatchResult[WritePolicyMutationsOutcome]:
         for input in inputs:
+
             if not 1 <= len(input.mutations) <= 100:
-                raise ValueError("invalid bounded collection length for WritePolicyMutations.mutations")
+                raise InputBudgetError(COLLECTION_COUNT, "mutations")
+            for index, item in enumerate(input.mutations):
+                if item.context is not None and len(item.context) > 524288:
+                    raise InputBudgetError(INDIVIDUAL_VALUE_BYTES, "mutations", index, "context")
+                if len(item.relation.encode("utf-8")) > 64:
+                    raise InputBudgetError(INDIVIDUAL_VALUE_BYTES, "mutations", index, "relation")
             aggregate_element_bytes = sum(canonical_value_encoded_length(encode_value(item, PolicyMutation)) for item in input.mutations)
             if aggregate_element_bytes > 900000:
-                raise ValueError("invalid aggregate collection bytes for WritePolicyMutations.mutations")
+                raise InputBudgetError(AGGREGATE_CANONICAL_ELEMENT_BYTES, "mutations")
         return await self._transport._command_batch(inputs, options, self.write_policy_mutations, progress)
 
     async def write_tuples(self, input: WriteTuplesInput) -> TypedCommandResult[WriteTuplesOutcome]:

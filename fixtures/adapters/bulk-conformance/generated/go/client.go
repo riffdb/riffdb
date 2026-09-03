@@ -20,6 +20,15 @@ type WorkflowSuccessorRevision struct { Binding string; Revision uint64 }
 type CommandResult[T any] struct { Outcome T; CommitSequence *uint64; ContractVersion uint64; PlanHash string; Replayed bool; OutcomeURI string; WorkflowRevisions []WorkflowSuccessorRevision }
 type BatchItem[T any] struct { Index uint32; Result *CommandResult[T]; Error error }
 type BatchResult[T any] struct { Items []BatchItem[T]; Checkpoint uint32; Total uint32 }
+type InputBudgetCause string
+const (
+	CollectionCount InputBudgetCause = "collection_count"
+	IndividualValueBytes InputBudgetCause = "individual_value_bytes"
+	AggregateCanonicalElementBytes InputBudgetCause = "aggregate_canonical_element_bytes"
+)
+type InputBudgetPath struct { Collection string; Index *int; Leaf string }
+type InputBudgetError struct { Cause InputBudgetCause; Path InputBudgetPath }
+func (error *InputBudgetError) Error() string { return "generated command input exceeds its compiled budget" }
 
 type Metric struct {
 	Name string
@@ -526,7 +535,7 @@ func encodeLogMetricsInput(input LogMetricsInput) map[string]riffdb.Value { retu
 	"request_id": riffdb.UUID(input.RequestId),
 	"experiment_id": riffdb.UUID(input.ExperimentId),
 } }
-func validateLogMetricsInput(input LogMetricsInput) error { if len(input.Metrics) < 1 || len(input.Metrics) > 1000 { return errors.New("invalid bounded collection length for LogMetrics.metrics") }; aggregateElementBytes := 0; for _, item := range input.Metrics { encoded := encodeMetric(item); length, err := riffdb.CanonicalValueEncodedLength(encoded); if err != nil || length > 1048576-aggregateElementBytes { return errors.New("invalid aggregate collection bytes for LogMetrics.metrics") }; aggregateElementBytes += length }; return nil }
+func validateLogMetricsInput(input LogMetricsInput) error { if len(input.Metrics) < 1 || len(input.Metrics) > 1000 { return &InputBudgetError{Cause: CollectionCount, Path: InputBudgetPath{Collection: "metrics"}} }; for index, item := range input.Metrics { if len(item.Name) > 128 { return &InputBudgetError{Cause: IndividualValueBytes, Path: InputBudgetPath{Collection: "metrics", Index: &index, Leaf: "name"}} }; _ = index; _ = item }; aggregateElementBytes := 0; for _, item := range input.Metrics { encoded := encodeMetric(item); length, err := riffdb.CanonicalValueEncodedLength(encoded); if err != nil || length > 1048576-aggregateElementBytes { return &InputBudgetError{Cause: AggregateCanonicalElementBytes, Path: InputBudgetPath{Collection: "metrics"}} }; aggregateElementBytes += length }; return nil }
 func decodeLogMetricsOutcome(value riffdb.Value) (LogMetricsOutcome, error) { fields, err := riffdb.RecordFields(value); if err != nil { return nil, err }; outcomeValue, err := requiredField(fields, "outcome"); if err != nil { return nil, err }; outcome, err := riffdb.EnumValue(outcomeValue); if err != nil { return nil, err }; var raw riffdb.Value; switch outcome {
 case "MetricsLogged": result := LogMetricsMetricsLogged{Outcome: outcome}
 raw, err = requiredField(fields, "revision"); if err != nil { return nil, err }; result.Revision, err = riffdb.U64Value(raw); if err != nil { return nil, err }
@@ -543,7 +552,7 @@ func encodeWritePolicyMutationsInput(input WritePolicyMutationsInput) map[string
 	"mutations": riffdb.Values(input.Mutations, func(item PolicyMutation) riffdb.Value { return encodePolicyMutation(item) }),
 	"request_id": riffdb.UUID(input.RequestId),
 } }
-func validateWritePolicyMutationsInput(input WritePolicyMutationsInput) error { if len(input.Mutations) < 1 || len(input.Mutations) > 100 { return errors.New("invalid bounded collection length for WritePolicyMutations.mutations") }; aggregateElementBytes := 0; for _, item := range input.Mutations { encoded := encodePolicyMutation(item); length, err := riffdb.CanonicalValueEncodedLength(encoded); if err != nil || length > 900000-aggregateElementBytes { return errors.New("invalid aggregate collection bytes for WritePolicyMutations.mutations") }; aggregateElementBytes += length }; return nil }
+func validateWritePolicyMutationsInput(input WritePolicyMutationsInput) error { if len(input.Mutations) < 1 || len(input.Mutations) > 100 { return &InputBudgetError{Cause: CollectionCount, Path: InputBudgetPath{Collection: "mutations"}} }; for index, item := range input.Mutations { if item.Context != nil && len(*item.Context) > 524288 { return &InputBudgetError{Cause: IndividualValueBytes, Path: InputBudgetPath{Collection: "mutations", Index: &index, Leaf: "context"}} }; if len(item.Relation) > 64 { return &InputBudgetError{Cause: IndividualValueBytes, Path: InputBudgetPath{Collection: "mutations", Index: &index, Leaf: "relation"}} }; _ = index; _ = item }; aggregateElementBytes := 0; for _, item := range input.Mutations { encoded := encodePolicyMutation(item); length, err := riffdb.CanonicalValueEncodedLength(encoded); if err != nil || length > 900000-aggregateElementBytes { return &InputBudgetError{Cause: AggregateCanonicalElementBytes, Path: InputBudgetPath{Collection: "mutations"}} }; aggregateElementBytes += length }; return nil }
 func decodeWritePolicyMutationsOutcome(value riffdb.Value) (WritePolicyMutationsOutcome, error) { fields, err := riffdb.RecordFields(value); if err != nil { return nil, err }; outcomeValue, err := requiredField(fields, "outcome"); if err != nil { return nil, err }; outcome, err := riffdb.EnumValue(outcomeValue); if err != nil { return nil, err }; switch outcome {
 case "PolicyMutationExists": result := WritePolicyMutationsPolicyMutationExists{Outcome: outcome}
 return result, nil
