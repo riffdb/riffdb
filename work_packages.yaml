@@ -1803,6 +1803,7 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-710
   name: Columnar V2 workload ledger, format registry, and independent codec
+  tier: surface
   depends_on: [WP-430, WP-455, WP-612, WP-645, WP-696]
   objective: After exact acceptance of ADR-0160, close the current row-framed columnar byte/CPU/
     allocation ledger and implement an independent bounded typed segment V2 codec with deterministic
@@ -1852,6 +1853,20 @@ work_packages:
       statistics, pruning, validation, rebuild, or fallback; the codec owns no authority or query.
     scale: Segments, lanes, dictionaries, bitmaps, offsets, validation, fixtures, and diagnostics
       are statically bounded and stream per partition without full-database memory or rewrite.
+  closure:
+    status: complete
+    completed_at: "2026-09-03"
+    requirements_satisfied: [PRJ-001, PRJ-002, PRJ-003, PRJ-004, OQ-017, OQ-018, OQ-019,
+      OQ-020, OQ-021, OQ-022, OQ-024, OQ-053, PERF-001, PERF-007, PERF-008, PERF-018]
+    evidence: The additive inactive Segment V2 and manifest V2 codecs are topology-registered,
+      bounded, canonical, corruption-refusing, and byte-frozen without changing V1 production
+      selection or authoritative semantics. Req-tagged projection, descriptor, epoch, fixture,
+      pruning, validate-once, and ledger proofs pass. The exact 16,384-row release campaign passes
+      high-cardinality bytes at 86.93 percent of V1, low-cardinality bytes at 55.25 percent,
+      clustered pruning at 99 of 100 with zero false negatives, and full decode at 99.16 percent
+      of V1 p50. The retained earlier 227.68- and 122.92-percent failures remain documented as
+      rejected evidence, and the 60-second decoder fuzz campaign completed 29,050,758 executions
+      without a crash. V2 remains inactive pending WP-711 lifecycle and recovery proof.
   human_review_triggers: *id001
 - id: WP-711
   name: Crash-safe columnar V2 rebuild, compaction, and zone-map activation

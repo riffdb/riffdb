@@ -10,12 +10,20 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = { version = "0.4.13" }
+riffdb-columnar = { version = "0.1.0", path = "../crates/riffdb-columnar" }
 riffdb-contract-syntax = { version = "0.1.0", path = "../crates/riffdb-contract-syntax" }
 riffdb-driver-host = { version = "0.1.0", path = "../crates/riffdb-driver-host" }
 riffdb-proto = { version = "0.1.0", path = "../crates/riffdb-proto" }
 riffdb-riffql-syntax = { version = "0.1.0", path = "../crates/riffdb-riffql-syntax" }
 riffdb-storage-api = { version = "0.1.0", path = "../crates/riffdb-storage-api" }
 riffdb-storage-redb = { version = "0.1.0", path = "../crates/riffdb-storage-redb", features = ["test-fixtures"] }
+
+[[bin]]
+name = "columnar_segment_v2"
+path = "fuzz_targets/columnar_segment_v2.rs"
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "contract_parser"
