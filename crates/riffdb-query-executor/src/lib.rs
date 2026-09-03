@@ -4128,6 +4128,15 @@ fn bind_predicates_with_driver(
                     _ => return Err(QueryExecutionError::InvalidProgram),
                 }
             }
+            if let QueryPredicateValue::Parameter(parameter) = predicate.value() {
+                validate_binary_text_interval_parameter(
+                    step,
+                    predicate.field(),
+                    predicate.operator(),
+                    parameter,
+                    &value,
+                )?;
+            }
             Ok(BoundPredicate {
                 field: predicate.field().to_owned(),
                 operator: predicate.operator(),
@@ -4135,6 +4144,63 @@ fn bind_predicates_with_driver(
             })
         })
         .collect()
+}
+
+fn validate_binary_text_interval_parameter(
+    step: &QueryAccessStep,
+    field: &str,
+    operator: QueryPredicateOperator,
+    parameter: &str,
+    value: &CanonicalValue,
+) -> Result<(), QueryExecutionError> {
+    if !matches!(
+        operator,
+        QueryPredicateOperator::NotEqual
+            | QueryPredicateOperator::Less
+            | QueryPredicateOperator::LessEqual
+            | QueryPredicateOperator::Greater
+            | QueryPredicateOperator::GreaterEqual
+    ) {
+        return Ok(());
+    }
+    let fields = match step.access() {
+        QueryAccessKind::Index { fields, .. }
+        | QueryAccessKind::PartitionSetIndex { fields, .. }
+        | QueryAccessKind::ExpansionIndex { fields, .. } => fields,
+        _ => return Ok(()),
+    };
+    let Some(position) = fields.iter().position(|candidate| candidate == field) else {
+        return Err(QueryExecutionError::InvalidProgram);
+    };
+    let Some(component) = step
+        .internal_operational_index_descriptor()
+        .and_then(|descriptor| descriptor.component(position, field))
+    else {
+        return Ok(());
+    };
+    if component.encoding()
+        != riffdb_contract_ir::IndexFieldEncodingV1::TextKey(
+            riffdb_contract_ir::TextKeyProfileV1::BinaryUtf8,
+        )
+    {
+        return Ok(());
+    }
+    let [physical] = component.physical() else {
+        return Err(QueryExecutionError::InvalidProgram);
+    };
+    match value {
+        CanonicalValue::String(value)
+            if physical
+                .value_type()
+                .byte_bound()
+                .is_some_and(|maximum| value.as_str().len() <= maximum) =>
+        {
+            Ok(())
+        }
+        _ => Err(QueryExecutionError::InvalidParameter {
+            parameter: parameter.to_owned(),
+        }),
+    }
 }
 
 fn bind_candidate_value(
@@ -5923,6 +5989,23 @@ query PrefixDocuments(
 }
 "#;
 
+    const BINARY_TEXT_INTERVAL_DOCUMENTS: &str = r#"
+query BinaryTextIntervalDocuments(
+    $organization_id: Document.organization_id,
+    $lower: Document.title,
+    $upper: Document.title,
+) {
+    many documents from Document
+        where organization_id == $organization_id
+          && title >= $lower
+          && title < $upper
+        order by title asc, document_id asc
+        take 10
+    return Found { documents: documents { document_id title } }
+    outcomes Found
+}
+"#;
+
     const PARTITION_SET_CONTRACT: &str = r#"
 contract PartitionSetExecution version 1 {
   enum LifecycleStage { Active, Deleted }
@@ -6500,6 +6583,100 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
                 .encode_index(&values, entity_key)
                 .expect("index key");
             assert_eq!(matching_range(&ranges, key.as_bytes()), expected, "{title}");
+        }
+    }
+
+    // req: OQ-057, OQ-058, OQ-059, OQ-060
+    #[test]
+    fn binary_text_interval_boundaries_match_the_authoritative_utf8_byte_oracle() {
+        let organization = CanonicalValue::Uuid([7; 16]);
+        let bundle = compile_contract_source(OPERATIONAL_INDEX_CONTRACT).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let family = compile_operational_query_family(
+            &parse_query(BINARY_TEXT_INTERVAL_DOCUMENTS).expect("interval query"),
+            &catalog,
+        )
+        .expect("binary-text interval family");
+        let step = family.select(&[]).expect("sole member").program().steps()[0].clone();
+        let entity = &bundle.schema().entities()[0];
+        let index = entity
+            .indexes()
+            .iter()
+            .find(|index| index.name() == "by_title")
+            .expect("text index");
+        let field_id = |name: &str| {
+            entity
+                .record()
+                .fields()
+                .iter()
+                .find(|field| field.name() == name)
+                .expect("field")
+                .id()
+        };
+        let values = vec![
+            String::new(),
+            "\0".to_owned(),
+            "a".to_owned(),
+            "a\0b".to_owned(),
+            "ab".to_owned(),
+            "doc-3".to_owned(),
+            "doc6".to_owned(),
+            "é".to_owned(),
+            "東京".to_owned(),
+            "z".repeat(64),
+        ];
+
+        for lower in &values {
+            for upper in &values {
+                let parameters = QueryParameters::checked(BTreeMap::from([
+                    ("organization_id".to_owned(), organization.clone()),
+                    (
+                        "lower".to_owned(),
+                        CanonicalValue::string(lower).expect("bounded lower"),
+                    ),
+                    (
+                        "upper".to_owned(),
+                        CanonicalValue::string(upper).expect("bounded upper"),
+                    ),
+                ]))
+                .expect("parameters");
+                let predicates = bind_predicates(&step, &parameters, &BTreeMap::new(), &[])
+                    .expect("bound predicates");
+                let schedule =
+                    bound_index_range_schedule_v1(&step, &predicates).expect("range schedule");
+
+                for (ordinal, candidate) in values.iter().enumerate() {
+                    let document_id =
+                        CanonicalValue::Uuid([u8::try_from(ordinal).expect("ordinal"); 16]);
+                    let record = CanonicalRecord::new(vec![
+                        (field_id("organization_id"), organization.clone()),
+                        (field_id("document_id"), document_id.clone()),
+                        (
+                            field_id("title"),
+                            CanonicalValue::string(candidate).expect("bounded candidate"),
+                        ),
+                    ])
+                    .expect("record");
+                    let physical =
+                        riffdb_contract_ir::encode_operational_index_values_v1(index, &record)
+                            .expect("physical index values");
+                    let entity_key = entity
+                        .primary_key()
+                        .encode_entity(&[organization.clone(), document_id])
+                        .expect("entity key");
+                    let key = index
+                        .key_schema()
+                        .encode_index(&physical, entity_key)
+                        .expect("index key");
+                    let expected = candidate.as_bytes() >= lower.as_bytes()
+                        && candidate.as_bytes() < upper.as_bytes();
+                    assert_eq!(
+                        matching_range(&schedule, key.as_bytes()),
+                        expected,
+                        "candidate={candidate:?}, lower={lower:?}, upper={upper:?}"
+                    );
+                }
+            }
         }
     }
 

@@ -832,8 +832,139 @@ query ProjectMembersInRange(
     outcomes Found
 }
 "#;
+    const BINARY_TEXT_INTERVAL_CONTRACT: &str =
+        include_str!("../../../fixtures/riffql/wp700-binary-text-interval-contract.riff");
+    const BINARY_TEXT_INTERVAL_QUERY: &str =
+        include_str!("../../../fixtures/riffql/wp700-binary-text-strict-window.riffq");
+    const BINARY_TEXT_COMPLEMENT_QUERY: &str =
+        include_str!("../../../fixtures/riffql/wp700-binary-text-complement.riffq");
     const EXPANSION_QUERY: &str =
         include_str!("../../../fixtures/riffql/ticket_comments_expansion.riffql");
+
+    fn binary_text_state(
+        bundle: &riffdb_contract_ir::ContractBundle,
+        program: &QueryAccessProgramV1,
+    ) -> MemoryState {
+        let step = &program.steps()[0];
+        let entity = &bundle.schema().entities()[0];
+        let index = entity
+            .indexes()
+            .iter()
+            .find(|index| index.name() == "by_code")
+            .expect("binary-text index");
+        let access = program.internal_entity_access("Item").expect("Item access");
+        let binding = DurableKeySchemaBindingV1::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+        );
+        let organization = CanonicalValue::Uuid([0x71; 16]);
+        let mut state = MemoryState::default();
+        for (ordinal, code) in ["a", "ab", "abacus", "ac", "doc-3", "doc6"]
+            .into_iter()
+            .enumerate()
+        {
+            let item = CanonicalValue::Uuid([u8::try_from(ordinal + 1).expect("ordinal"); 16]);
+            let code = CanonicalValue::string(code).expect("code");
+            let entity_key = step
+                .internal_entity_key_schema()
+                .encode_entity(&[organization.clone(), item.clone()])
+                .expect("entity key");
+            let fields = CanonicalRecord::new(vec![
+                (
+                    access
+                        .internal_field_id("organization_id")
+                        .expect("organization"),
+                    organization.clone(),
+                ),
+                (access.internal_field_id("item_id").expect("item"), item),
+                (access.internal_field_id("code").expect("code"), code),
+            ])
+            .expect("fields");
+            let record = StoredEntityRecordV1::new(
+                EntityTarget::new(step.internal_entity_id(), entity_key.clone()).expect("target"),
+                EntityVersion::first(),
+                bundle.contract_version(),
+                binding.clone(),
+                fields.clone(),
+            )
+            .expect("entity");
+            let index_values =
+                riffdb_contract_ir::encode_operational_index_values_v1(index, &fields)
+                    .expect("index values");
+            let index_key = index
+                .key_schema()
+                .encode_index(&index_values, entity_key)
+                .expect("index key");
+            let partition = step
+                .internal_partition_key_schema()
+                .encode_partition(std::slice::from_ref(&organization))
+                .expect("partition");
+            let index = StoredIndexEntryV2::new(
+                index_key,
+                binding.clone(),
+                CanonicalRecord::new(Vec::new()).expect("cover"),
+                partition,
+            )
+            .expect("index row");
+            let encoded = encode_index_entry_v2(&index).expect("encoded index");
+            state.entities.push(record);
+            state
+                .index_entries
+                .push(MemoryIndexEntry::current_from_encoded(
+                    index,
+                    encoded.as_bytes().to_vec(),
+                    EncodedContentCharge::new(encoded.as_bytes().len()).expect("charge"),
+                ));
+        }
+        state
+            .entities
+            .sort_unstable_by(|left, right| left.target().cmp(right.target()));
+        state
+            .index_entries
+            .sort_unstable_by(|left, right| left.key().cmp(right.key()));
+        state
+    }
+
+    fn memory_binary_text_pages(
+        state: &MemoryState,
+        program: &QueryAccessProgramV1,
+        parameters: &QueryParameters,
+    ) -> Vec<String> {
+        let mut prior = None;
+        let mut codes = Vec::new();
+        loop {
+            let mut view = MemoryQueryView {
+                state,
+                program,
+                parameters,
+            };
+            let snapshot = execute_page_in_snapshot(program, parameters, prior.as_ref(), &mut view)
+                .expect("binary-text page");
+            let Some(QueryResultValue::Many(rows)) = snapshot.fields().get("items") else {
+                panic!("items result")
+            };
+            codes.extend(rows.iter().map(|row| match row.field("code") {
+                Some(CanonicalValue::String(code)) => code.as_str().to_owned(),
+                other => panic!("code field: {other:?}"),
+            }));
+            let Some(after) = snapshot.continuation() else {
+                break;
+            };
+            prior = Some(
+                QueryContinuation::checked(
+                    snapshot
+                        .continuation_binding()
+                        .expect("continuation binding")
+                        .to_owned(),
+                    after.to_vec(),
+                    snapshot.index_epochs().clone(),
+                )
+                .expect("continuation"),
+            );
+        }
+        codes
+    }
 
     fn expansion_status(bundle: &riffdb_contract_ir::ContractBundle) -> CanonicalValue {
         let status = bundle
@@ -1514,6 +1645,67 @@ query ProjectMembersInRange(
         assert!(admission.covers(step.internal_entity_id(), &covered));
         assert!(!admission.admits(&candidate_keys[0]));
         assert!(admission.admits(&candidate_keys[1]));
+    }
+
+    // req: OQ-036, OQ-043, OQ-057, OQ-058, OQ-059
+    #[test]
+    fn binary_text_interval_memory_backend_matches_the_shared_cursor_truth_table() {
+        let bundle = compile_contract_source(BINARY_TEXT_INTERVAL_CONTRACT).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let organization = CanonicalValue::Uuid([0x71; 16]);
+        let interval_parameters = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), organization.clone()),
+            (
+                "lower".to_owned(),
+                CanonicalValue::string("ab").expect("lower"),
+            ),
+            (
+                "upper".to_owned(),
+                CanonicalValue::string("doc6").expect("upper"),
+            ),
+        ]))
+        .expect("parameters");
+        let forward = compile_query(
+            &parse_query(BINARY_TEXT_INTERVAL_QUERY).expect("forward query"),
+            &catalog,
+        )
+        .expect("forward program");
+        let state = binary_text_state(&bundle, &forward);
+        assert_eq!(
+            memory_binary_text_pages(&state, &forward, &interval_parameters),
+            ["abacus", "ac", "doc-3"]
+        );
+
+        let reverse_source = BINARY_TEXT_INTERVAL_QUERY
+            .replace("code asc", "code desc")
+            .replace("item_id asc", "item_id desc");
+        let reverse = compile_query(
+            &parse_query(&reverse_source).expect("reverse query"),
+            &catalog,
+        )
+        .expect("reverse program");
+        assert_eq!(
+            memory_binary_text_pages(&state, &reverse, &interval_parameters),
+            ["doc-3", "ac", "abacus"]
+        );
+
+        let complement = compile_query(
+            &parse_query(BINARY_TEXT_COMPLEMENT_QUERY).expect("complement query"),
+            &catalog,
+        )
+        .expect("complement program");
+        let complement_parameters = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), organization),
+            (
+                "excluded".to_owned(),
+                CanonicalValue::string("ac").expect("excluded"),
+            ),
+        ]))
+        .expect("complement parameters");
+        assert_eq!(
+            memory_binary_text_pages(&state, &complement, &complement_parameters),
+            ["a", "ab", "abacus", "doc-3", "doc6"]
+        );
     }
 
     #[test]

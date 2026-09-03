@@ -207,6 +207,29 @@ query TuplesByObjects(
 }
 "#;
 
+const WP700_BINARY_TEXT_CONTRACT: &str =
+    include_str!("../../../fixtures/riffql/wp700-binary-text-interval-contract.riff");
+
+fn binary_text_interval_source(predicate: &str, order: &str) -> String {
+    format!(
+        r#"
+query ItemsInCodeWindow(
+    $organization_id: Item.organization_id,
+    $lower: Item.code,
+    $upper: Item.code,
+    $after: Cursor?,
+) {{
+    many items from Item
+        where organization_id == $organization_id && {predicate}
+        order by {order}
+        take 1 after $after
+    return Found {{ items: items {{ item_id code }} }}
+    outcomes Found
+}}
+"#
+    )
+}
+
 fn catalog(source: &str) -> SymbolicCatalog {
     let bundle = compile_contract_source(source).expect("contract");
     SymbolicCatalog::from_bundle(&bundle).expect("catalog")
@@ -302,6 +325,91 @@ fn binary_text_key_proves_bounded_interval_and_bytewise_order() {
         predicate.field() == "relation"
             && predicate.operator() == QueryPredicateOperator::GreaterEqual
     }));
+}
+
+// req: OQ-001, OQ-008, OQ-009, OQ-056, OQ-057
+#[test]
+fn binary_text_interval_compiler_admits_only_the_frozen_operator_matrix() {
+    let catalog = catalog(WP700_BINARY_TEXT_CONTRACT);
+    for predicate in [
+        "code > $lower",
+        "code >= $lower",
+        "code < $upper",
+        "code <= $upper",
+        "code != $lower",
+        "code > $lower && code < $upper",
+        "code >= $lower && code <= $upper",
+    ] {
+        let source = binary_text_interval_source(predicate, "code asc, item_id asc");
+        let family = compile_operational_query_family(
+            &parse_query(&source).unwrap_or_else(|error| panic!("{predicate}: {error:?}")),
+            &catalog,
+        )
+        .unwrap_or_else(|error| panic!("{predicate}: {error:?}"));
+        let program = family.select(&[]).expect("sole family member").program();
+        let descriptor = program.steps()[0]
+            .internal_operational_index_descriptor()
+            .expect("compiler-sealed descriptor");
+        assert_eq!(
+            descriptor
+                .component(1, "code")
+                .expect("code component")
+                .encoding(),
+            riffdb_contract_ir::IndexFieldEncodingV1::TextKey(
+                riffdb_contract_ir::TextKeyProfileV1::BinaryUtf8
+            ),
+            "{predicate}"
+        );
+    }
+}
+
+// req: OQ-003, OQ-033, OQ-037, OQ-056, OQ-060
+#[test]
+fn binary_text_interval_compiler_refuses_incomplete_orders_and_canonical_substitution() {
+    let binary_catalog = catalog(WP700_BINARY_TEXT_CONTRACT);
+    for order in ["item_id asc", "code asc", "code asc, item_id desc"] {
+        let source = binary_text_interval_source("code > $lower", order);
+        let diagnostics = compile_operational_query_family(
+            &parse_query(&source).expect("query"),
+            &binary_catalog,
+        )
+        .expect_err("incomplete or mixed order must fail closed");
+        assert!(
+            diagnostics.as_slice()[0].primary().start < diagnostics.as_slice()[0].primary().end
+        );
+    }
+
+    for source in [
+        binary_text_interval_source("code > $lower && code >= $upper", "code asc, item_id asc"),
+        binary_text_interval_source("code != $lower && code < $upper", "code asc, item_id asc"),
+        binary_text_interval_source("code > $lower", "code asc, item_id asc")
+            .replace("organization_id == $organization_id && ", ""),
+    ] {
+        let diagnostics = compile_operational_query_family(
+            &parse_query(&source).expect("unsupported interval shape"),
+            &binary_catalog,
+        )
+        .expect_err("multiple same-side, mixed complement, and unrouted shapes fail closed");
+        assert!(
+            diagnostics.as_slice()[0].primary().start < diagnostics.as_slice()[0].primary().end
+        );
+    }
+
+    let canonical = WP700_BINARY_TEXT_CONTRACT.replace(" text_key(code, binary_utf8_v1)", "");
+    let source = binary_text_interval_source("code > $lower", "code asc, item_id asc");
+    let diagnostics = compile_operational_query_family(
+        &parse_query(&source).expect("canonical query"),
+        &catalog(&canonical),
+    )
+    .expect_err("canonical strings retain length-first physical order");
+    let diagnostic = &diagnostics.as_slice()[0];
+    assert_eq!(diagnostic.code(), PlannerDiagnosticCode::Unindexed);
+    assert!(diagnostic.primary().start < diagnostic.primary().end);
+    assert!(
+        diagnostic
+            .suggested_index()
+            .is_some_and(|suggestion| suggestion.contains("text_key(code, binary_utf8_v1)"))
+    );
 }
 
 #[test]

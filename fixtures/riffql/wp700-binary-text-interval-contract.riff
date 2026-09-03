@@ -1,0 +1,12 @@
+contract BinaryTextIntervals version 1 {
+  entity Item {
+    key (organization_id: uuid, item_id: uuid)
+    field code: string<16>
+    index by_code (organization_id, code, item_id) text_key(code, binary_utf8_v1)
+  }
+  aggregate Items {
+    root Item
+    partition_by organization_id
+    conflict_key (organization_id, item_id)
+  }
+}

@@ -1,0 +1,12 @@
+query ItemsOutsideCode(
+    $organization_id: Item.organization_id,
+    $excluded: Item.code,
+    $after: Cursor?,
+) {
+    many items from Item
+        where organization_id == $organization_id && code != $excluded
+        order by code asc, item_id asc
+        take 1 after $after
+    return Found { items: items { item_id code } }
+    outcomes Found
+}

@@ -190,6 +190,26 @@ query DocumentsExceptTitle(
 }
 "#;
 
+fn binary_text_interval_query(name: &str, predicate: &str) -> String {
+    format!(
+        r#"
+query {name}(
+  $organization_id: Document.organization_id,
+  $text_lower: Document.title,
+  $text_upper: Document.title,
+  $after: Cursor?,
+) {{
+  many documents from Document
+    where organization_id == $organization_id && {predicate}
+    order by title asc, document_id asc
+    take 1 after $after
+  return Found {{ documents: documents {{ document_id title }} }}
+  outcomes Found
+}}
+"#
+    )
+}
+
 const CANONICAL_RANGE_QUERY: &str = r#"
 query DocumentsBySequenceRange(
   $organization_id: Document.organization_id,
@@ -927,6 +947,7 @@ fn canonical_intervals_and_complements_share_exact_forward_reverse_cursors() {
     );
 }
 
+// req: OQ-034, OQ-036, OQ-043, OQ-057, OQ-058, OQ-059
 #[test]
 fn binary_text_intervals_and_complements_share_bytewise_forward_reverse_cursors() {
     let ascending =
@@ -952,4 +973,36 @@ fn binary_text_intervals_and_complements_share_bytewise_forward_reverse_cursors(
         )
         .is_empty()
     );
+
+    for (name, predicate, expected) in [
+        (
+            "StrictLower",
+            "title > $text_lower",
+            &["abacus", "ac", "doc-3", "doc6"][..],
+        ),
+        (
+            "InclusiveLower",
+            "title >= $text_lower",
+            &["ab", "abacus", "ac", "doc-3", "doc6"][..],
+        ),
+        (
+            "StrictUpper",
+            "title < $text_upper",
+            &["a", "ab", "abacus"][..],
+        ),
+        (
+            "InclusiveUpper",
+            "title <= $text_upper",
+            &["a", "ab", "abacus", "ac"][..],
+        ),
+        (
+            "ClosedWindow",
+            "title >= $text_lower && title <= $text_upper",
+            &["ab", "abacus", "ac"][..],
+        ),
+    ] {
+        let source = binary_text_interval_query(name, predicate);
+        let actual = execute_all_text_interval_cursor_pages(&source, Some(("ab", "ac")), None);
+        assert_eq!(titles(&actual), expected, "{predicate}");
+    }
 }

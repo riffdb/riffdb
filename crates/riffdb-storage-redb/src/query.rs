@@ -1234,7 +1234,6 @@ impl RedbQueryView<'_> {
                 profile.stage_ns[SCAN_SETUP].saturating_add(elapsed_nanos(started));
         }
 
-        self.touch_indexes();
         'ranges: for range in schedule.ranges() {
             let Some(window) = range.resume_window(*direction, after, after_inclusive) else {
                 continue;
@@ -1248,6 +1247,7 @@ impl RedbQueryView<'_> {
                 end.push(0);
                 end
             });
+            self.touch_indexes();
             let rows = self.read_index_range(
                 *direction,
                 window.start_inclusive(),
@@ -1411,7 +1411,6 @@ impl RedbQueryView<'_> {
                 profile.stage_ns[SCAN_SETUP].saturating_add(elapsed_nanos(started));
         }
 
-        self.touch_indexes();
         'ranges: for range in schedule.ranges() {
             let Some(window) = range.resume_window(*direction, after, false) else {
                 continue;
@@ -1420,6 +1419,7 @@ impl RedbQueryView<'_> {
             if remaining_scan == 0 {
                 return Err(storage_error(StorageErrorKind::LimitExceeded));
             }
+            self.touch_indexes();
             let rows = self.read_index_range(
                 *direction,
                 window.start_inclusive(),
@@ -1831,6 +1831,12 @@ query ProjectMembersInRange(
     outcomes Found
 }
 "#;
+    const BINARY_TEXT_INTERVAL_CONTRACT: &str =
+        include_str!("../../../fixtures/riffql/wp700-binary-text-interval-contract.riff");
+    const BINARY_TEXT_INTERVAL_QUERY: &str =
+        include_str!("../../../fixtures/riffql/wp700-binary-text-strict-window.riffq");
+    const BINARY_TEXT_COMPLEMENT_QUERY: &str =
+        include_str!("../../../fixtures/riffql/wp700-binary-text-complement.riffq");
     const BOARD_QUERY: &str = include_str!("../../../queries/ticketdesk/board_page_450.riffq");
     const EXPANSION_QUERY: &str =
         include_str!("../../../fixtures/riffql/ticket_comments_expansion.riffql");
@@ -1958,6 +1964,117 @@ query ProjectMembersInRange(
             let scope = crate::test_path::ScopedDirectory::new("query");
             Self(scope.join("db.redb"), scope)
         }
+    }
+
+    fn binary_text_rows(
+        binding: &DurableKeySchemaBindingV1,
+        program: &QueryAccessProgramV1,
+    ) -> (Vec<StoredEntityRecordV1>, Vec<StoredIndexEntryV2>) {
+        let step = &program.steps()[0];
+        let access = program.internal_entity_access("Item").expect("Item access");
+        let organization = CanonicalValue::Uuid([0x71; 16]);
+        let mut records = Vec::new();
+        let mut indexes = Vec::new();
+        for (ordinal, code) in ["a", "ab", "abacus", "ac", "doc-3", "doc6"]
+            .into_iter()
+            .enumerate()
+        {
+            let item = CanonicalValue::Uuid([u8::try_from(ordinal + 1).expect("ordinal"); 16]);
+            let code = CanonicalValue::string(code).expect("code");
+            let entity_key = step
+                .internal_entity_key_schema()
+                .encode_entity(&[organization.clone(), item.clone()])
+                .expect("entity key");
+            let fields = CanonicalRecord::new(vec![
+                (
+                    access
+                        .internal_field_id("organization_id")
+                        .expect("organization"),
+                    organization.clone(),
+                ),
+                (
+                    access.internal_field_id("item_id").expect("item"),
+                    item.clone(),
+                ),
+                (
+                    access.internal_field_id("code").expect("code"),
+                    code.clone(),
+                ),
+            ])
+            .expect("fields");
+            records.push(
+                StoredEntityRecordV1::new(
+                    EntityTarget::new(step.internal_entity_id(), entity_key.clone())
+                        .expect("target"),
+                    EntityVersion::first(),
+                    binding.contract_version(),
+                    binding.clone(),
+                    fields.clone(),
+                )
+                .expect("entity"),
+            );
+            let CanonicalValue::String(code) = code else {
+                unreachable!("constructed string")
+            };
+            let index_values = [
+                organization.clone(),
+                CanonicalValue::bytes(code.as_str().as_bytes().to_vec()).expect("ordered bytes"),
+                item,
+            ];
+            let index_key = step
+                .internal_index_key_schema()
+                .expect("index schema")
+                .encode_index(&index_values, entity_key)
+                .expect("index key");
+            indexes.push(
+                StoredIndexEntryV2::new(
+                    index_key,
+                    binding.clone(),
+                    CanonicalRecord::new(Vec::new()).expect("cover"),
+                    step.internal_partition_key_schema()
+                        .encode_partition(std::slice::from_ref(&organization))
+                        .expect("partition"),
+                )
+                .expect("index row"),
+            );
+        }
+        (records, indexes)
+    }
+
+    fn redb_binary_text_pages(
+        ports: &RedbOperationalPorts,
+        program: &QueryAccessProgramV1,
+        parameters: &QueryParameters,
+    ) -> Vec<String> {
+        let mut prior = None;
+        let mut codes = Vec::new();
+        loop {
+            let snapshot = ports
+                .execute_query_page(program, parameters, prior.as_ref())
+                .expect("binary-text page");
+            let Some(QueryResultValue::Many(rows)) = snapshot.fields().get("items") else {
+                panic!("items result")
+            };
+            codes.extend(rows.iter().map(|row| match row.field("code") {
+                Some(CanonicalValue::String(code)) => code.as_str().to_owned(),
+                other => panic!("code field: {other:?}"),
+            }));
+            let Some(after) = snapshot.continuation() else {
+                break;
+            };
+            prior = Some(
+                QueryContinuation::checked(
+                    snapshot
+                        .continuation_binding()
+                        .expect("continuation binding")
+                        .to_owned(),
+                    after.to_vec(),
+                    snapshot.index_epochs().clone(),
+                )
+                .expect("continuation"),
+            );
+        }
+        codes
     }
 
     // req: OQ-114, OQ-115
@@ -2414,6 +2531,227 @@ query ProjectMembersInRange(
                     && rows[0].field("user_id") == Some(&CanonicalValue::Uuid([4; 16]))
         ));
         assert!(range_second.continuation().is_none());
+    }
+
+    // req: OQ-056, OQ-057, OQ-058, OQ-059, OQ-060
+    #[test]
+    fn contradictory_binary_text_interval_returns_empty_without_index_storage_work() {
+        let bundle = compile_contract_source(BINARY_TEXT_INTERVAL_CONTRACT).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let program = compile_query(
+            &parse_query(BINARY_TEXT_INTERVAL_QUERY).expect("query"),
+            &catalog,
+        )
+        .expect("binary-text interval program");
+        let parameters = QueryParameters::checked(BTreeMap::from([
+            (
+                "organization_id".to_owned(),
+                CanonicalValue::Uuid([0x71; 16]),
+            ),
+            (
+                "lower".to_owned(),
+                CanonicalValue::string("z").expect("lower"),
+            ),
+            (
+                "upper".to_owned(),
+                CanonicalValue::string("a").expect("upper"),
+            ),
+        ]))
+        .expect("parameters");
+
+        let path = TestPath::new();
+        let mut store = RedbStore::open(&path.0).expect("store");
+        store
+            .initialize_database(
+                DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x70; 10])
+                    .expect("database ID"),
+            )
+            .expect("initialize");
+        let ports = RedbOperationalPorts {
+            shared: Arc::clone(&store.shared),
+        };
+
+        let _serial = QUERY_TABLE_OPEN_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        reset_query_table_open_counts();
+        let snapshot = ports
+            .execute_query(&program, &parameters)
+            .expect("contradictory interval is exact empty");
+        assert!(matches!(
+            snapshot.fields().get("items"),
+            Some(QueryResultValue::Many(rows)) if rows.is_empty()
+        ));
+        assert!(snapshot.continuation().is_none());
+        assert_eq!(
+            query_table_open_counts().indexes,
+            0,
+            "an empty normalized schedule must not open the secondary-index table"
+        );
+    }
+
+    // req: OQ-039, OQ-056, OQ-060
+    #[test]
+    fn oversized_binary_text_endpoint_is_redacted_and_refused_before_storage() {
+        let bundle = compile_contract_source(BINARY_TEXT_INTERVAL_CONTRACT).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let program = compile_query(
+            &parse_query(BINARY_TEXT_INTERVAL_QUERY).expect("query"),
+            &catalog,
+        )
+        .expect("binary-text interval program");
+        let submitted = "private-endpoint-value";
+        let parameters = QueryParameters::checked(BTreeMap::from([
+            (
+                "organization_id".to_owned(),
+                CanonicalValue::Uuid([0x71; 16]),
+            ),
+            (
+                "lower".to_owned(),
+                CanonicalValue::string(submitted).expect("submitted endpoint"),
+            ),
+            (
+                "upper".to_owned(),
+                CanonicalValue::string("z").expect("upper"),
+            ),
+        ]))
+        .expect("parameters");
+
+        let path = TestPath::new();
+        let mut store = RedbStore::open(&path.0).expect("store");
+        store
+            .initialize_database(
+                DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x73; 10])
+                    .expect("database ID"),
+            )
+            .expect("initialize");
+        let ports = RedbOperationalPorts {
+            shared: Arc::clone(&store.shared),
+        };
+
+        let _serial = QUERY_TABLE_OPEN_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        reset_query_table_open_counts();
+        let error = ports
+            .execute_query(&program, &parameters)
+            .expect_err("string<16> endpoint must fail before storage");
+        assert_eq!(
+            error,
+            QueryExecutionError::InvalidParameter {
+                parameter: "lower".to_owned()
+            }
+        );
+        assert!(!format!("{error:?}").contains(submitted));
+        assert_eq!(query_table_open_counts().indexes, 0);
+        assert_eq!(query_table_open_counts().entities, 0);
+    }
+
+    // req: OQ-036, OQ-043, OQ-057, OQ-058, OQ-059
+    #[test]
+    fn binary_text_interval_redb_backend_matches_the_shared_cursor_truth_table() {
+        let bundle = compile_contract_source(BINARY_TEXT_INTERVAL_CONTRACT).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let forward = compile_query(
+            &parse_query(BINARY_TEXT_INTERVAL_QUERY).expect("forward query"),
+            &catalog,
+        )
+        .expect("forward program");
+        let binding = DurableKeySchemaBindingV1::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+        );
+        let (records, indexes) = binary_text_rows(&binding, &forward);
+
+        let path = TestPath::new();
+        let mut store = RedbStore::open(&path.0).expect("store");
+        store
+            .initialize_database(
+                DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x72; 10])
+                    .expect("database ID"),
+            )
+            .expect("initialize");
+        let ports = RedbOperationalPorts {
+            shared: Arc::clone(&store.shared),
+        };
+        let write = ports.begin_write().expect("write");
+        {
+            let mut table = write
+                .transaction()
+                .expect("transaction")
+                .open_table(ENTITIES)
+                .expect("entities");
+            for record in &records {
+                let encoded = encode_entity_record_v1(record).expect("encoded entity");
+                table
+                    .insert(encode_entity_key(record.target().key()), encoded.as_bytes())
+                    .expect("insert entity");
+            }
+        }
+        {
+            let mut table = write
+                .transaction()
+                .expect("transaction")
+                .open_table(SECONDARY_INDEXES)
+                .expect("indexes");
+            for index in &indexes {
+                let encoded = encode_index_entry_v2(index).expect("encoded index");
+                table
+                    .insert(index.key().as_bytes(), encoded.as_bytes())
+                    .expect("insert index");
+            }
+        }
+        write.commit().expect("seed commit");
+
+        let organization = CanonicalValue::Uuid([0x71; 16]);
+        let interval_parameters = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), organization.clone()),
+            (
+                "lower".to_owned(),
+                CanonicalValue::string("ab").expect("lower"),
+            ),
+            (
+                "upper".to_owned(),
+                CanonicalValue::string("doc6").expect("upper"),
+            ),
+        ]))
+        .expect("parameters");
+        assert_eq!(
+            redb_binary_text_pages(&ports, &forward, &interval_parameters),
+            ["abacus", "ac", "doc-3"]
+        );
+
+        let reverse_source = BINARY_TEXT_INTERVAL_QUERY
+            .replace("code asc", "code desc")
+            .replace("item_id asc", "item_id desc");
+        let reverse = compile_query(
+            &parse_query(&reverse_source).expect("reverse query"),
+            &catalog,
+        )
+        .expect("reverse program");
+        assert_eq!(
+            redb_binary_text_pages(&ports, &reverse, &interval_parameters),
+            ["doc-3", "ac", "abacus"]
+        );
+
+        let complement = compile_query(
+            &parse_query(BINARY_TEXT_COMPLEMENT_QUERY).expect("complement query"),
+            &catalog,
+        )
+        .expect("complement program");
+        let complement_parameters = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), organization),
+            (
+                "excluded".to_owned(),
+                CanonicalValue::string("ac").expect("excluded"),
+            ),
+        ]))
+        .expect("complement parameters");
+        assert_eq!(
+            redb_binary_text_pages(&ports, &complement, &complement_parameters),
+            ["a", "ab", "abacus", "doc-3", "doc6"]
+        );
     }
 
     #[test]
