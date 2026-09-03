@@ -448,7 +448,7 @@ work_packages:
     ADR-0111, ADR-0124, ADR-0129, ADR-0134, ADR-0145, ADR-0150, ADR-0189]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0150-compiler-sealed-operational-access-path-algebra.md,
-    crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**,
+    crates/riffdb-catalog/**, crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**,
     crates/riffdb-query-executor/**, crates/riffdb-storage-api/**,
     crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
     crates/riffdb-testkit/**, fixtures/riffql/**, tests/**, scripts/**,
