@@ -180,31 +180,39 @@ pub enum GeneratedApplicationArtifactKind {
 }
 
 impl GeneratedApplicationArtifactKind {
-    const fn as_str(self) -> &'static str {
+    /// Declared generated surface represented by this artifact kind, if any.
+    #[must_use]
+    pub fn surface(self) -> Option<crate::GeneratedApplicationSurface> {
+        crate::GeneratedApplicationSurface::ALL
+            .into_iter()
+            .find(|surface| surface.artifact_kind() == self)
+    }
+
+    fn as_str(self) -> &'static str {
+        if let Some(surface) = self.surface() {
+            return surface.key();
+        }
         match self {
             Self::Manifest => "manifest",
-            Self::Rust => "rust",
-            Self::TypeScript => "typescript",
-            Self::Go => "go",
-            Self::Python => "python",
-            Self::Mcp => "mcp",
             Self::ContractBundle => "contract_bundle",
             Self::ReactiveModule => "reactive_module",
+            Self::Rust | Self::TypeScript | Self::Go | Self::Python | Self::Mcp => {
+                unreachable!("generated surface kind must occur in the closed registry")
+            }
         }
     }
 
     fn parse(value: &str) -> Option<Self> {
-        Some(match value {
-            "manifest" => Self::Manifest,
-            "rust" => Self::Rust,
-            "typescript" => Self::TypeScript,
-            "go" => Self::Go,
-            "python" => Self::Python,
-            "mcp" => Self::Mcp,
-            "contract_bundle" => Self::ContractBundle,
-            "reactive_module" => Self::ReactiveModule,
-            _ => return None,
-        })
+        crate::GeneratedApplicationSurface::parse(value)
+            .map(crate::GeneratedApplicationSurface::artifact_kind)
+            .or_else(|| {
+                Some(match value {
+                    "manifest" => Self::Manifest,
+                    "contract_bundle" => Self::ContractBundle,
+                    "reactive_module" => Self::ReactiveModule,
+                    _ => return None,
+                })
+            })
     }
 }
 

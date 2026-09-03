@@ -145,13 +145,7 @@ fn canonical_generators(
 ) -> Result<Vec<ProjectGenerator>, ProjectError> {
     let mut values = values
         .iter()
-        .map(|value| match value {
-            ApplicationGenerator::Rust => ProjectGenerator::Rust,
-            ApplicationGenerator::Go => ProjectGenerator::Go,
-            ApplicationGenerator::Typescript => ProjectGenerator::Typescript,
-            ApplicationGenerator::Python => ProjectGenerator::Python,
-            ApplicationGenerator::Mcp => ProjectGenerator::Mcp,
-        })
+        .map(|value| ProjectGenerator::from_surface(value.surface()))
         .collect::<Vec<_>>();
     values.sort_unstable();
     values.dedup();
@@ -263,6 +257,7 @@ mod tests {
     use super::*;
     use riffdb_query_module::GeneratedApplicationArtifactKind;
 
+    // req: DX-013, DX-014, DX-015
     #[test]
     fn init_is_idempotent_in_an_existing_project_and_never_scaffolds_application_code() {
         let scratch =
@@ -301,6 +296,7 @@ mod tests {
         assert!(!scratch.path().join("riffdb.application.lock.json").exists());
     }
 
+    // req: DX-014
     #[test]
     fn init_conflict_is_detected_before_any_other_file_changes() {
         let scratch =
@@ -324,6 +320,7 @@ mod tests {
         );
     }
 
+    // req: DX-017
     #[test]
     fn fresh_and_noop_pushes_need_no_acceptance() {
         assert_eq!(push_ceremony(None, "22", None), PushCeremony::Publish);
@@ -333,6 +330,7 @@ mod tests {
         );
     }
 
+    // req: DX-017, DX-018, DX-048
     #[test]
     fn changed_push_requires_the_exact_proposed_identity() {
         assert_eq!(
@@ -349,6 +347,7 @@ mod tests {
         );
     }
 
+    // req: DX-016, DX-042, DX-043, DX-044, DX-047, DX-049
     #[test]
     fn project_materializes_only_selected_language_artifacts_and_keeps_present_ones_exact() {
         let scratch =
@@ -421,6 +420,7 @@ mod tests {
         );
     }
 
+    // req: DX-042, DX-044, DX-047, DX-049
     #[test]
     fn every_singleton_generator_declares_locks_and_materializes_only_its_surface() {
         let cases = [
@@ -496,12 +496,6 @@ mod tests {
     }
 
     fn generator_to_project(generator: ApplicationGenerator) -> ProjectGenerator {
-        match generator {
-            ApplicationGenerator::Rust => ProjectGenerator::Rust,
-            ApplicationGenerator::Go => ProjectGenerator::Go,
-            ApplicationGenerator::Typescript => ProjectGenerator::Typescript,
-            ApplicationGenerator::Python => ProjectGenerator::Python,
-            ApplicationGenerator::Mcp => ProjectGenerator::Mcp,
-        }
+        ProjectGenerator::from_surface(generator.surface())
     }
 }

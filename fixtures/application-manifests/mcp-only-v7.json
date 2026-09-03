@@ -1,0 +1,1 @@
+{"application":"inventory","contract":{"lineage":"Inventory","source":"riffdb/contract.riff","version":1},"generation":{"mcp":"generated/mcp/tools.json"},"migrations":[],"query_modules":[{"name":"inventory","queries":[],"version":1}],"reactive_modules":[],"roles":[],"schema":"riffdb.application-source/v7","seed_inputs":[]}

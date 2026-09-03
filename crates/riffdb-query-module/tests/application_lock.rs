@@ -398,6 +398,7 @@ fn checked_row_policy_rotation_fixtures_decode_as_one_current_identity_family() 
     assert!(!text.contains("team_ids"));
 }
 
+// req: DX-006, DX-042, DX-043, DX-044, DX-045, DX-047, DX-049
 #[test]
 fn v8_lock_contains_exactly_the_v7_declared_surface_set() {
     let source = ApplicationSourceManifest::decode_canonical(include_bytes!(
@@ -443,6 +444,20 @@ fn v8_lock_contains_exactly_the_v7_declared_surface_set() {
         )
         .expect("contract artifact"),
     ];
+    assert_eq!(
+        ApplicationLock::compile_v7(
+            &source,
+            &manifest,
+            &contract,
+            std::slice::from_ref(&module),
+            &[],
+            &mandatory,
+            &[],
+        )
+        .expect_err("the predecessor writer must reject V7/V5 identities")
+        .kind(),
+        ApplicationLockErrorKind::UnsupportedVersion
+    );
     let lock = ApplicationLock::compile_v8(
         &source,
         &manifest,
@@ -453,6 +468,14 @@ fn v8_lock_contains_exactly_the_v7_declared_surface_set() {
         &[],
     )
     .expect("V8 lock");
+    assert_eq!(
+        manifest.canonical_bytes(),
+        include_bytes!("../../../fixtures/application-manifests/go-only-exact-v5.json")
+    );
+    assert_eq!(
+        lock.canonical_bytes(),
+        include_bytes!("../../../fixtures/application-locks/go-only-v8.json")
+    );
     assert_eq!(
         lock.schema(),
         riffdb_query_module::APPLICATION_LOCK_SCHEMA_V8

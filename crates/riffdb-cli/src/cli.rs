@@ -594,6 +594,18 @@ pub(crate) enum ApplicationGenerator {
     Mcp,
 }
 
+impl ApplicationGenerator {
+    pub(crate) const fn surface(self) -> riffdb_query_module::GeneratedApplicationSurface {
+        match self {
+            Self::Rust => riffdb_query_module::GeneratedApplicationSurface::Rust,
+            Self::Go => riffdb_query_module::GeneratedApplicationSurface::Go,
+            Self::Typescript => riffdb_query_module::GeneratedApplicationSurface::TypeScript,
+            Self::Python => riffdb_query_module::GeneratedApplicationSurface::Python,
+            Self::Mcp => riffdb_query_module::GeneratedApplicationSurface::Mcp,
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 pub(crate) enum RoleCommand {
     Check {

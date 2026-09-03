@@ -41,7 +41,7 @@ pub use application_source::{
     ApplicationSourceErrorKind, ApplicationSourceGeneration, ApplicationSourceManifest,
     ApplicationSourceMigration, ApplicationSourceQuery, ApplicationSourceQueryModule,
     ApplicationSourceReactiveModule, ApplicationSourceRole, ApplicationSourceTenantScope,
-    MAX_APPLICATION_MIGRATIONS, MAX_APPLICATION_SOURCE_BYTES,
+    ApplicationSourceV7MigrationPreview, MAX_APPLICATION_MIGRATIONS, MAX_APPLICATION_SOURCE_BYTES,
 };
 pub use exact_predicate_result_set::*;
 pub use exact_text::*;

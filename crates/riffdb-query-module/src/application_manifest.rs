@@ -283,6 +283,27 @@ pub struct ManifestGenerationTargets {
 }
 
 impl ManifestGenerationTargets {
+    /// Exact path for one compiler-owned generated surface.
+    #[must_use]
+    pub fn path(&self, surface: crate::GeneratedApplicationSurface) -> Option<&str> {
+        match surface {
+            crate::GeneratedApplicationSurface::Rust => self.rust(),
+            crate::GeneratedApplicationSurface::Go => self.go(),
+            crate::GeneratedApplicationSurface::TypeScript => self.typescript(),
+            crate::GeneratedApplicationSurface::Python => self.python(),
+            crate::GeneratedApplicationSurface::Mcp => self.mcp(),
+        }
+    }
+
+    /// Declared surfaces and paths in compiler-registry order.
+    pub fn declared(
+        &self,
+    ) -> impl Iterator<Item = (crate::GeneratedApplicationSurface, &str)> + '_ {
+        crate::GeneratedApplicationSurface::ALL
+            .into_iter()
+            .filter_map(|surface| self.path(surface).map(|path| (surface, path)))
+    }
+
     /// Workspace-relative Rust output.
     #[must_use]
     pub fn rust(&self) -> Option<&str> {
@@ -437,22 +458,10 @@ impl ApplicationManifest {
                 | APPLICATION_MANIFEST_SCHEMA_V5
         ) {
             let root = canonical_value.as_object_mut().expect("manifest object");
-            let mut generation_value = Map::new();
-            if let Some(go) = generation.go() {
-                generation_value.insert("go".to_owned(), json!(go));
-            }
-            if let Some(mcp) = generation.mcp() {
-                generation_value.insert("mcp".to_owned(), json!(mcp));
-            }
-            if let Some(python) = generation.python() {
-                generation_value.insert("python".to_owned(), json!(python));
-            }
-            if let Some(rust) = generation.rust() {
-                generation_value.insert("rust".to_owned(), json!(rust));
-            }
-            if let Some(typescript) = generation.typescript() {
-                generation_value.insert("typescript".to_owned(), json!(typescript));
-            }
+            let generation_value = generation
+                .declared()
+                .map(|(surface, path)| (surface.key().to_owned(), json!(path)))
+                .collect::<Map<_, _>>();
             root.insert("generation".to_owned(), Value::Object(generation_value));
             root.insert(
                 "reactive_modules".to_owned(),

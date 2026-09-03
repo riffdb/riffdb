@@ -268,6 +268,15 @@ impl ApplicationSourceGeneration {
         }
     }
 
+    /// Declared surfaces and paths in compiler-registry order.
+    pub fn declared(
+        &self,
+    ) -> impl Iterator<Item = (crate::GeneratedApplicationSurface, &str)> + '_ {
+        crate::GeneratedApplicationSurface::ALL
+            .into_iter()
+            .filter_map(|surface| self.path(surface).map(|path| (surface, path)))
+    }
+
     /// Rust output path.
     #[must_use]
     pub fn rust(&self) -> Option<&str> {
@@ -313,6 +322,34 @@ pub struct ApplicationSourceManifest {
     migrations: Vec<ApplicationSourceMigration>,
     canonical_bytes: Vec<u8>,
     identity: ApplicationSourceHash,
+}
+
+/// Pure compiler-owned proposal for an explicit V7 sparse target selection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApplicationSourceV7MigrationPreview {
+    source: ApplicationSourceManifest,
+    removed_surfaces: Vec<crate::GeneratedApplicationSurface>,
+}
+
+impl ApplicationSourceV7MigrationPreview {
+    /// Canonical proposed V7 source and its exact source identity.
+    #[must_use]
+    pub const fn source(&self) -> &ApplicationSourceManifest {
+        &self.source
+    }
+
+    /// Previously declared surfaces omitted by the explicit proposal, in
+    /// compiler-registry order.
+    #[must_use]
+    pub fn removed_surfaces(&self) -> &[crate::GeneratedApplicationSurface] {
+        &self.removed_surfaces
+    }
+
+    /// Consumes the preview and returns the canonical proposed source.
+    #[must_use]
+    pub fn into_source(self) -> ApplicationSourceManifest {
+        self.source
+    }
 }
 
 impl ApplicationSourceManifest {
@@ -525,6 +562,61 @@ impl ApplicationSourceManifest {
     #[must_use]
     pub const fn identity(&self) -> ApplicationSourceHash {
         self.identity
+    }
+
+    /// Builds a read-only V7 migration preview for one explicit sparse target
+    /// selection. Existing target paths are retained; newly selected targets
+    /// use the compiler registry's canonical scaffold path. The receiver and
+    /// every filesystem artifact remain unchanged.
+    pub fn preview_generation_v7(
+        &self,
+        surfaces: &[crate::GeneratedApplicationSurface],
+    ) -> Result<ApplicationSourceV7MigrationPreview, ApplicationSourceError> {
+        let selected = surfaces.iter().copied().collect::<BTreeSet<_>>();
+        if selected.is_empty() || selected.len() != surfaces.len() {
+            return Err(ApplicationSourceError::new(
+                ApplicationSourceErrorKind::InvalidShape,
+            ));
+        }
+        let path = |surface| {
+            selected.contains(&surface).then(|| {
+                self.generation
+                    .path(surface)
+                    .unwrap_or_else(|| surface.default_path())
+                    .to_owned()
+            })
+        };
+        let generation = ApplicationSourceGeneration {
+            rust: path(crate::GeneratedApplicationSurface::Rust),
+            typescript: path(crate::GeneratedApplicationSurface::TypeScript),
+            go: path(crate::GeneratedApplicationSurface::Go),
+            mcp: path(crate::GeneratedApplicationSurface::Mcp),
+            python: path(crate::GeneratedApplicationSurface::Python),
+        };
+        let value = canonical_value(CanonicalApplicationSource {
+            application: &self.application_name,
+            contract: &self.contract,
+            modules: &self.query_modules,
+            reactive_modules: &self.reactive_modules,
+            roles: &self.roles,
+            generation: &generation,
+            seeds: &self.seed_inputs,
+            migrations: &self.migrations,
+            schema: APPLICATION_SOURCE_SCHEMA_V7,
+        });
+        let proposed = serde_json::to_string(&value)
+            .map_err(|_| ApplicationSourceError::new(ApplicationSourceErrorKind::InvalidJson))?;
+        let source = Self::parse(&proposed)?;
+        let removed_surfaces = self
+            .generation
+            .declared()
+            .map(|(surface, _)| surface)
+            .filter(|surface| !selected.contains(surface))
+            .collect();
+        Ok(ApplicationSourceV7MigrationPreview {
+            source,
+            removed_surfaces,
+        })
     }
 
     /// Produces the compatible exact V1 manifest after every compiled identity
@@ -885,22 +977,10 @@ fn canonical_value(source: CanonicalApplicationSource<'_>) -> Value {
         migrations,
         schema,
     } = source;
-    let mut generation_value = Map::new();
-    if let Some(mcp) = &generation.mcp {
-        generation_value.insert("mcp".to_owned(), json!(mcp));
-    }
-    if let Some(go) = &generation.go {
-        generation_value.insert("go".to_owned(), json!(go));
-    }
-    if let Some(python) = &generation.python {
-        generation_value.insert("python".to_owned(), json!(python));
-    }
-    if let Some(rust) = &generation.rust {
-        generation_value.insert("rust".to_owned(), json!(rust));
-    }
-    if let Some(typescript) = &generation.typescript {
-        generation_value.insert("typescript".to_owned(), json!(typescript));
-    }
+    let generation_value = generation
+        .declared()
+        .map(|(surface, path)| (surface.key().to_owned(), json!(path)))
+        .collect::<Map<_, _>>();
     let mut root = Map::new();
     root.insert("application".to_owned(), json!(application));
     root.insert(
@@ -1589,6 +1669,7 @@ mod tests {
         );
     }
 
+    // req: DX-042, DX-043, DX-044, DX-045, DX-049
     #[test]
     fn v7_accepts_only_a_nonempty_closed_unique_sparse_surface_set() {
         let fixture = include_str!("../../../fixtures/application-manifests/go-only-v7.json");
@@ -1620,6 +1701,154 @@ mod tests {
                 "invalid sparse declaration must fail closed"
             );
         }
+    }
+
+    // req: DX-042, DX-044, DX-049
+    #[test]
+    fn v7_singleton_and_representative_multi_surface_fixtures_follow_the_registry() {
+        let singleton_fixtures = [
+            (
+                crate::GeneratedApplicationSurface::Go,
+                include_bytes!("../../../fixtures/application-manifests/go-only-v7.json")
+                    .as_slice(),
+            ),
+            (
+                crate::GeneratedApplicationSurface::Mcp,
+                include_bytes!("../../../fixtures/application-manifests/mcp-only-v7.json")
+                    .as_slice(),
+            ),
+            (
+                crate::GeneratedApplicationSurface::Python,
+                include_bytes!("../../../fixtures/application-manifests/python-only-v7.json")
+                    .as_slice(),
+            ),
+            (
+                crate::GeneratedApplicationSurface::Rust,
+                include_bytes!("../../../fixtures/application-manifests/rust-only-v7.json")
+                    .as_slice(),
+            ),
+            (
+                crate::GeneratedApplicationSurface::TypeScript,
+                include_bytes!("../../../fixtures/application-manifests/typescript-only-v7.json")
+                    .as_slice(),
+            ),
+        ];
+        assert_eq!(
+            singleton_fixtures.map(|(surface, _)| surface),
+            crate::GeneratedApplicationSurface::ALL
+        );
+        for (surface, fixture) in singleton_fixtures {
+            let source = ApplicationSourceManifest::decode_canonical(fixture)
+                .expect("canonical singleton fixture");
+            assert_eq!(
+                source.generation().declared().collect::<Vec<_>>(),
+                vec![(surface, surface.default_path())]
+            );
+        }
+
+        let multi = ApplicationSourceManifest::decode_canonical(include_bytes!(
+            "../../../fixtures/application-manifests/go-rust-typescript-v7.json"
+        ))
+        .expect("canonical representative multi-surface fixture");
+        assert_eq!(
+            multi
+                .generation()
+                .declared()
+                .map(|(surface, _)| surface)
+                .collect::<Vec<_>>(),
+            vec![
+                crate::GeneratedApplicationSurface::Go,
+                crate::GeneratedApplicationSurface::Rust,
+                crate::GeneratedApplicationSurface::TypeScript,
+            ]
+        );
+    }
+
+    // req: DX-042, DX-043, DX-045, DX-048
+    #[test]
+    fn v7_migration_preview_requires_an_explicit_registry_selection_without_mutating_source() {
+        let original = ApplicationSourceManifest::decode_canonical(include_bytes!(
+            "../../../fixtures/application-manifests/empty-project-v5.json"
+        ))
+        .expect("canonical V5 source");
+        let original_bytes = original.canonical_bytes().to_vec();
+
+        let preview = original
+            .preview_generation_v7(&[
+                crate::GeneratedApplicationSurface::Go,
+                crate::GeneratedApplicationSurface::Rust,
+            ])
+            .expect("explicit sparse migration preview");
+        assert_eq!(
+            preview.removed_surfaces(),
+            &[
+                crate::GeneratedApplicationSurface::Mcp,
+                crate::GeneratedApplicationSurface::Python,
+                crate::GeneratedApplicationSurface::TypeScript,
+            ]
+        );
+        let preview = preview.source();
+        assert_eq!(preview.schema(), APPLICATION_SOURCE_SCHEMA_V7);
+        assert_eq!(preview.generation().go(), Some("generated/go/client.go"));
+        assert_eq!(
+            preview.generation().rust(),
+            Some("generated/rust/client.rs")
+        );
+        assert_eq!(preview.generation().typescript(), None);
+        assert_eq!(preview.generation().python(), None);
+        assert_eq!(preview.generation().mcp(), None);
+        assert_eq!(original.canonical_bytes(), original_bytes);
+
+        for invalid in [
+            Vec::new(),
+            vec![
+                crate::GeneratedApplicationSurface::Go,
+                crate::GeneratedApplicationSurface::Go,
+            ],
+        ] {
+            assert_eq!(
+                original
+                    .preview_generation_v7(&invalid)
+                    .expect_err("selection must be nonempty and unique")
+                    .kind(),
+                ApplicationSourceErrorKind::InvalidShape
+            );
+        }
+    }
+
+    // req: DX-047, DX-048
+    #[test]
+    fn sparse_selection_changes_only_source_schema_generation_and_identity() {
+        let original = ApplicationSourceManifest::decode_canonical(include_bytes!(
+            "../../../fixtures/application-manifests/policy-surface-v6.json"
+        ))
+        .expect("canonical V6 policy source");
+        let preview = original
+            .preview_generation_v7(&[crate::GeneratedApplicationSurface::Go])
+            .expect("Go-only preview");
+        let preview = preview.source();
+
+        assert_eq!(preview.application_name(), original.application_name());
+        assert_eq!(preview.contract(), original.contract());
+        assert_eq!(preview.query_modules(), original.query_modules());
+        assert_eq!(preview.reactive_modules(), original.reactive_modules());
+        assert_eq!(preview.roles(), original.roles());
+        assert_eq!(preview.seed_inputs(), original.seed_inputs());
+        assert_eq!(preview.migrations(), original.migrations());
+        assert_ne!(preview.identity(), original.identity());
+    }
+
+    // req: DX-045
+    #[test]
+    fn future_source_identity_fails_closed_without_retiring_v1_through_v7() {
+        let fixture = include_str!("../../../fixtures/application-manifests/go-only-v7.json");
+        assert!(
+            ApplicationSourceManifest::parse(
+                &fixture.replace(APPLICATION_SOURCE_SCHEMA_V7, "riffdb.application-source/v8")
+            )
+            .is_err(),
+            "an unregistered successor must fail closed"
+        );
     }
 
     #[test]

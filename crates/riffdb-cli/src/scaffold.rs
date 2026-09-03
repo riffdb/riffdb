@@ -845,15 +845,8 @@ fn compiled_output_kind(
         .map(GeneratedApplicationArtifact::kind)
 }
 
-const fn selectable_artifact(kind: GeneratedApplicationArtifactKind) -> bool {
-    matches!(
-        kind,
-        GeneratedApplicationArtifactKind::Rust
-            | GeneratedApplicationArtifactKind::TypeScript
-            | GeneratedApplicationArtifactKind::Go
-            | GeneratedApplicationArtifactKind::Python
-            | GeneratedApplicationArtifactKind::Mcp
-    )
+fn selectable_artifact(kind: GeneratedApplicationArtifactKind) -> bool {
+    kind.surface().is_some()
 }
 
 pub(crate) fn plan_application_migrations(
@@ -1333,6 +1326,22 @@ fn compile_symbolic_application_mode(
         std::str::from_utf8(&source_bytes).map_err(|_| ScaffoldError::ApplicationSource)?;
     let source = ApplicationSourceManifest::parse(source_text)
         .map_err(|error| application_source_diagnostic(source_path, error))?;
+    compile_symbolic_application_source_mode(
+        source_path,
+        source,
+        contract_override,
+        lock_v3,
+        include_runtime_operation_catalog,
+    )
+}
+
+fn compile_symbolic_application_source_mode(
+    source_path: &Path,
+    source: ApplicationSourceManifest,
+    contract_override: Option<ContractBundle>,
+    lock_v3: bool,
+    include_runtime_operation_catalog: bool,
+) -> Result<CompiledSymbolicApplication, ScaffoldError> {
     let root = source_parent(source_path);
     let contract_source = read_workspace_text(root, source.contract().source(), 1_048_576)?;
     let contract = if let Some(contract) = contract_override {
@@ -1559,19 +1568,6 @@ fn compile_symbolic_application_mode(
         EXACT_MANIFEST_PATH.to_owned(),
         exact.canonical_bytes().to_vec(),
     )];
-    if let Some(path) = source.generation().rust() {
-        outputs.push((
-            path.to_owned(),
-            generate_rust_application_client(module, &contract, &reactive_modules).into_bytes(),
-        ));
-    }
-    if let Some(path) = source.generation().typescript() {
-        outputs.push((
-            path.to_owned(),
-            generate_typescript_application_client(module, &contract, &reactive_modules)
-                .into_bytes(),
-        ));
-    }
     let runtime_operation_catalog = if include_runtime_operation_catalog {
         Some(
             render_application_operation_catalog(&exact, module, &contract, &reactive_modules)?
@@ -1580,36 +1576,44 @@ fn compile_symbolic_application_mode(
     } else {
         None
     };
-    if let Some(path) = source.generation().mcp() {
-        let generated_mcp = match runtime_operation_catalog.as_ref() {
-            Some(catalog) => catalog.clone(),
-            None => {
-                render_application_operation_catalog(&exact, module, &contract, &reactive_modules)?
+    for (surface, path) in source.generation().declared() {
+        let bytes = match surface {
+            riffdb_query_module::GeneratedApplicationSurface::Rust => {
+                generate_rust_application_client(module, &contract, &reactive_modules).into_bytes()
+            }
+            riffdb_query_module::GeneratedApplicationSurface::Go => {
+                generate_go_application_client(module, &contract, &reactive_modules).into_bytes()
+            }
+            riffdb_query_module::GeneratedApplicationSurface::TypeScript => {
+                generate_typescript_application_client(module, &contract, &reactive_modules)
                     .into_bytes()
             }
+            riffdb_query_module::GeneratedApplicationSurface::Python => {
+                generate_python_application_client(module, &contract, &reactive_modules)
+                    .map_err(|error| {
+                        python_generation_diagnostic(
+                            source.contract().source(),
+                            &contract_source,
+                            &python_query_sources,
+                            &error,
+                        )
+                    })?
+                    .into_bytes()
+            }
+            riffdb_query_module::GeneratedApplicationSurface::Mcp => {
+                match runtime_operation_catalog.as_ref() {
+                    Some(catalog) => catalog.clone(),
+                    None => render_application_operation_catalog(
+                        &exact,
+                        module,
+                        &contract,
+                        &reactive_modules,
+                    )?
+                    .into_bytes(),
+                }
+            }
         };
-        outputs.push((path.to_owned(), generated_mcp));
-    }
-    if let Some(path) = source.generation().python() {
-        outputs.push((
-            path.to_owned(),
-            generate_python_application_client(module, &contract, &reactive_modules)
-                .map_err(|error| {
-                    python_generation_diagnostic(
-                        source.contract().source(),
-                        &contract_source,
-                        &python_query_sources,
-                        &error,
-                    )
-                })?
-                .into_bytes(),
-        ));
-    }
-    if let Some(path) = source.generation().go() {
-        outputs.push((
-            path.to_owned(),
-            generate_go_application_client(module, &contract, &reactive_modules).into_bytes(),
-        ));
+        outputs.push((path.to_owned(), bytes));
     }
     if lock_v3 {
         outputs.push((
@@ -1623,22 +1627,18 @@ fn compile_symbolic_application_mode(
         .map(|(path, bytes)| {
             let kind = if path == EXACT_MANIFEST_PATH {
                 GeneratedApplicationArtifactKind::Manifest
-            } else if source.generation().rust() == Some(path.as_str()) {
-                GeneratedApplicationArtifactKind::Rust
-            } else if source.generation().typescript() == Some(path.as_str()) {
-                GeneratedApplicationArtifactKind::TypeScript
-            } else if source.generation().python() == Some(path.as_str()) {
-                GeneratedApplicationArtifactKind::Python
-            } else if source.generation().go() == Some(path.as_str()) {
-                GeneratedApplicationArtifactKind::Go
             } else if path == CONTRACT_BUNDLE_ARTIFACT_PATH {
                 GeneratedApplicationArtifactKind::ContractBundle
             } else if path.ends_with(".riffdb.reactive.module") {
                 GeneratedApplicationArtifactKind::ReactiveModule
-            } else if source.generation().mcp() == Some(path.as_str()) {
-                GeneratedApplicationArtifactKind::Mcp
             } else {
-                return Err(ScaffoldError::ApplicationLock);
+                source
+                    .generation()
+                    .declared()
+                    .find_map(|(surface, declared_path)| {
+                        (declared_path == path).then(|| surface.artifact_kind())
+                    })
+                    .ok_or(ScaffoldError::ApplicationLock)?
             };
             GeneratedApplicationArtifact::new(kind, path.clone(), bytes)
                 .map_err(|error| lock_diagnostic(Path::new(DEFAULT_LOCK_PATH), error.kind()))
