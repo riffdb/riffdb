@@ -7,7 +7,8 @@ use riffdb_contract_syntax::Span;
 use riffdb_types::FieldId;
 
 use crate::diagnostic::{
-    CompilerDiagnostic, CompilerDiagnosticCause, CompilerDiagnosticCode, CompilerDiagnostics,
+    CompilerBoundResource, CompilerDiagnostic, CompilerDiagnosticCause, CompilerDiagnosticCode,
+    CompilerDiagnostics,
 };
 use crate::hir::{
     HirBinding, HirCommand, HirDecisionAction, HirEffect, HirExpressionRoot, HirObjectField,
@@ -882,13 +883,22 @@ fn validate_cascade_binding(
             count.checked_add(relationship.maximum)
         });
     let total = rows_per_root.and_then(|count| count.checked_mul(root_maximum));
-    if total.is_none_or(|total| {
-        total > riffdb_contract_ir::MAX_COLLECTION_COMMAND_MUTATION_INSTANCES_V1
-    }) {
-        diagnostics.push(CompilerDiagnostic::new(
-            CompilerDiagnosticCode::BoundExceeded,
+    match total {
+        Some(actual)
+            if actual > riffdb_contract_ir::MAX_COLLECTION_COMMAND_MUTATION_INSTANCES_V1 =>
+        {
+            diagnostics.push(CompilerDiagnostic::bound_exceeded(
+                CompilerBoundResource::CollectionCommandMutationInstances,
+                actual,
+                riffdb_contract_ir::MAX_COLLECTION_COMMAND_MUTATION_INSTANCES_V1,
+                failure.span,
+            ));
+        }
+        None => diagnostics.push(CompilerDiagnostic::arithmetic_overflow(
+            CompilerBoundResource::CollectionCommandMutationInstances,
             failure.span,
-        ));
+        )),
+        Some(_) => {}
     }
 }
 

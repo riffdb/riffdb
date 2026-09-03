@@ -31,6 +31,23 @@ use crate::literal::decode_json_string_lexeme;
 use crate::symbols::GenesisSymbols;
 use crate::typecheck::ResolvedTypes;
 
+fn parse_positive_bounded_usize(
+    source: &str,
+    maximum: usize,
+    resource: CompilerBoundResource,
+    span: Span,
+) -> Result<usize, CompilerDiagnostic> {
+    let actual = source
+        .parse::<usize>()
+        .map_err(|_| CompilerDiagnostic::arithmetic_overflow(resource, span))?;
+    if actual == 0 || actual > maximum {
+        return Err(CompilerDiagnostic::bound_exceeded(
+            resource, actual, maximum, span,
+        ));
+    }
+    Ok(actual)
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct HirExpressionNode {
     pub(crate) kind: ExpressionKind,
@@ -1133,8 +1150,10 @@ fn lower_entities(
                         }
                         DeletePolicyDeclaration::Cascade { relationships } => {
                             if relationships.is_empty() || relationships.len() > 32 {
-                                diagnostics.push(CompilerDiagnostic::new(
-                                    CompilerDiagnosticCode::BoundExceeded,
+                                diagnostics.push(CompilerDiagnostic::bound_exceeded(
+                                    CompilerBoundResource::DeclarationCount,
+                                    relationships.len(),
+                                    32,
                                     item.span,
                                 ));
                                 continue;
@@ -1170,19 +1189,17 @@ fn lower_entities(
                                     ));
                                     continue;
                                 };
-                                let Some(maximum) = relationship
-                                    .value
-                                    .maximum
-                                    .value
-                                    .parse::<usize>()
-                                    .ok()
-                                    .filter(|maximum| *maximum > 0 && *maximum <= 255)
-                                else {
-                                    diagnostics.push(CompilerDiagnostic::new(
-                                        CompilerDiagnosticCode::BoundExceeded,
-                                        relationship.value.maximum.span,
-                                    ));
-                                    continue;
+                                let maximum = match parse_positive_bounded_usize(
+                                    &relationship.value.maximum.value,
+                                    255,
+                                    CompilerBoundResource::DeclarationCount,
+                                    relationship.value.maximum.span,
+                                ) {
+                                    Ok(maximum) => maximum,
+                                    Err(diagnostic) => {
+                                        diagnostics.push(diagnostic);
+                                        continue;
+                                    }
                                 };
                                 lowered.push(HirCascadeRelationship {
                                     source_entity,
@@ -1218,68 +1235,60 @@ fn lower_entities(
             if let EntityItem::VectorField(vector_field) = &item.value {
                 let mut valid = true;
                 // Dimension must be a parseable positive integer within bound.
-                match vector_field.dimension.value.parse::<u32>() {
-                    Ok(dim) if riffdb_types::VectorDimension::new(dim).is_some() => {}
-                    _ => {
+                match parse_positive_bounded_usize(
+                    &vector_field.dimension.value,
+                    riffdb_types::MAX_VECTOR_DIMENSION as usize,
+                    CompilerBoundResource::DeclarationCount,
+                    vector_field.dimension.span,
+                ) {
+                    Ok(_) => {}
+                    Err(diagnostic) => {
                         valid = false;
-                        diagnostics.push(CompilerDiagnostic::new(
-                            CompilerDiagnosticCode::BoundExceeded,
-                            vector_field.dimension.span,
-                        ));
+                        diagnostics.push(diagnostic);
                     }
                 }
                 // The v1 staleness SLO is a positive stale-entity count
                 // threshold. Duration semantics are reserved for a future
                 // amendment and require no clock machinery here.
-                let stale_entity_count_threshold =
-                    match vector_field.staleness_slo.value.parse::<u32>() {
-                        Ok(count)
-                            if riffdb_types::StaleEntityCountThreshold::new(count).is_some() =>
-                        {
-                            u64::from(count)
-                        }
-                        _ => {
-                            valid = false;
-                            diagnostics.push(CompilerDiagnostic::new(
-                                CompilerDiagnosticCode::BoundExceeded,
-                                vector_field.staleness_slo.span,
-                            ));
-                            0
-                        }
-                    };
+                let stale_entity_count_threshold = match parse_positive_bounded_usize(
+                    &vector_field.staleness_slo.value,
+                    u32::MAX as usize,
+                    CompilerBoundResource::DeclarationCount,
+                    vector_field.staleness_slo.span,
+                ) {
+                    Ok(count) => count as u64,
+                    Err(diagnostic) => {
+                        valid = false;
+                        diagnostics.push(diagnostic);
+                        0
+                    }
+                };
                 let (ann_row_threshold, recall_target_bps) = match &vector_field.ann {
                     None => (None, None),
                     Some(ann) => {
-                        let threshold = match ann.row_threshold.value.parse::<u32>() {
-                            Ok(value)
-                                if (1
-                                    ..=riffdb_contract_ir::MAX_VECTOR_ANN_THRESHOLD_ROWS_PER_ORG)
-                                    .contains(&value) =>
-                            {
-                                Some(value)
-                            }
-                            _ => {
+                        let threshold = match parse_positive_bounded_usize(
+                            &ann.row_threshold.value,
+                            riffdb_contract_ir::MAX_VECTOR_ANN_THRESHOLD_ROWS_PER_ORG as usize,
+                            CompilerBoundResource::DeclarationCount,
+                            ann.row_threshold.span,
+                        ) {
+                            Ok(value) => Some(value as u32),
+                            Err(diagnostic) => {
                                 valid = false;
-                                diagnostics.push(CompilerDiagnostic::new(
-                                    CompilerDiagnosticCode::BoundExceeded,
-                                    ann.row_threshold.span,
-                                ));
+                                diagnostics.push(diagnostic);
                                 None
                             }
                         };
-                        let recall = match ann.recall_target_bps.value.parse::<u32>() {
-                            Ok(value)
-                                if (1..=riffdb_contract_ir::VECTOR_RECALL_BASIS_POINTS)
-                                    .contains(&value) =>
-                            {
-                                Some(value)
-                            }
-                            _ => {
+                        let recall = match parse_positive_bounded_usize(
+                            &ann.recall_target_bps.value,
+                            riffdb_contract_ir::VECTOR_RECALL_BASIS_POINTS as usize,
+                            CompilerBoundResource::DeclarationCount,
+                            ann.recall_target_bps.span,
+                        ) {
+                            Ok(value) => Some(value as u32),
+                            Err(diagnostic) => {
                                 valid = false;
-                                diagnostics.push(CompilerDiagnostic::new(
-                                    CompilerDiagnosticCode::BoundExceeded,
-                                    ann.recall_target_bps.span,
-                                ));
+                                diagnostics.push(diagnostic);
                                 None
                             }
                         };
@@ -1291,56 +1300,65 @@ fn lower_entities(
                         decode_json_string_lexeme(&production.model_identity.value);
                     let current_model_version =
                         decode_json_string_lexeme(&production.current_model_version.value);
-                    let replay_age_seconds =
-                        production.replay_age_seconds.value.parse::<u64>().ok();
-                    let replay_bytes = production.replay_bytes.value.parse::<u64>().ok();
-                    let replay_backlog = production.replay_backlog.value.parse::<u64>().ok();
-
-                    let candidates = [
+                    for (value, span) in [
+                        (model_identity.as_ref(), production.model_identity.span),
                         (
-                            model_identity.as_ref().is_some_and(|value| {
-                                !value.is_empty()
-                                    && value.len()
-                                        <= riffdb_types::EmbeddingMetadata::MAX_MODEL_STRING_LEN
-                            }),
-                            production.model_identity.span,
-                        ),
-                        (
-                            current_model_version.as_ref().is_some_and(|value| {
-                                !value.is_empty()
-                                    && value.len()
-                                        <= riffdb_types::EmbeddingMetadata::MAX_MODEL_STRING_LEN
-                            }),
+                            current_model_version.as_ref(),
                             production.current_model_version.span,
                         ),
-                        (
-                            replay_age_seconds.is_some_and(|value| {
-                                (1..=riffdb_contract_ir::MAX_VECTOR_REPLAY_AGE_SECONDS)
-                                    .contains(&value)
-                            }),
-                            production.replay_age_seconds.span,
-                        ),
-                        (
-                            replay_bytes.is_some_and(|value| {
-                                (1..=riffdb_contract_ir::MAX_VECTOR_REPLAY_BYTES).contains(&value)
-                            }),
-                            production.replay_bytes.span,
-                        ),
-                        (
-                            replay_backlog.is_some_and(|value| {
-                                (1..=riffdb_contract_ir::MAX_VECTOR_REPLAY_BACKLOG).contains(&value)
-                            }),
-                            production.replay_backlog.span,
-                        ),
-                    ];
-                    for (is_valid, span) in candidates {
-                        if !is_valid {
-                            valid = false;
-                            diagnostics.push(CompilerDiagnostic::new(
-                                CompilerDiagnosticCode::BoundExceeded,
-                                span,
-                            ));
+                    ] {
+                        match value {
+                            Some(value)
+                                if !value.is_empty()
+                                    && value.len()
+                                        <= riffdb_types::EmbeddingMetadata::MAX_MODEL_STRING_LEN =>
+                            {}
+                            Some(value) => {
+                                valid = false;
+                                diagnostics.push(CompilerDiagnostic::bound_exceeded(
+                                    CompilerBoundResource::ValueBytes,
+                                    value.len(),
+                                    riffdb_types::EmbeddingMetadata::MAX_MODEL_STRING_LEN,
+                                    span,
+                                ));
+                            }
+                            None => {
+                                valid = false;
+                                diagnostics.push(CompilerDiagnostic::arithmetic_overflow(
+                                    CompilerBoundResource::ValueBytes,
+                                    span,
+                                ));
+                            }
                         }
+                    }
+                    let replay_age_seconds = parse_positive_bounded_usize(
+                        &production.replay_age_seconds.value,
+                        riffdb_contract_ir::MAX_VECTOR_REPLAY_AGE_SECONDS as usize,
+                        CompilerBoundResource::CompiledArtifact,
+                        production.replay_age_seconds.span,
+                    );
+                    let replay_bytes = parse_positive_bounded_usize(
+                        &production.replay_bytes.value,
+                        riffdb_contract_ir::MAX_VECTOR_REPLAY_BYTES as usize,
+                        CompilerBoundResource::ValueBytes,
+                        production.replay_bytes.span,
+                    );
+                    let replay_backlog = parse_positive_bounded_usize(
+                        &production.replay_backlog.value,
+                        riffdb_contract_ir::MAX_VECTOR_REPLAY_BACKLOG as usize,
+                        CompilerBoundResource::DeclarationCount,
+                        production.replay_backlog.span,
+                    );
+                    for diagnostic in [
+                        replay_age_seconds.as_ref().err(),
+                        replay_bytes.as_ref().err(),
+                        replay_backlog.as_ref().err(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        valid = false;
+                        diagnostics.push(diagnostic.clone());
                     }
                     if !valid {
                         return None;
@@ -1348,9 +1366,9 @@ fn lower_entities(
                     let (
                         Some(model_identity),
                         Some(current_model_version),
-                        Some(replay_age_seconds),
-                        Some(replay_bytes),
-                        Some(replay_backlog),
+                        Ok(replay_age_seconds),
+                        Ok(replay_bytes),
+                        Ok(replay_backlog),
                     ) = (
                         model_identity,
                         current_model_version,
@@ -1364,9 +1382,9 @@ fn lower_entities(
                     Some(HirVectorProduction {
                         model_identity,
                         current_model_version,
-                        replay_age_seconds,
-                        replay_bytes,
-                        replay_backlog,
+                        replay_age_seconds: replay_age_seconds as u64,
+                        replay_bytes: replay_bytes as u64,
+                        replay_backlog: replay_backlog as u64,
                     })
                 });
                 // Source fields must be non-empty and each must resolve to an entity field.
@@ -2632,15 +2650,25 @@ fn lower_commands(
                             ));
                             continue;
                         };
-                        let parsed_minimum = minimum
-                            .as_ref()
-                            .and_then(|minimum| minimum.value.parse::<usize>().ok());
-                        let source_maximum = source_maximum.value.parse::<usize>().ok();
+                        let source_maximum = parse_positive_bounded_usize(
+                            &source_maximum.value,
+                            riffdb_contract_ir::MAX_COLLECTION_COMMAND_ELEMENTS_V2,
+                            CompilerBoundResource::CollectionCommandElements,
+                            source_input.value.field.ty.span,
+                        );
                         let maximum_aggregate_element_bytes = source_input
                             .value
                             .aggregate_bytes
                             .as_ref()
-                            .and_then(|bound| bound.value.parse::<usize>().ok());
+                            .map(|bound| {
+                                parse_positive_bounded_usize(
+                                    &bound.value,
+                                    riffdb_contract_ir::MAX_COLLECTION_COMMAND_GRAPH_BYTES_V1,
+                                    CompilerBoundResource::AggregateCollectionBytes,
+                                    bound.span,
+                                )
+                            })
+                            .transpose();
                         if let Some(bound) = &source_input.value.aggregate_bytes
                             && element_type.list_parts().is_some()
                         {
@@ -2650,38 +2678,44 @@ fn lower_commands(
                             ));
                             continue;
                         }
-                        if let Some(bound) = &source_input.value.aggregate_bytes
-                            && maximum_aggregate_element_bytes.is_none_or(|bound| {
-                                bound == 0
-                                    || bound
-                                        > riffdb_contract_ir::MAX_COLLECTION_COMMAND_GRAPH_BYTES_V1
-                            })
+                        let maximum_aggregate_element_bytes = match maximum_aggregate_element_bytes
                         {
-                            diagnostics.push(CompilerDiagnostic::new(
-                                CompilerDiagnosticCode::BoundExceeded,
-                                bound.span,
-                            ));
-                            continue;
-                        }
-                        let Some(minimum) = parsed_minimum else {
+                            Ok(maximum) => maximum,
+                            Err(diagnostic) => {
+                                diagnostics.push(diagnostic);
+                                continue;
+                            }
+                        };
+                        let source_maximum = match source_maximum {
+                            Ok(source_maximum) => source_maximum,
+                            Err(diagnostic) => {
+                                diagnostics.push(diagnostic);
+                                continue;
+                            }
+                        };
+                        let Some(minimum) = minimum.as_ref() else {
                             diagnostics.push(CompilerDiagnostic::new(
                                 CompilerDiagnosticCode::InvalidType,
                                 source_input.value.field.ty.span,
                             ));
                             continue;
                         };
-                        if maximum > riffdb_contract_ir::MAX_COLLECTION_COMMAND_ELEMENTS_V2 {
-                            diagnostics.push(CompilerDiagnostic::bound_exceeded(
-                                CompilerBoundResource::CollectionCommandElements,
-                                maximum,
-                                riffdb_contract_ir::MAX_COLLECTION_COMMAND_ELEMENTS_V2,
-                                source_input.value.field.ty.span,
-                            ));
-                            continue;
-                        }
-                        if source_maximum != Some(maximum) || minimum == 0 || minimum > maximum {
+                        let minimum = parse_positive_bounded_usize(
+                            &minimum.value,
+                            source_maximum,
+                            CompilerBoundResource::CollectionCommandElements,
+                            source_input.value.field.ty.span,
+                        );
+                        let minimum = match minimum {
+                            Ok(minimum) => minimum,
+                            Err(diagnostic) => {
+                                diagnostics.push(diagnostic);
+                                continue;
+                            }
+                        };
+                        if source_maximum != maximum || minimum > maximum {
                             diagnostics.push(CompilerDiagnostic::new(
-                                CompilerDiagnosticCode::BoundExceeded,
+                                CompilerDiagnosticCode::InvalidIr,
                                 source_input.value.field.ty.span,
                             ));
                             continue;
@@ -2820,8 +2854,10 @@ fn lower_commands(
                 continue;
             };
             let Ok(index) = u32::try_from(index) else {
-                diagnostics.push(CompilerDiagnostic::new(
-                    CompilerDiagnosticCode::BoundExceeded,
+                diagnostics.push(CompilerDiagnostic::bound_exceeded(
+                    CompilerBoundResource::DeclarationCount,
+                    index,
+                    u32::MAX as usize,
                     binding.name().span,
                 ));
                 continue;
@@ -3830,8 +3866,10 @@ fn lower_commands(
                 }
                 let first_binding = u32::try_from(top_level_binding_count).ok();
                 let Some(first_binding) = first_binding else {
-                    diagnostics.push(CompilerDiagnostic::new(
-                        CompilerDiagnosticCode::BoundExceeded,
+                    diagnostics.push(CompilerDiagnostic::bound_exceeded(
+                        CompilerBoundResource::DeclarationCount,
+                        top_level_binding_count,
+                        u32::MAX as usize,
                         span,
                     ));
                     return None;

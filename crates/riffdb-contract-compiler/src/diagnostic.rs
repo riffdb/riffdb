@@ -730,6 +730,7 @@ pub struct CompilerDiagnostic {
     primary_span: Span,
     related_span: Option<Span>,
     bound: Option<CompilerBoundObservation>,
+    overflow_resource: Option<CompilerBoundResource>,
     cause: Option<CompilerDiagnosticCause>,
 }
 
@@ -737,11 +738,17 @@ impl CompilerDiagnostic {
     /// Constructs a diagnostic with one primary source span.
     #[must_use]
     pub const fn new(code: CompilerDiagnosticCode, primary_span: Span) -> Self {
+        let overflow_resource = if matches!(code, CompilerDiagnosticCode::BoundExceeded) {
+            Some(CompilerBoundResource::CompiledArtifact)
+        } else {
+            None
+        };
         Self {
             code,
             primary_span,
             related_span: None,
             bound: None,
+            overflow_resource,
             cause: None,
         }
     }
@@ -777,6 +784,23 @@ impl CompilerDiagnostic {
                 actual,
                 maximum,
             }),
+            overflow_resource: None,
+        }
+    }
+
+    /// Constructs a value-free `RDB-C020` for checked arithmetic overflow.
+    ///
+    /// Overflow has no representable `actual` value and therefore must not
+    /// fabricate one. The closed resource still makes the refusal actionable.
+    #[must_use]
+    pub const fn arithmetic_overflow(resource: CompilerBoundResource, primary_span: Span) -> Self {
+        Self {
+            code: CompilerDiagnosticCode::BoundExceeded,
+            primary_span,
+            related_span: None,
+            bound: None,
+            overflow_resource: Some(resource),
+            cause: None,
         }
     }
 
@@ -794,8 +818,8 @@ impl CompilerDiagnostic {
                 maximum,
                 primary_span,
             ),
-            riffdb_contract_ir::IrValidationError::SizeOverflow { .. } => {
-                Self::new(CompilerDiagnosticCode::BoundExceeded, primary_span)
+            riffdb_contract_ir::IrValidationError::SizeOverflow { kind } => {
+                Self::arithmetic_overflow(CompilerBoundResource::from_ir_kind(kind), primary_span)
             }
             _ => Self::new(CompilerDiagnosticCode::InvalidIr, primary_span),
         }
@@ -832,11 +856,24 @@ impl CompilerDiagnostic {
         self.bound
     }
 
+    /// Returns the closed resource whose checked arithmetic overflowed.
+    #[must_use]
+    pub const fn overflow_resource(&self) -> Option<CompilerBoundResource> {
+        self.overflow_resource
+    }
+
     /// Returns the bounded public summary, including actionable bound evidence.
     #[must_use]
     pub fn summary(&self) -> String {
         self.bound.map_or_else(
-            || self.code.summary().to_owned(),
+            || {
+                self.overflow_resource.map_or_else(
+                    || self.code.summary().to_owned(),
+                    |resource| {
+                        format!("{} exceeded checked arithmetic capacity", resource.as_str())
+                    },
+                )
+            },
             |bound| {
                 format!(
                     "{} is {}; maximum is {}",
@@ -874,6 +911,7 @@ impl CompilerDiagnostics {
                 diagnostic.code,
                 diagnostic.related_span,
                 diagnostic.bound,
+                diagnostic.overflow_resource,
             )
         });
         diagnostics.dedup();
@@ -964,6 +1002,7 @@ mod tests {
         assert_eq!(diagnostic.related_span(), Some(related));
     }
 
+    // req: BLK-026
     #[test]
     fn bound_diagnostics_preserve_closed_resource_actual_maximum_and_span() {
         let primary = Span::new(30, 44).expect("valid command span");
@@ -989,6 +1028,30 @@ mod tests {
             diagnostic.to_string(),
             "RDB-C020: command_affected_prefix_epochs is 23320; maximum is 4096"
         );
+    }
+
+    // req: BLK-026
+    #[test]
+    fn checked_overflow_names_its_closed_resource_without_inventing_an_actual_value() {
+        let primary = Span::new(7, 11).expect("valid span");
+        let diagnostic = CompilerDiagnostic::from_ir_error(
+            riffdb_contract_ir::IrValidationError::SizeOverflow {
+                kind: "command worst-case index derivation",
+            },
+            primary,
+        );
+
+        assert_eq!(diagnostic.code(), CompilerDiagnosticCode::BoundExceeded);
+        assert_eq!(diagnostic.bound(), None);
+        assert_eq!(
+            diagnostic.overflow_resource(),
+            Some(CompilerBoundResource::CompiledArtifact)
+        );
+        assert_eq!(
+            diagnostic.summary(),
+            "compiled_artifact exceeded checked arithmetic capacity"
+        );
+        assert_eq!(diagnostic.primary_span(), primary);
     }
 
     #[test]

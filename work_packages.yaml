@@ -4260,6 +4260,23 @@ work_packages:
     scale: Compiler work is bounded by existing schema/plan ceilings; D is at most 4,096, A and V
       at most 65,535, D+A+V at most 65,535, affected state at most 16 MiB, arithmetic is checked,
       and no estimate depends on database rows, history, runtime equality, or backend scans.
+  closure:
+    status: complete
+    completed_at: "2026-09-03"
+    requirements_satisfied: [BLK-022, BLK-023, BLK-026, DSL-001, DSL-002,
+      DSL-003, DSL-004, DSL-005, DSL-006, DSL-007, DSL-008, DSL-009, DSL-010,
+      DSL-011, DSL-012, SAFE-004, SAFE-005, PERF-004, PERF-005]
+    evidence: Compiler-owned D, A, V, D+A+V, and affine affected-state byte estimates retain the
+      accepted structural and byte ceilings, with exact, plus-one, neutral 100-element, and reduced
+      reference-model proofs. RDB-C020 now carries a closed resource with checked actual and maximum
+      for every representable known ceiling, while checked arithmetic overflow names the closed
+      resource without inventing an actual value. IR validation errors preserve that evidence through
+      lowering, and the shared bounded summary remains the source for diagnostics, CLI, MCP, gRPC, and
+      LSP rendering. Generated compiler and protocol fixtures remain byte-exact, so no plan, command,
+      protocol, durable, runtime, storage, or transaction identity changed.
+    known_limitations: This package changes compiler admission and diagnostic evidence only; runtime
+      target derivation and durable successor conformance remain owned by WP-684.
+    follow_ups: [WP-684]
   human_review_triggers: *id001
 - id: WP-684
   name: Correlated index-work runtime and durable successor conformance

@@ -8742,7 +8742,7 @@ pub(crate) mod tests {
             })
         );
     }
-
+    // req: BLK-022
     #[test]
     fn worst_case_index_limits_accept_exact_boundaries_and_reject_one_over_in_priority_order() {
         let empty = WorstCaseIndexDerivation {
@@ -8968,7 +8968,7 @@ pub(crate) mod tests {
             })
         );
     }
-
+    // req: BLK-023
     #[test]
     fn worst_case_index_estimator_freezes_create_replace_and_shared_whole_prefix_formulas() {
         let first = FieldId::new(2).expect("field");
@@ -9105,8 +9105,8 @@ pub(crate) mod tests {
             }
         );
     }
-
     proptest::proptest! {
+        // req: BLK-023
         #[test]
         fn reduced_partition_model_never_exceeds_the_compiler_prefix_and_work_estimate(
             field_count in 1usize..10,

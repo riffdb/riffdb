@@ -14,7 +14,7 @@ use riffdb_types::{
     CanonicalValue, CommandId, Decimal, DecimalSpec, EntityTypeId, EventTypeId, FieldId, Money,
 };
 
-use crate::diagnostic::{CompilerDiagnostic, CompilerDiagnosticCode};
+use crate::diagnostic::{CompilerBoundResource, CompilerDiagnostic, CompilerDiagnosticCode};
 use crate::hir::{HirExpressionArena, HirExpressionNode};
 use crate::literal::decode_json_string_lexeme;
 use crate::symbols::GenesisSymbols;
@@ -541,8 +541,14 @@ impl<'a> ExpressionLowerer<'a> {
         value_type: ValueType,
         span: Span,
     ) -> Result<(ExprId, ValueType), CompilerDiagnostic> {
-        let index = u32::try_from(self.nodes.len())
-            .map_err(|_| CompilerDiagnostic::new(CompilerDiagnosticCode::BoundExceeded, span))?;
+        let index = u32::try_from(self.nodes.len()).map_err(|_| {
+            CompilerDiagnostic::bound_exceeded(
+                CompilerBoundResource::DeclarationCount,
+                self.nodes.len(),
+                u32::MAX as usize,
+                span,
+            )
+        })?;
         self.nodes.push(HirExpressionNode {
             kind,
             value_type: value_type.clone(),
