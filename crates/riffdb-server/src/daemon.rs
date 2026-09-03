@@ -3183,6 +3183,15 @@ async fn supervise_ready_process(
     } else {
         graph.shutdown_with_stage_evidence().await
     };
+    if let Err(error) = &graph_result
+        && let Some(checkpoint_close) = error.checkpoint_close_receipt()
+    {
+        eprintln!(
+            "{}",
+            ProductionGraphShutdownStageEvidence::format_labels_v1_line()
+        );
+        eprintln!("{}", checkpoint_close.format_v1_line());
+    }
     if let Ok(shutdown_stages) = &graph_result {
         let counts = write_completion_groups
             .iter()
@@ -3209,6 +3218,7 @@ async fn supervise_ready_process(
             "{}",
             ProductionGraphShutdownStageEvidence::format_labels_v1_line()
         );
+        eprintln!("{}", shutdown_stages.format_checkpoint_close_v1_line());
         eprintln!("{}", crate::shutdown_census::format_v1_line());
         crate::shutdown_census::mark_graph_receipt();
         let read_stages_line = riffdb_observability::format_read_stages_v1_line(&read_stages);

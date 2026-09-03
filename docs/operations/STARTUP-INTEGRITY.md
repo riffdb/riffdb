@@ -41,11 +41,25 @@ one by editing or deleting the lifecycle record.
 ## Graceful shutdown
 
 Shutdown first stops admission and drains writers, workers, and the journal.
-The optional validated-prefix checkpoint remains non-fatal. RiffDB then writes
-the clean lifecycle record with immediate durability; that record is the final
-authoritative mutation. Failure to write it does not make shutdown data unsafe:
-the following process sees dirty or absent evidence and performs complete
-validation.
+After the durable journal-suffix barrier, RiffDB inspects the optional
+validated-prefix checkpoint through fixed metadata and table cardinalities. It
+never rebuilds, repairs, deletes, or rewrites that proof during shutdown. An
+exact-current checkpoint and every companion proof row remain byte-identical;
+an absent checkpoint remains absent, and stale or ineligible bytes remain
+unchanged. Those states do not prevent a clean close because the lifecycle
+certificate is independent evidence.
+
+RiffDB then rereads the bounded lifecycle roots and writes the clean lifecycle
+record with immediate durability as the final database mutation. Failure before
+that commit leaves DIRTY; commit uncertainty is resolved on reopen as either the
+complete prior DIRTY state or the complete CLEAN successor. A later dirty open
+still verifies the retained prefix and exact suffix or performs complete
+validation. Shutdown never moves that population work into the close path.
+
+The internal shutdown receipt reports only a closed checkpoint disposition, a
+closed lifecycle outcome, and three saturating stage durations. It contains no
+database identity, path, frontier, generation, hash, key, value, row count, or
+engine diagnostic.
 
 Startup and shutdown durations are observations, not correctness deadlines or
 comparative database benchmarks. Their cost depends on durability mode,

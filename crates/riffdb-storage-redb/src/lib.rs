@@ -209,7 +209,7 @@ pub use durable_fixtures::{MigrationDurableFixture, migration_durable_fixture_se
 #[cfg(feature = "test-fixtures")]
 #[doc(hidden)]
 pub use fixtures::{
-    downgrade_all_index_rows_to_v1_fixture,
+    downgrade_all_index_rows_to_v1_fixture, read_validated_prefix_checkpoint_bytes_fixture,
     read_validated_prefix_checkpoint_commit_sequence_fixture,
 };
 pub use format_preflight::{
@@ -257,4 +257,8 @@ pub use store::{REPAIR_PROGRESS_SENTINEL, reset_last_repair_progress_for_tests};
 pub use store::{
     RedbCommitProfile, RedbDormantPorts, RedbDurabilityEpoch, RedbOperationalPorts, RedbStore,
     last_repair_progress_basis_points,
+};
+#[doc(hidden)]
+pub use validated_prefix::{
+    GracefulCheckpointCloseReceiptV1, GracefulCheckpointDispositionV1, GracefulLifecycleOutcomeV1,
 };

@@ -508,6 +508,110 @@ pub(crate) fn bounded_state_binding_hash(
     Ok(*hash(HashDomain::Schema, &preimage).as_bytes())
 }
 
+/// Write-snapshot form used by graceful close so checkpoint classification,
+/// bounded-root reread, and CLEAN share one final transaction snapshot.
+pub(crate) fn bounded_state_binding_hash_for_write(
+    transaction: &redb::WriteTransaction,
+    journal_header_digest: [u8; 32],
+) -> Result<[u8; 32], riffdb_storage_api::StorageError> {
+    let mut preimage = Vec::with_capacity(4096);
+    append_bytes(&mut preimage, BOUNDED_ROOT_HASH_LABEL)?;
+    append_bytes(&mut preimage, &BOUNDED_ROOT_HASH_VERSION.to_be_bytes())?;
+
+    let meta = transaction.open_table(META).map_err(table_error)?;
+    for key in BOUNDED_META_KEYS {
+        let value = meta
+            .get(key)
+            .map_err(precommit_storage_error)?
+            .map(|value| value.value().to_vec());
+        validate_bounded_meta_value(key, value.as_deref())?;
+        append_item(
+            &mut preimage,
+            META_TABLE_TAG,
+            key.as_bytes(),
+            value.as_deref(),
+        )?;
+    }
+    drop(meta);
+
+    let catalog = transaction
+        .open_table(CATALOG_ACTIVE)
+        .map_err(table_error)?;
+    if catalog.len().map_err(precommit_storage_error)? > 1 {
+        return Err(corrupt());
+    }
+    let active_catalog = catalog
+        .get(CATALOG_ACTIVE_KEY.as_slice())
+        .map_err(precommit_storage_error)?
+        .map(|value| value.value().to_vec());
+    if let Some(value) = &active_catalog {
+        codec::decode_active_catalog_pointer_v1(value)?;
+    }
+    append_item(
+        &mut preimage,
+        CATALOG_TABLE_TAG,
+        &CATALOG_ACTIVE_KEY,
+        active_catalog.as_deref(),
+    )?;
+    drop(catalog);
+
+    let active_modules = transaction
+        .open_table(QUERY_MODULE_ACTIVE)
+        .map_err(table_error)?;
+    let count = usize::try_from(active_modules.len().map_err(precommit_storage_error)?)
+        .map_err(|_| limit_exceeded())?;
+    if count > MAX_RETAINED_QUERY_MODULES {
+        return Err(limit_exceeded());
+    }
+    let count = u32::try_from(count).map_err(|_| limit_exceeded())?;
+    append_bytes(&mut preimage, &count.to_be_bytes())?;
+    let module_bodies = transaction.open_table(QUERY_MODULES).map_err(table_error)?;
+    let mut previous_key: Option<Vec<u8>> = None;
+    for entry in active_modules.iter().map_err(precommit_storage_error)? {
+        let (key, value) = entry.map_err(precommit_storage_error)?;
+        let key = key.value();
+        if previous_key
+            .as_deref()
+            .is_some_and(|previous| previous >= key)
+        {
+            return Err(corrupt());
+        }
+        previous_key = Some(key.to_vec());
+        let record = codec::decode_query_module_administration_v1(value.value())?;
+        let pointer = record.value().activated();
+        let expected = keys::encode_active_query_module_key(
+            pointer.contract_lineage(),
+            pointer.contract_version(),
+            pointer.contract_bundle_hash(),
+        )
+        .map_err(|_| corrupt())?;
+        if key != expected.as_slice() {
+            return Err(corrupt());
+        }
+        let module_key = keys::encode_query_module_key(pointer.module_hash());
+        let stored_module = module_bodies
+            .get(module_key.as_slice())
+            .map_err(precommit_storage_error)?
+            .ok_or_else(corrupt)?;
+        let module = codec::decode_query_module_v1(stored_module.value())?;
+        if !pointer.matches_module(module.value())
+            || hash_query_module(module.value().canonical_bytes()) != pointer.module_hash()
+        {
+            return Err(corrupt());
+        }
+        append_item(
+            &mut preimage,
+            QUERY_ACTIVE_TABLE_TAG,
+            key,
+            Some(value.value()),
+        )?;
+    }
+    drop(module_bodies);
+    drop(active_modules);
+    append_bytes(&mut preimage, &journal_header_digest)?;
+    Ok(*hash(HashDomain::Schema, &preimage).as_bytes())
+}
+
 /// Reloads the exact active catalog root already proved by bounded clean
 /// startup. Unlike the ordinary operational catalog read, this does not walk
 /// population audit history whose integrity was intentionally deferred.

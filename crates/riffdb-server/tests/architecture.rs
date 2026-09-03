@@ -48,6 +48,64 @@ fn development_dependencies() -> &'static str {
 }
 
 #[test]
+// req: STO-023, REC-004, PERF-019
+fn graceful_checkpoint_receipt_has_only_one_closed_output_path() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let sources = rust_sources(&root);
+    let type_holders = sources
+        .iter()
+        .filter(|(_, source)| source.contains("GracefulCheckpointCloseReceiptV1"))
+        .map(|(path, _)| {
+            path.file_name()
+                .expect("server source file")
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(type_holders, ["process_graph.rs", "storage.rs"]);
+
+    let daemon = std::fs::read_to_string(root.join("daemon.rs")).expect("read daemon");
+    assert!(
+        daemon.contains("eprintln!(\"{}\", shutdown_stages.format_checkpoint_close_v1_line())")
+    );
+    for public_boundary in [
+        "hosted_mcp.rs",
+        "main.rs",
+        "lifecycle.rs",
+        "lifecycle_service.rs",
+        "operational_status.rs",
+        "runtime_support.rs",
+    ] {
+        let source = std::fs::read_to_string(root.join(public_boundary))
+            .expect("read public boundary source");
+        for forbidden in [
+            "GracefulCheckpointCloseReceiptV1",
+            "riffdb-graceful-checkpoint-close-v1",
+            "format_checkpoint_close_v1_line",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{public_boundary} could expose graceful checkpoint receipt through {forbidden}"
+            );
+        }
+    }
+
+    let process_graph =
+        std::fs::read_to_string(root.join("process_graph.rs")).expect("read process graph");
+    let formatter = process_graph
+        .split_once("pub(crate) fn format_checkpoint_close_v1_line")
+        .expect("closed receipt formatter")
+        .1
+        .split_once("}")
+        .expect("formatter end")
+        .0;
+    assert!(formatter.contains("self.checkpoint_close.format_v1_line()"));
+    for forbidden in ["metrics", "Mcp", "Status", "Error", "path", "identity"] {
+        assert!(!formatter.contains(forbidden));
+    }
+}
+
+#[test]
 fn lifecycle_wrappers_cover_the_symbolic_catalog_surface() {
     for source in [LIFECYCLE_SERVICE, LIFECYCLE] {
         assert!(

@@ -2693,7 +2693,7 @@ fn command_outcome_from_operational_indexes(
     // prefix checkpoint covering the captured frontier. That inference assumes
     // the derived index was built over the checkpoint, which is false on a
     // bounded clean-close start where the index is dormant: on such a start the
-    // shutdown checkpoint's S equals the captured frontier, so the
+    // retained checkpoint's S can equal the captured frontier, so the
     // short-circuit reported a durably committed outcome as absent.
     if let Some(encoded) = access.read_value(JournalTable::IdempotencyLocators, exact_key)? {
         let locator = crate::codec::decode_command_locator_v1(&encoded)?

@@ -42,6 +42,14 @@ pub enum RedbTestOperation {
     Restore,
     /// Validated-prefix startup checkpoint write (ADR-0085 A1).
     ValidatedPrefixCheckpoint,
+    /// Final ADR-0157 graceful-close lifecycle transaction.
+    CleanCloseLifecycle,
+    /// Logical start/end of the durable suffix and journal-header barrier.
+    GracefulCloseBarrier,
+    /// Mid-barrier point after suffix materialization and before header proof.
+    GracefulCloseBarrierSuffix,
+    /// Logical start/end of immutable checkpoint classification.
+    GracefulCheckpointClassification,
     /// Offline retention hold add/remove (ADR-0085 A2).
     RetentionHold,
     /// Offline retention prune: first transaction deletes the validated-prefix checkpoint.
@@ -190,10 +198,7 @@ impl RedbTestController {
 
     /// First matching before-commit returns Unavailable; the second aborts the process.
     ///
-    /// Used by shutdown-path checkpoint crash arms: the startup finish write is
-    /// non-fatally rejected (clean flag set, no durable checkpoint), then the
-    /// public [`crate::RedbOperationalPorts::write_validated_prefix_checkpoint`]
-    /// entry is the write that aborts.
+    /// Retained for explicit checkpoint-writer compatibility fixtures.
     #[must_use]
     pub fn return_before_then_abort_before(operation: RedbTestOperation) -> Self {
         Self::sequence(
@@ -213,8 +218,7 @@ impl RedbTestController {
 
     /// First matching before-commit returns Unavailable; the next after-commit aborts.
     ///
-    /// Startup finish write is non-fatally rejected; the subsequent public
-    /// checkpoint write commits, then the process aborts.
+    /// Retained for explicit checkpoint-writer compatibility fixtures.
     #[must_use]
     pub fn return_before_then_abort_after(operation: RedbTestOperation) -> Self {
         Self::sequence(

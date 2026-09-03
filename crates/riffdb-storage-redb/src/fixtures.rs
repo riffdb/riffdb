@@ -73,11 +73,8 @@ pub fn downgrade_all_index_rows_to_v1_fixture(path: &Path) -> Result<usize, Stor
 /// Reads the commit sequence S bound in a stopped database's durable
 /// validated-prefix checkpoint, or `None` when no checkpoint row exists.
 ///
-/// Read-only observation for real-process tests (ADR-0019 Amendment 1): a
-/// graceful shutdown's final engine commit binds S at the drained frontier, so
-/// the bound sequence discriminates the shutdown write from an earlier
-/// startup-finish checkpoint. Must be called only after the owning process has
-/// stopped.
+/// Read-only observation for stopped-database recovery tests. Must be called
+/// only after the owning process has stopped.
 pub fn read_validated_prefix_checkpoint_commit_sequence_fixture(
     path: &Path,
 ) -> Result<Option<u64>, StorageError> {
@@ -96,4 +93,17 @@ pub fn read_validated_prefix_checkpoint_commit_sequence_fixture(
             .into_parts()
             .0;
     Ok(Some(checkpoint.base().checkpoint_commit_sequence()))
+}
+
+/// Reads the exact retained checkpoint envelope bytes from a stopped database.
+pub fn read_validated_prefix_checkpoint_bytes_fixture(
+    path: &Path,
+) -> Result<Option<Vec<u8>>, StorageError> {
+    let database = Database::open(path).map_err(database_error)?;
+    let transaction = database.begin_read().map_err(transaction_error)?;
+    let meta = transaction.open_table(META).map_err(table_error)?;
+    Ok(meta
+        .get(META_VALIDATED_PREFIX_CHECKPOINT)
+        .map_err(precommit_storage_error)?
+        .map(|encoded| encoded.value().to_vec()))
 }

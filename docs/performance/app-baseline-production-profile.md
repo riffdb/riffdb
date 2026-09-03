@@ -327,7 +327,7 @@ same binary and workload:
 | Stage | run A | run B |
 | --- | ---: | ---: |
 | `columnar_worker` | **36.63 s** | **0.137 s** |
-| `validated_prefix_checkpoint_write` | 0.183 s | 0.183 s |
+| `validated_prefix_checkpoint_write` (legacy label) | 0.183 s | 0.183 s |
 | `post_graph_release` (contains `redb::Database::drop`) | 0.044 s | 0.034 s |
 
 The checkpoint write is 0.183 s and flat at every size, so it is ruled out, as
@@ -372,16 +372,12 @@ earlier reading of 758 ms coexisted with a 12-minute observed shutdown.
   scenario negotiates it, so the columnar plane is untested at any scale.
 - **No attachments, SLA timers, reporting aggregations, saved views with deep
   pagination, bulk operations, or email ingestion.**
-- **Clean shutdown needs a much larger budget.** Graceful shutdown checkpoints
-  the published journal suffix, and at this size that measured about 21 seconds
-  against 16 ms for a second, already-checkpointed shutdown
-  (`riffdb-shutdown-stages-v1` puts nearly all of it in the final stage). The
-  harness budgeted 15 seconds, so it SIGKILLed the daemon mid-checkpoint, and
-  the next daemon then exited without a ready line because it was opening a
-  database left mid-write. Both are fixed here, but the operational point stands
-  on its own: a 4.7 GB database takes tens of seconds to close cleanly, and
-  nothing outside this profile measures that. Set
-  `RIFFDB_STOP_TIMEOUT_SECS` generously for larger datasets.
+- **Clean shutdown still needs a measured budget.** The final stage now drains
+  any published journal suffix, classifies retained validated-prefix evidence
+  without rewriting or walking it, and commits only CLEAN. Its cost is bounded
+  by the retained suffix and fixed metadata, not database population. Worker
+  backlog and engine close can still dominate wall time, so configure
+  `RIFFDB_STOP_TIMEOUT_SECS` from lifecycle evidence rather than database size.
 - **Seed time is not comparable across harnesses.** All four now seed
   concurrently -- the Rust harness with `DEFAULT_SEED_CONCURRENCY: usize = 128`,
   and TypeScript, Go and Python through their generated bounded batch envelopes

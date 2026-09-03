@@ -164,13 +164,354 @@ pub(crate) enum CheckpointCountSource {
 
 /// Closed lifecycle purpose for one checkpoint write attempt.
 ///
-/// Startup retains its established proof-publication schedule. Graceful
-/// shutdown may reuse the proof startup established for this process
-/// generation when the authoritative view is still exact.
+/// Startup retains its established proof-publication schedule. The fixture
+/// purpose exists only to preserve falsifiability tests for the removed
+/// shutdown writer; production graceful close never selects it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CheckpointPurpose {
     StartupValidation,
-    GracefulShutdown,
+    TestFixture,
+}
+
+/// Closed result of the bounded graceful-close checkpoint inspection.
+///
+/// This is process evidence, never durable authority. The four successful
+/// classes describe bytes that were observed and left untouched; the two
+/// failure classes describe how far graceful close progressed.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GracefulCheckpointDispositionV1 {
+    BarrierFailed,
+    RetainedExactCurrent,
+    LeftAbsent,
+    LeftStale,
+    LeftIneligible,
+    ClassificationFailed,
+}
+
+impl GracefulCheckpointDispositionV1 {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::BarrierFailed => "barrier_failed",
+            Self::RetainedExactCurrent => "retained_exact_current",
+            Self::LeftAbsent => "left_absent",
+            Self::LeftStale => "left_stale",
+            Self::LeftIneligible => "left_ineligible",
+            Self::ClassificationFailed => "classification_failed",
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn is_successful(self) -> bool {
+        matches!(
+            self,
+            Self::RetainedExactCurrent | Self::LeftAbsent | Self::LeftStale | Self::LeftIneligible
+        )
+    }
+}
+
+/// Successful classifier states, excluding both failure dispositions by type.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SuccessfulGracefulCheckpointDisposition {
+    RetainedExactCurrent,
+    LeftAbsent,
+    LeftStale,
+    LeftIneligible,
+}
+
+impl SuccessfulGracefulCheckpointDisposition {
+    const fn public(self) -> GracefulCheckpointDispositionV1 {
+        match self {
+            Self::RetainedExactCurrent => GracefulCheckpointDispositionV1::RetainedExactCurrent,
+            Self::LeftAbsent => GracefulCheckpointDispositionV1::LeftAbsent,
+            Self::LeftStale => GracefulCheckpointDispositionV1::LeftStale,
+            Self::LeftIneligible => GracefulCheckpointDispositionV1::LeftIneligible,
+        }
+    }
+}
+
+/// Closed result of the final lifecycle transition.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GracefulLifecycleOutcomeV1 {
+    CleanCommitted,
+    CleanNotAttempted,
+    CleanFailed,
+    CleanUnknown,
+}
+
+impl GracefulLifecycleOutcomeV1 {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CleanCommitted => "clean_committed",
+            Self::CleanNotAttempted => "clean_not_attempted",
+            Self::CleanFailed => "clean_failed",
+            Self::CleanUnknown => "clean_unknown",
+        }
+    }
+}
+
+/// Attempted CLEAN outcomes, excluding `CleanNotAttempted` by type.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AttemptedGracefulLifecycleOutcome {
+    Committed,
+    Failed,
+    Unknown,
+}
+
+impl AttemptedGracefulLifecycleOutcome {
+    const fn public(self) -> GracefulLifecycleOutcomeV1 {
+        match self {
+            Self::Committed => GracefulLifecycleOutcomeV1::CleanCommitted,
+            Self::Failed => GracefulLifecycleOutcomeV1::CleanFailed,
+            Self::Unknown => GracefulLifecycleOutcomeV1::CleanUnknown,
+        }
+    }
+}
+
+/// Fixed-cardinality, redaction-safe graceful-close process receipt.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GracefulCheckpointCloseReceiptV1 {
+    disposition: GracefulCheckpointDispositionV1,
+    lifecycle: GracefulLifecycleOutcomeV1,
+    /// Barrier, classification, and CLEAN stage durations in microseconds.
+    elapsed_us: [u64; 3],
+}
+
+impl GracefulCheckpointCloseReceiptV1 {
+    const fn from_parts(
+        disposition: GracefulCheckpointDispositionV1,
+        lifecycle: GracefulLifecycleOutcomeV1,
+        elapsed_us: [u64; 3],
+    ) -> Self {
+        Self {
+            disposition,
+            lifecycle,
+            elapsed_us,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new(
+        disposition: GracefulCheckpointDispositionV1,
+        lifecycle: GracefulLifecycleOutcomeV1,
+        elapsed_us: [u64; 3],
+    ) -> Result<Self, StorageError> {
+        let valid = if disposition.is_successful() {
+            !matches!(lifecycle, GracefulLifecycleOutcomeV1::CleanNotAttempted)
+        } else {
+            matches!(lifecycle, GracefulLifecycleOutcomeV1::CleanNotAttempted)
+        };
+        if !valid {
+            return Err(StorageError::new(
+                StorageErrorKind::InvariantViolation,
+                None,
+            ));
+        }
+        Ok(Self::from_parts(disposition, lifecycle, elapsed_us))
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn barrier_failed(elapsed_us: [u64; 3]) -> Self {
+        Self::from_parts(
+            GracefulCheckpointDispositionV1::BarrierFailed,
+            GracefulLifecycleOutcomeV1::CleanNotAttempted,
+            elapsed_us,
+        )
+    }
+
+    pub(crate) const fn classification_failed(elapsed_us: [u64; 3]) -> Self {
+        Self::from_parts(
+            GracefulCheckpointDispositionV1::ClassificationFailed,
+            GracefulLifecycleOutcomeV1::CleanNotAttempted,
+            elapsed_us,
+        )
+    }
+
+    pub(crate) const fn completed(
+        disposition: SuccessfulGracefulCheckpointDisposition,
+        lifecycle: AttemptedGracefulLifecycleOutcome,
+        elapsed_us: [u64; 3],
+    ) -> Self {
+        Self::from_parts(disposition.public(), lifecycle.public(), elapsed_us)
+    }
+
+    #[must_use]
+    pub const fn disposition(self) -> GracefulCheckpointDispositionV1 {
+        self.disposition
+    }
+
+    #[must_use]
+    pub const fn lifecycle(self) -> GracefulLifecycleOutcomeV1 {
+        self.lifecycle
+    }
+
+    #[must_use]
+    pub const fn elapsed_us(self) -> [u64; 3] {
+        self.elapsed_us
+    }
+
+    /// One bounded line containing only closed tags and saturating durations.
+    #[must_use]
+    pub fn format_v1_line(self) -> String {
+        format!(
+            "riffdb-graceful-checkpoint-close-v1\t{}\t{}\t{},{},{}",
+            self.disposition.as_str(),
+            self.lifecycle.as_str(),
+            self.elapsed_us[0],
+            self.elapsed_us[1],
+            self.elapsed_us[2]
+        )
+    }
+}
+
+/// Classifies the retained checkpoint from one immutable post-barrier view.
+///
+/// Only fixed metadata, redb table cardinalities, and the process-generation
+/// witness are consulted. No population key, row, or companion value is decoded.
+pub(crate) fn classify_graceful_checkpoint(
+    transaction: &ReadTransaction,
+    execution_failed_rows: u64,
+    process_generation_witness: bool,
+) -> Result<SuccessfulGracefulCheckpointDisposition, StorageError> {
+    let meta = transaction.open_table(META).map_err(table_error)?;
+    let database_id = *codec::decode_database_identity_v1(
+        meta.get(crate::layout::META_DATABASE_ID)
+            .map_err(precommit_storage_error)?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?
+            .value(),
+    )?
+    .value();
+    let history_incarnation = *codec::decode_history_incarnation_v1(
+        meta.get(crate::layout::META_HISTORY_INCARNATION)
+            .map_err(precommit_storage_error)?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?
+            .value(),
+    )?
+    .value();
+    let application = *codec::decode_application_sequence_allocator_v1(
+        meta.get(crate::layout::META_APPLICATION_SEQUENCE)
+            .map_err(precommit_storage_error)?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?
+            .value(),
+    )?
+    .value();
+    let administration = *codec::decode_administration_sequence_allocator_v1(
+        meta.get(crate::layout::META_ADMINISTRATION_SEQUENCE)
+            .map_err(precommit_storage_error)?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?
+            .value(),
+    )?
+    .value();
+    let checkpoint_bytes = meta
+        .get(META_VALIDATED_PREFIX_CHECKPOINT)
+        .map_err(precommit_storage_error)?;
+    let snapshot_rows = transaction
+        .open_table(VALIDATED_PREFIX_ENTITY_HEADS)
+        .map_err(table_error)?
+        .len()
+        .map_err(precommit_storage_error)?;
+    let Some(encoded) = checkpoint_bytes else {
+        return Ok(if snapshot_rows == 0 {
+            SuccessfulGracefulCheckpointDisposition::LeftAbsent
+        } else {
+            SuccessfulGracefulCheckpointDisposition::LeftIneligible
+        });
+    };
+    let checkpoint = match decode_validated_prefix_checkpoint_v2(encoded.value()) {
+        Ok(checkpoint) => checkpoint.into_parts().0,
+        Err(_) => return Ok(SuccessfulGracefulCheckpointDisposition::LeftIneligible),
+    };
+    drop(encoded);
+    drop(meta);
+
+    // An exhausted allocator has no bounded fixed-metadata predecessor witness:
+    // deriving its exact tail would require consulting population values. The
+    // retained proof therefore remains untouched but cannot be retained as
+    // exact-current by the graceful classifier.
+    if matches!(application, ApplicationSequenceAllocator::Exhausted)
+        || matches!(
+            administration,
+            riffdb_storage_api::AdministrationSequenceAllocator::Exhausted
+        )
+    {
+        return Ok(SuccessfulGracefulCheckpointDisposition::LeftIneligible);
+    }
+
+    let entity_counts = checkpoint.entity_counts();
+    let Some(recorded_chain_rows) = entity_counts
+        .live_entity_count
+        .checked_add(entity_counts.deleted_entity_count)
+    else {
+        return Ok(SuccessfulGracefulCheckpointDisposition::LeftIneligible);
+    };
+    if snapshot_rows != recorded_chain_rows {
+        return Ok(SuccessfulGracefulCheckpointDisposition::LeftIneligible);
+    }
+    if !process_generation_witness {
+        return Ok(SuccessfulGracefulCheckpointDisposition::LeftStale);
+    }
+
+    let base = checkpoint.base();
+    if base.retained().application_sequence_exhausted
+        || base.retained().administration_sequence_exhausted
+    {
+        return Ok(SuccessfulGracefulCheckpointDisposition::LeftIneligible);
+    }
+    let ApplicationSequenceAllocator::Next(application_next) = application else {
+        return Ok(SuccessfulGracefulCheckpointDisposition::LeftIneligible);
+    };
+    let riffdb_storage_api::AdministrationSequenceAllocator::Next(administration_next) =
+        administration
+    else {
+        return Ok(SuccessfulGracefulCheckpointDisposition::LeftIneligible);
+    };
+    let head = application_next.get().saturating_sub(1);
+    let administration_tail = administration_next.get().saturating_sub(1);
+    let watermark = load_retention_watermark_sequence(transaction)?;
+    let Some(counts) = counts_from_durable_cardinalities(
+        transaction,
+        head,
+        base.audit_sequence_bound(),
+        execution_failed_rows,
+    )?
+    else {
+        return Ok(SuccessfulGracefulCheckpointDisposition::LeftIneligible);
+    };
+    let entity_rows = transaction
+        .open_table(ENTITIES)
+        .map_err(table_error)?
+        .len()
+        .map_err(precommit_storage_error)?;
+    let chain_rows = transaction
+        .open_table(ENTITY_CHAIN_HEADS)
+        .map_err(table_error)?
+        .len()
+        .map_err(precommit_storage_error)?;
+
+    let exact = base.database_id() == database_id
+        && base.history_incarnation() == history_incarnation
+        && base.registry_digest() == current_record_registry_digest()
+        && base.checkpoint_commit_sequence() == head
+        // The physical AUDIT bound can trail the logical administration tail:
+        // segmented command audit records live inside COMMITS. Its own bound,
+        // counts, and self-hash were verified at startup; the retained logical
+        // allocator separately proves no administration mutation followed.
+        && base.audit_sequence_bound() <= administration_tail
+        && base.retention_watermark_sequence() == watermark
+        && base.retained() == allocator_snapshot(application, administration)
+        && base.counts() == counts
+        && entity_counts.live_entity_count == entity_rows
+        && recorded_chain_rows == chain_rows;
+    Ok(if exact {
+        SuccessfulGracefulCheckpointDisposition::RetainedExactCurrent
+    } else {
+        SuccessfulGracefulCheckpointDisposition::LeftStale
+    })
 }
 
 /// Builds and durably writes one validated-prefix checkpoint under an exclusive writer.
@@ -187,7 +528,7 @@ pub(crate) fn write_validated_prefix_checkpoint(
     let source = CheckpointCountSource::DurableLengths {
         execution_failed_rows: shared.terminal_execution_failure_rows(),
     };
-    if purpose == CheckpointPurpose::GracefulShutdown
+    if purpose == CheckpointPurpose::TestFixture
         && exact_current_checkpoint_exists(
             &transaction,
             retained,
@@ -615,31 +956,68 @@ fn load_retention_watermark_sequence(transaction: &ReadTransaction) -> Result<u6
         .unwrap_or(0))
 }
 
+/// Read-view counterpart used only by graceful classification. Unlike the
+/// historical checkpoint builder, it deliberately performs no last-key probe:
+/// the fixed allocator metadata is the post-barrier tail witness.
+fn counts_from_durable_cardinalities(
+    transaction: &ReadTransaction,
+    s: u64,
+    audit_sequence_bound: u64,
+    execution_failed_rows: u64,
+) -> Result<Option<ValidatedPrefixSequenceCounts>, StorageError> {
+    let idempotency = table_row_count(transaction, IDEMPOTENCY)?;
+    let Some(terminal_outcomes) = idempotency.checked_sub(execution_failed_rows) else {
+        return Ok(None);
+    };
+    let below_s = |count: u64| if s == 0 { 0 } else { count };
+    let below_bound = |count: u64| if audit_sequence_bound == 0 { 0 } else { count };
+    Ok(Some(ValidatedPrefixSequenceCounts {
+        commits_count: below_s(table_row_count(transaction, COMMITS)?),
+        events_count: below_s(table_row_count(transaction, EVENTS)?),
+        event_routes_count: below_s(table_row_count(transaction, EVENT_ROUTES)?),
+        outbox_count: below_s(table_row_count(transaction, OUTBOX)?),
+        outbox_status_count: below_s(table_row_count(transaction, OUTBOX_STATUS)?),
+        idempotency_count: below_s(terminal_outcomes),
+        audit_count: below_bound(table_row_count(transaction, AUDIT)?),
+        audit_by_request_count: below_bound(table_row_count(transaction, AUDIT_BY_REQUEST)?),
+    }))
+}
+
 fn retained_snapshot(
     retained: &riffdb_storage_api::RetainedMetadataV1,
 ) -> ValidatedPrefixRetainedSnapshot {
-    match retained.application_sequence() {
+    allocator_snapshot(
+        retained.application_sequence(),
+        retained.administration_sequence(),
+    )
+}
+
+fn allocator_snapshot(
+    application: ApplicationSequenceAllocator,
+    administration: riffdb_storage_api::AdministrationSequenceAllocator,
+) -> ValidatedPrefixRetainedSnapshot {
+    match application {
         ApplicationSequenceAllocator::Next(seq) => ValidatedPrefixRetainedSnapshot {
             next_application_sequence: seq.get(),
             application_sequence_exhausted: false,
-            next_administration_sequence: match retained.administration_sequence() {
+            next_administration_sequence: match administration {
                 riffdb_storage_api::AdministrationSequenceAllocator::Next(s) => s.get(),
                 riffdb_storage_api::AdministrationSequenceAllocator::Exhausted => 0,
             },
             administration_sequence_exhausted: matches!(
-                retained.administration_sequence(),
+                administration,
                 riffdb_storage_api::AdministrationSequenceAllocator::Exhausted
             ),
         },
         ApplicationSequenceAllocator::Exhausted => ValidatedPrefixRetainedSnapshot {
             next_application_sequence: 0,
             application_sequence_exhausted: true,
-            next_administration_sequence: match retained.administration_sequence() {
+            next_administration_sequence: match administration {
                 riffdb_storage_api::AdministrationSequenceAllocator::Next(s) => s.get(),
                 riffdb_storage_api::AdministrationSequenceAllocator::Exhausted => 0,
             },
             administration_sequence_exhausted: matches!(
-                retained.administration_sequence(),
+                administration,
                 riffdb_storage_api::AdministrationSequenceAllocator::Exhausted
             ),
         },

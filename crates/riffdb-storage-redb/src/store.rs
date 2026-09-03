@@ -10,6 +10,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::Instant;
 
+#[path = "store_graceful_close.rs"]
+mod graceful_close;
+
 use redb::{
     Builder, Database, Durability, MultimapTableHandle, ReadTransaction, ReadableDatabase,
     ReadableTable, ReadableTableMetadata, TableDefinition, TableHandle, WriteTransaction,
@@ -122,6 +125,10 @@ fn record_publication_duration(sum: &AtomicU64, maximum: &AtomicU64, elapsed: st
     let _ = maximum.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         Some(current.max(micros))
     });
+}
+
+fn saturating_elapsed_microseconds(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
 }
 
 pub(crate) fn command_publication_stage_census() -> [u64; 9] {
@@ -2606,16 +2613,12 @@ impl RedbStore {
         self.shared.fence_writes();
     }
 
-    /// Ensures one proof-carrying validated-prefix checkpoint at the graceful boundary.
+    /// Compatibility checkpoint writer retained for existing callers.
     ///
-    /// Requires exclusive writer access and the same clean-validation gate and
-    /// full proof builder as the post-validation startup write. Startup always
-    /// publishes its one process-generation proof; graceful shutdown retains it
-    /// unchanged when the authoritative view is still exact. Returns `Ok(false)`
-    /// only when vetoed; `Ok(true)` means an exact proof is present. A finding
-    /// can never be silenced by a shutdown checkpoint. A failed write after a
-    /// clean gate is counted and returned as `Err`; callers treat that as
-    /// non-fatal.
+    /// Production shutdown has no caller for this API. It retains its existing
+    /// semantics for compatibility and explicit falsifiability, but must not be
+    /// composed into runtime close.
+    #[doc(hidden)]
     pub fn write_validated_prefix_checkpoint(&self) -> Result<bool, StorageError> {
         let _lease = self.acquire_mutation_lease()?;
         self.ensure_writable()?;
@@ -2639,7 +2642,7 @@ impl RedbStore {
         match crate::validated_prefix::write_validated_prefix_checkpoint(
             &self.shared,
             &retained,
-            crate::validated_prefix::CheckpointPurpose::GracefulShutdown,
+            crate::validated_prefix::CheckpointPurpose::TestFixture,
         ) {
             Ok(()) => Ok(true),
             Err(error) => {
@@ -2650,21 +2653,50 @@ impl RedbStore {
         }
     }
 
-    /// Writes the private ADR-0157 clean-close lifecycle as the final
-    /// authoritative graceful-shutdown mutation.
+    /// Performs the one storage-owned graceful-close sequence from the journal
+    /// barrier through immutable checkpoint classification and final CLEAN.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn complete_graceful_close(&self) -> crate::GracefulCheckpointCloseReceiptV1 {
+        let started = Instant::now();
+        let lease = self.acquire_mutation_lease();
+        let Ok(_lease) = lease else {
+            self.shared.note_clean_close_write_failure();
+            return crate::GracefulCheckpointCloseReceiptV1::barrier_failed([
+                saturating_elapsed_microseconds(started),
+                0,
+                0,
+            ]);
+        };
+        if self.ensure_writable().is_err() {
+            self.shared.note_clean_close_write_failure();
+            return crate::GracefulCheckpointCloseReceiptV1::barrier_failed([
+                saturating_elapsed_microseconds(started),
+                0,
+                0,
+            ]);
+        }
+        let receipt = self.shared.complete_graceful_close();
+        if receipt.lifecycle() != crate::GracefulLifecycleOutcomeV1::CleanCommitted {
+            self.shared.note_clean_close_write_failure();
+        }
+        receipt
+    }
+
+    /// Compatibility entry point for storage-level lifecycle tests.
     ///
-    /// A failure is non-fatal at the process boundary — acknowledged work is
-    /// already durable and only the next open's bounded path is lost — and the
-    /// graceful-shutdown call site therefore discards the error. It is counted
-    /// here so a discarded failure is still observable.
+    /// Production shutdown uses [`Self::complete_graceful_close`] so it retains
+    /// the closed receipt even when CLEAN is not known committed.
     pub fn write_clean_close_lifecycle(&self) -> Result<(), StorageError> {
-        let _lease = self.acquire_mutation_lease()?;
-        self.ensure_writable()?;
-        match self.shared.write_final_clean_close_lifecycle() {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                self.shared.note_clean_close_write_failure();
-                Err(error)
+        match self.complete_graceful_close().lifecycle() {
+            crate::GracefulLifecycleOutcomeV1::CleanCommitted => Ok(()),
+            crate::GracefulLifecycleOutcomeV1::CleanUnknown => Err(StorageError::new(
+                StorageErrorKind::CommitStatusUnknown,
+                None,
+            )),
+            crate::GracefulLifecycleOutcomeV1::CleanNotAttempted
+            | crate::GracefulLifecycleOutcomeV1::CleanFailed => {
+                Err(StorageError::new(StorageErrorKind::Unavailable, None))
             }
         }
     }
@@ -4474,11 +4506,12 @@ impl RedbOperationalPorts {
         self.shared.mutation_gate.tickets_issued()
     }
 
-    /// Writes one proof-carrying validated-prefix startup checkpoint (ADR-0085 A1).
+    /// Compatibility checkpoint writer retained for existing callers.
     ///
     /// Gated exactly like the startup write: returns `Ok(false)` without
     /// writing unless this database's startup validation completed with zero
     /// structural findings of any scope.
+    #[doc(hidden)]
     pub fn write_validated_prefix_checkpoint(&self) -> Result<bool, StorageError> {
         RedbStore {
             shared: Arc::clone(&self.shared),
@@ -4492,6 +4525,17 @@ impl RedbOperationalPorts {
             shared: Arc::clone(&self.shared),
         }
         .write_clean_close_lifecycle()
+    }
+
+    /// Performs the bounded graceful-close sequence and returns only closed,
+    /// redaction-safe process evidence.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn complete_graceful_close(&self) -> crate::GracefulCheckpointCloseReceiptV1 {
+        RedbStore {
+            shared: Arc::clone(&self.shared),
+        }
+        .complete_graceful_close()
     }
 
     /// Failed checkpoint writes after clean validation (non-fatal; counted).
@@ -6179,109 +6223,6 @@ impl SharedRedb {
         self.commit_durable(transaction)?;
         self.refresh_durable_read_frontier()?;
         self.finish_journal_checkpoint(runtime)
-    }
-
-    fn write_final_clean_close_lifecycle(self: &Arc<Self>) -> Result<(), StorageError> {
-        // Materialize every acknowledged published suffix before taking the
-        // one final read used for both frontier and bounded-root proof.
-        self.checkpoint_published_journal_suffix_for_barrier()?;
-        // Even a never-written database needs the selected recyclable extent
-        // header named by ADR-0157. Initializing the runtime creates that
-        // canonical empty extent; the spare is scratch and is removed before
-        // certification because clean evidence permits no scratch name.
-        {
-            let mut frontier = self
-                .durable_read_frontier
-                .write()
-                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-            if frontier.is_none() {
-                *frontier = Some(Arc::new(CheckpointRoot::new(
-                    self.database.begin_read().map_err(transaction_error)?,
-                )));
-                self.retire_current_read_root();
-            }
-        }
-        drop(self.journal_runtime()?);
-        let spare = crate::journal::spare_journal_path(&self.path);
-        match self.journal_media.remove_file(&spare) {
-            Ok(()) => crate::journal::sync_parent_directory_with_media(
-                self.journal_media.as_ref(),
-                &spare,
-            )
-            .map_err(journal_io_error)?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Err(storage_error(StorageErrorKind::Unavailable)),
-        }
-        let transaction = self.database.begin_read().map_err(transaction_error)?;
-        let database_id = read_identity_from_read_transaction(&transaction)?;
-        let meta = transaction.open_table(META).map_err(table_error)?;
-        let history = meta
-            .get(META_HISTORY_INCARNATION)
-            .map_err(precommit_storage_error)?
-            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-        let history_incarnation = *decode_history_incarnation_v1(history.value())
-            .map_err(crate::error::codec_error)?
-            .value();
-        let lifecycle_bytes = meta
-            .get(META_CLEAN_CLOSE_LIFECYCLE)
-            .map_err(precommit_storage_error)?
-            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-        let lifecycle = crate::clean_close::CleanCloseLifecycle::decode(lifecycle_bytes.value())
-            .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
-        if lifecycle.database_id() != database_id
-            || lifecycle.history_incarnation() != history_incarnation
-            || lifecycle.state() != crate::clean_close::CleanCloseState::Dirty
-        {
-            return Err(storage_error(StorageErrorKind::CorruptData));
-        }
-        drop(lifecycle_bytes);
-        drop(history);
-        drop(meta);
-        let application_frontier = read_commit_tail(&transaction)?;
-        let administration_frontier = read_administration_tail(&transaction)?;
-        let journal_header_digest = crate::journal::verify_clean_close_header_digest_with_media(
-            self.journal_media.as_ref(),
-            &self.path,
-            database_id,
-            application_frontier,
-            administration_frontier,
-        )
-        .map_err(recovery_journal_error)?;
-        let binding =
-            crate::clean_close::bounded_state_binding_hash(&transaction, journal_header_digest)?;
-        drop(transaction);
-
-        let clean = lifecycle
-            .successor_clean(binding)
-            .map_err(|error| match error {
-                crate::clean_close::CleanCloseCodecError::GenerationExhausted => {
-                    storage_error(StorageErrorKind::SequenceExhausted)
-                }
-                crate::clean_close::CleanCloseCodecError::Invalid => {
-                    storage_error(StorageErrorKind::CorruptData)
-                }
-            })?;
-        let encoded = clean
-            .encode()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        let mut write = self.database.begin_write().map_err(transaction_error)?;
-        write
-            .set_durability(Durability::Immediate)
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        let mut meta = write.open_table(META).map_err(table_error)?;
-        let current = meta
-            .get(META_CLEAN_CLOSE_LIFECYCLE)
-            .map_err(precommit_storage_error)?
-            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-        if crate::clean_close::CleanCloseLifecycle::decode(current.value()).ok() != Some(lifecycle)
-        {
-            return Err(storage_error(StorageErrorKind::CorruptData));
-        }
-        drop(current);
-        meta.insert(META_CLEAN_CLOSE_LIFECYCLE, encoded.as_slice())
-            .map_err(precommit_storage_error)?;
-        drop(meta);
-        self.commit_durable(write)
     }
 
     fn capture_or_initialize_composite_view(

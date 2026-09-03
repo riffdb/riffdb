@@ -13,8 +13,9 @@ times:
 5. notification closure;
 6. commit-coordinator drain;
 7. blocking-port drain; and
-8. final storage close: the optional validated-prefix checkpoint followed by
-   the immediately durable clean-close lifecycle mutation.
+8. final storage close. In the historical WP-668 build this was the optional
+   validated-prefix checkpoint followed by the immediately durable clean-close
+   lifecycle mutation.
 
 The benchmark parser treats the receipt as optional, so a control server from
 before WP-668 remains parseable and reports absent stage evidence. The harness
@@ -70,11 +71,13 @@ revalidation, durable encoding, redb apply, or the durability fence. It must
 not weaken ADR-0019's non-fatal final-checkpoint semantics or move work into an
 acknowledged-write path without a predeclared interactive-tail guard.
 
-Current builds retain the eight-stage receipt identity and attribute both the
-optional checkpoint and the final clean-close lifecycle commit to stage 8.
-These historical measurements therefore do not isolate certificate-commit
-cost. New PERF-019 evidence must separately distinguish drain, checkpoint, and
-final lifecycle durability before drawing a shutdown attribution conclusion.
+ADR-0188/WP-774 retain the eight-stage receipt identity and its stage 8 label,
+`validated_prefix_checkpoint_write`, byte-for-byte for compatibility. Current
+shutdown performs the journal barrier,
+bounded immutable checkpoint classification, and final lifecycle durability in
+that legacy-labelled stage; it never refreshes the checkpoint. A new companion closed receipt
+separates barrier, classification, and CLEAN durations. The table above remains
+historical evidence for the pre-WP-774 implementation.
 
 The harness-observed wall exceeds graph wall by 115 to 306 milliseconds on the
 cloud receipts. That is an explicitly named outer boundary—transport/process

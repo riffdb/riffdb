@@ -52,8 +52,7 @@ use riffdb_storage_api::{
 };
 use riffdb_storage_redb::{
     RedbDormantPorts, RedbOfflineRetention, RedbOperationalPorts, RedbStore,
-    downgrade_all_index_rows_to_v1_fixture,
-    read_validated_prefix_checkpoint_commit_sequence_fixture,
+    downgrade_all_index_rows_to_v1_fixture, read_validated_prefix_checkpoint_bytes_fixture,
 };
 use riffdb_types::{
     AdministrationSequence, AggregateTypeId, DecimalSpec, DigestKeyId, EntityKey, EntityKeyBuilder,
@@ -132,6 +131,19 @@ async fn real_riffdbd_restart_preserves_budget_and_bootstrap_replay() -> TestRes
         matter_id: MATTER_ID,
         amount: amount(ALLOCATED_MINOR_UNITS)?,
     };
+
+    // Establish the exact retained startup checkpoint while no process owns
+    // the database. The production daemon is the writer in both runs; the
+    // probe never races redb's exclusive database ownership.
+    let mut checkpoint_seed_process = ServerProcess::spawn(
+        &database_path,
+        &capability_keys_path,
+        &idempotency_keys_path,
+    )?;
+    let _checkpoint_seed_address = checkpoint_seed_process.wait_for_ready_address()?;
+    checkpoint_seed_process.shutdown_cleanly()?;
+    let checkpoint_before_commands = read_validated_prefix_checkpoint_bytes_fixture(&database_path)
+        .map_err(|error| test_failure(format!("checkpoint probe failed: {error:?}")))?;
 
     let mut first_process = ServerProcess::spawn(
         &database_path,
@@ -283,14 +295,13 @@ async fn real_riffdbd_restart_preserves_budget_and_bootstrap_replay() -> TestRes
     drop(first_client);
     first_process.shutdown_cleanly()?;
 
-    // ADR-0019 A1 write point (2): a real graceful daemon shutdown must leave a
-    // durable validated-prefix checkpoint bound at the drained commit frontier
-    // (S=2 after the two committed commands), and the next open must verify it
-    // (fast path). The startup-finish checkpoint of this run was bound at S=0,
-    // so the bound sequence discriminates the shutdown write: skipping or
-    // vetoing it fails this assertion, never silently costing every future
-    // open its fast path.
-    assert_graceful_shutdown_checkpoint(&database_path, 2)?;
+    // ADR-0188: graceful shutdown earns CLEAN but never refreshes the optional
+    // validated-prefix proof. The exact pre-close bytes must survive, even
+    // though two commands made that startup proof stale.
+    assert_graceful_shutdown_retains_checkpoint(
+        &database_path,
+        checkpoint_before_commands.as_deref(),
+    )?;
 
     let mut second_process = ServerProcess::spawn(
         &database_path,
@@ -1530,21 +1541,18 @@ fn assert_readiness_path_rebuild_census(process: &ServerProcess, expected: u64) 
     Ok(())
 }
 
-fn assert_graceful_shutdown_checkpoint(
+fn assert_graceful_shutdown_retains_checkpoint(
     database_path: &Path,
-    expected_sequence: u64,
+    expected_bytes: Option<&[u8]>,
 ) -> TestResult<()> {
-    // (1) A durable checkpoint exists and binds S at the drained frontier.
-    let bound = read_validated_prefix_checkpoint_commit_sequence_fixture(database_path)
+    let observed = read_validated_prefix_checkpoint_bytes_fixture(database_path)
         .map_err(|error| test_failure(format!("checkpoint probe failed: {error:?}")))?;
-    if bound != Some(expected_sequence) {
-        return Err(test_failure(format!(
-            "graceful shutdown must leave a durable validated-prefix checkpoint bound to \
-             S={expected_sequence}; found {bound:?}"
-        )));
+    if observed.as_deref() != expected_bytes {
+        return Err(test_failure(
+            "graceful shutdown changed retained validated-prefix checkpoint bytes".to_owned(),
+        ));
     }
-    // (2) The next open verifies either the conventional clean-close proof or
-    // the retained validated-prefix checkpoint, taking a bounded fast path.
+    // CLEAN, not the stale optional prefix, authorizes bounded startup.
     let store = RedbStore::open(database_path)
         .map_err(|error| test_failure(format!("checkpoint reopen failed: {error:?}")))?;
     let session = store
@@ -1565,12 +1573,6 @@ fn assert_graceful_shutdown_checkpoint(
              (checkpoint_verified={} checkpoint_ignored={:?})",
             session.clean_close_declined_reason(),
             session.checkpoint_verified(),
-            session.checkpoint_ignored_reason(),
-        )));
-    }
-    if !session.checkpoint_verified() && session.checkpoint_ignored_reason().is_some() {
-        return Err(test_failure(format!(
-            "graceful shutdown left an unusable validated-prefix checkpoint: {:?}",
             session.checkpoint_ignored_reason(),
         )));
     }
