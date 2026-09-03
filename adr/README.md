@@ -194,7 +194,7 @@ record with no front matter.
 | [0157](0157-clean-close-lifecycle-durable-identity.md) | Clean-Close Lifecycle Durable Identity | Accepted | legacy |
 | [0158](0158-compiler-declared-bounded-runtime-page-limits.md) | Compiler-Declared Bounded Runtime Page Limits | Accepted | legacy |
 | [0159](0159-page-cardinality-independent-query-cursors.md) | Page-Cardinality-Independent Query Cursors and External Page Coalescing | Accepted | legacy |
-| [0160](0160-rebuildable-columnar-segment-v2.md) | Rebuildable Typed Columnar Segment V2 and Exact Segment Pruning | Proposed | legacy |
+| [0160](0160-rebuildable-columnar-segment-v2.md) | Rebuildable Typed Columnar Segment V2 and Exact Segment Pruning | Accepted | legacy |
 | [0161](0161-compiler-sealed-vectorized-columnar-execution.md) | Compiler-Sealed Vectorized Columnar Execution and Bounded Parallel Scans | Proposed | legacy |
 | [0162](0162-incremental-analytical-provider-structures.md) | Compiler-Declared Incremental Analytical Provider Structures | Proposed | legacy |
 | [0163](0163-compiler-sealed-command-decisions.md) | Compiler-Sealed Command Decisions with Exact No-Effect Arms | Accepted | legacy |
