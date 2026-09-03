@@ -1414,13 +1414,14 @@ work_packages:
       deterministic recovery matrix are implemented and covered by the package acceptance gates.
   human_review_triggers: *id001
 - id: WP-705
-  name: Clean-startup internal scrub compatibility and production-scale evidence
+  name: Clean-startup internal scrub compatibility and bounded dirty evidence
   depends_on: [WP-610, WP-668, WP-704]
   objective: Close ADR-0156 with a sealed internal complete-integrity scrub primitive, backup/
     restore/migration/retention compatibility, operator and handbook guidance, production-scale
-    clean and dirty lifecycle evidence, and bounded handoffs to WP-760 and WP-578 without presenting
-    asymmetric PostgreSQL process startup as a database-semantic comparison. ADR-0182 and WP-760
-    solely own the authorized public maintenance service, CLI command, and public scrub receipt.
+    clean lifecycle evidence, genuine 65,536-row complete-validation recovery evidence, and a
+    fail-closed production-scale complete-path ceiling handoff to WP-760. ADR-0182 and WP-760 solely
+    own production-scale dirty readiness without a population walk, the 64 MiB recovery-owned-state
+    proof, the authorized public maintenance service, CLI command, and public scrub receipt.
   requirements: [STO-012, STO-023, REC-001, REC-002, REC-004,
     PERF-013, PERF-014, PERF-019, END-004, END-006, END-007, END-008]
   required_adrs: [ADR-0019, ADR-0041, ADR-0050, ADR-0056, ADR-0073,
@@ -1444,9 +1445,17 @@ work_packages:
     identifier, frontier, table count, hash, key, application value, or unbounded label and cannot be
     supplied back as control input
   - A production-scale cleanly seeded and cleanly shut down database proving clean reopen and final
-    close retain bounded heap and perform zero population-table evidence walks, with separate dirty
-    kill/reopen evidence proving full validation, recovery, idempotency, and the 86-arm matrix remain
-    exact
+    close retain bounded heap and perform zero population-table evidence walks
+  - Genuine writer-process kill and reopen evidence at exactly the 65,536-row checkpoint proving
+    engine repair is invoked, the unchanged complete-validation path reaches exact end, recovery and
+    idempotency remain exact, the 86-arm matrix remains green, the unclean/clean wall-time ratio is
+    recorded against an equivalently seeded clean database, and no command, event, outcome,
+    provenance, audit, projection, outbox, or allocator advances
+  - One production-scale attempt of the unchanged complete path recording its typed fail-closed
+    LimitExceeded result at the historical-evidence 512 MiB ceiling without retry, a raised ceiling,
+    partial readiness, a passing performance claim, application-authority mutation, or allocator
+    advance; this known-ceiling receipt is handed to WP-760 and does not satisfy production-scale
+    dirty readiness
   - PERF-013/PERF-014/PERF-019 evidence distinguishing engine open, bounded roots, certificate
     consumption, readiness, drain, final certificate commit, and complete validation; PostgreSQL
     lifecycle numbers are excluded unless the harness owns equivalent process and integrity work
@@ -1468,20 +1477,25 @@ work_packages:
   - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
   - cargo +1.97.0 doc --workspace --no-deps
   exit_gate: Clean production-scale reopen and shutdown are bounded independently of live and
-    retained populations, dirty and sealed internal scrub paths retain complete fail-closed
-    validation, every maintenance and compatibility transition has exact certificate behavior,
-    documentation states the reduced clean-start assurance and deferred public scrub honestly, and
-    the endurance harness handed to WP-578 no longer pays a full scrub on every graceful restart or
-    mistakes an asymmetric comparator lifecycle for product evidence; the authorized public scrub
-    remains WP-760 and the actual uninterrupted run remains pending in WP-578.
+    retained populations; a genuine 65,536-row dirty kill/reopen invokes repair and completes exact
+    validation without authoritative or allocator advance; the production-scale complete-path
+    attempt preserves its typed LimitExceeded at the 512 MiB historical-evidence ceiling as a
+    fail-closed WP-760 handoff rather than a pass; sealed internal scrub and compatibility paths
+    retain complete fail-closed behavior; and documentation states the reduced clean-start assurance,
+    known dirty ceiling, and deferred public scrub honestly; WP-705 does not wait for WP-760.
+    Production-scale dirty readiness without a population walk and under 64 MiB, plus the authorized
+    public scrub, remain WP-760; the actual uninterrupted run remains pending in WP-578.
   standing_design_tests:
     interface_safety: WP-705 adds no public or operator action. Its scrub primitive and receipt are
       sealed internal values, and no public surface can request less validation, obtain a storage
       handle or path, force readiness, preserve a stale certificate, or convert an integrity
       incident into ordinary application behavior. WP-760 owns the later authorized operation.
-    scale: Clean lifecycle work and observations are bounded independently of population; scrub and
-      dirty validation stream without population-sized memory; evidence uses fixed checkpoints,
-      stages, labels, durations, artifacts, and diagnostic ceilings.
+    scale: Clean lifecycle work and observations are bounded independently of population; explicit
+      validation streams within compiled bounds and fails closed at LimitExceeded rather than
+      exceeding them. WP-705 records that production-scale ceiling but does not claim dirty
+      readiness; WP-760 exclusively proves zero population-table enumeration and recovery-owned
+      state under 64 MiB at production scale. Evidence uses fixed checkpoints, stages, labels,
+      durations, artifacts, and diagnostic ceilings.
   human_review_triggers: *id001
 - id: WP-706
   name: Compiler-declared bounded runtime page limits
@@ -22371,8 +22385,11 @@ work_packages:
     public_offline_scrub_drives_the_complete_validation_path
   - PERF-013, PERF-014, and PERF-019 evidence reporting dirty-restart stages, total wall time,
     and peak recovery heap separately at the 65,536-row and production-scale checkpoints plus
-    scrub rows per second, validated by scripts/check-dirty-recovery-evidence; handbook
-    startup-integrity, troubleshooting, and known-limitations updates
+    scrub rows per second, validated by scripts/check-dirty-recovery-evidence; this package is the
+    exclusive owner of the production-scale dirty-readiness, zero-population-walk, and 64 MiB
+    recovery-owned-state evidence, while WP-705's production-scale LimitExceeded receipt is an input
+    rather than a passing result; handbook startup-integrity, troubleshooting, and known-limitations
+    updates
   acceptance_commands:
   - ./scripts/acceptance --wp WP-760
   - ./scripts/ci-all
