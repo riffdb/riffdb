@@ -1448,13 +1448,17 @@ work_packages:
   - A production-scale cleanly seeded and cleanly shut down database proving clean reopen and final
     close retain bounded heap and perform zero population-table evidence walks
   - Genuine writer-process kill and reopen evidence at exactly the 65,536-row checkpoint proving
-    engine repair is invoked, the unchanged complete-validation path reaches exact end, recovery and
-    idempotency remain exact, and the in-flight probe resolves atomically as either wholly absent or
-    wholly committed; a transaction durable before SIGKILL is not required to disappear. The
-    repaired database must exactly match one of two predeclared equivalently seeded clean twins, the
-    unclean/clean wall-time ratio is recorded against the matching twin, and a second restart proves
-    recovery itself adds no command, event, outcome, provenance, audit, projection, outbox, or
-    allocator advance beyond that atomic outcome
+    the unchanged complete-validation path reaches exact end, recovery and idempotency remain exact,
+    and the in-flight probe resolves atomically as either wholly absent or wholly committed; a
+    transaction durable before SIGKILL is not required to disappear. The database must exactly match
+    one of two predeclared equivalently seeded clean twins, the dirty/clean wall-time ratio is
+    recorded against the matching twin, the real engine-repair callback observation is reported
+    truthfully, and a second restart proves recovery itself adds no command, event, outcome,
+    provenance, audit, projection, outbox, or allocator advance beyond that atomic outcome
+  - A separate dedicated PERF-014 process fixture using a genuine process kill at a deterministic
+    real-engine crash boundary, proving the real repair callback is invoked, recovered state equals
+    its equivalently seeded clean peer, and the repair/clean wall-time ratio is recorded without
+    simulated or relabelled repair
   - One production-scale attempt of the unchanged complete path recording its typed fail-closed
     LimitExceeded result at the historical-evidence 512 MiB ceiling without retry, a raised ceiling,
     partial readiness, a passing performance claim, application-authority mutation, or allocator
@@ -1481,14 +1485,16 @@ work_packages:
   - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
   - cargo +1.97.0 doc --workspace --no-deps
   exit_gate: Clean production-scale reopen and shutdown are bounded independently of live and
-    retained populations; a genuine 65,536-row dirty kill/reopen invokes repair and completes exact
-    validation, resolves the in-flight probe atomically as either wholly absent or wholly committed,
-    matches the corresponding predeclared clean twin, and proves a second recovery makes no further
-    authoritative or allocator advance; the production-scale complete-path attempt preserves its
-    typed LimitExceeded at the 512 MiB historical-evidence ceiling as a fail-closed WP-760 handoff
-    rather than a pass; sealed internal scrub and compatibility paths retain complete fail-closed
-    behavior; and documentation states the reduced clean-start assurance, known dirty ceiling, and
-    deferred public scrub honestly; WP-705 does not wait for WP-760.
+    retained populations; a genuine 65,536-row dirty kill/reopen completes exact validation,
+    resolves the in-flight probe atomically as either wholly absent or wholly committed, matches the
+    corresponding predeclared clean twin, reports whether engine repair actually occurred, and
+    proves a second recovery makes no further authoritative or allocator advance; a separate
+    PERF-014 process fixture invokes the real repair callback and records its clean-peer ratio; the
+    production-scale complete-path attempt preserves its typed LimitExceeded at the 512 MiB
+    historical-evidence ceiling as a fail-closed WP-760 handoff rather than a pass; sealed internal
+    scrub and compatibility paths retain complete fail-closed behavior; and documentation states the
+    reduced clean-start assurance, known dirty ceiling, and deferred public scrub honestly; WP-705
+    does not wait for WP-760.
     Production-scale dirty readiness without a population walk and under 64 MiB, plus the authorized
     public scrub, remain WP-760; the actual uninterrupted run remains pending in WP-578.
   standing_design_tests:
