@@ -1817,7 +1817,7 @@ work_packages:
     adr/0160-rebuildable-columnar-segment-v2.md,
     release/version-topology-v1.json, crates/riffdb-types/**,
     crates/riffdb-columnar/**, crates/riffdb-projection/**,
-    crates/riffdb-observability/**, fixtures/**, tests/**, benchmarks/**,
+    crates/riffdb-observability/**, fixtures/**, fuzz/**, tests/**, benchmarks/**,
     scripts/**, docs/architecture/**, docs/performance/**, docs/known-limitations.md]
   deliverables:
   - Fixed V1 row-framed baseline over incompressible, low-cardinality, clustered-selective, and
