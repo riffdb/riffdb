@@ -708,6 +708,25 @@ work_packages:
       no binding can express a transaction, raw delete, secret widening, weaker durability, or retry.
     scale: Requests, outcomes, transport frames, waits, retries, crash evidence, and generated buffers
       retain fixed ceilings; no consumer walk, scan, or retained token population is introduced.
+  closure:
+    status: complete
+    completed_at: "2026-08-25"
+    requirements_satisfied: [BLK-031, BLK-032, BLK-033, BLK-034, BLK-035,
+      API-001, MCP-001, MCP-020, MCP-021, MCP-023]
+    evidence: Commit a1dd0fbe completed the generated Rust, Go, TypeScript, Python, CLI, and MCP
+      surfaces and froze the generic one-time-token contract, exact command identities, value-free
+      secret metadata, and external four-language TLS receipt. The
+      collection_create_and_delete_are_complete_or_absent_across_process_crash matrix includes unary
+      consume before and after the durability boundary; unary_delete_race_commits_one_preimage_and_replays_after_reopen
+      proves one redb winner, one missing result, exact replay, and absent current state after reopen.
+      policy_revocation_between_outcome_checks_withholds_the_present_result proves fresh
+      release-time authorization, while shared application-service and EntityMutation::Delete
+      conformance retain the same authorization, atomic graph, and memory/redb storage paths.
+    known_limitations: Ordinary unary delete remains single-target, exact-key, partition-local, and
+      no_inbound only. The receipt is value-free and binds the four external runner sources and
+      generated artifacts; framework schema, routes, adapters, profiles, and identity policy remain
+      external.
+    follow_ups: []
   human_review_triggers: *id001
 - id: WP-693
   name: Aggregate semantic registry and provider descriptor sketches
