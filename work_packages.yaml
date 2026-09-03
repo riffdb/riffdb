@@ -211,6 +211,7 @@ gates:
   - WP-767
   - WP-772
   - WP-773
+  - WP-774
 - id: P13
   name: Relational operators in the candidate algebra
   requires:
@@ -1417,7 +1418,7 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-705
   name: Clean-startup internal scrub compatibility and bounded dirty evidence
-  depends_on: [WP-610, WP-668, WP-704, WP-773]
+  depends_on: [WP-610, WP-668, WP-704, WP-773, WP-774]
   objective: Close ADR-0156 with a sealed internal complete-integrity scrub primitive, backup/
     restore/migration/retention compatibility, operator and handbook guidance, production-scale
     clean lifecycle evidence, genuine 65,536-row complete-validation recovery evidence, and a
@@ -1427,7 +1428,8 @@ work_packages:
   requirements: [STO-012, STO-023, REC-001, REC-002, REC-004,
     PERF-013, PERF-014, PERF-019, END-004, END-006, END-007, END-008]
   required_adrs: [ADR-0019, ADR-0041, ADR-0050, ADR-0056, ADR-0073,
-    ADR-0085, ADR-0104, ADR-0112, ADR-0123, ADR-0156, ADR-0157, ADR-0182, ADR-0187]
+    ADR-0085, ADR-0104, ADR-0112, ADR-0123, ADR-0156, ADR-0157, ADR-0182, ADR-0187,
+    ADR-0188]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0156-clean-close-certificate-fast-startup.md,
     adr/0157-clean-close-lifecycle-durable-identity.md,
@@ -23180,3 +23182,73 @@ work_packages:
     restart replay and idempotency.
   - An application, transport, operator option, or configuration value could select interruption,
     page size, publication, checkpoint, or restart behavior.
+
+- id: WP-774
+  name: Bounded graceful validated-prefix checkpoint retention
+  tier: guarantee
+  depends_on: [WP-669, WP-704]
+  objective: Implement ADR-0188 by removing graceful shutdown as a validated-prefix checkpoint
+    creation or refresh point. After the required journal-suffix barrier, retain exact-current
+    checkpoint state byte-for-byte, leave missing/stale/ineligible state untouched, keep CLEAN as
+    the last transaction, and preserve unchanged exact dirty fallback and crash recovery.
+  requirements: [STO-023, REC-001, REC-002, REC-004, PERF-007, PERF-013, PERF-019]
+  required_adrs: [ADR-0019, ADR-0061, ADR-0085, ADR-0101, ADR-0104, ADR-0124,
+    ADR-0156, ADR-0157, ADR-0188]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0188-bounded-graceful-checkpoint-retention.md, adr/README.md,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**, crates/riffdb-server/**,
+    crates/riffdb-observability/**, crates/riffdb-testkit/**, fixtures/**, tests/**,
+    examples/app-baseline/**, scripts/**, docs/**]
+  deliverables:
+  - Sealed storage classifier returning only `RetainedExactCurrent`, `LeftAbsent`, `LeftStale`,
+    `LeftIneligible`, or `ClassificationFailed` from fixed metadata, constant-time table
+    cardinalities, and the existing process-generation witness after the durable suffix barrier
+  - Graceful shutdown graph ordering of admission/drain, suffix recovery and empty-extent barrier,
+    immutable checkpoint classification, bounded-root reread, and final Immediate CLEAN commit,
+    with no checkpoint create/refresh/delete/repair and no database write after CLEAN
+  - Exact-current retention proving canonical checkpoint metadata and every companion
+    `validated_prefix_entity_heads` byte remain unchanged and no checkpoint transaction opens
+  - Missing, stale, malformed, partial, unsupported, contradictory, and exhausted checkpoint
+    fixtures proving shutdown performs no population scan or checkpoint mutation, may still close
+    CLEAN after successful bounded classification, and leaves independent dirty verification exact
+  - Closed non-durable receipt containing only the six disposition tags, four lifecycle outcome
+    tags, and bounded saturating stage durations, with constructor rejection of impossible pairs
+    and redaction tests covering logs, metrics, MCP text, CLI output, and public errors
+  - Req-tagged proofs `graceful_close_retains_exact_current_checkpoint_byte_for_byte`,
+    `graceful_close_leaves_unusable_checkpoint_state_unchanged`,
+    `graceful_checkpoint_close_crash_matrix_preserves_dirty_fallback`, and
+    `graceful_checkpoint_receipt_is_closed_and_redacted`, plus process-level crash arms before,
+    during, and after barrier, classification, and CLEAN commit
+  - Architecture and falsifiability checks proving `write_shutdown_validated_prefix_checkpoint`
+    is absent, no shutdown path calls proof construction or checkpoint mutation, and startup after
+    dirty termination still reaches the existing structural and catalog-semantic exact ends
+  - Handbook and performance guidance documenting that graceful close preserves but does not earn
+    validated-prefix proof, so a later dirty open may inspect a longer suffix or take the complete
+    path while clean readiness remains independently bounded
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-774
+  - cargo +1.97.0 test -p riffdb-storage-redb -p riffdb-server --all-features
+  - ./scripts/recovery_full
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+  - ./scripts/ci-all
+  exit_gate: Graceful shutdown performs the suffix barrier and one final CLEAN transaction without
+    opening a checkpoint write or scanning population data; exact-current checkpoint state remains
+    byte-identical, every other boundedly classifiable state remains absent or unchanged, every
+    injected crash recovers through exact dirty fallback or a complete CLEAN successor, and all
+    receipts and diagnostics remain closed and redacted.
+  standing_design_tests:
+    interface_safety: Checkpoint disposition and lifecycle outcomes are sealed internal values;
+      no application, agent, operator argument, configuration, or transport can request refresh,
+      preserve unsafe evidence, force CLEAN, or suppress dirty exact-end fallback.
+    scale: The suffix barrier is already required, classification reads fixed metadata and
+      constant-time engine cardinalities, and close performs no population walk, proof build,
+      companion-table replacement, or checkpoint commit.
+  human_review_triggers: &id0188
+  - Shutdown would create, refresh, delete, repair, or reinterpret a validated-prefix checkpoint.
+  - Checkpoint classification would scan population rows or trust unbounded process-local state.
+  - CLEAN could commit before the journal suffix is durably subsumed or any database write could
+    follow it.
+  - Dirty fallback would skip an exact end, trust unusable checkpoint state, mutate application
+    authority, or advance an application or administration allocator.
+  - A receipt, error, log, metric, or public surface would expose checkpoint contents or
+    population-derived diagnostics.
