@@ -1,0 +1,228 @@
+#!/usr/bin/env python3
+"""Bound and exclusively publish one host-qualified app-baseline report."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+import tempfile
+
+from bounded_evidence_io import bounded_read, exclusive_write
+
+
+MAX_REPORT_BYTES = 32 * 1024 * 1024
+MAX_HOST_BYTES = 1024 * 1024
+
+
+def attach(
+    raw_path: Path,
+    output_path: Path,
+    preflight_path: Path,
+    postflight_path: Path,
+    *,
+    deferred_unary_stability: bool,
+    wp674_receipt: bool,
+    candidate: dict[str, object],
+) -> None:
+    report = json.loads(bounded_read(raw_path, MAX_REPORT_BYTES, "raw app-baseline report"))
+    preflight = json.loads(bounded_read(preflight_path, MAX_HOST_BYTES, "host preflight"))
+    postflight = json.loads(bounded_read(postflight_path, MAX_HOST_BYTES, "host postflight"))
+    host_idle = bool(preflight.get("valid")) and bool(postflight.get("valid"))
+    report["host_validity"] = {"preflight": preflight, "postflight": postflight}
+    eligibility = report.setdefault("evidence_eligibility", {})
+    eligibility["host_idle"] = host_idle
+    reasons = list(eligibility.get("reason_codes") or [])
+    if not host_idle and "host_interference" not in reasons:
+        reasons.append("host_interference")
+    eligibility["reason_codes"] = reasons
+    if report.get("schema") == "riffdb.app-baseline/v1":
+        comparisons = report.get("comparisons") or {}
+        summaries = comparisons.get("rep_summaries") or {}
+        if deferred_unary_stability:
+            unary_summaries = comparisons.get("unary_rep_summaries") or {}
+
+            def five_positive_generations(summary: object) -> bool:
+                value = summary if isinstance(summary, dict) else {}
+                values = sorted(value.get("values") or [])
+                return (
+                    value.get("reps") == 5
+                    and len(values) == 5
+                    and all(
+                        isinstance(item, (int, float))
+                        and not isinstance(item, bool)
+                        and item > 0
+                        for item in values
+                    )
+                )
+
+            def central_three_stable(summary: object) -> bool:
+                value = summary if isinstance(summary, dict) else {}
+                values = sorted(value.get("values") or [])
+                return five_positive_generations(value) and values[3] / values[1] <= 1.20
+
+            parity_stable = bool(unary_summaries) and all(
+                five_positive_generations((entry.get("postgres") or {}).get(statistic))
+                and central_three_stable((entry.get("riffdb") or {}).get(statistic))
+                for entry in unary_summaries.values()
+                for statistic in ("p50_ns", "p95_ns")
+            )
+            eligibility["postgres_central_three_spread_disclosed"] = sorted(
+                f"{scenario}.{statistic}"
+                for scenario, entry in unary_summaries.items()
+                for statistic in ("p50_ns", "p95_ns")
+                if five_positive_generations((entry.get("postgres") or {}).get(statistic))
+                and sorted(((entry.get("postgres") or {}).get(statistic) or {}).get("values"))[3]
+                / sorted(((entry.get("postgres") or {}).get(statistic) or {}).get("values"))[1]
+                > 1.20
+            )
+        else:
+            parity_stable = bool(summaries) and all(
+                isinstance(summary, dict) and summary.get("stability") == "stable"
+                for summary in summaries.values()
+            )
+        crosscheck = report.get("board_page_live_crosscheck") or {}
+        unary = report.get("unary_qualification") or {}
+        scenario_rows = comparisons.get("scenarios") or []
+        unary_exact = (
+            unary.get("schema") == "riffdb.app-baseline-unary-qualification/v1"
+            and len(scenario_rows) == 1
+            and unary.get("scenario") == scenario_rows[0].get("scenario")
+            and unary.get("same_scenario_warmups_after_restart") == 20
+            and unary.get("measured_operations_per_generation")
+            == (1000 if wp674_receipt else 100)
+            and unary.get("process_generations")
+            == (5 if deferred_unary_stability else 3)
+        )
+        correctness_clean = bool(scenario_rows) and all(
+            row.get("last_row_count_equal") is True for row in scenario_rows
+        ) and (unary_exact or crosscheck.get("status") == "ok")
+        required = {
+            "same_device": report.get("same_device") is True,
+            "repetitions": int(report.get("reps") or 0)
+            >= (5 if deferred_unary_stability else 3),
+            "environment": bool(report.get("environment")),
+            "device_baseline": bool(report.get("device_baseline")),
+            "postgres_durability": bool(report.get("postgres_durability")),
+            "comparison": comparisons.get("available") is True,
+            "stability": parity_stable,
+            "correctness": correctness_clean,
+        }
+        missing = [name for name, present in required.items() if not present]
+        eligibility.update({
+            "stable": parity_stable,
+            "correctness_clean": correctness_clean,
+            "same_device_comparable": report.get("same_device") is True,
+            "comparison_complete": comparisons.get("available") is True,
+            "missing_required_fields": missing,
+            "non_evidentiary_window": False,
+        })
+        eligibility["eligible"] = not missing and host_idle
+    else:
+        eligibility["eligible"] = bool(eligibility.get("eligible")) and host_idle
+    # Candidate identity belongs only to accepted, host-valid evidence. A
+    # postflight-invalid report is retained as failed evidence and must remain
+    # eligible for the single host-validity replacement classification.
+    if host_idle:
+        report["qualification_candidate"] = candidate
+    exclusive_write(
+        output_path,
+        (json.dumps(report, indent=2) + "\n").encode(),
+        MAX_REPORT_BYTES,
+        "qualified app-baseline report",
+    )
+
+
+# req: PERF-018
+def self_test() -> None:
+    with tempfile.TemporaryDirectory(prefix="riffdb-qualification-attach-") as root_text:
+        root = Path(root_text)
+        raw = root / "raw.json"
+        preflight = root / "preflight.json"
+        postflight = root / "postflight.json"
+        raw.write_text(json.dumps({"schema": "other", "evidence_eligibility": {"eligible": True}}))
+        preflight.write_text(json.dumps({"valid": True}))
+        postflight.write_text(json.dumps({"valid": True}))
+        candidate = {"schema": "fixture"}
+        output = root / "qualified.json"
+        attach(raw, output, preflight, postflight, deferred_unary_stability=False,
+               wp674_receipt=False, candidate=candidate)
+        assert json.loads(bounded_read(output, MAX_REPORT_BYTES, "fixture"))["qualification_candidate"] == candidate
+
+        invalid_postflight = root / "invalid-postflight.json"
+        invalid_postflight.write_text(json.dumps({"valid": False}))
+        invalid_output = root / "invalid-qualified.json"
+        attach(raw, invalid_output, preflight, invalid_postflight,
+               deferred_unary_stability=False, wp674_receipt=True, candidate=candidate)
+        invalid_report = json.loads(bounded_read(invalid_output, MAX_REPORT_BYTES, "invalid fixture"))
+        assert invalid_report["evidence_eligibility"]["host_idle"] is False
+        assert "qualification_candidate" not in invalid_report
+
+        oversized = root / "oversized.json"
+        oversized.write_bytes(b"x" * (MAX_REPORT_BYTES + 1))
+        try:
+            attach(oversized, root / "oversized-output.json", preflight, postflight,
+                   deferred_unary_stability=False, wp674_receipt=False, candidate=candidate)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("oversized raw report was parsed")
+
+        retained = root / "retained.json"
+        retained.write_text("retained\n")
+        linked = root / "linked-output.json"
+        linked.symlink_to(retained)
+        try:
+            attach(raw, linked, preflight, postflight, deferred_unary_stability=False,
+                   wp674_receipt=False, candidate=candidate)
+        except (FileExistsError, OSError):
+            pass
+        else:
+            raise AssertionError("linked final output was replaced")
+        assert retained.read_text() == "retained\n"
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--raw", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--preflight", type=Path)
+    parser.add_argument("--postflight", type=Path)
+    parser.add_argument("--deferred", choices=("0", "1"))
+    parser.add_argument("--wp674", choices=("0", "1"))
+    parser.add_argument("--source-revision")
+    parser.add_argument("--cargo-lock-sha256")
+    parser.add_argument("--runner-sha256")
+    parser.add_argument("--riffdbd-sha256")
+    parser.add_argument("--harness-sha256")
+    args = parser.parse_args()
+    if args.self_test:
+        self_test()
+        print("app-baseline qualification attachment self-test: passed")
+        return
+    required = (
+        args.raw, args.output, args.preflight, args.postflight, args.deferred,
+        args.wp674, args.source_revision, args.cargo_lock_sha256,
+        args.runner_sha256, args.riffdbd_sha256, args.harness_sha256,
+    )
+    if any(value is None for value in required):
+        parser.error("qualification attachment requires every input and identity")
+    attach(
+        args.raw, args.output, args.preflight, args.postflight,
+        deferred_unary_stability=args.deferred == "1",
+        wp674_receipt=args.wp674 == "1",
+        candidate={
+            "schema": "riffdb.app-baseline-qualified-candidate/v1",
+            "source_revision": args.source_revision,
+            "source_tree_clean": True,
+            "cargo_lock_sha256": args.cargo_lock_sha256,
+            "runner_sha256": args.runner_sha256,
+            "riffdbd_sha256": args.riffdbd_sha256,
+            "harness_sha256": args.harness_sha256,
+        },
+    )
+
+
+if __name__ == "__main__":
+    main()

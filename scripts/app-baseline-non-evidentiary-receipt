@@ -8,18 +8,20 @@ import hashlib
 import json
 from pathlib import Path
 
+from bounded_evidence_io import bounded_read, exclusive_write
+
 
 MAX_INVENTORY_BYTES = 1_048_576
+MAX_PARTIAL_EVIDENCE_BYTES = 32 * 1024 * 1024
 
 
 def load_inventory(path: str | None) -> dict[str, object] | None:
     if path is None:
         return None
     candidate = Path(path)
-    if candidate.stat().st_size > MAX_INVENTORY_BYTES:
-        raise ValueError("host inventory exceeds the bounded receipt input")
-    with candidate.open(encoding="utf-8") as source:
-        value = json.load(source)
+    value = json.loads(
+        bounded_read(candidate, MAX_INVENTORY_BYTES, "host inventory").decode()
+    )
     if value.get("schema") not in {
         "riffdb.app-baseline-host-validity/v1",
         "riffdb.app-baseline-host-validity/v2",
@@ -29,11 +31,9 @@ def load_inventory(path: str | None) -> dict[str, object] | None:
 
 
 def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return hashlib.sha256(
+        bounded_read(path, MAX_PARTIAL_EVIDENCE_BYTES, "partial phase evidence")
+    ).hexdigest()
 
 
 def main() -> None:
@@ -51,6 +51,7 @@ def main() -> None:
     parser.add_argument(
         "--postgres-comparator", required=True, choices=("minimal", "safe-app")
     )
+    parser.add_argument("--scenario")
     parser.add_argument("--concurrency-sweep", required=True, choices=("0", "1"))
     parser.add_argument("--preflight", required=True)
     parser.add_argument("--postflight")
@@ -117,18 +118,21 @@ def main() -> None:
     reason_codes = [arguments.reason]
     if arguments.reason == "backend_execution_failed" and not host_idle:
         reason_codes.append("host_interference")
+    requested: dict[str, object] = {
+        "mode": arguments.mode,
+        "profile": arguments.profile,
+        "duration_secs": arguments.duration_secs,
+        "reps": arguments.reps,
+        "postgres_comparator": arguments.postgres_comparator,
+        "concurrency_sweep": arguments.concurrency_sweep == "1",
+    }
+    if arguments.scenario is not None:
+        requested["scenario"] = arguments.scenario
     receipt = {
         "schema": "riffdb.app-baseline-non-evidentiary/v1",
         "status": "non_evidentiary",
         "reason": reason,
-        "requested": {
-            "mode": arguments.mode,
-            "profile": arguments.profile,
-            "duration_secs": arguments.duration_secs,
-            "reps": arguments.reps,
-            "postgres_comparator": arguments.postgres_comparator,
-            "concurrency_sweep": arguments.concurrency_sweep == "1",
-        },
+        "requested": requested,
         "partial_phase_evidence": partial,
         "host_validity": {"preflight": preflight, "postflight": postflight},
         "evidence_eligibility": {
@@ -137,11 +141,12 @@ def main() -> None:
             "reason_codes": reason_codes,
         },
     }
-    output = Path(arguments.output)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("w", encoding="utf-8") as destination:
-        json.dump(receipt, destination, indent=2)
-        destination.write("\n")
+    exclusive_write(
+        Path(arguments.output),
+        (json.dumps(receipt, indent=2) + "\n").encode(),
+        MAX_PARTIAL_EVIDENCE_BYTES,
+        "non-evidentiary receipt",
+    )
 
 
 if __name__ == "__main__":

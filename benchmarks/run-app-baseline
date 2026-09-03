@@ -41,6 +41,34 @@ cargo_target_directory() {
         | jq -er '.target_directory | select(type == "string" and length > 0)'
 }
 
+bounded_sha256() {
+    local path="$1" maximum_bytes="$2" label="$3"
+    PYTHONPATH="$repo_root/scripts" python3 - "$path" "$maximum_bytes" "$label" <<'PY'
+import hashlib
+import sys
+from pathlib import Path
+
+from bounded_evidence_io import bounded_read
+
+path, maximum_bytes, label = sys.argv[1:]
+print(hashlib.sha256(bounded_read(Path(path), int(maximum_bytes), label)).hexdigest())
+PY
+}
+
+bounded_jq() {
+    local path="$1" maximum_bytes="$2" filter="$3" label="$4"
+    PYTHONPATH="$repo_root/scripts" python3 - "$path" "$maximum_bytes" "$label" <<'PY' \
+        | jq -e "$filter"
+import sys
+from pathlib import Path
+
+from bounded_evidence_io import bounded_read
+
+path, maximum_bytes, label = sys.argv[1:]
+sys.stdout.buffer.write(bounded_read(Path(path), int(maximum_bytes), label))
+PY
+}
+
 # --self-test: build riffdbd and run the full app-baseline --workspace suite,
 # including the kill -9 dead-peer e2e (RUN_RIFFDB_DEAD_PEER=1).
 if [[ "${1:-}" == "--self-test" ]]; then
@@ -50,6 +78,7 @@ if [[ "${1:-}" == "--self-test" ]]; then
     fi
     printf 'self-test: building riffdbd (release)\n'
     ./scripts/app-baseline-host-validity --self-test
+    ./scripts/attach-app-baseline-qualification --self-test
     host_fixture="$(mktemp "$task_tmp_root/riffdb-host-validity.XXXXXX")"
     set +e
     ./scripts/app-baseline-host-validity --interval-ms 50 >"$host_fixture"
@@ -71,7 +100,8 @@ if [[ "${1:-}" == "--self-test" ]]; then
       and .thresholds.maximum_whole_cell_steal_percent == 1
       and .inventory_bounds.process_arguments_included == false
     ' "$host_fixture" >/dev/null
-    receipt_fixture="$(mktemp "$task_tmp_root/riffdb-non-evidentiary.XXXXXX")"
+    receipt_fixture_root="$(mktemp -d "$task_tmp_root/riffdb-non-evidentiary.XXXXXX")"
+    receipt_fixture="$receipt_fixture_root/receipt.json"
     ./scripts/app-baseline-non-evidentiary-receipt \
         --output "$receipt_fixture" \
         --reason backend_execution_failed \
@@ -80,6 +110,7 @@ if [[ "${1:-}" == "--self-test" ]]; then
         --duration-secs 90 \
         --reps 3 \
         --postgres-comparator safe-app \
+        --scenario point_get_ticket \
         --concurrency-sweep 1 \
         --preflight "$host_fixture" \
         --postflight "$host_fixture" \
@@ -94,12 +125,14 @@ if [[ "${1:-}" == "--self-test" ]]; then
       and .reason.backend == "riffdb_public_grpc"
       and .reason.rep == 1
       and .reason.phase_exit_status == 1
+      and .requested.scenario == "point_get_ticket"
       and .evidence_eligibility.eligible == false
       and (.partial_phase_evidence.sha256 | test("^[0-9a-f]{64}$"))
     ' "$receipt_fixture" >/dev/null
     ./scripts/app-baseline-performance-sentinel-check --self-test
     bash -n ./scripts/app-baseline-performance-sentinel
     rm -f "$receipt_fixture"
+    rmdir "$receipt_fixture_root"
     rm -f "$host_fixture"
     cargo +1.97.0 build --locked --release -p riffdb-server --bin riffdbd
     riffdbd_bin="$(cargo_target_directory)/release/riffdbd"
@@ -567,6 +600,8 @@ fi
 
 host_validity_preflight=
 host_validity_postflight=
+qualification_raw_root=
+producer_report="$report"
 if ((require_stable)); then
     if [[ "$defer_unary_stability" != 0 && "$defer_unary_stability" != 1 ]]; then
         printf 'RIFFDB_APP_BASELINE_DEFER_UNARY_STABILITY must be 0 or 1\n' >&2
@@ -594,6 +629,9 @@ if ((require_stable)); then
             printf 'host validity inventory failed\n' >&2
             exit 1
         fi
+        receipt_scenario_args=()
+        [[ -z "${RIFFDB_APP_BASELINE_UNARY_QUALIFICATION_SCENARIO:-}" ]] || \
+            receipt_scenario_args=(--scenario "$RIFFDB_APP_BASELINE_UNARY_QUALIFICATION_SCENARIO")
         ./scripts/app-baseline-non-evidentiary-receipt \
             --output "$report" \
             --reason host_interference \
@@ -603,6 +641,7 @@ if ((require_stable)); then
             --reps "${reps:-3}" \
             --postgres-comparator "$postgres_comparator" \
             --concurrency-sweep "$load_concurrency_sweep" \
+            "${receipt_scenario_args[@]}" \
             --preflight "$host_validity_preflight"
         printf 'non-evidentiary host-interference receipt: %s\n' "$report" >&2
         rm -f "$host_validity_preflight"
@@ -707,6 +746,10 @@ cleanup() {
     stop_postgres
     [[ -z "$host_validity_preflight" ]] || rm -f "$host_validity_preflight"
     [[ -z "$host_validity_postflight" ]] || rm -f "$host_validity_postflight"
+    if [[ -n "$qualification_raw_root" ]]; then
+        rm -f "$qualification_raw_root/raw.json"
+        rmdir "$qualification_raw_root" 2>/dev/null || true
+    fi
 }
 trap cleanup EXIT INT TERM HUP
 
@@ -931,6 +974,14 @@ else
     printf 'building app-baseline runner\n'
     cargo +1.97.0 build --release --manifest-path examples/app-baseline/Cargo.toml -p riffdb-app-baseline
     runner="$(cargo_target_directory --manifest-path examples/app-baseline/Cargo.toml)/release/riffdb-app-baseline"
+fi
+
+# WP-674's Rust producer publishes into a private, fresh raw path. Host
+# qualification and candidate identity are then attached into the caller's
+# final path exactly once; the final path is never reopened or truncated.
+if ((require_stable)) && [[ "${RIFFDB_APP_BASELINE_WP674_RECEIPT:-0}" == 1 ]]; then
+    qualification_raw_root="$(mktemp -d "$task_tmp_root/riffdb-wp674-raw.XXXXXX")"
+    producer_report="$qualification_raw_root/raw.json"
 fi
 if [[ ! -x "$runner" ]]; then
     runner="$(find examples/app-baseline/target target -type f -name riffdb-app-baseline 2>/dev/null | head -n1 || true)"
@@ -1314,7 +1365,7 @@ else
         start_postgres
     fi
     printf 'running app baseline (%s)\n' "$mode"
-    cmd=("$runner" "${extra_args[@]}" --output "$report")
+    cmd=("$runner" "${extra_args[@]}" --output "$producer_report")
     ((skip_postgres)) && cmd+=(--skip-postgres)
     ((skip_riffdb)) && cmd+=(--skip-riffdb)
     if ((skip_postgres == 0)); then
@@ -1324,7 +1375,11 @@ else
         cmd+=(--riffdbd-bin "$RIFFDB_APP_BASELINE_RIFFDBD_BIN")
     fi
     "${cmd[@]}"
-    printf 'report: %s\n' "$report"
+    if [[ "$producer_report" == "$report" ]]; then
+        printf 'report: %s\n' "$report"
+    else
+        printf 'raw qualification report retained privately pending host attachment\n'
+    fi
 fi
 
 if [[ -n "$host_validity_preflight" ]]; then
@@ -1338,8 +1393,27 @@ if [[ -n "$host_validity_preflight" ]]; then
         printf 'postflight host validity inventory failed\n' >&2
         exit 1
     }
-    python3 - "$report" "$host_validity_preflight" "$host_validity_postflight" \
-        "$defer_unary_stability" <<'PY'
+    if [[ "${RIFFDB_APP_BASELINE_WP674_RECEIPT:-0}" == 1 ]]; then
+        source_revision="$(git rev-parse --verify HEAD)"
+        cargo_lock_sha256="$(bounded_sha256 Cargo.lock $((2 * 1024 * 1024)) 'Cargo.lock')"
+        runner_sha256="$(bounded_sha256 "$runner" $((256 * 1024 * 1024)) 'app-baseline runner')"
+        riffdbd_sha256="$(bounded_sha256 "$RIFFDB_APP_BASELINE_RIFFDBD_BIN" $((256 * 1024 * 1024)) 'riffdbd')"
+        harness_sha256="$(bounded_sha256 benchmarks/run-app-baseline $((1024 * 1024)) 'app-baseline harness')"
+        ./scripts/attach-app-baseline-qualification \
+            --raw "$producer_report" \
+            --output "$report" \
+            --preflight "$host_validity_preflight" \
+            --postflight "$host_validity_postflight" \
+            --deferred "$defer_unary_stability" \
+            --wp674 1 \
+            --source-revision "$source_revision" \
+            --cargo-lock-sha256 "$cargo_lock_sha256" \
+            --runner-sha256 "$runner_sha256" \
+            --riffdbd-sha256 "$riffdbd_sha256" \
+            --harness-sha256 "$harness_sha256"
+    else
+        python3 - "$report" "$host_validity_preflight" "$host_validity_postflight" \
+            "$defer_unary_stability" <<'PY'
 import json
 import sys
 
@@ -1439,13 +1513,15 @@ with open(report_path, "w", encoding="utf-8") as destination:
     json.dump(report, destination, indent=2)
     destination.write("\n")
 PY
-    if ((require_stable)) && ! jq -e '.evidence_eligibility.host_idle == true' "$report" >/dev/null; then
+    fi
+    if ((require_stable)) && ! bounded_jq "$report" $((32 * 1024 * 1024)) \
+        '.evidence_eligibility.host_idle == true' 'qualified app-baseline report' >/dev/null; then
         printf 'measurement-integrity: host interference invalidated %s\n' "$report" >&2
         exit 1
     fi
 fi
 
-if ((require_stable)); then
+if ((require_stable)) && [[ "${RIFFDB_APP_BASELINE_WP674_RECEIPT:-0}" != 1 ]]; then
     source_revision="$(git rev-parse --verify HEAD)"
     cargo_lock_sha256="$(sha256sum Cargo.lock | awk '{print $1}')"
     runner_sha256="$(sha256sum "$runner" | awk '{print $1}')"
