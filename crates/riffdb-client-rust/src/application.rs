@@ -2504,6 +2504,7 @@ mod tests {
         );
     }
 
+    // req: OQ-031
     #[test]
     fn generated_cursor_routing_preserves_low_level_options_and_rejects_collision() {
         let routed = QueryOptions::new()

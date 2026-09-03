@@ -4104,6 +4104,20 @@ work_packages:
     scale: One call processes one bounded cursor and one bounded page; optional helpers require a
       finite caller-owned stop and no hidden population/page walk is generated.
   human_review_triggers: *id001
+  closure:
+    status: complete
+    completed_at: "2026-09-03"
+    requirements_satisfied: [OQ-004, OQ-006, OQ-015, OQ-016, OQ-031,
+      API-001, SAFE-001]
+    evidence: Generated Rust, Go, TypeScript, and Python facades preserve exact required and
+      optional cursor signatures, remove the compiler-owned cursor from symbolic input, and route
+      its bytes only through the existing protected option with local collision rejection. Query
+      module validation rejects cursor parameters without one matching continuation slot. The
+      shared live corpus proves absent first page, bounded continuation, terminal page, and
+      malformed-cursor failure in all four languages; the retained closed fixture covers identity,
+      history, expiry, cancellation, and response bounds. Static generator assertions and adapter
+      escape scans prohibit hidden semantic page walks, and low-level option behavior remains
+      unchanged.
 - id: WP-681
   name: Repository-confined Go development runner package
   depends_on: [WP-325, WP-611]

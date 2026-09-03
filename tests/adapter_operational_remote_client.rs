@@ -1,5 +1,5 @@
 //! Rust cell for the shared adapter-shaped operational-query corpus.
-// req: OQ-113
+// req: OQ-004, OQ-006, OQ-016, OQ-031, OQ-113
 
 #![forbid(unsafe_code)]
 #![allow(dead_code, unreachable_pub)]
@@ -122,25 +122,35 @@ async fn run_async() -> TestResult<()> {
 }
 
 async fn seed(client: &mut generated::AdapterOperationalConformanceClient) -> TestResult<()> {
+    let mut tuples = vec![
+        generated::FgaTuple {
+            store_id: id(10),
+            tuple_id: id(11),
+            object: "document:alpha".to_owned(),
+            relation: "viewer".to_owned(),
+            subject: "user:agent".to_owned(),
+        },
+        generated::FgaTuple {
+            store_id: id(10),
+            tuple_id: id(12),
+            object: "document:alpha".to_owned(),
+            relation: "editor".to_owned(),
+            subject: "team:authors".to_owned(),
+        },
+    ];
+    for suffix in 13..=36 {
+        tuples.push(generated::FgaTuple {
+            store_id: id(10),
+            tuple_id: id(suffix),
+            object: format!("document:fixture-{suffix}"),
+            relation: "editor".to_owned(),
+            subject: format!("user:fixture-{suffix}"),
+        });
+    }
     client
         .write_tuples(generated::WriteTuplesInput {
             request_id: id(1),
-            tuples: vec![
-                generated::FgaTuple {
-                    store_id: id(10),
-                    tuple_id: id(11),
-                    object: "document:alpha".to_owned(),
-                    relation: "viewer".to_owned(),
-                    subject: "user:agent".to_owned(),
-                },
-                generated::FgaTuple {
-                    store_id: id(10),
-                    tuple_id: id(12),
-                    object: "document:alpha".to_owned(),
-                    relation: "editor".to_owned(),
-                    subject: "team:authors".to_owned(),
-                },
-            ],
+            tuples,
         })
         .await?;
     client
@@ -312,15 +322,36 @@ async fn seed(client: &mut generated::AdapterOperationalConformanceClient) -> Te
 async fn verify_queries(
     client: &mut generated::AdapterOperationalConformanceClient,
 ) -> TestResult<()> {
-    let all = client
-        .list_fga_tuples(generated::ListFgaTuplesParams {
-            store_id: id(10),
-            relation: None,
-            after: None,
-        })
+    let first = client
+        .list_fga_tuples_with_options(
+            generated::ListFgaTuplesParams {
+                store_id: id(10),
+                relation: None,
+                after: None,
+            },
+            QueryOptions::new(),
+        )
         .await?;
-    let generated::ListFgaTuplesResult::Found(all) = all;
-    expect(all.tuples.len() == 2, "OpenFGA unfiltered tuple page")?;
+    let first_cursor = first
+        .next_cursor
+        .ok_or("OpenFGA first-page cursor absent")?;
+    let generated::ListFgaTuplesResult::Found(first_page) = first.value;
+    expect(first_page.tuples.len() == 25, "OpenFGA bounded first page")?;
+    let second = client
+        .list_fga_tuples_with_options(
+            generated::ListFgaTuplesParams {
+                store_id: id(10),
+                relation: None,
+                after: Some(first_cursor),
+            },
+            QueryOptions::new(),
+        )
+        .await?;
+    let generated::ListFgaTuplesResult::Found(second_page) = second.value;
+    expect(
+        second_page.tuples.len() == 1 && second.next_cursor.is_none(),
+        "OpenFGA generated cursor continuation",
+    )?;
     let viewer = client
         .list_fga_tuples(generated::ListFgaTuplesParams {
             store_id: id(10),
@@ -532,9 +563,9 @@ async fn verify_queries(
             generated::ListFgaTuplesParams {
                 store_id: id(10),
                 relation: None,
-                after: None,
+                after: Some("not-a-riffdb-cursor".to_owned()),
             },
-            QueryOptions::new().after("not-a-riffdb-cursor"),
+            QueryOptions::new(),
         )
         .await;
     expect(stale.is_err(), "stale cursor fails closed")?;

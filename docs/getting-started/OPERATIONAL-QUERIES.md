@@ -55,9 +55,12 @@ page.
 When a named query declares `Cursor` or `Cursor?`, generated Rust, Go,
 TypeScript, and Python methods route a present value to the protected query
 options cursor. They omit it from the symbolic parameter record. Absence means
-the first page; supplying both the generated cursor parameter and the existing
+the first page for `Cursor?`; an exact `Cursor` remains a required method
+parameter. Supplying both the generated cursor parameter and the existing
 low-level cursor option fails locally instead of choosing one. Cursor bytes and
-server validation are unchanged.
+server validation are unchanged. Generated methods issue exactly one bounded
+request. They do not expose an iterator that walks pages to implement count,
+offset, filtering, sorting, or any other query semantic.
 
 ## Binary text-key ordering
 
@@ -288,7 +291,9 @@ TypeScript, Python, CLI, and generated MCP schemas. The exact-result phase
 proves all three binary-text operators, both declared order directions, direct
 offset boundaries, complete totals, optional-filter null/present forms, and
 the V6 set/range/state/independent-order family.
-The corpus also proves a malformed cursor fails closed and scans the
-application runners for kernel, storage, numeric-ID, raw-transaction, and
-client-filter escape hatches. External adapter repositories own their separate
-route-level compatibility matrices.
+The corpus also proves optional first-page and generated continuation calls in
+all four languages, that a malformed generated cursor fails closed, and that
+each response stays within its declared page bound. It scans the application
+runners for kernel, storage, numeric-ID, raw-transaction, and client-filter
+escape hatches. External adapter repositories own their separate route-level
+compatibility matrices.

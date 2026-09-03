@@ -1,3 +1,4 @@
+// req: OQ-004, OQ-006, OQ-016, OQ-031
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
@@ -17,8 +18,15 @@ const assert = (condition, label) => { if (!condition) throw new Error(`TypeScri
 
 try {
   const client = new AdapterOperationalConformanceClient(new DriverGeneratedApplicationTransport(driver), 3);
+  const first = await client.listFgaTuples({ store_id: id(10) });
+  assert(first.value.outcome === "Found" && first.value.tuples.length === 25 && first.nextCursor !== undefined, "OpenFGA bounded first page");
+  const second = await client.listFgaTuples({ store_id: id(10), after: first.nextCursor });
+  assert(second.value.outcome === "Found" && second.value.tuples.length === 1 && second.nextCursor === undefined, "OpenFGA generated cursor continuation");
   const tuples = await client.listFgaTuples({ store_id: id(10), relation: "viewer" });
   assert(tuples.value.outcome === "Found" && tuples.value.tuples.length === 1, "OpenFGA optional relation page");
+  let malformedFailed = false;
+  try { await client.listFgaTuples({ store_id: id(10), after: "not-a-riffdb-cursor" }); } catch { malformedFailed = true; }
+  assert(malformedFailed, "malformed generated cursor fails closed");
 
   const dashboard = await client.metricDashboard({ experiment_id: id(20) });
   assert(dashboard.value.outcome === "Found" && dashboard.value.summary.length === 1, "MLflow aggregate page");

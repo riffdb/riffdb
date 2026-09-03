@@ -53,6 +53,14 @@ constructs the same typed result directly, without a per-row map or exposed
 ordinal. The runtime retains legacy named-record decoding for compatible
 servers and rejects malformed or mixed response shapes.
 
+For a named query with `Cursor?`, pass the returned cursor through the same
+generated parameter on the next call; leaving it nil requests the first page.
+An exact `Cursor` remains a required `string`. The generated method moves that
+opaque value into `QueryOptions.Cursor` and never includes it in the symbolic
+input. Do not also set the low-level option: the generated method rejects the
+collision locally. It makes one bounded request and does not walk pages to
+implement count, offset, filtering, or sorting.
+
 The starter connects with the driver socket plus the host's public handshake
 identity. Those hashes are substitution checks, not authority. Do not put a
 credential, remote endpoint, raw method name, numeric compiler ID, field mask,

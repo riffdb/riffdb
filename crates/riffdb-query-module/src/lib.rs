@@ -2,6 +2,7 @@
 
 //! Immutable, exact-contract query modules with a strict canonical codec.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 mod application_lock;
@@ -76,8 +77,8 @@ use riffdb_query_compiler::{
     exact_predicate_artifact_invariant, exact_text_artifact_invariant,
 };
 use riffdb_query_ir::{
-    AuthorizationEntityAccess, CoveredResultLayoutV1, NamedQuerySchemas, OperationalQueryFamilyV1,
-    OrderQueryFamilyV1, QUERY_IR_VERSION_BOUNDED_LIMIT_V1,
+    AuthorizationEntityAccess, CoveredResultLayoutV1, NamedQuerySchemas, NamedTypeSchema,
+    OperationalQueryFamilyV1, OrderQueryFamilyV1, QUERY_IR_VERSION_BOUNDED_LIMIT_V1,
     QUERY_IR_VERSION_BOUNDED_RESULT_PIPELINE_V1, QUERY_IR_VERSION_COVERED_RESULT_V1,
     QUERY_IR_VERSION_EXACT_AGGREGATE_V1, QUERY_IR_VERSION_EXACT_FILTERED_RESULT_SET_V1,
     QUERY_IR_VERSION_EXACT_PREDICATE_V1, QUERY_IR_VERSION_EXACT_RESULT_SET_V1,
@@ -475,6 +476,61 @@ impl CompiledNamedQueryPlan {
     }
 }
 
+fn cursor_routes_match_plan(plan: &CompiledNamedQueryPlan) -> bool {
+    let schema_cursors = plan
+        .schemas()
+        .parameters()
+        .iter()
+        .filter_map(|parameter| {
+            matches!(parameter.value_type(), NamedTypeSchema::Cursor)
+                .then(|| parameter.name().to_owned())
+                .or_else(|| match parameter.value_type() {
+                    NamedTypeSchema::Optional(inner)
+                        if matches!(inner.as_ref(), NamedTypeSchema::Cursor) =>
+                    {
+                        Some(parameter.name().to_owned())
+                    }
+                    _ => None,
+                })
+        })
+        .collect::<BTreeSet<_>>();
+    if schema_cursors.len() > 1 {
+        return false;
+    }
+    let program_matches = |program: &QueryAccessProgramV1| {
+        program
+            .steps()
+            .iter()
+            .filter_map(|step| step.cursor_parameter().map(str::to_owned))
+            .collect::<BTreeSet<_>>()
+            == schema_cursors
+    };
+
+    match plan {
+        CompiledNamedQueryPlan::V1(program) => program_matches(program),
+        CompiledNamedQueryPlan::OperationalV1(family) => family
+            .members()
+            .iter()
+            .all(|member| program_matches(member.program())),
+        CompiledNamedQueryPlan::OrderFamilyV1(family) => family
+            .members()
+            .iter()
+            .all(|member| program_matches(member.program())),
+        CompiledNamedQueryPlan::ExactTextResultV1(exact) => {
+            program_matches(exact.representative_program())
+        }
+        CompiledNamedQueryPlan::ExactPredicateV1(exact) => {
+            program_matches(exact.representative_program())
+        }
+        CompiledNamedQueryPlan::NullableExactPredicateV1(exact) => {
+            program_matches(exact.representative_program())
+        }
+        CompiledNamedQueryPlan::TokenizedTextV1(tokenized) => {
+            program_matches(tokenized.representative_program())
+        }
+    }
+}
+
 impl CompiledNamedQuery {
     /// Exact public query name.
     #[must_use]
@@ -804,6 +860,12 @@ impl QueryModule {
                         QueryCompilationDiagnostics::Planner(diagnostics),
                     )
                 })?;
+            if !cursor_routes_match_plan(&plan) {
+                return Err(QueryModuleError::named(
+                    QueryModuleErrorKind::InvalidQuery,
+                    submitted.name,
+                ));
+            }
             queries.push(CompiledNamedQuery {
                 name: submitted.name,
                 source_hash: hash_query_source(canonical_source.as_bytes()),
@@ -1139,6 +1201,14 @@ impl QueryModuleError {
             kind: QueryModuleErrorKind::InvalidQuery,
             query_name: Some(name),
             diagnostics: Some(diagnostics),
+        }
+    }
+
+    fn named(kind: QueryModuleErrorKind, name: String) -> Self {
+        Self {
+            kind,
+            query_name: Some(name),
+            diagnostics: None,
         }
     }
 
