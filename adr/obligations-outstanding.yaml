@@ -1249,16 +1249,6 @@ outstanding:
   obligation: WP-675 must stop for an administrative renumbering; it may not reuse
     or reinterpret the occupied identity.
   reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
-- key: '0146-fixed-generation-unary-sampling-and-cloud-host-validity.md::- **Defines
-    or blocks:** `WP-674`, `WP-623`, `WP-579` - **Final evidence:** `WP-674` ## De'
-  adr: 0146-fixed-generation-unary-sampling-and-cloud-host-validity.md
-  work_packages:
-  - WP-674
-  - WP-623
-  - WP-579
-  obligation: "- **Defines or blocks:** `WP-674`, `WP-623`, `WP-579` - **Final evidence:**
-    `WP-674` ## Decision Deadline The exact text must be accepted before `SPEC."
-  reason: Predates scripts/check-adr-obligations. Not yet linked to a named proof.
 - key: 0147-aggregate-byte-budgets-for-atomic-collection-commands.md::WP-678 must
     re-audit `release/version-topology-v1.
   adr: 0147-aggregate-byte-budgets-for-atomic-collection-commands.md
