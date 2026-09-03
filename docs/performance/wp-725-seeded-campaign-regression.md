@@ -87,13 +87,18 @@ the window reachable from some nearby coordinate; a window no seed can hit in
 96 attempts is closed. Re-pinning cannot work — and had someone tried, the
 search would have failed slowly rather than revealing why.
 
-## What WP-725 must still establish
+## Questions WP-725 had to settle
 
 1. What clean-close fast startup changed about the frontier a recovery
    observes, stated against `fa5d906c`'s diff rather than inferred.
-3. A sweep-level assertion on `total.in_flight_commit_present > 0`, so this
-   coverage cannot lapse silently again. Its absence is why a regression in the
-   more dangerous recovery direction survived from 2026-08-26 to now.
+2. Whether the interval is merely hard to address or has zero width, and
+   whether an interrupted durable batch can still be missed by recovery.
+3. Which sweep-level assertion keeps any future reopening visible in the
+   standard suite. Its previous absence is why the change in the more dangerous
+   recovery direction survived from 2026-08-26 until this investigation.
+
+The sections below answer all three and retain the executable probes used to
+distinguish them.
 
 ## It is not an addressability problem either
 

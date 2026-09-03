@@ -1,3 +1,4 @@
+// req: SIM-001
 //! Digest-sensitivity pins for the trace chain (`SIM-001`).
 //!
 //! The determinism pin (same seed twice ⇒ identical digest) proves
