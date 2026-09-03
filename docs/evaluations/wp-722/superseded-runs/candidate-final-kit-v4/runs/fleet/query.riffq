@@ -1,0 +1,22 @@
+query OpenWorkOrders(
+    $fleet_id: Vehicle.fleet_id,
+    $limit: Limit<80> = 25,
+) {
+    many work_orders from WorkOrder
+        where fleet_id == $fleet_id && status == WorkOrderStatus.Open
+        order by opened_at desc, vehicle_id desc, work_order_id desc
+        take $limit
+
+    return Found {
+        work_orders: work_orders {
+            fleet_id
+            vehicle_id
+            work_order_id
+            status
+            summary
+            opened_at
+        }
+    }
+
+    outcomes Found
+}

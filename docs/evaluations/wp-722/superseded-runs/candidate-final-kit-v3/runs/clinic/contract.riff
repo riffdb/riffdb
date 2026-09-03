@@ -1,0 +1,59 @@
+contract Clinic version 1 {
+  entity Patient {
+    key (clinic_id: uuid, patient_id: uuid)
+    field name: string<128>
+    field created_at: timestamp
+    delete_policy cascade {
+      relationship Appointment.patient using Appointment.by_patient maximum 32
+    }
+  }
+
+  entity Appointment {
+    key (clinic_id: uuid, patient_id: uuid, appointment_id: uuid)
+    field starts_at: timestamp
+    field reason: string<256>
+    field created_at: timestamp
+    index by_patient (clinic_id, patient_id, appointment_id)
+    index by_upcoming (clinic_id, starts_at, appointment_id)
+    reference patient (clinic_id, patient_id) -> Patient(clinic_id, patient_id)
+    delete_policy no_inbound
+  }
+
+  aggregate PatientRoot {
+    root Patient
+    child Appointment
+    partition_by clinic_id
+    conflict_key (clinic_id, patient_id)
+  }
+
+  command CreatePatient {
+    input idempotency_key: string<128>
+    input clinic_id: uuid
+    input patient_id: uuid
+    input name: string<128>
+    idempotency_key idempotency_key
+    create Patient(clinic_id, patient_id) as patient
+      else PatientExists { patient_id: patient_id }
+    set patient.name = name
+    set patient.created_at = tx.time
+    return Created { patient: patient }
+  }
+
+  command CreateAppointment {
+    input idempotency_key: string<128>
+    input clinic_id: uuid
+    input patient_id: uuid
+    input appointment_id: uuid
+    input starts_at: timestamp
+    input reason: string<256>
+    idempotency_key idempotency_key
+    read Patient(clinic_id, patient_id) as patient
+      else PatientMissing { patient_id: patient_id }
+    create Appointment(clinic_id, patient_id, appointment_id) as appointment
+      else AppointmentExists { appointment_id: appointment_id }
+    set appointment.starts_at = starts_at
+    set appointment.reason = reason
+    set appointment.created_at = tx.time
+    return Created { appointment: appointment }
+  }
+}

@@ -1,0 +1,50 @@
+contract BranchLibrary version 1 {
+  enum CopyStatus { Available, CheckedOut }
+
+  entity Patron {
+    key (branch_id: uuid, patron_id: uuid)
+    field display_name: string<128>
+    field last_activity_at: timestamp
+    delete_policy no_inbound
+  }
+
+  entity BookCopy {
+    key (branch_id: uuid, copy_id: uuid)
+    field title: string<256>
+    field status: CopyStatus
+    field last_activity_at: timestamp
+    index by_availability (branch_id, status, copy_id)
+    delete_policy no_inbound
+  }
+
+  aggregate PatronRoot {
+    root Patron
+    partition_by branch_id
+    conflict_key (branch_id, patron_id)
+  }
+
+  aggregate BookCopyRoot {
+    root BookCopy
+    partition_by branch_id
+    conflict_key (branch_id, copy_id)
+  }
+
+  command CheckoutCopy {
+    input request_key: string<128>
+    input branch_id: uuid
+    input patron_id: uuid
+    input copy_id: uuid
+    idempotency_key request_key
+
+    mutate Patron(branch_id, patron_id) as patron
+      else PatronMissing { patron_id: patron_id }
+    mutate BookCopy(branch_id, copy_id) as copy
+      else CopyMissing { copy_id: copy_id }
+    require CopyIsAvailable: copy.status == CopyStatus.Available
+      else CopyUnavailable { copy_id: copy_id }
+    set patron.last_activity_at = tx.time
+    set copy.status = CopyStatus.CheckedOut
+    set copy.last_activity_at = tx.time
+    return CheckedOut { patron: patron, copy: copy }
+  }
+}

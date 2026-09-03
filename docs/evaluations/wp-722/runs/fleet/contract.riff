@@ -1,0 +1,83 @@
+contract FleetMaintenance version 1 {
+  enum WorkOrderStatus { Open, InProgress, Closed }
+
+  entity Vehicle {
+    key (fleet_id: uuid, vehicle_id: uuid)
+    field label: string<96>
+    field created_at: timestamp
+    index by_fleet (fleet_id, vehicle_id)
+    delete_policy restrict WorkOrder.by_vehicle
+  }
+
+  entity WorkOrder {
+    key (fleet_id: uuid, work_order_id: uuid)
+    field vehicle_id: uuid
+    field summary: string<256>
+    field status: WorkOrderStatus
+    field opened_at: timestamp
+    index by_vehicle (fleet_id, vehicle_id, work_order_id)
+    index by_status (fleet_id, status, work_order_id)
+    reference assigned_vehicle (fleet_id, vehicle_id) -> Vehicle(fleet_id, vehicle_id)
+    delete_policy no_inbound
+  }
+
+  aggregate VehicleRoot {
+    root Vehicle
+    partition_by fleet_id
+    conflict_key (fleet_id, vehicle_id)
+  }
+
+  aggregate WorkOrderRoot {
+    root WorkOrder
+    partition_by fleet_id
+    conflict_key (fleet_id, work_order_id)
+  }
+
+  command CreateVehicle {
+    input request_key: string<128>
+    input fleet_id: uuid
+    input vehicle_id: uuid
+    input label: string<96>
+    idempotency_key request_key
+
+    create Vehicle(fleet_id, vehicle_id) as vehicle
+      else VehicleExists { vehicle_id: vehicle_id }
+    set vehicle.label = label
+    set vehicle.created_at = tx.time
+    return Created { vehicle: vehicle }
+  }
+
+  command CreateWorkOrder {
+    input request_key: string<128>
+    input fleet_id: uuid
+    input work_order_id: uuid
+    input vehicle_id: uuid
+    input summary: string<256>
+    idempotency_key request_key
+
+    read Vehicle(fleet_id, vehicle_id) as vehicle
+      else VehicleMissing { vehicle_id: vehicle_id }
+    create WorkOrder(fleet_id, work_order_id) as work_order
+      else WorkOrderExists { work_order_id: work_order_id }
+    set work_order.vehicle_id = vehicle_id
+    set work_order.summary = summary
+    set work_order.status = WorkOrderStatus.Open
+    set work_order.opened_at = tx.time
+    return Created { work_order: work_order }
+  }
+
+  bulk command DeleteVehicles {
+    input request_key: string<128>
+    input fleet_id: uuid
+    input vehicle_ids: list<uuid, 1..64>
+    idempotency_key request_key
+
+    for vehicle_id in vehicle_ids {
+      delete Vehicle(fleet_id, vehicle_id) as vehicle
+        else VehicleMissing {}
+        restrict VehicleHasWorkOrders {}
+    }
+
+    return VehiclesDeleted {}
+  }
+}

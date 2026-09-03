@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+evidence_root="$repo_root/docs/evaluations/wp-722/runs"
+campaign="$repo_root/docs/evaluations/wp-722/campaign.json"
+task_tmp_root="${TMPDIR:-/tmp}"
+mkdir -p "$task_tmp_root"
+work_root="$(mktemp -d "$task_tmp_root/riffdb-wp722-authoring.XXXXXX")"
+cleanup() {
+    rm -rf "$work_root"
+}
+trap cleanup EXIT INT TERM
+
+for tool in cargo jq rg sha256sum; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo "required WP-722 acceptance tool is missing: $tool" >&2
+        exit 1
+    }
+done
+
+jq -e '
+  .schema == "riffdb-public-authoring-campaign/v1"
+  and (.repository_base | test("^[0-9a-f]{40}$"))
+  and (.runs | length == 3)
+  and ([.runs[].agent_id] | unique | length == 3)
+  and ([.runs[].domain] | sort) == ["clinic", "fleet", "library"]
+  and ([.runs[].kit_inventory_sha256] | unique | length == 1)
+  and all(.runs[];
+    (.kit_inventory_sha256 | test("^[0-9a-f]{64}$"))
+    and (.artifacts | length >= 4 and length <= 8)
+    and all(.artifacts[];
+      (.path | startswith("docs/evaluations/wp-722/runs/"))
+      and (.sha256 | test("^[0-9a-f]{64}$"))))
+' "$campaign" >/dev/null || {
+    echo "WP-722 campaign manifest violates its closed inventory" >&2
+    exit 1
+}
+(
+    cd "$repo_root"
+    jq -r '.runs[].artifacts[] | "\(.sha256)  \(.path)"' "$campaign" \
+        | sha256sum --check --status
+) || {
+    echo "WP-722 campaign artifact hash mismatch" >&2
+    exit 1
+}
+
+failed_reports=(
+    "$repo_root/docs/evaluations/wp-722/failed-runs/clinic-01/report.json"
+    "$repo_root/docs/evaluations/wp-722/failed-runs/fleet-01/report.json"
+    "$repo_root/docs/evaluations/wp-722/failed-runs/library-01/report.json"
+)
+jq -se '
+  (map(.agent_id) | sort) == ["Clinic-01", "Fleet-01", "Library-01"]
+  and all(.[]; any(.diagnostics[]; .help_sufficient == false))
+' "${failed_reports[@]}" >/dev/null || {
+    echo "WP-722 superseded failures were removed or retroactively reclassified" >&2
+    exit 1
+}
+
+reports=()
+for domain in clinic fleet library; do
+    run_root="$evidence_root/$domain"
+    report="$run_root/report.json"
+    for required in contract.riff query.riffq riffdb.application.json report.json; do
+        [[ -s "$run_root/$required" ]] || {
+            echo "WP-722 $domain run is missing $required" >&2
+            exit 1
+        }
+    done
+    reports+=("$report")
+
+    campaign_agent_id="$(jq -r --arg domain "$domain" \
+        '.runs[] | select(.domain == $domain) | .agent_id' "$campaign")"
+    report_agent_id="$(jq -r '.agent_id' "$report")"
+    [[ "$campaign_agent_id" == "$report_agent_id" ]] || {
+        echo "WP-722 $domain campaign identity does not match its immutable report" >&2
+        exit 1
+    }
+
+    jq -e --arg domain "$domain" '
+      . as $report
+      | (keys | sort) == ([
+          "agent_id", "completed", "diagnostics", "domain",
+          "final_contract_compiled", "final_query_compiled", "fresh_context",
+          "implementation_source_reads", "network_used", "public_inputs"
+        ] | sort)
+      and (.agent_id | type == "string" and length >= 1 and length <= 64)
+      and .domain == $domain
+      and .fresh_context == true
+      and .network_used == false
+      and .implementation_source_reads == 0
+      and (.public_inputs | type == "array" and length >= 1 and length <= 32
+        and length == (unique | length))
+      and all(.public_inputs[];
+        . == "bin/riffdb" or . == "brief" or . == "domain brief"
+        or . == "kit.json" or . == "checksums.sha256"
+        or . == "docs/" or . == "scaffold/"
+        or startswith("application/") or startswith("scaffold/")
+        or startswith("docs/"))
+      and (.diagnostics | type == "array" and length <= 32)
+      and ([.diagnostics[].sequence]
+        == [range(1; ($report.diagnostics | length) + 1)])
+      and all(.diagnostics[];
+        (keys | sort) == (["code", "help", "help_sufficient", "reason", "sequence"] | sort)
+        and (.code | test("^RDB-[A-Z]+[0-9]{3}$"))
+        and (.help | type == "string" and length >= 1 and length <= 2048)
+        and .help_sufficient == true
+        and (.reason | type == "string" and length >= 1 and length <= 512))
+      and .final_contract_compiled == true
+      and .final_query_compiled == true
+      and .completed == true
+    ' "$report" >/dev/null || {
+        echo "WP-722 $domain report violates the closed passing shape" >&2
+        exit 1
+    }
+
+    shopt -s nullglob
+    diagnostic_files=("$run_root"/diagnostics/*.json)
+    shopt -u nullglob
+    report_diagnostic_count="$(jq '.diagnostics | length' "$report")"
+    if (( report_diagnostic_count == 0 && ${#diagnostic_files[@]} != 0 )); then
+        echo "WP-722 $domain report omits retained diagnostic evidence" >&2
+        exit 1
+    fi
+    if (( report_diagnostic_count > 0 && ${#diagnostic_files[@]} == 0 )); then
+        echo "WP-722 $domain report claims diagnostics without raw evidence" >&2
+        exit 1
+    fi
+    if (( ${#diagnostic_files[@]} > 0 )); then
+        jq -se '
+          [ .[] | .diagnostics[] | {code, help} ]
+          | all(.[]; (.code | test("^RDB-[A-Z]+[0-9]{3}$"))
+            and (.help | type == "string" and length > 0))
+        ' "${diagnostic_files[@]}" >/dev/null || {
+            echo "WP-722 $domain raw diagnostic lacks repair help" >&2
+            exit 1
+        }
+        jq -sc '[ .[] | .diagnostics[] | {code, help} ]' \
+            "${diagnostic_files[@]}" >"$work_root/$domain-observed.json"
+        jq -c '[ .diagnostics[] | {code, help} ]' \
+            "$report" >"$work_root/$domain-reported.json"
+        cmp "$work_root/$domain-observed.json" "$work_root/$domain-reported.json" || {
+            echo "WP-722 $domain report does not exactly inventory raw diagnostics" >&2
+            exit 1
+        }
+    fi
+
+    application_root="$work_root/$domain-application"
+    query_path="$(jq -r '.query_modules[0].queries[0].source' \
+        "$run_root/riffdb.application.json")"
+    [[ "$query_path" == riffdb/queries/*.riffq && "$query_path" != *..* ]] || {
+        echo "WP-722 $domain manifest has an unsafe query path" >&2
+        exit 1
+    }
+    mkdir -p "$application_root/riffdb/queries"
+    cp "$run_root/contract.riff" "$application_root/riffdb/contract.riff"
+    cp "$run_root/query.riffq" "$application_root/$query_path"
+    cp "$run_root/riffdb.application.json" "$application_root/"
+done
+
+jq -se '
+  (map(.agent_id) | unique | length) == 3
+  and (map(.domain) | sort) == ["clinic", "fleet", "library"]
+' "${reports[@]}" >/dev/null || {
+    echo "WP-722 runs do not have three distinct fresh-agent identities and domains" >&2
+    exit 1
+}
+
+rg -q 'aggregate PatronRoot' "$evidence_root/library/contract.riff"
+rg -q 'aggregate BookCopyRoot' "$evidence_root/library/contract.riff"
+rg -q 'mutate Patron' "$evidence_root/library/contract.riff"
+rg -q 'mutate BookCopy' "$evidence_root/library/contract.riff"
+rg -q 'delete_policy no_inbound' "$evidence_root/library/contract.riff"
+rg -q 'query AvailableCopies' "$evidence_root/library/query.riffq"
+rg -q 'Limit<100>' "$evidence_root/library/query.riffq"
+
+rg -q 'delete_policy cascade' "$evidence_root/clinic/contract.riff"
+rg -q 'reference patient ' "$evidence_root/clinic/contract.riff"
+rg -q 'read Patient' "$evidence_root/clinic/contract.riff"
+rg -q 'query UpcomingAppointments' "$evidence_root/clinic/query.riffq"
+rg -q 'Limit<64>' "$evidence_root/clinic/query.riffq"
+
+rg -q 'delete_policy restrict WorkOrder.by_vehicle' "$evidence_root/fleet/contract.riff"
+rg -q 'restrict VehicleHasWorkOrders' "$evidence_root/fleet/contract.riff"
+rg -q 'read Vehicle' "$evidence_root/fleet/contract.riff"
+rg -q 'query OpenWorkOrders' "$evidence_root/fleet/query.riffq"
+rg -q 'Limit<80>' "$evidence_root/fleet/query.riffq"
+
+cd "$repo_root"
+cargo build --quiet --locked -p riffdb-cli --bin riffdb
+for domain in clinic fleet library; do
+    (
+        cd "$work_root/$domain-application"
+        "$repo_root/target/debug/riffdb" --output json \
+            application check --source-only >"$work_root/$domain-final.out"
+    )
+    rg -q '^application sources compile; no lock or generated artifacts were checked$' \
+        "$work_root/$domain-final.out" || {
+        echo "WP-722 $domain final source did not report checked status" >&2
+        exit 1
+    }
+    printf 'WP-722 %s: 10/10\n' "$domain"
+done
+
+cargo test --quiet --locked -p riffdb-diagnostics --all-features
+echo "WP-722 public-source-only authoring acceptance passed"

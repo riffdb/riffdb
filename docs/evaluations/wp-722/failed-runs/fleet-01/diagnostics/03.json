@@ -1,0 +1,1 @@
+{"diagnostics":[{"cause":"unknown_symbol","code":"RDB-QM004","file_change":"no_files_changed","fixes":["correct_symbol"],"help":null,"path":"riffdb/queries","retry":"correct_source","span":null,"stage":"query_plan","summary":"query file declaration does not match its symbolic name","symbol_path":[]}],"version":1}

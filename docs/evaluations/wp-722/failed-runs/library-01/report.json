@@ -1,0 +1,34 @@
+{
+  "agent_id": "Library-01",
+  "domain": "library",
+  "fresh_context": true,
+  "network_used": false,
+  "implementation_source_reads": 0,
+  "public_inputs": [
+    "domain brief",
+    "application/AUTHORING.md",
+    "application/riffdb/contract.riff",
+    "application/riffdb/queries/item_page.riffq",
+    "application/riffdb.application.json",
+    "docs/contracts/AUTHORING.md",
+    "docs/contracts/COMMAND-INVARIANT-COOKBOOK.md",
+    "docs/contracts/LANGUAGE.md",
+    "docs/contracts/examples/museum/contract.riff",
+    "docs/contracts/examples/museum/collection_page.riffq",
+    "docs/contracts/examples/museum/riffdb.application.json",
+    "docs/getting-started/AUTHORING-DIAGNOSTICS.md",
+    "docs/riffql/LANGUAGE.md"
+  ],
+  "diagnostics": [
+    {
+      "sequence": 1,
+      "code": "RDB-S004",
+      "help": "use the grammar-version-1 spelling shown in the language reference",
+      "help_sufficient": false,
+      "reason": "The help redirects to the full grammar but does not identify the working repair: insert a comma between the two return payload fields."
+    }
+  ],
+  "final_contract_compiled": true,
+  "final_query_compiled": true,
+  "completed": true
+}

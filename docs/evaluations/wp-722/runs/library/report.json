@@ -1,0 +1,20 @@
+{
+  "agent_id": "Library-05",
+  "domain": "library",
+  "fresh_context": true,
+  "network_used": false,
+  "implementation_source_reads": 0,
+  "public_inputs": ["brief", "docs/", "scaffold/", "bin/riffdb"],
+  "diagnostics": [
+    {
+      "sequence": 1,
+      "code": "RDB-S004",
+      "help": "insert `,` between adjacent fields or payload members at this span; see docs/contracts/LANGUAGE.md",
+      "help_sufficient": true,
+      "reason": "The help itself states the working repair: insert a comma between the adjacent payload members at the reported span."
+    }
+  ],
+  "final_contract_compiled": true,
+  "final_query_compiled": true,
+  "completed": true
+}

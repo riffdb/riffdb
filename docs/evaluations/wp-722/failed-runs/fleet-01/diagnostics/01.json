@@ -1,0 +1,1 @@
+{"diagnostics":[{"cause":"internal_invariant","code":"RDB-C023","file_change":"no_files_changed","fixes":["contact_operator"],"help":null,"path":"riffdb/contract.riff","retry":"contact_operator","span":{"end":1874,"start":1860},"stage":"contract_semantic","summary":"checked executable IR construction rejected the compiled plan","symbol_path":[]}],"version":1}

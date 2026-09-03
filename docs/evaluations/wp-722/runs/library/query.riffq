@@ -1,0 +1,19 @@
+query AvailableCopies(
+    $branch_id: BookCopy.branch_id,
+    $limit: Limit<100> = 25,
+) {
+    many copies from BookCopy
+        where branch_id == $branch_id && status == CopyStatus.Available
+        order by title asc, copy_id asc
+        take $limit
+
+    return Found {
+        copies: copies {
+            copy_id
+            title
+            status
+        }
+    }
+
+    outcomes Found
+}

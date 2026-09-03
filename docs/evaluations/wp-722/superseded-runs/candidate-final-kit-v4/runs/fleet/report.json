@@ -1,0 +1,35 @@
+{
+  "agent_id": "Fleet-03",
+  "domain": "fleet",
+  "fresh_context": true,
+  "network_used": false,
+  "implementation_source_reads": 0,
+  "public_inputs": [
+    "brief",
+    "bin/riffdb",
+    "scaffold/README.md",
+    "scaffold/AUTHORING.md",
+    "scaffold/riffdb.application.json",
+    "scaffold/riffdb/contract.riff",
+    "scaffold/riffdb/queries/item_page.riffq",
+    "docs/getting-started/AGENT-APPLICATION-QUICKSTART.md",
+    "docs/getting-started/AUTHORING-DIAGNOSTICS.md",
+    "docs/contracts/AUTHORING.md",
+    "docs/contracts/BOUNDED-COMMANDS.md",
+    "docs/contracts/COMMAND-INVARIANT-COOKBOOK.md",
+    "docs/contracts/examples/museum/contract.riff",
+    "docs/riffql/LANGUAGE.md"
+  ],
+  "diagnostics": [
+    {
+      "sequence": 1,
+      "code": "RDB-C023",
+      "help": "use empty per-element else, restrict, and cascade outcome payloads in a bounded collection delete; if no collection delete is present, keep the source unchanged and report this internal code with exact source and tool identities",
+      "help_sufficient": true,
+      "reason": "The help itself states the working repair: make the per-element else and restrict outcome payloads empty."
+    }
+  ],
+  "final_contract_compiled": true,
+  "final_query_compiled": true,
+  "completed": true
+}

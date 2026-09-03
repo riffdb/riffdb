@@ -1,0 +1,42 @@
+{
+  "agent_id": "Fleet-01",
+  "domain": "fleet",
+  "fresh_context": true,
+  "network_used": false,
+  "implementation_source_reads": 0,
+  "public_inputs": [
+    "bin/riffdb",
+    "application/AUTHORING.md",
+    "application/riffdb/contract.riff",
+    "application/riffdb/queries/item_page.riffq",
+    "application/riffdb.application.json",
+    "docs/",
+    "docs/contracts/examples/museum/"
+  ],
+  "diagnostics": [
+    {
+      "sequence": 1,
+      "code": "RDB-C023",
+      "help": null,
+      "help_sufficient": false,
+      "reason": "No help was provided; the public bounded-command examples, not the diagnostic, suggested empty per-element outcomes."
+    },
+    {
+      "sequence": 2,
+      "code": "RDB-QP001",
+      "help": "use declared symbols and make parameters, predicates, and returned fields use their exact contract types; see docs/riffql/LANGUAGE.md",
+      "help_sufficient": false,
+      "reason": "The help gives a general type-correction rule but does not identify a concrete declared replacement for the obsolete Item symbol."
+    },
+    {
+      "sequence": 3,
+      "code": "RDB-QM004",
+      "help": null,
+      "help_sufficient": false,
+      "reason": "No help was provided for reconciling the manifest query name with the source declaration."
+    }
+  ],
+  "final_contract_compiled": true,
+  "final_query_compiled": true,
+  "completed": true
+}

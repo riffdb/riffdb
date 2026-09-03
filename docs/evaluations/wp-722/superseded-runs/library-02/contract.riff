@@ -1,0 +1,71 @@
+contract MunicipalLibrary version 1 {
+  entity Patron {
+    key (branch_id: uuid, patron_id: uuid)
+    field name: string<128>
+    field active_loans: i64
+    invariant active_loans_non_negative: active_loans >= 0
+  }
+
+  entity BookCopy {
+    key (branch_id: uuid, copy_id: uuid)
+    field title: string<256>
+    field checked_out: bool
+    index by_availability (branch_id, checked_out, copy_id)
+    delete_policy no_inbound
+  }
+
+  aggregate PatronRoot {
+    root Patron
+    partition_by branch_id
+    conflict_key (branch_id, patron_id)
+  }
+
+  aggregate BookCopyRoot {
+    root BookCopy
+    partition_by branch_id
+    conflict_key (branch_id, copy_id)
+  }
+
+  command CreatePatron {
+    input idempotency_key: string<128>
+    input branch_id: uuid
+    input patron_id: uuid
+    input name: string<128>
+    idempotency_key idempotency_key
+    create Patron(branch_id, patron_id) as patron
+      else PatronExists { patron_id: patron_id }
+    set patron.name = name
+    set patron.active_loans = 0
+    return Created { patron: patron }
+  }
+
+  command CreateBookCopy {
+    input idempotency_key: string<128>
+    input branch_id: uuid
+    input copy_id: uuid
+    input title: string<256>
+    idempotency_key idempotency_key
+    create BookCopy(branch_id, copy_id) as copy
+      else CopyExists { copy_id: copy_id }
+    set copy.title = title
+    set copy.checked_out = false
+    return Created { copy: copy }
+  }
+
+  command CheckoutCopy {
+    input idempotency_key: string<128>
+    input branch_id: uuid
+    input patron_id: uuid
+    input copy_id: uuid
+    idempotency_key idempotency_key
+    mutate Patron(branch_id, patron_id) as patron
+      else PatronMissing { patron_id: patron_id }
+    mutate BookCopy(branch_id, copy_id) as copy
+      else CopyMissing { copy_id: copy_id }
+    require CopyAvailable: copy.checked_out == false
+      else CopyAlreadyCheckedOut { copy_id: copy_id }
+    set copy.checked_out = true
+    set patron.active_loans = patron.active_loans + 1
+    return CheckedOut { patron: patron, copy: copy }
+  }
+}

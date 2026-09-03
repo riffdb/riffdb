@@ -1,0 +1,50 @@
+contract LibraryCirculation version 1 {
+  enum CopyStatus { Available, CheckedOut }
+
+  entity Patron {
+    key (branch_id: uuid, patron_id: uuid)
+    field active: bool
+    field last_checkout_at: timestamp
+    delete_policy no_inbound
+  }
+
+  entity BookCopy {
+    key (branch_id: uuid, copy_id: uuid)
+    field title: string<256>
+    field status: CopyStatus
+    index by_availability (branch_id, status, title, copy_id)
+    delete_policy no_inbound
+  }
+
+  aggregate PatronRoot {
+    root Patron
+    partition_by branch_id
+    conflict_key (branch_id, patron_id)
+  }
+
+  aggregate BookCopyRoot {
+    root BookCopy
+    partition_by branch_id
+    conflict_key (branch_id, copy_id)
+  }
+
+  command CheckoutBook {
+    input idempotency_key: string<128>
+    input branch_id: uuid
+    input patron_id: uuid
+    input copy_id: uuid
+    idempotency_key idempotency_key
+
+    mutate Patron(branch_id, patron_id) as patron
+      else PatronMissing { patron_id: patron_id }
+    mutate BookCopy(branch_id, copy_id) as copy
+      else CopyMissing { copy_id: copy_id }
+    require PatronActive: patron.active == true
+      else PatronUnavailable { patron_id: patron_id }
+    require CopyAvailable: copy.status == CopyStatus.Available
+      else CopyUnavailable { copy_id: copy_id }
+    set patron.last_checkout_at = tx.time
+    set copy.status = CopyStatus.CheckedOut
+    return CheckedOut { patron: patron, copy: copy }
+  }
+}

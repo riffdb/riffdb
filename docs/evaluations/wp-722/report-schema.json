@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "agent_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "completed": { "const": true },
+    "diagnostics": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "code": { "type": "string", "pattern": "^RDB-[A-Z]+[0-9]{3}$" },
+          "help": { "type": "string", "minLength": 1, "maxLength": 2048 },
+          "help_sufficient": { "const": true },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "sequence": { "type": "integer", "minimum": 1, "maximum": 32 }
+        },
+        "required": ["sequence", "code", "help", "help_sufficient", "reason"]
+      }
+    },
+    "domain": { "enum": ["clinic", "fleet", "library"] },
+    "final_contract_compiled": { "const": true },
+    "final_query_compiled": { "const": true },
+    "fresh_context": { "const": true },
+    "implementation_source_reads": { "const": 0 },
+    "network_used": { "const": false },
+    "public_inputs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+    }
+  },
+  "required": [
+    "agent_id",
+    "domain",
+    "fresh_context",
+    "network_used",
+    "implementation_source_reads",
+    "public_inputs",
+    "diagnostics",
+    "final_contract_compiled",
+    "final_query_compiled",
+    "completed"
+  ],
+  "type": "object"
+}

@@ -1,0 +1,31 @@
+{
+  "agent_id": "Library-04",
+  "domain": "library",
+  "fresh_context": true,
+  "network_used": false,
+  "implementation_source_reads": 0,
+  "public_inputs": [
+    "brief",
+    "docs/contracts/AUTHORING.md",
+    "docs/contracts/BOUNDED-COMMANDS.md",
+    "docs/contracts/COMMAND-INVARIANT-COOKBOOK.md",
+    "docs/contracts/LANGUAGE.md",
+    "docs/contracts/examples/museum/collection_page.riffq",
+    "docs/contracts/examples/museum/contract.riff",
+    "docs/contracts/examples/museum/riffdb.application.json",
+    "docs/getting-started/AGENT-APPLICATION-QUICKSTART.md",
+    "docs/riffql/EXACT-PREDICATES.md",
+    "docs/riffql/LANGUAGE.md",
+    "docs/riffql/PLANNING.md",
+    "scaffold/AUTHORING.md",
+    "scaffold/README.md",
+    "scaffold/riffdb.application.json",
+    "scaffold/riffdb/contract.riff",
+    "scaffold/riffdb/queries/item_page.riffq",
+    "bin/riffdb"
+  ],
+  "diagnostics": [],
+  "final_contract_compiled": true,
+  "final_query_compiled": true,
+  "completed": true
+}

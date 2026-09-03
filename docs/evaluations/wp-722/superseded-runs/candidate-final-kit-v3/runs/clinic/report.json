@@ -1,0 +1,41 @@
+{
+  "agent_id": "Clinic-02",
+  "domain": "clinic",
+  "fresh_context": true,
+  "network_used": false,
+  "implementation_source_reads": 0,
+  "public_inputs": [
+    "bin/riffdb",
+    "application/AUTHORING.md",
+    "application/riffdb.application.json",
+    "application/riffdb/contract.riff",
+    "application/riffdb/queries/item_page.riffq",
+    "docs/contracts/AUTHORING.md",
+    "docs/contracts/LANGUAGE.md",
+    "docs/contracts/BOUNDED-COMMANDS.md",
+    "docs/contracts/COMMAND-INVARIANT-COOKBOOK.md",
+    "docs/riffql/LANGUAGE.md",
+    "docs/riffql/EXACT-PREDICATES.md",
+    "docs/contracts/examples/museum/contract.riff",
+    "docs/contracts/examples/museum/collection_page.riffq"
+  ],
+  "diagnostics": [
+    {
+      "sequence": 1,
+      "code": "RDB-QP001",
+      "help": "replace an unknown symbol with the exact case-sensitive entity and field named in the contract, or make the operands use that field's exact type; the diagnostic symbol path identifies the unresolved use; see docs/riffql/LANGUAGE.md",
+      "help_sufficient": true,
+      "reason": "The help identifies the stale entity-qualified parameter type and directs an exact case-sensitive replacement from the current contract; replacing the sample query with the clinic query removed this diagnostic."
+    },
+    {
+      "sequence": 2,
+      "code": "RDB-QM004",
+      "help": "make the manifest query name exactly equal the query declaration after `query`, including case",
+      "help_sufficient": true,
+      "reason": "The help states the complete repair: matching the manifest query name to UpcomingAppointments made the application compile."
+    }
+  ],
+  "final_contract_compiled": true,
+  "final_query_compiled": true,
+  "completed": true
+}

@@ -1,0 +1,19 @@
+{
+  "agent_id": "Clinic-03",
+  "domain": "clinic",
+  "fresh_context": true,
+  "network_used": false,
+  "implementation_source_reads": 0,
+  "public_inputs": [
+    "brief",
+    "kit.json",
+    "checksums.sha256",
+    "docs/",
+    "scaffold/",
+    "bin/riffdb"
+  ],
+  "diagnostics": [],
+  "final_contract_compiled": true,
+  "final_query_compiled": true,
+  "completed": true
+}
