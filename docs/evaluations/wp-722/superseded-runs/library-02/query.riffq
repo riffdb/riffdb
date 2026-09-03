@@ -1,0 +1,20 @@
+query AvailableCopies(
+    $branch_id: BookCopy.branch_id,
+    $limit: Limit<100>,
+) {
+    many copies from BookCopy
+        where branch_id == $branch_id && checked_out == false
+        order by copy_id asc
+        take $limit
+
+    return Found {
+        copies: copies {
+            branch_id
+            copy_id
+            title
+            checked_out
+        }
+    }
+
+    outcomes Found
+}

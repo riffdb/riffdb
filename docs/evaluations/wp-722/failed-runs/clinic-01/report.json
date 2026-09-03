@@ -1,0 +1,36 @@
+{
+  "agent_id": "Clinic-01",
+  "domain": "clinic",
+  "fresh_context": true,
+  "network_used": false,
+  "implementation_source_reads": 0,
+  "public_inputs": [
+    "bin/riffdb",
+    "application/AUTHORING.md",
+    "application/riffdb/contract.riff",
+    "application/riffdb/queries/item_page.riffq",
+    "application/riffdb.application.json",
+    "docs/getting-started/AGENT-APPLICATION-QUICKSTART.md",
+    "docs/contracts/LANGUAGE.md",
+    "docs/contracts/AUTHORING.md",
+    "docs/contracts/BOUNDED-COMMANDS.md",
+    "docs/contracts/COMMAND-INVARIANT-COOKBOOK.md",
+    "docs/contracts/examples/museum/contract.riff",
+    "docs/contracts/examples/museum/collection_page.riffq",
+    "docs/contracts/examples/museum/riffdb.application.json",
+    "docs/riffql/LANGUAGE.md",
+    "docs/riffql/PLANNING.md"
+  ],
+  "diagnostics": [
+    {
+      "sequence": 1,
+      "code": "RDB-C023",
+      "help": null,
+      "help_sufficient": false,
+      "reason": "The diagnostic supplied no help text and therefore did not state the working repair of using empty per-element cascade outcomes."
+    }
+  ],
+  "final_contract_compiled": true,
+  "final_query_compiled": true,
+  "completed": true
+}

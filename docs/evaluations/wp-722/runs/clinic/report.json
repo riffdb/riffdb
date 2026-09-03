@@ -1,0 +1,25 @@
+{
+  "agent_id": "Clinic-04",
+  "domain": "clinic",
+  "fresh_context": true,
+  "network_used": false,
+  "implementation_source_reads": 0,
+  "public_inputs": [
+    "brief",
+    "docs/",
+    "scaffold/",
+    "bin/riffdb"
+  ],
+  "diagnostics": [
+    {
+      "sequence": 1,
+      "code": "RDB-C023",
+      "help": "use empty per-element else, restrict, and cascade outcome payloads in a bounded collection delete; if no collection delete is present, keep the source unchanged and report this internal code with exact source and tool identities",
+      "help_sufficient": true,
+      "reason": "The help directly states the working source repair: make each per-element else, restrict, and cascade outcome payload empty."
+    }
+  ],
+  "final_contract_compiled": true,
+  "final_query_compiled": true,
+  "completed": true
+}

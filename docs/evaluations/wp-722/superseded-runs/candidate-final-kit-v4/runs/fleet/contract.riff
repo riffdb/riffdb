@@ -1,0 +1,77 @@
+contract FleetMaintenance version 1 {
+  enum WorkOrderStatus {
+    Open,
+    Completed
+  }
+
+  entity Vehicle {
+    key (fleet_id: uuid, vehicle_id: uuid)
+    field name: string<128>
+    field created_at: timestamp
+    delete_policy restrict WorkOrder.by_vehicle
+  }
+
+  entity WorkOrder {
+    key (fleet_id: uuid, vehicle_id: uuid, work_order_id: uuid)
+    field status: WorkOrderStatus
+    field summary: string<256>
+    field opened_at: timestamp
+    index by_vehicle (fleet_id, vehicle_id, work_order_id)
+    index by_open_status (fleet_id, status, opened_at, vehicle_id, work_order_id)
+    reference assigned_vehicle (fleet_id, vehicle_id) -> Vehicle(fleet_id, vehicle_id)
+  }
+
+  aggregate VehicleRoot {
+    root Vehicle
+    child WorkOrder
+    partition_by fleet_id
+    conflict_key (fleet_id, vehicle_id)
+  }
+
+  command CreateVehicle {
+    input request_id: uuid
+    input fleet_id: uuid
+    input vehicle_id: uuid
+    input name: string<128>
+    idempotency_key request_id
+
+    create Vehicle(fleet_id, vehicle_id) as vehicle
+      else VehicleExists { vehicle_id: vehicle_id }
+    set vehicle.name = name
+    set vehicle.created_at = tx.time
+    return Created { vehicle: vehicle }
+  }
+
+  command CreateWorkOrder {
+    input request_id: uuid
+    input fleet_id: uuid
+    input vehicle_id: uuid
+    input work_order_id: uuid
+    input summary: string<256>
+    idempotency_key request_id
+
+    read Vehicle(fleet_id, vehicle_id) as vehicle
+      else VehicleMissing { vehicle_id: vehicle_id }
+    create WorkOrder(fleet_id, vehicle_id, work_order_id) as work_order
+      else WorkOrderExists { work_order_id: work_order_id }
+    set work_order.status = WorkOrderStatus.Open
+    set work_order.summary = summary
+    set work_order.opened_at = tx.time
+    return Created { work_order: work_order }
+  }
+
+  bulk command DeleteVehicles {
+    input request_id: uuid
+    input fleet_id: uuid
+    input vehicle_ids: list<uuid, 1..64>
+    idempotency_key request_id
+
+    for vehicle_id in vehicle_ids {
+      delete Vehicle(fleet_id, vehicle_id) as vehicle
+        else VehicleMissing {}
+        restrict VehicleReferenced {}
+    }
+
+    return Deleted {}
+  }
+}

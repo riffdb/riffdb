@@ -1,0 +1,40 @@
+{
+  "schema": "riffdb-public-authoring-campaign/v1",
+  "repository_base": "2e23cdfe20cd1179d723da10dbbe41fc7da01443",
+  "runs": [
+    {
+      "agent_id": "Clinic-03",
+      "domain": "clinic",
+      "kit_inventory_sha256": "60d5d2a5cf08be5d7ef4e7925c4a14ff018d4599bb5abd431b6c5cdbfa3dbe49",
+      "artifacts": [
+        {"path":"docs/evaluations/wp-722/runs/clinic/contract.riff","sha256":"4d67dcea5ff6da4fcfb0ad38c96b2991efb7de91f102fc4f8a6236976787e4fa"},
+        {"path":"docs/evaluations/wp-722/runs/clinic/query.riffq","sha256":"b04452445281c60042323357bb055ffe1cefacfeed20c13c9d92b5fe60ceabc7"},
+        {"path":"docs/evaluations/wp-722/runs/clinic/riffdb.application.json","sha256":"ac43fb7af329998f349ff7a96211abe77d7f384da4cf12fa5d86abd28baeeb49"},
+        {"path":"docs/evaluations/wp-722/runs/clinic/report.json","sha256":"ab62c47ccff90bfaed9eb85e4f0bb27d8a3b602415181d2e5c2a5081891b79f6"}
+      ]
+    },
+    {
+      "agent_id": "Fleet-03",
+      "domain": "fleet",
+      "kit_inventory_sha256": "60d5d2a5cf08be5d7ef4e7925c4a14ff018d4599bb5abd431b6c5cdbfa3dbe49",
+      "artifacts": [
+        {"path":"docs/evaluations/wp-722/runs/fleet/contract.riff","sha256":"bf9b3be70ff2fd5abe00d5d01c966da657186e44092016e4a4e088e6ad938d5a"},
+        {"path":"docs/evaluations/wp-722/runs/fleet/query.riffq","sha256":"937a68fcbd0becab5e15618cfc10a2e107325b5a43216dbeb1274ca6873583fe"},
+        {"path":"docs/evaluations/wp-722/runs/fleet/riffdb.application.json","sha256":"ad797f22b6107af65849594ff3f10f2ea0db0b4b8fb5d9fb0fb51b2d28bc2596"},
+        {"path":"docs/evaluations/wp-722/runs/fleet/report.json","sha256":"c5ddcf657c008f73b3716aa2db8e405d0d14ea44ed5945f76a33a8d7672dc2dd"},
+        {"path":"docs/evaluations/wp-722/runs/fleet/diagnostics/01.json","sha256":"45ea38f55cdf22f471b0c37c29b95533b1bf832e251fb276978254f206192918"}
+      ]
+    },
+    {
+      "agent_id": "Library-04",
+      "domain": "library",
+      "kit_inventory_sha256": "60d5d2a5cf08be5d7ef4e7925c4a14ff018d4599bb5abd431b6c5cdbfa3dbe49",
+      "artifacts": [
+        {"path":"docs/evaluations/wp-722/runs/library/contract.riff","sha256":"7c092092c1376758e813e06112ded34953b011ca75b640a61276be3694eec646"},
+        {"path":"docs/evaluations/wp-722/runs/library/query.riffq","sha256":"08decbb152cc0adc8a0b69367453068e1b62df3cb84d1a04fea9d0561fe2eb05"},
+        {"path":"docs/evaluations/wp-722/runs/library/riffdb.application.json","sha256":"a4fa1430c5761ad66aa6ddaa19f16f480d33f53f2e0afd1d4098e71d53302d87"},
+        {"path":"docs/evaluations/wp-722/runs/library/report.json","sha256":"c8591723c76e5ae8534a5337b6b6b4e7fd17bd337ed1035679c42a58fd01c290"}
+      ]
+    }
+  ]
+}

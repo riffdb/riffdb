@@ -1,0 +1,22 @@
+query UpcomingAppointments(
+    $clinic_id: Patient.clinic_id,
+    $from: Appointment.scheduled_at,
+    $limit: Limit<64> = 25,
+) {
+    many appointments from Appointment
+        where clinic_id == $clinic_id && scheduled_at >= $from
+        order by scheduled_at asc, patient_id asc, appointment_id asc
+        take $limit
+
+    return Found {
+        appointments: appointments {
+            appointment_id
+            patient_id
+            scheduled_at
+            reason
+            created_at
+        }
+    }
+
+    outcomes Found
+}

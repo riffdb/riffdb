@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+destination="${1:-}"
+[[ -n "$destination" && "$destination" == /* ]] || {
+    echo "usage: scripts/wp722-authoring-kit /absolute/new-directory" >&2
+    exit 2
+}
+[[ ! -e "$destination" ]] || {
+    echo "authoring-kit destination already exists" >&2
+    exit 2
+}
+destination_parent="$(dirname "$destination")"
+[[ -d "$destination_parent" ]] || {
+    echo "authoring-kit destination parent is unavailable" >&2
+    exit 2
+}
+
+for tool in cargo find jq sha256sum sort; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        echo "required authoring-kit tool is missing: $tool" >&2
+        exit 1
+    }
+done
+
+temporary="$(mktemp -d "$destination_parent/.riffdb-wp722-kit.XXXXXX")"
+cleanup() {
+    rm -rf "$temporary"
+}
+trap cleanup EXIT INT TERM
+
+cd "$repo_root"
+cargo build --quiet --locked -p riffdb-cli --bin riffdb
+mkdir -p "$temporary/bin" "$temporary/docs/getting-started"
+cp target/debug/riffdb "$temporary/bin/"
+cp -R docs/contracts docs/riffql "$temporary/docs/"
+cp docs/getting-started/AUTHORING-DIAGNOSTICS.md \
+    docs/getting-started/AGENT-APPLICATION-QUICKSTART.md \
+    docs/getting-started/SYMBOLIC-APPLICATIONS.md \
+    docs/getting-started/application-source-v1.schema.json \
+    "$temporary/docs/getting-started/"
+"$temporary/bin/riffdb" new authoring-evaluation \
+    --directory "$temporary/scaffold" >/dev/null
+
+if find "$temporary" -type f \
+    \( -name SPEC.md -o -name work_packages.yaml -o -path '*/crates/*' -o -path '*/.git/*' \) \
+    | grep -q .; then
+    echo "authoring kit contains private repository material" >&2
+    exit 1
+fi
+
+(
+    cd "$temporary"
+    find . -type f ! -name checksums.sha256 ! -name kit.json -print0 \
+        | sort -z \
+        | xargs -0 sha256sum >checksums.sha256
+)
+inventory_sha256="$(sha256sum "$temporary/checksums.sha256" | cut -d' ' -f1)"
+jq -n \
+    --arg inventory_sha256 "$inventory_sha256" \
+    --arg revision "$(git rev-parse HEAD)" \
+    '{
+      schema: "riffdb-public-authoring-kit/v1",
+      repository_revision: $revision,
+      inventory_sha256: $inventory_sha256,
+      contains_implementation_source: false,
+      network_required: false
+    }' >"$temporary/kit.json"
+
+mv "$temporary" "$destination"
+trap - EXIT INT TERM
+echo "$inventory_sha256"

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# req: DX-002
 set -euo pipefail
 export LC_ALL=C
 umask 077

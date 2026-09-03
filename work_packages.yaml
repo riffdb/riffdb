@@ -2432,6 +2432,30 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-722
   name: Public-source-only authoring acceptance
+  closure:
+    status: complete
+    completed_at: "2026-09-03"
+    requirements_satisfied: [DX-002, DX-004, SAFE-004]
+    evidence: scripts/wp722-authoring-acceptance verifies the content-addressed campaign,
+      recompiles the Library-05, Clinic-04, and Fleet-04 contracts and named queries, requires
+      three distinct fresh contexts with zero implementation-source reads or network use, checks
+      every retained diagnostic byte-for-byte against its sufficient-help judgment, and scores
+      every run 10/10. The ordinary_contract_and_query_plan_codes_all_name_a_concrete_repair,
+      bounded_limit_syntax_repair_survives_the_authoring_boundary,
+      missing_payload_comma_diagnostic_names_the_exact_separator, and
+      query_name_mismatch_names_the_exact_manifest_source_repair tests make absent or non-actionable
+      ordinary authoring help fail. docs/evaluations/wp-722/failed-runs retains the three original
+      non-evidentiary reports without changing their negative judgments. release-source-install-smoke
+      proves DX-002's inactive-service, configuration-refusal, private-journal, atomic-publication,
+      and interruption-resume behavior; symbolic_application_values_cover_every_generated_scalar_without_numeric_ids
+      proves DX-004 natural and tagged symbolic values; and
+      relationship_diagnostic_names_the_exact_proof_and_its_safe_correction proves SAFE-004 refusal
+      plus the exact compiling repair.
+    known_limitations: This package qualifies public contract and named-query authoring only; it
+      does not substitute for generated-driver, deployed-runtime, migration-execution, or endurance
+      evidence. RDB-C023 now names the known bounded collection-delete repair and otherwise directs
+      an author to preserve source and report the compiler invariant rather than guessing.
+    follow_ups: []
   depends_on: [WP-569, WP-721]
   objective: Prove the agent-facing thesis the release rests on. A fresh agent with only the public
     handbook, scaffold, and diagnostics must author a compiling contract and named query for an

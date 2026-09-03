@@ -1,0 +1,37 @@
+{
+  "agent_id": "Library-03",
+  "domain": "library",
+  "fresh_context": true,
+  "network_used": false,
+  "implementation_source_reads": 0,
+  "public_inputs": [
+    "brief",
+    "bin/riffdb",
+    "application/AUTHORING.md",
+    "application/riffdb/contract.riff",
+    "application/riffdb/queries/item_page.riffq",
+    "application/riffdb/seed/01-CreateItem.jsonl",
+    "application/riffdb.application.json",
+    "docs/contracts/AUTHORING.md",
+    "docs/contracts/LANGUAGE.md",
+    "docs/contracts/COMMAND-INVARIANT-COOKBOOK.md",
+    "docs/contracts/BOUNDED-COMMANDS.md",
+    "docs/contracts/examples/museum/contract.riff",
+    "docs/contracts/examples/museum/collection_page.riffq",
+    "docs/riffql/LANGUAGE.md",
+    "docs/getting-started/AGENT-APPLICATION-QUICKSTART.md",
+    "docs/getting-started/AUTHORING-DIAGNOSTICS.md"
+  ],
+  "diagnostics": [
+    {
+      "sequence": 1,
+      "code": "RDB-S004",
+      "help": "insert `,` between adjacent fields or payload members at this span; see docs/contracts/LANGUAGE.md",
+      "help_sufficient": true,
+      "reason": "The help identified the exact missing delimiter and the affected construct, so no additional diagnostic context was needed."
+    }
+  ],
+  "final_contract_compiled": true,
+  "final_query_compiled": true,
+  "completed": true
+}

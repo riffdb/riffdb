@@ -1,0 +1,36 @@
+{
+  "agent_id": "Fleet-02",
+  "domain": "fleet",
+  "fresh_context": true,
+  "network_used": false,
+  "implementation_source_reads": 0,
+  "public_inputs": [
+    "bin/riffdb",
+    "application/AUTHORING.md",
+    "application/riffdb.application.json",
+    "application/riffdb/contract.riff",
+    "application/riffdb/queries/item_page.riffq",
+    "docs/contracts/AUTHORING.md",
+    "docs/contracts/BOUNDED-COMMANDS.md",
+    "docs/contracts/COMMAND-INVARIANT-COOKBOOK.md",
+    "docs/contracts/LANGUAGE.md",
+    "docs/contracts/examples/museum/collection_page.riffq",
+    "docs/contracts/examples/museum/contract.riff",
+    "docs/getting-started/AUTHORING-DIAGNOSTICS.md",
+    "docs/riffql/EXACT-PREDICATES.md",
+    "docs/riffql/LANGUAGE.md",
+    "docs/riffql/PLANNING.md"
+  ],
+  "diagnostics": [
+    {
+      "sequence": 1,
+      "code": "RDB-C023",
+      "help": "use empty per-element else, restrict, and cascade outcome payloads in a bounded collection delete; if no collection delete is present, keep the source unchanged and report this internal code with exact source and tool identities",
+      "help_sufficient": true,
+      "reason": "The help directly states the working source repair: make each per-element missing and restrict outcome payload empty. Applying exactly that change made the next source-only check compile."
+    }
+  ],
+  "final_contract_compiled": true,
+  "final_query_compiled": true,
+  "completed": true
+}

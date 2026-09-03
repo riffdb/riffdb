@@ -112,6 +112,23 @@ A fixed scope constant is a legitimate route. An entity partitioned by
 writers still do not contend, provided the conflict key carries the row
 identifier.
 
+### Partition-local cross-aggregate writes
+
+A command may write roots owned by different aggregates when every binding
+derives the same complete partition route. Keep the aggregates' conflict keys
+independent; RiffDB acquires the union in its compiler-owned order and commits
+the mutations atomically. For example, inventory and an order may remain
+separate aggregates while one checkout writes both, provided both aggregate
+declarations say `partition_by tenant_id` and both bindings use the same
+`tenant_id` input.
+
+Do not copy the partition value through a different expression or omit part of
+a composite route. `RDB-C017` means the compiler could not prove the routes
+identical. Make each `create` and `mutate` key derive the complete same route,
+or split a genuinely cross-partition operation into independently idempotent
+commands. A cross-aggregate command does not make cross-partition transactions
+available.
+
 ## Uniqueness
 
 `unique` is enforced by a durable occupancy row inside the writing command's
@@ -138,6 +155,30 @@ aggregate Experiments {
 Creates and renames are then both checked atomically by the engine. Concurrent
 writes to different experiments do not contend, because the conflict key
 carries `experiment_id`.
+
+## Delete policy
+
+Every deletable entity declares what happens to inbound relationships. Choose
+the policy from the relationship graph, not from the command that happens to
+delete the row:
+
+- `delete_policy no_inbound` is valid only when no declared relationship can
+  target the entity.
+- `delete_policy restrict Child.by_parent` names the complete partition-local
+  reverse index used to prove there are no referencing rows. The delete command
+  also declares `restrict Referenced {}` so a reference produces a typed
+  zero-mutation outcome.
+- `delete_policy cascade { relationship Child.parent using Child.by_parent
+  maximum 32 }` enumerates every direct inbound relationship and its fixed
+  fan-out maximum. Cascade is one bounded hop; recursive discovery is never
+  substituted.
+
+The reverse index starts with the target's partition and key fields. Child
+entities reached by a cascade declare `no_inbound`, and the command must use the
+bounded collection-delete surface described in [Bounded Commands](BOUNDED-COMMANDS.md).
+`RDB-C045` means the declared policy is incomplete or inconsistent with that
+graph; add the missing reverse-index proof or choose the policy that matches
+the actual inbound relationships.
 
 ## Composing two indexed predicates
 

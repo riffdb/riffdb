@@ -377,6 +377,14 @@ impl AuthoringDiagnostic {
         self
     }
 
+    /// Attaches bounded compiler-derived guidance that includes a closed set
+    /// of expected grammar tokens.
+    #[must_use]
+    fn with_help_owned(mut self, help: Option<String>) -> Self {
+        self.help = help;
+        self
+    }
+
     #[must_use]
     fn with_refusal_class(
         mut self,
@@ -510,7 +518,7 @@ impl AuthoringDiagnostics {
                         AuthoringCause::InvalidSyntax,
                         vec![AuthoringFix::UseLanguageReference],
                     )
-                    .map(|value| value.with_help(diagnostic.code().help()))
+                    .map(|value| value.with_help_owned(contract_syntax_help(diagnostic)))
                 })
                 .collect::<Result<Vec<_>, _>>()?,
             CompilationError::Semantic(diagnostics) => diagnostics
@@ -530,7 +538,7 @@ impl AuthoringDiagnostics {
                         cause,
                         fixes,
                     )
-                    .map(|value| value.with_help(code.help()))
+                    .map(|value| value.with_help(contract_semantic_help(code)))
                 })
                 .collect::<Result<Vec<_>, _>>()?,
         };
@@ -561,6 +569,7 @@ impl AuthoringDiagnostics {
                         AuthoringCause::InvalidSyntax,
                         vec![AuthoringFix::UseLanguageReference],
                     )
+                    .map(|value| value.with_help(diagnostic.help()))
                 })
                 .collect::<Result<Vec<_>, _>>()?,
             Some(QueryCompilationDiagnostics::Planner(diagnostics)) => diagnostics
@@ -581,19 +590,26 @@ impl AuthoringDiagnostics {
                         cause,
                         vec![fix],
                     )
-                    .map(|value| value.with_refusal_class(diagnostic.refusal_class()))
+                    .map(|value| {
+                        value
+                            .with_help(Some(query_plan_help(diagnostic.code())))
+                            .with_refusal_class(diagnostic.refusal_class())
+                    })
                 })
                 .collect::<Result<Vec<_>, _>>()?,
-            None => vec![diagnostic_value(
-                AuthoringStage::QueryPlan,
-                query_module_code(error.kind()),
-                path,
-                None,
-                query_symbol,
-                query_module_summary(error.kind()),
-                query_module_cause(error.kind()),
-                vec![query_module_fix(error.kind())],
-            )?],
+            None => vec![
+                diagnostic_value(
+                    AuthoringStage::QueryPlan,
+                    query_module_code(error.kind()),
+                    path,
+                    None,
+                    query_symbol,
+                    query_module_summary(error.kind()),
+                    query_module_cause(error.kind()),
+                    vec![query_module_fix(error.kind())],
+                )?
+                .with_help(Some(query_module_help(error.kind()))),
+            ],
         };
         Self::new(diagnostics)
     }
@@ -991,6 +1007,50 @@ fn contract_semantic_summary(diagnostic: &riffdb_contract_compiler::CompilerDiag
         .map_or(base.clone(), |cause| format!("{base}: {}", cause.as_str()))
 }
 
+fn contract_syntax_help(diagnostic: &riffdb_contract_syntax::SyntaxDiagnostic) -> Option<String> {
+    use riffdb_contract_syntax::SyntaxDiagnosticCode as Code;
+
+    if diagnostic.code() == Code::UnexpectedToken
+        && !diagnostic.expected().is_empty()
+        && diagnostic.expected().contains(&",")
+    {
+        return Some(
+            "insert `,` between adjacent fields or payload members at this span; see docs/contracts/LANGUAGE.md"
+                .to_owned(),
+        );
+    }
+
+    diagnostic.code().help().map(str::to_owned)
+}
+
+/// Keeps the compiler's closed repair text, while pointing diagnostics at the
+/// public handbook sections that explain the authoring decisions behind the
+/// most commonly confused shapes. The path is part of every public authoring
+/// bundle, so it remains useful before a project has been scaffolded.
+const fn contract_semantic_help(
+    code: riffdb_contract_compiler::CompilerDiagnosticCode,
+) -> Option<&'static str> {
+    use riffdb_contract_compiler::CompilerDiagnosticCode as Code;
+    match code {
+        Code::InvalidAggregate | Code::InvalidBinding | Code::CrossPartitionMutation => Some(
+            "derive every write binding from one complete partition route and choose conflict keys independently; see docs/contracts/AUTHORING.md#choosing-a-partition-route",
+        ),
+        Code::InvalidRelationship | Code::MissingRelationshipRead => Some(
+            "read the complete same-partition target key before the create or mutation, declare its missing-target outcome, and store the same input expressions; see docs/contracts/AUTHORING.md#command-declaration-order-and-relationship-proofs",
+        ),
+        Code::InvalidUniqueKey => Some(
+            "begin the unique key with the complete partition route, or widen the partition to the intended uniqueness scope while keeping a fine conflict key; see docs/contracts/AUTHORING.md#uniqueness",
+        ),
+        Code::InvalidDeletePolicy => Some(
+            "declare no_inbound only for an unreferenced entity, restrict with the complete reverse index, or cascade every bounded inbound relationship; see docs/contracts/AUTHORING.md#delete-policy",
+        ),
+        Code::InvalidIr => Some(
+            "use empty per-element else, restrict, and cascade outcome payloads in a bounded collection delete; if no collection delete is present, keep the source unchanged and report this internal code with exact source and tool identities",
+        ),
+        _ => code.help(),
+    }
+}
+
 fn contract_semantic_base_summary(
     diagnostic: &riffdb_contract_compiler::CompilerDiagnostic,
 ) -> String {
@@ -1025,6 +1085,86 @@ fn query_plan_summary(diagnostic: &riffdb_query_compiler::PlannerDiagnostic) -> 
             )
         },
     )
+}
+
+/// Static repair text for every query-planner code an application author can
+/// encounter. Keeping this match exhaustive makes a newly added code fail to
+/// compile until its authoring repair is defined.
+const fn query_plan_help(code: riffdb_query_compiler::PlannerDiagnosticCode) -> &'static str {
+    use riffdb_query_compiler::PlannerDiagnosticCode as Code;
+    match code {
+        Code::TypeMismatch => {
+            "replace an unknown symbol with the exact case-sensitive entity and field named in the contract, or make the operands use that field's exact type; the diagnostic symbol path identifies the unresolved use; see docs/riffql/LANGUAGE.md"
+        }
+        Code::NonLocal => {
+            "bind the complete partition route to query parameters and keep every binding in that same route; see docs/contracts/AUTHORING.md#choosing-a-partition-route"
+        }
+        Code::Unindexed => {
+            "declare the suggested bounded index on the named entity, then make the predicate prefix and order match it; see docs/contracts/AUTHORING.md#operational-query-indexes"
+        }
+        Code::Unordered => {
+            "order by one complete forward or reverse suffix of the selected index; see docs/riffql/PLANNING.md"
+        }
+        Code::Unbounded => {
+            "add an explicit positive take bound and use Limit<MAX> for a caller-supplied page size; see docs/riffql/LANGUAGE.md#compiler-declared-bounded-runtime-limits-language-v9-and-v11"
+        }
+        Code::InternalInvariant => {
+            "do not change source or retry blindly; report this code and the exact source/tool identities to the operator"
+        }
+        Code::Cardinality => {
+            "use one bindings only as scalars and many bindings only through bounded collection operations; see docs/contracts/AUTHORING.md#composing-two-indexed-predicates"
+        }
+        Code::OperationalFamilyRequired => {
+            "express optional predicates as top-level when guards or declare one complete finite order family, then compile the whole family; see docs/riffql/PLANNING.md#finite-operational-plan-families"
+        }
+        Code::ExactTextProvider => {
+            "declare a compatible text_key index and use the exact supported comparison profile and bound; see docs/contracts/AUTHORING.md#operational-query-indexes"
+        }
+        Code::CostCeilingExceeded => {
+            "reduce take, Limit<MAX>, returned fields, or repeated bindings until the reported static charge is within the reported maximum; see docs/riffql/PLANNING.md#whole-query-authorization-and-execution-fuel"
+        }
+        Code::CandidateInvalid => {
+            "use one bounded same-partition root universe and only declared route-complete indexes in candidate algebra; see docs/riffql/PLANNING.md#candidate-set-plans"
+        }
+        Code::LongPatternInvalid => {
+            "declare a compatible bounded long_pattern_v1 provider and use it before root ordering with the same partition and text profile; see docs/riffql/LONG-PATTERN.md#declare-the-provider"
+        }
+    }
+}
+
+const fn query_module_help(kind: QueryModuleErrorKind) -> &'static str {
+    match kind {
+        QueryModuleErrorKind::InvalidName => {
+            "rename the module or query with an ASCII identifier beginning with a letter"
+        }
+        QueryModuleErrorKind::LimitExceeded => {
+            "reduce query count, identifier bytes, or source bytes to the documented module bounds"
+        }
+        QueryModuleErrorKind::DuplicateQuery => {
+            "rename or remove one repeated query so every module entry name is unique"
+        }
+        QueryModuleErrorKind::QueryNameMismatch => {
+            "make the manifest query name exactly equal the query declaration after `query`, including case"
+        }
+        QueryModuleErrorKind::InvalidQuery => {
+            "correct the nested RiffQL syntax or planner diagnostic before compiling the module again"
+        }
+        QueryModuleErrorKind::InvalidContract => {
+            "keep query source unchanged and report this code with the exact contract and tool identities"
+        }
+        QueryModuleErrorKind::InvalidEncoding => {
+            "restore the compiler-owned module from the reviewed lock and regenerate it with `riffdb application generate --locked`"
+        }
+        QueryModuleErrorKind::ContractMismatch => {
+            "compile against the contract pinned by the application lock, or review and write a new lock for the intended contract"
+        }
+        QueryModuleErrorKind::IdentityMismatch => {
+            "restore unchanged source and locked generation, or review the source diff before writing and generating a replacement lock"
+        }
+        QueryModuleErrorKind::UnsupportedVersion => {
+            "use a toolchain that supports the locked module version; do not rewrite or downgrade the module bytes"
+        }
+    }
 }
 
 fn query_plan_class(
@@ -1205,7 +1345,8 @@ const fn filesystem_summary(class: FilesystemDiagnosticClass) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use riffdb_contract_compiler::compile_contract_source;
+    use riffdb_contract_compiler::{CompilerDiagnosticCode, compile_contract_source};
+    use riffdb_query_compiler::PlannerDiagnosticCode;
     use riffdb_query_module::{
         NamedQuerySource, QueryModule, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
     };
@@ -1213,6 +1354,208 @@ mod tests {
     use super::*;
 
     const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
+    const ORDINARY_QUERY_PLAN_CODES: [PlannerDiagnosticCode; 11] = [
+        PlannerDiagnosticCode::TypeMismatch,
+        PlannerDiagnosticCode::NonLocal,
+        PlannerDiagnosticCode::Unindexed,
+        PlannerDiagnosticCode::Unordered,
+        PlannerDiagnosticCode::Unbounded,
+        PlannerDiagnosticCode::Cardinality,
+        PlannerDiagnosticCode::OperationalFamilyRequired,
+        PlannerDiagnosticCode::ExactTextProvider,
+        PlannerDiagnosticCode::CostCeilingExceeded,
+        PlannerDiagnosticCode::CandidateInvalid,
+        PlannerDiagnosticCode::LongPatternInvalid,
+    ];
+
+    fn help_names_concrete_repair(help: &str) -> bool {
+        let first_word = help
+            .split_ascii_whitespace()
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches(',');
+        matches!(
+            first_word,
+            "add"
+                | "assign"
+                | "begin"
+                | "bind"
+                | "compile"
+                | "construct"
+                | "declare"
+                | "derive"
+                | "do"
+                | "express"
+                | "keep"
+                | "make"
+                | "map"
+                | "name"
+                | "order"
+                | "pass"
+                | "preserve"
+                | "read"
+                | "reduce"
+                | "replace"
+                | "reference"
+                | "remove"
+                | "rename"
+                | "retain"
+                | "shorten"
+                | "start"
+                | "use"
+                | "wait"
+                | "write"
+        )
+    }
+
+    #[test]
+    fn ordinary_contract_and_query_plan_codes_all_name_a_concrete_repair() {
+        for code in CompilerDiagnosticCode::ALL {
+            let help = contract_semantic_help(code)
+                .unwrap_or_else(|| panic!("{} has no authoring help", code.as_str()));
+            assert!(
+                help_names_concrete_repair(help),
+                "{} help does not name a concrete repair: {help}",
+                code.as_str()
+            );
+        }
+
+        for code in ORDINARY_QUERY_PLAN_CODES {
+            let help = query_plan_help(code);
+            assert!(
+                help_names_concrete_repair(help),
+                "{} help does not name a concrete repair: {help}",
+                code.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn bounded_limit_syntax_repair_survives_the_authoring_boundary() {
+        let bundle = compile_contract_source(CONTRACT).expect("contract");
+        let query = r#"
+query Bad($organization_id: Organization.organization_id, $limit: Limit = 10) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+        order by ticket_id asc
+        take $limit
+    return Found { tickets: tickets { ticket_id } }
+    outcomes Found
+}
+"#;
+        let error = QueryModule::compile(
+            QueryModuleCandidate::new(
+                QueryModuleName::new("diagnostic").expect("name"),
+                QueryModuleVersion::new(1).expect("version"),
+                vec![NamedQuerySource::new("Bad", query).expect("query")],
+            )
+            .expect("candidate"),
+            &bundle,
+        )
+        .expect_err("an unbounded Limit source must reject");
+        let diagnostics = AuthoringDiagnostics::from_query_module(
+            AuthoringSourcePath::new("riffdb/queries/bad.riffq").expect("path"),
+            &error,
+        )
+        .expect("diagnostics");
+        let diagnostic = &diagnostics.as_slice()[0];
+
+        assert_eq!(diagnostic.code().as_str(), "RDB-QS003");
+        assert!(
+            diagnostic
+                .help()
+                .is_some_and(|help| help.contains("Limit<MAX>"))
+        );
+    }
+
+    #[test]
+    fn missing_payload_comma_diagnostic_names_the_exact_separator() {
+        let source = r#"
+contract MissingComma version 1 {
+  entity Item { key (scope: string<8>, item_id: uuid) field name: string<32> }
+  aggregate Items { root Item partition_by scope conflict_key (scope, item_id) }
+  command CreateItem {
+    input request_key: string<32>
+    input scope: string<8>
+    input item_id: uuid
+    input name: string<32>
+    idempotency_key request_key
+    create Item(scope, item_id) as item else Exists {}
+    set item.name = name
+    return Created { first: item second: item }
+  }
+}
+"#;
+        let error = compile_contract_source(source).expect_err("comma is required");
+        let diagnostics = AuthoringDiagnostics::from_contract(
+            AuthoringSourcePath::new("riffdb/contract.riff").expect("path"),
+            &error,
+        )
+        .expect("diagnostics");
+        let diagnostic = &diagnostics.as_slice()[0];
+
+        assert_eq!(diagnostic.code().as_str(), "RDB-S004");
+        assert!(
+            diagnostic
+                .help()
+                .is_some_and(|help| help.contains("insert `,`"))
+        );
+    }
+
+    #[test]
+    fn non_comma_unexpected_token_preserves_the_accepted_generic_help() {
+        let error = compile_contract_source("contract SafeApp version 1 { SECRET_VALUE }\n")
+            .expect_err("unknown declaration is invalid syntax");
+        let diagnostics = AuthoringDiagnostics::from_contract(
+            AuthoringSourcePath::new("riffdb/contract.riff").expect("path"),
+            &error,
+        )
+        .expect("diagnostics");
+        let diagnostic = &diagnostics.as_slice()[0];
+
+        assert_eq!(diagnostic.code().as_str(), "RDB-S004");
+        assert_eq!(
+            diagnostic.help(),
+            Some("use the grammar-version-1 spelling shown in the language reference")
+        );
+    }
+
+    #[test]
+    fn query_name_mismatch_names_the_exact_manifest_source_repair() {
+        let bundle = compile_contract_source(CONTRACT).expect("contract");
+        let source = r#"
+query Actual($organization_id: Organization.organization_id) {
+    one organization from Organization
+        where organization_id == $organization_id
+        else NotFound
+    return Found { organization: organization { organization_id } }
+    outcomes Found | NotFound
+}
+"#;
+        let error = QueryModule::compile(
+            QueryModuleCandidate::new(
+                QueryModuleName::new("diagnostic").expect("name"),
+                QueryModuleVersion::new(1).expect("version"),
+                vec![NamedQuerySource::new("Expected", source).expect("query")],
+            )
+            .expect("candidate"),
+            &bundle,
+        )
+        .expect_err("declared and manifest names differ");
+        let diagnostics = AuthoringDiagnostics::from_query_module(
+            AuthoringSourcePath::new("riffdb/queries/actual.riffq").expect("path"),
+            &error,
+        )
+        .expect("diagnostics");
+        let diagnostic = &diagnostics.as_slice()[0];
+
+        assert_eq!(diagnostic.code().as_str(), "RDB-QM004");
+        assert!(
+            diagnostic
+                .help()
+                .is_some_and(|help| help.contains("manifest query name exactly equal"))
+        );
+    }
 
     /// A bounded query over the result-byte ceiling must be reported as a
     /// limit to reduce, not as a missing bound, and must quote the charged
@@ -1314,6 +1657,11 @@ query Bad($organization_id: Organization.organization_id, $title: Ticket.title) 
         let diagnostic = &diagnostics.as_slice()[0];
 
         assert_eq!(diagnostic.code().as_str(), "RDB-QP003");
+        assert!(
+            diagnostic
+                .help()
+                .is_some_and(|help| help.contains("declare the suggested bounded index"))
+        );
         assert_eq!(diagnostic.cause(), AuthoringCause::MissingIndex);
         assert!(
             diagnostic
@@ -1441,10 +1789,7 @@ contract Orders version 1 {
         let human = diagnostics.render_human().expect("human");
         assert!(human.contains("RDB-C045"), "{human}");
         assert!(human.contains("  help: "), "{human}");
-        assert!(
-            human.contains("cascade over every inbound relation"),
-            "{human}"
-        );
+        assert!(human.contains("cascade every bounded inbound"), "{human}");
     }
 
     #[test]
@@ -1555,6 +1900,7 @@ contract Orders version 1 {
         );
     }
 
+    // req: SAFE-004
     #[test]
     fn relationship_diagnostic_names_the_exact_proof_and_its_safe_correction() {
         let source = r#"

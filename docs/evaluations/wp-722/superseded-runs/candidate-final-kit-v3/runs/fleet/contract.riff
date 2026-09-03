@@ -1,0 +1,71 @@
+contract FleetService version 1 {
+  enum WorkOrderStatus { Open, Closed }
+
+  entity Vehicle {
+    key (fleet_id: uuid, vehicle_id: uuid)
+    field label: string<128>
+    field created_at: timestamp
+    delete_policy restrict WorkOrder.by_vehicle
+  }
+
+  entity WorkOrder {
+    key (fleet_id: uuid, vehicle_id: uuid, work_order_id: uuid)
+    field status: WorkOrderStatus
+    field summary: string<256>
+    field opened_at: timestamp
+    index by_vehicle (fleet_id, vehicle_id, work_order_id)
+    index open_by_fleet (fleet_id, status, opened_at, work_order_id)
+    reference vehicle (fleet_id, vehicle_id) -> Vehicle(fleet_id, vehicle_id)
+    delete_policy no_inbound
+  }
+
+  aggregate VehicleRoot {
+    root Vehicle
+    child WorkOrder
+    partition_by fleet_id
+    conflict_key (fleet_id, vehicle_id)
+  }
+
+  command CreateVehicle {
+    input idempotency_key: string<128>
+    input fleet_id: uuid
+    input vehicle_id: uuid
+    input label: string<128>
+    idempotency_key idempotency_key
+    create Vehicle(fleet_id, vehicle_id) as vehicle
+      else VehicleExists { vehicle_id: vehicle_id }
+    set vehicle.label = label
+    set vehicle.created_at = tx.time
+    return VehicleCreated { vehicle: vehicle }
+  }
+
+  command CreateWorkOrder {
+    input idempotency_key: string<128>
+    input fleet_id: uuid
+    input vehicle_id: uuid
+    input work_order_id: uuid
+    input summary: string<256>
+    idempotency_key idempotency_key
+    read Vehicle(fleet_id, vehicle_id) as vehicle
+      else VehicleMissing { vehicle_id: vehicle_id }
+    create WorkOrder(fleet_id, vehicle_id, work_order_id) as work_order
+      else WorkOrderExists { work_order_id: work_order_id }
+    set work_order.status = WorkOrderStatus.Open
+    set work_order.summary = summary
+    set work_order.opened_at = tx.time
+    return WorkOrderCreated { work_order: work_order }
+  }
+
+  bulk command DeleteVehicles {
+    input idempotency_key: string<128>
+    input fleet_id: uuid
+    input vehicle_ids: list<uuid, 1..64>
+    idempotency_key idempotency_key
+    for vehicle_id in vehicle_ids {
+      delete Vehicle(fleet_id, vehicle_id) as vehicle
+        else VehicleMissing {}
+        restrict VehicleReferenced {}
+    }
+    return VehiclesDeleted {}
+  }
+}

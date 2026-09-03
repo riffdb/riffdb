@@ -47,4 +47,5 @@ cargo machete
 ./scripts/check-adr-obligations
 ./scripts/adr-index --check
 ./scripts/check-generated
+./scripts/wp722-authoring-acceptance
 ./scripts/release-source-install-smoke

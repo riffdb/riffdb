@@ -1,0 +1,24 @@
+{
+  "agent_id": "Library-02",
+  "domain": "library",
+  "fresh_context": true,
+  "network_used": false,
+  "implementation_source_reads": 0,
+  "public_inputs": [
+    "application/AUTHORING.md",
+    "application/README.md",
+    "application/riffdb.application.json",
+    "application/riffdb/contract.riff",
+    "application/riffdb/queries/item_page.riffq",
+    "docs/getting-started/AGENT-APPLICATION-QUICKSTART.md",
+    "docs/contracts/AUTHORING.md",
+    "docs/contracts/COMMAND-INVARIANT-COOKBOOK.md",
+    "docs/contracts/LANGUAGE.md",
+    "docs/riffql/LANGUAGE.md",
+    "bin/riffdb"
+  ],
+  "diagnostics": [],
+  "final_contract_compiled": true,
+  "final_query_compiled": true,
+  "completed": true
+}
