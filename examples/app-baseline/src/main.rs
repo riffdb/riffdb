@@ -4,7 +4,8 @@
 
 use std::collections::BTreeMap;
 use std::env;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Barrier};
@@ -41,6 +42,24 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn write_new_report(path: &Path, encoded: &str) -> Result<(), String> {
+    let mut destination = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| format!("create fresh report {}: {error}", path.display()))?;
+    destination
+        .write_all(encoded.as_bytes())
+        .and_then(|()| destination.sync_all())
+        .map_err(|error| format!("write fresh report {}: {error}", path.display()))?;
+    if let Some(parent) = path.parent() {
+        fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| format!("sync report directory {}: {error}", parent.display()))?;
+    }
+    Ok(())
 }
 
 fn run() -> Result<(), String> {
@@ -115,7 +134,8 @@ fn run() -> Result<(), String> {
     }
 
     // Ordinary parity remains interleaved PG/RiffDB. ADR-0142/0143 unary
-    // qualification counterbalances backend order across five generations.
+    // qualification, including WP-674's selector-free minimal disclosure,
+    // counterbalances backend order across five generations.
     let mut pg_rep_seed_ns: Vec<u64> = Vec::new();
     let mut pg_rep_scenarios: Vec<Vec<riffdb_app_baseline_core::ScenarioResult>> = Vec::new();
     let mut rd_rep_seed_ns: Vec<u64> = Vec::new();
@@ -405,14 +425,14 @@ fn run() -> Result<(), String> {
             }};
         }
 
-        if matches!(
+        let unary_qualification = matches!(
             scenario_selection,
             Some(ScenarioSelection {
                 mode: ScenarioSelectionMode::UnaryQualification,
                 ..
             })
-        ) && rep % 2 == 1
-        {
+        );
+        if riffdb_runs_first(args.wp674_receipt, unary_qualification, rep) {
             run_riffdb_generation!();
             run_postgres_generation!();
         } else {
@@ -628,7 +648,7 @@ fn run() -> Result<(), String> {
     report["reps"] = json!(args.reps);
     let encoded = serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?;
     if let Some(path) = &args.output {
-        fs::write(path, format!("{encoded}\n")).map_err(|error| error.to_string())?;
+        write_new_report(path, &format!("{encoded}\n"))?;
         println!("wrote {}", path.display());
     } else {
         println!("{encoded}");
@@ -2314,7 +2334,7 @@ fn run_load(args: Args) -> Result<(), String> {
     }
     let encoded = serde_json::to_string_pretty(&suite).map_err(|error| error.to_string())?;
     if let Some(path) = &args.output {
-        fs::write(path, format!("{encoded}\n")).map_err(|error| error.to_string())?;
+        write_new_report(path, &format!("{encoded}\n"))?;
         println!("wrote {}", path.display());
     } else {
         println!("{encoded}");
@@ -3069,6 +3089,8 @@ struct Args {
     reps: usize,
     /// Exit nonzero when any gated metric is unstable (spread_ratio > 2.0).
     require_stable: bool,
+    /// Exact WP-674 receipt mode parsed once from the release-owned environment pin.
+    wp674_receipt: bool,
     /// Diagnostic mode that shuts down immediately after the full seed.
     seed_only: bool,
 }
@@ -3555,6 +3577,7 @@ impl Args {
             allow_tmpfs,
             reps,
             require_stable,
+            wp674_receipt,
             seed_only,
         })
     }
@@ -3568,6 +3591,14 @@ fn measurement_sample_ceiling(wp674_receipt: bool, query_execute_diagnostics: bo
     } else {
         100
     }
+}
+
+fn riffdb_runs_first(
+    wp674_receipt: bool,
+    unary_qualification: bool,
+    generation: usize,
+) -> bool {
+    (wp674_receipt || unary_qualification) && generation % 2 == 1
 }
 
 fn validate_wp674_receipt_shape(
@@ -3593,7 +3624,8 @@ mod tests {
         Args, RiffDbTransport, Scale, SeedDataset, WorkloadProfile, assert_all_parity,
         assert_write_parity, attach_rep_summaries, comparator_contract, gated_ratio,
         load_rep_summaries, measurement_sample_ceiling, median_scenarios,
-        require_load_stable, require_stable, scalar_summary, validate_wp674_receipt_shape,
+        require_load_stable, require_stable, riffdb_runs_first, scalar_summary,
+        validate_wp674_receipt_shape, write_new_report,
     };
 
     #[test]
@@ -3611,6 +3643,42 @@ mod tests {
             assert!(validate_wp674_receipt_shape(true, shape.0, shape.1, shape.2).is_err());
         }
         assert!(validate_wp674_receipt_shape(false, 100, 5, 3).is_ok());
+    }
+
+    // req: PERF-018
+    #[test]
+    fn wp674_selector_free_minimal_generations_are_counterbalanced() {
+        assert_eq!(
+            (0..5)
+                .map(|generation| riffdb_runs_first(true, false, generation))
+                .collect::<Vec<_>>(),
+            [false, true, false, true, false]
+        );
+        assert!(riffdb_runs_first(false, true, 1));
+        assert!(!riffdb_runs_first(false, false, 1));
+    }
+
+    // req: PERF-018
+    #[test]
+    fn evidence_report_output_is_fresh_and_never_truncates_a_symlink() {
+        use std::fs;
+        use std::os::unix::fs::symlink;
+
+        let nonce = fs::read_to_string("/proc/sys/kernel/random/uuid")
+            .expect("kernel UUID fixture")
+            .trim()
+            .to_owned();
+        let root = std::env::temp_dir().join(format!("riffdb-app-report-{nonce}"));
+        fs::create_dir(&root).expect("exclusive report fixture root");
+        let target = root.join("target.json");
+        fs::write(&target, "retained\n").expect("target fixture");
+        let linked = root.join("report.json");
+        symlink(&target, &linked).expect("report symlink fixture");
+        assert!(write_new_report(&linked, "replacement\n").is_err());
+        assert_eq!(fs::read_to_string(&target).expect("retained target"), "retained\n");
+        fs::remove_file(linked).expect("remove owned fixture link");
+        fs::remove_file(target).expect("remove owned fixture target");
+        fs::remove_dir(root).expect("remove owned fixture root");
     }
 
     #[test]

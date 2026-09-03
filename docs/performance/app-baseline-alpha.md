@@ -186,6 +186,56 @@ app-baseline lock with Cargo's locked resolver. A stale lock is rejected before
 any scenario result is retained, rather than being rewritten by the first
 runner build and making the next clean-tree check fail.
 
+The output directory must be empty and neither it nor the attempt-custody entry
+may be a symbolic link. An interrupted run remains failed evidence and is never
+resumed against a later source revision or artifact: retain its directory and
+start the new exact-artifact receipt under another empty output root. The only
+automatic host replacement is the one the same runner process performs
+immediately after retaining, completely validating, and recording a
+host-invalid attempt. That classification is limited to either a non-evidentiary
+invalid preflight or a completed cell with a valid exact preflight and an
+independently invalid exact V2 postflight/whole-cell observation; latency
+distributions do not classify host validity. Otherwise interrupted receipts are
+retained failed evidence and require another empty exact-artifact output root. A
+second host-invalid attempt terminates that run; recovery never creates a third
+attempt.
+
+A safe-application invalid preflight is bound to the exact requested scenario;
+a receipt for another scenario cannot consume the replacement. Every evidence
+input is opened with a bounded no-follow regular-file read, every output is a
+fresh exclusive file, and symbolic-link ancestors or final components are
+refused throughout runner, verifier, and assembler custody.
+
+Before attempt 1, the profile runner builds or selects the exact release
+binaries and writes `attempts/campaign-identity.json`. Its bounded v1 identity
+pins the profile, source revision, `Cargo.lock`, `run-app-baseline` harness,
+app-baseline runner, `riffdbd`, ordered fourteen-scenario registry, both
+comparators, five repetitions, twenty warmups, and 1,000 measurements. The
+runner rechecks that identity before and after every benchmark subprocess,
+before a replacement, and before publishing the profile fragment. The v2
+profile fragment and assembled v2 manifest reference the identity and reject a
+missing, linked, type-drifted, cross-profile, cross-source, or cross-binary
+receipt. Older v2 fragments without that campaign reference remain historical
+evidence; they cannot be assembled as a new qualification.
+
+The wrapper also refuses an ambient `RIFFDB_APP_BASELINE_POSTGRES_URL`: WP-674
+must use the harness-owned, digest-pinned PostgreSQL 18.4 container on loopback
+with its bind-mounted data directory on the same persistent device as RiffDB.
+The verifier pins the complete observed PostgreSQL durability identity, storage
+topology, row-count agreement, raw timing arithmetic, generation summaries,
+eligibility classification, and clean-shutdown process-generation evidence.
+Each V2 host boundary records a maximum 4,096-process scan; enumeration overflow
+or more than 32 qualifying interferers is invalid evidence rather than a
+truncated idle-host claim. The interval also binds each endpoint's Linux process
+identity to PID and start time: an endpoint PID-set change or reuse of one PID
+with another start time makes the host observation invalid. As ADR-0146
+specifies, the separately recomputed aggregate CPU-steal boundary covers the
+complete measured cell; endpoint inventories do not claim a continuous process
+event trace. Process-generation evidence is checked against the selected
+scenario class: reads have read-only cardinality, commands have exact
+command/write and committed-operation cardinality, and the complete minimal run
+must prove both shapes.
+
 Use `--profile n1` and `--profile e2` on those hosts. Copy each
 `profile-fragment.json` and its reports beneath one evidence root, then assemble
 and verify:

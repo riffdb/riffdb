@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterable
 import hashlib
 import json
 import os
@@ -12,9 +13,12 @@ import tempfile
 import time
 from typing import Any
 
+from bounded_evidence_io import bounded_read
+
 
 SCHEMA = "riffdb.app-baseline-host-validity/v2"
 MAX_REPORTED_PROCESSES = 32
+MAX_SCANNED_PROCESSES = 4096
 MAX_BASELINE_BYTES = 1024 * 1024
 MAX_STEAL_PERCENT = 1.0
 
@@ -117,23 +121,20 @@ def whole_cell_accounting(
 
 
 def load_baseline(path: Path) -> tuple[dict[str, Any], str]:
-    if not path.is_file() or path.is_symlink():
-        raise ValueError("preflight host inventory is absent or linked")
-    encoded = path.read_bytes()
-    if not 0 < len(encoded) <= MAX_BASELINE_BYTES:
-        raise ValueError("preflight host inventory exceeds its byte bound")
+    encoded = bounded_read(path, MAX_BASELINE_BYTES, "preflight host inventory")
     value = json.loads(encoded.decode("utf-8"))
     if not isinstance(value, dict):
         raise ValueError("preflight host inventory root is not an object")
     return value, hashlib.sha256(encoded).hexdigest()
 
 
+# req: PERF-018
 def run_self_test() -> None:
     assert parse_cpu_accounting("cpu  1 2 3 4 5 6 7 8 9 10\n")["total_ticks"] == 36
     for malformed in ("", "cpu0 1 2 3 4 5 6 7 8", "cpu 1 2 bad 4 5 6 7 8"):
         try:
             parse_cpu_accounting(malformed)
-        except ValueError:
+        except (OSError, ValueError):
             pass
         else:
             raise AssertionError("malformed CPU accounting was accepted")
@@ -210,12 +211,73 @@ def run_self_test() -> None:
         assert loaded == baseline and len(digest) == 64
         linked = Path(root) / "linked.json"
         linked.symlink_to(fixture)
-        try:
-            load_baseline(linked)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("linked preflight inventory was accepted")
+        linked_parent = Path(root) / "linked-parent"
+        linked_parent.symlink_to(Path(root), target_is_directory=True)
+        for linked_input in (linked, linked_parent / "preflight.json"):
+            try:
+                load_baseline(linked_input)
+            except (OSError, ValueError):
+                pass
+            else:
+                raise AssertionError("linked preflight inventory was accepted")
+
+    high_cpu = [
+        {
+            "pid": pid,
+            "comm": "cpu-load",
+            "cpu_percent_of_one_logical_cpu": 4.9,
+            "read_bytes_per_sec": 0,
+            "write_bytes_per_sec": 0,
+            "rss_bytes": 4096,
+        }
+        for pid in range(1, MAX_REPORTED_PROCESSES + 1)
+    ]
+    high_io = {
+        "pid": MAX_REPORTED_PROCESSES + 1,
+        "comm": "io-load",
+        "cpu_percent_of_one_logical_cpu": 0.1,
+        "read_bytes_per_sec": 8 * 1024 * 1024,
+        "write_bytes_per_sec": 0,
+        "rss_bytes": 4096,
+    }
+    displayed, interferers = bounded_active_inventory(
+        [*high_cpu, high_io], 5.0, 8 * 1024 * 1024
+    )
+    assert high_io in displayed and interferers == [high_io]
+    try:
+        bounded_numeric_pids(str(pid) for pid in range(MAX_SCANNED_PROCESSES + 1))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("an overflowing /proc inventory was accepted")
+    try:
+        bounded_active_inventory(
+            [
+                {**high_io, "pid": pid}
+                for pid in range(1, MAX_REPORTED_PROCESSES + 2)
+            ],
+            5.0,
+            8 * 1024 * 1024,
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("an overflowing interferer inventory was accepted")
+    stable_process = {7: {"starttime_ticks": 100}}
+    assert interval_churn(stable_process, stable_process) == {
+        "stable_identity_required": True,
+        "started_processes": 0,
+        "exited_processes": 0,
+        "pid_reuses": 0,
+    }
+    assert interval_churn(stable_process, {7: {"starttime_ticks": 101}}) == {
+        "stable_identity_required": True,
+        "started_processes": 1,
+        "exited_processes": 1,
+        "pid_reuses": 1,
+    }
+    assert interval_churn(stable_process, {})["exited_processes"] == 1
+    assert interval_churn({}, stable_process)["started_processes"] == 1
 
 
 def ancestors(pid: int) -> set[int]:
@@ -244,6 +306,7 @@ def read_process(pid: int) -> dict[str, int | str] | None:
         comm = stat[open_paren + 1 : close_paren][:64]
         fields = stat[close_paren + 2 :].split()
         cpu_ticks = int(fields[11]) + int(fields[12])
+        starttime_ticks = int(fields[19])
         rss_pages = max(0, int(fields[21]))
         read_bytes = 0
         write_bytes = 0
@@ -255,10 +318,16 @@ def read_process(pid: int) -> dict[str, int | str] | None:
                     write_bytes = int(line.split(":", 1)[1])
         except (OSError, ValueError):
             pass
+        confirmation = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        confirmation_close = confirmation.rfind(")")
+        confirmation_fields = confirmation[confirmation_close + 2 :].split()
+        if confirmation_close < 0 or int(confirmation_fields[19]) != starttime_ticks:
+            raise ValueError("PID identity changed while sampling one process")
         return {
             "pid": pid,
             "comm": comm,
             "cpu_ticks": cpu_ticks,
+            "starttime_ticks": starttime_ticks,
             "rss_bytes": rss_pages * os.sysconf("SC_PAGE_SIZE"),
             "read_bytes": read_bytes,
             "write_bytes": write_bytes,
@@ -267,18 +336,78 @@ def read_process(pid: int) -> dict[str, int | str] | None:
         return None
 
 
+def bounded_numeric_pids(names: Iterable[str]) -> list[int]:
+    result: list[int] = []
+    for name in names:
+        if not name.isdigit():
+            continue
+        if len(result) >= MAX_SCANNED_PROCESSES:
+            raise ValueError("process inventory exceeds its scan bound")
+        result.append(int(name))
+    return result
+
+
 def snapshot(excluded: set[int]) -> dict[int, dict[str, int | str]]:
     result: dict[int, dict[str, int | str]] = {}
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
-        pid = int(entry.name)
+    pids = bounded_numeric_pids(entry.name for entry in Path("/proc").iterdir())
+    for pid in pids:
         if pid in excluded:
             continue
         process = read_process(pid)
-        if process is not None:
-            result[pid] = process
+        if process is None:
+            raise ValueError("process inventory changed during a bounded snapshot")
+        result[pid] = process
     return result
+
+
+def interval_churn(
+    before: dict[int, dict[str, int | str]],
+    after: dict[int, dict[str, int | str]],
+) -> dict[str, int | bool]:
+    before_identities = {(pid, int(row["starttime_ticks"])) for pid, row in before.items()}
+    after_identities = {(pid, int(row["starttime_ticks"])) for pid, row in after.items()}
+    reused = sum(
+        1
+        for pid in set(before) & set(after)
+        if before[pid]["starttime_ticks"] != after[pid]["starttime_ticks"]
+    )
+    return {
+        "stable_identity_required": True,
+        "started_processes": len(after_identities - before_identities),
+        "exited_processes": len(before_identities - after_identities),
+        "pid_reuses": reused,
+    }
+
+
+def bounded_active_inventory(
+    active: list[dict[str, int | float | str]],
+    cpu_threshold: float,
+    io_threshold: int,
+) -> tuple[list[dict[str, int | float | str]], list[dict[str, int | float | str]]]:
+    sort_key = lambda row: (
+        max(
+            float(row["cpu_percent_of_one_logical_cpu"]) / cpu_threshold,
+            int(row["read_bytes_per_sec"]) / io_threshold,
+            int(row["write_bytes_per_sec"]) / io_threshold,
+        ),
+        int(row["pid"]),
+    )
+    interferers = [
+        row
+        for row in active
+        if float(row["cpu_percent_of_one_logical_cpu"]) >= cpu_threshold
+        or int(row["read_bytes_per_sec"]) >= io_threshold
+        or int(row["write_bytes_per_sec"]) >= io_threshold
+    ]
+    interferers.sort(key=sort_key, reverse=True)
+    if len(interferers) > MAX_REPORTED_PROCESSES:
+        raise ValueError("interfering process inventory exceeds its report bound")
+    interferer_pids = {int(row["pid"]) for row in interferers}
+    remaining = [row for row in active if int(row["pid"]) not in interferer_pids]
+    remaining.sort(key=sort_key, reverse=True)
+    displayed = [*interferers, *remaining[: MAX_REPORTED_PROCESSES - len(interferers)]]
+    displayed.sort(key=sort_key, reverse=True)
+    return displayed, interferers
 
 
 def load_average() -> list[float]:
@@ -355,12 +484,13 @@ def main() -> int:
     time.sleep(args.interval_ms / 1000.0)
     elapsed = max(time.monotonic() - started, 0.001)
     after = snapshot(excluded)
+    process_interval = interval_churn(before, after)
     ticks_per_second = os.sysconf("SC_CLK_TCK")
 
     active = []
     for pid, current in after.items():
         prior = before.get(pid)
-        if prior is None:
+        if prior is None or prior["starttime_ticks"] != current["starttime_ticks"]:
             continue
         cpu_ticks = max(0, int(current["cpu_ticks"]) - int(prior["cpu_ticks"]))
         cpu_percent = cpu_ticks / ticks_per_second / elapsed * 100.0
@@ -379,21 +509,9 @@ def main() -> int:
             }
         )
 
-    active.sort(
-        key=lambda row: (
-            float(row["cpu_percent_of_one_logical_cpu"]),
-            int(row["read_bytes_per_sec"]) + int(row["write_bytes_per_sec"]),
-        ),
-        reverse=True,
+    active, interferers = bounded_active_inventory(
+        active, args.cpu_percent, args.io_bytes_per_sec
     )
-    active = active[:MAX_REPORTED_PROCESSES]
-    interferers = [
-        row
-        for row in active
-        if float(row["cpu_percent_of_one_logical_cpu"]) >= args.cpu_percent
-        or int(row["read_bytes_per_sec"]) >= args.io_bytes_per_sec
-        or int(row["write_bytes_per_sec"]) >= args.io_bytes_per_sec
-    ]
     hardware = {
         "cpu_model": first_prefixed_line(Path("/proc/cpuinfo"), "model name"),
         "system_product": bounded_text(Path("/sys/class/dmi/id/product_name")),
@@ -414,7 +532,11 @@ def main() -> int:
             current_hardware_identity=hardware,
             current_logical_cpus=logical_cpus,
         )
-    valid = not interferers and (whole_cell is None or whole_cell["valid"])
+    interval_stable = all(
+        process_interval[key] == 0
+        for key in ("started_processes", "exited_processes", "pid_reuses")
+    )
+    valid = not interferers and interval_stable and (whole_cell is None or whole_cell["valid"])
     report = {
         "schema": SCHEMA,
         "valid": valid,
@@ -437,9 +559,11 @@ def main() -> int:
         "active_processes": active,
         "interfering_processes": interferers,
         "inventory_bounds": {
+            "maximum_scanned_processes": MAX_SCANNED_PROCESSES,
             "maximum_reported_processes": MAX_REPORTED_PROCESSES,
             "process_arguments_included": False,
         },
+        "process_interval": process_interval,
     }
     print(json.dumps(report, sort_keys=True))
     return 0 if valid else 3

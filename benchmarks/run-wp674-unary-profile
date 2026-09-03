@@ -4,6 +4,7 @@
 set -euo pipefail
 export LC_ALL=C
 export TZ=UTC
+export PYTHONDONTWRITEBYTECODE=1
 
 usage() {
     printf '%s\n' \
@@ -31,9 +32,91 @@ done
 
 [[ "$profile" == workstation || "$profile" == n1 || "$profile" == e2 ]] || usage
 [[ -n "$output_dir" ]] || usage
+output_requested="$output_dir"
+if [[ -n "${RIFFDB_APP_BASELINE_POSTGRES_URL:-}" ]]; then
+    printf 'WP-674 requires the harness-owned local PostgreSQL 18 instance; ambient PostgreSQL URL is forbidden\n' >&2
+    exit 2
+fi
+unset RIFFDB_APP_BASELINE_POSTGRES_URL
+if ! output_lexical="$(realpath -ms -- "$output_dir")"; then
+    printf 'WP-674 output directory could not be normalized\n' >&2
+    exit 2
+fi
+if [[ -L "$output_lexical" ]]; then
+    printf 'WP-674 output directory must not be a symbolic link\n' >&2
+    exit 2
+fi
 
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
+
+safe_path_components() {
+    python3 - "$1" "$2" <<'PY'
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path.cwd() / "scripts"))
+from bounded_evidence_io import reject_symlink_components
+reject_symlink_components(Path(sys.argv[1]), allow_missing_leaf=sys.argv[2] == "missing")
+PY
+}
+bounded_jq() {
+    local mode="$1" report="$2" filter="$3" scenario="${4:-}"
+    python3 - "$mode" "$report" "$filter" "$scenario" <<'PY'
+from pathlib import Path
+import subprocess
+import sys
+sys.path.insert(0, str(Path.cwd() / "scripts"))
+from bounded_evidence_io import bounded_read
+mode, path, filter_text, scenario = sys.argv[1:]
+command = ["jq", mode]
+if scenario:
+    command.extend(["--arg", "scenario", scenario])
+command.append(filter_text)
+raise SystemExit(subprocess.run(
+    command,
+    input=bounded_read(Path(path), 32 * 1024 * 1024, "WP-674 generated report"),
+).returncode)
+PY
+}
+exclusive_evidence_copy() {
+    python3 - "$1" "$2" <<'PY'
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path.cwd() / "scripts"))
+from bounded_evidence_io import exclusive_copy
+exclusive_copy(Path(sys.argv[1]), Path(sys.argv[2]), 32 * 1024 * 1024, "WP-674 report copy")
+PY
+}
+bounded_sha256() {
+    python3 - "$1" "$2" <<'PY'
+from pathlib import Path
+import hashlib
+import sys
+sys.path.insert(0, str(Path.cwd() / "scripts"))
+from bounded_evidence_io import bounded_read
+print(hashlib.sha256(bounded_read(Path(sys.argv[1]), int(sys.argv[2]), "WP-674 identity input")).hexdigest())
+PY
+}
+append_attempt_status() {
+    python3 - "$attempt_statuses" "$1" "$2" <<'PY'
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path.cwd() / "scripts"))
+from bounded_evidence_io import bounded_append
+bounded_append(
+    Path(sys.argv[1]),
+    f"{sys.argv[2]}\t{sys.argv[3]}\n".encode(),
+    1024,
+    "WP-674 attempt ledger",
+)
+PY
+}
+if ! safe_path_components "$output_requested" missing; then
+    printf 'WP-674 output path contains a linked or invalid component\n' >&2
+    exit 2
+fi
+safe_path_components Cargo.lock present
+safe_path_components benchmarks/run-app-baseline present
 
 # Receipt mode executes each scenario in a fresh run, and every run requires a
 # clean source tree. Refuse a stale nested lock before the first measurement:
@@ -48,6 +131,31 @@ if ! git diff --quiet --ignore-submodules -- || \
     printf 'WP-674 profile banking requires an exact clean source tree\n' >&2
     exit 2
 fi
+
+if [[ -n "${RIFFDB_APP_BASELINE_RIFFDBD_BIN:-}" && -x "$RIFFDB_APP_BASELINE_RIFFDBD_BIN" ]]; then
+    riffdbd_bin="$RIFFDB_APP_BASELINE_RIFFDBD_BIN"
+else
+    cargo +1.97.0 build --locked --release -p riffdb-server --bin riffdbd
+    riffdbd_bin="$(cargo +1.97.0 metadata --locked --format-version 1 \
+        | jq -r .target_directory)/release/riffdbd"
+fi
+if [[ -n "${RIFFDB_APP_BASELINE_RUNNER_BIN:-}" && -x "$RIFFDB_APP_BASELINE_RUNNER_BIN" ]]; then
+    app_baseline_runner="$RIFFDB_APP_BASELINE_RUNNER_BIN"
+else
+    cargo +1.97.0 build --locked --release \
+        --manifest-path examples/app-baseline/Cargo.toml -p riffdb-app-baseline
+    app_baseline_runner="$(cargo +1.97.0 metadata --locked \
+        --manifest-path examples/app-baseline/Cargo.toml --format-version 1 \
+        | jq -r .target_directory)/release/riffdb-app-baseline"
+fi
+[[ -x "$riffdbd_bin" && -x "$app_baseline_runner" ]] || {
+    printf 'WP-674 campaign binaries are absent after the exact build\n' >&2
+    exit 2
+}
+safe_path_components "$riffdbd_bin" present
+safe_path_components "$app_baseline_runner" present
+export RIFFDB_APP_BASELINE_RIFFDBD_BIN="$riffdbd_bin"
+export RIFFDB_APP_BASELINE_RUNNER_BIN="$app_baseline_runner"
 
 # The output directory cannot live inside the repository. Every measured run
 # re-checks the clean tree, and creating an untracked directory here makes the
@@ -75,13 +183,36 @@ case "$profile" in
     e2) hardware_class=gcp_e2_persistent_disk ;;
 esac
 
-mkdir -p "$output_dir"
-output_dir="$(cd "$output_dir" && pwd)"
+mkdir -p "$candidate"
+output_dir="$candidate"
+if [[ ! -d "$output_dir" || -L "$output_dir" ]]; then
+    printf 'WP-674 output custody is not an owned directory\n' >&2
+    exit 2
+fi
+if ! output_inventory="$(find "$output_dir" -mindepth 1 -print -quit)"; then
+    printf 'WP-674 %s: output directory inventory failed\n' "$profile" >&2
+    exit 2
+fi
+if [[ -n "$output_inventory" ]]; then
+    printf 'WP-674 %s: output directory must be empty for one exact-artifact run\n' \
+        "$profile" >&2
+    exit 2
+fi
 attempts_dir="$output_dir/attempts"
-mkdir -p "$attempts_dir"
+mkdir "$attempts_dir"
 attempt_statuses="$attempts_dir/status.tsv"
-: >"$attempt_statuses"
+python3 - "$attempt_statuses" <<'PY'
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path.cwd() / "scripts"))
+from bounded_evidence_io import exclusive_empty
+exclusive_empty(Path(sys.argv[1]), "WP-674 attempt ledger")
+PY
 task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
+if ! safe_path_components "$task_tmp_root" missing; then
+    printf 'WP-674 temporary root contains a linked or invalid component\n' >&2
+    exit 2
+fi
 mkdir -p "$task_tmp_root"
 export TMPDIR="$task_tmp_root"
 
@@ -102,28 +233,96 @@ scenarios=(
     open_ticket_with_labels
 )
 
+campaign_identity="$attempts_dir/campaign-identity.json"
+source_revision="$(git rev-parse --verify HEAD)"
+cargo_lock_sha256="$(bounded_sha256 Cargo.lock $((2 * 1024 * 1024)))"
+harness_sha256="$(bounded_sha256 benchmarks/run-app-baseline $((1024 * 1024)))"
+runner_sha256="$(bounded_sha256 "$app_baseline_runner" $((256 * 1024 * 1024)))"
+riffdbd_sha256="$(bounded_sha256 "$riffdbd_bin" $((256 * 1024 * 1024)))"
+python3 - "$campaign_identity" "$profile" "$source_revision" \
+    "$cargo_lock_sha256" "$harness_sha256" "$runner_sha256" \
+    "$riffdbd_sha256" <<'PY'
+import copy
+import json
+from pathlib import Path
+import sys
+
+path, profile, revision, cargo_lock, harness, runner, riffdbd = sys.argv[1:]
+sys.path.insert(0, str(Path.cwd() / "scripts"))
+from wp674_host_policy import CAMPAIGN_METHOD, CAMPAIGN_SCHEMA
+
+identity = {
+    "schema": CAMPAIGN_SCHEMA,
+    "profile": profile,
+    "source_revision": revision,
+    "cargo_lock_sha256": cargo_lock,
+    "harness_sha256": harness,
+    "runner_sha256": runner,
+    "riffdbd_sha256": riffdbd,
+    "method": copy.deepcopy(CAMPAIGN_METHOD),
+}
+from bounded_evidence_io import exclusive_write
+exclusive_write(
+    Path(path),
+    (json.dumps(identity, indent=2) + "\n").encode(),
+    16 * 1024,
+    "WP-674 campaign identity",
+)
+PY
+
+campaign_identity_is_exact() {
+    git diff --quiet --ignore-submodules -- \
+        && git diff --cached --quiet --ignore-submodules -- \
+        && [[ -z "$(git ls-files --others --exclude-standard)" ]] \
+        && python3 - "$campaign_identity" "$profile" \
+            "$(git rev-parse --verify HEAD)" \
+            "$(bounded_sha256 Cargo.lock $((2 * 1024 * 1024)))" \
+            "$(bounded_sha256 benchmarks/run-app-baseline $((1024 * 1024)))" \
+            "$(bounded_sha256 "$app_baseline_runner" $((256 * 1024 * 1024)))" \
+            "$(bounded_sha256 "$riffdbd_bin" $((256 * 1024 * 1024)))" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path, profile, revision, cargo_lock, harness, runner, riffdbd = sys.argv[1:]
+sys.path.insert(0, str(Path.cwd() / "scripts"))
+from bounded_evidence_io import bounded_read
+from wp674_host_policy import validate_campaign_identity_value
+
+actual = json.loads(bounded_read(Path(path), 16 * 1024, "WP-674 campaign identity").decode())
+validate_campaign_identity_value(actual, profile, {
+    "source_revision": revision,
+    "cargo_lock_sha256": cargo_lock,
+    "harness_sha256": harness,
+    "runner_sha256": runner,
+    "riffdbd_sha256": riffdbd,
+})
+PY
+}
+
+require_campaign_identity() {
+    if ! campaign_identity_is_exact; then
+        printf 'WP-674 %s: campaign source/artifact/method identity drifted\n' \
+            "$profile" >&2
+        return 1
+    fi
+}
+
 host_invalid_attempt() {
-    local report="$1"
-    [[ -f "$report" ]] && jq -e '
-      (
-        .schema == "riffdb.app-baseline/v1"
-        and (
-          .host_validity.preflight.valid == false
-          or .host_validity.postflight.valid == false
-        )
-      )
-      or (
-        .schema == "riffdb.app-baseline-non-evidentiary/v1"
-        and .status == "non_evidentiary"
-        and .reason.code == "host_interference"
-        and .evidence_eligibility.host_idle == false
-      )
-    ' "$report" >/dev/null 2>&1
+    local report="$1" comparator="$2" scenario="${3:-}"
+    local command=(
+        ./scripts/check-wp674-unary-baseline
+        --validate-host-invalid-receipt "$report"
+        --profile "$profile"
+        --comparator "$comparator"
+    )
+    [[ -z "$scenario" ]] || command+=(--scenario "$scenario")
+    "${command[@]}" >/dev/null 2>&1
 }
 
 safe_app_attempt_shape_is_exact() {
     local report="$1" scenario="$2"
-    jq -e --arg scenario "$scenario" '
+    bounded_jq -e "$report" '
       .schema == "riffdb.app-baseline/v1"
       and .evidence_eligibility.host_idle == true
       and .host_validity.preflight.schema == "riffdb.app-baseline-host-validity/v2"
@@ -139,7 +338,7 @@ safe_app_attempt_shape_is_exact() {
       and .unary_qualification.same_scenario_warmups_after_restart == 20
       and .unary_qualification.measured_operations_per_generation == 1000
       and (.comparisons.unary_rep_summaries[$scenario] != null)
-    ' "$report" >/dev/null
+    ' "$scenario" >/dev/null
 }
 
 # ADR-0171: the central-three spread rule binds the gated backend. RiffDB's
@@ -154,7 +353,7 @@ safe_app_attempt_shape_is_exact() {
 # so a missing or malformed PostgreSQL summary still fails.
 safe_app_attempt_spread_is_valid() {
     local report="$1" scenario="$2"
-    jq -e --arg scenario "$scenario" '
+    bounded_jq -e "$report" '
       def five_positive_generations:
         (.values | sort) as $values |
         .reps == 5
@@ -168,7 +367,7 @@ safe_app_attempt_spread_is_valid() {
         | all(five_positive_generations))
       and ([$summary.riffdb.p50_ns, $summary.riffdb.p95_ns]
         | all(central_three_stable))
-    ' "$report" >/dev/null
+    ' "$scenario" >/dev/null
 }
 
 # Names the comparator statistics whose spread exceeded the bound, so the
@@ -176,7 +375,7 @@ safe_app_attempt_spread_is_valid() {
 # attempt. Prints nothing when the comparator was stable.
 safe_app_comparator_disclosure() {
     local report="$1" scenario="$2"
-    jq -r --arg scenario "$scenario" '
+    bounded_jq -r "$report" '
       .comparisons.unary_rep_summaries[$scenario] as $summary |
       [$summary.postgres | to_entries[]
         | select(.key == "p50_ns" or .key == "p95_ns")
@@ -184,12 +383,12 @@ safe_app_comparator_disclosure() {
         | select(($values[3] / $values[1]) > 1.20)
         | {statistic: .key, central_three_spread: ($values[3] / $values[1])}
       ] | if length == 0 then empty else tojson end
-    ' "$report"
+    ' "$scenario"
 }
 
 minimal_attempt_shape_is_exact() {
     local report="$1"
-    jq -e '
+    bounded_jq -e "$report" '
       .schema == "riffdb.app-baseline/v1"
       and .evidence_eligibility.host_idle == true
       and .host_validity.preflight.schema == "riffdb.app-baseline-host-validity/v2"
@@ -202,13 +401,13 @@ minimal_attempt_shape_is_exact() {
       and .qualification_candidate.schema == "riffdb.app-baseline-qualified-candidate/v1"
       and .reps == 5
       and ((.comparisons.unary_rep_summaries | length) == 14)
-    ' "$report" >/dev/null
+    ' >/dev/null
 }
 
 # ADR-0171, as above: RiffDB's spread gates, the comparator's is disclosed.
 minimal_attempt_spread_is_valid() {
     local report="$1"
-    jq -e '
+    bounded_jq -e "$report" '
       def five_positive_generations:
         (.values | sort) as $values |
         .reps == 5
@@ -221,17 +420,19 @@ minimal_attempt_spread_is_valid() {
         .postgres.p50_ns, .postgres.p95_ns] | all(five_positive_generations))
       and ([.comparisons.unary_rep_summaries[] |
         .riffdb.p50_ns, .riffdb.p95_ns] | all(central_three_stable))
-    ' "$report" >/dev/null
+    ' >/dev/null
 }
 
 run_host_attempt() {
     local attempt="$1" attempt_root="$attempts_dir/host-attempt-$1"
     local scenario attempt_report attempt_status comparator_disclosure
+    require_campaign_identity
     mkdir -p "$attempt_root"
     for scenario in "${scenarios[@]}"; do
         attempt_report="$attempt_root/safe-app-$scenario.json"
         printf 'WP-674 %s: host attempt %s/2, safe-app %s\n' \
             "$profile" "$attempt" "$scenario"
+        require_campaign_identity
         set +e
         RIFFDB_APP_BASELINE_UNARY_QUALIFICATION_SCENARIO="$scenario" \
         RIFFDB_APP_BASELINE_DEFER_UNARY_STABILITY=1 \
@@ -241,8 +442,9 @@ run_host_attempt() {
                 --postgres-comparator safe-app --output "$attempt_report"
         attempt_status=$?
         set -e
+        require_campaign_identity
         if ((attempt_status != 0)); then
-            if host_invalid_attempt "$attempt_report"; then
+            if host_invalid_attempt "$attempt_report" safe-app "$scenario"; then
                 return 10
             fi
             printf 'WP-674 %s: non-retryable failure for %s in host attempt %s\n' \
@@ -267,8 +469,8 @@ run_host_attempt() {
             printf 'WP-674 %s: comparator spread disclosed for %s: %s\n' \
                 "$profile" "$scenario" "$comparator_disclosure"
         fi
-        if ! jq -e '.evidence_eligibility.eligible == true' \
-            "$attempt_report" >/dev/null; then
+        if ! bounded_jq -e "$attempt_report" \
+            '.evidence_eligibility.eligible == true' >/dev/null; then
             printf 'WP-674 %s: non-retryable eligibility drift for %s\n' \
                 "$profile" "$scenario" >&2
             return 1
@@ -278,6 +480,7 @@ run_host_attempt() {
     attempt_report="$attempt_root/minimal.json"
     printf 'WP-674 %s: host attempt %s/2, complete minimal disclosure\n' \
         "$profile" "$attempt"
+    require_campaign_identity
     set +e
     RIFFDB_APP_BASELINE_DEFER_UNARY_STABILITY=1 \
     RIFFDB_APP_BASELINE_WP674_RECEIPT=1 \
@@ -286,8 +489,9 @@ run_host_attempt() {
             --postgres-comparator minimal --output "$attempt_report"
     attempt_status=$?
     set -e
+    require_campaign_identity
     if ((attempt_status != 0)); then
-        if host_invalid_attempt "$attempt_report"; then
+        if host_invalid_attempt "$attempt_report" minimal; then
             return 10
         fi
         printf 'WP-674 %s: non-retryable minimal failure at attempt %s\n' \
@@ -304,7 +508,8 @@ run_host_attempt() {
             "$profile" >&2
         return 1
     fi
-    if ! jq -e '.evidence_eligibility.eligible == true' "$attempt_report" >/dev/null; then
+    if ! bounded_jq -e "$attempt_report" \
+        '.evidence_eligibility.eligible == true' >/dev/null; then
         printf 'WP-674 %s: non-retryable minimal eligibility drift\n' "$profile" >&2
         return 1
     fi
@@ -313,17 +518,24 @@ run_host_attempt() {
 
 accepted_attempt=0
 for attempt in 1 2; do
+    # The parent must capture the typed attempt status without disabling
+    # errexit inside the attempt. A function invoked as an `if` condition runs
+    # with Bash's errexit semantics suppressed throughout its body, which can
+    # turn an unexpected evidence-custody failure into continued measurement.
     set +e
-    run_host_attempt "$attempt"
+    (
+        set -e
+        run_host_attempt "$attempt"
+    )
     status=$?
     set -e
     if ((status == 0)); then
-        printf '%s\taccepted\n' "$attempt" >>"$attempt_statuses"
+        append_attempt_status "$attempt" accepted
         accepted_attempt="$attempt"
         break
     fi
     if ((status == 10)); then
-        printf '%s\thost_invalid\n' "$attempt" >>"$attempt_statuses"
+        append_attempt_status "$attempt" host_invalid
         printf 'WP-674 %s: retaining host-invalid attempt %s\n' \
             "$profile" "$attempt" >&2
         if ((attempt == 1)); then
@@ -337,27 +549,33 @@ if ((accepted_attempt == 0)); then
     exit 1
 fi
 
+require_campaign_identity
+
 accepted_root="$attempts_dir/host-attempt-$accepted_attempt"
 for scenario in "${scenarios[@]}"; do
-    cp "$accepted_root/safe-app-$scenario.json" "$output_dir/safe-app-$scenario.json"
+    exclusive_evidence_copy \
+        "$accepted_root/safe-app-$scenario.json" "$output_dir/safe-app-$scenario.json"
 done
 minimal="$output_dir/minimal.json"
-cp "$accepted_root/minimal.json" "$minimal"
+exclusive_evidence_copy "$accepted_root/minimal.json" "$minimal"
 
 source_revision="$(git rev-parse --verify HEAD)"
-cargo_lock_sha256="$(sha256sum Cargo.lock | awk '{print $1}')"
-harness_sha256="$(sha256sum benchmarks/run-app-baseline | awk '{print $1}')"
-governance_predecessor_sha256="$(sha256sum \
-    release/evidence/wp-674/adr0143-failed-attempts-v1.json | awk '{print $1}')"
+cargo_lock_sha256="$(bounded_sha256 Cargo.lock $((2 * 1024 * 1024)))"
+harness_sha256="$(bounded_sha256 benchmarks/run-app-baseline $((1024 * 1024)))"
+governance_predecessor_sha256="$(bounded_sha256 \
+    release/evidence/wp-674/adr0143-failed-attempts-v1.json $((64 * 1024)))"
 fragment="$output_dir/profile-fragment.json"
 python3 - "$fragment" "$profile" "$hardware_class" "$source_revision" \
     "$cargo_lock_sha256" "$harness_sha256" "$governance_predecessor_sha256" \
-    "$minimal" "$attempt_statuses" \
+    "$minimal" "$attempt_statuses" "$campaign_identity" \
     "${scenarios[@]}" <<'PY'
 import hashlib
 import json
 from pathlib import Path
 import sys
+
+sys.path.insert(0, str(Path.cwd() / "scripts"))
+from bounded_evidence_io import bounded_read, exclusive_write
 
 (
     fragment_path,
@@ -369,12 +587,13 @@ import sys
     governance_predecessor_sha256,
     minimal_path,
     attempt_statuses_path,
+    campaign_identity_path,
     *scenarios,
 ) = sys.argv[1:]
 root = Path(fragment_path).parent
 
-def reference(path: Path) -> dict[str, str]:
-    encoded = path.read_bytes()
+def reference(path: Path, maximum: int = 32 * 1024 * 1024) -> dict[str, str]:
+    encoded = bounded_read(path, maximum, "WP-674 fragment reference")
     return {
         "path": path.relative_to(root).as_posix(),
         "sha256": hashlib.sha256(encoded).hexdigest(),
@@ -385,7 +604,9 @@ for scenario in scenarios:
     path = root / f"safe-app-{scenario}.json"
     reports.append({"scenario": scenario, **reference(path)})
 host_attempts = []
-for line in Path(attempt_statuses_path).read_text(encoding="utf-8").splitlines():
+for line in bounded_read(
+    Path(attempt_statuses_path), 1024, "WP-674 attempt ledger"
+).decode().splitlines():
     attempt_text, status = line.split("\t")
     attempt = int(attempt_text)
     attempt_root = root / "attempts" / f"host-attempt-{attempt}"
@@ -413,9 +634,15 @@ fragment = {
         "reports": reports,
         "minimal_report": reference(Path(minimal_path)),
         "host_attempts": host_attempts,
+        "campaign_identity": reference(Path(campaign_identity_path), 16 * 1024),
     },
 }
-Path(fragment_path).write_text(json.dumps(fragment, indent=2) + "\n", encoding="utf-8")
+exclusive_write(
+    Path(fragment_path),
+    (json.dumps(fragment, indent=2) + "\n").encode(),
+    128 * 1024,
+    "WP-674 profile fragment",
+)
 PY
 
 printf 'WP-674 profile fragment: %s\n' "$fragment"

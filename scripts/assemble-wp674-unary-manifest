@@ -11,6 +11,9 @@ import re
 import sys
 from typing import Any
 
+from bounded_evidence_io import bounded_read, exclusive_write
+from wp674_host_policy import validate_campaign_identity_value
+
 
 SCHEMA = "riffdb.wp-674-unary-profile/v2"
 MANIFEST_SCHEMA = "riffdb.wp-674-unary-manifest/v2"
@@ -23,6 +26,9 @@ REQUIREMENTS = ["END-007", "END-008", "PERF-005", "PERF-008", "PERF-018"]
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 MAX_FRAGMENT_BYTES = 128 * 1024
+MAX_CAMPAIGN_BYTES = 16 * 1024
+MAX_REPORT_BYTES = 32 * 1024 * 1024
+MAX_MANIFEST_BYTES = 256 * 1024
 
 
 def fail(message: str) -> "None":
@@ -30,11 +36,7 @@ def fail(message: str) -> "None":
 
 
 def read_fragment(path: Path) -> dict[str, Any]:
-    if not path.is_file() or path.is_symlink():
-        fail(f"profile fragment is absent or linked: {path}")
-    encoded = path.read_bytes()
-    if not 0 < len(encoded) <= MAX_FRAGMENT_BYTES:
-        fail(f"profile fragment exceeds its byte bound: {path}")
+    encoded = bounded_read(path, MAX_FRAGMENT_BYTES, "profile fragment")
     value = json.loads(encoded.decode("utf-8"))
     if not isinstance(value, dict) or value.get("schema") != SCHEMA:
         fail(f"profile fragment schema is invalid: {path}")
@@ -48,14 +50,14 @@ def main() -> int:
     parser.add_argument("--e2", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    output = args.output.resolve()
-    output.parent.mkdir(parents=True, exist_ok=True)
+    output = args.output.absolute()
     common: tuple[str, str, str, str] | None = None
+    common_binaries: tuple[str, str] | None = None
     profiles = []
     for expected, path in (
-        ("workstation", args.workstation.resolve()),
-        ("n1", args.n1.resolve()),
-        ("e2", args.e2.resolve()),
+        ("workstation", args.workstation.absolute()),
+        ("n1", args.n1.absolute()),
+        ("e2", args.e2.absolute()),
     ):
         fragment = read_fragment(path)
         identity = (
@@ -78,23 +80,50 @@ def main() -> int:
         if profile.get("hardware_class") != PROFILE_CLASSES[expected]:
             fail(f"{expected}: hardware class differs")
 
-        def remap(reference: Any) -> dict[str, str]:
+        def remap(reference: Any, maximum: int = MAX_REPORT_BYTES) -> dict[str, str]:
             if not isinstance(reference, dict) or set(reference) != {"path", "sha256"}:
                 fail(f"{expected}: evidence reference is invalid")
             relative = reference.get("path")
             digest = reference.get("sha256")
             if not isinstance(relative, str) or SHA256.fullmatch(str(digest)) is None:
                 fail(f"{expected}: evidence path or digest is invalid")
-            source = (path.parent / relative).resolve()
-            if not source.is_file() or source.is_symlink():
-                fail(f"{expected}: evidence file is absent or linked: {source}")
-            actual = hashlib.sha256(source.read_bytes()).hexdigest()
+            source = path.parent / relative
+            encoded = bounded_read(source, maximum, f"{expected} evidence file")
+            actual = hashlib.sha256(encoded).hexdigest()
             if actual != digest:
                 fail(f"{expected}: evidence digest differs: {source}")
             return {
                 "path": str(source.relative_to(output.parent)),
                 "sha256": digest,
             }
+
+        campaign_reference = profile.get("campaign_identity")
+        campaign_remapped = remap(campaign_reference, MAX_CAMPAIGN_BYTES)
+        campaign_path = path.parent / campaign_reference["path"]
+        campaign = json.loads(
+            bounded_read(campaign_path, MAX_CAMPAIGN_BYTES, "campaign identity").decode()
+        )
+        validate_campaign_identity_value(
+            campaign,
+            expected,
+            {
+                "source_revision": identity[0],
+                "cargo_lock_sha256": identity[1],
+                "harness_sha256": identity[2],
+                "runner_sha256": campaign.get("runner_sha256"),
+                "riffdbd_sha256": campaign.get("riffdbd_sha256"),
+            },
+        )
+        binaries = (
+            campaign.get("runner_sha256"),
+            campaign.get("riffdbd_sha256"),
+        )
+        if any(SHA256.fullmatch(str(value)) is None for value in binaries):
+            fail(f"{expected}: campaign binary identity is invalid")
+        if common_binaries is None:
+            common_binaries = binaries  # type: ignore[assignment]
+        elif binaries != common_binaries:
+            fail(f"{expected}: campaign binaries differ")
 
         reports = profile.get("reports")
         if not isinstance(reports, list):
@@ -139,19 +168,28 @@ def main() -> int:
                 ],
                 "minimal_report": remap(profile.get("minimal_report")),
                 "host_attempts": [remap_host_attempt(attempt) for attempt in host_attempts],
+                "campaign_identity": campaign_remapped,
             }
         )
     assert common is not None
+    assert common_binaries is not None
     manifest = {
         "schema": MANIFEST_SCHEMA,
         "source_revision": common[0],
         "cargo_lock_sha256": common[1],
         "harness_sha256": common[2],
+        "runner_sha256": common_binaries[0],
+        "riffdbd_sha256": common_binaries[1],
         "governance_predecessor_sha256": common[3],
         "requirements": REQUIREMENTS,
         "profiles": profiles,
     }
-    output.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    exclusive_write(
+        output,
+        (json.dumps(manifest, indent=2) + "\n").encode(),
+        MAX_MANIFEST_BYTES,
+        "WP-674 manifest output",
+    )
     print(output)
     return 0
 

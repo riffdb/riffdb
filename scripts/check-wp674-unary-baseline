@@ -11,7 +11,19 @@ import math
 from pathlib import Path
 import re
 import sys
+import tempfile
 from typing import Any
+
+from bounded_evidence_io import bounded_read, exclusive_write, run_self_test as bounded_io_self_test
+from wp674_host_policy import (
+    CAMPAIGN_SCHEMA,
+    PROFILE_HARDWARE_RULES,
+    SCENARIO_ORDER,
+    strict_equal,
+    validate_host_invalid_receipt,
+    validate_campaign_identity_value,
+    validate_valid_host_pair,
+)
 
 
 MANIFEST_SCHEMA = "riffdb.wp-674-unary-manifest/v2"
@@ -29,6 +41,8 @@ MEASUREMENTS = 1_000
 MAX_SPREAD = 1.20
 MAX_REGRESSION = 1.10
 MAX_HOST_ATTEMPTS = 2
+MAX_CAMPAIGN_BYTES = 16 * 1024
+MAX_GOVERNANCE_BYTES = 64 * 1024
 GOVERNANCE_PREDECESSOR = (
     Path(__file__).resolve().parent.parent
     / "release/evidence/wp-674/adr0143-failed-attempts-v1.json"
@@ -39,11 +53,6 @@ PROFILE_CLASSES = {
     "workstation": "workstation_nvme",
     "n1": "gcp_n1_persistent_disk",
     "e2": "gcp_e2_persistent_disk",
-}
-PROFILE_HARDWARE_RULES = {
-    "workstation": {"logical_cpus": 32, "cpu_contains": "AMD Ryzen 9 7950X"},
-    "n1": {"logical_cpus": 8, "cpu_contains": "Intel"},
-    "e2": {"logical_cpus": 8, "cpu_contains": "AMD EPYC 7B12"},
 }
 SCENARIO_CLASSES = {
     "ordinary_named_read": {
@@ -72,8 +81,77 @@ ABSOLUTE_CEILINGS_NS = {
     "wide_bounded_named_read": {"p50_ns": 6_000_000.0, "p95_ns": 12_000_000.0},
     "compiled_command": {"p50_ns": 10_000_000.0, "p95_ns": 15_000_000.0},
 }
-SCENARIOS = set().union(*SCENARIO_CLASSES.values())
+SCENARIOS = set(SCENARIO_ORDER)
+if SCENARIOS != set().union(*SCENARIO_CLASSES.values()):
+    raise RuntimeError("WP-674 ordered scenarios and class registry differ")
+RIFFDB_ADDITIVE_SCENARIOS = (
+    "board_page_projected_50",
+    "board_page_projected_200",
+    "board_page_projected_450",
+    "board_page_packed_50",
+    "board_page_packed_200",
+    "board_page_packed_450",
+)
+RIFFDB_MINIMAL_SCENARIO_ORDER = (
+    *SCENARIO_ORDER[:10],
+    *RIFFDB_ADDITIVE_SCENARIOS,
+    *SCENARIO_ORDER[10:],
+)
 REQUIREMENTS = {"PERF-005", "PERF-008", "PERF-018", "END-007", "END-008"}
+FROZEN_TABLES = [
+    "organization",
+    "app_user",
+    "project",
+    "project_member",
+    "ticket",
+    "comment",
+    "label",
+    "ticket_label",
+]
+FROZEN_FULL_SCALE = {
+    "profile": "full",
+    "organizations": 10,
+    "users_per_org": 50,
+    "projects_per_org": 10,
+    "members_per_project": 5,
+    "tickets_per_project": 20,
+    "comments_per_ticket": 4,
+    "labels_per_org": 5,
+    "labels_per_ticket": 2,
+    "board_dense_open": 600,
+    "approximate_row_count": 19_220,
+}
+FROZEN_FULL_SCALE_SHAPE = {
+    "organizations": 10,
+    "projects_per_org": 10,
+    "tickets_per_project": 20,
+    "comments_per_ticket": 4,
+    "labels_per_ticket": 2,
+    "board_dense_open": 600,
+    "payload_bytes": 0,
+    "comment_payload_bytes": 0,
+    "ticket_title_payload_bytes": 0,
+}
+FROZEN_CONFIGURATION_PINS = {
+    "timing_source": "std::time::Instant",
+    "distribution_method": "nearest-rank p50/p95/p99",
+    "list_limit": 50,
+    "board_page_sizes": [50, 200, 450],
+    "seed_generation": 2,
+    "board_limit_mode": "static_compiled",
+}
+READ_PIPELINE_STAGES = (
+    "transport_adapt", "authn", "admission_context", "spawn_dispatch",
+    "plan_lookup", "param_materialize", "authorize_begin", "authorize_pre",
+    "execute", "authorize_post", "response_build", "encode_convert",
+    "audit_finish", "service_await", "server_handler",
+)
+WRITE_SERVICE_STAGES = (
+    "transport_adapt", "service_prepare", "coordinator_await", "service_finish", "encode_convert"
+)
+COMMAND_PIPELINE_STAGES = (
+    "admission", "compatibility", "evaluation", "validation_encoding_staging", "publication"
+)
 
 
 def fail(detail: str) -> "None":
@@ -81,11 +159,7 @@ def fail(detail: str) -> "None":
 
 
 def load_json(path: Path, maximum: int) -> tuple[dict[str, Any], str]:
-    if not path.is_file() or path.is_symlink():
-        fail(f"evidence file is absent or linked: {path}")
-    encoded = path.read_bytes()
-    if not 0 < len(encoded) <= maximum:
-        fail(f"evidence file exceeds its byte bound: {path}")
+    encoded = bounded_read(path, maximum, "evidence file")
     value = json.loads(encoded.decode("utf-8"))
     if not isinstance(value, dict):
         fail(f"evidence root must be an object: {path}")
@@ -105,6 +179,11 @@ def require_number(value: Any, label: str) -> float:
     if not math.isfinite(result) or result < 0:
         fail(f"{label} is not finite and nonnegative")
     return result
+
+
+def require_exact_integer(value: Any, expected: int, label: str) -> None:
+    if type(value) is not int or value != expected:
+        fail(f"{label} is not the exact integer {expected}")
 
 
 def exact_strings(value: Any, expected: set[str], label: str) -> None:
@@ -143,8 +222,7 @@ def summary_value(
 ) -> float:
     if not isinstance(summary, dict):
         fail(f"{label} summary is absent")
-    if summary.get("reps") != REPETITIONS:
-        fail(f"{label} does not contain exactly five generations")
+    require_exact_integer(summary.get("reps"), REPETITIONS, f"{label}.reps")
     values = summary.get("values")
     if not isinstance(values, list) or len(values) != REPETITIONS:
         fail(f"{label} does not retain all five generations")
@@ -178,10 +256,9 @@ def verify_host(report: dict[str, Any], profile_id: str, label: str) -> tuple[st
     host = report.get("host_validity")
     if not isinstance(host, dict):
         fail(f"{label}: host validity is absent")
-    inventories: list[dict[str, Any]] = []
+    inventories = list(validate_valid_host_pair(host, profile_id))
     stable_identities: list[dict[str, Any]] = []
-    for boundary in ("preflight", "postflight"):
-        observation = host.get(boundary)
+    for boundary, observation in zip(("preflight", "postflight"), inventories):
         if (
             not isinstance(observation, dict)
             or observation.get("schema") != "riffdb.app-baseline-host-validity/v2"
@@ -210,7 +287,6 @@ def verify_host(report: dict[str, Any], profile_id: str, label: str) -> tuple[st
             or steal_ticks > total_ticks
         ):
             fail(f"{label}: {boundary} CPU accounting is invalid")
-        inventories.append(observation)
         identity = observation.get("hardware_identity")
         if not isinstance(identity, dict):
             fail(f"{label}: hardware identity is absent")
@@ -289,11 +365,30 @@ def verify_candidate(
     report: dict[str, Any], manifest: dict[str, Any], label: str
 ) -> dict[str, str]:
     candidate = report.get("qualification_candidate")
-    if not isinstance(candidate, dict) or candidate.get("schema") != CANDIDATE_SCHEMA:
+    if (
+        not isinstance(candidate, dict)
+        or set(candidate)
+        != {
+            "schema",
+            "source_revision",
+            "source_tree_clean",
+            "cargo_lock_sha256",
+            "runner_sha256",
+            "riffdbd_sha256",
+            "harness_sha256",
+        }
+        or candidate.get("schema") != CANDIDATE_SCHEMA
+    ):
         fail(f"{label}: exact candidate identity is absent")
     if candidate.get("source_tree_clean") is not True:
         fail(f"{label}: source tree was not clean")
-    for key in ("source_revision", "cargo_lock_sha256", "harness_sha256"):
+    for key in (
+        "source_revision",
+        "cargo_lock_sha256",
+        "harness_sha256",
+        "runner_sha256",
+        "riffdbd_sha256",
+    ):
         if candidate.get(key) != manifest.get(key):
             fail(f"{label}: candidate {key} differs from manifest")
     return {
@@ -311,24 +406,275 @@ def verify_counterbalance(report: dict[str, Any], postgres: str, label: str) -> 
         fail(f"{label}: backend generations are not counterbalanced")
 
 
+def verify_frozen_workload(report: dict[str, Any], label: str) -> None:
+    if report.get("report_id") != "ticketdesk-app-baseline":
+        fail(f"{label}: report identity drifted")
+    if report.get("domain") != "TicketDesk":
+        fail(f"{label}: workload domain drifted")
+    strict_equal(report.get("tables"), FROZEN_TABLES, f"{label}.tables")
+    strict_equal(report.get("scale"), FROZEN_FULL_SCALE, f"{label}.scale")
+    strict_equal(
+        report.get("scale_shape"),
+        FROZEN_FULL_SCALE_SHAPE,
+        f"{label}.scale_shape",
+    )
+    configuration = report.get("configuration")
+    if not isinstance(configuration, dict):
+        fail(f"{label}: configuration is absent")
+    for key, expected in FROZEN_CONFIGURATION_PINS.items():
+        strict_equal(configuration.get(key), expected, f"{label}.configuration.{key}")
+
+
+def verify_storage_topology(report: dict[str, Any], label: str) -> None:
+    environment = report.get("environment")
+    if not isinstance(environment, dict):
+        fail(f"{label}: environment is absent")
+    environment_medium = environment.get("medium")
+    riffdb_medium = report.get("riffdb_storage_medium")
+    postgres_medium = report.get("postgres_storage_medium")
+    if not all(
+        isinstance(medium, dict)
+        for medium in (environment_medium, riffdb_medium, postgres_medium)
+    ):
+        fail(f"{label}: storage-medium evidence is absent")
+    strict_equal(riffdb_medium, environment_medium, f"{label}.riffdb_storage_medium")
+    strict_equal(postgres_medium, environment_medium, f"{label}.postgres_storage_medium")
+    if environment_medium.get("kind") != "disk" or report.get("same_device") is not True:
+        fail(f"{label}: backends are not on one persistent device")
+
+
+def verify_timing(row: dict[str, Any], label: str) -> None:
+    timing = row.get("timing")
+    expected_keys = {
+        "max_ns",
+        "mean_ns",
+        "min_ns",
+        "p50_ns",
+        "p95_ns",
+        "p99_ns",
+        "sample_count",
+        "samples_ns",
+    }
+    if not isinstance(timing, dict) or set(timing) != expected_keys:
+        fail(f"{label}: timing sample shape drifted")
+    require_exact_integer(
+        timing.get("sample_count"), MEASUREMENTS, f"{label}.sample_count"
+    )
+    samples = timing.get("samples_ns")
+    if not isinstance(samples, list) or len(samples) != MEASUREMENTS:
+        fail(f"{label}: timing samples are not exact")
+    if any(type(sample) is not int or sample <= 0 for sample in samples):
+        fail(f"{label}: timing samples are not positive integers")
+    ordered = sorted(samples)
+    expected = {
+        "min_ns": ordered[0],
+        "max_ns": ordered[-1],
+        "mean_ns": sum(ordered) // MEASUREMENTS,
+        "p50_ns": ordered[math.ceil(0.50 * MEASUREMENTS) - 1],
+        "p95_ns": ordered[math.ceil(0.95 * MEASUREMENTS) - 1],
+        "p99_ns": ordered[math.ceil(0.99 * MEASUREMENTS) - 1],
+    }
+    for key, expected_value in expected.items():
+        require_exact_integer(timing.get(key), expected_value, f"{label}.{key}")
+
+
+def verify_process_evidence(
+    report: dict[str, Any], label: str, *, scenario_class_name: str | None
+) -> None:
+    generations = report.get("riffdb_process_evidence")
+    if (
+        not isinstance(generations, list)
+        or len(generations) != REPETITIONS
+        or any(not isinstance(generation, dict) for generation in generations)
+    ):
+        fail(f"{label}: RiffDB process-generation evidence shape drifted")
+    selected_scenario = scenario_class_name is not None
+    expected_scope = (
+        "after_seed_before_measured_process_to_after_clean_shutdown_and_structural_reopen"
+        if selected_scenario
+        else "post_shutdown_structural_reopen_inventory_only"
+    )
+    for index, generation in enumerate(generations):
+        prefix = f"{label}.riffdb_process_evidence[{index}]"
+        if generation.get("labels") != "closed_fixed_cardinality":
+            fail(f"{prefix}: evidence labels drifted")
+        if generation.get("post_shutdown_structural_reopen") is not True:
+            fail(f"{prefix}: clean shutdown and structural reopen are not proven")
+        if generation.get("table_inventory_scope") != expected_scope:
+            fail(f"{prefix}: process-generation inventory scope drifted")
+        for field in ("graph_shutdown_elapsed_us", "harness_shutdown_elapsed_us"):
+            value = generation.get(field)
+            if type(value) is not int or value < 0:
+                fail(f"{prefix}.{field}: shutdown evidence is not an integer")
+        shutdown_stages = generation.get("shutdown_stages_us")
+        if (
+            not isinstance(shutdown_stages, list)
+            or len(shutdown_stages) != 8
+            or any(type(value) is not int or value < 0 for value in shutdown_stages)
+        ):
+            fail(f"{prefix}: shutdown-stage evidence is incomplete")
+        inventory = generation.get("authoritative_table_inventory")
+        if (
+            not isinstance(inventory, list)
+            or not inventory
+            or any(not isinstance(row, dict) or not row for row in inventory)
+        ):
+            fail(f"{prefix}: post-shutdown table inventory is absent")
+        stage_inventories = {
+            "read_pipeline_stages": READ_PIPELINE_STAGES,
+            "write_service_stages": WRITE_SERVICE_STAGES,
+            "command_pipeline_stages": COMMAND_PIPELINE_STAGES,
+        }
+        stage_counts: dict[str, list[int]] = {}
+        for field, expected_stages in stage_inventories.items():
+            rows = generation.get(field)
+            if (
+                not isinstance(rows, list)
+                or [row.get("stage") for row in rows if isinstance(row, dict)]
+                != list(expected_stages)
+            ):
+                fail(f"{prefix}.{field}: process-generation stages are absent")
+            if any(type(row.get("count")) is not int or row["count"] < 0 for row in rows):
+                fail(f"{prefix}.{field}: process-generation counts are invalid")
+            stage_counts[field] = [row["count"] for row in rows]
+        for field in (
+            "writer_frame_census",
+            "writer_flush_census",
+            "writer_journal_stages",
+            "writer_publication_stages",
+            "completion_lane",
+        ):
+            value = generation.get(field)
+            if not isinstance(value, dict) or not value:
+                fail(f"{prefix}.{field}: process-generation census is absent")
+        writer = generation.get("writer")
+        if not isinstance(writer, dict) or not writer:
+            fail(f"{prefix}.writer: writer evidence is absent")
+        for field in ("physical_commits", "logical_commands_committed"):
+            value = writer.get(field)
+            if type(value) is not int or value < 0:
+                fail(f"{prefix}.writer.{field}: writer work is not proven")
+        for field in ("frontier_equivalence_failures", "prepared_epoch_proof_mismatches"):
+            require_exact_integer(writer.get(field), 0, f"{prefix}.writer.{field}")
+        if scenario_class_name == "compiled_command":
+            if (
+                stage_counts["read_pipeline_stages"] != [0] * len(READ_PIPELINE_STAGES)
+                or stage_counts["write_service_stages"] != [MEASUREMENTS] * len(WRITE_SERVICE_STAGES)
+                or stage_counts["command_pipeline_stages"] != [MEASUREMENTS] * len(COMMAND_PIPELINE_STAGES)
+            ):
+                fail(f"{prefix}: compiled-command process topology or cardinality drifted")
+            require_exact_integer(writer.get("physical_commits"), MEASUREMENTS, f"{prefix}.physical_commits")
+            require_exact_integer(writer.get("logical_commands_committed"), MEASUREMENTS, f"{prefix}.logical_commands")
+        elif selected_scenario:
+            expected_reads = MEASUREMENTS + WARMUPS
+            if (
+                stage_counts["read_pipeline_stages"] != [expected_reads] * len(READ_PIPELINE_STAGES)
+                or stage_counts["write_service_stages"] != [0] * len(WRITE_SERVICE_STAGES)
+                or stage_counts["command_pipeline_stages"] != [0] * len(COMMAND_PIPELINE_STAGES)
+            ):
+                fail(f"{prefix}: named-read process topology or cardinality drifted")
+            require_exact_integer(writer.get("physical_commits"), 0, f"{prefix}.physical_commits")
+            require_exact_integer(writer.get("logical_commands_committed"), 0, f"{prefix}.logical_commands")
+        else:
+            physical_commits = writer["physical_commits"]
+            if (
+                stage_counts["read_pipeline_stages"] != [10_206] * len(READ_PIPELINE_STAGES)
+                or stage_counts["write_service_stages"]
+                != [4_000, 23_220, 23_220, 23_220, 4_000]
+                or stage_counts["command_pipeline_stages"]
+                != [physical_commits] * len(COMMAND_PIPELINE_STAGES)
+                or not 0 < physical_commits <= 23_220
+            ):
+                fail(f"{prefix}: minimal process topology or cardinality drifted")
+            require_exact_integer(writer.get("logical_commands_committed"), 23_220, f"{prefix}.logical_commands")
+
+
+def verify_postgres_durability(report: dict[str, Any], label: str) -> None:
+    expected = {
+        "data_directory": "/var/lib/postgresql/18/docker",
+        "fsync": "on",
+        "full_page_writes": "on",
+        "server_version_num": "180004",
+        "synchronous_commit": "on",
+        "wal_sync_method": "fdatasync",
+    }
+    strict_equal(report.get("postgres_durability"), expected, f"{label}.postgres_durability")
+
+
+def verify_correctness(
+    comparison: dict[str, Any],
+    backend_rows: dict[str, dict[str, Any]],
+    label: str,
+) -> None:
+    postgres = backend_rows["postgres"]
+    riffdb = backend_rows["riffdb"]
+    values = {
+        "postgres comparison": comparison.get("postgres_last_row_count"),
+        "riffdb comparison": comparison.get("riffdb_last_row_count"),
+        "postgres backend": postgres.get("last_row_count"),
+        "riffdb backend": riffdb.get("last_row_count"),
+    }
+    if any(type(value) is not int or value < 0 for value in values.values()):
+        fail(f"{label}: correctness row counts are not non-negative integers")
+    if len(set(values.values())) != 1 or comparison.get("last_row_count_equal") is not True:
+        fail(f"{label}: backend and comparison row counts differ")
+
+
+def verify_selected_p50(
+    backend_row: dict[str, Any], summary: Any, label: str
+) -> None:
+    observed = (backend_row.get("timing") or {}).get("p50_ns")
+    expected = summary_value(summary, label, require_stable=False)
+    if type(observed) is not int or not math.isclose(float(observed), expected):
+        fail(f"{label}: selected timing p50 differs from the five-generation median")
+
+
+def verify_evidence_eligibility(
+    report: dict[str, Any],
+    postgres_disclosures: list[str],
+    riffdb_stable: bool,
+    label: str,
+    *,
+    host_invalid: bool,
+) -> None:
+    expected = {
+        "eligible": not host_invalid and riffdb_stable,
+        "host_idle": not host_invalid,
+        "reason_codes": ["host_interference"] if host_invalid else [],
+        "postgres_central_three_spread_disclosed": sorted(postgres_disclosures),
+        "stable": riffdb_stable,
+        "correctness_clean": True,
+        "same_device_comparable": True,
+        "comparison_complete": True,
+        "missing_required_fields": [] if riffdb_stable else ["stability"],
+        "non_evidentiary_window": False,
+    }
+    strict_equal(report.get("evidence_eligibility"), expected, f"{label}.evidence_eligibility")
+
+
 def verify_report(
     report: dict[str, Any],
     manifest: dict[str, Any],
     profile_id: str,
     scenario: str,
     label: str,
+    *,
+    host_invalid: bool = False,
+    require_stable: bool = True,
 ) -> tuple[dict[str, Any], dict[str, str]]:
-    if report.get("schema") != REPORT_SCHEMA or report.get("reps") != REPETITIONS:
+    if report.get("schema") != REPORT_SCHEMA:
         fail(f"{label}: report schema or repetition count drifted")
-    if (report.get("scale") or {}).get("profile") != "full":
-        fail(f"{label}: full frozen dataset is absent")
+    require_exact_integer(report.get("reps"), REPETITIONS, f"{label}.reps")
+    verify_frozen_workload(report, label)
     configuration = report.get("configuration") or {}
-    if configuration.get("warmup_iterations") != WARMUPS:
-        fail(f"{label}: warmup count drifted")
-    if configuration.get("measured_samples") != MEASUREMENTS:
-        fail(f"{label}: measurement count drifted")
+    require_exact_integer(
+        configuration.get("warmup_iterations"), WARMUPS, f"{label}.warmups"
+    )
+    require_exact_integer(
+        configuration.get("measured_samples"), MEASUREMENTS, f"{label}.measurements"
+    )
     selection = report.get("unary_qualification") or {}
-    if selection != {
+    expected_selection = {
         "schema": SELECTION_SCHEMA,
         "scenario": scenario,
         "class": scenario_class(scenario),
@@ -336,31 +682,43 @@ def verify_report(
         "same_scenario_warmups_after_restart": WARMUPS,
         "measured_operations_per_generation": MEASUREMENTS,
         "process_generations": REPETITIONS,
-    }:
+    }
+    try:
+        strict_equal(selection, expected_selection, f"{label}.unary_qualification")
+    except ValueError:
         fail(f"{label}: frozen selection or class drifted")
     if report.get("same_device") is not True:
         fail(f"{label}: PostgreSQL and RiffDB are not on one device")
-    durability = report.get("postgres_durability") or {}
-    for key in ("synchronous_commit", "fsync", "full_page_writes"):
-        if durability.get(key) != "on":
-            fail(f"{label}: PostgreSQL {key} is not on")
+    verify_postgres_durability(report, label)
     if not report.get("environment") or not report.get("device_baseline"):
         fail(f"{label}: environment or device observation is absent")
-    host_digest, hardware_digest = verify_host(report, profile_id, label)
-    binaries = verify_candidate(report, manifest, label)
+    verify_storage_topology(report, label)
+    verify_process_evidence(report, label, scenario_class_name=scenario_class(scenario))
+    if host_invalid:
+        if "qualification_candidate" in report:
+            fail(f"{label}: host-invalid report claims a qualified candidate")
+        host_digest = ""
+        hardware_digest = ""
+        binaries = {}
+    else:
+        host_digest, hardware_digest = verify_host(report, profile_id, label)
+        binaries = verify_candidate(report, manifest, label)
     verify_counterbalance(report, "postgres_safe_app", label)
 
     backends = report.get("backends")
     if not isinstance(backends, list):
         fail(f"{label}: backend reports are absent")
-    backend_ids = {row.get("backend_id") for row in backends if isinstance(row, dict)}
-    if backend_ids != {"postgres_safe_app", "riffdb_public_grpc"}:
+    backend_ids = [row.get("backend_id") for row in backends if isinstance(row, dict)]
+    if backend_ids != ["postgres_safe_app", "riffdb_public_grpc"]:
         fail(f"{label}: backend set drifted")
     encoded_sizes: dict[str, dict[str, int]] = {}
+    timed_rows: dict[str, dict[str, Any]] = {}
     for backend in backends:
         rows = backend.get("scenarios") if isinstance(backend, dict) else None
         if not isinstance(rows, list) or len(rows) != 1 or rows[0].get("scenario") != scenario:
             fail(f"{label}: report contains another timed scenario")
+        verify_timing(rows[0], f"{label}.{backend.get('backend_id')}.{scenario}")
+        timed_rows["postgres" if backend["backend_id"] == "postgres_safe_app" else "riffdb"] = rows[0]
         encoded = rows[0].get("encoded_size") or {}
         if encoded.get("schema") != "riffdb.app-baseline-canonical-semantic-frame/v1":
             fail(f"{label}: encoded-size schema is absent or drifted")
@@ -395,6 +753,7 @@ def verify_report(
         or rows[0].get("last_row_count_equal") is not True
     ):
         fail(f"{label}: correctness or scenario identity differs")
+    verify_correctness(rows[0], timed_rows, f"{label}.{scenario}")
     summaries = comparisons.get("unary_rep_summaries")
     if not isinstance(summaries, dict) or set(summaries) != {scenario}:
         fail(f"{label}: unary generation summaries are not exact")
@@ -420,8 +779,9 @@ def verify_report(
     # invalidating a receipt -- the comparator's measurement stability is not a
     # property RiffDB can influence, and its ratios are not a gate.
     comparator_spreads: dict[str, float] = {}
+    riffdb_spreads: dict[str, float] = {}
     for backend in ("postgres", "riffdb"):
-        gated = backend == "riffdb"
+        gated = require_stable and backend == "riffdb"
         for statistic in ("p50_ns", "p95_ns"):
             summary = (entry.get(backend) or {}).get(statistic)
             result[backend][statistic] = summary_value(
@@ -429,10 +789,19 @@ def verify_report(
                 f"{label}.{backend}.{statistic}",
                 require_stable=gated,
             )
-            if not gated:
+            if backend == "postgres":
                 comparator_spreads[statistic] = summary_spread(
                     summary, f"{label}.{backend}.{statistic}"
                 )
+            else:
+                riffdb_spreads[statistic] = summary_spread(
+                    summary, f"{label}.{backend}.{statistic}"
+                )
+        verify_selected_p50(
+            timed_rows[backend],
+            (entry.get(backend) or {}).get("p50_ns"),
+            f"{label}.{backend}.p50_ns",
+        )
     result["postgres_central_three_spread"] = comparator_spreads
     # Disclosure marker, so a reader weighing a published ratio can see that the
     # comparator it was computed against was unstable, without opening a
@@ -457,42 +826,84 @@ def verify_report(
     result["profile"] = profile_id
     result["host_observation_sha256"] = host_digest
     result["hardware_identity_sha256"] = hardware_digest
+    verify_evidence_eligibility(
+        report,
+        [f"{scenario}.{statistic}" for statistic in result["postgres_stability_disclosure"]],
+        all(spread <= MAX_SPREAD for spread in riffdb_spreads.values()),
+        label,
+        host_invalid=host_invalid,
+    )
     return result, binaries
 
 
 def verify_minimal_report(
-    report: dict[str, Any], manifest: dict[str, Any], profile_id: str, label: str
+    report: dict[str, Any],
+    manifest: dict[str, Any],
+    profile_id: str,
+    label: str,
+    *,
+    host_invalid: bool = False,
+    require_stable: bool = True,
 ) -> tuple[dict[str, Any], dict[str, str], str, str]:
-    if report.get("schema") != REPORT_SCHEMA or report.get("reps") != REPETITIONS:
+    if report.get("schema") != REPORT_SCHEMA:
         fail(f"{label}: minimal report schema or repetition count drifted")
-    if (report.get("scale") or {}).get("profile") != "full":
-        fail(f"{label}: minimal report is not the full dataset")
+    require_exact_integer(report.get("reps"), REPETITIONS, f"{label}.reps")
+    verify_frozen_workload(report, label)
     configuration = report.get("configuration") or {}
-    if configuration.get("warmup_iterations") != WARMUPS:
-        fail(f"{label}: minimal warmup count drifted")
-    if configuration.get("measured_samples") != MEASUREMENTS:
-        fail(f"{label}: minimal measurement count drifted")
+    require_exact_integer(
+        configuration.get("warmup_iterations"), WARMUPS, f"{label}.warmups"
+    )
+    require_exact_integer(
+        configuration.get("measured_samples"), MEASUREMENTS, f"{label}.measurements"
+    )
     if report.get("same_device") is not True:
         fail(f"{label}: minimal backends are not on one device")
-    durability = report.get("postgres_durability") or {}
-    for key in ("synchronous_commit", "fsync", "full_page_writes"):
-        if durability.get(key) != "on":
-            fail(f"{label}: minimal PostgreSQL {key} is not on")
-    host_digest, hardware_digest = verify_host(report, profile_id, label)
-    binaries = verify_candidate(report, manifest, label)
+    if "unary_qualification" in report:
+        fail(f"{label}: minimal report contains a unary selection")
+    verify_postgres_durability(report, label)
+    if not report.get("environment") or not report.get("device_baseline"):
+        fail(f"{label}: minimal environment or device observation is absent")
+    verify_storage_topology(report, label)
+    verify_process_evidence(report, label, scenario_class_name=None)
+    if host_invalid:
+        if "qualification_candidate" in report:
+            fail(f"{label}: host-invalid minimal report claims a qualified candidate")
+        host_digest = ""
+        hardware_digest = ""
+        binaries = {}
+    else:
+        host_digest, hardware_digest = verify_host(report, profile_id, label)
+        binaries = verify_candidate(report, manifest, label)
     verify_counterbalance(report, "postgres_minimal", label)
     backends = report.get("backends")
-    if not isinstance(backends, list) or {
+    if not isinstance(backends, list) or [
         row.get("backend_id") for row in backends if isinstance(row, dict)
-    } != {"postgres_minimal", "riffdb_public_grpc"}:
+    ] != ["postgres_minimal", "riffdb_public_grpc"]:
         fail(f"{label}: minimal backend set drifted")
     encoded_by_backend: dict[str, dict[str, tuple[int, int]]] = {}
+    timed_rows_by_backend: dict[str, dict[str, dict[str, Any]]] = {}
     for backend in backends:
         encoded_by_backend[backend["backend_id"]] = {}
-        for row in backend.get("scenarios") or []:
+        timed_rows_by_backend[backend["backend_id"]] = {}
+        scenario_rows = backend.get("scenarios") if isinstance(backend, dict) else None
+        expected_scenarios = (
+            SCENARIO_ORDER
+            if backend.get("backend_id") == "postgres_minimal"
+            else RIFFDB_MINIMAL_SCENARIO_ORDER
+        )
+        if (
+            not isinstance(scenario_rows, list)
+            or len(scenario_rows) != len(expected_scenarios)
+            or [
+                row.get("scenario") for row in scenario_rows if isinstance(row, dict)
+            ]
+            != list(expected_scenarios)
+        ):
+            fail(f"{label}: minimal backend scenario inventory or order drifted")
+        for row in scenario_rows:
             scenario = row.get("scenario")
-            if scenario not in SCENARIOS:
-                continue
+            verify_timing(row, f"{label}.{backend.get('backend_id')}.{scenario}")
+            timed_rows_by_backend[backend["backend_id"]][scenario] = row
             encoded = row.get("encoded_size") or {}
             request_bytes = encoded.get("request_bytes")
             response_bytes = encoded.get("response_bytes")
@@ -507,10 +918,11 @@ def verify_minimal_report(
                 or response_bytes <= 0
             ):
                 fail(f"{label}.{scenario}: minimal encoded-size disclosure is invalid")
-            encoded_by_backend[backend["backend_id"]][scenario] = (
-                request_bytes,
-                response_bytes,
-            )
+            if scenario in SCENARIOS:
+                encoded_by_backend[backend["backend_id"]][scenario] = (
+                    request_bytes,
+                    response_bytes,
+                )
     if any(set(sizes) != SCENARIOS for sizes in encoded_by_backend.values()):
         fail(f"{label}: minimal encoded-size scenario set is incomplete")
     if len({tuple(sorted(sizes.items())) for sizes in encoded_by_backend.values()}) != 1:
@@ -522,28 +934,80 @@ def verify_minimal_report(
     rows_by_scenario = {
         row.get("scenario"): row for row in rows if isinstance(row, dict)
     }
-    if not SCENARIOS.issubset(rows_by_scenario):
-        fail(f"{label}: minimal unary scenario set is incomplete")
+    if set(rows_by_scenario) != SCENARIOS or len(rows) != len(SCENARIOS):
+        fail(f"{label}: minimal unary scenario set is not exact")
     if any(
         rows_by_scenario[scenario].get("last_row_count_equal") is not True
         for scenario in SCENARIOS
     ):
         fail(f"{label}: minimal correctness differs")
-    if (report.get("board_page_live_crosscheck") or {}).get("status") != "ok":
+    for scenario in SCENARIO_ORDER:
+        verify_correctness(
+            rows_by_scenario[scenario],
+            {
+                "postgres": timed_rows_by_backend["postgres_minimal"][scenario],
+                "riffdb": timed_rows_by_backend["riffdb_public_grpc"][scenario],
+            },
+            f"{label}.{scenario}",
+        )
+    if report.get("board_page_live_crosscheck") != {
+        "limit_mode": "static_compiled",
+        "limits": [50, 200, 450],
+        "order_sensitive": True,
+        "status": "ok",
+    }:
         fail(f"{label}: minimal board cross-check is absent")
     summaries = comparisons.get("unary_rep_summaries")
-    if not isinstance(summaries, dict) or not SCENARIOS.issubset(summaries):
-        fail(f"{label}: minimal unary disclosures are incomplete")
+    if not isinstance(summaries, dict) or set(summaries) != SCENARIOS:
+        fail(f"{label}: minimal unary disclosures are not exact")
     result: dict[str, Any] = {}
+    all_postgres_disclosures: list[str] = []
+    all_riffdb_spreads: list[float] = []
     for scenario in sorted(SCENARIOS):
         entry = summaries[scenario]
+        if not isinstance(entry, dict) or set(entry) != {
+            "postgres",
+            "riffdb",
+            "ratios_riffdb_over_postgres",
+        }:
+            fail(f"{label}.{scenario}: minimal unary summary shape drifted")
         metrics = {"postgres": {}, "riffdb": {}, "ratios_riffdb_over_postgres": {}}
+        comparator_spreads: dict[str, float] = {}
         for backend in ("postgres", "riffdb"):
             for statistic in ("p50_ns", "p95_ns"):
+                summary = (entry.get(backend) or {}).get(statistic)
                 metrics[backend][statistic] = summary_value(
-                    (entry.get(backend) or {}).get(statistic),
+                    summary,
                     f"{label}.{scenario}.{backend}.{statistic}",
+                    require_stable=require_stable and backend == "riffdb",
                 )
+                if backend == "postgres":
+                    comparator_spreads[statistic] = summary_spread(
+                        summary, f"{label}.{scenario}.{backend}.{statistic}"
+                    )
+                else:
+                    all_riffdb_spreads.append(
+                        summary_spread(
+                            summary, f"{label}.{scenario}.{backend}.{statistic}"
+                        )
+                    )
+            verify_selected_p50(
+                timed_rows_by_backend[
+                    "postgres_minimal" if backend == "postgres" else "riffdb_public_grpc"
+                ][scenario],
+                (entry.get(backend) or {}).get("p50_ns"),
+                f"{label}.{scenario}.{backend}.p50_ns",
+            )
+        metrics["postgres_central_three_spread"] = comparator_spreads
+        metrics["postgres_stability_disclosure"] = sorted(
+            statistic
+            for statistic, spread in comparator_spreads.items()
+            if spread > MAX_SPREAD
+        )
+        all_postgres_disclosures.extend(
+            f"{scenario}.{statistic}"
+            for statistic in metrics["postgres_stability_disclosure"]
+        )
         for statistic in ("p50", "p95"):
             ratio_summary = (entry.get("ratios_riffdb_over_postgres") or {}).get(statistic)
             summary_value(
@@ -564,7 +1028,53 @@ def verify_minimal_report(
                 fail(f"{label}.{scenario}: ratio is not derived from backend medians")
             metrics["ratios_riffdb_over_postgres"][statistic] = reported
         result[scenario] = metrics
+    verify_evidence_eligibility(
+        report,
+        all_postgres_disclosures,
+        all(spread <= MAX_SPREAD for spread in all_riffdb_spreads),
+        label,
+        host_invalid=host_invalid,
+    )
     return result, binaries, host_digest, hardware_digest
+
+
+def validate_terminal_host_invalid_report(
+    path: Path,
+    profile_id: str,
+    comparator: str,
+    scenario: str | None,
+) -> None:
+    is_postflight = validate_host_invalid_receipt(
+        path, profile_id, comparator, scenario
+    )
+    if not is_postflight:
+        return
+    report, _ = load_json(path, MAX_REPORT_BYTES)
+    if comparator == "safe-app":
+        if scenario is None:
+            fail("safe-app host-invalid report has no expected scenario")
+        verify_report(
+            report,
+            {},
+            profile_id,
+            scenario,
+            "host-invalid safe-app report",
+            host_invalid=True,
+            require_stable=False,
+        )
+    elif comparator == "minimal":
+        if scenario is not None:
+            fail("minimal host-invalid report unexpectedly has a scenario selector")
+        verify_minimal_report(
+            report,
+            {},
+            profile_id,
+            "host-invalid minimal report",
+            host_invalid=True,
+            require_stable=False,
+        )
+    else:
+        fail("host-invalid comparator is not frozen")
 
 
 def validate_manifest(manifest: dict[str, Any]) -> None:
@@ -573,6 +1083,8 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         "source_revision",
         "cargo_lock_sha256",
         "harness_sha256",
+        "runner_sha256",
+        "riffdbd_sha256",
         "governance_predecessor_sha256",
         "requirements",
         "profiles",
@@ -583,16 +1095,15 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         fail("manifest source revision is invalid")
     require_sha(manifest.get("cargo_lock_sha256"), "manifest.cargo_lock_sha256")
     require_sha(manifest.get("harness_sha256"), "manifest.harness_sha256")
+    require_sha(manifest.get("runner_sha256"), "manifest.runner_sha256")
+    require_sha(manifest.get("riffdbd_sha256"), "manifest.riffdbd_sha256")
     predecessor = require_sha(
         manifest.get("governance_predecessor_sha256"),
         "manifest.governance_predecessor_sha256",
     )
-    if (
-        not GOVERNANCE_PREDECESSOR.is_file()
-        or GOVERNANCE_PREDECESSOR.is_symlink()
-        or hashlib.sha256(GOVERNANCE_PREDECESSOR.read_bytes()).hexdigest()
-        != predecessor
-    ):
+    if hashlib.sha256(
+        bounded_read(GOVERNANCE_PREDECESSOR, MAX_GOVERNANCE_BYTES, "governance predecessor")
+    ).hexdigest() != predecessor:
         fail("governance predecessor receipt is absent, linked, or differs")
     exact_strings(manifest.get("requirements"), REQUIREMENTS, "manifest.requirements")
     profiles = manifest.get("profiles")
@@ -601,6 +1112,38 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
     observed = {p.get("id") for p in profiles if isinstance(p, dict)}
     if observed != set(PROFILE_CLASSES):
         fail("manifest profile identities are not exact")
+
+
+def validate_campaign_identity(
+    manifest_path: Path,
+    reference: Any,
+    profile_id: str,
+    manifest: dict[str, Any],
+) -> None:
+    if not isinstance(reference, dict) or set(reference) != {"path", "sha256"}:
+        fail(f"{profile_id}: campaign identity reference is invalid")
+    relative = reference.get("path")
+    if not isinstance(relative, str):
+        fail(f"{profile_id}: campaign identity path is invalid")
+    campaign, digest = load_json(
+        manifest_path.parent / relative, MAX_CAMPAIGN_BYTES
+    )
+    if digest != require_sha(reference.get("sha256"), f"{profile_id}.campaign"):
+        fail(f"{profile_id}: campaign identity digest differs")
+    validate_campaign_identity_value(
+        campaign,
+        profile_id,
+        {
+            key: manifest[key]
+            for key in (
+                "source_revision",
+                "cargo_lock_sha256",
+                "harness_sha256",
+                "runner_sha256",
+                "riffdbd_sha256",
+            )
+        },
+    )
 
 
 def load_reports(
@@ -614,17 +1157,21 @@ def load_reports(
             "reports",
             "minimal_report",
             "host_attempts",
+            "campaign_identity",
         }:
             fail("profile shape is invalid")
         profile_id = profile["id"]
         if profile.get("hardware_class") != PROFILE_CLASSES[profile_id]:
             fail(f"{profile_id}: hardware class drifted")
+        validate_campaign_identity(
+            manifest_path, profile.get("campaign_identity"), profile_id, manifest
+        )
         reports = profile.get("reports")
         if not isinstance(reports, list) or len(reports) != len(SCENARIOS):
             fail(f"{profile_id}: report inventory is incomplete")
-        names = {item.get("scenario") for item in reports if isinstance(item, dict)}
-        if names != SCENARIOS:
-            fail(f"{profile_id}: scenario inventory drifted")
+        names = [item.get("scenario") for item in reports if isinstance(item, dict)]
+        if names != list(SCENARIO_ORDER):
+            fail(f"{profile_id}: scenario inventory order drifted")
         result[profile_id] = {}
         for reference in reports:
             if set(reference) != {"scenario", "path", "sha256"}:
@@ -632,7 +1179,7 @@ def load_reports(
             relative = reference["path"]
             if not isinstance(relative, str):
                 fail(f"{profile_id}: report path is invalid")
-            path = (manifest_path.parent / relative).resolve()
+            path = manifest_path.parent / relative
             report, digest = load_json(path, MAX_REPORT_BYTES)
             if digest != require_sha(reference["sha256"], f"{profile_id}.{reference['scenario']}"):
                 fail(f"{profile_id}.{reference['scenario']}: report digest differs")
@@ -643,7 +1190,7 @@ def load_reports(
         relative = reference.get("path")
         if not isinstance(relative, str):
             fail(f"{profile_id}: minimal report path is invalid")
-        path = (manifest_path.parent / relative).resolve()
+        path = manifest_path.parent / relative
         report, digest = load_json(path, MAX_REPORT_BYTES)
         if digest != require_sha(reference["sha256"], f"{profile_id}.minimal"):
             fail(f"{profile_id}: minimal report digest differs")
@@ -670,7 +1217,8 @@ def load_reports(
             references = attempt.get("reports")
             if not isinstance(references, list):
                 fail(f"{profile_id}: host-attempt reports are invalid")
-            observed: dict[str, tuple[dict[str, Any], str]] = {}
+            observed: dict[str, tuple[dict[str, Any], str, Path]] = {}
+            observed_order: list[str] = []
             for reference in references:
                 if not isinstance(reference, dict) or set(reference) != {
                     "scenario", "path", "sha256"
@@ -680,14 +1228,14 @@ def load_reports(
                 relative = reference.get("path")
                 if scenario not in SCENARIOS or scenario in observed or not isinstance(relative, str):
                     fail(f"{profile_id}: host-attempt scenario inventory is invalid")
-                report, actual = load_json(
-                    (manifest_path.parent / relative).resolve(), MAX_REPORT_BYTES
-                )
+                attempt_path = manifest_path.parent / relative
+                report, actual = load_json(attempt_path, MAX_REPORT_BYTES)
                 if actual != require_sha(reference.get("sha256"), f"{profile_id}.host_attempt"):
                     fail(f"{profile_id}.{scenario}: host-attempt digest differs")
-                observed[scenario] = (report, actual)
+                observed[scenario] = (report, actual, attempt_path)
+                observed_order.append(scenario)
             minimal_reference = attempt.get("minimal_report")
-            minimal_observed: tuple[dict[str, Any], str] | None = None
+            minimal_observed: tuple[dict[str, Any], str, Path] | None = None
             if minimal_reference is not None:
                 if not isinstance(minimal_reference, dict) or set(minimal_reference) != {
                     "path", "sha256"
@@ -696,34 +1244,58 @@ def load_reports(
                 relative = minimal_reference.get("path")
                 if not isinstance(relative, str):
                     fail(f"{profile_id}: host-attempt minimal path is invalid")
-                minimal_report, actual = load_json(
-                    (manifest_path.parent / relative).resolve(), MAX_REPORT_BYTES
-                )
+                minimal_path = manifest_path.parent / relative
+                minimal_report, actual = load_json(minimal_path, MAX_REPORT_BYTES)
                 if actual != require_sha(
                     minimal_reference.get("sha256"), f"{profile_id}.host_attempt.minimal"
                 ):
                     fail(f"{profile_id}: host-attempt minimal digest differs")
-                minimal_observed = (minimal_report, actual)
+                minimal_observed = (minimal_report, actual, minimal_path)
             if expected_status == "accepted":
                 if set(observed) != SCENARIOS or minimal_observed is None:
                     fail(f"{profile_id}: accepted host attempt is incomplete")
-                if {scenario: digest for scenario, (_, digest) in observed.items()} != canonical_reports:
+                if {
+                    scenario: digest for scenario, (_, digest, _) in observed.items()
+                } != canonical_reports:
                     fail(f"{profile_id}: accepted host attempt is not canonical")
                 if minimal_observed[1] != profile["minimal_report"]["sha256"]:
                     fail(f"{profile_id}: accepted minimal attempt is not canonical")
             else:
-                retained = [report for report, _ in observed.values()]
-                if minimal_observed is not None:
-                    retained.append(minimal_observed[0])
-                if not retained or not any(
-                    isinstance(report.get("host_validity"), dict)
-                    and (
-                        (report["host_validity"].get("preflight") or {}).get("valid") is False
-                        or (report["host_validity"].get("postflight") or {}).get("valid") is False
+                canonical_order = list(SCENARIO_ORDER)
+                if observed_order != canonical_order[: len(observed_order)]:
+                    fail(f"{profile_id}: invalid attempt is not a scenario prefix")
+                completed_scenarios = (
+                    observed_order
+                    if minimal_observed is not None
+                    else observed_order[:-1]
+                )
+                for completed_scenario in completed_scenarios:
+                    completed_report = observed[completed_scenario][0]
+                    verify_report(
+                        completed_report,
+                        manifest,
+                        profile_id,
+                        completed_scenario,
+                        f"{profile_id}.host_attempt.{completed_scenario}",
                     )
-                    for report in retained
-                ):
-                    fail(f"{profile_id}: replacement was not independently host-invalid")
+                if minimal_observed is not None:
+                    if observed_order != canonical_order:
+                        fail(f"{profile_id}: minimal ran before every safe-app scenario")
+                    terminal_path = minimal_observed[2]
+                    terminal_comparator = "minimal"
+                    terminal_scenario = None
+                elif observed_order:
+                    terminal_scenario = observed_order[-1]
+                    terminal_path = observed[terminal_scenario][2]
+                    terminal_comparator = "safe-app"
+                else:
+                    fail(f"{profile_id}: invalid attempt has no terminal report")
+                validate_terminal_host_invalid_report(
+                    terminal_path,
+                    profile_id,
+                    terminal_comparator,
+                    terminal_scenario,
+                )
     return result
 
 
@@ -743,7 +1315,7 @@ def verify_corpus(
         report_digests: dict[str, str] = {}
         host_digests: dict[str, str] = {}
         hardware_digests: set[str] = set()
-        for scenario in sorted(SCENARIOS):
+        for scenario in SCENARIO_ORDER:
             report, digest = reports[profile_id][scenario]
             metrics, binaries = verify_report(
                 report,
@@ -919,13 +1491,101 @@ def fake_ratio_summary(value: float) -> dict[str, Any]:
     return summary
 
 
+def fake_timing(value: int) -> dict[str, Any]:
+    return {
+        "samples_ns": [value for _ in range(MEASUREMENTS)],
+        "sample_count": MEASUREMENTS,
+        "min_ns": value,
+        "max_ns": value,
+        "mean_ns": value,
+        "p50_ns": value,
+        "p95_ns": value,
+        "p99_ns": value,
+    }
+
+
+def fake_process_evidence(*, scenario_class_name: str | None) -> dict[str, Any]:
+    if scenario_class_name == "compiled_command":
+        read_counts = [0] * len(READ_PIPELINE_STAGES)
+        write_counts = [MEASUREMENTS] * len(WRITE_SERVICE_STAGES)
+        command_counts = [MEASUREMENTS] * len(COMMAND_PIPELINE_STAGES)
+        physical_commits = logical_commands = MEASUREMENTS
+    elif scenario_class_name is not None:
+        read_counts = [MEASUREMENTS + WARMUPS] * len(READ_PIPELINE_STAGES)
+        write_counts = [0] * len(WRITE_SERVICE_STAGES)
+        command_counts = [0] * len(COMMAND_PIPELINE_STAGES)
+        physical_commits = logical_commands = 0
+    else:
+        read_counts = [10_206] * len(READ_PIPELINE_STAGES)
+        write_counts = [4_000, 23_220, 23_220, 23_220, 4_000]
+        physical_commits = 4_321
+        command_counts = [physical_commits] * len(COMMAND_PIPELINE_STAGES)
+        logical_commands = 23_220
+    return {
+        "graph_shutdown_elapsed_us": 1,
+        "harness_shutdown_elapsed_us": 1,
+        "shutdown_stages_us": [1] * 8,
+        "authoritative_table_inventory": [{"table": "meta", "rows_after": 1}],
+        "table_inventory_scope": (
+            "after_seed_before_measured_process_to_after_clean_shutdown_and_structural_reopen"
+            if scenario_class_name is not None
+            else "post_shutdown_structural_reopen_inventory_only"
+        ),
+        "post_shutdown_structural_reopen": True,
+        "read_pipeline_stages": [
+            {"stage": stage, "count": count}
+            for stage, count in zip(READ_PIPELINE_STAGES, read_counts)
+        ],
+        "write_service_stages": [
+            {"stage": stage, "count": count}
+            for stage, count in zip(WRITE_SERVICE_STAGES, write_counts)
+        ],
+        "command_pipeline_stages": [
+            {"stage": stage, "count": count}
+            for stage, count in zip(COMMAND_PIPELINE_STAGES, command_counts)
+        ],
+        "writer": {
+            "physical_commits": physical_commits,
+            "logical_commands_committed": logical_commands,
+            "frontier_equivalence_failures": 0,
+            "prepared_epoch_proof_mismatches": 0,
+        },
+        "writer_frame_census": {"frames": 1},
+        "writer_flush_census": {"physical_flushes": 1},
+        "writer_journal_stages": {"physical_flushes": 1},
+        "writer_publication_stages": {"publications": 1},
+        "completion_lane": {"max_depth": 1},
+        "labels": "closed_fixed_cardinality",
+    }
+
+
 def fake_report(manifest: dict[str, Any], profile: str, scenario: str) -> dict[str, Any]:
     host = {
         "schema": "riffdb.app-baseline-host-validity/v2",
         "valid": True,
+        "reason": None,
+        "sample_interval_ms": 3_000,
+        "load_average_before": [0.0, 0.0, 0.0],
+        "load_average_after": [0.0, 0.0, 0.0],
+        "memory_available_bytes": 1_073_741_824,
+        "active_processes": [],
         "interfering_processes": [],
-        "inventory_bounds": {"process_arguments_included": False},
-        "profile": profile,
+        "inventory_bounds": {
+            "maximum_scanned_processes": 4096,
+            "maximum_reported_processes": 32,
+            "process_arguments_included": False,
+        },
+        "process_interval": {
+            "stable_identity_required": True,
+            "started_processes": 0,
+            "exited_processes": 0,
+            "pid_reuses": 0,
+        },
+        "thresholds": {
+            "cpu_percent_of_one_logical_cpu": 5.0,
+            "io_bytes_per_sec": 8 * 1024 * 1024,
+            "maximum_whole_cell_steal_percent": 1.0,
+        },
         "logical_cpus": PROFILE_HARDWARE_RULES[profile]["logical_cpus"],
         "hardware_identity": {
             "cpu_model": PROFILE_HARDWARE_RULES[profile]["cpu_contains"],
@@ -956,11 +1616,16 @@ def fake_report(manifest: dict[str, Any], profile: str, scenario: str) -> dict[s
     rd = min(2_000_000.0, ABSOLUTE_CEILINGS_NS[class_name]["p50_ns"])
     return {
         "schema": REPORT_SCHEMA,
+        "report_id": "ticketdesk-app-baseline",
+        "domain": "TicketDesk",
+        "tables": copy.deepcopy(FROZEN_TABLES),
         "reps": REPETITIONS,
-        "scale": {"profile": "full"},
+        "scale": copy.deepcopy(FROZEN_FULL_SCALE),
+        "scale_shape": copy.deepcopy(FROZEN_FULL_SCALE_SHAPE),
         "configuration": {
             "warmup_iterations": WARMUPS,
             "measured_samples": MEASUREMENTS,
+            **copy.deepcopy(FROZEN_CONFIGURATION_PINS),
         },
         "unary_qualification": {
             "schema": SELECTION_SCHEMA,
@@ -973,15 +1638,44 @@ def fake_report(manifest: dict[str, Any], profile: str, scenario: str) -> dict[s
         },
         "same_device": True,
         "postgres_durability": {
+            "data_directory": "/var/lib/postgresql/18/docker",
             "synchronous_commit": "on",
             "fsync": "on",
             "full_page_writes": "on",
+            "server_version_num": "180004",
+            "wal_sync_method": "fdatasync",
         },
         "environment": {
             "profile": profile,
             "medium": {"kind": "disk", "fstype": "ext4", "device_model": "test"},
         },
+        "riffdb_storage_medium": {
+            "kind": "disk",
+            "fstype": "ext4",
+            "device_model": "test",
+        },
+        "postgres_storage_medium": {
+            "kind": "disk",
+            "fstype": "ext4",
+            "device_model": "test",
+        },
         "device_baseline": {"fdatasync_p50_us": 100},
+        "evidence_eligibility": {
+            "eligible": True,
+            "host_idle": True,
+            "reason_codes": [],
+            "postgres_central_three_spread_disclosed": [],
+            "stable": True,
+            "correctness_clean": True,
+            "same_device_comparable": True,
+            "comparison_complete": True,
+            "missing_required_fields": [],
+            "non_evidentiary_window": False,
+        },
+        "riffdb_process_evidence": [
+            fake_process_evidence(scenario_class_name=class_name)
+            for _ in range(REPETITIONS)
+        ],
         "host_validity": {"preflight": host, "postflight": postflight},
         "qualification_candidate": {
             "schema": CANDIDATE_SCHEMA,
@@ -1009,6 +1703,8 @@ def fake_report(manifest: dict[str, Any], profile: str, scenario: str) -> dict[s
                 "backend_id": "postgres_safe_app",
                 "scenarios": [{
                     "scenario": scenario,
+                    "last_row_count": 1,
+                    "timing": fake_timing(int(pg)),
                     "encoded_size": {
                         "schema": "riffdb.app-baseline-canonical-semantic-frame/v1",
                         "request_bytes": 64,
@@ -1021,6 +1717,8 @@ def fake_report(manifest: dict[str, Any], profile: str, scenario: str) -> dict[s
                 "backend_id": "riffdb_public_grpc",
                 "scenarios": [{
                     "scenario": scenario,
+                    "last_row_count": 1,
+                    "timing": fake_timing(int(rd)),
                     "encoded_size": {
                         "schema": "riffdb.app-baseline-canonical-semantic-frame/v1",
                         "request_bytes": 64,
@@ -1032,7 +1730,12 @@ def fake_report(manifest: dict[str, Any], profile: str, scenario: str) -> dict[s
         ],
         "comparisons": {
             "available": True,
-            "scenarios": [{"scenario": scenario, "last_row_count_equal": True}],
+            "scenarios": [{
+                "scenario": scenario,
+                "last_row_count_equal": True,
+                "postgres_last_row_count": 1,
+                "riffdb_last_row_count": 1,
+            }],
             "unary_rep_summaries": {
                 scenario: {
                     "postgres": {
@@ -1054,9 +1757,12 @@ def fake_report(manifest: dict[str, Any], profile: str, scenario: str) -> dict[s
 
 
 def fake_minimal_report(manifest: dict[str, Any], profile: str) -> dict[str, Any]:
-    first = sorted(SCENARIOS)[0]
+    first = SCENARIO_ORDER[0]
     report = fake_report(manifest, profile, first)
     report.pop("unary_qualification")
+    report["riffdb_process_evidence"] = [
+        fake_process_evidence(scenario_class_name=None) for _ in range(REPETITIONS)
+    ]
     report["backend_execution_order"] = [
         "postgres_minimal",
         "riffdb_public_grpc",
@@ -1070,11 +1776,16 @@ def fake_minimal_report(manifest: dict[str, Any], profile: str) -> dict[str, Any
         "riffdb_public_grpc",
     ]
     rows = [
-        {"scenario": scenario, "last_row_count_equal": True}
-        for scenario in sorted(SCENARIOS)
+        {
+            "scenario": scenario,
+            "last_row_count_equal": True,
+            "postgres_last_row_count": 1,
+            "riffdb_last_row_count": 1,
+        }
+        for scenario in SCENARIO_ORDER
     ]
     summaries = {}
-    for scenario in sorted(SCENARIOS):
+    for scenario in SCENARIO_ORDER:
         one = fake_report(manifest, profile, scenario)
         summaries[scenario] = one["comparisons"]["unary_rep_summaries"][scenario]
     report["backends"] = [
@@ -1083,6 +1794,8 @@ def fake_minimal_report(manifest: dict[str, Any], profile: str) -> dict[str, Any
             "scenarios": [
                 {
                     "scenario": scenario,
+                    "last_row_count": 1,
+                    "timing": fake_timing(1_000_000),
                     "encoded_size": {
                         "schema": "riffdb.app-baseline-canonical-semantic-frame/v1",
                         "request_bytes": 64,
@@ -1090,7 +1803,7 @@ def fake_minimal_report(manifest: dict[str, Any], profile: str) -> dict[str, Any
                         "transport_framing_included": False,
                     },
                 }
-                for scenario in sorted(SCENARIOS)
+                for scenario in SCENARIO_ORDER
             ],
         },
         {
@@ -1098,6 +1811,12 @@ def fake_minimal_report(manifest: dict[str, Any], profile: str) -> dict[str, Any
             "scenarios": [
                 {
                     "scenario": scenario,
+                    "last_row_count": 1,
+                    "timing": fake_timing(
+                        int(min(2_000_000.0, ABSOLUTE_CEILINGS_NS[scenario_class(scenario)]["p50_ns"]))
+                        if scenario in SCENARIOS
+                        else 100
+                    ),
                     "encoded_size": {
                         "schema": "riffdb.app-baseline-canonical-semantic-frame/v1",
                         "request_bytes": 64,
@@ -1105,11 +1824,16 @@ def fake_minimal_report(manifest: dict[str, Any], profile: str) -> dict[str, Any
                         "transport_framing_included": False,
                     },
                 }
-                for scenario in sorted(SCENARIOS)
+                for scenario in RIFFDB_MINIMAL_SCENARIO_ORDER
             ],
         },
     ]
-    report["board_page_live_crosscheck"] = {"status": "ok"}
+    report["board_page_live_crosscheck"] = {
+        "limit_mode": "static_compiled",
+        "limits": [50, 200, 450],
+        "order_sensitive": True,
+        "status": "ok",
+    }
     report["comparisons"] = {
         "available": True,
         "scenarios": rows,
@@ -1118,6 +1842,43 @@ def fake_minimal_report(manifest: dict[str, Any], profile: str) -> dict[str, Any
     return report
 
 
+def fake_host_invalid_postflight(report: dict[str, Any]) -> dict[str, Any]:
+    report = copy.deepcopy(report)
+    report.pop("qualification_candidate")
+    preflight = report["host_validity"]["preflight"]
+    postflight = report["host_validity"]["postflight"]
+    before_total = preflight["cpu_accounting"]["total_ticks"]
+    before_steal = preflight["cpu_accounting"]["steal_ticks"]
+    after_total = postflight["cpu_accounting"]["total_ticks"]
+    elapsed_total = after_total - before_total
+    elapsed_steal = elapsed_total // 50
+    postflight["cpu_accounting"]["steal_ticks"] = before_steal + elapsed_steal
+    postflight["valid"] = False
+    postflight["reason"] = "host_interference"
+    postflight["whole_cell"] = {
+        "valid": False,
+        "reason": "cpu_steal_exceeded",
+        "elapsed_total_ticks": elapsed_total,
+        "elapsed_steal_ticks": elapsed_steal,
+        "steal_percent": round(elapsed_steal / elapsed_total * 100.0, 6),
+        "maximum_steal_percent": 1.0,
+    }
+    report["evidence_eligibility"] = {
+        "eligible": False,
+        "host_idle": False,
+        "reason_codes": ["host_interference"],
+        "postgres_central_three_spread_disclosed": [],
+        "stable": True,
+        "correctness_clean": True,
+        "same_device_comparable": True,
+        "comparison_complete": True,
+        "missing_required_fields": [],
+        "non_evidentiary_window": False,
+    }
+    return report
+
+
+# req: PERF-018
 def run_self_test(root: Path) -> None:
     scratch = root / "self-test"
     scratch.mkdir(parents=True, exist_ok=True)
@@ -1126,15 +1887,17 @@ def run_self_test(root: Path) -> None:
         "source_revision": "1" * 40,
         "cargo_lock_sha256": "2" * 64,
         "harness_sha256": "3" * 64,
+        "runner_sha256": "4" * 64,
+        "riffdbd_sha256": "5" * 64,
         "governance_predecessor_sha256": hashlib.sha256(
-            GOVERNANCE_PREDECESSOR.read_bytes()
+            bounded_read(GOVERNANCE_PREDECESSOR, MAX_GOVERNANCE_BYTES, "governance predecessor")
         ).hexdigest(),
         "requirements": sorted(REQUIREMENTS),
         "profiles": [],
     }
     for profile_id, hardware_class in PROFILE_CLASSES.items():
         references = []
-        for scenario in sorted(SCENARIOS):
+        for scenario in SCENARIO_ORDER:
             path = scratch / f"{profile_id}-{scenario}.json"
             encoded = json.dumps(fake_report(manifest, profile_id, scenario), indent=2) + "\n"
             path.write_text(encoded, encoding="utf-8")
@@ -1148,6 +1911,27 @@ def run_self_test(root: Path) -> None:
         minimal_path = scratch / f"{profile_id}-minimal.json"
         minimal_encoded = json.dumps(fake_minimal_report(manifest, profile_id), indent=2) + "\n"
         minimal_path.write_text(minimal_encoded, encoding="utf-8")
+        campaign_path = scratch / f"{profile_id}-campaign-identity.json"
+        campaign_encoded = json.dumps(
+            {
+                "schema": CAMPAIGN_SCHEMA,
+                "profile": profile_id,
+                "source_revision": manifest["source_revision"],
+                "cargo_lock_sha256": manifest["cargo_lock_sha256"],
+                "harness_sha256": manifest["harness_sha256"],
+                "runner_sha256": manifest["runner_sha256"],
+                "riffdbd_sha256": manifest["riffdbd_sha256"],
+                "method": {
+                    "samples": MEASUREMENTS,
+                    "warmups": WARMUPS,
+                    "reps": REPETITIONS,
+                    "comparators": ["safe-app", "minimal"],
+                    "scenarios": list(SCENARIO_ORDER),
+                },
+            },
+            indent=2,
+        ) + "\n"
+        campaign_path.write_text(campaign_encoded, encoding="utf-8")
         manifest["profiles"].append(
             {
                 "id": profile_id,
@@ -1168,12 +1952,194 @@ def run_self_test(root: Path) -> None:
                         },
                     }
                 ],
+                "campaign_identity": {
+                    "path": campaign_path.name,
+                    "sha256": hashlib.sha256(campaign_encoded.encode()).hexdigest(),
+                },
             }
         )
     manifest_path = scratch / "manifest.json"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     baseline = verify_corpus(manifest_path, manifest)
     verify_against_baseline(baseline, baseline)
+
+    campaign_type_drift = copy.deepcopy(manifest)
+    campaign_value, _ = load_json(
+        scratch / "workstation-campaign-identity.json", MAX_CAMPAIGN_BYTES
+    )
+    campaign_value["method"]["reps"] = 5.0
+    campaign_drift_path = scratch / "workstation-campaign-type-drift.json"
+    campaign_drift_encoded = json.dumps(campaign_value, indent=2) + "\n"
+    campaign_drift_path.write_text(campaign_drift_encoded, encoding="utf-8")
+    campaign_type_drift["profiles"][0]["campaign_identity"] = {
+        "path": campaign_drift_path.name,
+        "sha256": hashlib.sha256(campaign_drift_encoded.encode()).hexdigest(),
+    }
+    try:
+        verify_corpus(manifest_path, campaign_type_drift)
+    except ValueError:
+        pass
+    else:
+        fail("a type-drifted campaign identity passed")
+
+    safe_invalid_path = scratch / "host-invalid-safe-app.json"
+    safe_invalid_path.write_text(
+        json.dumps(
+            fake_host_invalid_postflight(
+                fake_report(manifest, "n1", SCENARIO_ORDER[0])
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    validate_terminal_host_invalid_report(
+        safe_invalid_path, "n1", "safe-app", SCENARIO_ORDER[0]
+    )
+    minimal_invalid_path = scratch / "host-invalid-minimal.json"
+    minimal_invalid_path.write_text(
+        json.dumps(fake_host_invalid_postflight(fake_minimal_report(manifest, "n1")))
+        + "\n",
+        encoding="utf-8",
+    )
+    validate_terminal_host_invalid_report(
+        minimal_invalid_path, "n1", "minimal", None
+    )
+
+    replaced = copy.deepcopy(manifest)
+    replaced_profile = replaced["profiles"][0]
+    accepted_attempt = replaced_profile["host_attempts"][0]
+    accepted_attempt["attempt"] = 2
+    terminal_scenario = replaced_profile["reports"][0]["scenario"]
+    rules = PROFILE_HARDWARE_RULES[replaced_profile["id"]]
+    process = {
+        "pid": 7,
+        "comm": "fixture-load",
+        "cpu_percent_of_one_logical_cpu": 6.0,
+        "read_bytes_per_sec": 0,
+        "write_bytes_per_sec": 0,
+        "rss_bytes": 4096,
+    }
+    invalid_preflight = {
+        "active_processes": [process],
+        "baseline_report_sha256": None,
+        "boot_identity_sha256": "a" * 64,
+        "cpu_accounting": {"steal_ticks": 0, "total_ticks": 1000},
+        "hardware_identity": {
+            "cpu_model": rules["cpu_contains"],
+            "operating_system": {"id": "fixture", "version_id": "1"},
+            "system_product": "fixture",
+            "system_vendor": "fixture",
+        },
+        "interfering_processes": [process],
+        "inventory_bounds": {
+            "maximum_scanned_processes": 4096,
+            "maximum_reported_processes": 32,
+            "process_arguments_included": False,
+        },
+        "process_interval": {
+            "stable_identity_required": True,
+            "started_processes": 0,
+            "exited_processes": 0,
+            "pid_reuses": 0,
+        },
+        "load_average_after": [0.0, 0.0, 0.0],
+        "load_average_before": [0.0, 0.0, 0.0],
+        "logical_cpus": rules["logical_cpus"],
+        "memory_available_bytes": 1_073_741_824,
+        "reason": "host_interference",
+        "sample_interval_ms": 3000,
+        "schema": "riffdb.app-baseline-host-validity/v2",
+        "thresholds": {
+            "cpu_percent_of_one_logical_cpu": 5.0,
+            "io_bytes_per_sec": 8 * 1024 * 1024,
+            "maximum_whole_cell_steal_percent": 1.0,
+        },
+        "valid": False,
+        "whole_cell": None,
+    }
+    invalid_receipt = {
+        "schema": "riffdb.app-baseline-non-evidentiary/v1",
+        "status": "non_evidentiary",
+        "reason": {
+            "code": "host_interference",
+            "retry": "rerun_on_idle_host",
+        },
+        "requested": {
+            "mode": "full",
+            "profile": "parity",
+            "duration_secs": 90,
+            "reps": 5,
+            "postgres_comparator": "safe-app",
+            "concurrency_sweep": False,
+            "scenario": terminal_scenario,
+        },
+        "partial_phase_evidence": None,
+        "host_validity": {"preflight": invalid_preflight, "postflight": None},
+        "evidence_eligibility": {
+            "eligible": False,
+            "host_idle": False,
+            "reason_codes": ["host_interference"],
+        },
+    }
+    invalid_path = scratch / "workstation-invalid-preflight.json"
+    invalid_encoded = json.dumps(invalid_receipt, indent=2) + "\n"
+    invalid_path.write_text(invalid_encoded, encoding="utf-8")
+    replaced_profile["host_attempts"].insert(
+        0,
+        {
+            "attempt": 1,
+            "status": "host_invalid",
+            "reports": [
+                {
+                    "scenario": terminal_scenario,
+                    "path": invalid_path.name,
+                    "sha256": hashlib.sha256(invalid_encoded.encode()).hexdigest(),
+                }
+            ],
+            "minimal_report": None,
+        },
+    )
+    verify_corpus(manifest_path, replaced)
+
+    drifted_prefix = copy.deepcopy(replaced)
+    drifted_prefix_profile = drifted_prefix["profiles"][0]
+    first_scenario = SCENARIO_ORDER[0]
+    second_scenario = SCENARIO_ORDER[1]
+    prior_report = fake_report(manifest, "workstation", first_scenario)
+    prior_report["qualification_candidate"]["runner_sha256"] = "9" * 64
+    prior_path = scratch / "workstation-drifted-prior.json"
+    prior_encoded = json.dumps(prior_report, indent=2) + "\n"
+    prior_path.write_text(prior_encoded, encoding="utf-8")
+    drifted_prefix_profile["host_attempts"][0]["reports"] = [
+        {
+            "scenario": first_scenario,
+            "path": prior_path.name,
+            "sha256": hashlib.sha256(prior_encoded.encode()).hexdigest(),
+        },
+        {
+            "scenario": second_scenario,
+            "path": invalid_path.name,
+            "sha256": hashlib.sha256(invalid_encoded.encode()).hexdigest(),
+        },
+    ]
+    try:
+        verify_corpus(manifest_path, drifted_prefix)
+    except ValueError:
+        pass
+    else:
+        fail("a host-invalid attempt with prior artifact drift passed")
+
+    permuted = copy.deepcopy(manifest)
+    permuted["profiles"][0]["reports"][0], permuted["profiles"][0]["reports"][1] = (
+        permuted["profiles"][0]["reports"][1],
+        permuted["profiles"][0]["reports"][0],
+    )
+    try:
+        verify_corpus(manifest_path, permuted)
+    except ValueError:
+        pass
+    else:
+        fail("permuted canonical scenario order passed")
 
     invalid = copy.deepcopy(manifest)
     invalid["profiles"][1]["reports"].pop()
@@ -1278,6 +2244,9 @@ def run_self_test(root: Path) -> None:
         sorted(SCENARIOS)[0]
     ]["riffdb"]["p95_ns"]["median"]
     ratio_entry["qualified_ratio_of_backend_medians"] = riffdb_median / 1.459
+    unstable_comparator["evidence_eligibility"][
+        "postgres_central_three_spread_disclosed"
+    ] = [f"{sorted(SCENARIOS)[0]}.p95_ns"]
     disclosed, _ = verify_report(
         unstable_comparator, manifest, "n1", sorted(SCENARIOS)[0], "comparator_spread"
     )
@@ -1296,6 +2265,199 @@ def run_self_test(root: Path) -> None:
     )
     if quiet.get("postgres_stability_disclosure"):
         fail("a stable comparator was marked as disclosed")
+
+    unstable_minimal_comparator = fake_minimal_report(manifest, "n1")
+    minimal_scenario = sorted(SCENARIOS)[0]
+    minimal_entry = unstable_minimal_comparator["comparisons"][
+        "unary_rep_summaries"
+    ][minimal_scenario]
+    minimal_pg = minimal_entry["postgres"]["p95_ns"]
+    minimal_pg.update({
+        "values": [1.0, 1.0, 1.459, 1.459, 1.459],
+        "min": 1.0,
+        "median": 1.459,
+        "max": 1.459,
+        "spread_ratio": 1.459,
+    })
+    minimal_entry["ratios_riffdb_over_postgres"]["p95"][
+        "qualified_ratio_of_backend_medians"
+    ] = minimal_entry["riffdb"]["p95_ns"]["median"] / 1.459
+    unstable_minimal_comparator["evidence_eligibility"][
+        "postgres_central_three_spread_disclosed"
+    ] = [f"{minimal_scenario}.p95_ns"]
+    minimal_disclosed, _, _, _ = verify_minimal_report(
+        unstable_minimal_comparator,
+        manifest,
+        "n1",
+        "minimal_comparator_spread",
+    )
+    if "p95_ns" not in minimal_disclosed[minimal_scenario].get(
+        "postgres_stability_disclosure", []
+    ):
+        fail("an unstable minimal comparator passed without disclosure")
+
+    selected_minimal = fake_minimal_report(manifest, "n1")
+    selected_minimal["unary_qualification"] = fake_report(
+        manifest, "n1", minimal_scenario
+    )["unary_qualification"]
+    try:
+        verify_minimal_report(selected_minimal, manifest, "n1", "selected_minimal")
+    except ValueError:
+        pass
+    else:
+        fail("a minimal report with a unary selector passed")
+
+    workload_drifts = [
+        ("report identity", ("report_id",), "other-workload"),
+        ("full cardinality", ("scale", "organizations"), 11),
+        ("scale shape", ("scale_shape", "tickets_per_project"), 21),
+        (
+            "distribution method",
+            ("configuration", "distribution_method"),
+            "arithmetic mean",
+        ),
+        ("report repetition type", ("reps",), 5.0),
+        ("warmup type", ("configuration", "warmup_iterations"), 20.0),
+        (
+            "selection generation type",
+            ("unary_qualification", "process_generations"),
+            5.0,
+        ),
+        (
+            "summary repetition type",
+            (
+                "comparisons",
+                "unary_rep_summaries",
+                SCENARIO_ORDER[0],
+                "riffdb",
+                "p95_ns",
+                "reps",
+            ),
+            5.0,
+        ),
+        (
+            "timing percentile arithmetic",
+            ("backends", 0, "scenarios", 0, "timing", "p95_ns"),
+            101,
+        ),
+        (
+            "storage device mismatch",
+            ("postgres_storage_medium", "device_model"),
+            "other-device",
+        ),
+        (
+            "PostgreSQL major version drift",
+            ("postgres_durability", "server_version_num"),
+            "170006",
+        ),
+        (
+            "PostgreSQL WAL sync method drift",
+            ("postgres_durability", "wal_sync_method"),
+            "open_datasync",
+        ),
+        (
+            "backend row-count mismatch",
+            ("backends", 0, "scenarios", 0, "last_row_count"),
+            2,
+        ),
+        (
+            "eligibility correctness drift",
+            ("evidence_eligibility", "correctness_clean"),
+            False,
+        ),
+        (
+            "selected p50 summary mismatch",
+            ("backends", 0, "scenarios", 0, "timing"),
+            fake_timing(999),
+        ),
+        (
+            "missing clean shutdown",
+            ("riffdb_process_evidence", 0, "post_shutdown_structural_reopen"),
+            False,
+        ),
+        (
+            "read process cardinality drift",
+            ("riffdb_process_evidence", 0, "read_pipeline_stages", 0, "count"),
+            0,
+        ),
+        (
+            "whole-cell counter mismatch",
+            ("host_validity", "postflight", "cpu_accounting", "total_ticks"),
+            20_001,
+        ),
+    ]
+    for drift_label, path, replacement in workload_drifts:
+        drifted = fake_report(manifest, "n1", SCENARIO_ORDER[0])
+        target = drifted
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = replacement
+        try:
+            verify_report(drifted, manifest, "n1", SCENARIO_ORDER[0], drift_label)
+        except ValueError:
+            pass
+        else:
+            fail(f"{drift_label} passed the frozen workload verifier")
+
+    extra_minimal_row = fake_minimal_report(manifest, "n1")
+    extra_minimal_row["backends"][0]["scenarios"].append(
+        copy.deepcopy(extra_minimal_row["backends"][0]["scenarios"][0])
+    )
+    try:
+        verify_minimal_report(extra_minimal_row, manifest, "n1", "extra_minimal_row")
+    except ValueError:
+        pass
+    else:
+        fail("an extra minimal backend scenario row passed")
+
+    drifted_minimal = fake_minimal_report(manifest, "n1")
+    drifted_minimal["backends"][0]["scenarios"][0]["timing"]["sample_count"] = 1_000.0
+    try:
+        verify_minimal_report(drifted_minimal, manifest, "n1", "minimal_timing_type")
+    except ValueError:
+        pass
+    else:
+        fail("a type-drifted minimal timing cardinality passed")
+
+    minimal_drifts = [
+        (
+            "minimal backend row-count mismatch",
+            ("backends", 0, "scenarios", 0, "last_row_count"),
+            2,
+        ),
+        (
+            "minimal selected p50 mismatch",
+            ("backends", 0, "scenarios", 0, "timing"),
+            fake_timing(999),
+        ),
+        (
+            "minimal clean-shutdown drift",
+            ("riffdb_process_evidence", 0, "post_shutdown_structural_reopen"),
+            False,
+        ),
+        (
+            "minimal committed-operation drift",
+            ("riffdb_process_evidence", 0, "writer", "logical_commands_committed"),
+            23_219,
+        ),
+        (
+            "minimal eligibility drift",
+            ("evidence_eligibility", "comparison_complete"),
+            False,
+        ),
+    ]
+    for drift_label, path, replacement in minimal_drifts:
+        drifted = fake_minimal_report(manifest, "n1")
+        target = drifted
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = replacement
+        try:
+            verify_minimal_report(drifted, manifest, "n1", drift_label)
+        except ValueError:
+            pass
+        else:
+            fail(f"{drift_label} passed the frozen minimal verifier")
 
     # The same instability in the gated backend, in an otherwise self-consistent
     # receipt. The pre-existing "spread" arm above mutates only the summary and
@@ -1386,10 +2548,40 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--baseline", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--validate-host-invalid-receipt", type=Path)
+    parser.add_argument("--profile", choices=sorted(PROFILE_HARDWARE_RULES))
+    parser.add_argument("--comparator", choices=("safe-app", "minimal"))
+    parser.add_argument("--scenario", choices=sorted(SCENARIOS))
     args = parser.parse_args()
-    if args.self_test and any((args.manifest, args.baseline, args.output)):
+    if args.self_test and any(
+        (
+            args.manifest,
+            args.baseline,
+            args.output,
+            args.validate_host_invalid_receipt,
+            args.profile,
+            args.comparator,
+            args.scenario,
+        )
+    ):
         parser.error("--self-test is exclusive")
-    if not args.self_test and args.manifest is None:
+    if args.validate_host_invalid_receipt is not None:
+        if (
+            any((args.manifest, args.baseline, args.output))
+            or args.profile is None
+            or args.comparator is None
+            or (args.comparator == "safe-app") != (args.scenario is not None)
+        ):
+            parser.error(
+                "--validate-host-invalid-receipt requires --profile, --comparator, "
+                "and exactly one --scenario for safe-app"
+            )
+    elif any((args.profile, args.comparator, args.scenario)):
+        parser.error(
+            "--profile, --comparator, and --scenario are only valid with "
+            "--validate-host-invalid-receipt"
+        )
+    elif not args.self_test and args.manifest is None:
         parser.error("--manifest is required")
     return args
 
@@ -1397,23 +2589,40 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     if args.self_test:
-        root = Path.home() / "tmp" / "riffdb-wp674-verifier-self-test"
-        run_self_test(root)
+        task_tmp = Path.home() / "tmp"
+        task_tmp.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="riffdb-wp674-verifier-", dir=task_tmp) as root:
+            isolated = Path(root)
+            bounded_io_self_test(isolated / "bounded-io")
+            run_self_test(isolated / "verifier")
         print("WP-674 unary verifier self-test: passed")
         return 0
-    manifest_path = args.manifest.resolve()
+    if args.validate_host_invalid_receipt is not None:
+        validate_terminal_host_invalid_report(
+            args.validate_host_invalid_receipt,
+            args.profile,
+            args.comparator,
+            args.scenario,
+        )
+        print("WP-674 host-invalid receipt: valid")
+        return 0
+    manifest_path = args.manifest
     manifest, _ = load_json(manifest_path, MAX_MANIFEST_BYTES)
     candidate = verify_corpus(manifest_path, manifest)
     output = candidate
     if args.baseline is not None:
-        baseline, _ = load_json(args.baseline.resolve(), MAX_BASELINE_BYTES)
+        baseline, _ = load_json(args.baseline, MAX_BASELINE_BYTES)
         output = verify_against_baseline(candidate, baseline)
     encoded = json.dumps(output, indent=2, sort_keys=True) + "\n"
     if args.output is None:
         print(encoded, end="")
     else:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(encoded, encoding="utf-8")
+        exclusive_write(
+            args.output,
+            encoded.encode(),
+            MAX_BASELINE_BYTES,
+            "WP-674 verifier output",
+        )
     return 0
 
 
