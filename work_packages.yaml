@@ -3713,28 +3713,27 @@ work_packages:
 
 - id: WP-721
   closure:
-    status: partial
-    evidence: crates/riffdb-contract-compiler/tests/cross_aggregate_writes.rs
-    decision: The compiler proof, union conflict ownership, and executable IR V19 are delivered, and
-      single-aggregate contracts keep byte-identical locks and plan hashes. The canonical lease order
-      was already implemented -- lower_conflict_keys sorts a deduplicated conflict-key set, and
-      ConflictKeyBuilder namespaces each key by aggregate, so that sort is already a total order over
-      (aggregate, key). Deadlock-freedom is now proved by an arm that fails when the canonical sort
-      is removed. The crash arm is delivered against a second contract added beside the existing
-      one, and atomicity holds on both commit profiles -- nothing partial survives a pre-commit
-      crash, and a post-commit crash recovers both aggregates under one commit sequence. Aborting
-      after the commit instead of before makes it fail, so it is load-bearing. Building it found an
-      unstated restriction, since fixed. A cross-aggregate command's non-locality aggregate could not
-      carry an index. Index entries were partitioned by the command's single partition key,
-      namespaced by the locality aggregate, so keeping that key made validate_persisted_key reject
-      the durable state at the next startup, while giving the index its owner's key made
-      CommandWriteSetPlanV1 refuse the write plan. Unreachable from both directions, and found by a
-      clean commit-and-reopen rather than by a crash. owning_partition_key now derives each entry's
-      key from the index owner's aggregate, and the write plan accepts a different aggregate
-      namespace on the same route while still refusing a different route. No compatibility handling
-      was needed -- for a single-aggregate command the owner is the command's aggregate and the key
-      is unchanged, and the previously broken shape had no durable representation to migrate.
-      Detailed in docs/performance/wp-721-cross-aggregate-conflict-ownership.md.
+    status: complete
+    completed_at: "2026-09-03"
+    requirements_satisfied: [PERF-005]
+    evidence: crates/riffdb-contract-compiler/tests/cross_aggregate_writes.rs proves identical-route
+      admission, per-binding conflict ownership, RDB-C017 cross-route refusal, V19 round-trip, and
+      least-sufficient legacy identity. The
+      a_cross_aggregate_union_with_a_state_derived_conflict_key_is_rejected,
+      cross_aggregate_conflict_acquisition_is_globally_ordered_and_deadlock_free, and
+      disjoint_cross_aggregate_union_conflicts_do_not_serialize arms prove the canonical global
+      lease order and independent acquisition of disjoint two-aggregate unions without sleeps.
+      crash_before_cross_aggregate_commit_leaves_both_aggregates_absent and
+      crash_after_cross_aggregate_commit_preserves_both_aggregates prove atomicity and repeatable
+      recovery under Standard and Hardened commit profiles; the post-commit arm carries indexes for
+      both aggregates. a_cross_aggregate_index_entry_may_change_namespace_but_not_route proves
+      per-owner index partitioning accepts only the compiler-proved route. Existing generated and
+      compatibility suites retain the byte-exact single-aggregate formats and identities. Detailed
+      implementation evidence is retained in docs/performance/wp-721-cross-aggregate-conflict-ownership.md.
+    known_limitations: Cross-partition reads and writes remain rejected. Conflict ownership must be
+      completely input-computable and bounded, and applications cannot select the conflict union,
+      acquisition order, partition placement, transaction boundary, or durability behavior.
+    follow_ups: []
   name: Partition-local cross-aggregate command writes
   depends_on: [WP-040, WP-080]
   objective: Close ADR-0170 by admitting a command whose create/mutate bindings derive one

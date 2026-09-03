@@ -6,16 +6,24 @@ mod support;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::task::{Context, Poll, Waker};
+use std::time::{Duration, Instant};
 
 use riffdb_commit::{
     ApplicationCommitNotificationSink, CommandExecutionAdmissionError, CommandExecutionResult,
     CommitCallTerminal, CommitTelemetry, CommitTelemetryEvent, CommittedOutcomeDisposition,
     CoordinatorLifecycleState,
 };
+use riffdb_conflict::{
+    CancellationToken, ConflictManager, ConflictManagerConfig, ShardedConflictManager,
+};
+use riffdb_contract_compiler::{CompilerDiagnosticCode, compile_contract_source};
 use riffdb_storage_api::AuthoritativePointReader;
 use riffdb_storage_api::{ApplicationCommandTransactionPort, EmptyCommandBatch};
 use riffdb_storage_redb::{RedbTestController, RedbTestOperation, RedbTestPhase};
-use riffdb_types::{CommitSequence, ExecutionFailureCode};
+use riffdb_types::{
+    AggregateTypeId, CommitSequence, ConflictKey, ConflictKeyBuilder, ExecutionFailureCode,
+};
 
 use support::{
     BudgetDatabase, BulkRowsDatabase, CountingProvenanceSource,
@@ -25,6 +33,122 @@ use support::{
     start_coordinator_with_notifications, start_group_coordinator_with_commit_telemetry,
     start_group_coordinator_with_notifications,
 };
+
+const CROSS_AGGREGATE_WITH_DYNAMIC_CONFLICT: &str = r"
+contract DynamicUnion version 1 {
+  entity Product {
+    key (tenant_id: uuid, product_id: uuid)
+    field stock: u64
+    delete_policy no_inbound
+  }
+  entity Order {
+    key (tenant_id: uuid, order_id: uuid)
+    delete_policy no_inbound
+  }
+  aggregate ProductData {
+    root Product
+    partition_by tenant_id
+    conflict_key (tenant_id, stock)
+  }
+  aggregate OrderData {
+    root Order
+    partition_by tenant_id
+    conflict_key (tenant_id, order_id)
+  }
+  command Checkout {
+    input request_id: uuid
+    input tenant_id: uuid
+    input product_id: uuid
+    input order_id: uuid
+    idempotency_key request_id
+    mutate Product(tenant_id, product_id) as product else ProductMissing {}
+    create Order(tenant_id, order_id) as order else OrderExists {}
+    set product.stock = product.stock
+    return CheckoutCompleted {}
+  }
+}
+";
+
+// req: PERF-005
+#[test]
+fn a_cross_aggregate_union_with_a_state_derived_conflict_key_is_rejected() {
+    let error = compile_contract_source(CROSS_AGGREGATE_WITH_DYNAMIC_CONFLICT)
+        .expect_err("every conflict key in the cross-aggregate union must be input-computable");
+    let diagnostics = match error {
+        riffdb_contract_compiler::CompilationError::Semantic(diagnostics) => diagnostics,
+        other => panic!("expected a semantic rejection, got {other:?}"),
+    };
+    assert!(
+        diagnostics.as_slice().iter().any(|diagnostic| {
+            diagnostic.code() == CompilerDiagnosticCode::ConflictNotInputComputable
+        }),
+        "a state-derived member of the union must raise RDB-C016"
+    );
+}
+
+// req: PERF-005
+#[test]
+fn disjoint_cross_aggregate_union_conflicts_do_not_serialize() {
+    fn key(aggregate: u32, value: u64) -> ConflictKey {
+        let mut builder =
+            ConflictKeyBuilder::new(AggregateTypeId::new(aggregate).expect("nonzero aggregate"));
+        builder.push_u64(value).expect("bounded component");
+        builder.finish().expect("conflict key")
+    }
+
+    let manager =
+        ShardedConflictManager::new(ConflictManagerConfig::default()).expect("conflict manager");
+    let runtime = runtime();
+    let deadline = || {
+        Instant::now()
+            .checked_add(Duration::from_secs(30))
+            .expect("future deadline")
+    };
+    let first = runtime
+        .block_on(manager.acquire_mut(
+            vec![key(1, 11), key(2, 12)],
+            deadline(),
+            CancellationToken::new(),
+        ))
+        .expect("first cross-aggregate union acquires");
+
+    let mut second = manager.acquire_mut(
+        vec![key(1, 21), key(2, 22)],
+        deadline(),
+        CancellationToken::new(),
+    );
+    let mut context = Context::from_waker(Waker::noop());
+    let second = match second.as_mut().poll(&mut context) {
+        Poll::Ready(Ok(lease)) => lease,
+        Poll::Ready(Err(error)) => panic!("disjoint union was refused: {error}"),
+        Poll::Pending => panic!("disjoint cross-aggregate unions must not serialize"),
+    };
+    assert_eq!(first.key_count(), 2);
+    assert_eq!(second.key_count(), 2);
+
+    // The control intersects both held unions. It must remain blocked after
+    // only one lease drops, proving the ready result above came from key
+    // disjointness rather than from incomplete capability retention.
+    let mut intersecting = manager.acquire_mut(
+        vec![key(1, 11), key(2, 22)],
+        deadline(),
+        CancellationToken::new(),
+    );
+    assert!(matches!(
+        intersecting.as_mut().poll(&mut context),
+        Poll::Pending
+    ));
+    drop(first);
+    assert!(matches!(
+        intersecting.as_mut().poll(&mut context),
+        Poll::Pending
+    ));
+    drop(second);
+    runtime
+        .block_on(intersecting)
+        .expect("dropping both intersected unions releases the control")
+        .release();
+}
 
 #[test]
 // req: BLK-066, BLK-069

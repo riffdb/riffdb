@@ -8234,6 +8234,7 @@ fn cross_aggregate_audit_transition(
 /// The failure this excludes is a torn write in which one aggregate's entity
 /// and index entry survive and the other's do not. A single-aggregate arm
 /// cannot see that, which is why this one walks both.
+// req: PERF-005
 #[test]
 fn crash_before_cross_aggregate_commit_leaves_both_aggregates_absent() {
     for (label, profile) in [
@@ -8253,6 +8254,7 @@ fn crash_before_cross_aggregate_commit_leaves_both_aggregates_absent() {
 
 /// ADR-0170, WP-721: a crash after the commit preserves BOTH aggregates, under
 /// one commit sequence, and the second recovery observes the same state.
+// req: PERF-005
 #[test]
 fn crash_after_cross_aggregate_commit_preserves_both_aggregates() {
     for (label, profile) in [
@@ -8294,6 +8296,7 @@ fn crash_after_cross_aggregate_commit_preserves_both_aggregates() {
 /// route. This pins both halves of that: the same route under another
 /// aggregate is admitted, and a *different* route is still refused, because
 /// `RDB-C017` rejecting cross-partition writes is the property ADR-0170 kept.
+// req: PERF-005
 #[test]
 fn a_cross_aggregate_index_entry_may_change_namespace_but_not_route() {
     let fixture = cross_aggregate_fixture();
