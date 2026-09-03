@@ -4119,6 +4119,7 @@ work_packages:
     crates/riffdb-testkit/**, clients/**, templates/**,
     fixtures/adapters/bulk-conformance/**, fixtures/application-parity/**,
     fixtures/compatibility/operation-adapters-v1/riffdb-cli/app.rs.in,
+    fixtures/compatibility/public-adapter-freeze-v1.tsv,
     fixtures/driver/**, examples/**, tests/**, scripts/**, release/**,
     docs/SUMMARY.md, docs/contracts/**, docs/getting-started/**,
     docs/integrations/**, docs/reference/**]
