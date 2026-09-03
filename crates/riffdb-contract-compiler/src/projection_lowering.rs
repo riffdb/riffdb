@@ -115,11 +115,8 @@ pub(crate) fn lower_projections(
         let group_schema =
             match ProjectionGroupSchema::new(projection.id, group_components, measures) {
                 Ok(group_schema) => group_schema,
-                Err(_) => {
-                    diagnostics.push(CompilerDiagnostic::new(
-                        CompilerDiagnosticCode::BoundExceeded,
-                        projection.span,
-                    ));
+                Err(error) => {
+                    diagnostics.push(CompilerDiagnostic::from_ir_error(error, projection.span));
                     continue;
                 }
             };

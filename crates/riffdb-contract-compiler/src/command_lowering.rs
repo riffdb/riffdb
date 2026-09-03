@@ -15,7 +15,9 @@ use riffdb_contract_ir::{
 use riffdb_contract_syntax::Span;
 use riffdb_types::{CanonicalValue, ContractLineage, EntityTypeId, FieldId, InvariantId};
 
-use crate::diagnostic::{CompilerDiagnostic, CompilerDiagnosticCode, CompilerDiagnostics};
+use crate::diagnostic::{
+    CompilerBoundResource, CompilerDiagnostic, CompilerDiagnosticCode, CompilerDiagnostics,
+};
 use crate::hir::{
     HirBinding, HirCommand, HirDecisionAction, HirEffect, HirExpressionArena, HirExpressionNode,
     HirOutcome, HirWorkflowLeaseOperation, TypedContractHir,
@@ -1662,8 +1664,10 @@ fn lower_commit_checks(
                 )
             } else {
                 let Ok(index) = u32::try_from(root_validation_reads.len()) else {
-                    diagnostics.push(CompilerDiagnostic::new(
-                        CompilerDiagnosticCode::BoundExceeded,
+                    diagnostics.push(CompilerDiagnostic::bound_exceeded(
+                        CompilerBoundResource::DeclarationCount,
+                        root_validation_reads.len(),
+                        u32::MAX as usize,
                         target.span,
                     ));
                     continue;
@@ -1824,8 +1828,14 @@ fn push_hir_node(
     value_type: riffdb_contract_ir::ValueType,
     span: Span,
 ) -> Result<ExprId, CompilerDiagnostic> {
-    let index = u32::try_from(arena.nodes.len())
-        .map_err(|_| CompilerDiagnostic::new(CompilerDiagnosticCode::BoundExceeded, span))?;
+    let index = u32::try_from(arena.nodes.len()).map_err(|_| {
+        CompilerDiagnostic::bound_exceeded(
+            CompilerBoundResource::DeclarationCount,
+            arena.nodes.len(),
+            u32::MAX as usize,
+            span,
+        )
+    })?;
     arena.nodes.push(HirExpressionNode {
         kind,
         value_type,
@@ -1850,8 +1860,10 @@ fn command_instructions(
         .sum();
     for (index, requirement) in command.requirements.iter().enumerate() {
         let Ok(requirement_index) = u32::try_from(index) else {
-            diagnostics.push(CompilerDiagnostic::new(
-                CompilerDiagnosticCode::BoundExceeded,
+            diagnostics.push(CompilerDiagnostic::bound_exceeded(
+                CompilerBoundResource::DeclarationCount,
+                index,
+                u32::MAX as usize,
                 requirement.name_span,
             ));
             continue;

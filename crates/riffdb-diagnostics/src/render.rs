@@ -336,6 +336,7 @@ mod tests {
         assert!(matches!(error, CompilationError::Syntax(_)));
     }
 
+    // req: BLK-026
     #[test]
     fn compiler_bound_renderer_preserves_closed_actual_and_maximum() {
         let error = CompilationError::Semantic(CompilerDiagnostics::single(

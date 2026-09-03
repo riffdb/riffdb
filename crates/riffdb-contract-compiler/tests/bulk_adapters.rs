@@ -42,6 +42,7 @@ fn adapter_collection_sources_compile_to_one_bounded_v5_plan() {
     }
 }
 
+// req: BLK-022, BLK-023
 #[test]
 fn neutral_index_rich_hundred_element_command_passes_correlated_budgets() {
     let source = include_str!("../../../fixtures/contracts/bulk/indexed-mutations.riff");

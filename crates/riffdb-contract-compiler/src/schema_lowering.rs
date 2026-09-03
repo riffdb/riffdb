@@ -11,7 +11,8 @@ use riffdb_contract_syntax::Span;
 use riffdb_types::{EnumTypeId, EnumVariantId};
 
 use crate::diagnostic::{
-    CompilerDiagnostic, CompilerDiagnosticCause, CompilerDiagnosticCode, CompilerDiagnostics,
+    CompilerBoundResource, CompilerDiagnostic, CompilerDiagnosticCause, CompilerDiagnosticCode,
+    CompilerDiagnostics,
 };
 use crate::hir::{HirDeletePolicy, HirEffect, HirInvariant, TypedContractHir};
 
@@ -866,15 +867,15 @@ fn lower_entities(
             };
             match key_component(field.value_type.clone(), hir) {
                 Ok(component) => key_components.push(component),
-                Err(code) => diagnostics.push(CompilerDiagnostic::new(code, field.type_span)),
+                Err(error) => diagnostics.push(key_component_diagnostic(error, field.type_span)),
             }
         }
-        let Ok(primary_key) = KeySchema::new(KeyPurpose::Entity(entity.id), key_components) else {
-            diagnostics.push(CompilerDiagnostic::new(
-                CompilerDiagnosticCode::BoundExceeded,
-                entity.span,
-            ));
-            continue;
+        let primary_key = match KeySchema::new(KeyPurpose::Entity(entity.id), key_components) {
+            Ok(primary_key) => primary_key,
+            Err(error) => {
+                diagnostics.push(CompilerDiagnostic::from_ir_error(error, entity.span));
+                continue;
+            }
         };
         let invariants = entity
             .invariants
@@ -889,9 +890,10 @@ fn lower_entities(
                     diagnostics.push(ir_diagnostic(*span));
                     continue;
                 };
-                match operational_index_components(field.value_type.clone(), *encoding, hir) {
+                match operational_index_components(field.value_type.clone(), *encoding, hir, *span)
+                {
                     Ok(lowered) => components.extend(lowered),
-                    Err(code) => diagnostics.push(CompilerDiagnostic::new(code, *span)),
+                    Err(diagnostic) => diagnostics.push(diagnostic),
                 }
             }
             let key_schema = KeySchema::index(index.id, entity.id, components, primary_key.clone());
@@ -906,10 +908,9 @@ fn lower_entities(
                 )
             }) {
                 Ok(schema) => indexes.push(schema),
-                Err(_) => diagnostics.push(CompilerDiagnostic::new(
-                    CompilerDiagnosticCode::BoundExceeded,
-                    index.span,
-                )),
+                Err(error) => {
+                    diagnostics.push(CompilerDiagnostic::from_ir_error(error, index.span))
+                }
             }
         }
         match EntitySchema::new(
@@ -1098,8 +1099,11 @@ fn lower_aggregates(
         let partition_component =
             match key_component(aggregate.keys.partition.value_type.clone(), hir) {
                 Ok(component) => component,
-                Err(code) => {
-                    diagnostics.push(CompilerDiagnostic::new(code, aggregate.keys.partition.span));
+                Err(error) => {
+                    diagnostics.push(key_component_diagnostic(
+                        error,
+                        aggregate.keys.partition.span,
+                    ));
                     continue;
                 }
             };
@@ -1107,7 +1111,7 @@ fn lower_aggregates(
         for conflict in &aggregate.keys.conflicts {
             match key_component(conflict.value_type.clone(), hir) {
                 Ok(component) => conflict_components.push(component),
-                Err(code) => diagnostics.push(CompilerDiagnostic::new(code, conflict.span)),
+                Err(error) => diagnostics.push(key_component_diagnostic(error, conflict.span)),
             }
         }
         let keys = KeySchema::new(
@@ -1132,12 +1136,12 @@ fn lower_aggregates(
                 },
             )
         });
-        let Ok(keys) = keys else {
-            diagnostics.push(CompilerDiagnostic::new(
-                CompilerDiagnosticCode::BoundExceeded,
-                aggregate.span,
-            ));
-            continue;
+        let keys = match keys {
+            Ok(keys) => keys,
+            Err(error) => {
+                diagnostics.push(CompilerDiagnostic::from_ir_error(error, aggregate.span));
+                continue;
+            }
         };
         let invariants = aggregate
             .invariants
@@ -1182,46 +1186,62 @@ fn lower_invariant(
 fn key_component(
     value_type: ValueType,
     hir: &TypedContractHir,
-) -> Result<KeyComponentSchema, CompilerDiagnosticCode> {
+) -> Result<KeyComponentSchema, riffdb_contract_ir::IrValidationError> {
     let variants = match value_type.enum_type_id() {
         Some(enum_id) => enum_variants(enum_id, hir),
         None => Vec::new(),
     };
-    KeyComponentSchema::new(value_type, variants).map_err(|error| match error {
-        riffdb_contract_ir::IrValidationError::LimitExceeded { .. }
-        | riffdb_contract_ir::IrValidationError::SizeOverflow { .. } => {
-            CompilerDiagnosticCode::BoundExceeded
+    KeyComponentSchema::new(value_type, variants)
+}
+
+fn key_component_diagnostic(
+    error: riffdb_contract_ir::IrValidationError,
+    span: Span,
+) -> CompilerDiagnostic {
+    match error {
+        error @ (riffdb_contract_ir::IrValidationError::LimitExceeded { .. }
+        | riffdb_contract_ir::IrValidationError::SizeOverflow { .. }) => {
+            CompilerDiagnostic::from_ir_error(error, span)
         }
-        _ => CompilerDiagnosticCode::InvalidType,
-    })
+        _ => CompilerDiagnostic::new(CompilerDiagnosticCode::InvalidType, span),
+    }
 }
 
 fn operational_index_components(
     logical: ValueType,
     encoding: riffdb_contract_ir::IndexFieldEncodingV1,
     hir: &TypedContractHir,
-) -> Result<Vec<KeyComponentSchema>, CompilerDiagnosticCode> {
+    span: Span,
+) -> Result<Vec<KeyComponentSchema>, CompilerDiagnostic> {
     use riffdb_contract_ir::{
         IndexFieldEncodingV1, TextKeyProfileV1, UNICODE_FOLD_V1_MAXIMUM_EXPANSION,
     };
 
     match encoding {
-        IndexFieldEncodingV1::Canonical => key_component(logical, hir).map(|value| vec![value]),
+        IndexFieldEncodingV1::Canonical => key_component(logical, hir)
+            .map(|value| vec![value])
+            .map_err(|error| key_component_diagnostic(error, span)),
         IndexFieldEncodingV1::Presence => {
             let inner = logical
                 .optional_inner()
                 .filter(|inner| inner.is_authoritative_key_scalar())
-                .ok_or(CompilerDiagnosticCode::InvalidType)?;
+                .ok_or_else(|| {
+                    CompilerDiagnostic::new(CompilerDiagnosticCode::InvalidType, span)
+                })?;
             Ok(vec![
-                key_component(ValueType::u64(), hir)?,
-                key_component(inner.clone(), hir)?,
+                key_component(ValueType::u64(), hir)
+                    .map_err(|error| key_component_diagnostic(error, span))?,
+                key_component(inner.clone(), hir)
+                    .map_err(|error| key_component_diagnostic(error, span))?,
             ])
         }
         IndexFieldEncodingV1::TextKey(profile) => {
             let maximum = logical
                 .byte_bound()
                 .filter(|_| logical.tag() == riffdb_contract_ir::ValueTypeTag::String)
-                .ok_or(CompilerDiagnosticCode::InvalidType)?;
+                .ok_or_else(|| {
+                    CompilerDiagnostic::new(CompilerDiagnosticCode::InvalidType, span)
+                })?;
             let maximum = match profile {
                 TextKeyProfileV1::BinaryUtf8 => maximum,
                 // ADR-0172. NFKC can turn one code point into many, so a folded
@@ -1230,10 +1250,15 @@ fn operational_index_components(
                 // against the pinned tables in `riffdb_types::unicode_fold`.
                 TextKeyProfileV1::UnicodeFold => maximum
                     .checked_mul(UNICODE_FOLD_V1_MAXIMUM_EXPANSION)
-                    .ok_or(CompilerDiagnosticCode::BoundExceeded)?,
+                    .ok_or_else(|| {
+                        CompilerDiagnostic::arithmetic_overflow(
+                            CompilerBoundResource::KeyBytes,
+                            span,
+                        )
+                    })?,
             };
             riffdb_contract_ir::KeyComponentSchema::ordered_bytes(maximum)
-                .map_err(|_| CompilerDiagnosticCode::BoundExceeded)
+                .map_err(|error| CompilerDiagnostic::from_ir_error(error, span))
                 .map(|value| vec![value])
         }
     }
@@ -1348,7 +1373,11 @@ contract Docs version 1 {
     /// Lowers a vector_field contract expecting rejection, returning the
     /// diagnostic matching `code` at `spanned` (AGENTS.md: every compiler
     /// diagnostic needs a source-span snapshot plus semantic assertion).
-    fn vector_rejection(source: &str, code: CompilerDiagnosticCode, spanned: &str) -> Span {
+    fn vector_rejection(
+        source: &str,
+        code: CompilerDiagnosticCode,
+        spanned: &str,
+    ) -> CompilerDiagnostic {
         let document = parse_contract(source).expect("syntax");
         let symbols = allocate_genesis_symbols(&document).expect("symbols");
         let types = resolve_declared_types(&document, &symbols).expect("types");
@@ -1360,12 +1389,13 @@ contract Docs version 1 {
             .iter()
             .find(|diagnostic| diagnostic.code() == code && diagnostic.primary_span() == expected)
             .unwrap_or_else(|| panic!("expected {code:?} at {expected:?}; found {diagnostics:?}"));
-        found.primary_span()
+        found.clone()
     }
 
+    // req: BLK-026
     #[test]
     fn vector_field_rejects_zero_dimension_at_its_span() {
-        vector_rejection(
+        let diagnostic = vector_rejection(
             r#"
 contract Invalid version 1 {
   entity Document {
@@ -1378,11 +1408,16 @@ contract Invalid version 1 {
             CompilerDiagnosticCode::BoundExceeded,
             "0",
         );
+        let bound = diagnostic.bound().expect("closed bound evidence");
+        assert_eq!(bound.resource(), CompilerBoundResource::DeclarationCount);
+        assert_eq!(bound.actual(), 0);
+        assert_eq!(bound.maximum(), 4_096);
     }
 
+    // req: BLK-026
     #[test]
     fn vector_field_rejects_oversized_dimension_at_its_span() {
-        vector_rejection(
+        let diagnostic = vector_rejection(
             r#"
 contract Invalid version 1 {
   entity Document {
@@ -1395,6 +1430,10 @@ contract Invalid version 1 {
             CompilerDiagnosticCode::BoundExceeded,
             "4097",
         );
+        let bound = diagnostic.bound().expect("closed bound evidence");
+        assert_eq!(bound.resource(), CompilerBoundResource::DeclarationCount);
+        assert_eq!(bound.actual(), 4_097);
+        assert_eq!(bound.maximum(), 4_096);
     }
 
     #[test]
