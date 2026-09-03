@@ -25,6 +25,7 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
+// req: OQ-033, OQ-039, OQ-041
 #[test]
 fn every_real_point_dependency_and_dependent_batch_matches_the_frozen_inventory() {
     let root = workspace_root();
@@ -91,6 +92,11 @@ fn every_real_point_dependency_and_dependent_batch_matches_the_frozen_inventory(
                         .iter()
                         .find(|candidate| candidate.binding() == source_binding)
                         .expect("dependency is an earlier step");
+                    assert_eq!(
+                        source_step.internal_partition_key_schema().components(),
+                        step.internal_partition_key_schema().components(),
+                        "relationship dependency must retain one type-exact partition route",
+                    );
                     assert!(step.dependencies().contains(source_binding));
                     assert_eq!(
                         predicate.operator(),
@@ -100,13 +106,14 @@ fn every_real_point_dependency_and_dependent_batch_matches_the_frozen_inventory(
                             QueryPredicateOperator::Equal
                         }
                     );
-                    let (shape, access_key_bytes) = match step.access() {
+                    let (shape, access_key_bytes, maximum_probes) = match step.access() {
                         QueryAccessKind::Point { key_fields } => {
                             assert!(!collection);
                             assert!(key_fields.contains(&predicate.field().to_owned()));
                             (
                                 "point",
                                 step.internal_entity_key_schema().maximum_encoded_bytes(),
+                                1,
                             )
                         }
                         QueryAccessKind::DependentPointBatch {
@@ -122,6 +129,7 @@ fn every_real_point_dependency_and_dependent_batch_matches_the_frozen_inventory(
                             (
                                 "dependent-batch",
                                 step.internal_entity_key_schema().maximum_encoded_bytes(),
+                                step.maximum_rows(),
                             )
                         }
                         QueryAccessKind::Index { .. } => {
@@ -131,6 +139,7 @@ fn every_real_point_dependency_and_dependent_batch_matches_the_frozen_inventory(
                                 step.internal_index_key_schema()
                                     .expect("index access key schema")
                                     .maximum_encoded_bytes(),
+                                step.maximum_rows().saturating_add(1),
                             )
                         }
                         QueryAccessKind::ExpansionIndex { .. } => {
@@ -140,6 +149,7 @@ fn every_real_point_dependency_and_dependent_batch_matches_the_frozen_inventory(
                                 step.internal_index_key_schema()
                                     .expect("expansion index access key schema")
                                     .maximum_encoded_bytes(),
+                                step.maximum_rows().saturating_add(1),
                             )
                         }
                         QueryAccessKind::PartitionSetIndex { .. } => {
@@ -169,8 +179,36 @@ fn every_real_point_dependency_and_dependent_batch_matches_the_frozen_inventory(
                     } else {
                         "none"
                     };
+                    let authority = program
+                        .authorization()
+                        .iter()
+                        .find(|access| access.entity() == step.entity())
+                        .expect("dependent target has compiler-derived authority");
+                    assert!(authority.maximum_rows() >= step.maximum_rows());
+                    assert!(
+                        step.selected_fields()
+                            .iter()
+                            .chain(step.predicate_fields())
+                            .all(|field| authority.fields().contains(field)),
+                        "selected and dependency fields must be authorized",
+                    );
+                    let explain = program.explain().lines().join("\n");
+                    let expected_explain = if collection {
+                        format!("dependent primary-key batch from {source_binding}.{source_field}")
+                    } else {
+                        match step.access() {
+                            QueryAccessKind::Point { .. } => "primary-key".to_owned(),
+                            QueryAccessKind::Index { index, .. }
+                            | QueryAccessKind::ExpansionIndex { index, .. } => {
+                                format!("index {index}")
+                            }
+                            _ => unreachable!("relationship inventory shape handled above"),
+                        }
+                    };
+                    assert!(explain.contains(&expected_explain));
+                    let cost = program.cost();
                     inventory.push(format!(
-                        "{}/{} {}.{} <- {}.{} shape={} driver_rows<={} target_rows<={} access_key_bytes<={} missing={} cursor={} authority=sealed plan_identity=sealed",
+                        "{}/{} {}.{} <- {}.{} shape={} partition=shared driver_rows<={} fanout_rows<={} probes<={} access_key_bytes<={} query_intermediates<={} query_projected_values<={} query_result_bytes<={} missing={} cursor={} authority=sealed explain=sealed plan_identity=sealed",
                         domain.name,
                         query,
                         step.binding(),
@@ -180,7 +218,11 @@ fn every_real_point_dependency_and_dependent_batch_matches_the_frozen_inventory(
                         shape,
                         source_step.maximum_rows(),
                         step.maximum_rows(),
+                        maximum_probes,
                         total_key_bytes,
+                        cost.intermediate_rows(),
+                        cost.projected_values(),
+                        cost.encoded_result_bytes(),
                         missing,
                         cursor,
                     ));
@@ -203,8 +245,9 @@ fn every_real_point_dependency_and_dependent_batch_matches_the_frozen_inventory(
     );
 }
 
+// req: OQ-042
 #[test]
-fn relationship_runtime_remains_one_point_batch_without_join_operators() {
+fn relationship_runtime_contains_no_unaccepted_join_operator() {
     let root = workspace_root();
     let ir = fs::read_to_string(root.join("crates/riffdb-query-ir/src/plan.rs"))
         .expect("query IR source");
@@ -223,8 +266,17 @@ fn relationship_runtime_remains_one_point_batch_without_join_operators() {
             "relationship runtime unexpectedly contains {forbidden}"
         );
     }
+    if ir.contains("ExpansionIndex") {
+        let amendment = fs::read_to_string(
+            root.join("adr/0185-relational-operators-in-the-candidate-algebra.md"),
+        )
+        .expect("accepted successor relationship amendment");
+        assert!(amendment.contains("status: accepted"));
+        assert!(amendment.contains("**One-to-many expansion.**"));
+    }
 }
 
+// req: OQ-041, OQ-043
 #[test]
 fn memory_and_redb_share_one_position_preserving_policy_aware_batch_contract() {
     let root = workspace_root();

@@ -2792,4 +2792,145 @@ query list_members_exact(
             "lazy first-touch of a missing ENTITIES table must keep the pre-R3 integrity taxonomy"
         );
     }
+
+    // req: OQ-041, OQ-043
+    #[test]
+    fn dependent_point_batch_preserves_position_and_missing_semantics() {
+        use riffdb_query_executor::{BoundPredicate, QueryReadView};
+        use riffdb_query_ir::{QueryAccessKind, QueryPredicateOperator};
+
+        let bundle = compile_contract_source(CONTRACT).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let program = compile_query(
+            &parse_query(include_str!(
+                "../../../queries/ticketdesk/ticket_page.riffq"
+            ))
+            .expect("parse"),
+            &catalog,
+        )
+        .expect("program");
+        let step = program
+            .steps()
+            .iter()
+            .find(|step| matches!(step.access(), QueryAccessKind::DependentPointBatch { .. }))
+            .expect("labels dependent batch step");
+        assert!(step.cursor_parameter().is_none());
+        let QueryAccessKind::DependentPointBatch { key_fields, .. } = step.access() else {
+            unreachable!();
+        };
+        let organization = CanonicalValue::Uuid([1; 16]);
+        let binding = DurableKeySchemaBindingV1::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+        );
+        let access = program
+            .internal_entity_access("Label")
+            .expect("Label access");
+        let label_record = |ordinal: u8| {
+            let label = CanonicalValue::Uuid([ordinal; 16]);
+            let key = step
+                .internal_entity_key_schema()
+                .encode_entity(&[organization.clone(), label.clone()])
+                .expect("label key");
+            StoredEntityRecordV1::new(
+                EntityTarget::new(step.internal_entity_id(), key).expect("label target"),
+                EntityVersion::first(),
+                bundle.contract_version(),
+                binding.clone(),
+                CanonicalRecord::new(vec![
+                    (
+                        access
+                            .internal_field_id("organization_id")
+                            .expect("organization field"),
+                        organization.clone(),
+                    ),
+                    (
+                        access.internal_field_id("label_id").expect("label field"),
+                        label,
+                    ),
+                    (
+                        access.internal_field_id("name").expect("name field"),
+                        CanonicalValue::string(format!("label-{ordinal}")).expect("label name"),
+                    ),
+                ])
+                .expect("label fields"),
+            )
+            .expect("label record")
+        };
+
+        let path = TestPath::new();
+        let mut store = RedbStore::open(&path.0).expect("store");
+        let database_id =
+            DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x63; 10])
+                .expect("database ID");
+        store.initialize_database(database_id).expect("initialize");
+        let ports = RedbOperationalPorts {
+            shared: Arc::clone(&store.shared),
+        };
+        let write = ports.begin_write().expect("write");
+        {
+            let mut table = write
+                .transaction()
+                .expect("transaction")
+                .open_table(ENTITIES)
+                .expect("entities");
+            for record in [label_record(1), label_record(2)] {
+                let encoded = encode_entity_record_v1(&record).expect("encoded entity");
+                table
+                    .insert(encode_entity_key(record.target().key()), encoded.as_bytes())
+                    .expect("insert entity");
+            }
+        }
+        write.commit().expect("seed commit");
+
+        let predicates = |ordinal: u8| {
+            key_fields
+                .iter()
+                .map(|field| {
+                    BoundPredicate::new(
+                        field.clone(),
+                        QueryPredicateOperator::Equal,
+                        if field == "organization_id" {
+                            organization.clone()
+                        } else {
+                            CanonicalValue::Uuid([ordinal; 16])
+                        },
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let parameters = QueryParameters::checked(BTreeMap::from([(
+            "organization_id".to_owned(),
+            organization.clone(),
+        )]))
+        .expect("parameters");
+        let _table_open_serial = QUERY_TABLE_OPEN_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let transaction = ports.begin_composite_read().expect("read snapshot");
+        let mut view = RedbQueryView {
+            transaction: &transaction,
+            entities_touched: false,
+            indexes_touched: false,
+            epochs_touched: false,
+            head: 0,
+            program: &program,
+            parameters: &parameters,
+            profile: None,
+        };
+        let observed = view
+            .dependent_point_batch(step, &[predicates(2), predicates(1), predicates(3)], None)
+            .expect("batch");
+        assert_eq!(observed.len(), 3);
+        assert_eq!(
+            observed[0].as_ref().and_then(|row| row.field("label_id")),
+            Some(&CanonicalValue::Uuid([2; 16]))
+        );
+        assert_eq!(
+            observed[1].as_ref().and_then(|row| row.field("label_id")),
+            Some(&CanonicalValue::Uuid([1; 16]))
+        );
+        assert!(observed[2].is_none());
+    }
 }

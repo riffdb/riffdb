@@ -3,6 +3,8 @@
 use std::fs;
 use std::path::PathBuf;
 
+use riffdb_query_ir::{ExactPredicateOperatorV1, QueryPredicateOperator};
+
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -11,6 +13,7 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
+// req: OQ-033, OQ-039, OQ-043
 #[test]
 fn one_compiler_registry_and_one_executor_lowering_own_component_semantics() {
     let root = workspace_root();
@@ -64,6 +67,60 @@ fn one_compiler_registry_and_one_executor_lowering_own_component_semantics() {
             );
         }
     }
+}
+
+// req: OQ-040
+#[test]
+fn ordinary_and_provider_planes_share_logical_predicate_meanings_without_a_runtime_bridge() {
+    let shared = [
+        (
+            QueryPredicateOperator::Equal,
+            ExactPredicateOperatorV1::Equal,
+        ),
+        (
+            QueryPredicateOperator::NotEqual,
+            ExactPredicateOperatorV1::NotEqual,
+        ),
+        (QueryPredicateOperator::Less, ExactPredicateOperatorV1::Less),
+        (
+            QueryPredicateOperator::LessEqual,
+            ExactPredicateOperatorV1::LessEqual,
+        ),
+        (
+            QueryPredicateOperator::Greater,
+            ExactPredicateOperatorV1::Greater,
+        ),
+        (
+            QueryPredicateOperator::GreaterEqual,
+            ExactPredicateOperatorV1::GreaterEqual,
+        ),
+        (QueryPredicateOperator::In, ExactPredicateOperatorV1::In),
+        (
+            QueryPredicateOperator::Prefix,
+            ExactPredicateOperatorV1::StartsWith,
+        ),
+        (
+            QueryPredicateOperator::IsNull,
+            ExactPredicateOperatorV1::IsNull,
+        ),
+        (
+            QueryPredicateOperator::IsNotNull,
+            ExactPredicateOperatorV1::IsNotNull,
+        ),
+        (
+            QueryPredicateOperator::Exists,
+            ExactPredicateOperatorV1::Exists,
+        ),
+    ];
+    assert_eq!(shared.len(), 11, "the frozen common vocabulary changed");
+
+    let root = workspace_root();
+    let ordinary = fs::read_to_string(root.join("crates/riffdb-query-executor/src/lib.rs"))
+        .expect("ordinary executor source");
+    let provider = fs::read_to_string(root.join("crates/riffdb-query-ir/src/exact_predicate.rs"))
+        .expect("provider semantic source");
+    assert!(!ordinary.contains("ExactPredicateProgramV1"));
+    assert!(!provider.contains("bound_index_range_schedule_v1"));
 }
 
 #[test]

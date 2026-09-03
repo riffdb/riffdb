@@ -75,6 +75,7 @@ struct FakeView {
     point_calls: usize,
     batch_calls: usize,
     missing_batch_target: bool,
+    fail_batch_before_release: bool,
     scan_calls: usize,
     last_limit: Option<u64>,
     last_after: Option<Vec<u8>>,
@@ -183,6 +184,9 @@ impl QueryReadView for FakeView {
         _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<Vec<Option<QueryRow>>, Self::Error> {
         self.batch_calls += 1;
+        if self.fail_batch_before_release {
+            return Err(());
+        }
         if self.missing_batch_target {
             return Ok((0..predicates.len()).map(|_| None).collect());
         }
@@ -229,6 +233,7 @@ impl QueryReadView for FakeView {
     }
 }
 
+// req: OQ-041
 #[test]
 fn all_accesses_use_one_owned_snapshot_and_respect_cardinality() {
     let bundle = compile_contract_source(&contract_without_cover()).expect("contract");
@@ -359,6 +364,7 @@ fn all_accesses_use_one_owned_snapshot_and_respect_cardinality() {
         point_calls: 0,
         batch_calls: 0,
         missing_batch_target: false,
+        fail_batch_before_release: false,
         scan_calls: 0,
         last_limit: None,
         last_after: None,
@@ -381,6 +387,14 @@ fn all_accesses_use_one_owned_snapshot_and_respect_cardinality() {
         snapshot.fields().get("labels"),
         Some(QueryResultValue::Many(rows)) if rows.len() == 1
     ));
+
+    view.fail_batch_before_release = true;
+    assert_eq!(
+        execute_in_snapshot(&program, &parameters, &mut view),
+        Err(QueryExecutionError::BackendUnavailable),
+        "a cancelled or unavailable batch releases no partial relationship result",
+    );
+    view.fail_batch_before_release = false;
 
     view.missing_batch_target = true;
     let missing = execute_in_snapshot(&program, &parameters, &mut view).expect("declared outcome");
@@ -504,6 +518,7 @@ fn continuation_resumes_the_named_binding_and_rejects_a_stale_epoch() {
         point_calls: 0,
         batch_calls: 0,
         missing_batch_target: false,
+        fail_batch_before_release: false,
         scan_calls: 0,
         last_limit: None,
         last_after: None,
@@ -528,6 +543,7 @@ fn continuation_resumes_the_named_binding_and_rejects_a_stale_epoch() {
         point_calls: 0,
         batch_calls: 0,
         missing_batch_target: false,
+        fail_batch_before_release: false,
         scan_calls: 0,
         last_limit: None,
         last_after: None,
@@ -545,6 +561,7 @@ fn continuation_resumes_the_named_binding_and_rejects_a_stale_epoch() {
         point_calls: 0,
         batch_calls: 0,
         missing_batch_target: false,
+        fail_batch_before_release: false,
         scan_calls: 0,
         last_limit: None,
         last_after: None,
@@ -590,6 +607,7 @@ fn exact_enum_symbols_execute_as_internal_canonical_values() {
         point_calls: 0,
         batch_calls: 0,
         missing_batch_target: false,
+        fail_batch_before_release: false,
         scan_calls: 0,
         last_limit: None,
         last_after: None,
@@ -1152,6 +1170,7 @@ fn report_only_board_scale_materialize_project_loop() {
         point_calls: 0,
         batch_calls: 0,
         missing_batch_target: false,
+        fail_batch_before_release: false,
         scan_calls: 0,
         last_limit: None,
         last_after: None,
