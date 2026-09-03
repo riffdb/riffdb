@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Direction approved:** 2026-08-24 (maintainer)
 - **Exact text accepted:** Yes, 2026-08-24 (maintainer)
+- **Evidence ownership split accepted:** 2026-09-03 (maintainer, in session)
 - **Decision deadline:** Before WP-674 replaces either retained failed cloud
   attempt or banks any unary baseline
 - **Requires:** ADR-0123, ADR-0142, ADR-0143
@@ -217,10 +218,11 @@ policy, correctness, and response-release paths execute unchanged.
 
 ## Requirements and Work Packages
 
-- **Requirements:** `PERF-008`, `PERF-018`, `END-007`, `END-008`, `END-009`,
-  `END-010`
+- **Requirements:** `PERF-008`, `PERF-018`, `END-007`, `END-008`
+- **Endurance evidence:** `WP-578` separately and solely owns `END-009`,
+  `END-010`, the uninterrupted 72-hour run, and the final endurance receipt.
 - **Defines or blocks:** `WP-674`, `WP-623`, `WP-579`
-- **Final evidence:** `WP-674`
+- **Final unary qualification evidence:** `WP-674`.
 
 ## Decision Deadline
 

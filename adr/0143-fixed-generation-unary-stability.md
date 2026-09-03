@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Direction approved:** 2026-08-23 (maintainer)
 - **Exact text accepted:** Yes, 2026-08-24 (maintainer)
+- **Evidence ownership split accepted:** 2026-09-03 (maintainer, in session)
 - **Decision deadline:** Before WP-674 reruns or banks the alpha unary baseline
 - **Requires:** ADR-0123, ADR-0142
 - **Amends:** ADR-0142 Decisions 2 through 4 and WP-674's repetition-stability
@@ -91,10 +92,12 @@ reclassified as host-invalid from its result distribution.
 ADR-0142's scenario classes, N1/E2 absolute ceilings, workstation regression
 obligation, byte-exact baseline identity, 1.10-times RiffDB regression ceiling,
 PostgreSQL disclosure, mixed-load gates, seed ceiling, low-water-mark rules,
-and requirement ownership remain unchanged. WP-674 must restart the unary bank
-from the first scenario under this five-generation method; its prior
-three-generation attempts remain historical failed evidence and cannot be
-merged into the accepted bank.
+and unary-qualification requirement ownership remain unchanged. WP-674 must
+restart the unary bank from the first scenario under this five-generation
+method; its prior three-generation attempts remain historical failed evidence
+and cannot be merged into the accepted bank. END-009 and END-010 are not part
+of WP-674 qualification: WP-578 separately and solely owns the uninterrupted
+72-hour run and final endurance receipt.
 
 ## Options Considered
 
@@ -165,10 +168,11 @@ unchanged in every measured operation.
 
 ## Requirements and Work Packages
 
-- **Requirements:** `PERF-008`, `PERF-018`, `END-007`, `END-008`, `END-009`,
-  `END-010`
+- **Requirements:** `PERF-008`, `PERF-018`, `END-007`, `END-008`
+- **Endurance evidence:** `WP-578` separately and solely owns `END-009`,
+  `END-010`, the uninterrupted 72-hour run, and the final endurance receipt.
 - **Defines or blocks:** `WP-674`, `WP-623`, `WP-579`
-- **Final evidence:** `WP-674`
+- **Final unary qualification evidence:** `WP-674`.
 
 ## Decision Deadline
 
