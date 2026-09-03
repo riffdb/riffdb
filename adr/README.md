@@ -221,6 +221,7 @@ record with no front matter.
 | [0184](0184-panic-discipline-test-economics-and-coordinator-simulation.md) | Panic Discipline, Test Economics, and Coordinator Simulation | Accepted | surface |
 | [0185](0185-relational-operators-in-the-candidate-algebra.md) | Relational Operators in the Candidate Algebra, Not Provider Families | Accepted | surface |
 | [0186](0186-complete-authoritative-changelog-v3.md) | Complete Authoritative Changelog V3 | Accepted | guarantee |
+| [0187](0187-bounded-columnar-shutdown-abandonment.md) | Bounded Columnar Shutdown Abandonment | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

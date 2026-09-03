@@ -210,6 +210,7 @@ gates:
   - WP-766
   - WP-767
   - WP-772
+  - WP-773
 - id: P13
   name: Relational operators in the candidate algebra
   requires:
@@ -1416,7 +1417,7 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-705
   name: Clean-startup internal scrub compatibility and bounded dirty evidence
-  depends_on: [WP-610, WP-668, WP-704]
+  depends_on: [WP-610, WP-668, WP-704, WP-773]
   objective: Close ADR-0156 with a sealed internal complete-integrity scrub primitive, backup/
     restore/migration/retention compatibility, operator and handbook guidance, production-scale
     clean lifecycle evidence, genuine 65,536-row complete-validation recovery evidence, and a
@@ -1426,7 +1427,7 @@ work_packages:
   requirements: [STO-012, STO-023, REC-001, REC-002, REC-004,
     PERF-013, PERF-014, PERF-019, END-004, END-006, END-007, END-008]
   required_adrs: [ADR-0019, ADR-0041, ADR-0050, ADR-0056, ADR-0073,
-    ADR-0085, ADR-0104, ADR-0112, ADR-0123, ADR-0156, ADR-0157, ADR-0182]
+    ADR-0085, ADR-0104, ADR-0112, ADR-0123, ADR-0156, ADR-0157, ADR-0182, ADR-0187]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0156-clean-close-certificate-fast-startup.md,
     adr/0157-clean-close-lifecycle-durable-identity.md,
@@ -23108,3 +23109,74 @@ work_packages:
     subsuming checkpoint and every replication fence permits it.
   - A public error, diagnostic, log, metric, or receipt would expose replicated keys, values,
     payload-derived hashes, capability material, or population cardinalities.
+
+- id: WP-773
+  name: Bounded worker-only columnar shutdown abandonment
+  tier: guarantee
+  depends_on: [WP-667, WP-668, WP-704]
+  objective: Bound graceful columnar-worker termination at one existing 64-record page by
+    abandoning only unpublished derived work after an internal stop request, while leaving
+    ordinary catch-up publication, notification, checkpoint, freshness, and retention semantics
+    unchanged and replaying from the last durable frontier after restart.
+  requirements: [PRJ-001, PRJ-002, PRJ-003, PRJ-004, PERF-007, PERF-008, PERF-019]
+  required_adrs: [ADR-0007, ADR-0049, ADR-0086, ADR-0156, ADR-0187]
+  allowed_paths: [work_packages.yaml,
+    adr/0187-bounded-columnar-shutdown-abandonment.md, adr/README.md,
+    crates/riffdb-columnar/**, crates/riffdb-server/src/columnar_worker.rs,
+    crates/riffdb-server/src/process_graph.rs, examples/app-baseline/**,
+    benchmarks/**, tests/**, scripts/**, release/evidence/**, docs/**]
+  deliverables:
+  - One workspace-internal worker-only shutdown-aware catch-up entry owned by riffdb-columnar and
+    not re-exported through application, SDK, transport, or operator surfaces. The server worker is
+    its only production caller, owns the monotonic stop token, and may pass an internal read-only
+    closure that observes it only after a complete existing page of at most 64 authoritative
+    records and before the next page request. Ordinary no-stop apply retains its exact frozen fence,
+    publication, and returned progress semantics while the worker retains its notification and
+    checkpoint cadence; proof
+    ordinary_columnar_apply_publication_and_checkpoint_are_unchanged
+  - Stop observation returning one internal abandoned result without final publication,
+    notification, checkpoint, or durable-frontier advance; any safe-prefix publication already
+    completed under supersession holdback remains valid and only later unpublished in-memory
+    working state is dropped; proof
+    shutdown_abandons_only_unpublished_columnar_work_at_a_page_boundary
+  - Restart and crash evidence proving replay begins from the prior durable projection frontier,
+    remains idempotent, exposes only existing typed building or lagging outcomes, and converges to
+    the same rows and frontier as uninterrupted catch-up; proof
+    abandoned_columnar_shutdown_replays_from_the_durable_frontier
+  - One fixed redaction-safe internal shutdown observation with exactly between_passes,
+    abandoned_unpublished, and failed, carrying no path, identity, frontier, distance, row count,
+    key, value, hash, credential, or caller-supplied control
+  - Production-scale backlog and paired ordinary no-stop evidence proving shutdown completes after
+    at most one page plus fixed join/reporting work and that catch-up, application latency and
+    throughput, CPU, and memory retain the existing five-percent no-regression gates
+  - Handbook and operational guidance stating that a clean process restart may replay derived
+    columnar work from its durable frontier and temporarily return the existing typed freshness
+    outcomes, without implying loss of authoritative data or a caller-selectable behavior
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-773
+  - cargo +1.97.0 test -p riffdb-columnar -p riffdb-server --all-features
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+  - ./scripts/ci-all
+  exit_gate: An explicit stop requested during production-scale catch-up is observed after at most
+    one 64-record page; it publishes, notifies, and checkpoints nothing because of the stop and
+    advances no durable frontier; any earlier safe-prefix publication remains exact; restart
+    replays to the uninterrupted oracle; the closed diagnostic exposes no population or control
+    value; ordinary no-stop semantics remain exact; and every paired five-percent lifecycle,
+    latency, throughput, CPU, and memory gate passes.
+  standing_design_tests:
+    interface_safety: The server worker owns the stop token; the riffdb-columnar shutdown entry and
+      result are workspace-internal and not re-exported through an application, SDK, transport, or
+      operator surface. No application, agent, option, or configuration can select interruption,
+      page size, publication, checkpoint, replay, freshness, or retention behavior.
+    scale: Shutdown observes one token per existing 64-record page and retains no per-page history;
+      after a request it completes at the next page boundary without scanning backlog,
+      checkpointing the projection population, or holding state proportional to either.
+  human_review_triggers: &id0187
+  - A stop request would be observed inside a commit, or any partial commit could become visible
+    or durable.
+  - Ordinary no-stop catch-up would gain a different publication, notification, checkpoint,
+    scan-fence, freshness, or retention behavior.
+  - Shutdown abandonment would discard authoritative state, advance a durable frontier, or weaken
+    restart replay and idempotency.
+  - An application, transport, operator option, or configuration value could select interruption,
+    page size, publication, checkpoint, or restart behavior.
