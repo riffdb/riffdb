@@ -333,6 +333,42 @@ fn run_crashing_child(mode: &str, path: &Path) {
     run_crashing_child_with_profile(mode, path, RedbCommitProfile::Standard);
 }
 
+#[cfg(feature = "test-fixtures")]
+fn run_externally_killed_command_child(path: &Path) {
+    let marker = path.with_extension("external-kill.ready");
+    let mut child = Command::new(std::env::current_exe().expect("current test executable"))
+        .arg("--exact")
+        .arg("process_recovery_child")
+        .arg("--nocapture")
+        .env(CHILD_MODE, "external-before-command-batch-commit")
+        .env(CHILD_PATH, path)
+        .env(CHILD_COMMIT_PROFILE, "hardened")
+        .env("RIFFDB_TEST_REDB_EXTERNAL_KILL_BARRIER", &marker)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn externally killed recovery child");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !marker.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "redb child never reached its before-commit barrier"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(std::fs::read(&marker).expect("read barrier"), b"armed\n");
+    child.kill().expect("SIGKILL exact redb child");
+    let status = child.wait().expect("wait for SIGKILL child");
+    assert!(!status.success());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(status.signal(), Some(9), "runner must send SIGKILL");
+    }
+    std::fs::remove_file(marker).expect("remove barrier marker");
+}
+
 /// Every armed child terminates through `std::process::abort()` (SIGABRT).
 /// Discriminating on the signal keeps 'before' arms honest: a child that
 /// panics without reaching its failpoint exits with a plain nonzero code and
@@ -1760,6 +1796,14 @@ fn process_recovery_child() {
         "before-command-batch-commit" => {
             RedbTestController::abort_before_commit(RedbTestOperation::CommandBatch)
         }
+        #[cfg(feature = "test-fixtures")]
+        "external-before-command-batch-commit" => {
+            RedbTestController::wait_before_final_engine_sync_for_external_kill(
+                RedbTestOperation::CommandBatch,
+                std::env::var_os("RIFFDB_TEST_REDB_EXTERNAL_KILL_BARRIER")
+                    .expect("external kill barrier path"),
+            )
+        }
         "after-command-batch-commit" => {
             RedbTestController::abort_after_commit(RedbTestOperation::CommandBatch)
         }
@@ -1839,6 +1883,15 @@ fn process_recovery_child() {
         let _ = maintenance.prune_to(target);
         panic!("the armed prune failpoint did not terminate the child");
     }
+    #[cfg(feature = "test-fixtures")]
+    let store = if mode == "external-before-command-batch-commit" {
+        RedbStore::open_with_external_kill_barrier(path, profile, controller.clone())
+            .expect("open child database over the real barrier backend")
+    } else {
+        RedbStore::open_with_test_controller_and_commit_profile(path, profile, controller.clone())
+            .expect("open child database")
+    };
+    #[cfg(not(feature = "test-fixtures"))]
     let store =
         RedbStore::open_with_test_controller_and_commit_profile(path, profile, controller.clone())
             .expect("open child database");
@@ -1847,7 +1900,9 @@ fn process_recovery_child() {
             let mut store = store;
             let _ = store.initialize_database(database_id());
         }
-        "before-command-batch-commit" | "after-command-batch-commit" => {
+        "before-command-batch-commit"
+        | "external-before-command-batch-commit"
+        | "after-command-batch-commit" => {
             let ports = open_operational(store);
             commit_command_fixture(&ports, &command_fixture());
         }
@@ -1912,6 +1967,107 @@ fn process_recovery_child() {
         _ => unreachable!("controller match rejects unknown modes"),
     }
     panic!("the armed failpoint did not terminate the child");
+}
+
+// req: PERF-014
+#[cfg(all(feature = "test-fixtures", feature = "benchmark-support"))]
+#[test]
+fn external_sigkill_at_real_command_precommit_invokes_engine_repair() {
+    let path = TestDatabasePath::new("external-sigkill-command-precommit");
+    let absent_twin = TestDatabasePath::new("external-sigkill-absent-twin");
+    let committed_twin = TestDatabasePath::new("external-sigkill-committed-twin");
+    let fixture = command_fixture();
+
+    prepare_command_database(&absent_twin.0);
+    let absent = open_operational(RedbStore::open(&absent_twin.0).expect("open absent twin"));
+    assert_precommit_command_state(&absent, &fixture);
+    absent
+        .write_clean_close_lifecycle()
+        .expect("certify absent twin");
+    drop(absent);
+    let absent_started = std::time::Instant::now();
+    let absent = open_operational(RedbStore::open(&absent_twin.0).expect("reopen absent twin"));
+    let absent_open_us = absent_started.elapsed().as_micros().max(1);
+    absent
+        .write_clean_close_lifecycle()
+        .expect("recertify absent twin");
+    drop(absent);
+    let absent_snapshot =
+        riffdb_storage_redb::benchmark_support::recovery_authority_snapshot_v1(&absent_twin.0)
+            .expect("snapshot absent clean twin");
+    prepare_command_database(&committed_twin.0);
+    let committed =
+        open_operational(RedbStore::open(&committed_twin.0).expect("open committed twin"));
+    commit_command_fixture(&committed, &fixture);
+    committed
+        .write_clean_close_lifecycle()
+        .expect("certify committed twin");
+    drop(committed);
+    let committed_started = std::time::Instant::now();
+    let committed =
+        open_operational(RedbStore::open(&committed_twin.0).expect("reopen committed twin"));
+    let committed_open_us = committed_started.elapsed().as_micros().max(1);
+    assert_postcommit_command_state(&committed, &fixture);
+    committed
+        .write_clean_close_lifecycle()
+        .expect("recertify committed twin");
+    drop(committed);
+    let committed_snapshot =
+        riffdb_storage_redb::benchmark_support::recovery_authority_snapshot_v1(&committed_twin.0)
+            .expect("snapshot committed clean twin");
+    prepare_command_database(&path.0);
+    let clean = open_operational(RedbStore::open(&path.0).expect("open clean-close fixture"));
+    clean
+        .write_clean_close_lifecycle()
+        .expect("write a matching clean-close certificate");
+    drop(clean);
+    run_externally_killed_command_child(&path.0);
+    riffdb_storage_redb::reset_last_repair_progress_for_tests();
+    let repair_started = std::time::Instant::now();
+    let ports = open_operational(
+        RedbStore::open(&path.0).expect("ordinary reopen of externally killed redb writer"),
+    );
+    let repair_open_us = repair_started.elapsed().as_micros().max(1);
+    assert_ne!(
+        riffdb_storage_redb::last_repair_progress_basis_points(),
+        riffdb_storage_redb::REPAIR_PROGRESS_SENTINEL,
+        "external SIGKILL at the real pre-commit barrier must invoke repair"
+    );
+    let (outcome, matching_clean_us, matching_snapshot) = match ports
+        .lookup_admission(fixture.candidates.clone())
+        .expect("resolve the atomic probe")
+    {
+        AdmissionLookupResultV1::NotFound => {
+            assert_precommit_command_state(&ports, &fixture);
+            ("absent", absent_open_us, &absent_snapshot)
+        }
+        AdmissionLookupResultV1::Found(_) => {
+            assert_postcommit_command_state(&ports, &fixture);
+            ("committed", committed_open_us, &committed_snapshot)
+        }
+        AdmissionLookupResultV1::MultipleMatches => {
+            panic!("atomic probe resolved to multiple outcomes")
+        }
+    };
+    ports
+        .write_clean_close_lifecycle()
+        .expect("certify recovered engine fixture");
+    drop(ports);
+    let recovered_snapshot =
+        riffdb_storage_redb::benchmark_support::recovery_authority_snapshot_v1(&path.0)
+            .expect("snapshot recovered real-engine fixture");
+    assert!(
+        matching_snapshot.same_authority(&recovered_snapshot),
+        "repaired state must match the corresponding predeclared clean twin, including allocators and control metadata"
+    );
+    assert!(
+        matching_snapshot.clean_generation_advance_matches(&recovered_snapshot, 1),
+        "repair adds exactly the one lifecycle generation consumed by the killed writer"
+    );
+    let ratio_millis = repair_open_us.saturating_mul(1_000) / matching_clean_us;
+    eprintln!(
+        "riffdb-perf-014-repair-v1\toutcome={outcome}\trepair_observed=true\trepair_to_clean_ratio_millis={ratio_millis}"
+    );
 }
 
 #[test]
@@ -4818,6 +4974,7 @@ fn retention_prune_refuses_below_undelivered_outbox_intent() {
     );
 }
 
+// req: STO-023, REC-004
 #[test]
 fn retention_prune_populated_roundtrip_reopens_clean_and_types_pruned_reads() {
     // The mandated populated-history roundtrip: prune → every pruned row gone,
@@ -4829,11 +4986,46 @@ fn retention_prune_populated_roundtrip_reopens_clean_and_types_pruned_reads() {
     retention_deliver_outbox_status_raw(&path.0, 1);
     retention_deliver_outbox_status_raw(&path.0, 2);
 
+    let ports = open_operational(RedbStore::open(&path.0).expect("certification open"));
+    ports
+        .write_clean_close_lifecycle()
+        .expect("certify pre-retention lifecycle");
+    drop(ports);
+
     let maintenance = riffdb_storage_redb::RedbOfflineRetention::bind(&path.0);
     maintenance.add_hold("cap", 5, "test cap").expect("hold");
+    let digest_key = DigestKeyId::new(1).expect("digest key ID");
+    let validation_inputs = |seconds| {
+        StartupValidationInputs::new(
+            Timestamp::new(seconds, 0).expect("startup timestamp"),
+            ReadableCapabilityDigestInventory::new(vec![ReadableDigestKey::v1(digest_key)])
+                .expect("capability digest inventory"),
+            ReadableIdempotencyDigestInventory::new(vec![ReadableDigestKey::v1(digest_key)])
+                .expect("idempotency digest inventory"),
+        )
+    };
+    let held = RedbStore::open(&path.0)
+        .expect("open after retention hold")
+        .begin_structural_evidence(validation_inputs(1_700_000_000))
+        .expect("select post-hold startup mode");
+    assert!(
+        !held.clean_close_fast_path(),
+        "retention hold mutation must invalidate the prior certificate"
+    );
+    drop(held);
     let status = maintenance.prune_to(1).expect("prune populated range");
     assert_eq!(status.watermark_sequence, 1);
     assert_eq!(status.tombstone_count, 1);
+
+    let pruned = RedbStore::open(&path.0)
+        .expect("open after retention prune")
+        .begin_structural_evidence(validation_inputs(1_700_000_001))
+        .expect("select post-prune startup mode");
+    assert!(
+        !pruned.clean_close_fast_path(),
+        "retention prune must keep the old certificate invalid"
+    );
+    drop(pruned);
 
     assert!(!retention_raw_row_present(
         &path.0,

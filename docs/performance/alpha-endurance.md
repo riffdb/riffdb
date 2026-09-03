@@ -192,6 +192,12 @@ terminate the daemon with `SIGKILL`, start a new installed process, and require
 journal recovery to publish at least both observed frontiers. Only that real
 unclean reopen increments the recovery counter.
 
+Ordinary restart and checkpoint cycles remain graceful so they exercise clean
+certificate startup; forced-kill/recovery arms remain dirty and must report the
+closed `complete_validation` mode. The authorized scheduled public scrub must
+be added before the campaign runs; it is not present in this harness handoff.
+The uninterrupted 72-hour campaign and its receipt remain pending.
+
 `scripts/endurance-fault` owns the five closed orchestrator-only fault cells and
 serializes them against lifecycle administration with the same protected lock.
 Process-kill and journal-recycle-crash cells kill the installed daemon and
@@ -255,18 +261,13 @@ unless two installed prune/restart cycles pass. The harness never deletes the
 journal, marks pending intents delivered, or weakens startup validation to make
 that evidence green.
 
-Startup validation also keeps its historical-evidence plan bounded by catalog
-and persisted-key shape rather than by the number of live rows. Catalog-shaped
-bundle, plan, active-pointer, and capability entries remain materialized. Live
-entities, secondary-index rows, and index epochs are first assigned to bounded
-`(schema, kind, owner, key length)` groups and then read lazily from the pinned
-database snapshot. Within each group startup verifies that physical table order
-agrees with the existing historical order key; index rows and legacy epochs are
-merged in that same order. The complete byte sequence, page continuation, and
-ExactEnd behavior are unchanged, and every row is still decoded and checked
-before the plan is served. Consequently a post-soak reopen no longer consumes
-the 512 MiB plan ceiling merely because the database has about one million live
-rows; the ceiling remains fail-closed for excessive catalog or key-shape state.
+Clean-certificate restart avoids the population historical-evidence plan. Dirty
+restart still uses the complete path and can refuse with typed `LimitExceeded`
+at the compiled 512 MiB plan ceiling at roughly one million live rows. That
+known ceiling remains a fail-closed limitation, not a reason to retry with a
+larger budget or claim partial readiness. Endurance forced-kill arms therefore
+retain complete-validation evidence and must not be relabelled as successful
+production-scale dirty readiness.
 
 Environment setup creates one short-lived test CA and two distinct leaf/key
 pairs before starting RiffDB. Certificate rotation atomically replaces the

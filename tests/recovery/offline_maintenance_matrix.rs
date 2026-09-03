@@ -416,10 +416,11 @@ fn run_child_from_environment() -> TestResult<()> {
             storage.create_named_backup(operation_id(0x60), &backup_name()?, &build_metadata()?)?;
         }
         CrashAction::StageRestore => {
-            storage.stage_restore(operation_id(0x61), &backup_name()?)?;
+            storage.stage_restore(operation_id(0x61), &backup_name()?, validation_inputs()?)?;
         }
         CrashAction::PublishRestore => {
-            let staged = storage.stage_restore(operation_id(0x61), &backup_name()?)?;
+            let staged =
+                storage.stage_restore(operation_id(0x61), &backup_name()?, validation_inputs()?)?;
             let manifest_identity = staged.manifest_identity().clone();
             let staged_database_id = complete_structural_validation(staged.staged_database_file())?;
             let sealed = staged.seal_after_validation(staged_database_id)?;
@@ -493,13 +494,7 @@ fn replace_with_database(path: &Path, database_id: DatabaseId) -> TestResult<()>
 
 fn complete_structural_validation(path: &Path) -> TestResult<DatabaseId> {
     let store = RedbStore::open(path)?;
-    let digest_key =
-        DigestKeyId::new(1).ok_or_else(|| test_failure("static digest key is invalid"))?;
-    let inputs = StartupValidationInputs::new(
-        Timestamp::new(1_700_000_000, 0)?,
-        ReadableCapabilityDigestInventory::new(vec![ReadableDigestKey::v1(digest_key)])?,
-        ReadableIdempotencyDigestInventory::new(vec![ReadableDigestKey::v1(digest_key)])?,
-    );
+    let inputs = validation_inputs()?;
     let mut session = store.begin_structural_evidence(inputs)?;
     let database_id = session.database_id();
     let session_id = session.open_session_id();
@@ -525,6 +520,16 @@ fn complete_structural_validation(path: &Path) -> TestResult<DatabaseId> {
             "WP-190 fixture unexpectedly required migration",
         )),
     }
+}
+
+fn validation_inputs() -> TestResult<StartupValidationInputs> {
+    let digest_key =
+        DigestKeyId::new(1).ok_or_else(|| test_failure("static digest key is invalid"))?;
+    Ok(StartupValidationInputs::new(
+        Timestamp::new(1_700_000_000, 0)?,
+        ReadableCapabilityDigestInventory::new(vec![ReadableDigestKey::v1(digest_key)])?,
+        ReadableIdempotencyDigestInventory::new(vec![ReadableDigestKey::v1(digest_key)])?,
+    ))
 }
 
 fn receipt(

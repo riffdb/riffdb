@@ -1,6 +1,10 @@
 //! Closed, redaction-safe storage diagnostics and process-test failpoints.
 
 use std::collections::VecDeque;
+#[cfg(feature = "test-fixtures")]
+use std::io::Write;
+#[cfg(feature = "test-fixtures")]
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -105,6 +109,10 @@ struct TestControllerInner {
     events: Mutex<Vec<RedbTestEvent>>,
     index_migration: Mutex<IndexMigrationObservation>,
     audit_sequence_begin_reads: AtomicU64,
+    #[cfg(feature = "test-fixtures")]
+    external_kill_barrier: Option<PathBuf>,
+    #[cfg(feature = "test-fixtures")]
+    external_engine_sync_armed: AtomicU64,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -119,6 +127,10 @@ enum FailpointAction {
     ReturnBeforeCommit,
     ReturnUnknownAfterCommit,
     AbortProcess,
+    #[cfg(feature = "test-fixtures")]
+    WaitForExternalKillBeforeCommit,
+    #[cfg(feature = "test-fixtures")]
+    ArmExternalKillAfterEngineSync,
 }
 
 impl RedbTestController {
@@ -132,6 +144,10 @@ impl RedbTestController {
                 events: Mutex::new(Vec::new()),
                 index_migration: Mutex::new(IndexMigrationObservation::default()),
                 audit_sequence_begin_reads: AtomicU64::new(0),
+                #[cfg(feature = "test-fixtures")]
+                external_kill_barrier: None,
+                #[cfg(feature = "test-fixtures")]
+                external_engine_sync_armed: AtomicU64::new(0),
             }),
         }
     }
@@ -194,6 +210,66 @@ impl RedbTestController {
             RedbTestPhase::AfterEngineCommit,
             FailpointAction::AbortProcess,
         )
+    }
+
+    /// Arms a deterministic mid-commit barrier for a process-level kill test.
+    ///
+    /// The matching command arms the closed real-file backend. In a two-phase
+    /// redb commit that backend delegates and synchronizes the secondary-slot
+    /// phase, then blocks before delegating the final engine sync after the
+    /// primary-header write. It publishes the fixed marker only at that
+    /// structural boundary. The owning runner must kill that
+    /// exact process. There is no injected error, self-abort, simulated repair,
+    /// or success return.
+    #[must_use]
+    #[cfg(feature = "test-fixtures")]
+    pub fn wait_before_final_engine_sync_for_external_kill(
+        operation: RedbTestOperation,
+        marker: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(TestControllerInner {
+                operation: Some(operation),
+                steps: Mutex::new(VecDeque::from([(
+                    RedbTestPhase::BeforeEngineCommit,
+                    FailpointAction::ArmExternalKillAfterEngineSync,
+                )])),
+                events: Mutex::new(Vec::new()),
+                index_migration: Mutex::new(IndexMigrationObservation::default()),
+                audit_sequence_begin_reads: AtomicU64::new(0),
+                external_kill_barrier: Some(marker.into()),
+                external_engine_sync_armed: AtomicU64::new(0),
+            }),
+        }
+    }
+
+    /// Blocks at the selected semantic pre-commit boundary until the owning
+    /// process runner sends SIGKILL.
+    ///
+    /// Unlike the real-backend mid-commit fixture, this seam does not attempt
+    /// to force an engine repair. It provides a deterministic real-daemon
+    /// crash boundary while the command is still unresolved, so recovery may
+    /// truthfully select either complete atomic outcome.
+    #[must_use]
+    #[cfg(feature = "test-fixtures")]
+    pub fn wait_before_commit_for_external_kill(
+        operation: RedbTestOperation,
+        marker: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(TestControllerInner {
+                operation: Some(operation),
+                steps: Mutex::new(VecDeque::from([(
+                    RedbTestPhase::BeforeEngineCommit,
+                    FailpointAction::WaitForExternalKillBeforeCommit,
+                )])),
+                events: Mutex::new(Vec::new()),
+                index_migration: Mutex::new(IndexMigrationObservation::default()),
+                audit_sequence_begin_reads: AtomicU64::new(0),
+                external_kill_barrier: Some(marker.into()),
+                external_engine_sync_armed: AtomicU64::new(0),
+            }),
+        }
     }
 
     /// First matching before-commit returns Unavailable; the second aborts the process.
@@ -268,6 +344,10 @@ impl RedbTestController {
                 events: Mutex::new(Vec::new()),
                 index_migration: Mutex::new(IndexMigrationObservation::default()),
                 audit_sequence_begin_reads: AtomicU64::new(0),
+                #[cfg(feature = "test-fixtures")]
+                external_kill_barrier: None,
+                #[cfg(feature = "test-fixtures")]
+                external_engine_sync_armed: AtomicU64::new(0),
             }),
         }
     }
@@ -300,6 +380,17 @@ impl RedbTestController {
                     return Err(StorageError::new(StorageErrorKind::Unavailable, None));
                 }
                 FailpointAction::AbortProcess => std::process::abort(),
+                #[cfg(feature = "test-fixtures")]
+                FailpointAction::WaitForExternalKillBeforeCommit => {
+                    self.publish_external_kill_barrier()
+                        .map_err(|_| StorageError::new(StorageErrorKind::Unavailable, None))?;
+                }
+                #[cfg(feature = "test-fixtures")]
+                FailpointAction::ArmExternalKillAfterEngineSync => {
+                    self.inner
+                        .external_engine_sync_armed
+                        .store(2, Ordering::Release);
+                }
                 FailpointAction::ReturnUnknownAfterCommit => {}
             }
         }
@@ -318,6 +409,14 @@ impl RedbTestController {
                 }
                 FailpointAction::AbortProcess => std::process::abort(),
                 FailpointAction::ReturnBeforeCommit => {}
+                #[cfg(feature = "test-fixtures")]
+                FailpointAction::WaitForExternalKillBeforeCommit
+                | FailpointAction::ArmExternalKillAfterEngineSync => {
+                    return Err(StorageError::new(
+                        StorageErrorKind::InvariantViolation,
+                        None,
+                    ));
+                }
             }
         }
         Ok(())
@@ -347,11 +446,61 @@ impl RedbTestController {
         }
         steps.pop_front().map(|(_, action)| action)
     }
+
+    #[cfg(feature = "test-fixtures")]
+    pub(crate) fn wait_before_engine_sync_if_armed(&self) -> Result<(), std::io::Error> {
+        if self
+            .inner
+            .external_engine_sync_armed
+            .load(Ordering::Acquire)
+            != 1
+        {
+            return Ok(());
+        }
+        self.inner
+            .external_engine_sync_armed
+            .store(0, Ordering::Release);
+        self.publish_external_kill_barrier()
+    }
+
+    #[cfg(feature = "test-fixtures")]
+    fn publish_external_kill_barrier(&self) -> Result<(), std::io::Error> {
+        let marker = self
+            .inner
+            .external_kill_barrier
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("external-kill barrier unavailable"))?;
+        let staging = marker.with_extension("arming");
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staging)?;
+        file.write_all(b"armed\n").and_then(|()| file.sync_all())?;
+        std::fs::rename(staging, marker)?;
+        loop {
+            std::thread::park();
+        }
+    }
+
+    #[cfg(feature = "test-fixtures")]
+    pub(crate) fn note_engine_sync_completed_if_armed(&self) {
+        let _ = self.inner.external_engine_sync_armed.compare_exchange(
+            2,
+            1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "test-fixtures")]
+    const EXTERNAL_KILL_CHILD: &str = "RIFFDB_HOOK_EXTERNAL_KILL_CHILD";
+    #[cfg(feature = "test-fixtures")]
+    const EXTERNAL_KILL_MARKER: &str = "RIFFDB_HOOK_EXTERNAL_KILL_MARKER";
 
     #[test]
     fn fixed_failpoint_fires_once_and_records_only_closed_events() {
@@ -371,5 +520,77 @@ mod tests {
             event.operation() == RedbTestOperation::CommandBatch
                 && event.phase() == RedbTestPhase::BeforeEngineCommit
         }));
+    }
+
+    // req: PERF-014
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn before_commit_barrier_requires_an_external_process_kill() {
+        if let Some(mode) = std::env::var_os(EXTERNAL_KILL_CHILD) {
+            let marker =
+                std::env::var_os(EXTERNAL_KILL_MARKER).expect("external-kill child marker path");
+            let controller = if mode == "semantic" {
+                RedbTestController::wait_before_commit_for_external_kill(
+                    RedbTestOperation::DeferredCommandBatch,
+                    marker,
+                )
+            } else {
+                RedbTestController::wait_before_final_engine_sync_for_external_kill(
+                    RedbTestOperation::CommandBatch,
+                    marker,
+                )
+            };
+            controller
+                .before_commit(if mode == "semantic" {
+                    RedbTestOperation::DeferredCommandBatch
+                } else {
+                    RedbTestOperation::CommandBatch
+                })
+                .expect("arm the external-kill barrier");
+            if mode != "semantic" {
+                controller.note_engine_sync_completed_if_armed();
+                controller
+                    .wait_before_engine_sync_if_armed()
+                    .expect("publish the synchronized external-kill marker");
+            }
+            panic!("external-kill barrier returned");
+        }
+
+        for mode in ["engine", "semantic"] {
+            let scope = crate::test_path::ScopedDirectory::new("hook-external-kill");
+            let marker = scope.join(if mode == "engine" {
+                "engine.ready"
+            } else {
+                "semantic.ready"
+            });
+            let mut child = std::process::Command::new(
+                std::env::current_exe().expect("current hook test executable"),
+            )
+            .arg("--exact")
+            .arg("hooks::tests::before_commit_barrier_requires_an_external_process_kill")
+            .arg("--nocapture")
+            .env(EXTERNAL_KILL_CHILD, mode)
+            .env(EXTERNAL_KILL_MARKER, &marker)
+            .spawn()
+            .expect("spawn external-kill barrier child");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !marker.exists() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "child never reached the before-commit barrier"
+                );
+                std::thread::yield_now();
+            }
+            assert_eq!(
+                std::fs::read(&marker).expect("read synchronized barrier marker"),
+                b"armed\n"
+            );
+            child
+                .kill()
+                .expect("externally kill the exact child process");
+            let status = child.wait().expect("wait for externally killed child");
+            assert!(!status.success());
+            std::fs::remove_file(marker).expect("remove external-kill marker");
+        }
     }
 }

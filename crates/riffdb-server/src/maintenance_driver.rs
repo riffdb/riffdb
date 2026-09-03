@@ -778,16 +778,19 @@ pub(crate) fn run_recovery_restore(
                 OfflineMaintenanceReceiptFailureV1::StagedAuthorizationFailed,
             ));
         };
-        let stage =
-            match storage.stage_recovery_restore_candidate(operation_id, request.backup_name()) {
-                Ok(stage) => stage,
-                Err(error) => {
-                    return Err(MaintenanceDriverFailure::without_receipt(
-                        operation_id,
-                        artifact_storage_failure(&error),
-                    ));
-                }
-            };
+        let stage = match storage.stage_recovery_restore_candidate(
+            operation_id,
+            request.backup_name(),
+            dependencies.startup_inputs.clone(),
+        ) {
+            Ok(stage) => stage,
+            Err(error) => {
+                return Err(MaintenanceDriverFailure::without_receipt(
+                    operation_id,
+                    artifact_storage_failure(&error),
+                ));
+            }
+        };
         match validate_and_authorize_stage(
             stage,
             credential,
@@ -1017,7 +1020,11 @@ fn run_restore(
                 None => {
                     let credential = credential.ok_or(DriverFault::StagedAuthorization)?;
                     let stage = storage
-                        .stage_restore(receipt.operation_id(), receipt.backup_name())
+                        .stage_restore(
+                            receipt.operation_id(),
+                            receipt.backup_name(),
+                            dependencies.startup_inputs.clone(),
+                        )
                         .map_err(DriverFault::ArtifactStorage)?;
                     validate_and_authorize_stage(
                         stage,
@@ -1227,6 +1234,9 @@ fn validate_and_authorize_stage(
     input_hash: riffdb_types::OfflineMaintenanceInputHash,
     dependencies: &MaintenanceDriverDependencies<'_>,
 ) -> Result<PreparedStagedRestore, DriverFault> {
+    // `stage_restore` and its recovery counterpart return only after the
+    // storage-owned complete exact-end scrub, so no copied CLEAN certificate
+    // can stand in for ADR-0050's pre-authorization validation.
     let staged_startup = open_redb_startup_with_commit_profile(
         stage.staged_database_file(),
         dependencies.startup_inputs.clone(),
@@ -2150,7 +2160,11 @@ mod tests {
         );
 
         let stage = storage
-            .stage_restore(receipt.operation_id(), receipt.backup_name())
+            .stage_restore(
+                receipt.operation_id(),
+                receipt.backup_name(),
+                fixture_startup_inputs(),
+            )
             .expect("stage restore");
         let staged_database_id = stage.manifest_identity().database_id();
         let sealed = stage

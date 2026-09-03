@@ -33,6 +33,9 @@ use crate::startup_census::{StartupStage, timed};
 
 const STARTUP_EVIDENCE_PAGE_ITEMS: u32 = 500;
 
+#[cfg(feature = "test-fixtures")]
+const EXTERNAL_KILL_BARRIER_ENV: &str = "RIFFDB_TEST_REDB_EXTERNAL_KILL_BARRIER";
+
 /// Checked durable lifecycle selected from the same startup snapshot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ValidatedStartupLifecycle {
@@ -301,10 +304,38 @@ pub(crate) fn open_redb_startup_with_commit_profile(
 ) -> Result<CheckedRedbStartup, RedbStartupError> {
     let store = timed(StartupStage::StoreOpen, || {
         preflight_redb_startup_format(path)?;
-        RedbStore::open_with_commit_profile(path, application_commit_profile)
-            .map_err(RedbStartupError::from)
+        open_redb_store(path, application_commit_profile)
     })?;
     complete_redb_startup(store, inputs, || database_ids.next_database_id())
+}
+
+#[cfg(not(feature = "test-fixtures"))]
+fn open_redb_store(
+    path: &Path,
+    application_commit_profile: RedbCommitProfile,
+) -> Result<RedbStore, RedbStartupError> {
+    RedbStore::open_with_commit_profile(path, application_commit_profile)
+        .map_err(RedbStartupError::from)
+}
+
+#[cfg(feature = "test-fixtures")]
+fn open_redb_store(
+    path: &Path,
+    application_commit_profile: RedbCommitProfile,
+) -> Result<RedbStore, RedbStartupError> {
+    let Some(marker) = std::env::var_os(EXTERNAL_KILL_BARRIER_ENV) else {
+        return RedbStore::open_with_commit_profile(path, application_commit_profile)
+            .map_err(RedbStartupError::from);
+    };
+    RedbStore::open_with_test_controller_and_commit_profile(
+        path,
+        application_commit_profile,
+        riffdb_storage_redb::RedbTestController::wait_before_commit_for_external_kill(
+            riffdb_storage_redb::RedbTestOperation::DeferredCommandBatch,
+            marker,
+        ),
+    )
+    .map_err(RedbStartupError::from)
 }
 
 fn preflight_redb_startup_format(path: &Path) -> Result<(), RedbStartupError> {

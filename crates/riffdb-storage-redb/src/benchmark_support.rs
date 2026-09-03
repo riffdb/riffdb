@@ -8,7 +8,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use redb::{
-    Database, Durability, ReadOnlyDatabase, ReadableDatabase, ReadableTable, WriteTransaction,
+    Database, Durability, ReadOnlyDatabase, ReadableDatabase, ReadableTable, TableHandle,
+    WriteTransaction,
 };
 use riffdb_storage_api::{
     AuditPrincipalV1, DatabaseInitializationPort, DatabaseInitializationResult,
@@ -19,14 +20,16 @@ use riffdb_types::{
     RequestId, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetsV1,
     ServiceIngressKindV1, ServiceOperationV1, Timestamp,
 };
+use sha2::{Digest, Sha256};
 
 use crate::journal::{
     EncodedJournalFrame, JournalFrame, JournalMutation, JournalMutationBuffer, JournalTable,
 };
 use crate::layout::{
-    AUDIT, AUDIT_BY_REQUEST, COMMITS, ENTITIES, EVENT_ROUTES, EVENTS, IDEMPOTENCY,
-    IDEMPOTENCY_PENDING, INDEX_EPOCHS, META, META_APPLICATION_SEQUENCE, OUTBOX, PROVENANCE,
-    SECONDARY_INDEXES, create_all_tables,
+    AUDIT, AUDIT_BY_REQUEST, AUDIT_BY_REQUEST_LOCATORS, BYTE_TABLES, COMMITS, ENTITIES,
+    EVENT_ROUTES, EVENTS, IDEMPOTENCY, IDEMPOTENCY_LOCATORS, IDEMPOTENCY_PENDING, INDEX_EPOCHS,
+    META, META_APPLICATION_SEQUENCE, META_CLEAN_CLOSE_LIFECYCLE, META_VALIDATED_PREFIX_CHECKPOINT,
+    OUTBOX, PROVENANCE, PROVENANCE_LOCATORS, SECONDARY_INDEXES, create_all_tables,
 };
 use crate::store::{RedbDormantPorts, RedbOperationalPorts, RedbStore};
 
@@ -212,6 +215,164 @@ pub fn authoritative_table_inventory_after_reopen_v1(
     })?;
     drop(reopened);
     authoritative_table_inventory_v1(path)
+}
+
+/// Opaque, streaming snapshot of every authoritative logical key/value.
+///
+/// The clean-close lifecycle is decoded separately because a forced-kill
+/// recovery must legitimately advance it from dirty through the recovery
+/// generation to the final clean successor. All other META keys (including
+/// allocators and frontiers) and all authoritative byte tables contribute to
+/// the canonical digest without retaining population-sized buffers. The
+/// rebuildable validated-prefix checkpoint and its entity-head cache are
+/// deliberately excluded: a complete-validation startup may replace those
+/// proofs without changing authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveryAuthoritySnapshotV1 {
+    authority_digest: [u8; 32],
+    lifecycle: crate::clean_close::CleanCloseLifecycle,
+}
+
+impl RecoveryAuthoritySnapshotV1 {
+    /// Returns true only when every non-lifecycle authoritative key/value byte,
+    /// including allocator and frontier metadata, is identical.
+    #[must_use]
+    pub fn same_authority(&self, other: &Self) -> bool {
+        self.authority_digest == other.authority_digest
+    }
+
+    /// Returns true for an exact clean-to-clean lifecycle generation advance
+    /// with no non-lifecycle authority change.
+    #[must_use]
+    pub fn same_authority_after_clean_generations(&self, after: &Self, generations: u64) -> bool {
+        self.same_authority(after) && self.clean_generation_advance_matches(after, generations)
+    }
+
+    /// Checks only the closed clean lifecycle identity and exact generation
+    /// advance; authority is compared independently against the two clean twins.
+    #[must_use]
+    pub fn clean_generation_advance_matches(&self, after: &Self, generations: u64) -> bool {
+        self.lifecycle.database_id() == after.lifecycle.database_id()
+            && self.lifecycle.history_incarnation() == after.lifecycle.history_incarnation()
+            && matches!(
+                self.lifecycle.state(),
+                crate::clean_close::CleanCloseState::Clean(_)
+            )
+            && self
+                .lifecycle
+                .lifecycle_generation()
+                .checked_add(generations)
+                == Some(after.lifecycle.lifecycle_generation())
+            && matches!(
+                after.lifecycle.state(),
+                crate::clean_close::CleanCloseState::Clean(_)
+            )
+    }
+
+    /// Returns true only for byte-identical authority plus the exact lifecycle
+    /// transition made by one clean open, forced kill, dirty reopen, and clean close.
+    #[must_use]
+    pub fn unchanged_across_forced_kill_recovery(&self, after: &Self) -> bool {
+        let Some(expected_generation) = self.lifecycle.lifecycle_generation().checked_add(3) else {
+            return false;
+        };
+        self.same_authority_after_clean_generations(after, 3)
+            && after.lifecycle.lifecycle_generation() == expected_generation
+    }
+}
+
+/// Reads a bounded-memory canonical authority snapshot from a stopped durable
+/// unit without opening a writer or publishing diagnostic cardinalities.
+pub fn recovery_authority_snapshot_v1(
+    path: &Path,
+) -> Result<RecoveryAuthoritySnapshotV1, EngineBenchmarkError> {
+    let database = ReadOnlyDatabase::open(path).map_err(|_| EngineBenchmarkError::Inventory {
+        stage: InventoryStage::OpenDatabase,
+        table: None,
+    })?;
+    let transaction = database
+        .begin_read()
+        .map_err(|_| EngineBenchmarkError::Inventory {
+            stage: InventoryStage::BeginRead,
+            table: None,
+        })?;
+    let mut hasher = Sha256::new();
+    hash_component(&mut hasher, b"riffdb-recovery-authority-snapshot-v1");
+
+    let meta = transaction
+        .open_table(META)
+        .map_err(|_| EngineBenchmarkError::Inventory {
+            stage: InventoryStage::OpenTable,
+            table: Some("meta"),
+        })?;
+    hash_component(&mut hasher, META.name().as_bytes());
+    let mut lifecycle = None;
+    for entry in meta.iter().map_err(|_| EngineBenchmarkError::Inventory {
+        stage: InventoryStage::ReadRows,
+        table: Some("meta"),
+    })? {
+        let (key, value) = entry.map_err(|_| EngineBenchmarkError::Inventory {
+            stage: InventoryStage::ReadRows,
+            table: Some("meta"),
+        })?;
+        if key.value() == META_CLEAN_CLOSE_LIFECYCLE {
+            lifecycle = Some(
+                crate::clean_close::CleanCloseLifecycle::decode(value.value()).map_err(|_| {
+                    EngineBenchmarkError::Inventory {
+                        stage: InventoryStage::DecodeLifecycle,
+                        table: Some("meta"),
+                    }
+                })?,
+            );
+            continue;
+        }
+        if key.value() == META_VALIDATED_PREFIX_CHECKPOINT {
+            continue;
+        }
+        hash_component(&mut hasher, key.value().as_bytes());
+        hash_component(&mut hasher, value.value());
+    }
+    drop(meta);
+
+    for definition in BYTE_TABLES.into_iter().chain([
+        IDEMPOTENCY_LOCATORS,
+        PROVENANCE_LOCATORS,
+        AUDIT_BY_REQUEST_LOCATORS,
+    ]) {
+        let name = definition.name();
+        hash_component(&mut hasher, name.as_bytes());
+        let table =
+            transaction
+                .open_table(definition)
+                .map_err(|_| EngineBenchmarkError::Inventory {
+                    stage: InventoryStage::OpenTable,
+                    table: None,
+                })?;
+        for entry in table.iter().map_err(|_| EngineBenchmarkError::Inventory {
+            stage: InventoryStage::ReadRows,
+            table: None,
+        })? {
+            let (key, value) = entry.map_err(|_| EngineBenchmarkError::Inventory {
+                stage: InventoryStage::ReadRows,
+                table: None,
+            })?;
+            hash_component(&mut hasher, key.value());
+            hash_component(&mut hasher, value.value());
+        }
+    }
+
+    Ok(RecoveryAuthoritySnapshotV1 {
+        authority_digest: hasher.finalize().into(),
+        lifecycle: lifecycle.ok_or(EngineBenchmarkError::Inventory {
+            stage: InventoryStage::DecodeLifecycle,
+            table: Some("meta"),
+        })?,
+    })
+}
+
+fn hash_component(hasher: &mut Sha256, bytes: &[u8]) {
+    hasher.update(u64::try_from(bytes.len()).unwrap_or(u64::MAX).to_be_bytes());
+    hasher.update(bytes);
 }
 
 fn table_inventory<K, V>(
@@ -1370,6 +1531,10 @@ pub enum InventoryStage {
     Stats,
     /// Count logical rows in one table.
     Count,
+    /// Stream the canonical logical key/value sequence.
+    ReadRows,
+    /// Decode the private clean-close lifecycle record.
+    DecodeLifecycle,
 }
 
 impl InventoryStage {
@@ -1381,6 +1546,8 @@ impl InventoryStage {
             Self::OpenTable => "open_table",
             Self::Stats => "stats",
             Self::Count => "count",
+            Self::ReadRows => "read_rows",
+            Self::DecodeLifecycle => "decode_lifecycle",
         }
     }
 }
@@ -2941,13 +3108,15 @@ mod tests {
     use super::{
         DatabaseId, DatabaseInitializationPort, DatabaseInitializationResult, EngineBenchmarkError,
         EngineDurability, EngineMechanicsProfile, EngineStagingOrder, InventoryStage,
-        JournalMutationCensusV1, RedbStore, ServiceAuditGrowthHarness, StateSegmentProjection,
-        StateSegmentWorkload, authoritative_table_inventory_after_reopen_v1,
-        authoritative_table_inventory_v1, expected_evidence_page_capacity,
-        initialize_engine_mechanics, measure_clean_startup, measure_clean_startup_linear,
-        run_engine_mechanics_window, run_journal_overlay_mechanics_window,
-        run_state_segment_projection_window, split_half_page_durations, uuid_v7_bytes,
+        JournalMutationCensusV1, RecoveryAuthoritySnapshotV1, RedbStore, ServiceAuditGrowthHarness,
+        StateSegmentProjection, StateSegmentWorkload,
+        authoritative_table_inventory_after_reopen_v1, authoritative_table_inventory_v1,
+        expected_evidence_page_capacity, initialize_engine_mechanics, measure_clean_startup,
+        measure_clean_startup_linear, run_engine_mechanics_window,
+        run_journal_overlay_mechanics_window, run_state_segment_projection_window,
+        split_half_page_durations, uuid_v7_bytes,
     };
+    use crate::clean_close::CleanCloseLifecycle;
     use crate::journal::{JournalTable, journal_path};
     use std::fs;
     use std::time::Duration;
@@ -2967,6 +3136,35 @@ mod tests {
             expected_evidence_page_capacity(10_000_000) > expected_evidence_page_capacity(1_000)
         );
         assert!(expected_evidence_page_capacity(0) >= 32);
+    }
+
+    // req: REC-001, REC-002, REC-004
+    #[test]
+    fn forced_kill_authority_snapshot_accepts_only_exact_clean_g_plus_three() {
+        let database_id = DatabaseId::from_bytes(uuid_v7_bytes(0x61, 1)).expect("database id");
+        let before = RecoveryAuthoritySnapshotV1 {
+            authority_digest: [0x11; 32],
+            lifecycle: CleanCloseLifecycle::clean(database_id, 7, 9, [0x22; 32])
+                .expect("clean before"),
+        };
+        let expected = RecoveryAuthoritySnapshotV1 {
+            authority_digest: [0x11; 32],
+            lifecycle: CleanCloseLifecycle::clean(database_id, 7, 12, [0x33; 32])
+                .expect("clean after"),
+        };
+        assert!(before.unchanged_across_forced_kill_recovery(&expected));
+
+        let altered_authority = RecoveryAuthoritySnapshotV1 {
+            authority_digest: [0x12; 32],
+            ..expected.clone()
+        };
+        assert!(!before.unchanged_across_forced_kill_recovery(&altered_authority));
+        let skipped_generation = RecoveryAuthoritySnapshotV1 {
+            lifecycle: CleanCloseLifecycle::clean(database_id, 7, 11, [0x33; 32])
+                .expect("wrong generation"),
+            ..expected
+        };
+        assert!(!before.unchanged_across_forced_kill_recovery(&skipped_generation));
     }
 
     #[test]

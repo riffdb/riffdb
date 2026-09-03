@@ -100,7 +100,9 @@ def process_kill(module: ModuleType, environment: Path) -> tuple[int, int, dict[
     generation_before = module.journal_generation(database)
     os.kill(old_pid, signal.SIGKILL)
     module.wait_stopped(old_pid, 30)
-    after = module.start_server(environment, process_state, before)
+    after, startup_mode = module.start_server(environment, process_state, before)
+    if startup_mode != "complete_validation":
+        fail("process-kill recovery did not select complete_validation")
     generation_after = module.journal_generation(database)
     if after < before or generation_after < generation_before:
         fail("process-kill recovery regressed a durable frontier")
@@ -112,6 +114,7 @@ def process_kill(module: ModuleType, environment: Path) -> tuple[int, int, dict[
         "application_frontier_after": after,
         "journal_generation_before": generation_before,
         "journal_generation_after": generation_after,
+        "startup_mode": startup_mode,
     }
 
 
@@ -225,7 +228,9 @@ def checkpoint_crash(
     checkpoint = module.inspect_checkpoint(environment)
     if checkpoint > before:
         fail("checkpoint-crash inspection exceeded the observed application frontier")
-    after = module.start_server(environment, process_state, before)
+    after, startup_mode = module.start_server(environment, process_state, before)
+    if startup_mode != "complete_validation":
+        fail("checkpoint-crash recovery did not select complete_validation")
     return before, after, {
         "schema": EVIDENCE_SCHEMA,
         "fault": "checkpoint_crash",
@@ -237,6 +242,7 @@ def checkpoint_crash(
         "seed_ticket_id": seed_ticket_id,
         "application_frontier_before": before,
         "application_frontier_after": after,
+        "startup_mode": startup_mode,
     }
 
 
@@ -257,7 +263,9 @@ def journal_recycle_crash(module: ModuleType, environment: Path) -> tuple[int, i
     before = module.health_frontier(environment)
     os.kill(pid, signal.SIGKILL)
     module.wait_stopped(pid, 30)
-    after = module.start_server(environment, process_state, before)
+    after, startup_mode = module.start_server(environment, process_state, before)
+    if startup_mode != "complete_validation":
+        fail("journal-recycle recovery did not select complete_validation")
     recovered_generation = module.journal_generation(database)
     if recovered_generation < generation_after_recycle:
         fail("journal-recycle crash recovery regressed the extent generation")
@@ -270,6 +278,7 @@ def journal_recycle_crash(module: ModuleType, environment: Path) -> tuple[int, i
         "generation_after_recovery": recovered_generation,
         "application_frontier_before": before,
         "application_frontier_after": after,
+        "startup_mode": startup_mode,
     }
 
 

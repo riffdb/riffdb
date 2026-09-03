@@ -24,6 +24,8 @@ MAX_JSON_BYTES = 1024 * 1024
 JOURNAL_HEADER_BYTES = 4096
 JOURNAL_MAGIC = b"RDBJEX03"
 MAX_RETAINED_BACKUPS = 2
+MAX_STARTUP_OBSERVATION_BYTES = 256 * 1024
+STARTUP_MODES = {"clean_certificate", "complete_validation"}
 
 
 def fail(message: str) -> "None":
@@ -418,6 +420,37 @@ def wait_stopped(pid: int, timeout_seconds: int) -> None:
         time.sleep(0.05)
 
 
+def parse_startup_mode(encoded: bytes) -> str:
+    if len(encoded) > MAX_STARTUP_OBSERVATION_BYTES:
+        fail("endurance startup observation exceeds its byte bound")
+    lines = [
+        line
+        for line in encoded.decode("utf-8", errors="strict").splitlines()
+        if line.startswith("riffdb-startup-stages-v1\t")
+    ]
+    if len(lines) != 1:
+        fail("endurance restart emitted an invalid startup observation count")
+    fields: dict[str, str] = {}
+    for item in lines[0].split("\t")[1:]:
+        name, separator, raw = item.partition("=")
+        if not separator or name in fields:
+            fail("endurance startup observation is malformed")
+        fields[name] = raw
+    mode = fields.get("mode")
+    if mode not in STARTUP_MODES:
+        fail("endurance startup observation mode is invalid")
+    return mode
+
+
+def startup_mode(stderr_path: Path, offset: int) -> str:
+    size = stderr_path.stat().st_size
+    if offset < 0 or size < offset or size - offset > MAX_STARTUP_OBSERVATION_BYTES:
+        fail("endurance startup observation has an invalid bounded extent")
+    with stderr_path.open("rb") as source:
+        source.seek(offset)
+        return parse_startup_mode(source.read(MAX_STARTUP_OBSERVATION_BYTES + 1))
+
+
 def stop_server(
     environment: Path,
 ) -> tuple[dict[str, Any], int, int, int]:
@@ -445,10 +478,12 @@ def start_server(
     environment: Path,
     process_state: dict[str, Any],
     minimum_frontier: int,
-) -> int:
+) -> tuple[int, str]:
+    stderr_path = environment / "server.stderr"
+    stderr_offset = stderr_path.stat().st_size
     stdin = (environment / "server.input").open("rb", buffering=0)
     stdout = (environment / "server.stdout").open("ab", buffering=0)
-    stderr = (environment / "server.stderr").open("ab", buffering=0)
+    stderr = stderr_path.open("ab", buffering=0)
     process: subprocess.Popen[bytes] | None = None
     try:
         process = subprocess.Popen(
@@ -491,19 +526,21 @@ def start_server(
 
     process_state["server_pid"] = process.pid
     atomic_write(environment / "state.json", process_state)
-    return after_frontier
+    return after_frontier, startup_mode(stderr_path, stderr_offset)
 
 
-def restart_server(environment: Path, lifecycle: dict[str, Any]) -> tuple[int, int, int]:
+def restart_server(environment: Path, lifecycle: dict[str, Any]) -> tuple[int, int, int, str]:
     process_state, before_frontier, checkpoint, queue_depth = stop_server(environment)
-    after_frontier = start_server(environment, process_state, before_frontier)
+    after_frontier, mode = start_server(environment, process_state, checkpoint)
+    if mode != "clean_certificate":
+        fail("graceful endurance restart did not select clean_certificate")
     lifecycle["writer_queue_depth"] = max(
         integer(lifecycle["writer_queue_depth"], "writer_queue_depth"), queue_depth
     )
     lifecycle["checkpoint_count"] = integer(lifecycle["checkpoint_count"], "checkpoint_count") + 1
     lifecycle["checkpoint_frontier"] = checkpoint
     lifecycle["restart_count"] = integer(lifecycle["restart_count"], "restart_count") + 1
-    return before_frontier, after_frontier, queue_depth
+    return before_frontier, after_frontier, queue_depth, mode
 
 
 def evidence_digest(environment: Path, name: str, ordinal: int, evidence: dict[str, Any]) -> str:
@@ -932,7 +969,9 @@ def certificate_rotation(
     atomic_replace_file(replacement_certificate, active_certificate, 0o444)
     atomic_replace_file(replacement_key, active_key, 0o600)
     process_state, frontier_before, checkpoint, queue_depth = stop_server(environment)
-    frontier_after = start_server(environment, process_state, frontier_before)
+    frontier_after, mode = start_server(environment, process_state, checkpoint)
+    if mode != "clean_certificate":
+        fail("graceful certificate-rotation restart did not select clean_certificate")
     if frontier_after < frontier_before:
         fail("endurance certificate rotation regressed the application frontier")
     after = before + 1
@@ -952,6 +991,7 @@ def certificate_rotation(
         "application_frontier_after": frontier_after,
         "checkpoint_frontier": checkpoint,
         "writer_queue_depth_max": queue_depth,
+        "startup_mode": mode,
     }
 
 
@@ -1049,7 +1089,9 @@ def retention(environment: Path, state: dict[str, Any]) -> tuple[int, int, dict[
         )
         if after != target or after <= before:
             fail("endurance retention prune did not publish the fenced target")
-        after_frontier = start_server(environment, process_state, application_frontier)
+        after_frontier, mode = start_server(environment, process_state, checkpoint)
+        if mode != "complete_validation":
+            fail("retention restart did not select complete_validation")
         restarted = True
     finally:
         if not restarted:
@@ -1079,6 +1121,7 @@ def retention(environment: Path, state: dict[str, Any]) -> tuple[int, int, dict[
         "application_frontier_before": application_frontier,
         "application_frontier_after": after_frontier,
         "checkpoint_frontier": checkpoint,
+        "startup_mode": mode,
         "writer_queue_depth_max": queue_depth,
     }
 
@@ -1088,7 +1131,7 @@ def checkpoint_or_restart(
 ) -> tuple[int, int, dict[str, Any]]:
     checkpoint_count_before = integer(state["checkpoint_count"], "checkpoint_count")
     restart_count_before = integer(state["restart_count"], "restart_count")
-    frontier_before, frontier_after, queue_depth = restart_server(environment, state)
+    frontier_before, frontier_after, queue_depth, mode = restart_server(environment, state)
     if name == "checkpoint":
         before = checkpoint_count_before
         after = integer(state["checkpoint_count"], "checkpoint_count")
@@ -1102,6 +1145,7 @@ def checkpoint_or_restart(
         "application_frontier_after": frontier_after,
         "checkpoint_frontier": integer(state["checkpoint_frontier"], "checkpoint_frontier"),
         "writer_queue_depth_max": queue_depth,
+        "startup_mode": mode,
     }
 
 
@@ -1117,7 +1161,9 @@ def recovery(environment: Path, state: dict[str, Any]) -> tuple[int, int, dict[s
     os.kill(old_pid, signal.SIGKILL)
     wait_stopped(old_pid, 30)
     recovery_started = time.monotonic_ns()
-    frontier_after = start_server(environment, process_state, frontier_before)
+    frontier_after, mode = start_server(environment, process_state, frontier_before)
+    if mode != "complete_validation":
+        fail("forced-kill endurance recovery did not select complete_validation")
     recovery_microseconds = max(1, (time.monotonic_ns() - recovery_started) // 1_000)
     generation_after = journal_generation(database)
     if frontier_after < frontier_before or generation_after < generation_before:
@@ -1133,6 +1179,7 @@ def recovery(environment: Path, state: dict[str, Any]) -> tuple[int, int, dict[s
         "journal_generation_before": generation_before,
         "journal_generation_after": generation_after,
         "recovery_microseconds": recovery_microseconds,
+        "startup_mode": mode,
     }
 
 
@@ -1179,6 +1226,7 @@ def run_action(environment: Path, state_path: Path, name: str) -> dict[str, Any]
     }
 
 
+# req: END-006, END-007, END-008, PERF-019
 def self_test() -> None:
     header = bytearray(JOURNAL_HEADER_BYTES)
     header[:8] = JOURNAL_MAGIC
@@ -1188,6 +1236,17 @@ def self_test() -> None:
         fail("journal header self-test failed")
     state = initial_state(7)
     validate_state(state)
+    if (
+        parse_startup_mode(
+            b"riffdb-startup-stages-v1\tmode=clean_certificate\tstore_open=1\n"
+        )
+        != "clean_certificate"
+        or parse_startup_mode(
+            b"riffdb-startup-stages-v1\tmode=complete_validation\tstore_open=2\n"
+        )
+        != "complete_validation"
+    ):
+        fail("endurance startup-mode self-test failed")
     print("endurance lifecycle state: passed")
 
 

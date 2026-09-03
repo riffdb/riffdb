@@ -13,6 +13,7 @@
 - **WP-705 dirty-evidence boundary exact text accepted:** 2026-09-02 (maintainer)
 - **WP-705 atomic crash-evidence interpretation accepted:** 2026-09-02 (maintainer)
 - **WP-705 repair-evidence split accepted:** 2026-09-02 (maintainer)
+- **PERF-019 lifecycle-evidence amendment accepted:** 2026-09-03 (maintainer)
 - **Accepted:** 2026-08-26
 - **Acceptance reference:** Maintainer exact-text acceptance in the current
   Codex session for upstream commit `c5c73858`
@@ -488,3 +489,53 @@ production-scale ceiling; WP-705 neither calls nor waits for WP-760 behavior.
 WP-760 consumes those artifacts to replace the population walk on dirty
 readiness and must independently satisfy its 65,536-row and production-scale
 acceptance gates before WP-578 may consume the bounded dirty path.
+
+## Amendment 5 — exact PERF-019 lifecycle measurement contract (Accepted 2026-09-03)
+
+WP-705 measures one Linux `riffdbd` daemon process. The harness binds every
+sample to the daemon PID and the immutable process start time parsed from
+`/proc/<pid>/stat`; PID reuse, a missing process, a changed start time, an
+ambiguous process tree, or any measurement of a wrapper or child invalidates
+the run.
+
+The conservative heap envelope is the positive change in the daemon's Linux
+`VmData` value over each closed lifecycle window and is reported as
+`heap_envelope_bytes`. `VmHWM` is retained as a separate peak-RSS diagnostic;
+it is not substituted for the heap envelope and cannot make a failing
+`VmData` result pass. Every measurement is an unsigned byte count obtained
+from one bounded `/proc/<pid>/status` sample tied to the same PID/start-time
+identity.
+
+Evidence uses the exact default-feature `riffdbd` binary built with
+`cargo build --release --locked`. The source revision, `Cargo.lock`, binary,
+harness, referee, and every retained raw input and report are closed by exact
+cryptographic digests. A mismatched, uncommitted, missing, extra, or
+non-reproducibly selected artifact invalidates the result. The dedicated
+crash/repair fixture may use its separately identified test-fixture binary,
+but that binary is never presented as the production clean-lifecycle binary.
+
+The only accepted population checkpoints are exactly 65,536 entities and the
+canonical production profile. Both checkpoints record the complete closed
+stage registry: engine open, bounded-root validation, certificate consumption,
+readiness, drain, final certificate commit, and total lifecycle wall time.
+Startup and shutdown attribution may not omit, merge away, or relabel a stage.
+
+For each checkpoint and lifecycle window, the positive `VmData` delta MUST be
+at most 64 MiB. The canonical-production positive delta MUST additionally be
+no more than 16 MiB above the corresponding 65,536-entity delta. Every
+prohibited population table named by PERF-019 MUST report exactly zero rows
+walked on the clean startup and shutdown paths. Missing counters, overflow,
+negative-delta reinterpretation, unknown table names, or an incomplete table
+registry fail the evidence rather than becoming zero.
+
+The referee independently verifies the closed source/binary/harness/report
+provenance, PID/start-time binding, exact build profile, checkpoint identities,
+complete stage and prohibited-table registries, arithmetic, and both byte
+thresholds before a receipt may pass. Human-readable summaries are derived
+from those closed inputs and are not evidence by themselves.
+
+This amendment is solely the `PERF-019` clean-lifecycle measurement contract
+for WP-705. It does not claim or satisfy WP-760's production-scale dirty
+readiness or 64 MiB recovery-owned-state guarantee, WP-578's uninterrupted
+`END-009` endurance campaign, or any 72-hour receipt. Those remain separate
+work packages and are not WP-705 closure conditions.

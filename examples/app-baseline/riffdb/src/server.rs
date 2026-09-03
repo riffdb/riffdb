@@ -1,6 +1,6 @@
 //! Process harness that starts a real `riffdbd` for the app baseline.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::SocketAddr;
@@ -34,6 +34,7 @@ use tonic::transport::Endpoint;
 
 use crate::projected::TicketStatusEnumIds;
 use crate::{RiffDbError, RiffDbPublicBackend};
+use riffdb_app_baseline_core::{AppBackend, CloseTicketWithCommentSeed};
 
 /// TOML body registering the board columnar projection (ADR-0086 config form).
 const BOARD_PROJECTIONS_TOML: &str = r#"
@@ -61,6 +62,23 @@ const WRITER_PUBLICATION_STAGES_PREFIX: &str = "riffdb-writer-publication-stages
 const COMPLETION_LANE_PREFIX: &str = "riffdb-completion-lane-v1\t";
 const QUERY_EXECUTE_WINDOWS_PREFIX: &str = "riffdb-query-execute-windows-v1\t";
 const SHUTDOWN_STAGES_PREFIX: &str = "riffdb-shutdown-stages-v1\t";
+const STARTUP_STAGES_PREFIX: &str = "riffdb-startup-stages-v1\t";
+const CLEAN_CLOSE_STAGES_PREFIX: &str = "riffdb-clean-close-stages-v1\t";
+const EXTERNAL_KILL_BARRIER_ENV: &str = "RIFFDB_TEST_REDB_EXTERNAL_KILL_BARRIER";
+const EXTERNAL_KILL_BARRIER_BODY: &[u8] = b"armed\n";
+const STARTUP_STAGE_NAMES: [&str; 11] = [
+    "store_open",
+    "evidence_begin",
+    "structural_drain",
+    "catalog_history",
+    "evidence_finish",
+    "port_activation",
+    "current_views",
+    "consumer_recovery",
+    "outbox_recovery",
+    "graph_rest",
+    "process_to_ready",
+];
 /// Readiness budget.
 ///
 /// Startup cost depends on whether the clean-close certificate admits the fast
@@ -229,6 +247,8 @@ pub struct RiffDbServerSession {
     query_execute_diagnostics: bool,
     table_inventory_before_measurement:
         Option<Vec<riffdb_storage_redb::benchmark_support::AuthoritativeTableInventoryV1>>,
+    recovery_authority_before_process:
+        Option<riffdb_storage_redb::benchmark_support::RecoveryAuthoritySnapshotV1>,
     /// Resolved real-disk root used for this session.
     pub bench_root: riffdb_bench_root::BenchRoot,
     /// Public application backend.
@@ -238,6 +258,14 @@ pub struct RiffDbServerSession {
 /// Redaction-safe fixed-cardinality server telemetry emitted at clean shutdown.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RiffDbShutdownEvidence {
+    /// Closed startup mode and stage observation for this process generation.
+    pub startup: Option<RiffDbStartupEvidence>,
+    /// Separate graceful checkpoint and final-certificate commit observation.
+    pub clean_close: Option<RiffDbCleanCloseStageEvidence>,
+    /// Process sample captured immediately after the daemon was spawned.
+    pub process_memory_at_spawn: Option<RiffDbProcessMemoryEvidence>,
+    /// Process sample captured immediately before graceful shutdown admission.
+    pub process_memory_before_shutdown: Option<RiffDbProcessMemoryEvidence>,
     /// Complete graph-local shutdown wall time from the server receipt.
     pub graph_shutdown_elapsed_us: Option<u64>,
     /// Service jobs, exact text, columnar, projection, notifications,
@@ -275,6 +303,71 @@ pub struct RiffDbShutdownEvidence {
     /// Command-table inventory after the measured process stopped cleanly.
     pub table_inventory_after_measurement:
         Vec<riffdb_storage_redb::benchmark_support::AuthoritativeTableInventoryV1>,
+    /// Opaque post-close authority proof retained only for lifecycle comparison.
+    pub recovery_authority_snapshot_after_measurement:
+        Option<riffdb_storage_redb::benchmark_support::RecoveryAuthoritySnapshotV1>,
+}
+
+/// Closed redaction-safe startup observation emitted by the runner-owned daemon.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RiffDbStartupEvidence {
+    /// `clean_certificate` or `complete_validation`.
+    pub mode: String,
+    /// Eleven fixed startup stage durations in server emission order.
+    pub stages_us: [u64; 11],
+    /// Bounded transient-index rebuild path count.
+    pub transient_index_rebuilds: u64,
+    /// `none` or `observed`; never a population cardinality.
+    pub population_table_walk: String,
+    /// The redb repair callback was observed on this generation.
+    pub engine_repair_observed: bool,
+}
+
+/// Fixed-cardinality graceful close observation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RiffDbCleanCloseStageEvidence {
+    /// Checkpoint write duration.
+    pub checkpoint_us: u64,
+    /// Closed `present`, `skipped`, or `failed` checkpoint result.
+    pub checkpoint_status: String,
+    /// Final clean-certificate commit duration.
+    pub final_certificate_commit_us: u64,
+    /// Final clean-certificate commit completed successfully.
+    pub final_certificate_commit_succeeded: bool,
+}
+
+/// Linux process-memory sample bound to one immutable process generation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RiffDbProcessMemoryEvidence {
+    /// Daemon process identifier.
+    pub pid: u32,
+    /// Field 22 from `/proc/<pid>/stat`, which disambiguates PID reuse.
+    pub starttime_ticks: u64,
+    /// Conservative writable-data envelope from `VmData`.
+    pub vm_data_bytes: u64,
+    /// Peak resident-set diagnostic from `VmHWM`.
+    pub vm_hwm_bytes: u64,
+}
+
+/// Runner-owned forced-kill and dirty-reopen observation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RiffDbDirtyRecoveryEvidence {
+    /// Dirty startup observation after killing only the tracked child.
+    pub startup: RiffDbStartupEvidence,
+    /// Harness wall time from kill request through recovered readiness.
+    pub recovery_elapsed_us: u64,
+    /// Opaque exact authority snapshot after kill and before recovery.
+    pub authority_before_recovery:
+        riffdb_storage_redb::benchmark_support::RecoveryAuthoritySnapshotV1,
+    /// Predeclared clean twin with the whole probe absent after two opens.
+    pub authority_absent_twin: riffdb_storage_redb::benchmark_support::RecoveryAuthoritySnapshotV1,
+    /// Clean second-startup wall time for the absent twin.
+    pub absent_twin_process_to_ready_us: u64,
+    /// Predeclared clean twin with the whole probe committed.
+    pub authority_committed_twin:
+        riffdb_storage_redb::benchmark_support::RecoveryAuthoritySnapshotV1,
+    /// Clean startup wall time for the committed twin.
+    pub committed_twin_process_to_ready_us: u64,
 }
 
 /// Closed completion-lane evidence in submitted, published, drained, shutdown order.
@@ -534,6 +627,7 @@ impl RiffDbServerSession {
             coordinator_workload_capacity: options.coordinator_workload_capacity,
             query_execute_diagnostics: options.query_execute_diagnostics,
             table_inventory_before_measurement: None,
+            recovery_authority_before_process: None,
             bench_root,
             backend,
         })
@@ -578,6 +672,11 @@ impl RiffDbServerSession {
             .map_err(|error| RiffDbError::Server {
                 detail: format!("read pre-measurement table inventory: {error}"),
             })?;
+        let recovery_authority_before_process =
+            riffdb_storage_redb::benchmark_support::recovery_authority_snapshot_v1(&database_path)
+                .map_err(|error| RiffDbError::Server {
+                    detail: format!("read pre-process authority snapshot: {error}"),
+                })?;
         let backup_root = self._temporary.path().join("backups");
         let projections_root = self._temporary.path().join("projections");
         let projections_config_path = self._temporary.path().join("projections.toml");
@@ -606,7 +705,337 @@ impl RiffDbServerSession {
         self.process = process;
         self.backend = backend;
         self.table_inventory_before_measurement = Some(table_inventory_before_measurement);
+        self.recovery_authority_before_process = Some(recovery_authority_before_process);
         Ok((self, setup_evidence))
+    }
+
+    /// Exact retained entity rows captured while the seed process was stopped.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn retained_entity_rows_before_measurement(&self) -> Option<u64> {
+        self.table_inventory_before_measurement
+            .as_ref()?
+            .iter()
+            .find(|table| table.name() == "entities")
+            .map(riffdb_storage_redb::benchmark_support::AuthoritativeTableInventoryV1::rows)
+    }
+
+    /// Kills only this session's tracked writer at its real pre-commit barrier,
+    /// then reopens the same durable unit through the ordinary production path.
+    pub async fn force_kill_and_restart_for_evidence(
+        mut self,
+        crash_probe: CloseTicketWithCommentSeed,
+    ) -> Result<(Self, RiffDbDirtyRecoveryEvidence), RiffDbError> {
+        let started = Instant::now();
+        // Stop the clean comparison generation first. This makes the baseline
+        // snapshot authoritative and ensures it is captured only while no
+        // writer owns the file. The armed generation below is the next and only
+        // writer before recovery.
+        self.process
+            .shutdown_cleanly()
+            .map_err(|error| RiffDbError::Server {
+                detail: error.to_string(),
+            })?;
+        let database_path = self._temporary.path().join("riffdb.redb");
+        let authority_before_recovery =
+            riffdb_storage_redb::benchmark_support::recovery_authority_snapshot_v1(&database_path)
+                .map_err(|error| RiffDbError::Server {
+                    detail: format!("read stopped pre-crash authority snapshot: {error}"),
+                })?;
+
+        // Both clean twins execute the same two-start lifecycle as the armed
+        // generation plus recovery. This keeps allocator/frontier META values
+        // comparable rather than treating extra opens as recovery mutation.
+        let absent_twin =
+            riffdb_bench_root::BenchDir::create(&self.bench_root, "wp705-absent-twin").map_err(
+                |error| RiffDbError::Server {
+                    detail: error.to_string(),
+                },
+            )?;
+        copy_regular_files(self._temporary.path(), absent_twin.path()).map_err(|error| {
+            RiffDbError::Server {
+                detail: format!("copy absent clean twin: {error}"),
+            }
+        })?;
+        let absent_database = absent_twin.path().join("riffdb.redb");
+        let absent_backup = absent_twin.path().join("backups");
+        let absent_projections = absent_twin.path().join("projections");
+        fs::create_dir_all(&absent_backup).map_err(|_| RiffDbError::Io)?;
+        fs::create_dir_all(&absent_projections).map_err(|_| RiffDbError::Io)?;
+        let mut authority_absent_twin = None;
+        let mut absent_twin_process_to_ready_us = None;
+        for ordinal in 0..2 {
+            let mut absent_process = ServerProcess::spawn(
+                &self.riffdbd_bin,
+                &absent_database,
+                &absent_backup,
+                &absent_twin.path().join("capability.keys"),
+                &absent_twin.path().join("idempotency.keys"),
+                self.coordinator_workload_capacity,
+                self.query_execute_diagnostics,
+                Some(absent_projections.as_path()),
+                Some(&absent_twin.path().join("projections.toml")),
+            )
+            .map_err(|error| RiffDbError::Server {
+                detail: error.to_string(),
+            })?;
+            absent_process.wait_for_ready_address().map_err(|error| {
+                let detail = absent_process.diagnostic_detail(&error.to_string());
+                RiffDbError::Server { detail }
+            })?;
+            let absent_startup =
+                absent_process
+                    .startup_evidence()
+                    .map_err(|error| RiffDbError::Server {
+                        detail: error.to_string(),
+                    })?;
+            if absent_startup.mode != "clean_certificate" {
+                return Err(RiffDbError::Server {
+                    detail: "absent twin did not select clean startup".to_owned(),
+                });
+            }
+            absent_process
+                .shutdown_cleanly()
+                .map_err(|error| RiffDbError::Server {
+                    detail: error.to_string(),
+                })?;
+            if ordinal == 1 {
+                // Retain only the matching recovery-generation startup time.
+                absent_twin_process_to_ready_us = Some(absent_startup.stages_us[10]);
+                authority_absent_twin = Some(
+                    riffdb_storage_redb::benchmark_support::recovery_authority_snapshot_v1(
+                        &absent_database,
+                    )
+                    .map_err(|error| RiffDbError::Server {
+                        detail: format!("read absent clean twin: {error}"),
+                    })?,
+                );
+            }
+        }
+        let authority_absent_twin =
+            authority_absent_twin.expect("second absent-twin generation records authority");
+        let absent_twin_process_to_ready_us =
+            absent_twin_process_to_ready_us.expect("second absent-twin generation records timing");
+        let committed_twin = riffdb_bench_root::BenchDir::create(&self.bench_root, "wp705-twin")
+            .map_err(|error| RiffDbError::Server {
+                detail: error.to_string(),
+            })?;
+        copy_regular_files(self._temporary.path(), committed_twin.path()).map_err(|error| {
+            RiffDbError::Server {
+                detail: format!("copy committed clean twin: {error}"),
+            }
+        })?;
+        let twin_database = committed_twin.path().join("riffdb.redb");
+        let twin_backup = committed_twin.path().join("backups");
+        let twin_projections = committed_twin.path().join("projections");
+        fs::create_dir_all(&twin_backup).map_err(|_| RiffDbError::Io)?;
+        fs::create_dir_all(&twin_projections).map_err(|_| RiffDbError::Io)?;
+        let mut twin_process = ServerProcess::spawn(
+            &self.riffdbd_bin,
+            &twin_database,
+            &twin_backup,
+            &committed_twin.path().join("capability.keys"),
+            &committed_twin.path().join("idempotency.keys"),
+            self.coordinator_workload_capacity,
+            self.query_execute_diagnostics,
+            Some(twin_projections.as_path()),
+            Some(&committed_twin.path().join("projections.toml")),
+        )
+        .map_err(|error| RiffDbError::Server {
+            detail: error.to_string(),
+        })?;
+        let twin_address = twin_process.wait_for_ready_address().map_err(|error| {
+            let detail = twin_process.diagnostic_detail(&error.to_string());
+            RiffDbError::Server { detail }
+        })?;
+        let twin_startup =
+            twin_process
+                .startup_evidence()
+                .map_err(|error| RiffDbError::Server {
+                    detail: error.to_string(),
+                })?;
+        if twin_startup.mode != "clean_certificate" {
+            return Err(RiffDbError::Server {
+                detail: "committed twin did not select clean startup".to_owned(),
+            });
+        }
+        let mut twin_backend = self
+            .backend
+            .reconnect_endpoint(&format!("http://{twin_address}"))
+            .await?;
+        let twin_probe = crash_probe.clone();
+        thread::spawn(move || twin_backend.close_ticket_with_comment(&twin_probe))
+            .join()
+            .map_err(|_| RiffDbError::Server {
+                detail: "committed clean-twin client panicked".to_owned(),
+            })??;
+        twin_process
+            .shutdown_cleanly()
+            .map_err(|error| RiffDbError::Server {
+                detail: error.to_string(),
+            })?;
+        let mut twin_process = ServerProcess::spawn(
+            &self.riffdbd_bin,
+            &twin_database,
+            &twin_backup,
+            &committed_twin.path().join("capability.keys"),
+            &committed_twin.path().join("idempotency.keys"),
+            self.coordinator_workload_capacity,
+            self.query_execute_diagnostics,
+            Some(twin_projections.as_path()),
+            Some(&committed_twin.path().join("projections.toml")),
+        )
+        .map_err(|error| RiffDbError::Server {
+            detail: error.to_string(),
+        })?;
+        twin_process.wait_for_ready_address().map_err(|error| {
+            let detail = twin_process.diagnostic_detail(&error.to_string());
+            RiffDbError::Server { detail }
+        })?;
+        let twin_matching_startup =
+            twin_process
+                .startup_evidence()
+                .map_err(|error| RiffDbError::Server {
+                    detail: error.to_string(),
+                })?;
+        if twin_matching_startup.mode != "clean_certificate" {
+            return Err(RiffDbError::Server {
+                detail: "committed twin second open did not select clean startup".to_owned(),
+            });
+        }
+        twin_process
+            .shutdown_cleanly()
+            .map_err(|error| RiffDbError::Server {
+                detail: error.to_string(),
+            })?;
+        let authority_committed_twin =
+            riffdb_storage_redb::benchmark_support::recovery_authority_snapshot_v1(&twin_database)
+                .map_err(|error| RiffDbError::Server {
+                    detail: format!("read committed clean twin: {error}"),
+                })?;
+        self.recovery_authority_before_process = None;
+        let backup_root = self._temporary.path().join("backups");
+        let projections_root = self._temporary.path().join("projections");
+        let projections_config_path = self._temporary.path().join("projections.toml");
+        let capability_keys_path = self._temporary.path().join("capability.keys");
+        let idempotency_keys_path = self._temporary.path().join("idempotency.keys");
+        let barrier_marker = self
+            ._temporary
+            .path()
+            .join("command-batch-before-engine-commit.ready");
+        if barrier_marker.exists() {
+            return Err(RiffDbError::Server {
+                detail: "external-kill barrier marker already exists".to_owned(),
+            });
+        }
+        let process = ServerProcess::spawn_with_external_kill_barrier(
+            &self.riffdbd_bin,
+            &database_path,
+            &backup_root,
+            &capability_keys_path,
+            &idempotency_keys_path,
+            self.coordinator_workload_capacity,
+            self.query_execute_diagnostics,
+            Some(projections_root.as_path()),
+            Some(projections_config_path.as_path()),
+            &barrier_marker,
+        )
+        .map_err(|error| RiffDbError::Server {
+            detail: error.to_string(),
+        })?;
+        let address = process.wait_for_ready_address().map_err(|error| {
+            let detail = process.diagnostic_detail(&error.to_string());
+            RiffDbError::Server { detail }
+        })?;
+        let endpoint = format!("http://{address}");
+        let backend = self.backend.reconnect_endpoint(&endpoint).await?;
+        self.process = process;
+        self.backend = backend;
+
+        let mut request_backend = self.backend.clone();
+        let request =
+            thread::spawn(move || request_backend.close_ticket_with_comment(&crash_probe));
+        self.process
+            .wait_for_external_kill_barrier(&barrier_marker)
+            .map_err(|error| RiffDbError::Server {
+                detail: error.to_string(),
+            })?;
+        let child_id = self.process.child_id;
+        self.process
+            .kill_owned_child(child_id)
+            .map_err(|error| RiffDbError::Server {
+                detail: error.to_string(),
+            })?;
+        match request.join() {
+            Ok(Err(_)) => {}
+            Ok(Ok(())) => {
+                return Err(RiffDbError::Server {
+                    detail: "pre-commit crash probe unexpectedly committed".to_owned(),
+                });
+            }
+            Err(_) => {
+                return Err(RiffDbError::Server {
+                    detail: "pre-commit crash-probe client panicked".to_owned(),
+                });
+            }
+        }
+
+        // This is deliberately the ordinary production open: the barrier
+        // environment is scoped to the killed child and is not inherited here.
+        let process = ServerProcess::spawn(
+            &self.riffdbd_bin,
+            &database_path,
+            &backup_root,
+            &capability_keys_path,
+            &idempotency_keys_path,
+            self.coordinator_workload_capacity,
+            self.query_execute_diagnostics,
+            Some(projections_root.as_path()),
+            Some(projections_config_path.as_path()),
+        )
+        .map_err(|error| RiffDbError::Server {
+            detail: error.to_string(),
+        })?;
+        let address = process.wait_for_ready_address().map_err(|error| {
+            let detail = process.diagnostic_detail(&error.to_string());
+            RiffDbError::Server { detail }
+        })?;
+        let startup = process
+            .startup_evidence()
+            .map_err(|error| RiffDbError::Server {
+                detail: error.to_string(),
+            })?;
+        if startup.mode != "complete_validation" {
+            return Err(RiffDbError::Server {
+                detail: "forced-kill reopen omitted complete validation".to_owned(),
+            });
+        }
+        let endpoint = format!("http://{address}");
+        let backend = self.backend.reconnect_endpoint(&endpoint).await?;
+        self.process = process;
+        self.backend = backend;
+        Ok((
+            self,
+            RiffDbDirtyRecoveryEvidence {
+                startup,
+                recovery_elapsed_us: u64::try_from(started.elapsed().as_micros())
+                    .unwrap_or(u64::MAX),
+                authority_before_recovery,
+                authority_absent_twin,
+                absent_twin_process_to_ready_us,
+                authority_committed_twin,
+                committed_twin_process_to_ready_us: twin_matching_startup.stages_us[10],
+            },
+        ))
+    }
+
+    /// Returns the current runner-owned daemon's bounded startup observation.
+    pub fn startup_evidence(&self) -> Result<RiffDbStartupEvidence, RiffDbError> {
+        self.process
+            .startup_evidence()
+            .map_err(|error| RiffDbError::Server {
+                detail: error.to_string(),
+            })
     }
 
     /// Stops the server cleanly.
@@ -637,7 +1066,93 @@ impl RiffDbServerSession {
             .map_err(|error| RiffDbError::Server {
                 detail: format!("reopen and read post-measurement table inventory: {error}"),
             })?;
+        evidence.recovery_authority_snapshot_after_measurement = Some(
+            riffdb_storage_redb::benchmark_support::recovery_authority_snapshot_v1(&database_path)
+                .map_err(|error| RiffDbError::Server {
+                    detail: format!("read post-measurement authority snapshot: {error}"),
+                })?,
+        );
         Ok(evidence)
+    }
+
+    /// Closes recovered state, performs one ordinary clean restart, closes it
+    /// again, and returns opaque snapshots proving that recovery added nothing.
+    pub fn shutdown_with_recovery_repeat_evidence(
+        mut self,
+    ) -> Result<
+        (
+            RiffDbShutdownEvidence,
+            riffdb_storage_redb::benchmark_support::RecoveryAuthoritySnapshotV1,
+            RiffDbStartupEvidence,
+        ),
+        RiffDbError,
+    > {
+        let database_path = self._temporary.path().join("riffdb.redb");
+        let mut evidence =
+            self.process
+                .shutdown_cleanly()
+                .map_err(|error| RiffDbError::Server {
+                    detail: error.to_string(),
+                })?;
+        let first =
+            riffdb_storage_redb::benchmark_support::recovery_authority_snapshot_v1(&database_path)
+                .map_err(|error| RiffDbError::Server {
+                    detail: format!("read first recovered authority snapshot: {error}"),
+                })?;
+        let backup_root = self._temporary.path().join("backups");
+        let projections_root = self._temporary.path().join("projections");
+        let projections_config_path = self._temporary.path().join("projections.toml");
+        let capability_keys_path = self._temporary.path().join("capability.keys");
+        let idempotency_keys_path = self._temporary.path().join("idempotency.keys");
+        let mut repeat = ServerProcess::spawn(
+            &self.riffdbd_bin,
+            &database_path,
+            &backup_root,
+            &capability_keys_path,
+            &idempotency_keys_path,
+            self.coordinator_workload_capacity,
+            self.query_execute_diagnostics,
+            Some(projections_root.as_path()),
+            Some(projections_config_path.as_path()),
+        )
+        .map_err(|error| RiffDbError::Server {
+            detail: error.to_string(),
+        })?;
+        repeat.wait_for_ready_address().map_err(|error| {
+            let detail = repeat.diagnostic_detail(&error.to_string());
+            RiffDbError::Server { detail }
+        })?;
+        let repeat_startup = repeat
+            .startup_evidence()
+            .map_err(|error| RiffDbError::Server {
+                detail: error.to_string(),
+            })?;
+        repeat
+            .shutdown_cleanly()
+            .map_err(|error| RiffDbError::Server {
+                detail: error.to_string(),
+            })?;
+        let second =
+            riffdb_storage_redb::benchmark_support::recovery_authority_snapshot_v1(&database_path)
+                .map_err(|error| RiffDbError::Server {
+                    detail: format!("read repeated recovery authority snapshot: {error}"),
+                })?;
+        if !first.same_authority_after_clean_generations(&second, 2) {
+            return Err(RiffDbError::Server {
+                detail: "second recovery restart changed authority".to_owned(),
+            });
+        }
+        evidence.table_inventory_before_measurement =
+            self.table_inventory_before_measurement.take();
+        evidence.table_inventory_after_measurement =
+            riffdb_storage_redb::benchmark_support::authoritative_table_inventory_v1(
+                &database_path,
+            )
+            .map_err(|error| RiffDbError::Server {
+                detail: format!("read repeated-recovery table inventory: {error}"),
+            })?;
+        evidence.recovery_authority_snapshot_after_measurement = Some(first);
+        Ok((evidence, second, repeat_startup))
     }
 
     /// Last stderr lines captured from `riffdbd` (for crash diagnosis).
@@ -685,6 +1200,19 @@ impl RiffDbServerSession {
         self.process.child_id
     }
 
+    /// Initial Linux process-memory sample for the current daemon generation.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn initial_process_memory(&self) -> RiffDbProcessMemoryEvidence {
+        self.process.initial_process_memory
+    }
+
+    /// Current Linux process-memory sample, refusing PID reuse.
+    #[doc(hidden)]
+    pub fn current_process_memory(&self) -> Result<RiffDbProcessMemoryEvidence, String> {
+        self.process.process_memory().map_err(|error| error.to_string())
+    }
+
     /// Private per-run directory containing the database, projection, and
     /// auxiliary durable files. Benchmark attribution may inspect aggregate
     /// byte counts, but must never publish paths or file contents as labels.
@@ -692,6 +1220,13 @@ impl RiffDbServerSession {
     pub fn session_directory(&self) -> &Path {
         self._temporary.path()
     }
+}
+
+#[cfg(test)]
+fn take_stopped_authority_baseline<T>(slot: &mut Option<T>) -> Result<T, RiffDbError> {
+    slot.take().ok_or_else(|| RiffDbError::Server {
+        detail: "forced-kill evidence requires a stopped pre-process authority snapshot".to_owned(),
+    })
 }
 
 /// Phase 1: bootstrap capability + deploy TicketDesk contract only.
@@ -1199,6 +1734,7 @@ enum ReaperCommand {
 
 struct ServerProcess {
     child_id: u32,
+    initial_process_memory: RiffDbProcessMemoryEvidence,
     stdin: Option<std::process::ChildStdin>,
     ready: Receiver<io::Result<String>>,
     shutdown_evidence: Receiver<io::Result<RiffDbShutdownEvidence>>,
@@ -1213,6 +1749,16 @@ struct ServerProcess {
     cached_exit: Option<Result<ExitStatus, String>>,
 }
 
+fn copy_regular_files(source: &Path, destination: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            fs::copy(entry.path(), destination.join(entry.file_name()))?;
+        }
+    }
+    Ok(())
+}
+
 impl ServerProcess {
     #[allow(clippy::too_many_arguments)]
     fn spawn(
@@ -1225,6 +1771,60 @@ impl ServerProcess {
         query_execute_diagnostics: bool,
         projections_root: Option<&Path>,
         projections_config: Option<&Path>,
+    ) -> io::Result<Self> {
+        Self::spawn_inner(
+            binary,
+            database_path,
+            backup_root,
+            capability_keys_path,
+            idempotency_keys_path,
+            coordinator_workload_capacity,
+            query_execute_diagnostics,
+            projections_root,
+            projections_config,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_with_external_kill_barrier(
+        binary: &Path,
+        database_path: &Path,
+        backup_root: &Path,
+        capability_keys_path: &Path,
+        idempotency_keys_path: &Path,
+        coordinator_workload_capacity: Option<u16>,
+        query_execute_diagnostics: bool,
+        projections_root: Option<&Path>,
+        projections_config: Option<&Path>,
+        barrier_marker: &Path,
+    ) -> io::Result<Self> {
+        Self::spawn_inner(
+            binary,
+            database_path,
+            backup_root,
+            capability_keys_path,
+            idempotency_keys_path,
+            coordinator_workload_capacity,
+            query_execute_diagnostics,
+            projections_root,
+            projections_config,
+            Some(barrier_marker),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_inner(
+        binary: &Path,
+        database_path: &Path,
+        backup_root: &Path,
+        capability_keys_path: &Path,
+        idempotency_keys_path: &Path,
+        coordinator_workload_capacity: Option<u16>,
+        query_execute_diagnostics: bool,
+        projections_root: Option<&Path>,
+        projections_config: Option<&Path>,
+        barrier_marker: Option<&Path>,
     ) -> io::Result<Self> {
         let mut command = Command::new(binary);
         command
@@ -1262,8 +1862,19 @@ impl ServerProcess {
         if query_execute_diagnostics {
             command.env("RIFFDB_QUERY_EXECUTE_DIAGNOSTICS", "1");
         }
+        if let Some(marker) = barrier_marker {
+            command.env(EXTERNAL_KILL_BARRIER_ENV, marker);
+        }
         let mut child = command.spawn()?;
         let child_id = child.id();
+        let initial_process_memory = match read_process_memory(child_id) {
+            Ok(observation) => observation,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        };
         let stdin = child
             .stdin
             .take()
@@ -1288,6 +1899,7 @@ impl ServerProcess {
         let reaper = thread::spawn(move || reap_child(child, commands, exit_sender));
         Ok(Self {
             child_id,
+            initial_process_memory,
             stdin: Some(stdin),
             ready,
             shutdown_evidence,
@@ -1330,6 +1942,81 @@ impl ServerProcess {
             .lock()
             .map(|ring| ring.iter().cloned().collect::<Vec<_>>().join(""))
             .unwrap_or_default()
+    }
+
+    fn startup_evidence(&self) -> io::Result<RiffDbStartupEvidence> {
+        parse_startup_evidence(&self.stderr_tail())
+    }
+
+    fn process_memory(&self) -> io::Result<RiffDbProcessMemoryEvidence> {
+        let observation = read_process_memory(self.child_id)?;
+        if observation.pid != self.initial_process_memory.pid
+            || observation.starttime_ticks != self.initial_process_memory.starttime_ticks
+        {
+            return Err(io::Error::other(
+                "riffdbd process generation changed during measurement",
+            ));
+        }
+        Ok(observation)
+    }
+
+    fn kill_owned_child(&mut self, requested_child_id: u32) -> io::Result<()> {
+        require_owned_child(self.child_id, requested_child_id)?;
+        drop(self.stdin.take());
+        self.reaper_commands
+            .send(ReaperCommand::Kill)
+            .map_err(|_| io::Error::other("runner-owned child reaper disconnected"))?;
+        let status = self
+            .exited
+            .recv_timeout(process_stop_timeout())
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "forced-kill wait timed out"))??;
+        self.exit_observed = true;
+        self.cached_exit = Some(Ok(status));
+        if status.success() {
+            return Err(io::Error::other("forced-kill child exited successfully"));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            if status.signal() != Some(9) {
+                return Err(io::Error::other(
+                    "runner-owned child did not exit on SIGKILL",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn wait_for_external_kill_barrier(&mut self, marker: &Path) -> io::Result<()> {
+        let deadline = Instant::now() + RPC_TIMEOUT;
+        loop {
+            match fs::read(marker) {
+                Ok(body) if body == EXTERNAL_KILL_BARRIER_BODY => {
+                    fs::remove_file(marker)?;
+                    return Ok(());
+                }
+                Ok(_) => {
+                    return Err(io::Error::other(
+                        "external-kill barrier marker was not canonical",
+                    ));
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            if let Some(status) = self.poll_exit() {
+                return Err(io::Error::other(format!(
+                    "barrier child exited before synchronization: {}",
+                    status?
+                )));
+            }
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "before-commit external-kill barrier timed out",
+                ));
+            }
+            thread::yield_now();
+        }
     }
 
     /// Non-blocking poll of the child exit channel (caches observed status).
@@ -1377,63 +2064,173 @@ impl ServerProcess {
 
     fn shutdown_cleanly(&mut self) -> io::Result<RiffDbShutdownEvidence> {
         let started = Instant::now();
+        let process_memory_before_shutdown = self.process_memory()?;
         if let Some(mut stdin) = self.stdin.take() {
             let _ = stdin.write_all(b"shutdown\n");
             let _ = stdin.flush();
         }
-        let evidence = match self.exited.recv_timeout(process_stop_timeout()) {
-            Ok(status) => {
-                self.exit_observed = true;
-                let status = status?;
-                self.cached_exit = Some(Ok(status));
-                if status.success() {
-                    self.shutdown_evidence
-                        .recv_timeout(PROCESS_STOP_TIMEOUT)
-                        .map_err(|_| {
-                            io::Error::other(
-                                self.diagnostic_detail(
+        let configured_budget = process_stop_timeout();
+        let evidence =
+            match self.exited.recv_timeout(configured_budget) {
+                Ok(status) => {
+                    self.exit_observed = true;
+                    let status = status?;
+                    self.cached_exit = Some(Ok(status));
+                    if status.success() {
+                        self.shutdown_evidence
+                            .recv_timeout(PROCESS_STOP_TIMEOUT)
+                            .map_err(|_| {
+                                io::Error::other(self.diagnostic_detail(
                                     "write-group report missing after clean exit",
-                                ),
-                            )
-                        })?
-                } else {
-                    let code = status
-                        .code()
-                        .map(|c| format!("exit_code={c}"))
-                        .unwrap_or_else(|| format!("exit_status={status}"));
-                    // Unix signal when available.
-                    #[cfg(unix)]
-                    let code = {
-                        use std::os::unix::process::ExitStatusExt;
-                        match status.signal() {
-                            Some(sig) => format!("{code} signal={sig}"),
-                            None => code,
-                        }
-                    };
-                    Err(io::Error::other(self.diagnostic_detail(&code)))
-                }
-            }
-            Err(_) => {
-                let _ = self.reaper_commands.send(ReaperCommand::Kill);
-                // Give the reaper a moment to deposit an exit status if kill works.
-                let after_kill = self.exited.recv_timeout(Duration::from_secs(2));
-                let headline = match after_kill {
-                    Ok(Ok(status)) => {
-                        self.exit_observed = true;
-                        format!("shutdown timeout; killed child status={status}")
+                                ))
+                            })?
+                    } else {
+                        let code = status
+                            .code()
+                            .map(|c| format!("exit_code={c}"))
+                            .unwrap_or_else(|| format!("exit_status={status}"));
+                        // Unix signal when available.
+                        #[cfg(unix)]
+                        let code = {
+                            use std::os::unix::process::ExitStatusExt;
+                            match status.signal() {
+                                Some(sig) => format!("{code} signal={sig}"),
+                                None => code,
+                            }
+                        };
+                        Err(io::Error::other(self.diagnostic_detail(&code)))
                     }
-                    Ok(Err(error)) => format!("shutdown timeout; kill wait error={error}"),
-                    Err(_) => "shutdown timeout; child unresponsive after kill".to_owned(),
-                };
-                Err(io::Error::other(self.diagnostic_detail(&headline)))
+                }
+                Err(_) => {
+                    let _ = self.reaper_commands.send(ReaperCommand::Kill);
+                    // Give the reaper a moment to deposit an exit status if kill works.
+                    let after_kill = self.exited.recv_timeout(Duration::from_secs(2));
+                    let outcome = match after_kill {
+                        Ok(Ok(status)) => {
+                            self.exit_observed = true;
+                            format!("shutdown timeout; killed child status={status}")
+                        }
+                        Ok(Err(error)) => format!("shutdown timeout; kill wait error={error}"),
+                        Err(_) => "shutdown timeout; child unresponsive after kill".to_owned(),
+                    };
+                    let headline = format!(
+                        "{outcome}; {}",
+                        shutdown_timeout_context(
+                            configured_budget,
+                            started.elapsed(),
+                            &self.stderr_tail()
+                        )
+                    );
+                    Err(io::Error::other(self.diagnostic_detail(&headline)))
+                }
+            };
+        evidence.and_then(|mut evidence| {
+            if let Some(handle) = self.stderr.take() {
+                handle
+                    .join()
+                    .map_err(|_| io::Error::other("stderr collector panicked"))?;
             }
-        };
-        evidence.map(|mut evidence| {
+            let stderr = self.stderr_tail();
+            evidence.startup = Some(parse_startup_evidence(&stderr)?);
+            evidence.clean_close = Some(parse_clean_close_evidence(&stderr)?);
+            evidence.process_memory_at_spawn = Some(self.initial_process_memory);
+            evidence.process_memory_before_shutdown = Some(process_memory_before_shutdown);
             evidence.harness_shutdown_elapsed_us =
                 u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
-            evidence
+            Ok(evidence)
         })
     }
+}
+
+fn shutdown_timeout_context(budget: Duration, elapsed: Duration, stderr: &str) -> String {
+    format!(
+        "configured_budget_ms={} elapsed_us={} shutdown_stage_receipt={}",
+        budget.as_millis(),
+        elapsed.as_micros(),
+        if stderr
+            .lines()
+            .any(|line| line.starts_with(SHUTDOWN_STAGES_PREFIX))
+        {
+            "present"
+        } else {
+            "absent"
+        }
+    )
+}
+
+fn require_owned_child(expected_child_id: u32, requested_child_id: u32) -> io::Result<()> {
+    if expected_child_id == requested_child_id && expected_child_id != 0 {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "forced kill refused for non-owned child",
+        ))
+    }
+}
+
+fn read_process_memory(pid: u32) -> io::Result<RiffDbProcessMemoryEvidence> {
+    const PROC_FILE_LIMIT: usize = 65_536;
+    let stat = fs::read(format!("/proc/{pid}/stat"))?;
+    if stat.is_empty() || stat.len() > PROC_FILE_LIMIT {
+        return Err(io::Error::other("riffdbd process stat is invalid"));
+    }
+    let stat = std::str::from_utf8(&stat)
+        .map_err(|_| io::Error::other("riffdbd process stat is not UTF-8"))?;
+    let close = stat
+        .rfind(')')
+        .ok_or_else(|| io::Error::other("riffdbd process stat is malformed"))?;
+    let fields = stat
+        .get(close + 1..)
+        .ok_or_else(|| io::Error::other("riffdbd process stat is malformed"))?
+        .split_whitespace()
+        .collect::<Vec<_>>();
+    // `fields[0]` is field 3 (`state`), so field 22 is index 19.
+    let starttime_ticks = fields
+        .get(19)
+        .ok_or_else(|| io::Error::other("riffdbd process stat omitted starttime"))?
+        .parse::<u64>()
+        .map_err(|_| io::Error::other("riffdbd process starttime is invalid"))?;
+    if starttime_ticks == 0 {
+        return Err(io::Error::other("riffdbd process starttime is zero"));
+    }
+
+    let status = fs::read(format!("/proc/{pid}/status"))?;
+    if status.is_empty() || status.len() > PROC_FILE_LIMIT {
+        return Err(io::Error::other("riffdbd process status is invalid"));
+    }
+    let status = std::str::from_utf8(&status)
+        .map_err(|_| io::Error::other("riffdbd process status is not UTF-8"))?;
+    let parse_kib = |name: &str| -> io::Result<u64> {
+        let mut matches = status.lines().filter_map(|line| line.strip_prefix(name));
+        let value = matches
+            .next()
+            .ok_or_else(|| io::Error::other("riffdbd process memory field is missing"))?;
+        if matches.next().is_some() {
+            return Err(io::Error::other(
+                "riffdbd process memory field is duplicated",
+            ));
+        }
+        let mut fields = value.split_whitespace();
+        let kib = fields
+            .next()
+            .ok_or_else(|| io::Error::other("riffdbd process memory value is missing"))?
+            .parse::<u64>()
+            .map_err(|_| io::Error::other("riffdbd process memory value is invalid"))?;
+        if fields.next() != Some("kB") || fields.next().is_some() {
+            return Err(io::Error::other("riffdbd process memory unit is invalid"));
+        }
+        kib.checked_mul(1024)
+            .ok_or_else(|| io::Error::other("riffdbd process memory value overflowed"))
+    };
+    let vm_data_bytes = parse_kib("VmData:")?;
+    let vm_hwm_bytes = parse_kib("VmHWM:")?;
+    Ok(RiffDbProcessMemoryEvidence {
+        pid,
+        starttime_ticks,
+        vm_data_bytes,
+        vm_hwm_bytes,
+    })
 }
 
 impl Drop for ServerProcess {
@@ -1530,11 +2327,8 @@ fn read_server_stdout(
             .trim_end()
             .strip_prefix(WRITER_PUBLICATION_STAGES_PREFIX)
         {
-            writer_publication_stages = Some(parse_fixed_counts(
-                encoded,
-                "writer-publication-stages",
-                9,
-            ));
+            writer_publication_stages =
+                Some(parse_fixed_counts(encoded, "writer-publication-stages", 9));
         } else if let Some(encoded) = line.trim_end().strip_prefix(COMPLETION_LANE_PREFIX) {
             completion_lane = Some(parse_completion_lane(encoded));
         } else if let Some(encoded) = line.trim_end().strip_prefix(QUERY_EXECUTE_WINDOWS_PREFIX) {
@@ -1570,6 +2364,10 @@ fn read_server_stdout(
                                     completion_lane.transpose().and_then(|completion_lane| {
                                         query_execute.transpose().and_then(|query_execute| {
                                             optional_shutdown_stages(shutdown_stages_us).map(|(graph_shutdown_elapsed_us, shutdown_stages_us)| RiffDbShutdownEvidence {
+                                                startup: None,
+                                                clean_close: None,
+                                                process_memory_at_spawn: None,
+                                                process_memory_before_shutdown: None,
                                                 graph_shutdown_elapsed_us,
                                                 shutdown_stages_us,
                                                 harness_shutdown_elapsed_us: 0,
@@ -1587,6 +2385,7 @@ fn read_server_stdout(
                                                 query_execute,
                                                 table_inventory_before_measurement: None,
                                                 table_inventory_after_measurement: Vec::new(),
+                                                recovery_authority_snapshot_after_measurement: None,
                                             })
                                         })
                                     })
@@ -1765,9 +2564,7 @@ fn optional_shutdown_stages(
     evidence: Option<io::Result<(u64, [u64; 8])>>,
 ) -> io::Result<(Option<u64>, Option<[u64; 8]>)> {
     match evidence {
-        Some(Ok((graph_elapsed_us, stages_us))) => {
-            Ok((Some(graph_elapsed_us), Some(stages_us)))
-        }
+        Some(Ok((graph_elapsed_us, stages_us))) => Ok((Some(graph_elapsed_us), Some(stages_us))),
         Some(Err(error)) => Err(error),
         None => Ok((None, None)),
     }
@@ -1890,34 +2687,38 @@ fn parse_writer_evidence(encoded: &str) -> io::Result<RiffDbWriterEvidence> {
             .iter()
             .find(|entry| entry.name == "reorder_buffer_occupancy")
             .cloned(),
-        prepared_epoch_rollbacks: values
-            .get("prepared_epoch_rollbacks")
-            .map_or(Ok(0), |value| {
+        prepared_epoch_rollbacks: values.get("prepared_epoch_rollbacks").map_or(
+            Ok(0),
+            |value| {
                 value
                     .parse::<u64>()
                     .map_err(|_| io::Error::other("invalid epoch rollback count"))
-            })?,
-        prepared_epoch_proof_mismatches: values
-            .get("prepared_epoch_proof_mismatches")
-            .map_or(Ok(0), |value| {
+            },
+        )?,
+        prepared_epoch_proof_mismatches: values.get("prepared_epoch_proof_mismatches").map_or(
+            Ok(0),
+            |value| {
                 value
                     .parse::<u64>()
                     .map_err(|_| io::Error::other("invalid proof mismatch count"))
-            })?,
-        frontier_equivalence_checks: values
-            .get("frontier_equivalence_checks")
-            .map_or(Ok(0), |value| {
+            },
+        )?,
+        frontier_equivalence_checks: values.get("frontier_equivalence_checks").map_or(
+            Ok(0),
+            |value| {
                 value
                     .parse::<u64>()
                     .map_err(|_| io::Error::other("invalid frontier check count"))
-            })?,
-        frontier_equivalence_failures: values
-            .get("frontier_equivalence_failures")
-            .map_or(Ok(0), |value| {
+            },
+        )?,
+        frontier_equivalence_failures: values.get("frontier_equivalence_failures").map_or(
+            Ok(0),
+            |value| {
                 value
                     .parse::<u64>()
                     .map_err(|_| io::Error::other("invalid frontier failure count"))
-            })?,
+            },
+        )?,
     })
 }
 
@@ -1954,6 +2755,98 @@ fn push_stderr_line(ring: &mut VecDeque<String>, ring_bytes: &mut usize, line: S
             break;
         }
     }
+}
+
+fn parse_key_values(line: &str, prefix: &str) -> io::Result<BTreeMap<String, String>> {
+    let encoded = line
+        .trim_end()
+        .strip_prefix(prefix)
+        .ok_or_else(|| io::Error::other("diagnostic prefix mismatch"))?;
+    let mut fields = BTreeMap::new();
+    for field in encoded.split('\t') {
+        let (name, value) = field
+            .split_once('=')
+            .ok_or_else(|| io::Error::other("malformed diagnostic field"))?;
+        if fields.insert(name.to_owned(), value.to_owned()).is_some() {
+            return Err(io::Error::other("duplicate diagnostic field"));
+        }
+    }
+    Ok(fields)
+}
+
+fn parse_startup_evidence(stderr: &str) -> io::Result<RiffDbStartupEvidence> {
+    let lines = stderr
+        .lines()
+        .filter(|line| line.starts_with(STARTUP_STAGES_PREFIX))
+        .collect::<Vec<_>>();
+    if lines.len() != 1 {
+        return Err(io::Error::other("startup census count mismatch"));
+    }
+    let fields = parse_key_values(lines[0], STARTUP_STAGES_PREFIX)?;
+    let mode = fields
+        .get("mode")
+        .filter(|mode| matches!(mode.as_str(), "clean_certificate" | "complete_validation"))
+        .cloned()
+        .ok_or_else(|| io::Error::other("startup mode missing or invalid"))?;
+    let mut stages_us = [0_u64; STARTUP_STAGE_NAMES.len()];
+    for (slot, name) in stages_us.iter_mut().zip(STARTUP_STAGE_NAMES) {
+        *slot = fields
+            .get(name)
+            .ok_or_else(|| io::Error::other("startup stage missing"))?
+            .parse()
+            .map_err(|_| io::Error::other("startup stage invalid"))?;
+    }
+    let transient_index_rebuilds = fields
+        .get("transient_index_rebuilds")
+        .ok_or_else(|| io::Error::other("startup rebuild count missing"))?
+        .parse()
+        .map_err(|_| io::Error::other("startup rebuild count invalid"))?;
+    let population_table_walk = fields
+        .get("population_table_walk")
+        .filter(|value| matches!(value.as_str(), "none" | "observed"))
+        .cloned()
+        .ok_or_else(|| io::Error::other("startup population-walk class invalid"))?;
+    Ok(RiffDbStartupEvidence {
+        mode,
+        stages_us,
+        transient_index_rebuilds,
+        population_table_walk,
+        engine_repair_observed: stderr.lines().any(|line| {
+            line == "[riffdbd-diag] trigger=startup clean_close_fast=false decline=engine_repaired_at_open (full validation pass; cost scales with retained history)"
+        }),
+    })
+}
+
+fn parse_clean_close_evidence(stderr: &str) -> io::Result<RiffDbCleanCloseStageEvidence> {
+    let lines = stderr
+        .lines()
+        .filter(|line| line.starts_with(CLEAN_CLOSE_STAGES_PREFIX))
+        .collect::<Vec<_>>();
+    if lines.len() != 1 {
+        return Err(io::Error::other("clean-close census count mismatch"));
+    }
+    let fields = parse_key_values(lines[0], CLEAN_CLOSE_STAGES_PREFIX)?;
+    let duration = |name| {
+        fields
+            .get(name)
+            .ok_or_else(|| io::Error::other("clean-close duration missing"))?
+            .parse::<u64>()
+            .map_err(|_| io::Error::other("clean-close duration invalid"))
+    };
+    let succeeded = |name| match fields.get(name).map(String::as_str) {
+        Some("succeeded") => Ok(true),
+        Some("failed") => Ok(false),
+        _ => Err(io::Error::other("clean-close status invalid")),
+    };
+    Ok(RiffDbCleanCloseStageEvidence {
+        checkpoint_us: duration("checkpoint_us")?,
+        checkpoint_status: match fields.get("checkpoint_status").map(String::as_str) {
+            Some(status @ ("present" | "skipped" | "failed")) => status.to_owned(),
+            _ => return Err(io::Error::other("clean-close checkpoint status invalid")),
+        },
+        final_certificate_commit_us: duration("final_certificate_commit_us")?,
+        final_certificate_commit_succeeded: succeeded("final_certificate_commit_status")?,
+    })
 }
 
 fn reap_child(
@@ -2084,6 +2977,58 @@ mod tests {
         assert!(ring_bytes <= STDERR_RING_BYTES + huge.len());
     }
 
+    // req: REC-001, REC-002, REC-004, PERF-019
+    #[test]
+    fn production_lifecycle_observations_are_closed_and_kill_is_owner_bound() {
+        let startup = parse_startup_evidence(
+            "[riffdbd-diag] trigger=startup clean_close_fast=false decline=engine_repaired_at_open (full validation pass; cost scales with retained history)\n\
+             riffdb-startup-stages-v1\tmode=complete_validation\tstore_open=1\tevidence_begin=2\tstructural_drain=3\tcatalog_history=4\tevidence_finish=5\tport_activation=6\tcurrent_views=7\tconsumer_recovery=8\toutbox_recovery=9\tgraph_rest=10\tprocess_to_ready=11\ttransient_index_rebuilds=1\tpopulation_table_walk=observed\n",
+        )
+        .expect("parse dirty production observation");
+        assert_eq!(startup.mode, "complete_validation");
+        assert_eq!(startup.stages_us, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+        assert!(startup.engine_repair_observed);
+        assert!(require_owned_child(41, 41).is_ok());
+        assert!(require_owned_child(41, 42).is_err());
+        assert!(require_owned_child(0, 0).is_err());
+        let mut stopped_baseline = Some("closed-authority");
+        assert_eq!(
+            take_stopped_authority_baseline(&mut stopped_baseline).expect("stopped baseline"),
+            "closed-authority"
+        );
+        assert!(stopped_baseline.is_none());
+        assert!(take_stopped_authority_baseline(&mut stopped_baseline).is_err());
+
+        let close = parse_clean_close_evidence(
+            "riffdb-clean-close-stages-v1\tcheckpoint_us=12\tcheckpoint_status=skipped\tfinal_certificate_commit_us=13\tfinal_certificate_commit_status=succeeded\n",
+        )
+        .expect("parse clean-close observation");
+        assert_eq!(close.checkpoint_us, 12);
+        assert_eq!(close.final_certificate_commit_us, 13);
+        assert_eq!(close.checkpoint_status, "skipped");
+        assert!(close.final_certificate_commit_succeeded);
+        assert!(
+            parse_startup_evidence("riffdb-startup-stages-v1\tmode=caller_supplied\n").is_err()
+        );
+    }
+
+    // req: PERF-019
+    #[test]
+    fn shutdown_timeout_context_is_bounded_and_receipt_aware() {
+        assert_eq!(
+            shutdown_timeout_context(Duration::from_secs(120), Duration::from_micros(7), ""),
+            "configured_budget_ms=120000 elapsed_us=7 shutdown_stage_receipt=absent"
+        );
+        assert_eq!(
+            shutdown_timeout_context(
+                Duration::from_secs(1),
+                Duration::from_micros(9),
+                "riffdb-shutdown-stages-v1\t8\t1,1,1,1,1,1,1,1\n"
+            ),
+            "configured_budget_ms=1000 elapsed_us=9 shutdown_stage_receipt=present"
+        );
+    }
+
     #[test]
     fn shutdown_evidence_parsers_reject_shape_drift() {
         let groups = (0_u64..u64::try_from(WRITE_GROUP_BUCKETS).expect("bucket count"))
@@ -2096,8 +3041,7 @@ mod tests {
         assert_eq!(parsed[WRITE_GROUP_BUCKETS - 1], 255);
         assert!(parse_fixed_counts::<4>("1,2,3", "dispatch", 4).is_err());
         assert_eq!(
-            parse_shutdown_stages("9\t1,2,3,4,5,6,7,8")
-                .expect("shutdown stages"),
+            parse_shutdown_stages("9\t1,2,3,4,5,6,7,8").expect("shutdown stages"),
             (9, [1, 2, 3, 4, 5, 6, 7, 8])
         );
         assert!(parse_shutdown_stages("9\t1,2,3,4,5,6,7").is_err());
@@ -2123,22 +3067,21 @@ mod tests {
         assert_eq!(stages[0].buckets.len(), 16);
         assert!(parse_read_stages("authorize:2:9:1,2").is_err());
 
-        let completion = parse_completion_lane(
-            "counts=3,2,1,0;elapsed_us=30,20,10,0;max_depth=7;max_reorder=0",
-        )
-        .expect("completion lane evidence");
+        let completion =
+            parse_completion_lane("counts=3,2,1,0;elapsed_us=30,20,10,0;max_depth=7;max_reorder=0")
+                .expect("completion lane evidence");
         assert_eq!(completion.phase_counts, [3, 2, 1, 0]);
         assert_eq!(completion.phase_elapsed_us, [30, 20, 10, 0]);
         assert_eq!(completion.max_depth, 7);
         assert_eq!(completion.max_reorder_occupancy, 0);
-        assert!(parse_completion_lane(
-            "counts=3,2,1;elapsed_us=30,20,10,0;max_depth=7;max_reorder=0"
-        )
-        .is_err());
-        assert!(parse_completion_lane(
-            "counts=3,2,1,0;elapsed_us=30,20,10,0;max_depth=7;unknown=0"
-        )
-        .is_err());
+        assert!(
+            parse_completion_lane("counts=3,2,1;elapsed_us=30,20,10,0;max_depth=7;max_reorder=0")
+                .is_err()
+        );
+        assert!(
+            parse_completion_lane("counts=3,2,1,0;elapsed_us=30,20,10,0;max_depth=7;unknown=0")
+                .is_err()
+        );
 
         let writer_histograms = [
             "commit_us",
@@ -2148,8 +3091,8 @@ mod tests {
             "final_apply_us",
             "journal_submit_us",
         ]
-            .map(|name| format!("{name}:2:9:{buckets}"))
-            .join(";");
+        .map(|name| format!("{name}:2:9:{buckets}"))
+        .join(";");
         let writer = parse_writer_evidence(&format!(
             "busy_us=11;idle_us=12;dispatch_selected=13;dispatch_deferred=14;compatibility_selected=15;compatibility_groups=16;compatibility_conflict_key_splits=17;compatibility_exact_access_splits=18;compatibility_commutative_shared_groups=19;queue_delay_estimate_us=20\t{writer_histograms}"
         ))
@@ -2170,7 +3113,10 @@ mod tests {
         assert_eq!(writer.storage_queue_duration.name, "storage_queue_us");
         assert_eq!(writer.group_residence_duration, None);
         assert_eq!(
-            writer.final_apply_duration.as_ref().map(|stage| stage.name.as_str()),
+            writer
+                .final_apply_duration
+                .as_ref()
+                .map(|stage| stage.name.as_str()),
             Some("final_apply_us")
         );
         assert_eq!(writer.journal_submit_duration.name, "journal_submit_us");
@@ -2222,8 +3168,7 @@ mod tests {
         assert!(parse_writer_evidence("busy_us=1\tcommit_us:1:1:1,2").is_err());
 
         let query_stages = riffdb_storage_redb::QUERY_EXECUTE_STAGE_LABELS_V1.join(",");
-        let stage_sums = (1_u64
-            ..=riffdb_storage_redb::QUERY_EXECUTE_STAGE_LABELS_V1.len() as u64)
+        let stage_sums = (1_u64..=riffdb_storage_redb::QUERY_EXECUTE_STAGE_LABELS_V1.len() as u64)
             .map(|value| value.to_string())
             .collect::<Vec<_>>()
             .join(",");
@@ -2240,9 +3185,11 @@ mod tests {
         assert_eq!(query.windows[0].index_rows_sum, 12);
         assert_eq!(query.windows[0].index_range_reads_sum, 14);
         assert_eq!(query.windows[0].program_steps_max, 17);
-        assert!(parse_query_execute_windows(&format!(
-            "256\t1\t{query_stages}\t1\t1,{stage_sums},2,3,4,5"
-        ))
-        .is_err());
+        assert!(
+            parse_query_execute_windows(&format!(
+                "256\t1\t{query_stages}\t1\t1,{stage_sums},2,3,4,5"
+            ))
+            .is_err()
+        );
     }
 }

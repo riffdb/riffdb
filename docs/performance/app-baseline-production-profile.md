@@ -442,11 +442,14 @@ unconditional complete-pass rule, ADR-0073's rejection of clean-shutdown
 markers, and ADR-0085's rejection of a validation-free clean fast path, and it
 was accepted with exact maintainer text.
 
-The `LimitExceeded` refusal is gone: the production cell reaches its load phase
-and completes, which it could not before. But the claim that once stood here --
-that this verified the ADR-0156 fast path -- was wrong. That run took the
-complete validation pass, because the harness reopened and dirtied the database
-between the clean shutdown and the measured start. See the open defect above.
+The clean-certificate path avoids that population materialization, but the
+complete path has not removed the ceiling. A one-shot dirty production-scale
+attempt still refused with typed `LimitExceeded` at the compiled 512 MiB
+historical-evidence bound and did not publish readiness. It is retained as a
+fail-closed handoff, not a passing startup or memory result. Clean production
+qualification and dirty complete-path qualification are therefore separate
+receipts; success in the former must never be described as removing the latter
+ceiling.
 
 Two notes worth keeping with the profile:
 

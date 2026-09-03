@@ -41,8 +41,10 @@ If a clean restart reports corruption only when a particular record is used,
 that is the documented accessed-row integrity boundary, not evidence that
 validation was disabled. Keep the service stopped if the error affects required
 authority or active application state, retain the incident ID, and restore from
-a verified backup when directed. The POC does not yet expose its specified
-offline full-integrity scrub as a public command.
+a verified backup when directed. The sealed complete-integrity scrub primitive
+is not directly invocable, and the authorized maintenance operation and CLI are
+not yet available. Do not edit lifecycle metadata or invoke internal storage
+APIs as a substitute.
 
 ## CLI connects to the wrong database
 

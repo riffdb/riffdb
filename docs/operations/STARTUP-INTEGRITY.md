@@ -33,10 +33,11 @@ delivery, projection, or mutation. Latent corruption unrelated to the bounded
 roots can therefore be reported when the affected row is first accessed.
 
 Dirty startup retains the complete exact-end structural and historical
-validation path. The separately specified authorized offline integrity-scrub
-operation is not yet exposed by this POC; until it is delivered, operators
-cannot request an on-demand full scrub through the public CLI. Do not simulate
-one by editing or deleting the lifecycle record.
+validation path. RiffDB also retains a sealed internal primitive for that
+complete-integrity work. It is not a public operation, storage handle,
+startup-mode selector, or operator shortcut. The authorized maintenance
+service and CLI are not yet available, so operators cannot request an on-demand
+full scrub. Do not simulate one by editing or deleting lifecycle metadata.
 
 ## Graceful shutdown
 
@@ -105,7 +106,11 @@ engine diagnostic.
 Startup and shutdown durations are observations, not correctness deadlines or
 comparative database benchmarks. Their cost depends on durability mode,
 storage engine recovery, dataset shape, filesystem, and whether the preceding
-close produced eligible clean evidence.
+close produced eligible clean evidence. The emitted lifecycle observations use
+only closed stage names, bounded durations, success/failure state, and the
+automatically selected startup mode. They contain no database path, identifier,
+frontier, table population, hash, key, or application value, and none is an
+accepted configuration or command input.
 
 See also [Compatibility](../compatibility.md), [Backup and
 Restore](../backup-restore.md), and [Troubleshooting](TROUBLESHOOTING.md).

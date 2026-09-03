@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use riffdb_storage_api::{
     BackupIntegrityChecksumV1, OfflineBackupManifestIdentityV1, OfflineBackupManifestV1,
     OfflineRestoreOverwritePolicyV1, OfflineRestorePersistencePort, OfflineRestoreResultV1,
-    StorageError, StorageErrorKind,
+    StartupValidationInputs, StorageError, StorageErrorKind,
 };
 use riffdb_types::{BackupNameV1, DatabaseId, OfflineMaintenanceOperationId};
 
@@ -20,7 +20,7 @@ use crate::error::storage_error;
 
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
 
-/// Move-only private staged restore awaiting complete server startup validation.
+/// Move-only private staged restore that has passed complete exact-end validation.
 pub struct RedbStagedRestore {
     operation_id: OfflineMaintenanceOperationId,
     backup_name: BackupNameV1,
@@ -44,6 +44,7 @@ impl RedbStagedRestore {
         backup_directory: PathBuf,
         staged_directory: PathBuf,
         configured_database_file: PathBuf,
+        validation_inputs: StartupValidationInputs,
         test_controller: Option<RedbMaintenanceTestController>,
     ) -> Result<Self, StorageError> {
         let backup_directory_guard = PinnedDirectory::open(&backup_directory)?;
@@ -95,6 +96,11 @@ impl RedbStagedRestore {
                 let staged_journal_file = crate::journal::journal_path(&staged_database_file);
                 let staged_format_marker_file =
                     crate::durable_format_marker_path(&staged_database_file);
+                crate::startup::RedbOfflineIntegrityScrub::from_inputs(
+                    &staged_database_file,
+                    validation_inputs,
+                )
+                .run()?;
                 Ok(Self {
                     operation_id,
                     backup_name,
@@ -118,7 +124,7 @@ impl RedbStagedRestore {
         }
     }
 
-    /// Returns the private staged database file for complete startup validation.
+    /// Returns the completely scrubbed private database for staged authorization.
     #[must_use]
     pub fn staged_database_file(&self) -> &Path {
         &self.staged_database_file
@@ -144,11 +150,10 @@ impl RedbStagedRestore {
         self.stage_cleanup.remove_now()
     }
 
-    /// Seals the post-validation stage after all startup-owned handles are closed.
+    /// Seals the already-scrubbed stage after auth-owned handles are closed.
     ///
-    /// Startup is permitted to apply accepted storage migrations. This check
-    /// therefore revalidates semantic manifest facts, then freezes the exact
-    /// resulting bytes rather than requiring the original artifact checksum.
+    /// The server-supplied identity is reread by its staged authorization open;
+    /// this final check freezes exact post-open bytes for publication.
     pub fn seal_after_validation(
         self,
         validated_database_id: DatabaseId,

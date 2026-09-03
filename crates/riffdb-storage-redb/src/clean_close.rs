@@ -304,7 +304,7 @@ impl CleanCloseLifecycle {
         self.history_incarnation
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "benchmark-support"))]
     pub(crate) const fn lifecycle_generation(self) -> u64 {
         self.lifecycle_generation
     }

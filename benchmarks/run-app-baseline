@@ -134,7 +134,7 @@ if [[ "${1:-}" == "--self-test" ]]; then
     rm -f "$receipt_fixture"
     rmdir "$receipt_fixture_root"
     rm -f "$host_fixture"
-    cargo +1.97.0 build --locked --release -p riffdb-server --bin riffdbd
+    cargo +1.97.0 build --locked --release -p riffdb-server --bin riffdbd --features test-fixtures
     riffdbd_bin="$(cargo_target_directory)/release/riffdbd"
     [[ -x "$riffdbd_bin" ]] || {
         printf 'self-test: riffdbd missing after build: %s\n' "$riffdbd_bin" >&2
@@ -586,6 +586,22 @@ while (($#)); do
     esac
 done
 
+wp705_lifecycle_evidence="${RIFFDB_APP_BASELINE_WP705_LIFECYCLE_EVIDENCE:-0}"
+if [[ "$wp705_lifecycle_evidence" != 0 && "$wp705_lifecycle_evidence" != 1 ]]; then
+    printf 'RIFFDB_APP_BASELINE_WP705_LIFECYCLE_EVIDENCE must be 0 or 1\n' >&2
+    exit 2
+fi
+if [[ "$wp705_lifecycle_evidence" == 1 ]]; then
+    if ((seed_only == 0 || skip_postgres == 0 || skip_riffdb != 0)); then
+        printf 'WP-705 lifecycle evidence requires --seed-only --skip-postgres with RiffDB enabled\n' >&2
+        exit 2
+    fi
+    if [[ -n "${RIFFDB_APP_BASELINE_RIFFDBD_BIN:-}" || -n "${RIFFDB_APP_BASELINE_RUNNER_BIN:-}" ]]; then
+        printf 'WP-705 lifecycle evidence builds and seals its own exact binaries\n' >&2
+        exit 2
+    fi
+fi
+
 out_dir=target/app-baseline
 mkdir -p "$out_dir"
 if [[ -n "$load_profile" ]]; then
@@ -602,6 +618,14 @@ host_validity_preflight=
 host_validity_postflight=
 qualification_raw_root=
 producer_report="$report"
+if ((require_stable)) || [[ "$wp705_lifecycle_evidence" == 1 ]]; then
+    if ! git diff --quiet --ignore-submodules -- || \
+       ! git diff --cached --quiet --ignore-submodules -- || \
+       [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
+        printf 'measurement-integrity: qualification requires an exact clean source tree\n' >&2
+        exit 2
+    fi
+fi
 if ((require_stable)); then
     if [[ "$defer_unary_stability" != 0 && "$defer_unary_stability" != 1 ]]; then
         printf 'RIFFDB_APP_BASELINE_DEFER_UNARY_STABILITY must be 0 or 1\n' >&2
@@ -611,12 +635,6 @@ if ((require_stable)); then
        && -z "${RIFFDB_APP_BASELINE_UNARY_QUALIFICATION_SCENARIO:-}" \
        && "${RIFFDB_APP_BASELINE_WP674_RECEIPT:-0}" != 1 ]]; then
         printf 'deferred stability is confined to a WP-674 evidence receipt\n' >&2
-        exit 2
-    fi
-    if ! git diff --quiet --ignore-submodules -- || \
-       ! git diff --cached --quiet --ignore-submodules -- || \
-       [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
-        printf 'measurement-integrity: --require-stable requires an exact clean source tree\n' >&2
         exit 2
     fi
     host_validity_preflight="$(mktemp "$task_tmp_root/riffdb-host-preflight.XXXXXX")"
@@ -962,7 +980,29 @@ if ((skip_riffdb == 0)); then
         printf 'using exact supplied riffdbd: %s\n' "$RIFFDB_APP_BASELINE_RIFFDBD_BIN"
     else
         printf 'building riffdbd (release)\n'
-        cargo +1.97.0 build --locked --release -p riffdb-server --bin riffdbd
+        riffdbd_feature_args=()
+        riffdbd_feature_identity=default
+        if [[ "${RIFFDB_APP_BASELINE_WP705_LIFECYCLE_EVIDENCE:-}" == "1" ]]; then
+            lifecycle_organizations="${organizations:-200}"
+            lifecycle_tickets="${tickets_per_project:-50}"
+            lifecycle_comments="${comments_per_ticket:-5}"
+            lifecycle_ticket_labels="${labels_per_ticket:-3}"
+            lifecycle_board_density="${board_density:-600}"
+            lifecycle_payload_bytes="${payload_bytes:-256}"
+            if [[ "$lifecycle_organizations" == 4 \
+               && "$lifecycle_tickets" == 86 \
+               && "$lifecycle_comments" == 5 \
+               && "$lifecycle_ticket_labels" == 8 \
+               && "$lifecycle_board_density" == 600 \
+               && "$lifecycle_payload_bytes" == 256 ]]; then
+                # Only the real SIGKILL arm needs the closed external-kill
+                # fixture. Canonical production-clean evidence is built from
+                # the default production feature set.
+                riffdbd_feature_args=(--features test-fixtures)
+                riffdbd_feature_identity=test-fixtures
+            fi
+        fi
+        cargo +1.97.0 build --locked --release -p riffdb-server --bin riffdbd "${riffdbd_feature_args[@]}"
         export RIFFDB_APP_BASELINE_RIFFDBD_BIN="$(cargo_target_directory)/release/riffdbd"
     fi
 fi
@@ -972,7 +1012,7 @@ if [[ -n "$runner" && -x "$runner" ]]; then
     printf 'using exact supplied app-baseline runner: %s\n' "$runner"
 else
     printf 'building app-baseline runner\n'
-    cargo +1.97.0 build --release --manifest-path examples/app-baseline/Cargo.toml -p riffdb-app-baseline
+    cargo +1.97.0 build --locked --release --manifest-path examples/app-baseline/Cargo.toml -p riffdb-app-baseline
     runner="$(cargo_target_directory --manifest-path examples/app-baseline/Cargo.toml)/release/riffdb-app-baseline"
 fi
 
@@ -1521,14 +1561,18 @@ PY
     fi
 fi
 
-if ((require_stable)) && [[ "${RIFFDB_APP_BASELINE_WP674_RECEIPT:-0}" != 1 ]]; then
+if [[ "$wp705_lifecycle_evidence" == 1 ]] || {
+    ((require_stable)) && [[ "${RIFFDB_APP_BASELINE_WP674_RECEIPT:-0}" != 1 ]]
+}; then
     source_revision="$(git rev-parse --verify HEAD)"
     cargo_lock_sha256="$(sha256sum Cargo.lock | awk '{print $1}')"
     runner_sha256="$(sha256sum "$runner" | awk '{print $1}')"
     riffdbd_sha256="$(sha256sum "$RIFFDB_APP_BASELINE_RIFFDBD_BIN" | awk '{print $1}')"
     harness_sha256="$(sha256sum benchmarks/run-app-baseline | awk '{print $1}')"
+    referee_sha256="$(sha256sum scripts/wp705-lifecycle-referee | awk '{print $1}')"
     python3 - "$report" "$source_revision" "$cargo_lock_sha256" \
-        "$runner_sha256" "$riffdbd_sha256" "$harness_sha256" <<'PY'
+        "$runner_sha256" "$riffdbd_sha256" "$harness_sha256" \
+        "$referee_sha256" "${riffdbd_feature_identity:-supplied}" <<'PY'
 import json
 import sys
 
@@ -1539,6 +1583,8 @@ import sys
     runner_sha256,
     riffdbd_sha256,
     harness_sha256,
+    referee_sha256,
+    riffdbd_feature_identity,
 ) = sys.argv[1:]
 with open(report_path, encoding="utf-8") as source:
     report = json.load(source)
@@ -1550,6 +1596,13 @@ report["qualification_candidate"] = {
     "runner_sha256": runner_sha256,
     "riffdbd_sha256": riffdbd_sha256,
     "harness_sha256": harness_sha256,
+    "referee_sha256": referee_sha256,
+    "build": {
+        "cargo": "cargo +1.97.0 build --locked --release",
+        "package": "riffdb-server",
+        "binary": "riffdbd",
+        "feature_set": riffdbd_feature_identity,
+    },
 }
 with open(report_path, "w", encoding="utf-8") as destination:
     json.dump(report, destination, indent=2)

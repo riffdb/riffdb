@@ -105,6 +105,24 @@ validation and records dirty lifecycle state. A matching clean lifecycle record
 is eligible only under the exact successor registry digest. Older binaries do
 not recognize that registry and downgrade remains unsupported.
 
+Clean-close compatibility is exact rather than best effort:
+
+| Offline operation | Certificate bytes | Next startup decision |
+|---|---|---|
+| Immutable named backup creation | Preserved in the verified artifact | Private restore staging first runs complete exact-end validation; the later staged-authorization open consumes matching CLEAN into DIRTY before publication |
+| Destructive restore or maintenance replacement | May be copied as source bytes | Invalidated by the new history incarnation; complete validation |
+| Complete stopped lifecycle-unit copy | Preserved with its matching journal and format marker | Preserved while every bound root and identity remains exact |
+| Bare database-file copy | May be copied | Ineligible without the matching journal, marker, and lifecycle unit; complete validation |
+| Registry migration or incompatible internal format | Old bytes may remain readable during the transition | Invalidated or refused fail-closed; complete validation is never skipped |
+| Compatible marker-only format upgrade | Preserved with the unchanged internal lifecycle unit | Preserved after the backup-bound marker transition |
+| History-incarnation rotation | Preserved until ordinary lifecycle replacement | Invalidated; complete validation |
+| Retention hold change or prune | Preserved until ordinary lifecycle replacement | Invalidated by changed retention roots; complete validation |
+| Sealed internal integrity scrub | Engine repair, journal recovery, or compatible registry migration may physically change bytes | Complete validation fails closed as applicable, creates no eligibility, and makes no new semantic application-authority mutation |
+
+Only an unchanged, completely and gracefully stopped lifecycle unit can reuse a
+matching record. The sealed primitive and its internal receipt are not public;
+the authorized maintenance operation and durable receipt are not yet available.
+
 Inspect the same decision while the server is stopped:
 
 ```bash

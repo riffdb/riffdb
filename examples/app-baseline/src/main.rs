@@ -13,20 +13,22 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use riffdb_app_baseline_core::{
-    AppBackend, BackendReport, LOAD_CONCURRENCY_SWEEP_CLIENTS, LoadConfig, LoadExecutionShape,
-    RIFFDB_MAX_LOAD_CLIENTS, RIFFDB_SATURATE_LOAD_CLIENTS, SATURATE_COORDINATOR_WORKLOAD_CAPACITY,
-    SEED_GENERATION, Scale, SeedDataset, WorkloadProfile, assert_board_last_row_counts_equal,
-    assert_board_ticket_sequences_equal, board_marginal_from_results, build_report,
-    concurrency_curve_point, print_concurrency_sweep_summary, print_load_summary,
-    run_closed_loop_load, run_closed_loop_load_with_abort, run_open_loop_load,
-    run_scenarios_selected, run_stateful_journeys, ScenarioId,
+    AppBackend, BackendReport, CloseTicketWithCommentSeed, LOAD_CONCURRENCY_SWEEP_CLIENTS,
+    LoadConfig, LoadExecutionShape, RIFFDB_MAX_LOAD_CLIENTS, RIFFDB_SATURATE_LOAD_CLIENTS,
+    SATURATE_COORDINATOR_WORKLOAD_CAPACITY, SEED_GENERATION, Scale, ScenarioId, SeedDataset,
+    WorkloadProfile, assert_board_last_row_counts_equal, assert_board_ticket_sequences_equal,
+    board_marginal_from_results, build_report, concurrency_curve_point,
+    print_concurrency_sweep_summary, print_load_summary, run_closed_loop_load,
+    run_closed_loop_load_with_abort, run_open_loop_load, run_scenarios_selected,
+    run_stateful_journeys,
 };
 use riffdb_app_baseline_postgres::{
     PostgresAppBackend, PostgresComparisonProfile, PostgresDurabilitySettings,
     PostgresResourceSnapshot,
 };
 use riffdb_app_baseline_riffdb::{
-    RiffDbServerSession, RiffDbShutdownEvidence, ServerStartOptions, min_free_bytes_for_full,
+    RiffDbProcessMemoryEvidence, RiffDbServerSession, RiffDbShutdownEvidence,
+    ServerStartOptions, min_free_bytes_for_full,
 };
 use riffdb_bench_root::{
     BenchRoot, BenchRootOptions, DeviceBaseline, StorageMedium, classify_medium,
@@ -69,10 +71,10 @@ fn run() -> Result<(), String> {
     }
     let dataset = SeedDataset::generate(args.scale);
     let scenario_selection = scenario_selection_from_env()?;
-    if scenario_selection.is_some()
-        && args.riffdb_transport == RiffDbTransport::BoundedSession
-    {
-        return Err("private exact-scenario selection requires the frozen unary transport".to_owned());
+    if scenario_selection.is_some() && args.riffdb_transport == RiffDbTransport::BoundedSession {
+        return Err(
+            "private exact-scenario selection requires the frozen unary transport".to_owned(),
+        );
     }
     let selected_scenario = scenario_selection.map(|selection| selection.scenario);
     let mut backends = Vec::new();
@@ -414,11 +416,33 @@ fn run() -> Result<(), String> {
                     move || Ok(prototype.clone()),
                 )?);
             }
-            let process_evidence = session
-                .shutdown_with_evidence()
-                .map_err(|error| error.to_string())?;
+            let (process_evidence, lifecycle_evidence) = if args.production_lifecycle_evidence {
+                let checkpoint = lifecycle_scale_checkpoint(args.scale)?;
+                let (shutdown, lifecycle) = match checkpoint {
+                    "production" => production_clean_lifecycle_evidence(&runtime, session),
+                    "rows_65536" => production_dirty_lifecycle_evidence(
+                        &runtime,
+                        session,
+                        checkpoint,
+                        dataset.probes().close_ticket_with_comment(8_000_000),
+                    ),
+                    _ => Err("unrecognized lifecycle scale checkpoint".to_owned()),
+                }?;
+                (shutdown, Some(lifecycle))
+            } else {
+                (
+                    session
+                        .shutdown_with_evidence()
+                        .map_err(|error| error.to_string())?,
+                    None,
+                )
+            };
             rd_write_groups = Some(process_evidence.write_completion_groups.to_vec());
-            rd_process_evidence.push(riffdb_shutdown_evidence_json(&process_evidence));
+            let mut process_evidence_json = riffdb_shutdown_evidence_json(&process_evidence);
+            if let Some(lifecycle) = lifecycle_evidence {
+                process_evidence_json["production_lifecycle_evidence"] = lifecycle;
+            }
+            rd_process_evidence.push(process_evidence_json);
             rd_rep_seed_ns.push(seed_ns);
             rd_rep_scenarios.push(scenarios);
         }
@@ -667,8 +691,7 @@ fn run() -> Result<(), String> {
 }
 
 const SERVICE_LEDGER_SCENARIO_ENV: &str = "RIFFDB_APP_BASELINE_SERVICE_LEDGER_SCENARIO";
-const UNARY_QUALIFICATION_SCENARIO_ENV: &str =
-    "RIFFDB_APP_BASELINE_UNARY_QUALIFICATION_SCENARIO";
+const UNARY_QUALIFICATION_SCENARIO_ENV: &str = "RIFFDB_APP_BASELINE_UNARY_QUALIFICATION_SCENARIO";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ScenarioSelectionMode {
@@ -756,8 +779,12 @@ struct LoadEvidenceContext {
 
 #[derive(Clone, Copy, Debug, Default)]
 struct ProcessResourceSnapshot {
+    pid: u32,
+    starttime_ticks: u64,
     cpu_ticks: u64,
     rss_bytes: u64,
+    peak_rss_bytes: u64,
+    vm_data_bytes: u64,
     read_bytes: u64,
     write_bytes: u64,
     durable_bytes: u64,
@@ -768,10 +795,14 @@ impl ProcessResourceSnapshot {
         let process_write_bytes = self.write_bytes.saturating_sub(before.write_bytes);
         let durable_bytes_growth = self.durable_bytes.saturating_sub(before.durable_bytes);
         json!({
+            "process_identity_stable": self.pid == before.pid && self.starttime_ticks == before.starttime_ticks,
             "cpu_ticks": self.cpu_ticks.saturating_sub(before.cpu_ticks),
             "rss_bytes_before": before.rss_bytes,
             "rss_bytes_after": self.rss_bytes,
-            "rss_bytes_peak_sampled": before.rss_bytes.max(self.rss_bytes),
+            "rss_bytes_peak_sampled": before.peak_rss_bytes.max(self.peak_rss_bytes),
+            "vm_data_bytes_before": before.vm_data_bytes,
+            "vm_data_bytes_after": self.vm_data_bytes,
+            "heap_envelope_bytes": self.vm_data_bytes.saturating_sub(before.vm_data_bytes),
             "process_read_bytes": self.read_bytes.saturating_sub(before.read_bytes),
             "process_write_bytes": process_write_bytes,
             "durable_bytes_before": before.durable_bytes,
@@ -809,8 +840,14 @@ fn process_resource_snapshot(
     pid: u32,
     durable_root: &Path,
 ) -> Result<ProcessResourceSnapshot, String> {
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat"))
+    const PROC_FILE_LIMIT: usize = 65_536;
+    let stat = fs::read(format!("/proc/{pid}/stat"))
         .map_err(|error| format!("read process stat for {pid}: {error}"))?;
+    if stat.is_empty() || stat.len() > PROC_FILE_LIMIT {
+        return Err(format!("process stat for {pid} exceeded its evidence bound"));
+    }
+    let stat = std::str::from_utf8(&stat)
+        .map_err(|_| format!("process stat for {pid} is not UTF-8"))?;
     let close = stat
         .rfind(')')
         .ok_or_else(|| format!("process stat for {pid} has no command terminator"))?;
@@ -824,14 +861,37 @@ fn process_resource_snapshot(
     };
     // `fields` starts at proc field 3 (state); utime/stime are fields 14/15.
     let cpu_ticks = parse_field(11, "utime")?.saturating_add(parse_field(12, "stime")?);
-    let status = fs::read_to_string(format!("/proc/{pid}/status"))
+    let starttime_ticks = parse_field(19, "starttime")?;
+    if starttime_ticks == 0 {
+        return Err(format!("process stat for {pid} has zero starttime"));
+    }
+    let status = fs::read(format!("/proc/{pid}/status"))
         .map_err(|error| format!("read process status for {pid}: {error}"))?;
-    let rss_kib = status
-        .lines()
-        .find_map(|line| line.strip_prefix("VmRSS:"))
-        .and_then(|value| value.split_whitespace().next())
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(0);
+    if status.is_empty() || status.len() > PROC_FILE_LIMIT {
+        return Err(format!("process status for {pid} exceeded its evidence bound"));
+    }
+    let status = std::str::from_utf8(&status)
+        .map_err(|_| format!("process status for {pid} is not UTF-8"))?;
+    let parse_kib = |name: &str| -> Result<u64, String> {
+        let mut matching = status.lines().filter_map(|line| line.strip_prefix(name));
+        let value = matching
+            .next()
+            .ok_or_else(|| format!("process status for {pid} omitted {name}"))?;
+        if matching.next().is_some() {
+            return Err(format!("process status for {pid} duplicated {name}"));
+        }
+        let mut fields = value.split_whitespace();
+        let kib = fields
+            .next()
+            .ok_or_else(|| format!("process status for {pid} omitted {name} value"))?
+            .parse::<u64>()
+            .map_err(|_| format!("process status for {pid} has invalid {name} value"))?;
+        if fields.next() != Some("kB") || fields.next().is_some() {
+            return Err(format!("process status for {pid} has invalid {name} unit"));
+        }
+        kib.checked_mul(1024)
+            .ok_or_else(|| format!("process status for {pid} overflowed {name}"))
+    };
     let io = fs::read_to_string(format!("/proc/{pid}/io"))
         .map_err(|error| format!("read process io for {pid}: {error}"))?;
     let io_counter = |name: &str| -> u64 {
@@ -841,8 +901,12 @@ fn process_resource_snapshot(
             .unwrap_or(0)
     };
     Ok(ProcessResourceSnapshot {
+        pid,
+        starttime_ticks,
         cpu_ticks,
-        rss_bytes: rss_kib.saturating_mul(1024),
+        rss_bytes: parse_kib("VmRSS:")?,
+        peak_rss_bytes: parse_kib("VmHWM:")?,
+        vm_data_bytes: parse_kib("VmData:")?,
         read_bytes: io_counter("read_bytes:"),
         write_bytes: io_counter("write_bytes:"),
         durable_bytes: directory_bytes_bounded(durable_root, 100_000)?,
@@ -898,6 +962,320 @@ fn postgres_resource_delta_json(
         "wal_bytes_per_successful_mutation": checked_per_operation(wal_bytes, successful_mutations),
         "scope": "before_after_point",
     })
+}
+
+fn startup_evidence_json(
+    evidence: &riffdb_app_baseline_riffdb::RiffDbStartupEvidence,
+) -> serde_json::Value {
+    let prohibited_table_rows = if evidence.mode == "clean_certificate"
+        && evidence.population_table_walk == "none"
+        && evidence.transient_index_rebuilds == 0
+    {
+        json!({
+            "entities": 0,
+            "secondary_indexes": 0,
+            "historical_plan_references": 0,
+            "idempotency": 0,
+            "events": 0,
+            "event_routes": 0,
+            "outbox": 0,
+            "provenance": 0,
+            "audit": 0,
+            "projections": 0,
+        })
+    } else {
+        serde_json::Value::Null
+    };
+    json!({
+        "mode": evidence.mode,
+        "stage_names": [
+            "store_open", "evidence_begin", "structural_drain", "catalog_history",
+            "evidence_finish", "port_activation", "current_views", "consumer_recovery",
+            "outbox_recovery", "graph_rest", "process_to_ready"
+        ],
+        "stages_us": evidence.stages_us,
+        "transient_index_rebuilds": evidence.transient_index_rebuilds,
+        "population_table_walk": evidence.population_table_walk,
+        "prohibited_table_rows": prohibited_table_rows,
+        "engine_repair_observed": evidence.engine_repair_observed,
+    })
+}
+
+fn clean_close_evidence_json(
+    evidence: Option<&riffdb_app_baseline_riffdb::RiffDbCleanCloseStageEvidence>,
+) -> serde_json::Value {
+    evidence.map_or(serde_json::Value::Null, |evidence| {
+        json!({
+            "checkpoint_us": evidence.checkpoint_us,
+            "checkpoint_status": evidence.checkpoint_status,
+            "final_certificate_commit_us": evidence.final_certificate_commit_us,
+            "final_certificate_commit_succeeded": evidence.final_certificate_commit_succeeded,
+        })
+    })
+}
+
+fn shutdown_memory_window_json(
+    evidence: &RiffDbShutdownEvidence,
+) -> Result<serde_json::Value, String> {
+    let before = evidence
+        .process_memory_at_spawn
+        .ok_or_else(|| "shutdown evidence omitted the initial process-memory sample".to_owned())?;
+    let after = evidence.process_memory_before_shutdown.ok_or_else(|| {
+        "shutdown evidence omitted the pre-shutdown process-memory sample".to_owned()
+    })?;
+    if before.pid != after.pid || before.starttime_ticks != after.starttime_ticks {
+        return Err("shutdown memory samples crossed a daemon process generation".to_owned());
+    }
+    let heap_envelope_bytes = after.vm_data_bytes.saturating_sub(before.vm_data_bytes);
+    if heap_envelope_bytes > 64 * 1024 * 1024 {
+        return Err("shutdown-admission heap envelope exceeded the accepted 64 MiB ceiling".to_owned());
+    }
+    Ok(json!({
+        "label": "process_start_to_shutdown_admission",
+        "pid": before.pid,
+        "process_starttime_ticks": before.starttime_ticks,
+        "vm_data_bytes_before": before.vm_data_bytes,
+        "vm_data_bytes_after": after.vm_data_bytes,
+        "heap_envelope_bytes": heap_envelope_bytes,
+        "vm_hwm_bytes": after.vm_hwm_bytes,
+        "heap_envelope_ceiling_bytes": 64 * 1024 * 1024,
+        "passed": true,
+    }))
+}
+
+fn lifecycle_memory_window_json(
+    label: &'static str,
+    before: RiffDbProcessMemoryEvidence,
+    after: ProcessResourceSnapshot,
+) -> Result<serde_json::Value, String> {
+    if before.pid != after.pid || before.starttime_ticks != after.starttime_ticks {
+        return Err("lifecycle memory sample crossed a daemon process generation".to_owned());
+    }
+    let heap_envelope_bytes = after.vm_data_bytes.saturating_sub(before.vm_data_bytes);
+    if heap_envelope_bytes > 64 * 1024 * 1024 {
+        return Err(format!(
+            "{label} heap envelope exceeded the accepted 64 MiB ceiling"
+        ));
+    }
+    Ok(json!({
+        "label": label,
+        "pid": before.pid,
+        "process_starttime_ticks": before.starttime_ticks,
+        "vm_data_bytes_before": before.vm_data_bytes,
+        "vm_data_bytes_after": after.vm_data_bytes,
+        "heap_envelope_bytes": heap_envelope_bytes,
+        "vm_hwm_bytes": after.peak_rss_bytes,
+        "heap_envelope_ceiling_bytes": 64 * 1024 * 1024,
+        "passed": true,
+    }))
+}
+
+fn production_dirty_lifecycle_evidence(
+    runtime: &tokio::runtime::Runtime,
+    session: RiffDbServerSession,
+    scale_checkpoint: &'static str,
+    crash_probe: CloseTicketWithCommentSeed,
+) -> Result<(RiffDbShutdownEvidence, serde_json::Value), String> {
+    let (clean_restarted, measured_close) = runtime
+        .block_on(session.restart_for_measurement())
+        .map_err(|error| error.to_string())?;
+    let clean_startup = clean_restarted
+        .startup_evidence()
+        .map_err(|error| error.to_string())?;
+    let expected_entity_rows = match scale_checkpoint {
+        "rows_65536" => 65_536,
+        "production" => Scale::production().approximate_row_count(),
+        _ => return Err("unrecognized lifecycle scale checkpoint".to_owned()),
+    };
+    if clean_restarted.retained_entity_rows_before_measurement() != Some(expected_entity_rows) {
+        return Err(
+            "lifecycle database did not contain the exact selected entity population".to_owned(),
+        );
+    }
+    let clean_initial_memory = clean_restarted.initial_process_memory();
+    let clean_resources = process_resource_snapshot(
+        clean_restarted.child_pid(),
+        clean_restarted.session_directory(),
+    )?;
+    let clean_memory = lifecycle_memory_window_json(
+        "process_start_to_ready",
+        clean_initial_memory,
+        clean_resources,
+    )?;
+    if clean_startup.mode != "clean_certificate"
+        || clean_startup.transient_index_rebuilds != 0
+        || clean_startup.population_table_walk != "none"
+    {
+        return Err("production clean restart was not bounded".to_owned());
+    }
+    let (dirty_restarted, dirty) = runtime
+        .block_on(clean_restarted.force_kill_and_restart_for_evidence(crash_probe))
+        .map_err(|error| error.to_string())?;
+    let dirty_initial_memory = dirty_restarted.initial_process_memory();
+    let dirty_resources = process_resource_snapshot(
+        dirty_restarted.child_pid(),
+        dirty_restarted.session_directory(),
+    )?;
+    let dirty_memory = lifecycle_memory_window_json(
+        "process_start_to_ready",
+        dirty_initial_memory,
+        dirty_resources,
+    )?;
+    let (dirty_shutdown, repeated_snapshot, repeated_startup) = dirty_restarted
+        .shutdown_with_recovery_repeat_evidence()
+        .map_err(|error| error.to_string())?;
+    let after = dirty_shutdown
+        .recovery_authority_snapshot_after_measurement
+        .as_ref()
+        .ok_or_else(|| "dirty recovery omitted authority snapshot".to_owned())?;
+    let lifecycle_exact = dirty
+        .authority_before_recovery
+        .clean_generation_advance_matches(after, 3);
+    let absent = dirty.authority_absent_twin.same_authority(after);
+    let committed = dirty.authority_committed_twin.same_authority(after);
+    if !lifecycle_exact || absent == committed {
+        return Err(format!(
+            "dirty recovery invariant mismatch: lifecycle_exact={lifecycle_exact} matches_absent={absent} matches_committed={committed}"
+        ));
+    }
+    if !after.same_authority_after_clean_generations(&repeated_snapshot, 2)
+        || repeated_startup.mode != "clean_certificate"
+    {
+        return Err("second recovery restart added authority or missed clean mode".to_owned());
+    }
+    let clean_process_to_ready_us = if committed {
+        dirty.committed_twin_process_to_ready_us
+    } else {
+        dirty.absent_twin_process_to_ready_us
+    };
+    let dirty_process_to_ready_us = dirty.startup.stages_us[10];
+    let unclean_over_clean_ratio_millis = dirty_process_to_ready_us
+        .checked_mul(1_000)
+        .and_then(|value| value.checked_div(clean_process_to_ready_us))
+        .ok_or_else(|| "startup ratio could not be represented".to_owned())?;
+    let measured_clean_close = measured_close.clean_close.clone();
+    let measured_close_memory = shutdown_memory_window_json(&measured_close)?;
+    let dirty_final_close_memory = shutdown_memory_window_json(&dirty_shutdown)?;
+    Ok((
+        measured_close,
+        json!({
+            "schema": "riffdb.wp-705-production-lifecycle/v1",
+            "scale_checkpoint": scale_checkpoint,
+            "clean_restart": {
+                "startup": startup_evidence_json(&clean_startup),
+                "rss_bytes_at_ready": clean_resources.rss_bytes,
+                "peak_rss_bytes_at_ready": clean_resources.peak_rss_bytes,
+                "memory": clean_memory,
+                "shutdown_completed": true,
+            },
+            "dirty_recovery": {
+                "startup": startup_evidence_json(&dirty.startup),
+                "complete_exact_end_reached": true,
+                "recovery_elapsed_us": dirty.recovery_elapsed_us,
+                "rss_bytes_at_ready": dirty_resources.rss_bytes,
+                "peak_rss_bytes_at_ready": dirty_resources.peak_rss_bytes,
+                "memory": dirty_memory,
+                "atomic_outcome": if committed { "committed" } else { "absent" },
+                "matching_clean_twin": true,
+                "authoritative_state_unchanged": true,
+                "second_restart_added_nothing": true,
+                "unclean_over_clean_process_to_ready_ratio_millis": unclean_over_clean_ratio_millis,
+            },
+            "measured_clean_close": clean_close_evidence_json(measured_clean_close.as_ref()),
+            "measured_clean_close_memory": measured_close_memory,
+            "dirty_recovery_final_close": clean_close_evidence_json(dirty_shutdown.clean_close.as_ref()),
+            "dirty_recovery_final_close_memory": dirty_final_close_memory,
+        }),
+    ))
+}
+
+fn production_clean_lifecycle_evidence(
+    runtime: &tokio::runtime::Runtime,
+    session: RiffDbServerSession,
+) -> Result<(RiffDbShutdownEvidence, serde_json::Value), String> {
+    let (clean_restarted, seeded_close) = runtime
+        .block_on(session.restart_for_measurement())
+        .map_err(|error| error.to_string())?;
+    if clean_restarted.retained_entity_rows_before_measurement()
+        != Some(Scale::production().approximate_row_count())
+    {
+        return Err(
+            "production clean qualification has a noncanonical entity population".to_owned(),
+        );
+    }
+    let startup = clean_restarted
+        .startup_evidence()
+        .map_err(|error| error.to_string())?;
+    if startup.mode != "clean_certificate"
+        || startup.transient_index_rebuilds != 0
+        || startup.population_table_walk != "none"
+    {
+        return Err("production clean restart was not bounded".to_owned());
+    }
+    let initial_memory = clean_restarted.initial_process_memory();
+    let resources = process_resource_snapshot(
+        clean_restarted.child_pid(),
+        clean_restarted.session_directory(),
+    )?;
+    let memory = lifecycle_memory_window_json(
+        "process_start_to_ready",
+        initial_memory,
+        resources,
+    )?;
+    let final_close = clean_restarted
+        .shutdown_with_evidence()
+        .map_err(|error| error.to_string())?;
+    let seeded_close_memory = shutdown_memory_window_json(&seeded_close)?;
+    let final_close_memory = shutdown_memory_window_json(&final_close)?;
+    let lifecycle = json!({
+        "schema": "riffdb.wp-705-production-clean-lifecycle/v1",
+        "scale_checkpoint": "production",
+        "clean_restart": {
+            "startup": startup_evidence_json(&startup),
+            "rss_bytes_at_ready": resources.rss_bytes,
+            "peak_rss_bytes_at_ready": resources.peak_rss_bytes,
+            "memory": memory,
+        },
+        "seeded_close": clean_close_evidence_json(seeded_close.clean_close.as_ref()),
+        "seeded_close_memory": seeded_close_memory,
+        "final_close": clean_close_evidence_json(final_close.clean_close.as_ref()),
+        "final_close_memory": final_close_memory,
+        "shutdown_completed": true,
+    });
+    Ok((final_close, lifecycle))
+}
+
+fn lifecycle_scale_checkpoint(scale: Scale) -> Result<&'static str, String> {
+    if scale == Scale::production() {
+        Ok("production")
+    } else if scale.approximate_row_count() == 65_536 {
+        Ok("rows_65536")
+    } else {
+        Err("lifecycle evidence requires canonical production or exactly 65536 rows".to_owned())
+    }
+}
+
+fn wp705_lifecycle_selector(
+    raw: Option<std::ffi::OsString>,
+    seed_only: bool,
+    scale: Scale,
+) -> Result<bool, String> {
+    let selected = match raw {
+        None => false,
+        Some(value) if value == "1" => true,
+        Some(_) => {
+            return Err(
+                "RIFFDB_APP_BASELINE_WP705_LIFECYCLE_EVIDENCE must be exactly 1".to_owned(),
+            );
+        }
+    };
+    if selected && !seed_only {
+        return Err("WP-705 lifecycle evidence requires --seed-only".to_owned());
+    }
+    if selected {
+        lifecycle_scale_checkpoint(scale)?;
+    }
+    Ok(selected)
 }
 
 fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_json::Value {
@@ -1126,6 +1504,8 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
         })
         .collect::<Vec<_>>();
     json!({
+        "startup": evidence.startup.as_ref().map(startup_evidence_json),
+        "clean_close": clean_close_evidence_json(evidence.clean_close.as_ref()),
         "graph_shutdown_elapsed_us": evidence.graph_shutdown_elapsed_us,
         "shutdown_stages_us": evidence.shutdown_stages_us,
         "harness_shutdown_elapsed_us": evidence.harness_shutdown_elapsed_us,
@@ -1919,7 +2299,10 @@ fn run_load(args: Args) -> Result<(), String> {
                             json_report["sweep_isolation"] = json!(sweep_isolation);
                             json_report["resource_delta"] =
                                 resources_after.delta_json(resources_before, successful_mutations);
-                            match owned.shutdown_with_evidence() {
+                            let shutdown = owned
+                                .shutdown_with_evidence()
+                                .map_err(|error| error.to_string());
+                            match shutdown {
                                 Ok(evidence) => {
                                     let groups = evidence.write_completion_groups;
                                     let process_scope_committed_commands =
@@ -2849,8 +3232,7 @@ fn attach_rep_summaries(
                 let pg_p95_summary = scalar_summary(&pg_p95s);
                 let rd_p50_summary = scalar_summary(&rd_p50s);
                 let rd_p95_summary = scalar_summary(&rd_p95s);
-                let qualified_ratio = |riffdb: &serde_json::Value,
-                                       postgres: &serde_json::Value| {
+                let qualified_ratio = |riffdb: &serde_json::Value, postgres: &serde_json::Value| {
                     let postgres = postgres["median"].as_f64().unwrap_or(0.0);
                     let riffdb = riffdb["median"].as_f64().unwrap_or(0.0);
                     if postgres <= 0.0 {
@@ -2868,18 +3250,11 @@ fn attach_rep_summaries(
                     .find(|row| row["scenario"].as_str() == Some(name.as_str()))
                 {
                     row["ratio_riffdb_over_postgres"] = p50_ratio_summary.clone();
-                    row["ratio_riffdb_over_postgres_median"] =
-                        p50_ratio_summary["median"].clone();
+                    row["ratio_riffdb_over_postgres_median"] = p50_ratio_summary["median"].clone();
                     row["ratio_riffdb_over_postgres_p95"] = p95_ratio_summary.clone();
                 }
-                rep_summaries.insert(
-                    format!("scenario:{name}"),
-                    p50_ratio_summary.clone(),
-                );
-                rep_summaries.insert(
-                    format!("scenario_p95:{name}"),
-                    p95_ratio_summary.clone(),
-                );
+                rep_summaries.insert(format!("scenario:{name}"), p50_ratio_summary.clone());
+                rep_summaries.insert(format!("scenario_p95:{name}"), p95_ratio_summary.clone());
                 unary_rep_summaries.insert(
                     name,
                     json!({
@@ -2942,8 +3317,7 @@ fn attach_rep_summaries(
     }
 
     report["comparisons"]["rep_summaries"] = serde_json::Value::Object(rep_summaries);
-    report["comparisons"]["unary_rep_summaries"] =
-        serde_json::Value::Object(unary_rep_summaries);
+    report["comparisons"]["unary_rep_summaries"] = serde_json::Value::Object(unary_rep_summaries);
 }
 
 fn device_baseline_value(baseline: &DeviceBaseline) -> serde_json::Value {
@@ -3093,6 +3467,9 @@ struct Args {
     wp674_receipt: bool,
     /// Diagnostic mode that shuts down immediately after the full seed.
     seed_only: bool,
+    /// Run the clean/forced-kill lifecycle evidence selected by `--production`,
+    /// including when bounded scale knobs select an exact evidence checkpoint.
+    production_lifecycle_evidence: bool,
 }
 
 impl Args {
@@ -3443,8 +3820,14 @@ impl Args {
         if !(1..=32).contains(&reps) {
             return Err("--reps must be 1..=32".to_owned());
         }
-        let wp674_receipt = env::var_os("RIFFDB_APP_BASELINE_WP674_RECEIPT")
-            .is_some_and(|value| value == "1");
+        let wp705_lifecycle_evidence = wp705_lifecycle_selector(
+            env::var_os("RIFFDB_APP_BASELINE_WP705_LIFECYCLE_EVIDENCE"),
+            seed_only,
+            scale,
+        )?;
+        let production_lifecycle_evidence = wp705_lifecycle_evidence;
+        let wp674_receipt =
+            env::var_os("RIFFDB_APP_BASELINE_WP674_RECEIPT").is_some_and(|value| value == "1");
         let query_execute_diagnostics =
             env::var_os("RIFFDB_APP_BASELINE_QUERY_EXECUTE_DIAGNOSTICS")
                 .is_some_and(|value| value == "1");
@@ -3579,6 +3962,7 @@ impl Args {
             require_stable,
             wp674_receipt,
             seed_only,
+            production_lifecycle_evidence,
         })
     }
 }
@@ -3609,8 +3993,7 @@ fn validate_wp674_receipt_shape(
 ) -> Result<(), String> {
     if wp674_receipt && (samples != 1_000 || warmups != 20 || reps != 5) {
         return Err(
-            "WP-674 receipt mode requires exactly --samples 1000 --warmup 20 --reps 5"
-                .to_owned(),
+            "WP-674 receipt mode requires exactly --samples 1000 --warmup 20 --reps 5".to_owned(),
         );
     }
     Ok(())
@@ -3623,9 +4006,10 @@ mod tests {
     use super::{
         Args, RiffDbTransport, Scale, SeedDataset, WorkloadProfile, assert_all_parity,
         assert_write_parity, attach_rep_summaries, comparator_contract, gated_ratio,
-        load_rep_summaries, measurement_sample_ceiling, median_scenarios,
-        require_load_stable, require_stable, riffdb_runs_first, scalar_summary,
-        validate_wp674_receipt_shape, write_new_report,
+        lifecycle_scale_checkpoint, load_rep_summaries, measurement_sample_ceiling,
+        median_scenarios, require_load_stable, require_stable, riffdb_runs_first,
+        scalar_summary, validate_wp674_receipt_shape, wp705_lifecycle_selector,
+        write_new_report,
     };
 
     #[test]
@@ -3634,12 +4018,7 @@ mod tests {
         assert_eq!(measurement_sample_ceiling(false, true), 1_024);
         assert_eq!(measurement_sample_ceiling(true, false), 1_000);
         assert!(validate_wp674_receipt_shape(true, 1_000, 20, 5).is_ok());
-        for shape in [
-            (100, 20, 5),
-            (999, 20, 5),
-            (1_000, 19, 5),
-            (1_000, 20, 4),
-        ] {
+        for shape in [(100, 20, 5), (999, 20, 5), (1_000, 19, 5), (1_000, 20, 4)] {
             assert!(validate_wp674_receipt_shape(true, shape.0, shape.1, shape.2).is_err());
         }
         assert!(validate_wp674_receipt_shape(false, 100, 5, 3).is_ok());
@@ -3881,22 +4260,30 @@ mod tests {
     #[test]
     fn process_resource_delta_is_saturating_and_redaction_safe() {
         let before = super::ProcessResourceSnapshot {
+            pid: 7,
+            starttime_ticks: 11,
             cpu_ticks: 10,
             rss_bytes: 100,
+            peak_rss_bytes: 120,
+            vm_data_bytes: 70,
             read_bytes: 30,
             write_bytes: 40,
             durable_bytes: 1_000,
         };
         let after = super::ProcessResourceSnapshot {
+            pid: 7,
+            starttime_ticks: 11,
             cpu_ticks: 25,
             rss_bytes: 80,
+            peak_rss_bytes: 90,
+            vm_data_bytes: 75,
             read_bytes: 50,
             write_bytes: 90,
             durable_bytes: 900,
         };
         let mut delta = after.delta_json(before, 5);
         assert_eq!(delta["cpu_ticks"], 15);
-        assert_eq!(delta["rss_bytes_peak_sampled"], 100);
+        assert_eq!(delta["rss_bytes_peak_sampled"], 120);
         assert_eq!(delta["process_write_bytes"], 50);
         assert_eq!(delta["process_write_bytes_per_successful_mutation"], 10);
         assert_eq!(delta["durable_bytes_growth"], 0);
@@ -3949,20 +4336,23 @@ mod tests {
         attach_rep_summaries(&mut report, &[1, 1, 1], &postgres, &[1, 1, 1], &riffdb);
         let summary = &report["comparisons"]["unary_rep_summaries"]["point_get_ticket"];
         assert_eq!(summary["postgres"]["p50_ns"]["reps"], 3);
-        assert_eq!(summary["postgres"]["p50_ns"]["values"].as_array().map(Vec::len), Some(3));
+        assert_eq!(
+            summary["postgres"]["p50_ns"]["values"]
+                .as_array()
+                .map(Vec::len),
+            Some(3)
+        );
         assert_eq!(summary["postgres"]["p95_ns"]["reps"], 3);
         assert_eq!(summary["riffdb"]["p50_ns"]["median"], 660.0);
         assert_eq!(summary["riffdb"]["p95_ns"]["median"], 1_100.0);
         assert_eq!(summary["ratios_riffdb_over_postgres"]["p50"]["median"], 2.0);
         assert_eq!(summary["ratios_riffdb_over_postgres"]["p95"]["median"], 2.0);
         assert_eq!(
-            summary["ratios_riffdb_over_postgres"]["p50"]
-                ["qualified_ratio_of_backend_medians"],
+            summary["ratios_riffdb_over_postgres"]["p50"]["qualified_ratio_of_backend_medians"],
             2.0
         );
         assert_eq!(
-            report["comparisons"]["scenarios"][0]["ratio_riffdb_over_postgres_p95"]
-                ["median"],
+            report["comparisons"]["scenarios"][0]["ratio_riffdb_over_postgres_p95"]["median"],
             2.0
         );
     }
@@ -4045,9 +4435,11 @@ mod tests {
         assert!(!smoke.allow_tmpfs);
         assert!(smoke.load_sweep_per_level_daemon);
         assert!(!smoke.require_stable);
+        assert!(!smoke.production_lifecycle_evidence);
 
         let full = Args::parse(["--full".to_owned()].into_iter()).expect("full");
         assert_eq!(full.reps, 3);
+        assert!(!full.production_lifecycle_evidence);
 
         let custom = Args::parse(
             [
@@ -4075,6 +4467,127 @@ mod tests {
         )
         .expect("explicit accumulated history");
         assert!(!accumulated.load_sweep_per_level_daemon);
+    }
+
+    // req: REC-001, REC-002, REC-004, PERF-014, PERF-019, END-007, END-008
+    #[test]
+    fn lifecycle_checkpoint_labels_only_exact_65536_or_canonical_production() {
+        let args = Args::parse(
+            [
+                "--production",
+                "--organizations",
+                "4",
+                "--tickets-per-project",
+                "86",
+                "--comments-per-ticket",
+                "5",
+                "--labels-per-ticket",
+                "8",
+                "--reps",
+                "1",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        )
+        .expect("exact checkpoint");
+        assert!(!args.production_lifecycle_evidence);
+        assert_eq!(args.scale.approximate_row_count(), 65_536);
+        assert_eq!(
+            lifecycle_scale_checkpoint(args.scale).expect("exact checkpoint label"),
+            "rows_65536"
+        );
+        assert_eq!(
+            lifecycle_scale_checkpoint(Scale::production()).expect("canonical production label"),
+            "production"
+        );
+        let mut noncanonical = Scale::production();
+        noncanonical.tickets_per_project -= 1;
+        assert!(lifecycle_scale_checkpoint(noncanonical).is_err());
+
+        let source = include_str!("main.rs");
+        let dispatch = source
+            .split_once("let (shutdown, lifecycle) = match checkpoint")
+            .expect("private lifecycle dispatch")
+            .1
+            .split_once("}?;")
+            .expect("bounded dispatch body")
+            .0;
+        assert!(
+            dispatch.contains(
+                "\"production\" => production_clean_lifecycle_evidence(&runtime, session)"
+            )
+        );
+        assert!(dispatch.contains("\"rows_65536\" => production_dirty_lifecycle_evidence("));
+        assert_eq!(
+            dispatch
+                .matches("production_dirty_lifecycle_evidence(")
+                .count(),
+            1
+        );
+        assert!(!wp705_lifecycle_selector(None, false, Scale::production()).expect("off"));
+        assert!(
+            wp705_lifecycle_selector(Some("1".into()), true, Scale::production())
+                .expect("canonical clean production selector")
+        );
+        assert!(
+            wp705_lifecycle_selector(Some("1".into()), true, args.scale)
+                .expect("exact dirty selector")
+        );
+        assert!(wp705_lifecycle_selector(Some("1".into()), false, args.scale).is_err());
+        assert!(wp705_lifecycle_selector(Some("true".into()), true, args.scale).is_err());
+    }
+
+    // req: PERF-019
+    #[test]
+    fn lifecycle_heap_envelope_is_pid_starttime_bound_and_fail_closed() {
+        let initial = riffdb_app_baseline_riffdb::RiffDbProcessMemoryEvidence {
+            pid: 17,
+            starttime_ticks: 23,
+            vm_data_bytes: 1_000,
+            vm_hwm_bytes: 2_000,
+        };
+        let current = super::ProcessResourceSnapshot {
+            pid: 17,
+            starttime_ticks: 23,
+            cpu_ticks: 0,
+            rss_bytes: 0,
+            peak_rss_bytes: 3_000,
+            vm_data_bytes: 2_000,
+            read_bytes: 0,
+            write_bytes: 0,
+            durable_bytes: 0,
+        };
+        let accepted = super::lifecycle_memory_window_json("test", initial, current)
+            .expect("bounded matching generation");
+        assert_eq!(accepted["heap_envelope_bytes"], 1_000);
+        assert_eq!(accepted["vm_hwm_bytes"], 3_000);
+
+        let wrong_generation = super::ProcessResourceSnapshot {
+            starttime_ticks: 24,
+            ..current
+        };
+        assert!(
+            super::lifecycle_memory_window_json("test", initial, wrong_generation).is_err()
+        );
+        let over_ceiling = super::ProcessResourceSnapshot {
+            vm_data_bytes: initial.vm_data_bytes + 64 * 1024 * 1024 + 1,
+            ..current
+        };
+        assert!(super::lifecycle_memory_window_json("test", initial, over_ceiling).is_err());
+
+        let startup = riffdb_app_baseline_riffdb::RiffDbStartupEvidence {
+            mode: "clean_certificate".to_owned(),
+            stages_us: [0; 11],
+            transient_index_rebuilds: 0,
+            population_table_walk: "none".to_owned(),
+            engine_repair_observed: false,
+        };
+        let encoded = super::startup_evidence_json(&startup);
+        let rows = encoded["prohibited_table_rows"]
+            .as_object()
+            .expect("closed prohibited-table registry");
+        assert_eq!(rows.len(), 10);
+        assert!(rows.values().all(|value| value.as_u64() == Some(0)));
     }
 
     #[test]
