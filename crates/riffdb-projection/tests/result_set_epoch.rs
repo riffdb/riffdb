@@ -59,6 +59,7 @@ fn observation_with_lifecycle(
 }
 
 #[test]
+// req: OQ-020
 fn newest_common_epoch_is_bound_to_every_provider_generation() {
     let providers = [observation(1, 7, 2, 20, 90), observation(2, 7, 4, 40, 80)];
     let proof = negotiate_result_set_epoch_v1(

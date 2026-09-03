@@ -20,6 +20,7 @@ use riffdb_columnar::{
 use common::*;
 
 #[test]
+// req: PRJ-004
 fn authoritative_snapshot_rebuild_is_private_until_exact_publication() {
     let bundle = compile_bundle();
     let definition = register_ticket_board(&bundle);
@@ -82,6 +83,7 @@ fn authoritative_snapshot_rebuild_is_private_until_exact_publication() {
 }
 
 #[test]
+// req: PRJ-001, PRJ-002
 fn acceptance_reference_match_at_published_frontier() {
     let bundle = compile_bundle();
     let definition = register_ticket_board(&bundle);
@@ -232,6 +234,7 @@ fn acceptance_all_or_none_multi_entity_commit() {
 }
 
 #[test]
+// req: PRJ-003
 fn acceptance_duplicate_application_idempotent() {
     let bundle = compile_bundle();
     let definition = register_ticket_board(&bundle);
@@ -354,6 +357,7 @@ fn acceptance_irrelevant_commits_advance_processed() {
 }
 
 #[test]
+// req: OQ-021
 fn acceptance_org_scope_airtight() {
     let bundle = compile_bundle();
     let definition = register_ticket_board(&bundle);
@@ -422,6 +426,7 @@ fn acceptance_org_scope_airtight() {
 }
 
 #[test]
+// req: OQ-019
 fn acceptance_query_range_sort_limit_aggregates_group_by_budgets() {
     let bundle = compile_bundle();
     let definition = register_ticket_board(&bundle);
@@ -1784,6 +1789,7 @@ fn query_org_scope_type_mismatch_is_typed_error() {
 }
 
 #[test]
+// req: OQ-017, OQ-018
 fn columnar_provider_descriptor_matches_real_reference_engine_contract() {
     let bundle = compile_bundle();
     let descriptor = register_ticket_board(&bundle)

@@ -65,19 +65,26 @@ mod engine;
 mod error;
 mod hnsw;
 mod hooks;
+mod manifest_v2;
 pub mod nearest;
 mod outcome;
 mod query;
+mod segment_v2;
 mod store;
 
 pub use apply::ApplyProgress;
 pub use checkpoint::{CheckpointError, ColumnarAmplification, ManifestV1, SegmentInventoryEntry};
 pub use definition::{
-    ColumnarProjectionDefinition, DefinitionError, DefinitionFingerprint, LAYOUT_VERSION,
-    ProviderDescriptorError, RegisteredDefinition, VectorAnnConfig, VectorProviderProfileV1,
+    COLUMNAR_LAYOUT_VERSION_V1, COLUMNAR_LAYOUT_VERSION_V2, ColumnarProjectionDefinition,
+    DefinitionError, DefinitionFingerprint, LAYOUT_VERSION, ProviderDescriptorError,
+    RegisteredDefinition, VectorAnnConfig, VectorProviderProfileV1,
 };
 pub use engine::{ColumnarEngine, ColumnarSnapshotRebuild, OpenOptions};
 pub use error::{ColumnarError, StorageFailure};
+pub use manifest_v2::{
+    ColumnarManifestV2, ColumnarManifestV2Entry, MAX_COLUMNAR_MANIFEST_V2_BYTES,
+    MAX_COLUMNAR_MANIFEST_V2_SEGMENTS,
+};
 pub use outcome::{
     ColumnarOutcome, DegradedReason, ProjectionBuilding, ProjectionDegraded, ProjectionInvalid,
     ProjectionLagging, ProjectionReady, ProjectionRebuilding, RebuildingReason,
@@ -90,6 +97,13 @@ pub use query::{
     QueryBudget, QueryError, QueryResult, QueryRow, QueryRows, SortDirection,
     nearest_query_snapshot, nearest_query_snapshot_with_admission, query_snapshot,
     query_snapshot_with_policy_admission,
+};
+pub use segment_v2::{
+    COLUMNAR_ENCODING_REGISTRY_VERSION_V1, COLUMNAR_MANIFEST_FORMAT_VERSION_V1,
+    COLUMNAR_MANIFEST_FORMAT_VERSION_V2, COLUMNAR_SEGMENT_FORMAT_VERSION_V2, MAX_SEGMENT_V2_BYTES,
+    MAX_SEGMENT_V2_COLUMNS, MAX_SEGMENT_V2_ROWS, SegmentV2, SegmentV2Cell, SegmentV2Codec,
+    SegmentV2Column, SegmentV2Error, SegmentV2Identity, SegmentV2LogicalType, SegmentV2Predicate,
+    SegmentV2PruningDecision, SegmentV2SegmentId,
 };
 pub use store::{
     ColumnarSnapshot, LiveRow, MergedRow, OrgDelta, OrgKey, PrimaryKeyBytes, SegmentId,

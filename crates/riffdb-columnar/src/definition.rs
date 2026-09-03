@@ -11,8 +11,12 @@ use riffdb_types::{
 };
 use std::num::NonZeroU32;
 
-/// Layout version frozen into definition fingerprints and manifests.
-pub const LAYOUT_VERSION: u32 = 1;
+/// Production row-framed columnar layout identity.
+pub const COLUMNAR_LAYOUT_VERSION_V1: u32 = 1;
+/// Inactive typed columnar candidate layout identity.
+pub const COLUMNAR_LAYOUT_VERSION_V2: u32 = 2;
+/// Layout selected by the production engine until WP-711 activation succeeds.
+pub const LAYOUT_VERSION: u32 = COLUMNAR_LAYOUT_VERSION_V1;
 
 /// Author-facing columnar projection definition before contract validation.
 #[derive(Clone, Debug, Eq, PartialEq)]
