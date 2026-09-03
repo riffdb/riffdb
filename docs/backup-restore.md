@@ -256,6 +256,22 @@ writers. A later graceful shutdown may produce a new clean record bound to the
 restored incarnation. Copying backup artifacts or a database file cannot forge
 clean eligibility.
 
+The immutable backup artifact preserves the source bytes, including a matching
+certificate. Private restore staging nevertheless drives the complete
+structural and catalog-semantic streams through exact end before staged
+authentication; it never uses those bytes to skip restore validation. Because
+that sealed scrub is read-only, the later ordinary open used solely for staged
+authentication may still report the matching clean mode. Eligibility is a
+property of the complete stopped database, journal, format marker, maintenance
+state, and retained roots, not of certificate bytes alone. A complete stopped
+lifecycle-unit copy preserves eligibility; a bare database-file copy does not
+and takes complete validation. Registry migration, an incompatible internal
+format, maintenance replacement, retention hold or prune, and
+history-incarnation rotation likewise invalidate or fail closed. A backup-bound
+compatible marker-only format upgrade preserves an otherwise unchanged
+lifecycle unit. An offline integrity scrub deliberately preserves the bytes but
+does not consume, refresh, or replace them.
+
 A destructive restore removes every observation created after the backup's
 included frontier. The removed application and administration sequence suffixes
 may later be reused for different records. An idempotency key that existed only

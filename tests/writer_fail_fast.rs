@@ -36,6 +36,7 @@ use tonic::transport::Endpoint;
 const AUDIENCE: &str = "riffdb-grpc-loopback";
 const ENVIRONMENT: &str = "writer-fail-fast-test";
 const READY_PREFIX: &str = "riffdbd-ready-v1\t";
+const STARTUP_PREFIX: &str = "riffdb-startup-stages-v1\t";
 const WRITER_FAILPOINT: &str = "RIFFDB_TEST_WRITER_FAILPOINT";
 const WRITER_FAILPOINT_ARM: &str = "RIFFDB_TEST_WRITER_FAILPOINT_ARM";
 const MAX_READY_LINE_BYTES: usize = 256;
@@ -53,6 +54,7 @@ const BUDGET_CONTRACT: &str = include_str!("../contracts/examples/budget.riff");
 
 type TestResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
+// req: STO-023, REC-004
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn writer_thread_panic_stops_the_coordinator_and_exits_the_daemon_nonzero() -> TestResult<()>
 {
@@ -148,6 +150,20 @@ async fn writer_thread_panic_stops_the_coordinator_and_exits_the_daemon_nonzero(
         return Err(test_failure(
             "riffdbd diagnostics did not attribute the panic to its writer thread",
         ));
+    }
+
+    let recovery =
+        ServerProcess::spawn_without_failpoint(&database, &capability_keys, &idempotency_keys)?;
+    recovery.wait_for_ready_address()?;
+    let startup = recovery.wait_for_startup_receipt()?;
+    let mode = startup
+        .split('\t')
+        .find_map(|field| field.strip_prefix("mode="))
+        .ok_or_else(|| test_failure("recovery startup receipt omitted its mode"))?;
+    if mode != "complete_validation" {
+        return Err(test_failure(format!(
+            "writer shutdown failure left usable clean evidence: mode={mode}"
+        )));
     }
     Ok(())
 }
@@ -293,6 +309,7 @@ enum ReaperCommand {
 
 struct ServerProcess {
     ready: Receiver<io::Result<String>>,
+    startup: Receiver<String>,
     commands: SyncSender<ReaperCommand>,
     exited: Receiver<io::Result<ExitStatus>>,
     reaper: Option<JoinHandle<()>>,
@@ -308,6 +325,23 @@ impl ServerProcess {
         capability_keys: &Path,
         idempotency_keys: &Path,
         arm: &Path,
+    ) -> io::Result<Self> {
+        Self::spawn_inner(database, capability_keys, idempotency_keys, Some(arm))
+    }
+
+    fn spawn_without_failpoint(
+        database: &Path,
+        capability_keys: &Path,
+        idempotency_keys: &Path,
+    ) -> io::Result<Self> {
+        Self::spawn_inner(database, capability_keys, idempotency_keys, None)
+    }
+
+    fn spawn_inner(
+        database: &Path,
+        capability_keys: &Path,
+        idempotency_keys: &Path,
+        arm: Option<&Path>,
     ) -> io::Result<Self> {
         let mut command = Command::new(env!("CARGO_BIN_EXE_riffdbd"));
         command
@@ -330,11 +364,14 @@ impl ServerProcess {
             .arg(capability_keys)
             .arg("--idempotency-keys")
             .arg(idempotency_keys)
-            .env(WRITER_FAILPOINT, "after_command_dispatch")
-            .env(WRITER_FAILPOINT_ARM, arm)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(arm) = arm {
+            command
+                .env(WRITER_FAILPOINT, "after_command_dispatch")
+                .env(WRITER_FAILPOINT_ARM, arm);
+        }
         let mut child = command.spawn()?;
         let stdout = child
             .stdout
@@ -348,12 +385,14 @@ impl ServerProcess {
         let stdout = thread::spawn(move || read_ready_then_drain(stdout, ready_tx));
         let retained_stderr = Arc::new(Mutex::new(Vec::new()));
         let stderr_lines = Arc::clone(&retained_stderr);
-        let stderr = thread::spawn(move || drain_stderr(stderr, stderr_lines));
+        let (startup_tx, startup) = mpsc::sync_channel(1);
+        let stderr = thread::spawn(move || drain_stderr(stderr, stderr_lines, startup_tx));
         let (commands, reaper_commands) = mpsc::sync_channel(1);
         let (exit_tx, exited) = mpsc::sync_channel(1);
         let reaper = thread::spawn(move || reap_child(child, reaper_commands, exit_tx));
         Ok(Self {
             ready,
+            startup,
             commands,
             exited,
             reaper: Some(reaper),
@@ -373,6 +412,12 @@ impl ServerProcess {
             .ok_or_else(|| test_failure("unknown readiness line"))?
             .parse()
             .map_err(Into::into)
+    }
+
+    fn wait_for_startup_receipt(&self) -> TestResult<String> {
+        self.startup
+            .recv_timeout(PROCESS_START_TIMEOUT)
+            .map_err(|_| test_failure("riffdbd startup receipt timed out"))
     }
 
     fn wait_for_exit(&mut self, deadline: Duration) -> TestResult<ExitStatus> {
@@ -478,11 +523,18 @@ fn read_bounded_line(reader: &mut impl Read, maximum: usize) -> io::Result<Strin
     String::from_utf8(bytes).map_err(|_| io::Error::other("readiness was not UTF-8"))
 }
 
-fn drain_stderr(stderr: ChildStderr, retained: Arc<Mutex<Vec<String>>>) -> usize {
+fn drain_stderr(
+    stderr: ChildStderr,
+    retained: Arc<Mutex<Vec<String>>>,
+    startup: SyncSender<String>,
+) -> usize {
     let mut bytes = 0_usize;
     for line in BufReader::new(stderr).lines() {
         let Ok(line) = line else { break };
         bytes = bytes.saturating_add(line.len());
+        if line.starts_with(STARTUP_PREFIX) {
+            let _ = startup.try_send(line.clone());
+        }
         if let Ok(mut lines) = retained.lock()
             && lines.len() < MAX_RETAINED_STDERR_LINES
         {

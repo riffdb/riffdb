@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+# req: PERF-019, END-007, END-008
+"""Fail-closed referee for the two exact WP-705 clean lifecycle reports."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+HEAP_CEILING = 64 * 1024 * 1024
+CROSS_POPULATION_CEILING = 16 * 1024 * 1024
+STARTUP_STAGES = [
+    "store_open",
+    "evidence_begin",
+    "structural_drain",
+    "catalog_history",
+    "evidence_finish",
+    "port_activation",
+    "current_views",
+    "consumer_recovery",
+    "outbox_recovery",
+    "graph_rest",
+    "process_to_ready",
+]
+PROHIBITED_TABLES = {
+    "entities",
+    "secondary_indexes",
+    "historical_plan_references",
+    "idempotency",
+    "events",
+    "event_routes",
+    "outbox",
+    "provenance",
+    "audit",
+    "projections",
+}
+
+
+def refuse(message: str) -> "NoReturn":
+    print(f"wp705_lifecycle_evidence_invalid: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while block := source.read(1024 * 1024):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def object_value(value: Any, label: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        refuse(f"{label} is not an object")
+    return value
+
+
+def integer(value: Any, label: str) -> int:
+    if type(value) is not int or value < 0:
+        refuse(f"{label} is not an unsigned integer")
+    return value
+
+
+def memory_window(value: Any, label: str) -> int:
+    window = object_value(value, label)
+    expected = {
+        "label",
+        "pid",
+        "process_starttime_ticks",
+        "vm_data_bytes_before",
+        "vm_data_bytes_after",
+        "heap_envelope_bytes",
+        "vm_hwm_bytes",
+        "heap_envelope_ceiling_bytes",
+        "passed",
+    }
+    if set(window) != expected:
+        refuse(f"{label} field registry is not exact")
+    pid = integer(window["pid"], f"{label}.pid")
+    starttime = integer(window["process_starttime_ticks"], f"{label}.starttime")
+    before = integer(window["vm_data_bytes_before"], f"{label}.before")
+    after = integer(window["vm_data_bytes_after"], f"{label}.after")
+    envelope = integer(window["heap_envelope_bytes"], f"{label}.envelope")
+    integer(window["vm_hwm_bytes"], f"{label}.vm_hwm")
+    if pid == 0 or starttime == 0:
+        refuse(f"{label} omitted its process-generation identity")
+    if envelope != max(0, after - before):
+        refuse(f"{label} heap-envelope arithmetic is inconsistent")
+    if window["heap_envelope_ceiling_bytes"] != HEAP_CEILING:
+        refuse(f"{label} changed the accepted heap ceiling")
+    if envelope > HEAP_CEILING or window["passed"] is not True:
+        refuse(f"{label} exceeded the accepted heap ceiling")
+    return envelope
+
+
+def report_lifecycle(path: Path, checkpoint: str) -> tuple[dict[str, Any], int]:
+    try:
+        report = object_value(json.loads(path.read_text()), str(path))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        refuse(f"cannot read {path.name}: {error}")
+    candidate = object_value(report.get("qualification_candidate"), "qualification_candidate")
+    if candidate.get("schema") != "riffdb.app-baseline-qualified-candidate/v1":
+        refuse(f"{path.name} has the wrong qualification schema")
+    if candidate.get("source_tree_clean") is not True:
+        refuse(f"{path.name} was not produced from a clean source tree")
+    build = object_value(candidate.get("build"), "qualification build")
+    expected_feature = "default" if checkpoint == "production" else "test-fixtures"
+    if build != {
+        "cargo": "cargo +1.97.0 build --locked --release",
+        "package": "riffdb-server",
+        "binary": "riffdbd",
+        "feature_set": expected_feature,
+    }:
+        refuse(f"{path.name} has the wrong release build identity")
+    process_rows = report.get("riffdb_process_evidence")
+    if not isinstance(process_rows, list) or len(process_rows) != 1:
+        refuse(f"{path.name} must contain one process evidence row")
+    lifecycle = object_value(
+        object_value(process_rows[0], "process evidence").get("production_lifecycle_evidence"),
+        "production lifecycle evidence",
+    )
+    if lifecycle.get("scale_checkpoint") != checkpoint:
+        refuse(f"{path.name} has the wrong scale checkpoint")
+    clean = object_value(lifecycle.get("clean_restart"), "clean restart")
+    startup = object_value(clean.get("startup"), "clean startup")
+    if startup.get("mode") != "clean_certificate":
+        refuse(f"{path.name} did not select clean-certificate startup")
+    if startup.get("stage_names") != STARTUP_STAGES:
+        refuse(f"{path.name} changed the closed startup-stage registry")
+    stages = startup.get("stages_us")
+    if not isinstance(stages, list) or len(stages) != len(STARTUP_STAGES):
+        refuse(f"{path.name} omitted a startup stage")
+    for index, value in enumerate(stages):
+        integer(value, f"startup stage {STARTUP_STAGES[index]}")
+    if startup.get("population_table_walk") != "none":
+        refuse(f"{path.name} observed a clean-path population walk")
+    if startup.get("transient_index_rebuilds") != 0:
+        refuse(f"{path.name} rebuilt a transient population index")
+    rows = object_value(startup.get("prohibited_table_rows"), "prohibited table rows")
+    if set(rows) != PROHIBITED_TABLES or any(value != 0 for value in rows.values()):
+        refuse(f"{path.name} did not report exact zero prohibited-table rows")
+    envelope = memory_window(clean.get("memory"), f"{checkpoint} startup memory")
+    close_keys = (
+        ("seeded_close", "seeded_close_memory"),
+        ("final_close", "final_close_memory"),
+    ) if checkpoint == "production" else (("measured_clean_close", "measured_clean_close_memory"),)
+    for close_key, memory_key in close_keys:
+        close = object_value(lifecycle.get(close_key), close_key)
+        if close.get("final_certificate_commit_succeeded") is not True:
+            refuse(f"{path.name} has an unsuccessful final certificate stage")
+        memory_window(lifecycle.get(memory_key), f"{checkpoint} {memory_key}")
+    return candidate, envelope
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--rows-65536", required=True, type=Path)
+    parser.add_argument("--production", required=True, type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    args = parser.parse_args()
+    rows_candidate, rows_envelope = report_lifecycle(args.rows_65536, "rows_65536")
+    production_candidate, production_envelope = report_lifecycle(args.production, "production")
+    if rows_candidate.get("source_revision") != production_candidate.get("source_revision"):
+        refuse("the two reports do not bind the same source revision")
+    for field in ("cargo_lock_sha256", "runner_sha256", "harness_sha256", "referee_sha256"):
+        if rows_candidate.get(field) != production_candidate.get(field):
+            refuse(f"the two reports do not bind the same {field}")
+    root = Path(subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip())
+    head_revision = subprocess.check_output(
+        ["git", "-C", str(root), "rev-parse", "HEAD"], text=True
+    ).strip()
+    if rows_candidate.get("source_revision") != head_revision:
+        refuse("retained reports do not bind the current source revision")
+    expected_digests = {
+        "cargo_lock_sha256": sha256(root / "Cargo.lock"),
+        "harness_sha256": sha256(root / "benchmarks/run-app-baseline"),
+        "referee_sha256": sha256(root / "scripts/wp705-lifecycle-referee"),
+    }
+    for field, expected in expected_digests.items():
+        if rows_candidate.get(field) != expected:
+            refuse(f"retained reports do not bind the current {field}")
+    cross_delta = max(0, production_envelope - rows_envelope)
+    if cross_delta > CROSS_POPULATION_CEILING:
+        refuse("production heap envelope exceeds the 65,536-row envelope by more than 16 MiB")
+    receipt = {
+        "schema": "riffdb.wp-705-perf-019-referee/v1",
+        "status": "passed",
+        "source_revision": rows_candidate["source_revision"],
+        "rows_65536_report": {"sha256": sha256(args.rows_65536)},
+        "production_report": {"sha256": sha256(args.production)},
+        "closed_provenance": {
+            **expected_digests,
+            "runner_sha256": rows_candidate["runner_sha256"],
+            "rows_65536_riffdbd_sha256": rows_candidate["riffdbd_sha256"],
+            "production_riffdbd_sha256": production_candidate["riffdbd_sha256"],
+        },
+        "heap_envelope_ceiling_bytes": HEAP_CEILING,
+        "cross_population_ceiling_bytes": CROSS_POPULATION_CEILING,
+        "rows_65536_heap_envelope_bytes": rows_envelope,
+        "production_heap_envelope_bytes": production_envelope,
+        "production_minus_rows_65536_heap_envelope_bytes": cross_delta,
+        "prohibited_table_rows": 0,
+    }
+    encoded = json.dumps(receipt, indent=2) + "\n"
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = args.output.with_name(f".{args.output.name}.tmp-{os.getpid()}")
+    temporary.write_text(encoded)
+    os.replace(temporary, args.output)
+    print(encoded, end="")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

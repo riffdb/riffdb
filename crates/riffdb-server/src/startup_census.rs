@@ -15,7 +15,7 @@
 //! that is never reached simply reports zero.
 
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
 /// One named startup stage, in emission order.
@@ -158,6 +158,35 @@ static TRANSIENT_COMMIT_ROWS: AtomicU64 = AtomicU64::new(0);
 static COLUMNAR_COLD_SOURCES: AtomicU64 = AtomicU64::new(0);
 static COLUMNAR_ACTIVATIONS: AtomicU64 = AtomicU64::new(0);
 static COLUMNAR_POPULATION_PASSES: AtomicU64 = AtomicU64::new(0);
+static CLEAN_CERTIFICATE_MODE: AtomicBool = AtomicBool::new(false);
+
+/// Records the closed startup mode selected by storage evidence.
+pub(crate) fn record_mode(clean_certificate: bool) {
+    CLEAN_CERTIFICATE_MODE.store(clean_certificate, Ordering::Relaxed);
+}
+
+const fn startup_mode_label(clean_certificate: bool) -> &'static str {
+    if clean_certificate {
+        "clean_certificate"
+    } else {
+        "complete_validation"
+    }
+}
+
+const fn population_walk_label(
+    clean_certificate: bool,
+    transient_commit_rows: u64,
+) -> &'static str {
+    // `none` is a proof classification, not an inference from one zero counter:
+    // only the bounded clean selector excludes the complete evidence plan, and
+    // the independent transient counter excludes a derived COMMITS rebuild.
+    // Every other state reports the conservative closed value.
+    if clean_certificate && transient_commit_rows == 0 {
+        "none"
+    } else {
+        "observed"
+    }
+}
 
 /// Records the transient-index rebuild census observed at graph build.
 pub(crate) fn record_transient_index_rebuilds(rebuilds: u64, commit_rows: u64) {
@@ -203,6 +232,10 @@ pub(crate) fn format_v1_line() -> String {
         record(StartupStage::ProcessToReady, *started);
     }
     let mut line = String::from("riffdb-startup-stages-v1");
+    line.push_str("\tmode=");
+    line.push_str(startup_mode_label(
+        CLEAN_CERTIFICATE_MODE.load(Ordering::Relaxed),
+    ));
     for stage in StartupStage::ALL {
         line.push('\t');
         line.push_str(stage.as_str());
@@ -215,8 +248,11 @@ pub(crate) fn format_v1_line() -> String {
     }
     line.push_str("\ttransient_index_rebuilds=");
     line.push_str(&TRANSIENT_REBUILDS.load(Ordering::Relaxed).to_string());
-    line.push_str("\ttransient_index_commit_rows=");
-    line.push_str(&TRANSIENT_COMMIT_ROWS.load(Ordering::Relaxed).to_string());
+    line.push_str("\tpopulation_table_walk=");
+    line.push_str(population_walk_label(
+        CLEAN_CERTIFICATE_MODE.load(Ordering::Relaxed),
+        TRANSIENT_COMMIT_ROWS.load(Ordering::Relaxed),
+    ));
     line.push_str("\tcolumnar_cold_sources=");
     line.push_str(&COLUMNAR_COLD_SOURCES.load(Ordering::Acquire).to_string());
     line.push_str("\tcolumnar_activations=");
@@ -228,7 +264,7 @@ pub(crate) fn format_v1_line() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{StartupStage, format_v1_line};
+    use super::{StartupStage, format_v1_line, population_walk_label, startup_mode_label};
 
     #[test]
     fn stage_indices_are_unique_and_dense() {
@@ -240,10 +276,17 @@ mod tests {
         assert!(seen.into_iter().all(|present| present));
     }
 
+    // req: PERF-019
     #[test]
     fn every_stage_appears_in_the_rendered_line() {
         let line = format_v1_line();
         assert!(line.starts_with("riffdb-startup-stages-v1\t"));
+        assert_eq!(startup_mode_label(false), "complete_validation");
+        assert_eq!(startup_mode_label(true), "clean_certificate");
+        assert!(
+            line.contains("\tmode=complete_validation")
+                || line.contains("\tmode=clean_certificate")
+        );
         for stage in StartupStage::ALL {
             assert!(
                 line.contains(&format!("\t{}=", stage.as_str())),
@@ -251,6 +294,15 @@ mod tests {
                 stage.as_str()
             );
         }
+        assert!(line.contains("\ttransient_index_rebuilds=0"));
+        assert!(
+            line.contains("\tpopulation_table_walk=none")
+                || line.contains("\tpopulation_table_walk=observed")
+        );
+        assert!(!line.contains("transient_index_commit_rows="));
+        assert_eq!(population_walk_label(true, 0), "none");
+        assert_eq!(population_walk_label(true, 1), "observed");
+        assert_eq!(population_walk_label(false, 0), "observed");
         assert!(line.contains("\tcolumnar_cold_sources="));
         assert!(line.contains("\tcolumnar_activations="));
         assert!(line.contains("\tcolumnar_population_passes="));

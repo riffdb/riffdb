@@ -61,7 +61,11 @@ fn semantic_ticket_page_bytes(page: &TicketDetailPage) -> u64 {
         + 1
         + page.assignee.as_ref().map_or(0, semantic_user_bytes)
         + 4
-        + page.comments.iter().map(semantic_comment_bytes).sum::<u64>()
+        + page
+            .comments
+            .iter()
+            .map(semantic_comment_bytes)
+            .sum::<u64>()
         + 4
         + page.labels.iter().map(semantic_label_bytes).sum::<u64>()
 }
@@ -414,14 +418,7 @@ pub fn run_scenarios_with_options<B: AppBackend>(
     samples: usize,
     include_projected: bool,
 ) -> Result<Vec<ScenarioResult>, B::Error> {
-    run_scenarios_selected(
-        backend,
-        dataset,
-        warmups,
-        samples,
-        include_projected,
-        None,
-    )
+    run_scenarios_selected(backend, dataset, warmups, samples, include_projected, None)
 }
 
 /// Runs the normal scenario machinery with an optional exact private selector.
@@ -466,283 +463,278 @@ pub fn run_scenarios_selected<B: AppBackend>(
         .collect::<Vec<_>>();
 
     let mut measure = |result: &mut ScenarioResult, sample: usize| -> Result<(), B::Error> {
-            let scenario_name = result.scenario.as_str();
-            let outcome = match result.scenario {
-                ScenarioId::PointGetTicket => {
-                    let (value, elapsed) = time_call(|| {
-                        backend.point_get_ticket(probes.organization_id, probes.ticket_id)
+        let scenario_name = result.scenario.as_str();
+        let outcome = match result.scenario {
+            ScenarioId::PointGetTicket => {
+                let (value, elapsed) = time_call(|| {
+                    backend.point_get_ticket(probes.organization_id, probes.ticket_id)
+                });
+                value.map(|row| {
+                    let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
+                        + 1
+                        + row.as_ref().map_or(0, semantic_ticket_bytes);
+                    (
+                        usize::from(row.is_some()),
+                        elapsed,
+                        SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2,
+                        response_bytes,
+                    )
+                })
+            }
+            ScenarioId::PointGetUser => {
+                let (value, elapsed) =
+                    time_call(|| backend.point_get_user(probes.organization_id, probes.user_id));
+                value.map(|row| {
+                    let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
+                        + 1
+                        + row.as_ref().map_or(0, semantic_user_bytes);
+                    (
+                        usize::from(row.is_some()),
+                        elapsed,
+                        SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2,
+                        response_bytes,
+                    )
+                })
+            }
+            ScenarioId::ListTicketsByProjectStatus => {
+                let (value, elapsed) = time_call(|| {
+                    backend.list_tickets_by_project_status(
+                        probes.organization_id,
+                        probes.project_id,
+                        probes.open_status,
+                        50,
+                    )
+                });
+                value.map(|rows| {
+                    let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
+                        + 4
+                        + rows.iter().map(semantic_ticket_bytes).sum::<u64>();
+                    (
+                        rows.len(),
+                        elapsed,
+                        SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2 + 1 + 4,
+                        response_bytes,
+                    )
+                })
+            }
+            ScenarioId::ListOpenTicketsForAssignee => {
+                let (value, elapsed) = time_call(|| {
+                    backend.list_open_tickets_for_assignee(
+                        probes.organization_id,
+                        probes.assignee_id,
+                        50,
+                    )
+                });
+                value.map(|rows| {
+                    let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
+                        + 4
+                        + rows.iter().map(semantic_ticket_bytes).sum::<u64>();
+                    (
+                        rows.len(),
+                        elapsed,
+                        SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2 + 4,
+                        response_bytes,
+                    )
+                })
+            }
+            ScenarioId::ListCommentsForTicket => {
+                let (value, elapsed) = time_call(|| {
+                    backend.list_comments_for_ticket(probes.organization_id, probes.ticket_id, 50)
+                });
+                value.map(|rows| {
+                    let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
+                        + 4
+                        + rows.iter().map(semantic_comment_bytes).sum::<u64>();
+                    (
+                        rows.len(),
+                        elapsed,
+                        SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2 + 4,
+                        response_bytes,
+                    )
+                })
+            }
+            ScenarioId::ListProjectMembers => {
+                let (value, elapsed) = time_call(|| {
+                    backend.list_project_members(probes.organization_id, probes.project_id, 50)
+                });
+                value.map(|rows| {
+                    let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
+                        + 4
+                        + rows.iter().map(semantic_member_bytes).sum::<u64>();
+                    (
+                        rows.len(),
+                        elapsed,
+                        SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2 + 4,
+                        response_bytes,
+                    )
+                })
+            }
+            ScenarioId::TicketDetailPage => {
+                let (value, elapsed) = time_call(|| {
+                    backend.ticket_detail_page(probes.organization_id, probes.ticket_id, 50)
+                });
+                value.map(|page| {
+                    let count = page.as_ref().map_or(0, |page| {
+                        1 + page.comments.len()
+                            + page.labels.len()
+                            + usize::from(page.assignee.is_some())
                     });
-                    value.map(|row| {
-                        let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
-                            + 1
-                            + row.as_ref().map_or(0, semantic_ticket_bytes);
-                        (
-                            usize::from(row.is_some()),
-                            elapsed,
-                            SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2,
-                            response_bytes,
-                        )
-                    })
-                }
-                ScenarioId::PointGetUser => {
-                    let (value, elapsed) = time_call(|| {
-                        backend.point_get_user(probes.organization_id, probes.user_id)
-                    });
-                    value.map(|row| {
-                        let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
-                            + 1
-                            + row.as_ref().map_or(0, semantic_user_bytes);
-                        (
-                            usize::from(row.is_some()),
-                            elapsed,
-                            SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2,
-                            response_bytes,
-                        )
-                    })
-                }
-                ScenarioId::ListTicketsByProjectStatus => {
-                    let (value, elapsed) = time_call(|| {
-                        backend.list_tickets_by_project_status(
-                            probes.organization_id,
-                            probes.project_id,
-                            probes.open_status,
-                            50,
-                        )
-                    });
-                    value.map(|rows| {
-                        let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
-                            + 4
-                            + rows.iter().map(semantic_ticket_bytes).sum::<u64>();
-                        (
-                            rows.len(),
-                            elapsed,
-                            SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2 + 1 + 4,
-                            response_bytes,
-                        )
-                    })
-                }
-                ScenarioId::ListOpenTicketsForAssignee => {
-                    let (value, elapsed) = time_call(|| {
-                        backend.list_open_tickets_for_assignee(
-                            probes.organization_id,
-                            probes.assignee_id,
-                            50,
-                        )
-                    });
-                    value.map(|rows| {
-                        let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
-                            + 4
-                            + rows.iter().map(semantic_ticket_bytes).sum::<u64>();
-                        (
-                            rows.len(),
-                            elapsed,
-                            SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2 + 4,
-                            response_bytes,
-                        )
-                    })
-                }
-                ScenarioId::ListCommentsForTicket => {
-                    let (value, elapsed) = time_call(|| {
-                        backend.list_comments_for_ticket(
-                            probes.organization_id,
-                            probes.ticket_id,
-                            50,
-                        )
-                    });
-                    value.map(|rows| {
-                        let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
-                            + 4
-                            + rows.iter().map(semantic_comment_bytes).sum::<u64>();
-                        (
-                            rows.len(),
-                            elapsed,
-                            SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2 + 4,
-                            response_bytes,
-                        )
-                    })
-                }
-                ScenarioId::ListProjectMembers => {
-                    let (value, elapsed) = time_call(|| {
-                        backend.list_project_members(probes.organization_id, probes.project_id, 50)
-                    });
-                    value.map(|rows| {
-                        let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
-                            + 4
-                            + rows.iter().map(semantic_member_bytes).sum::<u64>();
-                        (
-                            rows.len(),
-                            elapsed,
-                            SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2 + 4,
-                            response_bytes,
-                        )
-                    })
-                }
-                ScenarioId::TicketDetailPage => {
-                    let (value, elapsed) = time_call(|| {
-                        backend.ticket_detail_page(probes.organization_id, probes.ticket_id, 50)
-                    });
-                    value.map(|page| {
-                        let count = page.as_ref().map_or(0, |page| {
-                            1 + page.comments.len()
-                                + page.labels.len()
-                                + usize::from(page.assignee.is_some())
-                        });
-                        let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
-                            + 1
-                            + page.as_ref().map_or(0, semantic_ticket_page_bytes);
-                        (
-                            count,
-                            elapsed,
-                            SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2 + 4,
-                            response_bytes,
-                        )
-                    })
-                }
-                ScenarioId::BoardPage50 | ScenarioId::BoardPage200 | ScenarioId::BoardPage450 => {
-                    let limit = result
-                        .scenario
-                        .board_page_limit()
-                        .expect("board scenario has limit");
-                    let (value, elapsed) = time_call(|| {
-                        backend.board_page(
-                            probes.board_organization_id,
-                            probes.board_project_id,
-                            probes.open_status,
-                            limit,
-                        )
-                    });
-                    value.map(|rows| {
-                        let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
-                            + 4
-                            + rows.iter().map(semantic_ticket_bytes).sum::<u64>();
-                        (
-                            rows.len(),
-                            elapsed,
-                            SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2 + 1 + 4,
-                            response_bytes,
-                        )
-                    })
-                }
-                ScenarioId::BoardPageProjected50
-                | ScenarioId::BoardPageProjected200
-                | ScenarioId::BoardPageProjected450 => {
-                    let limit = result
-                        .scenario
-                        .board_page_limit()
-                        .expect("projected board scenario has limit");
-                    let (value, elapsed) = time_call(|| {
-                        backend.board_page_projected(
-                            probes.board_organization_id,
-                            probes.board_project_id,
-                            probes.open_status,
-                            limit,
-                        )
-                    });
-                    value.map(|rows| {
-                        let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
-                            + 4
-                            + rows.iter().map(semantic_ticket_bytes).sum::<u64>();
-                        (
-                            rows.len(),
-                            elapsed,
-                            SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2 + 1 + 4,
-                            response_bytes,
-                        )
-                    })
-                }
-                ScenarioId::BoardPagePacked50
-                | ScenarioId::BoardPagePacked200
-                | ScenarioId::BoardPagePacked450 => {
-                    let limit = result
-                        .scenario
-                        .board_page_limit()
-                        .expect("packed board scenario has limit");
-                    let (value, elapsed) = time_call(|| {
-                        backend.board_page_packed(
-                            probes.board_organization_id,
-                            probes.board_project_id,
-                            probes.open_status,
-                            limit,
-                        )
-                    });
-                    value.map(|rows| {
-                        let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
-                            + 4
-                            + rows.iter().map(semantic_ticket_bytes).sum::<u64>();
-                        (
-                            rows.len(),
-                            elapsed,
-                            SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2 + 1 + 4,
-                            response_bytes,
-                        )
-                    })
-                }
-                ScenarioId::CreateComment => {
-                    // Each sample inserts a distinct comment (new idempotency
-                    // key + comment id) so RiffDB never takes the replay path
-                    // and PostgreSQL never no-ops on conflict.
-                    let input = probes.write_comment(sample);
-                    let (value, elapsed) = time_call(|| backend.create_comment(&input));
-                    value.map(|()| {
-                        (
-                            1,
-                            elapsed,
-                            semantic_comment_request_bytes(&input),
-                            SEMANTIC_FRAME_HEADER_BYTES + 1,
-                        )
-                    })
-                }
-                ScenarioId::CloseTicketWithComment => {
-                    let input = probes.close_ticket_with_comment(sample);
-                    let (value, elapsed) = time_call(|| backend.close_ticket_with_comment(&input));
-                    // Two entity mutations: ticket + comment.
-                    value.map(|()| {
-                        (
-                            2,
-                            elapsed,
-                            semantic_close_request_bytes(&input),
-                            SEMANTIC_FRAME_HEADER_BYTES + 1,
-                        )
-                    })
-                }
-                ScenarioId::SwapMemberRoles => {
-                    let input = probes.swap_member_roles(sample);
-                    let (value, elapsed) = time_call(|| backend.swap_member_roles(&input));
-                    value.map(|()| {
-                        (
-                            2,
-                            elapsed,
-                            semantic_swap_request_bytes(&input),
-                            SEMANTIC_FRAME_HEADER_BYTES + 1,
-                        )
-                    })
-                }
-                ScenarioId::OpenTicketWithLabels => {
-                    let input = probes.open_ticket_with_labels(sample);
-                    let (value, elapsed) = time_call(|| backend.open_ticket_with_labels(&input));
-                    // Ticket + two label links.
-                    value.map(|()| {
-                        (
-                            3,
-                            elapsed,
-                            semantic_open_request_bytes(&input),
-                            SEMANTIC_FRAME_HEADER_BYTES + 1,
-                        )
-                    })
-                }
-            };
-            let (row_count, elapsed, encoded_request_bytes, encoded_response_bytes) = match outcome {
-                Ok(measurement) => measurement,
-                Err(error) => {
-                    eprintln!("scenario {scenario_name} failed: {error}");
-                    return Err(error);
-                }
-            };
-            result.samples.record(elapsed);
-            result.last_row_count = row_count;
-            result.encoded_request_bytes = encoded_request_bytes;
-            result.encoded_response_bytes = encoded_response_bytes;
-            Ok(())
+                    let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
+                        + 1
+                        + page.as_ref().map_or(0, semantic_ticket_page_bytes);
+                    (
+                        count,
+                        elapsed,
+                        SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2 + 4,
+                        response_bytes,
+                    )
+                })
+            }
+            ScenarioId::BoardPage50 | ScenarioId::BoardPage200 | ScenarioId::BoardPage450 => {
+                let limit = result
+                    .scenario
+                    .board_page_limit()
+                    .expect("board scenario has limit");
+                let (value, elapsed) = time_call(|| {
+                    backend.board_page(
+                        probes.board_organization_id,
+                        probes.board_project_id,
+                        probes.open_status,
+                        limit,
+                    )
+                });
+                value.map(|rows| {
+                    let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
+                        + 4
+                        + rows.iter().map(semantic_ticket_bytes).sum::<u64>();
+                    (
+                        rows.len(),
+                        elapsed,
+                        SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2 + 1 + 4,
+                        response_bytes,
+                    )
+                })
+            }
+            ScenarioId::BoardPageProjected50
+            | ScenarioId::BoardPageProjected200
+            | ScenarioId::BoardPageProjected450 => {
+                let limit = result
+                    .scenario
+                    .board_page_limit()
+                    .expect("projected board scenario has limit");
+                let (value, elapsed) = time_call(|| {
+                    backend.board_page_projected(
+                        probes.board_organization_id,
+                        probes.board_project_id,
+                        probes.open_status,
+                        limit,
+                    )
+                });
+                value.map(|rows| {
+                    let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
+                        + 4
+                        + rows.iter().map(semantic_ticket_bytes).sum::<u64>();
+                    (
+                        rows.len(),
+                        elapsed,
+                        SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2 + 1 + 4,
+                        response_bytes,
+                    )
+                })
+            }
+            ScenarioId::BoardPagePacked50
+            | ScenarioId::BoardPagePacked200
+            | ScenarioId::BoardPagePacked450 => {
+                let limit = result
+                    .scenario
+                    .board_page_limit()
+                    .expect("packed board scenario has limit");
+                let (value, elapsed) = time_call(|| {
+                    backend.board_page_packed(
+                        probes.board_organization_id,
+                        probes.board_project_id,
+                        probes.open_status,
+                        limit,
+                    )
+                });
+                value.map(|rows| {
+                    let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
+                        + 4
+                        + rows.iter().map(semantic_ticket_bytes).sum::<u64>();
+                    (
+                        rows.len(),
+                        elapsed,
+                        SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2 + 1 + 4,
+                        response_bytes,
+                    )
+                })
+            }
+            ScenarioId::CreateComment => {
+                // Each sample inserts a distinct comment (new idempotency
+                // key + comment id) so RiffDB never takes the replay path
+                // and PostgreSQL never no-ops on conflict.
+                let input = probes.write_comment(sample);
+                let (value, elapsed) = time_call(|| backend.create_comment(&input));
+                value.map(|()| {
+                    (
+                        1,
+                        elapsed,
+                        semantic_comment_request_bytes(&input),
+                        SEMANTIC_FRAME_HEADER_BYTES + 1,
+                    )
+                })
+            }
+            ScenarioId::CloseTicketWithComment => {
+                let input = probes.close_ticket_with_comment(sample);
+                let (value, elapsed) = time_call(|| backend.close_ticket_with_comment(&input));
+                // Two entity mutations: ticket + comment.
+                value.map(|()| {
+                    (
+                        2,
+                        elapsed,
+                        semantic_close_request_bytes(&input),
+                        SEMANTIC_FRAME_HEADER_BYTES + 1,
+                    )
+                })
+            }
+            ScenarioId::SwapMemberRoles => {
+                let input = probes.swap_member_roles(sample);
+                let (value, elapsed) = time_call(|| backend.swap_member_roles(&input));
+                value.map(|()| {
+                    (
+                        2,
+                        elapsed,
+                        semantic_swap_request_bytes(&input),
+                        SEMANTIC_FRAME_HEADER_BYTES + 1,
+                    )
+                })
+            }
+            ScenarioId::OpenTicketWithLabels => {
+                let input = probes.open_ticket_with_labels(sample);
+                let (value, elapsed) = time_call(|| backend.open_ticket_with_labels(&input));
+                // Ticket + two label links.
+                value.map(|()| {
+                    (
+                        3,
+                        elapsed,
+                        semantic_open_request_bytes(&input),
+                        SEMANTIC_FRAME_HEADER_BYTES + 1,
+                    )
+                })
+            }
+        };
+        let (row_count, elapsed, encoded_request_bytes, encoded_response_bytes) = match outcome {
+            Ok(measurement) => measurement,
+            Err(error) => {
+                eprintln!("scenario {scenario_name} failed: {error}");
+                return Err(error);
+            }
+        };
+        result.samples.record(elapsed);
+        result.last_row_count = row_count;
+        result.encoded_request_bytes = encoded_request_bytes;
+        result.encoded_response_bytes = encoded_response_bytes;
+        Ok(())
     };
     if std::env::var_os("RIFFDB_APP_BASELINE_SCENARIO_MAJOR_DIAGNOSTICS")
         .is_some_and(|value| value == "1")
@@ -1105,7 +1097,10 @@ mod tests {
     #[test]
     fn report_ids_round_trip_and_service_ledger_set_is_exact() {
         for scenario in ScenarioId::all() {
-            assert_eq!(ScenarioId::from_report_id(scenario.as_str()), Some(scenario));
+            assert_eq!(
+                ScenarioId::from_report_id(scenario.as_str()),
+                Some(scenario)
+            );
         }
         assert_eq!(ScenarioId::from_report_id("unknown"), None);
         assert_eq!(

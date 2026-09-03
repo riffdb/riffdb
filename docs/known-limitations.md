@@ -217,8 +217,12 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 - A graceful clean restart proves bounded continuity but is not a full
   population scrub. Latent corruption outside the bound roots may fail closed
   when an affected row is first accessed. Dirty restart still performs complete
-  startup validation, but the separately specified authorized offline scrub is
-  not yet exposed as a public POC operation.
+  startup validation; at the production benchmark population, that path
+  currently fails closed with `LimitExceeded` at the compiled 512 MiB
+  historical-evidence ceiling and does not publish readiness. A sealed internal
+  exact-end scrub exists, but its
+  authorized maintenance service, durable receipt, and public CLI are not yet
+  available; application or operator code cannot invoke the primitive.
 - Outbox delivery has only the explicitly configured POC connector behavior.
 - Projection state is rebuildable and can be degraded while authoritative
   commits remain available.

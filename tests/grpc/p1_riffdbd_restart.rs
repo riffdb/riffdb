@@ -1527,6 +1527,15 @@ fn replayed_commit_sequences(page: &v1::EventPage) -> TestResult<Vec<u64>> {
 /// anything, so the assertion is exact and host-independent.
 fn assert_readiness_path_rebuild_census(process: &ServerProcess, expected: u64) -> TestResult<()> {
     let census = process.startup_census()?;
+    let mode = census
+        .split('\t')
+        .find_map(|field| field.strip_prefix("mode="))
+        .ok_or_else(|| test_failure("startup census omitted mode"))?;
+    if mode != "clean_certificate" {
+        return Err(test_failure(format!(
+            "graceful real-daemon restart selected mode={mode}, expected clean_certificate"
+        )));
+    }
     let rebuilds = census
         .split('\t')
         .find_map(|field| field.strip_prefix("transient_index_rebuilds="))
@@ -1537,6 +1546,21 @@ fn assert_readiness_path_rebuild_census(process: &ServerProcess, expected: u64) 
              rebuild(s), expected {expected}. Each one walks every command \
              segment before the ready line. Census: {census}"
         )));
+    }
+    let population_walk = census
+        .split('\t')
+        .find_map(|field| field.strip_prefix("population_table_walk="))
+        .ok_or_else(|| test_failure("startup census omitted population_table_walk"))?;
+    let expected_walk = if expected == 0 { "none" } else { "observed" };
+    if population_walk != expected_walk {
+        return Err(test_failure(format!(
+            "readiness path reported population_table_walk={population_walk}, expected {expected_walk}"
+        )));
+    }
+    if census.contains("transient_index_commit_rows=") {
+        return Err(test_failure(
+            "startup census exposed a population table row count",
+        ));
     }
     Ok(())
 }

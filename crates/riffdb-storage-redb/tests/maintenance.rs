@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use redb::{ReadableDatabase, TableDefinition};
+use riffdb_catalog::{CatalogHistoryOutcome, validate_catalog_history};
 use riffdb_storage_api::{
     AuditPrincipalV1, BackupBuildMetadataV1, ContractMigrationAdmissionV1,
     ContractMigrationArtifactFileV1, ContractMigrationArtifactsV1,
@@ -605,14 +607,7 @@ fn migration_external_failpoints_recover_exact_receipt_stage_and_target_state() 
 
 fn complete_structural_validation(path: &Path) -> DatabaseId {
     let store = RedbStore::open(path).expect("open staged database");
-    let digest_key = DigestKeyId::new(1).expect("digest key ID");
-    let inputs = StartupValidationInputs::new(
-        Timestamp::new(1_700_000_000, 0).expect("startup timestamp"),
-        ReadableCapabilityDigestInventory::new(vec![ReadableDigestKey::v1(digest_key)])
-            .expect("capability inventory"),
-        ReadableIdempotencyDigestInventory::new(vec![ReadableDigestKey::v1(digest_key)])
-            .expect("idempotency inventory"),
-    );
+    let inputs = validation_inputs();
     let mut session = store
         .begin_structural_evidence(inputs)
         .expect("begin structural validation");
@@ -647,6 +642,190 @@ fn complete_structural_validation(path: &Path) -> DatabaseId {
         StructuralOpenOutcome::Clean(_)
     ));
     database_id
+}
+
+fn validation_inputs() -> StartupValidationInputs {
+    let digest_key = DigestKeyId::new(1).expect("digest key ID");
+    StartupValidationInputs::new(
+        Timestamp::new(1_700_000_000, 0).expect("startup timestamp"),
+        ReadableCapabilityDigestInventory::new(vec![ReadableDigestKey::v1(digest_key)])
+            .expect("capability inventory"),
+        ReadableIdempotencyDigestInventory::new(vec![ReadableDigestKey::v1(digest_key)])
+            .expect("idempotency inventory"),
+    )
+}
+
+fn certify_clean_close(path: &Path) {
+    let store = RedbStore::open(path).expect("open database to certify");
+    let digest_key = DigestKeyId::new(1).expect("digest key ID");
+    let inputs = StartupValidationInputs::new(
+        Timestamp::new(1_700_000_000, 0).expect("startup timestamp"),
+        ReadableCapabilityDigestInventory::new(vec![ReadableDigestKey::v1(digest_key)])
+            .expect("capability inventory"),
+        ReadableIdempotencyDigestInventory::new(vec![ReadableDigestKey::v1(digest_key)])
+            .expect("idempotency inventory"),
+    );
+    let mut session = store
+        .begin_structural_evidence(inputs)
+        .expect("begin complete validation");
+    let database_id = session.database_id();
+    let session_id = session.open_session_id();
+    let limit = EvidencePageLimit::new(64).expect("page limit");
+    let mut structural = StructuralEvidenceCursor::start(database_id, session_id);
+    let structural_end = loop {
+        match session
+            .read_structural_evidence(structural, limit)
+            .expect("structural evidence")
+        {
+            StructuralEvidencePage::Page { findings, next, .. } => {
+                assert!(findings.is_empty());
+                structural = next;
+            }
+            StructuralEvidencePage::ExactEnd(end) => break end,
+        }
+    };
+    let (catalog, historical_end) = validate_catalog_history(&mut session)
+        .expect("catalog history")
+        .into_parts();
+    assert!(matches!(catalog, CatalogHistoryOutcome::Ready(_)));
+    let StructuralOpenOutcome::Clean(opened) = session
+        .finish(structural_end, historical_end)
+        .expect("finish startup")
+    else {
+        panic!("current format must not require migration");
+    };
+    let (_, _, _, dormant) = opened.into_parts();
+    let ports = dormant
+        .into_operational_after_catalog_validation()
+        .expect("activate for final clean close");
+    ports
+        .write_clean_close_lifecycle()
+        .expect("write clean lifecycle");
+}
+
+fn raw_meta(path: &Path, key: &str) -> Option<Vec<u8>> {
+    let database = redb::ReadOnlyDatabase::open(path).expect("open raw read-only database");
+    let read = database.begin_read().expect("begin raw read");
+    let table = read
+        .open_table(TableDefinition::<&str, &[u8]>::new("meta"))
+        .expect("open meta");
+    table
+        .get(key)
+        .expect("read meta")
+        .map(|value| value.value().to_vec())
+}
+
+fn clean_mode_selected(path: &Path) -> bool {
+    let key = DigestKeyId::new(1).expect("digest key ID");
+    let inputs = StartupValidationInputs::new(
+        Timestamp::new(1_700_000_000, 0).expect("startup timestamp"),
+        ReadableCapabilityDigestInventory::new(vec![ReadableDigestKey::v1(key)])
+            .expect("capability inventory"),
+        ReadableIdempotencyDigestInventory::new(vec![ReadableDigestKey::v1(key)])
+            .expect("idempotency inventory"),
+    );
+    let session = RedbStore::open(path)
+        .expect("open compatibility database")
+        .begin_structural_evidence(inputs)
+        .expect("begin compatibility evidence");
+    session.clean_close_fast_path()
+}
+
+// req: STO-023, REC-004, END-004
+#[test]
+fn maintenance_and_copy_transitions_have_exact_clean_certificate_behavior() {
+    let root = TestRoot::new("clean-certificate-compatibility");
+    let source = root.join("source.redb");
+    let copy = root.join("copy.redb");
+    let backup_root = root.join("backups");
+    initialize(&source);
+    certify_clean_close(&source);
+    let clean = raw_meta(&source, "clean_close_certificate/v1").expect("clean lifecycle");
+
+    let (mut maintenance, _) =
+        RedbMaintenanceStorage::open(&source, &backup_root).expect("maintenance storage");
+    let (_, backup_identity) = create_completed_named_backup(&mut maintenance, 0x61);
+    assert_eq!(
+        raw_meta(
+            &backup_root.join("before-upgrade/database.redb"),
+            "clean_close_certificate/v1"
+        ),
+        Some(clean.clone()),
+        "immutable backup creation preserves the matching certificate bytes"
+    );
+
+    fs::copy(&source, &copy).expect("copy closed database");
+    fs::copy(
+        riffdb_storage_redb::durable_format_marker_path(&source),
+        riffdb_storage_redb::durable_format_marker_path(&copy),
+    )
+    .expect("copy exact format marker");
+    assert!(
+        !clean_mode_selected(&copy),
+        "a bare database-file copy lacks the complete journal/engine lifecycle unit and must fall back"
+    );
+
+    riffdb_storage_redb::stamp_history_incarnation(&copy, 2)
+        .expect("rotate copied history incarnation");
+    assert!(
+        !clean_mode_selected(&copy),
+        "history-incarnation rotation must invalidate the copied certificate"
+    );
+
+    let mut restore = receipt(0x62, OfflineMaintenanceOperationKind::RestoreBackup);
+    advance_offline(&mut restore);
+    maintenance
+        .create_or_read_receipt(&restore)
+        .expect("create restore receipt");
+    let staged = maintenance
+        .stage_restore(
+            restore.operation_id(),
+            restore.backup_name(),
+            validation_inputs(),
+        )
+        .expect("stage immutable backup through normal restore selector");
+    assert_eq!(
+        raw_meta(staged.staged_database_file(), "clean_close_certificate/v1"),
+        Some(clean),
+        "normal restore staging preserves the immutable artifact's certificate bytes"
+    );
+    assert!(
+        clean_mode_selected(staged.staged_database_file()),
+        "the complete immutable backup selected through normal restore staging preserves matching clean eligibility"
+    );
+    let staged_database_id = complete_structural_validation(staged.staged_database_file());
+    let mut sealed = staged
+        .seal_after_validation(staged_database_id)
+        .expect("seal validated restore");
+    sealed
+        .apply_published_history_incarnation(2)
+        .expect("stamp replacement incarnation");
+    restore
+        .record_staged_database_id(staged_database_id)
+        .expect("record staged database identity");
+    restore
+        .record_manifest_identity(backup_identity)
+        .expect("record backup manifest identity");
+    restore
+        .record_published_incarnation(2)
+        .expect("record replacement incarnation");
+    maintenance
+        .replace_receipt(&restore)
+        .expect("persist restore evidence");
+    assert!(matches!(
+        maintenance
+            .publish_sealed_restore(
+                sealed,
+                OfflineRestoreOverwritePolicyV1::ExplicitlyAllowDestructive,
+            )
+            .expect("publish maintenance replacement"),
+        riffdb_storage_api::OfflineRestoreResultV1::Restored { .. }
+    ));
+    drop(maintenance);
+    assert!(
+        !clean_mode_selected(&source),
+        "restore/maintenance replacement must invalidate the preserved certificate into complete validation"
+    );
 }
 
 #[test]
@@ -728,6 +907,65 @@ fn maintenance_ownership_is_exclusive_across_processes_for_the_storage_lifetime(
         .expect("ownership lock must release when storage is dropped");
 }
 
+// req: STO-023, REC-004, END-004
+#[test]
+fn clean_certified_restore_stage_scrubs_population_corruption_before_handoff() {
+    let root = TestRoot::new("clean-certified-corrupt-stage");
+    let database = root.join("database.redb");
+    let backup_root = root.join("backups");
+    initialize(&database);
+    certify_clean_close(&database);
+
+    // A clean binding intentionally does not cover population rows. Preserve
+    // the certificate while installing a malformed entity so a fast startup
+    // alone would miss this corruption before staged authorization.
+    let raw = redb::Database::open(&database).expect("open raw database");
+    let write = raw.begin_write().expect("begin population corruption");
+    {
+        let mut entities = write
+            .open_table(TableDefinition::<&[u8], &[u8]>::new("entities"))
+            .expect("open entities");
+        entities
+            .insert(&[0x81][..], &[0xff][..])
+            .expect("install malformed population row");
+    }
+    write.commit().expect("commit population corruption");
+    drop(raw);
+
+    let (mut maintenance, _) =
+        RedbMaintenanceStorage::open(&database, &backup_root).expect("maintenance storage");
+    create_completed_named_backup(&mut maintenance, 0x63);
+    let mut restore = receipt(0x64, OfflineMaintenanceOperationKind::RestoreBackup);
+    advance_offline(&mut restore);
+    maintenance
+        .create_or_read_receipt(&restore)
+        .expect("create restore receipt");
+    let target_before = Sha256::digest(fs::read(&database).expect("read target before stage"));
+
+    assert_eq!(
+        maintenance
+            .stage_restore(
+                restore.operation_id(),
+                restore.backup_name(),
+                validation_inputs(),
+            )
+            .expect_err("complete stage scrub must reject malformed population")
+            .kind(),
+        StorageErrorKind::CorruptData
+    );
+    assert_eq!(
+        Sha256::digest(fs::read(&database).expect("read unchanged target")),
+        target_before,
+        "failed staged scrub must not publish or mutate the configured target"
+    );
+    assert!(
+        !backup_root
+            .join(format!(".maintenance/staged/{}", restore.operation_id()))
+            .exists(),
+        "a failed pre-authorization scrub must delete its private stage"
+    );
+}
+
 #[test]
 fn recovery_stage_failures_and_retries_leave_no_pre_receipt_inventory() {
     const REPEATED_ATTEMPTS: usize = 32;
@@ -748,7 +986,11 @@ fn recovery_stage_failures_and_retries_leave_no_pre_receipt_inventory() {
     let stage_directory = backup_root.join(format!(".maintenance/staged/{recovery_operation_id}"));
     assert_eq!(
         storage
-            .stage_recovery_restore_candidate(recovery_operation_id, &backup_name())
+            .stage_recovery_restore_candidate(
+                recovery_operation_id,
+                &backup_name(),
+                validation_inputs(),
+            )
             .expect_err("materialization failpoint must return a closed error")
             .kind(),
         StorageErrorKind::Unavailable
@@ -759,7 +1001,11 @@ fn recovery_stage_failures_and_retries_leave_no_pre_receipt_inventory() {
     );
     for _ in 0..REPEATED_ATTEMPTS {
         let candidate = storage
-            .stage_recovery_restore_candidate(recovery_operation_id, &backup_name())
+            .stage_recovery_restore_candidate(
+                recovery_operation_id,
+                &backup_name(),
+                validation_inputs(),
+            )
             .expect("materialize recovery candidate");
         assert!(stage_directory.is_dir());
         drop(candidate);
@@ -788,7 +1034,11 @@ fn recovery_stage_failures_and_retries_leave_no_pre_receipt_inventory() {
     .expect("corrupt immutable source");
     assert_eq!(
         storage
-            .stage_recovery_restore_candidate(recovery_operation_id, &backup_name())
+            .stage_recovery_restore_candidate(
+                recovery_operation_id,
+                &backup_name(),
+                validation_inputs(),
+            )
             .expect_err("source validation failure must not leave a stage")
             .kind(),
         StorageErrorKind::CorruptData
@@ -827,7 +1077,11 @@ fn zero_byte_target_needs_no_confirmation_but_every_nonempty_target_does() {
 
     let seal = |storage: &RedbMaintenanceStorage| {
         let stage = storage
-            .stage_restore(restore.operation_id(), restore.backup_name())
+            .stage_restore(
+                restore.operation_id(),
+                restore.backup_name(),
+                validation_inputs(),
+            )
             .expect("materialize stage");
         let staged_database_id = complete_structural_validation(stage.staged_database_file());
         stage
@@ -1484,7 +1738,11 @@ fn corrupt_target_restore_completes_and_fence_does_not_decrease() {
         .create_or_read_receipt(&restore)
         .expect("create restore receipt");
     let staged = storage
-        .stage_restore(restore.operation_id(), restore.backup_name())
+        .stage_restore(
+            restore.operation_id(),
+            restore.backup_name(),
+            validation_inputs(),
+        )
         .expect("stage");
     let staged_database_id = complete_structural_validation(staged.staged_database_file());
     let mut sealed = staged
@@ -1557,7 +1815,11 @@ fn restore_stamps_staged_before_publish_so_checksum_reconcile_holds() {
         .create_or_read_receipt(&restore)
         .expect("create restore receipt");
     let staged = storage
-        .stage_restore(restore.operation_id(), restore.backup_name())
+        .stage_restore(
+            restore.operation_id(),
+            restore.backup_name(),
+            validation_inputs(),
+        )
         .expect("stage");
     let staged_database_id = complete_structural_validation(staged.staged_database_file());
     let mut sealed = staged
@@ -1669,7 +1931,11 @@ fn resume_after_between_receipt_and_stamp_converges_to_receipt_value() {
         .create_or_read_receipt(&restore)
         .expect("create restore receipt");
     let staged = storage
-        .stage_restore(restore.operation_id(), restore.backup_name())
+        .stage_restore(
+            restore.operation_id(),
+            restore.backup_name(),
+            validation_inputs(),
+        )
         .expect("stage");
     let staged_database_id = complete_structural_validation(staged.staged_database_file());
     let mut sealed = staged
@@ -1798,14 +2064,18 @@ fn named_backup_staged_validation_and_exact_file_publication_reuse_wp070() {
     let recovery_operation_id = operation_id(0x43);
     assert_eq!(
         storage
-            .stage_restore(recovery_operation_id, &backup_name())
+            .stage_restore(recovery_operation_id, &backup_name(), validation_inputs(),)
             .expect_err("normal staging requires an offline receipt")
             .kind(),
         StorageErrorKind::Unavailable
     );
     let target_before_recovery = Sha256::digest(fs::read(&database).expect("read target"));
     let recovery_candidate = storage
-        .stage_recovery_restore_candidate(recovery_operation_id, &backup_name())
+        .stage_recovery_restore_candidate(
+            recovery_operation_id,
+            &backup_name(),
+            validation_inputs(),
+        )
         .expect("materialize recovery candidate");
     assert!(recovery_candidate.staged_database_file().is_file());
     assert!(
@@ -1861,7 +2131,11 @@ fn named_backup_staged_validation_and_exact_file_publication_reuse_wp070() {
     assert!(!target_temp.exists());
 
     let staged = storage
-        .stage_restore(restore.operation_id(), restore.backup_name())
+        .stage_restore(
+            restore.operation_id(),
+            restore.backup_name(),
+            validation_inputs(),
+        )
         .expect("materialize stage");
     assert_eq!(staged.manifest(), &manifest);
     assert_eq!(staged.manifest_identity(), &manifest_identity);
@@ -1880,7 +2154,11 @@ fn named_backup_staged_validation_and_exact_file_publication_reuse_wp070() {
         StorageErrorKind::InvariantViolation
     );
     let staged = storage
-        .stage_restore(restore.operation_id(), restore.backup_name())
+        .stage_restore(
+            restore.operation_id(),
+            restore.backup_name(),
+            validation_inputs(),
+        )
         .expect("rematerialize after refused publication");
     let staged_database_id = complete_structural_validation(staged.staged_database_file());
     let sealed = staged

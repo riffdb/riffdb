@@ -520,9 +520,15 @@ fn sync_parent(path: &Path) -> Result<(), RedbDurableFormatUpgradeError> {
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    use riffdb_catalog::{CatalogHistoryOutcome, validate_catalog_history};
     use riffdb_storage_api::{
         BackupBuildMetadataV1, DatabaseIdentityProbePort, DatabaseInitializationPort,
+        EvidencePageLimit, ReadableCapabilityDigestInventory, ReadableDigestKey,
+        ReadableIdempotencyDigestInventory, StartupValidationInputs, StructuralEvidenceCursor,
+        StructuralEvidenceOpen, StructuralEvidencePage, StructuralEvidenceSession,
+        StructuralOpenOutcome,
     };
+    use riffdb_types::{DigestKeyId, Timestamp};
 
     use super::*;
 
@@ -569,6 +575,48 @@ mod tests {
         .expect("build metadata")
     }
 
+    fn certify_clean_close(store: RedbStore) {
+        let key = ReadableDigestKey::v1(DigestKeyId::new(1).expect("digest key"));
+        let inputs = StartupValidationInputs::new(
+            Timestamp::new(1_700_000_000, 0).expect("timestamp"),
+            ReadableCapabilityDigestInventory::new(vec![key]).expect("capability inventory"),
+            ReadableIdempotencyDigestInventory::new(vec![key]).expect("idempotency inventory"),
+        );
+        let mut session = store
+            .begin_structural_evidence(inputs)
+            .expect("begin format compatibility validation");
+        let mut cursor =
+            StructuralEvidenceCursor::start(session.database_id(), session.open_session_id());
+        let structural_end = loop {
+            match session
+                .read_structural_evidence(cursor, EvidencePageLimit::new(64).expect("page limit"))
+                .expect("read structural evidence")
+            {
+                StructuralEvidencePage::Page { findings, next, .. } => {
+                    assert!(findings.is_empty(), "fixture must validate: {findings:?}");
+                    cursor = next;
+                }
+                StructuralEvidencePage::ExactEnd(end) => break end,
+            }
+        };
+        let (catalog, historical_end) = validate_catalog_history(&mut session)
+            .expect("validate catalog history")
+            .into_parts();
+        assert!(matches!(catalog, CatalogHistoryOutcome::Ready(_)));
+        let StructuralOpenOutcome::Clean(opened) = session
+            .finish(structural_end, historical_end)
+            .expect("finish format compatibility validation")
+        else {
+            panic!("empty format fixture cannot require index migration");
+        };
+        let (_, _, _, dormant) = opened.into_parts();
+        dormant
+            .into_operational_after_catalog_validation()
+            .expect("activate format compatibility fixture")
+            .write_clean_close_lifecycle()
+            .expect("certify format compatibility fixture");
+    }
+
     fn predecessor_fixture(root: &TestRoot, seed: u8) -> (PathBuf, PathBuf) {
         let database = root.join("application.redb");
         let backup = root.join("verified-backup");
@@ -580,7 +628,7 @@ mod tests {
             store.probe_database_identity().expect("probe identity"),
             riffdb_storage_api::DatabaseIdentityProbe::Existing(database_id(seed))
         );
-        drop(store);
+        certify_clean_close(store);
         fs::remove_file(crate::durable_format_marker_path(&database))
             .expect("remove marker to model predecessor release");
         crate::backup::create_pre_format_compatibility_backup_fixture(&database, &backup, &build())
@@ -588,8 +636,9 @@ mod tests {
         (database, backup)
     }
 
+    // req: STO-023, REC-004
     #[test]
-    fn exact_predecessor_upgrade_is_backup_bound_receipted_and_reopenable() {
+    fn compatible_marker_upgrade_is_backup_bound_receipted_and_preserves_clean_mode() {
         let root = TestRoot::new("complete");
         let (database, backup) = predecessor_fixture(&root, 0x91);
 
@@ -615,6 +664,18 @@ mod tests {
                 .probe_database_identity()
                 .expect("probe upgraded database"),
             riffdb_storage_api::DatabaseIdentityProbe::Existing(database_id(0x91))
+        );
+        let key = ReadableDigestKey::v1(DigestKeyId::new(1).expect("digest key"));
+        let session = reopened
+            .begin_structural_evidence(StartupValidationInputs::new(
+                Timestamp::new(1_700_000_001, 0).expect("timestamp"),
+                ReadableCapabilityDigestInventory::new(vec![key]).expect("capability inventory"),
+                ReadableIdempotencyDigestInventory::new(vec![key]).expect("idempotency inventory"),
+            ))
+            .expect("select post-format-migration startup mode");
+        assert!(
+            session.clean_close_fast_path(),
+            "a marker-only compatible upgrade preserves the unchanged internal lifecycle unit"
         );
     }
 

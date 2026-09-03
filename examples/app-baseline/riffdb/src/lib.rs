@@ -48,10 +48,11 @@ pub use projected::{
 };
 pub use server::{
     DATABASE_ROOT_ENV, DEFAULT_DATABASE_ROOT, MIN_FREE_BYTES, MIN_FREE_BYTES_FULL,
-    MIN_FREE_BYTES_SMOKE, RiffDbCompletionLaneEvidence, RiffDbQueryExecuteEvidence,
+    MIN_FREE_BYTES_SMOKE, RiffDbCleanCloseStageEvidence, RiffDbCompletionLaneEvidence,
+    RiffDbDirtyRecoveryEvidence, RiffDbProcessMemoryEvidence, RiffDbQueryExecuteEvidence,
     RiffDbQueryExecuteWindowEvidence, RiffDbReadStageEvidence, RiffDbServerSession,
-    RiffDbShutdownEvidence, RiffDbWriterEvidence, ServerStartOptions, min_free_bytes_for_full,
-    resolve_bench_root, resolve_database_root, sweep_stale_session_dirs,
+    RiffDbShutdownEvidence, RiffDbStartupEvidence, RiffDbWriterEvidence, ServerStartOptions,
+    min_free_bytes_for_full, resolve_bench_root, resolve_database_root, sweep_stale_session_dirs,
 };
 
 /// Default in-flight seed commands (bounded client concurrency, not a bulk RPC).

@@ -98,6 +98,7 @@ impl SharedRedbOperationalPorts {
         health: Option<Arc<dyn ServiceHealthHooks>>,
     ) -> Result<Self, StorageError> {
         let bounded_clean_startup = ports.clean_close_fast_startup();
+        crate::startup_census::record_mode(bounded_clean_startup);
         let shared = ports.shared_ports();
         let catalog = if bounded_clean_startup {
             CurrentCatalogView::rebuild_from_clean_startup(&shared)?

@@ -302,7 +302,13 @@ fn sha256_dependency_is_confined_to_reviewed_integrity_boundaries() {
         if path.file_name().is_some_and(|name| {
             matches!(
                 name.to_str(),
-                Some("backup.rs" | "format_upgrade.rs" | "journal.rs" | "migration_stage.rs")
+                Some(
+                    "backup.rs"
+                        | "benchmark_support.rs"
+                        | "format_upgrade.rs"
+                        | "journal.rs"
+                        | "migration_stage.rs"
+                )
             )
         }) || path.extension().is_none_or(|extension| extension != "rs")
         {
@@ -354,7 +360,7 @@ fn only_startup_imports_the_catalog_driver_and_storage_never_imports_ir() {
             continue;
         }
         assert!(
-            !read(&path).contains("riffdb_catalog"),
+            !production_source(&path).contains("riffdb_catalog"),
             "only startup migration may import catalog: {}",
             path.display()
         );

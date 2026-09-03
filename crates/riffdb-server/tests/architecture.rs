@@ -274,6 +274,12 @@ fn production_transport_features_are_exact_default_disabled_and_confined() {
     );
 }
 
+// req: PERF-014
+#[test]
+fn external_kill_fixture_feature_propagates_to_the_storage_backend() {
+    assert!(MANIFEST.contains("\"riffdb-storage-redb/test-fixtures\","));
+}
+
 #[test]
 fn client_and_public_message_helpers_remain_test_only() {
     let development = development_dependencies();

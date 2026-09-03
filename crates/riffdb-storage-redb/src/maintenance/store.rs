@@ -13,7 +13,8 @@ use riffdb_storage_api::{
     OfflineMaintenanceReceiptPersistencePort, OfflineMaintenanceReceiptPhaseV1,
     OfflineMaintenanceReceiptReplaceResultV1, OfflineMaintenanceReceiptReplaceResultV2,
     OfflineMaintenanceReceiptV1, OfflineMaintenanceReceiptV2, OfflineRestoreOverwritePolicyV1,
-    OfflineRestoreResultV1, StorageError, StorageErrorKind, StorageValueError,
+    OfflineRestoreResultV1, StartupValidationInputs, StorageError, StorageErrorKind,
+    StorageValueError,
 };
 use riffdb_types::{
     BackupNameV1, ContractMigrationOperationId, OfflineMaintenanceOperationId,
@@ -1007,11 +1008,16 @@ impl RedbMaintenanceStorage {
         self.verify_path_ownership()
     }
 
-    /// Materializes one named immutable backup into operation-private staging.
+    /// Materializes and completely validates one operation-private restore.
+    ///
+    /// The supplied digest inventory is server configuration, never a public
+    /// selector. This method ignores copied clean eligibility and returns only
+    /// after both complete evidence streams reach exact end.
     pub fn stage_restore(
         &self,
         operation_id: OfflineMaintenanceOperationId,
         backup_name: &BackupNameV1,
+        validation_inputs: StartupValidationInputs,
     ) -> Result<RedbStagedRestore, StorageError> {
         self.verify_path_ownership()?;
         self.require_offline_operation(
@@ -1025,6 +1031,7 @@ impl RedbMaintenanceStorage {
             self.named_backup_directory(backup_name),
             self.staged_directory.join(operation_id.to_string()),
             self.database_file.clone(),
+            validation_inputs,
             self.test_controller.clone(),
         )?;
         self.verify_path_ownership()?;
@@ -1036,13 +1043,14 @@ impl RedbMaintenanceStorage {
     /// This narrow path is used only when the configured target cannot provide
     /// trustworthy ordinary readiness or current authorization. It creates no
     /// receipt, changes no configured database file, grants no authority, and
-    /// returns only the same move-only stage that still requires complete
-    /// startup validation, fresh staged authorization, sealing, and a durable
-    /// source-less restore receipt before publication.
+    /// returns only the same move-only, completely validated stage that still
+    /// requires fresh staged authorization, sealing, and a durable source-less
+    /// restore receipt before publication.
     pub fn stage_recovery_restore_candidate(
         &self,
         operation_id: OfflineMaintenanceOperationId,
         backup_name: &BackupNameV1,
+        validation_inputs: StartupValidationInputs,
     ) -> Result<RedbStagedRestore, StorageError> {
         self.verify_path_ownership()?;
         let stage = RedbStagedRestore::materialize(
@@ -1051,6 +1059,7 @@ impl RedbMaintenanceStorage {
             self.named_backup_directory(backup_name),
             self.staged_directory.join(operation_id.to_string()),
             self.database_file.clone(),
+            validation_inputs,
             self.test_controller.clone(),
         )?;
         self.verify_path_ownership()?;

@@ -13,7 +13,10 @@ ignored = ["rustls-webpki"]
 
 [features]
 default = []
-test-fixtures = ["riffdb-commit/test-fixtures"]
+test-fixtures = [
+    "riffdb-commit/test-fixtures",
+    "riffdb-storage-redb/test-fixtures",
+]
 
 [dependencies]
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio"] }

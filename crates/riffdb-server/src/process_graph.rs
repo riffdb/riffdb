@@ -169,6 +169,23 @@ impl ProductionGraphShutdownStageEvidence {
     }
 }
 
+fn begin_shutdown_stage(index: usize) -> Instant {
+    eprintln!(
+        "riffdb-shutdown-progress-v1\tstage={}\tphase=begin\telapsed_us=0",
+        PRODUCTION_SHUTDOWN_STAGE_LABELS_V1[index]
+    );
+    Instant::now()
+}
+
+fn finish_shutdown_stage(index: usize, started: Instant) -> u64 {
+    let elapsed_us = elapsed_microseconds(started);
+    eprintln!(
+        "riffdb-shutdown-progress-v1\tstage={}\tphase=complete\telapsed_us={elapsed_us}",
+        PRODUCTION_SHUTDOWN_STAGE_LABELS_V1[index]
+    );
+    elapsed_us
+}
+
 /// Fixed P1 coordinator admission bound, independent of the 256-command
 /// transaction ceiling and the reserved shutdown slot.
 ///
@@ -1054,19 +1071,19 @@ impl RunningProductionGraph {
         let graph_started = Instant::now();
         let mut elapsed_us = [0_u64; PRODUCTION_SHUTDOWN_STAGE_COUNT];
         self.lifecycle.stop();
-        let started = Instant::now();
+        let started = begin_shutdown_stage(0);
         self.spawner.wait_for_idle().await;
-        elapsed_us[0] = elapsed_microseconds(started);
+        elapsed_us[0] = finish_shutdown_stage(0, started);
 
-        let started = Instant::now();
+        let started = begin_shutdown_stage(1);
         let exact = self
             .exact_worker
             .take()
             .expect("a running graph retains one exact text worker")
             .shutdown()
             .err();
-        elapsed_us[1] = elapsed_microseconds(started);
-        let started = Instant::now();
+        elapsed_us[1] = finish_shutdown_stage(1, started);
+        let started = begin_shutdown_stage(2);
         let columnar = self
             .columnar_worker
             .take()
@@ -1077,35 +1094,35 @@ impl RunningProductionGraph {
             .copied()
             .unwrap_or(ColumnarWorkerShutdownObservation::Failed);
         let columnar = columnar.err();
-        elapsed_us[2] = elapsed_microseconds(started);
-        let started = Instant::now();
+        elapsed_us[2] = finish_shutdown_stage(2, started);
+        let started = begin_shutdown_stage(3);
         let projection = self
             .projection_worker
             .take()
             .expect("a running graph retains one projection worker")
             .shutdown()
             .err();
-        elapsed_us[3] = elapsed_microseconds(started);
-        let started = Instant::now();
+        elapsed_us[3] = finish_shutdown_stage(3, started);
+        let started = begin_shutdown_stage(4);
         let notification_failed = self.notifications.shutdown().is_err();
-        elapsed_us[4] = elapsed_microseconds(started);
-        let started = Instant::now();
+        elapsed_us[4] = finish_shutdown_stage(4, started);
+        let started = begin_shutdown_stage(5);
         let coordinator = self
             .coordinator
             .take()
             .expect("a running graph retains one coordinator")
             .shutdown()
             .err();
-        elapsed_us[5] = elapsed_microseconds(started);
-        let started = Instant::now();
+        elapsed_us[5] = finish_shutdown_stage(5, started);
+        let started = begin_shutdown_stage(6);
         let blocking = self
             .blocking
             .take()
             .expect("a running graph retains one blocking driver")
             .shutdown_and_drain()
             .err();
-        elapsed_us[6] = elapsed_microseconds(started);
-        let started = Instant::now();
+        elapsed_us[6] = finish_shutdown_stage(6, started);
+        let started = begin_shutdown_stage(7);
         let checkpoint_close = if shutdown_prerequisites_succeeded([
             exact.is_some(),
             columnar.is_some(),
@@ -1118,13 +1135,28 @@ impl RunningProductionGraph {
         } else {
             riffdb_storage_redb::GracefulCheckpointCloseReceiptV1::barrier_failed([0; 3])
         };
-        elapsed_us[7] = elapsed_microseconds(started);
+        elapsed_us[7] = finish_shutdown_stage(7, started);
         let evidence = ProductionGraphShutdownStageEvidence {
             graph_elapsed_us: elapsed_microseconds(graph_started),
             elapsed_us,
             columnar_shutdown,
             checkpoint_close,
         };
+        // Make redb's allocator-state persistence and file trim observable as
+        // a named release stage after the combined checkpoint/CLEAN commit.
+        let release_stage = crate::shutdown_census::ShutdownReleaseStage::GraphStorageRelease;
+        eprintln!(
+            "riffdb-shutdown-progress-v1\tstage={}\tphase=begin\telapsed_us=0",
+            release_stage.as_str()
+        );
+        let release_started = Instant::now();
+        drop(self);
+        let release_elapsed_us = elapsed_microseconds(release_started);
+        crate::shutdown_census::record(release_stage, release_started);
+        eprintln!(
+            "riffdb-shutdown-progress-v1\tstage={}\tphase=complete\telapsed_us={release_elapsed_us}",
+            release_stage.as_str()
+        );
         shutdown_result_with_checkpoint_close(
             exact,
             columnar,
@@ -1468,13 +1500,14 @@ fn shutdown_result(
     coordinator: Option<CoordinatorShutdownError>,
     blocking: Option<BlockingPortDriverShutdownError>,
 ) -> Result<(), ProductionGraphShutdownError> {
-    if exact.is_none()
-        && columnar.is_none()
-        && projection.is_none()
-        && !notification_failed
-        && coordinator.is_none()
-        && blocking.is_none()
-    {
+    if shutdown_stages_succeeded(
+        &exact,
+        &columnar,
+        &projection,
+        notification_failed,
+        &coordinator,
+        &blocking,
+    ) {
         Ok(())
     } else {
         Err(ProductionGraphShutdownError {
@@ -1518,6 +1551,22 @@ fn shutdown_result_with_checkpoint_close(
         .err()
         .unwrap_or_else(ProductionGraphShutdownError::checkpoint_close_only)
         .with_checkpoint_close_receipt(checkpoint_close))
+}
+
+fn shutdown_stages_succeeded(
+    exact: &Option<ExactTextWorkerShutdownError>,
+    columnar: &Option<ColumnarWorkerShutdownError>,
+    projection: &Option<ProjectionWorkerShutdownError>,
+    notification_failed: bool,
+    coordinator: &Option<CoordinatorShutdownError>,
+    blocking: &Option<BlockingPortDriverShutdownError>,
+) -> bool {
+    exact.is_none()
+        && columnar.is_none()
+        && projection.is_none()
+        && !notification_failed
+        && coordinator.is_none()
+        && blocking.is_none()
 }
 
 /// Closed construction failure with cleanup evidence for any started owner.
@@ -1715,9 +1764,10 @@ impl Error for ProductionGraphShutdownError {}
 #[cfg(test)]
 mod tests {
     use super::{
-        P1_COORDINATOR_WORKLOAD_CAPACITY, ProductionGraphShutdownStageEvidence,
-        checkpoint_close_succeeded, shutdown_prerequisites_succeeded,
-        shutdown_result_with_checkpoint_close,
+        P1_COORDINATOR_WORKLOAD_CAPACITY, PRODUCTION_SHUTDOWN_STAGE_LABELS_V1,
+        ProductionGraphShutdownStageEvidence, checkpoint_close_succeeded,
+        shutdown_prerequisites_succeeded, shutdown_result_with_checkpoint_close,
+        shutdown_stages_succeeded,
     };
     use crate::columnar_worker::ColumnarWorkerShutdownObservation;
     use riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS;
@@ -1868,6 +1918,47 @@ mod tests {
         assert!(bounded_close < aggregation);
     }
 
+    // req: STO-023, REC-004
+    #[test]
+    fn shutdown_failure_is_checked_before_combined_checkpoint_close() {
+        let source = production_source();
+        let ordinary = source
+            .split_once("pub(crate) async fn shutdown_with_stage_evidence")
+            .expect("ordinary shutdown")
+            .1
+            .split_once("pub(crate) async fn shutdown_for_maintenance")
+            .expect("ordinary shutdown boundary")
+            .0;
+        let maintenance = source
+            .split_once("pub(crate) async fn shutdown_for_maintenance_with_stage_evidence")
+            .expect("maintenance shutdown")
+            .1
+            .split_once("/// Cloned least-authority inputs")
+            .expect("maintenance shutdown boundary")
+            .0;
+
+        for body in [ordinary, maintenance] {
+            let successful_drain = body
+                .find("shutdown_prerequisites_succeeded([")
+                .expect("all shutdown failures checked");
+            let checkpoint = body
+                .find("self.storage.complete_graceful_close()")
+                .expect("conditional combined checkpoint/CLEAN write");
+            assert!(successful_drain < checkpoint);
+        }
+    }
+
+    // req: STO-023, REC-004
+    #[test]
+    fn shutdown_stage_success_requires_every_captured_stage_to_succeed() {
+        assert!(shutdown_stages_succeeded(
+            &None, &None, &None, false, &None, &None
+        ));
+        assert!(!shutdown_stages_succeeded(
+            &None, &None, &None, true, &None, &None
+        ));
+    }
+
     #[test]
     fn shutdown_has_no_checkpoint_writer_or_proof_builder() {
         let source = production_source();
@@ -1911,6 +2002,7 @@ mod tests {
         assert_eq!(error.checkpoint_close_receipt(), Some(receipt));
     }
 
+    // req: PERF-019
     #[test]
     fn shutdown_stage_receipt_has_exact_v1_shape() {
         let evidence = ProductionGraphShutdownStageEvidence {
@@ -1953,5 +2045,42 @@ mod tests {
                 .with_columnar_shutdown_observation(observation);
             assert_eq!(error.columnar_shutdown_observation, Some(observation));
         }
+    }
+
+    // req: PERF-019
+    #[test]
+    fn shutdown_progress_labels_are_closed_and_redaction_safe() {
+        assert_eq!(PRODUCTION_SHUTDOWN_STAGE_LABELS_V1.len(), 8);
+        assert_eq!(PRODUCTION_SHUTDOWN_STAGE_LABELS_V1[0], "service_jobs_idle");
+        assert_eq!(
+            PRODUCTION_SHUTDOWN_STAGE_LABELS_V1[7],
+            "validated_prefix_checkpoint_write"
+        );
+        assert!(PRODUCTION_SHUTDOWN_STAGE_LABELS_V1.iter().all(|label| {
+            label
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+        }));
+    }
+
+    // req: PERF-019
+    #[test]
+    fn ordinary_shutdown_names_storage_release_after_final_certificate() {
+        let source = production_source();
+        let body = source
+            .split_once("pub(crate) async fn shutdown_with_stage_evidence")
+            .expect("ordinary shutdown")
+            .1
+            .split_once("pub(crate) async fn shutdown_for_maintenance")
+            .expect("ordinary shutdown boundary")
+            .0;
+        let checkpoint = body
+            .find("self.storage.complete_graceful_close()")
+            .expect("final combined checkpoint and certificate");
+        let release_boundary = body
+            .find("ShutdownReleaseStage::GraphStorageRelease")
+            .expect("named graph release");
+        let release = body.find("drop(self)").expect("explicit graph release");
+        assert!(checkpoint < release_boundary && release_boundary < release);
     }
 }
