@@ -223,6 +223,7 @@ record with no front matter.
 | [0186](0186-complete-authoritative-changelog-v3.md) | Complete Authoritative Changelog V3 | Accepted | guarantee |
 | [0187](0187-bounded-columnar-shutdown-abandonment.md) | Bounded Columnar Shutdown Abandonment | Accepted | guarantee |
 | [0188](0188-bounded-graceful-checkpoint-retention.md) | Bounded Graceful Checkpoint Retention | Accepted | guarantee |
+| [0189](0189-compiler-sealed-operational-index-descriptor-reconstruction.md) | Compiler-Sealed Operational Index Descriptor Reconstruction | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
