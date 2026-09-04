@@ -63,7 +63,7 @@ const COMPLETION_LANE_PREFIX: &str = "riffdb-completion-lane-v1\t";
 const QUERY_EXECUTE_WINDOWS_PREFIX: &str = "riffdb-query-execute-windows-v1\t";
 const SHUTDOWN_STAGES_PREFIX: &str = "riffdb-shutdown-stages-v1\t";
 const STARTUP_STAGES_PREFIX: &str = "riffdb-startup-stages-v1\t";
-const CLEAN_CLOSE_STAGES_PREFIX: &str = "riffdb-clean-close-stages-v1\t";
+const GRACEFUL_CHECKPOINT_CLOSE_PREFIX: &str = "riffdb-graceful-checkpoint-close-v1\t";
 const EXTERNAL_KILL_BARRIER_ENV: &str = "RIFFDB_TEST_REDB_EXTERNAL_KILL_BARRIER";
 const EXTERNAL_KILL_BARRIER_BODY: &[u8] = b"armed\n";
 const STARTUP_STAGE_NAMES: [&str; 11] = [
@@ -326,10 +326,12 @@ pub struct RiffDbStartupEvidence {
 /// Fixed-cardinality graceful close observation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RiffDbCleanCloseStageEvidence {
-    /// Checkpoint write duration.
-    pub checkpoint_us: u64,
-    /// Closed `present`, `skipped`, or `failed` checkpoint result.
-    pub checkpoint_status: String,
+    /// Final journal-to-redb barrier duration.
+    pub journal_barrier_us: u64,
+    /// Bounded retained-checkpoint classification duration.
+    pub checkpoint_classification_us: u64,
+    /// Closed retained-checkpoint disposition.
+    pub checkpoint_disposition: String,
     /// Final clean-certificate commit duration.
     pub final_certificate_commit_us: u64,
     /// Final clean-certificate commit completed successfully.
@@ -2820,32 +2822,60 @@ fn parse_startup_evidence(stderr: &str) -> io::Result<RiffDbStartupEvidence> {
 fn parse_clean_close_evidence(stderr: &str) -> io::Result<RiffDbCleanCloseStageEvidence> {
     let lines = stderr
         .lines()
-        .filter(|line| line.starts_with(CLEAN_CLOSE_STAGES_PREFIX))
+        .filter(|line| line.starts_with(GRACEFUL_CHECKPOINT_CLOSE_PREFIX))
         .collect::<Vec<_>>();
     if lines.len() != 1 {
         return Err(io::Error::other("clean-close census count mismatch"));
     }
-    let fields = parse_key_values(lines[0], CLEAN_CLOSE_STAGES_PREFIX)?;
-    let duration = |name| {
-        fields
-            .get(name)
-            .ok_or_else(|| io::Error::other("clean-close duration missing"))?
-            .parse::<u64>()
-            .map_err(|_| io::Error::other("clean-close duration invalid"))
+    let encoded = lines[0]
+        .trim_end()
+        .strip_prefix(GRACEFUL_CHECKPOINT_CLOSE_PREFIX)
+        .ok_or_else(|| io::Error::other("clean-close prefix mismatch"))?;
+    let parts = encoded.split('\t').collect::<Vec<_>>();
+    if parts.len() != 3 {
+        return Err(io::Error::other("clean-close field count mismatch"));
+    }
+    let disposition = match parts[0] {
+        value @ ("barrier_failed"
+        | "retained_exact_current"
+        | "left_absent"
+        | "left_stale"
+        | "left_ineligible"
+        | "classification_failed") => value,
+        _ => return Err(io::Error::other("clean-close disposition invalid")),
     };
-    let succeeded = |name| match fields.get(name).map(String::as_str) {
-        Some("succeeded") => Ok(true),
-        Some("failed") => Ok(false),
-        _ => Err(io::Error::other("clean-close status invalid")),
+    let lifecycle = match parts[1] {
+        value @ ("clean_committed" | "clean_not_attempted" | "clean_failed" | "clean_unknown") => {
+            value
+        }
+        _ => return Err(io::Error::other("clean-close lifecycle invalid")),
+    };
+    let successful_disposition = matches!(
+        disposition,
+        "retained_exact_current" | "left_absent" | "left_stale" | "left_ineligible"
+    );
+    if successful_disposition == (lifecycle == "clean_not_attempted") {
+        return Err(io::Error::other("clean-close disposition/lifecycle mismatch"));
+    }
+    let durations = parts[2]
+        .split(',')
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| io::Error::other("clean-close duration invalid"))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    let [journal_barrier_us, checkpoint_classification_us, final_certificate_commit_us] =
+        durations.as_slice()
+    else {
+        return Err(io::Error::other("clean-close duration count mismatch"));
     };
     Ok(RiffDbCleanCloseStageEvidence {
-        checkpoint_us: duration("checkpoint_us")?,
-        checkpoint_status: match fields.get("checkpoint_status").map(String::as_str) {
-            Some(status @ ("present" | "skipped" | "failed")) => status.to_owned(),
-            _ => return Err(io::Error::other("clean-close checkpoint status invalid")),
-        },
-        final_certificate_commit_us: duration("final_certificate_commit_us")?,
-        final_certificate_commit_succeeded: succeeded("final_certificate_commit_status")?,
+        journal_barrier_us: *journal_barrier_us,
+        checkpoint_classification_us: *checkpoint_classification_us,
+        checkpoint_disposition: disposition.to_owned(),
+        final_certificate_commit_us: *final_certificate_commit_us,
+        final_certificate_commit_succeeded: lifecycle == "clean_committed",
     })
 }
 
@@ -3000,12 +3030,13 @@ mod tests {
         assert!(take_stopped_authority_baseline(&mut stopped_baseline).is_err());
 
         let close = parse_clean_close_evidence(
-            "riffdb-clean-close-stages-v1\tcheckpoint_us=12\tcheckpoint_status=skipped\tfinal_certificate_commit_us=13\tfinal_certificate_commit_status=succeeded\n",
+            "riffdb-graceful-checkpoint-close-v1\tleft_stale\tclean_committed\t11,12,13\n",
         )
         .expect("parse clean-close observation");
-        assert_eq!(close.checkpoint_us, 12);
+        assert_eq!(close.journal_barrier_us, 11);
+        assert_eq!(close.checkpoint_classification_us, 12);
         assert_eq!(close.final_certificate_commit_us, 13);
-        assert_eq!(close.checkpoint_status, "skipped");
+        assert_eq!(close.checkpoint_disposition, "left_stale");
         assert!(close.final_certificate_commit_succeeded);
         assert!(
             parse_startup_evidence("riffdb-startup-stages-v1\tmode=caller_supplied\n").is_err()
