@@ -65,6 +65,7 @@ const SHUTDOWN_STAGES_PREFIX: &str = "riffdb-shutdown-stages-v1\t";
 const STARTUP_STAGES_PREFIX: &str = "riffdb-startup-stages-v1\t";
 const GRACEFUL_CHECKPOINT_CLOSE_PREFIX: &str = "riffdb-graceful-checkpoint-close-v1\t";
 const PROCESS_MEMORY_BASELINE_LINE: &str = "riffdb-process-memory-baseline-v1";
+const ENGINE_REPAIR_DIAGNOSTIC_LINE: &str = "[riffdbd-diag] trigger=startup clean_close_fast=false decline=engine_repaired_at_open (full validation pass; cost scales with retained history)";
 const EXTERNAL_KILL_BARRIER_ENV: &str = "RIFFDB_TEST_REDB_EXTERNAL_KILL_BARRIER";
 const EXTERNAL_KILL_BARRIER_BODY: &[u8] = b"armed\n";
 const STARTUP_STAGE_NAMES: [&str; 11] = [
@@ -1738,6 +1739,7 @@ enum ReaperCommand {
 struct ServerProcess {
     child_id: u32,
     initial_process_memory: RiffDbProcessMemoryEvidence,
+    startup_evidence: Mutex<StartupEvidenceState>,
     stdin: Option<std::process::ChildStdin>,
     ready: Receiver<io::Result<String>>,
     shutdown_evidence: Receiver<io::Result<RiffDbShutdownEvidence>>,
@@ -1750,6 +1752,11 @@ struct ServerProcess {
     exit_observed: bool,
     /// Cached exit once observed; subsequent [`poll_exit`] returns this.
     cached_exit: Option<Result<ExitStatus, String>>,
+}
+
+struct StartupEvidenceState {
+    receiver: Receiver<io::Result<RiffDbStartupEvidence>>,
+    cached: Option<RiffDbStartupEvidence>,
 }
 
 fn copy_regular_files(source: &Path, destination: &Path) -> io::Result<()> {
@@ -1889,8 +1896,15 @@ impl ServerProcess {
         let stderr_ring = Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_RING_LINES)));
         let stderr_ring_worker = Arc::clone(&stderr_ring);
         let (baseline_sender, baseline_receiver) = mpsc::sync_channel(1);
+        let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
         let stderr = thread::spawn(move || {
-            drain_server_stderr(stderr, stderr_ring_worker, child_id, baseline_sender)
+            drain_server_stderr(
+                stderr,
+                stderr_ring_worker,
+                child_id,
+                baseline_sender,
+                startup_sender,
+            )
         });
         let baseline = if std::env::var_os("RIFFDB_APP_BASELINE_WP705_LIFECYCLE_EVIDENCE")
             .is_some_and(|value| value == "1")
@@ -1926,6 +1940,10 @@ impl ServerProcess {
         Ok(Self {
             child_id,
             initial_process_memory,
+            startup_evidence: Mutex::new(StartupEvidenceState {
+                receiver: startup_receiver,
+                cached: None,
+            }),
             stdin: Some(stdin),
             ready,
             shutdown_evidence,
@@ -1971,7 +1989,26 @@ impl ServerProcess {
     }
 
     fn startup_evidence(&self) -> io::Result<RiffDbStartupEvidence> {
-        parse_startup_evidence(&self.stderr_tail())
+        let mut state = self
+            .startup_evidence
+            .lock()
+            .map_err(|_| io::Error::other("startup evidence state unavailable"))?;
+        if let Some(cached) = &state.cached {
+            return Ok(cached.clone());
+        }
+        let evidence = state
+            .receiver
+            .recv_timeout(process_start_timeout())
+            .map_err(|error| match error {
+                RecvTimeoutError::Timeout => {
+                    io::Error::new(io::ErrorKind::TimedOut, "startup evidence timed out")
+                }
+                RecvTimeoutError::Disconnected => {
+                    io::Error::other("startup evidence disconnected")
+                }
+            })??;
+        state.cached = Some(evidence.clone());
+        Ok(evidence)
     }
 
     fn process_memory(&self) -> io::Result<RiffDbProcessMemoryEvidence> {
@@ -2753,11 +2790,14 @@ fn drain_server_stderr(
     ring: Arc<Mutex<VecDeque<String>>>,
     child_id: u32,
     baseline_sender: SyncSender<io::Result<RiffDbProcessMemoryEvidence>>,
+    startup_sender: SyncSender<io::Result<RiffDbStartupEvidence>>,
 ) -> usize {
     let mut reader = BufReader::new(stream);
     let mut total = 0_usize;
     let mut ring_bytes = 0_usize;
     let mut baseline_sender = Some(baseline_sender);
+    let mut startup_sender = Some(startup_sender);
+    let mut engine_repair_observed = false;
     let mut line = String::new();
     loop {
         line.clear();
@@ -2773,6 +2813,18 @@ fn drain_server_stderr(
             && let Some(sender) = baseline_sender.take()
         {
             let _ = sender.send(read_process_memory(child_id));
+        }
+        if line.trim_end() == ENGINE_REPAIR_DIAGNOSTIC_LINE {
+            engine_repair_observed = true;
+        }
+        if line.starts_with(STARTUP_STAGES_PREFIX)
+            && let Some(sender) = startup_sender.take()
+        {
+            let parsed = parse_startup_evidence(&line).map(|mut evidence| {
+                evidence.engine_repair_observed = engine_repair_observed;
+                evidence
+            });
+            let _ = sender.send(parsed);
         }
         if let Ok(mut guard) = ring.lock() {
             push_stderr_line(&mut guard, &mut ring_bytes, line.clone());
@@ -2848,9 +2900,9 @@ fn parse_startup_evidence(stderr: &str) -> io::Result<RiffDbStartupEvidence> {
         stages_us,
         transient_index_rebuilds,
         population_table_walk,
-        engine_repair_observed: stderr.lines().any(|line| {
-            line == "[riffdbd-diag] trigger=startup clean_close_fast=false decline=engine_repaired_at_open (full validation pass; cost scales with retained history)"
-        }),
+        engine_repair_observed: stderr
+            .lines()
+            .any(|line| line == ENGINE_REPAIR_DIAGNOSTIC_LINE),
     })
 }
 
@@ -3040,6 +3092,30 @@ mod tests {
         }
         assert!(ring.len() < STDERR_RING_LINES);
         assert!(ring_bytes <= STDERR_RING_BYTES + huge.len());
+    }
+
+    // req: PERF-014, PERF-019
+    #[test]
+    fn stderr_collector_publishes_startup_after_the_complete_line() {
+        let startup_line = "riffdb-startup-stages-v1\tmode=complete_validation\tstore_open=1\tevidence_begin=2\tstructural_drain=3\tcatalog_history=4\tevidence_finish=5\tport_activation=6\tcurrent_views=7\tconsumer_recovery=8\toutbox_recovery=9\tgraph_rest=10\tprocess_to_ready=11\ttransient_index_rebuilds=1\tpopulation_table_walk=observed\n";
+        let input = format!("{ENGINE_REPAIR_DIAGNOSTIC_LINE}\n{startup_line}");
+        let ring = Arc::new(Mutex::new(VecDeque::new()));
+        let (baseline_sender, _baseline_receiver) = mpsc::sync_channel(1);
+        let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
+        let read = drain_server_stderr(
+            std::io::Cursor::new(input.as_bytes()),
+            ring,
+            std::process::id(),
+            baseline_sender,
+            startup_sender,
+        );
+        assert_eq!(read, input.len());
+        let startup = startup_receiver
+            .recv()
+            .expect("collector publishes one startup result")
+            .expect("startup evidence parses");
+        assert_eq!(startup.stages_us, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+        assert!(startup.engine_repair_observed);
     }
 
     // req: REC-001, REC-002, REC-004, PERF-019
