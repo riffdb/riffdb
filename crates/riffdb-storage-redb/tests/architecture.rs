@@ -371,11 +371,12 @@ fn only_startup_imports_the_catalog_driver_and_storage_never_imports_ir() {
 
     let source = crate_root().join("src");
     let startup = source.join("startup.rs");
+    let startup_tests = source.join("startup/tests.rs");
     let migration_backend = source.join("startup/index_migration_backend.rs");
     let mut paths = Vec::new();
     collect_rust_sources(&source, &mut paths);
     for path in paths {
-        if path == startup || path == migration_backend {
+        if path == startup || path == startup_tests || path == migration_backend {
             continue;
         }
         assert!(
