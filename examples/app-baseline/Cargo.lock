@@ -1192,21 +1192,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "riffdb-application"
-version = "0.1.0"
-dependencies = [
- "riffdb-contract-ir",
- "riffdb-types",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "riffdb-auth"
 version = "0.1.0"
 dependencies = [
  "base64",
  "getrandom 0.3.4",
+ "riffdb-observability",
  "riffdb-storage-api",
  "riffdb-types",
  "zeroize",
@@ -1225,6 +1216,7 @@ version = "0.1.0"
 dependencies = [
  "riffdb-contract-ir",
  "riffdb-invariant",
+ "riffdb-observability",
  "riffdb-query-module",
  "riffdb-storage-api",
  "riffdb-types",
@@ -1236,8 +1228,6 @@ version = "0.1.0"
 dependencies = [
  "futures-util",
  "getrandom 0.3.4",
- "riffdb-api-grpc",
- "riffdb-application",
  "riffdb-config",
  "riffdb-errors",
  "riffdb-proto",
@@ -1295,24 +1285,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "riffdb-policy"
+name = "riffdb-observability"
 version = "0.1.0"
 dependencies = [
- "riffdb-auth",
- "riffdb-contract-ir",
+ "riffdb-errors",
  "riffdb-types",
-]
-
-[[package]]
-name = "riffdb-projection"
-version = "0.1.0"
-dependencies = [
- "riffdb-catalog",
- "riffdb-contract-ir",
- "riffdb-invariant",
- "riffdb-query-ir",
- "riffdb-storage-api",
- "riffdb-types",
+ "tracing",
 ]
 
 [[package]]
@@ -1322,8 +1300,12 @@ dependencies = [
  "base64",
  "crc",
  "prost",
+ "prost-types",
  "riffdb-errors",
  "riffdb-types",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
 ]
 
 [[package]]
@@ -1333,19 +1315,6 @@ dependencies = [
  "riffdb-contract-ir",
  "riffdb-query-ir",
  "riffdb-reactive-syntax",
- "riffdb-riffql-syntax",
- "riffdb-types",
-]
-
-[[package]]
-name = "riffdb-query-executor"
-version = "0.1.0"
-dependencies = [
- "riffdb-auth",
- "riffdb-contract-ir",
- "riffdb-policy",
- "riffdb-projection",
- "riffdb-query-ir",
  "riffdb-riffql-syntax",
  "riffdb-types",
 ]
@@ -1404,11 +1373,7 @@ dependencies = [
  "cap-std",
  "redb",
  "riffdb-catalog",
- "riffdb-policy",
- "riffdb-projection",
  "riffdb-proto",
- "riffdb-query-executor",
- "riffdb-query-ir",
  "riffdb-storage-api",
  "riffdb-types",
  "sha2",
@@ -1430,6 +1395,8 @@ version = "0.1.0"
 dependencies = [
  "caseless",
  "hmac",
+ "serde",
+ "serde_json",
  "sha2",
  "unicode-normalization",
  "unicode-segmentation",
