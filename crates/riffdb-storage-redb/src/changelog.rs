@@ -427,6 +427,7 @@ pub fn start_changelog_emitter(
     let worker_emitter = Arc::clone(&emitter);
     let worker = std::thread::Builder::new()
         .name("riffdb-changelog".to_owned())
+        .stack_size(crate::PRODUCTION_THREAD_STACK_BYTES)
         .spawn(move || run_emitter(&worker_emitter, &receiver, consumer.as_ref()))
         .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
     Ok(RedbChangelogEmitterHandle {
@@ -467,6 +468,7 @@ pub fn start_changelog_emitter_v2(
     let worker_emitter = Arc::clone(&emitter);
     let worker = std::thread::Builder::new()
         .name("riffdb-changelog-v2".to_owned())
+        .stack_size(crate::PRODUCTION_THREAD_STACK_BYTES)
         .spawn(move || {
             run_emitter_v2(&worker_emitter, &receiver, consumer.as_ref(), receipt);
         })

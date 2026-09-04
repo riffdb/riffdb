@@ -1454,6 +1454,7 @@ impl RunningExactTextWorker {
         let worker_stop = Arc::clone(&stop);
         let task = thread::Builder::new()
             .name("riffdb-exact-text".to_owned())
+            .stack_size(crate::PRODUCTION_THREAD_STACK_BYTES)
             .spawn(move || {
                 while !stop_requested(&worker_stop) {
                     let _ = refresh_registered_slots(&runtime);

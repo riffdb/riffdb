@@ -188,6 +188,7 @@ impl RunningColumnarWorker {
         let retained_runtime = Arc::clone(&runtime);
         let task = thread::Builder::new()
             .name("riffdb-columnar".to_owned())
+            .stack_size(crate::PRODUCTION_THREAD_STACK_BYTES)
             .spawn(move || {
                 let mut state = ColumnarWorkerState::new(runtime.as_ref());
                 let mut activation_epoch = worker_activation_wake.current();

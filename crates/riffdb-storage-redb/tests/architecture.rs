@@ -298,7 +298,10 @@ fn redb_startup_produces_evidence_only_and_drives_no_migration() {
 #[test]
 fn production_redb_cache_is_explicitly_bounded_on_every_authoritative_open() {
     let source = read(crate_root().join("src/store.rs"));
-    assert!(source.contains("const REDB_CACHE_SIZE_BYTES: usize = 32 * 1024 * 1024;"));
+    assert!(
+        source.contains("const REDB_CACHE_SIZE_BYTES: usize = 4 * 1024 * 1024;"),
+        "the fixed page cache must leave room for the complete production graph inside PERF-019"
+    );
     assert_eq!(
         source.matches("let mut builder = Builder::new();").count(),
         1,
@@ -311,6 +314,26 @@ fn production_redb_cache_is_explicitly_bounded_on_every_authoritative_open() {
         1,
         "the authoritative redb builder must apply exactly one fixed cache budget"
     );
+}
+
+// req: PERF-019
+#[test]
+fn dedicated_storage_threads_apply_the_fixed_stack_budget() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let library = std::fs::read_to_string(root.join("lib.rs")).expect("read storage library");
+    assert!(library.contains("PRODUCTION_THREAD_STACK_BYTES: usize = 384 * 1024;"));
+    for owner in [
+        "command_segment_preparation.rs",
+        "changelog.rs",
+        "journal.rs",
+        "store.rs",
+    ] {
+        let source = std::fs::read_to_string(root.join(owner)).expect("read thread owner");
+        assert!(
+            source.contains(".stack_size(crate::PRODUCTION_THREAD_STACK_BYTES)"),
+            "{owner} must apply the fixed production stack budget"
+        );
+    }
 }
 
 #[test]

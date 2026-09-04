@@ -172,6 +172,7 @@ impl RunningProjectionWorker {
         let worker_status = status.clone();
         let task = thread::Builder::new()
             .name("riffdb-projection".to_owned())
+            .stack_size(crate::PRODUCTION_THREAD_STACK_BYTES)
             .spawn(move || {
                 let mut state = ProjectionWorkerState::default();
                 loop {

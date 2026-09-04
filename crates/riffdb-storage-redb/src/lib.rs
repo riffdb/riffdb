@@ -11,6 +11,9 @@
 
 //! Durable redb implementation of RiffDB's semantic storage ports.
 
+/// Fixed stack reservation for dedicated production storage threads.
+pub(crate) const PRODUCTION_THREAD_STACK_BYTES: usize = 384 * 1024;
+
 pub use riffdb_storage_api::{
     DurableFormatAction, DurableFormatIdentity, current_durable_format_manifest,
 };
