@@ -22530,7 +22530,8 @@ work_packages:
     crates/riffdb-mcp-stdio/**, crates/riffdb-driver-host/**, crates/riffdb-testkit/**,
     crates/riffdb-testkit-server/**, crates/riffdb-sim/**, crates/riffdb-storage-memory/**,
     crates/riffdb-storage-redb/**, crates/riffdb-query-module/**, tests/**, fixtures/**,
-    scripts/**, docs/**, .config/nextest.toml, release/version-topology-v1.json]
+    scripts/**, docs/**, .config/nextest.toml, release/version-topology-v1.json,
+    examples/agent-alpha/domains/rust/Cargo.lock]
   deliverables:
   - Generated Tonic service clients and DATABASE_METADATA_KEY moved into riffdb-proto behind a
     client-only feature; riffdb-api-grpc consumes the same generated messages for the server side;
