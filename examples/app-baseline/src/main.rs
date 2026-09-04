@@ -1170,8 +1170,8 @@ fn production_dirty_lifecycle_evidence(
         .checked_mul(1_000)
         .and_then(|value| value.checked_div(clean_process_to_ready_us))
         .ok_or_else(|| "startup ratio could not be represented".to_owned())?;
-    let measured_clean_close = measured_close.clean_close.clone();
-    let measured_close_memory = shutdown_memory_window_json(&measured_close, true)?;
+    let measured_clean_close = dirty.clean_comparison_close.clean_close.clone();
+    let measured_close_memory = shutdown_memory_window_json(&dirty.clean_comparison_close, true)?;
     let dirty_final_close_memory = shutdown_memory_window_json(&dirty_shutdown, false)?;
     Ok((
         measured_close,
@@ -4542,6 +4542,16 @@ mod tests {
                 .count(),
             1
         );
+        let dirty_lifecycle = source
+            .split_once("fn production_dirty_lifecycle_evidence(")
+            .expect("dirty lifecycle evidence owner")
+            .1
+            .split_once("fn production_clean_lifecycle_evidence(")
+            .expect("dirty lifecycle evidence end")
+            .0;
+        assert!(dirty_lifecycle
+            .contains("shutdown_memory_window_json(&dirty.clean_comparison_close, true)"));
+        assert!(!dirty_lifecycle.contains("shutdown_memory_window_json(&measured_close, true)"));
         assert!(!wp705_lifecycle_selector(None, false, Scale::production()).expect("off"));
         assert!(
             wp705_lifecycle_selector(Some("1".into()), true, Scale::production())

@@ -356,6 +356,8 @@ pub struct RiffDbProcessMemoryEvidence {
 /// Runner-owned forced-kill and dirty-reopen observation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RiffDbDirtyRecoveryEvidence {
+    /// No-work clean comparison generation closed immediately after readiness.
+    pub clean_comparison_close: RiffDbShutdownEvidence,
     /// Dirty startup observation after killing only the tracked child.
     pub startup: RiffDbStartupEvidence,
     /// Harness wall time from kill request through recovered readiness.
@@ -735,7 +737,8 @@ impl RiffDbServerSession {
         // snapshot authoritative and ensures it is captured only while no
         // writer owns the file. The armed generation below is the next and only
         // writer before recovery.
-        self.process
+        let clean_comparison_close = self
+            .process
             .shutdown_cleanly()
             .map_err(|error| RiffDbError::Server {
                 detail: error.to_string(),
@@ -1021,6 +1024,7 @@ impl RiffDbServerSession {
         Ok((
             self,
             RiffDbDirtyRecoveryEvidence {
+                clean_comparison_close,
                 startup,
                 recovery_elapsed_us: u64::try_from(started.elapsed().as_micros())
                     .unwrap_or(u64::MAX),
