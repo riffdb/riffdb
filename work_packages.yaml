@@ -23570,6 +23570,17 @@ work_packages:
     replays to the uninterrupted oracle; the closed diagnostic exposes no population or control
     value; ordinary no-stop semantics remain exact; and every paired five-percent lifecycle,
     latency, throughput, CPU, and memory gate passes.
+  closure:
+    status: complete
+    completed_at: '2026-09-04'
+    evidence: docs/performance/wp-773-columnar-shutdown.md
+    decision: The worker-only stop is observed at the next existing 64-record page boundary and
+      abandons only unpublished derived work. Deterministic and process-loss tests prove exact
+      safe-prefix visibility, no stop-caused publication or durable-frontier advance, and replay
+      convergence from the prior durable frontier. A valid counterbalanced three-repetition
+      19,220-command production-profile run passed every five-percent lifecycle, request,
+      throughput, CPU, RSS/PSS, and wall-time gate; columnar shutdown was 0.239x control and total
+      lifecycle shutdown was 0.825x control.
   standing_design_tests:
     interface_safety: The server worker owns the stop token; the riffdb-columnar shutdown entry and
       result are workspace-internal and not re-exported through an application, SDK, transport, or
