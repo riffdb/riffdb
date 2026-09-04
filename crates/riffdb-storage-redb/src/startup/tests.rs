@@ -1284,7 +1284,7 @@ fn migration_compare_mismatch_rolls_back_the_complete_catalog_batch() {
     else {
         panic!("V1 storage history must retain a migration port");
     };
-    port.substitute_before_apply = Some(substituted);
+    port.substitute_before_apply(substituted);
     let error = CatalogIndexMigrationDriver::new(context, port)
         .expect("bind same-session migration driver")
         .run()
