@@ -1006,8 +1006,9 @@ fn clean_close_evidence_json(
 ) -> serde_json::Value {
     evidence.map_or(serde_json::Value::Null, |evidence| {
         json!({
-            "checkpoint_us": evidence.checkpoint_us,
-            "checkpoint_status": evidence.checkpoint_status,
+            "journal_barrier_us": evidence.journal_barrier_us,
+            "checkpoint_classification_us": evidence.checkpoint_classification_us,
+            "checkpoint_disposition": evidence.checkpoint_disposition,
             "final_certificate_commit_us": evidence.final_certificate_commit_us,
             "final_certificate_commit_succeeded": evidence.final_certificate_commit_succeeded,
         })
