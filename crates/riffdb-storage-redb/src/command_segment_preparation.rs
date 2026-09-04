@@ -61,6 +61,7 @@ impl CommandSegmentPreparationPool {
             let receiver = Arc::clone(&receiver);
             let worker = thread::Builder::new()
                 .name(format!("riffdb-segment-prepare-{index}"))
+                .stack_size(crate::PRODUCTION_THREAD_STACK_BYTES)
                 .spawn(move || {
                     loop {
                         let task = {

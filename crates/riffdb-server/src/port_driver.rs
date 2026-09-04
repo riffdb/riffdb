@@ -31,7 +31,7 @@ use crate::runtime_support::RuntimeRoutingState;
 /// This is deliberately independent of the 256-item commit-notification bound:
 /// notifications and admitted blocking operations have different ownership and
 /// backpressure semantics.
-pub(crate) const P1_BLOCKING_PORT_WORKER_THREADS: usize = 32;
+pub(crate) const P1_BLOCKING_PORT_WORKER_THREADS: usize = 8;
 
 /// Maximum permits, queued jobs, and executing P1 blocking port operations.
 ///
@@ -399,6 +399,7 @@ impl BlockingPortDriver {
             let worker_inner = Arc::clone(&inner);
             let handle = thread::Builder::new()
                 .name(format!("riffdb-port-{worker_index}"))
+                .stack_size(crate::PRODUCTION_THREAD_STACK_BYTES)
                 .spawn(move || {
                     if started.recv().is_ok() {
                         run_worker(&worker_inner);
@@ -699,6 +700,16 @@ mod tests {
 
     use super::*;
     use crate::runtime_support::RuntimeStopReason;
+
+    // req: PERF-019
+    #[test]
+    fn production_blocking_workers_fit_the_clean_lifecycle_budget() {
+        assert!(
+            P1_BLOCKING_PORT_WORKER_THREADS <= 8,
+            "the fixed blocking worker set must not consume the clean lifecycle heap budget"
+        );
+        assert_eq!(crate::PRODUCTION_THREAD_STACK_BYTES, 384 * 1024);
+    }
 
     struct ThreadWake(thread::Thread);
 

@@ -11,6 +11,11 @@
 
 //! Production composition and process providers for `riffdbd`.
 
+/// Fixed stack reservation for dedicated production threads started after the
+/// process-memory baseline. Tokio runtime workers use their separately owned
+/// builder configuration.
+pub(crate) const PRODUCTION_THREAD_STACK_BYTES: usize = 384 * 1024;
+
 mod application_export_adapter;
 mod application_reimport_adapter;
 mod auth_adapters;

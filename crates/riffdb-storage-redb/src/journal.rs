@@ -1883,6 +1883,7 @@ impl JournalLane {
         let worker_flushes = Arc::clone(&durable_flushes);
         let worker = thread::Builder::new()
             .name("riffdb-journal".to_string())
+            .stack_size(crate::PRODUCTION_THREAD_STACK_BYTES)
             .spawn(move || journal_worker(file, receiver, &worker_flushes, state))
             .map_err(|_| JournalIoError::Io)?;
         Ok(Self {

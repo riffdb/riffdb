@@ -3441,6 +3441,7 @@ fn spawn_shutdown_reader() -> Result<(ShutdownReceiver, JoinHandle<()>), DaemonE
     let (sender, receiver) = oneshot::channel();
     let handle = thread::Builder::new()
         .name("riffdb-shutdown-input".to_owned())
+        .stack_size(crate::PRODUCTION_THREAD_STACK_BYTES)
         .spawn(move || {
             let stdin = io::stdin();
             let result = read_shutdown_command(&mut stdin.lock());

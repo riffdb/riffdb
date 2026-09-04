@@ -107,6 +107,27 @@ fn graceful_checkpoint_receipt_has_only_one_closed_output_path() {
     }
 }
 
+// req: PERF-019
+#[test]
+fn dedicated_production_threads_apply_the_fixed_stack_budget() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let library = std::fs::read_to_string(root.join("lib.rs")).expect("read server library");
+    assert!(library.contains("PRODUCTION_THREAD_STACK_BYTES: usize = 384 * 1024;"));
+    for owner in [
+        "daemon.rs",
+        "port_driver.rs",
+        "exact_text_adapter.rs",
+        "projection_worker.rs",
+        "columnar_worker.rs",
+    ] {
+        let source = std::fs::read_to_string(root.join(owner)).expect("read thread owner");
+        assert!(
+            source.contains(".stack_size(crate::PRODUCTION_THREAD_STACK_BYTES)"),
+            "{owner} must apply the fixed production stack budget"
+        );
+    }
+}
+
 #[test]
 fn lifecycle_wrappers_cover_the_symbolic_catalog_surface() {
     for source in [LIFECYCLE_SERVICE, LIFECYCLE] {

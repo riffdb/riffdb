@@ -85,7 +85,7 @@ use crate::transient::{
 /// population-sized process-owned memory while retaining one bounded cache for
 /// reads and writes. This is an internal performance bound; it does not alter
 /// the durable format or transaction semantics.
-const REDB_CACHE_SIZE_BYTES: usize = 32 * 1024 * 1024;
+const REDB_CACHE_SIZE_BYTES: usize = 4 * 1024 * 1024;
 
 #[cfg(feature = "test-fixtures")]
 struct ExternalKillBarrierFileBackend {
@@ -7026,6 +7026,7 @@ impl SharedRedb {
         let worker_batch = batch.clone();
         if std::thread::Builder::new()
             .name("riffdb-checkpoint".to_string())
+            .stack_size(crate::PRODUCTION_THREAD_STACK_BYTES)
             .spawn(move || {
                 let result = worker_shared.materialize_checkpoint_batch(&worker_batch);
                 let _ = sender.send(result);
