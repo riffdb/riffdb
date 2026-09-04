@@ -1,5 +1,7 @@
 //! Complete candidate intersection, mixed root ordering, and cursor coverage.
 
+// req: DEP-001
+
 use std::collections::BTreeMap;
 
 use riffdb_contract_compiler::compile_contract_source;
@@ -239,6 +241,8 @@ fn partition_set_candidates_remain_scoped_before_global_root_order() {
         },
     )
     .expect("second scoped candidate page");
+    capture_snapshot("partition-set-page-1", &first);
+    capture_snapshot("partition-set-page-2", &second);
     assert_eq!(page_scopes(&second), vec!["org-b"]);
     assert!(second.continuation().is_none());
 }
@@ -407,6 +411,7 @@ fn provider_candidates_share_one_exact_head_before_root_order_and_page() {
         &[batch],
     )
     .expect("provider page");
+    capture_snapshot("provider-page", &page);
     assert_eq!(page_ids(&page), vec![2]);
     assert_eq!(
         view.root_reads, 2,
@@ -429,18 +434,20 @@ fn provider_candidates_share_one_exact_head_before_root_order_and_page() {
         riffdb_projection::ResultSetEpochRequirementV1::Exact(stale),
     )
     .expect("stale proof");
-    assert_eq!(
-        execute_provider_page_in_snapshot(
-            &program,
-            &parameters,
-            None,
-            &mut CandidateView::default(),
-            policy_shape,
-            &stale_proof,
-            &[],
-        ),
-        Err(QueryExecutionError::BackendUnavailable)
+    let stale_result = execute_provider_page_in_snapshot(
+        &program,
+        &parameters,
+        None,
+        &mut CandidateView::default(),
+        policy_shape,
+        &stale_proof,
+        &[],
     );
+    capture_error(
+        "provider-unavailable-refusal",
+        stale_result.as_ref().expect_err("provider refusal"),
+    );
+    assert_eq!(stale_result, Err(QueryExecutionError::BackendUnavailable));
 }
 
 #[test]
@@ -577,4 +584,30 @@ fn text(value: &str) -> CanonicalValue {
 fn bytes(value: &[u8]) -> CanonicalValue {
     assert!(value.len() <= MAX_BYTES_VALUE_BYTES);
     CanonicalValue::bytes(value.to_vec()).expect("bytes")
+}
+
+fn capture_snapshot(name: &str, snapshot: &riffdb_query_executor::QueryOwnedSnapshot) {
+    let Some(root) = std::env::var_os("RIFFDB_WP754_FIXTURE_OUTPUT") else {
+        return;
+    };
+    let path = std::path::PathBuf::from(root).join(format!("{name}.bin"));
+    std::fs::create_dir_all(path.parent().expect("fixture parent")).expect("fixture directory");
+    std::fs::write(
+        path,
+        riffdb_query_executor::encode_query_snapshot_fixture_v1(name, snapshot),
+    )
+    .expect("write fixture");
+}
+
+fn capture_error(name: &str, error: &QueryExecutionError) {
+    let Some(root) = std::env::var_os("RIFFDB_WP754_FIXTURE_OUTPUT") else {
+        return;
+    };
+    let path = std::path::PathBuf::from(root).join(format!("{name}.bin"));
+    std::fs::create_dir_all(path.parent().expect("fixture parent")).expect("fixture directory");
+    std::fs::write(
+        path,
+        riffdb_query_executor::encode_query_error_fixture_v1(name, error),
+    )
+    .expect("write fixture");
 }

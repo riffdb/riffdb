@@ -49,7 +49,38 @@ use crate::keys::{
     encode_partition_index_key, encode_vector_evidence_index_key,
     encode_vector_evidence_index_prefix, encode_vector_observation_key,
 };
-use crate::store::{RedbOperationalPorts, RedbReadAccess};
+use crate::store::{
+    CommitTailProfileV1, CompositeReadAcquireProfileV1, RedbOperationalPorts, RedbReadAccess,
+};
+
+impl RedbOperationalPorts {
+    pub(crate) fn begin_composite_read_profiled(
+        &self,
+    ) -> Result<(RedbReadAccess, CompositeReadAcquireProfileV1), StorageError> {
+        self.shared.begin_composite_operational_read_profiled()
+    }
+}
+
+impl RedbReadAccess {
+    pub(crate) fn composite_overlay_diagnostic(&self) -> (u64, u64) {
+        match self {
+            Self::Composite(view) => (
+                u64::try_from(view.overlay().transition_count()).unwrap_or(u64::MAX),
+                u64::try_from(view.overlay().charged_bytes()).unwrap_or(u64::MAX),
+            ),
+            Self::Current(_) | Self::Durable(_) => (0, 0),
+        }
+    }
+
+    pub(crate) fn application_frontier_profiled(
+        &self,
+    ) -> Result<(Option<riffdb_types::CommitSequence>, CommitTailProfileV1), StorageError> {
+        Ok((
+            crate::reads::read_snapshot_head(self)?,
+            CommitTailProfileV1::default(),
+        ))
+    }
+}
 
 const PUBLICATION_OUTER_LOCK: usize = 0;
 const PUBLICATION_VIEW_CAPTURE: usize = 1;
@@ -215,6 +246,10 @@ fn atomic_max(target: &AtomicU64, value: u64) {
     let _ = target.fetch_max(value, Ordering::Relaxed);
 }
 
+#[allow(
+    dead_code,
+    reason = "test-only legacy parity oracle retains its census"
+)]
 pub(crate) fn query_execute_census_v1() -> crate::QueryExecuteCensusV1 {
     let Some(census) = QUERY_EXECUTE_CENSUS.get() else {
         return crate::QueryExecuteCensusV1 {
@@ -1767,6 +1802,7 @@ mod tests {
     use riffdb_query_compiler::compile_query;
     use riffdb_query_executor::{
         QueryContinuation, QueryExecutionPort, QueryParameters, QueryResultValue,
+        StorageQueryExecutor,
     };
     use riffdb_query_ir::SymbolicCatalog;
     use riffdb_riffql_syntax::parse_query;
@@ -2178,6 +2214,7 @@ query ProjectMembersInRange(
         );
     }
 
+    // req: DEP-001
     #[test]
     fn point_query_frontier_does_not_decode_retained_command_history() {
         let bundle = compile_contract_source(CONTRACT).expect("contract");
@@ -2302,6 +2339,12 @@ query ProjectMembersInRange(
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         reset_query_table_open_counts();
         let snapshot = ports.execute_query(&program, &parameters).expect("query");
+        let executor = StorageQueryExecutor::new(&ports);
+        let inverted = executor
+            .execute_query(&program, &parameters)
+            .expect("executor-over-storage point query");
+        assert_eq!(inverted, snapshot);
+        capture_snapshot("redb-named-point-found", &inverted);
         assert_eq!(snapshot.outcome(), "Found");
         assert!(matches!(
             snapshot.fields().get("ticket"),
@@ -2318,8 +2361,32 @@ query ProjectMembersInRange(
             },
             "point query opens only commits (head) and entities; eager open would also open indexes/epochs"
         );
+        let absent_parameters = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+            ("ticket_id".to_owned(), CanonicalValue::Uuid([9; 16])),
+        ]))
+        .expect("absent parameters");
+        let absent = ports
+            .execute_query(&program, &absent_parameters)
+            .expect("declared NotFound outcome");
+        let inverted_absent = executor
+            .execute_query(&program, &absent_parameters)
+            .expect("inverted declared NotFound outcome");
+        assert_eq!(inverted_absent, absent);
+        capture_snapshot("redb-named-point-not-found", &inverted_absent);
+        let missing_parameters =
+            QueryParameters::checked(BTreeMap::new()).expect("empty parameters");
+        let missing = ports
+            .execute_query(&program, &missing_parameters)
+            .expect_err("missing parameter refusal");
+        let inverted_missing = executor
+            .execute_query(&program, &missing_parameters)
+            .expect_err("inverted missing parameter refusal");
+        assert_eq!(inverted_missing, missing);
+        capture_error("redb-missing-parameter-refusal", &inverted_missing);
     }
 
+    // req: DEP-001
     #[test]
     fn index_page_batches_entity_reads_inside_the_same_redb_transaction() {
         let bundle = compile_contract_source(CONTRACT).expect("contract");
@@ -2446,6 +2513,12 @@ query ProjectMembersInRange(
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         reset_query_table_open_counts();
         let snapshot = ports.execute_query(&program, &parameters).expect("query");
+        let executor = StorageQueryExecutor::new(&ports);
+        let inverted = executor
+            .execute_query(&program, &parameters)
+            .expect("executor-over-storage first page");
+        assert_eq!(inverted, snapshot);
+        capture_snapshot("redb-named-page-1", &inverted);
         let opens = query_table_open_counts();
         assert_eq!(
             opens,
@@ -2479,9 +2552,35 @@ query ProjectMembersInRange(
             snapshot.index_epochs().clone(),
         )
         .expect("cursor");
+        let mut stale_epochs = snapshot.index_epochs().clone();
+        for epoch in stale_epochs.values_mut() {
+            *epoch = epoch.saturating_add(1);
+        }
+        let stale = QueryContinuation::checked(
+            snapshot
+                .continuation_binding()
+                .expect("continuation binding")
+                .to_owned(),
+            snapshot.continuation().expect("continuation").to_vec(),
+            stale_epochs,
+        )
+        .expect("stale cursor");
+        let stale_error = ports
+            .execute_query_page(&program, &parameters, Some(&stale))
+            .expect_err("stale cursor refusal");
+        let inverted_stale = executor
+            .execute_query_page(&program, &parameters, Some(&stale))
+            .expect_err("inverted stale cursor refusal");
+        assert_eq!(inverted_stale, stale_error);
+        capture_error("redb-stale-cursor-refusal", &inverted_stale);
         let second = ports
             .execute_query_page(&program, &parameters, Some(&cursor))
             .expect("second page");
+        let inverted_second = executor
+            .execute_query_page(&program, &parameters, Some(&cursor))
+            .expect("inverted second page");
+        assert_eq!(inverted_second, second);
+        capture_snapshot("redb-named-page-2", &inverted_second);
         assert!(matches!(
             second.fields().get("members"),
             Some(QueryResultValue::Many(rows))
@@ -2503,6 +2602,11 @@ query ProjectMembersInRange(
         let range_first = ports
             .execute_query_page(&range_program, &range_parameters, None)
             .expect("first range page");
+        let inverted_range_first = executor
+            .execute_query_page(&range_program, &range_parameters, None)
+            .expect("inverted first range page");
+        assert_eq!(inverted_range_first, range_first);
+        capture_snapshot("redb-range-page-1", &inverted_range_first);
         assert!(matches!(
             range_first.fields().get("members"),
             Some(QueryResultValue::Many(rows))
@@ -2524,6 +2628,11 @@ query ProjectMembersInRange(
         let range_second = ports
             .execute_query_page(&range_program, &range_parameters, Some(&range_cursor))
             .expect("second range page");
+        let inverted_range_second = executor
+            .execute_query_page(&range_program, &range_parameters, Some(&range_cursor))
+            .expect("inverted second range page");
+        assert_eq!(inverted_range_second, range_second);
+        capture_snapshot("redb-range-page-2", &inverted_range_second);
         assert!(matches!(
             range_second.fields().get("members"),
             Some(QueryResultValue::Many(rows))
@@ -2590,7 +2699,7 @@ query ProjectMembersInRange(
         );
     }
 
-    // req: OQ-039, OQ-056, OQ-060
+    // req: DEP-001, OQ-039, OQ-056, OQ-060
     #[test]
     fn oversized_binary_text_endpoint_is_redacted_and_refused_before_storage() {
         let bundle = compile_contract_source(BINARY_TEXT_INTERVAL_CONTRACT).expect("contract");
@@ -2636,6 +2745,11 @@ query ProjectMembersInRange(
         let error = ports
             .execute_query(&program, &parameters)
             .expect_err("string<16> endpoint must fail before storage");
+        let inverted_error = StorageQueryExecutor::new(&ports)
+            .execute_query(&program, &parameters)
+            .expect_err("inverted string<16> endpoint must fail before storage");
+        assert_eq!(inverted_error, error);
+        capture_error("redb-invalid-parameter-refusal", &inverted_error);
         assert_eq!(
             error,
             QueryExecutionError::InvalidParameter {
@@ -3083,6 +3197,7 @@ query list_members_exact(
 
     /// Lazy open of a missing ENTITIES table yields the same backend integrity
     /// classification as the pre-R3 eager path.
+    // req: DEP-001
     #[test]
     fn missing_entities_table_on_point_query_is_backend_integrity() {
         use riffdb_query_executor::QueryExecutionError;
@@ -3124,11 +3239,42 @@ query list_members_exact(
         let error = ports
             .execute_query(&program, &parameters)
             .expect_err("missing entities must fail");
+        let inverted_error = StorageQueryExecutor::new(&ports)
+            .execute_query(&program, &parameters)
+            .expect_err("inverted missing entities must fail");
+        assert_eq!(inverted_error, error);
+        capture_error("redb-backend-integrity-refusal", &inverted_error);
         assert_eq!(
             error,
             QueryExecutionError::BackendIntegrity,
             "lazy first-touch of a missing ENTITIES table must keep the pre-R3 integrity taxonomy"
         );
+    }
+
+    fn capture_snapshot(name: &str, snapshot: &QueryOwnedSnapshot) {
+        let Some(root) = std::env::var_os("RIFFDB_WP754_FIXTURE_OUTPUT") else {
+            return;
+        };
+        let path = std::path::PathBuf::from(root).join(format!("{name}.bin"));
+        std::fs::create_dir_all(path.parent().expect("fixture parent")).expect("fixture directory");
+        std::fs::write(
+            path,
+            riffdb_query_executor::encode_query_snapshot_fixture_v1(name, snapshot),
+        )
+        .expect("write fixture");
+    }
+
+    fn capture_error(name: &str, error: &QueryExecutionError) {
+        let Some(root) = std::env::var_os("RIFFDB_WP754_FIXTURE_OUTPUT") else {
+            return;
+        };
+        let path = std::path::PathBuf::from(root).join(format!("{name}.bin"));
+        std::fs::create_dir_all(path.parent().expect("fixture parent")).expect("fixture directory");
+        std::fs::write(
+            path,
+            riffdb_query_executor::encode_query_error_fixture_v1(name, error),
+        )
+        .expect("write fixture");
     }
 
     // req: OQ-041, OQ-043

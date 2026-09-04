@@ -47,7 +47,10 @@ mod layout;
 mod maintenance;
 mod media;
 mod migration_stage;
+mod owned_snapshot;
+#[cfg(test)]
 mod query;
+mod query_diagnostics;
 mod reads;
 mod retention;
 mod shared_ports;
@@ -179,11 +182,14 @@ pub struct QueryExecuteCensusV1 {
     pub windows: [QueryExecuteWindowV1; QUERY_EXECUTE_WINDOW_COUNT_V1],
 }
 
-/// Returns bounded operation-ordinal execute timing for this process.
+/// Returns the retired storage-owned V1 census, empty after WP-754.
+///
+/// Query execution now lives above storage; reporting zero-filled storage
+/// stages as executor timing would be false evidence.
 #[doc(hidden)]
 #[must_use]
 pub fn query_execute_census_v1() -> QueryExecuteCensusV1 {
-    query::query_execute_census_v1()
+    query_diagnostics::query_execute_census_v1()
 }
 mod transient;
 mod validated_prefix;

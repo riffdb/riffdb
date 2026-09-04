@@ -2,7 +2,7 @@
 adr: 0180
 title: Crate Dependency Direction Repair
 status: accepted
-tier: surface
+tier: guarantee
 date: "2026-09-01"
 accepted: "2026-09-01"
 requires: [ADR-0004, ADR-0035, ADR-0037, ADR-0038, ADR-0042, ADR-0049, ADR-0053,
@@ -59,85 +59,30 @@ review_triggers:
 
 ## Context
 
-SPEC Section 5.2 already states the intended edges. The `riffdb-storage-redb`
-and `riffdb-storage-memory` rows allow "storage API, `redb`, and the sole
-ADR-0042 migration-only catalog driver edge" and nothing else in production.
-The `riffdb-client-rust` row allows "proto and Tonic client" plus the
-ADR-0037 foundational types. The `riffdb-observability` row calls the crate
-"cross-cutting interfaces without business semantics." No check enforces
-that table, and the code has drifted from it in four places.
+SPEC Section 5.2 already states the intended edges. The concrete storage rows allow only storage API, `redb`, and the ADR-0042 migration-only catalog edge; the Rust client allows protocol/Tonic plus ADR-0037 foundational types; and observability is "cross-cutting interfaces without business semantics." No check enforces that table, and four areas have drifted.
 
-First, both concrete backends take production dependencies on
-`riffdb-query-executor`, `riffdb-query-ir`, `riffdb-policy`, and
-`riffdb-projection` (`crates/riffdb-storage-redb/Cargo.toml`,
-`crates/riffdb-storage-memory/Cargo.toml`). `storage-redb/src/query.rs`
-implements the executor's `QueryExecutionPort` and calls
-`execute_in_snapshot` and its policy, provider, and operational variants from
-inside the redb read transaction; `shared_ports.rs`, `consumer.rs`, and
-`application.rs` repeat the pattern. The 21,564-line in-memory backend
-mirrors it. The storage boundary the overview calls replaceable is therefore
-not replaceable: a backend cannot be written without also re-implementing
-composite-query execution and row-policy admission.
+First, both storage backends depend on `riffdb-query-executor`, `riffdb-query-ir`, `riffdb-policy`, and `riffdb-projection`. They implement `QueryExecutionPort` and composite policy/provider execution inside storage, so a replacement backend must reimplement query semantics. The 21,564-line memory backend mirrors redb.
 
-Second, `storage-redb/src/startup.rs` is 13,453 lines. Besides structural and
-historical evidence it drives catalog index migration through
-`read_index_migration_page`, `apply_index_migration_batch`, and
-`finish_index_migration`, importing eleven catalog migration types. ADR-0042
-placed the driver in catalog; the redb file still hosts the loop.
+Second, the 13,453-line `storage-redb/src/startup.rs` drives catalog index migration as well as producing structural and historical evidence, despite ADR-0042 placing the driver in catalog.
 
-Third, `riffdb-client-rust` depends on `riffdb-api-grpc` for the generated
-service clients and `DATABASE_METADATA_KEY`, and on `riffdb-application`,
-which itself depends on `riffdb-contract-compiler`. ADR-0037 permitted the
-client-only `riffdb-api-grpc` feature as a reviewed exception. The effect is
-that the SDK links the server crate and the contract compiler.
+Third, `riffdb-client-rust` reaches generated clients and `DATABASE_METADATA_KEY` through `riffdb-api-grpc`, and reaches the contract compiler through `riffdb-application`; ADR-0037 allowed only the reviewed client-side protocol role. Fourth, `riffdb-observability` depends on service, commit, MCP, catalog, policy, conflict, and auth to consume their telemetry types, placing telemetry at the top of the graph. `riffdb-testkit` depends on server and CLI while serving as a dev-dependency of leaf crates, so leaf tests link the daemon across 238 integration targets.
 
-Fourth, `riffdb-observability` depends on `riffdb-service`, `riffdb-commit`,
-`riffdb-api-mcp`, `riffdb-catalog`, `riffdb-policy`, `riffdb-conflict`, and
-`riffdb-auth` to consume their telemetry enums, so telemetry sits at the top
-of the graph instead of the bottom. `riffdb-testkit` depends on
-`riffdb-server` and `riffdb-cli` while being a dev-dependency of eight crates
-including `riffdb-policy` and `riffdb-commit`, so testing a leaf crate links
-the daemon; the workspace carries 238 integration test targets.
 
-The in-memory backend is consumed only by the test kit and four migration
-gate tests. It does not implement `ChangelogPublicationPort` or the offline
-backup and restore ports, so `riffdbd` cannot run on it. It is a second
-implementation of the 64,333-line, sixty-trait storage-api typestate whose
-only remaining role is a parity oracle for the execution code this record
-moves out of storage.
+The memory backend is used only by the test kit and four migration gates. It cannot run `riffdbd` because it lacks changelog, backup, restore, and clean-close ports; its remaining parity-oracle role is better served by the model and a reader fake after execution leaves storage.
 
 ## Decision
 
 ### 1. Concrete backends implement storage-api only
 
-`riffdb-storage-redb` depends in production on `riffdb-storage-api`,
-`riffdb-types`, `riffdb-proto`, `redb`, and the ADR-0042 catalog driver edge.
-It has no production edge to `riffdb-query-executor`, `riffdb-query-ir`,
-`riffdb-policy`, or `riffdb-projection`. The `QueryExecutionPort`
-implementation and the `RedbQueryView` adapter leave `storage-redb/query.rs`.
+`riffdb-storage-redb` depends in production on `riffdb-storage-api`, `riffdb-types`, `riffdb-proto`, `redb`, and the ADR-0042 catalog driver edge. It has no production edge to query executor, query IR, policy, or projection. `QueryExecutionPort` and `RedbQueryView` leave storage.
 
 ### 2. The executor owns composite-query execution over narrow readers
 
-`riffdb-query-executor` implements `QueryExecutionPort` once, over the
-readers storage-api already defines (`AuthoritativePointReader`,
-`AuthoritativeScanReader`, `FilteredAuthoritativeScanReader`,
-`SnapshotReader`, and the ADR-0035 scan fences) plus one owned-snapshot
-handle that pins the application head, index epochs, and provider
-generations for the life of one page and its continuation. Row-policy
-contexts never cross the storage port: the executor applies ADR-0111
-admission to rows it reads, and no row, count, cursor, or measure escapes
-the executor before admission. Storage sees keys, bounded ranges, and
-bounded predicates in storage-api vocabulary only. ADR-0164 admission-head
-fencing, ADR-0175 partition-set merge, and every existing bound are
-unchanged in meaning; they move, they do not widen.
+`riffdb-query-executor` implements `QueryExecutionPort` once over the existing point, scan, filtered-scan, snapshot, and ADR-0035 fence readers plus an owned snapshot that pins application head, index epochs, and provider generations for one page and continuation. Policy contexts never cross storage: the executor admits rows before releasing any row, count, cursor, or measure. Storage sees only keys, bounded ranges, and bounded storage-API predicates. ADR-0164 fencing, ADR-0175 partition merge, and all bounds retain their meaning.
 
 ### 3. Startup evidence and migration driving separate
 
-`storage-redb/src/startup.rs` retains exclusive read-only structural and
-historical evidence over one immutable redb snapshot. The index-migration
-page, apply, and finish loop moves behind the ADR-0042 catalog-owned driver,
-which consumes the backend's branded page, point-read, and apply ports. The
-redb crate keeps those ports private and exposes no migration progress.
+`storage-redb/src/startup.rs` retains exclusive read-only structural and historical evidence over one immutable snapshot. Index-migration page, apply, and finish driving moves behind ADR-0042's catalog-owned driver over backend-private branded ports; redb exposes no migration progress.
 
 ### 4. The Rust client depends on the protocol only
 
@@ -213,9 +158,8 @@ after WP-756, on the same host, as a non-evidentiary receipt in
 
 ## Options Considered
 
-1. **Leave the edges and document them:** rejected. SPEC 5.2 already
-   documents the intended edges; documentation without a check is how the
-   drift happened.
+1. **Leave the edges and document them:** rejected. SPEC 5.2 already documents
+   the intended edges; documentation without a check is how drift happened.
 2. **Promote the in-memory backend to a server-capable backend:** rejected.
    It would need the changelog, journal, backup, restore, and clean-close
    ports, roughly doubling a 21K-line crate to serve a backend no deployment
@@ -240,6 +184,7 @@ after WP-756, on the same host, as a non-evidentiary receipt in
   its migration loop; the workspace loses one 21K-line crate.
 - Cost: WP-754 touches the hottest read path in the repository and needs
   byte-exact page, cursor, and refusal fixtures before and after.
+- The storage-owned V1 query timing census stops emitting samples; any replacement is executor-owned and newly versioned.
 - Cost: one new workspace crate (`riffdb-testkit-server`) and one new check.
 - Deferred: layer changes for `riffdb-columnar` and the provider adapters in
   `riffdb-server`; a second real backend; any change to storage encodings.

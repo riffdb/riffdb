@@ -11,19 +11,18 @@ default = []
 
 [dependencies]
 riffdb-catalog = { version = "0.1.0", path = "../riffdb-catalog", default-features = false }
-riffdb-contract-ir = { version = "0.1.0", path = "../riffdb-contract-ir", default-features = false }
-riffdb-policy = { version = "0.1.0", path = "../riffdb-policy", default-features = false }
-riffdb-projection = { version = "0.1.0", path = "../riffdb-projection", default-features = false }
-riffdb-query-executor = { version = "0.1.0", path = "../riffdb-query-executor", default-features = false }
-riffdb-query-ir = { version = "0.1.0", path = "../riffdb-query-ir", default-features = false }
 riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api", default-features = false }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
 
 [dev-dependencies]
 riffdb-auth = { version = "0.1.0", path = "../riffdb-auth", default-features = false }
 riffdb-contract-compiler = { version = "0.1.0", path = "../riffdb-contract-compiler", default-features = false }
+riffdb-contract-ir = { version = "0.1.0", path = "../riffdb-contract-ir", default-features = false }
 riffdb-query-compiler = { version = "0.1.0", path = "../riffdb-query-compiler", default-features = false }
 riffdb-query-executor = { version = "0.1.0", path = "../riffdb-query-executor", default-features = false, features = ["test-fixtures"] }
+riffdb-policy = { version = "0.1.0", path = "../riffdb-policy", default-features = false }
+riffdb-projection = { version = "0.1.0", path = "../riffdb-projection", default-features = false }
+riffdb-query-ir = { version = "0.1.0", path = "../riffdb-query-ir", default-features = false }
 riffdb-riffql-syntax = { version = "0.1.0", path = "../riffdb-riffql-syntax", default-features = false }
 riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api", default-features = false, features = ["test-fixtures"] }
 riffdb-testkit = { path = "../riffdb-testkit", version = "0.1.0" }

@@ -22442,7 +22442,7 @@ work_packages:
 
 - id: WP-754
   name: Executor-over-storage inversion and startup migration-driver relocation
-  tier: surface
+  tier: guarantee
   depends_on: [WP-743, WP-745]
   objective: Move composite-query execution and row-policy admission out of both concrete storage
     backends into riffdb-query-executor, running over the storage-api readers plus one owned-snapshot
@@ -22491,6 +22491,20 @@ work_packages:
       before admission.
     scale: The owned-snapshot handle is single-node and is the named reversible constraint; an
       executor over narrow readers is the shape a remote reader needs, and no bound widens.
+  closure:
+    status: complete
+    completed_at: "2026-09-04"
+    requirements_satisfied: [DEP-001, DEP-002]
+    evidence: Query execution and row-policy admission now live once in riffdb-query-executor over
+      an API-neutral owned storage snapshot, while both storage backends retain only reader and
+      final-safe-point implementations and no forbidden production dependency edges. Twenty-eight
+      recorded pre-inversion cases replay byte-identically through redb and memory readers, event
+      release revalidates exact capability, event, row, and relationship observations, and the
+      retired storage-owned query census publishes no false executor samples. The catalog-owned
+      migration driver now calls a private redb backend module, startup.rs produces only evidence,
+      the three named architecture obligations pass, package acceptance passes 15 of 15 gates,
+      and the full CI battery passes including recovery, simulation, migration, and multi-language
+      operator acceptance.
   human_review_triggers: &id0180
   - A page, cursor, count, aggregate, or typed refusal would differ from its recorded fixture.
   - A policy context, executor type, or compiler plan would cross a storage-api trait.

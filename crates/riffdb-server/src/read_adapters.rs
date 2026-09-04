@@ -50,11 +50,12 @@ use riffdb_storage_api::{
     EventRouteScanRequestV1, ExecutablePlanRef, FilteredAuthoritativeIndexScanPage,
     FilteredAuthoritativeIndexScanRequest, FilteredAuthoritativeScanReader, IdempotencyIdentity,
     IdempotencyKeyDigest, IdempotencyLookupCandidatesV1, IndexPartitionFilter,
-    IndexPartitionFilterScope, IndexRangePrefixBuilder, IndexRangeTarget, QueryModuleRepository,
-    ReactiveModuleRepository, ReadableDigestKey, ReadableIdempotencyDigestInventory, StorageError,
-    StorageErrorKind, StorageScanLimit, StoredAdmissionStateV1, StoredCommitRecordV1,
-    StoredPendingAdmissionV1, StoredProvenanceRecordV1, VectorEvidenceIndexRepository,
-    VectorEvidenceIndexScanRequestV1, VectorObservationRepository, VectorObservationTargetV1,
+    IndexPartitionFilterScope, IndexRangePrefixBuilder, IndexRangeTarget,
+    PartitionEventRouteReader, QueryModuleRepository, ReactiveModuleRepository, ReadableDigestKey,
+    ReadableIdempotencyDigestInventory, StorageError, StorageErrorKind, StorageScanLimit,
+    StoredAdmissionStateV1, StoredCommitRecordV1, StoredPendingAdmissionV1,
+    StoredProvenanceRecordV1, VectorEvidenceIndexRepository, VectorEvidenceIndexScanRequestV1,
+    VectorObservationRepository, VectorObservationTargetV1,
 };
 #[cfg(test)]
 use riffdb_types::QueryOperationName;
@@ -923,6 +924,40 @@ impl ServerAuthoritativeReadPort {
                     .ok_or(AuthoritativeReadError::Integrity)?,
                 )
                 .map_err(|_| AuthoritativeReadError::Integrity)?;
+                let mut candidate_request = scan_request;
+                let mut candidate_events = Vec::new();
+                for _ in 0..usize::from(candidate_limit.get().get()) {
+                    let page = event_storage
+                        .scan_partition_event_routes(candidate_request)
+                        .map_err(map_storage_error)?;
+                    candidate_events.extend(
+                        page.items()
+                            .iter()
+                            .map(|item| item.value())
+                            .filter(|route| route.event_type_id() == replay.event_type_id())
+                            .map(|route| route.event_id()),
+                    );
+                    let Some(continuation) = page.continuation() else {
+                        break;
+                    };
+                    candidate_request = EventRouteScanRequestV1::continuing(continuation, one);
+                }
+                let admission = event_storage
+                    .query_executor()
+                    .authorize_event_candidates(&candidate_events, observed_at, &policy)
+                    .map_err(|error| match error {
+                        riffdb_query_executor::QueryExecutionError::BackendUnavailable => {
+                            AuthoritativeReadError::Unavailable
+                        }
+                        _ => AuthoritativeReadError::Integrity,
+                    })?;
+                let riffdb_query_executor::EventCandidateAuthorizationV1::Authorized(admission) =
+                    admission
+                else {
+                    return Ok(AuthoritativeEventReplayPage::AuthorizationChanged);
+                };
+                let admission =
+                    (*admission).through_admitted_limit(usize::from(limit.get().get()));
                 return match event_storage
                     .replay_protected_events(riffdb_storage_redb::ProtectedEventReplayV1 {
                         scan_request,
@@ -931,7 +966,7 @@ impl ServerAuthoritativeReadPort {
                         candidate_limit,
                         history_incarnation,
                         observed_at,
-                        policy,
+                        admission,
                     })
                     .map_err(map_storage_error)?
                 {

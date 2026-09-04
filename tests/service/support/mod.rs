@@ -5765,7 +5765,10 @@ impl ServiceHarness {
             Arc::clone(&cursor_tokens) as Arc<dyn CursorTokenGenerator>,
             Arc::new(FixedCursorClock),
         )
-        .with_query_executor(Arc::new(shared) as Arc<dyn riffdb_query_executor::QueryExecutionPort>)
+        .with_query_executor(
+            Arc::new(riffdb_query_executor::StorageQueryExecutor::new(shared))
+                as Arc<dyn riffdb_query_executor::QueryExecutionPort>,
+        )
         .with_columnar(Arc::clone(&columnar) as Arc<dyn ColumnarProjectionPort>);
         let identity = ServiceIdentity::new(
             database_id(),

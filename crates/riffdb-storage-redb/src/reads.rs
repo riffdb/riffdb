@@ -71,7 +71,7 @@ impl SnapshotReader for RedbOperationalPorts {
     }
 }
 
-fn read_snapshot_from_access(
+pub(crate) fn read_snapshot_from_access(
     request: SnapshotRequest,
     observed_through: Option<CommitSequence>,
     access: &RedbReadAccess,
@@ -795,7 +795,7 @@ pub(crate) fn read_entity_record(
     Ok(Some(record))
 }
 
-fn read_epoch_position_access(
+pub(crate) fn read_epoch_position_access(
     access: &RedbReadAccess,
     target: &PartitionIndexTarget,
 ) -> Result<IndexEpochPosition, StorageError> {

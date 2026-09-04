@@ -878,7 +878,8 @@ impl SharedRedb {
         self.begin_operational_read()
     }
 
-    fn begin_composite_operational_read_profiled(
+    #[cfg(test)]
+    pub(crate) fn begin_composite_operational_read_profiled(
         &self,
     ) -> Result<(RedbReadAccess, CompositeReadAcquireProfileV1), StorageError> {
         let outer_started = Instant::now();
@@ -1155,11 +1156,13 @@ struct AsyncJournalCheckpoint {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[cfg(test)]
 pub(crate) struct CompositeReadAcquireProfileV1 {
     pub(crate) outer_lock_ns: u64,
     pub(crate) view_capture_ns: u64,
 }
 
+#[cfg(test)]
 fn elapsed_nanos(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
@@ -1200,16 +1203,6 @@ pub(crate) enum RedbReadAccess {
 }
 
 impl RedbReadAccess {
-    pub(crate) fn composite_overlay_diagnostic(&self) -> (u64, u64) {
-        match self {
-            Self::Composite(view) => (
-                u64::try_from(view.overlay().transition_count()).unwrap_or(u64::MAX),
-                u64::try_from(view.overlay().charged_bytes()).unwrap_or(u64::MAX),
-            ),
-            Self::Current(_) | Self::Durable(_) => (0, 0),
-        }
-    }
-
     #[allow(
         dead_code,
         reason = "WP-487 introduces the composite root; WP-488 publishes it"
@@ -1354,15 +1347,6 @@ impl RedbReadAccess {
 
     pub(crate) fn application_frontier(&self) -> Result<Option<CommitSequence>, StorageError> {
         crate::reads::read_snapshot_head(self)
-    }
-
-    pub(crate) fn application_frontier_profiled(
-        &self,
-    ) -> Result<(Option<CommitSequence>, CommitTailProfileV1), StorageError> {
-        Ok((
-            crate::reads::read_snapshot_head(self)?,
-            CommitTailProfileV1::default(),
-        ))
     }
 
     pub(crate) fn administration_frontier(
@@ -4631,12 +4615,6 @@ impl RedbOperationalPorts {
 
     pub(crate) fn begin_composite_read(&self) -> Result<RedbReadAccess, StorageError> {
         self.shared.begin_composite_operational_read()
-    }
-
-    pub(crate) fn begin_composite_read_profiled(
-        &self,
-    ) -> Result<(RedbReadAccess, CompositeReadAcquireProfileV1), StorageError> {
-        self.shared.begin_composite_operational_read_profiled()
     }
 
     pub(crate) fn begin_write(&self) -> Result<RedbWriteAccess, StorageError> {

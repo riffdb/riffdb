@@ -158,7 +158,7 @@ impl CheckpointRoot {
         table: JournalTable,
         key: &[u8],
     ) -> Result<Option<Vec<u8>>, JournalIoError> {
-        if crate::query::query_execute_diagnostics_enabled()
+        if crate::query_diagnostics::query_execute_diagnostics_enabled()
             && crate::journal::byte_table_definition(table).is_some()
         {
             return self.read_value_profiled(table, key);

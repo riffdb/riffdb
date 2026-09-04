@@ -100,6 +100,16 @@ impl MemoryDormantPorts {
 }
 
 impl MemoryOperationalPorts {
+    /// Builds a detached read-only carrier for one already-cloned snapshot.
+    pub(crate) fn immutable_read_view(state: MemoryState) -> Self {
+        Self {
+            shared: Arc::new(SharedMemory {
+                gate: ExclusiveGate::default(),
+                state: Mutex::new(state),
+            }),
+        }
+    }
+
     /// Acquires the exclusive lease for a consuming typed transition.
     ///
     /// The access value may cross storage type-state values, but a state mutex

@@ -898,7 +898,7 @@ impl VectorProjectionPort for ServerColumnarProjectionPort {
             std::num::NonZeroU16::new(500).expect("fixed inspection bound is nonzero"),
         );
         let evidence = riffdb_query_executor::QueryExecutionPort::inspect_vector_evidence(
-            self.runtime.storage(),
+            &self.runtime.storage().query_executor(),
             &target,
             request.row_policy().map(Arc::as_ref),
         )

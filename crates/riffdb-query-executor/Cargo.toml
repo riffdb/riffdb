@@ -23,6 +23,7 @@ riffdb-policy = { version = "0.1.0", path = "../riffdb-policy", default-features
 riffdb-projection = { version = "0.1.0", path = "../riffdb-projection", default-features = false }
 riffdb-query-ir = { version = "0.1.0", path = "../riffdb-query-ir", default-features = false }
 riffdb-riffql-syntax = { version = "0.1.0", path = "../riffdb-riffql-syntax", default-features = false }
+riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api", default-features = false }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
 
 [lints]

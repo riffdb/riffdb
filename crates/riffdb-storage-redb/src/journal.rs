@@ -3243,7 +3243,7 @@ pub(crate) fn read_value(
     table: JournalTable,
     key: &[u8],
 ) -> Result<Option<Vec<u8>>, JournalIoError> {
-    if crate::query::query_execute_diagnostics_enabled()
+    if crate::query_diagnostics::query_execute_diagnostics_enabled()
         && let Some(definition) = byte_table_definition(table)
     {
         return read_value_profiled(transaction, definition, key);

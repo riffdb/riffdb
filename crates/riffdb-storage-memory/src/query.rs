@@ -1260,6 +1260,7 @@ query ProjectMembersInRange(
         );
     }
 
+    // req: DEP-001
     #[test]
     fn point_query_materializes_an_owned_result_from_one_state_view() {
         let bundle = compile_contract_source(CONTRACT).expect("contract");
@@ -1319,13 +1320,40 @@ query ProjectMembersInRange(
             parameters: &parameters,
         };
         let snapshot = execute_in_snapshot(&program, &parameters, &mut view).expect("execute");
+        capture_snapshot("memory-named-point-found", &snapshot);
         assert_eq!(snapshot.outcome(), "Found");
         assert!(matches!(
             snapshot.fields().get("ticket"),
             Some(QueryResultValue::One(row)) if row.field("title").is_some()
         ));
+
+        let absent_parameters = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+            ("ticket_id".to_owned(), CanonicalValue::Uuid([9; 16])),
+        ]))
+        .expect("absent parameters");
+        let mut absent_view = MemoryQueryView {
+            state: &state,
+            program: &program,
+            parameters: &absent_parameters,
+        };
+        let absent = execute_in_snapshot(&program, &absent_parameters, &mut absent_view)
+            .expect("declared NotFound outcome");
+        capture_snapshot("memory-named-point-not-found", &absent);
+
+        let missing_parameters =
+            QueryParameters::checked(BTreeMap::new()).expect("empty parameters");
+        let mut missing_view = MemoryQueryView {
+            state: &state,
+            program: &program,
+            parameters: &missing_parameters,
+        };
+        let missing = execute_in_snapshot(&program, &missing_parameters, &mut missing_view)
+            .expect_err("missing parameter refusal");
+        capture_error("memory-missing-parameter-refusal", &missing);
     }
 
+    // req: DEP-001
     #[test]
     fn index_page_batches_entity_reads_inside_the_same_memory_view() {
         let bundle = compile_contract_source(CONTRACT).expect("contract");
@@ -1426,6 +1454,7 @@ query ProjectMembersInRange(
             parameters: &parameters,
         };
         let snapshot = execute_in_snapshot(&program, &parameters, &mut view).expect("execute");
+        capture_snapshot("memory-named-page-1", &snapshot);
         assert!(matches!(
             snapshot.fields().get("members"),
             Some(QueryResultValue::Many(rows)) if rows.len() == 1
@@ -1448,6 +1477,28 @@ query ProjectMembersInRange(
             snapshot.index_epochs().clone(),
         )
         .expect("cursor");
+        let mut stale_epochs = snapshot.index_epochs().clone();
+        for epoch in stale_epochs.values_mut() {
+            *epoch = epoch.saturating_add(1);
+        }
+        let stale = QueryContinuation::checked(
+            snapshot
+                .continuation_binding()
+                .expect("continuation binding")
+                .to_owned(),
+            snapshot.continuation().expect("continuation").to_vec(),
+            stale_epochs,
+        )
+        .expect("stale cursor");
+        let mut stale_view = MemoryQueryView {
+            state: &state,
+            program: &program,
+            parameters: &parameters,
+        };
+        let stale_error =
+            execute_page_in_snapshot(&program, &parameters, Some(&stale), &mut stale_view)
+                .expect_err("stale cursor refusal");
+        capture_error("memory-stale-cursor-refusal", &stale_error);
         let mut second_view = MemoryQueryView {
             state: &state,
             program: &program,
@@ -1456,6 +1507,7 @@ query ProjectMembersInRange(
         let second =
             execute_page_in_snapshot(&program, &parameters, Some(&cursor), &mut second_view)
                 .expect("second page");
+        capture_snapshot("memory-named-page-2", &second);
         assert!(matches!(
             second.fields().get("members"),
             Some(QueryResultValue::Many(rows))
@@ -1495,6 +1547,7 @@ query ProjectMembersInRange(
         let range_first =
             execute_page_in_snapshot(&range_program, &range_parameters, None, &mut range_view)
                 .expect("first range page");
+        capture_snapshot("memory-range-page-1", &range_first);
         assert!(matches!(
             range_first.fields().get("members"),
             Some(QueryResultValue::Many(rows))
@@ -1525,6 +1578,7 @@ query ProjectMembersInRange(
             &mut range_second_view,
         )
         .expect("second range page");
+        capture_snapshot("memory-range-page-2", &range_second);
         assert!(matches!(
             range_second.fields().get("members"),
             Some(QueryResultValue::Many(rows))
@@ -1591,6 +1645,7 @@ query ProjectMembersInRange(
         let filtered =
             execute_policy_page_in_snapshot(&program, &parameters, None, &mut policy_view, &policy)
                 .expect("policy-filtered page");
+        capture_snapshot("memory-row-admission-page", &filtered);
         assert!(matches!(
             filtered.fields().get("members"),
             Some(QueryResultValue::Many(rows))
@@ -1645,6 +1700,32 @@ query ProjectMembersInRange(
         assert!(admission.covers(step.internal_entity_id(), &covered));
         assert!(!admission.admits(&candidate_keys[0]));
         assert!(admission.admits(&candidate_keys[1]));
+    }
+
+    fn capture_snapshot(name: &str, snapshot: &QueryOwnedSnapshot) {
+        let Some(root) = std::env::var_os("RIFFDB_WP754_FIXTURE_OUTPUT") else {
+            return;
+        };
+        let path = std::path::PathBuf::from(root).join(format!("{name}.bin"));
+        std::fs::create_dir_all(path.parent().expect("fixture parent")).expect("fixture directory");
+        std::fs::write(
+            path,
+            riffdb_query_executor::encode_query_snapshot_fixture_v1(name, snapshot),
+        )
+        .expect("write fixture");
+    }
+
+    fn capture_error(name: &str, error: &QueryExecutionError) {
+        let Some(root) = std::env::var_os("RIFFDB_WP754_FIXTURE_OUTPUT") else {
+            return;
+        };
+        let path = std::path::PathBuf::from(root).join(format!("{name}.bin"));
+        std::fs::create_dir_all(path.parent().expect("fixture parent")).expect("fixture directory");
+        std::fs::write(
+            path,
+            riffdb_query_executor::encode_query_error_fixture_v1(name, error),
+        )
+        .expect("write fixture");
     }
 
     // req: OQ-036, OQ-043, OQ-057, OQ-058, OQ-059

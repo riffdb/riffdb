@@ -13,6 +13,8 @@ mod integrity_administration;
 mod integrity_command;
 mod integrity_projection;
 mod migration;
+mod owned_snapshot;
+#[cfg(test)]
 mod query;
 mod startup;
 mod state;
