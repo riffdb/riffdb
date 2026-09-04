@@ -2067,6 +2067,7 @@ dependencies = [
  "riffdb-query-compiler",
  "riffdb-query-ir",
  "riffdb-riffql-syntax",
+ "riffdb-storage-api",
  "riffdb-types",
 ]
 

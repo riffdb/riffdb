@@ -214,7 +214,7 @@ record with no front matter.
 | [0177](0177-compiler-bounded-high-cardinality-atomic-collections.md) | Compiler-Bounded High-Cardinality Atomic Collections | Accepted | legacy |
 | [0178](0178-follower-activation-and-changelog-derived-backup.md) | Follower Activation and Changelog-Derived Incremental Backup | Accepted | guarantee |
 | [0179](0179-generated-public-surface-adapters-and-operation-registry.md) | Generated Public-Surface Adapters and the Operation Registry | Accepted | surface |
-| [0180](0180-crate-dependency-direction-repair.md) | Crate Dependency Direction Repair | Accepted | surface |
+| [0180](0180-crate-dependency-direction-repair.md) | Crate Dependency Direction Repair | Accepted | guarantee |
 | [0181](0181-pre-alpha-format-epoch-reset-and-governance-load.md) | Pre-Alpha Format Epoch Reset and Governance Load | Accepted | surface |
 | [0182](0182-bounded-dirty-recovery-and-online-retention.md) | Bounded Dirty Recovery and Online Retention | Accepted | guarantee |
 | [0183](0183-performance-package-freeze-and-durable-group-lever.md) | Performance Package Freeze and the Durable-Group Lever | Accepted | guarantee |

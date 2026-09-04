@@ -2521,6 +2521,7 @@ fn named_budget_request(
     .expect("named request")
 }
 
+// req: DEP-001
 #[test]
 fn admission_head_is_captured_after_authorization_only_for_stronger_first_pages() {
     use riffdb_errors::ApplicationErrorCode;
@@ -2581,6 +2582,26 @@ fn admission_head_is_captured_after_authorization_only_for_stronger_first_pages(
             Some(ApplicationErrorCode::FreshnessUnsatisfied)
         );
         assert_eq!(harness.application_head_observations(), 2);
+        if let Some(root) = std::env::var_os("RIFFDB_WP754_FIXTURE_OUTPUT") {
+            let code = failure
+                .public_error()
+                .and_then(|error| error.application_code_hint())
+                .expect("typed freshness refusal")
+                .as_str();
+            let mut bytes = b"riffdb.query-pre-inversion/admission-head-v1\0".to_vec();
+            bytes.extend_from_slice(&2_u64.to_be_bytes());
+            bytes.push(u8::from(authorization < head));
+            bytes.extend_from_slice(
+                &u32::try_from(code.len())
+                    .expect("bounded application code")
+                    .to_be_bytes(),
+            );
+            bytes.extend_from_slice(code.as_bytes());
+            let path = std::path::PathBuf::from(root).join("admission-head-page-and-refusal.bin");
+            std::fs::create_dir_all(path.parent().expect("fixture parent"))
+                .expect("fixture directory");
+            std::fs::write(path, bytes).expect("write admission-head fixture");
+        }
     });
 }
 

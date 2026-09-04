@@ -39,6 +39,12 @@ the production caller stopped using that helper.
 
 ## Closed stage measurements
 
+> WP-754 moved query execution out of the concrete storage backend. The
+> storage-owned `riffdb-query-execute-windows-v1` census therefore emits no
+> samples after that package; it does not publish zero-filled stages as if they
+> measured executor work. Any later performance-evidence package must add an
+> executor-owned, newly versioned census before collecting comparable timings.
+
 The opt-in `RIFFDB_QUERY_EXECUTE_DIAGNOSTICS=1` census stores at most 64
 windows of 256 operations. The terminal window absorbs excess operations. It
 records only closed stage durations, composite overlay counts/bytes, and the

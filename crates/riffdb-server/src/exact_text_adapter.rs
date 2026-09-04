@@ -1731,8 +1731,9 @@ fn rebuild_long_pattern_partition(
     if let Some(policy) = registration.row_policy.as_deref() {
         let candidates = records.keys().cloned().collect::<Vec<_>>();
         let candidate_set = records.keys().cloned().collect::<BTreeSet<_>>();
+        let query_executor = runtime.storage.query_executor();
         let admission = QueryExecutionPort::authorize_projected_candidates(
-            &runtime.storage,
+            &query_executor,
             registration.step.internal_entity_id(),
             &candidates,
             policy,
@@ -2318,8 +2319,9 @@ fn read_complete_tokenized_partition(
     }
     if let Some(policy) = registration.row_policy.as_deref() {
         let ordered_candidates = candidates.iter().cloned().collect::<Vec<_>>();
+        let query_executor = runtime.storage.query_executor();
         let admission = QueryExecutionPort::authorize_projected_candidates(
-            &runtime.storage,
+            &query_executor,
             step.internal_entity_id(),
             &ordered_candidates,
             policy,
@@ -2520,8 +2522,9 @@ fn read_complete_predicate_partition<R: ExactPredicateRegistrationView>(
     }
     if let Some(policy) = registration.row_policy() {
         let ordered_candidates = candidates.iter().cloned().collect::<Vec<_>>();
+        let query_executor = runtime.storage.query_executor();
         let admission = QueryExecutionPort::authorize_projected_candidates(
-            &runtime.storage,
+            &query_executor,
             step.internal_entity_id(),
             &ordered_candidates,
             policy,
@@ -2668,8 +2671,9 @@ fn read_complete_partition(
     }
     if let Some(policy) = registration.row_policy.as_deref() {
         let ordered_candidates = candidates.iter().cloned().collect::<Vec<_>>();
+        let query_executor = runtime.storage.query_executor();
         let admission = QueryExecutionPort::authorize_projected_candidates(
-            &runtime.storage,
+            &query_executor,
             step.internal_entity_id(),
             &ordered_candidates,
             policy,

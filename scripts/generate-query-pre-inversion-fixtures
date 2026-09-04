@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# req: DEP-001
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+mode="${1:---check}"
+case "$mode" in
+    --check|--write) ;;
+    *) printf 'usage: %s [--check|--write]\n' "$0" >&2; exit 2 ;;
+esac
+
+generated="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-wp754-fixtures.XXXXXX")"
+trap 'rm -rf "$generated"' EXIT
+export RIFFDB_WP754_FIXTURE_OUTPUT="$generated"
+export RUSTC_WRAPPER=""
+export LC_ALL=C
+export TZ=UTC
+
+cd "$repo_root"
+
+cargo test -p riffdb-query-executor --features test-fixtures \
+    --test candidate_execution partition_set_candidates_remain_scoped_before_global_root_order \
+    -- --exact
+cargo test -p riffdb-query-executor --features test-fixtures \
+    --test candidate_execution provider_candidates_share_one_exact_head_before_root_order_and_page \
+    -- --exact
+
+for test_name in \
+    operational_aggregates_are_exact_grouped_and_canonically_ordered \
+    exact_aggregate_core_freezes_novalue_empty_and_mean_state \
+    aggregate_overflow_withholds_the_complete_result
+do
+    cargo test -p riffdb-query-executor --features test-fixtures --lib \
+        "pipeline_clone_tests::${test_name}" -- --exact
+done
+
+for test_name in \
+    point_query_materializes_an_owned_result_from_one_state_view \
+    index_page_batches_entity_reads_inside_the_same_memory_view
+do
+    cargo test -p riffdb-storage-memory --features riffdb-query-executor/test-fixtures --lib \
+        "query::tests::${test_name}" -- --exact
+done
+
+for test_name in \
+    point_query_frontier_does_not_decode_retained_command_history \
+    index_page_batches_entity_reads_inside_the_same_redb_transaction \
+    oversized_binary_text_endpoint_is_redacted_and_refused_before_storage \
+    missing_entities_table_on_point_query_is_backend_integrity
+do
+    cargo test -p riffdb-storage-redb --features test-fixtures --lib \
+        "query::tests::${test_name}" -- --exact
+done
+
+cargo test -p riffdb-service --test service_end_to_end \
+    admission_head_is_captured_after_authorization_only_for_stronger_first_pages -- --exact
+
+expected=(
+    admission-head-page-and-refusal.bin
+    memory-missing-parameter-refusal.bin
+    memory-named-page-1.bin
+    memory-named-page-2.bin
+    memory-named-point-found.bin
+    memory-named-point-not-found.bin
+    memory-range-page-1.bin
+    memory-range-page-2.bin
+    memory-row-admission-page.bin
+    memory-stale-cursor-refusal.bin
+    operational-empty-aggregate.bin
+    operational-exact-aggregate.bin
+    operational-grouped-aggregate.bin
+    operational-overflow-refusal.bin
+    partition-set-page-1.bin
+    partition-set-page-2.bin
+    provider-page.bin
+    provider-unavailable-refusal.bin
+    redb-backend-integrity-refusal.bin
+    redb-invalid-parameter-refusal.bin
+    redb-missing-parameter-refusal.bin
+    redb-named-page-1.bin
+    redb-named-page-2.bin
+    redb-named-point-found.bin
+    redb-named-point-not-found.bin
+    redb-range-page-1.bin
+    redb-range-page-2.bin
+    redb-stale-cursor-refusal.bin
+)
+
+for file in "${expected[@]}"; do
+    test -f "$generated/$file" || {
+        printf 'missing generated WP-754 fixture: %s\n' "$file" >&2
+        exit 1
+    }
+done
+test "$(find "$generated" -maxdepth 1 -type f -name '*.bin' | wc -l)" -eq "${#expected[@]}"
+
+(
+    cd "$generated"
+    sha256sum "${expected[@]}" > manifest.sha256
+)
+
+fixture_root="$repo_root/fixtures/query-executor/pre-inversion-v1"
+if [[ "$mode" == "--write" ]]; then
+    mkdir -p "$fixture_root"
+    cp "$generated"/*.bin "$generated/manifest.sha256" "$fixture_root/"
+    printf 'Generated %d canonical WP-754 fixtures.\n' "${#expected[@]}"
+else
+    diff -ru "$fixture_root" "$generated"
+    printf 'WP-754 pre-inversion fixtures are current.\n'
+fi

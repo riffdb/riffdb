@@ -737,7 +737,7 @@ impl ProductionGraphBuilder {
             cursor_tokens,
             cursor_clock,
         )
-        .with_query_executor(Arc::new(storage))
+        .with_query_executor(Arc::new(storage.query_executor()))
         .with_contextual_causation(
             riffdb_service::ContextualCausationTokenCodec::from_provider(Arc::clone(
                 &capability_keys,

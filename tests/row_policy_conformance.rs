@@ -18,15 +18,12 @@ use riffdb_policy::{
     revalidate_event_release_proof, revalidate_row_policy_proof,
 };
 use riffdb_storage_api::{
-    DatabaseInitializationPort, DatabaseInitializationResult, EventConsumerIdentityV1,
-    EvidencePageLimit, ReadableCapabilityDigestInventory, ReadableDigestKey,
-    ReadableIdempotencyDigestInventory, StartupValidationInputs, StructuralEvidenceCursor,
-    StructuralEvidenceOpen, StructuralEvidencePage, StructuralEvidenceSession,
+    DatabaseInitializationPort, DatabaseInitializationResult, EvidencePageLimit,
+    ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
+    StartupValidationInputs, StructuralEvidenceCursor, StructuralEvidenceOpen,
+    StructuralEvidencePage, StructuralEvidenceSession,
 };
-use riffdb_storage_redb::{
-    ProtectedEventConsumerLeaseValidationResultV1, ProtectedEventConsumerLeaseValidationV1,
-    RedbDormantPorts, RedbOperationalPorts, RedbStore,
-};
+use riffdb_storage_redb::{RedbDormantPorts, RedbOperationalPorts, RedbStore};
 use riffdb_testkit::authorization::{
     AuthorizationFixture, AuthorizationFixtureConfig, AuthorizationFixtureTimes,
 };
@@ -36,9 +33,9 @@ use riffdb_types::{
     CapabilityPermissionsV1, CapabilityPrincipalFactV1, CapabilityPrincipalFactsV1,
     CapabilityRowPolicyBindingV1, CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1,
     CommitSequence, ContractVersion, DatabaseId, DigestKeyId, EntityFieldVisibilityV1, EntityKey,
-    Environment, EventConsumerName, EventDeliveryAttempt, EventId, EventLeaseToken,
-    PartitionKeyBuilder, PartitionScopeV1, QueryParameterHash, ReactiveModuleHash,
-    ReactiveOperationName, RowPolicyName, TenantScope, Timestamp,
+    Environment, EventConsumerName, EventId, PartitionKeyBuilder, PartitionScopeV1,
+    QueryParameterHash, ReactiveModuleHash, ReactiveOperationName, RowPolicyName, TenantScope,
+    Timestamp,
 };
 
 const SOURCE: &str = include_str!("../fixtures/compiler/row-policy/valid/document-access.riff");
@@ -420,6 +417,7 @@ fn event_release_proof_binds_event_key_row_and_capability_revision() {
     );
 }
 
+// req: DEP-001
 #[test]
 fn protected_reaction_safe_point_denies_when_durable_capability_is_absent() {
     let bundle = compile_contract_source(SOURCE).expect("policy contract compiles");
@@ -539,29 +537,18 @@ fn protected_reaction_safe_point_denies_when_durable_capability_is_absent() {
             .expect("policy context resolves")
             .expect("protected policy context");
 
-    let (_scope, mut ports) = empty_operational_database(database_id);
-    let result = ports
-        .validate_protected_event_consumer_lease(ProtectedEventConsumerLeaseValidationV1 {
-            identity: EventConsumerIdentityV1::new(
-                database_id,
-                module,
-                operation,
-                parameter_hash,
-                consumer_name,
-            ),
-            partition_hash: riffdb_types::PartitionKeyHash::from_bytes([0x74; 32]),
-            event_id: EventId::new(CommitSequence::first(), 0),
-            attempt: EventDeliveryAttempt::first(),
-            token: EventLeaseToken::from_bytes([0x75; 32]),
-            history_incarnation: 1,
-            observed_at: Timestamp::new(5, 0).expect("observed time"),
-            policy: policy_context,
-        })
+    let (_scope, ports) = empty_operational_database(database_id);
+    let result = riffdb_query_executor::StorageQueryExecutor::new(ports)
+        .authorize_event_candidates(
+            &[EventId::new(CommitSequence::first(), 0)],
+            Timestamp::new(5, 0).expect("observed time"),
+            &policy_context,
+        )
         .expect("missing current capability is a closed denial, not a storage failure");
-    assert_eq!(
+    assert!(matches!(
         result,
-        ProtectedEventConsumerLeaseValidationResultV1::Denied
-    );
+        riffdb_query_executor::EventCandidateAuthorizationV1::AuthorizationChanged
+    ));
 }
 
 fn policy(bundle: &ContractBundle) -> &RowPolicyPlanV1 {

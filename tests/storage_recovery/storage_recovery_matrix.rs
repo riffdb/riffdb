@@ -7504,7 +7504,11 @@ fn execute_covered_board_page(
             ),
         ]))
         .expect("board page parameters");
-    riffdb_query_executor::QueryExecutionPort::execute_query(ports, &program, &parameters)
+    riffdb_query_executor::QueryExecutionPort::execute_query(
+        &riffdb_query_executor::StorageQueryExecutor::new(ports),
+        &program,
+        &parameters,
+    )
 }
 
 /// A complete cover must survive a full durable close and startup

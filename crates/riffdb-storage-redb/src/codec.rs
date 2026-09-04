@@ -329,6 +329,10 @@ borrowed_codec!(
     decode_vector_projection_control_v1
 );
 
+#[allow(
+    dead_code,
+    reason = "retained compatibility hook for the query diagnostic schema"
+)]
 pub(crate) fn decode_entity_record_v1_profiled(
     encoded: &[u8],
 ) -> Result<

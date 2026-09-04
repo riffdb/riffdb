@@ -10,12 +10,7 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use riffdb_policy::{AuthorizedProjectedRowAdmissionV1, AuthorizedQueryRowPolicyContextV1};
-use riffdb_query_executor::{
-    QueryContinuation, QueryExecutionError, QueryExecutionPort, QueryExecutionRequest,
-    QueryOwnedSnapshot, QueryParameters,
-};
-use riffdb_query_ir::QueryAccessProgramV1;
+use riffdb_query_executor::StorageQueryExecutor;
 use riffdb_service::{AuthoritativeReadinessFailure, ServiceHealthHooks};
 use riffdb_storage_api::{
     ActiveCatalogPointerV1, ActiveQueryModulePointerV1, AdmissionLookupResultV1,
@@ -128,6 +123,11 @@ impl SharedRedbOperationalPorts {
 
     pub(crate) const fn bounded_clean_startup(&self) -> bool {
         self.bounded_clean_startup
+    }
+
+    /// Assembles the sole executor implementation over this cloneable lower reader.
+    pub(crate) fn query_executor(&self) -> StorageQueryExecutor<RedbSharedPorts> {
+        StorageQueryExecutor::new(self.shared.clone())
     }
 
     /// True only when bounded startup proved no in-flight `Delivering` outbox
@@ -264,135 +264,6 @@ impl Clone for SharedRedbOperationalPorts {
             bounded_clean_startup: self.bounded_clean_startup,
             health: self.health.clone(),
         }
-    }
-}
-
-impl QueryExecutionPort for SharedRedbOperationalPorts {
-    fn execute_query_page(
-        &self,
-        program: &QueryAccessProgramV1,
-        parameters: &QueryParameters,
-        prior: Option<&QueryContinuation>,
-    ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
-        QueryExecutionPort::execute_query_page(&self.shared, program, parameters, prior)
-    }
-
-    fn execute_query_group(
-        &self,
-        requests: &[QueryExecutionRequest<'_>],
-    ) -> Result<Vec<QueryOwnedSnapshot>, QueryExecutionError> {
-        QueryExecutionPort::execute_query_group(&self.shared, requests)
-    }
-
-    fn execute_operational_query_page(
-        &self,
-        program: &riffdb_query_ir::QueryAccessProgramV1,
-        aggregates: &[riffdb_query_ir::OperationalAggregateV1],
-        parameters: &riffdb_query_executor::QueryParameters,
-        prior: Option<&riffdb_query_executor::QueryContinuation>,
-    ) -> Result<riffdb_query_executor::QueryOwnedSnapshot, riffdb_query_executor::QueryExecutionError>
-    {
-        QueryExecutionPort::execute_operational_query_page(
-            &self.shared,
-            program,
-            aggregates,
-            parameters,
-            prior,
-        )
-    }
-
-    fn execute_policy_query_page(
-        &self,
-        program: &QueryAccessProgramV1,
-        parameters: &QueryParameters,
-        prior: Option<&QueryContinuation>,
-        policy: &AuthorizedQueryRowPolicyContextV1,
-    ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
-        QueryExecutionPort::execute_policy_query_page(
-            &self.shared,
-            program,
-            parameters,
-            prior,
-            policy,
-        )
-    }
-
-    fn execute_policy_operational_query_page(
-        &self,
-        program: &riffdb_query_ir::QueryAccessProgramV1,
-        aggregates: &[riffdb_query_ir::OperationalAggregateV1],
-        parameters: &riffdb_query_executor::QueryParameters,
-        prior: Option<&riffdb_query_executor::QueryContinuation>,
-        policy: &AuthorizedQueryRowPolicyContextV1,
-    ) -> Result<riffdb_query_executor::QueryOwnedSnapshot, riffdb_query_executor::QueryExecutionError>
-    {
-        QueryExecutionPort::execute_policy_operational_query_page(
-            &self.shared,
-            program,
-            aggregates,
-            parameters,
-            prior,
-            policy,
-        )
-    }
-
-    fn execute_provider_query_page(
-        &self,
-        program: &QueryAccessProgramV1,
-        parameters: &QueryParameters,
-        prior: Option<&QueryContinuation>,
-        policy_shape: riffdb_types::ApplicationRoleHash,
-        proof: &riffdb_projection::ResultSetEpochProofV1,
-        batches: &[riffdb_query_executor::LongPatternCandidateBatch],
-    ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
-        QueryExecutionPort::execute_provider_query_page(
-            &self.shared,
-            program,
-            parameters,
-            prior,
-            policy_shape,
-            proof,
-            batches,
-        )
-    }
-
-    fn execute_policy_provider_query_page(
-        &self,
-        program: &QueryAccessProgramV1,
-        parameters: &QueryParameters,
-        prior: Option<&QueryContinuation>,
-        policy: &AuthorizedQueryRowPolicyContextV1,
-        policy_shape: riffdb_types::ApplicationRoleHash,
-        proof: &riffdb_projection::ResultSetEpochProofV1,
-        batches: &[riffdb_query_executor::LongPatternCandidateBatch],
-    ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
-        QueryExecutionPort::execute_policy_provider_query_page(
-            &self.shared,
-            program,
-            parameters,
-            prior,
-            policy,
-            policy_shape,
-            proof,
-            batches,
-        )
-    }
-
-    fn authorize_projected_candidates(
-        &self,
-        entity: riffdb_types::EntityTypeId,
-        candidates: &[riffdb_types::EntityKey],
-        policy: &AuthorizedQueryRowPolicyContextV1,
-    ) -> Result<AuthorizedProjectedRowAdmissionV1, QueryExecutionError> {
-        QueryExecutionPort::authorize_projected_candidates(&self.shared, entity, candidates, policy)
-    }
-
-    fn inspect_vector_evidence(
-        &self,
-        target: &riffdb_query_executor::VectorInspectionTargetV1,
-        policy: Option<&AuthorizedQueryRowPolicyContextV1>,
-    ) -> Result<riffdb_query_executor::VectorInspectionSnapshotV1, QueryExecutionError> {
-        QueryExecutionPort::inspect_vector_evidence(&self.shared, target, policy)
     }
 }
 
@@ -2204,24 +2075,16 @@ mod tests {
     }
 
     #[test]
-    fn production_query_bridge_delegates_provider_pages() {
-        let source = include_str!("storage.rs");
-        let implementation = source
-            .split_once("impl QueryExecutionPort for SharedRedbOperationalPorts")
-            .expect("query bridge implementation")
-            .1
-            .split_once("impl fmt::Debug for SharedRedbOperationalPorts")
-            .expect("query bridge boundary")
-            .0;
-
-        assert!(implementation.contains("fn execute_provider_query_page"));
-        assert!(implementation.contains("fn execute_policy_provider_query_page"));
-        assert!(implementation.contains(
-            "QueryExecutionPort::execute_provider_query_page(\n            &self.shared"
-        ));
-        assert!(implementation.contains(
-            "QueryExecutionPort::execute_policy_provider_query_page(\n            &self.shared"
-        ));
+    fn production_query_bridge_assembles_executor_over_lower_storage() {
+        let source = include_str!("storage.rs")
+            .split("\n#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production storage source");
+        assert!(
+            source.contains("fn query_executor(&self) -> StorageQueryExecutor<RedbSharedPorts>")
+        );
+        assert!(source.contains("StorageQueryExecutor::new(self.shared.clone())"));
+        assert!(!source.contains("impl QueryExecutionPort for SharedRedbOperationalPorts"));
     }
 
     #[test]

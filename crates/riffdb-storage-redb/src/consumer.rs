@@ -1,24 +1,23 @@
 //! Durable redb persistence for backend-neutral event-consumer transitions.
 
 use redb::ReadableTable;
-use riffdb_policy::{AuthorizedQueryRowPolicyContextV1, EventPolicyCandidateV1};
-use riffdb_query_executor::MAX_QUERY_SCANNED_ROWS;
 use riffdb_storage_api::{
     AuthoritativePointReader, CapabilityLifecycleV1, ConsumerDeliveryStateV1,
     ConsumerLeaseCandidateV1, ConsumerStateError, CoordinateConsumerAcknowledgementV1,
     CoordinateConsumerLeaseResultV1, CoordinatedConsumerLeaseV1, EncodedPageItem, EntityTarget,
     EvaluatedEventConsumerTransitionV1, EventConsumerIdentityV1, EventConsumerRepository,
     EventConsumerSnapshotV1, EventConsumerTransitionResultV1, EventConsumerTransitionV1,
-    EventRouteContinuationV1, EventRoutePageLimit, EventRouteScanRequestV1, EventRouteScanV1,
-    EventRouteUpperFenceV1, ExpectedConsumerDeliveryV1, IdempotencyIdentity,
-    MAX_CONSUMER_BATCH_ITEMS, MAX_CONSUMER_DELIVERY_RECORDS, MAX_CONSUMER_IN_FLIGHT,
-    MAX_CONSUMER_SPARSE_RESOLUTIONS, MAX_EVENT_CONSUMERS, MAX_SCAN_PAGE_BYTES,
-    PartitionEventRouteReader, PolicyAuthorizedEventReplayItemV1, PreparedConsumerResolutionV1,
-    StorageError, StorageErrorKind, StoredCommitRecordV1, StoredDurableEventV1,
-    StoredEntityRecordV1, StoredEventConsumerDeliveryV1, StoredEventConsumerV1, StoredOutcomeV1,
-    StoredProvenanceRecordV1, evaluate_consumer_lease_validation,
-    evaluate_event_consumer_transition, normalize_consumer_recovery, prepare_consumer_resolution,
-    resolve_policy_hidden_state, status_from_snapshot,
+    EventPolicyAdmissionFenceV1, EventRouteContinuationV1, EventRoutePageLimit,
+    EventRouteScanRequestV1, EventRouteScanV1, EventRouteUpperFenceV1, ExpectedConsumerDeliveryV1,
+    IdempotencyIdentity, MAX_CONSUMER_BATCH_ITEMS, MAX_CONSUMER_DELIVERY_RECORDS,
+    MAX_CONSUMER_IN_FLIGHT, MAX_CONSUMER_SPARSE_RESOLUTIONS, MAX_EVENT_CONSUMERS,
+    MAX_SCAN_PAGE_BYTES, PartitionEventRouteReader, PolicyAuthorizedEventReplayItemV1,
+    PreparedConsumerResolutionV1, StorageError, StorageErrorKind, StoredCommitRecordV1,
+    StoredDurableEventV1, StoredEntityRecordV1, StoredEventConsumerDeliveryV1,
+    StoredEventConsumerV1, StoredOutcomeV1, StoredProvenanceRecordV1,
+    evaluate_consumer_lease_validation, evaluate_event_consumer_transition,
+    normalize_consumer_recovery, prepare_consumer_resolution, resolve_policy_hidden_state,
+    status_from_snapshot,
 };
 use riffdb_types::{
     CommitSequence, DatabaseId, EventConsumerIdentityHash, EventDeliveryAttempt, EventId,
@@ -31,7 +30,7 @@ use crate::codec::{
     decode_event_route_v1, decode_index_entry_v2, decode_provenance_record_v1,
     encode_event_consumer_delivery_v1, encode_event_consumer_v1,
 };
-use crate::command_authority::{command_member_at, commit_at};
+use crate::command_authority::{CommandAuthorityMember, command_member_at, commit_at};
 use crate::error::{precommit_storage_error, storage_error, table_error};
 use crate::hooks::RedbTestOperation;
 use crate::keys::{
@@ -62,8 +61,8 @@ pub struct ProtectedEventReplayV1 {
     pub history_incarnation: u64,
     /// Service-owned authorization instant.
     pub observed_at: Timestamp,
-    /// Move-only current row-policy authority.
-    pub policy: AuthorizedQueryRowPolicyContextV1,
+    /// Executor-produced neutral observations rechecked at the release safe point.
+    pub admission: EventPolicyAdmissionFenceV1,
 }
 
 /// Closed result class for one protected replay scan.
@@ -138,8 +137,8 @@ pub struct ProtectedEventConsumerLeaseV1 {
     pub batch_limit: u8,
     /// Maximum concurrent live leases.
     pub in_flight_limit: u8,
-    /// Move-only current row-policy authority.
-    pub policy: AuthorizedQueryRowPolicyContextV1,
+    /// Executor-produced neutral observations rechecked at the mutation safe point.
+    pub admission: EventPolicyAdmissionFenceV1,
 }
 
 /// One exact reaction lease validated together with current event authority.
@@ -158,8 +157,8 @@ pub struct ProtectedEventConsumerLeaseValidationV1 {
     pub history_incarnation: u64,
     /// Service-owned current instant.
     pub observed_at: Timestamp,
-    /// Move-only current capability and compiled row-policy authority.
-    pub policy: AuthorizedQueryRowPolicyContextV1,
+    /// Executor-produced neutral observations rechecked at the validation safe point.
+    pub admission: EventPolicyAdmissionFenceV1,
 }
 
 /// Inference-safe protected reaction-lease validation result.
@@ -178,8 +177,8 @@ pub struct ProtectedEventConsumerResolutionV1 {
     pub acknowledgement: CoordinateConsumerAcknowledgementV1,
     /// Retry/dead-letter eligibility for a negative acknowledgement.
     pub retry_at: Option<Timestamp>,
-    /// Move-only current row-policy authority.
-    pub policy: AuthorizedQueryRowPolicyContextV1,
+    /// Executor-produced neutral observations rechecked at the mutation safe point.
+    pub admission: EventPolicyAdmissionFenceV1,
 }
 
 impl std::fmt::Debug for ProtectedEventConsumerResolutionV1 {
@@ -219,12 +218,9 @@ impl RedbOperationalPorts {
         let access = self.begin_write()?;
         let transaction = access.transaction()?;
         let database_id = read_database_id_from_write(transaction)?;
-        if !current_capability_matches_policy(
-            transaction,
-            database_id,
-            request.observed_at,
-            &request.policy,
-        )? {
+        if request.admission.observed_at() != request.observed_at
+            || !revalidate_event_policy_admission(transaction, database_id, &request.admission)?
+        {
             access.abort()?;
             return Ok(ProtectedEventReplayResultV1::AuthorizationChanged);
         }
@@ -258,7 +254,7 @@ impl RedbOperationalPorts {
                 let event = reader
                     .read_durable_event(route.event_id())?
                     .ok_or_else(corrupt)?;
-                if !authorize_stored_event(transaction, &event, &request.policy)? {
+                if !admission_decision(&request.admission, event.event_id()).ok_or_else(corrupt)? {
                     continue;
                 }
                 let commit = reader
@@ -328,14 +324,10 @@ impl RedbOperationalPorts {
                 request.identity.identity_hash(),
             )?
         };
-        if !current_capability_matches_policy(
-            transaction,
-            database_id,
-            request.observed_at,
-            &request.policy,
-        )? || authorize_selected_events(transaction, &[request.event_id], &request.policy)?
-            .as_slice()
-            != [request.event_id]
+        if request.admission.observed_at() != request.observed_at
+            || !admission_covers_exact(&request.admission, &[request.event_id])
+            || !revalidate_event_policy_admission(transaction, database_id, &request.admission)?
+            || admission_decision(&request.admission, request.event_id) != Some(true)
         {
             access.abort()?;
             return Ok(ProtectedEventConsumerLeaseValidationResultV1::Denied);
@@ -428,12 +420,10 @@ impl RedbOperationalPorts {
             });
         }
 
-        if !current_capability_matches_policy(
-            transaction,
-            database_id,
-            request.observed_at,
-            &request.policy,
-        )? {
+        if request.admission.observed_at() != request.observed_at
+            || !admission_covers_exact(&request.admission, &request.selected_events)
+            || !revalidate_event_policy_admission(transaction, database_id, &request.admission)?
+        {
             access.abort()?;
             return Ok(CoordinateConsumerLeaseResultV1 {
                 transition: EventConsumerTransitionResultV1::StateChanged,
@@ -442,8 +432,7 @@ impl RedbOperationalPorts {
             });
         }
 
-        let visible_events =
-            authorize_selected_events(transaction, &request.selected_events, &request.policy)?;
+        let visible_events = request.admission.admitted_event_ids().collect::<Vec<_>>();
         let live = current.as_ref().map_or(0, |snapshot| {
             snapshot
                 .deliveries()
@@ -617,18 +606,11 @@ impl RedbOperationalPorts {
             access.abort()?;
             return Ok(EventConsumerTransitionResultV1::NotFound);
         };
-        if !current_capability_matches_policy(
-            transaction,
-            database_id,
-            request.acknowledgement.observed_at,
-            &request.policy,
-        )? || authorize_selected_events(
-            transaction,
-            &[request.acknowledgement.event_id],
-            &request.policy,
-        )?
-        .as_slice()
-            != [request.acknowledgement.event_id]
+        if request.admission.observed_at() != request.acknowledgement.observed_at
+            || !admission_covers_exact(&request.admission, &[request.acknowledgement.event_id])
+            || !revalidate_event_policy_admission(transaction, database_id, &request.admission)?
+            || admission_decision(&request.admission, request.acknowledgement.event_id)
+                != Some(true)
         {
             access.abort()?;
             return Ok(EventConsumerTransitionResultV1::StateChanged);
@@ -848,7 +830,18 @@ impl AuthoritativePointReader for ProtectedEventReplayReader<'_> {
         &self,
         event_id: EventId,
     ) -> Result<Option<StoredDurableEventV1>, StorageError> {
+        let commits = self.transaction.open_table(COMMITS).map_err(table_error)?;
         let events = self.transaction.open_table(EVENTS).map_err(table_error)?;
+        if let Some(CommandAuthorityMember::CapsuleV2(capsule)) =
+            command_member_at(&commits, &events, event_id.commit_sequence())?
+        {
+            let ordinal = usize::try_from(event_id.event_ordinal()).map_err(|_| corrupt())?;
+            let event = capsule.events().get(ordinal).ok_or_else(corrupt)?;
+            if event.event_id() != event_id {
+                return Err(corrupt());
+            }
+            return Ok(Some(event.clone()));
+        }
         let Some(row) = events
             .get(encode_event_key(event_id).as_slice())
             .map_err(precommit_storage_error)?
@@ -863,161 +856,124 @@ impl AuthoritativePointReader for ProtectedEventReplayReader<'_> {
     }
 }
 
-fn authorize_stored_event(
-    transaction: &redb::WriteTransaction,
-    event: &StoredDurableEventV1,
-    policy: &AuthorizedQueryRowPolicyContextV1,
-) -> Result<bool, StorageError> {
-    let Some(anchor) = event.policy_anchor() else {
-        return Ok(false);
-    };
-    let target = anchor.source();
-    if !policy.protects(target.entity_type_id()) {
-        return Err(storage_error(StorageErrorKind::InvariantViolation));
-    }
-    let current = {
-        let entities = transaction.open_table(ENTITIES).map_err(table_error)?;
-        let Some(row) = entities
-            .get(encode_entity_key(target.key()))
-            .map_err(precommit_storage_error)?
-        else {
-            return Ok(false);
-        };
-        let record = decode_entity_record_v1(row.value())?.into_parts().0;
-        if record.target() != target {
-            return Err(corrupt());
-        }
-        record
-    };
-    let lookups = policy
-        .relationship_lookups(target.entity_type_id(), current.fields())
-        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-    let evidence = lookups
+fn admission_covers_exact(admission: &EventPolicyAdmissionFenceV1, event_ids: &[EventId]) -> bool {
+    admission
+        .observations()
         .iter()
-        .map(|lookup| indexed_relationship_exists_write(transaction, lookup))
-        .collect::<Result<Vec<_>, _>>()?;
-    let candidate = EventPolicyCandidateV1::new(
-        event.event_id(),
-        target.key().clone(),
-        anchor.read_policy().clone(),
-    );
-    Ok(policy
-        .authorize_event_release(&candidate, current.fields(), &evidence)
-        .is_allowed())
+        .map(|observation| observation.event().event_id())
+        .eq(event_ids.iter().copied())
 }
 
-fn current_capability_matches_policy(
+fn admission_decision(admission: &EventPolicyAdmissionFenceV1, event_id: EventId) -> Option<bool> {
+    admission
+        .observations()
+        .binary_search_by_key(&event_id, |observation| observation.event().event_id())
+        .ok()
+        .map(|index| admission.observations()[index].admitted())
+}
+
+fn revalidate_event_policy_admission(
     transaction: &redb::WriteTransaction,
     database_id: DatabaseId,
-    observed_at: Timestamp,
-    policy: &AuthorizedQueryRowPolicyContextV1,
+    admission: &EventPolicyAdmissionFenceV1,
 ) -> Result<bool, StorageError> {
-    let Some((capability_id, revision)) = policy.internal_capability_identity() else {
-        return Err(storage_error(StorageErrorKind::InvariantViolation));
-    };
-    let expected_grant = policy
-        .internal_row_policy_grant()
-        .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
     let capabilities = transaction.open_table(CAPABILITIES).map_err(table_error)?;
     let lookups = transaction
         .open_table(CAPABILITY_TOKENS)
         .map_err(table_error)?;
-    let Some(current) = crate::administration::capability_from_tables(
+    let Some(current_capability) = crate::administration::capability_from_tables(
         &capabilities,
         &lookups,
         database_id,
-        capability_id,
+        admission.capability().capability_id(),
     )?
     else {
         return Ok(false);
     };
-    Ok(current.revision() == revision
-        && matches!(current.lifecycle(), CapabilityLifecycleV1::Active)
-        && current.issued_at() <= observed_at
-        && observed_at < current.expires_at()
-        && current.grant().internal_row_policy() == Some(expected_grant))
-}
+    if &current_capability != admission.capability()
+        || !matches!(
+            current_capability.lifecycle(),
+            CapabilityLifecycleV1::Active
+        )
+        || current_capability.issued_at() > admission.observed_at()
+        || admission.observed_at() >= current_capability.expires_at()
+    {
+        return Ok(false);
+    }
 
-fn authorize_selected_events(
-    transaction: &redb::WriteTransaction,
-    selected_events: &[EventId],
-    policy: &AuthorizedQueryRowPolicyContextV1,
-) -> Result<Vec<EventId>, StorageError> {
-    let mut visible = Vec::with_capacity(selected_events.len());
-    for event_id in selected_events {
-        let event = {
+    for observation in admission.observations() {
+        let current_event = {
+            let commits = transaction.open_table(COMMITS).map_err(table_error)?;
             let events = transaction.open_table(EVENTS).map_err(table_error)?;
-            let row = events
-                .get(encode_event_key(*event_id).as_slice())
-                .map_err(precommit_storage_error)?
-                .ok_or_else(corrupt)?;
-            decode_durable_event_v1(row.value())?.into_parts().0
-        };
-        if event.event_id() != *event_id {
-            return Err(corrupt());
-        }
-        let Some(anchor) = event.policy_anchor() else {
-            // V1 events have no compiler-owned current-row identity. They are
-            // indistinguishable policy-hidden history for an ordinary
-            // protected consumer, never an integrity failure or payload-based
-            // authority fallback.
-            continue;
-        };
-        let target = anchor.source();
-        if !policy.protects(target.entity_type_id()) {
-            return Err(storage_error(StorageErrorKind::InvariantViolation));
-        }
-        let current = {
-            let entities = transaction.open_table(ENTITIES).map_err(table_error)?;
-            let Some(row) = entities
-                .get(encode_entity_key(target.key()))
-                .map_err(precommit_storage_error)?
-            else {
-                continue;
-            };
-            let record = decode_entity_record_v1(row.value())?.into_parts().0;
-            if record.target() != target {
-                return Err(corrupt());
+            let event_id = observation.event().event_id();
+            match command_member_at(&commits, &events, event_id.commit_sequence())? {
+                Some(CommandAuthorityMember::CapsuleV2(capsule)) => {
+                    let ordinal =
+                        usize::try_from(event_id.event_ordinal()).map_err(|_| corrupt())?;
+                    capsule.events().get(ordinal).cloned().ok_or_else(corrupt)?
+                }
+                Some(CommandAuthorityMember::CapsuleV1(_)) | None => {
+                    let Some(row) = events
+                        .get(encode_event_key(event_id).as_slice())
+                        .map_err(precommit_storage_error)?
+                    else {
+                        return Ok(false);
+                    };
+                    decode_durable_event_v1(row.value())?.into_parts().0
+                }
             }
-            record
         };
-        let lookups = policy
-            .relationship_lookups(target.entity_type_id(), current.fields())
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        let evidence = lookups
-            .iter()
-            .map(|lookup| indexed_relationship_exists_write(transaction, lookup))
-            .collect::<Result<Vec<_>, _>>()?;
-        let candidate = EventPolicyCandidateV1::new(
-            *event_id,
-            target.key().clone(),
-            anchor.read_policy().clone(),
-        );
-        if policy
-            .authorize_event_release(&candidate, current.fields(), &evidence)
-            .is_allowed()
-        {
-            visible.push(*event_id);
+        if &current_event != observation.event() {
+            return Ok(false);
+        }
+        let current_record = match observation.event().policy_anchor() {
+            None => None,
+            Some(anchor) => {
+                let entities = transaction.open_table(ENTITIES).map_err(table_error)?;
+                let encoded = entities
+                    .get(encode_entity_key(anchor.source().key()))
+                    .map_err(precommit_storage_error)?;
+                encoded
+                    .map(|row| decode_entity_record_v1(row.value()).map(|item| item.into_parts().0))
+                    .transpose()?
+            }
+        };
+        if current_record.as_ref() != observation.current() {
+            return Ok(false);
+        }
+        for relationship in observation.relationships() {
+            let exists = indexed_relationship_exists_write(
+                transaction,
+                relationship.index_prefix(),
+                relationship.partition(),
+            )?;
+            if exists != relationship.exists() {
+                return Ok(false);
+            }
         }
     }
-    Ok(visible)
+    Ok(true)
 }
 
 fn indexed_relationship_exists_write(
     transaction: &redb::WriteTransaction,
-    lookup: &riffdb_policy::AuthorizedIndexedRelationshipLookupV1,
+    index_prefix: &[u8],
+    partition: &riffdb_types::PartitionKey,
 ) -> Result<bool, StorageError> {
-    let upper = exclusive_prefix_end(lookup.index_prefix())
+    let upper = exclusive_prefix_end(index_prefix)
         .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
     let indexes = transaction
         .open_table(SECONDARY_INDEXES)
         .map_err(table_error)?;
     let mut inspected = 0usize;
     for row in indexes
-        .range(lookup.index_prefix()..upper.as_slice())
+        .range(index_prefix..upper.as_slice())
         .map_err(precommit_storage_error)?
     {
-        if inspected == usize::try_from(MAX_QUERY_SCANNED_ROWS).unwrap_or(usize::MAX) {
+        if inspected
+            == usize::try_from(riffdb_types::MAX_APPLICATION_QUERY_SCANNED_ROWS)
+                .unwrap_or(usize::MAX)
+        {
             return Err(storage_error(StorageErrorKind::LimitExceeded));
         }
         inspected = inspected.saturating_add(1);
@@ -1027,13 +983,12 @@ fn indexed_relationship_exists_write(
         if entry.key() != &key {
             return Err(corrupt());
         }
-        if entry.partition_key() == lookup.partition() {
+        if entry.partition_key() == partition {
             return Ok(true);
         }
     }
     Ok(false)
 }
-
 fn exclusive_prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
     let mut upper = prefix.to_vec();
     let position = upper.iter().rposition(|byte| *byte != u8::MAX)?;

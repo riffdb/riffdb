@@ -21,7 +21,8 @@ Trusted role provisioning type-checks the complete fact set before returning
 otherwise-withheld permissions in that V4 grant.
 
 Authoritative named and ad hoc RiffQL reads now consume that V4 authority in
-the storage-owned snapshot. Point reads become indistinguishable absence when
+the query-executor-owned snapshot over API-neutral storage readers. Point reads
+become indistinguishable absence when
 denied; dependent reads filter before cardinality and hydration; index scans
 filter each authoritative candidate before it can consume the visible page
 limit or cursor; and operational aggregates see only the resulting authorized

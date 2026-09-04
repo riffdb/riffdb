@@ -3,9 +3,11 @@
 //! Closed-program execution over one engine-owned authoritative read view.
 
 mod exact_result_set;
+mod storage_executor;
 mod tokenized_text;
 
 pub use exact_result_set::*;
+pub use storage_executor::*;
 pub use tokenized_text::*;
 
 #[cfg(test)]
@@ -33,6 +35,12 @@ use riffdb_types::{
     decode_canonical_value, encode_canonical_value, hash_partition_key,
     hash_partition_set_observation,
 };
+
+#[cfg(feature = "test-fixtures")]
+mod pre_inversion_fixture;
+#[cfg(feature = "test-fixtures")]
+#[doc(hidden)]
+pub use pre_inversion_fixture::{encode_query_error_fixture_v1, encode_query_snapshot_fixture_v1};
 
 /// Maximum checked submitted parameters.
 pub const MAX_QUERY_PARAMETERS: usize = 1_024;
@@ -6840,6 +6848,7 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
         );
     }
 
+    // req: DEP-001
     #[test]
     fn operational_aggregates_are_exact_grouped_and_canonically_ordered() {
         let bundle = compile_contract_source(AGGREGATE_CONTRACT).expect("contract");
@@ -6898,6 +6907,7 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
         let Some(QueryResultValue::AggregateMany(groups)) = snapshot.fields().get("summary") else {
             panic!("grouped aggregate result missing: {:?}", snapshot.fields());
         };
+        capture_snapshot("operational-grouped-aggregate", &snapshot);
         assert_eq!(groups.len(), 2);
         assert_eq!(
             groups[0].fields().get("status"),
@@ -6918,6 +6928,7 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
         );
     }
 
+    // req: DEP-001
     #[test]
     fn exact_aggregate_core_freezes_novalue_empty_and_mean_state() {
         let bundle = compile_contract_source(AGGREGATE_CONTRACT).expect("contract");
@@ -6982,6 +6993,7 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
         };
 
         let snapshot = execute(tickets);
+        capture_snapshot("operational-exact-aggregate", &snapshot);
         let Some(QueryResultValue::AggregateOne(summary)) = snapshot.fields().get("summary") else {
             panic!("summary missing")
         };
@@ -7015,6 +7027,7 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
         );
 
         let empty = execute(Vec::new());
+        capture_snapshot("operational-empty-aggregate", &empty);
         let Some(QueryResultValue::AggregateOne(summary)) = empty.fields().get("summary") else {
             panic!("empty summary missing")
         };
@@ -7273,6 +7286,7 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
         );
     }
 
+    // req: DEP-001
     #[test]
     fn aggregate_overflow_withholds_the_complete_result() {
         let bundle = compile_contract_source(DECIMAL_AGGREGATE_CONTRACT).expect("contract");
@@ -7307,16 +7321,48 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
         let mut view = FakeView {
             rows: BTreeMap::from([("entries".to_owned(), entries)]),
         };
+        let result = execute_operational_page_in_snapshot(
+            program,
+            family.aggregates(),
+            &parameters,
+            None,
+            &mut view,
+        );
+        capture_error(
+            "operational-overflow-refusal",
+            result.as_ref().expect_err("overflow refusal"),
+        );
         assert_eq!(
-            execute_operational_page_in_snapshot(
-                program,
-                family.aggregates(),
-                &parameters,
-                None,
-                &mut view,
-            ),
+            result,
             Err(QueryExecutionError::AggregateOverflow),
             "overflow must release no partial count/group/result"
         );
     }
+
+    #[cfg(feature = "test-fixtures")]
+    fn capture_snapshot(name: &str, snapshot: &QueryOwnedSnapshot) {
+        let Some(root) = std::env::var_os("RIFFDB_WP754_FIXTURE_OUTPUT") else {
+            return;
+        };
+        let path = std::path::PathBuf::from(root).join(format!("{name}.bin"));
+        std::fs::create_dir_all(path.parent().expect("fixture parent")).expect("fixture directory");
+        std::fs::write(path, encode_query_snapshot_fixture_v1(name, snapshot))
+            .expect("write fixture");
+    }
+
+    #[cfg(not(feature = "test-fixtures"))]
+    fn capture_snapshot(_name: &str, _snapshot: &QueryOwnedSnapshot) {}
+
+    #[cfg(feature = "test-fixtures")]
+    fn capture_error(name: &str, error: &QueryExecutionError) {
+        let Some(root) = std::env::var_os("RIFFDB_WP754_FIXTURE_OUTPUT") else {
+            return;
+        };
+        let path = std::path::PathBuf::from(root).join(format!("{name}.bin"));
+        std::fs::create_dir_all(path.parent().expect("fixture parent")).expect("fixture directory");
+        std::fs::write(path, encode_query_error_fixture_v1(name, error)).expect("write fixture");
+    }
+
+    #[cfg(not(feature = "test-fixtures"))]
+    fn capture_error(_name: &str, _error: &QueryExecutionError) {}
 }

@@ -108,28 +108,41 @@ fn coordinate_request(
             history_incarnation,
             observed_at,
             policy,
-        } => storage
-            .validate_protected_event_consumer_lease(ProtectedEventConsumerLeaseValidationV1 {
-                identity: storage_identity(database_id, identity),
-                partition_hash,
-                event_id,
-                attempt,
-                token,
-                history_incarnation,
-                observed_at,
-                policy,
-            })
-            .map(|result| {
-                EventConsumerPortResponse::LeaseValidation(match result {
-                    ProtectedEventConsumerLeaseValidationResultV1::Validation(validation) => {
-                        service_lease_validation(validation)
-                    }
-                    ProtectedEventConsumerLeaseValidationResultV1::Denied => {
-                        EventConsumerLeaseValidation::Denied
-                    }
+        } => {
+            let admission = storage
+                .query_executor()
+                .authorize_event_candidates(&[event_id], observed_at, &policy)
+                .map_err(map_query_execution)?;
+            let riffdb_query_executor::EventCandidateAuthorizationV1::Authorized(admission) =
+                admission
+            else {
+                return Ok(EventConsumerPortResponse::LeaseValidation(
+                    EventConsumerLeaseValidation::Denied,
+                ));
+            };
+            storage
+                .validate_protected_event_consumer_lease(ProtectedEventConsumerLeaseValidationV1 {
+                    identity: storage_identity(database_id, identity),
+                    partition_hash,
+                    event_id,
+                    attempt,
+                    token,
+                    history_incarnation,
+                    observed_at,
+                    admission: *admission,
                 })
-            })
-            .map_err(map_storage),
+                .map(|result| {
+                    EventConsumerPortResponse::LeaseValidation(match result {
+                        ProtectedEventConsumerLeaseValidationResultV1::Validation(validation) => {
+                            service_lease_validation(validation)
+                        }
+                        ProtectedEventConsumerLeaseValidationResultV1::Denied => {
+                            EventConsumerLeaseValidation::Denied
+                        }
+                    })
+                })
+                .map_err(map_storage)
+        }
         EventConsumerPortRequest::Lease {
             identity,
             partition_hash,
@@ -183,6 +196,23 @@ fn coordinate_request(
             in_flight_limit,
             policy,
         } => {
+            let admission = storage
+                .query_executor()
+                .authorize_event_candidates(&selected_events, observed_at, &policy)
+                .map_err(map_query_execution)?;
+            let riffdb_query_executor::EventCandidateAuthorizationV1::Authorized(admission) =
+                admission
+            else {
+                let identity = storage_identity(database_id, identity);
+                let status = coordinate_consumer_status(&storage, &identity)
+                    .map_err(map_storage)?
+                    .map(service_status);
+                return Ok(EventConsumerPortResponse::Leased {
+                    result: EventConsumerMutationResult::StateChanged,
+                    leases: Vec::new(),
+                    status,
+                });
+            };
             let result = storage
                 .coordinate_protected_event_consumer_lease(ProtectedEventConsumerLeaseV1 {
                     identity: storage_identity(database_id, identity),
@@ -194,7 +224,7 @@ fn coordinate_request(
                     tokens,
                     batch_limit,
                     in_flight_limit,
-                    policy,
+                    admission: *admission,
                 })
                 .map_err(map_storage)?;
             Ok(EventConsumerPortResponse::Leased {
@@ -220,21 +250,36 @@ fn coordinate_request(
             observed_at,
             selected_prefix,
             policy,
-        } => storage
-            .coordinate_protected_event_consumer_resolution(ProtectedEventConsumerResolutionV1 {
-                acknowledgement: CoordinateConsumerAcknowledgementV1 {
-                    identity: storage_identity(database_id, identity),
-                    event_id,
-                    token,
-                    history_incarnation,
-                    observed_at,
-                    selected_prefix,
-                },
-                retry_at: None,
-                policy,
-            })
-            .map(|result| EventConsumerPortResponse::Mutated(mutation_result(result)))
-            .map_err(map_storage),
+        } => {
+            let admission = storage
+                .query_executor()
+                .authorize_event_candidates(&[event_id], observed_at, &policy)
+                .map_err(map_query_execution)?;
+            let riffdb_query_executor::EventCandidateAuthorizationV1::Authorized(admission) =
+                admission
+            else {
+                return Ok(EventConsumerPortResponse::Mutated(
+                    EventConsumerMutationResult::StateChanged,
+                ));
+            };
+            storage
+                .coordinate_protected_event_consumer_resolution(
+                    ProtectedEventConsumerResolutionV1 {
+                        acknowledgement: CoordinateConsumerAcknowledgementV1 {
+                            identity: storage_identity(database_id, identity),
+                            event_id,
+                            token,
+                            history_incarnation,
+                            observed_at,
+                            selected_prefix,
+                        },
+                        retry_at: None,
+                        admission: *admission,
+                    },
+                )
+                .map(|result| EventConsumerPortResponse::Mutated(mutation_result(result)))
+                .map_err(map_storage)
+        }
         EventConsumerPortRequest::ProtectedNegativeAcknowledge {
             identity,
             event_id,
@@ -243,21 +288,36 @@ fn coordinate_request(
             eligible_at,
             selected_prefix,
             policy,
-        } => storage
-            .coordinate_protected_event_consumer_resolution(ProtectedEventConsumerResolutionV1 {
-                acknowledgement: CoordinateConsumerAcknowledgementV1 {
-                    identity: storage_identity(database_id, identity),
-                    event_id,
-                    token,
-                    history_incarnation: 0,
-                    observed_at,
-                    selected_prefix,
-                },
-                retry_at: Some(eligible_at),
-                policy,
-            })
-            .map(|result| EventConsumerPortResponse::Mutated(mutation_result(result)))
-            .map_err(map_storage),
+        } => {
+            let admission = storage
+                .query_executor()
+                .authorize_event_candidates(&[event_id], observed_at, &policy)
+                .map_err(map_query_execution)?;
+            let riffdb_query_executor::EventCandidateAuthorizationV1::Authorized(admission) =
+                admission
+            else {
+                return Ok(EventConsumerPortResponse::Mutated(
+                    EventConsumerMutationResult::StateChanged,
+                ));
+            };
+            storage
+                .coordinate_protected_event_consumer_resolution(
+                    ProtectedEventConsumerResolutionV1 {
+                        acknowledgement: CoordinateConsumerAcknowledgementV1 {
+                            identity: storage_identity(database_id, identity),
+                            event_id,
+                            token,
+                            history_incarnation: 0,
+                            observed_at,
+                            selected_prefix,
+                        },
+                        retry_at: Some(eligible_at),
+                        admission: *admission,
+                    },
+                )
+                .map(|result| EventConsumerPortResponse::Mutated(mutation_result(result)))
+                .map_err(map_storage)
+        }
         EventConsumerPortRequest::Acknowledge {
             identity,
             event_id,
@@ -377,6 +437,17 @@ const fn mutation_result(result: EventConsumerTransitionResultV1) -> EventConsum
 fn map_storage(error: riffdb_storage_api::StorageError) -> EventConsumerPortError {
     match error.kind() {
         StorageErrorKind::Unavailable | StorageErrorKind::CommitStatusUnknown => {
+            EventConsumerPortError::Unavailable
+        }
+        _ => EventConsumerPortError::Integrity,
+    }
+}
+
+fn map_query_execution(
+    error: riffdb_query_executor::QueryExecutionError,
+) -> EventConsumerPortError {
+    match error {
+        riffdb_query_executor::QueryExecutionError::BackendUnavailable => {
             EventConsumerPortError::Unavailable
         }
         _ => EventConsumerPortError::Integrity,

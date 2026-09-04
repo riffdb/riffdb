@@ -15,11 +15,8 @@ fn read(path: impl AsRef<Path>) -> String {
 
 fn rust_sources() -> String {
     let source = crate_root().join("src");
-    let mut paths = fs::read_dir(source)
-        .expect("read source directory")
-        .map(|entry| entry.expect("source entry").path())
-        .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
-        .collect::<Vec<_>>();
+    let mut paths = Vec::new();
+    collect_rust_sources(&source, &mut paths);
     paths.sort();
     paths.into_iter().map(read).collect::<Vec<_>>().join("\n")
 }
@@ -197,6 +194,113 @@ fn dependency_surface_keeps_redb_private_and_excludes_infrastructure_assemblies(
     assert!(!public_root.contains("extern crate redb"));
 }
 
+// req: DEP-001
+#[test]
+fn storage_backends_depend_only_on_storage_api_types_proto_and_catalog_driver() {
+    let root = crate_root();
+    let workspace = root
+        .parent()
+        .and_then(Path::parent)
+        .expect("workspace root");
+    for backend in ["riffdb-storage-redb", "riffdb-storage-memory"] {
+        let manifest = read(workspace.join("crates").join(backend).join("Cargo.toml"));
+        let dependencies = manifest
+            .split_once("[dev-dependencies]")
+            .map_or(manifest.as_str(), |(production, _)| production);
+        for forbidden in [
+            "riffdb-query-executor",
+            "riffdb-query-ir",
+            "riffdb-policy",
+            "riffdb-projection",
+        ] {
+            assert!(
+                !dependencies.contains(forbidden),
+                "{backend} retains forbidden production dependency {forbidden}"
+            );
+        }
+    }
+}
+
+// req: DEP-001
+#[test]
+fn executor_owned_snapshot_pages_match_pre_inversion_fixtures() {
+    let root = crate_root();
+    let workspace = root
+        .parent()
+        .and_then(Path::parent)
+        .expect("workspace root");
+    let fixture_root = workspace.join("fixtures/query-executor/pre-inversion-v1");
+    let manifest_path = fixture_root.join("manifest.sha256");
+    assert!(
+        manifest_path.is_file(),
+        "capture the reviewed pre-inversion fixture bundle before moving execution"
+    );
+    let manifest = read(&manifest_path);
+    assert_eq!(manifest.lines().count(), 28, "the reviewed corpus is exact");
+    for line in manifest.lines() {
+        let (_, name) = line
+            .split_once("  ")
+            .expect("sha256 manifest uses canonical two-space separation");
+        assert!(
+            fixture_root.join(name).is_file(),
+            "manifest fixture is present: {name}"
+        );
+    }
+    assert!(
+        workspace
+            .join("crates/riffdb-query-executor/src/storage_executor.rs")
+            .is_file(),
+        "the obligation remains fail-first until executor-over-storage exists"
+    );
+    let generator = read(workspace.join("scripts/generate-query-pre-inversion-fixtures"));
+    assert!(generator.contains("diff -ru \"$fixture_root\" \"$generated\""));
+    assert!(generator.contains("test \"$(find \"$generated\""));
+    let redb_oracle = read(root.join("src/query.rs"));
+    for parity in [
+        "assert_eq!(inverted, snapshot)",
+        "assert_eq!(inverted_second, second)",
+        "assert_eq!(inverted_range_first, range_first)",
+        "assert_eq!(inverted_range_second, range_second)",
+        "assert_eq!(inverted_error, error)",
+    ] {
+        assert!(
+            redb_oracle.contains(parity),
+            "missing parity oracle: {parity}"
+        );
+    }
+}
+
+// req: DEP-001
+#[test]
+fn retired_storage_query_census_never_publishes_false_executor_measurements() {
+    let census = riffdb_storage_redb::query_execute_census_v1();
+    assert_eq!(census.total_count, 0);
+    assert!(
+        census
+            .windows
+            .iter()
+            .all(|window| *window == Default::default())
+    );
+}
+
+// req: DEP-002
+#[test]
+fn redb_startup_produces_evidence_only_and_drives_no_migration() {
+    let startup = production_source(crate_root().join("src/startup.rs"));
+    for forbidden in [
+        "CatalogIndexMigrationInstruction",
+        "read_index_migration_page",
+        "apply_index_migration_batch",
+        "finish_index_migration",
+        "apply_index_migration_instruction",
+    ] {
+        assert!(
+            !startup.contains(forbidden),
+            "startup must produce evidence only and not own {forbidden}"
+        );
+    }
+}
+
 #[test]
 fn sha256_dependency_is_confined_to_reviewed_integrity_boundaries() {
     let source = crate_root().join("src");
@@ -248,11 +352,12 @@ fn only_startup_imports_the_catalog_driver_and_storage_never_imports_ir() {
     }
 
     let source = crate_root().join("src");
-    for entry in fs::read_dir(source).expect("read source directory") {
-        let path = entry.expect("source entry").path();
-        if path.file_name().is_some_and(|name| name == "startup.rs")
-            || path.extension().is_none_or(|extension| extension != "rs")
-        {
+    let startup = source.join("startup.rs");
+    let migration_backend = source.join("startup/index_migration_backend.rs");
+    let mut paths = Vec::new();
+    collect_rust_sources(&source, &mut paths);
+    for path in paths {
+        if path == startup || path == migration_backend {
             continue;
         }
         assert!(
@@ -262,9 +367,9 @@ fn only_startup_imports_the_catalog_driver_and_storage_never_imports_ir() {
         );
     }
 
-    let startup = read(crate_root().join("src/startup.rs"));
-    assert!(startup.contains("CatalogIndexMigrationBackend"));
-    assert!(!startup.contains("ValidatedCatalogHistory"));
+    let migration = read(migration_backend);
+    assert!(migration.contains("CatalogIndexMigrationBackend"));
+    assert!(!migration.contains("ValidatedCatalogHistory"));
 }
 
 #[test]
@@ -617,19 +722,20 @@ fn partial_contract_migration_reopen_is_confined_to_the_witness_gate() {
 
 #[test]
 fn index_migration_rechecks_replacement_charge_before_staging_any_write() {
-    let startup = read(crate_root().join("src/startup.rs"));
-    let charge_check = startup
+    let migration = read(crate_root().join("src/startup/index_migration_backend.rs"));
+    let charge_check = migration
         .find("replacement.encoded_content_charge().get()")
         .expect("migration replacement charge check");
-    let insert = startup[charge_check..]
+    let insert = migration[charge_check..]
         .find("table\n                    .insert(key, replacement.as_bytes())")
         .map(|offset| charge_check + offset)
         .expect("migration replacement insertion");
     assert!(charge_check < insert);
     assert!(
-        startup[charge_check..insert].contains("expected.conservative_v2_envelope_charge().get()")
+        migration[charge_check..insert]
+            .contains("expected.conservative_v2_envelope_charge().get()")
     );
-    assert!(startup[charge_check..insert].contains("return Err(invariant())"));
+    assert!(migration[charge_check..insert].contains("return Err(invariant())"));
 }
 
 #[test]
@@ -740,7 +846,11 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
     assert!(audit_begin.contains("transaction:None"));
     assert!(!audit_begin.contains("database.begin_write()"));
 
-    let startup = without_whitespace(&production_source(source_dir.join("startup.rs")));
+    let startup = without_whitespace(&format!(
+        "{}\n{}",
+        production_source(source_dir.join("startup.rs")),
+        production_source(source_dir.join("startup/index_migration_backend.rs")),
+    ));
     assert!(!startup.contains("transaction.commit()"));
     assert_eq!(startup.matches("commit_durable(transaction)?").count(), 1);
 }
