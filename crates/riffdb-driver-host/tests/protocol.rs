@@ -314,6 +314,7 @@ fn v2_handshake_and_invoke_remain_compact_read_compatible() {
     assert!(!options.accept_packed_result);
 }
 
+// req: DRV-012
 #[test]
 fn structured_application_error_context_is_frozen() {
     let response = DriverResponse::Error {

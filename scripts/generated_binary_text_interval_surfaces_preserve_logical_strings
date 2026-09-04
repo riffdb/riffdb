@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# req: OQ-004, OQ-006, OQ-016, OQ-056, OQ-057, OQ-058, OQ-059, OQ-060, OQ-061
+set -euo pipefail
+
+if [[ "$#" -ne 1 || ! -d "$1" ]]; then
+    echo "usage: ./scripts/generated_binary_text_interval_surfaces_preserve_logical_strings RESULT-DIRECTORY" >&2
+    exit 2
+fi
+results="$1"
+
+# These exact names bind the ADR obligation to independently captured public
+# surface and transport observations from the live acceptance harness.
+required_observations=(
+    binary_interval_rust
+    binary_interval_go
+    binary_interval_typescript
+    binary_interval_python
+    binary_interval_cli
+    binary_interval_mcp
+    binary_interval_mcp_stdio
+    binary_interval_local_driver
+    binary_interval_remote_grpc
+)
+for observation in "${required_observations[@]}"; do
+    case "$observation" in
+        binary_interval_go) path="$results/go.json" ;;
+        binary_interval_typescript) path="$results/typescript.json" ;;
+        binary_interval_python) path="$results/python.json" ;;
+        *) path="$results/$observation.json" ;;
+    esac
+    [[ -s "$path" ]] || {
+        echo "missing executed surface observation: $observation" >&2
+        exit 1
+    }
+done
+
+expected='{"first_cursor":true,"first_page":["aa","b"],"second_cursor":false,"second_page":["é"]}'
+for language in rust go typescript python cli; do
+    case "$language" in
+        rust) observed="$(jq -cS 'del(.surface,.transport)' "$results/binary_interval_rust.json")" ;;
+        cli) observed="$(jq -cS 'del(.surface,.transport)' "$results/binary_interval_cli.json")" ;;
+        *) observed="$(jq -cS '.binary_interval' "$results/$language.json")" ;;
+    esac
+    [[ "$observed" == "$expected" ]] || {
+        echo "$language changed bytewise interval order, strict bounds, cursor continuation, or logical strings: $observed" >&2
+        exit 1
+    }
+done
+
+for transport in hosted_mcp stdio_mcp; do
+    if [[ "$transport" == hosted_mcp ]]; then
+        mcp_path="$results/binary_interval_mcp.json"
+    else
+        mcp_path="$results/binary_interval_mcp_stdio.json"
+    fi
+    jq -e --arg transport "$transport" '
+      .surface == "mcp"
+      and .transport == $transport
+      and .first_page == ["aa", "b"]
+      and .first_cursor == true
+      and .second_page == ["é"]
+      and .second_cursor == false
+      and .raw_shape_exact == true
+    ' "$mcp_path" >/dev/null
+done
+jq -e --argjson expected "$expected" '
+  .surface == "local_driver"
+  and .transport == "driver_host"
+  and .go == $expected
+  and .typescript == $expected
+' "$results/binary_interval_local_driver.json" >/dev/null
+jq -e --argjson expected "$expected" '
+  .surface == "remote_grpc"
+  and .transport == "verified_tls"
+  and (.rust | del(.surface,.transport)) == $expected
+  and .python == $expected
+' "$results/binary_interval_remote_grpc.json" >/dev/null
+
+# Exact equality with this logical observation is also the negative proof: no
+# encoded key, byte array, normalization, or horizon value can cross a surface.
+canonical='["aa","b","é"]'
+for observation in \
+    "$results/binary_interval_rust.json" \
+    "$results/binary_interval_cli.json"; do
+    observed="$(jq -c '[.first_page[],.second_page[]]' "$observation")"
+    [[ "$observed" == "$canonical" ]] || {
+        echo "surface exposed non-logical or divergent values: $observed" >&2
+        exit 1
+    }
+done
+
+echo "Generated Rust, Go, TypeScript, Python, CLI, MCP, local-driver, and remote-gRPC preserve [\"aa\",\"b\",\"é\"] within strict (\"a\",\"😀\") bounds."

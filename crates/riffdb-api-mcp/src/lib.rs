@@ -44,7 +44,9 @@ pub use application_guidance::*;
 pub use builder::{BuilderMcpConfiguration, BuilderMcpServer};
 pub use conversion::*;
 pub use cursor::{
-    MCP_CURSOR_BYTES, MCP_CURSOR_TEXT_BYTES, McpCursorError, decode_mcp_cursor, encode_mcp_cursor,
+    APPLICATION_QUERY_CURSOR_TEXT_BYTES, MCP_CURSOR_BYTES, MCP_CURSOR_TEXT_BYTES, McpCursorError,
+    decode_application_query_cursor, decode_mcp_cursor, encode_application_query_cursor,
+    encode_mcp_cursor,
 };
 pub use handler::*;
 #[cfg(feature = "streamable-http")]
@@ -88,6 +90,7 @@ pub use registry::{
 };
 pub use request_id::{McpRequestId, RequestIdSource, RequestIdSourceError};
 pub use resource_presentation::*;
+pub use schema::{GeneratedNamedQueryPagination, generated_named_query_pagination};
 pub use schema::{SchemaCompositionError, SchemaValidationError};
 pub use schema_bound::*;
 #[cfg(feature = "streamable-http")]

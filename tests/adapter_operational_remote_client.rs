@@ -81,10 +81,12 @@ async fn run_async() -> TestResult<()> {
     ] {
         expect(preflight.is_available(feature), "catalog feature preflight")?;
     }
-    expect(
-        !preflight.is_available(ApplicationCatalogFeature::UnicodeFoldTextPrefixV1),
-        "unavailable feature is explicit",
-    )?;
+    if std::env::var_os("RIFFDB_WP701_BINARY_INTERVAL").is_none() {
+        expect(
+            !preflight.is_available(ApplicationCatalogFeature::UnicodeFoldTextPrefixV1),
+            "unavailable feature is explicit",
+        )?;
+    }
 
     let mut client = generated::AdapterOperationalConformanceClient::new(
         transport,
@@ -92,6 +94,9 @@ async fn run_async() -> TestResult<()> {
         AttemptBudget::new(3).ok_or("attempt budget")?,
     );
     seed(&mut client).await?;
+    if std::env::var_os("RIFFDB_WP701_BINARY_INTERVAL").is_some() {
+        seed_wp701_nullable_transitions(&mut client).await?;
+    }
     if std::env::var_os("RIFFDB_CONFORMANCE_SEED_ONLY").is_some() {
         return Ok(());
     }
@@ -119,6 +124,26 @@ async fn run_async() -> TestResult<()> {
         })
     );
     Ok(())
+}
+
+async fn seed_wp701_nullable_transitions(
+    client: &mut generated::AdapterOperationalConformanceClient,
+) -> TestResult<()> {
+    let transitions = vec![
+        inventory_transition(9, 71, Some("Omega"), Some(250), 2),
+        inventory_transition(10, 72, Some("Aardvark"), Some(50), 5),
+        inventory_transition(11, 73, None, None, 3),
+    ];
+    let transitioned = client
+        .change_inventory_record_state_batch(
+            transitions,
+            GeneratedBatchOptions::new(3).map_err(|error| format!("batch bounds: {error}"))?,
+        )
+        .await?;
+    expect(
+        transitioned.items.iter().all(|item| item.result.is_ok()),
+        "WP-701 nullable transition seed",
+    )
 }
 
 async fn seed(client: &mut generated::AdapterOperationalConformanceClient) -> TestResult<()> {
@@ -195,6 +220,43 @@ async fn seed(client: &mut generated::AdapterOperationalConformanceClient) -> Te
                         seconds: 1_700_000_200,
                         nanos: 0,
                     }),
+                },
+            ],
+        })
+        .await?;
+    client
+        .create_documents(generated::CreateDocumentsInput {
+            request_id: id(130),
+            documents: vec![
+                generated::Document {
+                    site_id: id(35),
+                    document_id: id(131),
+                    title: "a".to_owned(),
+                    published_at: None,
+                },
+                generated::Document {
+                    site_id: id(35),
+                    document_id: id(132),
+                    title: "aa".to_owned(),
+                    published_at: None,
+                },
+                generated::Document {
+                    site_id: id(35),
+                    document_id: id(133),
+                    title: "b".to_owned(),
+                    published_at: None,
+                },
+                generated::Document {
+                    site_id: id(35),
+                    document_id: id(134),
+                    title: "é".to_owned(),
+                    published_at: None,
+                },
+                generated::Document {
+                    site_id: id(35),
+                    document_id: id(135),
+                    title: "😀".to_owned(),
+                    published_at: None,
                 },
             ],
         })

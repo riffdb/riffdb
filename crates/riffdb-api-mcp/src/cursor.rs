@@ -1,11 +1,45 @@
 use std::error::Error;
 use std::fmt;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
 /// Exact byte length of an API-neutral cursor carried by MCP.
 pub const MCP_CURSOR_BYTES: usize = 16;
 
 /// Exact byte length of the canonical lowercase hexadecimal presentation.
 pub const MCP_CURSOR_TEXT_BYTES: usize = MCP_CURSOR_BYTES * 2;
+
+/// Exact byte length of the canonical application-query base64url cursor.
+pub const APPLICATION_QUERY_CURSOR_TEXT_BYTES: usize = 22;
+
+/// Encodes one application-query cursor in canonical unpadded base64url form.
+#[must_use]
+pub fn encode_application_query_cursor(cursor: [u8; MCP_CURSOR_BYTES]) -> String {
+    URL_SAFE_NO_PAD.encode(cursor)
+}
+
+/// Decodes only the canonical 22-character application-query cursor form.
+pub fn decode_application_query_cursor(
+    text: &str,
+) -> Result<[u8; MCP_CURSOR_BYTES], McpCursorError> {
+    if text.len() != APPLICATION_QUERY_CURSOR_TEXT_BYTES
+        || text
+            .bytes()
+            .any(|byte| !matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'))
+    {
+        return Err(McpCursorError);
+    }
+    let bytes: [u8; MCP_CURSOR_BYTES] = URL_SAFE_NO_PAD
+        .decode(text)
+        .map_err(|_| McpCursorError)?
+        .try_into()
+        .map_err(|_| McpCursorError)?;
+    if URL_SAFE_NO_PAD.encode(bytes) != text {
+        return Err(McpCursorError);
+    }
+    Ok(bytes)
+}
 
 /// Encodes one opaque cursor without interpreting its contents.
 #[must_use]

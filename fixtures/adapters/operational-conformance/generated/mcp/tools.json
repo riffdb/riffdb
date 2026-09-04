@@ -1464,7 +1464,7 @@
     }
   ],
   "reactive_tools": [],
-  "schema": "riffdb-generated-application-operations/v2",
+  "schema": "riffdb-generated-application-operations/v5",
   "tools": [
     {
       "annotations": {
@@ -2501,6 +2501,9 @@
           "after": {
             "anyOf": [
               {
+                "maxLength": 22,
+                "minLength": 22,
+                "pattern": "^[A-Za-z0-9_-]{22}$",
                 "type": "string"
               },
               {
@@ -2525,57 +2528,91 @@
         "required": [
           "store_id"
         ],
-        "type": "object"
+        "type": "object",
+        "x-riffdb-continuationParameter": "after"
       },
       "module_hash": "b461ee2f384a4caf685c9f5ca2bd8df3873f9b44d853c4208797608bca190c90",
       "name": "adapter_operational_conformance_list_fga_tuples",
       "operation_name": "ListFgaTuples",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "oneOf": [
-          {
+        "additionalProperties": false,
+        "properties": {
+          "page": {
             "additionalProperties": false,
             "properties": {
-              "outcome": {
-                "const": "Found",
-                "type": "string"
-              },
-              "tuples": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "object": {
-                      "type": "string"
-                    },
-                    "relation": {
-                      "type": "string"
-                    },
-                    "subject": {
-                      "type": "string"
-                    },
-                    "tuple_id": {
-                      "type": "string"
-                    }
+              "next_cursor": {
+                "anyOf": [
+                  {
+                    "maxLength": 22,
+                    "minLength": 22,
+                    "pattern": "^[A-Za-z0-9_-]{22}$",
+                    "type": "string"
                   },
-                  "required": [
-                    "tuple_id",
-                    "object",
-                    "relation",
-                    "subject"
-                  ],
-                  "type": "object"
-                },
-                "maxItems": 25,
-                "type": "array"
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
-              "outcome",
-              "tuples"
+              "next_cursor"
             ],
             "type": "object"
+          },
+          "result": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "outcome": {
+                    "const": "Found",
+                    "type": "string"
+                  },
+                  "tuples": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "object": {
+                          "type": "string"
+                        },
+                        "relation": {
+                          "type": "string"
+                        },
+                        "subject": {
+                          "type": "string"
+                        },
+                        "tuple_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "tuple_id",
+                        "object",
+                        "relation",
+                        "subject"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 25,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "outcome",
+                  "tuples"
+                ],
+                "type": "object"
+              }
+            ]
           }
-        ]
+        },
+        "required": [
+          "result",
+          "page"
+        ],
+        "type": "object",
+        "x-riffdb-resultProfile": "paginated-envelope-v1"
       },
       "title": "Run ListFgaTuples"
     },
@@ -2594,6 +2631,9 @@
           "after": {
             "anyOf": [
               {
+                "maxLength": 22,
+                "minLength": 22,
+                "pattern": "^[A-Za-z0-9_-]{22}$",
                 "type": "string"
               },
               {
@@ -2618,53 +2658,87 @@
         "required": [
           "organization_id"
         ],
-        "type": "object"
+        "type": "object",
+        "x-riffdb-continuationParameter": "after"
       },
       "module_hash": "b461ee2f384a4caf685c9f5ca2bd8df3873f9b44d853c4208797608bca190c90",
       "name": "adapter_operational_conformance_list_pipelines",
       "operation_name": "ListPipelines",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "oneOf": [
-          {
+        "additionalProperties": false,
+        "properties": {
+          "page": {
             "additionalProperties": false,
             "properties": {
-              "outcome": {
-                "const": "Found",
-                "type": "string"
-              },
-              "pipelines": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "name": {
-                      "type": "string"
-                    },
-                    "pipeline_id": {
-                      "type": "string"
-                    },
-                    "state": {
-                      "type": "string"
-                    }
+              "next_cursor": {
+                "anyOf": [
+                  {
+                    "maxLength": 22,
+                    "minLength": 22,
+                    "pattern": "^[A-Za-z0-9_-]{22}$",
+                    "type": "string"
                   },
-                  "required": [
-                    "pipeline_id",
-                    "name",
-                    "state"
-                  ],
-                  "type": "object"
-                },
-                "maxItems": 25,
-                "type": "array"
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
-              "outcome",
-              "pipelines"
+              "next_cursor"
             ],
             "type": "object"
+          },
+          "result": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "outcome": {
+                    "const": "Found",
+                    "type": "string"
+                  },
+                  "pipelines": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "pipeline_id": {
+                          "type": "string"
+                        },
+                        "state": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "pipeline_id",
+                        "name",
+                        "state"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 25,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "outcome",
+                  "pipelines"
+                ],
+                "type": "object"
+              }
+            ]
           }
-        ]
+        },
+        "required": [
+          "result",
+          "page"
+        ],
+        "type": "object",
+        "x-riffdb-resultProfile": "paginated-envelope-v1"
       },
       "title": "Run ListPipelines"
     },
@@ -3118,6 +3192,9 @@
           "after": {
             "anyOf": [
               {
+                "maxLength": 22,
+                "minLength": 22,
+                "pattern": "^[A-Za-z0-9_-]{22}$",
                 "type": "string"
               },
               {
@@ -3136,60 +3213,94 @@
           "site_id",
           "title_prefix"
         ],
-        "type": "object"
+        "type": "object",
+        "x-riffdb-continuationParameter": "after"
       },
       "module_hash": "b461ee2f384a4caf685c9f5ca2bd8df3873f9b44d853c4208797608bca190c90",
       "name": "adapter_operational_conformance_search_documents",
       "operation_name": "SearchDocuments",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "oneOf": [
-          {
+        "additionalProperties": false,
+        "properties": {
+          "page": {
             "additionalProperties": false,
             "properties": {
-              "documents": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "document_id": {
-                      "type": "string"
-                    },
-                    "published_at": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "title": {
-                      "type": "string"
-                    }
+              "next_cursor": {
+                "anyOf": [
+                  {
+                    "maxLength": 22,
+                    "minLength": 22,
+                    "pattern": "^[A-Za-z0-9_-]{22}$",
+                    "type": "string"
                   },
-                  "required": [
-                    "document_id",
-                    "title",
-                    "published_at"
-                  ],
-                  "type": "object"
-                },
-                "maxItems": 25,
-                "type": "array"
-              },
-              "outcome": {
-                "const": "Found",
-                "type": "string"
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
-              "outcome",
-              "documents"
+              "next_cursor"
             ],
             "type": "object"
+          },
+          "result": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "documents": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "document_id": {
+                          "type": "string"
+                        },
+                        "published_at": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "title": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "document_id",
+                        "title",
+                        "published_at"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 25,
+                    "type": "array"
+                  },
+                  "outcome": {
+                    "const": "Found",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "outcome",
+                  "documents"
+                ],
+                "type": "object"
+              }
+            ]
           }
-        ]
+        },
+        "required": [
+          "result",
+          "page"
+        ],
+        "type": "object",
+        "x-riffdb-resultProfile": "paginated-envelope-v1"
       },
       "title": "Run SearchDocuments"
     },

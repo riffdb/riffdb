@@ -1,0 +1,19 @@
+query DocumentsInTitleWindow(
+    $site_id: Document.site_id,
+    $after_title: Document.title,
+    $horizon_title: Document.title,
+    $after: Cursor?,
+) {
+    many documents from Document
+        where site_id == $site_id
+          && title > $after_title
+          && title < $horizon_title
+        order by title asc, document_id asc
+        take 2 after $after
+
+    return Found {
+        documents: documents { document_id title }
+    }
+
+    outcomes Found
+}

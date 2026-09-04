@@ -8,6 +8,7 @@ from uuid import UUID
 from client import (
     AdapterOperationalConformanceClient,
     AuthSessionState,
+    DocumentsInTitleWindowParams,
     ExactDocumentsContainsAscParams,
     ExactDocumentsEndsWithDescParams,
     ExactDocumentsStartsWithAscParams,
@@ -219,6 +220,30 @@ def main() -> None:
             "Better Auth typed session graph",
         )
 
+        interval_first = client.documents_in_title_window(
+            DocumentsInTitleWindowParams(
+                site_id=uid(35), after_title="a", horizon_title="😀"
+            )
+        )
+        require(
+            [row.title for row in interval_first.value.documents] == ["aa", "b"]
+            and interval_first.next_cursor is not None,
+            "binary interval first page",
+        )
+        interval_second = client.documents_in_title_window(
+            DocumentsInTitleWindowParams(
+                site_id=uid(35),
+                after_title="a",
+                horizon_title="😀",
+                after=interval_first.next_cursor,
+            )
+        )
+        require(
+            [row.title for row in interval_second.value.documents] == ["é"]
+            and interval_second.next_cursor is None,
+            "binary interval continuation",
+        )
+
     print(
         json.dumps(
             {
@@ -236,6 +261,12 @@ def main() -> None:
                 "exact_total": True,
                 "numeric_offset": True,
                 "operator_expansions": True,
+                "binary_interval": {
+                    "first_page": ["aa", "b"],
+                    "second_page": ["é"],
+                    "first_cursor": True,
+                    "second_cursor": False,
+                },
                 "adapters": ["mlflow", "openfga", "better-auth", "woodpecker"],
                 "regression_adapters": ["payload"],
             },

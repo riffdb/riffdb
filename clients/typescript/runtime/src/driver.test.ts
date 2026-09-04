@@ -1,3 +1,4 @@
+// req: DRV-008, DRV-012
 import assert from "node:assert/strict";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
@@ -15,7 +16,7 @@ import {
   exactMoney,
   type DriverApplicationIdentity,
 } from "./driver.js";
-import { DriverGeneratedApplicationTransport } from "./index.js";
+import { DriverGeneratedApplicationTransport, InputBudgetError } from "./index.js";
 
 const HASH = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 let fixtureSequence = 0;
@@ -93,8 +94,9 @@ test("driver transport carries a canonical half-mebibyte byte value within its f
 
 test("generated driver transport rejects aggregate canonical bytes before invocation", async () => {
   const fixture = await DriverFixture.start(() => undefined);
+  let driver: DriverApplicationTransport | undefined;
   try {
-    const driver = await DriverApplicationTransport.connect({ socketPath: fixture.path, identity });
+    driver = await DriverApplicationTransport.connect({ socketPath: fixture.path, identity });
     const transport = new DriverGeneratedApplicationTransport(driver);
     await assert.rejects(
       transport.executeCommand({
@@ -119,11 +121,16 @@ test("generated driver transport rejects aggregate canonical bytes before invoca
         outcomeSchemas: { Written: { kind: "record", fields: [] } },
         decodeError: () => new Error("application error"),
       }, 3),
-      /invalid generated RiffDB input/u,
+      (error: unknown) => {
+        assert.ok(error instanceof InputBudgetError);
+        assert.equal(error.cause, "aggregate_canonical_element_bytes");
+        assert.deepEqual(error.path, { collection: "contexts" });
+        return true;
+      },
     );
     assert.equal(fixture.invocations, 0);
-    await driver.shutdown();
   } finally {
+    await driver?.shutdown();
     await fixture.close();
   }
 });

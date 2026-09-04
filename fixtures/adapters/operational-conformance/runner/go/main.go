@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	generated "riffdb.dev/adapter-operational-conformance/generated/go"
@@ -262,7 +263,40 @@ func run() error {
 		return errors.New("Better Auth typed session graph")
 	}
 
+	afterTitle, horizonTitle := "a", "😀"
+	intervalFirst, err := client.DocumentsInTitleWindow(ctx, generated.DocumentsInTitleWindowParams{
+		SiteId: id(35), AfterTitle: afterTitle, HorizonTitle: horizonTitle,
+	}, generated.QueryOptions{})
+	if err != nil {
+		return err
+	}
+	intervalFirstPage, ok := intervalFirst.Value.(generated.DocumentsInTitleWindowFound)
+	if !ok || documentTitles(intervalFirstPage.Documents) != "aa,b" || intervalFirst.NextCursor == "" {
+		return errors.New("binary interval first page")
+	}
+	intervalSecond, err := client.DocumentsInTitleWindow(ctx, generated.DocumentsInTitleWindowParams{
+		SiteId: id(35), AfterTitle: afterTitle, HorizonTitle: horizonTitle, After: &intervalFirst.NextCursor,
+	}, generated.QueryOptions{})
+	if err != nil {
+		return err
+	}
+	intervalSecondPage, ok := intervalSecond.Value.(generated.DocumentsInTitleWindowFound)
+	if !ok || documentTitles(intervalSecondPage.Documents) != "é" || intervalSecond.NextCursor != "" {
+		return errors.New("binary interval continuation")
+	}
+
 	return json.NewEncoder(os.Stdout).Encode(observation("go"))
+}
+
+func documentTitles(documents []struct {
+	DocumentId string
+	Title      string
+}) string {
+	titles := make([]string, 0, len(documents))
+	for _, document := range documents {
+		titles = append(titles, document.Title)
+	}
+	return strings.Join(titles, ",")
 }
 
 func observation(language string) map[string]any {
@@ -272,6 +306,7 @@ func observation(language string) map[string]any {
 		"null_predicate": true, "binary_prefix": true, "exact_aggregates": true,
 		"exact_text_family": true, "exact_predicate_family": true, "nullable_exact_order": true, "exact_total": true, "numeric_offset": true,
 		"operator_expansions": true,
+		"binary_interval":     map[string]any{"first_page": []string{"aa", "b"}, "second_page": []string{"é"}, "first_cursor": true, "second_cursor": false},
 		"adapters":            []string{"mlflow", "openfga", "better-auth", "woodpecker"},
 		"regression_adapters": []string{"payload"},
 	}

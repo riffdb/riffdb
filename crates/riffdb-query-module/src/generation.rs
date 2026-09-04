@@ -937,27 +937,8 @@ fn generate_all_query_tools(
                 return Err(McpToolGenerationError::NameCollision);
             }
             let schemas = query.plan().schemas();
-            let mut properties = Map::new();
-            let mut required = Vec::new();
-            for parameter in schemas.parameters() {
-                properties.insert(
-                    parameter.name().to_owned(),
-                    mcp_query_parameter_schema(query, parameter),
-                );
-                if !parameter.has_default()
-                    && !is_cursor_type(parameter.value_type())
-                    && !is_optional_type(parameter.value_type())
-                {
-                    required.push(Value::String(parameter.name().to_owned()));
-                }
-            }
-            let input = json!({
-                "$schema": MCP_SCHEMA_DIALECT,
-                "type": "object",
-                "additionalProperties": false,
-                "properties": properties,
-                "required": required,
-            });
+            let pagination = mcp_pagination_parameter(query);
+            let input = mcp_query_input_schema(query, pagination);
             let branches = schemas
                 .results()
                 .iter()
@@ -980,10 +961,43 @@ fn generate_all_query_tools(
                     })
                 })
                 .collect::<Vec<_>>();
-            let result = json!({
+            let mut business_result = json!({
                 "$schema": MCP_SCHEMA_DIALECT,
                 "oneOf": branches,
             });
+            let result = if pagination.is_some() {
+                business_result
+                    .as_object_mut()
+                    .expect("generated business result is an object")
+                    .remove("$schema");
+                json!({
+                    "$schema": MCP_SCHEMA_DIALECT,
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "result": business_result,
+                        "page": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                                "next_cursor": mcp_nullable_cursor_schema(),
+                            },
+                            "required": ["next_cursor"],
+                        },
+                    },
+                    "required": ["result", "page"],
+                    "x-riffdb-resultProfile": "paginated-envelope-v1",
+                })
+            } else {
+                business_result
+            };
+            let input_schema =
+                serde_json::to_string(&input).map_err(|_| McpToolGenerationError::InvalidSchema)?;
+            let result_schema = serde_json::to_string(&result)
+                .map_err(|_| McpToolGenerationError::InvalidSchema)?;
+            if input_schema.len() > 65_536 || result_schema.len() > 65_536 {
+                return Err(McpToolGenerationError::InvalidSchema);
+            }
             Ok(GeneratedMcpTool {
                 operation_name: query.name().to_owned(),
                 title: format!("Run {}", query.name()),
@@ -993,10 +1007,8 @@ fn generate_all_query_tools(
                     module.name().as_str()
                 ),
                 name,
-                input_schema: serde_json::to_string(&input)
-                    .map_err(|_| McpToolGenerationError::InvalidSchema)?,
-                result_schema: serde_json::to_string(&result)
-                    .map_err(|_| McpToolGenerationError::InvalidSchema)?,
+                input_schema,
+                result_schema,
                 module_hash: *module.identity().as_bytes(),
             })
         })
@@ -1016,28 +1028,10 @@ pub(crate) fn generated_query_driver_operations(
             if !generated_names.insert(generated_name.clone()) {
                 return Err(McpToolGenerationError::NameCollision);
             }
-            let schemas = query.plan().schemas();
-            let mut properties = Map::new();
-            let mut required = Vec::new();
-            for parameter in schemas.parameters() {
-                properties.insert(
-                    parameter.name().to_owned(),
-                    mcp_query_parameter_schema(query, parameter),
-                );
-                if !parameter.has_default()
-                    && !is_cursor_type(parameter.value_type())
-                    && !is_optional_type(parameter.value_type())
-                {
-                    required.push(Value::String(parameter.name().to_owned()));
-                }
-            }
-            let input = serde_json::to_string(&json!({
-                "$schema": MCP_SCHEMA_DIALECT,
-                "type": "object",
-                "additionalProperties": false,
-                "properties": properties,
-                "required": required,
-            }))
+            let input = serde_json::to_string(&mcp_query_input_schema(
+                query,
+                mcp_pagination_parameter(query),
+            ))
             .map_err(|_| McpToolGenerationError::InvalidSchema)?;
             Ok((
                 query.name().to_owned(),
@@ -1045,6 +1039,69 @@ pub(crate) fn generated_query_driver_operations(
             ))
         })
         .collect()
+}
+
+fn mcp_pagination_parameter(query: &crate::CompiledNamedQuery) -> Option<&str> {
+    if !query.plan().secret_outputs().is_empty() {
+        return None;
+    }
+    query
+        .plan()
+        .schemas()
+        .parameters()
+        .iter()
+        .find(|parameter| is_cursor_type(parameter.value_type()))
+        .map(|parameter| parameter.name())
+}
+
+fn mcp_query_input_schema(query: &crate::CompiledNamedQuery, pagination: Option<&str>) -> Value {
+    let schemas = query.plan().schemas();
+    let mut properties = Map::new();
+    let mut required = Vec::new();
+    for parameter in schemas.parameters() {
+        properties.insert(
+            parameter.name().to_owned(),
+            mcp_query_parameter_schema(query, parameter),
+        );
+        if !parameter.has_default()
+            && !is_cursor_type(parameter.value_type())
+            && !is_optional_type(parameter.value_type())
+        {
+            required.push(Value::String(parameter.name().to_owned()));
+        }
+    }
+    let mut input = json!({
+        "$schema": MCP_SCHEMA_DIALECT,
+        "type": "object",
+        "additionalProperties": false,
+        "properties": properties,
+        "required": required,
+    });
+    if let Some(parameter) = pagination {
+        input
+            .as_object_mut()
+            .expect("generated input is an object")
+            .insert(
+                "x-riffdb-continuationParameter".to_owned(),
+                Value::String(parameter.to_owned()),
+            );
+    }
+    input
+}
+
+fn mcp_cursor_schema() -> Value {
+    json!({
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{22}$",
+        "minLength": 22,
+        "maxLength": 22,
+    })
+}
+
+fn mcp_nullable_cursor_schema() -> Value {
+    json!({
+        "anyOf": [mcp_cursor_schema(), {"type": "null"}],
+    })
 }
 
 /// Generates deterministic mutating MCP operation artifacts for every command.
@@ -1335,6 +1392,15 @@ fn mcp_query_parameter_schema(
             "type": "string",
             "enum": family.members().iter().map(|member| member.variant_name()).collect::<Vec<_>>(),
         });
+    }
+    if matches!(parameter.value_type(), NamedTypeSchema::Cursor) {
+        return mcp_cursor_schema();
+    }
+    if matches!(
+        parameter.value_type(),
+        NamedTypeSchema::Optional(inner) if matches!(inner.as_ref(), NamedTypeSchema::Cursor)
+    ) {
+        return mcp_nullable_cursor_schema();
     }
     mcp_type_schema(parameter.value_type())
 }
@@ -5266,6 +5332,94 @@ mod tests {
         assert!(go.contains("options.Cursor = parameters.After"));
         assert!(typescript.contains("readonly after: string;"));
         assert!(python.contains("after: str\n"));
+    }
+
+    // req: OQ-004, OQ-006, OQ-016, OQ-058, OQ-061
+    #[test]
+    fn generated_paginated_mcp_queries_expose_collision_safe_cursor_envelope() {
+        let contract = compile_contract_source(include_str!(
+            "../../../examples/app-baseline/contracts/ticketdesk.riff"
+        ))
+        .expect("TicketDesk contract");
+        let query = NamedQuerySource::new(
+            "ListComments",
+            include_str!("../../../queries/ticketdesk/list_comments.riffq"),
+        )
+        .expect("query source");
+        let module = QueryModule::compile(
+            QueryModuleCandidate::new(
+                QueryModuleName::new("TicketDeskComments").expect("module name"),
+                QueryModuleVersion::new(1).expect("module version"),
+                vec![query],
+            )
+            .expect("candidate"),
+            &contract,
+        )
+        .expect("module");
+
+        let [tool] = generate_mcp_tools(&module)
+            .expect("MCP generation")
+            .try_into()
+            .expect("one generated tool");
+        let input: Value = serde_json::from_str(&tool.input_schema).expect("input schema");
+        let result: Value = serde_json::from_str(&tool.result_schema).expect("result schema");
+
+        assert_eq!(input["x-riffdb-continuationParameter"], "after");
+        assert!(
+            !input["required"]
+                .as_array()
+                .expect("required")
+                .contains(&json!("after"))
+        );
+        assert_eq!(
+            input["properties"]["after"],
+            json!({
+                "anyOf": [{
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{22}$",
+                    "minLength": 22,
+                    "maxLength": 22,
+                }, {"type": "null"}],
+            })
+        );
+        assert_eq!(result["x-riffdb-resultProfile"], "paginated-envelope-v1");
+        assert_eq!(result["additionalProperties"], false);
+        assert_eq!(result["required"], json!(["result", "page"]));
+        assert!(result["properties"]["result"]["oneOf"].is_array());
+        assert_eq!(
+            result["properties"]["page"],
+            json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "next_cursor": {
+                        "anyOf": [{
+                            "type": "string",
+                            "pattern": "^[A-Za-z0-9_-]{22}$",
+                            "minLength": 22,
+                            "maxLength": 22,
+                        }, {"type": "null"}],
+                    },
+                },
+                "required": ["next_cursor"],
+            })
+        );
+        assert!(tool.input_schema.len() <= 65_536);
+        assert!(tool.result_schema.len() <= 65_536);
+
+        let business = serde_json::to_string(&json!({"outcome":"Found"})).expect("business");
+        let with_cursor = serde_json::to_string(&json!({
+            "result": {"outcome":"Found"},
+            "page": {"next_cursor":"AAAAAAAAAAAAAAAAAAAAAA"},
+        }))
+        .expect("cursor envelope");
+        let final_page = serde_json::to_string(&json!({
+            "result": {"outcome":"Found"},
+            "page": {"next_cursor": null},
+        }))
+        .expect("final envelope");
+        assert_eq!(with_cursor.len(), business.len() + 59);
+        assert_eq!(final_page.len(), business.len() + 39);
     }
 
     // req: OQ-031, SAFE-001

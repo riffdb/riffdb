@@ -214,6 +214,23 @@ impl ApplicationCatalog {
             serde_json::from_slice(tools).map_err(|_| CatalogError::InvalidArtifact)?;
         let tools: GeneratedCatalog = serde_json::from_value(tools_value.clone())
             .map_err(|_| CatalogError::InvalidArtifact)?;
+        let has_pagination = tools
+            .tools
+            .iter()
+            .map(generated_query_is_paginated)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .any(|value| value);
+        if tools
+            .sdk_tools
+            .iter()
+            .map(generated_query_is_paginated)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .any(|value| value)
+        {
+            return Err(CatalogError::IdentityMismatch);
+        }
         let declared_catalog = lock.artifacts.iter().any(|artifact| {
             artifact.kind == "mcp"
                 && parse_hash(&artifact.content_hash).ok() == Some(tools_file_hash)
@@ -248,12 +265,14 @@ impl ApplicationCatalog {
             "riffdb-generated-application-operations/v2"
                 | "riffdb-generated-application-operations/v3"
                 | "riffdb-generated-application-operations/v4"
+                | "riffdb-generated-application-operations/v5"
         ) || (tools.schema == "riffdb-generated-application-operations/v2"
-            && (!tools.sdk_tools.is_empty() || !tools.vector_tools.is_empty()))
+            && (!tools.sdk_tools.is_empty() || !tools.vector_tools.is_empty() || has_pagination))
             || (tools.schema == "riffdb-generated-application-operations/v3"
-                && (tools.sdk_tools.is_empty() || !tools.vector_tools.is_empty()))
+                && (tools.sdk_tools.is_empty() || !tools.vector_tools.is_empty() || has_pagination))
             || (tools.schema == "riffdb-generated-application-operations/v4"
-                && tools.vector_tools.is_empty())
+                && (tools.vector_tools.is_empty() || has_pagination))
+            || (tools.schema == "riffdb-generated-application-operations/v5" && !has_pagination)
             || lock.exact_manifest_hash != tools.application_manifest_hash
             || manifest.contract.lineage != lock.contract.lineage
             || manifest.contract.version != lock.contract.version
@@ -570,6 +589,20 @@ impl ApplicationCatalog {
     #[must_use]
     pub fn contract_bundle_hash_hex(&self) -> String {
         hex(&self.contract_bundle_hash)
+    }
+}
+
+fn generated_query_is_paginated(tool: &GeneratedTool) -> Result<bool, CatalogError> {
+    let input_profile = tool.input_schema.get("x-riffdb-continuationParameter");
+    let result_profile = tool.result_schema.get("x-riffdb-resultProfile");
+    match (input_profile, result_profile) {
+        (None, None) => Ok(false),
+        (Some(Value::String(parameter)), Some(Value::String(profile)))
+            if !parameter.is_empty() && profile == "paginated-envelope-v1" =>
+        {
+            Ok(true)
+        }
+        _ => Err(CatalogError::InvalidArtifact),
     }
 }
 

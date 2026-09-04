@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# req: OQ-004, OQ-006, OQ-016, OQ-058, OQ-061
+set -euo pipefail
+
+if [[ "$#" -ne 1 || ! -d "$1" ]]; then
+    echo "usage: ./scripts/generated_mcp_query_cursor_round_trip_preserves_authority_and_redaction RESULT-DIRECTORY" >&2
+    exit 2
+fi
+results="$1"
+hosted="$results/mcp-hosted-proof.json"
+stdio="$results/mcp-stdio-proof.json"
+hosted_auth="$results/mcp-auth-first-output.json"
+stdio_auth="$results/mcp-stdio-auth-first.json"
+for proof in "$hosted" "$stdio" "$hosted_auth" "$stdio_auth"; do
+    [[ -s "$proof" ]] || {
+        echo "missing executed MCP pagination proof: $proof" >&2
+        exit 1
+    }
+done
+
+invalid_cursor="AAAAAAAAAAAAAAAAAAAAAB"
+for proof_and_transport in "$hosted:hosted_mcp" "$stdio:stdio_mcp"; do
+    proof="${proof_and_transport%%:*}"
+    transport="${proof_and_transport#*:}"
+    jq -e --arg transport "$transport" --arg invalid "$invalid_cursor" '
+      def closed_error:
+        if has("error") then
+          (has("result") | not) and (.error | type == "object")
+        else
+          .result.isError == true
+          and (.result | has("structuredContent") | not)
+        end;
+      def contains_forbidden_physical_key:
+        [.. | objects | keys[]
+          | select(test("^(encoded_key|physical_key|key_bytes|cursor_bytes|index_entry_key)$"))]
+        | length > 0;
+      .first.result.structuredContent.page.next_cursor as $cursor
+      |
+      .schema == "riffdb.mcp-paginated-query-proof/v1"
+      and .transport == $transport
+      and (.first.result.isError == false)
+      and (.first.result.structuredContent | keys) == ["page", "result"]
+      and (.first.result.structuredContent.result | keys) == ["documents", "outcome"]
+      and [.first.result.structuredContent.result.documents[].title] == ["aa", "b"]
+      and (.first.result.structuredContent.result.documents
+           | all((keys | sort) == ["document_id", "title"]))
+      and (.first.result.structuredContent.page.next_cursor
+           | type == "string" and test("^[A-Za-z0-9_-]{22}$"))
+      and (.first.result.content | length) == 1
+      and (.first.result.content[0].text | fromjson) == .first.result.structuredContent
+      and (.second.result.isError == false)
+      and [.second.result.structuredContent.result.documents[].title] == ["é"]
+      and .second.result.structuredContent.page == {"next_cursor":null}
+      and (.second.result.content | length) == 1
+      and (.second.result.content[0].text | fromjson) == .second.result.structuredContent
+      and (.first | contains_forbidden_physical_key | not)
+      and (.second | contains_forbidden_physical_key | not)
+      and (.malformed | closed_error)
+      and (.cross_query | closed_error)
+      and (.cross_database | closed_error)
+      and (.stale | closed_error)
+      and (.authorization | closed_error)
+      and ([.malformed,.cross_query,.cross_database,.stale,.authorization]
+           | all((contains_forbidden_physical_key | not)))
+      and ([.malformed,.cross_query,.cross_database,.stale,.authorization]
+           | all((tostring | contains($invalid) | not)))
+      and ([.malformed,.cross_query,.cross_database,.stale,.authorization]
+           | all((tostring | contains($cursor) | not)))
+    ' "$proof" >/dev/null
+done
+
+hosted_cursor="$(jq -er '.first.result.structuredContent.page.next_cursor' "$hosted")"
+stdio_cursor="$(jq -er '.first.result.structuredContent.page.next_cursor' "$stdio")"
+hosted_auth_cursor="$(jq -er '.result.structuredContent.page.next_cursor' "$hosted_auth")"
+stdio_auth_cursor="$(jq -er '.result.structuredContent.page.next_cursor' "$stdio_auth")"
+for proof in "$hosted" "$stdio"; do
+    for forbidden in "$invalid_cursor" "$hosted_cursor" "$stdio_cursor" \
+        "$hosted_auth_cursor" "$stdio_auth_cursor"; do
+        if jq -e --arg forbidden "$forbidden" \
+            '[.malformed,.cross_query,.cross_database,.stale,.authorization]
+             | tostring | contains($forbidden)' "$proof" >/dev/null; then
+            echo "MCP failure disclosed a submitted cursor value: $proof" >&2
+            exit 1
+        fi
+    done
+done
+for log in "$results/server.stderr" "$results/server-stdio.stderr" "$results/mcp-stdio.stderr"; do
+    [[ -f "$log" ]] || {
+        echo "missing redaction log: $log" >&2
+        exit 1
+    }
+    for forbidden in "$invalid_cursor" "$hosted_cursor" "$stdio_cursor" \
+        "$hosted_auth_cursor" "$stdio_auth_cursor"; do
+        if rg -F -- "$forbidden" "$log" >/dev/null; then
+            echo "MCP cursor or submitted value reached diagnostics: $log" >&2
+            exit 1
+        fi
+    done
+done
+
+echo "Hosted and stdio MCP preserve one opaque cursor authority and fail closed without value disclosure."

@@ -42,7 +42,16 @@ cargo machete
 ./scripts/check-three-places --self-test
 ./scripts/expansion_completes_every_driver_before_release_or_refuses_whole
 ./scripts/expansion_memory_redb_parity_matches_independent_oracle
-./scripts/check-operator-acceptance
+wp701_proof_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-wp701-ci.XXXXXX")"
+cleanup_wp701_proof_root() {
+    rm -rf -- "$wp701_proof_root"
+}
+trap cleanup_wp701_proof_root EXIT INT TERM
+RIFFDB_CONFORMANCE_RESULT_DIR="$wp701_proof_root" ./scripts/check-operator-acceptance
+./scripts/generated_binary_text_interval_surfaces_preserve_logical_strings "$wp701_proof_root"
+./scripts/generated_mcp_query_cursor_round_trip_preserves_authority_and_redaction "$wp701_proof_root"
+cleanup_wp701_proof_root
+trap - EXIT INT TERM
 ./scripts/check-requirement-coverage
 ./scripts/check-adr-obligations
 ./scripts/adr-index --check

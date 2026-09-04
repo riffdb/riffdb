@@ -2642,7 +2642,7 @@
       "title": "status TriageTicket"
     }
   ],
-  "schema": "riffdb-generated-application-operations/v2",
+  "schema": "riffdb-generated-application-operations/v5",
   "tools": [
     {
       "annotations": {
@@ -3102,6 +3102,9 @@
           "after": {
             "anyOf": [
               {
+                "maxLength": 22,
+                "minLength": 22,
+                "pattern": "^[A-Za-z0-9_-]{22}$",
                 "type": "string"
               },
               {
@@ -3125,57 +3128,91 @@
           "organization_id",
           "ticket_id"
         ],
-        "type": "object"
+        "type": "object",
+        "x-riffdb-continuationParameter": "after"
       },
       "module_hash": "07e927f735f4b4501c8c6d06458716ebca1ffbd451ec72a517c2b968e71612b4",
       "name": "ticketdesk_list_comments",
       "operation_name": "ListComments",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "oneOf": [
-          {
+        "additionalProperties": false,
+        "properties": {
+          "page": {
             "additionalProperties": false,
             "properties": {
-              "comments": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "author_id": {
-                      "type": "string"
-                    },
-                    "body": {
-                      "type": "string"
-                    },
-                    "comment_id": {
-                      "type": "string"
-                    },
-                    "created_at": {
-                      "type": "string"
-                    }
+              "next_cursor": {
+                "anyOf": [
+                  {
+                    "maxLength": 22,
+                    "minLength": 22,
+                    "pattern": "^[A-Za-z0-9_-]{22}$",
+                    "type": "string"
                   },
-                  "required": [
-                    "comment_id",
-                    "body",
-                    "author_id",
-                    "created_at"
-                  ],
-                  "type": "object"
-                },
-                "maxItems": 499,
-                "type": "array"
-              },
-              "outcome": {
-                "const": "Found",
-                "type": "string"
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
-              "outcome",
-              "comments"
+              "next_cursor"
             ],
             "type": "object"
+          },
+          "result": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "comments": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "author_id": {
+                          "type": "string"
+                        },
+                        "body": {
+                          "type": "string"
+                        },
+                        "comment_id": {
+                          "type": "string"
+                        },
+                        "created_at": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "comment_id",
+                        "body",
+                        "author_id",
+                        "created_at"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 499,
+                    "type": "array"
+                  },
+                  "outcome": {
+                    "const": "Found",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "outcome",
+                  "comments"
+                ],
+                "type": "object"
+              }
+            ]
           }
-        ]
+        },
+        "required": [
+          "result",
+          "page"
+        ],
+        "type": "object",
+        "x-riffdb-resultProfile": "paginated-envelope-v1"
       },
       "title": "Run ListComments"
     },
@@ -3194,6 +3231,9 @@
           "after": {
             "anyOf": [
               {
+                "maxLength": 22,
+                "minLength": 22,
+                "pattern": "^[A-Za-z0-9_-]{22}$",
                 "type": "string"
               },
               {
@@ -3226,69 +3266,103 @@
           "project_id",
           "statuses"
         ],
-        "type": "object"
+        "type": "object",
+        "x-riffdb-continuationParameter": "after"
       },
       "module_hash": "07e927f735f4b4501c8c6d06458716ebca1ffbd451ec72a517c2b968e71612b4",
       "name": "ticketdesk_list_tickets",
       "operation_name": "ListTickets",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "oneOf": [
-          {
+        "additionalProperties": false,
+        "properties": {
+          "page": {
             "additionalProperties": false,
             "properties": {
-              "outcome": {
-                "const": "Found",
-                "type": "string"
-              },
-              "tickets": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "assignee_id": {
-                      "type": "string"
-                    },
-                    "project_id": {
-                      "type": "string"
-                    },
-                    "reporter_id": {
-                      "type": "string"
-                    },
-                    "status": {
-                      "type": "string"
-                    },
-                    "ticket_id": {
-                      "type": "string"
-                    },
-                    "title": {
-                      "type": "string"
-                    },
-                    "updated_at": {
-                      "type": "string"
-                    }
+              "next_cursor": {
+                "anyOf": [
+                  {
+                    "maxLength": 22,
+                    "minLength": 22,
+                    "pattern": "^[A-Za-z0-9_-]{22}$",
+                    "type": "string"
                   },
-                  "required": [
-                    "ticket_id",
-                    "project_id",
-                    "title",
-                    "status",
-                    "updated_at",
-                    "reporter_id",
-                    "assignee_id"
-                  ],
-                  "type": "object"
-                },
-                "maxItems": 499,
-                "type": "array"
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
-              "outcome",
-              "tickets"
+              "next_cursor"
             ],
             "type": "object"
+          },
+          "result": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "outcome": {
+                    "const": "Found",
+                    "type": "string"
+                  },
+                  "tickets": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "assignee_id": {
+                          "type": "string"
+                        },
+                        "project_id": {
+                          "type": "string"
+                        },
+                        "reporter_id": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string"
+                        },
+                        "ticket_id": {
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "updated_at": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "ticket_id",
+                        "project_id",
+                        "title",
+                        "status",
+                        "updated_at",
+                        "reporter_id",
+                        "assignee_id"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 499,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "outcome",
+                  "tickets"
+                ],
+                "type": "object"
+              }
+            ]
           }
-        ]
+        },
+        "required": [
+          "result",
+          "page"
+        ],
+        "type": "object",
+        "x-riffdb-resultProfile": "paginated-envelope-v1"
       },
       "title": "Run ListTickets"
     },
@@ -3307,6 +3381,9 @@
           "after": {
             "anyOf": [
               {
+                "maxLength": 22,
+                "minLength": 22,
+                "pattern": "^[A-Za-z0-9_-]{22}$",
                 "type": "string"
               },
               {
@@ -3339,69 +3416,103 @@
           "assignee_id",
           "statuses"
         ],
-        "type": "object"
+        "type": "object",
+        "x-riffdb-continuationParameter": "after"
       },
       "module_hash": "07e927f735f4b4501c8c6d06458716ebca1ffbd451ec72a517c2b968e71612b4",
       "name": "ticketdesk_list_tickets_by_assignee",
       "operation_name": "ListTicketsByAssignee",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "oneOf": [
-          {
+        "additionalProperties": false,
+        "properties": {
+          "page": {
             "additionalProperties": false,
             "properties": {
-              "outcome": {
-                "const": "Found",
-                "type": "string"
-              },
-              "tickets": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "assignee_id": {
-                      "type": "string"
-                    },
-                    "project_id": {
-                      "type": "string"
-                    },
-                    "reporter_id": {
-                      "type": "string"
-                    },
-                    "status": {
-                      "type": "string"
-                    },
-                    "ticket_id": {
-                      "type": "string"
-                    },
-                    "title": {
-                      "type": "string"
-                    },
-                    "updated_at": {
-                      "type": "string"
-                    }
+              "next_cursor": {
+                "anyOf": [
+                  {
+                    "maxLength": 22,
+                    "minLength": 22,
+                    "pattern": "^[A-Za-z0-9_-]{22}$",
+                    "type": "string"
                   },
-                  "required": [
-                    "ticket_id",
-                    "project_id",
-                    "title",
-                    "status",
-                    "updated_at",
-                    "reporter_id",
-                    "assignee_id"
-                  ],
-                  "type": "object"
-                },
-                "maxItems": 499,
-                "type": "array"
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
-              "outcome",
-              "tickets"
+              "next_cursor"
             ],
             "type": "object"
+          },
+          "result": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "outcome": {
+                    "const": "Found",
+                    "type": "string"
+                  },
+                  "tickets": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "assignee_id": {
+                          "type": "string"
+                        },
+                        "project_id": {
+                          "type": "string"
+                        },
+                        "reporter_id": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string"
+                        },
+                        "ticket_id": {
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "updated_at": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "ticket_id",
+                        "project_id",
+                        "title",
+                        "status",
+                        "updated_at",
+                        "reporter_id",
+                        "assignee_id"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 499,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "outcome",
+                  "tickets"
+                ],
+                "type": "object"
+              }
+            ]
           }
-        ]
+        },
+        "required": [
+          "result",
+          "page"
+        ],
+        "type": "object",
+        "x-riffdb-resultProfile": "paginated-envelope-v1"
       },
       "title": "Run ListTicketsByAssignee"
     },
@@ -3420,6 +3531,9 @@
           "after": {
             "anyOf": [
               {
+                "maxLength": 22,
+                "minLength": 22,
+                "pattern": "^[A-Za-z0-9_-]{22}$",
                 "type": "string"
               },
               {
@@ -3438,49 +3552,83 @@
           "organization_id",
           "project_id"
         ],
-        "type": "object"
+        "type": "object",
+        "x-riffdb-continuationParameter": "after"
       },
       "module_hash": "07e927f735f4b4501c8c6d06458716ebca1ffbd451ec72a517c2b968e71612b4",
       "name": "ticketdesk_project_members",
       "operation_name": "ProjectMembers",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "oneOf": [
-          {
+        "additionalProperties": false,
+        "properties": {
+          "page": {
             "additionalProperties": false,
             "properties": {
-              "members": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "role": {
-                      "type": "string"
-                    },
-                    "user_id": {
-                      "type": "string"
-                    }
+              "next_cursor": {
+                "anyOf": [
+                  {
+                    "maxLength": 22,
+                    "minLength": 22,
+                    "pattern": "^[A-Za-z0-9_-]{22}$",
+                    "type": "string"
                   },
-                  "required": [
-                    "user_id",
-                    "role"
-                  ],
-                  "type": "object"
-                },
-                "maxItems": 100,
-                "type": "array"
-              },
-              "outcome": {
-                "const": "Found",
-                "type": "string"
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
-              "outcome",
-              "members"
+              "next_cursor"
             ],
             "type": "object"
+          },
+          "result": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "members": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "role": {
+                          "type": "string"
+                        },
+                        "user_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "user_id",
+                        "role"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 100,
+                    "type": "array"
+                  },
+                  "outcome": {
+                    "const": "Found",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "outcome",
+                  "members"
+                ],
+                "type": "object"
+              }
+            ]
           }
-        ]
+        },
+        "required": [
+          "result",
+          "page"
+        ],
+        "type": "object",
+        "x-riffdb-resultProfile": "paginated-envelope-v1"
       },
       "title": "Run ProjectMembers"
     },
@@ -3842,6 +3990,9 @@
           "comments_after": {
             "anyOf": [
               {
+                "maxLength": 22,
+                "minLength": 22,
+                "pattern": "^[A-Za-z0-9_-]{22}$",
                 "type": "string"
               },
               {
@@ -3860,20 +4011,151 @@
           "organization_id",
           "ticket_id"
         ],
-        "type": "object"
+        "type": "object",
+        "x-riffdb-continuationParameter": "comments_after"
       },
       "module_hash": "07e927f735f4b4501c8c6d06458716ebca1ffbd451ec72a517c2b968e71612b4",
       "name": "ticketdesk_ticket_page_paged",
       "operation_name": "TicketPagePaged",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "oneOf": [
-          {
+        "additionalProperties": false,
+        "properties": {
+          "page": {
             "additionalProperties": false,
             "properties": {
-              "assignee": {
+              "next_cursor": {
                 "anyOf": [
                   {
+                    "maxLength": 22,
+                    "minLength": 22,
+                    "pattern": "^[A-Za-z0-9_-]{22}$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "next_cursor"
+            ],
+            "type": "object"
+          },
+          "result": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "assignee": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "display_name": {
+                            "type": "string"
+                          },
+                          "user_id": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "user_id",
+                          "display_name"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "comments": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "author_id": {
+                          "type": "string"
+                        },
+                        "body": {
+                          "type": "string"
+                        },
+                        "comment_id": {
+                          "type": "string"
+                        },
+                        "created_at": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "comment_id",
+                        "body",
+                        "author_id",
+                        "created_at"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "labels": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "label_id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "label_id",
+                        "name"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 50,
+                    "type": "array"
+                  },
+                  "organization": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "organization_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "organization_id",
+                      "name"
+                    ],
+                    "type": "object"
+                  },
+                  "outcome": {
+                    "const": "Found",
+                    "type": "string"
+                  },
+                  "project": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "project_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "project_id",
+                      "name"
+                    ],
+                    "type": "object"
+                  },
+                  "reporter": {
                     "additionalProperties": false,
                     "properties": {
                       "display_name": {
@@ -3889,183 +4171,86 @@
                     ],
                     "type": "object"
                   },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "comments": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "author_id": {
-                      "type": "string"
+                  "ticket": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "created_at": {
+                        "type": "string"
+                      },
+                      "project_id": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string"
+                      },
+                      "ticket_id": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "updated_at": {
+                        "type": "string"
+                      }
                     },
-                    "body": {
-                      "type": "string"
-                    },
-                    "comment_id": {
-                      "type": "string"
-                    },
-                    "created_at": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "comment_id",
-                    "body",
-                    "author_id",
-                    "created_at"
-                  ],
-                  "type": "object"
-                },
-                "maxItems": 50,
-                "type": "array"
-              },
-              "labels": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "label_id": {
-                      "type": "string"
-                    },
-                    "name": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "label_id",
-                    "name"
-                  ],
-                  "type": "object"
-                },
-                "maxItems": 50,
-                "type": "array"
-              },
-              "organization": {
-                "additionalProperties": false,
-                "properties": {
-                  "name": {
-                    "type": "string"
-                  },
-                  "organization_id": {
-                    "type": "string"
+                    "required": [
+                      "ticket_id",
+                      "project_id",
+                      "title",
+                      "status",
+                      "created_at",
+                      "updated_at"
+                    ],
+                    "type": "object"
                   }
                 },
                 "required": [
-                  "organization_id",
-                  "name"
+                  "outcome",
+                  "ticket",
+                  "project",
+                  "organization",
+                  "reporter",
+                  "assignee",
+                  "comments",
+                  "labels"
                 ],
                 "type": "object"
               },
-              "outcome": {
-                "const": "Found",
-                "type": "string"
-              },
-              "project": {
+              {
                 "additionalProperties": false,
                 "properties": {
-                  "name": {
-                    "type": "string"
-                  },
-                  "project_id": {
+                  "outcome": {
+                    "const": "NotFound",
                     "type": "string"
                   }
                 },
                 "required": [
-                  "project_id",
-                  "name"
+                  "outcome"
                 ],
                 "type": "object"
               },
-              "reporter": {
+              {
                 "additionalProperties": false,
                 "properties": {
-                  "display_name": {
-                    "type": "string"
-                  },
-                  "user_id": {
+                  "outcome": {
+                    "const": "IntegrityFailure",
                     "type": "string"
                   }
                 },
                 "required": [
-                  "user_id",
-                  "display_name"
-                ],
-                "type": "object"
-              },
-              "ticket": {
-                "additionalProperties": false,
-                "properties": {
-                  "created_at": {
-                    "type": "string"
-                  },
-                  "project_id": {
-                    "type": "string"
-                  },
-                  "status": {
-                    "type": "string"
-                  },
-                  "ticket_id": {
-                    "type": "string"
-                  },
-                  "title": {
-                    "type": "string"
-                  },
-                  "updated_at": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "ticket_id",
-                  "project_id",
-                  "title",
-                  "status",
-                  "created_at",
-                  "updated_at"
+                  "outcome"
                 ],
                 "type": "object"
               }
-            },
-            "required": [
-              "outcome",
-              "ticket",
-              "project",
-              "organization",
-              "reporter",
-              "assignee",
-              "comments",
-              "labels"
-            ],
-            "type": "object"
-          },
-          {
-            "additionalProperties": false,
-            "properties": {
-              "outcome": {
-                "const": "NotFound",
-                "type": "string"
-              }
-            },
-            "required": [
-              "outcome"
-            ],
-            "type": "object"
-          },
-          {
-            "additionalProperties": false,
-            "properties": {
-              "outcome": {
-                "const": "IntegrityFailure",
-                "type": "string"
-              }
-            },
-            "required": [
-              "outcome"
-            ],
-            "type": "object"
+            ]
           }
-        ]
+        },
+        "required": [
+          "result",
+          "page"
+        ],
+        "type": "object",
+        "x-riffdb-resultProfile": "paginated-envelope-v1"
       },
       "title": "Run TicketPagePaged"
     },

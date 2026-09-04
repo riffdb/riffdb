@@ -1,5 +1,13 @@
 # Generated operational queries
 
+Generated MCP tools for a paginated named query return the business outcome
+under `result` and the sole nullable opaque continuation under
+`page.next_cursor`. Reuse a non-null cursor only through the compiler-declared
+input cursor property; the service retains snapshot, order, expiry, and
+authorization authority. Hosted and stdio MCP use this same envelope. Unpaged
+tools retain their flat generated result, and generated SDK query options keep
+their existing typed cursor behavior.
+
 Operational RiffQL gives an application a finite set of compiler-owned read
 plans without accepting a predicate tree, field name, operator, order clause,
 or index from the caller. A deployed named query may expose typed optional

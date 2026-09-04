@@ -358,6 +358,114 @@ pub(crate) fn validate_schema_source(root: &Value) -> Result<(), SchemaValidatio
     validate_schema_node(root, definitions, 0, true, &mut visited)
 }
 
+/// Compiler-owned pagination metadata carried only by generated named-query schemas.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GeneratedNamedQueryPagination {
+    parameter: String,
+    accepts_null: bool,
+}
+
+impl GeneratedNamedQueryPagination {
+    /// Exact compiler-declared cursor property name.
+    #[must_use]
+    pub fn parameter(&self) -> &str {
+        &self.parameter
+    }
+
+    /// Whether explicit JSON null denotes the first page.
+    #[must_use]
+    pub const fn accepts_null(&self) -> bool {
+        self.accepts_null
+    }
+}
+
+/// Validates the paired compiler-owned input/result pagination profiles.
+pub fn generated_named_query_pagination(
+    input: &SchemaDocument,
+    result: &SchemaDocument,
+) -> Result<Option<GeneratedNamedQueryPagination>, SchemaValidationError> {
+    let input = input.json_object();
+    let result = result.json_object();
+    let parameter = input.get("x-riffdb-continuationParameter");
+    let profile = result.get("x-riffdb-resultProfile");
+    match (parameter, profile) {
+        (None, None) => return Ok(None),
+        (Some(_), Some(Value::String(profile))) if profile == "paginated-envelope-v1" => {}
+        _ => return Err(SchemaValidationError),
+    }
+    let parameter = parameter
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or(SchemaValidationError)?;
+    if input.get("type").and_then(Value::as_str) != Some("object")
+        || input.get("additionalProperties") != Some(&Value::Bool(false))
+        || input
+            .get("required")
+            .and_then(Value::as_array)
+            .is_none_or(|required| {
+                required
+                    .iter()
+                    .any(|value| value.as_str() == Some(parameter))
+            })
+    {
+        return Err(SchemaValidationError);
+    }
+    let cursor_schema = input
+        .get("properties")
+        .and_then(Value::as_object)
+        .and_then(|properties| properties.get(parameter))
+        .ok_or(SchemaValidationError)?;
+    let accepts_null = if cursor_schema == &application_cursor_schema() {
+        false
+    } else if cursor_schema == &nullable_application_cursor_schema() {
+        true
+    } else {
+        return Err(SchemaValidationError);
+    };
+
+    let result_properties = result
+        .get("properties")
+        .and_then(Value::as_object)
+        .ok_or(SchemaValidationError)?;
+    if result.len() != 6
+        || result.get("$schema").and_then(Value::as_str) != Some(DIALECT)
+        || result.get("type").and_then(Value::as_str) != Some("object")
+        || result.get("additionalProperties") != Some(&Value::Bool(false))
+        || result.get("required") != Some(&serde_json::json!(["result", "page"]))
+        || result_properties.len() != 2
+        || !result_properties.contains_key("result")
+        || result_properties.get("page") != Some(&pagination_page_schema())
+    {
+        return Err(SchemaValidationError);
+    }
+    Ok(Some(GeneratedNamedQueryPagination {
+        parameter: parameter.to_owned(),
+        accepts_null,
+    }))
+}
+
+fn application_cursor_schema() -> Value {
+    serde_json::json!({
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{22}$",
+        "minLength": 22,
+        "maxLength": 22,
+    })
+}
+
+fn nullable_application_cursor_schema() -> Value {
+    serde_json::json!({"anyOf": [application_cursor_schema(), {"type": "null"}]})
+}
+
+fn pagination_page_schema() -> Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {"next_cursor": nullable_application_cursor_schema()},
+        "required": ["next_cursor"],
+    })
+}
+
 fn validate_schema_node(
     schema: &Value,
     definitions: Option<&Map<String, Value>>,
@@ -543,7 +651,11 @@ fn is_schema_keyword(key: &str, root: bool) -> bool {
             | "x-riffdb-strictlyIncreasingBy"
             | "x-riffdb-uniqueBy"
             | "x-riffdb-vectorDimension"
-    ) || (root && matches!(key, "$defs" | "$schema"))
+    ) || (root
+        && matches!(
+            key,
+            "$defs" | "$schema" | "x-riffdb-continuationParameter" | "x-riffdb-resultProfile"
+        ))
 }
 
 fn validate_nonnegative_keyword(
@@ -616,6 +728,12 @@ fn validate_extension_shapes(object: &Map<String, Value>) -> Result<(), SchemaVa
     if object
         .get("description")
         .is_some_and(|value| value.as_str().is_none())
+        || object
+            .get("x-riffdb-continuationParameter")
+            .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
+        || object
+            .get("x-riffdb-resultProfile")
+            .is_some_and(|value| value.as_str() != Some("paginated-envelope-v1"))
     {
         return Err(SchemaValidationError);
     }
@@ -1148,6 +1266,7 @@ fn accepted_pattern(pattern: &str) -> bool {
             | "^[!-~]+$"
             | "^[0-9a-f]{32}$"
             | "^[0-9a-f]{64}$"
+            | "^[A-Za-z0-9_-]{22}$"
             | "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
             | "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
             | "^[A-Z]{3}$"
@@ -1160,6 +1279,12 @@ fn accepted_pattern(pattern: &str) -> bool {
 
 fn pattern_matches(pattern: &str, text: &str) -> bool {
     match pattern {
+        "^[A-Za-z0-9_-]{22}$" => {
+            text.len() == 22
+                && text.bytes().all(
+                    |byte| matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'),
+                )
+        }
         "^(0|-?[1-9][0-9]*)$" => parse_canonical_i128(text).is_some(),
         "^-?(0|[1-9][0-9]*)$" => {
             let unsigned = text.strip_prefix('-').unwrap_or(text);

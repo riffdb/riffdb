@@ -1,3 +1,4 @@
+// req: DRV-008, DRV-012
 import assert from "node:assert/strict";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
@@ -5,7 +6,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { DRIVER_ERROR_REGISTRY_HASH, DRIVER_PROTOCOL_VERSION, DRIVER_VALUE_REGISTRY_HASH, DriverApplicationError, DriverApplicationTransport, exactDecimal, exactMoney, } from "./driver.js";
-import { DriverGeneratedApplicationTransport } from "./index.js";
+import { DriverGeneratedApplicationTransport, InputBudgetError } from "./index.js";
 const HASH = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 let fixtureSequence = 0;
 const identity = {
@@ -77,8 +78,9 @@ test("driver transport carries a canonical half-mebibyte byte value within its f
 });
 test("generated driver transport rejects aggregate canonical bytes before invocation", async () => {
     const fixture = await DriverFixture.start(() => undefined);
+    let driver;
     try {
-        const driver = await DriverApplicationTransport.connect({ socketPath: fixture.path, identity });
+        driver = await DriverApplicationTransport.connect({ socketPath: fixture.path, identity });
         const transport = new DriverGeneratedApplicationTransport(driver);
         await assert.rejects(transport.executeCommand({
             driverOperation: { name: "policy_write_mutations", inputSchemaHash: HASH },
@@ -101,11 +103,16 @@ test("generated driver transport rejects aggregate canonical bytes before invoca
             },
             outcomeSchemas: { Written: { kind: "record", fields: [] } },
             decodeError: () => new Error("application error"),
-        }, 3), /invalid generated RiffDB input/u);
+        }, 3), (error) => {
+            assert.ok(error instanceof InputBudgetError);
+            assert.equal(error.cause, "aggregate_canonical_element_bytes");
+            assert.deepEqual(error.path, { collection: "contexts" });
+            return true;
+        });
         assert.equal(fixture.invocations, 0);
-        await driver.shutdown();
     }
     finally {
+        await driver?.shutdown();
         await fixture.close();
     }
 });

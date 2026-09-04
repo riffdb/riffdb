@@ -2892,6 +2892,11 @@ fn render_mcp_manifest(
     reactive_tools: &[GeneratedMcpReactiveTool],
     vector_tools: &[GeneratedVectorInspectionTool],
 ) -> Result<String, ScaffoldError> {
+    let has_pagination = tools.iter().try_fold(false, |found, tool| {
+        let input = serde_json::from_str::<serde_json::Value>(&tool.input_schema)
+            .map_err(|_| ScaffoldError::GenerateMcp)?;
+        Ok::<_, ScaffoldError>(found || input.get("x-riffdb-continuationParameter").is_some())
+    })?;
     let tools = tools
         .iter()
         .map(render_query_registry_entry)
@@ -2976,24 +2981,22 @@ fn render_mcp_manifest(
             }))
         })
         .collect::<Result<Vec<_>, ScaffoldError>>()?;
+    let has_sdk_tools = !sdk_tools.is_empty();
+    let has_vector_tools = !vector_tools.is_empty();
     let mut value = json!({
-        "schema": "riffdb-generated-application-operations/v2",
+        "schema": GENERATED_OPERATIONS_V2,
         "application_manifest_hash": hex(manifest.identity().as_bytes()),
         "tools": tools,
         "commands": commands,
         "reactive_tools": reactive_tools,
     });
-    if !sdk_tools.is_empty() {
-        value["schema"] =
-            serde_json::Value::String("riffdb-generated-application-operations/v3".to_owned());
+    if has_sdk_tools {
         value
             .as_object_mut()
             .ok_or(ScaffoldError::GenerateMcp)?
             .insert("sdk_tools".to_owned(), serde_json::Value::Array(sdk_tools));
     }
-    if !vector_tools.is_empty() {
-        value["schema"] =
-            serde_json::Value::String("riffdb-generated-application-operations/v4".to_owned());
+    if has_vector_tools {
         value
             .as_object_mut()
             .ok_or(ScaffoldError::GenerateMcp)?
@@ -3002,11 +3005,35 @@ fn render_mcp_manifest(
                 serde_json::Value::Array(vector_tools),
             );
     }
+    value["schema"] = serde_json::Value::String(
+        generated_operations_schema(has_pagination, has_sdk_tools, has_vector_tools).to_owned(),
+    );
     let mut output =
         serde_json::to_string_pretty(&value).map_err(|_| ScaffoldError::GenerateMcp)?;
     output.push('\n');
     Ok(output)
 }
+
+const fn generated_operations_schema(
+    has_pagination: bool,
+    has_sdk_tools: bool,
+    has_vector_tools: bool,
+) -> &'static str {
+    if has_pagination {
+        GENERATED_OPERATIONS_V5
+    } else if has_vector_tools {
+        GENERATED_OPERATIONS_V4
+    } else if has_sdk_tools {
+        GENERATED_OPERATIONS_V3
+    } else {
+        GENERATED_OPERATIONS_V2
+    }
+}
+
+const GENERATED_OPERATIONS_V2: &str = "riffdb-generated-application-operations/v2";
+const GENERATED_OPERATIONS_V3: &str = "riffdb-generated-application-operations/v3";
+const GENERATED_OPERATIONS_V4: &str = "riffdb-generated-application-operations/v4";
+const GENERATED_OPERATIONS_V5: &str = "riffdb-generated-application-operations/v5";
 
 fn render_query_registry_entry(
     tool: &GeneratedMcpTool,
@@ -3295,6 +3322,35 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // req: OQ-004, OQ-006, OQ-016, OQ-058, OQ-061
+    #[test]
+    fn generated_application_operations_v5_topology_and_selection_are_exact() {
+        assert_eq!(
+            generated_operations_schema(false, false, false),
+            GENERATED_OPERATIONS_V2
+        );
+        assert_eq!(
+            generated_operations_schema(false, true, false),
+            GENERATED_OPERATIONS_V3
+        );
+        assert_eq!(
+            generated_operations_schema(false, false, true),
+            GENERATED_OPERATIONS_V4
+        );
+        assert_eq!(
+            generated_operations_schema(false, true, true),
+            GENERATED_OPERATIONS_V4
+        );
+        for sdk in [false, true] {
+            for vector in [false, true] {
+                assert_eq!(
+                    generated_operations_schema(true, sdk, vector),
+                    GENERATED_OPERATIONS_V5
+                );
+            }
+        }
+    }
 
     #[test]
     fn current_application_generation_uses_the_symbolic_lock_rules() {
