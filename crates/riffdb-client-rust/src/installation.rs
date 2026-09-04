@@ -2,12 +2,11 @@
 
 use std::fmt;
 
-use riffdb_application::{
-    ApplicationInstallationPlan, InstallationCampaignError, InstallationDriver,
-    InstallationStageEvidence, InstalledSeedEvidence,
-};
 use riffdb_proto::v1;
-use riffdb_types::{ApplicationInstallationCampaignId, RequestId};
+use riffdb_types::{
+    ApplicationInstallationCampaignId, ApplicationInstallationPlan, InstallationCampaignError,
+    InstallationDriver, InstalledSeedEvidence, RequestId,
+};
 
 /// One immutable exact application-installation start or resume submission.
 #[derive(Clone)]
@@ -55,8 +54,7 @@ impl StartApplicationInstallation {
         mut self,
         drivers: Vec<InstallationDriver>,
     ) -> Result<Self, InstallationCampaignError> {
-        let completion = InstallationStageEvidence::DriverProof(drivers.clone());
-        completion.validate_for(&self.plan)?;
+        self.plan.validate_driver_proof(&drivers)?;
         self.external_completion = Some(ExternalInstallationCompletion::DriverProof(drivers));
         Ok(self)
     }
@@ -67,8 +65,7 @@ impl StartApplicationInstallation {
         mut self,
         seeds: Vec<InstalledSeedEvidence>,
     ) -> Result<Self, InstallationCampaignError> {
-        let completion = InstallationStageEvidence::Seeds(seeds.clone());
-        completion.validate_for(&self.plan)?;
+        self.plan.validate_seed_receipts(&seeds)?;
         self.external_completion = Some(ExternalInstallationCompletion::Seeds(seeds));
         Ok(self)
     }

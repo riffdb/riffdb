@@ -10,6 +10,7 @@ publish.workspace = true
 default = []
 
 [dependencies]
+riffdb-observability = { version = "0.1.0", path = "../riffdb-observability", default-features = false }
 riffdb-contract-ir = { version = "0.1.0", path = "../riffdb-contract-ir" }
 riffdb-invariant = { version = "0.1.0", path = "../riffdb-invariant" }
 riffdb-query-module = { version = "0.1.0", path = "../riffdb-query-module" }

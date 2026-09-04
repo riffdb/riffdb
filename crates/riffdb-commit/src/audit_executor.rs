@@ -3999,7 +3999,7 @@ impl CommandWriter {
                 ingress,
                 terminal: match &result {
                     Ok(_) => CommitCommandTerminal::ReadOnlySucceeded,
-                    Err(error) => CommitCommandTerminal::Failed(error.kind()),
+                    Err(error) => CommitCommandTerminal::Failed(error.kind().into()),
                 },
                 elapsed: enqueued_at.elapsed(),
             });
@@ -4454,7 +4454,7 @@ fn commit_command_terminal(
         Ok(CommandExecutionResult::ExecutionFailed(_)) => CommitCommandTerminal::ExecutionFailed,
         Ok(CommandExecutionResult::PreparationChanged) => CommitCommandTerminal::PreparationChanged,
         Ok(CommandExecutionResult::InputMismatch) => CommitCommandTerminal::InputMismatch,
-        Err(error) => CommitCommandTerminal::Failed(error.kind()),
+        Err(error) => CommitCommandTerminal::Failed(error.kind().into()),
     }
 }
 

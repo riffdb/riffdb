@@ -18,7 +18,7 @@ use riffdb_client_rust::{CallMetadata, DatabaseAlias, RiffDbClient, v1};
 use riffdb_config::{
     CanonicalHttpsEndpoint, ProtectedFilePath, TlsClientConfig, TlsServerIdentity,
 };
-use riffdb_testkit::process::{ChildProcessController, ChildProcessSpec};
+use riffdb_testkit_server::process::{ChildProcessController, ChildProcessSpec};
 
 const CHILD_MODE: &str = "RIFFDB_REMOTE_INGRESS_CHILD";
 const READY_PREFIX: &str = "riffdbd-ready-v1\t";

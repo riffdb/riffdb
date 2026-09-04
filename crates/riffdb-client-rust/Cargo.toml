@@ -17,11 +17,9 @@ default = []
 [dependencies]
 futures-util = { version = "=0.3.33", default-features = false, features = ["async-await", "std"] }
 getrandom = { version = "=0.3.4", default-features = false }
-riffdb-api-grpc = { version = "0.1.0", path = "../riffdb-api-grpc", default-features = false, features = ["client"] }
-riffdb-application = { version = "0.1.0", path = "../riffdb-application", default-features = false }
 riffdb-config = { version = "0.1.0", path = "../riffdb-config", default-features = false }
 riffdb-errors = { version = "0.1.0", path = "../riffdb-errors", default-features = false }
-riffdb-proto = { version = "0.1.0", path = "../riffdb-proto", default-features = false }
+riffdb-proto = { version = "0.1.0", path = "../riffdb-proto", default-features = false, features = ["client"] }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
 rustls-pki-types = { version = "=1.15.1", default-features = false, features = ["std"] }
 rustls-webpki = { version = "=0.103.13", default-features = false, features = ["std"] }
@@ -33,6 +31,7 @@ tonic-prost = { version = "=0.14.6", default-features = false }
 zeroize = { version = "=1.8.1", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
+serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
 tempfile = { workspace = true }
 # Current-thread runtime for batch re-entry tests that exercise real Overloaded
 # backoff sleeps via execute_retry_attempts (needs `rt` + `time`).

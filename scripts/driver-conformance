@@ -204,7 +204,7 @@ export RIFFDB_CONFORMANCE_CREDENTIAL="$credential"
 if [[ -n "$rust_runner" ]]; then
     "$rust_runner" >"$work_root/rust.json"
 else
-    cargo +1.97.0 run --quiet -p riffdb-testkit --example driver_conformance_remote_client -- \
+    cargo +1.97.0 run --quiet -p riffdb-testkit-server --example driver_conformance_remote_client -- \
         >"$work_root/rust.json"
 fi
 
@@ -300,7 +300,7 @@ if [[ -n "$rust_runner" ]]; then
         "$rust_runner" >"$work_root/rust-revoked.json"
 else
     RIFFDB_CONFORMANCE_EXPECT_REVOKED=1 \
-        cargo +1.97.0 run --quiet -p riffdb-testkit --example driver_conformance_remote_client -- \
+        cargo +1.97.0 run --quiet -p riffdb-testkit-server --example driver_conformance_remote_client -- \
         >"$work_root/rust-revoked.json"
 fi
 RIFFDB_CONFORMANCE_EXPECT_REVOKED=1 \
@@ -337,7 +337,7 @@ if [[ "${RIFFDB_CONFORMANCE_PACKAGE_MODE:-0}" != 1 ]]; then
     npm --prefix clients/typescript/runtime test >/dev/null
     "$python_bin" -m unittest discover \
         -s clients/python/runtime/tests -q
-    cargo +1.97.0 test --quiet -p riffdb-testkit --test reactive_ticketdesk_acceptance --all-features
+    cargo +1.97.0 test --quiet -p riffdb-testkit-server --test reactive_ticketdesk_acceptance --all-features
 fi
 
 echo "Rust, Go, TypeScript, and Python passed the shared remote driver corpus."

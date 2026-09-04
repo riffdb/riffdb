@@ -2,8 +2,12 @@
 
 //! Versioned public and durable Protobuf boundaries for RiffDB.
 
+extern crate self as riffdb_proto;
+
 mod app_public_message;
 mod application_error;
+#[cfg(feature = "client")]
+mod client_codec;
 mod command;
 pub mod durable;
 mod durable_wire;
@@ -42,6 +46,23 @@ pub use command::*;
 pub use public_error::*;
 pub use public_message::*;
 pub use value::*;
+
+/// Exact ASCII metadata key selecting one database before authentication.
+pub const DATABASE_METADATA_KEY: &str = "riffdb-database";
+
+/// Generated client-only Tonic bindings for `riffdb.v1`.
+#[cfg(feature = "client")]
+#[allow(missing_docs, clippy::large_enum_variant)]
+pub mod generated {
+    include!(concat!(env!("OUT_DIR"), "/riffdb.v1.rs"));
+}
+
+/// Generated client-only Tonic bindings for `riffdb.app.v1`.
+#[cfg(feature = "client")]
+#[allow(missing_docs, clippy::large_enum_variant)]
+pub mod generated_app {
+    include!(concat!(env!("OUT_DIR"), "/riffdb.app.v1.rs"));
+}
 
 /// Source-info-stripped, path-sorted descriptors for all current production schemas.
 pub const PRODUCTION_FILE_DESCRIPTOR_SET: &[u8] = include_bytes!(concat!(

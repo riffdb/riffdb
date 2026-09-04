@@ -41,7 +41,7 @@ Run this during ordinary development:
 ```bash
 ./scripts/alpha-endurance --self-test
 ./scripts/endurance-conformance --self-test
-cargo +1.97.0 test -p riffdb-testkit --test endurance_harness --all-features
+cargo +1.97.0 test -p riffdb-testkit-server --test endurance_harness --all-features
 ```
 
 The test is synthetic and deliberately short. It proves that the receipt

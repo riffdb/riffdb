@@ -6,34 +6,27 @@ use std::fmt::{self, Write};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use riffdb_api_mcp::{
-    McpListChangeKind, McpRiskClass, McpSchemaFailurePhase, McpTelemetry, McpTelemetryEvent,
-    McpTransportKind,
-};
-use riffdb_auth::{AuthenticationRejection, AuthenticationTelemetry, AuthenticationTelemetryEvent};
-use riffdb_commit::{
-    CommitCallTerminal, CommitCommandTerminal, CommitGroupDispatchReason,
-    CommitIdempotencyObservation, CommitTelemetry, CommitTelemetryEvent,
-    CommitUncertaintyResolution, CommitUncertaintyStage, CompletionLanePhase,
-    PreparedEpochRollbackReason,
-};
 use riffdb_errors::{IncidentIdSource, IncidentIdSourceError, InternalError};
 use riffdb_observability::{
-    AgentSessionTelemetryHash, AuthoritativeComponent, AuthoritativeCondition,
-    CommandWorkCountError, CommandWorkCounts, DerivedComponent, DerivedCondition, DerivedFinding,
-    HISTOGRAM_UPPER_BOUNDS, HealthClassification, HealthRegistry, IncidentClass,
-    IncidentReportError, MAX_COMMAND_METRIC_SERIES, MAX_DERIVED_FINDINGS_PER_COMPONENT,
-    MAX_METRIC_SERIES, MAX_TRACE_RECORDS, MAX_WRITE_GROUP_SIZE, MetricKey, MetricRegistry,
-    MetricSemantics, Observability, PrincipalIdTelemetryHash, READ_PIPELINE_STAGE_COUNT,
-    REQUIRED_COMMAND_SPAN_FIELDS, REQUIRED_METRIC_INVENTORY, RequiredCounter, RequiredGauge,
-    RequiredHistogram, SafeTraceLayer, TraceKind, format_completion_lane_evidence_v1_line,
-    format_read_stages_v1_line, format_writer_evidence_v1_line, parse_read_stages_v1_payload,
-    read_pipeline_stage_index, request_span,
-};
-use riffdb_policy::{AuthorizationTelemetry, AuthorizationTelemetryEvent, PolicyCode};
-use riffdb_service::{
-    AuthoritativeReadinessFailure, ReadPipelineStage, ServiceDiagnostics, ServiceHealthHooks,
-    ServiceTelemetry, ServiceTelemetryEvent, ServiceTerminalClass,
+    AgentSessionTelemetryHash, AuthenticationRejection, AuthenticationTelemetry,
+    AuthenticationTelemetryEvent, AuthoritativeComponent, AuthoritativeCondition,
+    AuthoritativeReadinessFailure, AuthorizationDenial, AuthorizationTelemetry,
+    AuthorizationTelemetryEvent, CommandWorkCountError, CommandWorkCounts, CommitCallTerminal,
+    CommitCommandTerminal, CommitExecutionFailureKind, CommitGroupDispatchReason,
+    CommitIdempotencyObservation, CommitTelemetry, CommitTelemetryEvent,
+    CommitUncertaintyResolution, CommitUncertaintyStage, CompletionLanePhase, DerivedComponent,
+    DerivedCondition, DerivedFinding, HISTOGRAM_UPPER_BOUNDS, HealthClassification, HealthRegistry,
+    IncidentClass, IncidentReportError, MAX_COMMAND_METRIC_SERIES,
+    MAX_DERIVED_FINDINGS_PER_COMPONENT, MAX_METRIC_SERIES, MAX_TRACE_RECORDS, MAX_WRITE_GROUP_SIZE,
+    McpListChangeKind, McpRiskClass, McpSchemaFailurePhase, McpTelemetry, McpTelemetryEvent,
+    McpTransportKind, MetricKey, MetricRegistry, MetricSemantics, Observability,
+    PreparedEpochRollbackReason, PrincipalIdTelemetryHash, READ_PIPELINE_STAGE_COUNT,
+    REQUIRED_COMMAND_SPAN_FIELDS, REQUIRED_METRIC_INVENTORY, ReadPipelineStage, RequiredCounter,
+    RequiredGauge, RequiredHistogram, ServiceDiagnostics, ServiceHealthHooks, ServiceTelemetry,
+    ServiceTelemetryEvent, ServiceTerminalClass, TraceCollector, TraceKind,
+    format_completion_lane_evidence_v1_line, format_read_stages_v1_line,
+    format_writer_evidence_v1_line, parse_read_stages_v1_payload, read_pipeline_stage_index,
+    request_span,
 };
 use riffdb_types::{
     CommandId, CommitSequence, ContractVersion, IncidentId, MAX_COMMAND_CONFLICT_KEYS_V1,
@@ -46,6 +39,30 @@ use tracing_subscriber::layer::{Context, SubscriberExt};
 
 const SECRET_CANARY: &str = "riffdb-secret-token-canary-never-export";
 static SUBSCRIBER_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+#[derive(Clone)]
+struct SafeTraceLayer {
+    collector: TraceCollector,
+}
+
+impl SafeTraceLayer {
+    fn new(capacity: usize) -> Result<Self, riffdb_observability::TraceCollectorBuildError> {
+        TraceCollector::new(capacity).map(|collector| Self { collector })
+    }
+
+    fn collector(&self) -> TraceCollector {
+        self.collector.clone()
+    }
+}
+
+impl<S> Layer<S> for SafeTraceLayer
+where
+    S: Subscriber,
+{
+    fn on_event(&self, event: &Event<'_>, _context: Context<'_, S>) {
+        self.collector.record_event(event);
+    }
+}
 
 struct ScriptedIncidentIds {
     values: Mutex<VecDeque<Result<IncidentId, IncidentIdSourceError>>>,
@@ -131,7 +148,7 @@ fn internal_error_sources_never_enter_exported_telemetry() {
     );
     AuthorizationTelemetry::record(
         &observability,
-        AuthorizationTelemetryEvent::Denied(PolicyCode::MissingPermission),
+        AuthorizationTelemetryEvent::Denied(AuthorizationDenial::MissingPermission),
     );
 
     let exported = format!(
@@ -690,7 +707,7 @@ fn typed_trace_counts_and_collector_capacity_fail_closed() {
         Err(CommandWorkCountError::ConflictKeys)
     );
     assert_eq!(
-        CommandWorkCounts::new(0, riffdb_storage_api::MAX_READ_DEPENDENCIES + 1, 0, 0),
+        CommandWorkCounts::new(0, 4_097, 0, 0),
         Err(CommandWorkCountError::ReadDependencies)
     );
     assert!(SafeTraceLayer::new(0).is_err());
@@ -757,9 +774,7 @@ fn supported_api_redacts_before_both_subscriber_layers() {
             CommitTelemetryEvent::CommandTerminal {
                 command_id: CommandId::first(),
                 ingress: ServiceIngressKindV1::Grpc,
-                terminal: CommitCommandTerminal::Failed(
-                    riffdb_commit::CommandExecutionErrorKind::InternalDefect,
-                ),
+                terminal: CommitCommandTerminal::Failed(CommitExecutionFailureKind::InternalDefect),
                 elapsed: Duration::from_micros(1),
             },
         );

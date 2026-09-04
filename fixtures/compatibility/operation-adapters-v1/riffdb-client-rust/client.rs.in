@@ -4,14 +4,14 @@ use std::error::Error;
 use std::fmt;
 use std::time::Duration;
 
-use riffdb_api_grpc::generated::{
+use riffdb_proto::generated::{
     admin_service_client::AdminServiceClient,
     application_session_service_client::ApplicationSessionServiceClient,
     command_service_client::CommandServiceClient, commit_service_client::CommitServiceClient,
     contract_service_client::ContractServiceClient, event_service_client::EventServiceClient,
     query_service_client::QueryServiceClient,
 };
-use riffdb_api_grpc::generated_app::application_query_service_client::ApplicationQueryServiceClient;
+use riffdb_proto::generated_app::application_query_service_client::ApplicationQueryServiceClient;
 use riffdb_proto::{
     MAX_EXECUTE_REQUEST_BYTES, MAX_EXECUTE_RESPONSE_BYTES, PublicMessage,
     validate_apply_application_reimport_page_exchange, validate_apply_contract_migration_exchange,

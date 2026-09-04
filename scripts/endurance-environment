@@ -118,7 +118,7 @@ cargo +1.97.0 build --quiet --release \
     -p riffdb-cli --bin riffdb \
     -p riffdb-driver-host --bin riffdb-driverd \
     -p riffdb-ticketdesk --bin endurance \
-    -p riffdb-testkit --example endurance_inspect >&2
+    -p riffdb-testkit-server --example endurance_inspect >&2
 cp target/release/riffdbd "$environment_root/bin/riffdbd"
 cp target/release/riffdb "$environment_root/bin/riffdb"
 cp target/release/riffdb-driverd "$environment_root/bin/riffdb-driverd"
@@ -130,7 +130,7 @@ cp target/release/examples/endurance_inspect "$environment_root/bin/riffdb-endur
 # copied fixture closure; later edits in the developer checkout cannot change
 # the meaning of an in-flight run.
 probe_build="$environment_root/conformance-build.jsonl"
-cargo +1.97.0 test --release -p riffdb-testkit \
+cargo +1.97.0 test --release -p riffdb-testkit-server \
     --test adapter_conformance --test row_policy_conformance \
     --all-features --no-run --message-format=json-render-diagnostics \
     >"$probe_build"
