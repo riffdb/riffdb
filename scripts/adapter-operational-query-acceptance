@@ -16,6 +16,19 @@ export GOPROXY=off
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$task_tmp_root/riffdb-uv-cache}"
 mkdir -p "$GOCACHE" "$GOPATH" "$UV_CACHE_DIR"
 
+proof_output_dir="${RIFFDB_CONFORMANCE_RESULT_DIR:-}"
+if [[ -n "$proof_output_dir" ]]; then
+    [[ "$proof_output_dir" == /* && -d "$proof_output_dir" && ! -L "$proof_output_dir" ]] || {
+        echo "conformance result directory must be an absolute existing non-symlink directory" >&2
+        exit 2
+    }
+    [[ -z "$(find "$proof_output_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]] || {
+        echo "conformance result directory must be empty" >&2
+        exit 2
+    }
+    chmod 0700 "$proof_output_dir"
+fi
+
 for tool in cargo curl go jq mkfifo mktemp node npm python3 sha256sum uv; do
     command -v "$tool" >/dev/null 2>&1 || {
         echo "required adapter-operational tool is missing: $tool" >&2
@@ -87,12 +100,10 @@ printf '%s' 'riffdb-idempotency-digest-keys-v1
 1:202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f
 ' >"$work_root/idempotency.keys"
 chmod 0600 "$work_root/capability.keys" "$work_root/idempotency.keys"
-mkdir -m 0700 "$work_root/backups"
+mkdir -m 0700 "$work_root/backups-default" "$work_root/backups-other"
 
 cat >"$work_root/riffdbd.toml" <<EOF
 [server]
-database = "$work_root/riffdb.redb"
-environment = "development"
 audience = "riffdb-adapter-operational"
 capability_keys = "$work_root/capability.keys"
 idempotency_keys = "$work_root/idempotency.keys"
@@ -111,8 +122,15 @@ max_streams_per_connection = 128
 handshake_timeout_seconds = 5
 drain_timeout_seconds = 5
 
-[maintenance]
-backup_root = "$work_root/backups"
+[databases.default]
+path = "$work_root/riffdb.redb"
+backup_root = "$work_root/backups-default"
+environment = "development"
+
+[databases.other]
+path = "$work_root/riffdb-other.redb"
+backup_root = "$work_root/backups-other"
+environment = "development"
 EOF
 
 mkfifo "$work_root/server.input" "$work_root/server.output"
@@ -146,6 +164,11 @@ EOF
 target/debug/riffdb --config "$work_root/bootstrap-client.toml" capability bootstrap \
     --request "$work_root/bootstrap.json" --generate "$work_root/bootstrap.credential" \
     --bearer-output "$work_root/operator.credential" >/dev/null
+sed 's/database = "default"/database = "other"/' "$work_root/bootstrap-client.toml" \
+    >"$work_root/other-bootstrap-client.toml"
+target/debug/riffdb --config "$work_root/other-bootstrap-client.toml" capability bootstrap \
+    --request "$work_root/bootstrap.json" --generate "$work_root/other-bootstrap.credential" \
+    --bearer-output "$work_root/other-operator.credential" >/dev/null
 cat >"$work_root/operator-client.toml" <<EOF
 [client]
 endpoint = "https://127.0.0.1:$port"
@@ -156,8 +179,26 @@ credential_file = "$work_root/operator.credential"
 tls_trust_root = "$work_root/ca.pem"
 tls_server_name = "127.0.0.1"
 EOF
+sed -e 's/database = "default"/database = "other"/' \
+    -e 's#operator\.credential#other-operator.credential#' \
+    "$work_root/operator-client.toml" >"$work_root/other-operator-client.toml"
 
 cp -R fixtures/adapters/operational-conformance "$work_root/application"
+cp fixtures/riffql/wp701-binary-text-interval/documents_in_title_window.riffq \
+    "$work_root/application/riffdb/queries/documents_in_title_window.riffq"
+jq '
+  .query_modules[0].queries += [{"name":"DocumentsInTitleWindow","source":"riffdb/queries/documents_in_title_window.riffq"}]
+  | .roles[] |= if .name == "AdapterOperationalApplication"
+      then .queries += ["DocumentsInTitleWindow"] else . end
+' "$work_root/application/riffdb.application.json" \
+    >"$work_root/application/riffdb.application.wp701.json"
+mv "$work_root/application/riffdb.application.wp701.json" \
+    "$work_root/application/riffdb.application.json"
+(
+    cd "$work_root/application"
+    "$repo_root/target/debug/riffdb" application lock --write \
+        riffdb.application.json --lock riffdb.application.lock.json >/dev/null
+)
 (
     cd "$work_root/application"
     "$repo_root/target/debug/riffdb" --config "$work_root/operator-client.toml" application deploy \
@@ -168,6 +209,16 @@ deployment_root="$work_root/application/.riffdb/deployments/default"
 credential_file="$(jq -r 'if (.role.credential_file // "") == "" then "application.credential" else .role.credential_file end' "$deployment_root/deployment-state.json")"
 if [[ "$credential_file" == /* ]]; then credential="$credential_file"; else credential="$deployment_root/$credential_file"; fi
 [[ -f "$credential" ]] || { echo "adapter application credential was not provisioned" >&2; exit 1; }
+(
+    cd "$work_root/application"
+    "$repo_root/target/debug/riffdb" --config "$work_root/other-operator-client.toml" application deploy \
+        riffdb.application.json --lock riffdb.application.lock.json \
+        --provision-role AdapterOperationalApplication --lifetime-seconds 3600 >/dev/null
+)
+other_deployment_root="$work_root/application/.riffdb/deployments/other"
+other_credential_file="$(jq -r 'if (.role.credential_file // "") == "" then "application.credential" else .role.credential_file end' "$other_deployment_root/deployment-state.json")"
+if [[ "$other_credential_file" == /* ]]; then other_credential="$other_credential_file"; else other_credential="$other_deployment_root/$other_credential_file"; fi
+[[ -f "$other_credential" ]] || { echo "other-database application credential was not provisioned" >&2; exit 1; }
 
 target/debug/riffdb --config "$work_root/operator-client.toml" role bind \
     "$work_root/application/generated/riffdb.application.exact.json" \
@@ -178,7 +229,26 @@ target/debug/riffdb --config "$work_root/operator-client.toml" role bind \
     "$work_root/application/generated/riffdb.application.exact.json" \
     --role AdapterOperationalApplication --principal adapter-operational-mcp \
     --actor-kind agent --audience "http://127.0.0.1:$mcp_port/mcp" --lifetime-seconds 3600 \
+    --capability-id 01990000-0000-7000-8000-000000000701 \
     --credential-output "$work_root/mcp.credential" --output json >/dev/null
+target/debug/riffdb --config "$work_root/operator-client.toml" role bind \
+    "$work_root/application/generated/riffdb.application.exact.json" \
+    --role AdapterOperationalApplication --principal adapter-operational-mcp-auth \
+    --actor-kind agent --audience "http://127.0.0.1:$mcp_port/mcp" --lifetime-seconds 3600 \
+    --capability-id 01990000-0000-7000-8000-000000000702 \
+    --credential-output "$work_root/mcp-auth.credential" --output json >/dev/null
+target/debug/riffdb --config "$work_root/other-operator-client.toml" role bind \
+    "$work_root/application/generated/riffdb.application.exact.json" \
+    --role AdapterOperationalApplication --principal adapter-operational-mcp-other \
+    --actor-kind agent --audience "http://127.0.0.1:$mcp_port/mcp" --lifetime-seconds 3600 \
+    --capability-id 01990000-0000-7000-8000-000000000703 \
+    --credential-output "$work_root/mcp-other.credential" --output json >/dev/null
+target/debug/riffdb --config "$work_root/operator-client.toml" role bind \
+    "$work_root/application/generated/riffdb.application.exact.json" \
+    --role AdapterOperationalApplication --principal adapter-operational-stdio-auth \
+    --actor-kind agent --audience riffdb-adapter-operational --lifetime-seconds 3600 \
+    --capability-id 01990000-0000-7000-8000-000000000704 \
+    --credential-output "$work_root/stdio-auth.credential" --output json >/dev/null
 
 export RIFFDB_CONFORMANCE_ENDPOINT="https://127.0.0.1:$port"
 export RIFFDB_CONFORMANCE_TRUST_ROOT="$work_root/ca.pem"
@@ -194,9 +264,37 @@ tls_trust_root = "$work_root/ca.pem"
 tls_server_name = "127.0.0.1"
 EOF
 module_hash="$(jq -r '.modules[0].module_hash' "$work_root/application/riffdb.application.lock.json")"
-RIFFDB_CONFORMANCE_SEED_ONLY=1 \
+RIFFDB_WP701_BINARY_INTERVAL=1 RIFFDB_CONFORMANCE_SEED_ONLY=1 \
     cargo +1.97.0 run --quiet -p riffdb-testkit --example adapter_operational_remote_client -- \
     >"$work_root/rust-seed.json"
+cat >"$work_root/binary-interval-parameters.json" <<'EOF'
+{
+  "site_id": {"$uuid":"018f0f8b-7c6d-7e31-8a4f-000000000023"},
+  "after_title": "a",
+  "horizon_title": "😀",
+  "after": null
+}
+EOF
+binary_interval_ready=''
+for _attempt in $(seq 1 100); do
+    if target/debug/riffdb --config "$work_root/application-client.toml" \
+        query run-named DocumentsInTitleWindow \
+        --contract-lineage AdapterOperationalConformance --contract-version 1 \
+        --module-hash "$module_hash" --parameters "$work_root/binary-interval-parameters.json" \
+        --output json >"$work_root/binary-interval-readiness.out" 2>&1; then
+        binary_interval_ready=yes
+        break
+    fi
+    if ! rg -q 'RDB-QUERY-0102' "$work_root/binary-interval-readiness.out"; then
+        cat "$work_root/binary-interval-readiness.out" >&2
+        exit 1
+    fi
+done
+[[ "$binary_interval_ready" == yes ]] || {
+    cat "$work_root/binary-interval-readiness.out" >&2
+    echo "DocumentsInTitleWindow provider did not become ready within the bounded poll budget" >&2
+    exit 1
+}
 cat >"$work_root/exact-provider-readiness.json" <<'EOF'
 {
   "site_id": {"$uuid":"018f0f8b-7c6d-7e31-8a4f-00000000001e"},
@@ -327,7 +425,36 @@ for exact_query in \
     }
 done
 
-cargo +1.97.0 run --quiet -p riffdb-testkit --example adapter_operational_remote_client -- >"$work_root/rust.json"
+WP701_GENERATED_ROOT="$work_root/application/generated" \
+    CARGO_TARGET_DIR="$work_root/wp701-rust-target" \
+    cargo +1.97.0 run --quiet \
+        --manifest-path fixtures/riffql/wp701-binary-text-interval/runner/rust/Cargo.toml \
+        >"$work_root/binary_interval_rust.json"
+
+target/debug/riffdb --config "$work_root/application-client.toml" \
+    query run-named DocumentsInTitleWindow \
+    --contract-lineage AdapterOperationalConformance --contract-version 1 \
+    --module-hash "$module_hash" --parameters "$work_root/binary-interval-parameters.json" \
+    --output json >"$work_root/binary-interval-cli-first.json"
+binary_interval_cli_cursor="$(jq -r '.result.next_cursor // empty' "$work_root/binary-interval-cli-first.json")"
+[[ -n "$binary_interval_cli_cursor" ]] || {
+    echo "CLI binary interval first page omitted its cursor" >&2
+    exit 1
+}
+target/debug/riffdb --config "$work_root/application-client.toml" \
+    query run-named DocumentsInTitleWindow \
+    --contract-lineage AdapterOperationalConformance --contract-version 1 \
+    --module-hash "$module_hash" --parameters "$work_root/binary-interval-parameters.json" \
+    --cursor "$binary_interval_cli_cursor" \
+    --output json >"$work_root/binary-interval-cli-second.json"
+jq -n \
+    --slurpfile first "$work_root/binary-interval-cli-first.json" \
+    --slurpfile second "$work_root/binary-interval-cli-second.json" \
+    '{surface:"cli",transport:"remote_grpc",
+      first_page:[$first[0].result.fields[] | select(.name == "documents") | .records[].fields[] | select(.name == "title") | .value.value],
+      second_page:[$second[0].result.fields[] | select(.name == "documents") | .records[].fields[] | select(.name == "title") | .value.value],
+      first_cursor:($first[0].result.next_cursor != null),second_cursor:($second[0].result.next_cursor != null)}' \
+    >"$work_root/binary_interval_cli.json"
 
 cat >"$work_root/list-fga-parameters.json" <<'EOF'
 {
@@ -488,8 +615,10 @@ jq -n \
 
 export RIFFDB_CONFORMANCE_SOCKET="$socket"
 export RIFFDB_CONFORMANCE_IDENTITY="$work_root/identity.json"
+go -C "$work_root/application" mod edit \
+    -replace "riffdb.dev/application=$repo_root/clients/go/runtime"
 GOCACHE="$GOCACHE" GOPATH="$GOPATH" GOPROXY=off \
-    go -C fixtures/adapters/operational-conformance run ./runner/go >"$work_root/go.json"
+    go -C "$work_root/application" run ./runner/go >"$work_root/go.json"
 
 clients/typescript/runtime/node_modules/.bin/tsc \
     "$work_root/application/generated/typescript/client.ts" \
@@ -504,8 +633,8 @@ PYTHONPATH="$work_root/application/generated/python" \
     "$work_root/python-venv/bin/python" fixtures/adapters/operational-conformance/runner/python.py \
     >"$work_root/python.json"
 
-expected='{"adapters":["mlflow","openfga","better-auth","woodpecker"],"binary_prefix":true,"catalog_preflight":true,"exact_aggregates":true,"exact_predicate_family":true,"exact_text_family":true,"exact_total":true,"null_predicate":true,"nullable_exact_order":true,"numeric_offset":true,"operator_expansions":true,"optional_filters":true,"regression_adapters":["payload"],"schema":"riffdb.adapter-operational-observation/v1","stable_cursor":true}'
-for language in rust go typescript python; do
+expected='{"adapters":["mlflow","openfga","better-auth","woodpecker"],"binary_interval":{"first_cursor":true,"first_page":["aa","b"],"second_cursor":false,"second_page":["é"]},"binary_prefix":true,"catalog_preflight":true,"exact_aggregates":true,"exact_predicate_family":true,"exact_text_family":true,"exact_total":true,"null_predicate":true,"nullable_exact_order":true,"numeric_offset":true,"operator_expansions":true,"optional_filters":true,"regression_adapters":["payload"],"schema":"riffdb.adapter-operational-observation/v1","stable_cursor":true}'
+for language in go typescript python; do
     observed="$(jq -cS 'del(.language)' "$work_root/$language.json")"
     [[ "$observed" == "$expected" ]] || {
         echo "$language produced a divergent adapter observation: $observed" >&2
@@ -514,40 +643,82 @@ for language in rust go typescript python; do
 done
 
 mcp_endpoint="http://127.0.0.1:$mcp_port/mcp"
-cat >"$work_root/mcp-curl.conf" <<EOF
+write_mcp_curl_config() {
+    local credential_path="$1"
+    local database="$2"
+    local output="$3"
+    cat >"$output" <<EOF
 url = "$mcp_endpoint"
-header = "Authorization: Bearer $(<"$work_root/mcp.credential")"
+header = "Authorization: Bearer $(<"$credential_path")"
+header = "riffdb-database: $database"
 header = "Content-Type: application/json"
 header = "Accept: application/json, text/event-stream"
 header = "Mcp-Protocol-Version: 2025-11-25"
 max-time = 45
 silent
 show-error
-fail-with-body
 EOF
-chmod 0600 "$work_root/mcp-curl.conf"
+    chmod 0600 "$output"
+}
+write_mcp_curl_config "$work_root/mcp.credential" default "$work_root/mcp-curl.conf"
+write_mcp_curl_config "$work_root/mcp-auth.credential" default "$work_root/mcp-auth-curl.conf"
+write_mcp_curl_config "$work_root/mcp-other.credential" other "$work_root/mcp-other-curl.conf"
 normalize_mcp_response() {
     jq -Rse '
       [split("\n")[] | select(startswith("data: ")) | ltrimstr("data: ") | fromjson]
       | if length == 1 then .[0] else error("expected exactly one MCP data event") end
     ' "$1" >"$2"
 }
-jq -cn '{jsonrpc:"2.0",id:1,method:"initialize",params:{protocolVersion:"2025-11-25",capabilities:{},clientInfo:{name:"riffdb-operator-acceptance",version:"1"}}}' >"$work_root/mcp-initialize.json"
-curl --config "$work_root/mcp-curl.conf" --dump-header "$work_root/mcp-initialize.headers" \
-    --output "$work_root/mcp-initialize-output.sse" \
-    --data-binary @"$work_root/mcp-initialize.json"
-session_id="$(awk 'tolower($1) == "mcp-session-id:" {gsub(/\r/, "", $2); print $2}' "$work_root/mcp-initialize.headers")"
-[[ -n "$session_id" && "$session_id" != *$'\n'* ]] || {
-    echo "hosted MCP initialization omitted its bounded session ID" >&2
-    exit 1
+initialize_mcp_session() {
+    local config="$1"
+    local prefix="$2"
+    jq -cn '{jsonrpc:"2.0",id:1,method:"initialize",params:{protocolVersion:"2025-11-25",capabilities:{},clientInfo:{name:"riffdb-operator-acceptance",version:"1"}}}' >"$work_root/$prefix-initialize.json"
+    curl --config "$config" --dump-header "$work_root/$prefix-initialize.headers" \
+        --output "$work_root/$prefix-initialize-output.sse" \
+        --data-binary @"$work_root/$prefix-initialize.json"
+    mcp_session_id="$(awk 'tolower($1) == "mcp-session-id:" {gsub(/\r/, "", $2); print $2}' "$work_root/$prefix-initialize.headers")"
+    [[ -n "$mcp_session_id" && "$mcp_session_id" != *$'\n'* ]] || {
+        echo "hosted MCP initialization omitted its bounded session ID" >&2
+        exit 1
+    }
+    normalize_mcp_response "$work_root/$prefix-initialize-output.sse" \
+        "$work_root/$prefix-initialize-output.json"
+    jq -e '.result.protocolVersion == "2025-11-25"' "$work_root/$prefix-initialize-output.json" >/dev/null
+    jq -cn '{jsonrpc:"2.0",method:"notifications/initialized"}' >"$work_root/$prefix-notification.json"
+    curl --config "$config" --header "Mcp-Session-Id: $mcp_session_id" \
+        --output "$work_root/$prefix-notification-output.json" \
+        --data-binary @"$work_root/$prefix-notification.json"
 }
-normalize_mcp_response "$work_root/mcp-initialize-output.sse" \
-    "$work_root/mcp-initialize-output.json"
-jq -e '.result.protocolVersion == "2025-11-25"' "$work_root/mcp-initialize-output.json" >/dev/null
-jq -cn '{jsonrpc:"2.0",method:"notifications/initialized"}' >"$work_root/mcp-notification.json"
-curl --config "$work_root/mcp-curl.conf" --header "Mcp-Session-Id: $session_id" \
-    --output "$work_root/mcp-notification-output.json" \
-    --data-binary @"$work_root/mcp-notification.json"
+raw_mcp_call() {
+    local config="$1"
+    local call_session_id="$2"
+    local request_id="$3"
+    local tool="$4"
+    local arguments="$5"
+    local prefix="$6"
+    jq -cn --argjson id "$request_id" --arg tool "$tool" --argjson arguments "$arguments" \
+        '{jsonrpc:"2.0",id:$id,method:"tools/call",params:{name:$tool,arguments:$arguments}}' \
+        >"$work_root/$prefix.json"
+    local http_status
+    http_status="$(curl --config "$config" --header "Mcp-Session-Id: $call_session_id" \
+        --output "$work_root/$prefix-output.sse" --write-out '%{http_code}' \
+        --data-binary @"$work_root/$prefix.json")"
+    if rg -q '^data: ' "$work_root/$prefix-output.sse"; then
+        normalize_mcp_response "$work_root/$prefix-output.sse" "$work_root/$prefix-output.json"
+    elif [[ -s "$work_root/$prefix-output.sse" ]] \
+        && jq -e . "$work_root/$prefix-output.sse" >"$work_root/$prefix-output.json" 2>/dev/null; then
+        :
+    elif [[ "$http_status" == 401 || "$http_status" == 403 ]]; then
+        jq -n --argjson status "$http_status" \
+            '{error:{type:"http_authorization_failure",status:$status}}' \
+            >"$work_root/$prefix-output.json"
+    else
+        echo "hosted MCP returned an undecodable response with HTTP status $http_status" >&2
+        exit 1
+    fi
+}
+initialize_mcp_session "$work_root/mcp-curl.conf" mcp
+session_id="$mcp_session_id"
 run_mcp_call() {
     local request_id="$1"
     local tool="$2"
@@ -577,6 +748,83 @@ run_mcp_call 4 adapter_operational_conformance_mlflow_runs_with_tags \
 run_mcp_call 5 adapter_operational_conformance_fga_objects_with_relations \
     '{"store_id":"018f0f8b-7c6d-7e31-8a4f-000000000064","kind":"document"}' \
     objects relations
+jq -cn \
+    --arg tool adapter_operational_conformance_documents_in_title_window \
+    '{jsonrpc:"2.0",id:6,method:"tools/call",params:{name:$tool,arguments:{site_id:"018f0f8b-7c6d-7e31-8a4f-000000000023",after_title:"a",horizon_title:"😀"}}}' \
+    >"$work_root/mcp-call-6.json"
+curl --config "$work_root/mcp-curl.conf" --header "Mcp-Session-Id: $session_id" \
+    --dump-header "$work_root/mcp-call-6.headers" \
+    --output "$work_root/mcp-call-6-output.sse" \
+    --data-binary @"$work_root/mcp-call-6.json"
+normalize_mcp_response "$work_root/mcp-call-6-output.sse" \
+    "$work_root/mcp-call-6-output.json"
+jq -e '
+  .result.isError == false
+  and (.result.structuredContent | keys) == ["page", "result"]
+  and (.result.structuredContent.result | keys) == ["documents", "outcome"]
+  and (.result.structuredContent.result.documents | all((keys | sort) == ["document_id", "title"]))
+  and [.result.structuredContent.result.documents[].title] == ["aa", "b"]
+  and (.result.structuredContent.page | keys) == ["next_cursor"]
+  and (.result.structuredContent.page.next_cursor | test("^[A-Za-z0-9_-]{22}$"))
+  and (.result.content | length) == 1
+  and (.result.content[0].text | fromjson) == .result.structuredContent
+' "$work_root/mcp-call-6-output.json" >/dev/null
+hosted_cursor="$(jq -r '.result.structuredContent.page.next_cursor' "$work_root/mcp-call-6-output.json")"
+invalid_cursor=AAAAAAAAAAAAAAAAAAAAAB
+raw_mcp_call "$work_root/mcp-curl.conf" "$session_id" 8 \
+    adapter_operational_conformance_documents_in_title_window \
+    "{\"site_id\":\"018f0f8b-7c6d-7e31-8a4f-000000000023\",\"after_title\":\"a\",\"horizon_title\":\"😀\",\"after\":\"$invalid_cursor\"}" \
+    mcp-malformed
+raw_mcp_call "$work_root/mcp-curl.conf" "$session_id" 9 \
+    adapter_operational_conformance_list_fga_tuples \
+    "{\"store_id\":\"018f0f8b-7c6d-7e31-8a4f-00000000000a\",\"relation\":\"viewer\",\"after\":\"$hosted_cursor\"}" \
+    mcp-cross-query
+initialize_mcp_session "$work_root/mcp-other-curl.conf" mcp-other
+other_session_id="$mcp_session_id"
+raw_mcp_call "$work_root/mcp-other-curl.conf" "$other_session_id" 10 \
+    adapter_operational_conformance_documents_in_title_window \
+    "{\"site_id\":\"018f0f8b-7c6d-7e31-8a4f-000000000023\",\"after_title\":\"a\",\"horizon_title\":\"😀\",\"after\":\"$hosted_cursor\"}" \
+    mcp-cross-database
+jq -cn --arg tool adapter_operational_conformance_documents_in_title_window \
+    --arg after "$hosted_cursor" \
+    '{jsonrpc:"2.0",id:7,method:"tools/call",params:{name:$tool,arguments:{site_id:"018f0f8b-7c6d-7e31-8a4f-000000000023",after_title:"a",horizon_title:"😀",after:$after}}}' \
+    >"$work_root/mcp-call-7.json"
+curl --config "$work_root/mcp-curl.conf" --header "Mcp-Session-Id: $session_id" \
+    --output "$work_root/mcp-call-7-output.sse" --data-binary @"$work_root/mcp-call-7.json"
+normalize_mcp_response "$work_root/mcp-call-7-output.sse" "$work_root/mcp-call-7-output.json"
+jq -e '
+  .result.isError == false
+  and (.result.structuredContent | keys) == ["page", "result"]
+  and (.result.structuredContent.result | keys) == ["documents", "outcome"]
+  and (.result.structuredContent.result.documents | all((keys | sort) == ["document_id", "title"]))
+  and [.result.structuredContent.result.documents[].title] == ["é"]
+  and .result.structuredContent.page == {"next_cursor":null}
+  and (.result.content[0].text | fromjson) == .result.structuredContent
+' "$work_root/mcp-call-7-output.json" >/dev/null
+initialize_mcp_session "$work_root/mcp-auth-curl.conf" mcp-auth
+auth_session_id="$mcp_session_id"
+raw_mcp_call "$work_root/mcp-auth-curl.conf" "$auth_session_id" 11 \
+    adapter_operational_conformance_documents_in_title_window \
+    '{"site_id":"018f0f8b-7c6d-7e31-8a4f-000000000023","after_title":"a","horizon_title":"😀"}' \
+    mcp-auth-first
+auth_cursor="$(jq -er '.result.structuredContent.page.next_cursor' "$work_root/mcp-auth-first-output.json")"
+target/debug/riffdb --config "$work_root/operator-client.toml" capability revoke \
+    01990000-0000-7000-8000-000000000702 --reason policy_change >/dev/null
+raw_mcp_call "$work_root/mcp-auth-curl.conf" "$auth_session_id" 12 \
+    adapter_operational_conformance_documents_in_title_window \
+    "{\"site_id\":\"018f0f8b-7c6d-7e31-8a4f-000000000023\",\"after_title\":\"a\",\"horizon_title\":\"😀\",\"after\":\"$auth_cursor\"}" \
+    mcp-authorization
+jq -n --slurpfile first "$work_root/mcp-call-6-output.json" \
+    --slurpfile second "$work_root/mcp-call-7-output.json" \
+    '{surface:"mcp",transport:"hosted_mcp",first_page:[$first[0].result.structuredContent.result.documents[].title],first_cursor:($first[0].result.structuredContent.page.next_cursor != null),second_page:[$second[0].result.structuredContent.result.documents[].title],second_cursor:($second[0].result.structuredContent.page.next_cursor != null),raw_shape_exact:true}' \
+    >"$work_root/binary_interval_mcp.json"
+
+jq -n --slurpfile go "$work_root/go.json" --slurpfile typescript "$work_root/typescript.json" \
+    '{surface:"local_driver",transport:"driver_host",go:$go[0].binary_interval,typescript:$typescript[0].binary_interval}' \
+    >"$work_root/binary_interval_local_driver.json"
+jq -n --slurpfile rust "$work_root/binary_interval_rust.json" --slurpfile python "$work_root/python.json" \
+    '{surface:"remote_grpc",transport:"verified_tls",rust:$rust[0],python:$python[0].binary_interval}' \
+    >"$work_root/binary_interval_remote_grpc.json"
 
 kill -TERM "$driver_pid"
 wait "$driver_pid"
@@ -585,8 +833,217 @@ printf 'shutdown\n' >&"$server_input_fd"
 wait "$server_pid"
 server_pid=
 
+stdio_port="$($work_root/python-venv/bin/python - <<'PY'
+import socket
+with socket.socket() as listener:
+    listener.bind(("127.0.0.1", 0))
+    print(listener.getsockname()[1])
+PY
+)"
+cat >"$work_root/riffdbd-stdio.toml" <<EOF
+[server]
+audience = "riffdb-adapter-operational"
+grpc_listen = "127.0.0.1:$stdio_port"
+capability_keys = "$work_root/capability.keys"
+idempotency_keys = "$work_root/idempotency.keys"
+mcp_listen = "127.0.0.1:$mcp_port"
+
+[databases.default]
+path = "$work_root/riffdb.redb"
+backup_root = "$work_root/backups-default"
+environment = "development"
+
+[databases.other]
+path = "$work_root/riffdb-other.redb"
+backup_root = "$work_root/backups-other"
+environment = "development"
+EOF
+target/debug/riffdbd --config "$work_root/riffdbd-stdio.toml" \
+    <&"$server_input_fd" >"$work_root/server.output" 2>"$work_root/server-stdio.stderr" &
+server_pid=$!
+ready=
+while IFS= read -r -t 60 line <&"$server_output_fd"; do
+    if [[ "$line" == riffdbd-ready-v1$'\t'* ]]; then ready="$line"; break; fi
+done
+[[ "$ready" == "riffdbd-ready-v1"$'\t'"127.0.0.1:$stdio_port" ]] || {
+    sed -n '1,200p' "$work_root/server-stdio.stderr" >&2
+    echo "stdio acceptance RiffDB did not become ready" >&2
+    exit 1
+}
+initialize_mcp_session "$work_root/mcp-curl.conf" mcp-restarted
+restarted_session_id="$mcp_session_id"
+raw_mcp_call "$work_root/mcp-curl.conf" "$restarted_session_id" 13 \
+    adapter_operational_conformance_documents_in_title_window \
+    "{\"site_id\":\"018f0f8b-7c6d-7e31-8a4f-000000000023\",\"after_title\":\"a\",\"horizon_title\":\"😀\",\"after\":\"$hosted_cursor\"}" \
+    mcp-stale
+jq -n \
+    --slurpfile first "$work_root/mcp-call-6-output.json" \
+    --slurpfile second "$work_root/mcp-call-7-output.json" \
+    --slurpfile malformed "$work_root/mcp-malformed-output.json" \
+    --slurpfile cross_query "$work_root/mcp-cross-query-output.json" \
+    --slurpfile cross_database "$work_root/mcp-cross-database-output.json" \
+    --slurpfile stale "$work_root/mcp-stale-output.json" \
+    --slurpfile authorization "$work_root/mcp-authorization-output.json" \
+    '{schema:"riffdb.mcp-paginated-query-proof/v1",transport:"hosted_mcp",
+      first:$first[0],second:$second[0],malformed:$malformed[0],
+      cross_query:$cross_query[0],cross_database:$cross_database[0],
+      stale:$stale[0],authorization:$authorization[0]}' \
+    >"$work_root/mcp-hosted-proof.json"
+cat >"$work_root/riffdb-mcp.toml" <<EOF
+[mcp]
+endpoint = "http://127.0.0.1:$stdio_port"
+database = "default"
+credential_file = "$credential"
+expected_audience = "riffdb-adapter-operational"
+EOF
+cat >"$work_root/riffdb-mcp-other.toml" <<EOF
+[mcp]
+endpoint = "http://127.0.0.1:$stdio_port"
+database = "other"
+credential_file = "$other_credential"
+expected_audience = "riffdb-adapter-operational"
+EOF
+cat >"$work_root/riffdb-mcp-auth.toml" <<EOF
+[mcp]
+endpoint = "http://127.0.0.1:$stdio_port"
+database = "default"
+credential_file = "$work_root/stdio-auth.credential"
+expected_audience = "riffdb-adapter-operational"
+EOF
+cat >"$work_root/stdio-operator-client.toml" <<EOF
+[client]
+endpoint = "http://127.0.0.1:$stdio_port"
+database = "default"
+output = "json"
+max_attempts = 3
+credential_file = "$work_root/operator.credential"
+EOF
+RIFFDB_MCP_CONFIG="$work_root/riffdb-mcp.toml" \
+    RIFFDB_MCP_OTHER_CONFIG="$work_root/riffdb-mcp-other.toml" \
+    RIFFDB_MCP_AUTH_CONFIG="$work_root/riffdb-mcp-auth.toml" \
+    RIFFDB_MCP_BINARY="$repo_root/target/debug/riffdb-mcp" \
+    RIFFDB_MCP_RESULT="$work_root/binary_interval_mcp_stdio.json" \
+    RIFFDB_MCP_PROOF="$work_root/mcp-stdio-proof.json" \
+    RIFFDB_MCP_AUTH_FIRST="$work_root/mcp-stdio-auth-first.json" \
+    RIFFDB_MCP_STDERR="$work_root/mcp-stdio.stderr" \
+    RIFFDB_HOSTED_STALE_CURSOR="$hosted_cursor" \
+    RIFFDB_CLI="$repo_root/target/debug/riffdb" \
+    RIFFDB_OPERATOR_CONFIG="$work_root/stdio-operator-client.toml" \
+    "$work_root/python-venv/bin/python" - <<'PY'
+import json
+import os
+import subprocess
+
+def start(config):
+    environment = dict(os.environ)
+    environment["RIFFDB_MCP_CONFIG"] = config
+    return subprocess.Popen(
+        [os.environ["RIFFDB_MCP_BINARY"]],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=environment,
+    )
+
+def send(process, message, response=True):
+    process.stdin.write(json.dumps(message, separators=(",", ":"), ensure_ascii=False) + "\n")
+    process.stdin.flush()
+    if not response:
+        return None
+    line = process.stdout.readline()
+    if not line:
+        raise RuntimeError("stdio MCP closed before responding")
+    return json.loads(line)
+
+def initialize(process):
+    initialized = send(process, {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"riffdb-wp701","version":"1"}}})
+    if initialized.get("result", {}).get("protocolVersion") != "2025-11-25":
+        raise RuntimeError("stdio MCP initialization diverged")
+    send(process, {"jsonrpc":"2.0","method":"notifications/initialized"}, response=False)
+
+def call(process, request_id, tool, arguments):
+    return send(process, {"jsonrpc":"2.0","id":request_id,"method":"tools/call","params":{"name":tool,"arguments":arguments}})
+
+def close(process):
+    process.stdin.close()
+    process.wait(timeout=10)
+    diagnostics = process.stderr.read()
+    if process.returncode != 0:
+        raise RuntimeError("stdio MCP exited unsuccessfully: " + diagnostics)
+    return diagnostics
+
+document_tool = "adapter_operational_conformance_documents_in_title_window"
+fga_tool = "adapter_operational_conformance_list_fga_tuples"
+arguments = {"site_id":"018f0f8b-7c6d-7e31-8a4f-000000000023","after_title":"a","horizon_title":"😀"}
+process = start(os.environ["RIFFDB_MCP_CONFIG"])
+initialize(process)
+stale = call(process, 2, document_tool, dict(arguments, after=os.environ["RIFFDB_HOSTED_STALE_CURSOR"]))
+first = call(process, 3, document_tool, arguments)
+if "result" not in first:
+    raise RuntimeError("stdio MCP first call failed: " + json.dumps(first, separators=(",", ":")))
+structured = first["result"]["structuredContent"]
+if sorted(structured) != ["page", "result"] or sorted(structured["result"]) != ["documents", "outcome"]:
+    raise RuntimeError("stdio MCP exposed an open or physical result shape")
+if [row["title"] for row in structured["result"]["documents"]] != ["aa", "b"]:
+    raise RuntimeError("stdio MCP first page diverged")
+cursor = structured["page"]["next_cursor"]
+if not isinstance(cursor, str) or len(cursor) != 22:
+    raise RuntimeError("stdio MCP cursor presentation diverged")
+malformed = call(process, 4, document_tool, dict(arguments, after="AAAAAAAAAAAAAAAAAAAAAB"))
+cross_query = call(process, 5, fga_tool, {"store_id":"018f0f8b-7c6d-7e31-8a4f-00000000000a","relation":"viewer","after":cursor})
+second = call(process, 6, document_tool, dict(arguments, after=cursor))
+second_structured = second["result"]["structuredContent"]
+if [row["title"] for row in second_structured["result"]["documents"]] != ["é"] or second_structured["page"] != {"next_cursor":None}:
+    raise RuntimeError("stdio MCP continuation diverged")
+if json.loads(first["result"]["content"][0]["text"]) != structured or json.loads(second["result"]["content"][0]["text"]) != second_structured:
+    raise RuntimeError("stdio MCP text and structured content diverged")
+auth_process = start(os.environ["RIFFDB_MCP_AUTH_CONFIG"])
+initialize(auth_process)
+authorization_first = call(auth_process, 2, document_tool, arguments)
+authorization_cursor = authorization_first["result"]["structuredContent"]["page"]["next_cursor"]
+with open(os.environ["RIFFDB_MCP_AUTH_FIRST"], "w", encoding="utf-8") as output:
+    json.dump(authorization_first, output, separators=(",", ":"), ensure_ascii=False)
+    output.write("\n")
+
+other_process = start(os.environ["RIFFDB_MCP_OTHER_CONFIG"])
+initialize(other_process)
+cross_database = call(other_process, 2, document_tool, dict(arguments, after=authorization_cursor))
+other_diagnostics = close(other_process)
+
+subprocess.run(
+    [os.environ["RIFFDB_CLI"], "--config", os.environ["RIFFDB_OPERATOR_CONFIG"],
+     "capability", "revoke", "01990000-0000-7000-8000-000000000704",
+     "--reason", "policy_change"],
+    check=True,
+    stdout=subprocess.DEVNULL,
+)
+authorization = call(auth_process, 3, document_tool, dict(arguments, after=authorization_cursor))
+with open(os.environ["RIFFDB_MCP_RESULT"], "w", encoding="utf-8") as output:
+    json.dump({"surface":"mcp","transport":"stdio_mcp","first_page":["aa","b"],"first_cursor":True,"second_page":["é"],"second_cursor":False,"raw_shape_exact":True}, output, separators=(",", ":"), ensure_ascii=False)
+    output.write("\n")
+with open(os.environ["RIFFDB_MCP_PROOF"], "w", encoding="utf-8") as output:
+    json.dump({"schema":"riffdb.mcp-paginated-query-proof/v1","transport":"stdio_mcp",
+               "first":first,"second":second,"malformed":malformed,
+               "cross_query":cross_query,"cross_database":cross_database,
+               "stale":stale,"authorization":authorization},
+              output, separators=(",", ":"), ensure_ascii=False)
+    output.write("\n")
+diagnostics = close(process)
+auth_diagnostics = close(auth_process)
+with open(os.environ["RIFFDB_MCP_STDERR"], "w", encoding="utf-8") as output:
+    output.write(diagnostics)
+    output.write(other_diagnostics)
+    output.write(auth_diagnostics)
+PY
+printf 'shutdown\n' >&"$server_input_fd"
+wait "$server_pid"
+server_pid=
+
+./scripts/generated_mcp_query_cursor_round_trip_preserves_authority_and_redaction "$work_root"
+
 jq -e '
-  .schema == "riffdb-generated-application-operations/v2"
+  .schema == "riffdb-generated-application-operations/v5"
   and (.tools | length) == 18
   and ([.tools[].operation_name] | sort) == ["ExactDocumentsContainsAsc", "ExactDocumentsEndsWithDesc", "ExactDocumentsStartsWithAsc", "FgaObjectsWithRelations", "GetAuthSession", "InventoryByObservedAscNullsLast", "InventoryByObservedDescNullsFirst", "InventoryBySubtitleAscNullsFirst", "InventoryBySubtitleDescNullsLast", "ListDraftDocuments", "ListFgaTuples", "ListPipelines", "MetricDashboard", "MlflowRunsWithTags", "ReviewedDirectoryUsers", "SearchDirectoryUsers", "SearchDocuments", "TicketPageWithComments"]
   and ([.tools[] | select(.operation_name | startswith("ExactDocuments"))] | length) == 3
@@ -601,12 +1058,16 @@ jq -e '
          and (.result_schema.oneOf | map(.properties.outcome.const) | sort) == ["Found", "Missing"])
   and (.tools[] | select(.operation_name == "ListFgaTuples")
        | (.input_schema.properties | keys | sort) == ["after", "relation", "store_id"]
-         and .result_schema.oneOf[0].properties.tuples.maxItems == 25)
+         and .input_schema["x-riffdb-continuationParameter"] == "after"
+         and .input_schema.properties.after.anyOf[0].pattern == "^[A-Za-z0-9_-]{22}$"
+         and .result_schema["x-riffdb-resultProfile"] == "paginated-envelope-v1"
+         and .result_schema.properties.result.oneOf[0].properties.tuples.maxItems == 25
+         and .result_schema.properties.page.required == ["next_cursor"])
   and (.tools[] | select(.operation_name == "MetricDashboard")
        | .result_schema.oneOf[0].properties.summary.maxItems == 50)
   and (.tools[] | select(.operation_name == "SearchDocuments")
        | (.input_schema.required | sort) == ["site_id", "title_prefix"]
-         and .result_schema.oneOf[0].properties.documents.maxItems == 25)
+         and .result_schema.properties.result.oneOf[0].properties.documents.maxItems == 25)
   and all(.tools[] | select(.operation_name == "TicketPageWithComments" or .operation_name == "MlflowRunsWithTags" or .operation_name == "FgaObjectsWithRelations");
        (.result_schema.oneOf[0].properties[] | select(.type == "array")
         | .maxItems == 4
@@ -625,6 +1086,16 @@ jq -e '
 ' \
     fixtures/adapters/operational-conformance/generated/mcp/tools.json >/dev/null
 
+git show HEAD:fixtures/adapters/operational-conformance/generated/mcp/tools.json \
+    >"$work_root/pre-wp701-tools.json"
+jq -S '[.tools[] | select(.input_schema["x-riffdb-continuationParameter"] == null)]' \
+    fixtures/adapters/operational-conformance/generated/mcp/tools.json \
+    >"$work_root/current-unpaged-tools.json"
+jq -S --slurpfile current "$work_root/current-unpaged-tools.json" '
+  [.tools[] | select(.operation_name as $name | any($current[0][]; .operation_name == $name))]
+' "$work_root/pre-wp701-tools.json" >"$work_root/prior-unpaged-tools.json"
+cmp "$work_root/prior-unpaged-tools.json" "$work_root/current-unpaged-tools.json"
+
 if rg -n 'riffdb[_-](kernel|storage)|GetEntity|ScanIndex|raw[_ -]?(mutation|transaction)|entity_type_id|field_id|index_id' \
     fixtures/adapters/operational-conformance/runner tests/adapter_operational_remote_client.rs; then
     echo "adapter corpus crossed the application boundary" >&2
@@ -637,5 +1108,39 @@ if rg -n '\.(sort|filter)\(|sort\.(Slice|SliceStable|Strings)|sorted\(|ORDER BY|
 fi
 
 ./scripts/generate-operational-query-capability --check
+
+if [[ -n "$proof_output_dir" ]]; then
+    proof_artifacts=(
+        go.json
+        typescript.json
+        python.json
+        binary_interval_rust.json
+        binary_interval_cli.json
+        binary_interval_mcp.json
+        binary_interval_mcp_stdio.json
+        binary_interval_local_driver.json
+        binary_interval_remote_grpc.json
+        mcp-hosted-proof.json
+        mcp-stdio-proof.json
+        mcp-auth-first-output.json
+        mcp-stdio-auth-first.json
+        server.stderr
+        server-stdio.stderr
+        mcp-stdio.stderr
+    )
+    for artifact in "${proof_artifacts[@]}"; do
+        [[ -f "$work_root/$artifact" ]] || {
+            echo "executed conformance proof artifact is absent: $artifact" >&2
+            exit 1
+        }
+        artifact_bytes="$(wc -c <"$work_root/$artifact")"
+        (( artifact_bytes <= 4194304 )) || {
+            echo "executed conformance proof artifact exceeds 4,194,304 bytes: $artifact" >&2
+            exit 1
+        }
+        cp "$work_root/$artifact" "$proof_output_dir/$artifact"
+        chmod 0600 "$proof_output_dir/$artifact"
+    done
+fi
 
 echo "Rust, Go, TypeScript, Python, CLI, and MCP passed the bounded operational-query corpus."

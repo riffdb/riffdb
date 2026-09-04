@@ -1,0 +1,17 @@
+[package]
+name = "wp701-binary-text-interval-rust"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata.cargo-machete]
+ignored = ["tinyvec"]
+
+[workspace]
+
+[dependencies]
+riffdb-client-rust = { path = "../../../../../crates/riffdb-client-rust", default-features = false }
+riffdb-config = { path = "../../../../../crates/riffdb-config", default-features = false }
+serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
+tinyvec = { version = "=1.12.0", default-features = false }
+tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread", "time"] }

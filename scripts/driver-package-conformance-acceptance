@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# req: DRV-007, DRV-012, DRV-014
 set -euo pipefail
 umask 077
 

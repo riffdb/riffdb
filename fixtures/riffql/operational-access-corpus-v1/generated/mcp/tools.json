@@ -2,7 +2,7 @@
   "application_manifest_hash": "20f011e6d8f5b33c0100a2636ec311a50d089a26d2bee13e72d37f910ce33488",
   "commands": [],
   "reactive_tools": [],
-  "schema": "riffdb-generated-application-operations/v2",
+  "schema": "riffdb-generated-application-operations/v5",
   "tools": [
     {
       "annotations": {
@@ -19,6 +19,9 @@
           "after": {
             "anyOf": [
               {
+                "maxLength": 22,
+                "minLength": 22,
+                "pattern": "^[A-Za-z0-9_-]{22}$",
                 "type": "string"
               },
               {
@@ -37,68 +40,102 @@
           "workspace_id",
           "code"
         ],
-        "type": "object"
+        "type": "object",
+        "x-riffdb-continuationParameter": "after"
       },
       "module_hash": "e943b03babf87d680037f0b10a9cf1a42631577ee2056813217befc0e5301cb5",
       "name": "operational_access_corpus_items_by_code",
       "operation_name": "ItemsByCode",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "oneOf": [
-          {
+        "additionalProperties": false,
+        "properties": {
+          "page": {
             "additionalProperties": false,
             "properties": {
-              "items": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "item_id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "type": "string"
-                    },
-                    "published_at": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "score": {
-                      "type": "string"
-                    }
+              "next_cursor": {
+                "anyOf": [
+                  {
+                    "maxLength": 22,
+                    "minLength": 22,
+                    "pattern": "^[A-Za-z0-9_-]{22}$",
+                    "type": "string"
                   },
-                  "required": [
-                    "item_id",
-                    "code",
-                    "kind",
-                    "score",
-                    "published_at"
-                  ],
-                  "type": "object"
-                },
-                "maxItems": 16,
-                "type": "array"
-              },
-              "outcome": {
-                "const": "Found",
-                "type": "string"
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
-              "outcome",
-              "items"
+              "next_cursor"
             ],
             "type": "object"
+          },
+          "result": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "items": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "item_id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string"
+                        },
+                        "published_at": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "score": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "item_id",
+                        "code",
+                        "kind",
+                        "score",
+                        "published_at"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 16,
+                    "type": "array"
+                  },
+                  "outcome": {
+                    "const": "Found",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "outcome",
+                  "items"
+                ],
+                "type": "object"
+              }
+            ]
           }
-        ]
+        },
+        "required": [
+          "result",
+          "page"
+        ],
+        "type": "object",
+        "x-riffdb-resultProfile": "paginated-envelope-v1"
       },
       "title": "Run ItemsByCode"
     },
@@ -117,6 +154,9 @@
           "after": {
             "anyOf": [
               {
+                "maxLength": 22,
+                "minLength": 22,
+                "pattern": "^[A-Za-z0-9_-]{22}$",
                 "type": "string"
               },
               {
@@ -135,68 +175,102 @@
           "workspace_id",
           "prefix"
         ],
-        "type": "object"
+        "type": "object",
+        "x-riffdb-continuationParameter": "after"
       },
       "module_hash": "e943b03babf87d680037f0b10a9cf1a42631577ee2056813217befc0e5301cb5",
       "name": "operational_access_corpus_items_by_code_prefix",
       "operation_name": "ItemsByCodePrefix",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "oneOf": [
-          {
+        "additionalProperties": false,
+        "properties": {
+          "page": {
             "additionalProperties": false,
             "properties": {
-              "items": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "item_id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "type": "string"
-                    },
-                    "published_at": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "score": {
-                      "type": "string"
-                    }
+              "next_cursor": {
+                "anyOf": [
+                  {
+                    "maxLength": 22,
+                    "minLength": 22,
+                    "pattern": "^[A-Za-z0-9_-]{22}$",
+                    "type": "string"
                   },
-                  "required": [
-                    "item_id",
-                    "code",
-                    "kind",
-                    "score",
-                    "published_at"
-                  ],
-                  "type": "object"
-                },
-                "maxItems": 16,
-                "type": "array"
-              },
-              "outcome": {
-                "const": "Found",
-                "type": "string"
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
-              "outcome",
-              "items"
+              "next_cursor"
             ],
             "type": "object"
+          },
+          "result": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "items": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "item_id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string"
+                        },
+                        "published_at": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "score": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "item_id",
+                        "code",
+                        "kind",
+                        "score",
+                        "published_at"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 16,
+                    "type": "array"
+                  },
+                  "outcome": {
+                    "const": "Found",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "outcome",
+                  "items"
+                ],
+                "type": "object"
+              }
+            ]
           }
-        ]
+        },
+        "required": [
+          "result",
+          "page"
+        ],
+        "type": "object",
+        "x-riffdb-resultProfile": "paginated-envelope-v1"
       },
       "title": "Run ItemsByCodePrefix"
     },
@@ -215,6 +289,9 @@
           "after": {
             "anyOf": [
               {
+                "maxLength": 22,
+                "minLength": 22,
+                "pattern": "^[A-Za-z0-9_-]{22}$",
                 "type": "string"
               },
               {
@@ -238,68 +315,102 @@
           "workspace_id",
           "codes"
         ],
-        "type": "object"
+        "type": "object",
+        "x-riffdb-continuationParameter": "after"
       },
       "module_hash": "e943b03babf87d680037f0b10a9cf1a42631577ee2056813217befc0e5301cb5",
       "name": "operational_access_corpus_items_by_codes",
       "operation_name": "ItemsByCodes",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "oneOf": [
-          {
+        "additionalProperties": false,
+        "properties": {
+          "page": {
             "additionalProperties": false,
             "properties": {
-              "items": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "item_id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "type": "string"
-                    },
-                    "published_at": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "score": {
-                      "type": "string"
-                    }
+              "next_cursor": {
+                "anyOf": [
+                  {
+                    "maxLength": 22,
+                    "minLength": 22,
+                    "pattern": "^[A-Za-z0-9_-]{22}$",
+                    "type": "string"
                   },
-                  "required": [
-                    "item_id",
-                    "code",
-                    "kind",
-                    "score",
-                    "published_at"
-                  ],
-                  "type": "object"
-                },
-                "maxItems": 16,
-                "type": "array"
-              },
-              "outcome": {
-                "const": "Found",
-                "type": "string"
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
-              "outcome",
-              "items"
+              "next_cursor"
             ],
             "type": "object"
+          },
+          "result": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "items": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "item_id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string"
+                        },
+                        "published_at": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "score": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "item_id",
+                        "code",
+                        "kind",
+                        "score",
+                        "published_at"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 16,
+                    "type": "array"
+                  },
+                  "outcome": {
+                    "const": "Found",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "outcome",
+                  "items"
+                ],
+                "type": "object"
+              }
+            ]
           }
-        ]
+        },
+        "required": [
+          "result",
+          "page"
+        ],
+        "type": "object",
+        "x-riffdb-resultProfile": "paginated-envelope-v1"
       },
       "title": "Run ItemsByCodes"
     },
@@ -318,6 +429,9 @@
           "after": {
             "anyOf": [
               {
+                "maxLength": 22,
+                "minLength": 22,
+                "pattern": "^[A-Za-z0-9_-]{22}$",
                 "type": "string"
               },
               {
@@ -341,68 +455,102 @@
           "workspace_id",
           "codes"
         ],
-        "type": "object"
+        "type": "object",
+        "x-riffdb-continuationParameter": "after"
       },
       "module_hash": "e943b03babf87d680037f0b10a9cf1a42631577ee2056813217befc0e5301cb5",
       "name": "operational_access_corpus_items_by_codes_reverse",
       "operation_name": "ItemsByCodesReverse",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "oneOf": [
-          {
+        "additionalProperties": false,
+        "properties": {
+          "page": {
             "additionalProperties": false,
             "properties": {
-              "items": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "item_id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "type": "string"
-                    },
-                    "published_at": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "score": {
-                      "type": "string"
-                    }
+              "next_cursor": {
+                "anyOf": [
+                  {
+                    "maxLength": 22,
+                    "minLength": 22,
+                    "pattern": "^[A-Za-z0-9_-]{22}$",
+                    "type": "string"
                   },
-                  "required": [
-                    "item_id",
-                    "code",
-                    "kind",
-                    "score",
-                    "published_at"
-                  ],
-                  "type": "object"
-                },
-                "maxItems": 16,
-                "type": "array"
-              },
-              "outcome": {
-                "const": "Found",
-                "type": "string"
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
-              "outcome",
-              "items"
+              "next_cursor"
             ],
             "type": "object"
+          },
+          "result": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "items": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "item_id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string"
+                        },
+                        "published_at": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "score": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "item_id",
+                        "code",
+                        "kind",
+                        "score",
+                        "published_at"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 16,
+                    "type": "array"
+                  },
+                  "outcome": {
+                    "const": "Found",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "outcome",
+                  "items"
+                ],
+                "type": "object"
+              }
+            ]
           }
-        ]
+        },
+        "required": [
+          "result",
+          "page"
+        ],
+        "type": "object",
+        "x-riffdb-resultProfile": "paginated-envelope-v1"
       },
       "title": "Run ItemsByCodesReverse"
     },
@@ -421,6 +569,9 @@
           "after": {
             "anyOf": [
               {
+                "maxLength": 22,
+                "minLength": 22,
+                "pattern": "^[A-Za-z0-9_-]{22}$",
                 "type": "string"
               },
               {
@@ -444,68 +595,102 @@
           "workspace_id",
           "kinds"
         ],
-        "type": "object"
+        "type": "object",
+        "x-riffdb-continuationParameter": "after"
       },
       "module_hash": "e943b03babf87d680037f0b10a9cf1a42631577ee2056813217befc0e5301cb5",
       "name": "operational_access_corpus_items_by_kinds",
       "operation_name": "ItemsByKinds",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "oneOf": [
-          {
+        "additionalProperties": false,
+        "properties": {
+          "page": {
             "additionalProperties": false,
             "properties": {
-              "items": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "item_id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "type": "string"
-                    },
-                    "published_at": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "score": {
-                      "type": "string"
-                    }
+              "next_cursor": {
+                "anyOf": [
+                  {
+                    "maxLength": 22,
+                    "minLength": 22,
+                    "pattern": "^[A-Za-z0-9_-]{22}$",
+                    "type": "string"
                   },
-                  "required": [
-                    "item_id",
-                    "code",
-                    "kind",
-                    "score",
-                    "published_at"
-                  ],
-                  "type": "object"
-                },
-                "maxItems": 16,
-                "type": "array"
-              },
-              "outcome": {
-                "const": "Found",
-                "type": "string"
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
-              "outcome",
-              "items"
+              "next_cursor"
             ],
             "type": "object"
+          },
+          "result": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "items": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "item_id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string"
+                        },
+                        "published_at": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "score": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "item_id",
+                        "code",
+                        "kind",
+                        "score",
+                        "published_at"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 16,
+                    "type": "array"
+                  },
+                  "outcome": {
+                    "const": "Found",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "outcome",
+                  "items"
+                ],
+                "type": "object"
+              }
+            ]
           }
-        ]
+        },
+        "required": [
+          "result",
+          "page"
+        ],
+        "type": "object",
+        "x-riffdb-resultProfile": "paginated-envelope-v1"
       },
       "title": "Run ItemsByKinds"
     },
@@ -524,6 +709,9 @@
           "after": {
             "anyOf": [
               {
+                "maxLength": 22,
+                "minLength": 22,
+                "pattern": "^[A-Za-z0-9_-]{22}$",
                 "type": "string"
               },
               {
@@ -546,68 +734,102 @@
           "after_code",
           "horizon_code"
         ],
-        "type": "object"
+        "type": "object",
+        "x-riffdb-continuationParameter": "after"
       },
       "module_hash": "e943b03babf87d680037f0b10a9cf1a42631577ee2056813217befc0e5301cb5",
       "name": "operational_access_corpus_items_in_code_window",
       "operation_name": "ItemsInCodeWindow",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "oneOf": [
-          {
+        "additionalProperties": false,
+        "properties": {
+          "page": {
             "additionalProperties": false,
             "properties": {
-              "items": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "item_id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "type": "string"
-                    },
-                    "published_at": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "score": {
-                      "type": "string"
-                    }
+              "next_cursor": {
+                "anyOf": [
+                  {
+                    "maxLength": 22,
+                    "minLength": 22,
+                    "pattern": "^[A-Za-z0-9_-]{22}$",
+                    "type": "string"
                   },
-                  "required": [
-                    "item_id",
-                    "code",
-                    "kind",
-                    "score",
-                    "published_at"
-                  ],
-                  "type": "object"
-                },
-                "maxItems": 16,
-                "type": "array"
-              },
-              "outcome": {
-                "const": "Found",
-                "type": "string"
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
-              "outcome",
-              "items"
+              "next_cursor"
             ],
             "type": "object"
+          },
+          "result": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "items": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "item_id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string"
+                        },
+                        "published_at": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "score": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "item_id",
+                        "code",
+                        "kind",
+                        "score",
+                        "published_at"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 16,
+                    "type": "array"
+                  },
+                  "outcome": {
+                    "const": "Found",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "outcome",
+                  "items"
+                ],
+                "type": "object"
+              }
+            ]
           }
-        ]
+        },
+        "required": [
+          "result",
+          "page"
+        ],
+        "type": "object",
+        "x-riffdb-resultProfile": "paginated-envelope-v1"
       },
       "title": "Run ItemsInCodeWindow"
     },
@@ -626,6 +848,9 @@
           "after": {
             "anyOf": [
               {
+                "maxLength": 22,
+                "minLength": 22,
+                "pattern": "^[A-Za-z0-9_-]{22}$",
                 "type": "string"
               },
               {
@@ -648,68 +873,102 @@
           "minimum",
           "maximum"
         ],
-        "type": "object"
+        "type": "object",
+        "x-riffdb-continuationParameter": "after"
       },
       "module_hash": "e943b03babf87d680037f0b10a9cf1a42631577ee2056813217befc0e5301cb5",
       "name": "operational_access_corpus_items_in_score_window",
       "operation_name": "ItemsInScoreWindow",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "oneOf": [
-          {
+        "additionalProperties": false,
+        "properties": {
+          "page": {
             "additionalProperties": false,
             "properties": {
-              "items": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "item_id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "type": "string"
-                    },
-                    "published_at": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "score": {
-                      "type": "string"
-                    }
+              "next_cursor": {
+                "anyOf": [
+                  {
+                    "maxLength": 22,
+                    "minLength": 22,
+                    "pattern": "^[A-Za-z0-9_-]{22}$",
+                    "type": "string"
                   },
-                  "required": [
-                    "item_id",
-                    "code",
-                    "kind",
-                    "score",
-                    "published_at"
-                  ],
-                  "type": "object"
-                },
-                "maxItems": 16,
-                "type": "array"
-              },
-              "outcome": {
-                "const": "Found",
-                "type": "string"
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
-              "outcome",
-              "items"
+              "next_cursor"
             ],
             "type": "object"
+          },
+          "result": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "items": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "item_id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string"
+                        },
+                        "published_at": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "score": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "item_id",
+                        "code",
+                        "kind",
+                        "score",
+                        "published_at"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 16,
+                    "type": "array"
+                  },
+                  "outcome": {
+                    "const": "Found",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "outcome",
+                  "items"
+                ],
+                "type": "object"
+              }
+            ]
           }
-        ]
+        },
+        "required": [
+          "result",
+          "page"
+        ],
+        "type": "object",
+        "x-riffdb-resultProfile": "paginated-envelope-v1"
       },
       "title": "Run ItemsInScoreWindow"
     },
@@ -728,6 +987,9 @@
           "after": {
             "anyOf": [
               {
+                "maxLength": 22,
+                "minLength": 22,
+                "pattern": "^[A-Za-z0-9_-]{22}$",
                 "type": "string"
               },
               {
@@ -746,68 +1008,102 @@
           "workspace_id",
           "excluded_code"
         ],
-        "type": "object"
+        "type": "object",
+        "x-riffdb-continuationParameter": "after"
       },
       "module_hash": "e943b03babf87d680037f0b10a9cf1a42631577ee2056813217befc0e5301cb5",
       "name": "operational_access_corpus_items_outside_code",
       "operation_name": "ItemsOutsideCode",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "oneOf": [
-          {
+        "additionalProperties": false,
+        "properties": {
+          "page": {
             "additionalProperties": false,
             "properties": {
-              "items": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "item_id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "type": "string"
-                    },
-                    "published_at": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "score": {
-                      "type": "string"
-                    }
+              "next_cursor": {
+                "anyOf": [
+                  {
+                    "maxLength": 22,
+                    "minLength": 22,
+                    "pattern": "^[A-Za-z0-9_-]{22}$",
+                    "type": "string"
                   },
-                  "required": [
-                    "item_id",
-                    "code",
-                    "kind",
-                    "score",
-                    "published_at"
-                  ],
-                  "type": "object"
-                },
-                "maxItems": 16,
-                "type": "array"
-              },
-              "outcome": {
-                "const": "Found",
-                "type": "string"
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
-              "outcome",
-              "items"
+              "next_cursor"
             ],
             "type": "object"
+          },
+          "result": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "items": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "item_id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string"
+                        },
+                        "published_at": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "score": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "item_id",
+                        "code",
+                        "kind",
+                        "score",
+                        "published_at"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 16,
+                    "type": "array"
+                  },
+                  "outcome": {
+                    "const": "Found",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "outcome",
+                  "items"
+                ],
+                "type": "object"
+              }
+            ]
           }
-        ]
+        },
+        "required": [
+          "result",
+          "page"
+        ],
+        "type": "object",
+        "x-riffdb-resultProfile": "paginated-envelope-v1"
       },
       "title": "Run ItemsOutsideCode"
     },
@@ -826,6 +1122,9 @@
           "after": {
             "anyOf": [
               {
+                "maxLength": 22,
+                "minLength": 22,
+                "pattern": "^[A-Za-z0-9_-]{22}$",
                 "type": "string"
               },
               {
@@ -844,68 +1143,102 @@
           "workspace_id",
           "excluded"
         ],
-        "type": "object"
+        "type": "object",
+        "x-riffdb-continuationParameter": "after"
       },
       "module_hash": "e943b03babf87d680037f0b10a9cf1a42631577ee2056813217befc0e5301cb5",
       "name": "operational_access_corpus_items_outside_score",
       "operation_name": "ItemsOutsideScore",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "oneOf": [
-          {
+        "additionalProperties": false,
+        "properties": {
+          "page": {
             "additionalProperties": false,
             "properties": {
-              "items": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "item_id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "type": "string"
-                    },
-                    "published_at": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "score": {
-                      "type": "string"
-                    }
+              "next_cursor": {
+                "anyOf": [
+                  {
+                    "maxLength": 22,
+                    "minLength": 22,
+                    "pattern": "^[A-Za-z0-9_-]{22}$",
+                    "type": "string"
                   },
-                  "required": [
-                    "item_id",
-                    "code",
-                    "kind",
-                    "score",
-                    "published_at"
-                  ],
-                  "type": "object"
-                },
-                "maxItems": 16,
-                "type": "array"
-              },
-              "outcome": {
-                "const": "Found",
-                "type": "string"
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
-              "outcome",
-              "items"
+              "next_cursor"
             ],
             "type": "object"
+          },
+          "result": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "items": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "item_id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string"
+                        },
+                        "published_at": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "score": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "item_id",
+                        "code",
+                        "kind",
+                        "score",
+                        "published_at"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 16,
+                    "type": "array"
+                  },
+                  "outcome": {
+                    "const": "Found",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "outcome",
+                  "items"
+                ],
+                "type": "object"
+              }
+            ]
           }
-        ]
+        },
+        "required": [
+          "result",
+          "page"
+        ],
+        "type": "object",
+        "x-riffdb-resultProfile": "paginated-envelope-v1"
       },
       "title": "Run ItemsOutsideScore"
     },

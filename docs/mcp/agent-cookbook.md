@@ -113,6 +113,24 @@ Deployed named-query tools use the compiler-owned
 result schemas, and execute one named query in one snapshot. They never submit
 ad-hoc RiffQL or gain raw entity/index authority.
 
+A named query with a compiler-declared `Cursor` or `Cursor?` uses the generated
+pagination result profile:
+
+```json
+{"result":{"outcome":"Found","items":[]},"page":{"next_cursor":null}}
+```
+
+Read business fields only below `result`. When `page.next_cursor` is a string,
+pass that exact opaque 22-character value back in the cursor parameter named by
+the tool's input schema (commonly `after`). A null cursor is the final page. Do
+not decode, modify, log, or substitute this value, and do not confuse it with
+the lowercase 32-character cursors used by MCP discovery and resources.
+Generated catalog V5 identifies this result profile. Older exact V2--V4
+catalogs keep their unpaged flat results byte-for-byte; callers that select V5
+must understand the envelope and fail locally on version skew. Invalid, stale,
+expired, mismatched, or denied continuations fail without structured content
+and without echoing the cursor.
+
 ## Reactive operations
 
 Reactive application roles may discover `riffdb_event_next`,

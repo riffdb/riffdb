@@ -311,6 +311,7 @@ class RuntimeTests(unittest.TestCase):
             _translate_native(cancellation)
         self.assertIs(raised.exception, cancellation)
 
+    # req: DRV-012
     def test_checked_public_storage_failure_remains_typed_and_retryable(self) -> None:
         encoded = json.dumps(
             {

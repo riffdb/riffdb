@@ -3,7 +3,7 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { CliApplicationTransport, exactDecimal, exactMoney } from "./index.js";
+import { CliApplicationTransport, InputBudgetError, exactDecimal, exactMoney } from "./index.js";
 test("generated collection schemas reject counts before transport", async () => {
     const transport = new CliApplicationTransport({
         riffdbPath: "/does-not-exist/riffdb",
@@ -59,7 +59,12 @@ test("generated collection schemas reject aggregate canonical bytes before trans
         },
         outcomeSchemas: { Written: { kind: "record", fields: [] } },
         decodeError: () => new Error("unexpected application error"),
-    }, 1), /invalid generated application input/);
+    }, 1), (error) => {
+        assert.ok(error instanceof InputBudgetError);
+        assert.equal(error.cause, "aggregate_canonical_element_bytes");
+        assert.deepEqual(error.path, { collection: "mutations" });
+        return true;
+    });
 });
 test("exact decimal helpers remove handwritten coefficient encoding", () => {
     assert.deepEqual(exactMoney("USD", "25.00"), {

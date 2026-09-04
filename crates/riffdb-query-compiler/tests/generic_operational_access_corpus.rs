@@ -198,3 +198,69 @@ fn generic_corpus_contains_no_external_framework_vocabulary() {
         }
     }
 }
+
+// req: OQ-004, OQ-006, OQ-016, OQ-056, OQ-057, OQ-058, OQ-059, OQ-060, OQ-061
+#[test]
+fn binary_text_interval_surface_harness_is_compiler_sealed_and_bounded() {
+    let workspace = workspace_root();
+    let contract = fs::read_to_string(
+        workspace.join("fixtures/adapters/operational-conformance/riffdb/contract.riff"),
+    )
+    .expect("surface-conformance contract");
+    let bundle = compile_contract_source(&contract).expect("surface-conformance contract compiles");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("surface-conformance catalog");
+    let source = fs::read_to_string(
+        workspace
+            .join("fixtures/riffql/wp701-binary-text-interval/documents_in_title_window.riffq"),
+    )
+    .expect("surface-conformance query");
+    let family = compile_operational_query_family(
+        &parse_query(&source).expect("surface-conformance query parses"),
+        &catalog,
+    )
+    .expect("surface-conformance query compiles");
+    let program = family.select(&[]).expect("sole family member").program();
+    let step = &program.steps()[0];
+
+    assert!(matches!(
+        step.access(),
+        QueryAccessKind::Index {
+            index,
+            direction: AccessDirection::Forward,
+            ..
+        } if index == "by_title"
+    ));
+    assert!(
+        step.predicates()
+            .iter()
+            .any(|predicate| predicate.operator() == QueryPredicateOperator::Greater)
+    );
+    assert!(
+        step.predicates()
+            .iter()
+            .any(|predicate| predicate.operator() == QueryPredicateOperator::Less)
+    );
+    assert_eq!(step.maximum_rows(), 2);
+    assert!(step.cursor_parameter().is_some());
+
+    let acceptance = fs::read_to_string(
+        workspace.join("scripts/generated_binary_text_interval_surfaces_preserve_logical_strings"),
+    )
+    .expect("surface acceptance script");
+    for required in [
+        "binary_interval_rust",
+        "binary_interval_go",
+        "binary_interval_typescript",
+        "binary_interval_python",
+        "binary_interval_cli",
+        "binary_interval_mcp",
+        "binary_interval_local_driver",
+        "binary_interval_remote_grpc",
+        r#"[\"aa\",\"b\",\"é\"]"#,
+    ] {
+        assert!(
+            acceptance.contains(required),
+            "surface acceptance omits {required}"
+        );
+    }
+}

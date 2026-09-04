@@ -1,154 +1,26 @@
 #!/usr/bin/env python3
-"""Generate the immutable generic operational-query capability receipt."""
+# req: OQ-061
+"""Verify the immutable generic operational-query capability receipts."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 from pathlib import Path
 import sys
 
 
 ROOT = Path(__file__).resolve().parent.parent
-CORPUS = ROOT / "fixtures/riffql/operational-access-corpus-v1"
-LOCK = CORPUS / "riffdb.application.lock.json"
-NULLABLE_QUERY = CORPUS / "queries/items_by_published_state.riffq"
 EXTERNAL = ROOT / "fixtures/riffql/wp701-external-binary-text-interval-capability-v1.json"
+EXTERNAL_SHA256 = "22e4a8a69869fd4867a578319a9a80d5ed2d84a37f372a64e3dfe3354ee12673"
 PREDECESSOR = ROOT / "fixtures/riffql/operational-query-capability-v4.json"
 PREDECESSOR_SHA256 = "d4df09daa026aad644bba0771b0bd2c3ecd108e96b7634c03712d9fb336fd38b"
 OUTPUT = ROOT / "fixtures/riffql/operational-query-capability-v5.json"
-OPERATION_ROLES = {
-    "ItemsByCode": ["binary_text_exact", "forward_cursor"],
-    "ItemsByCodePrefix": ["binary_text_prefix", "forward_cursor"],
-    "ItemsByCodes": ["binary_text_membership", "forward_cursor"],
-    "ItemsByCodesReverse": ["binary_text_membership", "reverse_cursor"],
-    "ItemsInCodeWindow": ["binary_text_interval", "forward_cursor"],
-    "ItemsByKinds": ["canonical_membership", "forward_cursor"],
-    "ItemsInScoreWindow": ["canonical_typed_interval", "forward_cursor"],
-    "ItemsOutsideScore": ["canonical_typed_complement", "reverse_cursor"],
-    "ItemsOutsideCode": ["binary_text_complement", "reverse_cursor"],
-    "ItemsWithLabels": ["dependent_complete_key_batch"],
-}
+OUTPUT_SHA256 = "18b7659b3d20853c6171a49e63981e3d7542094f063eb584978600eecd50737c"
 
 
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def render() -> bytes:
-    lock = json.loads(LOCK.read_text(encoding="utf-8"))
-    external = json.loads(EXTERNAL.read_text(encoding="utf-8"))
-    if external.get("schema") != "riffdb.external-operational-capability/v2":
-        raise ValueError("external operational capability has the wrong schema")
-    if external.get("status") != "passed":
-        raise ValueError("external operational capability did not pass")
-    if external.get("verification", {}).get("full_framework_conformance_claimed") is not False:
-        raise ValueError("external receipt must not claim framework conformance")
-    if external.get("value_free_source_receipt", {}).get("schema_or_route_names_retained") is not False:
-        raise ValueError("external receipt retained framework vocabulary")
-    module = lock["modules"][0]
-    queries = {query["name"]: query for query in module["queries"]}
-    if set(queries) != set(OPERATION_ROLES):
-        raise ValueError("generic operational corpus operation inventory drifted")
-    artifacts = sorted(
-        (
-            {
-                "kind": artifact["kind"],
-                "path": f"fixtures/riffql/operational-access-corpus-v1/{artifact['path']}",
-                "sha256": artifact["content_hash"],
-            }
-            for artifact in lock["artifacts"]
-            if artifact["kind"] in {"go", "mcp", "python", "rust", "typescript"}
-        ),
-        key=lambda artifact: artifact["kind"],
-    )
-    receipt = {
-        "schema": "riffdb.operational-query-capability/v5",
-        "work_package": "WP-701",
-        "status": "development",
-        "predecessor": {
-            "path": str(PREDECESSOR.relative_to(ROOT)),
-            "sha256": PREDECESSOR_SHA256,
-            "unchanged": True,
-        },
-        "contract": {
-            "lineage": lock["contract"]["lineage"],
-            "version": lock["contract"]["version"],
-            "bundle_hash": lock["contract"]["bundle_hash"],
-        },
-        "query_module": {
-            "name": module["name"],
-            "version": module["version"],
-            "module_hash": module["module_hash"],
-        },
-        "operational_access_operations": [
-            {
-                "name": name,
-                "plan_hash": queries[name]["plan_hash"],
-                "source_hash": queries[name]["source_hash"],
-                "roles": roles,
-            }
-            for name, roles in sorted(OPERATION_ROLES.items())
-        ],
-        "compiler_only_corpus": {
-            "nullable_presence_and_order": {
-                "path": str(NULLABLE_QUERY.relative_to(ROOT)),
-                "sha256": sha256(NULLABLE_QUERY),
-            },
-            "test": "riffdb-query-compiler/generic_operational_access_corpus",
-        },
-        "generated_artifacts": artifacts,
-        "semantics": {
-            "caller_supplied_structure": False,
-            "client_shaping": False,
-            "finite_compiler_family": True,
-            "global_range_budget": True,
-            "logical_predicates_before_page": True,
-            "one_component_capability_registry": True,
-            "profile_aware_binary_text_interval": True,
-            "one_semantic_storage_schedule": True,
-            "partition_local": True,
-            "policy_before_release": True,
-            "request_time_authoritative_scan": False,
-            "row_store_provider_bridge": False,
-            "typed_generated_languages": ["go", "python", "rust", "typescript"],
-        },
-        "external_acceptance": {
-            "path": str(EXTERNAL.relative_to(ROOT)),
-            "sha256": sha256(EXTERNAL),
-            "status": external["status"],
-            "consumer_class": external["consumer_class"],
-            "full_framework_conformance_claimed": False,
-            "framework_artifacts_retained": False,
-        },
-        "compatibility": {
-            "proved_predecessor_artifacts_preserved": True,
-            "historically_unproved_plans_executable": False,
-            "typed_refusal": "RDB-QUERY-0102",
-            "recovery": "refresh_contract_then_recompile_and_redeploy",
-            "durable_or_wire_format_changed": False,
-        },
-        "refusal_inventory": {
-            "repository_active_unproved_ordinary_plans": 0,
-            "external_consumer_classes": [
-                {
-                    "consumer_class": "partitioned_tuple_store",
-                    "refused_source_count": 2,
-                    "shape": "multiple_same_side_binary_text_endpoints",
-                    "compiler_code": "RDB-QP003",
-                    "historical_runtime_code": "RDB-QUERY-0102",
-                    "recovery": "normalize_to_one_endpoint_or_obtain_a_separately_accepted_compiler_shape_then_recompile_and_redeploy",
-                    "client_emulation_permitted": False,
-                }
-            ],
-        },
-        "source_lock": {
-            "path": str(LOCK.relative_to(ROOT)),
-            "sha256": sha256(LOCK),
-        },
-    }
-    return (json.dumps(receipt, indent=2, sort_keys=True) + "\n").encode()
 
 
 def main() -> int:
@@ -158,15 +30,14 @@ def main() -> int:
     if not PREDECESSOR.exists() or sha256(PREDECESSOR) != PREDECESSOR_SHA256:
         print(f"immutable predecessor receipt changed: {PREDECESSOR}", file=sys.stderr)
         return 1
-    expected = render()
-    if arguments.check:
-        if not OUTPUT.exists() or OUTPUT.read_bytes() != expected:
-            print(f"generated operational-query capability is stale: {OUTPUT}", file=sys.stderr)
-            return 1
-        return 0
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT.write_bytes(expected)
-    print(OUTPUT.relative_to(ROOT))
+    if not EXTERNAL.exists() or sha256(EXTERNAL) != EXTERNAL_SHA256:
+        print(f"immutable historical receipt changed: {EXTERNAL}", file=sys.stderr)
+        return 1
+    if not OUTPUT.exists() or sha256(OUTPUT) != OUTPUT_SHA256:
+        print(f"immutable V5 capability fixture changed: {OUTPUT}", file=sys.stderr)
+        return 1
+    if not arguments.check:
+        print(f"{OUTPUT.relative_to(ROOT)} is immutable; no files written")
     return 0
 
 

@@ -1918,36 +1918,31 @@ impl HostedServiceMcpBackend {
         request: &McpToolInvocation,
         descriptor: NamedQueryToolDescriptor,
     ) -> Result<McpToolResult, McpBackendError> {
-        let input_schema = SchemaDocument::from_public_parts(
-            format!(
-                "riffdb.named-query/{}/{}/input/v1",
-                lower_hex(descriptor.module_hash().as_bytes()),
-                descriptor.source_query()
-            ),
-            descriptor.input_schema().schema_hash().as_bytes(),
-            descriptor.input_schema().canonical_json(),
-        )
-        .map_err(invalid_response)?;
-        let result_schema = SchemaDocument::from_public_parts(
-            format!(
-                "riffdb.named-query/{}/{}/result/v1",
-                lower_hex(descriptor.module_hash().as_bytes()),
-                descriptor.source_query()
-            ),
-            descriptor.result_schema().schema_hash().as_bytes(),
-            descriptor.result_schema().canonical_json(),
-        )
-        .map_err(invalid_response)?;
+        let (input_schema, result_schema, pagination) =
+            named_query_schema_documents(&descriptor)?;
         McpDynamicToolDefinition::from_discovered_query(exact_name, input_schema, result_schema)
             .map_err(invalid_response)?;
-        let values = request
+        let mut arguments = request
             .arguments()
             .deserialize::<BTreeMap<String, serde_json::Value>>()
-            .map_err(invalid_response)?
+            .map_err(invalid_response)?;
+        let cursor = match pagination.as_ref() {
+            None => None,
+            Some(profile) => match arguments.remove(profile.parameter()) {
+                None => None,
+                Some(serde_json::Value::Null) if profile.accepts_null() => None,
+                Some(serde_json::Value::String(value)) => Some(CursorToken::from_bytes(
+                    crate::cursor::decode_application_query_cursor(&value)
+                        .map_err(invalid_response)?,
+                )),
+                Some(_) => return Err(McpBackendError::InvalidResponse),
+            },
+        };
+        let values = arguments
             .into_iter()
             .map(|(name, value)| Ok((name, natural_parameter(value)?)))
             .collect::<Result<BTreeMap<_, _>, McpBackendError>>()?;
-        let named = NamedSymbolicQueryRequest::new(
+        let mut named = NamedSymbolicQueryRequest::new(
             SymbolicContractSelector::from_selection(ContractSelection::Exact {
                 lineage: descriptor.lineage().clone(),
                 version: descriptor.version(),
@@ -1957,6 +1952,9 @@ impl HostedServiceMcpBackend {
             SymbolicQueryParameters::new(values).map_err(invalid_response)?,
         )
         .map_err(invalid_response)?;
+        if let Some(cursor) = cursor {
+            named = named.with_cursor(cursor);
+        }
         let target =
             McpRateTarget::command_tool(exact_name.to_owned()).map_err(invalid_response)?;
         let mut call = self.prepare_call(invocation, target)?;
@@ -1973,7 +1971,7 @@ impl HostedServiceMcpBackend {
             return Err(McpBackendError::InvalidResponse);
         }
         call.complete();
-        render_dynamic_named_query(&result)
+        render_dynamic_named_query(&result, pagination.is_some())
     }
 
     pub(crate) async fn invoke_observer_service(
@@ -2722,28 +2720,7 @@ fn tool_item_from_service(
             .map_err(|_| McpBackendError::InvalidResponse)
         }
         CommandToolDiscoveryItem::NamedQuery(descriptor) => {
-            let input = descriptor.input_schema();
-            let result = descriptor.result_schema();
-            let input_schema = SchemaDocument::from_public_parts(
-                format!(
-                    "riffdb.named-query/{}/{}/input/v1",
-                    lower_hex(descriptor.module_hash().as_bytes()),
-                    descriptor.source_query()
-                ),
-                input.schema_hash().as_bytes(),
-                input.canonical_json(),
-            )
-            .map_err(|_| McpBackendError::InvalidResponse)?;
-            let result_schema = SchemaDocument::from_public_parts(
-                format!(
-                    "riffdb.named-query/{}/{}/result/v1",
-                    lower_hex(descriptor.module_hash().as_bytes()),
-                    descriptor.source_query()
-                ),
-                result.schema_hash().as_bytes(),
-                result.canonical_json(),
-            )
-            .map_err(|_| McpBackendError::InvalidResponse)?;
+            let (input_schema, result_schema, _) = named_query_schema_documents(descriptor)?;
             McpDynamicToolDefinition::from_discovered_query(
                 descriptor.name(),
                 input_schema,
@@ -4598,6 +4575,7 @@ const fn live_terminal_reason(value: LiveQueryTerminalReason) -> &'static str {
 
 fn render_dynamic_named_query(
     result: &ExecuteSymbolicQueryResult,
+    paginated: bool,
 ) -> Result<McpToolResult, McpBackendError> {
     let mut payload = serde_json::Map::new();
     payload.insert(
@@ -4622,7 +4600,68 @@ fn render_dynamic_named_query(
             return Err(McpBackendError::InvalidResponse);
         }
     }
-    McpToolResult::from_serializable(&serde_json::Value::Object(payload)).map_err(invalid_response)
+    let business = serde_json::Value::Object(payload);
+    let presentation = if paginated {
+        let next_cursor = result.next_cursor().map(|cursor| {
+            crate::cursor::encode_application_query_cursor(*cursor.as_bytes())
+        });
+        serde_json::json!({
+            "result": business,
+            "page": {"next_cursor": next_cursor},
+        })
+    } else {
+        business
+    };
+    McpToolResult::from_serializable(&presentation).map_err(invalid_response)
+}
+
+fn named_query_schema_documents(
+    descriptor: &NamedQueryToolDescriptor,
+) -> Result<
+    (
+        SchemaDocument,
+        SchemaDocument,
+        Option<crate::schema::GeneratedNamedQueryPagination>,
+    ),
+    McpBackendError,
+> {
+    let input = descriptor.input_schema();
+    let result = descriptor.result_schema();
+    let input_value: serde_json::Value =
+        serde_json::from_str(input.canonical_json()).map_err(invalid_response)?;
+    let result_value: serde_json::Value =
+        serde_json::from_str(result.canonical_json()).map_err(invalid_response)?;
+    let paginated = input_value
+        .get("x-riffdb-continuationParameter")
+        .is_some()
+        || result_value.get("x-riffdb-resultProfile").is_some();
+    let version = if paginated { "v2" } else { "v1" };
+    let input_schema = SchemaDocument::from_public_parts(
+        format!(
+            "riffdb.named-query/{}/{}/input/{version}",
+            lower_hex(descriptor.module_hash().as_bytes()),
+            descriptor.source_query()
+        ),
+        input.schema_hash().as_bytes(),
+        input.canonical_json(),
+    )
+    .map_err(invalid_response)?;
+    let result_schema = SchemaDocument::from_public_parts(
+        format!(
+            "riffdb.named-query/{}/{}/result/{version}",
+            lower_hex(descriptor.module_hash().as_bytes()),
+            descriptor.source_query()
+        ),
+        result.schema_hash().as_bytes(),
+        result.canonical_json(),
+    )
+    .map_err(invalid_response)?;
+    let pagination = crate::schema::generated_named_query_pagination(
+        &input_schema,
+        &result_schema,
+    )
+    .map_err(invalid_response)?;
+    Ok((input_schema, result_schema, pagination))
 }
 
 fn named_query_record(

@@ -10,17 +10,18 @@ use riffdb_api_mcp::{
     McpResourceJson, McpResourceLocator, McpResourcePage, McpResourceReadRequest,
     McpStdioClientActivity, McpSubscriptionRequest, McpToolDiscoveryItem, McpToolInvocation,
     McpToolPage, McpToolResult, McpTransportKind, RequestIdSourceError, SchemaDocument,
-    decode_dynamic_command_input, decode_fixed_tool_request, fixed_tool_registry,
-    format_active_contract_locator, format_application_guidance_locator,
-    format_command_documentation_locator_from_public, format_command_plan_locator_from_public,
-    format_commit_locator, format_commit_locator_from_public, format_commit_template_locator,
+    decode_application_query_cursor, decode_dynamic_command_input, decode_fixed_tool_request,
+    encode_application_query_cursor, fixed_tool_registry, format_active_contract_locator,
+    format_application_guidance_locator, format_command_documentation_locator_from_public,
+    format_command_plan_locator_from_public, format_commit_locator,
+    format_commit_locator_from_public, format_commit_template_locator,
     format_contract_version_locator, format_contract_version_locator_from_public,
     format_entity_schema_locator, format_entity_schema_locator_from_public, format_outcome_locator,
     format_outcome_template_locator_from_public, format_projection_status_locator,
     format_projection_status_locator_from_public, format_provenance_locator,
     format_provenance_locator_from_public, format_provenance_template_locator,
-    format_reactive_wakeup_locator, format_server_health_locator, parse_resource_locator,
-    render_application_guidance,
+    format_reactive_wakeup_locator, format_server_health_locator, generated_named_query_pagination,
+    parse_resource_locator, render_application_guidance,
 };
 use riffdb_client_rust::{
     ApplicationContract, ApplicationValue, CallMetadata, ClientError, DetailsFreeStatus,
@@ -1332,10 +1333,39 @@ impl PublicGrpcMcpBackend {
         contract_version: u64,
         module_hash: [u8; 32],
     ) -> Result<McpToolResult, McpBackendError> {
-        let parameters = request
+        let pagination =
+            generated_named_query_pagination(definition.input_schema(), definition.result_schema())
+                .map_err(|_| McpBackendError::InvalidResponse)?;
+        let pagination_parameter = pagination
+            .as_ref()
+            .map(|profile| profile.parameter().to_owned());
+        let mut arguments = request
             .arguments()
             .deserialize::<BTreeMap<String, serde_json::Value>>()
-            .map_err(|_| McpBackendError::InvalidResponse)?
+            .map_err(|_| McpBackendError::InvalidResponse)?;
+        let cursor = match pagination_parameter.as_deref() {
+            None => None,
+            Some(parameter) => match arguments.remove(parameter) {
+                None => None,
+                Some(serde_json::Value::Null)
+                    if pagination
+                        .as_ref()
+                        .is_some_and(|profile| profile.accepts_null()) =>
+                {
+                    None
+                }
+                Some(serde_json::Value::String(value)) => {
+                    let bytes = decode_application_query_cursor(&value)
+                        .map_err(|_| McpBackendError::InvalidResponse)?;
+                    if encode_application_query_cursor(bytes) != value {
+                        return Err(McpBackendError::InvalidResponse);
+                    }
+                    Some(value)
+                }
+                Some(_) => return Err(McpBackendError::InvalidResponse),
+            },
+        };
+        let parameters = arguments
             .into_iter()
             .map(|(name, value)| Ok((name, application_value(value)?)))
             .collect::<Result<BTreeMap<_, _>, McpBackendError>>()?;
@@ -1348,7 +1378,7 @@ impl PublicGrpcMcpBackend {
             source_query.clone(),
             Some(module_hash),
             parameters,
-            None,
+            cursor,
         )
         .map_err(|_| McpBackendError::InvalidResponse)?;
         reject_cancelled(invocation)?;
@@ -1373,7 +1403,24 @@ impl PublicGrpcMcpBackend {
         {
             return Err(McpBackendError::InvalidResponse);
         }
-        let payload = named_query_result_payload(result)?;
+        let next_cursor = result
+            .next_cursor
+            .as_deref()
+            .map(|cursor| {
+                decode_application_query_cursor(cursor)
+                    .map(encode_application_query_cursor)
+                    .map_err(|_| McpBackendError::InvalidResponse)
+            })
+            .transpose()?;
+        let business = named_query_result_payload(result)?;
+        let payload = if pagination_parameter.is_some() {
+            serde_json::json!({
+                "result": business,
+                "page": {"next_cursor": next_cursor},
+            })
+        } else {
+            business
+        };
         let value = McpToolResult::from_serializable(&payload)
             .map_err(|_| McpBackendError::InvalidResponse)?;
         let _ = definition;
@@ -2154,13 +2201,35 @@ fn dynamic_query_from_public(
         return Err(McpBackendError::InvalidResponse);
     }
     let hash = lower_hex(&module_hash);
+    let input_profile = tool
+        .input_schema
+        .as_ref()
+        .and_then(|schema| serde_json::from_str::<serde_json::Value>(&schema.canonical_json).ok())
+        .and_then(|schema| schema.get("x-riffdb-continuationParameter").cloned());
+    let result_profile = tool
+        .result_schema
+        .as_ref()
+        .and_then(|schema| serde_json::from_str::<serde_json::Value>(&schema.canonical_json).ok())
+        .and_then(|schema| schema.get("x-riffdb-resultProfile").cloned());
+    let paginated = match (input_profile, result_profile) {
+        (None, None) => false,
+        (Some(_), Some(_)) => true,
+        _ => return Err(McpBackendError::InvalidResponse),
+    };
+    let version = if paginated { "v2" } else { "v1" };
     let input = dynamic_query_schema(
         tool.input_schema,
-        format!("riffdb.named-query/{hash}/{}/input/v1", tool.source_query),
+        format!(
+            "riffdb.named-query/{hash}/{}/input/{version}",
+            tool.source_query
+        ),
     )?;
     let result = dynamic_query_schema(
         tool.result_schema,
-        format!("riffdb.named-query/{hash}/{}/result/v1", tool.source_query),
+        format!(
+            "riffdb.named-query/{hash}/{}/result/{version}",
+            tool.source_query
+        ),
     )?;
     McpDynamicToolDefinition::from_discovered_query(tool.tool_name, input, result)
         .map_err(|_| McpBackendError::InvalidResponse)

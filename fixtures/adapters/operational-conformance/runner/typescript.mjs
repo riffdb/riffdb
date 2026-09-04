@@ -75,6 +75,13 @@ try {
   assert(authSession.value.state === undefined, "Better Auth result remains page-shaped");
   assert(authSession.value.session.state === "AuthActive" && authSession.value.session.expires_at.seconds === 1800000000n, "Better Auth typed session graph");
 
+  const intervalFirst = await client.documentsInTitleWindow({ site_id: id(35), after_title: "a", horizon_title: "😀" });
+  assert(intervalFirst.value.outcome === "Found" && intervalFirst.value.documents.map((row) => row.title).join(",") === "aa,b", "binary interval first page");
+  assert(intervalFirst.nextCursor !== undefined, "binary interval cursor");
+  const intervalSecond = await client.documentsInTitleWindow({ site_id: id(35), after_title: "a", horizon_title: "😀", after: intervalFirst.nextCursor });
+  assert(intervalSecond.value.outcome === "Found" && intervalSecond.value.documents.map((row) => row.title).join(",") === "é", "binary interval continuation");
+  assert(intervalSecond.nextCursor === undefined, "binary interval exhausted");
+
   console.log(JSON.stringify({
     schema: "riffdb.adapter-operational-observation/v1",
     language: "typescript",
@@ -90,6 +97,7 @@ try {
     exact_total: true,
     numeric_offset: true,
     operator_expansions: true,
+    binary_interval: { first_page: ["aa", "b"], second_page: ["é"], first_cursor: true, second_cursor: false },
     adapters: ["mlflow", "openfga", "better-auth", "woodpecker"],
     regression_adapters: ["payload"],
   }));
