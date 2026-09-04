@@ -278,12 +278,9 @@ fn relationship_runtime_contains_no_unaccepted_join_operator() {
 
 // req: OQ-041, OQ-043
 #[test]
-fn memory_and_redb_share_one_position_preserving_policy_aware_batch_contract() {
+fn redb_uses_the_position_preserving_policy_aware_batch_contract() {
     let root = workspace_root();
-    for path in [
-        "crates/riffdb-storage-memory/src/query.rs",
-        "crates/riffdb-storage-redb/src/query.rs",
-    ] {
+    for path in ["crates/riffdb-storage-redb/src/query.rs"] {
         let source = fs::read_to_string(root.join(path)).expect("storage query source");
         // Follow a diagnostic wrapper to the implementation. `riffdb-storage-redb`
         // wraps this method to time the storage read-view call and delegates to

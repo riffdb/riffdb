@@ -47,6 +47,9 @@ mod layout;
 mod maintenance;
 mod media;
 mod migration_stage;
+#[cfg(feature = "test-fixtures")]
+#[doc(hidden)]
+pub use migration_stage::{RedbMigrationStageFixture, RedbMigrationStageSnapshot};
 mod owned_snapshot;
 #[cfg(test)]
 mod query;

@@ -3,15 +3,66 @@
 use std::path::Path;
 
 use redb::{Database, ReadableDatabase, ReadableTable};
-use riffdb_storage_api::{StorageError, StorageErrorKind, StoredIndexEntryV1};
+use riffdb_storage_api::{
+    ActiveCatalogPointerV1, DatabaseInitializationPort, StorageError, StorageErrorKind,
+    StoredContractBundleV1, StoredEntityRecordV1, StoredIndexEntryV1,
+};
 
 use crate::error::{
     codec_error, commit_error, database_error, precommit_storage_error, storage_error, table_error,
     transaction_error,
 };
 use crate::layout::{
-    META, META_CLEAN_CLOSE_LIFECYCLE, META_VALIDATED_PREFIX_CHECKPOINT, SECONDARY_INDEXES,
+    CATALOG_ACTIVE, CATALOG_ACTIVE_KEY, CONTRACT_BUNDLES, ENTITIES, META,
+    META_CLEAN_CLOSE_LIFECYCLE, META_VALIDATED_PREFIX_CHECKPOINT, SECONDARY_INDEXES,
 };
+
+/// Seeds and opens least-authority ports for one isolated contract-migration fixture.
+pub(crate) fn contract_migration_stage_ports_fixture(
+    path: &Path,
+    database_id: riffdb_types::DatabaseId,
+    parent: &StoredContractBundleV1,
+    rows: &[StoredEntityRecordV1],
+) -> Result<crate::store::RedbOperationalPorts, StorageError> {
+    let mut store = crate::RedbStore::open(path)?;
+    store.initialize_database(database_id)?;
+    let transaction = store
+        .shared
+        .database
+        .begin_write()
+        .map_err(transaction_error)?;
+    let bundle_key =
+        crate::keys::encode_contract_bundle_key(parent.lineage(), parent.contract_version())
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    let encoded_bundle = crate::codec::encode_contract_bundle_v1(parent)?;
+    transaction
+        .open_table(CONTRACT_BUNDLES)
+        .map_err(table_error)?
+        .insert(bundle_key.as_slice(), encoded_bundle.as_bytes())
+        .map_err(precommit_storage_error)?;
+    let active = ActiveCatalogPointerV1::from_bundle(parent);
+    let encoded_active = crate::codec::encode_active_catalog_pointer_v1(&active)?;
+    transaction
+        .open_table(CATALOG_ACTIVE)
+        .map_err(table_error)?
+        .insert(CATALOG_ACTIVE_KEY.as_slice(), encoded_active.as_bytes())
+        .map_err(precommit_storage_error)?;
+    let mut entities = transaction.open_table(ENTITIES).map_err(table_error)?;
+    for row in rows {
+        let encoded = crate::codec::encode_entity_record_v1(row)?;
+        entities
+            .insert(
+                crate::keys::encode_entity_key(row.target().key()),
+                encoded.as_bytes(),
+            )
+            .map_err(precommit_storage_error)?;
+    }
+    drop(entities);
+    transaction.commit().map_err(commit_error)?;
+    Ok(crate::store::RedbOperationalPorts {
+        shared: store.shared,
+    })
+}
 
 /// Replaces every canonical V2 secondary-index row in a stopped database with
 /// its canonical V1 migration source.

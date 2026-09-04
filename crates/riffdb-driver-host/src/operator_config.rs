@@ -6,7 +6,6 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
-use riffdb_application::ApplicationPortabilityManifest;
 use riffdb_client_rust::{
     ApplicationInstallationCampaignId, CallMetadata, CapabilityApplicationReimportScopeV1,
     RiffDbClient, StartApplicationReimport, load_protected_bearer_credential,
@@ -14,7 +13,7 @@ use riffdb_client_rust::{
 use riffdb_config::{
     CanonicalHttpsEndpoint, ProtectedFilePath, TlsClientConfig, TlsServerIdentity,
 };
-use riffdb_types::{ContractLineage, DatabaseAlias};
+use riffdb_types::{ApplicationPortabilityManifest, ContractLineage, DatabaseAlias};
 use serde::Deserialize;
 
 use crate::{OperatorDriverHost, OperatorDriverSocket};

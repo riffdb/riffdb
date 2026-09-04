@@ -191,7 +191,6 @@ fn production_transport_features_are_exact_default_disabled_and_confined() {
     for forbidden in [
         "riffdb-client-rust",
         "riffdb-proto",
-        "riffdb-storage-memory",
         "base64 =",
         "features = [\"transport\"]",
         "channel",

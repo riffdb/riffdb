@@ -804,7 +804,6 @@ fn manifest_has_only_the_reviewed_dependencies_needed_by_commit_orchestration() 
         "riffdb-proto",
         "riffdb-api-grpc",
         "riffdb-api-mcp",
-        "riffdb-storage-memory",
         "riffdb-storage-redb",
         "riffdb-auth",
         "riffdb-contract-compiler",
@@ -1687,7 +1686,6 @@ fn this_slice_has_no_concrete_clock_entropy_transport_or_engine_authority() {
         "redb::",
         "riffdb_service",
         "riffdb_proto",
-        "riffdb_storage_memory",
         "riffdb_storage_redb",
     ] {
         assert!(

@@ -37,6 +37,7 @@ cargo deny check
 cargo audit
 cargo machete
 ./scripts/check-workspace-policy
+./scripts/check-crate-graph --self-test
 ./scripts/check-file-size-guard
 ./scripts/check-test-partition-coverage
 ./scripts/check-three-places --self-test

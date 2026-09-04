@@ -104,7 +104,6 @@ fn source_has_no_internal_database_or_unchecked_transport_path() {
         // Offline retention may import `riffdb_storage_redb` only; other storage
         // crates remain forbidden. Match full crate roots, not the shared prefix.
         "riffdb_storage_api",
-        "riffdb_storage_memory",
         "tonic::",
         "load_capability_token_file",
     ] {

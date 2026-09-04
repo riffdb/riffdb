@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+// req: DEP-005
 
 //! Covering-index migration evidence.
 //!
@@ -20,10 +21,8 @@ use riffdb_contract_ir::MigrationStepKindV1;
 use riffdb_query_compiler::compile_query;
 use riffdb_query_ir::SymbolicCatalog;
 use riffdb_riffql_syntax::parse_query;
-use riffdb_storage_api::{
-    ApplicationSequenceAllocator, DurableKeySchemaBindingV1, EntityTarget, StoredEntityRecordV1,
-};
-use riffdb_storage_memory::{MemoryMigrationHistoryWitness, MemoryMigrationStage};
+use riffdb_storage_api::{DurableKeySchemaBindingV1, EntityTarget, StoredEntityRecordV1};
+use riffdb_storage_redb::RedbMigrationStageFixture;
 use riffdb_types::{CanonicalRecord, CanonicalValue, EntityVersion, Timestamp};
 
 const CONTRACT: &str = include_str!(concat!(
@@ -63,7 +62,7 @@ fn adding_a_covering_index_rebuilds_entries_with_their_complete_cover() {
     );
 
     let source = ticket_row(&parent);
-    let mut stage = memory_stage(&parent, vec![source.clone()]);
+    let mut stage = redb_stage(&plan, vec![source.clone()]);
     MigrationCoordinator::apply(&plan, &mut stage).expect("covering-index migration applies");
 
     // Only the newly declared index is rebuilt: no existing index identity
@@ -156,7 +155,7 @@ fn an_unrelated_index_change_does_not_strip_an_existing_cover() {
 
     let plan = ValidatedMigrationPlan::from_artifacts(parent.clone(), candidate, migration)
         .expect("sealed plan");
-    let mut stage = memory_stage(&parent, vec![ticket_row(&parent)]);
+    let mut stage = redb_stage(&plan, vec![ticket_row(&parent)]);
     MigrationCoordinator::apply(&plan, &mut stage).expect("migration applies");
 
     let rebuilt = stage
@@ -182,7 +181,7 @@ fn an_unrelated_index_change_does_not_strip_an_existing_cover() {
 #[test]
 fn rebuilt_covering_entries_bind_to_the_successor_contract() {
     let (parent, candidate, plan) = covering_index_plan();
-    let mut stage = memory_stage(&parent, vec![ticket_row(&parent)]);
+    let mut stage = redb_stage(&plan, vec![ticket_row(&parent)]);
     MigrationCoordinator::apply(&plan, &mut stage).expect("covering-index migration applies");
 
     let entry = &stage.index_entries()[0];
@@ -236,17 +235,17 @@ fn covering_index_plan() -> (
     (parent, candidate, plan)
 }
 
-fn memory_stage(
-    parent: &ValidatedContractBundle,
+fn redb_stage(
+    plan: &ValidatedMigrationPlan,
     rows: Vec<StoredEntityRecordV1>,
-) -> MemoryMigrationStage {
-    let history = MemoryMigrationHistoryWitness::new(
-        ApplicationSequenceAllocator::initial(),
-        b"immutable-covering-index-history".to_vec(),
+) -> RedbMigrationStageFixture {
+    RedbMigrationStageFixture::create(
+        &plan.parent().to_stored().expect("stored parent"),
+        plan.candidate_bundle_hash(),
+        plan.migration_bundle_hash(),
+        rows,
     )
-    .expect("history witness");
-    MemoryMigrationStage::new(parent.to_stored().expect("stored parent"), rows, history)
-        .expect("memory stage")
+    .expect("redb migration stage")
 }
 
 fn ticket_row(parent: &ValidatedContractBundle) -> StoredEntityRecordV1 {

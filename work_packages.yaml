@@ -22620,6 +22620,19 @@ work_packages:
       grants no runtime capability.
     scale: Removing the second single-node backend removes an assumption rather than adding one;
       the layered allow-list places readers below executors, which a remote reader requires.
+  closure:
+    status: complete
+    completed_at: "2026-09-04"
+    requirements_satisfied: [DEP-005, DEP-006]
+    evidence: The cargo-metadata graph gate passes the full workspace and rejects both an injected
+      upward edge and an exception without an ADR. The in-memory backend is removed; migration
+      gates use the redb stage, executor tests use a small storage-api reader fake, and the testkit
+      model remains the independent oracle. The storage-api consumer inventory found no orphaned
+      trait, so no format-bearing API was removed and ADR-0124 records no durable, wire, or IR
+      identity change. The non-evidentiary receipt records a 2.4 percent warm-incremental change
+      and 91.8, 46.7, and 23.3 percent reductions in policy, commit, and service leaf-test link
+      times. Migration, simulator, generated-artifact, handbook, adapter, governance, and package
+      acceptance checks pass.
   human_review_triggers: *id0180
 
 - id: WP-757

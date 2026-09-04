@@ -448,7 +448,6 @@ fn transports_cannot_bypass_service_owned_authorization() {
             "riffdb-commit",
             "riffdb-runtime",
             "riffdb-storage-api",
-            "riffdb-storage-memory",
             "riffdb-storage-redb",
         ] {
             assert!(
