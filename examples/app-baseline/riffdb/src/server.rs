@@ -64,6 +64,7 @@ const QUERY_EXECUTE_WINDOWS_PREFIX: &str = "riffdb-query-execute-windows-v1\t";
 const SHUTDOWN_STAGES_PREFIX: &str = "riffdb-shutdown-stages-v1\t";
 const STARTUP_STAGES_PREFIX: &str = "riffdb-startup-stages-v1\t";
 const GRACEFUL_CHECKPOINT_CLOSE_PREFIX: &str = "riffdb-graceful-checkpoint-close-v1\t";
+const PROCESS_MEMORY_BASELINE_LINE: &str = "riffdb-process-memory-baseline-v1";
 const EXTERNAL_KILL_BARRIER_ENV: &str = "RIFFDB_TEST_REDB_EXTERNAL_KILL_BARRIER";
 const EXTERNAL_KILL_BARRIER_BODY: &[u8] = b"armed\n";
 const STARTUP_STAGE_NAMES: [&str; 11] = [
@@ -1869,14 +1870,6 @@ impl ServerProcess {
         }
         let mut child = command.spawn()?;
         let child_id = child.id();
-        let initial_process_memory = match read_process_memory(child_id) {
-            Ok(observation) => observation,
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(error);
-            }
-        };
         let stdin = child
             .stdin
             .take()
@@ -1895,7 +1888,38 @@ impl ServerProcess {
             thread::spawn(move || read_server_stdout(stdout, ready_sender, shutdown_sender));
         let stderr_ring = Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_RING_LINES)));
         let stderr_ring_worker = Arc::clone(&stderr_ring);
-        let stderr = thread::spawn(move || drain_server_stderr(stderr, stderr_ring_worker));
+        let (baseline_sender, baseline_receiver) = mpsc::sync_channel(1);
+        let stderr = thread::spawn(move || {
+            drain_server_stderr(stderr, stderr_ring_worker, child_id, baseline_sender)
+        });
+        let baseline = if std::env::var_os("RIFFDB_APP_BASELINE_WP705_LIFECYCLE_EVIDENCE")
+            .is_some_and(|value| value == "1")
+        {
+            baseline_receiver
+                .recv_timeout(process_start_timeout())
+                .map_err(|error| match error {
+                    RecvTimeoutError::Timeout => io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "process memory baseline timed out",
+                    ),
+                    RecvTimeoutError::Disconnected => {
+                        io::Error::other("process memory baseline disconnected")
+                    }
+                })
+                .and_then(|observation| observation)
+        } else {
+            read_process_memory(child_id)
+        };
+        let initial_process_memory = match baseline {
+            Ok(observation) => observation,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout.join();
+                let _ = stderr.join();
+                return Err(error);
+            }
+        };
         let (reaper_commands, commands) = mpsc::sync_channel(1);
         let (exit_sender, exited) = mpsc::sync_channel(1);
         let reaper = thread::spawn(move || reap_child(child, commands, exit_sender));
@@ -2724,10 +2748,16 @@ fn parse_writer_evidence(encoded: &str) -> io::Result<RiffDbWriterEvidence> {
     })
 }
 
-fn drain_server_stderr(stream: impl Read, ring: Arc<Mutex<VecDeque<String>>>) -> usize {
+fn drain_server_stderr(
+    stream: impl Read,
+    ring: Arc<Mutex<VecDeque<String>>>,
+    child_id: u32,
+    baseline_sender: SyncSender<io::Result<RiffDbProcessMemoryEvidence>>,
+) -> usize {
     let mut reader = BufReader::new(stream);
     let mut total = 0_usize;
     let mut ring_bytes = 0_usize;
+    let mut baseline_sender = Some(baseline_sender);
     let mut line = String::new();
     loop {
         line.clear();
@@ -2739,6 +2769,11 @@ fn drain_server_stderr(stream: impl Read, ring: Arc<Mutex<VecDeque<String>>>) ->
         }
         // Mirror to parent stderr so panics are visible during a hung load.
         eprint!("[riffdbd-stderr] {line}");
+        if line.trim_end() == PROCESS_MEMORY_BASELINE_LINE
+            && let Some(sender) = baseline_sender.take()
+        {
+            let _ = sender.send(read_process_memory(child_id));
+        }
         if let Ok(mut guard) = ring.lock() {
             push_stderr_line(&mut guard, &mut ring_bytes, line.clone());
         }
@@ -3028,6 +3063,10 @@ mod tests {
         );
         assert!(stopped_baseline.is_none());
         assert!(take_stopped_authority_baseline(&mut stopped_baseline).is_err());
+        assert_eq!(
+            PROCESS_MEMORY_BASELINE_LINE,
+            "riffdb-process-memory-baseline-v1"
+        );
 
         let close = parse_clean_close_evidence(
             "riffdb-graceful-checkpoint-close-v1\tleft_stale\tclean_committed\t11,12,13\n",

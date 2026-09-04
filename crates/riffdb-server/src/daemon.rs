@@ -579,6 +579,9 @@ async fn run_server(
     // cannot be lost while structural and catalog validation are running.
     let mut process_signal =
         ProductionShutdownSignal::register().map_err(DaemonError::ShutdownSignal)?;
+    // Internal benchmark synchronization only: the runtime and signal owner
+    // now exist, while no database or application population has been opened.
+    eprintln!("riffdb-process-memory-baseline-v1");
     if config.databases().len() > 1 {
         return run_multi_database_server(config, &mut process_signal, &recovery).await;
     }
