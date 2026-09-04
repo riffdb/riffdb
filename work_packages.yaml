@@ -22513,7 +22513,7 @@ work_packages:
 
 - id: WP-755
   name: Client, observability, and test-kit dependency splits
-  tier: surface
+  tier: guarantee
   depends_on: [WP-754]
   objective: Make riffdb-client-rust depend only on riffdb-proto, the Tonic client, and the ADR-0037
     foundational crates, make riffdb-observability a leaf that defines the telemetry types its
@@ -22530,7 +22530,7 @@ work_packages:
     crates/riffdb-mcp-stdio/**, crates/riffdb-driver-host/**, crates/riffdb-testkit/**,
     crates/riffdb-testkit-server/**, crates/riffdb-sim/**, crates/riffdb-storage-memory/**,
     crates/riffdb-storage-redb/**, crates/riffdb-query-module/**, tests/**, fixtures/**,
-    scripts/**, docs/**]
+    scripts/**, docs/**, .config/nextest.toml, release/version-topology-v1.json]
   deliverables:
   - Generated Tonic service clients and DATABASE_METADATA_KEY moved into riffdb-proto behind a
     client-only feature; riffdb-api-grpc consumes the same generated messages for the server side;
