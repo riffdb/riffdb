@@ -1309,7 +1309,7 @@ work_packages:
   objective: Close ADR-0154 across repository-local generated/public surfaces, handbook and
     architecture guidance, compatibility gates, and transport conformance while retaining every
     external schema, route, token convention, and adapter artifact in its owning repository.
-  requirements: [OQ-004, OQ-005, OQ-006, OQ-015, OQ-016, OQ-030, OQ-043,
+  requirements: [OQ-004, OQ-005, OQ-006, OQ-015, OQ-016, OQ-043,
     OQ-056, OQ-057, OQ-058, OQ-059, OQ-060, OQ-061, DRV-007, DRV-008,
     DRV-012, DRV-014, SAFE-004, SAFE-005]
   required_adrs: [ADR-0055, ADR-0108, ADR-0112, ADR-0124, ADR-0129,
