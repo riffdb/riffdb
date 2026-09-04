@@ -2,11 +2,10 @@
 
 use std::fmt;
 
-use riffdb_application::ApplicationPortabilityManifest;
 use riffdb_proto::v1;
 use riffdb_types::{
-    ApplicationExportOperationId, ApplicationExportSelectionV1, CapabilityApplicationExportScopeV1,
-    RequestId,
+    ApplicationExportOperationId, ApplicationExportSelectionV1, ApplicationPortabilityManifest,
+    CapabilityApplicationExportScopeV1, RequestId,
 };
 
 /// One immutable exact application-export start or replay submission.

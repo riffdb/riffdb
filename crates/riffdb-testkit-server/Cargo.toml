@@ -1,0 +1,211 @@
+[package]
+name = "riffdb-testkit-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+riffdb-testkit = { path = "../riffdb-testkit", version = "0.1.0", default-features = false }
+
+[dev-dependencies]
+riffdb-auth = { path = "../riffdb-auth", version = "0.1.0", default-features = false }
+riffdb-catalog = { path = "../riffdb-catalog", version = "0.1.0", default-features = false }
+riffdb-contract-compiler = { path = "../riffdb-contract-compiler", version = "0.1.0" }
+riffdb-contract-ir = { path = "../riffdb-contract-ir", version = "0.1.0", default-features = false }
+riffdb-invariant = { path = "../riffdb-invariant", version = "0.1.0", default-features = false }
+riffdb-runtime = { path = "../riffdb-runtime", version = "0.1.0", default-features = false }
+riffdb-scheduler = { path = "../riffdb-scheduler", version = "0.1.0", default-features = false }
+riffdb-storage-api = { path = "../riffdb-storage-api", version = "0.1.0" }
+riffdb-storage-redb = { path = "../riffdb-storage-redb", version = "0.1.0", default-features = false, features = ["test-fixtures"] }
+riffdb-types = { path = "../riffdb-types", version = "0.1.0" }
+riffdb-application = { path = "../riffdb-application", version = "0.1.0", default-features = false }
+riffdb-cli = { path = "../riffdb-cli", version = "0.1.0", default-features = false, features = ["test-fixtures"] }
+riffdb-client-rust = { path = "../riffdb-client-rust", version = "0.1.0", default-features = false }
+riffdb-columnar = { path = "../riffdb-columnar", version = "0.1.0", default-features = false }
+riffdb-commit = { path = "../riffdb-commit", version = "0.1.0", default-features = false }
+riffdb-config = { path = "../riffdb-config", version = "0.1.0", default-features = false }
+riffdb-conflict = { path = "../riffdb-conflict", version = "0.1.0", default-features = false }
+riffdb-driver-host = { path = "../riffdb-driver-host", version = "0.1.0", default-features = false }
+riffdb-idempotency = { path = "../riffdb-idempotency", version = "0.1.0", default-features = false }
+riffdb-policy = { path = "../riffdb-policy", version = "0.1.0", default-features = false, features = ["test-fixtures"] }
+riffdb-proto = { path = "../riffdb-proto", version = "0.1.0", default-features = false }
+riffdb-service = { path = "../riffdb-service", version = "0.1.0", default-features = false, features = ["test-fixtures"] }
+riffdb-query-module = { path = "../riffdb-query-module", version = "0.1.0", default-features = false }
+riffdb-query-ir = { path = "../riffdb-query-ir", version = "0.1.0", default-features = false }
+riffdb-query-compiler = { path = "../riffdb-query-compiler", version = "0.1.0", default-features = false }
+riffdb-query-executor = { path = "../riffdb-query-executor", version = "0.1.0", default-features = false }
+riffdb-riffql-syntax = { path = "../riffdb-riffql-syntax", version = "0.1.0", default-features = false }
+riffdb-server = { path = "../riffdb-server", version = "0.1.0", default-features = false, features = ["test-fixtures"] }
+riffdb-storage-memory = { path = "../riffdb-storage-memory", version = "0.1.0", default-features = false }
+tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
+tonic = { version = "=0.14.6", default-features = false, features = ["channel", "tls-ring"] }
+serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
+serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
+
+[[test]]
+name = "driver_host"
+path = "../../tests/driver_host.rs"
+
+[[test]]
+name = "full_recovery_matrix"
+path = "../../tests/recovery/full_recovery_matrix.rs"
+harness = false
+
+[[test]]
+name = "offline_maintenance_matrix"
+path = "../../tests/recovery/offline_maintenance_matrix.rs"
+harness = false
+
+[[test]]
+name = "contract_migration_model"
+path = "../../tests/migrations/contract_migration_model.rs"
+
+[[test]]
+name = "contract_migration_gate_a"
+path = "../../tests/migrations/contract_migration_gate_a.rs"
+harness = false
+
+[[test]]
+name = "contract_migration_gate_b"
+path = "../../tests/migrations/contract_migration_gate_b.rs"
+
+[[test]]
+name = "contract_migration_gate_c"
+path = "../../tests/migrations/contract_migration_gate_c.rs"
+
+[[test]]
+name = "contract_migration_acceptance"
+path = "../../tests/migrations/contract_migration_acceptance.rs"
+
+[[test]]
+name = "contract_migration_index_cover"
+path = "../../tests/migrations/contract_migration_index_cover.rs"
+
+[[test]]
+name = "durable_event_consumers"
+path = "../../tests/durable_event_consumers.rs"
+
+[[test]]
+name = "live_named_queries"
+path = "../../tests/live_named_queries.rs"
+
+[[test]]
+name = "contextual_agent_subscriptions"
+path = "../../tests/contextual_agent_subscriptions.rs"
+
+[[test]]
+name = "reactive_ticketdesk_acceptance"
+path = "../../tests/reactive_ticketdesk_acceptance.rs"
+
+[[test]]
+name = "remote_ingress"
+path = "../../tests/remote_ingress.rs"
+harness = false
+
+[[test]]
+name = "remote_deployment_rotation"
+path = "../../tests/remote_deployment_rotation.rs"
+harness = false
+
+[[test]]
+name = "remote_backup_restore"
+path = "../../tests/remote_backup_restore.rs"
+
+[[example]]
+name = "driver_conformance_remote_client"
+path = "../../tests/driver_conformance_remote_client.rs"
+test = false
+
+[[example]]
+name = "adapter_bulk_remote_client"
+path = "../../tests/adapter_bulk_remote_client.rs"
+test = false
+
+[[example]]
+name = "adapter_operational_remote_client"
+path = "../../tests/adapter_operational_remote_client.rs"
+test = false
+
+[[example]]
+name = "adapter_row_policy_remote_client"
+path = "../../tests/adapter_row_policy_remote_client.rs"
+test = false
+
+[[example]]
+name = "adapter_cascade_remote_client"
+path = "../../tests/adapter_cascade_remote_client.rs"
+test = false
+
+[[example]]
+name = "generate_adapter_conformance"
+path = "../../tests/generate_adapter_conformance.rs"
+test = false
+
+[[example]]
+name = "endurance_inspect"
+path = "../../tests/endurance_inspect.rs"
+test = false
+
+[[test]]
+name = "operational_queries"
+path = "../../tests/operational_queries.rs"
+
+[[test]]
+name = "workflow_concurrency"
+path = "../../tests/workflow_concurrency.rs"
+
+[[test]]
+name = "application_installation"
+path = "../../tests/application_installation.rs"
+
+[[test]]
+name = "adapter_conformance"
+path = "../../tests/adapter_conformance.rs"
+
+[[test]]
+name = "scheduler_recovery"
+path = "../../tests/scheduler_recovery.rs"
+
+[[test]]
+name = "bulk_command_recovery"
+path = "../../tests/bulk_command_recovery.rs"
+
+[[test]]
+name = "projection_semantics"
+path = "../../tests/projection_semantics.rs"
+
+[[test]]
+name = "row_policy_conformance"
+path = "../../tests/row_policy_conformance.rs"
+
+[[test]]
+name = "row_policy_inference"
+path = "../../tests/row_policy_inference.rs"
+
+[[test]]
+name = "endurance_harness"
+path = "../../tests/endurance_harness.rs"
+
+[[test]]
+name = "alpha_performance_evidence"
+path = "../../tests/alpha_performance_evidence.rs"
+
+[[test]]
+name = "deployable_alpha_gate"
+path = "../../tests/deployable_alpha_gate.rs"
+
+[[test]]
+name = "release_format_compatibility"
+path = "../../tests/release_format_compatibility.rs"
+
+[[test]]
+name = "application_export"
+path = "../../tests/application_export.rs"
+
+[lints]
+workspace = true

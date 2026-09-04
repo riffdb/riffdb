@@ -10,7 +10,9 @@ use std::num::NonZeroU16;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use riffdb_application::{ReimportObservation, ReimportObservationResult};
+use riffdb_application::{
+    ApplicationPortabilityValidation, ReimportObservation, ReimportObservationResult,
+};
 pub use riffdb_catalog::{
     APPLICATION_CATALOG_SCHEMA_V1, ApplicationCatalogFeatureStateV1, ApplicationCatalogFeatureV1,
     ApplicationCatalogFeatureViewV1, ApplicationCatalogPageV1, ApplicationCatalogSourceSpanV1,

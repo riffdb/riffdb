@@ -434,7 +434,12 @@ fn production_dependencies(manifest: &str) -> Vec<&str> {
 fn transports_cannot_bypass_service_owned_authorization() {
     assert_eq!(
         production_dependencies(POLICY_MANIFEST),
-        ["riffdb-auth", "riffdb-contract-ir", "riffdb-types"]
+        [
+            "riffdb-observability",
+            "riffdb-auth",
+            "riffdb-contract-ir",
+            "riffdb-types",
+        ]
     );
     for (adapter, manifest) in [("gRPC", GRPC_MANIFEST), ("MCP", MCP_MANIFEST)] {
         let dependencies = production_dependencies(manifest);

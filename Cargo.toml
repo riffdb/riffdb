@@ -44,6 +44,7 @@ members = [
     "crates/riffdb-storage-memory",
     "crates/riffdb-storage-redb",
     "crates/riffdb-testkit",
+    "crates/riffdb-testkit-server",
     "crates/riffdb-types",
     "examples/ticketdesk",
 ]

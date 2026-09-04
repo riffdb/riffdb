@@ -5,7 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 ./scripts/generate-driver-package-matrix --check
-cargo +1.97.0 test -p riffdb-testkit --test driver_host \
+cargo +1.97.0 test -p riffdb-testkit-server --test driver_host \
     package_first_matrix_binds_four_facades_to_one_exact_story --all-features
 
 printf '%s\n' 'WP-604 package-first driver matrix: passed'

@@ -73,7 +73,7 @@ Run the complete gate from a clean checkout:
 TMPDIR="$HOME/tmp" cargo test --workspace --all-features
 TMPDIR="$HOME/tmp" cargo test -p riffdb-server \
   --test contract_migration_recovery -- --ignored
-TMPDIR="$HOME/tmp" cargo test -p riffdb-testkit \
+TMPDIR="$HOME/tmp" cargo test -p riffdb-testkit-server \
   --test contract_migration_acceptance --all-features
 ./scripts/release-source-bootstrap-smoke
 ./scripts/handbook check

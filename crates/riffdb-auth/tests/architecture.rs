@@ -71,6 +71,7 @@ fn direct_dependency_slice_is_exact() {
     assert_eq!(
         dependency_lines,
         [
+            "riffdb-observability = { version = \"0.1.0\", path = \"../riffdb-observability\", default-features = false }",
             "base64 = { version = \"=0.22.1\", default-features = false, features = [\"alloc\"] }",
             "getrandom = { version = \"=0.3.4\", default-features = false }",
             "riffdb-storage-api = { version = \"0.1.0\", path = \"../riffdb-storage-api\", default-features = false }",

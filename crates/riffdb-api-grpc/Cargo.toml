@@ -8,7 +8,7 @@ publish.workspace = true
 
 [features]
 default = []
-client = ["tonic/channel"]
+client = ["riffdb-proto/client"]
 server = [
     "dep:futures-util",
     "dep:riffdb-auth",

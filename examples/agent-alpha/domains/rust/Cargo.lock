@@ -665,36 +665,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
-name = "riffdb-api-grpc"
-version = "0.1.0"
-dependencies = [
- "base64",
- "prost",
- "prost-types",
- "riffdb-proto",
- "tonic",
- "tonic-prost",
- "tonic-prost-build",
-]
-
-[[package]]
-name = "riffdb-application"
-version = "0.1.0"
-dependencies = [
- "riffdb-contract-ir",
- "riffdb-types",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "riffdb-client-rust"
 version = "0.1.0"
 dependencies = [
  "futures-util",
  "getrandom 0.3.4",
- "riffdb-api-grpc",
- "riffdb-application",
  "riffdb-config",
  "riffdb-errors",
  "riffdb-proto",
@@ -712,13 +687,6 @@ name = "riffdb-config"
 version = "0.1.0"
 
 [[package]]
-name = "riffdb-contract-ir"
-version = "0.1.0"
-dependencies = [
- "riffdb-types",
-]
-
-[[package]]
 name = "riffdb-errors"
 version = "0.1.0"
 dependencies = [
@@ -732,8 +700,12 @@ dependencies = [
  "base64",
  "crc",
  "prost",
+ "prost-types",
  "riffdb-errors",
  "riffdb-types",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
 ]
 
 [[package]]
@@ -742,6 +714,8 @@ version = "0.1.0"
 dependencies = [
  "caseless",
  "hmac",
+ "serde",
+ "serde_json",
  "sha2",
  "unicode-normalization",
  "unicode-segmentation",

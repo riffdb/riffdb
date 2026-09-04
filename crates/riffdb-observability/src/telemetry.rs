@@ -6,29 +6,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use riffdb_api_mcp::{McpTelemetry, McpTelemetryEvent};
-use riffdb_auth::{AuthenticationTelemetry, AuthenticationTelemetryEvent};
-use riffdb_catalog::{
-    CatalogDeploymentFailpoint, CatalogDeploymentHooks, CatalogFailpointTriggered,
-    CatalogTelemetryEvent,
-};
-use riffdb_commit::{
-    CommandPipelineStage, CommitGroupDispatchReason, CommitIdempotencyObservation, CommitTelemetry,
-    CommitTelemetryEvent, CommitUncertaintyResolution, CommitUncertaintyStage, CompletionLanePhase,
-};
-use riffdb_conflict::{ConflictEvent, ConflictObserver};
 use riffdb_errors::{IncidentIdSource, InternalError};
-use riffdb_policy::{AuthorizationTelemetry, AuthorizationTelemetryEvent};
-use riffdb_service::{
-    AuthoritativeReadinessFailure, ReadPipelineStage, ServiceDiagnostics, ServiceHealthHooks,
-    ServiceTelemetry, ServiceTelemetryEvent, WriteServiceStage,
-};
 use riffdb_types::{ConflictKeyHash, IncidentId};
 
 use crate::{
-    HISTOGRAM_UPPER_BOUNDS, HealthRegistry, HistogramSnapshot, MetricKey, MetricLabel,
-    MetricRegistry, READ_PIPELINE_STAGE_COUNT, RequiredCounter, RequiredGauge, RequiredHistogram,
-    TraceCollector, TraceRecord, WRITE_SERVICE_STAGE_COUNT, read_pipeline_stage_index,
+    AuthenticationTelemetry, AuthenticationTelemetryEvent, AuthoritativeReadinessFailure,
+    AuthorizationTelemetry, AuthorizationTelemetryEvent, CatalogDeploymentFailpoint,
+    CatalogDeploymentHooks, CatalogFailpointTriggered, CatalogTelemetryEvent, CommandPipelineStage,
+    CommitGroupDispatchReason, CommitIdempotencyObservation, CommitTelemetry, CommitTelemetryEvent,
+    CommitUncertaintyResolution, CommitUncertaintyStage, CompletionLanePhase, ConflictEvent,
+    ConflictObserver, HISTOGRAM_UPPER_BOUNDS, HealthRegistry, HistogramSnapshot, McpTelemetry,
+    McpTelemetryEvent, MetricKey, MetricLabel, MetricRegistry, READ_PIPELINE_STAGE_COUNT,
+    ReadPipelineStage, RequiredCounter, RequiredGauge, RequiredHistogram, ServiceDiagnostics,
+    ServiceHealthHooks, ServiceTelemetry, ServiceTelemetryEvent, TraceCollector, TraceRecord,
+    WRITE_SERVICE_STAGE_COUNT, WriteServiceStage, read_pipeline_stage_index,
     write_service_stage_index,
 };
 
@@ -37,7 +28,7 @@ pub const MAX_RETAINED_INCIDENTS: usize = 256;
 /// Maximum distinct queued conflict-key hashes retained for hot-key cardinality.
 pub const MAX_HOT_CONFLICT_KEYS: usize = 1_024;
 /// Closed production completion-group sizes.
-pub const MAX_WRITE_GROUP_SIZE: usize = riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS;
+pub const MAX_WRITE_GROUP_SIZE: usize = 256;
 /// Closed scheduler dispatch-reason cardinality.
 pub const COMMAND_GROUP_DISPATCH_REASON_COUNT: usize = 4;
 /// Closed coordinator command-stage cardinality.
@@ -851,7 +842,7 @@ impl ConflictObserver for Observability {
             u64::try_from(event.total_queue_depth()).unwrap_or(u64::MAX),
         );
         self.observe_hot_conflict_key(&event);
-        if event.kind() == riffdb_conflict::ConflictEventKind::DeadlineExceeded {
+        if event.kind() == crate::ConflictEventKind::DeadlineExceeded {
             self.metrics
                 .increment_required_counter(RequiredCounter::LockTimeouts);
         }
@@ -889,7 +880,7 @@ impl CommitTelemetry for Observability {
             }
             CommitTelemetryEvent::PreparedEpochRolledBack { reason } => {
                 saturating_increment(&self.prepared_epoch_rollbacks);
-                if reason == riffdb_commit::PreparedEpochRollbackReason::ProofMismatch {
+                if reason == crate::PreparedEpochRollbackReason::ProofMismatch {
                     saturating_increment(&self.prepared_epoch_proof_mismatches);
                 }
             }
@@ -1024,7 +1015,7 @@ impl CommitTelemetry for Observability {
                     RequiredHistogram::CommitBatchSize,
                     u64::from(batch_size),
                 );
-                if terminal == riffdb_commit::CommitCallTerminal::Committed {
+                if terminal == crate::CommitCallTerminal::Committed {
                     if let Some(counter) = usize::from(batch_size)
                         .checked_sub(1)
                         .and_then(|index| self.write_completion_groups.get(index))

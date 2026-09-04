@@ -12,6 +12,7 @@ loom = []
 shuttle = []
 
 [dependencies]
+riffdb-observability = { version = "0.1.0", path = "../riffdb-observability", default-features = false }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types" }
 
 [dev-dependencies]

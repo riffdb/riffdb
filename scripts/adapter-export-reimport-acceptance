@@ -24,12 +24,12 @@ done
 
 ./scripts/generate-adapter-conformance-fixtures --check
 ./scripts/generate-portability-fixtures --check
-cargo +1.97.0 test -p riffdb-testkit --test application_export --all-features --quiet
+cargo +1.97.0 test -p riffdb-testkit-server --test application_export --all-features --quiet
 cargo +1.97.0 test -p riffdb-application --all-features --test reimport_campaign --quiet
 cargo +1.97.0 test -p riffdb-service --all-features reimport_observation_tests --lib --quiet
 cargo +1.97.0 test -p riffdb-service --all-features reimport_page_fixture_tests --lib --quiet
 cargo +1.97.0 test -p riffdb-policy --all-features reimport --lib --quiet
-cargo +1.97.0 test -p riffdb-testkit --test workflow_concurrency --all-features \
+cargo +1.97.0 test -p riffdb-testkit-server --test workflow_concurrency --all-features \
     first_claim_after_reimport_mints_strictly_above_the_preserved_fence --quiet
 
 domains=(openfga mlflow better-auth woodpecker)

@@ -6,8 +6,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use riffdb_application::{
-    AdapterConformanceManifest, ApplicationPortabilityManifest, ApplicationReimportReceipt,
-    PortableReimportStrategy,
+    AdapterConformanceManifest, ApplicationPortabilityManifest, ApplicationPortabilityValidation,
+    ApplicationReimportReceipt, PortableReimportStrategy,
 };
 use riffdb_contract_compiler::{CompilerDiagnosticCode, validate_contract_source};
 use riffdb_contract_ir::ContractBundle;

@@ -5,25 +5,20 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use riffdb_api_mcp::McpRiskClass;
-use riffdb_auth::{AuthenticationDefect, AuthenticationRejection};
-use riffdb_catalog::CatalogTelemetryEvent;
-use riffdb_commit::{CommandPipelineStage, CommitCommandTerminal, CommitGroupDispatchReason};
-use riffdb_conflict::ConflictEventKind;
-use riffdb_policy::{AuthorizationDefect, PolicyCode};
-use riffdb_service::{
-    AuthoritativeReadinessFailure, CapacityRejectionStage, ReadPipelineStage, ServiceTerminalClass,
-    WriteServiceStage,
-};
 use riffdb_types::{CommandId, ServiceIngressKindV1, ServiceOperationV1};
 
-use crate::IncidentClass;
+use crate::{
+    AuthenticationDefect, AuthenticationRejection, AuthoritativeReadinessFailure,
+    AuthorizationDefect, AuthorizationDenial, CapacityRejectionStage, CatalogTelemetryEvent,
+    CommandPipelineStage, CommitCommandTerminal, CommitGroupDispatchReason, ConflictEventKind,
+    IncidentClass, McpRiskClass, ReadPipelineStage, ServiceTerminalClass, WriteServiceStage,
+};
 
 const SERVICE_OPERATION_COUNT: usize = ServiceOperationV1::ALL.len();
 const SERVICE_TERMINAL_COUNT: usize = ServiceTerminalClass::ALL.len();
 const AUTH_REJECTION_COUNT: usize = 5;
 const AUTH_DEFECT_COUNT: usize = 5;
-const POLICY_CODE_COUNT: usize = PolicyCode::ALL.len();
+const POLICY_CODE_COUNT: usize = AuthorizationDenial::ALL.len();
 const POLICY_DEFECT_COUNT: usize = 2;
 const CONFLICT_EVENT_COUNT: usize = 6;
 const CATALOG_EVENT_COUNT: usize = 5;
@@ -502,7 +497,7 @@ pub enum MetricKey {
     /// Initial credential authentication hit an internal defect.
     AuthenticationDefect(AuthenticationDefect),
     /// Current policy denied an operation.
-    AuthorizationDenied(PolicyCode),
+    AuthorizationDenied(AuthorizationDenial),
     /// Current policy hit an internal defect.
     AuthorizationDefect(AuthorizationDefect),
     /// Conflict-manager lifecycle event.
@@ -1432,7 +1427,7 @@ fn metric_keys() -> Vec<MetricKey> {
     keys.extend(authentication_rejections().map(MetricKey::AuthenticationRejected));
     keys.extend(authentication_defects().map(MetricKey::AuthenticationDefect));
     keys.extend(
-        PolicyCode::ALL
+        AuthorizationDenial::ALL
             .into_iter()
             .map(MetricKey::AuthorizationDenied),
     );
@@ -1723,17 +1718,17 @@ const fn authentication_defect_label(reason: AuthenticationDefect) -> MetricLabe
     }
 }
 
-const fn policy_code_label(code: PolicyCode) -> MetricLabel {
+const fn policy_code_label(code: AuthorizationDenial) -> MetricLabel {
     MetricLabel {
         key: "reason",
         value: match code {
-            PolicyCode::MissingPermission => "missing_permission",
-            PolicyCode::TenantScopeMismatch => "tenant_scope_mismatch",
-            PolicyCode::PartitionScopeMismatch => "partition_scope_mismatch",
-            PolicyCode::FieldVisibilityDenied => "field_visibility_denied",
-            PolicyCode::ApprovalRequired => "approval_required",
-            PolicyCode::DelegationExceedsAuthority => "delegation_exceeds_authority",
-            PolicyCode::InactiveOrStaleCapability => "inactive_or_stale_capability",
+            AuthorizationDenial::MissingPermission => "missing_permission",
+            AuthorizationDenial::TenantScopeMismatch => "tenant_scope_mismatch",
+            AuthorizationDenial::PartitionScopeMismatch => "partition_scope_mismatch",
+            AuthorizationDenial::FieldVisibilityDenied => "field_visibility_denied",
+            AuthorizationDenial::ApprovalRequired => "approval_required",
+            AuthorizationDenial::DelegationExceedsAuthority => "delegation_exceeds_authority",
+            AuthorizationDenial::InactiveOrStaleCapability => "inactive_or_stale_capability",
         },
     }
 }

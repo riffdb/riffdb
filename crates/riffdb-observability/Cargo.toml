@@ -10,17 +10,12 @@ publish.workspace = true
 default = []
 
 [dependencies]
-riffdb-auth = { version = "0.1.0", path = "../riffdb-auth", default-features = false }
-riffdb-catalog = { version = "0.1.0", path = "../riffdb-catalog", default-features = false }
-riffdb-commit = { version = "0.1.0", path = "../riffdb-commit", default-features = false }
-riffdb-conflict = { version = "0.1.0", path = "../riffdb-conflict", default-features = false }
 riffdb-errors = { version = "0.1.0", path = "../riffdb-errors", default-features = false }
-riffdb-policy = { version = "0.1.0", path = "../riffdb-policy", default-features = false }
-riffdb-api-mcp = { version = "0.1.0", path = "../riffdb-api-mcp", default-features = false }
-riffdb-service = { version = "0.1.0", path = "../riffdb-service", default-features = false }
-riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api", default-features = false }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
 tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["registry"] }
 
 [[test]]
