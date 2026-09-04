@@ -777,6 +777,7 @@ fn manifest_has_only_the_reviewed_dependencies_needed_by_commit_orchestration() 
     assert_eq!(
         riffdb_dependencies(production),
         vec![
+            "riffdb-observability",
             "riffdb-catalog",
             "riffdb-conflict",
             "riffdb-contract-ir",

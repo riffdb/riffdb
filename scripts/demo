@@ -479,13 +479,14 @@ cargo test --locked --all-features \
     -p riffdb-projection \
     -p riffdb-policy \
     -p riffdb-server \
-    -p riffdb-testkit
+    -p riffdb-testkit \
+    -p riffdb-testkit-server
 cargo test --locked -p riffdb-server --test server_configuration
 cargo test --locked -p riffdb-server \
     --test offline_maintenance_recovery -- --ignored
-cargo test --locked -p riffdb-testkit \
+cargo test --locked -p riffdb-testkit-server \
     --test full_recovery_matrix -- --ignored
-cargo test --locked -p riffdb-testkit \
+cargo test --locked -p riffdb-testkit-server \
     --test offline_maintenance_matrix -- --ignored
 cargo test --locked \
     --manifest-path benchmarks/storage-fjall/Cargo.toml --workspace

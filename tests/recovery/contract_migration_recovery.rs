@@ -37,7 +37,7 @@ use riffdb_storage_redb::{
     RedbContractMigrationContext, RedbContractMigrationStage, RedbMaintenanceStorage,
     RedbOperationalPorts, RedbStore,
 };
-use riffdb_testkit::process::{ChildProcessController, ChildProcessSpec};
+use riffdb_testkit_server::process::{ChildProcessController, ChildProcessSpec};
 use riffdb_types::{
     ActorId, ActorKind, ApprovalId, Audience, CapabilityId, CapabilityTokenDigest,
     ContractBundleHash, DatabaseId, DigestKeyId, Environment, RequestId, ServiceAuditTargetV1,

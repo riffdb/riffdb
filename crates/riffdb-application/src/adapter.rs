@@ -4,7 +4,8 @@ use std::fmt;
 use riffdb_types::{
     AdapterConformanceManifestHash, ApplicationLockHash, ApplicationManifestHash,
     ApplicationRoleHash, ContractBundleHash, ContractLineage, ContractVersion,
-    GeneratedArtifactHash, MigrationBundleHash, hash_adapter_conformance_manifest,
+    GeneratedArtifactHash, MAX_ADAPTER_PROBE_ITEMS, MigrationBundleHash,
+    hash_adapter_conformance_manifest,
 };
 use serde::{Deserialize, Serialize};
 
@@ -34,8 +35,6 @@ pub const MAX_ADAPTER_PLATFORMS: usize = 16;
 pub const MAX_ADAPTER_CONFORMANCE_PROBES: usize = 256;
 /// Maximum evolution cases in one manifest.
 pub const MAX_ADAPTER_EVOLUTIONS: usize = 32;
-/// Maximum bounded rows/items observed by one conformance probe.
-pub const MAX_ADAPTER_PROBE_ITEMS: u32 = 4_096;
 
 /// Stable, value-free adapter manifest failure class.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

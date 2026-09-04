@@ -71,9 +71,9 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 start_ns="$(date +%s%N)"
-TMPDIR="$tmp_root" cargo test -p riffdb-testkit --test contract_migration_acceptance \
+TMPDIR="$tmp_root" cargo test -p riffdb-testkit-server --test contract_migration_acceptance \
     --all-features >"$work_root/acceptance.out" 2>&1
-TMPDIR="$tmp_root" cargo test -p riffdb-testkit --test contract_migration_gate_a \
+TMPDIR="$tmp_root" cargo test -p riffdb-testkit-server --test contract_migration_gate_a \
     --all-features >"$work_root/gate-a.out" 2>&1
 riffdb_elapsed_ns=$(( $(date +%s%N) - start_ns ))
 gate_line="$(sed -n 's/^contract_migration_gate_a: passed /&/p' "$work_root/gate-a.out")"

@@ -8,7 +8,7 @@ use tonic::Request;
 use tonic::metadata::{Ascii, Binary, MetadataValue};
 use zeroize::Zeroizing;
 
-use riffdb_api_grpc::DATABASE_METADATA_KEY;
+use riffdb_proto::DATABASE_METADATA_KEY;
 use riffdb_types::DatabaseAlias;
 
 const CAPABILITY_TOKEN_BYTES: usize = 43;

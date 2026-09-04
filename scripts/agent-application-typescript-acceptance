@@ -46,6 +46,6 @@ rg -q 'DriverApplicationTransport\.connect' "$generated_app/src/main.ts"
 [[ -f "$generated_app/vendor/riffdb-application/dist/driver.d.ts" ]]
 
 "$repo_root/scripts/check-application-boundary" "$generated_app"
-cargo +1.97.0 test -p riffdb-testkit --test driver_host --all-features
+cargo +1.97.0 test -p riffdb-testkit-server --test driver_host --all-features
 
 echo "TypeScript long-lived driver and offline generated scaffold acceptance passed"

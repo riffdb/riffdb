@@ -24,8 +24,8 @@ use riffdb_storage_redb::{
     RedbMaintenanceFailpoint, RedbMaintenanceReconciliation, RedbMaintenanceStorage, RedbStore,
 };
 use riffdb_testkit::failpoint::verify_wp190_recovery_report_v1;
-use riffdb_testkit::process::{ChildProcessController, ChildProcessSpec};
 use riffdb_testkit::scratch::ScratchDir;
+use riffdb_testkit_server::process::{ChildProcessController, ChildProcessSpec};
 use riffdb_types::{
     ActorId, ActorKind, ApprovalId, BackupNameV1, CapabilityId, DatabaseId, DigestKeyId,
     OfflineMaintenanceOperationId, OfflineMaintenanceOperationKind,

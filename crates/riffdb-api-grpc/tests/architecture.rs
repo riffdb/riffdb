@@ -32,7 +32,7 @@ fn tonic_runtime_features_remain_narrow_and_default_disabled() {
         .next()
         .expect("runtime dependency section");
     assert!(manifest.contains("default = []"));
-    assert!(manifest.contains("client = [\"tonic/channel\"]"));
+    assert!(manifest.contains("client = [\"riffdb-proto/client\"]"));
     assert!(manifest.contains("\"tonic/router\","));
     assert!(manifest.contains("\"tonic/server\","));
     assert!(runtime_dependencies.contains("features = [\"codegen\"]"));
@@ -49,7 +49,7 @@ fn client_feature_does_not_activate_server_semantic_dependencies() {
         .lines()
         .find(|line| line.starts_with("client ="))
         .expect("client feature declaration");
-    assert_eq!(client, "client = [\"tonic/channel\"]");
+    assert_eq!(client, "client = [\"riffdb-proto/client\"]");
 
     for dependency in [
         "riffdb-auth",

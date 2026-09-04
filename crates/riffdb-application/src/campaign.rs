@@ -1,4 +1,3 @@
-use std::error::Error;
 use std::fmt;
 
 use riffdb_types::{
@@ -15,8 +14,9 @@ pub use riffdb_types::MAX_APPLICATION_INSTALLATION_CAMPAIGN_STATE_BYTES;
 
 use crate::{
     ApplicationInstallationPlan, ApplicationReimportCampaignV1, ApplicationReimportSourceV1,
-    InstallationArtifact, InstallationArtifactKind, InstallationDriver, InstallationPlanError,
-    InstallationPlanErrorKind, InstallationSymbol, parse_hex16, parse_hex32,
+    InstallationArtifact, InstallationArtifactKind, InstallationCampaignError,
+    InstallationCampaignErrorKind, InstallationDriver, InstallationSymbol, InstalledSeedEvidence,
+    parse_hex16, parse_hex32,
 };
 
 /// Canonical schema version for terminal installation receipts.
@@ -202,57 +202,6 @@ impl InstalledCredentialEvidence {
     #[must_use]
     pub const fn capability_id(&self) -> CapabilityId {
         self.capability_id
-    }
-}
-
-/// Bounded terminal counters for one ordinary-command seed batch.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct InstalledSeedEvidence {
-    name: InstallationSymbol,
-    content_hash: GeneratedArtifactHash,
-    succeeded: u64,
-    replayed: u64,
-}
-
-impl InstalledSeedEvidence {
-    /// Creates exact seed completion evidence without retaining item values.
-    #[must_use]
-    pub const fn new(
-        name: InstallationSymbol,
-        content_hash: GeneratedArtifactHash,
-        succeeded: u64,
-        replayed: u64,
-    ) -> Self {
-        Self {
-            name,
-            content_hash,
-            succeeded,
-            replayed,
-        }
-    }
-
-    /// Symbolic seed name.
-    #[must_use]
-    pub const fn name(&self) -> &InstallationSymbol {
-        &self.name
-    }
-
-    /// Exact seed artifact identity.
-    #[must_use]
-    pub const fn content_hash(&self) -> GeneratedArtifactHash {
-        self.content_hash
-    }
-
-    /// Newly completed command items.
-    #[must_use]
-    pub const fn succeeded(&self) -> u64 {
-        self.succeeded
-    }
-
-    /// Previously completed command items recovered by idempotency.
-    #[must_use]
-    pub const fn replayed(&self) -> u64 {
-        self.replayed
     }
 }
 
@@ -1113,97 +1062,6 @@ impl fmt::Debug for ApplicationInstallationReceipt {
     }
 }
 
-/// Closed campaign state-machine failure.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum InstallationCampaignErrorKind {
-    /// Caller supplied another campaign identity for retained state.
-    CampaignIdentityMismatch,
-    /// Caller reused a campaign identity for another exact plan.
-    PlanIdentityMismatch,
-    /// A stage was skipped, repeated, or submitted out of order.
-    StageOutOfOrder,
-    /// Observed stage state differs from the exact plan.
-    EvidenceMismatch,
-    /// The campaign already sealed its terminal receipt.
-    AlreadyTerminal,
-    /// A canonical campaign artifact exceeds its hard bound.
-    LimitExceeded,
-    /// A canonical campaign artifact is malformed.
-    InvalidEncoding,
-    /// A canonical campaign artifact has a valid shape but inexact bytes.
-    NonCanonical,
-    /// A canonical campaign artifact version is unsupported.
-    UnsupportedVersion,
-}
-
-/// Bounded, redaction-safe campaign error.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct InstallationCampaignError {
-    kind: InstallationCampaignErrorKind,
-}
-
-impl InstallationCampaignError {
-    const fn new(kind: InstallationCampaignErrorKind) -> Self {
-        Self { kind }
-    }
-
-    fn from_plan_error(error: InstallationPlanError) -> Self {
-        let kind = match error.kind() {
-            InstallationPlanErrorKind::LimitExceeded => {
-                InstallationCampaignErrorKind::LimitExceeded
-            }
-            InstallationPlanErrorKind::UnsupportedVersion => {
-                InstallationCampaignErrorKind::UnsupportedVersion
-            }
-            InstallationPlanErrorKind::NonCanonical => InstallationCampaignErrorKind::NonCanonical,
-            _ => InstallationCampaignErrorKind::InvalidEncoding,
-        };
-        Self::new(kind)
-    }
-
-    /// Stable campaign failure kind.
-    #[must_use]
-    pub const fn kind(self) -> InstallationCampaignErrorKind {
-        self.kind
-    }
-}
-
-impl fmt::Display for InstallationCampaignError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self.kind {
-            InstallationCampaignErrorKind::CampaignIdentityMismatch => {
-                "application installation campaign identity does not match retained state"
-            }
-            InstallationCampaignErrorKind::PlanIdentityMismatch => {
-                "application installation campaign identity is bound to another exact plan"
-            }
-            InstallationCampaignErrorKind::StageOutOfOrder => {
-                "application installation stage is not the exact next stage"
-            }
-            InstallationCampaignErrorKind::EvidenceMismatch => {
-                "application installation stage evidence differs from the exact plan"
-            }
-            InstallationCampaignErrorKind::AlreadyTerminal => {
-                "application installation campaign already has a terminal receipt"
-            }
-            InstallationCampaignErrorKind::LimitExceeded => {
-                "application installation campaign artifact exceeds a hard bound"
-            }
-            InstallationCampaignErrorKind::InvalidEncoding => {
-                "application installation campaign artifact encoding is invalid"
-            }
-            InstallationCampaignErrorKind::NonCanonical => {
-                "application installation campaign artifact encoding is not canonical"
-            }
-            InstallationCampaignErrorKind::UnsupportedVersion => {
-                "application installation campaign artifact version is unsupported"
-            }
-        })
-    }
-}
-
-impl Error for InstallationCampaignError {}
-
 fn validate_stage_evidence(
     plan: &ApplicationInstallationPlan,
     evidence: &InstallationStageEvidence,
@@ -1274,9 +1132,9 @@ fn validate_stage_evidence(
         InstallationStageEvidence::Seeds(seeds) => {
             seeds.len() == input.seeds.len()
                 && seeds.iter().zip(&input.seeds).all(|(observed, expected)| {
-                    observed.name == *expected.name()
-                        && observed.content_hash == expected.content_hash()
-                        && observed.succeeded.checked_add(observed.replayed)
+                    observed.name() == expected.name()
+                        && observed.content_hash() == expected.content_hash()
+                        && observed.succeeded().checked_add(observed.replayed())
                             == Some(expected.item_count())
                 })
         }

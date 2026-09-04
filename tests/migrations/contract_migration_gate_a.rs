@@ -32,7 +32,7 @@ use riffdb_storage_api::{
     StartupValidationInputs,
 };
 use riffdb_testkit::inspection::{DurableInspectionRequest, inspect_redb};
-use riffdb_testkit::process::{ChildProcessController, ChildProcessSpec};
+use riffdb_testkit_server::process::{ChildProcessController, ChildProcessSpec};
 use riffdb_types::{
     CanonicalValue, DigestKeyId, EntityKeyBuilder, EntityVersion, FieldId, FrontierPosition,
     ProjectionIdentity, Timestamp,

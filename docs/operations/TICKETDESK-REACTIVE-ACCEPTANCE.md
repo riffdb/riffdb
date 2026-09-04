@@ -49,10 +49,10 @@ sealed evaluation protocol includes the exact role-bind shape.
 Run the P8 gate tests:
 
 ```bash
-cargo test -p riffdb-testkit --test durable_event_consumers --all-features
-cargo test -p riffdb-testkit --test live_named_queries --all-features
-cargo test -p riffdb-testkit --test contextual_agent_subscriptions --all-features
-cargo test -p riffdb-testkit --test reactive_ticketdesk_acceptance --all-features
+cargo test -p riffdb-testkit-server --test durable_event_consumers --all-features
+cargo test -p riffdb-testkit-server --test live_named_queries --all-features
+cargo test -p riffdb-testkit-server --test contextual_agent_subscriptions --all-features
+cargo test -p riffdb-testkit-server --test reactive_ticketdesk_acceptance --all-features
 ./scripts/check-application-bindings
 ```
 

@@ -9,7 +9,9 @@
 mod adapter;
 mod campaign;
 mod diff;
-mod plan;
+mod plan {
+    pub use riffdb_types::application_plan::*;
+}
 mod portability;
 mod reimport_campaign;
 

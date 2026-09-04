@@ -8,8 +8,7 @@
 
 /// The one accepted details-free INTERNAL message before a public error exists.
 pub const EMERGENCY_INTERNAL_MESSAGE: &str = "an internal error occurred";
-/// Exact ASCII metadata key selecting one database before authentication.
-pub const DATABASE_METADATA_KEY: &str = "riffdb-database";
+pub use riffdb_proto::DATABASE_METADATA_KEY;
 
 #[cfg(feature = "server")]
 mod authentication;
@@ -30,12 +29,18 @@ mod server;
 /// checked-in [`riffdb_proto::v1`] messages through an external package mapping.
 #[allow(missing_docs, clippy::large_enum_variant)]
 pub mod generated {
+    #[cfg(feature = "client")]
+    pub use riffdb_proto::generated::*;
+    #[cfg(feature = "server")]
     include!(concat!(env!("OUT_DIR"), "/riffdb.v1.rs"));
 }
 
 /// Generated Tonic bindings for the symbolic `riffdb.app.v1` service.
 #[allow(missing_docs, clippy::large_enum_variant)]
 pub mod generated_app {
+    #[cfg(feature = "client")]
+    pub use riffdb_proto::generated_app::*;
+    #[cfg(feature = "server")]
     include!(concat!(env!("OUT_DIR"), "/riffdb.app.v1.rs"));
 }
 

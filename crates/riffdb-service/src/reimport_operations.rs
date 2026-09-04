@@ -5,9 +5,9 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use riffdb_application::{
-    ApplicationPortabilityManifest, ApplicationReimportCampaignPhaseV1, InstallationSymbol,
-    PortableRecordClass, PortableReimportStrategy, ReimportObservationResult,
-    ReimportPageMappingOutcomeV1,
+    ApplicationPortabilityManifest, ApplicationPortabilityValidation,
+    ApplicationReimportCampaignPhaseV1, InstallationSymbol, PortableRecordClass,
+    PortableReimportStrategy, ReimportObservationResult, ReimportPageMappingOutcomeV1,
 };
 use riffdb_contract_ir::{RecordSchema, RecordTypeRef, SchemaIr, ValueType, ValueTypeTag};
 use riffdb_errors::PublicError;

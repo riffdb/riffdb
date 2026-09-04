@@ -2,6 +2,9 @@
 
 //! Architecture constraints for the public Rust transport client.
 
+use std::path::PathBuf;
+use std::process::Command;
+
 const LIB: &str = include_str!("../src/lib.rs");
 const CLIENT: &str = include_str!("../src/generated/client.rs");
 const CAPABILITY: &str = include_str!("../src/capability.rs");
@@ -15,28 +18,66 @@ const GENERATED: &str = include_str!("../src/generated/mod.rs");
 const LEGAL_SPEND: &str = include_str!("../src/generated/legal_spend.rs");
 const PYTHON_NATIVE: &str = include_str!("../../riffdb-client-python-native/src/lib.rs");
 
+fn production_workspace_dependencies(package_name: &str) -> Vec<String> {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = crate_root
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("workspace root");
+    let output = Command::new(env!("CARGO"))
+        .args(["metadata", "--format-version", "1", "--locked", "--no-deps"])
+        .current_dir(workspace_root)
+        .output()
+        .expect("cargo metadata runs");
+    assert!(
+        output.status.success(),
+        "cargo metadata failed closed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("cargo metadata emits JSON");
+    let packages = metadata["packages"].as_array().expect("packages array");
+    let workspace_names = packages
+        .iter()
+        .filter_map(|package| package["name"].as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let package = packages
+        .iter()
+        .find(|package| package["name"].as_str() == Some(package_name))
+        .expect("workspace package");
+    let mut dependencies = package["dependencies"]
+        .as_array()
+        .expect("dependencies array")
+        .iter()
+        .filter(|dependency| dependency["kind"].as_str() != Some("dev"))
+        .filter(|dependency| {
+            dependency["name"]
+                .as_str()
+                .is_some_and(|name| workspace_names.contains(name))
+        })
+        .map(|dependency| {
+            dependency["name"]
+                .as_str()
+                .expect("dependency name")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    dependencies.sort();
+    dependencies
+}
+
+// req: DEP-003
 #[test]
-fn client_has_no_direct_lower_semantic_authority_dependency() {
-    let manifest = include_str!("../Cargo.toml");
-    for banned in [
-        "riffdb-auth",
-        "riffdb-catalog",
-        "riffdb-commit",
-        "riffdb-conflict",
-        "riffdb-policy",
-        "riffdb-runtime",
-        "riffdb-service",
-        "riffdb-storage-api",
-        "riffdb-storage-memory",
-        "riffdb-storage-redb",
-    ] {
-        assert!(
-            !manifest
-                .lines()
-                .any(|line| line.trim_start().starts_with(banned)),
-            "Rust client must not depend directly on {banned}"
-        );
-    }
+fn client_depends_only_on_proto_tonic_types_errors_and_config() {
+    assert_eq!(
+        production_workspace_dependencies("riffdb-client-rust"),
+        [
+            "riffdb-config",
+            "riffdb-errors",
+            "riffdb-proto",
+            "riffdb-types",
+        ]
+    );
 }
 
 #[test]

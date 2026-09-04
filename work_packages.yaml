@@ -22562,6 +22562,19 @@ work_packages:
       compiler and server internals; generated packages keep their public surface.
     scale: Telemetry types at the bottom of the graph are the shape a multi-process deployment
       needs; nothing here assumes co-located storage or single-node memory.
+  closure:
+    status: complete
+    completed_at: "2026-09-04"
+    requirements_satisfied: [DEP-003, DEP-004, DEP-005]
+    evidence: Generated Tonic clients and shared metadata now live behind riffdb-proto's client
+      feature, portability and installation values live in riffdb-types without serialization
+      drift, and riffdb-client-rust has no application or server-adapter edge. Observability owns
+      the closed telemetry vocabulary with only types, errors, and tracing dependencies. The core
+      test kit has no service, server, or CLI edge, while riffdb-testkit-server owns all thirty
+      daemon-linked root targets. Cargo-metadata architecture proofs, all 2,295 scoped tests, all
+      24 generators, the fifteen-gate package acceptance plan, and the full CI battery pass; the
+      reviewed adapter fixture change only relocates its generated-client import owner and leaves
+      public wire, descriptor, and generated client surfaces unchanged.
   human_review_triggers: *id0180
 
 - id: WP-756

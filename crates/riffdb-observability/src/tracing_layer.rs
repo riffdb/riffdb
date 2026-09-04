@@ -7,31 +7,26 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use riffdb_api_mcp::{
-    McpListChangeKind, McpRiskClass, McpSchemaFailurePhase, McpTelemetryEvent, McpTransportKind,
-};
-use riffdb_auth::{AuthenticationDefect, AuthenticationRejection};
-use riffdb_catalog::CatalogTelemetryEvent;
-use riffdb_commit::{
-    CommandExecutionErrorKind, CommandPipelineStage, CommitCallTerminal, CommitCommandTerminal,
-    CommitGroupDispatchReason, CommitIdempotencyObservation, CommitTelemetryEvent,
-    CommitUncertaintyResolution, CommitUncertaintyStage, CompletionLanePhase,
-    PreparedEpochRollbackReason,
-};
-use riffdb_conflict::ConflictEventKind;
-use riffdb_policy::{AuthorizationDefect, PolicyCode};
-use riffdb_service::{AuthoritativeReadinessFailure, ServiceTerminalClass};
-use riffdb_storage_api::{MAX_ENTITY_MUTATIONS, MAX_EVENT_INTENTS, MAX_READ_DEPENDENCIES};
 use riffdb_types::{
     CommandId, CommitSequence, ContractVersion, IncidentId, MAX_COMMAND_CONFLICT_KEYS_V1,
     OutcomeId, PartitionKeyHash, PlanHash, RequestId, ServiceIngressKindV1, ServiceOperationV1,
 };
 use tracing::field::{self, Field, Visit};
-use tracing::{Event, Instrument, Subscriber};
-use tracing_subscriber::Layer;
-use tracing_subscriber::layer::Context;
+use tracing::{Event, Instrument};
 
-use crate::IncidentClass;
+use crate::{
+    AuthenticationDefect, AuthenticationRejection, AuthoritativeReadinessFailure,
+    AuthorizationDefect, AuthorizationDenial, CatalogTelemetryEvent, CommandPipelineStage,
+    CommitCallTerminal, CommitCommandTerminal, CommitExecutionFailureKind,
+    CommitGroupDispatchReason, CommitIdempotencyObservation, CommitTelemetryEvent,
+    CommitUncertaintyResolution, CommitUncertaintyStage, CompletionLanePhase, ConflictEventKind,
+    IncidentClass, McpListChangeKind, McpRiskClass, McpSchemaFailurePhase, McpTelemetryEvent,
+    McpTransportKind, PreparedEpochRollbackReason, ServiceTerminalClass,
+};
+
+const MAX_READ_DEPENDENCIES: usize = 4_096;
+const MAX_ENTITY_MUTATIONS: usize = 4_096;
+const MAX_EVENT_INTENTS: usize = 4_096;
 
 /// The only tracing target emitted by this crate.
 pub const SAFE_TRACE_TARGET: &str = "riffdb_observability::safe";
@@ -236,7 +231,7 @@ impl TraceRecord {
         )
     }
 
-    pub(crate) const fn authorization_denied(code: PolicyCode) -> Self {
+    pub(crate) const fn authorization_denied(code: AuthorizationDenial) -> Self {
         Self::closed(TraceKind::AuthorizationDenied, None, code.tag(), 1, None)
     }
 
@@ -445,6 +440,19 @@ impl TraceCollector {
         true
     }
 
+    /// Validates and records one tracing event from an adapter-owned subscriber.
+    #[doc(hidden)]
+    pub fn record_event(&self, event: &Event<'_>) {
+        if !allows_safe_trace_target(event.metadata().target()) {
+            return;
+        }
+        let mut visitor = TraceFieldVisitor::default();
+        event.record(&mut visitor);
+        if let Some(record) = visitor.finish() {
+            self.record(record);
+        }
+    }
+
     /// Returns retained records in observation order.
     #[must_use]
     pub fn snapshot(&self) -> Vec<TraceRecord> {
@@ -482,47 +490,6 @@ impl fmt::Display for TraceCollectorBuildError {
 }
 
 impl std::error::Error for TraceCollectorBuildError {}
-
-/// A subscriber layer that accepts only this crate's exact numeric event schema.
-#[derive(Clone)]
-pub struct SafeTraceLayer {
-    collector: TraceCollector,
-}
-
-impl SafeTraceLayer {
-    /// Creates a bounded safe layer.
-    pub fn new(capacity: usize) -> Result<Self, TraceCollectorBuildError> {
-        TraceCollector::new(capacity).map(|collector| Self { collector })
-    }
-
-    /// Returns a cloneable view of retained records.
-    #[must_use]
-    pub fn collector(&self) -> TraceCollector {
-        self.collector.clone()
-    }
-}
-
-impl<S> Layer<S> for SafeTraceLayer
-where
-    S: Subscriber,
-{
-    fn on_event(&self, event: &Event<'_>, _context: Context<'_, S>) {
-        if !allows_safe_trace_target(event.metadata().target()) {
-            return;
-        }
-        let mut visitor = TraceFieldVisitor::default();
-        event.record(&mut visitor);
-        if let Some(record) = visitor.finish() {
-            self.collector.record(record);
-        }
-    }
-}
-
-impl fmt::Debug for SafeTraceLayer {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("SafeTraceLayer([REDACTED])")
-    }
-}
 
 /// Returns whether metadata belongs to the exact safe first-party target.
 #[must_use]
@@ -991,17 +958,17 @@ const fn commit_idempotency_observation_tag(observation: CommitIdempotencyObserv
     }
 }
 
-const fn command_execution_error_tag(kind: CommandExecutionErrorKind) -> u8 {
+const fn command_execution_error_tag(kind: CommitExecutionFailureKind) -> u8 {
     match kind {
-        CommandExecutionErrorKind::Cancelled => 1,
-        CommandExecutionErrorKind::DeadlineExceeded => 2,
-        CommandExecutionErrorKind::RetryBudgetExhausted => 3,
-        CommandExecutionErrorKind::StorageUnavailable => 4,
-        CommandExecutionErrorKind::OutcomeUnknown => 5,
-        CommandExecutionErrorKind::InternalDefect => 6,
-        CommandExecutionErrorKind::CoordinatorStopped => 7,
-        CommandExecutionErrorKind::CoordinatorFenced => 8,
-        CommandExecutionErrorKind::AuthorizationDenied => 9,
+        CommitExecutionFailureKind::Cancelled => 1,
+        CommitExecutionFailureKind::DeadlineExceeded => 2,
+        CommitExecutionFailureKind::RetryBudgetExhausted => 3,
+        CommitExecutionFailureKind::StorageUnavailable => 4,
+        CommitExecutionFailureKind::OutcomeUnknown => 5,
+        CommitExecutionFailureKind::InternalDefect => 6,
+        CommitExecutionFailureKind::CoordinatorStopped => 7,
+        CommitExecutionFailureKind::CoordinatorFenced => 8,
+        CommitExecutionFailureKind::AuthorizationDenied => 9,
     }
 }
 
@@ -1111,9 +1078,36 @@ fn write_hex(bytes: &[u8], formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
 
 #[cfg(test)]
 mod tests {
+    use tracing::{Event, Subscriber};
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::Context;
     use tracing_subscriber::layer::SubscriberExt;
 
     use super::*;
+
+    #[derive(Clone)]
+    struct SafeTraceLayer {
+        collector: TraceCollector,
+    }
+
+    impl SafeTraceLayer {
+        fn new(capacity: usize) -> Result<Self, TraceCollectorBuildError> {
+            TraceCollector::new(capacity).map(|collector| Self { collector })
+        }
+
+        fn collector(&self) -> TraceCollector {
+            self.collector.clone()
+        }
+    }
+
+    impl<S> Layer<S> for SafeTraceLayer
+    where
+        S: Subscriber,
+    {
+        fn on_event(&self, event: &Event<'_>, _context: Context<'_, S>) {
+            self.collector.record_event(event);
+        }
+    }
 
     #[test]
     fn layer_accepts_only_the_exact_numeric_schema() {

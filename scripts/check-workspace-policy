@@ -51,6 +51,7 @@ EXPECTED_PACKAGES = %w[
   riffdb-storage-memory
   riffdb-storage-redb
   riffdb-testkit
+  riffdb-testkit-server
   riffdb-ticketdesk
   riffdb-types
 ].freeze

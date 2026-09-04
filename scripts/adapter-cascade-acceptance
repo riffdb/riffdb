@@ -85,7 +85,7 @@ cargo +1.97.0 build --quiet \
     -p riffdb-server --bin riffdbd \
     -p riffdb-cli --bin riffdb \
     -p riffdb-driver-host --bin riffdb-driverd \
-    -p riffdb-testkit --example adapter_cascade_remote_client
+    -p riffdb-testkit-server --example adapter_cascade_remote_client
 npm --prefix clients/typescript/runtime run build >/dev/null
 mkdir "$work_root/python-dist"
 (
@@ -286,7 +286,7 @@ export RIFFDB_CONFORMANCE_ENDPOINT="https://127.0.0.1:$port"
 export RIFFDB_CONFORMANCE_TRUST_ROOT="$work_root/ca.pem"
 export RIFFDB_CONFORMANCE_CREDENTIAL="$work_root/owner.credential"
 export RIFFDB_BETTER_AUTH_USER_ID="$owner_id"
-cargo +1.97.0 run --quiet -p riffdb-testkit --example adapter_cascade_remote_client -- \
+cargo +1.97.0 run --quiet -p riffdb-testkit-server --example adapter_cascade_remote_client -- \
     >"$work_root/rust.json"
 jq -e '
   .schema == "riffdb.adapter-cascade-observation/v1"

@@ -5,10 +5,8 @@
 pub mod authorization;
 pub mod failpoint;
 pub mod histories;
-pub mod http2_gate;
 pub mod inspection;
 pub mod model;
-pub mod process;
 pub mod scratch;
 
 #[cfg(test)]

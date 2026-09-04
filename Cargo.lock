@@ -1704,6 +1704,7 @@ dependencies = [
  "http-body-util",
  "riffdb-auth",
  "riffdb-errors",
+ "riffdb-observability",
  "riffdb-service",
  "riffdb-storage-api",
  "riffdb-types",
@@ -1734,6 +1735,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "getrandom 0.3.4",
+ "riffdb-observability",
  "riffdb-storage-api",
  "riffdb-types",
  "tempfile",
@@ -1755,6 +1757,7 @@ dependencies = [
  "riffdb-contract-compiler",
  "riffdb-contract-ir",
  "riffdb-invariant",
+ "riffdb-observability",
  "riffdb-query-compiler",
  "riffdb-query-module",
  "riffdb-riffql-syntax",
@@ -1809,14 +1812,13 @@ version = "0.1.0"
 dependencies = [
  "futures-util",
  "getrandom 0.3.4",
- "riffdb-api-grpc",
- "riffdb-application",
  "riffdb-config",
  "riffdb-errors",
  "riffdb-proto",
  "riffdb-types",
  "rustls-pki-types",
  "rustls-webpki",
+ "serde_json",
  "tempfile",
  "tokio",
  "tonic",
@@ -1846,6 +1848,7 @@ dependencies = [
  "riffdb-contract-ir",
  "riffdb-idempotency",
  "riffdb-invariant",
+ "riffdb-observability",
  "riffdb-policy",
  "riffdb-projection",
  "riffdb-runtime",
@@ -1865,6 +1868,7 @@ name = "riffdb-conflict"
 version = "0.1.0"
 dependencies = [
  "loom",
+ "riffdb-observability",
  "riffdb-types",
  "shuttle",
 ]
@@ -1974,16 +1978,9 @@ dependencies = [
 name = "riffdb-observability"
 version = "0.1.0"
 dependencies = [
- "riffdb-api-mcp",
- "riffdb-auth",
- "riffdb-catalog",
- "riffdb-commit",
- "riffdb-conflict",
  "riffdb-errors",
- "riffdb-policy",
- "riffdb-service",
- "riffdb-storage-api",
  "riffdb-types",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
 ]
@@ -2009,6 +2006,7 @@ version = "0.1.0"
 dependencies = [
  "riffdb-auth",
  "riffdb-contract-ir",
+ "riffdb-observability",
  "riffdb-testkit",
  "riffdb-types",
  "serde",
@@ -2041,6 +2039,9 @@ dependencies = [
  "riffdb-errors",
  "riffdb-operation-registry",
  "riffdb-types",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
 ]
 
 [[package]]
@@ -2162,6 +2163,7 @@ dependencies = [
  "riffdb-storage-api",
  "riffdb-storage-redb",
  "riffdb-testkit",
+ "riffdb-testkit-server",
  "riffdb-types",
  "rustls-pki-types",
  "rustls-webpki",
@@ -2281,6 +2283,21 @@ dependencies = [
 name = "riffdb-testkit"
 version = "0.1.0"
 dependencies = [
+ "riffdb-auth",
+ "riffdb-catalog",
+ "riffdb-contract-compiler",
+ "riffdb-contract-ir",
+ "riffdb-invariant",
+ "riffdb-runtime",
+ "riffdb-storage-api",
+ "riffdb-storage-redb",
+ "riffdb-types",
+]
+
+[[package]]
+name = "riffdb-testkit-server"
+version = "0.1.0"
+dependencies = [
  "riffdb-application",
  "riffdb-auth",
  "riffdb-catalog",
@@ -2309,6 +2326,7 @@ dependencies = [
  "riffdb-storage-api",
  "riffdb-storage-memory",
  "riffdb-storage-redb",
+ "riffdb-testkit",
  "riffdb-types",
  "serde",
  "serde_json",
@@ -2333,6 +2351,8 @@ dependencies = [
  "caseless",
  "hmac",
  "proptest",
+ "serde",
+ "serde_json",
  "sha2",
  "unicode-normalization",
  "unicode-segmentation",

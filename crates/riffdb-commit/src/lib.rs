@@ -102,8 +102,8 @@ pub use read_only_execution::{ReadOnlyExecuted, ReadOnlyExecutionResult};
 pub use read_only_preparation::{ReadOnlyExecutionPreparation, ReadOnlyExecutionPreparationError};
 pub use service_values::{ServiceUuidV7Source, ServiceUuidV7SourceError};
 pub use telemetry::{
-    CommandPipelineStage, CommitCallTerminal, CommitCommandTerminal, CommitGroupDispatchReason,
-    CommitIdempotencyObservation, CommitTelemetry, CommitTelemetryEvent,
+    CommandPipelineStage, CommitCallTerminal, CommitCommandTerminal, CommitExecutionFailureKind,
+    CommitGroupDispatchReason, CommitIdempotencyObservation, CommitTelemetry, CommitTelemetryEvent,
     CommitUncertaintyResolution, CommitUncertaintyStage, CompletionLanePhase, NoopCommitTelemetry,
     PreparedEpochRollbackReason,
 };

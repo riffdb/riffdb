@@ -265,7 +265,7 @@ tls_server_name = "127.0.0.1"
 EOF
 module_hash="$(jq -r '.modules[0].module_hash' "$work_root/application/riffdb.application.lock.json")"
 RIFFDB_WP701_BINARY_INTERVAL=1 RIFFDB_CONFORMANCE_SEED_ONLY=1 \
-    cargo +1.97.0 run --quiet -p riffdb-testkit --example adapter_operational_remote_client -- \
+    cargo +1.97.0 run --quiet -p riffdb-testkit-server --example adapter_operational_remote_client -- \
     >"$work_root/rust-seed.json"
 cat >"$work_root/binary-interval-parameters.json" <<'EOF'
 {

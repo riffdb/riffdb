@@ -11,6 +11,7 @@ default = []
 test-fixtures = []
 
 [dependencies]
+riffdb-observability = { version = "0.1.0", path = "../riffdb-observability", default-features = false }
 base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
 riffdb-auth = { version = "0.1.0", path = "../riffdb-auth", default-features = false }
 riffdb-application = { version = "0.1.0", path = "../riffdb-application", default-features = false }
@@ -35,7 +36,6 @@ serde_json = { version = "=1.0.150", default-features = false, features = ["std"
 [dev-dependencies]
 riffdb-conflict = { version = "0.1.0", path = "../riffdb-conflict", default-features = false }
 riffdb-idempotency = { version = "0.1.0", path = "../riffdb-idempotency", default-features = false }
-riffdb-observability = { version = "0.1.0", path = "../riffdb-observability", default-features = false }
 riffdb-policy = { version = "0.1.0", path = "../riffdb-policy", default-features = false, features = ["test-fixtures"] }
 riffdb-query-ir = { version = "0.1.0", path = "../riffdb-query-ir", default-features = false }
 riffdb-query-module = { version = "0.1.0", path = "../riffdb-query-module", default-features = false }
