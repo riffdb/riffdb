@@ -1,0 +1,264 @@
+#!/usr/bin/env bash
+# Paired full-dataset no-regression evidence for WP-773.
+# req: PERF-007, PERF-008, PERF-019
+set -euo pipefail
+export LC_ALL=C
+export TZ=UTC
+repo_root="$(git rev-parse --show-toplevel)"
+
+usage() {
+    printf '%s\n' \
+        'usage: benchmarks/run-wp773-paired CONTROL_RIFFDBD CANDIDATE_RIFFDBD DIAGNOSTIC OUTPUT_DIR' >&2
+    exit 2
+}
+
+if (($# != 4)); then
+    usage
+fi
+
+control_bin="$1"
+candidate_bin="$2"
+diagnostic_bin="$3"
+output_dir="$4"
+
+for executable in "$control_bin" "$candidate_bin" "$diagnostic_bin"; do
+    if [[ ! -x "$executable" ]]; then
+        printf 'required executable is absent: %s\n' "$executable" >&2
+        exit 2
+    fi
+done
+if [[ -e "$output_dir" ]]; then
+    printf 'output directory already exists: %s\n' "$output_dir" >&2
+    exit 2
+fi
+mkdir -p "$output_dir"
+
+set +e
+"$repo_root/scripts/app-baseline-host-validity" --interval-ms 50 \
+    >"$output_dir/host-preflight.json"
+preflight_status=$?
+set -e
+if [[ "$preflight_status" != 0 && "$preflight_status" != 3 ]]; then
+    exit "$preflight_status"
+fi
+
+run_cell() {
+    local variant="$1" rep="$2" binary="$3"
+    local report="$output_dir/${variant}-r${rep}.json"
+    local resources="$output_dir/${variant}-r${rep}.resources.tsv"
+    /usr/bin/time -f '%e\t%U\t%S\t%M' -o "$resources" \
+        "$diagnostic_bin" \
+        --riffdbd-bin "$binary" \
+        --scale full \
+        --clients 1 \
+        --samples-per-client 500 \
+        --warmup-per-client 32 \
+        --output "$report"
+}
+
+# Counterbalance process/cache order while keeping each host strictly serial.
+run_cell control 1 "$control_bin"
+run_cell candidate 1 "$candidate_bin"
+run_cell candidate 2 "$candidate_bin"
+run_cell control 2 "$control_bin"
+run_cell control 3 "$control_bin"
+run_cell candidate 3 "$candidate_bin"
+
+set +e
+"$repo_root/scripts/app-baseline-host-validity" --interval-ms 50 \
+    --baseline-report "$output_dir/host-preflight.json" \
+    >"$output_dir/host-postflight.json"
+postflight_status=$?
+set -e
+if [[ "$postflight_status" != 0 && "$postflight_status" != 3 ]]; then
+    exit "$postflight_status"
+fi
+
+python3 - "$output_dir" "$control_bin" "$candidate_bin" "$diagnostic_bin" "$0" <<'PY'
+import hashlib
+import json
+import math
+import statistics
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+control_bin, candidate_bin, diagnostic_bin, runner = map(Path, sys.argv[2:])
+MAX_REPORT_BYTES = 16 * 1024 * 1024
+MAX_RESOURCE_BYTES = 4096
+
+
+def digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def read_bounded(path: Path, maximum: int) -> bytes:
+    if not path.is_file() or path.is_symlink():
+        raise ValueError(f"evidence file is absent or linked: {path}")
+    data = path.read_bytes()
+    if not data or len(data) > maximum:
+        raise ValueError(f"evidence file has invalid size: {path}")
+    return data
+
+
+def load_report(variant: str, rep: int) -> dict:
+    path = root / f"{variant}-r{rep}.json"
+    report = json.loads(read_bounded(path, MAX_REPORT_BYTES))
+    if report.get("schema") != "riffdb.client-transport-attribution/v1":
+        raise ValueError(f"wrong report schema: {path}")
+    if report.get("scale") != "full" or len(report.get("cells", [])) != 1:
+        raise ValueError(f"wrong full c1 matrix: {path}")
+    cell = report["cells"][0]
+    if cell.get("clients") != 1:
+        raise ValueError(f"wrong client count: {path}")
+    return report
+
+
+def resource_values(variant: str, rep: int) -> dict[str, float]:
+    path = root / f"{variant}-r{rep}.resources.tsv"
+    parts = read_bounded(path, MAX_RESOURCE_BYTES).decode("ascii").strip().split("\t")
+    if len(parts) != 4:
+        raise ValueError(f"wrong resource receipt shape: {path}")
+    elapsed, user, system, max_rss = map(float, parts)
+    values = {
+        "process_wall_seconds": elapsed,
+        "process_cpu_seconds": user + system,
+        "process_max_rss_kib": max_rss,
+    }
+    if any(not math.isfinite(value) or value < 0 for value in values.values()):
+        raise ValueError(f"invalid resource receipt value: {path}")
+    return values
+
+
+def report_values(report: dict) -> dict[str, float]:
+    cell = report["cells"][0]
+    sync = cell["frozen_synchronous_bridge"]
+    asynchronous = cell["asynchronous_shadow"]
+    shutdowns = [
+        report["initial_seed_server_shutdown"],
+        cell["synchronous_server_shutdown"],
+        cell["asynchronous_server_shutdown"],
+        report["final_server_shutdown"],
+    ]
+    if any(item.get("stages_us") is None for item in shutdowns):
+        raise ValueError("shutdown stage evidence is absent")
+    memory = [
+        cell["synchronous_server_memory_kib"][edge]["Pss"]
+        for edge in ("before", "after")
+    ] + [
+        cell["asynchronous_server_memory_kib"][edge]["Pss"]
+        for edge in ("before", "after")
+    ]
+    return {
+        "lifecycle_shutdown_us": float(sum(item["harness_shutdown_elapsed_us"] for item in shutdowns)),
+        "columnar_shutdown_us": float(sum(item["stages_us"]["columnar_worker"] for item in shutdowns)),
+        "seed_columnar_shutdown_us": float(shutdowns[0]["stages_us"]["columnar_worker"]),
+        "sync_mean_ns": float(sync["latency"]["mean_ns"]),
+        "sync_p95_ns": float(sync["latency"]["p95_ns"]),
+        "async_mean_ns": float(asynchronous["latency"]["mean_ns"]),
+        "async_p95_ns": float(asynchronous["latency"]["p95_ns"]),
+        "sync_throughput_ops_s": float(sync["throughput_ops_s"]),
+        "async_throughput_ops_s": float(asynchronous["throughput_ops_s"]),
+        "server_pss_kib": float(max(memory)),
+    }
+
+
+samples: dict[str, list[dict[str, float]]] = {"control": [], "candidate": []}
+receipts = []
+for variant in samples:
+    for rep in range(1, 4):
+        report_path = root / f"{variant}-r{rep}.json"
+        resource_path = root / f"{variant}-r{rep}.resources.tsv"
+        values = report_values(load_report(variant, rep))
+        values.update(resource_values(variant, rep))
+        samples[variant].append(values)
+        receipts.append({
+            "variant": variant,
+            "rep": rep,
+            "report_sha256": digest(report_path),
+            "resources_sha256": digest(resource_path),
+        })
+
+preflight = json.loads(read_bounded(root / "host-preflight.json", 1024 * 1024))
+postflight = json.loads(read_bounded(root / "host-postflight.json", 1024 * 1024))
+host_valid = (
+    preflight.get("schema") == "riffdb.app-baseline-host-validity/v2"
+    and postflight.get("schema") == "riffdb.app-baseline-host-validity/v2"
+    and preflight.get("valid") is True
+    and postflight.get("valid") is True
+    and postflight.get("baseline_report_sha256") == digest(root / "host-preflight.json")
+)
+
+metric_names = set(samples["control"][0])
+if any(set(row) != metric_names for rows in samples.values() for row in rows):
+    raise ValueError("metric registry drifted between paired cells")
+
+higher_is_better = {"sync_throughput_ops_s", "async_throughput_ops_s"}
+informational = {"sync_p95_ns", "async_p95_ns", "seed_columnar_shutdown_us"}
+comparisons = []
+passed = host_valid
+for metric in sorted(metric_names):
+    control = statistics.median(row[metric] for row in samples["control"])
+    candidate = statistics.median(row[metric] for row in samples["candidate"])
+    if metric in informational:
+        ratio = candidate / control if control else (1.0 if candidate == 0 else math.inf)
+        metric_passed = None
+        direction = "informational; histogram buckets do not resolve a five-percent gate"
+    elif metric in higher_is_better:
+        ratio = candidate / control if control else math.inf
+        metric_passed = ratio >= (1.0 / 1.05)
+        direction = "candidate/control; minimum 1/1.05"
+    else:
+        ratio = candidate / control if control else (1.0 if candidate == 0 else math.inf)
+        metric_passed = ratio <= 1.05
+        direction = "candidate/control; maximum 1.05"
+    if metric_passed is not None:
+        passed = passed and metric_passed
+    comparisons.append({
+        "metric": metric,
+        "control_median": control,
+        "candidate_median": candidate,
+        "ratio": ratio,
+        "gate": direction,
+        "passed": metric_passed,
+    })
+
+summary = {
+    "schema": "riffdb.wp-773-paired-no-regression/v1",
+    "qualified": passed,
+    "method": {
+        "scale": "full",
+        "seed_commands": 19220,
+        "clients": 1,
+        "samples_per_client": 500,
+        "warmup_per_client": 32,
+        "repetitions": 3,
+        "order": ["control", "candidate", "candidate", "control", "control", "candidate"],
+        "maximum_regression_ratio": 1.05,
+        "latency_gate_statistic": "arithmetic_mean",
+        "p95_classification": "informational_histogram_bucket_spacing_exceeds_five_percent",
+        "per_generation_stage_classification": "informational_total_columnar_and_lifecycle_are_qualifying",
+    },
+    "artifacts": {
+        "control_riffdbd_sha256": digest(control_bin),
+        "candidate_riffdbd_sha256": digest(candidate_bin),
+        "diagnostic_sha256": digest(diagnostic_bin),
+        "runner_sha256": digest(runner),
+    },
+    "host": {
+        "valid": host_valid,
+        "hardware_identity": preflight.get("hardware_identity"),
+        "logical_cpus": preflight.get("logical_cpus"),
+        "preflight_sha256": digest(root / "host-preflight.json"),
+        "postflight_sha256": digest(root / "host-postflight.json"),
+        "whole_cell": postflight.get("whole_cell"),
+    },
+    "receipts": receipts,
+    "comparisons": comparisons,
+}
+encoded = json.dumps(summary, indent=2, sort_keys=True) + "\n"
+(root / "summary-v1.json").write_text(encoded, encoding="utf-8")
+print(encoded, end="")
+if not passed:
+    raise SystemExit(1)
+PY

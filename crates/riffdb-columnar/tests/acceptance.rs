@@ -3,6 +3,9 @@
 
 mod common;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use riffdb_storage_api::CommittedEntityReferenceV2;
 use riffdb_types::{
     AggregateSemanticIdentityV1, CanonicalValue, CommitSequence, EntityVersion, FrontierPosition,
@@ -14,7 +17,7 @@ use riffdb_columnar::{
     AggregateOp, CheckpointError, ColumnPredicate, ColumnarEngine, ColumnarError, ColumnarOutcome,
     ColumnarProjectionDefinition, ColumnarQueryRequest, ColumnarSnapshotRebuild,
     ColumnarTestBoundary, ColumnarTestController, GroupBySpec, OpenOptions, OrderSpec, QueryBudget,
-    QueryError, QueryResult, RegisteredDefinition, SortDirection,
+    QueryError, QueryResult, RegisteredDefinition, SortDirection, WorkerApplyOutcome,
 };
 
 use common::*;
@@ -80,6 +83,304 @@ fn authoritative_snapshot_rebuild_is_private_until_exact_publication() {
         engine.published_frontier_position(),
         FrontierPosition::AppliedThrough(CommitSequence::new(2).expect("frontier"))
     );
+}
+
+// req: PRJ-001, PRJ-002, PERF-007, PERF-008
+#[test]
+fn ordinary_columnar_apply_publication_and_checkpoint_are_unchanged() {
+    let bundle = compile_bundle();
+    let mut source = HistorySource::default();
+    let mut oracle = Oracle::default();
+    let org = uuid(0x31);
+    for sequence in 1..=130 {
+        push_ticket_create(
+            &mut source,
+            &mut oracle,
+            &bundle,
+            sequence,
+            org,
+            sequence,
+            sequence,
+            "ordinary",
+            sequence as i64,
+        );
+    }
+    let mut ordinary = open_engine(register_ticket_board(&bundle), "ordinary-control");
+    let ordinary_progress = ordinary.apply_available(&source).expect("ordinary apply");
+    let ordinary_manifest = ordinary.checkpoint().expect("ordinary checkpoint");
+
+    let mut worker = open_engine(register_ticket_board(&bundle), "ordinary-worker");
+    let mut continuation_observations = 0_u8;
+    let worker_progress = match worker
+        .apply_available_for_worker(&source, || {
+            continuation_observations = continuation_observations.saturating_add(1);
+            false
+        })
+        .expect("worker apply")
+    {
+        WorkerApplyOutcome::Completed(progress) => progress,
+        WorkerApplyOutcome::AbandonedUnpublished => panic!("no stop was requested"),
+    };
+    let worker_manifest = worker.checkpoint().expect("worker checkpoint");
+
+    assert_eq!(
+        continuation_observations, 2,
+        "64 + 64 records have continuation edges; terminal 2 does not"
+    );
+    assert_eq!(worker_progress, ordinary_progress);
+    assert_eq!(worker_manifest, ordinary_manifest);
+    assert_eq!(worker.durable_frontier(), ordinary.durable_frontier());
+    assert_corpus_equivalence(&worker, &oracle, &bundle, &[org], "worker no-stop");
+    assert_corpus_equivalence(&ordinary, &oracle, &bundle, &[org], "ordinary control");
+}
+
+// req: PRJ-001, PRJ-002, PERF-007, PERF-008, PERF-019
+#[test]
+fn shutdown_abandons_only_unpublished_columnar_work_at_a_page_boundary() {
+    let bundle = compile_bundle();
+    let mut source = HistorySource::default();
+    let mut oracle = Oracle::default();
+    let org = uuid(0x32);
+    for sequence in 1..=63 {
+        push_ticket_create(
+            &mut source,
+            &mut oracle,
+            &bundle,
+            sequence,
+            org,
+            sequence,
+            sequence,
+            "safe-prefix",
+            sequence as i64,
+        );
+    }
+    let _held = push_open_race_v1(&mut source, &mut oracle, &bundle, 64, org, 64);
+    for sequence in 65..=130 {
+        push_ticket_create(
+            &mut source,
+            &mut oracle,
+            &bundle,
+            sequence,
+            org,
+            sequence,
+            sequence,
+            "later-unpublished",
+            sequence as i64,
+        );
+    }
+    let dir = temp_dir("worker-abandon");
+    let mut engine = ColumnarEngine::open(
+        register_ticket_board(&bundle),
+        OpenOptions::new(dir.clone()),
+    )
+    .expect("open");
+    let stop_requested = Arc::new(AtomicBool::new(false));
+    let (boundary_entered_tx, boundary_entered_rx) = std::sync::mpsc::channel();
+    let (boundary_release_tx, boundary_release_rx) = std::sync::mpsc::channel();
+    let worker_stop = Arc::clone(&stop_requested);
+    let worker = std::thread::spawn(move || {
+        let mut continuation_observations = 0_u8;
+        let outcome = engine
+            .apply_available_for_worker(&source, || {
+                continuation_observations = continuation_observations.saturating_add(1);
+                boundary_entered_tx
+                    .send(())
+                    .expect("announce complete page boundary");
+                boundary_release_rx
+                    .recv()
+                    .expect("release complete page boundary");
+                worker_stop.load(Ordering::Acquire)
+            })
+            .expect("bounded abandonment");
+        (engine, outcome, continuation_observations)
+    });
+
+    boundary_entered_rx
+        .recv()
+        .expect("worker reached a complete page boundary");
+    stop_requested.store(true, Ordering::Release);
+    boundary_release_tx
+        .send(())
+        .expect("release worker after stop request");
+    let (engine, outcome, continuation_observations) =
+        worker.join().expect("join bounded worker apply");
+
+    assert_eq!(outcome, WorkerApplyOutcome::AbandonedUnpublished);
+    assert_eq!(continuation_observations, 1);
+    assert_eq!(
+        engine.processed_frontier().position(),
+        FrontierPosition::AppliedThrough(CommitSequence::new(64).expect("page boundary"))
+    );
+    assert_eq!(
+        engine.published_frontier_position(),
+        FrontierPosition::AppliedThrough(CommitSequence::new(63).expect("safe prefix")),
+        "the pre-holdback safe prefix remains published"
+    );
+    assert_eq!(
+        engine.durable_frontier().position(),
+        FrontierPosition::BeforeFirst
+    );
+    assert_no_durable_files(&dir, "abandoned worker apply");
+    let rows = rows_of(
+        engine
+            .query(&board_query(CanonicalValue::Uuid(org)))
+            .expect("safe-prefix query"),
+    );
+    assert_eq!(rows.len(), 63, "later unpublished work remains invisible");
+}
+
+// req: PRJ-001, PRJ-002, PRJ-003, PRJ-004
+#[test]
+fn abandoned_columnar_reopen_replays_from_the_durable_frontier() {
+    let bundle = compile_bundle();
+    let definition = register_ticket_board(&bundle);
+    let mut source = HistorySource::default();
+    let mut oracle = Oracle::default();
+    let org = uuid(0x33);
+    for sequence in 1..=10 {
+        push_ticket_create(
+            &mut source,
+            &mut oracle,
+            &bundle,
+            sequence,
+            org,
+            sequence,
+            sequence,
+            "durable",
+            sequence as i64,
+        );
+    }
+    let dir = temp_dir("worker-replay");
+    let mut seeded =
+        ColumnarEngine::open(definition.clone(), OpenOptions::new(dir.clone())).expect("seed");
+    seeded.apply_available(&source).expect("seed apply");
+    seeded.checkpoint().expect("seed checkpoint");
+    drop(seeded);
+
+    for sequence in 11..=150 {
+        push_ticket_create(
+            &mut source,
+            &mut oracle,
+            &bundle,
+            sequence,
+            org,
+            sequence,
+            sequence,
+            "replayed",
+            sequence as i64,
+        );
+    }
+    let mut abandoned =
+        ColumnarEngine::open(definition.clone(), OpenOptions::new(dir.clone())).expect("reopen");
+    let outcome = abandoned
+        .apply_available_for_worker(&source, || true)
+        .expect("abandon one page");
+    assert_eq!(outcome, WorkerApplyOutcome::AbandonedUnpublished);
+    assert_eq!(
+        abandoned.durable_frontier().position(),
+        FrontierPosition::AppliedThrough(CommitSequence::new(10).expect("durable frontier"))
+    );
+    drop(abandoned);
+
+    let mut replayed =
+        ColumnarEngine::open(definition.clone(), OpenOptions::new(dir)).expect("replay reopen");
+    assert_eq!(
+        replayed.processed_frontier().position(),
+        FrontierPosition::AppliedThrough(CommitSequence::new(10).expect("replay begins here"))
+    );
+    replayed
+        .apply_available(&source)
+        .expect("replay to exact end");
+
+    let mut uninterrupted = open_engine(definition, "uninterrupted-oracle");
+    uninterrupted
+        .apply_available(&source)
+        .expect("uninterrupted apply");
+    assert_eq!(
+        replayed.published_frontier_position(),
+        uninterrupted.published_frontier_position()
+    );
+    assert_corpus_equivalence(&replayed, &oracle, &bundle, &[org], "replayed");
+    assert_corpus_equivalence(&uninterrupted, &oracle, &bundle, &[org], "uninterrupted");
+}
+
+// req: PRJ-001, PRJ-002, PRJ-003, PRJ-004, PERF-007, PERF-008, PERF-019
+#[test]
+fn production_scale_backlog_stops_at_one_page_and_no_stop_reaches_exact_end() {
+    const PRODUCTION_BACKLOG: u64 = 19_220;
+    let bundle = compile_bundle();
+    let definition = register_ticket_board(&bundle);
+    let mut source = HistorySource::default();
+    let mut oracle = Oracle::default();
+    let org = uuid(0x34);
+    for sequence in 1..=PRODUCTION_BACKLOG {
+        push_ticket_create(
+            &mut source,
+            &mut oracle,
+            &bundle,
+            sequence,
+            org,
+            sequence,
+            sequence,
+            "production-backlog",
+            sequence as i64,
+        );
+    }
+
+    let mut stopped = open_engine(definition.clone(), "production-stop");
+    let stopped_outcome = stopped
+        .apply_available_for_worker(&source, || true)
+        .expect("bounded production stop");
+    assert_eq!(stopped_outcome, WorkerApplyOutcome::AbandonedUnpublished);
+    assert_eq!(
+        stopped.processed_frontier().position(),
+        FrontierPosition::AppliedThrough(CommitSequence::new(64).expect("one page"))
+    );
+    assert_eq!(
+        stopped.published_frontier_position(),
+        FrontierPosition::BeforeFirst
+    );
+    assert_eq!(
+        stopped.durable_frontier().position(),
+        FrontierPosition::BeforeFirst
+    );
+
+    let mut ordinary = open_engine(definition.clone(), "production-ordinary");
+    let ordinary_progress = ordinary
+        .apply_available(&source)
+        .expect("ordinary exact end");
+
+    let mut worker = open_engine(definition, "production-worker");
+    let mut continuation_observations = 0_u16;
+    let worker_progress = match worker
+        .apply_available_for_worker(&source, || {
+            continuation_observations = continuation_observations.saturating_add(1);
+            false
+        })
+        .expect("worker exact end")
+    {
+        WorkerApplyOutcome::Completed(progress) => progress,
+        WorkerApplyOutcome::AbandonedUnpublished => panic!("no stop requested"),
+    };
+
+    assert_eq!(continuation_observations, 300);
+    assert_eq!(worker_progress, ordinary_progress);
+    assert_eq!(
+        worker.resident_segment_rows(),
+        ordinary.resident_segment_rows()
+    );
+    let worker_rows = rows_of(
+        worker
+            .query(&board_query(CanonicalValue::Uuid(org)))
+            .expect("worker rows"),
+    );
+    let ordinary_rows = rows_of(
+        ordinary
+            .query(&board_query(CanonicalValue::Uuid(org)))
+            .expect("ordinary rows"),
+    );
+    assert_eq!(worker_rows, ordinary_rows);
+    assert_eq!(worker_rows.len(), PRODUCTION_BACKLOG as usize);
 }
 
 #[test]

@@ -73,6 +73,8 @@ mod segment_v2;
 mod store;
 
 pub use apply::ApplyProgress;
+#[doc(hidden)]
+pub use apply::WorkerApplyOutcome;
 pub use checkpoint::{CheckpointError, ColumnarAmplification, ManifestV1, SegmentInventoryEntry};
 pub use definition::{
     COLUMNAR_LAYOUT_VERSION_V1, COLUMNAR_LAYOUT_VERSION_V2, ColumnarProjectionDefinition,

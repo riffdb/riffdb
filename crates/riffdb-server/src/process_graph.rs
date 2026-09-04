@@ -67,7 +67,8 @@ use crate::columnar_adapter::{
     ColumnarRegistrationError, ColumnarRuntime, ServerColumnarProjectionPort,
 };
 use crate::columnar_worker::{
-    ColumnarWorkerShutdownError, ColumnarWorkerStartError, RunningColumnarWorker,
+    ColumnarWorkerShutdownError, ColumnarWorkerShutdownObservation, ColumnarWorkerStartError,
+    RunningColumnarWorker,
 };
 use crate::config::{ConfiguredProjection, ServerConfig};
 use crate::consumer_adapter::ServerEventConsumerPort;
@@ -113,6 +114,7 @@ pub(crate) const PRODUCTION_SHUTDOWN_STAGE_COUNT: usize = 8;
 pub(crate) struct ProductionGraphShutdownStageEvidence {
     graph_elapsed_us: u64,
     elapsed_us: [u64; PRODUCTION_SHUTDOWN_STAGE_COUNT],
+    columnar_shutdown: ColumnarWorkerShutdownObservation,
     checkpoint_close: riffdb_storage_redb::GracefulCheckpointCloseReceiptV1,
 }
 
@@ -1063,8 +1065,12 @@ impl RunningProductionGraph {
             .columnar_worker
             .take()
             .expect("a running graph retains one columnar worker")
-            .shutdown()
-            .err();
+            .shutdown();
+        let columnar_shutdown = columnar
+            .as_ref()
+            .copied()
+            .unwrap_or(ColumnarWorkerShutdownObservation::Failed);
+        let columnar = columnar.err();
         elapsed_us[2] = elapsed_microseconds(started);
         let started = Instant::now();
         let projection = self
@@ -1110,6 +1116,7 @@ impl RunningProductionGraph {
         let evidence = ProductionGraphShutdownStageEvidence {
             graph_elapsed_us: elapsed_microseconds(graph_started),
             elapsed_us,
+            columnar_shutdown,
             checkpoint_close,
         };
         shutdown_result_with_checkpoint_close(
@@ -1120,7 +1127,8 @@ impl RunningProductionGraph {
             coordinator,
             blocking,
             checkpoint_close,
-        )?;
+        )
+        .map_err(|error| error.with_columnar_shutdown_observation(columnar_shutdown))?;
         Ok(evidence)
     }
 
@@ -1160,8 +1168,12 @@ impl RunningProductionGraph {
             .columnar_worker
             .take()
             .expect("a running graph retains one columnar worker")
-            .shutdown()
-            .err();
+            .shutdown();
+        let columnar_shutdown = columnar
+            .as_ref()
+            .copied()
+            .unwrap_or(ColumnarWorkerShutdownObservation::Failed);
+        let columnar = columnar.err();
         elapsed_us[2] = elapsed_microseconds(started);
         let started = Instant::now();
         let projection = self
@@ -1210,6 +1222,7 @@ impl RunningProductionGraph {
         let evidence = ProductionGraphShutdownStageEvidence {
             graph_elapsed_us: elapsed_microseconds(graph_started),
             elapsed_us,
+            columnar_shutdown,
             checkpoint_close,
         };
         // Releasing the graph's storage owners is where `redb::Database::drop`
@@ -1235,7 +1248,8 @@ impl RunningProductionGraph {
             coordinator,
             blocking,
             checkpoint_close,
-        )?;
+        )
+        .map_err(|error| error.with_columnar_shutdown_observation(columnar_shutdown))?;
         Ok(evidence)
     }
 }
@@ -1465,6 +1479,7 @@ fn shutdown_result(
             coordinator,
             blocking,
             checkpoint_close_receipt: None,
+            columnar_shutdown_observation: None,
         })
     }
 }
@@ -1637,6 +1652,7 @@ pub(crate) struct ProductionGraphShutdownError {
     coordinator: Option<CoordinatorShutdownError>,
     blocking: Option<BlockingPortDriverShutdownError>,
     checkpoint_close_receipt: Option<riffdb_storage_redb::GracefulCheckpointCloseReceiptV1>,
+    columnar_shutdown_observation: Option<ColumnarWorkerShutdownObservation>,
 }
 
 impl ProductionGraphShutdownError {
@@ -1649,6 +1665,7 @@ impl ProductionGraphShutdownError {
             coordinator: None,
             blocking: None,
             checkpoint_close_receipt: None,
+            columnar_shutdown_observation: None,
         }
     }
 
@@ -1657,6 +1674,14 @@ impl ProductionGraphShutdownError {
         receipt: riffdb_storage_redb::GracefulCheckpointCloseReceiptV1,
     ) -> Self {
         self.checkpoint_close_receipt = Some(receipt);
+        self
+    }
+
+    fn with_columnar_shutdown_observation(
+        mut self,
+        observation: ColumnarWorkerShutdownObservation,
+    ) -> Self {
+        self.columnar_shutdown_observation = Some(observation);
         self
     }
 
@@ -1688,6 +1713,7 @@ mod tests {
         checkpoint_close_succeeded, shutdown_prerequisites_succeeded,
         shutdown_result_with_checkpoint_close,
     };
+    use crate::columnar_worker::ColumnarWorkerShutdownObservation;
     use riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS;
     use riffdb_storage_redb::GracefulCheckpointCloseReceiptV1;
 
@@ -1884,6 +1910,7 @@ mod tests {
         let evidence = ProductionGraphShutdownStageEvidence {
             graph_elapsed_us: 9,
             elapsed_us: [1, 2, 3, 4, 5, 6, 7, 8],
+            columnar_shutdown: ColumnarWorkerShutdownObservation::BetweenPasses,
             checkpoint_close: GracefulCheckpointCloseReceiptV1::barrier_failed([9, 0, 0]),
         };
         assert_eq!(
@@ -1894,5 +1921,31 @@ mod tests {
             evidence.format_checkpoint_close_v1_line(),
             "riffdb-graceful-checkpoint-close-v1\tbarrier_failed\tclean_not_attempted\t9,0,0"
         );
+        assert_eq!(
+            evidence.columnar_shutdown,
+            ColumnarWorkerShutdownObservation::BetweenPasses
+        );
+    }
+
+    // req: PERF-007, PERF-008, PERF-019
+    #[test]
+    fn process_graph_retains_all_closed_columnar_shutdown_observations() {
+        for observation in [
+            ColumnarWorkerShutdownObservation::BetweenPasses,
+            ColumnarWorkerShutdownObservation::AbandonedUnpublished,
+            ColumnarWorkerShutdownObservation::Failed,
+        ] {
+            let evidence = ProductionGraphShutdownStageEvidence {
+                graph_elapsed_us: 0,
+                elapsed_us: [0; super::PRODUCTION_SHUTDOWN_STAGE_COUNT],
+                columnar_shutdown: observation,
+                checkpoint_close: GracefulCheckpointCloseReceiptV1::barrier_failed([0; 3]),
+            };
+            assert_eq!(evidence.columnar_shutdown, observation);
+
+            let error = super::ProductionGraphShutdownError::checkpoint_close_only()
+                .with_columnar_shutdown_observation(observation);
+            assert_eq!(error.columnar_shutdown_observation, Some(observation));
+        }
     }
 }
