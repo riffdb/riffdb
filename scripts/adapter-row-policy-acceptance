@@ -48,7 +48,7 @@ cargo +1.97.0 build --quiet \
     -p riffdb-server --bin riffdbd \
     -p riffdb-cli --bin riffdb \
     -p riffdb-driver-host --bin riffdb-driverd \
-    -p riffdb-testkit --example adapter_row_policy_remote_client
+    -p riffdb-testkit-server --example adapter_row_policy_remote_client
 npm --prefix clients/typescript/runtime run build >/dev/null
 (
     cd clients/python/runtime
@@ -342,7 +342,7 @@ for mode in owner outsider; do
     else
         unset RIFFDB_ROW_POLICY_MUTATOR_CREDENTIAL
     fi
-    cargo +1.97.0 run --quiet -p riffdb-testkit --example adapter_row_policy_remote_client -- \
+    cargo +1.97.0 run --quiet -p riffdb-testkit-server --example adapter_row_policy_remote_client -- \
         >"$work_root/$mode-rust.json"
     PYTHONPATH="$work_root/application/generated/python" \
         "$work_root/python-venv/bin/python" fixtures/adapters/row-policy-conformance/runner/python.py \

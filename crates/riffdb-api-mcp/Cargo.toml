@@ -17,6 +17,7 @@ streamable-http = [
 ]
 
 [dependencies]
+riffdb-observability = { version = "0.1.0", path = "../riffdb-observability", default-features = false }
 base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
 bytes = { version = "=1.12.1", default-features = false, features = ["std"] }
 futures = { version = "=0.3.33", default-features = false, features = ["std"] }

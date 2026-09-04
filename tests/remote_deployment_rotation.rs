@@ -21,7 +21,7 @@ use riffdb_client_rust::{
 use riffdb_config::{
     CanonicalHttpsEndpoint, ProtectedFilePath, TlsClientConfig, TlsServerIdentity,
 };
-use riffdb_testkit::process::{ChildProcessController, ChildProcessSpec};
+use riffdb_testkit_server::process::{ChildProcessController, ChildProcessSpec};
 
 const SERVER_CHILD: &str = "RIFFDB_ROTATION_SERVER_CHILD";
 const CLI_CHILD: &str = "RIFFDB_ROTATION_CLI_CHILD";

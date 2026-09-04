@@ -172,7 +172,7 @@ where
             ))),
             Err(code) => {
                 self.telemetry
-                    .record(AuthorizationTelemetryEvent::Denied(code));
+                    .record(AuthorizationTelemetryEvent::Denied(code.into()));
                 Ok(ApplicationExportDecisionV1::Deny(code))
             }
         }
@@ -239,7 +239,7 @@ where
             ))),
             Err(code) => {
                 self.telemetry
-                    .record(AuthorizationTelemetryEvent::Denied(code));
+                    .record(AuthorizationTelemetryEvent::Denied(code.into()));
                 Ok(ApplicationReimportDecisionV1::Deny(code))
             }
         }
@@ -291,7 +291,7 @@ where
             ))),
             Err(code) => {
                 self.telemetry
-                    .record(AuthorizationTelemetryEvent::Denied(code));
+                    .record(AuthorizationTelemetryEvent::Denied(code.into()));
                 Ok(OfflineMaintenanceDecision::Deny(code))
             }
         }
@@ -337,7 +337,7 @@ where
             ))),
             Err(code) => {
                 self.telemetry
-                    .record(AuthorizationTelemetryEvent::Denied(code));
+                    .record(AuthorizationTelemetryEvent::Denied(code.into()));
                 Ok(ContractMigrationDecision::Deny(code))
             }
         }
@@ -394,7 +394,7 @@ where
                 Ok(preparation) => Ok(Decision::PrepareCapabilityMutation(Box::new(preparation))),
                 Err(code) => {
                     self.telemetry
-                        .record(AuthorizationTelemetryEvent::Denied(code));
+                        .record(AuthorizationTelemetryEvent::Denied(code.into()));
                     Ok(Decision::Deny(code))
                 }
             };
@@ -443,7 +443,7 @@ where
             }
             Err(code) => {
                 self.telemetry
-                    .record(AuthorizationTelemetryEvent::Denied(code));
+                    .record(AuthorizationTelemetryEvent::Denied(code.into()));
                 Ok(Decision::Deny(code))
             }
         }

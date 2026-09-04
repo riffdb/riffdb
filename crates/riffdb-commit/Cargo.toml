@@ -12,6 +12,7 @@ simulation = []
 test-fixtures = []
 
 [dependencies]
+riffdb-observability = { version = "0.1.0", path = "../riffdb-observability", default-features = false }
 riffdb-catalog = { version = "0.1.0", path = "../riffdb-catalog", default-features = false }
 riffdb-conflict = { version = "0.1.0", path = "../riffdb-conflict", default-features = false }
 riffdb-contract-ir = { version = "0.1.0", path = "../riffdb-contract-ir", default-features = false }

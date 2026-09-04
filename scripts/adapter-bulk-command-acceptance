@@ -190,7 +190,7 @@ credential_file = "$credential"
 tls_trust_root = "$work_root/ca.pem"
 tls_server_name = "127.0.0.1"
 EOF
-cargo +1.97.0 run --quiet -p riffdb-testkit --example adapter_bulk_remote_client -- >"$work_root/rust.json"
+cargo +1.97.0 run --quiet -p riffdb-testkit-server --example adapter_bulk_remote_client -- >"$work_root/rust.json"
 
 socket="$work_root/riffdb-driver.sock"
 cat >"$work_root/driver.toml" <<EOF

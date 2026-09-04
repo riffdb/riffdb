@@ -2,11 +2,10 @@
 
 use std::fmt;
 
-use riffdb_application::ApplicationPortabilityManifest;
 use riffdb_proto::{PublicWireError, v1, validate_public_message};
 use riffdb_types::{
-    ApplicationInstallationCampaignId, CapabilityApplicationReimportScopeV1, ContractLineage,
-    RequestId,
+    ApplicationInstallationCampaignId, ApplicationPortabilityManifest,
+    CapabilityApplicationReimportScopeV1, ContractLineage, RequestId,
 };
 
 /// One immutable, exact application-reimport start submission.

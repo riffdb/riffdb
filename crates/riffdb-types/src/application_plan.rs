@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
 
-use riffdb_types::{
+use crate::{
     AdapterConformanceManifestHash, ApplicationExportManifestHash, ApplicationExportReceiptHash,
     ApplicationInstallationPlanHash, ApplicationLockHash, ApplicationManifestHash,
     ApplicationPortabilityManifestHash, ApplicationRoleHash, ApplicationSourceHash, CapabilityId,
@@ -185,7 +185,8 @@ pub enum InstallationArtifactKind {
 }
 
 impl InstallationArtifactKind {
-    pub(crate) const fn tag(self) -> &'static str {
+    #[doc(hidden)]
+    pub const fn tag(self) -> &'static str {
         match self {
             Self::Manifest => "manifest",
             Self::ContractBundle => "contract_bundle",
@@ -202,7 +203,8 @@ impl InstallationArtifactKind {
         }
     }
 
-    pub(crate) fn parse(value: &str) -> Option<Self> {
+    #[doc(hidden)]
+    pub fn parse(value: &str) -> Option<Self> {
         Some(match value {
             "manifest" => Self::Manifest,
             "contract_bundle" => Self::ContractBundle,
@@ -279,7 +281,8 @@ pub enum RoleOperationKind {
 }
 
 impl RoleOperationKind {
-    pub(crate) const fn tag(self) -> &'static str {
+    #[doc(hidden)]
+    pub const fn tag(self) -> &'static str {
         match self {
             Self::Query => "query",
             Self::Command => "command",
@@ -289,7 +292,8 @@ impl RoleOperationKind {
         }
     }
 
-    pub(crate) fn parse(value: &str) -> Option<Self> {
+    #[doc(hidden)]
+    pub fn parse(value: &str) -> Option<Self> {
         Some(match value {
             "query" => Self::Query,
             "command" => Self::Command,
@@ -867,7 +871,8 @@ pub enum InstallationDriver {
 }
 
 impl InstallationDriver {
-    pub(crate) const fn tag(self) -> &'static str {
+    #[doc(hidden)]
+    pub const fn tag(self) -> &'static str {
         match self {
             Self::Rust => "rust",
             Self::TypeScript => "typescript",
@@ -876,7 +881,8 @@ impl InstallationDriver {
         }
     }
 
-    pub(crate) fn parse(value: &str) -> Option<Self> {
+    #[doc(hidden)]
+    pub fn parse(value: &str) -> Option<Self> {
         Some(match value {
             "rust" => Self::Rust,
             "typescript" => Self::TypeScript,
@@ -932,7 +938,8 @@ impl InstallationFeature {
         Self::DataLifecycle,
     ];
 
-    pub(crate) const fn tag(self) -> &'static str {
+    #[doc(hidden)]
+    pub const fn tag(self) -> &'static str {
         match self {
             Self::RemoteTls => "remote_tls",
             Self::BulkCommands => "bulk_commands",
@@ -945,7 +952,8 @@ impl InstallationFeature {
         }
     }
 
-    pub(crate) fn parse(value: &str) -> Option<Self> {
+    #[doc(hidden)]
+    pub fn parse(value: &str) -> Option<Self> {
         Some(match value {
             "remote_tls" => Self::RemoteTls,
             "bulk_commands" => Self::BulkCommands,
@@ -966,6 +974,57 @@ pub struct InstallationSeed {
     name: InstallationSymbol,
     content_hash: GeneratedArtifactHash,
     item_count: u64,
+}
+
+/// Bounded terminal counters for one ordinary-command seed batch.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct InstalledSeedEvidence {
+    name: InstallationSymbol,
+    content_hash: GeneratedArtifactHash,
+    succeeded: u64,
+    replayed: u64,
+}
+
+impl InstalledSeedEvidence {
+    /// Creates exact seed completion evidence without retaining item values.
+    #[must_use]
+    pub const fn new(
+        name: InstallationSymbol,
+        content_hash: GeneratedArtifactHash,
+        succeeded: u64,
+        replayed: u64,
+    ) -> Self {
+        Self {
+            name,
+            content_hash,
+            succeeded,
+            replayed,
+        }
+    }
+
+    /// Symbolic seed name.
+    #[must_use]
+    pub const fn name(&self) -> &InstallationSymbol {
+        &self.name
+    }
+
+    /// Exact seed artifact identity.
+    #[must_use]
+    pub const fn content_hash(&self) -> GeneratedArtifactHash {
+        self.content_hash
+    }
+
+    /// Newly completed command items.
+    #[must_use]
+    pub const fn succeeded(&self) -> u64 {
+        self.succeeded
+    }
+
+    /// Previously completed command items recovered by idempotency.
+    #[must_use]
+    pub const fn replayed(&self) -> u64 {
+        self.replayed
+    }
 }
 
 impl InstallationSeed {
@@ -1149,6 +1208,44 @@ impl ApplicationInstallationPlan {
     pub const fn schema(&self) -> &'static str {
         self.schema.name()
     }
+
+    /// Validates exact public-driver proof for a transport submission.
+    pub fn validate_driver_proof(
+        &self,
+        drivers: &[InstallationDriver],
+    ) -> Result<(), InstallationCampaignError> {
+        if drivers == self.input.drivers {
+            Ok(())
+        } else {
+            Err(InstallationCampaignError::new(
+                InstallationCampaignErrorKind::EvidenceMismatch,
+            ))
+        }
+    }
+
+    /// Validates bounded seed receipts for a transport submission.
+    pub fn validate_seed_receipts(
+        &self,
+        seeds: &[InstalledSeedEvidence],
+    ) -> Result<(), InstallationCampaignError> {
+        let valid = seeds.len() == self.input.seeds.len()
+            && seeds
+                .iter()
+                .zip(&self.input.seeds)
+                .all(|(observed, expected)| {
+                    observed.name() == expected.name()
+                        && observed.content_hash() == expected.content_hash()
+                        && observed.succeeded().checked_add(observed.replayed())
+                            == Some(expected.item_count())
+                });
+        if valid {
+            Ok(())
+        } else {
+            Err(InstallationCampaignError::new(
+                InstallationCampaignErrorKind::EvidenceMismatch,
+            ))
+        }
+    }
 }
 
 impl fmt::Debug for ApplicationInstallationPlan {
@@ -1212,7 +1309,8 @@ impl InstallationPlanError {
         self.kind
     }
 
-    pub(crate) const fn from_kind_for_diff(kind: InstallationPlanErrorKind) -> Self {
+    #[doc(hidden)]
+    pub const fn from_kind_for_diff(kind: InstallationPlanErrorKind) -> Self {
         Self::new(kind)
     }
 }
@@ -1261,6 +1359,104 @@ impl fmt::Display for InstallationPlanError {
 }
 
 impl Error for InstallationPlanError {}
+
+/// Closed campaign state-machine failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InstallationCampaignErrorKind {
+    /// Caller supplied another campaign identity for retained state.
+    CampaignIdentityMismatch,
+    /// Caller reused a campaign identity for another exact plan.
+    PlanIdentityMismatch,
+    /// A stage was skipped, repeated, or submitted out of order.
+    StageOutOfOrder,
+    /// Observed stage state differs from the exact plan.
+    EvidenceMismatch,
+    /// The campaign already sealed its terminal receipt.
+    AlreadyTerminal,
+    /// A canonical campaign artifact exceeds its hard bound.
+    LimitExceeded,
+    /// A canonical campaign artifact is malformed.
+    InvalidEncoding,
+    /// A canonical campaign artifact has a valid shape but inexact bytes.
+    NonCanonical,
+    /// A canonical campaign artifact version is unsupported.
+    UnsupportedVersion,
+}
+
+/// Bounded, redaction-safe campaign error.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InstallationCampaignError {
+    kind: InstallationCampaignErrorKind,
+}
+
+impl InstallationCampaignError {
+    /// Constructs one closed error for the application-owned campaign machine.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn new(kind: InstallationCampaignErrorKind) -> Self {
+        Self { kind }
+    }
+
+    /// Maps a plan codec failure without exposing its source document.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn from_plan_error(error: InstallationPlanError) -> Self {
+        match error.kind() {
+            InstallationPlanErrorKind::LimitExceeded => {
+                Self::new(InstallationCampaignErrorKind::LimitExceeded)
+            }
+            InstallationPlanErrorKind::UnsupportedVersion => {
+                Self::new(InstallationCampaignErrorKind::UnsupportedVersion)
+            }
+            InstallationPlanErrorKind::NonCanonical => {
+                Self::new(InstallationCampaignErrorKind::NonCanonical)
+            }
+            _ => Self::new(InstallationCampaignErrorKind::InvalidEncoding),
+        }
+    }
+
+    /// Stable campaign failure kind.
+    #[must_use]
+    pub const fn kind(self) -> InstallationCampaignErrorKind {
+        self.kind
+    }
+}
+
+impl fmt::Display for InstallationCampaignError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self.kind {
+            InstallationCampaignErrorKind::CampaignIdentityMismatch => {
+                "application installation campaign identity does not match retained state"
+            }
+            InstallationCampaignErrorKind::PlanIdentityMismatch => {
+                "application installation campaign identity is bound to another exact plan"
+            }
+            InstallationCampaignErrorKind::StageOutOfOrder => {
+                "application installation stage is not the exact next stage"
+            }
+            InstallationCampaignErrorKind::EvidenceMismatch => {
+                "application installation stage evidence differs from the exact plan"
+            }
+            InstallationCampaignErrorKind::AlreadyTerminal => {
+                "application installation campaign already has a terminal receipt"
+            }
+            InstallationCampaignErrorKind::LimitExceeded => {
+                "application installation campaign artifact exceeds a hard bound"
+            }
+            InstallationCampaignErrorKind::InvalidEncoding => {
+                "application installation campaign artifact encoding is invalid"
+            }
+            InstallationCampaignErrorKind::NonCanonical => {
+                "application installation campaign artifact encoding is not canonical"
+            }
+            InstallationCampaignErrorKind::UnsupportedVersion => {
+                "application installation campaign artifact version is unsupported"
+            }
+        })
+    }
+}
+
+impl Error for InstallationCampaignError {}
 
 fn validate_and_sort(
     input: &mut ApplicationInstallationPlanInput,
@@ -1977,11 +2173,13 @@ impl SeedDto {
     }
 }
 
-pub(crate) fn hex32(bytes: &[u8; 32]) -> String {
+#[doc(hidden)]
+pub fn hex32(bytes: &[u8; 32]) -> String {
     hex(bytes)
 }
 
-pub(crate) fn hex16(bytes: &[u8; 16]) -> String {
+#[doc(hidden)]
+pub fn hex16(bytes: &[u8; 16]) -> String {
     hex(bytes)
 }
 
@@ -1995,11 +2193,13 @@ fn hex(bytes: &[u8]) -> String {
     output
 }
 
-pub(crate) fn parse_hex32(value: &str) -> Result<[u8; 32], InstallationPlanError> {
+#[doc(hidden)]
+pub fn parse_hex32(value: &str) -> Result<[u8; 32], InstallationPlanError> {
     parse_hex(value)
 }
 
-pub(crate) fn parse_hex16(value: &str) -> Result<[u8; 16], InstallationPlanError> {
+#[doc(hidden)]
+pub fn parse_hex16(value: &str) -> Result<[u8; 16], InstallationPlanError> {
     parse_hex(value)
 }
 

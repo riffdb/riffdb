@@ -31,7 +31,7 @@
       "title": "Application installation plan",
       "classification": "application_artifact",
       "owner": "riffdb-application",
-      "source_assertions": [{"kind":"identity_regex","path":"crates/riffdb-application/src/plan.rs","pattern":"pub const APPLICATION_INSTALLATION_PLAN_SCHEMA_V([0-9]+): &str = \"riffdb\\.application-installation-plan/v([0-9]+)\";","identities":["1","2","3"]}],
+      "source_assertions": [{"kind":"identity_regex","path":"crates/riffdb-types/src/application_plan.rs","pattern":"pub const APPLICATION_INSTALLATION_PLAN_SCHEMA_V([0-9]+): &str = \"riffdb\\.application-installation-plan/v([0-9]+)\";","identities":["1","2","3"]}],
       "readable_identities": ["riffdb.application-installation-plan/v1", "riffdb.application-installation-plan/v2", "riffdb.application-installation-plan/v3"],
       "writable_identities": ["riffdb.application-installation-plan/v1", "riffdb.application-installation-plan/v2", "riffdb.application-installation-plan/v3"],
       "current_identities": ["riffdb.application-installation-plan/v1", "riffdb.application-installation-plan/v2", "riffdb.application-installation-plan/v3"],

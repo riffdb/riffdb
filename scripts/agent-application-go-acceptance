@@ -40,6 +40,6 @@ rg -q 'generated/go/client\.go' "$generated_app/riffdb.application.lock.json"
 "$repo_root/scripts/check-application-boundary" "$generated_app"
 
 cargo +1.97.0 test -p riffdb-query-module --test reactive_application --all-features
-cargo +1.97.0 test -p riffdb-testkit --test driver_host --all-features
+cargo +1.97.0 test -p riffdb-testkit-server --test driver_host --all-features
 
 echo "Go retained-driver runtime and offline generated scaffold acceptance passed"

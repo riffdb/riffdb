@@ -5,7 +5,9 @@ use std::fmt;
 use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex};
 
-use riffdb_application::{ApplicationPortabilityManifest, PortableRecordClass};
+use riffdb_application::{
+    ApplicationPortabilityManifest, ApplicationPortabilityValidation, PortableRecordClass,
+};
 use riffdb_catalog::ValidatedContractBundle;
 use riffdb_contract_ir::{RecordSchema, RecordTypeRef, ValueType};
 use riffdb_policy::{

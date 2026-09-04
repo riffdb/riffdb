@@ -7,10 +7,11 @@ use std::path::{Path, PathBuf};
 
 use riffdb_application::{
     AdapterConformanceManifest, ApplicationPortabilityManifest,
-    ApplicationPortabilityManifestInput, ApplicationReimportReceipt, InstallationArtifactKind,
-    InstallationSymbol, PortableOmission, PortableOmissionClass, PortableOmissionReason,
-    PortableRecordClass, PortableRecordMapping, PortableReimportStrategy, ReimportMappingResult,
-    ReimportObservation, ReimportObservationParameter, ReimportObservationResult,
+    ApplicationPortabilityManifestInput, ApplicationPortabilityValidation,
+    ApplicationReimportReceipt, InstallationArtifactKind, InstallationSymbol, PortableOmission,
+    PortableOmissionClass, PortableOmissionReason, PortableRecordClass, PortableRecordMapping,
+    PortableReimportStrategy, ReimportMappingResult, ReimportObservation,
+    ReimportObservationParameter, ReimportObservationResult,
 };
 use riffdb_contract_ir::ContractBundle;
 use riffdb_types::{

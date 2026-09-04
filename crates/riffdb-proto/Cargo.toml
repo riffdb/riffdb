@@ -8,6 +8,7 @@ publish.workspace = true
 
 [features]
 default = []
+client = ["dep:tonic", "dep:tonic-prost"]
 
 [dependencies]
 base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
@@ -15,6 +16,13 @@ crc = { version = "3.4.0", default-features = false }
 prost = { version = "0.14.4", default-features = false, features = ["derive", "std"] }
 riffdb-errors = { version = "0.1.0", path = "../riffdb-errors" }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types" }
+tonic = { version = "=0.14.6", default-features = false, features = ["channel", "codegen", "tls-ring"], optional = true }
+tonic-prost = { version = "=0.14.6", default-features = false, optional = true }
+
+[build-dependencies]
+prost = { version = "0.14.4", default-features = false, features = ["std"] }
+prost-types = { version = "0.14.4", default-features = false, features = ["std"] }
+tonic-prost-build = { version = "=0.14.6", default-features = false, features = ["transport"] }
 
 [dev-dependencies]
 prost-build = { version = "0.14.4", default-features = false, features = ["format"] }

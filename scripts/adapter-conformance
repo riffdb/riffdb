@@ -22,7 +22,7 @@ done
 
 ./scripts/generate-adapter-conformance-fixtures --check
 cargo +1.97.0 test -p riffdb-application --all-features --quiet
-cargo +1.97.0 test -p riffdb-testkit --test adapter_conformance --all-features --quiet
+cargo +1.97.0 test -p riffdb-testkit-server --test adapter_conformance --all-features --quiet
 cargo +1.97.0 build -p riffdb-cli --bin riffdb --quiet
 
 domains=(openfga mlflow better-auth woodpecker)

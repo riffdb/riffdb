@@ -4,6 +4,10 @@
 
 mod actor;
 mod aggregate;
+/// Canonical application-installation value model.
+pub mod application_plan;
+/// Canonical application-portability value model.
+pub mod application_portability;
 mod capability;
 mod capability_grant;
 mod codec;
@@ -36,6 +40,8 @@ mod vector;
 
 pub use actor::*;
 pub use aggregate::*;
+pub use application_plan::*;
+pub use application_portability::*;
 pub use capability::*;
 pub use capability_grant::*;
 pub use codec::*;

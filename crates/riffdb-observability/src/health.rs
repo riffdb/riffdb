@@ -4,8 +4,9 @@ use std::error::Error;
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use riffdb_service::{AuthoritativeReadinessFailure, ServiceHealthHooks};
 use riffdb_types::CommitSequence;
+
+use crate::{AuthoritativeReadinessFailure, ServiceHealthHooks};
 
 /// Maximum closed findings retained for either derived subsystem.
 pub const MAX_DERIVED_FINDINGS_PER_COMPONENT: usize = 16;

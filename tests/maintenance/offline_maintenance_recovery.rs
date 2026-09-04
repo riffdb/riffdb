@@ -35,7 +35,7 @@ use riffdb_client_rust::{
 use riffdb_errors::PublicErrorKind;
 use riffdb_storage_api::{DatabaseIdentityProbe, DatabaseIdentityProbePort};
 use riffdb_storage_redb::RedbStore;
-use riffdb_testkit::process::MAX_CHILD_COMPONENT_BYTES;
+use riffdb_testkit_server::process::MAX_CHILD_COMPONENT_BYTES;
 use riffdb_types::{EntityKeyBuilder, EntityTypeId};
 use tokio::time::timeout;
 use tonic::transport::Endpoint;
