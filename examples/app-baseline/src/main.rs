@@ -1017,6 +1017,7 @@ fn clean_close_evidence_json(
 
 fn shutdown_memory_window_json(
     evidence: &RiffDbShutdownEvidence,
+    enforce_wp705_ceiling: bool,
 ) -> Result<serde_json::Value, String> {
     const HEAP_ENVELOPE_CEILING_BYTES: u64 = 64 * 1024 * 1024;
     let before = evidence
@@ -1029,7 +1030,7 @@ fn shutdown_memory_window_json(
         return Err("shutdown memory samples crossed a daemon process generation".to_owned());
     }
     let heap_envelope_bytes = after.vm_data_bytes.saturating_sub(before.vm_data_bytes);
-    if heap_envelope_bytes > HEAP_ENVELOPE_CEILING_BYTES {
+    if enforce_wp705_ceiling && heap_envelope_bytes > HEAP_ENVELOPE_CEILING_BYTES {
         return Err(format!(
             "wp705_heap_envelope_refusal stage=process_start_to_shutdown_admission \
              vm_data_bytes_before={} vm_data_bytes_after={} heap_envelope_bytes={} \
@@ -1045,8 +1046,9 @@ fn shutdown_memory_window_json(
         "vm_data_bytes_after": after.vm_data_bytes,
         "heap_envelope_bytes": heap_envelope_bytes,
         "vm_hwm_bytes": after.vm_hwm_bytes,
-        "heap_envelope_ceiling_bytes": HEAP_ENVELOPE_CEILING_BYTES,
-        "passed": true,
+        "heap_envelope_ceiling_bytes": enforce_wp705_ceiling.then_some(HEAP_ENVELOPE_CEILING_BYTES),
+        "passed": enforce_wp705_ceiling.then_some(true),
+        "gate_owner": if enforce_wp705_ceiling { "WP-705" } else { "WP-760" },
     }))
 }
 
@@ -1054,13 +1056,14 @@ fn lifecycle_memory_window_json(
     label: &'static str,
     before: RiffDbProcessMemoryEvidence,
     after: ProcessResourceSnapshot,
+    enforce_wp705_ceiling: bool,
 ) -> Result<serde_json::Value, String> {
     const HEAP_ENVELOPE_CEILING_BYTES: u64 = 64 * 1024 * 1024;
     if before.pid != after.pid || before.starttime_ticks != after.starttime_ticks {
         return Err("lifecycle memory sample crossed a daemon process generation".to_owned());
     }
     let heap_envelope_bytes = after.vm_data_bytes.saturating_sub(before.vm_data_bytes);
-    if heap_envelope_bytes > HEAP_ENVELOPE_CEILING_BYTES {
+    if enforce_wp705_ceiling && heap_envelope_bytes > HEAP_ENVELOPE_CEILING_BYTES {
         return Err(format!(
             "wp705_heap_envelope_refusal stage={label} vm_data_bytes_before={} \
              vm_data_bytes_after={} heap_envelope_bytes={} \
@@ -1076,8 +1079,9 @@ fn lifecycle_memory_window_json(
         "vm_data_bytes_after": after.vm_data_bytes,
         "heap_envelope_bytes": heap_envelope_bytes,
         "vm_hwm_bytes": after.peak_rss_bytes,
-        "heap_envelope_ceiling_bytes": HEAP_ENVELOPE_CEILING_BYTES,
-        "passed": true,
+        "heap_envelope_ceiling_bytes": enforce_wp705_ceiling.then_some(HEAP_ENVELOPE_CEILING_BYTES),
+        "passed": enforce_wp705_ceiling.then_some(true),
+        "gate_owner": if enforce_wp705_ceiling { "WP-705" } else { "WP-760" },
     }))
 }
 
@@ -1112,6 +1116,7 @@ fn production_dirty_lifecycle_evidence(
         "process_start_to_ready",
         clean_initial_memory,
         clean_resources,
+        true,
     )?;
     if clean_startup.mode != "clean_certificate"
         || clean_startup.transient_index_rebuilds != 0
@@ -1131,6 +1136,7 @@ fn production_dirty_lifecycle_evidence(
         "process_start_to_ready",
         dirty_initial_memory,
         dirty_resources,
+        false,
     )?;
     let (dirty_shutdown, repeated_snapshot, repeated_startup) = dirty_restarted
         .shutdown_with_recovery_repeat_evidence()
@@ -1165,8 +1171,8 @@ fn production_dirty_lifecycle_evidence(
         .and_then(|value| value.checked_div(clean_process_to_ready_us))
         .ok_or_else(|| "startup ratio could not be represented".to_owned())?;
     let measured_clean_close = measured_close.clean_close.clone();
-    let measured_close_memory = shutdown_memory_window_json(&measured_close)?;
-    let dirty_final_close_memory = shutdown_memory_window_json(&dirty_shutdown)?;
+    let measured_close_memory = shutdown_memory_window_json(&measured_close, true)?;
+    let dirty_final_close_memory = shutdown_memory_window_json(&dirty_shutdown, false)?;
     Ok((
         measured_close,
         json!({
@@ -1232,12 +1238,13 @@ fn production_clean_lifecycle_evidence(
         "process_start_to_ready",
         initial_memory,
         resources,
+        true,
     )?;
     let final_close = clean_restarted
         .shutdown_with_evidence()
         .map_err(|error| error.to_string())?;
-    let seeded_close_memory = shutdown_memory_window_json(&seeded_close)?;
-    let final_close_memory = shutdown_memory_window_json(&final_close)?;
+    let seeded_close_memory = shutdown_memory_window_json(&seeded_close, true)?;
+    let final_close_memory = shutdown_memory_window_json(&final_close, true)?;
     let lifecycle = json!({
         "schema": "riffdb.wp-705-production-clean-lifecycle/v1",
         "scale_checkpoint": "production",
@@ -4568,7 +4575,7 @@ mod tests {
             write_bytes: 0,
             durable_bytes: 0,
         };
-        let accepted = super::lifecycle_memory_window_json("test", initial, current)
+        let accepted = super::lifecycle_memory_window_json("test", initial, current, true)
             .expect("bounded matching generation");
         assert_eq!(accepted["heap_envelope_bytes"], 1_000);
         assert_eq!(accepted["vm_hwm_bytes"], 3_000);
@@ -4578,13 +4585,13 @@ mod tests {
             ..current
         };
         assert!(
-            super::lifecycle_memory_window_json("test", initial, wrong_generation).is_err()
+            super::lifecycle_memory_window_json("test", initial, wrong_generation, true).is_err()
         );
         let over_ceiling = super::ProcessResourceSnapshot {
             vm_data_bytes: initial.vm_data_bytes + 64 * 1024 * 1024 + 1,
             ..current
         };
-        let refusal = super::lifecycle_memory_window_json("test", initial, over_ceiling)
+        let refusal = super::lifecycle_memory_window_json("test", initial, over_ceiling, true)
             .expect_err("over-ceiling window must fail closed");
         assert_eq!(
             refusal,
@@ -4592,6 +4599,14 @@ mod tests {
              vm_data_bytes_after=67109865 heap_envelope_bytes=67108865 \
              heap_envelope_ceiling_bytes=67108864"
         );
+
+        let dirty_handoff =
+            super::lifecycle_memory_window_json("dirty_complete_validation", initial, over_ceiling, false)
+                .expect("WP-705 records dirty memory for WP-760 without claiming its gate");
+        assert_eq!(dirty_handoff["heap_envelope_bytes"], 64 * 1024 * 1024 + 1);
+        assert!(dirty_handoff["heap_envelope_ceiling_bytes"].is_null());
+        assert!(dirty_handoff["passed"].is_null());
+        assert_eq!(dirty_handoff["gate_owner"], "WP-760");
 
         let startup = riffdb_app_baseline_riffdb::RiffDbStartupEvidence {
             mode: "clean_certificate".to_owned(),
