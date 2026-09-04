@@ -2241,25 +2241,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "riffdb-storage-memory"
-version = "0.1.0"
-dependencies = [
- "riffdb-auth",
- "riffdb-catalog",
- "riffdb-contract-compiler",
- "riffdb-contract-ir",
- "riffdb-policy",
- "riffdb-projection",
- "riffdb-query-compiler",
- "riffdb-query-executor",
- "riffdb-query-ir",
- "riffdb-riffql-syntax",
- "riffdb-storage-api",
- "riffdb-testkit",
- "riffdb-types",
-]
-
-[[package]]
 name = "riffdb-storage-redb"
 version = "0.1.0"
 dependencies = [
@@ -2277,6 +2258,7 @@ dependencies = [
  "riffdb-storage-api",
  "riffdb-types",
  "sha2",
+ "tempfile",
 ]
 
 [[package]]
@@ -2324,7 +2306,6 @@ dependencies = [
  "riffdb-server",
  "riffdb-service",
  "riffdb-storage-api",
- "riffdb-storage-memory",
  "riffdb-storage-redb",
  "riffdb-testkit",
  "riffdb-types",

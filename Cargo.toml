@@ -41,7 +41,6 @@ members = [
     "crates/riffdb-service",
     "crates/riffdb-sim",
     "crates/riffdb-storage-api",
-    "crates/riffdb-storage-memory",
     "crates/riffdb-storage-redb",
     "crates/riffdb-testkit",
     "crates/riffdb-testkit-server",

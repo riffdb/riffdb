@@ -1690,7 +1690,6 @@ riffdb/
     riffdb-contract-compiler/
     riffdb-catalog/
     riffdb-storage-api/
-    riffdb-storage-memory/
     riffdb-storage-redb/
     riffdb-invariant/
     riffdb-runtime/
@@ -1745,7 +1744,6 @@ The binary targets are `riffdbd` from `riffdb-server`, `riffdb` from `riffdb-cli
 | `riffdb-contract-compiler` | Name resolution, type checking, invariant classification, locality analysis, plan generation, and JSON Schema output | Syntax and IR; no storage, service, or transport dependency |
 | `riffdb-catalog` | Immutable contract bundle persistence, compatibility checks, active-version changes, catalog notifications, bounded active-lineage materialization proofs, opaque command `Ready`/resource evidence and pure current-recheck operations, exact projection-plan resolution and opaque projection event-materialization views, IR-aware validation of bounded same-session historical startup evidence, historical V1/V2 index-partition derivation, and the fields-private backend-branded consuming index-migration driver/instruction/completion chain | IR, storage API, and the sole narrow pure `riffdb-invariant` uses accepted by ADR-0039 and ADR-0049; its opaque process-local proofs, evidence, migration context, instructions, completion, and materialization views never cross an operational storage trait or become constructible from public parts |
 | `riffdb-storage-api` | Semantic snapshots, database initialization, structural startup sessions/evidence/type-state ports including the same-snapshot retained-metadata handoff, codec-owned migration semantic row/evidence, checked migration bounds/cursor, identity-only startup migration port contract and closed outcome, evaluated commands, commit intents, durable DTOs, typed transitions/readers, bounded exact-end derived-recovery observations and atomic projection query fences, the narrow durable `proto_codec` mapping bridge, and ADR-0017 projection-schema consumers | Types/errors; proto only through `proto_codec`; contract IR only for immutable `ProjectionGroupSchema`/`BoundProjectionGroupSchema` values in the projection-schema module; no catalog authority/tracker/instruction/completion, public migration read/apply/finish operation, clock, entropy, compiler, command-plan interpretation, historical-plan validation, runtime, commit, service, transport, or concrete-engine dependency |
-| `riffdb-storage-memory` | Deterministic reference storage implementation used by model and semantic tests, including the named concrete startup-migration port used by catalog-driver conformance | Storage API, plus the sole ADR-0042 migration-only catalog driver edge; default-feature-disabled contract compiler only as a dev-dependency for canonical conformance fixtures; no production contract IR/compiler/invariant, historical partition-expression interpretation, `ValidatedCatalogHistory`, readiness composition, or API transport dependency |
 | `riffdb-storage-redb` | Durable POC implementation, table layout, complete structural integrity/evidence scan, bounded derived scans/query fences, session-bound V1/V2 index evidence and exclusive compare-and-rewrite migration port, dormant opened ports, backup, restore, the external maintenance receipt adapter, and engine benchmarks | Storage API, `redb`, and the sole ADR-0042 migration-only catalog driver edge; default-feature-disabled contract compiler only as a dev-dependency for canonical recovery fixtures; no production contract IR/compiler/invariant, historical partition-expression interpretation, `ValidatedCatalogHistory`, readiness composition, or API transports |
 | `riffdb-invariant` | Shared pure evaluation of checked input-computable expressions plus supported predicates, invariants, postconditions, and commit-time checks | Types and IR; no snapshot, admission, storage, service, clock, entropy, or transport dependency; no POC state-machine source, IR, or execution surface |
 | `riffdb-runtime` | Deterministic command-plan interpreter that consumes lineage-normalized owned snapshots, rejects unproved missing fields, and produces `EvaluatedCommand` without external I/O | IR, invariant engine, and storage semantic value/snapshot types; no catalog lineage construction, provenance claims, admission persistence, storage engine, service, or transport dependency |
@@ -1803,7 +1801,7 @@ The binary targets are `riffdbd` from `riffdb-server`, `riffdb` from `riffdb-cli
   row. That call is pure, bounded, synchronous, storage-free, callback-free,
   and grants no command-execution, commit-check, or mutation authority. No
   reverse invariant-to-catalog or storage-to-IR dependency is permitted.
-- `riffdb-storage-memory` and `riffdb-storage-redb` MAY consume
+- `riffdb-storage-redb` MAY consume
   `riffdb-catalog` only through ADR-0042's catalog-owned startup index-migration
   driver and fields-private move-only request/proof values branded by the exact
   concrete backend type. Every cross-crate scan, one-bundle read, batch apply,
@@ -1811,7 +1809,7 @@ The binary targets are `riffdbd` from `riffdb-server`, `riffdb` from `riffdb-cli
   factory consumes that exact request. The server never receives these values.
   This edge grants no direct IR/invariant import, catalog persistence access,
   historical validation, readiness composition, or operational storage path.
-  Both concrete backends MAY additionally use the default-feature-disabled
+  The concrete backend MAY additionally use the default-feature-disabled
   contract compiler only as a dev-dependency to build real canonical indexed
   bundles for conformance/recovery fixtures; it creates no production compiler
   or IR edge.

@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
-# req: OQ-114, OQ-115
+# Historical ADR-0185 proof name retained after the in-memory backend removal.
+# req: DEP-005, OQ-114, OQ-115
 set -euo pipefail
 
-cargo +1.97.0 test -p riffdb-storage-memory \
-  expansion_memory_matches_independent_oracle \
-  --all-features
-cargo +1.97.0 test -p riffdb-storage-redb \
-  expansion_redb_matches_independent_oracle \
-  --all-features
+exec "$(dirname "$0")/expansion_executor_redb_parity_matches_independent_oracle"

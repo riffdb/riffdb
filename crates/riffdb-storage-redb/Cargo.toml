@@ -9,7 +9,7 @@ publish.workspace = true
 [features]
 default = []
 benchmark-support = []
-test-fixtures = ["riffdb-storage-api/test-fixtures"]
+test-fixtures = ["riffdb-storage-api/test-fixtures", "dep:tempfile"]
 
 [dependencies]
 cap-std = { version = "=4.0.2", default-features = false }
@@ -19,6 +19,7 @@ riffdb-proto = { version = "0.1.0", path = "../riffdb-proto" }
 riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api" }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types" }
 sha2 = { version = "=0.11.0", default-features = false }
+tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
 riffdb-contract-compiler = { version = "0.1.0", path = "../riffdb-contract-compiler", default-features = false }

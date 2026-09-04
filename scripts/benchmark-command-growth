@@ -42,8 +42,8 @@ elif [ "$#" -ne 0 ]; then
     exit 2
 fi
 
-echo "command-growth preflight: memory semantics" >&2
-cargo test -p riffdb-storage-memory --all-features >&2
+echo "command-growth preflight: executor reader-fake semantics" >&2
+cargo test -p riffdb-query-executor --all-features >&2
 echo "command-growth preflight: redb semantics and recovery" >&2
 cargo test -p riffdb-storage-redb --all-features >&2
 echo "command-growth preflight: coordinator sequencing and replay" >&2

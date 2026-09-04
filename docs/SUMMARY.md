@@ -162,6 +162,7 @@
 - [WP-644 Bounded-session Baseline](performance/wp-644-session-baseline.md)
 - [WP-644 Bounded-session Candidate](performance/wp-644-session-candidate.md)
 - [WP-413 Migration Evolution Evidence](performance/wp-413-migration-evolution.md)
+- [WP-756 Crate-graph Repair Receipt](performance/wp-756-crate-graph-repair.md)
 - [App-baseline Production Profile](performance/app-baseline-production-profile.md)
 
 # Reference

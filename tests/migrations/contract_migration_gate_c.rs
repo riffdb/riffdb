@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+// req: DEP-005
 
 //! Gate-C key, ownership, reference, and crash-resume acceptance evidence.
 
@@ -9,11 +10,11 @@ use riffdb_contract_compiler::{
     compile_migration_source,
 };
 use riffdb_storage_api::{
-    ApplicationSequenceAllocator, DurableKeySchemaBindingV1, EntityTarget, MigrationBatch,
-    MigrationCutover, MigrationCutoverApplied, MigrationJournalState, MigrationScanCursor,
-    MigrationScanPage, MigrationStageError, MigrationStagePort, StoredEntityRecordV1,
+    DurableKeySchemaBindingV1, EntityTarget, MigrationBatch, MigrationCutover,
+    MigrationCutoverApplied, MigrationJournalState, MigrationScanCursor, MigrationScanPage,
+    MigrationStageError, MigrationStagePort, StoredEntityRecordV1,
 };
-use riffdb_storage_memory::{MemoryMigrationHistoryWitness, MemoryMigrationStage};
+use riffdb_storage_redb::RedbMigrationStageFixture;
 use riffdb_types::{CanonicalRecord, CanonicalValue, EntityVersion, ProjectionId};
 
 const PARENT_SOURCE: &str = include_str!(concat!(
@@ -75,8 +76,8 @@ fn combined_rekey_repartition_reference_and_index_change_is_atomic() {
         ],
     );
     let old_targets = [organization.target().clone(), ticket.target().clone()];
-    let mut stage = memory_stage(&parent, vec![organization, ticket]);
-    let history = stage.history_witness().clone();
+    let mut stage = redb_stage(&plan, vec![organization, ticket]);
+    let history = *stage.history_witness();
 
     let report = MigrationCoordinator::apply(&plan, &mut stage).expect("Gate C apply");
 
@@ -103,7 +104,7 @@ fn complete_preflight_rejects_occupied_and_duplicate_successor_targets() {
         named_row(&parent, "Row", vec![("id", uuid(1)), ("next_id", uuid(2))]),
         named_row(&parent, "Row", vec![("id", uuid(2)), ("next_id", uuid(3))]),
     ];
-    let mut occupied = memory_stage(&parent, occupied_rows);
+    let mut occupied = redb_stage(&occupied_plan, occupied_rows);
     let occupied_before = occupied.snapshot();
     let finding = MigrationCoordinator::check(&occupied_plan, &occupied).unwrap_err();
     assert_eq!(finding.code(), "RDB-M114");
@@ -114,7 +115,7 @@ fn complete_preflight_rejects_occupied_and_duplicate_successor_targets() {
         named_row(&parent, "Row", vec![("id", uuid(4)), ("next_id", uuid(9))]),
         named_row(&parent, "Row", vec![("id", uuid(5)), ("next_id", uuid(9))]),
     ];
-    let mut duplicate = memory_stage(&parent, duplicate_rows);
+    let mut duplicate = redb_stage(&occupied_plan, duplicate_rows);
     let duplicate_before = duplicate.snapshot();
     let finding = MigrationCoordinator::check(&occupied_plan, &duplicate).unwrap_err();
     assert_eq!(finding.code(), "RDB-M113");
@@ -182,7 +183,7 @@ migration OwnershipMove from 1 to 2 {
         .iter()
         .map(|row| row.target().clone())
         .collect::<std::collections::BTreeSet<_>>();
-    let mut stage = memory_stage(&parent, rows);
+    let mut stage = redb_stage(&plan, rows);
 
     let report = MigrationCoordinator::apply(&plan, &mut stage).expect("ownership apply");
 
@@ -226,8 +227,8 @@ fn interrupted_rekey_resumes_without_old_new_duplicate_or_partial_domain() {
             )
         })
         .collect();
-    let mut stage = memory_stage(&parent, rows);
-    let history = stage.history_witness().clone();
+    let mut stage = redb_stage(&plan, rows);
+    let history = *stage.history_witness();
     let mut interrupted = InterruptAfterFirstCommittedBatch {
         inner: &mut stage,
         fired: false,
@@ -285,7 +286,7 @@ migration RekeyCollision from 1 to 2 {
 }
 
 struct InterruptAfterFirstCommittedBatch<'a> {
-    inner: &'a mut MemoryMigrationStage,
+    inner: &'a mut RedbMigrationStageFixture,
     fired: bool,
 }
 
@@ -367,17 +368,17 @@ fn validated(bundle: riffdb_contract_ir::ContractBundle) -> ValidatedContractBun
     ValidatedContractBundle::from_compiler_bundle(bundle).expect("validated bundle")
 }
 
-fn memory_stage(
-    parent: &ValidatedContractBundle,
+fn redb_stage(
+    plan: &ValidatedMigrationPlan,
     rows: Vec<StoredEntityRecordV1>,
-) -> MemoryMigrationStage {
-    let history = MemoryMigrationHistoryWitness::new(
-        ApplicationSequenceAllocator::initial(),
-        b"immutable-gate-c-history".to_vec(),
+) -> RedbMigrationStageFixture {
+    RedbMigrationStageFixture::create(
+        &plan.parent().to_stored().expect("stored parent"),
+        plan.candidate_bundle_hash(),
+        plan.migration_bundle_hash(),
+        rows,
     )
-    .expect("history");
-    MemoryMigrationStage::new(parent.to_stored().expect("stored parent"), rows, history)
-        .expect("memory stage")
+    .expect("redb migration stage")
 }
 
 fn named_row(

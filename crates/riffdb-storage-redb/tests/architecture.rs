@@ -174,14 +174,7 @@ fn dependency_surface_keeps_redb_private_and_excludes_infrastructure_assemblies(
     assert!(dev_dependencies.contains(
         "riffdb-contract-compiler = { version = \"0.1.0\", path = \"../riffdb-contract-compiler\", default-features = false }"
     ));
-    for forbidden in [
-        "criterion",
-        "riffdb-contract-ir",
-        "riffdb-storage-memory",
-        "rmcp",
-        "tokio",
-        "tonic",
-    ] {
+    for forbidden in ["criterion", "riffdb-contract-ir", "rmcp", "tokio", "tonic"] {
         assert!(
             !manifest.contains(forbidden),
             "redb adapter must not depend on {forbidden}"
@@ -202,7 +195,7 @@ fn storage_backends_depend_only_on_storage_api_types_proto_and_catalog_driver() 
         .parent()
         .and_then(Path::parent)
         .expect("workspace root");
-    for backend in ["riffdb-storage-redb", "riffdb-storage-memory"] {
+    for backend in ["riffdb-storage-redb"] {
         let manifest = read(workspace.join("crates").join(backend).join("Cargo.toml"));
         let dependencies = manifest
             .split_once("[dev-dependencies]")
@@ -1520,6 +1513,7 @@ fn only_commit_durable_advances_a_root_an_operational_reader_can_select() {
         ("backup.rs", "stamp_history_incarnation"),
         ("backup.rs", "stamp_retention_watermark"),
         // Test-only downgrade fixture, likewise on a stopped database.
+        ("fixtures.rs", "contract_migration_stage_ports_fixture"),
         ("fixtures.rs", "downgrade_all_index_rows_to_v1_fixture"),
         // Journal recovery, which runs before operational readiness is claimed.
         ("journal.rs", "replay_frames"),
