@@ -12,7 +12,6 @@ fn grpc_adapter_has_no_lower_semantic_authority_dependency() {
         "riffdb-policy",
         "riffdb-runtime",
         "riffdb-storage-api",
-        "riffdb-storage-memory",
         "riffdb-storage-redb",
     ] {
         assert!(

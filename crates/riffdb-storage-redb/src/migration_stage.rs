@@ -377,6 +377,404 @@ impl RedbContractMigrationStage {
     }
 }
 
+#[cfg(feature = "test-fixtures")]
+mod fixture {
+    use std::num::NonZeroU64;
+
+    use redb::ReadableTable;
+    use riffdb_storage_api::{
+        BackupIntegrityChecksumV1, ContractMigrationArtifactFileV1,
+        ContractMigrationOperationArtifactsV1, StoredContractBundleV1, StoredEntityRecordV1,
+        StoredIndexEntryV2,
+    };
+    use riffdb_types::{
+        ActorId, ActorKind, BackupNameV1, CapabilityId, ContractMigrationApplyConfirmation,
+        ContractMigrationOperationKind, DatabaseId, ProjectionId, RequestId,
+        contract_migration_input_hash,
+    };
+
+    use super::*;
+
+    /// Read-only semantic image retained by the redb migration-stage fixture.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct RedbMigrationStageSnapshot {
+        active_bundle: riffdb_types::ContractBundleHash,
+        entities: Vec<StoredEntityRecordV1>,
+        indexes: Vec<StoredIndexEntryV2>,
+        retained_archive: Vec<StoredEntityRecordV1>,
+        immutable_history: [u8; 32],
+        journal: Option<MigrationJournalState>,
+        predecessor_writes_retired: bool,
+        migration_record: Option<StoredContractMigrationRecordV1>,
+    }
+
+    /// Feature-gated redb stage with cached, read-only assertions for migration gates.
+    pub struct RedbMigrationStageFixture {
+        stage: RedbContractMigrationStage,
+        migration: MigrationBundleHash,
+        snapshot: RedbMigrationStageSnapshot,
+        unresolved_retiring_admission: bool,
+        _scope: tempfile::TempDir,
+    }
+
+    impl RedbMigrationStageFixture {
+        /// Creates one isolated real redb stage containing the exact predecessor rows.
+        pub fn create(
+            parent: &StoredContractBundleV1,
+            candidate: riffdb_types::ContractBundleHash,
+            migration: MigrationBundleHash,
+            rows: Vec<StoredEntityRecordV1>,
+        ) -> Result<Self, StorageError> {
+            let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/riffdb-test-data/storage-redb-fixtures");
+            std::fs::create_dir_all(&root).map_err(|_| invalid())?;
+            let scope = tempfile::TempDir::new_in(root).map_err(|_| invalid())?;
+            let path = scope.path().join("db.redb");
+            let database_id =
+                DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x76; 10])
+                    .map_err(|_| invalid())?;
+            let ports = crate::fixtures::contract_migration_stage_ports_fixture(
+                &path,
+                database_id,
+                parent,
+                &rows,
+            )?;
+
+            let artifacts =
+                ContractMigrationArtifactsV1::new(parent.bundle_hash(), candidate, migration);
+            let operation_artifact =
+                ContractMigrationArtifactFileV1::new(1, [0x75; 32]).map_err(|_| invalid())?;
+            let operation_id = ContractMigrationOperationId::from_unix_milliseconds_and_random(
+                1_700_000_000_001,
+                [0x75; 10],
+            )
+            .map_err(|_| invalid())?;
+            let context = RedbContractMigrationContext {
+                operation_id,
+                input_hash: contract_migration_input_hash(
+                    ContractMigrationOperationKind::Apply,
+                    parent.bundle_hash(),
+                    candidate,
+                    migration,
+                    ContractMigrationApplyConfirmation::AllowApplyContractMigration,
+                ),
+                artifacts,
+                operation_artifacts: ContractMigrationOperationArtifactsV1::new(
+                    operation_artifact,
+                    operation_artifact,
+                ),
+                backup_name: BackupNameV1::new("wp756-redb-stage").map_err(|_| invalid())?,
+                backup_manifest: OfflineBackupManifestIdentityV1::new(
+                    BackupIntegrityChecksumV1::new(vec![0x75; 32]).map_err(|_| invalid())?,
+                    database_id,
+                    None,
+                ),
+                principal: AuditPrincipalV1::new(
+                    ActorId::new("wp756-migration-gate").map_err(|_| invalid())?,
+                    ActorKind::Human,
+                    CapabilityId::from_bytes(uuid(0x73)).map_err(|_| invalid())?,
+                    NonZeroU64::MIN,
+                ),
+                approval_id: None,
+                request_id: RequestId::from_bytes(uuid(0x74)).map_err(|_| invalid())?,
+                timestamp: Timestamp::new(1_700_000_000, 0).map_err(|_| invalid())?,
+                ingress: ServiceIngressKindV1::InProcessTestComparison,
+            };
+            let stage = RedbContractMigrationStage::new(ports, context)?;
+            let snapshot = inspect(&stage, migration)?;
+            Ok(Self {
+                stage,
+                migration,
+                snapshot,
+                unresolved_retiring_admission: false,
+                _scope: scope,
+            })
+        }
+
+        /// Returns the exact immutable-history digest canary.
+        #[must_use]
+        pub const fn history_witness(&self) -> &[u8; 32] {
+            &self.snapshot.immutable_history
+        }
+
+        /// Clones the complete inspected semantic state.
+        #[must_use]
+        pub fn snapshot(&self) -> RedbMigrationStageSnapshot {
+            self.snapshot.clone()
+        }
+
+        /// Borrows the current migration journal.
+        #[must_use]
+        pub const fn journal(&self) -> Option<&MigrationJournalState> {
+            self.snapshot.journal.as_ref()
+        }
+
+        /// Returns the inspected active bundle hash.
+        #[must_use]
+        pub const fn active_bundle_hash(&self) -> riffdb_types::ContractBundleHash {
+            self.snapshot.active_bundle
+        }
+
+        /// Returns whether the predecessor write fence is durable.
+        #[must_use]
+        pub const fn predecessor_writes_retired(&self) -> bool {
+            self.snapshot.predecessor_writes_retired
+        }
+
+        /// Borrows retained predecessor images.
+        #[must_use]
+        pub fn retained_archive(&self) -> &[StoredEntityRecordV1] {
+            &self.snapshot.retained_archive
+        }
+
+        /// Borrows successor index entries.
+        #[must_use]
+        pub fn index_entries(&self) -> &[StoredIndexEntryV2] {
+            &self.snapshot.indexes
+        }
+
+        /// Borrows permanent migration evidence after cutover.
+        #[must_use]
+        pub const fn migration_record(&self) -> Option<&StoredContractMigrationRecordV1> {
+            self.snapshot.migration_record.as_ref()
+        }
+
+        /// Iterates current authoritative entity rows.
+        pub fn entities(&self) -> impl ExactSizeIterator<Item = &StoredEntityRecordV1> {
+            self.snapshot.entities.iter()
+        }
+
+        /// Inserts one pending-admission canary used by the fail-closed gate.
+        pub fn add_unresolved_retiring_admission(&mut self) -> Result<(), StorageError> {
+            self.unresolved_retiring_admission = true;
+            Ok(())
+        }
+
+        fn refresh(&mut self) -> Result<(), MigrationStageError> {
+            self.snapshot = inspect(&self.stage, self.migration).map_err(stage_error)?;
+            Ok(())
+        }
+    }
+
+    impl MigrationStagePort for RedbMigrationStageFixture {
+        fn active_bundle_hash(&self) -> riffdb_types::ContractBundleHash {
+            MigrationStagePort::active_bundle_hash(&self.stage)
+        }
+
+        fn scan_migration_rows(
+            &self,
+            cursor: &MigrationScanCursor,
+        ) -> Result<MigrationScanPage, MigrationStageError> {
+            self.stage.scan_migration_rows(cursor)
+        }
+
+        fn migration_target_exists(
+            &self,
+            target: &riffdb_storage_api::EntityTarget,
+        ) -> Result<bool, MigrationStageError> {
+            self.stage.migration_target_exists(target)
+        }
+
+        fn has_unresolved_retiring_admissions(&self) -> Result<bool, MigrationStageError> {
+            if self.unresolved_retiring_admission {
+                Ok(true)
+            } else {
+                self.stage.has_unresolved_retiring_admissions()
+            }
+        }
+
+        fn migration_journal_state(
+            &self,
+            migration: MigrationBundleHash,
+        ) -> Result<Option<MigrationJournalState>, MigrationStageError> {
+            self.stage.migration_journal_state(migration)
+        }
+
+        fn migration_journal_step(
+            &self,
+            migration: MigrationBundleHash,
+        ) -> Result<Option<ContractMigrationJournalStepV1>, MigrationStageError> {
+            self.stage.migration_journal_step(migration)
+        }
+
+        fn migration_frozen_frontier(&self) -> Option<riffdb_types::CommitSequence> {
+            self.stage.migration_frozen_frontier()
+        }
+
+        fn retained_migration_entity_count(
+            &self,
+            migration: MigrationBundleHash,
+            entity_types: &[riffdb_types::EntityTypeId],
+        ) -> Result<u64, MigrationStageError> {
+            self.stage
+                .retained_migration_entity_count(migration, entity_types)
+        }
+
+        fn apply_migration_batch(
+            &mut self,
+            batch: MigrationBatch,
+        ) -> Result<(), MigrationStageError> {
+            let result = MigrationStagePort::apply_migration_batch(&mut self.stage, batch);
+            self.refresh()?;
+            result
+        }
+
+        fn checkpoint_migration_step(
+            &mut self,
+            step: ContractMigrationJournalStepV1,
+            required_projections: &[ProjectionId],
+        ) -> Result<(), MigrationStageError> {
+            let result = self
+                .stage
+                .checkpoint_migration_step(step, required_projections);
+            self.refresh()?;
+            result
+        }
+
+        fn build_migration_projection_candidates(
+            &mut self,
+            projections: &[ProjectionId],
+        ) -> Result<(), MigrationStageError> {
+            let result = self
+                .stage
+                .build_migration_projection_candidates(projections);
+            self.refresh()?;
+            result
+        }
+
+        fn validate_migration_stage(
+            &self,
+            candidate: riffdb_types::ContractBundleHash,
+            retained_parent_lineage: &[riffdb_types::ContractBundleHash],
+        ) -> Result<(), MigrationStageError> {
+            self.stage
+                .validate_migration_stage(candidate, retained_parent_lineage)
+        }
+
+        fn validate_migration_stage_structure(&self) -> Result<(), MigrationStageError> {
+            self.stage.validate_migration_stage_structure()
+        }
+
+        fn finalize_migration(
+            &mut self,
+            cutover: MigrationCutover,
+        ) -> Result<MigrationCutoverApplied, MigrationStageError> {
+            let result = MigrationStagePort::finalize_migration(&mut self.stage, cutover);
+            self.refresh()?;
+            result
+        }
+    }
+
+    fn inspect(
+        stage: &RedbContractMigrationStage,
+        migration: MigrationBundleHash,
+    ) -> Result<RedbMigrationStageSnapshot, StorageError> {
+        let transaction = stage.ports.begin_read()?;
+        let active_bundle = read_active(&transaction)?.bundle_hash();
+        let entities_table = transaction.open_table(ENTITIES).map_err(|_| invalid())?;
+        let mut entities = Vec::new();
+        for entry in entities_table.iter().map_err(|_| invalid())? {
+            let (_, value) = entry.map_err(|_| invalid())?;
+            entities.push(decode_entity_record_v1(value.value())?.into_parts().0);
+        }
+        drop(entities_table);
+        let indexes_table = transaction
+            .open_table(SECONDARY_INDEXES)
+            .map_err(|_| invalid())?;
+        let mut indexes = Vec::new();
+        for entry in indexes_table.iter().map_err(|_| invalid())? {
+            let (_, value) = entry.map_err(|_| invalid())?;
+            indexes.push(
+                crate::codec::decode_index_entry_v2(value.value())?
+                    .into_parts()
+                    .0,
+            );
+        }
+        drop(indexes_table);
+        let retired_table = transaction
+            .open_table(RETIRED_ENTITIES)
+            .map_err(|_| invalid())?;
+        let mut retained_archive = Vec::new();
+        for entry in retired_table.iter().map_err(|_| invalid())? {
+            let (_, value) = entry.map_err(|_| invalid())?;
+            let retired =
+                riffdb_storage_api::proto_codec::decode_retired_entity_record_v1(value.value())
+                    .map_err(|_| invalid())?
+                    .into_parts()
+                    .0;
+            retained_archive.push(
+                decode_entity_record_v1(retired.original_entity_envelope())?
+                    .into_parts()
+                    .0,
+            );
+        }
+        drop(retired_table);
+        let journal = read_journal_read(&transaction, stage.context.operation_id)?
+            .map(|row| {
+                let mut state = MigrationJournalState::new(
+                    migration,
+                    row.cursor().clone(),
+                    row.checked_rows(),
+                    row.changed_rows(),
+                    row.batch_count(),
+                )
+                .map_err(|_| invalid())?;
+                if row.step() == ContractMigrationJournalStepV1::Complete {
+                    state.mark_complete().map_err(|_| invalid())?;
+                }
+                Ok::<_, StorageError>(state)
+            })
+            .transpose()?;
+        let predecessor_writes_retired = transaction
+            .open_table(CONTRACT_WRITE_RETIREMENTS)
+            .map_err(|_| invalid())?
+            .get(encode_contract_write_retirement_key(stage.context.artifacts.parent()).as_slice())
+            .map_err(|_| invalid())?
+            .is_some();
+        let migrations = transaction
+            .open_table(CONTRACT_MIGRATIONS)
+            .map_err(|_| invalid())?;
+        let migration_record = migrations
+            .iter()
+            .map_err(|_| invalid())?
+            .next()
+            .transpose()
+            .map_err(|_| invalid())?
+            .map(|(_, value)| {
+                riffdb_storage_api::proto_codec::decode_contract_migration_record_v1(value.value())
+                    .map(|item| item.into_parts().0)
+                    .map_err(|_| invalid())
+            })
+            .transpose()?;
+        drop(migrations);
+        let immutable_history = stage.immutable_history_digest;
+        Ok(RedbMigrationStageSnapshot {
+            active_bundle,
+            entities,
+            indexes,
+            retained_archive,
+            immutable_history,
+            journal,
+            predecessor_writes_retired,
+            migration_record,
+        })
+    }
+
+    fn uuid(seed: u8) -> [u8; 16] {
+        let mut value = [seed; 16];
+        value[6] = 0x70 | (seed & 0x0f);
+        value[8] = 0x80 | (seed & 0x3f);
+        value
+    }
+
+    fn invalid() -> StorageError {
+        storage_error(StorageErrorKind::InvariantViolation)
+    }
+}
+
+#[cfg(feature = "test-fixtures")]
+pub use fixture::{RedbMigrationStageFixture, RedbMigrationStageSnapshot};
+
 impl MigrationStagePort for RedbContractMigrationStage {
     fn active_bundle_hash(&self) -> riffdb_types::ContractBundleHash {
         self.context.artifacts.parent()

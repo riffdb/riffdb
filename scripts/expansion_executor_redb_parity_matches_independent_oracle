@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# req: DEP-005, OQ-114, OQ-115
+set -euo pipefail
+
+# The executor-owned storage-api reader fake proves bounded composite behavior;
+# redb proves the identical real-backend path. The testkit remains the
+# independent oracle for authoritative state histories.
+cargo +1.97.0 test -p riffdb-query-executor \
+  --test expansion_execution \
+  expansion_completes_every_driver_before_release_or_refuses_whole \
+  --all-features
+cargo +1.97.0 test -p riffdb-storage-redb \
+  expansion_redb_matches_independent_oracle \
+  --all-features
+cargo +1.97.0 test -p riffdb-testkit \
+  generated_histories_match_runtime_and_reference_model \
+  --all-features

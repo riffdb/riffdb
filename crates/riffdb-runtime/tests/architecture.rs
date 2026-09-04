@@ -57,7 +57,6 @@ fn runtime_cannot_assemble_commits_or_observe_capability_and_provenance_state() 
         "StorageEngine",
         "WriteTransaction",
         "CommandTransaction",
-        "riffdb_storage_memory",
         "riffdb_storage_redb",
         "redb::",
     ] {
@@ -99,7 +98,6 @@ fn manifests_name_only_the_approved_semantic_layers() {
         "riffdb-commit",
         "riffdb-conflict",
         "riffdb-service",
-        "riffdb-storage-memory",
         "riffdb-storage-redb",
     ] {
         assert!(!RUNTIME_MANIFEST.contains(forbidden));

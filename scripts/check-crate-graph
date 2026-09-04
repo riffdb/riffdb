@@ -1,0 +1,180 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# req: DEP-005, DEP-006
+
+require "json"
+require "open3"
+require "pathname"
+require "tmpdir"
+
+ROOT = Pathname.new(__dir__).parent.realpath
+
+LAYERS = [
+  %w[riffdb-types riffdb-errors riffdb-config riffdb-observability],
+  %w[riffdb-contract-syntax riffdb-riffql-syntax riffdb-query-syntax
+     riffdb-reactive-syntax riffdb-operation-registry riffdb-contract-ir
+     riffdb-query-ir riffdb-contract-compiler riffdb-query-compiler
+     riffdb-invariant riffdb-proto],
+  %w[riffdb-storage-api],
+  %w[riffdb-storage-redb riffdb-catalog riffdb-auth riffdb-policy
+     riffdb-projection riffdb-columnar],
+  %w[riffdb-query-executor riffdb-runtime riffdb-conflict riffdb-idempotency
+     riffdb-outbox riffdb-scheduler riffdb-query-module riffdb-application
+     riffdb-diagnostics],
+  %w[riffdb-commit],
+  %w[riffdb-service],
+  %w[riffdb-api-grpc riffdb-api-mcp],
+  %w[riffdb-server riffdb-cli riffdb-mcp-stdio]
+].freeze
+
+SPECIAL = %w[riffdb-client-rust riffdb-driver-host riffdb-client-python-native].freeze
+COMPOSITION = %w[riffdb-sim riffdb-testkit riffdb-testkit-server riffdb-bench-root riffdb-ticketdesk].freeze
+
+# Same-layer and compatibility seams are exceptional by construction. Each
+# entry cites the accepted decision that owns the edge; an uncited entry is a
+# checker error, not an implicit grant.
+EXCEPTIONS = {
+  %w[riffdb-errors riffdb-types] => "ADR-0037",
+  %w[riffdb-observability riffdb-errors] => "ADR-0180",
+  %w[riffdb-observability riffdb-types] => "ADR-0180",
+  %w[riffdb-contract-compiler riffdb-contract-ir] => "ADR-0002",
+  %w[riffdb-contract-compiler riffdb-contract-syntax] => "ADR-0002",
+  %w[riffdb-invariant riffdb-contract-ir] => "ADR-0017",
+  %w[riffdb-proto riffdb-errors] => "ADR-0037",
+  %w[riffdb-query-compiler riffdb-query-ir] => "ADR-0051",
+  %w[riffdb-query-compiler riffdb-contract-ir] => "ADR-0051",
+  %w[riffdb-query-compiler riffdb-reactive-syntax] => "ADR-0080",
+  %w[riffdb-query-compiler riffdb-riffql-syntax] => "ADR-0051",
+  %w[riffdb-query-ir riffdb-contract-ir] => "ADR-0051",
+  %w[riffdb-query-ir riffdb-riffql-syntax] => "ADR-0051",
+  %w[riffdb-catalog riffdb-query-module] => "ADR-0052",
+  %w[riffdb-columnar riffdb-policy] => "ADR-0086",
+  %w[riffdb-policy riffdb-auth] => "ADR-0038",
+  %w[riffdb-projection riffdb-catalog] => "ADR-0049",
+  %w[riffdb-storage-redb riffdb-catalog] => "ADR-0042",
+  %w[riffdb-diagnostics riffdb-query-module] => "ADR-0053",
+  %w[riffdb-cli riffdb-client-rust] => "ADR-0037",
+  %w[riffdb-mcp-stdio riffdb-client-rust] => "ADR-0065",
+  %w[riffdb-driver-host riffdb-client-rust] => "ADR-0179",
+  %w[riffdb-client-python-native riffdb-driver-host] => "ADR-0179"
+}.freeze
+
+def cargo_metadata(root)
+  command = ["cargo", "metadata", "--locked", "--all-features", "--no-deps", "--format-version", "1"]
+  output, status = Open3.capture2e(*command, chdir: root.to_s)
+  abort "check-crate-graph: cargo metadata failed:\n#{output}" unless status.success?
+  JSON.parse(output)
+end
+
+def layer_index
+  @layer_index ||= LAYERS.each_with_index.each_with_object({}) do |(names, index), result|
+    names.each { |name| result[name] = index + 1 }
+  end.freeze
+end
+
+def validate_exception_registry(errors, exceptions = EXCEPTIONS)
+  exceptions.each do |edge, adr|
+    errors << "invalid exception edge #{edge.inspect}" unless edge.length == 2
+    errors << "exception #{edge.join(' -> ')} has no ADR number" unless adr.match?(/\AADR-\d{4}\z/)
+  end
+end
+
+def validate_graph(metadata)
+  errors = []
+  validate_exception_registry(errors)
+  workspace_ids = metadata.fetch("workspace_members").to_h { |id| [id, true] }
+  packages = metadata.fetch("packages").select { |package| workspace_ids[package.fetch("id")] }
+  names = packages.to_h { |package| [package.fetch("name"), true] }
+  classified = layer_index.keys + SPECIAL + COMPOSITION
+  (names.keys - classified).sort.each { |name| errors << "unclassified workspace crate #{name}" }
+
+  packages.sort_by { |package| package.fetch("name") }.each do |package|
+    consumer = package.fetch("name")
+    next if COMPOSITION.include?(consumer)
+
+    package.fetch("dependencies").each do |dependency|
+      provider = dependency.fetch("name")
+      next unless names[provider]
+      next if dependency["kind"] == "dev"
+      next if EXCEPTIONS.key?([consumer, provider])
+
+      if SPECIAL.include?(consumer)
+        allowed = provider == "riffdb-proto" || layer_index.fetch(provider, 99) == 1
+        errors << "#{consumer} -> #{provider} escapes the client allow-list" unless allowed
+        next
+      end
+
+      consumer_layer = layer_index[consumer]
+      provider_layer = layer_index[provider]
+      if consumer_layer.nil? || provider_layer.nil?
+        errors << "#{consumer} -> #{provider} crosses an unclassified production edge"
+      elsif provider_layer >= consumer_layer
+        direction = provider_layer == consumer_layer ? "sideways" : "upward"
+        errors << "#{consumer} -> #{provider} is an unapproved #{direction} edge"
+      end
+    end
+  end
+  errors
+end
+
+def validate_storage_api_consumers(root)
+  api_root = root.join("crates/riffdb-storage-api/src")
+  traits = Dir.glob(api_root.join("**/*.rs")).flat_map do |path|
+    File.read(path, encoding: "UTF-8").scan(/^pub trait ([A-Z][A-Za-z0-9_]*)/).flatten
+  end.uniq.sort
+  consumer_files = Dir.glob(root.join("crates/*/src/**/*.rs")).reject do |path|
+    path.include?("/riffdb-storage-api/")
+  end
+  source = consumer_files.map { |path| File.read(path, encoding: "UTF-8") }.join("\n")
+  traits.filter_map do |trait_name|
+    "storage-api trait #{trait_name} has no production, simulator, or reader-fake consumer" unless source.match?(/\b#{Regexp.escape(trait_name)}\b/)
+  end
+end
+
+def self_test
+  Dir.mktmpdir("riffdb-crate-graph-self-test") do |directory|
+    root = Pathname.new(directory)
+    File.write(root.join("Cargo.toml"), <<~TOML)
+      [workspace]
+      resolver = "3"
+      members = ["riffdb-types", "riffdb-server"]
+    TOML
+    %w[riffdb-types riffdb-server].each do |name|
+      crate = root.join(name)
+      crate.mkpath
+      crate.join("src").mkpath
+      dependency = name == "riffdb-types" ? "riffdb-server = { path = \"../riffdb-server\" }\n" : ""
+      File.write(crate.join("Cargo.toml"), <<~TOML)
+        [package]
+        name = "#{name}"
+        version = "0.0.0"
+        edition = "2024"
+        [dependencies]
+        #{dependency}
+      TOML
+      File.write(crate.join("src/lib.rs"), "#![forbid(unsafe_code)]\n")
+    end
+    errors = validate_graph(cargo_metadata(root))
+    expected = "riffdb-types -> riffdb-server is an unapproved upward edge"
+    abort "check-crate-graph self-test did not reject the injected edge" unless errors.include?(expected)
+  end
+
+  errors = []
+  validate_exception_registry(errors, EXCEPTIONS.merge(%w[riffdb-types riffdb-server] => ""))
+  expected = "exception riffdb-types -> riffdb-server has no ADR number"
+  abort "check-crate-graph self-test accepted an exception without an ADR" unless errors.include?(expected)
+  puts "check-crate-graph self-test passed"
+end
+
+self_test if ARGV.delete("--self-test")
+abort "usage: scripts/check-crate-graph [--self-test]" unless ARGV.empty?
+
+errors = validate_graph(cargo_metadata(ROOT))
+errors.concat(validate_storage_api_consumers(ROOT))
+if errors.empty?
+  puts "crate graph and storage-api consumer inventory passed"
+else
+  warn errors.map { |error| "check-crate-graph: #{error}" }.join("\n")
+  exit 1
+end

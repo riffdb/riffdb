@@ -7,6 +7,9 @@ require "pathname"
 require "set"
 
 ROOT = Pathname.new(File.expand_path("..", __dir__)).realpath
+unless system(ROOT.join("scripts/check-crate-graph").to_s, chdir: ROOT.to_s)
+  abort "workspace crate graph is invalid"
+end
 EXPECTED_PACKAGES = %w[
   riffdb-api-grpc
   riffdb-api-mcp
@@ -48,7 +51,6 @@ EXPECTED_PACKAGES = %w[
   riffdb-service
   riffdb-sim
   riffdb-storage-api
-  riffdb-storage-memory
   riffdb-storage-redb
   riffdb-testkit
   riffdb-testkit-server

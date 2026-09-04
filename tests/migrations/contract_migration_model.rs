@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+// req: DEP-005
 
 //! Gate-A contract migration reference-model and generated-history evidence.
 
@@ -12,12 +13,12 @@ use riffdb_contract_compiler::{
 };
 use riffdb_contract_ir::{ContractBundle, MigrationBundleV1};
 use riffdb_storage_api::{
-    ApplicationSequenceAllocator, DurableKeySchemaBindingV1, EntityTarget, MigrationBatch,
-    MigrationCutover, MigrationCutoverApplied, MigrationJournalState, MigrationRowEvidence,
-    MigrationRowMutation, MigrationScanCursor, MigrationScanPage, MigrationStageError,
-    MigrationStagePort, StoredEntityRecordV1,
+    DurableKeySchemaBindingV1, EntityTarget, MigrationBatch, MigrationCutover,
+    MigrationCutoverApplied, MigrationJournalState, MigrationRowEvidence, MigrationRowMutation,
+    MigrationScanCursor, MigrationScanPage, MigrationStageError, MigrationStagePort,
+    StoredEntityRecordV1,
 };
-use riffdb_storage_memory::{MemoryMigrationHistoryWitness, MemoryMigrationStage};
+use riffdb_storage_redb::RedbMigrationStageFixture;
 use riffdb_types::{
     CanonicalRecord, CanonicalValue, EntityKeyBuilder, EntityTypeId, EntityVersion, FieldId,
     ProjectionGeneration, ProjectionId,
@@ -44,15 +45,8 @@ const MODEL_BOUNDARIES: &str = include_str!(concat!(
 fn required_field_matches_reference_model_across_page_and_batch_boundaries() {
     let (plan, parent) = plan();
     let rows = (0..300).map(|value| row(&parent, value)).collect();
-    let history = MemoryMigrationHistoryWitness::new(
-        ApplicationSequenceAllocator::initial(),
-        b"immutable-command-history".to_vec(),
-    )
-    .expect("bounded history witness");
-    let mut stage =
-        MemoryMigrationStage::new(parent.to_stored().expect("stored parent"), rows, history)
-            .expect("canonical migration stage");
-    let before = stage.history_witness().clone();
+    let mut stage = redb_stage(&plan, rows);
+    let before = *stage.history_witness();
 
     let preflight = MigrationCoordinator::check(&plan, &stage).expect("complete preflight");
     assert_eq!(preflight.checked_rows(), 300);
@@ -88,9 +82,9 @@ fn required_field_matches_reference_model_across_page_and_batch_boundaries() {
     let record = stage
         .migration_record()
         .expect("permanent migration record");
-    assert_eq!(record.parent(), plan.parent_bundle_hash());
-    assert_eq!(record.candidate(), plan.candidate_bundle_hash());
-    assert_eq!(record.migration(), plan.migration_bundle_hash());
+    assert_eq!(record.artifacts().parent(), plan.parent_bundle_hash());
+    assert_eq!(record.artifacts().candidate(), plan.candidate_bundle_hash());
+    assert_eq!(record.artifacts().migration(), plan.migration_bundle_hash());
     assert_eq!(record.administration_sequence().get(), 1);
 
     for migrated in stage.entities() {
@@ -115,13 +109,7 @@ fn required_field_matches_reference_model_across_page_and_batch_boundaries() {
 fn coordinator_resumes_from_the_atomically_committed_journal_cursor() {
     let (plan, parent) = plan();
     let rows = (0..130).map(|value| row(&parent, value)).collect();
-    let history = MemoryMigrationHistoryWitness::new(
-        ApplicationSequenceAllocator::initial(),
-        b"restartable-history".to_vec(),
-    )
-    .expect("history");
-    let mut stage = MemoryMigrationStage::new(parent.to_stored().expect("parent"), rows, history)
-        .expect("stage");
+    let mut stage = redb_stage(&plan, rows);
     let mut interrupted = InterruptAfterFirstCommittedBatch {
         inner: &mut stage,
         fired: false,
@@ -157,16 +145,8 @@ fn generated_histories_match_the_pure_row_reference_model() {
             .map(|offset| generated_value(row_count, offset))
             .map(|value| row(&parent, value))
             .collect::<Vec<_>>();
-        let history_bytes = format!("history-canary-{row_count}").into_bytes();
-        let history = MemoryMigrationHistoryWitness::new(
-            ApplicationSequenceAllocator::initial(),
-            history_bytes,
-        )
-        .expect("bounded history witness");
-        let mut stage =
-            MemoryMigrationStage::new(parent.to_stored().expect("stored parent"), rows, history)
-                .expect("canonical stage");
-        let history_before = stage.history_witness().clone();
+        let mut stage = redb_stage(&plan, rows);
+        let history_before = *stage.history_witness();
 
         let applied = MigrationCoordinator::apply(&plan, &mut stage).expect("generated history");
         assert_eq!(applied.checked_rows(), row_count as u64);
@@ -190,18 +170,10 @@ fn generated_histories_match_the_pure_row_reference_model() {
 #[test]
 fn unresolved_predecessor_admission_fails_before_any_mutation() {
     let (plan, parent) = plan();
-    let history = MemoryMigrationHistoryWitness::new(
-        ApplicationSequenceAllocator::initial(),
-        b"pending-history".to_vec(),
-    )
-    .expect("bounded history witness");
-    let mut stage = MemoryMigrationStage::new(
-        parent.to_stored().expect("stored parent"),
-        vec![row(&parent, 7)],
-        history,
-    )
-    .expect("canonical stage")
-    .with_unresolved_retiring_admission();
+    let mut stage = redb_stage(&plan, vec![row(&parent, 7)]);
+    stage
+        .add_unresolved_retiring_admission()
+        .expect("pending admission fixture");
     let before = stage.snapshot();
 
     let finding = MigrationCoordinator::apply(&plan, &mut stage)
@@ -223,22 +195,13 @@ fn atomic_batch_rechecks_exact_source_version_hash_and_binding() {
         prepared.rebuilt_indexes().to_vec(),
     )
     .expect("checked mutation");
-    let history = MemoryMigrationHistoryWitness::new(
-        ApplicationSequenceAllocator::initial(),
-        b"row-recheck-history".to_vec(),
-    )
-    .expect("bounded history witness");
-    let mut stage = MemoryMigrationStage::new(
-        parent.to_stored().expect("stored parent"),
-        vec![row_with_id_value(&parent, 41, 42)],
-        history,
-    )
-    .expect("canonical stage");
+    let checked_through = MigrationScanCursor::after(mutation.expected().source().target().clone());
+    let mut stage = redb_stage(&plan, vec![row_with_id_value(&parent, 41, 42)]);
     let before = stage.snapshot();
     let batch = MigrationBatch::new(
         plan.migration_bundle_hash(),
         vec![mutation],
-        MigrationScanCursor::start(),
+        checked_through,
         1,
         1,
     )
@@ -280,14 +243,7 @@ fn combined_gate_a_constraints_indexes_and_projection_pass_together() {
             ],
         ),
     ];
-    let history = MemoryMigrationHistoryWitness::new(
-        ApplicationSequenceAllocator::initial(),
-        b"combined-gate-a-history".to_vec(),
-    )
-    .expect("history");
-    let mut stage =
-        MemoryMigrationStage::new(parent.to_stored().expect("stored parent"), rows, history)
-            .expect("stage");
+    let mut stage = redb_stage(&plan, rows);
 
     let checked = MigrationCoordinator::check(&plan, &stage).expect("combined preflight");
     assert_eq!(checked.checked_rows(), 3);
@@ -335,7 +291,7 @@ impl MigrationProjectionBuildPort for RecordingProjectionBuilder {
 }
 
 struct InterruptAfterFirstCommittedBatch<'a> {
-    inner: &'a mut MemoryMigrationStage,
+    inner: &'a mut RedbMigrationStageFixture,
     fired: bool,
 }
 
@@ -471,14 +427,7 @@ fn gate_a_relationship_unique_and_invariant_fail_value_free_before_mutation() {
     ];
 
     for (rows, expected_code) in cases {
-        let history = MemoryMigrationHistoryWitness::new(
-            ApplicationSequenceAllocator::initial(),
-            b"constraint-failure-history".to_vec(),
-        )
-        .expect("history");
-        let mut stage =
-            MemoryMigrationStage::new(parent.to_stored().expect("stored parent"), rows, history)
-                .expect("stage");
+        let mut stage = redb_stage(&plan, rows);
         let before = stage.snapshot();
         let finding = MigrationCoordinator::apply(&plan, &mut stage)
             .expect_err("constraint must fail complete preflight");
@@ -547,17 +496,7 @@ fn ancestor_written_rows_are_normalized_through_the_exact_parent_lineage() {
         "Stable",
         vec![("stable_id", CanonicalValue::Uuid(uuid_for(88)))],
     );
-    let history = MemoryMigrationHistoryWitness::new(
-        ApplicationSequenceAllocator::initial(),
-        b"ancestor-history".to_vec(),
-    )
-    .expect("history");
-    let mut stage = MemoryMigrationStage::new(
-        v2.to_stored().expect("stored active parent"),
-        vec![ancestor_row, unchanged_ancestor],
-        history,
-    )
-    .expect("ancestor stage");
+    let mut stage = redb_stage(&plan, vec![ancestor_row, unchanged_ancestor]);
 
     MigrationCoordinator::apply(&plan, &mut stage).expect("ancestor row migration");
     let row_entity_id = plan
@@ -610,17 +549,7 @@ fn ancestor_written_rows_are_normalized_through_the_exact_parent_lineage() {
 #[test]
 fn arithmetic_failure_is_value_free_and_leaves_stage_byte_identical() {
     let (plan, parent) = plan();
-    let history = MemoryMigrationHistoryWitness::new(
-        ApplicationSequenceAllocator::initial(),
-        b"immutable-command-history".to_vec(),
-    )
-    .expect("bounded history witness");
-    let mut stage = MemoryMigrationStage::new(
-        parent.to_stored().expect("stored parent"),
-        vec![row(&parent, i64::MAX)],
-        history,
-    )
-    .expect("canonical migration stage");
+    let mut stage = redb_stage(&plan, vec![row(&parent, i64::MAX)]);
     let before = stage.snapshot();
 
     let finding = MigrationCoordinator::apply(&plan, &mut stage)
@@ -630,6 +559,19 @@ fn arithmetic_failure_is_value_free_and_leaves_stage_byte_identical() {
     assert_eq!(finding.field(), Some(FieldId::new(3).unwrap()));
     assert_eq!(stage.snapshot(), before);
     assert!(!format!("{finding:?}").contains(&i64::MAX.to_string()));
+}
+
+fn redb_stage(
+    plan: &ValidatedMigrationPlan,
+    rows: Vec<StoredEntityRecordV1>,
+) -> RedbMigrationStageFixture {
+    RedbMigrationStageFixture::create(
+        &plan.parent().to_stored().expect("stored parent"),
+        plan.candidate_bundle_hash(),
+        plan.migration_bundle_hash(),
+        rows,
+    )
+    .expect("redb migration stage")
 }
 
 fn plan() -> (

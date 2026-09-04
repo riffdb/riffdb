@@ -36,14 +36,6 @@ do
 done
 
 for test_name in \
-    point_query_materializes_an_owned_result_from_one_state_view \
-    index_page_batches_entity_reads_inside_the_same_memory_view
-do
-    cargo test -p riffdb-storage-memory --features riffdb-query-executor/test-fixtures --lib \
-        "query::tests::${test_name}" -- --exact
-done
-
-for test_name in \
     point_query_frontier_does_not_decode_retained_command_history \
     index_page_batches_entity_reads_inside_the_same_redb_transaction \
     oversized_binary_text_endpoint_is_redacted_and_refused_before_storage \
@@ -87,6 +79,16 @@ expected=(
     redb-stale-cursor-refusal.bin
 )
 
+fixture_root="$repo_root/fixtures/query-executor/pre-inversion-v1"
+# The removed backend's reviewed bytes are historical pre-inversion evidence,
+# not a live generator surface. Preserve them exactly while the executor fake
+# and redb regenerate the active sides of the corpus.
+for file in "${expected[@]}"; do
+    case "$file" in
+        memory-*.bin) cp "$fixture_root/$file" "$generated/$file" ;;
+    esac
+done
+
 for file in "${expected[@]}"; do
     test -f "$generated/$file" || {
         printf 'missing generated WP-754 fixture: %s\n' "$file" >&2
@@ -100,7 +102,6 @@ test "$(find "$generated" -maxdepth 1 -type f -name '*.bin' | wc -l)" -eq "${#ex
     sha256sum "${expected[@]}" > manifest.sha256
 )
 
-fixture_root="$repo_root/fixtures/query-executor/pre-inversion-v1"
 if [[ "$mode" == "--write" ]]; then
     mkdir -p "$fixture_root"
     cp "$generated"/*.bin "$generated/manifest.sha256" "$fixture_root/"

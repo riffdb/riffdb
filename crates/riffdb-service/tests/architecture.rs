@@ -101,7 +101,6 @@ fn service_dependency_graph_has_no_storage_runtime_or_transport_edge() {
         .map_or_else(|| MANIFEST, |(dependencies, _)| dependencies);
     for forbidden in [
         "riffdb-storage-api",
-        "riffdb-storage-memory",
         "riffdb-storage-redb",
         "riffdb-runtime",
         "riffdb-conflict",
