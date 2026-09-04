@@ -86,7 +86,7 @@ tempfile = { version = "=3.24.0", default-features = false }
 # a register.
 [profile.profiling]
 inherits = "release"
-debug = true
+debug = "line-tables-only"
 strip = false
 # `-C force-frame-pointers` cannot live here: the `profile-rustflags` cargo
 # feature is unstable in the pinned 1.97.0 toolchain. `benchmarks/profile-read-path`
@@ -98,4 +98,11 @@ strip = false
 debug = "line-tables-only"
 
 [profile.dev.package."*"]
+debug = false
+
+[profile.test]
+debug = "line-tables-only"
+incremental = false
+
+[profile.test.package."*"]
 debug = false
