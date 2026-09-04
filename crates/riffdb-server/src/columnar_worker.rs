@@ -13,7 +13,8 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use riffdb_columnar::{
-    ColumnarEngine, ColumnarError, ColumnarSnapshotRebuild, OpenOptions, frontier_lag_sequences,
+    ColumnarEngine, ColumnarError, ColumnarSnapshotRebuild, OpenOptions, WorkerApplyOutcome,
+    frontier_lag_sequences,
 };
 use riffdb_observability::{MetricRegistry, RequiredGauge};
 use riffdb_storage_api::{
@@ -40,6 +41,69 @@ pub(crate) enum ColumnarWorkerReadiness {
     Ready,
     Degraded,
     Stopped,
+}
+
+/// Fixed, redaction-safe result of stopping the columnar worker.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum ColumnarWorkerShutdownObservation {
+    BetweenPasses,
+    AbandonedUnpublished,
+    Failed,
+}
+
+impl ColumnarWorkerShutdownObservation {
+    const fn code(self) -> u8 {
+        match self {
+            Self::BetweenPasses => 0,
+            Self::AbandonedUnpublished => 1,
+            Self::Failed => 2,
+        }
+    }
+
+    const fn from_code(code: u8) -> Self {
+        match code {
+            0 => Self::BetweenPasses,
+            1 => Self::AbandonedUnpublished,
+            _ => Self::Failed,
+        }
+    }
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::BetweenPasses => "between_passes",
+            Self::AbandonedUnpublished => "abandoned_unpublished",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl fmt::Debug for ColumnarWorkerShutdownObservation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone)]
+struct ColumnarWorkerShutdownStatus {
+    state: Arc<AtomicU8>,
+}
+
+impl ColumnarWorkerShutdownStatus {
+    fn new() -> Self {
+        Self {
+            state: Arc::new(AtomicU8::new(
+                ColumnarWorkerShutdownObservation::BetweenPasses.code(),
+            )),
+        }
+    }
+
+    fn publish(&self, observation: ColumnarWorkerShutdownObservation) {
+        self.state.store(observation.code(), Ordering::Release);
+    }
+
+    fn observation(&self) -> ColumnarWorkerShutdownObservation {
+        ColumnarWorkerShutdownObservation::from_code(self.state.load(Ordering::Acquire))
+    }
 }
 
 /// Cloneable observation handle with no worker or storage authority.
@@ -98,6 +162,7 @@ pub(crate) struct RunningColumnarWorker {
     stop: Arc<StopState>,
     task: Option<JoinHandle<()>>,
     status: ColumnarWorkerStatus,
+    shutdown_status: ColumnarWorkerShutdownStatus,
 }
 
 impl RunningColumnarWorker {
@@ -111,8 +176,10 @@ impl RunningColumnarWorker {
             changed: Condvar::new(),
         });
         let status = ColumnarWorkerStatus::new();
+        let shutdown_status = ColumnarWorkerShutdownStatus::new();
         let worker_stop = Arc::clone(&stop);
         let worker_status = status.clone();
+        let worker_shutdown_status = shutdown_status.clone();
         let task = thread::Builder::new()
             .name("riffdb-columnar".to_owned())
             .spawn(move || {
@@ -121,12 +188,24 @@ impl RunningColumnarWorker {
                     if stop_requested(&worker_stop) {
                         break;
                     }
-                    worker_status.publish(
-                        match run_columnar_pass(&runtime, metrics.as_ref(), &mut state) {
-                            Ok(()) => ColumnarWorkerReadiness::Ready,
-                            Err(_) => ColumnarWorkerReadiness::Degraded,
-                        },
-                    );
+                    match run_columnar_pass(
+                        &runtime,
+                        metrics.as_ref(),
+                        &mut state,
+                        || stop_requested(&worker_stop),
+                        || stop_requested(&worker_stop),
+                    ) {
+                        Ok(ColumnarPassOutcome::Completed) => {
+                            worker_status.publish(ColumnarWorkerReadiness::Ready);
+                        }
+                        Ok(ColumnarPassOutcome::StoppedBetweenEngines) => break,
+                        Ok(ColumnarPassOutcome::AbandonedUnpublished) => {
+                            worker_shutdown_status
+                                .publish(ColumnarWorkerShutdownObservation::AbandonedUnpublished);
+                            break;
+                        }
+                        Err(_) => worker_status.publish(ColumnarWorkerReadiness::Degraded),
+                    }
                     if wait_for_stop(&worker_stop, WORKER_POLL_INTERVAL) {
                         break;
                     }
@@ -138,6 +217,7 @@ impl RunningColumnarWorker {
             stop,
             task: Some(task),
             status,
+            shutdown_status,
         })
     }
 
@@ -146,17 +226,63 @@ impl RunningColumnarWorker {
         self.status.clone()
     }
 
+    #[cfg(test)]
+    fn start_boundary_barrier_test_worker(
+        entered: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) -> Self {
+        let stop = Arc::new(StopState {
+            requested: Mutex::new(false),
+            changed: Condvar::new(),
+        });
+        let status = ColumnarWorkerStatus::new();
+        let shutdown_status = ColumnarWorkerShutdownStatus::new();
+        let worker_stop = Arc::clone(&stop);
+        let worker_status = status.clone();
+        let worker_shutdown_status = shutdown_status.clone();
+        let task = thread::Builder::new()
+            .name("riffdb-columnar-boundary-test".to_owned())
+            .spawn(move || {
+                let _ = entered.send(());
+                let _ = release.recv();
+                if stop_requested(&worker_stop) {
+                    worker_shutdown_status
+                        .publish(ColumnarWorkerShutdownObservation::AbandonedUnpublished);
+                }
+                worker_status.publish(ColumnarWorkerReadiness::Stopped);
+            })
+            .expect("start deterministic boundary worker");
+        Self {
+            stop,
+            task: Some(task),
+            status,
+            shutdown_status,
+        }
+    }
+
     /// Requests termination and joins the worker before storage can be dropped.
-    pub(crate) fn shutdown(mut self) -> Result<(), ColumnarWorkerShutdownError> {
-        request_stop(&self.stop)?;
+    pub(crate) fn shutdown(
+        mut self,
+    ) -> Result<ColumnarWorkerShutdownObservation, ColumnarWorkerShutdownError> {
+        if request_stop(&self.stop).is_err() {
+            self.shutdown_status
+                .publish(ColumnarWorkerShutdownObservation::Failed);
+            return Err(ColumnarWorkerShutdownError);
+        }
         let task = self
             .task
             .take()
             .expect("a running columnar worker retains one task");
-        task.join().map_err(|_| ColumnarWorkerShutdownError)?;
+        if task.join().is_err() {
+            self.shutdown_status
+                .publish(ColumnarWorkerShutdownObservation::Failed);
+            return Err(ColumnarWorkerShutdownError);
+        }
         if self.status.readiness() == ColumnarWorkerReadiness::Stopped {
-            Ok(())
+            Ok(self.shutdown_status.observation())
         } else {
+            self.shutdown_status
+                .publish(ColumnarWorkerShutdownObservation::Failed);
             Err(ColumnarWorkerShutdownError)
         }
     }
@@ -468,11 +594,20 @@ const fn map_port_error(error: riffdb_service::ColumnarPortError) -> ColumnarWor
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ColumnarPassOutcome {
+    Completed,
+    StoppedBetweenEngines,
+    AbandonedUnpublished,
+}
+
 fn run_columnar_pass(
     runtime: &ColumnarRuntime,
     metrics: Option<&MetricRegistry>,
     state: &mut ColumnarWorkerState,
-) -> Result<(), ColumnarWorkerError> {
+    mut stop_before_engine: impl FnMut() -> bool,
+    mut stop_before_next_page: impl FnMut() -> bool,
+) -> Result<ColumnarPassOutcome, ColumnarWorkerError> {
     runtime
         .synchronize_active_vector_projections()
         .map_err(|_| ColumnarWorkerError::Registration)?;
@@ -496,6 +631,12 @@ fn run_columnar_pass(
         .engines()
         .map_err(|_| ColumnarWorkerError::Unavailable)?
     {
+        // The engine callback is intentionally reserved for nonterminal page
+        // boundaries. This separate worker-owned check prevents a stop that
+        // races with one engine's terminal page from starting another engine.
+        if stop_before_engine() {
+            return Ok(ColumnarPassOutcome::StoppedBetweenEngines);
+        }
         let catchup = state
             .engines
             .entry(name.clone())
@@ -510,9 +651,15 @@ fn run_columnar_pass(
                 .map_err(|_| ColumnarWorkerError::Integrity)?;
             let processed_before = engine.processed_frontier().position();
             let published_before = engine.published_frontier_position();
-            let progress = engine
-                .apply_available(apply_source)
-                .map_err(ColumnarWorkerError::Apply)?;
+            let progress = match engine
+                .apply_available_for_worker(apply_source, &mut stop_before_next_page)
+                .map_err(ColumnarWorkerError::Apply)?
+            {
+                WorkerApplyOutcome::Completed(progress) => progress,
+                WorkerApplyOutcome::AbandonedUnpublished => {
+                    return Ok(ColumnarPassOutcome::AbandonedUnpublished);
+                }
+            };
             published_after = progress.published_frontier;
             let commits_applied = sequences_advanced(processed_before, progress.processed);
             catchup.commits_since_checkpoint = catchup
@@ -554,13 +701,16 @@ fn run_columnar_pass(
     if let Some(metrics) = metrics {
         metrics.set_required_gauge(RequiredGauge::ProjectionLagCommits, max_lag);
     }
-    Ok(())
+    Ok(ColumnarPassOutcome::Completed)
 }
 
 #[cfg(test)]
 pub(crate) fn run_one_test_pass(runtime: &ColumnarRuntime) -> bool {
     let mut state = ColumnarWorkerState::new(runtime);
-    run_columnar_pass(runtime, None, &mut state).is_ok()
+    matches!(
+        run_columnar_pass(runtime, None, &mut state, || false, || false),
+        Ok(ColumnarPassOutcome::Completed)
+    )
 }
 
 fn record_vector_durable_frontier(
@@ -717,5 +867,47 @@ mod tests {
             format!("{:?}", ColumnarWorkerError::Integrity),
             "ColumnarWorkerError { class: \"integrity\" }"
         );
+    }
+
+    // req: PERF-007, PERF-008, PERF-019
+    #[test]
+    fn real_worker_shutdown_observes_the_monotonic_stop_at_a_deterministic_boundary() {
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker =
+            RunningColumnarWorker::start_boundary_barrier_test_worker(entered_tx, release_rx);
+        entered_rx.recv().expect("worker reached page boundary");
+
+        let stop = Arc::clone(&worker.stop);
+        let releaser = thread::spawn(move || {
+            let mut requested = stop.requested.lock().expect("stop lock");
+            while !*requested {
+                requested = stop.changed.wait(requested).expect("stop wait");
+            }
+            release_tx.send(()).expect("release page boundary");
+        });
+
+        assert_eq!(
+            worker.shutdown().expect("bounded worker shutdown"),
+            ColumnarWorkerShutdownObservation::AbandonedUnpublished
+        );
+        releaser.join().expect("join deterministic releaser");
+    }
+
+    // req: PERF-007, PERF-008, PERF-019
+    #[test]
+    fn shutdown_observation_is_fixed_and_redaction_safe() {
+        let observations = [
+            ColumnarWorkerShutdownObservation::BetweenPasses,
+            ColumnarWorkerShutdownObservation::AbandonedUnpublished,
+            ColumnarWorkerShutdownObservation::Failed,
+        ];
+        assert_eq!(
+            observations.map(ColumnarWorkerShutdownObservation::as_str),
+            ["between_passes", "abandoned_unpublished", "failed"]
+        );
+        assert_eq!(format!("{:?}", observations[0]), "between_passes");
+        assert_eq!(format!("{:?}", observations[1]), "abandoned_unpublished");
+        assert_eq!(format!("{:?}", observations[2]), "failed");
     }
 }

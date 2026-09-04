@@ -41,6 +41,22 @@ one by editing or deleting the lifecycle record.
 ## Graceful shutdown
 
 Shutdown first stops admission and drains writers, workers, and the journal.
+If the columnar worker is catching up, it observes the internal stop only after
+finishing its current authoritative page of at most 64 commit records. It may
+discard later unpublished in-memory columnar work at that boundary. Any safe
+prefix published before the stop remains valid, but the stop itself does not
+publish, notify, checkpoint, or advance the durable projection frontier.
+There is no application, agent, configuration, or operator option for choosing
+this behavior or changing its page size.
+
+After restart, columnar state resumes from its last durable projection frontier
+and replays the authoritative log idempotently. Projected reads can temporarily
+return their existing typed building or lagging outcome until replay catches
+up; this does not mean authoritative entity or commit data was lost. An
+operator should retain the authoritative history required by the projection
+and allow normal catch-up rather than editing projection files or weakening a
+query's declared freshness policy.
+
 After the durable journal-suffix barrier, RiffDB inspects the optional
 validated-prefix checkpoint through fixed metadata and table cardinalities. It
 never rebuilds, repairs, deletes, or rewrites that proof during shutdown. An

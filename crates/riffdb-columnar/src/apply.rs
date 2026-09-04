@@ -28,6 +28,20 @@ pub struct ApplyProgress {
     pub caught_up: bool,
 }
 
+/// Result of the workspace-internal worker-only apply entry point.
+///
+/// The abandoned variant deliberately carries no frontier, count, identity, or
+/// caller-supplied value. The production server uses it only to stop the
+/// derived worker without publishing its later in-memory delta.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkerApplyOutcome {
+    /// The frozen exact-end pass completed with ordinary progress semantics.
+    Completed(ApplyProgress),
+    /// A stop was observed after a complete nonterminal authoritative page.
+    AbandonedUnpublished,
+}
+
 /// Unit-test callback observing every snapshot at the moment it is published.
 #[cfg(test)]
 pub(crate) type PublishObserver = Box<dyn FnMut(&ColumnarSnapshot)>;
@@ -85,6 +99,29 @@ impl ApplyState {
         &mut self,
         reader: &(impl AuthoritativeScanReader + AuthoritativePointReader),
     ) -> Result<ApplyProgress, ColumnarError> {
+        match self.apply_available_inner(reader, || false)? {
+            WorkerApplyOutcome::Completed(progress) => Ok(progress),
+            WorkerApplyOutcome::AbandonedUnpublished => Err(ColumnarError::Integrity(
+                "ordinary apply cannot request worker abandonment",
+            )),
+        }
+    }
+
+    /// Runs the ordinary frozen exact-end protocol while allowing the server
+    /// worker to observe its monotonic stop token only on a continuation edge.
+    pub(crate) fn apply_available_for_worker(
+        &mut self,
+        reader: &(impl AuthoritativeScanReader + AuthoritativePointReader),
+        stop_before_next_page: impl FnMut() -> bool,
+    ) -> Result<WorkerApplyOutcome, ColumnarError> {
+        self.apply_available_inner(reader, stop_before_next_page)
+    }
+
+    fn apply_available_inner(
+        &mut self,
+        reader: &(impl AuthoritativeScanReader + AuthoritativePointReader),
+        mut stop_before_next_page: impl FnMut() -> bool,
+    ) -> Result<WorkerApplyOutcome, ColumnarError> {
         let limit = StorageScanLimit::new(64).ok_or(ColumnarError::Integrity("scan limit"))?;
         let mut scan = match self.working.processed {
             FrontierPosition::BeforeFirst => CommitScanRequest::initial(limit),
@@ -118,6 +155,9 @@ impl ApplyState {
                     inclusive_upper,
                     ..
                 } => {
+                    if stop_before_next_page() {
+                        return Ok(WorkerApplyOutcome::AbandonedUnpublished);
+                    }
                     let FrontierPosition::AppliedThrough(upper) = inclusive_upper else {
                         return Err(ColumnarError::Integrity("page upper missing sequence"));
                     };
@@ -149,12 +189,12 @@ impl ApplyState {
         if self.deferred.is_empty() && self.published.visible_frontier != self.working.processed {
             self.publish(self.working.processed);
         }
-        Ok(ApplyProgress {
+        Ok(WorkerApplyOutcome::Completed(ApplyProgress {
             processed: self.working.processed,
             published_frontier: self.published.visible_frontier,
             deferred_set_size: self.deferred.len(),
             caught_up,
-        })
+        }))
     }
 
     #[cfg(test)]
@@ -509,6 +549,16 @@ contract ColumnarPublish version 1 {
         ticket_id: u64,
         status: u64,
     ) -> StoredEntityRecordV1 {
+        ticket_entity_at_version(bundle, org, ticket_id, status, EntityVersion::first())
+    }
+
+    fn ticket_entity_at_version(
+        bundle: &ContractBundle,
+        org: [u8; 16],
+        ticket_id: u64,
+        status: u64,
+        version: EntityVersion,
+    ) -> StoredEntityRecordV1 {
         let entity = bundle
             .schema()
             .entities()
@@ -537,7 +587,7 @@ contract ColumnarPublish version 1 {
         let plan = plan_ref();
         StoredEntityRecordV1::new(
             target,
-            EntityVersion::first(),
+            version,
             plan.contract_version(),
             DurableKeySchemaBindingV1::from_plan(&plan),
             fields,
@@ -763,5 +813,101 @@ contract ColumnarPublish version 1 {
             progress.published_frontier,
             FrontierPosition::AppliedThrough(CommitSequence::new(3).expect("three"))
         );
+    }
+
+    // req: PRJ-001, PRJ-002, PERF-007, PERF-008
+    #[test]
+    fn ordinary_worker_apply_reuses_the_exact_publication_protocol() {
+        let bundle = compile_contract_source(CONTRACT).expect("compile");
+        let entity = bundle
+            .schema()
+            .entities()
+            .iter()
+            .find(|entity| entity.name() == "Ticket")
+            .expect("entity");
+        let field = |name: &str| {
+            entity
+                .record()
+                .fields()
+                .iter()
+                .find(|field| field.name() == name)
+                .map(riffdb_contract_ir::FieldSchema::id)
+                .expect("field")
+        };
+        let definition = RegisteredDefinition::register(
+            ColumnarProjectionDefinition {
+                name: "ordinary-worker-equivalence".into(),
+                entity_name: "Ticket".into(),
+                projected_fields: vec![field("status")],
+                org_scope_field: field("organization_id"),
+            },
+            &bundle,
+        )
+        .expect("register");
+        let org = [0x61; 16];
+        let safe = ticket_entity(&bundle, org, 1, 10);
+        let raced_v1 = ticket_entity(&bundle, org, 2, 20);
+        let raced_v2 = ticket_entity_at_version(
+            &bundle,
+            org,
+            2,
+            21,
+            EntityVersion::new(2).expect("version two"),
+        );
+        let safe_ref = CommittedEntityReferenceV2::from_post_image(&safe).expect("safe ref");
+        let raced_v1_ref =
+            CommittedEntityReferenceV2::from_post_image(&raced_v1).expect("raced v1 ref");
+        let reader = PointState {
+            entities: BTreeMap::from([
+                (safe.target().key().as_bytes().to_vec(), safe),
+                (raced_v2.target().key().as_bytes().to_vec(), raced_v2),
+            ]),
+            commits: vec![
+                stored_commit(1, vec![safe_ref]),
+                stored_commit(2, vec![raced_v1_ref]),
+            ],
+        };
+
+        let ordinary_publications = Rc::new(RefCell::new(Vec::new()));
+        let mut ordinary = ApplyState::new(definition.clone());
+        ordinary.publish_observer = Some(Box::new({
+            let publications = Rc::clone(&ordinary_publications);
+            move |snapshot| publications.borrow_mut().push(snapshot.visible_frontier)
+        }));
+        let ordinary_progress = ordinary.apply_available(&reader).expect("ordinary apply");
+
+        let worker_publications = Rc::new(RefCell::new(Vec::new()));
+        let mut worker = ApplyState::new(definition);
+        worker.publish_observer = Some(Box::new({
+            let publications = Rc::clone(&worker_publications);
+            move |snapshot| publications.borrow_mut().push(snapshot.visible_frontier)
+        }));
+        let mut continuation_observations = 0_u8;
+        let worker_progress = match worker
+            .apply_available_for_worker(&reader, &mut || {
+                continuation_observations = continuation_observations.saturating_add(1);
+                false
+            })
+            .expect("worker no-stop apply")
+        {
+            WorkerApplyOutcome::Completed(progress) => progress,
+            WorkerApplyOutcome::AbandonedUnpublished => panic!("no stop requested"),
+        };
+
+        assert_eq!(
+            continuation_observations, 0,
+            "ExactEnd is terminal and must not observe the stop token"
+        );
+        assert_eq!(
+            ordinary_publications.borrow().as_slice(),
+            worker_publications.borrow().as_slice()
+        );
+        assert_eq!(worker_progress, ordinary_progress);
+        assert_eq!(
+            worker.published.visible_frontier,
+            ordinary.published.visible_frontier
+        );
+        assert_eq!(worker.working.processed, ordinary.working.processed);
+        assert_eq!(worker.deferred, ordinary.deferred);
     }
 }

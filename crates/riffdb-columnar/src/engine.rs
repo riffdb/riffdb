@@ -8,7 +8,7 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{FrontierPosition, ProjectionFrontier};
 
-use crate::apply::{ApplyProgress, ApplyState};
+use crate::apply::{ApplyProgress, ApplyState, WorkerApplyOutcome};
 use crate::checkpoint::{CheckpointDir, CheckpointError, ManifestV1};
 use crate::definition::{DefinitionFingerprint, RegisteredDefinition};
 use crate::error::ColumnarError;
@@ -284,6 +284,41 @@ impl ColumnarEngine {
         reader: &(impl AuthoritativeScanReader + AuthoritativePointReader),
     ) -> Result<ApplyProgress, ColumnarError> {
         let progress = self.apply.apply_available(reader)?;
+        self.record_completed_apply(&progress);
+        Ok(progress)
+    }
+
+    /// Applies the existing frozen catch-up pass for the production columnar
+    /// worker, observing its server-owned stop token only after a complete
+    /// nonterminal storage page and before the next page request.
+    ///
+    /// This workspace-internal seam is not re-exported by an application, SDK,
+    /// transport, or operator surface. Ordinary callers use
+    /// [`Self::apply_available`].
+    #[doc(hidden)]
+    pub fn apply_available_for_worker(
+        &mut self,
+        reader: &(impl AuthoritativeScanReader + AuthoritativePointReader),
+        stop_before_next_page: impl FnMut() -> bool,
+    ) -> Result<WorkerApplyOutcome, ColumnarError> {
+        let outcome = self
+            .apply
+            .apply_available_for_worker(reader, stop_before_next_page)?;
+        match &outcome {
+            WorkerApplyOutcome::Completed(progress) => self.record_completed_apply(progress),
+            WorkerApplyOutcome::AbandonedUnpublished => {
+                // A supersession holdback may already have published its exact
+                // safe prefix. Preserve that publication while leaving the
+                // later working delta private.
+                if self.apply.published.visible_frontier > FrontierPosition::BeforeFirst {
+                    self.has_published = true;
+                }
+            }
+        }
+        Ok(outcome)
+    }
+
+    fn record_completed_apply(&mut self, progress: &ApplyProgress) {
         if self.apply.published.visible_frontier != FrontierPosition::BeforeFirst
             || (progress.caught_up && self.apply.deferred.is_empty())
         {
@@ -302,7 +337,6 @@ impl ColumnarEngine {
         {
             self.has_published = true;
         }
-        Ok(progress)
     }
 
     /// Lifecycle status for the current published state vs `head`.
