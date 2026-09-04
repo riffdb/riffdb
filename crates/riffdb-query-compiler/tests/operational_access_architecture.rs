@@ -47,10 +47,7 @@ fn one_compiler_registry_and_one_executor_lowering_own_component_semantics() {
         "typed interval lowering has one executor owner"
     );
 
-    for path in [
-        "crates/riffdb-storage-memory/src/query.rs",
-        "crates/riffdb-storage-redb/src/query.rs",
-    ] {
+    for path in ["crates/riffdb-storage-redb/src/query.rs"] {
         let storage = fs::read_to_string(root.join(path)).expect("storage query source");
         assert!(
             storage.contains("bound_index_range_schedule_v1") && storage.contains("resume_window"),
@@ -129,7 +126,6 @@ fn no_external_framework_branch_enters_the_generic_access_path() {
     for path in [
         "crates/riffdb-query-compiler/src/lib.rs",
         "crates/riffdb-query-executor/src/lib.rs",
-        "crates/riffdb-storage-memory/src/query.rs",
         "crates/riffdb-storage-redb/src/query.rs",
     ] {
         let source = fs::read_to_string(root.join(path)).expect("generic query source");

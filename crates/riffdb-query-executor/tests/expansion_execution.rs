@@ -187,7 +187,7 @@ fn parameters() -> QueryParameters {
     .expect("parameters")
 }
 
-// req: OQ-114
+// req: DEP-005, OQ-114
 #[test]
 fn expansion_completes_every_driver_before_release_or_refuses_whole() {
     let program = program();

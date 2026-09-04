@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+// req: DEP-005
 
 //! Gate-B structural migration acceptance evidence.
 
@@ -9,11 +10,11 @@ use riffdb_contract_compiler::{
     compile_migration_source,
 };
 use riffdb_storage_api::{
-    ApplicationSequenceAllocator, DurableKeySchemaBindingV1, EntityTarget, MigrationBatch,
-    MigrationCutover, MigrationCutoverApplied, MigrationJournalState, MigrationScanCursor,
-    MigrationScanPage, MigrationStageError, MigrationStagePort, StoredEntityRecordV1,
+    DurableKeySchemaBindingV1, EntityTarget, MigrationBatch, MigrationCutover,
+    MigrationCutoverApplied, MigrationJournalState, MigrationScanCursor, MigrationScanPage,
+    MigrationStageError, MigrationStagePort, StoredEntityRecordV1,
 };
-use riffdb_storage_memory::{MemoryMigrationHistoryWitness, MemoryMigrationStage};
+use riffdb_storage_redb::RedbMigrationStageFixture;
 use riffdb_types::{CanonicalRecord, CanonicalValue, EntityVersion, ProjectionId};
 
 const STRUCTURAL_PARENT: &str = include_str!(concat!(
@@ -97,8 +98,8 @@ fn rename_replacement_and_enum_map_preserve_identity_and_history() {
             ("status", enum_value(&parent, "WorkflowStatus", "Closed")),
         ],
     );
-    let mut stage = memory_stage(&parent, vec![row]);
-    let history = stage.history_witness().clone();
+    let mut stage = redb_stage(&plan, vec![row]);
+    let history = *stage.history_witness();
     let applied = MigrationCoordinator::apply(&plan, &mut stage).expect("Gate-B apply");
 
     assert_eq!(applied.checked_rows(), 1);
@@ -163,8 +164,8 @@ fn entity_retirement_archives_data_without_reinterpreting_history() {
         "Row",
         vec![("id", CanonicalValue::Uuid(uuid_for(2)))],
     );
-    let mut stage = memory_stage(&parent, vec![row.clone()]);
-    let history = stage.history_witness().clone();
+    let mut stage = redb_stage(&plan, vec![row.clone()]);
+    let history = *stage.history_witness();
 
     MigrationCoordinator::apply(&plan, &mut stage).expect("retirement apply");
     assert_eq!(stage.entities().len(), 0);
@@ -195,8 +196,8 @@ fn failed_checked_conversion_leaves_the_complete_stage_unchanged() {
             ("status", enum_value(&parent, "WorkflowStatus", "Open")),
         ],
     );
-    let mut stage = memory_stage(&parent, vec![invalid.clone()]);
-    let history = stage.history_witness().clone();
+    let mut stage = redb_stage(&plan, vec![invalid.clone()]);
+    let history = *stage.history_witness();
 
     assert!(MigrationCoordinator::check(&plan, &stage).is_err());
     assert!(MigrationCoordinator::apply(&plan, &mut stage).is_err());
@@ -234,8 +235,8 @@ fn interrupted_entity_retirement_resumes_without_skip_or_duplicate() {
             )
         })
         .collect();
-    let mut stage = memory_stage(&parent, rows);
-    let history = stage.history_witness().clone();
+    let mut stage = redb_stage(&plan, rows);
+    let history = *stage.history_witness();
     let mut interrupted = InterruptAfterFirstCommittedBatch {
         inner: &mut stage,
         fired: false,
@@ -256,7 +257,7 @@ fn interrupted_entity_retirement_resumes_without_skip_or_duplicate() {
 }
 
 struct InterruptAfterFirstCommittedBatch<'a> {
-    inner: &'a mut MemoryMigrationStage,
+    inner: &'a mut RedbMigrationStageFixture,
     fired: bool,
 }
 
@@ -334,17 +335,17 @@ impl MigrationStagePort for InterruptAfterFirstCommittedBatch<'_> {
     }
 }
 
-fn memory_stage(
-    parent: &ValidatedContractBundle,
+fn redb_stage(
+    plan: &ValidatedMigrationPlan,
     rows: Vec<StoredEntityRecordV1>,
-) -> MemoryMigrationStage {
-    let history = MemoryMigrationHistoryWitness::new(
-        ApplicationSequenceAllocator::initial(),
-        b"immutable-gate-b-history".to_vec(),
+) -> RedbMigrationStageFixture {
+    RedbMigrationStageFixture::create(
+        &plan.parent().to_stored().expect("stored parent"),
+        plan.candidate_bundle_hash(),
+        plan.migration_bundle_hash(),
+        rows,
     )
-    .expect("history");
-    MemoryMigrationStage::new(parent.to_stored().expect("stored parent"), rows, history)
-        .expect("memory stage")
+    .expect("redb migration stage")
 }
 
 fn named_row(
@@ -501,7 +502,7 @@ fn the_rebuilt_covering_index_carries_the_complete_cover_from_the_post_image() {
             ("status", enum_value(&parent, "WorkflowStatus", "Closed")),
         ],
     );
-    let mut stage = memory_stage(&parent, vec![row]);
+    let mut stage = redb_stage(&plan, vec![row]);
     MigrationCoordinator::apply(&plan, &mut stage).expect("covering-index migration applies");
 
     let rebuilt = stage
