@@ -413,39 +413,44 @@ pub(crate) struct SegmentV2PruningIndex {
 struct SegmentV2PruningColumn {
     logical_type: SegmentV2LogicalType,
     statistics: LaneStatistics,
-    dictionary: Option<BTreeSet<Vec<u8>>>,
+    dictionary: Option<Vec<Vec<u8>>>,
 }
 
 impl SegmentV2PruningIndex {
     fn from_validated(
         segment: &SegmentV2,
         directory: &[DirectoryEntry],
+        dictionary_evidence: Vec<Option<Vec<Vec<u8>>>>,
+        audit: &mut FusedDecodeAudit,
     ) -> Result<Self, SegmentV2Error> {
+        if dictionary_evidence.len() != segment.columns().len() {
+            return Err(SegmentV2Error::Corrupt("pruning dictionary count"));
+        }
         let mut columns = BTreeMap::new();
-        for (column, entry) in segment.columns().iter().zip(directory.iter().skip(2)) {
+        for ((column, entry), dictionary) in segment
+            .columns()
+            .iter()
+            .zip(directory.iter().skip(2))
+            .zip(dictionary_evidence)
+        {
             if entry.kind != LaneKind::Field(column.field_id())
                 || entry.logical_type != *column.logical_type()
             {
                 return Err(SegmentV2Error::Corrupt("pruning lane identity"));
             }
-            let dictionary = if entry.encoding == PhysicalEncoding::Dictionary {
-                Some(
-                    column
-                        .cells()
-                        .iter()
-                        .filter_map(|cell| match cell {
-                            SegmentV2Cell::Value(value) => Some(value),
-                            SegmentV2Cell::Missing | SegmentV2Cell::Null => None,
-                        })
-                        .map(|value| {
-                            encode_canonical_value(value)
-                                .map_err(|_| SegmentV2Error::Corrupt("dictionary evidence"))
-                        })
-                        .collect::<Result<BTreeSet<_>, _>>()?,
-                )
-            } else {
-                None
+            let dictionary = match (entry.encoding, dictionary) {
+                (PhysicalEncoding::Dictionary, Some(dictionary)) => Some(dictionary),
+                (PhysicalEncoding::Dictionary, None) => {
+                    return Err(SegmentV2Error::Corrupt("missing dictionary evidence"));
+                }
+                (_, None) => None,
+                (_, Some(_)) => {
+                    return Err(SegmentV2Error::Corrupt("unexpected dictionary evidence"));
+                }
             };
+            audit.record_pruning_dictionary_entries(
+                dictionary.as_ref().map_or(0, std::vec::Vec::len),
+            );
             if columns
                 .insert(
                     column.field_id(),
@@ -483,7 +488,7 @@ impl SegmentV2PruningIndex {
         };
         encode_canonical_value(value)
             .ok()
-            .is_some_and(|encoded| !dictionary.contains(&encoded))
+            .is_some_and(|encoded| dictionary.binary_search(&encoded).is_err())
     }
 }
 
@@ -740,6 +745,16 @@ struct FusedDecodeAudit {
     generic_system_cell_vectors: usize,
     #[cfg(test)]
     statistics_passes: usize,
+    #[cfg(test)]
+    pruning_dictionary_entries_from_lane: usize,
+    #[cfg(test)]
+    pruning_post_decode_row_visits: usize,
+    #[cfg(test)]
+    pruning_post_decode_value_encodes: usize,
+    #[cfg(test)]
+    primary_key_statistic_endpoints_retained: usize,
+    #[cfg(test)]
+    primary_key_statistic_per_row_clones: usize,
 }
 
 impl FusedDecodeAudit {
@@ -754,6 +769,22 @@ impl FusedDecodeAudit {
         #[cfg(test)]
         {
             self.statistics_passes += 1;
+        }
+    }
+
+    fn record_pruning_dictionary_entries(&mut self, entries: usize) {
+        #[cfg(test)]
+        {
+            self.pruning_dictionary_entries_from_lane += entries;
+        }
+        #[cfg(not(test))]
+        let _ = entries;
+    }
+
+    fn record_primary_key_statistic_endpoints(&mut self) {
+        #[cfg(test)]
+        {
+            self.primary_key_statistic_endpoints_retained = 2;
         }
     }
 }
@@ -1154,6 +1185,7 @@ enum FusedValueCursor<'a> {
     },
     Dictionary {
         dictionary: Vec<CanonicalValue>,
+        encoded_dictionary: Vec<Vec<u8>>,
         packed: &'a [u8],
         bit_width: u8,
         position: usize,
@@ -1242,6 +1274,7 @@ impl<'a> FusedValueCursor<'a> {
                     return Err(SegmentV2Error::Corrupt("empty dictionary"));
                 }
                 let mut dictionary = Vec::with_capacity(dictionary_count);
+                let mut encoded_dictionary = Vec::with_capacity(dictionary_count);
                 let mut previous_encoded: Option<&[u8]> = None;
                 for _ in 0..dictionary_count {
                     let length = reader.read_count(MAX_SCALAR_BYTES, "dictionary value")?;
@@ -1250,6 +1283,7 @@ impl<'a> FusedValueCursor<'a> {
                         return Err(SegmentV2Error::Corrupt("noncanonical dictionary order"));
                     }
                     dictionary.push(decode_typed_value(encoded, &entry.logical_type)?);
+                    encoded_dictionary.push(encoded.to_vec());
                     previous_encoded = Some(encoded);
                 }
                 let bit_width = reader.read_u8()?;
@@ -1267,6 +1301,7 @@ impl<'a> FusedValueCursor<'a> {
                 validate_packed_padding(reader.remaining(), value_count, bit_width)?;
                 Ok(Self::Dictionary {
                     dictionary,
+                    encoded_dictionary,
                     packed: reader.remaining(),
                     bit_width,
                     position: 0,
@@ -1370,6 +1405,7 @@ impl<'a> FusedValueCursor<'a> {
                 bit_width,
                 position,
                 count,
+                ..
             } => {
                 if *position >= *count {
                     return Err(SegmentV2Error::Corrupt("extra present value"));
@@ -1420,26 +1456,29 @@ impl<'a> FusedValueCursor<'a> {
         }
     }
 
-    fn finish(self) -> Result<(), SegmentV2Error> {
-        let (position, count, trailing) = match self {
+    fn finish(self) -> Result<Option<Vec<Vec<u8>>>, SegmentV2Error> {
+        let (position, count, trailing, dictionary) = match self {
             Self::Fixed {
                 position, count, ..
             }
             | Self::Offset {
                 position, count, ..
             }
-            | Self::Dictionary {
-                position, count, ..
-            }
             | Self::Boolean {
                 position, count, ..
-            } => (position, count, false),
+            } => (position, count, false, None),
+            Self::Dictionary {
+                position,
+                count,
+                encoded_dictionary,
+                ..
+            } => (position, count, false, Some(encoded_dictionary)),
             Self::Delta {
                 reader,
                 position,
                 count,
                 ..
-            } => (position, count, !reader.remaining().is_empty()),
+            } => (position, count, !reader.remaining().is_empty(), None),
         };
         if position != count {
             return Err(SegmentV2Error::Corrupt("value cardinality"));
@@ -1447,7 +1486,7 @@ impl<'a> FusedValueCursor<'a> {
         if trailing {
             return Err(SegmentV2Error::Corrupt("trailing delta bytes"));
         }
-        Ok(())
+        Ok(dictionary)
     }
 }
 
@@ -1456,6 +1495,11 @@ struct ObservedLaneStatistics {
     value_count: usize,
     minimum: Option<CanonicalValue>,
     maximum: Option<CanonicalValue>,
+}
+
+struct DecodedFieldLane {
+    column: SegmentV2Column,
+    dictionary: Option<Vec<Vec<u8>>>,
 }
 
 impl ObservedLaneStatistics {
@@ -1521,7 +1565,7 @@ fn decode_fused_field_lane(
     bytes: &[u8],
     row_count: usize,
     audit: &mut FusedDecodeAudit,
-) -> Result<SegmentV2Column, SegmentV2Error> {
+) -> Result<DecodedFieldLane, SegmentV2Error> {
     let field_id = match entry.kind {
         LaneKind::Field(field_id) => field_id,
         LaneKind::PrimaryKey | LaneKind::EntityVersion => {
@@ -1544,18 +1588,21 @@ fn decode_fused_field_lane(
             cells.push(SegmentV2Cell::Missing);
         }
     }
-    values.finish()?;
+    let dictionary = values.finish()?;
     statistics.verify(
         entry,
         entry.statistics.missing_count,
         entry.statistics.null_count,
     )?;
     audit.record_statistics_pass();
-    Ok(SegmentV2Column {
-        field_id,
-        logical_type: entry.logical_type.clone(),
-        cells,
-        statistics: entry.statistics.clone(),
+    Ok(DecodedFieldLane {
+        column: SegmentV2Column {
+            field_id,
+            logical_type: entry.logical_type.clone(),
+            cells,
+            statistics: entry.statistics.clone(),
+        },
+        dictionary,
     })
 }
 
@@ -1570,14 +1617,12 @@ fn decode_fused_primary_keys(
         return Err(SegmentV2Error::Corrupt("primary key lane state"));
     }
     let mut values = FusedValueCursor::new(entry, &frame, row_count)?;
-    let mut statistics = ObservedLaneStatistics::default();
     let mut keys = Vec::with_capacity(row_count);
     for row in 0..row_count {
         if !bit_is_set(frame.present, row) {
             return Err(SegmentV2Error::Corrupt("primary key lane state"));
         }
         let value = values.next_value(row)?;
-        statistics.observe(&entry.logical_type, &value)?;
         match value {
             CanonicalValue::Bytes(value) => {
                 keys.push(PrimaryKeyBytes::from_entity_key_bytes(value.into_vec()));
@@ -1585,10 +1630,40 @@ fn decode_fused_primary_keys(
             _ => return Err(SegmentV2Error::Corrupt("primary key lane type")),
         }
     }
-    values.finish()?;
-    statistics.verify(entry, 0, 0)?;
+    let _ = values.finish()?;
+    verify_sorted_primary_key_statistics(entry, &keys)?;
+    audit.record_primary_key_statistic_endpoints();
     audit.record_statistics_pass();
     Ok(keys)
+}
+
+fn verify_sorted_primary_key_statistics(
+    entry: &DirectoryEntry,
+    keys: &[PrimaryKeyBytes],
+) -> Result<(), SegmentV2Error> {
+    let first = keys
+        .first()
+        .ok_or(SegmentV2Error::Corrupt("empty primary key lane"))?;
+    let last = keys
+        .last()
+        .ok_or(SegmentV2Error::Corrupt("empty primary key lane"))?;
+    let minimum_matches = matches!(
+        &entry.statistics.minimum,
+        Some(CanonicalValue::Bytes(value)) if value.as_bytes() == first.as_bytes()
+    );
+    let maximum_matches = matches!(
+        &entry.statistics.maximum,
+        Some(CanonicalValue::Bytes(value)) if value.as_bytes() == last.as_bytes()
+    );
+    if entry.statistics.value_count != keys.len()
+        || entry.statistics.missing_count != 0
+        || entry.statistics.null_count != 0
+        || !minimum_matches
+        || !maximum_matches
+    {
+        return Err(SegmentV2Error::Corrupt("lane statistics"));
+    }
+    Ok(())
 }
 
 fn decode_fused_entity_versions(
@@ -1617,7 +1692,7 @@ fn decode_fused_entity_versions(
             _ => return Err(SegmentV2Error::Corrupt("entity version lane type")),
         }
     }
-    values.finish()?;
+    let _ = values.finish()?;
     statistics.verify(entry, 0, 0)?;
     audit.record_statistics_pass();
     Ok(versions)
@@ -1712,11 +1787,17 @@ fn decode_body_fused(
         row_count,
         &mut audit,
     )?;
-    let columns = directory
+    let decoded_columns = directory
         .iter()
         .skip(2)
         .map(|entry| decode_fused_field_lane(entry, lane_bytes(entry)?, row_count, &mut audit))
         .collect::<Result<Vec<_>, _>>()?;
+    let mut columns = Vec::with_capacity(decoded_columns.len());
+    let mut dictionary_evidence = Vec::with_capacity(decoded_columns.len());
+    for decoded in decoded_columns {
+        columns.push(decoded.column);
+        dictionary_evidence.push(decoded.dictionary);
+    }
     let identity = SegmentV2Identity::new(
         DefinitionFingerprint::from_bytes(fingerprint),
         history_incarnation,
@@ -1729,7 +1810,12 @@ fn decode_body_fused(
     .map_err(|_| SegmentV2Error::Corrupt("segment identity"))?;
     let segment = SegmentV2::new(identity, primary_keys, entity_versions, columns)
         .map_err(|_| SegmentV2Error::Corrupt("logical segment"))?;
-    let pruning = SegmentV2PruningIndex::from_validated(&segment, &directory)?;
+    let pruning = SegmentV2PruningIndex::from_validated(
+        &segment,
+        &directory,
+        dictionary_evidence,
+        &mut audit,
+    )?;
     Ok((segment, audit, pruning))
 }
 
@@ -3128,6 +3214,17 @@ mod tests {
             Err(SegmentV2Error::Corrupt("lane statistics"))
         ));
 
+        let mut mismatched_key_lanes = encode_all_lanes(&segment).expect("lanes");
+        mismatched_key_lanes[0].statistics.maximum = Some(
+            CanonicalValue::bytes(b"not-the-final-primary-key".to_vec())
+                .expect("mismatched primary-key maximum"),
+        );
+        let mismatched_key = encode_test_lanes(&segment, mismatched_key_lanes);
+        assert!(matches!(
+            SegmentV2Codec::decode_with_pruning(&mismatched_key),
+            Err(SegmentV2Error::Corrupt("lane statistics"))
+        ));
+
         let mut reordered_lanes = encode_all_lanes(&segment).expect("lanes");
         let dictionary_lane = &mut reordered_lanes[2];
         assert_eq!(dictionary_lane.encoding, PhysicalEncoding::Dictionary);
@@ -3246,6 +3343,11 @@ mod tests {
         assert_eq!(audit.intermediate_value_vectors, 0);
         assert_eq!(audit.generic_system_cell_vectors, 0);
         assert_eq!(audit.statistics_passes, fused.columns().len() + 2);
+        assert_eq!(audit.pruning_dictionary_entries_from_lane, 4);
+        assert_eq!(audit.pruning_post_decode_row_visits, 0);
+        assert_eq!(audit.pruning_post_decode_value_encodes, 0);
+        assert_eq!(audit.primary_key_statistic_endpoints_retained, 2);
+        assert_eq!(audit.primary_key_statistic_per_row_clones, 0);
     }
 
     #[test]
