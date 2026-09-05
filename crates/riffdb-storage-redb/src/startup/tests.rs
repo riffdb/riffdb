@@ -90,6 +90,8 @@ impl TestDatabasePath {
     }
 }
 
+include!("../startup_graceful_close_tests.rs");
+
 fn database_id(seed: u8) -> DatabaseId {
     DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [seed; 10])
         .expect("valid deterministic UUIDv7")

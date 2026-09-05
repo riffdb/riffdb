@@ -704,11 +704,13 @@ mod tests {
     // req: PERF-019
     #[test]
     fn production_blocking_workers_fit_the_clean_lifecycle_budget() {
-        assert!(
-            P1_BLOCKING_PORT_WORKER_THREADS <= 8,
-            "the fixed blocking worker set must not consume the clean lifecycle heap budget"
-        );
-        assert_eq!(crate::PRODUCTION_THREAD_STACK_BYTES, 384 * 1024);
+        const {
+            assert!(
+                P1_BLOCKING_PORT_WORKER_THREADS <= 8,
+                "the fixed blocking worker set must not consume the clean lifecycle heap budget"
+            );
+            assert!(crate::PRODUCTION_THREAD_STACK_BYTES == 384 * 1024);
+        }
     }
 
     struct ThreadWake(thread::Thread);

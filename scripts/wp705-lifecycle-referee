@@ -142,6 +142,14 @@ def report_lifecycle(path: Path, checkpoint: str) -> tuple[dict[str, Any], int]:
         refuse(f"{path.name} observed a clean-path population walk")
     if startup.get("transient_index_rebuilds") != 0:
         refuse(f"{path.name} rebuilt a transient population index")
+    integer(startup.get("columnar_cold_sources"), "clean startup columnar cold sources")
+    if integer(startup.get("columnar_activations"), "clean startup columnar activations") != 0:
+        refuse(f"{path.name} activated a columnar source without demand")
+    if integer(
+        startup.get("columnar_population_passes"),
+        "clean startup columnar population passes",
+    ) != 0:
+        refuse(f"{path.name} performed a columnar population pass without demand")
     rows = object_value(startup.get("prohibited_table_rows"), "prohibited table rows")
     if set(rows) != PROHIBITED_TABLES or any(value != 0 for value in rows.values()):
         refuse(f"{path.name} did not report exact zero prohibited-table rows")
@@ -154,6 +162,13 @@ def report_lifecycle(path: Path, checkpoint: str) -> tuple[dict[str, Any], int]:
         close = object_value(lifecycle.get(close_key), close_key)
         if close.get("final_certificate_commit_succeeded") is not True:
             refuse(f"{path.name} has an unsuccessful final certificate stage")
+        if integer(close.get("columnar_activations"), f"{close_key} columnar activations") != 0:
+            refuse(f"{path.name} activated a columnar source during {close_key}")
+        if integer(
+            close.get("columnar_population_passes"),
+            f"{close_key} columnar population passes",
+        ) != 0:
+            refuse(f"{path.name} performed a columnar population pass during {close_key}")
         memory_window(lifecycle.get(memory_key), f"{checkpoint} {memory_key}")
     return candidate, envelope
 
@@ -206,6 +221,9 @@ def main() -> int:
         "production_heap_envelope_bytes": production_envelope,
         "production_minus_rows_65536_heap_envelope_bytes": cross_delta,
         "prohibited_table_rows": 0,
+        "columnar_cold_sources_reported": True,
+        "columnar_activations": 0,
+        "columnar_population_passes": 0,
     }
     encoded = json.dumps(receipt, indent=2) + "\n"
     args.output.parent.mkdir(parents=True, exist_ok=True)
