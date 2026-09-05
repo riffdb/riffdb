@@ -23831,3 +23831,80 @@ work_packages:
     to join the activation owner before storage closes.
   - A durable control, generation-root, manifest, segment, retention fence, public protocol,
     lifecycle enum, freshness outcome, or canonical identity would change.
+
+- id: WP-778
+  name: Fresh-process contiguous idempotency locator coverage
+  tier: guarantee
+  depends_on: [WP-704, WP-774]
+  objective: Implement ADR-0197 Decisions 1 through 8 with one storage-private proof that arms only
+    from an exact command-empty operational activation, advances only across contiguous
+    same-process locator-bearing command publications, and proves bounded novel-key absence without
+    a history scan while preserving every existing idempotency and publication boundary.
+  requirements: [OUT-001, OUT-002, TXN-042, REC-004, PERF-019]
+  required_adrs: [ADR-0004, ADR-0006, ADR-0058, ADR-0101, ADR-0104, ADR-0156,
+    ADR-0157, ADR-0165, ADR-0197]
+  allowed_paths: [work_packages.yaml,
+    adr/0197-fresh-process-contiguous-idempotency-locator-coverage.md, adr/README.md,
+    crates/riffdb-storage-redb/**, crates/riffdb-commit/**, crates/riffdb-server/**,
+    crates/riffdb-testkit-server/**, tests/storage_recovery/**, tests/command_semantics/**]
+  deliverables:
+  - One fields-private `Disabled | ContiguousThrough` locator-coverage type armed before writers
+    only from an immutable application head of `None`, retaining one frontier and no locator, key,
+    command, segment, history, or other population state
+  - Bounded command-group proof tying exact first/last/count continuity and every decoded
+    idempotency locator to the same sealed composite successor, with advancement only after public
+    successor publication and under the existing transient-index publication lock
+  - Admission point-miss integration that consults coverage only after the exact locator read and
+    only through the captured read frontier, while retaining the mandatory coordinator
+    transaction-adjacent lookup and all existing locator validation
+  - Monotonic fail-closed invalidation for nonempty activation, unsupported or direct application
+    commits, gaps, proof mismatch, publication failure or uncertainty, transient invalidation, and
+    process loss; async checkpoint rebase changes no logical coverage
+  - Req-tagged deterministic proofs
+    `fresh_locator_coverage_arms_only_from_an_empty_authoritative_frontier`,
+    `fresh_locator_coverage_advances_only_with_contiguous_published_locators`, and
+    `fresh_locator_coverage_fails_closed_across_gaps_uncertainty_and_restart`, including full
+    256-command groups, predecessor/successor read races, before/after-commit failures, and exact
+    process-kill recovery with barriers or channels and no sleeps
+  - Req-tagged proof `cold_fresh_database_publications_complete_without_history_scans` running at
+    least 288 bounded concurrent unique publications through direct inspection and
+    transaction-adjacent revalidation, reaching the exact final head with zero fallback history
+    scans and zero transient-index rebuilds
+  - Architecture proof that no checkpoint or locator-table cardinality can arm coverage; no public
+    audit or `SubscribeCommits` path consults it; and no public, operator, configuration, durable,
+    journal, Protobuf, storage-key, registry, conflict, ordering, batching, acknowledgement, or
+    outcome surface changes
+  - A narrow handoff authorizing WP-705 to rerun its separately owned 65,536-row and canonical
+    production lifecycle qualification only after this package closes; no WP-705 report, closure,
+    or WP-578 uninterrupted 72-hour evidence is created or claimed here
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-778
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test -p riffdb-commit -p riffdb-server -p riffdb-testkit-server --all-features
+  - cargo +1.97.0 test -p riffdb-storage-redb --test storage_recovery_matrix --all-features
+  - ./scripts/recovery_full
+  - ./scripts/ci-all
+  exit_gate: Exact empty activation and every contiguous locator-bearing publication establish one
+    bounded process-local absence proof; 288 or more concurrent cold publications complete at the
+    exact head with no history fallback scan or transient rebuild; every gap, uncertainty, failure,
+    unsupported lane, kill, and nonempty reopen disables the proof and retains exact idempotent
+    replay, atomic publication, transaction-adjacent validation, and write fencing; architecture
+    and recovery checks prove no durable or public change; and WP-705 and WP-578 evidence remain
+    separately pending.
+  standing_design_tests:
+    interface_safety: Coverage is storage-private, automatic, monotonic, and usable only after an
+      exact locator miss; no application, agent, SDK, transport, MCP, CLI, operator, or
+      configuration can arm, preserve, reset, observe, or bypass it, select a fallback, or suppress
+      transaction-adjacent idempotency validation.
+    scale: State is one frontier and one closed tag; publication proof is bounded by the existing
+      256-command group and retains no per-command value after publication; novel-key reads perform
+      fixed point work and no retained-history, locator-table, or checkpoint population scan.
+  human_review_triggers: &id0197
+  - Coverage would arm from a checkpoint, table cardinality, nonempty frontier, retained history,
+    restored state, or another process generation.
+  - Missing locator absence would be accepted beyond the exact captured covered frontier, or a
+    malformed, mismatched, gapped, failed, or uncertain publication could preserve coverage.
+  - Transaction ordering, conflict ownership, transaction-adjacent revalidation, batching,
+    acknowledgement, outcome sequencing, write fencing, or public successor ordering would change.
+  - Public audit or `SubscribeCommits` reconstruction, any public or operator surface, any durable
+    byte or identity, or any WP-705 or WP-578 evidence or closure state would change.
