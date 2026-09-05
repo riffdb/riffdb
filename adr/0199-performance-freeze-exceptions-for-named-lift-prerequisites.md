@@ -1,10 +1,10 @@
 ---
 adr: 0199
 title: Performance Freeze Exceptions for Named Lift Prerequisites
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-05
-accepted: null
+accepted: 2026-09-05
 requires: [ADR-0178, ADR-0182, ADR-0183]
 amends: [ADR-0183, PERF-020]
 supersedes: []
