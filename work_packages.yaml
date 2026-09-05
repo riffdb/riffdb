@@ -1572,7 +1572,7 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-705
   name: Clean-startup internal scrub compatibility and bounded dirty evidence
-  depends_on: [WP-610, WP-668, WP-704, WP-773, WP-774]
+  depends_on: [WP-610, WP-668, WP-704, WP-773, WP-774, WP-778]
   objective: Close ADR-0156 with a sealed internal complete-integrity scrub primitive, backup/
     restore/migration/retention compatibility, operator and handbook guidance, production-scale
     clean lifecycle evidence, genuine 65,536-row complete-validation recovery evidence, and a
@@ -1583,7 +1583,7 @@ work_packages:
     PERF-013, PERF-014, PERF-019, END-004, END-006, END-007, END-008]
   required_adrs: [ADR-0019, ADR-0041, ADR-0050, ADR-0056, ADR-0073,
     ADR-0085, ADR-0104, ADR-0112, ADR-0123, ADR-0156, ADR-0157, ADR-0182, ADR-0187,
-    ADR-0188]
+    ADR-0188, ADR-0197]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0156-clean-close-certificate-fast-startup.md,
     adr/0157-clean-close-lifecycle-durable-identity.md,
@@ -23831,3 +23831,150 @@ work_packages:
     to join the activation owner before storage closes.
   - A durable control, generation-root, manifest, segment, retention fence, public protocol,
     lifecycle enum, freshness outcome, or canonical identity would change.
+
+- id: WP-778
+  name: Fresh-process contiguous idempotency locator coverage
+  tier: guarantee
+  depends_on: [WP-491, WP-704, WP-774]
+  objective: Implement ADR-0197 Decisions 1 through 15 with one storage-private proof system that arms only
+    at the first mutation-gated command-write entry from exact empty authority, advances only across
+    exact contiguous locator-bearing successors, and proves bounded novel-key absence without a
+    history scan while preserving every existing idempotency and publication boundary.
+  requirements: [OUT-001, OUT-002, TXN-042, REC-004, PERF-019]
+  required_adrs: [ADR-0004, ADR-0006, ADR-0058, ADR-0100, ADR-0101, ADR-0104, ADR-0156,
+    ADR-0157, ADR-0165, ADR-0197]
+  allowed_paths: [work_packages.yaml,
+    adr/0165-durable-command-derived-locator-tables.md,
+    adr/0197-fresh-process-contiguous-idempotency-locator-coverage.md, adr/README.md,
+    crates/riffdb-storage-redb/**, crates/riffdb-commit/**, crates/riffdb-server/**,
+    crates/riffdb-testkit-server/**, tests/storage_recovery/**, tests/command_semantics/**]
+  deliverables:
+  - One fields-private `Uninitialized | Disabled | PublicPrefixThrough | Rebinding` state whose sole
+    initialization opportunity is `RedbOperationalPorts::admit_or_resolve_group`, immediately after
+    its existing `begin_write()` and before `stage_admission_group`. The returned `RedbWriteAccess`
+    writer-private transaction must prove application frontier `None`, allocator `Next(first)`, zero
+    command authority in `COMMITS`, `IDEMPOTENCY`, `IDEMPOTENCY_PENDING`, and
+    `IDEMPOTENCY_LOCATORS`, dormant transient indexes, and an unfenced handle. No new drain or order
+    edge is added; `begin_deferred_epoch` and `BatchCore::open_with_access` are not activation sites.
+    `None` is empty, raw `Some(0)` is corruption, and every exhausted, contradictory, or nonempty
+    state disables coverage
+  - Distinct fields-private move-only `PrivateChainWitness`, `CommandPublicationWitness`,
+    `PreservePublicationWitness`, and `DirectCommandWitness` roles with no `Clone`, `Copy`,
+    `Default`, serialization, public constructor, or cross-role conversion. Queued sealing A/B/C
+    consumes private P/A/B and produces private A/B/C plus separate FIFO P-to-A/A-to-B/B-to-C
+    publication witnesses. Queued service audit between A and B consumes private A, produces private
+    A-audit plus FIFO preserve A-to-A-audit without advancing the application frontier, and B consumes
+    private A-audit; publication consumes only its exact witness
+  - Queued command-witness construction checks exact ADR-0104 composite predecessor/successor,
+    inclusive
+    `first = successor(predecessor)` and `count = last - first + 1`, segment/stage counts, and one
+    canonical idempotency locator per sequence. Each locator and capsule must match sequence,
+    database, environment, tenant scope, principal, contract lineage, command ID, and keyed
+    caller-key digest; every prior locator remains readable across public and unpublished prefixes
+  - Transaction-adjacent integration preserves the current result algebra and lookup order exactly;
+    transient/unpublished/active-epoch member, durable locator point read and complete capsule and
+    identity validation, then `Ok(None)` on locator miss. There is no write-side history fallback.
+    A matching private witness determines only whether fresh coverage may survive and advance;
+    missing or mismatched proof disables before the unchanged admission result proceeds
+  - Operational direct-inspection integration accepts a locator miss without its existing bounded
+    history scan only under public-prefix proof bound to the exact captured published view/frontier.
+    Without proof the current scan and result/failure remain; malformed, duplicate, wrong-key,
+    wrong-sequence, wrong-capsule, or wrong-identity evidence remains `CorruptData`
+  - Direct/hardened audited publication constructs `DirectCommandWitness` only from a direct
+    `RedbWriteAccess` with no composite stage, empty FIFO, matching public/private predecessor root,
+    frontier and allocator, and an exact canonical audited segment, transaction-local count, span,
+    locators, and identities. It consumes both predecessor roles before the existing Immediate
+    commit and produces both successor roles only after exact commit/root refresh and expected
+    frontier/allocator; it neither uses ADR-0104 staging nor adds an ordering edge
+  - Exhaustive lane integration in which queued commands consume per-publication witnesses at the
+    existing composite-successor/ADR-0100 edge and queued service audits consume preserve witnesses.
+    Closed `PreservingImmediateClass` variants cover admission, execution failure, service audit,
+    catalog, query/reactive module, capability bootstrap/grant/revoke, projection, outbox, consumer,
+    columnar control, installation, and export. Each typed request creates an exact private
+    `(table, encoded key, insert/delete)` permit before staging; every mutation is registered, and
+    architecture checks reject raw/unregistered mutations. Permits exclude `COMMITS`,
+    `IDEMPOTENCY_LOCATORS`, `PROVENANCE_LOCATORS`, `AUDIT_BY_REQUEST_LOCATORS`, and
+    `META_APPLICATION_SEQUENCE`; bounded pre/post reads prove exact unchanged application frontier
+    and allocator
+  - A preserving Immediate lane with empty FIFO consumes both matching public and private roles plus
+    its exact permit into an unusable pair token before commit. Definite precommit abort restores the
+    predecessor pair; exact commit/root refresh restores both on the exact successor without clone,
+    cross-role mint, or one-shot disable. Storage-format migration, contract
+    migration/import, uncapsulated or unwitnessed command writes, restore/root replacement,
+    unknown lanes, gaps, duplicates, fences, uncertainty, or dropped witnesses disable before
+    visibility. Every offline retention hold/prune starts without inherited proof and drops its
+    exclusive store state before the next store opens
+  - Checkpoint/root rebase with no pending publication moves both roles into one pair token containing
+    coverage epoch, both predecessor identities and Option frontiers under a short lock, then performs
+    every wait and I/O without that lock. Definite prepublication failure restores the old pair;
+    exact success restores both roles on the exact rebased successor without cross-role mint.
+    Uncertainty, mismatch, partial handoff, lock poison, or postpublication failure disables and
+    retains existing fencing; no new drain or ordering edge is added
+  - Crash/close drops tokens; only a newly proved empty first command write may reinitialize after
+    restart. State and fixed-size pending tokens remain bounded by the active epoch/publication
+    queue, 256-transition, and 16-MiB frame ceilings and retain no population collection
+  - Req-tagged deterministic proofs
+    `fresh_locator_coverage_arms_at_first_command_write_only_from_exact_empty_authority`,
+    `fresh_locator_private_chain_and_fifo_publications_are_linear`,
+    `fresh_locator_write_miss_retains_current_semantics_and_gates_only_coverage`,
+    `fresh_locator_miss_preserves_prior_identity_and_rejects_malformed_locators`, and
+    `fresh_locator_coverage_classifies_every_publication_rebase_failure_and_restart`, covering
+    `None`/raw zero/exhaustion, inclusive arithmetic, exact identity fields, prior locators, A/B/C
+    and A-to-audit-to-B pipelining before A publication, wrong successors, witness loss, multiple
+    private groups, direct access with no composite stage, same-successor Direct postcommit public-
+    prefix operational-miss use and private-chain continuation, wrong-role/root/frontier/allocator
+    negatives, every exact permit and raw/extra mutation rejection, every named preserving and
+    disabling lane, suspended two-role Immediate rebind, 256 commands, 16 MiB, rebase
+    success/failure/uncertainty, and before/after-publication kills with hooks/channels and no sleeps
+  - Req-tagged proof `cold_fresh_database_publications_complete_without_history_scans` running at
+    least 288 bounded concurrent unique publications through direct inspection and
+    transaction-adjacent revalidation, reaching the exact final head with zero fallback history
+    scans and zero transient-index rebuilds
+  - Architecture proof that operational activation, checkpoint/certificate evidence, locator-table
+    cardinality, and prior-process state cannot arm coverage; public audit and `SubscribeCommits`
+    cannot consult either role; preserving lanes cannot mutate raw/unpermitted keys; ADR-0100
+    receives the exact published snapshot; and no public,
+    operator, durable, journal, Protobuf, storage-key, registry, conflict, ordering, batching,
+    acknowledgement, or outcome surface changes
+  - A narrow handoff authorizing WP-705 to rerun its separately owned 65,536-row and canonical
+    production lifecycle qualification only after this package closes; no WP-705 report, closure,
+    or WP-578 uninterrupted 72-hour evidence is created or claimed here
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-778
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test -p riffdb-commit -p riffdb-server -p riffdb-testkit-server --all-features
+  - cargo +1.97.0 test -p riffdb-storage-redb --test storage_recovery_matrix --all-features
+  - ./scripts/recovery_full
+  - ./scripts/ci-all
+  exit_gate: The exact first mutation-gated command write proves empty authority and every accepted
+    contiguous successor has distinct private-chain, direct or per-FIFO-publication, and published-prefix
+    evidence; transaction-adjacent locator misses retain their exact current `Ok(None)` semantics
+    with no invented fallback; 288 or more
+    concurrent cold publications complete at the exact head with no history fallback scan or
+    transient rebuild; all locator/identity/span mismatches, wrong successors, lanes, rebases,
+    unpermitted mutations, uncertainties, failures, kills, and nonempty reopens preserve prior
+    locators and fail closed; every preserving Immediate/checkpoint rebase restores both roles;
+    ADR-0100 publication, exact idempotent replay, atomicity, transaction-adjacent validation,
+    fencing, bounds, and lock-free checkpoint I/O remain unchanged; WP-705 and WP-578 evidence stay
+    separately pending.
+  standing_design_tests:
+    interface_safety: Coverage is storage-private, automatic, monotonic, and usable only after an
+      exact locator miss; no application, agent, SDK, transport, MCP, CLI, operator, or
+      configuration can arm, preserve, reset, observe, or bypass it, select a fallback, or suppress
+      transaction-adjacent idempotency validation.
+    scale: State is fixed public/private identities, epoch, and closed tag; fixed-size tokens are bounded by the
+      existing active epoch/publication queue and 256-transition/16-MiB frame limits and retain no
+      per-command value after publication; novel-key reads perform fixed point work and no retained
+      history, locator-table, or checkpoint population scan.
+  human_review_triggers: &id0197
+  - Coverage would initialize outside the first command-write mutation gate, from operational
+    activation, a checkpoint/certificate, table cardinality, nonempty history, or prior-process state.
+  - Operational locator absence would be accepted without exact public-prefix proof, a private or
+    publication witness could be forged/duplicated/reused, prior locators could disappear, or
+    malformed identity/span/successor evidence could avoid CorruptData.
+  - Transaction ordering, conflict ownership, transaction-adjacent revalidation, batching,
+    acknowledgement, outcome sequencing, write fencing, or public successor ordering would change.
+  - Checkpoint I/O would hold a transient lock, a rebase comparison could be skipped, ADR-0100's
+    publication snapshot/edge would change, or an unclassified application lane could preserve proof.
+  - Public audit or `SubscribeCommits` reconstruction, any public or operator surface, any durable
+    byte or identity, or any WP-705 or WP-578 evidence or closure state would change.

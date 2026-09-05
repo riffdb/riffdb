@@ -25,6 +25,8 @@
   fail-closed local-check obligation for the command-derived locator kinds.
   Deliberately amends nothing in ADR-0085; preserving that record's derivation
   unchanged is the reason for the placement chosen below.
+- **Accepted exact-text correction:** ADR-0197, accepted 2026-09-05, corrects
+  the final sentence of "Relationship to concurrent columnar records" below.
 
 ## Context
 
@@ -259,9 +261,11 @@ on rebuildable **derived provider state** registered under ADR-0124: ADR-0160
 states that "Authoritative storage, events, changelog, backup identity ... remain
 byte-exact", and ADR-0162 that "Existing authoritative ... bytes remain
 unchanged". Their ADR-0085 dependency is frontier and checkpoint survival, not
-the count derivation. This record is the only proposal that touches authoritative
-durable tables and the authoritative record-registry digest chain, and it is the
-only one whose upgrade invalidates clean-close certificates.
+the count derivation. This record alone adds authoritative durable tables, but,
+as Decision 5 and Consequences establish, it adds no message schema, changes no
+authoritative record-registry digest or chain link, and does not invalidate an
+otherwise eligible clean-close certificate. This replacement is ADR-0197's
+accepted exact-text correction of the contradictory prior sentence.
 
 ## Options Considered
 
