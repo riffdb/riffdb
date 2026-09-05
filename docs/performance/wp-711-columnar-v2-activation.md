@@ -1,7 +1,7 @@
 # WP-711 columnar V2 production-activation receipt
 
-Status: **production-path receipt refresh in progress; the tracked lower-level
-receipt is non-terminal until replaced**.
+Status: **production-path receipt banked; WP-711 remains open pending exact
+human acceptance of stale-incarnation recovery authority and its proof**.
 
 WP-711 uses the frozen WP-710 mechanics gate as a mandatory preflight, then
 measures one production-shaped V1/V2 activation corpus. The generator writes no
@@ -56,22 +56,21 @@ fields. Its self-test proves nested-schema and source-identity refusal, each
 frozen WP-710 threshold, nonzero activation lag/control fields, a mismatched
 result count, and any missing production worker/gate/acknowledgement evidence.
 
-## Prior non-terminal receipt (awaiting replacement)
+## Generated production-path receipt
 
-The JSON and observations in this section came from the superseded lower-level
-diagnostic. They remain historical only until the clean deletion/generation
-protocol replaces them with the production worker receipt; they do not close
-WP-711 or qualify activation.
+This receipt qualifies the production activation and non-regression evidence
+only. It does not close WP-711 or claim the still-pending stale-incarnation
+recovery proof.
 
 The generated receipt is
 `docs/performance/wp-711-columnar-v2-activation.json`. Its schema is
 `riffdb.wp711.columnar-v2-activation-receipt.v1`, its SHA-256 is
-`49818c548c1d1a55a7d7e1a9d8920b0bd5c2435ce1737514632c48d6ed5a8676`,
+`61b00172d5fe9a6014728734ae9e308d4c1ca1fd6aa7486c131f0a878313d453`,
 and it is pinned to clean implementation and evidence-infrastructure revision
-`628fcbc28c0c5bd2c11ae25228bb5127f97446df`. The receipt was generated with
+`5fa2443090bcb76c77e420e8e3f57befd2768494`. The receipt was generated with
 Rust 1.97.0 in release mode on an AMD Ryzen 9 7950X with 32 logical CPUs. The
-recorded load averages before and after the run were both
-`5.68 5.79 5.73`.
+recorded load averages before and after the run were
+`6.02 14.24 14.48` and `9.14 14.37 14.51`, respectively.
 
 The unchanged WP-710 preflight passed every ADR-0160 threshold:
 
@@ -79,27 +78,29 @@ The unchanged WP-710 preflight passed every ADR-0160 threshold:
 |---|---:|---:|---|
 | High-cardinality bytes | 1,851,404 | 1,609,476 (8,693 bps) | Pass; maximum 11,000 bps |
 | Low-cardinality bytes | 1,421,324 | 785,287 (5,525 bps) | Pass; maximum 7,500 bps |
-| Full-decode p50 | 4,215,276 ns | 4,176,676 ns (9,908 bps) | Pass; maximum 10,500 bps |
+| Full-decode p50 | 4,379,075 ns | 4,325,705 ns (9,878 bps) | Pass; maximum 10,500 bps |
 | Clustered segment rejection | — | 99/100; zero false negatives | Pass; minimum 90 percent and zero false negatives |
 
 The production-activation corpus also passed every fail-closed control. Each of
 the two queries returned its exact 8,192-row partition count, and the private
 referee obtained the combined 16,384 rows at matched frontier 16,384. Projection
 lag, no-projection bytes, no-projection modeled allocations, and no-projection
-population passes were all zero.
+population passes were all zero. Six worker passes produced three durable
+publication acknowledgements, selected V2 generation 2, compaction generation
+3, and pointer-equal reuse of the exact selected immutable `Arc`.
 
 | Observation | V1/no-V2 control | Selected V2 |
 |---|---:|---:|
-| Physical bytes | 1,470,699 | 731,547 |
+| Physical bytes | 1,372,395 | 841,935 |
 | Modeled owned allocations | 98,304 | 98,338 |
-| Combined bounded-query p50 | 3,741,576 ns | 3,756,546 ns |
-| Recovery p50 | 7,713,473 ns | 12,920,181 ns |
-| Rebuild elapsed | — | 79,974,611 ns |
-| Compaction elapsed | — | 80,676,662 ns |
+| Combined bounded-query p50 | 4,227,975 ns | 4,146,925 ns |
+| Recovery p50 | 7,813,597 ns | 10,539,696 ns |
+| Rebuild elapsed | — | 245,713,753 ns |
+| Compaction elapsed | — | 267,661,139 ns |
 
-V2 uses 50.26 percent fewer physical bytes in this production-shaped corpus;
-its combined hot-query p50 is 0.40 percent above V1. Cold V2 recovery p50 is
-67.50 percent above V1 because reopening pays complete selected-generation
+V2 uses 38.65 percent fewer physical bytes in this production-shaped corpus;
+its combined hot-query p50 is 1.92 percent below V1. Cold V2 recovery p50 is
+34.89 percent above V1 because reopening pays complete selected-generation
 validation before an immutable view becomes available. That recovery delta is a
 review hazard, not a hidden failure. These single-host observations are package
 activation evidence, not public latency, storage-ratio, or allocation promises.
