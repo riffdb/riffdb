@@ -1055,7 +1055,7 @@ fn selected_v2_queries_use_open_validated_private_pruning_with_fixed_policy_work
 
 // req: PRJ-002, PRJ-004, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022, OQ-024
 #[test]
-fn columnar_v2_generation_root_publication_is_atomic_across_partitions() {
+fn columnar_v2_generation_root_is_structurally_atomic_across_partitions() {
     let definition = register_ticket_board(&compile_bundle());
     let source_directory = temp_dir("v2-generation-atomic");
     let generation = ProjectionGeneration::new(2).expect("generation");
@@ -1167,7 +1167,7 @@ fn columnar_v2_generation_root_publication_is_atomic_across_partitions() {
 
 // req: PRJ-002, PRJ-004, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022
 #[test]
-fn columnar_v2_crash_reopens_exactly_one_published_generation() {
+fn columnar_v2_member_build_crashes_recover_one_complete_generation() {
     const CHILD_MODE: &str = "RIFFDB_COLUMNAR_V2_CRASH_CHILD";
     const CHILD_PATH: &str = "RIFFDB_COLUMNAR_V2_CRASH_PATH";
     const CHILD_BOUNDARY: &str = "RIFFDB_COLUMNAR_V2_CRASH_BOUNDARY";
@@ -1222,7 +1222,7 @@ fn columnar_v2_crash_reopens_exactly_one_published_generation() {
         let source_directory = temp_dir(&format!("v2-crash-{name}"));
         let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
             .arg("--exact")
-            .arg("columnar_v2_crash_reopens_exactly_one_published_generation")
+            .arg("columnar_v2_member_build_crashes_recover_one_complete_generation")
             .arg("--nocapture")
             .env(CHILD_MODE, "1")
             .env(CHILD_PATH, &source_directory)
@@ -1257,7 +1257,7 @@ fn columnar_v2_crash_reopens_exactly_one_published_generation() {
 
 // req: PRJ-004, PRJ-008, PRJ-009, PRJ-010, OQ-020
 #[test]
-fn columnar_v2_retirement_crash_never_rolls_back_and_reclamation_is_idempotent() {
+fn v2_reclamation_delete_and_parent_sync_are_idempotent() {
     const CHILD_MODE: &str = "RIFFDB_COLUMNAR_V2_RECLAIM_CHILD";
     const CHILD_PATH: &str = "RIFFDB_COLUMNAR_V2_RECLAIM_PATH";
     const CHILD_BOUNDARY: &str = "RIFFDB_COLUMNAR_V2_RECLAIM_BOUNDARY";
@@ -1307,7 +1307,7 @@ fn columnar_v2_retirement_crash_never_rolls_back_and_reclamation_is_idempotent()
         let source_directory = temp_dir(&format!("v2-{name}"));
         let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
             .arg("--exact")
-            .arg("columnar_v2_retirement_crash_never_rolls_back_and_reclamation_is_idempotent")
+            .arg("v2_reclamation_delete_and_parent_sync_are_idempotent")
             .arg("--nocapture")
             .env(CHILD_MODE, "1")
             .env(CHILD_PATH, &source_directory)

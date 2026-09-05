@@ -237,6 +237,8 @@ impl ColumnarActivationSpec {
 /// One named engine retained cold until semantic demand.
 pub(crate) struct ColumnarEngineSlot {
     state: Mutex<ColumnarSlotState>,
+    #[cfg(test)]
+    capture_attempt_probe: Mutex<Option<std::sync::mpsc::SyncSender<()>>>,
     definition: RegisteredDefinition,
     activation: ColumnarActivationSpec,
     cold_snapshot: Arc<riffdb_columnar::ColumnarSnapshot>,
@@ -298,6 +300,8 @@ impl ColumnarEngineSlot {
     ) -> Self {
         Self {
             state: Mutex::new(ColumnarSlotState::Cold),
+            #[cfg(test)]
+            capture_attempt_probe: Mutex::new(None),
             activation: ColumnarActivationSpec {
                 definition: definition.clone(),
                 directory,
@@ -353,6 +357,12 @@ impl ColumnarEngineSlot {
     }
 
     fn request_activation(&self) -> Result<ColumnarActivationRequest, ColumnarPortError> {
+        #[cfg(test)]
+        if let Ok(probe) = self.capture_attempt_probe.lock()
+            && let Some(probe) = probe.as_ref()
+        {
+            let _ = probe.send(());
+        }
         let mut state = self
             .state
             .lock()
@@ -453,6 +463,13 @@ impl ColumnarEngineSlot {
             ColumnarSlotState::Failed { .. } | ColumnarSlotState::Stopped => {
                 Err(ColumnarPortError::Unavailable)
             }
+        }
+    }
+
+    #[cfg(test)]
+    fn set_capture_attempt_probe(&self, probe: Option<std::sync::mpsc::SyncSender<()>>) {
+        if let Ok(mut installed) = self.capture_attempt_probe.lock() {
+            *installed = probe;
         }
     }
 
@@ -2115,25 +2132,29 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::mpsc;
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use riffdb_catalog::{
         ActiveCatalogSnapshot as CatalogSnapshotReadback, CatalogHistoryOutcome,
         ValidatedContractBundle, validate_catalog_history,
     };
-    use riffdb_columnar::{ColumnarQueryRequest, QueryBudget, QueryResult, query_snapshot};
+    use riffdb_columnar::{
+        ColumnarQueryRequest, ColumnarSnapshot, ColumnarTestBoundary, ColumnarTestController,
+        LiveRow, OrgKey, PrimaryKeyBytes, QueryBudget, QueryResult, query_snapshot,
+    };
     use riffdb_storage_api::{
         AuditPrincipalV1, CatalogActivationIntentV1, CatalogActivationResult,
-        CatalogAdministrationRepository, DatabaseInitializationPort, DatabaseInitializationResult,
-        EvidencePageLimit, ReadableCapabilityDigestInventory, ReadableDigestKey,
-        ReadableIdempotencyDigestInventory, StartupValidationInputs, StructuralEvidenceCursor,
-        StructuralEvidenceOpen, StructuralEvidencePage, StructuralEvidenceSession,
-        StructuralOpenOutcome,
+        CatalogAdministrationRepository, ColumnarProjectionArtifactV1, DatabaseInitializationPort,
+        DatabaseInitializationResult, EvidencePageLimit, PreparedColumnarGenerationV1,
+        ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
+        StartupValidationInputs, StoredColumnarProjectionControlV1,
+        StoredColumnarProjectionGenerationV1, StructuralEvidenceCursor, StructuralEvidenceOpen,
+        StructuralEvidencePage, StructuralEvidenceSession, StructuralOpenOutcome,
     };
     use riffdb_storage_redb::{RedbDormantPorts, RedbOperationalPorts, RedbStore};
     use riffdb_types::{
-        ActorId, ActorKind, CanonicalValue, CapabilityId, DatabaseId, DigestKeyId, RequestId,
-        Timestamp,
+        ActorId, ActorKind, CanonicalValue, CapabilityId, DatabaseId, DigestKeyId, EntityVersion,
+        RequestId, Timestamp,
     };
 
     use super::*;
@@ -2353,7 +2374,11 @@ contract VectorBoard version 1 {
     }
 
     fn reopen_board_runtime(scope: &tempfile::TempDir) -> Arc<ColumnarRuntime> {
-        let store = RedbStore::open(scope.path().join("db.redb")).expect("reopen board database");
+        open_board_runtime_at(scope.path())
+    }
+
+    fn open_board_runtime_at(scope: &Path) -> Arc<ColumnarRuntime> {
+        let store = RedbStore::open(scope.join("db.redb")).expect("reopen board database");
         let ports = open_operational(store);
         let storage =
             SharedRedbOperationalPorts::new(ports, None).expect("share reopened board ports");
@@ -2366,7 +2391,7 @@ contract VectorBoard version 1 {
         ColumnarRuntime::open(
             storage,
             &[projection],
-            &scope.path().join("projections"),
+            &scope.join("projections"),
             1,
             [0x5a; 16],
         )
@@ -2394,6 +2419,127 @@ contract VectorBoard version 1 {
         runtime
             .request_activation(&slot)
             .expect("request projection activation");
+    }
+
+    struct PreparedV2Publication {
+        binding: ColumnarControlBinding,
+        expected: StoredColumnarProjectionControlV1,
+        prepared: PreparedColumnarGenerationV1,
+        successor: ColumnarEngine,
+        successor_snapshot: Arc<ColumnarSnapshot>,
+        organizations: [OrgKey; 2],
+    }
+
+    fn two_partition_snapshot() -> (ColumnarSnapshot, [OrgKey; 2]) {
+        let organizations = [
+            OrgKey::from_value(&CanonicalValue::Uuid(uuid_bytes(0x41))).expect("organization A"),
+            OrgKey::from_value(&CanonicalValue::Uuid(uuid_bytes(0x42))).expect("organization B"),
+        ];
+        let mut snapshot = ColumnarSnapshot::empty();
+        for (ordinal, organization) in organizations.iter().enumerate() {
+            snapshot.delta.insert(
+                organization.clone(),
+                BTreeMap::from([(
+                    PrimaryKeyBytes::from_entity_key_bytes(vec![ordinal as u8 + 1]),
+                    LiveRow {
+                        entity_version: EntityVersion::new(1).expect("entity version"),
+                        cells: vec![
+                            CanonicalValue::U64(ordinal as u64 + 1),
+                            CanonicalValue::string(format!("partition-{ordinal}"))
+                                .expect("bounded title"),
+                        ],
+                    },
+                )]),
+            );
+        }
+        (snapshot, organizations)
+    }
+
+    fn prepare_two_partition_v2_publication(
+        runtime: &Arc<ColumnarRuntime>,
+        scope: &tempfile::TempDir,
+    ) -> PreparedV2Publication {
+        request_projection(runtime, "ticket_board");
+        assert!(crate::columnar_worker::run_one_test_pass(runtime));
+        let binding = runtime
+            .control_binding("ticket_board")
+            .expect("control binding")
+            .clone();
+        let ready_v1 = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("read selected V1")
+            .expect("selected V1");
+        let physical = PhysicalGenerationFingerprintV1::compute(binding.definition().fingerprint());
+        assert_eq!(
+            runtime
+                .storage()
+                .begin_v2_candidate(&ready_v1, *physical.as_bytes())
+                .expect("begin V2 candidate"),
+            ColumnarProjectionControlWriteResultV1::Applied
+        );
+        let catching_up = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("read catching-up control")
+            .expect("catching-up control");
+        let candidate = catching_up.candidate().expect("V2 candidate");
+        let (snapshot, organizations) = two_partition_snapshot();
+        let source_directory =
+            controlled_source_directory(&scope.path().join("projections"), binding.spec().hash());
+        let generation = ValidatedColumnarV2Generation::prepare(
+            &source_directory,
+            binding.definition().clone(),
+            runtime.history_incarnation(),
+            candidate.generation(),
+            FrontierPosition::BeforeFirst,
+            &snapshot,
+        )
+        .expect("prepare two-partition V2 root");
+        let (length, checksum) = generation.artifact_identity();
+        let pointer = StoredColumnarProjectionGenerationV1::prepared_candidate(
+            candidate.generation(),
+            ColumnarProjectionLayoutV1::V2,
+            FrontierPosition::BeforeFirst,
+            FrontierPosition::BeforeFirst,
+            runtime.history_incarnation(),
+            ColumnarProjectionArtifactV1::new(length, checksum).expect("root artifact"),
+            binding.definition().fingerprint(),
+            binding.spec().hash(),
+            Some(*physical.as_bytes()),
+        )
+        .expect("prepared V2 pointer");
+        let prepared = PreparedColumnarGenerationV1::v2(
+            binding.spec().source().clone(),
+            binding.spec().definition_semantics_hash(),
+            pointer,
+            runtime.process_generation(),
+        )
+        .expect("prepared V2 witness");
+        assert_eq!(
+            runtime
+                .storage()
+                .record_durable_snapshot(&catching_up, &prepared)
+                .expect("record prepared V2 root"),
+            ColumnarProjectionControlWriteResultV1::Applied
+        );
+        let expected = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("reread prepared V2")
+            .expect("prepared V2");
+        let successor = runtime
+            .open_controlled_generation(&binding, expected.candidate().expect("candidate"))
+            .expect("open exact prepared V2");
+        let successor_snapshot = successor.published_snapshot();
+        PreparedV2Publication {
+            binding,
+            expected,
+            prepared,
+            successor,
+            successor_snapshot,
+            organizations,
+        }
     }
 
     fn controlled_directory(
@@ -2648,6 +2794,227 @@ contract VectorBoard version 1 {
                 .observe("ticket_board")
                 .expect("validated V2 observation")
                 .has_published()
+        );
+    }
+
+    // req: PRJ-006, PRJ-008, PRJ-009, OQ-020, OQ-022, PERF-007
+    #[test]
+    fn columnar_control_gate_recovers_every_cas_result_before_acknowledgement() {
+        use crate::columnar_worker::{
+            ColumnarPublicationTestMode, publish_prepared_under_capture_gate_for_test,
+        };
+
+        for (label, mode, becomes_selected) in [
+            ("applied", ColumnarPublicationTestMode::Ordinary, true),
+            (
+                "state-changed",
+                ColumnarPublicationTestMode::StateChangedAfterApplied,
+                true,
+            ),
+            (
+                "storage-failure",
+                ColumnarPublicationTestMode::StorageFailureBeforeCommit,
+                false,
+            ),
+            (
+                "unknown-applied",
+                ColumnarPublicationTestMode::UnknownAfterApplied,
+                true,
+            ),
+            (
+                "unknown-uncommitted",
+                ColumnarPublicationTestMode::UnknownBeforeCommit,
+                false,
+            ),
+        ] {
+            let (runtime, scope) = board_runtime(&format!("publication-{label}"));
+            let publication = prepare_two_partition_v2_publication(&runtime, &scope);
+            let port = ServerColumnarProjectionPort::new(Arc::clone(&runtime));
+            let predecessor = port
+                .observe("ticket_board")
+                .expect("capture predecessor")
+                .snapshot_arc();
+            let waiter = runtime
+                .notifier()
+                .register("ticket_board".to_owned())
+                .expect("register exact acknowledgement observer");
+            let slot = runtime
+                .engine("ticket_board")
+                .expect("engine registry")
+                .expect("active slot");
+            let candidate_generation = publication
+                .expected
+                .candidate()
+                .expect("prepared candidate")
+                .generation();
+            let result = publish_prepared_under_capture_gate_for_test(
+                &runtime,
+                &publication.binding,
+                &slot,
+                &publication.expected,
+                &publication.prepared,
+                publication.successor,
+                mode,
+                || {},
+            );
+            let durable = runtime
+                .storage()
+                .recover_expected_control(publication.binding.spec().source())
+                .expect("durable reread after injected result")
+                .expect("durable control");
+            let installed = port
+                .observe("ticket_board")
+                .expect("capture durable selected view")
+                .snapshot_arc();
+            let wake = waiter
+                .wait(Instant::now())
+                .expect("bounded wake observation");
+
+            if becomes_selected {
+                assert_eq!(result, Ok(true), "{label}");
+                assert_eq!(
+                    durable.published().map(|value| value.generation()),
+                    Some(candidate_generation),
+                    "{label}: durable reread, not the result class, selects the candidate"
+                );
+                assert!(
+                    Arc::ptr_eq(&installed, &publication.successor_snapshot),
+                    "{label}: the gate installs the exact fully validated successor Arc"
+                );
+                for organization in &publication.organizations {
+                    assert_eq!(installed.merged_org(organization).len(), 1, "{label}");
+                }
+                assert_eq!(wake, riffdb_service::ColumnarWake::Notified, "{label}");
+            } else {
+                assert_eq!(result, Err(()), "{label}");
+                assert_eq!(
+                    durable.published(),
+                    publication.expected.published(),
+                    "{label}"
+                );
+                assert!(
+                    !Arc::ptr_eq(&installed, &publication.successor_snapshot),
+                    "{label}: an unselected candidate Arc is never installed"
+                );
+                assert!(
+                    !Arc::ptr_eq(&predecessor, &publication.successor_snapshot),
+                    "{label}: predecessor and candidate capabilities are distinct"
+                );
+                assert_eq!(wake, riffdb_service::ColumnarWake::TimedOut, "{label}");
+            }
+        }
+    }
+
+    // req: PRJ-002, PRJ-004, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022, OQ-024
+    #[test]
+    fn columnar_v2_generation_root_publication_is_atomic_across_partitions() {
+        const CAPTURES: usize = 4;
+        use crate::columnar_worker::{
+            ColumnarPublicationTestMode, publish_prepared_under_capture_gate_for_test,
+        };
+
+        let (runtime, scope) = board_runtime("multi-partition-capture-race");
+        let publication = prepare_two_partition_v2_publication(&runtime, &scope);
+        let port = ServerColumnarProjectionPort::new(Arc::clone(&runtime));
+        let predecessor = port
+            .observe("ticket_board")
+            .expect("capture predecessor before gate")
+            .snapshot_arc();
+        assert!(
+            publication
+                .organizations
+                .iter()
+                .all(|organization| predecessor.merged_org(organization).is_empty())
+        );
+
+        let slot = runtime
+            .engine("ticket_board")
+            .expect("engine registry")
+            .expect("active slot");
+        let (attempt_tx, attempt_rx) = mpsc::sync_channel(CAPTURES);
+        slot.set_capture_attempt_probe(Some(attempt_tx));
+        let (gate_closed_tx, gate_closed_rx) = mpsc::sync_channel(0);
+        let (publish_tx, publish_rx) = mpsc::sync_channel(0);
+        let publish_runtime = Arc::clone(&runtime);
+        let publish_slot = Arc::clone(&slot);
+        let expected_snapshot = Arc::clone(&publication.successor_snapshot);
+        let organizations = publication.organizations.clone();
+        let binding = publication.binding.clone();
+        let expected_generation = publication
+            .expected
+            .candidate()
+            .expect("candidate")
+            .generation();
+        let publisher = thread::spawn(move || {
+            publish_prepared_under_capture_gate_for_test(
+                &publish_runtime,
+                &publication.binding,
+                &publish_slot,
+                &publication.expected,
+                &publication.prepared,
+                publication.successor,
+                ColumnarPublicationTestMode::Ordinary,
+                || {
+                    gate_closed_tx.send(()).expect("publish gate closed");
+                    publish_rx.recv().expect("release exact publication");
+                },
+            )
+        });
+        gate_closed_rx.recv().expect("observe closed capture gate");
+
+        let (captured_tx, captured_rx) = mpsc::channel();
+        let mut captures = Vec::new();
+        for _ in 0..CAPTURES {
+            let capture_runtime = Arc::clone(&runtime);
+            let captured_tx = captured_tx.clone();
+            captures.push(thread::spawn(move || {
+                let snapshot = ServerColumnarProjectionPort::new(capture_runtime)
+                    .observe("ticket_board")
+                    .expect("capture after publication")
+                    .snapshot_arc();
+                captured_tx
+                    .send(Arc::clone(&snapshot))
+                    .expect("send capture");
+                snapshot
+            }));
+        }
+        drop(captured_tx);
+        for _ in 0..CAPTURES {
+            attempt_rx
+                .recv()
+                .expect("real request reached the held engine-slot mutex");
+        }
+        assert!(
+            matches!(captured_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
+            "no request capture completes before durable selection and exact view installation"
+        );
+        slot.set_capture_attempt_probe(None);
+        publish_tx.send(()).expect("allow publication CAS");
+        assert_eq!(publisher.join().expect("join publisher"), Ok(true));
+
+        for capture in captures {
+            let snapshot = capture.join().expect("join request capture");
+            assert!(
+                Arc::ptr_eq(&snapshot, &expected_snapshot),
+                "every capture after the gate receives the one exact selected Arc"
+            );
+            for organization in &organizations {
+                assert_eq!(snapshot.merged_org(organization).len(), 1);
+            }
+        }
+        assert!(
+            organizations
+                .iter()
+                .all(|organization| predecessor.merged_org(organization).is_empty())
+        );
+        let durable = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("reread exact selection")
+            .expect("selected control");
+        assert_eq!(
+            durable.published().map(|value| value.generation()),
+            Some(expected_generation)
         );
     }
 
@@ -3065,6 +3432,553 @@ contract VectorBoard version 1 {
             "failure must not overwrite or fall back from the selected artifact"
         );
         assert_eq!(reopened.lifecycle_observation().activations(), 1);
+    }
+
+    // req: PRJ-008, PRJ-009, OQ-020, OQ-022
+    #[test]
+    fn columnar_control_recovery_refuses_corrupt_selected_v2_without_v1_fallback() {
+        const CHILD_MODE: &str = "RIFFDB_SERVER_CORRUPT_V2_CRASH_CHILD";
+        const CHILD_PATH: &str = "RIFFDB_SERVER_CORRUPT_V2_CRASH_PATH";
+        const EXACT_TEST: &str = "columnar_adapter::tests::columnar_control_recovery_refuses_corrupt_selected_v2_without_v1_fallback";
+        if std::env::var(CHILD_MODE).as_deref() == Ok("1") {
+            let path = PathBuf::from(std::env::var_os(CHILD_PATH).expect("child path"));
+            let runtime = open_board_runtime_at(&path);
+            request_projection(&runtime, "ticket_board");
+            let _ = crate::columnar_worker::run_one_test_pass(&runtime);
+            std::process::exit(0);
+        }
+
+        let (runtime, scope) = board_runtime("corrupt-selected-v2-no-fallback");
+        request_projection(&runtime, "ticket_board");
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        let port = ServerColumnarProjectionPort::new(Arc::clone(&runtime));
+        let retained_v1 = port
+            .observe("ticket_board")
+            .expect("capture selected V1 predecessor")
+            .snapshot_arc();
+        for _ in 0..3 {
+            assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        }
+        let binding = runtime
+            .control_binding("ticket_board")
+            .expect("control binding")
+            .clone();
+        let selected = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("read selected V2")
+            .expect("selected V2");
+        let published_v2 = selected.published().expect("published V2").clone();
+        assert_eq!(published_v2.layout(), ColumnarProjectionLayoutV1::V2);
+        let selected_v2 = port
+            .observe("ticket_board")
+            .expect("capture selected V2")
+            .snapshot_arc();
+        assert!(!Arc::ptr_eq(&retained_v1, &selected_v2));
+        let root =
+            controlled_source_directory(&scope.path().join("projections"), binding.spec().hash())
+                .join(format!(
+                    "generation-{:016x}",
+                    published_v2.generation().get()
+                ))
+                .join("ROOT-V1");
+        drop(port);
+        drop(runtime);
+        std::fs::write(&root, b"corrupt selected V2 root").expect("corrupt selected root");
+        let corrupt_bytes = std::fs::read(&root).expect("read corrupt root");
+
+        let reopened = reopen_board_runtime(&scope);
+        let reopened_port = ServerColumnarProjectionPort::new(Arc::clone(&reopened));
+        let cold = reopened_port
+            .observe("ticket_board")
+            .expect("cold observation before validation");
+        assert!(!cold.has_published());
+        assert!(
+            !crate::columnar_worker::run_one_test_pass(&reopened),
+            "complete selected-V2 validation must fail closed"
+        );
+        assert!(matches!(
+            reopened_port.observe("ticket_board"),
+            Err(ColumnarPortError::Unavailable)
+        ));
+        let degraded = reopened
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("reread degraded control")
+            .expect("degraded control");
+        assert_eq!(degraded.published(), Some(&published_v2));
+        assert!(degraded.servable_generation().is_none());
+        assert_eq!(
+            degraded.failure().map(|failure| failure.reason()),
+            Some(riffdb_storage_api::ColumnarProjectionFailureReasonV1::ArtifactInvalid)
+        );
+        assert_eq!(std::fs::read(&root).expect("reread root"), corrupt_bytes);
+        assert!(retained_v1.segments.is_empty() && retained_v1.delta.is_empty());
+        assert!(
+            !Arc::ptr_eq(&retained_v1, &selected_v2),
+            "a still-live predecessor capability never becomes fallback authority"
+        );
+
+        for (label, abort_at, unknown) in [
+            ("after-cas", "after-cas", false),
+            ("unknown-after-cas", "after-cas", true),
+            ("after-reread", "after-reread", false),
+            ("after-view-install", "after-view-install", false),
+        ] {
+            let (runtime, crash_scope) = board_runtime(&format!("corrupt-after-{label}"));
+            let publication = prepare_two_partition_v2_publication(&runtime, &crash_scope);
+            let predecessor = publication
+                .expected
+                .published()
+                .expect("V1 predecessor")
+                .clone();
+            let candidate = publication
+                .expected
+                .candidate()
+                .expect("V2 candidate")
+                .clone();
+            let binding = publication.binding.clone();
+            drop(publication);
+            drop(runtime);
+            let mut child = std::process::Command::new(
+                std::env::current_exe().expect("server test executable"),
+            );
+            child
+                .arg("--exact")
+                .arg(EXACT_TEST)
+                .arg("--nocapture")
+                .env(CHILD_MODE, "1")
+                .env(CHILD_PATH, crash_scope.path())
+                .env("RIFFDB_COLUMNAR_PUBLICATION_ABORT_AT", abort_at)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            if unknown {
+                child.env(
+                    "RIFFDB_COLUMNAR_PUBLICATION_RESULT",
+                    "unknown-after-applied",
+                );
+            }
+            let status = child.status().expect("spawn selected-V2 crash child");
+            assert!(!status.success(), "child must abort at {label}");
+
+            let root = controlled_source_directory(
+                &crash_scope.path().join("projections"),
+                binding.spec().hash(),
+            )
+            .join(format!("generation-{:016x}", candidate.generation().get()))
+            .join("ROOT-V1");
+            assert!(
+                root.is_file(),
+                "{label}: durable CAS selected the complete V2 root"
+            );
+            std::fs::write(&root, b"corrupt selected V2 after crash")
+                .expect("corrupt crash-selected root");
+            let reopened = open_board_runtime_at(crash_scope.path());
+            let durable = reopened
+                .storage()
+                .recover_expected_control(binding.spec().source())
+                .expect("reread crash-selected V2")
+                .expect("crash-selected V2");
+            let selected_pointer = durable.published().expect("published V2").clone();
+            assert_eq!(
+                selected_pointer.generation(),
+                candidate.generation(),
+                "{label}"
+            );
+            assert_eq!(selected_pointer.layout(), candidate.layout(), "{label}");
+            assert_eq!(selected_pointer.frontier(), candidate.frontier(), "{label}");
+            assert_eq!(selected_pointer.artifact(), candidate.artifact(), "{label}");
+            assert!(
+                controlled_generation_directory(
+                    &crash_scope.path().join("projections"),
+                    binding.spec().hash(),
+                    predecessor.generation(),
+                )
+                .exists(),
+                "{label}: a physical V1 predecessor remains available to catch accidental fallback"
+            );
+            let crash_port = ServerColumnarProjectionPort::new(Arc::clone(&reopened));
+            let cold = crash_port
+                .observe("ticket_board")
+                .expect("cold selected-V2 observation");
+            assert!(!cold.has_published(), "{label}");
+            assert!(
+                !crate::columnar_worker::run_one_test_pass(&reopened),
+                "{label}"
+            );
+            assert!(matches!(
+                crash_port.observe("ticket_board"),
+                Err(ColumnarPortError::Unavailable)
+            ));
+            let degraded = reopened
+                .storage()
+                .recover_expected_control(binding.spec().source())
+                .expect("reread degraded crash selection")
+                .expect("degraded crash selection");
+            assert_eq!(degraded.published(), Some(&selected_pointer), "{label}");
+            assert!(degraded.servable_generation().is_none(), "{label}");
+        }
+    }
+
+    // req: PRJ-002, PRJ-004, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022
+    #[test]
+    fn columnar_v2_crash_reopens_exactly_one_published_generation() {
+        const MODE: &str = "RIFFDB_SERVER_V2_CRASH_MODE";
+        const PATH: &str = "RIFFDB_SERVER_V2_CRASH_PATH";
+        const BOUNDARY: &str = "RIFFDB_SERVER_V2_CRASH_BOUNDARY";
+        const EXACT_TEST: &str =
+            "columnar_adapter::tests::columnar_v2_crash_reopens_exactly_one_published_generation";
+
+        if let Ok(mode) = std::env::var(MODE) {
+            let path = PathBuf::from(std::env::var_os(PATH).expect("child path"));
+            match mode.as_str() {
+                "build" => {
+                    let (definition_runtime, _definition_scope) = board_runtime("crash-definition");
+                    let definition = definition_runtime
+                        .control_binding("ticket_board")
+                        .expect("definition binding")
+                        .definition()
+                        .clone();
+                    let boundary = match std::env::var(BOUNDARY).expect("build boundary").as_str() {
+                        "before-segment-sync" => ColumnarTestBoundary::BeforeV2SegmentSync,
+                        "after-segment-rename" => ColumnarTestBoundary::AfterV2SegmentRename,
+                        "after-manifest-rename" => ColumnarTestBoundary::AfterV2ManifestRename,
+                        "after-root-rename" => ColumnarTestBoundary::AfterV2RootRename,
+                        "after-generation-rename" => ColumnarTestBoundary::AfterV2GenerationRename,
+                        other => panic!("unknown build boundary {other}"),
+                    };
+                    let controller = ColumnarTestController::new();
+                    controller.arm_abort_at(boundary);
+                    let (snapshot, _) = two_partition_snapshot();
+                    let _ = ValidatedColumnarV2Generation::prepare_with_controller(
+                        &path,
+                        definition,
+                        1,
+                        ProjectionGeneration::new(7).expect("generation"),
+                        FrontierPosition::BeforeFirst,
+                        &snapshot,
+                        &controller,
+                    );
+                }
+                "publication" | "compaction" => {
+                    let runtime = open_board_runtime_at(&path);
+                    request_projection(&runtime, "ticket_board");
+                    let _ = crate::columnar_worker::run_one_test_pass(&runtime);
+                }
+                "reclaim" => {
+                    let boundary = match std::env::var(BOUNDARY).expect("reclaim boundary").as_str()
+                    {
+                        "before-reclaim" => ColumnarTestBoundary::BeforeV2GenerationReclaim,
+                        "after-reclaim" => ColumnarTestBoundary::AfterV2GenerationReclaim,
+                        other => panic!("unknown reclaim boundary {other}"),
+                    };
+                    let controller = ColumnarTestController::new();
+                    controller.arm_abort_at(boundary);
+                    let _ = ValidatedColumnarV2Generation::reclaim_with_controller(
+                        &path,
+                        ProjectionGeneration::new(9).expect("retired generation"),
+                        &controller,
+                    );
+                }
+                other => panic!("unknown crash mode {other}"),
+            }
+            std::process::exit(0);
+        }
+
+        for boundary in [
+            "before-segment-sync",
+            "after-segment-rename",
+            "after-manifest-rename",
+            "after-root-rename",
+            "after-generation-rename",
+        ] {
+            let source_directory = adapter_scope(&format!("process-build-{boundary}"));
+            let status = std::process::Command::new(
+                std::env::current_exe().expect("server test executable"),
+            )
+            .arg("--exact")
+            .arg(EXACT_TEST)
+            .arg("--nocapture")
+            .env(MODE, "build")
+            .env(PATH, source_directory.path())
+            .env(BOUNDARY, boundary)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("spawn build-crash child");
+            assert!(!status.success(), "child must abort at {boundary}");
+            let (definition_runtime, _definition_scope) = board_runtime("recover-definition");
+            let definition = definition_runtime
+                .control_binding("ticket_board")
+                .expect("definition binding")
+                .definition()
+                .clone();
+            let (snapshot, organizations) = two_partition_snapshot();
+            let recovered = ValidatedColumnarV2Generation::prepare(
+                source_directory.path(),
+                definition,
+                1,
+                ProjectionGeneration::new(7).expect("generation"),
+                FrontierPosition::BeforeFirst,
+                &snapshot,
+            )
+            .unwrap_or_else(|error| panic!("recover {boundary}: {error}"));
+            assert_eq!(recovered.root().partitions().len(), 2);
+            assert!(
+                organizations.iter().all(|organization| recovered
+                    .snapshot()
+                    .merged_org(organization)
+                    .len()
+                    == 1)
+            );
+        }
+
+        for (label, abort_at, unknown, selected_layout) in [
+            (
+                "before-cas",
+                "before-cas",
+                false,
+                ColumnarProjectionLayoutV1::V1,
+            ),
+            (
+                "after-cas",
+                "after-cas",
+                false,
+                ColumnarProjectionLayoutV1::V2,
+            ),
+            (
+                "unknown-after-cas",
+                "after-cas",
+                true,
+                ColumnarProjectionLayoutV1::V2,
+            ),
+            (
+                "after-reread",
+                "after-reread",
+                false,
+                ColumnarProjectionLayoutV1::V2,
+            ),
+            (
+                "after-view-install",
+                "after-view-install",
+                false,
+                ColumnarProjectionLayoutV1::V2,
+            ),
+        ] {
+            let (runtime, scope) = board_runtime(&format!("process-publication-{label}"));
+            let publication = prepare_two_partition_v2_publication(&runtime, &scope);
+            let candidate_generation = publication
+                .expected
+                .candidate()
+                .expect("prepared candidate")
+                .generation();
+            let predecessor_generation = publication
+                .expected
+                .published()
+                .expect("published predecessor")
+                .generation();
+            drop(publication);
+            drop(runtime);
+            let mut child = std::process::Command::new(
+                std::env::current_exe().expect("server test executable"),
+            );
+            child
+                .arg("--exact")
+                .arg(EXACT_TEST)
+                .arg("--nocapture")
+                .env(MODE, "publication")
+                .env(PATH, scope.path())
+                .env("RIFFDB_COLUMNAR_PUBLICATION_ABORT_AT", abort_at)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            if unknown {
+                child.env(
+                    "RIFFDB_COLUMNAR_PUBLICATION_RESULT",
+                    "unknown-after-applied",
+                );
+            }
+            let status = child.status().expect("spawn publication-crash child");
+            assert!(!status.success(), "child must abort at {label}");
+
+            let reopened = open_board_runtime_at(scope.path());
+            let binding = reopened
+                .control_binding("ticket_board")
+                .expect("reopened binding")
+                .clone();
+            let durable = reopened
+                .storage()
+                .recover_expected_control(binding.spec().source())
+                .expect("reread crash result")
+                .expect("durable crash result");
+            let selected = durable
+                .servable_generation()
+                .expect("one durable selection");
+            assert_eq!(selected.layout(), selected_layout, "{label}");
+            assert_eq!(
+                selected.generation(),
+                if selected_layout == ColumnarProjectionLayoutV1::V2 {
+                    candidate_generation
+                } else {
+                    predecessor_generation
+                },
+                "{label}"
+            );
+            request_projection(&reopened, "ticket_board");
+            assert!(crate::columnar_worker::activate_one_test_slot(
+                &reopened,
+                "ticket_board"
+            ));
+            assert_eq!(
+                reopened
+                    .engine("ticket_board")
+                    .expect("engine registry")
+                    .expect("selected slot")
+                    .generation(),
+                Some(selected.generation()),
+                "{label}: reopen installs exactly the durable selection"
+            );
+        }
+
+        let (runtime, compaction_scope) = board_runtime("process-compaction-publication");
+        request_projection(&runtime, "ticket_board");
+        for _ in 0..4 {
+            assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        }
+        let binding = runtime
+            .control_binding("ticket_board")
+            .expect("compaction binding")
+            .clone();
+        let selected = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("read selected before compaction")
+            .expect("selected before compaction");
+        let predecessor_generation = selected.published().expect("selected V2").generation();
+        let physical = PhysicalGenerationFingerprintV1::compute(binding.definition().fingerprint());
+        assert_eq!(
+            runtime
+                .storage()
+                .allocate_same_spec_candidate(&selected, *physical.as_bytes())
+                .expect("allocate compaction candidate"),
+            ColumnarProjectionControlWriteResultV1::Applied
+        );
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        let prepared_compaction = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("read prepared compaction")
+            .expect("prepared compaction");
+        let compacted_generation = prepared_compaction
+            .candidate()
+            .expect("compaction candidate")
+            .generation();
+        drop(runtime);
+        let status =
+            std::process::Command::new(std::env::current_exe().expect("server test executable"))
+                .arg("--exact")
+                .arg(EXACT_TEST)
+                .arg("--nocapture")
+                .env(MODE, "compaction")
+                .env(PATH, compaction_scope.path())
+                .env("RIFFDB_COLUMNAR_PUBLICATION_ABORT_AT", "after-view-install")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .expect("spawn compaction-crash child");
+        assert!(
+            !status.success(),
+            "compaction child must abort after view install"
+        );
+        let reopened = open_board_runtime_at(compaction_scope.path());
+        let durable = reopened
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("reread compacted selection")
+            .expect("compacted selection");
+        assert_eq!(
+            durable.published().map(|value| value.generation()),
+            Some(compacted_generation)
+        );
+        assert!(compacted_generation > predecessor_generation);
+        request_projection(&reopened, "ticket_board");
+        assert!(crate::columnar_worker::activate_one_test_slot(
+            &reopened,
+            "ticket_board"
+        ));
+
+        for boundary in ["before-reclaim", "after-reclaim"] {
+            let source_directory = adapter_scope(&format!("process-{boundary}"));
+            let (definition_runtime, _definition_scope) = board_runtime("reclaim-definition");
+            let definition = definition_runtime
+                .control_binding("ticket_board")
+                .expect("definition binding")
+                .definition()
+                .clone();
+            let (snapshot, _) = two_partition_snapshot();
+            let retired = ValidatedColumnarV2Generation::prepare(
+                source_directory.path(),
+                definition.clone(),
+                1,
+                ProjectionGeneration::new(9).expect("retired generation"),
+                FrontierPosition::BeforeFirst,
+                &snapshot,
+            )
+            .expect("prepare retired generation");
+            let selected = ValidatedColumnarV2Generation::prepare(
+                source_directory.path(),
+                definition.clone(),
+                1,
+                ProjectionGeneration::new(10).expect("selected generation"),
+                FrontierPosition::BeforeFirst,
+                &snapshot,
+            )
+            .expect("prepare selected generation");
+            let selected_identity = selected.artifact_identity();
+            let selected_physical = selected.root().physical_generation_fingerprint();
+            drop(retired);
+            drop(selected);
+            let status = std::process::Command::new(
+                std::env::current_exe().expect("server test executable"),
+            )
+            .arg("--exact")
+            .arg(EXACT_TEST)
+            .arg("--nocapture")
+            .env(MODE, "reclaim")
+            .env(PATH, source_directory.path())
+            .env(BOUNDARY, boundary)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("spawn reclaim-crash child");
+            assert!(!status.success(), "child must abort at {boundary}");
+            let selected = ValidatedColumnarV2Generation::open(
+                source_directory.path(),
+                definition,
+                1,
+                ProjectionGeneration::new(10).expect("selected generation"),
+                FrontierPosition::BeforeFirst,
+                selected_identity,
+                selected_physical,
+            )
+            .unwrap_or_else(|error| panic!("selected reopen after {boundary}: {error}"));
+            assert_eq!(selected.root().generation().get(), 10);
+            ValidatedColumnarV2Generation::reclaim(
+                source_directory.path(),
+                ProjectionGeneration::new(9).expect("retired generation"),
+            )
+            .unwrap_or_else(|error| panic!("retry reclaim after {boundary}: {error}"));
+            assert!(
+                !source_directory
+                    .path()
+                    .join("generation-0000000000000009")
+                    .exists()
+            );
+        }
     }
 
     #[test]
