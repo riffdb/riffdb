@@ -16,7 +16,11 @@ use riffdb_types::{
     ProjectionGeneration,
 };
 
-use common::{compile_bundle, entity_type_id, field_id, register_ticket_board, temp_dir};
+use common::{
+    HistorySource, Oracle, assert_corpus_equivalence, compile_bundle, corpus_requests,
+    corpus_results, entity_type_id, field_id, open_engine, push_open_race_v1, push_ticket_create,
+    register_ticket_board, resolve_open_race, temp_dir,
+};
 
 fn row(version: u64, status: u64, title: &str, priority: i64) -> LiveRow {
     LiveRow {
@@ -53,6 +57,163 @@ fn ticket_key(
     key.push_uuid(organization).expect("organization key");
     key.push_u64(ticket).expect("ticket key");
     PrimaryKeyBytes::from_entity_key_bytes(key.finish().expect("entity key").into_bytes())
+}
+
+// req: PRJ-002, PRJ-004, PRJ-009, PRJ-010, OQ-020, OQ-022
+#[test]
+fn dataful_v2_rebuild_reopens_repeatedly_and_refuses_mixed_or_stale_state() {
+    let bundle = compile_bundle();
+    let definition = register_ticket_board(&bundle);
+    let organization = common::uuid(0x53);
+    let organization_value = CanonicalValue::Uuid(organization);
+    let organization_key = OrgKey::from_value(&organization_value).expect("organization");
+    let mut source = HistorySource::default();
+    let mut oracle = Oracle::default();
+    let mut engine = open_engine(definition.clone(), "v2-dataful-rebuild");
+
+    push_ticket_create(
+        &mut source,
+        &mut oracle,
+        &bundle,
+        1,
+        organization,
+        1,
+        1,
+        "one",
+        1,
+    );
+    push_ticket_create(
+        &mut source,
+        &mut oracle,
+        &bundle,
+        2,
+        organization,
+        2,
+        2,
+        "two",
+        2,
+    );
+    engine.apply_available(&source).expect("initial V1 apply");
+
+    let race = push_open_race_v1(&mut source, &mut oracle, &bundle, 3, organization, 3);
+    engine.apply_available(&source).expect("held V1 apply");
+    assert_eq!(
+        engine.published_frontier_position(),
+        FrontierPosition::AppliedThrough(
+            riffdb_types::CommitSequence::new(2).expect("safe prefix")
+        )
+    );
+    assert_eq!(engine.deferred_set_size(), 1);
+    assert_corpus_equivalence(&engine, &oracle, &bundle, &[organization], "held V1");
+
+    resolve_open_race(&mut source, &mut oracle, race, 4);
+    engine
+        .apply_available(&source)
+        .expect("resolve supersession holdback");
+    assert_eq!(engine.deferred_set_size(), 0);
+    assert_corpus_equivalence(&engine, &oracle, &bundle, &[organization], "resolved V1");
+    let before_replay = corpus_results(&engine, &bundle, &organization_value);
+    engine
+        .apply_available(&source)
+        .expect("idempotent repeated replay");
+    assert_eq!(
+        corpus_results(&engine, &bundle, &organization_value),
+        before_replay
+    );
+
+    let mut matched = ColumnarSnapshot::empty();
+    matched.visible_frontier = engine.published_frontier_position();
+    let flattened = engine
+        .published_snapshot()
+        .merged_org(&OrgKey::from_value(&organization_value).expect("organization"))
+        .into_iter()
+        .map(|(key, row)| {
+            (
+                key,
+                LiveRow {
+                    entity_version: row.entity_version,
+                    cells: row.cells,
+                },
+            )
+        })
+        .collect();
+    matched.delta.insert(organization_key, flattened);
+    let source_directory = temp_dir("v2-dataful-reopen");
+    let generation = ProjectionGeneration::new(41).expect("generation");
+    let prepared = ValidatedColumnarV2Generation::prepare(
+        &source_directory,
+        definition.clone(),
+        1,
+        generation,
+        FrontierPosition::BeforeFirst,
+        &matched,
+    )
+    .expect("prepare dataful V2");
+    let artifact = prepared.artifact_identity();
+    let physical = prepared.root().physical_generation_fingerprint();
+    let expected_results = corpus_requests(&bundle, &organization_value)
+        .iter()
+        .map(|request| query_snapshot(&definition, &matched, request).expect("V1 result"))
+        .collect::<Vec<_>>();
+
+    for _ in 0..3 {
+        let reopened = ValidatedColumnarV2Generation::open(
+            &source_directory,
+            definition.clone(),
+            1,
+            generation,
+            matched.visible_frontier,
+            artifact,
+            physical,
+        )
+        .expect("repeat exact V2 open");
+        let actual = corpus_requests(&bundle, &organization_value)
+            .iter()
+            .map(|request| {
+                query_snapshot(&definition, reopened.snapshot(), request).expect("V2 result")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected_results);
+    }
+
+    assert!(matches!(
+        ValidatedColumnarV2Generation::open(
+            &source_directory,
+            definition.clone(),
+            2,
+            generation,
+            matched.visible_frontier,
+            artifact,
+            physical,
+        ),
+        Err(ColumnarV2GenerationError::Invalid)
+    ));
+
+    let mixed_v1 = prepared.directory().join("MANIFEST-V1-mixed");
+    std::fs::write(&mixed_v1, b"mixed V1 member").expect("write mixed member");
+    assert!(matches!(
+        ValidatedColumnarV2Generation::open(
+            &source_directory,
+            definition.clone(),
+            1,
+            generation,
+            matched.visible_frontier,
+            artifact,
+            physical,
+        ),
+        Err(ColumnarV2GenerationError::Invalid)
+    ));
+    std::fs::remove_file(&mixed_v1).expect("remove mixed member");
+    ValidatedColumnarV2Generation::open(
+        &source_directory,
+        definition,
+        1,
+        generation,
+        matched.visible_frontier,
+        artifact,
+        physical,
+    )
+    .expect("exact V2 remains reopenable after mixed member removal");
 }
 
 // req: PRJ-004, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022, OQ-024, PERF-007

@@ -18,9 +18,9 @@ Startup admits at most 256 distinct sources as one set. Empty, path-shaped,
 duplicate names and duplicate aliases for one source are rejected before any
 columnar control or projection file is touched. Every absent source receives a
 durable `BeforeFirst` retention fence before command writers and projection
-workers start. The worker then rebuilds V1 from one authoritative snapshot plus
-the retained contiguous tail. Only a fully synced, reopened, checksummed
-immutable manifest can advance the fence or publish.
+workers start. On first demand, the worker rebuilds V1 from one authoritative
+snapshot plus the retained contiguous tail. Only a fully synced, reopened,
+checksummed immutable manifest can advance the fence or publish.
 
 The common durable control is the sole selector. V1 manifests live below a
 schema-hash directory and use `MANIFEST-V1-<sha256>` names; opening requires the
@@ -28,6 +28,55 @@ exact length and checksum recorded by control. Directory enumeration, a legacy
 `MANIFEST`, and name-derived directories cannot choose state. A crash before
 the control update leaves an ignored orphan. A crash after it reopens the exact
 selected artifact.
+
+## V2 activation and immutable generations
+
+Each database and source activates V2 independently. A selected V1 generation
+remains the ordinary readable, writable, checkpoint, and compaction path while
+a disjoint V2 candidate is allocated, built from one authoritative snapshot
+plus its retained contiguous tail, and checked for logical equality at the same
+frontier. Head movement replaces the stale candidate without changing the V1
+selection. Candidate cancellation, storage exhaustion, corruption, or a crash
+before selection likewise leaves that exact V1 generation selected.
+
+A V2 generation is an immutable `generation-<u64-hex>` directory containing
+only its exact Segment V2 files, partition Manifest V2 files, and `ROOT-V1`.
+The root canonically binds the complete ordered partition inventory, generation,
+history incarnation, definition, frontier, format tuple, total counts, and a
+root-only physical-generation fingerprint. Files are written privately,
+synced, checksummed, renamed, and completely reopened before the candidate may
+enter durable control. No partition manifest, directory listing, or mixed V1/V2
+member can publish a prefix of a generation.
+
+Publication closes new query-view capture, performs the one exact expected-
+control and transaction-current-head compare-and-set, then rereads durable
+control for every known success, mismatch, storage failure, or uncertain
+result. The process installs the exact selected validated immutable view before
+capture reopens or readiness is acknowledged. Queries which already captured
+the predecessor may finish. A selected V2 root which is missing, corrupt,
+partial, mixed, stale-incarnation, or otherwise contradictory keeps the source
+closed and degraded; it never falls back to V1.
+
+Cold open, unclean recovery, restore, scrub, and rebuild validate the complete
+root, manifests, segment framing, lane encodings, checksums, statistics, and
+cross-file identities. A successful open retains immutable process-local
+segment and pruning views. Hot queries do not reread, rehash, decode, or
+reconstruct proof from durable files. Exact scalar zone maps and complete
+canonical dictionaries may reject only a segment proven unable to match;
+missing evidence scans. Current row-policy admission is not compiler-proved
+segment-aligned, so that policy mode uses the same fixed scan work class and
+does not prune from protected statistics. Statistics, encoding choices, and
+skip counts are not public diagnostics, logs, or metrics.
+
+V2 compaction emits and publishes a new never-reused generation through the
+same gate; it never edits or reuses the selected root. Reclamation is derived
+from durable Published/Candidate/Predecessor control pointers and process-local
+captured views. An unselected directory is deleted only after neither class
+names or holds it, and deletion plus parent-directory sync is crash-idempotent.
+The current authoritative mutation model is Create/Replace: deletion and
+tombstone row states do not exist yet. V2 therefore preserves the existing V1
+supersession, idempotent replay, and holdback semantics without introducing a
+different deletion interpretation.
 
 The predecessor vector-control record (durable tag 65) remains readable only
 for bounded structural validation through the epoch-1 compatibility window.
