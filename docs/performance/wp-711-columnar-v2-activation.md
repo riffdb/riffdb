@@ -1,6 +1,6 @@
 # WP-711 columnar V2 production-activation receipt
 
-Status: **evidence harness implemented; no receipt claimed by this revision**.
+Status: **production-activation mechanics accepted for WP-711 human review**.
 
 WP-711 uses the frozen WP-710 mechanics gate as a mandatory preflight, then
 measures one production-shaped V1/V2 activation corpus. The generator writes no
@@ -46,6 +46,51 @@ missing, duplicated, malformed, empty, or out-of-bound marker fields. Its
 self-test proves refusal at each frozen WP-710 threshold and for nonzero
 activation lag/control fields or a mismatched result count.
 
+## Generated receipt and verdict
+
+The generated receipt is
+`docs/performance/wp-711-columnar-v2-activation.json`. Its schema is
+`riffdb.wp711.columnar-v2-activation-receipt.v1`, its SHA-256 is
+`49818c548c1d1a55a7d7e1a9d8920b0bd5c2435ce1737514632c48d6ed5a8676`,
+and it is pinned to clean implementation and evidence-infrastructure revision
+`628fcbc28c0c5bd2c11ae25228bb5127f97446df`. The receipt was generated with
+Rust 1.97.0 in release mode on an AMD Ryzen 9 7950X with 32 logical CPUs. The
+recorded load averages before and after the run were both
+`5.68 5.79 5.73`.
+
+The unchanged WP-710 preflight passed every ADR-0160 threshold:
+
+| Gate | V1 | V2 | Verdict |
+|---|---:|---:|---|
+| High-cardinality bytes | 1,851,404 | 1,609,476 (8,693 bps) | Pass; maximum 11,000 bps |
+| Low-cardinality bytes | 1,421,324 | 785,287 (5,525 bps) | Pass; maximum 7,500 bps |
+| Full-decode p50 | 4,215,276 ns | 4,176,676 ns (9,908 bps) | Pass; maximum 10,500 bps |
+| Clustered segment rejection | — | 99/100; zero false negatives | Pass; minimum 90 percent and zero false negatives |
+
+The production-activation corpus also passed every fail-closed control. Each of
+the two queries returned its exact 8,192-row partition count, and the private
+referee obtained the combined 16,384 rows at matched frontier 16,384. Projection
+lag, no-projection bytes, no-projection modeled allocations, and no-projection
+population passes were all zero.
+
+| Observation | V1/no-V2 control | Selected V2 |
+|---|---:|---:|
+| Physical bytes | 1,470,699 | 731,547 |
+| Modeled owned allocations | 98,304 | 98,338 |
+| Combined bounded-query p50 | 3,741,576 ns | 3,756,546 ns |
+| Recovery p50 | 7,713,473 ns | 12,920,181 ns |
+| Rebuild elapsed | — | 79,974,611 ns |
+| Compaction elapsed | — | 80,676,662 ns |
+
+V2 uses 50.26 percent fewer physical bytes in this production-shaped corpus;
+its combined hot-query p50 is 0.40 percent above V1. Cold V2 recovery p50 is
+67.50 percent above V1 because reopening pays complete selected-generation
+validation before an immutable view becomes available. That recovery delta is a
+review hazard, not a hidden failure. These single-host observations are package
+activation evidence, not public latency, storage-ratio, or allocation promises.
+The allocation figures remain the WP-710 modeled-owned-allocation metric and are
+not actual allocator calls.
+
 ## Exact commands
 
 From a clean worktree at the final implementation and evidence-infrastructure
@@ -81,7 +126,6 @@ Its self-test places a rejecting cargo earlier on a synthetic `PATH` and proves
 that the validated 1.97.0 proxy is selected. It also proves unique marker capture
 from Cargo's stderr channel as well as stdout, including libtest's exact
 `test ... MARKER` line prefix, because Rust test harnesses may emit nocapture
-output through either inherited stream. The JSON is created only after both
-child processes and independent marker validation succeed. A later
-evidence-only commit may add the generated receipt; this infrastructure revision
-intentionally contains none.
+output through either inherited stream. The JSON was created only after both
+child processes and independent marker validation succeeded, and the checked-in
+receipt independently passes the validator command above.
