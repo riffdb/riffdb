@@ -1582,6 +1582,14 @@ pub(crate) fn activate_one_test_slot(runtime: &ColumnarRuntime, name: &str) -> b
     activate_requested_slot(runtime, name, &slot).unwrap_or(false)
 }
 
+#[cfg(test)]
+pub(crate) fn apply_available_for_worker_for_test(
+    runtime: &ColumnarRuntime,
+    engine: &mut riffdb_columnar::ColumnarEngine,
+) -> Result<WorkerApplyOutcome, ColumnarError> {
+    engine.apply_available_for_worker(runtime.apply_source(), || false)
+}
+
 fn read_head(runtime: &ColumnarRuntime) -> Result<FrontierPosition, ColumnarWorkerError> {
     runtime
         .read_application_head()

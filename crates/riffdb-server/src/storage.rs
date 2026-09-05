@@ -129,11 +129,11 @@ impl SharedRedbOperationalPorts {
     #[cfg(test)]
     pub(crate) fn append_columnar_worker_commit_fixture(
         &self,
-        row: &riffdb_storage_api::StoredEntityRecordV1,
-        commit: &riffdb_storage_api::StoredCommitRecordV1,
+        rows: &[riffdb_storage_api::StoredEntityRecordV1],
+        commits: &[riffdb_storage_api::StoredCommitRecordV1],
     ) -> Result<(), StorageError> {
         self.cell.with_mut(|ports| {
-            riffdb_storage_redb::append_columnar_worker_commit_fixture(ports, row, commit)
+            riffdb_storage_redb::append_columnar_worker_commit_fixture(ports, rows, commits)
         })
     }
 

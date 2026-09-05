@@ -23,32 +23,51 @@ use crate::layout::{
 #[doc(hidden)]
 pub fn append_columnar_worker_commit_fixture(
     ports: &crate::store::RedbOperationalPorts,
-    row: &StoredEntityRecordV1,
-    commit: &StoredCommitRecordV1,
+    rows: &[StoredEntityRecordV1],
+    commits: &[StoredCommitRecordV1],
 ) -> Result<(), StorageError> {
+    if rows.is_empty() || rows.len() != commits.len() || rows.len() > 16_384 {
+        return Err(storage_error(StorageErrorKind::LimitExceeded));
+    }
     let access = ports.begin_write()?;
     let transaction = access.transaction()?;
-    let encoded_row = crate::codec::encode_entity_record_v1(row)?;
-    transaction
-        .open_table(ENTITIES)
-        .map_err(table_error)?
-        .insert(
-            crate::keys::encode_entity_key(row.target().key()),
-            encoded_row.as_bytes(),
-        )
-        .map_err(precommit_storage_error)?;
-    let encoded_commit = crate::codec::encode_commit_record_v1(commit)?;
-    let commit_key = crate::keys::encode_application_sequence_key(commit.commit_sequence());
-    if transaction
-        .open_table(COMMITS)
-        .map_err(table_error)?
-        .insert(commit_key.as_slice(), encoded_commit.as_bytes())
-        .map_err(precommit_storage_error)?
-        .is_some()
-    {
-        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    for (index, (row, commit)) in rows.iter().zip(commits).enumerate() {
+        let expected_sequence = u64::try_from(index + 1)
+            .ok()
+            .and_then(riffdb_types::CommitSequence::new)
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        if commit.commit_sequence() != expected_sequence {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let encoded_row = crate::codec::encode_entity_record_v1(row)?;
+        if transaction
+            .open_table(ENTITIES)
+            .map_err(table_error)?
+            .insert(
+                crate::keys::encode_entity_key(row.target().key()),
+                encoded_row.as_bytes(),
+            )
+            .map_err(precommit_storage_error)?
+            .is_some()
+        {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let encoded_commit = crate::codec::encode_commit_record_v1(commit)?;
+        let commit_key = crate::keys::encode_application_sequence_key(commit.commit_sequence());
+        if transaction
+            .open_table(COMMITS)
+            .map_err(table_error)?
+            .insert(commit_key.as_slice(), encoded_commit.as_bytes())
+            .map_err(precommit_storage_error)?
+            .is_some()
+        {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
     }
-    let allocator = commit.commit_sequence().checked_next().map_or(
+    let last = commits
+        .last()
+        .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+    let allocator = last.commit_sequence().checked_next().map_or(
         ApplicationSequenceAllocator::Exhausted,
         ApplicationSequenceAllocator::Next,
     );
