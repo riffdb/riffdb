@@ -340,6 +340,14 @@ hash_id!(
     ProjectionProviderDescriptorHash
 );
 hash_id!(
+    /// The hash of one complete canonical columnar definition-semantics document.
+    ColumnarDefinitionSemanticsHashV1
+);
+hash_id!(
+    /// The hash of one complete schema-bound columnar projection specification.
+    ColumnarProjectionSpecHashV1
+);
+hash_id!(
     /// The hash of one closed RiffQL query access program.
     QueryPlanHash
 );

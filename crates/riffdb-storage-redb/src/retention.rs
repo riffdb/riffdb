@@ -16,10 +16,10 @@ use riffdb_storage_api::{
     StoredRetentionAdministrationV1, StoredRetentionHoldsV1, StoredRetentionWatermarkV1,
     compute_max_permissible_watermark, history_tombstone_chain_root,
     proto_codec::{
-        current_record_registry_digest, decode_history_tombstone_v1, decode_projection_control_v1,
-        decode_retention_holds_v1, decode_retention_watermark_v1,
-        decode_vector_projection_control_v1, encode_history_tombstone_v1,
-        encode_retention_holds_v1, encode_retention_watermark_v1,
+        current_record_registry_digest, decode_columnar_projection_control_v1,
+        decode_history_tombstone_v1, decode_projection_control_v1, decode_retention_holds_v1,
+        decode_retention_watermark_v1, encode_history_tombstone_v1, encode_retention_holds_v1,
+        encode_retention_watermark_v1,
     },
 };
 use riffdb_types::{
@@ -881,7 +881,7 @@ pub(crate) fn durable_application_head(
     })
 }
 
-fn min_projection_durable_frontier(
+pub(crate) fn min_projection_durable_frontier(
     transaction: &redb::ReadTransaction,
     detached: &BTreeSet<String>,
 ) -> Result<Option<u64>, StorageError> {
@@ -913,29 +913,33 @@ fn min_projection_durable_frontier(
             Some(existing) => existing.min(frontier),
         });
     }
-    let vector_controls = transaction
-        .open_table(crate::layout::VECTOR_PROJECTION_CONTROLS)
+    let columnar_controls = transaction
+        .open_table(crate::layout::COLUMNAR_PROJECTION_CONTROLS)
         .map_err(table_error)?;
-    for entry in vector_controls.iter().map_err(precommit_storage_error)? {
+    let mut columnar_count = 0_usize;
+    for entry in columnar_controls.iter().map_err(precommit_storage_error)? {
+        columnar_count = columnar_count.saturating_add(1);
+        if columnar_count > 256 {
+            return Err(storage_error(StorageErrorKind::LimitExceeded));
+        }
         let (key, encoded) = entry.map_err(precommit_storage_error)?;
-        let source = crate::keys::decode_vector_projection_control_key(key.value())
+        let source = crate::keys::decode_columnar_projection_control_key(key.value())
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        let control = decode_vector_projection_control_v1(encoded.value())
+        let control = decode_columnar_projection_control_v1(encoded.value())
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
             .into_parts()
             .0;
-        if control.source() != &source || !control.retention_attached() {
-            if control.source() != &source {
-                return Err(storage_error(StorageErrorKind::InvariantViolation));
-            }
-            continue;
+        if control.source() != &source {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        any = true;
-        let frontier = match control.published_frontier() {
-            FrontierPosition::BeforeFirst => 0,
-            FrontierPosition::AppliedThrough(sequence) => sequence.get(),
-        };
-        min_frontier = Some(min_frontier.map_or(frontier, |existing| existing.min(frontier)));
+        if let Some(frontier) = control.retention_frontier() {
+            any = true;
+            let frontier = match frontier {
+                FrontierPosition::BeforeFirst => 0,
+                FrontierPosition::AppliedThrough(sequence) => sequence.get(),
+            };
+            min_frontier = Some(min_frontier.map_or(frontier, |existing| existing.min(frontier)));
+        }
     }
     Ok(if any { min_frontier } else { None })
 }

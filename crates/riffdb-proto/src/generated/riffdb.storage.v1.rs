@@ -1719,6 +1719,393 @@ impl StoredCleanCloseLifecycleStateV1 {
         }
     }
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredColumnarScalarSourceV1 {
+    #[prost(string, tag = "1")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "2")]
+    pub definition_fingerprint: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredColumnarVectorSourceV1 {
+    #[prost(string, tag = "1")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub entity_type_id: u32,
+    #[prost(uint32, tag = "3")]
+    pub vector_field_id: u32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredColumnarProjectionSourceV1 {
+    #[prost(oneof = "stored_columnar_projection_source_v1::Source", tags = "1, 2")]
+    pub source: ::core::option::Option<stored_columnar_projection_source_v1::Source>,
+}
+/// Nested message and enum types in `StoredColumnarProjectionSourceV1`.
+pub mod stored_columnar_projection_source_v1 {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Source {
+        #[prost(message, tag = "1")]
+        Scalar(super::StoredColumnarScalarSourceV1),
+        #[prost(message, tag = "2")]
+        Vector(super::StoredColumnarVectorSourceV1),
+    }
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredColumnarProjectionFrontierV1 {
+    #[prost(uint64, optional, tag = "1")]
+    pub applied_through: ::core::option::Option<u64>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredColumnarProjectionFailureV1 {
+    #[prost(enumeration = "ColumnarProjectionFailureTargetV1", tag = "1")]
+    pub target: i32,
+    #[prost(enumeration = "ColumnarProjectionFailureReasonV1", tag = "2")]
+    pub reason: i32,
+    #[prost(uint64, optional, tag = "3")]
+    pub generation: ::core::option::Option<u64>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredColumnarProjectionGenerationV1 {
+    #[prost(uint64, tag = "1")]
+    pub generation: u64,
+    #[prost(enumeration = "ColumnarProjectionLayoutV1", tag = "2")]
+    pub layout: i32,
+    #[prost(message, optional, tag = "3")]
+    pub frontier: ::core::option::Option<StoredColumnarProjectionFrontierV1>,
+    #[prost(uint64, tag = "4")]
+    pub history_incarnation: u64,
+    #[prost(uint64, optional, tag = "5")]
+    pub artifact_length: ::core::option::Option<u64>,
+    #[prost(bytes = "vec", optional, tag = "6")]
+    pub checksum_bytes: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    #[prost(bytes = "vec", tag = "7")]
+    pub definition_fingerprint: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "8")]
+    pub spec_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", optional, tag = "9")]
+    pub physical_generation_fingerprint: ::core::option::Option<
+        ::prost::alloc::vec::Vec<u8>,
+    >,
+    #[prost(message, optional, tag = "10")]
+    pub snapshot_frontier: ::core::option::Option<StoredColumnarProjectionFrontierV1>,
+    #[prost(enumeration = "ColumnarProjectionGenerationRoleV1", tag = "11")]
+    pub role: i32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredColumnarProjectionControlV1 {
+    #[prost(message, optional, tag = "1")]
+    pub source: ::core::option::Option<StoredColumnarProjectionSourceV1>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub target_definition_fingerprint: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub target_spec_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "4")]
+    pub highest_generation: u64,
+    #[prost(message, optional, tag = "5")]
+    pub published: ::core::option::Option<StoredColumnarProjectionGenerationV1>,
+    #[prost(message, optional, tag = "6")]
+    pub candidate: ::core::option::Option<StoredColumnarProjectionGenerationV1>,
+    #[prost(message, optional, tag = "7")]
+    pub predecessor: ::core::option::Option<StoredColumnarProjectionGenerationV1>,
+    #[prost(enumeration = "ColumnarProjectionLifecycleV1", tag = "8")]
+    pub lifecycle: i32,
+    #[prost(message, optional, tag = "9")]
+    pub failure: ::core::option::Option<StoredColumnarProjectionFailureV1>,
+    #[prost(uint64, tag = "10")]
+    pub replay_age_seconds: u64,
+    #[prost(uint64, tag = "11")]
+    pub replay_bytes: u64,
+    #[prost(uint64, tag = "12")]
+    pub replay_backlog: u64,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ColumnarProjectionLayoutV1 {
+    ColumnarProjectionLayoutUnspecified = 0,
+    ColumnarProjectionLayoutV1 = 1,
+    ColumnarProjectionLayoutV2 = 2,
+}
+impl ColumnarProjectionLayoutV1 {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::ColumnarProjectionLayoutUnspecified => {
+                "COLUMNAR_PROJECTION_LAYOUT_UNSPECIFIED"
+            }
+            Self::ColumnarProjectionLayoutV1 => "COLUMNAR_PROJECTION_LAYOUT_V1",
+            Self::ColumnarProjectionLayoutV2 => "COLUMNAR_PROJECTION_LAYOUT_V2",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "COLUMNAR_PROJECTION_LAYOUT_UNSPECIFIED" => {
+                Some(Self::ColumnarProjectionLayoutUnspecified)
+            }
+            "COLUMNAR_PROJECTION_LAYOUT_V1" => Some(Self::ColumnarProjectionLayoutV1),
+            "COLUMNAR_PROJECTION_LAYOUT_V2" => Some(Self::ColumnarProjectionLayoutV2),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ColumnarProjectionGenerationRoleV1 {
+    ColumnarProjectionGenerationRoleUnspecified = 0,
+    ColumnarProjectionGenerationRolePublished = 1,
+    ColumnarProjectionGenerationRoleCandidate = 2,
+    ColumnarProjectionGenerationRolePredecessor = 3,
+}
+impl ColumnarProjectionGenerationRoleV1 {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::ColumnarProjectionGenerationRoleUnspecified => {
+                "COLUMNAR_PROJECTION_GENERATION_ROLE_UNSPECIFIED"
+            }
+            Self::ColumnarProjectionGenerationRolePublished => {
+                "COLUMNAR_PROJECTION_GENERATION_ROLE_PUBLISHED"
+            }
+            Self::ColumnarProjectionGenerationRoleCandidate => {
+                "COLUMNAR_PROJECTION_GENERATION_ROLE_CANDIDATE"
+            }
+            Self::ColumnarProjectionGenerationRolePredecessor => {
+                "COLUMNAR_PROJECTION_GENERATION_ROLE_PREDECESSOR"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "COLUMNAR_PROJECTION_GENERATION_ROLE_UNSPECIFIED" => {
+                Some(Self::ColumnarProjectionGenerationRoleUnspecified)
+            }
+            "COLUMNAR_PROJECTION_GENERATION_ROLE_PUBLISHED" => {
+                Some(Self::ColumnarProjectionGenerationRolePublished)
+            }
+            "COLUMNAR_PROJECTION_GENERATION_ROLE_CANDIDATE" => {
+                Some(Self::ColumnarProjectionGenerationRoleCandidate)
+            }
+            "COLUMNAR_PROJECTION_GENERATION_ROLE_PREDECESSOR" => {
+                Some(Self::ColumnarProjectionGenerationRolePredecessor)
+            }
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ColumnarProjectionLifecycleV1 {
+    ColumnarProjectionLifecycleUnspecified = 0,
+    ColumnarProjectionLifecycleBuilding = 1,
+    ColumnarProjectionLifecycleCatchingUp = 2,
+    ColumnarProjectionLifecycleReady = 3,
+    ColumnarProjectionLifecycleRebuilding = 4,
+    ColumnarProjectionLifecycleDegraded = 5,
+    ColumnarProjectionLifecycleInvalid = 6,
+}
+impl ColumnarProjectionLifecycleV1 {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::ColumnarProjectionLifecycleUnspecified => {
+                "COLUMNAR_PROJECTION_LIFECYCLE_UNSPECIFIED"
+            }
+            Self::ColumnarProjectionLifecycleBuilding => {
+                "COLUMNAR_PROJECTION_LIFECYCLE_BUILDING"
+            }
+            Self::ColumnarProjectionLifecycleCatchingUp => {
+                "COLUMNAR_PROJECTION_LIFECYCLE_CATCHING_UP"
+            }
+            Self::ColumnarProjectionLifecycleReady => {
+                "COLUMNAR_PROJECTION_LIFECYCLE_READY"
+            }
+            Self::ColumnarProjectionLifecycleRebuilding => {
+                "COLUMNAR_PROJECTION_LIFECYCLE_REBUILDING"
+            }
+            Self::ColumnarProjectionLifecycleDegraded => {
+                "COLUMNAR_PROJECTION_LIFECYCLE_DEGRADED"
+            }
+            Self::ColumnarProjectionLifecycleInvalid => {
+                "COLUMNAR_PROJECTION_LIFECYCLE_INVALID"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "COLUMNAR_PROJECTION_LIFECYCLE_UNSPECIFIED" => {
+                Some(Self::ColumnarProjectionLifecycleUnspecified)
+            }
+            "COLUMNAR_PROJECTION_LIFECYCLE_BUILDING" => {
+                Some(Self::ColumnarProjectionLifecycleBuilding)
+            }
+            "COLUMNAR_PROJECTION_LIFECYCLE_CATCHING_UP" => {
+                Some(Self::ColumnarProjectionLifecycleCatchingUp)
+            }
+            "COLUMNAR_PROJECTION_LIFECYCLE_READY" => {
+                Some(Self::ColumnarProjectionLifecycleReady)
+            }
+            "COLUMNAR_PROJECTION_LIFECYCLE_REBUILDING" => {
+                Some(Self::ColumnarProjectionLifecycleRebuilding)
+            }
+            "COLUMNAR_PROJECTION_LIFECYCLE_DEGRADED" => {
+                Some(Self::ColumnarProjectionLifecycleDegraded)
+            }
+            "COLUMNAR_PROJECTION_LIFECYCLE_INVALID" => {
+                Some(Self::ColumnarProjectionLifecycleInvalid)
+            }
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ColumnarProjectionFailureTargetV1 {
+    ColumnarProjectionFailureTargetUnspecified = 0,
+    ColumnarProjectionFailureTargetCandidate = 1,
+    ColumnarProjectionFailureTargetPublished = 2,
+    ColumnarProjectionFailureTargetPredecessor = 3,
+    ColumnarProjectionFailureTargetControl = 4,
+}
+impl ColumnarProjectionFailureTargetV1 {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::ColumnarProjectionFailureTargetUnspecified => {
+                "COLUMNAR_PROJECTION_FAILURE_TARGET_UNSPECIFIED"
+            }
+            Self::ColumnarProjectionFailureTargetCandidate => {
+                "COLUMNAR_PROJECTION_FAILURE_TARGET_CANDIDATE"
+            }
+            Self::ColumnarProjectionFailureTargetPublished => {
+                "COLUMNAR_PROJECTION_FAILURE_TARGET_PUBLISHED"
+            }
+            Self::ColumnarProjectionFailureTargetPredecessor => {
+                "COLUMNAR_PROJECTION_FAILURE_TARGET_PREDECESSOR"
+            }
+            Self::ColumnarProjectionFailureTargetControl => {
+                "COLUMNAR_PROJECTION_FAILURE_TARGET_CONTROL"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "COLUMNAR_PROJECTION_FAILURE_TARGET_UNSPECIFIED" => {
+                Some(Self::ColumnarProjectionFailureTargetUnspecified)
+            }
+            "COLUMNAR_PROJECTION_FAILURE_TARGET_CANDIDATE" => {
+                Some(Self::ColumnarProjectionFailureTargetCandidate)
+            }
+            "COLUMNAR_PROJECTION_FAILURE_TARGET_PUBLISHED" => {
+                Some(Self::ColumnarProjectionFailureTargetPublished)
+            }
+            "COLUMNAR_PROJECTION_FAILURE_TARGET_PREDECESSOR" => {
+                Some(Self::ColumnarProjectionFailureTargetPredecessor)
+            }
+            "COLUMNAR_PROJECTION_FAILURE_TARGET_CONTROL" => {
+                Some(Self::ColumnarProjectionFailureTargetControl)
+            }
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ColumnarProjectionFailureReasonV1 {
+    ColumnarProjectionFailureReasonUnspecified = 0,
+    ColumnarProjectionFailureReasonReplayAge = 1,
+    ColumnarProjectionFailureReasonReplayBytes = 2,
+    ColumnarProjectionFailureReasonReplayBacklog = 3,
+    ColumnarProjectionFailureReasonSpecChanged = 4,
+    ColumnarProjectionFailureReasonArtifactInvalid = 5,
+    ColumnarProjectionFailureReasonResourceLimit = 6,
+    ColumnarProjectionFailureReasonStorage = 7,
+    ColumnarProjectionFailureReasonCancelled = 8,
+}
+impl ColumnarProjectionFailureReasonV1 {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::ColumnarProjectionFailureReasonUnspecified => {
+                "COLUMNAR_PROJECTION_FAILURE_REASON_UNSPECIFIED"
+            }
+            Self::ColumnarProjectionFailureReasonReplayAge => {
+                "COLUMNAR_PROJECTION_FAILURE_REASON_REPLAY_AGE"
+            }
+            Self::ColumnarProjectionFailureReasonReplayBytes => {
+                "COLUMNAR_PROJECTION_FAILURE_REASON_REPLAY_BYTES"
+            }
+            Self::ColumnarProjectionFailureReasonReplayBacklog => {
+                "COLUMNAR_PROJECTION_FAILURE_REASON_REPLAY_BACKLOG"
+            }
+            Self::ColumnarProjectionFailureReasonSpecChanged => {
+                "COLUMNAR_PROJECTION_FAILURE_REASON_SPEC_CHANGED"
+            }
+            Self::ColumnarProjectionFailureReasonArtifactInvalid => {
+                "COLUMNAR_PROJECTION_FAILURE_REASON_ARTIFACT_INVALID"
+            }
+            Self::ColumnarProjectionFailureReasonResourceLimit => {
+                "COLUMNAR_PROJECTION_FAILURE_REASON_RESOURCE_LIMIT"
+            }
+            Self::ColumnarProjectionFailureReasonStorage => {
+                "COLUMNAR_PROJECTION_FAILURE_REASON_STORAGE"
+            }
+            Self::ColumnarProjectionFailureReasonCancelled => {
+                "COLUMNAR_PROJECTION_FAILURE_REASON_CANCELLED"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "COLUMNAR_PROJECTION_FAILURE_REASON_UNSPECIFIED" => {
+                Some(Self::ColumnarProjectionFailureReasonUnspecified)
+            }
+            "COLUMNAR_PROJECTION_FAILURE_REASON_REPLAY_AGE" => {
+                Some(Self::ColumnarProjectionFailureReasonReplayAge)
+            }
+            "COLUMNAR_PROJECTION_FAILURE_REASON_REPLAY_BYTES" => {
+                Some(Self::ColumnarProjectionFailureReasonReplayBytes)
+            }
+            "COLUMNAR_PROJECTION_FAILURE_REASON_REPLAY_BACKLOG" => {
+                Some(Self::ColumnarProjectionFailureReasonReplayBacklog)
+            }
+            "COLUMNAR_PROJECTION_FAILURE_REASON_SPEC_CHANGED" => {
+                Some(Self::ColumnarProjectionFailureReasonSpecChanged)
+            }
+            "COLUMNAR_PROJECTION_FAILURE_REASON_ARTIFACT_INVALID" => {
+                Some(Self::ColumnarProjectionFailureReasonArtifactInvalid)
+            }
+            "COLUMNAR_PROJECTION_FAILURE_REASON_RESOURCE_LIMIT" => {
+                Some(Self::ColumnarProjectionFailureReasonResourceLimit)
+            }
+            "COLUMNAR_PROJECTION_FAILURE_REASON_STORAGE" => {
+                Some(Self::ColumnarProjectionFailureReasonStorage)
+            }
+            "COLUMNAR_PROJECTION_FAILURE_REASON_CANCELLED" => {
+                Some(Self::ColumnarProjectionFailureReasonCancelled)
+            }
+            _ => None,
+        }
+    }
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StoredCommandAuditInvocationV1 {
     #[prost(bytes = "vec", tag = "1")]

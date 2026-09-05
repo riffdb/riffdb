@@ -48,6 +48,7 @@ files
   riffdb/storage/v1/catalog.proto
     import riffdb/storage/v1/common.proto
   riffdb/storage/v1/clean_close_lifecycle_v1.proto
+  riffdb/storage/v1/columnar_projection_control_v1.proto
   riffdb/storage/v1/command_capsule_v1.proto
     import riffdb/storage/v1/application.proto
     import riffdb/storage/v1/audit.proto
@@ -934,6 +935,47 @@ messages
     5 state optional .riffdb.storage.v1.StoredCleanCloseLifecycleStateV1
     6 clean_state_binding_hash optional bytes
     7 lifecycle_hash optional bytes
+  riffdb.storage.v1.StoredColumnarProjectionControlV1 fields=12
+    1 source optional .riffdb.storage.v1.StoredColumnarProjectionSourceV1
+    2 target_definition_fingerprint optional bytes
+    3 target_spec_hash optional bytes
+    4 highest_generation optional uint64
+    5 published optional .riffdb.storage.v1.StoredColumnarProjectionGenerationV1 proto3-optional oneof=_published
+    6 candidate optional .riffdb.storage.v1.StoredColumnarProjectionGenerationV1 proto3-optional oneof=_candidate
+    7 predecessor optional .riffdb.storage.v1.StoredColumnarProjectionGenerationV1 proto3-optional oneof=_predecessor
+    8 lifecycle optional .riffdb.storage.v1.ColumnarProjectionLifecycleV1
+    9 failure optional .riffdb.storage.v1.StoredColumnarProjectionFailureV1 proto3-optional oneof=_failure
+    10 replay_age_seconds optional uint64
+    11 replay_bytes optional uint64
+    12 replay_backlog optional uint64
+  riffdb.storage.v1.StoredColumnarProjectionFailureV1 fields=3
+    1 target optional .riffdb.storage.v1.ColumnarProjectionFailureTargetV1
+    2 reason optional .riffdb.storage.v1.ColumnarProjectionFailureReasonV1
+    3 generation optional uint64 proto3-optional oneof=_generation
+  riffdb.storage.v1.StoredColumnarProjectionFrontierV1 fields=1
+    1 applied_through optional uint64 proto3-optional oneof=_applied_through
+  riffdb.storage.v1.StoredColumnarProjectionGenerationV1 fields=11
+    1 generation optional uint64
+    2 layout optional .riffdb.storage.v1.ColumnarProjectionLayoutV1
+    3 frontier optional .riffdb.storage.v1.StoredColumnarProjectionFrontierV1
+    4 history_incarnation optional uint64
+    5 artifact_length optional uint64 proto3-optional oneof=_artifact_length
+    6 checksum_bytes optional bytes proto3-optional oneof=_checksum_bytes
+    7 definition_fingerprint optional bytes
+    8 spec_hash optional bytes
+    9 physical_generation_fingerprint optional bytes proto3-optional oneof=_physical_generation_fingerprint
+    10 snapshot_frontier optional .riffdb.storage.v1.StoredColumnarProjectionFrontierV1 proto3-optional oneof=_snapshot_frontier
+    11 role optional .riffdb.storage.v1.ColumnarProjectionGenerationRoleV1
+  riffdb.storage.v1.StoredColumnarProjectionSourceV1 fields=2
+    1 scalar optional .riffdb.storage.v1.StoredColumnarScalarSourceV1 oneof=source
+    2 vector optional .riffdb.storage.v1.StoredColumnarVectorSourceV1 oneof=source
+  riffdb.storage.v1.StoredColumnarScalarSourceV1 fields=2
+    1 contract_lineage optional string
+    2 definition_fingerprint optional bytes
+  riffdb.storage.v1.StoredColumnarVectorSourceV1 fields=3
+    1 contract_lineage optional string
+    2 entity_type_id optional uint32
+    3 vector_field_id optional uint32
   riffdb.storage.v1.StoredCommandAuditInvocationV1 fields=10
     1 request_id optional bytes
     2 operation optional .riffdb.storage.v1.ServiceOperationV1
@@ -3043,6 +3085,39 @@ enums
     2 CAPABILITY_ROW_POLICY_OPERATION_CREATE
     3 CAPABILITY_ROW_POLICY_OPERATION_UPDATE
     4 CAPABILITY_ROW_POLICY_OPERATION_DELETE
+  riffdb.storage.v1.ColumnarProjectionFailureReasonV1 values=9
+    0 COLUMNAR_PROJECTION_FAILURE_REASON_UNSPECIFIED
+    1 COLUMNAR_PROJECTION_FAILURE_REASON_REPLAY_AGE
+    2 COLUMNAR_PROJECTION_FAILURE_REASON_REPLAY_BYTES
+    3 COLUMNAR_PROJECTION_FAILURE_REASON_REPLAY_BACKLOG
+    4 COLUMNAR_PROJECTION_FAILURE_REASON_SPEC_CHANGED
+    5 COLUMNAR_PROJECTION_FAILURE_REASON_ARTIFACT_INVALID
+    6 COLUMNAR_PROJECTION_FAILURE_REASON_RESOURCE_LIMIT
+    7 COLUMNAR_PROJECTION_FAILURE_REASON_STORAGE
+    8 COLUMNAR_PROJECTION_FAILURE_REASON_CANCELLED
+  riffdb.storage.v1.ColumnarProjectionFailureTargetV1 values=5
+    0 COLUMNAR_PROJECTION_FAILURE_TARGET_UNSPECIFIED
+    1 COLUMNAR_PROJECTION_FAILURE_TARGET_CANDIDATE
+    2 COLUMNAR_PROJECTION_FAILURE_TARGET_PUBLISHED
+    3 COLUMNAR_PROJECTION_FAILURE_TARGET_PREDECESSOR
+    4 COLUMNAR_PROJECTION_FAILURE_TARGET_CONTROL
+  riffdb.storage.v1.ColumnarProjectionGenerationRoleV1 values=4
+    0 COLUMNAR_PROJECTION_GENERATION_ROLE_UNSPECIFIED
+    1 COLUMNAR_PROJECTION_GENERATION_ROLE_PUBLISHED
+    2 COLUMNAR_PROJECTION_GENERATION_ROLE_CANDIDATE
+    3 COLUMNAR_PROJECTION_GENERATION_ROLE_PREDECESSOR
+  riffdb.storage.v1.ColumnarProjectionLayoutV1 values=3
+    0 COLUMNAR_PROJECTION_LAYOUT_UNSPECIFIED
+    1 COLUMNAR_PROJECTION_LAYOUT_V1
+    2 COLUMNAR_PROJECTION_LAYOUT_V2
+  riffdb.storage.v1.ColumnarProjectionLifecycleV1 values=7
+    0 COLUMNAR_PROJECTION_LIFECYCLE_UNSPECIFIED
+    1 COLUMNAR_PROJECTION_LIFECYCLE_BUILDING
+    2 COLUMNAR_PROJECTION_LIFECYCLE_CATCHING_UP
+    3 COLUMNAR_PROJECTION_LIFECYCLE_READY
+    4 COLUMNAR_PROJECTION_LIFECYCLE_REBUILDING
+    5 COLUMNAR_PROJECTION_LIFECYCLE_DEGRADED
+    6 COLUMNAR_PROJECTION_LIFECYCLE_INVALID
   riffdb.storage.v1.CommandDerivedIndexKindV1 values=7
     0 COMMAND_DERIVED_INDEX_KIND_UNSPECIFIED
     1 COMMAND_DERIVED_INDEX_KIND_IDEMPOTENCY

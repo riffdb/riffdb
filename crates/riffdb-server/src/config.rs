@@ -649,6 +649,10 @@ fn parse_projection_documents(
     for document in documents {
         if document.name.is_empty()
             || document.name.len() > 256
+            || document.name == "."
+            || document.name == ".."
+            || document.name.contains('/')
+            || document.name.contains('\\')
             || document.entity.is_empty()
             || document.projected_fields.is_empty()
             || document.org_scope_field.is_empty()

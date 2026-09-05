@@ -314,47 +314,7 @@ pub struct VectorObservationTargetV1 {
     vector_field: FieldId,
 }
 
-/// Stable logical identity of one compiler-declared vector projection.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct VectorProjectionSourceV1 {
-    lineage: ContractLineage,
-    entity_type: EntityTypeId,
-    vector_field: FieldId,
-}
-
-impl VectorProjectionSourceV1 {
-    /// Constructs a source identity from compiler-owned stable IDs.
-    #[must_use]
-    pub const fn new(
-        lineage: ContractLineage,
-        entity_type: EntityTypeId,
-        vector_field: FieldId,
-    ) -> Self {
-        Self {
-            lineage,
-            entity_type,
-            vector_field,
-        }
-    }
-
-    /// Contract lineage owning this projection.
-    #[must_use]
-    pub const fn lineage(&self) -> &ContractLineage {
-        &self.lineage
-    }
-
-    /// Compiler-assigned entity identity.
-    #[must_use]
-    pub const fn entity_type(&self) -> EntityTypeId {
-        self.entity_type
-    }
-
-    /// Compiler-assigned vector field identity.
-    #[must_use]
-    pub const fn vector_field(&self) -> FieldId {
-        self.vector_field
-    }
-}
+pub use riffdb_types::VectorProjectionSourceV1;
 
 /// Durable control for one vector projection and its current generation.
 ///

@@ -95,8 +95,11 @@ pub(crate) const VECTOR_EVIDENCE_INDEX: TableDefinition<&[u8], &[u8]> =
 /// Authoritative vector projection lifecycle and retention controls (ADR-0136).
 pub(crate) const VECTOR_PROJECTION_CONTROLS: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("vector_projection_controls");
+/// Sole schema-bound scalar/vector columnar selector and retention fence (ADR-0192).
+pub(crate) const COLUMNAR_PROJECTION_CONTROLS: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("columnar_projection_controls");
 
-pub(crate) const TABLE_NAMES: [&str; 42] = [
+pub(crate) const TABLE_NAMES: [&str; 43] = [
     "meta",
     "contract_bundles",
     "catalog_active",
@@ -136,12 +139,13 @@ pub(crate) const TABLE_NAMES: [&str; 42] = [
     "vector_observations",
     "vector_evidence_index",
     "vector_projection_controls",
+    "columnar_projection_controls",
     "idempotency_locators",
     "provenance_locators",
     "audit_by_request_locators",
 ];
 
-pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 37] = [
+pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 38] = [
     CONTRACT_BUNDLES,
     CATALOG_ACTIVE,
     QUERY_MODULES,
@@ -179,6 +183,7 @@ pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 37] = [
     VECTOR_OBSERVATIONS,
     VECTOR_EVIDENCE_INDEX,
     VECTOR_PROJECTION_CONTROLS,
+    COLUMNAR_PROJECTION_CONTROLS,
 ];
 
 pub(crate) const META_FORMAT_VERSION: &str = "format_version";
@@ -263,6 +268,7 @@ pub(crate) fn create_all_tables(tx: &WriteTransaction) -> Result<(), TableError>
     drop(tx.open_table(VECTOR_OBSERVATIONS)?);
     drop(tx.open_table(VECTOR_EVIDENCE_INDEX)?);
     drop(tx.open_table(VECTOR_PROJECTION_CONTROLS)?);
+    drop(tx.open_table(COLUMNAR_PROJECTION_CONTROLS)?);
     drop(tx.open_table(IDEMPOTENCY_LOCATORS)?);
     drop(tx.open_table(PROVENANCE_LOCATORS)?);
     drop(tx.open_table(AUDIT_BY_REQUEST_LOCATORS)?);
@@ -319,13 +325,14 @@ mod tests {
             VECTOR_OBSERVATIONS.name(),
             VECTOR_EVIDENCE_INDEX.name(),
             VECTOR_PROJECTION_CONTROLS.name(),
+            COLUMNAR_PROJECTION_CONTROLS.name(),
             IDEMPOTENCY_LOCATORS.name(),
             PROVENANCE_LOCATORS.name(),
             AUDIT_BY_REQUEST_LOCATORS.name(),
         ];
 
         assert_eq!(definition_names, TABLE_NAMES);
-        assert_eq!(TABLE_NAMES.len(), 42);
+        assert_eq!(TABLE_NAMES.len(), 43);
         assert_eq!(
             TABLE_NAMES.into_iter().collect::<BTreeSet<_>>().len(),
             TABLE_NAMES.len()

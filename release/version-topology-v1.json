@@ -159,6 +159,23 @@
       "durable_manifest": {"readable_key":"readable_backup_versions","writable_key":"writable_backup_versions"}
     },
     {
+      "id": "durable.columnar_projection_control",
+      "title": "Schema-bound columnar projection control",
+      "classification": "durable",
+      "owner": "riffdb-storage-api",
+      "source_assertions": [{"kind":"literal","path":"proto/riffdb/storage/v1/columnar_projection_control_v1.proto","literal":"message StoredColumnarProjectionControlV1 {"}],
+      "readable_identities": ["tag-67/revision-1"], "writable_identities": ["tag-67/revision-1"], "current_identities": ["tag-67/revision-1"],
+      "writer_policy": "single_current",
+      "compatibility_rule": "Revision 1 is the sole schema-bound scalar/vector selector; impossible pointer, evidence, role, lifecycle, failure, and retention shapes refuse.",
+      "breaking_when": "Tag 67, revision 1, source keys, Protobuf fields/enums, lifecycle shapes, or CAS selector semantics change.",
+      "supported_release_posture": "Tag 67 revision 1 is current; legacy tag 65 is structurally readable but inert until WP-757 removes it.",
+      "lifecycle": {"active":["tag-67/revision-1"],"read_only":[],"retirement_candidate":[],"retired":[]},
+      "reserved_identity_policy": "The tag, revision, field numbers, enum values, and source bytes are never reused.",
+      "evidence": ["fixtures/proto/durable-columnar-projection-control-v1-schema-hash.bin", "fixtures/proto/durable-columnar-projection-control-v1-record-bound.bin", "crates/riffdb-proto/tests/durable_schema.rs"],
+      "checks": ["./scripts/check-version-topology", "./scripts/check-durable-format-manifest"],
+      "last_change": {"classification":"new_domain_identity","decision":"ADR-0192/WP-776 schema-bound columnar control"}
+    },
+    {
       "id": "durable.contract_migration_receipt",
       "title": "Contract-migration check receipt",
       "classification": "durable",

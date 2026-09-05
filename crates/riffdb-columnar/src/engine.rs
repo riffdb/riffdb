@@ -111,6 +111,8 @@ pub struct OpenOptions {
     /// Bound into every [`ProjectionFrontier`] returned by this engine so a
     /// restore can never satisfy a pre-restore causal token.
     pub history_incarnation: u64,
+    /// `None` retains the legacy uncontrolled manifest behavior for fixtures.
+    controlled_manifest: Option<Option<(u64, [u8; 32])>>,
 }
 
 impl OpenOptions {
@@ -120,6 +122,7 @@ impl OpenOptions {
         Self {
             directory: directory.into(),
             history_incarnation: 1,
+            controlled_manifest: None,
         }
     }
 
@@ -127,6 +130,13 @@ impl OpenOptions {
     #[must_use]
     pub fn with_history_incarnation(mut self, history_incarnation: u64) -> Self {
         self.history_incarnation = history_incarnation;
+        self
+    }
+
+    /// Selects only the exact control-bound immutable manifest, or no artifact.
+    #[must_use]
+    pub fn with_controlled_manifest(mut self, selected: Option<(u64, [u8; 32])>) -> Self {
+        self.controlled_manifest = Some(selected);
         self
     }
 }
@@ -157,13 +167,14 @@ impl ColumnarEngine {
         definition: RegisteredDefinition,
         options: OpenOptions,
     ) -> Result<Self, ColumnarError> {
-        let checkpoint = CheckpointDir::new(options.directory)?;
+        let controlled = options.controlled_manifest.is_some();
+        let checkpoint = CheckpointDir::new(options.directory, controlled)?;
         let mut apply = ApplyState::new(definition.clone());
         let mut has_published = false;
         let mut durable_frontier = FrontierPosition::BeforeFirst;
         let mut has_manifest = false;
 
-        match checkpoint.load_manifest()? {
+        match checkpoint.load_manifest(options.controlled_manifest.flatten())? {
             None => {
                 // Fresh directory: building until first publication after apply.
                 // Sweep stray files from a checkpoint torn before the first
