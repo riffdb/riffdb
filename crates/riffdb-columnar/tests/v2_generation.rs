@@ -240,3 +240,133 @@ fn columnar_v2_crash_reopens_exactly_one_published_generation() {
         );
     }
 }
+
+// req: PRJ-004, PRJ-008, PRJ-009, PRJ-010, OQ-020
+#[test]
+fn columnar_v2_retirement_crash_never_rolls_back_and_reclamation_is_idempotent() {
+    const CHILD_MODE: &str = "RIFFDB_COLUMNAR_V2_RECLAIM_CHILD";
+    const CHILD_PATH: &str = "RIFFDB_COLUMNAR_V2_RECLAIM_PATH";
+    const CHILD_BOUNDARY: &str = "RIFFDB_COLUMNAR_V2_RECLAIM_BOUNDARY";
+    let generation = ProjectionGeneration::new(9).expect("generation");
+    let selected_generation = ProjectionGeneration::new(10).expect("selected generation");
+
+    if std::env::var(CHILD_MODE).as_deref() == Ok("1") {
+        let source_directory =
+            std::path::PathBuf::from(std::env::var_os(CHILD_PATH).expect("child path"));
+        let boundary = match std::env::var(CHILD_BOUNDARY)
+            .expect("child boundary")
+            .as_str()
+        {
+            "before-reclaim" => ColumnarTestBoundary::BeforeV2GenerationReclaim,
+            "after-reclaim" => ColumnarTestBoundary::AfterV2GenerationReclaim,
+            other => panic!("unknown reclaim boundary {other}"),
+        };
+        ValidatedColumnarV2Generation::prepare(
+            &source_directory,
+            register_ticket_board(&compile_bundle()),
+            1,
+            generation,
+            FrontierPosition::BeforeFirst,
+            &test_snapshot(),
+        )
+        .expect("prepare unselected generation");
+        ValidatedColumnarV2Generation::prepare(
+            &source_directory,
+            register_ticket_board(&compile_bundle()),
+            1,
+            selected_generation,
+            FrontierPosition::BeforeFirst,
+            &test_snapshot(),
+        )
+        .expect("prepare independently selected generation");
+        let controller = ColumnarTestController::new();
+        controller.arm_abort_at(boundary);
+        let _ = ValidatedColumnarV2Generation::reclaim_with_controller(
+            &source_directory,
+            generation,
+            &controller,
+        );
+        std::process::exit(0);
+    }
+
+    for name in ["before-reclaim", "after-reclaim"] {
+        let source_directory = temp_dir(&format!("v2-{name}"));
+        let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .arg("--exact")
+            .arg("columnar_v2_retirement_crash_never_rolls_back_and_reclamation_is_idempotent")
+            .arg("--nocapture")
+            .env(CHILD_MODE, "1")
+            .env(CHILD_PATH, &source_directory)
+            .env(CHILD_BOUNDARY, name)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("spawn reclaim crash child");
+        assert!(!status.success(), "child must abort at {name}");
+        let selected = ValidatedColumnarV2Generation::prepare(
+            &source_directory,
+            register_ticket_board(&compile_bundle()),
+            1,
+            selected_generation,
+            FrontierPosition::BeforeFirst,
+            &test_snapshot(),
+        )
+        .unwrap_or_else(|error| panic!("selected generation after {name}: {error}"));
+        assert_eq!(selected.root().generation(), selected_generation);
+        ValidatedColumnarV2Generation::reclaim(&source_directory, generation)
+            .unwrap_or_else(|error| panic!("retry {name}: {error}"));
+        assert!(
+            !source_directory
+                .join(format!("generation-{:016x}", generation.get()))
+                .exists()
+        );
+        ValidatedColumnarV2Generation::reclaim(&source_directory, generation)
+            .expect("repeated reclaim remains a no-op");
+    }
+}
+
+// req: PRJ-002, PRJ-004, PRJ-009, PRJ-010, OQ-020
+#[test]
+fn columnar_v2_enospc_candidate_failure_leaves_prior_generation_exactly_readable() {
+    let source_directory = temp_dir("v2-enospc-preserves-prior");
+    let definition = register_ticket_board(&compile_bundle());
+    let snapshot = test_snapshot();
+    let predecessor_generation = ProjectionGeneration::new(11).expect("predecessor generation");
+    let predecessor = ValidatedColumnarV2Generation::prepare(
+        &source_directory,
+        definition.clone(),
+        1,
+        predecessor_generation,
+        FrontierPosition::BeforeFirst,
+        &snapshot,
+    )
+    .expect("prepare predecessor");
+    let predecessor_identity = predecessor.artifact_identity();
+    let predecessor_physical = predecessor.root().physical_generation_fingerprint();
+
+    let controller = ColumnarTestController::new();
+    controller.arm_io_failure_at(ColumnarTestBoundary::BeforeV2SegmentSync);
+    let failure = ValidatedColumnarV2Generation::prepare_with_controller(
+        &source_directory,
+        definition.clone(),
+        1,
+        ProjectionGeneration::new(12).expect("candidate generation"),
+        FrontierPosition::BeforeFirst,
+        &snapshot,
+        &controller,
+    );
+    assert!(matches!(failure, Err(ColumnarV2GenerationError::Io)));
+
+    let reopened = ValidatedColumnarV2Generation::open(
+        &source_directory,
+        definition,
+        1,
+        predecessor_generation,
+        snapshot.visible_frontier,
+        predecessor_identity,
+        predecessor_physical,
+    )
+    .expect("prior selected generation remains exact");
+    assert_eq!(reopened.root(), predecessor.root());
+}

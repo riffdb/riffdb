@@ -28,6 +28,10 @@ pub enum ColumnarTestBoundary {
     AfterV2RootRename,
     /// After renaming the complete V2 candidate directory.
     AfterV2GenerationRename,
+    /// Before removing one durably unselected V2 generation directory.
+    BeforeV2GenerationReclaim,
+    /// After removing one durably unselected V2 generation, before parent sync.
+    AfterV2GenerationReclaim,
 }
 
 /// Fixed failpoint actions.
@@ -35,6 +39,7 @@ pub enum ColumnarTestBoundary {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FailpointAction {
     AbortProcess,
+    ReturnIo,
 }
 
 #[derive(Clone, Copy)]
@@ -79,6 +84,16 @@ impl ColumnarTestController {
         self.inner.fired.store(false, Ordering::SeqCst);
     }
 
+    /// Arms one synthetic ENOSPC-class I/O refusal at a durability boundary.
+    pub fn arm_io_failure_at(&self, boundary: ColumnarTestBoundary) {
+        let mut armed = self.inner.armed.lock().unwrap_or_else(|e| e.into_inner());
+        *armed = Some(ArmedFailpoint {
+            boundary,
+            action: FailpointAction::ReturnIo,
+        });
+        self.inner.fired.store(false, Ordering::SeqCst);
+    }
+
     /// Clears any armed failpoint.
     pub fn clear(&self) {
         let mut armed = self.inner.armed.lock().unwrap_or_else(|e| e.into_inner());
@@ -102,7 +117,7 @@ impl ColumnarTestController {
     }
 
     /// Invoked by checkpoint code at each fixed boundary.
-    pub(crate) fn hit(&self, boundary: ColumnarTestBoundary) {
+    pub(crate) fn hit(&self, boundary: ColumnarTestBoundary) -> bool {
         if let Ok(mut events) = self.inner.events.lock() {
             events.push(boundary);
         }
@@ -116,8 +131,10 @@ impl ColumnarTestController {
                     // Abrupt child death for recovery tests.
                     std::process::abort();
                 }
+                FailpointAction::ReturnIo => return true,
             }
         }
+        false
     }
 }
 

@@ -78,6 +78,48 @@ impl ValidatedColumnarV2Generation {
         source_directory.join(format!("{}.tmp", generation_directory_name(generation)))
     }
 
+    /// Removes only the exact immutable directory for one already unselected
+    /// V2 generation. Selection and captured-view fencing are owned by the
+    /// server caller; this helper owns only crash-idempotent filesystem work.
+    #[doc(hidden)]
+    pub fn reclaim(
+        source_directory: &Path,
+        generation: ProjectionGeneration,
+    ) -> Result<(), ColumnarV2GenerationError> {
+        Self::reclaim_with_optional_controller(source_directory, generation, None)
+    }
+
+    /// Identical reclamation with fixed crash boundaries for process tests.
+    #[doc(hidden)]
+    pub fn reclaim_with_controller(
+        source_directory: &Path,
+        generation: ProjectionGeneration,
+        controller: &ColumnarTestController,
+    ) -> Result<(), ColumnarV2GenerationError> {
+        Self::reclaim_with_optional_controller(source_directory, generation, Some(controller))
+    }
+
+    fn reclaim_with_optional_controller(
+        source_directory: &Path,
+        generation: ProjectionGeneration,
+        controller: Option<&ColumnarTestController>,
+    ) -> Result<(), ColumnarV2GenerationError> {
+        let directory = source_directory.join(generation_directory_name(generation));
+        if !directory.exists() {
+            return Ok(());
+        }
+        if hit(controller, ColumnarTestBoundary::BeforeV2GenerationReclaim) {
+            return Err(ColumnarV2GenerationError::Io);
+        }
+        fs::remove_dir_all(&directory).map_err(|_| ColumnarV2GenerationError::Io)?;
+        if hit(controller, ColumnarTestBoundary::AfterV2GenerationReclaim) {
+            return Err(ColumnarV2GenerationError::Io);
+        }
+        File::open(source_directory)
+            .and_then(|parent| parent.sync_all())
+            .map_err(|_| ColumnarV2GenerationError::Io)
+    }
+
     /// Writes one disjoint generation and reopens every member before return.
     pub fn prepare(
         source_directory: &Path,
@@ -283,7 +325,9 @@ impl ValidatedColumnarV2Generation {
             .map_err(|_| ColumnarV2GenerationError::Io)?;
         fs::rename(&temporary_directory, &final_directory)
             .map_err(|_| ColumnarV2GenerationError::Io)?;
-        hit(controller, ColumnarTestBoundary::AfterV2GenerationRename);
+        if hit(controller, ColumnarTestBoundary::AfterV2GenerationRename) {
+            return Err(ColumnarV2GenerationError::Io);
+        }
         File::open(source_directory)
             .and_then(|directory| directory.sync_all())
             .map_err(|_| ColumnarV2GenerationError::Io)?;
@@ -681,22 +725,28 @@ fn write_immutable_member(
         .map_err(|_| ColumnarV2GenerationError::Io)?;
     file.write_all(bytes)
         .map_err(|_| ColumnarV2GenerationError::Io)?;
-    if let Some(boundary) = before_sync {
-        hit(controller, boundary);
+    if let Some(boundary) = before_sync
+        && hit(controller, boundary)
+    {
+        return Err(ColumnarV2GenerationError::Io);
     }
     file.sync_all().map_err(|_| ColumnarV2GenerationError::Io)?;
     fs::rename(&temporary_path, &final_path).map_err(|_| ColumnarV2GenerationError::Io)?;
-    if let Some(boundary) = after_rename {
-        hit(controller, boundary);
+    if let Some(boundary) = after_rename
+        && hit(controller, boundary)
+    {
+        return Err(ColumnarV2GenerationError::Io);
     }
     File::open(directory)
         .and_then(|parent| parent.sync_all())
         .map_err(|_| ColumnarV2GenerationError::Io)
 }
 
-fn hit(controller: Option<&ColumnarTestController>, boundary: ColumnarTestBoundary) {
+fn hit(controller: Option<&ColumnarTestController>, boundary: ColumnarTestBoundary) -> bool {
     if let Some(controller) = controller {
-        controller.hit(boundary);
+        controller.hit(boundary)
+    } else {
+        false
     }
 }
 
