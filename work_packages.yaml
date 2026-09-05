@@ -23728,3 +23728,78 @@ work_packages:
     scale: The external run uses one partition, finite endpoints, bounded pages and operation counts,
       and retains no population-sized, duration-proportional, schema, route, artifact, or value data.
   human_review_triggers: *id001
+
+- id: WP-777
+  name: Demand-activated columnar runtime materialization
+  tier: guarantee
+  depends_on: [WP-704, WP-773, WP-774]
+  objective: Implement ADR-0195 by keeping admitted columnar artifacts cold through core
+    readiness and no-demand close, coalescing first semantic demand onto one server-owned
+    activation worker, and installing only the exactly selected validated immutable view.
+  requirements: [PERF-019, PRJ-002, PRJ-004, PRJ-008, PRJ-009,
+    OQ-019, OQ-020, OQ-022, PERF-007, PERF-008]
+  required_adrs: [ADR-0086, ADR-0156, ADR-0187, ADR-0190, ADR-0192, ADR-0195]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0195-demand-activated-columnar-runtime-materialization.md, adr/README.md,
+    crates/riffdb-columnar/**, crates/riffdb-service/**, crates/riffdb-server/**,
+    crates/riffdb-observability/**, crates/riffdb-testkit-server/**,
+    fixtures/**, tests/**, scripts/**, docs/SUMMARY.md, docs/architecture/**,
+    docs/operations/**, docs/performance/**, docs/known-limitations.md]
+  deliverables:
+  - One fields-private per-source Cold/Activating/Active/Failed/Stopped state machine retaining
+    only bounded checked registration before demand, with no artifact open, decoded snapshot,
+    catch-up, publication, checkpoint, or projection-population scan before readiness
+  - One serialized server-owned activation worker and bounded wake path; concurrent first demand
+    coalesces without caller tasks or retained requests and immediately returns the existing typed
+    Building/unavailable result with no rows
+  - Exact current-selection reread and complete bounded artifact validation before atomic immutable
+    view installation, preserving ordinary apply, publication, checkpoint, freshness, cursor,
+    policy, retention, and notification semantics after activation
+  - Corruption, mismatch, incompatible bytes, limit refusal, and unavailable-storage tests proving
+    typed rowless failure with no generation, layout, source, partition, frontier, V1, or
+    authoritative fallback and no request-owned reopen loop
+  - Deterministic barrier tests proving request cancellation does not cancel shared activation and
+    shutdown joins the sole owner at an existing page boundary without stop-caused publication,
+    checkpoint, notification, or frontier advance; cold close performs no projection I/O
+  - Architecture and redaction tests proving no public activation/prewarm/eager-mode surface, one
+    worker, read-only status/health observation, bounded diagnostics, and unchanged durable/public
+    formats and transaction ownership
+  - Handbook and performance guidance documenting first-demand Building behavior, derived-health
+    degradation, retry expectations, clean lifecycle scope, and the unchanged post-demand
+    PERF-007/PERF-008 resource gates
+  - WP-705 referee integration recording cold-source and activation counts and proving zero
+    activations and zero projection-population counters at the exact 65,536-row and canonical
+    production-scale clean lifecycle checkpoints
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-777
+  - cargo +1.97.0 test -p riffdb-columnar -p riffdb-service -p riffdb-server
+    -p riffdb-testkit-server --all-features
+  - ./scripts/handbook check
+  - ./scripts/ci-all
+  exit_gate: The exact configured production graph reaches core readiness and completes a no-demand
+    graceful close without opening, decoding, applying, publishing, or checkpointing a columnar
+    artifact; concurrent first demand creates one activation and returns only typed Building with
+    no rows; only a fully validated current selection becomes queryable; every failure remains
+    rowless without fallback; shutdown retains ADR-0187 abandonment; and both WP-705 lifecycle
+    checkpoints pass their unchanged heap/time and zero-population-work gates.
+  standing_design_tests:
+    interface_safety: Activation is automatic on first semantic demand and server-owned; no
+      application, agent, SDK, transport, operator, MCP, CLI, or configuration surface can select
+      activation timing, bytes, generation, layout, fallback, validation, worker count, scheduling,
+      or bounds, and no cold or failed source can return rows.
+    scale: Startup retains at most 256 bounded registrations and one worker independent of entity
+      or projection population; activation is serialized, uses existing page/segment/query bounds,
+      and installs at most one engine per source without a duplicate in-memory generation.
+  human_review_triggers: &id0195
+  - A public or operator input could choose eager versus demand activation, skip validation, force
+    readiness, select an artifact, or alter an activation bound.
+  - A cold, activating, failed, mismatched, corrupt, partial, stale, excessive, or unknown source
+    could serve rows or fall back to another source, generation, layout, partition set, or frontier.
+  - More than one activation owner or thread could exist, first demand could block until population
+    work completes, or request cancellation could cancel shared activation.
+  - Startup or no-demand graceful close could open or decode a generation artifact, apply
+    authoritative records, publish a view, write a checkpoint, or walk projection population.
+  - Shutdown could interrupt inside a commit/page, publish or checkpoint because of stop, or fail
+    to join the activation owner before storage closes.
+  - A durable control, generation-root, manifest, segment, retention fence, public protocol,
+    lifecycle enum, freshness outcome, or canonical identity would change.
