@@ -24046,19 +24046,6 @@ work_packages:
     ADR-0100 publication, exact idempotent replay, atomicity, transaction-adjacent validation,
     fencing, bounds, and lock-free checkpoint I/O remain unchanged; WP-705 and WP-578 evidence stay
     separately pending.
-  closure:
-    status: complete
-    completed_at: "2026-09-05"
-    evidence: Storage-private affine public, private, queued, direct, preserving, and rebase
-      witnesses now cover every exact contiguous locator-bearing successor. Independent typed-request
-      expectations match centrally recorded raw mutations at the checked 8,194-mutation consumer
-      ceiling; real dormant-index tests retain prior identities and reject malformed or mismatched
-      locator capsules; 288 unique publications complete as bounded A/B/C FIFO pipelines with zero
-      fallback scans and zero transient rebuilds. The exact WP-778 acceptance plan passes all six
-      steps, including 471 nextest cases with only the separately owned evidence test skipped.
-    decision: The optimization remains process-local and storage-private; no public, durable,
-      protocol, storage-key, transaction-ordering, acknowledgement, or outcome surface changes.
-      WP-705 fixed-scale qualification and WP-578 uninterrupted evidence remain separately pending.
   standing_design_tests:
     interface_safety: Coverage is storage-private, automatic, monotonic, and usable only after an
       exact locator miss; no application, agent, SDK, transport, MCP, CLI, operator, or
