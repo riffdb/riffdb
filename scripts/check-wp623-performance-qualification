@@ -51,6 +51,8 @@ EXPECTED_UNARY_METHOD = {
     "maximum_whole_cell_steal_percent": 1.0,
     "host_validity_schema": "riffdb.app-baseline-host-validity/v2",
     "qualified_statistic": "median_of_five_with_central_three_stability",
+    "stability_rule_binds": "gated_backend",
+    "comparator_spread_treatment": "published_disclosure",
 }
 COMMON_SCENARIOS = {
     "point_get_ticket",
@@ -923,6 +925,12 @@ def fake_load(manifest: dict[str, Any], profile: str) -> dict[str, Any]:
 
 
 def run_self_test() -> None:
+    if EXPECTED_UNARY_METHOD.get("stability_rule_binds") != "gated_backend":
+        fail("WP-623 does not require ADR-0183's exact unary stability-rule identity")
+    if EXPECTED_UNARY_METHOD.get("comparator_spread_treatment") != (
+        "published_disclosure"
+    ):
+        fail("WP-623 does not require ADR-0171's comparator disclosure method")
     manifest = {
         "schema": MANIFEST_SCHEMA,
         "source_revision": "1" * 40,
@@ -1036,6 +1044,17 @@ def run_self_test() -> None:
         print("unary_sample_drift: rejected")
     else:
         fail("historical unary sample cardinality passed as V2")
+
+    legacy_literal = copy.deepcopy(qualification)
+    legacy_literal["candidate"]["method"]["stability_rule_binds"] = (
+        "gated_backend_only"
+    )
+    try:
+        verify_manifest(manifest, reports, baseline, legacy_literal)
+    except ValueError:
+        print("unary_stability_rule_literal_drift: rejected")
+    else:
+        fail("the superseded V2 stability-rule literal passed WP-623")
 
     predecessor_drift = copy.deepcopy(qualification)
     predecessor_drift["candidate"]["governance_predecessor_sha256"] = "0" * 64

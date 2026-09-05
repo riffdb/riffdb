@@ -1405,7 +1405,7 @@ def verify_corpus(
             # baseline receipt means, so a candidate measured under the old
             # both-backends rule fails the method-drift check rather than being
             # silently comparable.
-            "stability_rule_binds": "gated_backend_only",
+            "stability_rule_binds": "gated_backend",
             "comparator_spread_treatment": "published_disclosure",
         },
         "scenario_classes": {
@@ -1961,7 +1961,18 @@ def run_self_test(root: Path) -> None:
     manifest_path = scratch / "manifest.json"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     baseline = verify_corpus(manifest_path, manifest)
+    if baseline.get("method", {}).get("stability_rule_binds") != "gated_backend":
+        fail("the V2 baseline did not emit ADR-0183's exact stability-rule identity")
     verify_against_baseline(baseline, baseline)
+
+    legacy_literal = copy.deepcopy(baseline)
+    legacy_literal["method"]["stability_rule_binds"] = "gated_backend_only"
+    try:
+        verify_against_baseline(legacy_literal, baseline)
+    except ValueError:
+        pass
+    else:
+        fail("the superseded V2 stability-rule literal passed as current evidence")
 
     campaign_type_drift = copy.deepcopy(manifest)
     campaign_value, _ = load_json(
