@@ -347,6 +347,7 @@ fn sha256_dependency_is_confined_to_reviewed_integrity_boundaries() {
                 Some(
                     "backup.rs"
                         | "benchmark_support.rs"
+                        | "fresh_locator_coverage.rs"
                         | "format_upgrade.rs"
                         | "journal.rs"
                         | "migration_stage.rs"
@@ -1752,7 +1753,10 @@ fn fresh_locator_roles_are_private_affine_and_bound_to_existing_publication_edge
             "the closed permit validator must reject {excluded}"
         );
     }
-    assert!(store.contains("riffdb-fresh-locator-preserving-permit-v1"));
+    assert!(
+        production_source(source_dir.join("fresh_locator_coverage.rs"))
+            .contains("riffdb-fresh-locator-preserving-permit-v1")
+    );
     assert!(store.contains("canonical.windows(2).any"));
     assert!(store.contains("publication_queue.lock()"));
 
