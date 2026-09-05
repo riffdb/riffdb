@@ -11,16 +11,18 @@ use std::time::Instant;
 
 use riffdb_columnar::{
     AggregateOp, AggregateValue, ColumnPredicate, ColumnarEngine, ColumnarManifestV2,
-    ColumnarQueryRequest, ColumnarSnapshot, ColumnarSpecReplayLimitsV1, ColumnarTestBoundary,
-    ColumnarTestController, ColumnarV2GenerationError, ColumnarV2StreamingError, LiveRow,
-    OpenOptions, OrgKey, PrimaryKeyBytes, QueryBudget, QueryError, QueryResult, SegmentV2Codec,
-    ValidatedColumnarV2Generation, query_snapshot, query_snapshot_with_policy_admission,
+    ColumnarProjectionSpecV1, ColumnarQueryRequest, ColumnarSnapshot, ColumnarSpecReplayLimitsV1,
+    ColumnarTestBoundary, ColumnarTestController, ColumnarV2GenerationError,
+    ColumnarV2StreamingError, LiveRow, OpenOptions, OrgKey, PrimaryKeyBytes, QueryBudget,
+    QueryError, QueryResult, SegmentV2Codec, ValidatedColumnarV2Generation, query_snapshot,
+    query_snapshot_with_policy_admission,
 };
 use riffdb_policy::AuthorizedProjectedRowAdmissionV1;
 use riffdb_storage_api::{
     ApplicationExportSnapshotReader, ApplicationExportSourcePageV1,
-    ApplicationExportSourceRecordV1, CommittedEntityReferenceV2, EntityTarget, ExpectedEntityState,
-    StorageError, StorageErrorKind, StorageScanLimit, StoredEntityRecordV1,
+    ApplicationExportSourceRecordV1, ColumnarProjectionArtifactV1, ColumnarProjectionLayoutV1,
+    CommittedEntityReferenceV2, EntityTarget, ExpectedEntityState, StorageError, StorageErrorKind,
+    StorageScanLimit, StoredColumnarProjectionGenerationV1, StoredEntityRecordV1,
 };
 use riffdb_types::{
     ApplicationExportClassV1, ApplicationExportSnapshotBindingV1, CanonicalValue,
@@ -1124,7 +1126,8 @@ fn selected_v2_queries_use_open_validated_private_pruning_with_fixed_policy_work
 // req: PRJ-002, PRJ-004, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022, OQ-024
 #[test]
 fn columnar_v2_generation_root_is_structurally_atomic_across_partitions() {
-    let definition = register_ticket_board(&compile_bundle());
+    let bundle = compile_bundle();
+    let definition = register_ticket_board(&bundle);
     let source_directory = temp_dir("v2-generation-atomic");
     let generation = ProjectionGeneration::new(2).expect("generation");
     let snapshot_frontier = FrontierPosition::BeforeFirst;
@@ -1191,16 +1194,66 @@ fn columnar_v2_generation_root_is_structurally_atomic_across_partitions() {
         snapshot.merged_org(&org_b)
     );
 
-    let reopened = ValidatedColumnarV2Generation::open(
-        &source_directory,
-        definition,
-        1,
+    let spec = ColumnarProjectionSpecV1::for_scalar(&definition, &bundle).expect("scalar spec");
+    let (length, checksum) = prepared.artifact_identity();
+    let pointer = StoredColumnarProjectionGenerationV1::prepared_candidate(
         generation,
+        ColumnarProjectionLayoutV1::V2,
         applied_frontier,
-        prepared.artifact_identity(),
-        prepared.root().physical_generation_fingerprint(),
+        applied_frontier,
+        1,
+        ColumnarProjectionArtifactV1::new(length, checksum).expect("root artifact"),
+        definition.fingerprint(),
+        spec.hash(),
+        Some(*prepared.root().physical_generation_fingerprint().as_bytes()),
     )
-    .expect("open exact complete generation");
+    .expect("mismatched snapshot pointer");
+    assert!(
+        prepared
+            .prepared_generation(&spec, pointer, [0x71; 16])
+            .is_err(),
+        "a validated root cannot mint a witness for another snapshot frontier"
+    );
+
+    let exact_pointer = StoredColumnarProjectionGenerationV1::prepared_candidate(
+        generation,
+        ColumnarProjectionLayoutV1::V2,
+        snapshot_frontier,
+        applied_frontier,
+        1,
+        ColumnarProjectionArtifactV1::new(length, checksum).expect("root artifact"),
+        definition.fingerprint(),
+        spec.hash(),
+        Some(*prepared.root().physical_generation_fingerprint().as_bytes()),
+    )
+    .expect("exact snapshot pointer");
+    let reopened = ValidatedColumnarV2Generation::open_prepared_candidate(
+        &source_directory,
+        definition.clone(),
+        &exact_pointer,
+    )
+    .expect("reopen exact prepared generation");
+    assert!(
+        reopened
+            .prepared_generation(&spec, exact_pointer.clone(), [0x71; 16])
+            .is_ok(),
+        "only the exact validated V2 root/control identity mints the witness"
+    );
+    assert!(
+        ValidatedColumnarV2Generation::open(
+            &source_directory,
+            definition.clone(),
+            1,
+            generation,
+            applied_frontier,
+            prepared.artifact_identity(),
+            prepared.root().physical_generation_fingerprint(),
+        )
+        .expect("ordinary selected reopen")
+        .prepared_generation(&spec, exact_pointer, [0x71; 16])
+        .is_err(),
+        "a selected reopen without Candidate snapshot evidence cannot mint"
+    );
     assert_eq!(reopened.root(), prepared.root());
     assert_eq!(
         reopened.snapshot().merged_org(&org_a),

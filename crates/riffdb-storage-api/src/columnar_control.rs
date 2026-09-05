@@ -1427,114 +1427,6 @@ impl FreshColumnarProjectionControlV1 {
     }
 }
 
-/// Nonserializable, path-free proof that one immutable generation was fully
-/// synced, reopened, and validated by this process.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PreparedColumnarGenerationV1 {
-    source: ColumnarProjectionSourceV1,
-    definition_semantics_hash: riffdb_types::ColumnarDefinitionSemanticsHashV1,
-    generation: StoredColumnarProjectionGenerationV1,
-    process_generation: [u8; 16],
-}
-
-impl PreparedColumnarGenerationV1 {
-    /// Captures complete V1 evidence only after the caller reopened the exact
-    /// immutable artifact selected by `generation`.
-    pub fn v1(
-        source: ColumnarProjectionSourceV1,
-        definition_semantics_hash: riffdb_types::ColumnarDefinitionSemanticsHashV1,
-        generation: StoredColumnarProjectionGenerationV1,
-        process_generation: [u8; 16],
-    ) -> Result<Self, ColumnarControlError> {
-        if generation.layout() != ColumnarProjectionLayoutV1::V1
-            || generation.artifact().is_none()
-            || generation.physical_generation_fingerprint().is_some()
-            || !matches!(
-                generation.role(),
-                ColumnarProjectionGenerationRoleV1::Candidate
-                    | ColumnarProjectionGenerationRoleV1::Published
-            )
-        {
-            return Err(ColumnarControlError);
-        }
-        Ok(Self {
-            source,
-            definition_semantics_hash,
-            generation,
-            process_generation,
-        })
-    }
-
-    /// Captures complete V2 evidence only after the caller has reopened and
-    /// fully validated the exact immutable generation root and every member,
-    /// and has matched its logical rows against the independent evaluator.
-    pub fn v2(
-        source: ColumnarProjectionSourceV1,
-        definition_semantics_hash: riffdb_types::ColumnarDefinitionSemanticsHashV1,
-        generation: StoredColumnarProjectionGenerationV1,
-        process_generation: [u8; 16],
-    ) -> Result<Self, ColumnarControlError> {
-        if generation.layout() != ColumnarProjectionLayoutV1::V2
-            || generation.artifact().is_none()
-            || generation.physical_generation_fingerprint().is_none()
-            || !matches!(
-                generation.role(),
-                ColumnarProjectionGenerationRoleV1::Candidate
-                    | ColumnarProjectionGenerationRoleV1::Published
-            )
-        {
-            return Err(ColumnarControlError);
-        }
-        Ok(Self {
-            source,
-            definition_semantics_hash,
-            generation,
-            process_generation,
-        })
-    }
-
-    /// Schema-bound source validated with this artifact.
-    #[must_use]
-    pub const fn source(&self) -> &ColumnarProjectionSourceV1 {
-        &self.source
-    }
-
-    /// Complete definition-semantics digest validated with this artifact.
-    #[must_use]
-    pub const fn definition_semantics_hash(
-        &self,
-    ) -> riffdb_types::ColumnarDefinitionSemanticsHashV1 {
-        self.definition_semantics_hash
-    }
-
-    /// Exact prepared durable pointer.
-    #[must_use]
-    pub const fn generation(&self) -> &StoredColumnarProjectionGenerationV1 {
-        &self.generation
-    }
-
-    /// Process generation that performed reopen validation.
-    #[must_use]
-    pub const fn process_generation(&self) -> [u8; 16] {
-        self.process_generation
-    }
-
-    /// Returns the prepared pointer only when its source and target hashes
-    /// match the complete expected control.
-    pub fn replacement_for(
-        &self,
-        expected: &StoredColumnarProjectionControlV1,
-    ) -> Result<StoredColumnarProjectionGenerationV1, ColumnarControlError> {
-        if &self.source != expected.source()
-            || self.generation.definition_fingerprint() != expected.target_definition_fingerprint()
-            || self.generation.spec_hash() != expected.target_spec_hash()
-        {
-            return Err(ColumnarControlError);
-        }
-        Ok(self.generation.clone())
-    }
-}
-
 /// Sole specialized durable selector repository for schema-bound columnar state.
 ///
 /// Every mutating operation is a closed named transition. Implementations must
@@ -1545,27 +1437,6 @@ pub trait ColumnarProjectionControlRepository {
     fn initialize_fresh_v1(
         &self,
         controls: &[FreshColumnarProjectionControlV1],
-    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError>;
-
-    /// Atomically installs the first complete Candidate artifact evidence.
-    fn record_durable_snapshot(
-        &self,
-        expected: &StoredColumnarProjectionControlV1,
-        prepared: &PreparedColumnarGenerationV1,
-    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError>;
-
-    /// Advances a Prepared V1 Candidate without passing the current head.
-    fn record_candidate_frontier(
-        &self,
-        expected: &StoredColumnarProjectionControlV1,
-        replacement: &PreparedColumnarGenerationV1,
-    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError>;
-
-    /// Advances only Published V1 while preserving any Candidate byte-exact.
-    fn advance_published_v1(
-        &self,
-        expected: &StoredColumnarProjectionControlV1,
-        replacement: &PreparedColumnarGenerationV1,
     ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError>;
 
     /// Allocates the first V2 Candidate beside healthy Published V1.
@@ -1592,13 +1463,6 @@ pub trait ColumnarProjectionControlRepository {
         replay_limits: ColumnarProjectionReplayLimitsV1,
         layout: ColumnarProjectionLayoutV1,
         physical_generation_fingerprint: Option<[u8; 32]>,
-    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError>;
-
-    /// Publishes a Prepared Candidate only at the transaction-current head.
-    fn publish_prepared_generation(
-        &self,
-        expected: &StoredColumnarProjectionControlV1,
-        prepared: &PreparedColumnarGenerationV1,
     ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError>;
 
     /// Suspends one exact Candidate failure without changing its other pointer.

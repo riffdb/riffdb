@@ -1,12 +1,13 @@
 //! Durable redb implementation of schema-bound columnar control.
 
 use redb::{ReadableTable, ReadableTableMetadata, WriteTransaction};
+use riffdb_columnar::{PreparedColumnarGenerationRepository, PreparedColumnarGenerationV1};
 use riffdb_storage_api::{
     ApplicationSequenceAllocator, ColumnarProjectionControlRepository,
     ColumnarProjectionControlWriteResultV1, ColumnarProjectionFailureReasonV1,
     ColumnarProjectionLayoutV1, ColumnarProjectionReplayLimitsV1,
     ColumnarProjectionRetentionRepository, FreshColumnarProjectionControlV1, StorageError,
-    StorageErrorKind, StoredColumnarProjectionControlV1,
+    StorageErrorKind, StoredColumnarProjectionControlV1, StoredColumnarProjectionGenerationV1,
 };
 use riffdb_types::{
     ColumnarProjectionSourceV1, ColumnarProjectionSpecHashV1, CommitSequence,
@@ -110,6 +111,49 @@ impl RedbOperationalPorts {
         access.commit_for(RedbTestOperation::ColumnarProjectionControl)?;
         Ok(ColumnarProjectionControlWriteResultV1::Applied)
     }
+
+    fn record_durable_snapshot_pointer(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+        replacement: StoredColumnarProjectionGenerationV1,
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        self.apply_expected_columnar_control(expected, |control, _| {
+            control.record_durable_snapshot(replacement)
+        })
+    }
+
+    fn record_candidate_frontier_pointer(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+        replacement: StoredColumnarProjectionGenerationV1,
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        self.apply_expected_columnar_control(expected, |control, head| {
+            control.record_candidate_frontier(replacement, head)
+        })
+    }
+
+    fn advance_published_v1_pointer(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+        replacement: StoredColumnarProjectionGenerationV1,
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        self.apply_expected_columnar_control(expected, |control, head| {
+            control.advance_published_v1(replacement, head)
+        })
+    }
+
+    fn publish_prepared_generation_pointer(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+        prepared: StoredColumnarProjectionGenerationV1,
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        self.apply_expected_columnar_control(expected, |control, head| {
+            if control.candidate() != Some(&prepared) {
+                return Err(riffdb_storage_api::ColumnarControlError);
+            }
+            control.publish_prepared_generation(head)
+        })
+    }
 }
 
 impl ColumnarProjectionControlRepository for RedbOperationalPorts {
@@ -166,39 +210,6 @@ impl ColumnarProjectionControlRepository for RedbOperationalPorts {
         Ok(ColumnarProjectionControlWriteResultV1::Applied)
     }
 
-    fn record_durable_snapshot(
-        &self,
-        expected: &StoredColumnarProjectionControlV1,
-        prepared: &riffdb_storage_api::PreparedColumnarGenerationV1,
-    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
-        self.apply_expected_columnar_control(expected, |control, _| {
-            let replacement = prepared.replacement_for(&control)?;
-            control.record_durable_snapshot(replacement)
-        })
-    }
-
-    fn record_candidate_frontier(
-        &self,
-        expected: &StoredColumnarProjectionControlV1,
-        replacement: &riffdb_storage_api::PreparedColumnarGenerationV1,
-    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
-        self.apply_expected_columnar_control(expected, |control, head| {
-            let replacement = replacement.replacement_for(&control)?;
-            control.record_candidate_frontier(replacement, head)
-        })
-    }
-
-    fn advance_published_v1(
-        &self,
-        expected: &StoredColumnarProjectionControlV1,
-        replacement: &riffdb_storage_api::PreparedColumnarGenerationV1,
-    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
-        self.apply_expected_columnar_control(expected, |control, head| {
-            let replacement = replacement.replacement_for(&control)?;
-            control.advance_published_v1(replacement, head)
-        })
-    }
-
     fn begin_v2_candidate(
         &self,
         expected: &StoredColumnarProjectionControlV1,
@@ -236,20 +247,6 @@ impl ColumnarProjectionControlRepository for RedbOperationalPorts {
                 layout,
                 physical_generation_fingerprint,
             )
-        })
-    }
-
-    fn publish_prepared_generation(
-        &self,
-        expected: &StoredColumnarProjectionControlV1,
-        prepared: &riffdb_storage_api::PreparedColumnarGenerationV1,
-    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
-        self.apply_expected_columnar_control(expected, |control, head| {
-            let prepared = prepared.replacement_for(&control)?;
-            if control.candidate() != Some(&prepared) {
-                return Err(riffdb_storage_api::ColumnarControlError);
-            }
-            control.publish_prepared_generation(head)
         })
     }
 
@@ -322,6 +319,56 @@ impl ColumnarProjectionControlRepository for RedbOperationalPorts {
         reason: ColumnarProjectionFailureReasonV1,
     ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
         self.apply_expected_columnar_control(expected, |control, _| control.mark_invalid(reason))
+    }
+}
+
+impl PreparedColumnarGenerationRepository for RedbOperationalPorts {
+    fn record_durable_snapshot(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+        prepared: &PreparedColumnarGenerationV1,
+        process_generation: [u8; 16],
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        let replacement = prepared
+            .replacement_for(expected, process_generation)
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        self.record_durable_snapshot_pointer(expected, replacement)
+    }
+
+    fn record_candidate_frontier(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+        replacement: &PreparedColumnarGenerationV1,
+        process_generation: [u8; 16],
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        let replacement = replacement
+            .replacement_for(expected, process_generation)
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        self.record_candidate_frontier_pointer(expected, replacement)
+    }
+
+    fn advance_published_v1(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+        replacement: &PreparedColumnarGenerationV1,
+        process_generation: [u8; 16],
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        let replacement = replacement
+            .replacement_for(expected, process_generation)
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        self.advance_published_v1_pointer(expected, replacement)
+    }
+
+    fn publish_prepared_generation(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+        prepared: &PreparedColumnarGenerationV1,
+        process_generation: [u8; 16],
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        let prepared = prepared
+            .replacement_for(expected, process_generation)
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        self.publish_prepared_generation_pointer(expected, prepared)
     }
 }
 
@@ -541,7 +588,7 @@ mod tests {
 
     // req: PRJ-002, PRJ-006, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022, OQ-024, OQ-053
     #[test]
-    fn columnar_control_publish_requires_prepared_root_and_transaction_current_head() {
+    fn columnar_control_pointer_cas_requires_transaction_current_head() {
         let (_path, ports) = ports(
             "columnar-v2-prepared-root-cas",
             RedbTestController::observe_index_migration(),
@@ -578,17 +625,9 @@ mod tests {
                 None,
             )
             .expect("prepared V1 pointer");
-        let semantics = riffdb_types::ColumnarDefinitionSemanticsHashV1::from_bytes([0x12; 32]);
-        let v1_prepared = riffdb_storage_api::PreparedColumnarGenerationV1::v1(
-            source.clone(),
-            semantics,
-            v1_pointer,
-            [0x41; 16],
-        )
-        .expect("prepared V1");
         assert_eq!(
             ports
-                .record_durable_snapshot(&initial, &v1_prepared)
+                .record_durable_snapshot_pointer(&initial, v1_pointer)
                 .expect("record V1"),
             ColumnarProjectionControlWriteResultV1::Applied
         );
@@ -596,16 +635,10 @@ mod tests {
             .recover_expected_control(&source)
             .expect("read V1")
             .expect("V1");
-        let selected_v1 = riffdb_storage_api::PreparedColumnarGenerationV1::v1(
-            source.clone(),
-            semantics,
-            prepared_v1_control.candidate().expect("candidate").clone(),
-            [0x41; 16],
-        )
-        .expect("selected V1");
+        let selected_v1 = prepared_v1_control.candidate().expect("candidate").clone();
         assert_eq!(
             ports
-                .publish_prepared_generation(&prepared_v1_control, &selected_v1)
+                .publish_prepared_generation_pointer(&prepared_v1_control, selected_v1)
                 .expect("publish V1"),
             ColumnarProjectionControlWriteResultV1::Applied
         );
@@ -640,16 +673,9 @@ mod tests {
                 Some(physical),
             )
             .expect("prepared V2 pointer");
-        let v2_prepared = riffdb_storage_api::PreparedColumnarGenerationV1::v2(
-            source.clone(),
-            semantics,
-            v2_pointer,
-            [0x41; 16],
-        )
-        .expect("prepared root");
         assert_eq!(
             ports
-                .record_durable_snapshot(&catching_up, &v2_prepared)
+                .record_durable_snapshot_pointer(&catching_up, v2_pointer.clone())
                 .expect("select prepared root"),
             ColumnarProjectionControlWriteResultV1::Applied
         );
@@ -658,20 +684,9 @@ mod tests {
             .expect("read prepared V2")
             .expect("prepared V2");
 
-        let unprepared = riffdb_storage_api::PreparedColumnarGenerationV1::v2(
-            source.clone(),
-            semantics,
-            catching_up.candidate().expect("unprepared V2").clone(),
-            [0x41; 16],
-        );
-        assert!(
-            unprepared.is_err(),
-            "an unprepared root cannot become a witness"
-        );
-
         assert_eq!(
             ports
-                .publish_prepared_generation(&prepared_v2_control, &v2_prepared)
+                .publish_prepared_generation_pointer(&prepared_v2_control, v2_pointer.clone())
                 .expect("publish at current head"),
             ColumnarProjectionControlWriteResultV1::Applied
         );
@@ -686,7 +701,7 @@ mod tests {
 
         assert_eq!(
             ports
-                .publish_prepared_generation(&prepared_v2_control, &v2_prepared)
+                .publish_prepared_generation_pointer(&prepared_v2_control, v2_pointer)
                 .expect("stale exact control"),
             ColumnarProjectionControlWriteResultV1::StateChanged,
             "the complete consumed control is compared in the same transaction"
@@ -720,16 +735,9 @@ mod tests {
                 Some(physical),
             )
             .expect("racing pointer");
-        let racing_prepared = riffdb_storage_api::PreparedColumnarGenerationV1::v2(
-            source.clone(),
-            semantics,
-            racing_pointer,
-            [0x41; 16],
-        )
-        .expect("racing prepared root");
         assert_eq!(
             ports
-                .record_durable_snapshot(&rebuilding, &racing_prepared)
+                .record_durable_snapshot_pointer(&rebuilding, racing_pointer.clone())
                 .expect("record racing root"),
             ColumnarProjectionControlWriteResultV1::Applied
         );
@@ -738,7 +746,7 @@ mod tests {
             .expect("read racing control")
             .expect("racing control");
         let error = ports
-            .publish_prepared_generation(&racing_control, &racing_prepared)
+            .publish_prepared_generation_pointer(&racing_control, racing_pointer)
             .expect_err("candidate frontier above transaction-current head must refuse");
         assert_eq!(error.kind(), StorageErrorKind::InvariantViolation);
         assert_eq!(

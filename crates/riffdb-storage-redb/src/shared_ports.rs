@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use redb::ReadableDatabase;
+use riffdb_columnar::{PreparedColumnarGenerationRepository, PreparedColumnarGenerationV1};
 use riffdb_storage_api::{
     ActiveCatalogPointerV1, ActiveQueryModulePointerV1, AdmissionLookupResultV1,
     AdmissionRepository, AdmissionRequestV1, AdmissionResultV1, ApplicationCommandTransactionPort,
@@ -278,42 +279,6 @@ impl ColumnarProjectionControlRepository for RedbSharedPorts {
         ColumnarProjectionControlRepository::initialize_fresh_v1(&self.operational(), controls)
     }
 
-    fn record_durable_snapshot(
-        &self,
-        expected: &StoredColumnarProjectionControlV1,
-        prepared: &riffdb_storage_api::PreparedColumnarGenerationV1,
-    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
-        ColumnarProjectionControlRepository::record_durable_snapshot(
-            &self.operational(),
-            expected,
-            prepared,
-        )
-    }
-
-    fn record_candidate_frontier(
-        &self,
-        expected: &StoredColumnarProjectionControlV1,
-        replacement: &riffdb_storage_api::PreparedColumnarGenerationV1,
-    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
-        ColumnarProjectionControlRepository::record_candidate_frontier(
-            &self.operational(),
-            expected,
-            replacement,
-        )
-    }
-
-    fn advance_published_v1(
-        &self,
-        expected: &StoredColumnarProjectionControlV1,
-        replacement: &riffdb_storage_api::PreparedColumnarGenerationV1,
-    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
-        ColumnarProjectionControlRepository::advance_published_v1(
-            &self.operational(),
-            expected,
-            replacement,
-        )
-    }
-
     fn begin_v2_candidate(
         &self,
         expected: &StoredColumnarProjectionControlV1,
@@ -355,18 +320,6 @@ impl ColumnarProjectionControlRepository for RedbSharedPorts {
             replay_limits,
             layout,
             physical_generation_fingerprint,
-        )
-    }
-
-    fn publish_prepared_generation(
-        &self,
-        expected: &StoredColumnarProjectionControlV1,
-        prepared: &riffdb_storage_api::PreparedColumnarGenerationV1,
-    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
-        ColumnarProjectionControlRepository::publish_prepared_generation(
-            &self.operational(),
-            expected,
-            prepared,
         )
     }
 
@@ -432,6 +385,64 @@ impl ColumnarProjectionControlRepository for RedbSharedPorts {
         reason: ColumnarProjectionFailureReasonV1,
     ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
         ColumnarProjectionControlRepository::mark_invalid(&self.operational(), expected, reason)
+    }
+}
+
+impl PreparedColumnarGenerationRepository for RedbSharedPorts {
+    fn record_durable_snapshot(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+        prepared: &PreparedColumnarGenerationV1,
+        process_generation: [u8; 16],
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        PreparedColumnarGenerationRepository::record_durable_snapshot(
+            &self.operational(),
+            expected,
+            prepared,
+            process_generation,
+        )
+    }
+
+    fn record_candidate_frontier(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+        replacement: &PreparedColumnarGenerationV1,
+        process_generation: [u8; 16],
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        PreparedColumnarGenerationRepository::record_candidate_frontier(
+            &self.operational(),
+            expected,
+            replacement,
+            process_generation,
+        )
+    }
+
+    fn advance_published_v1(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+        replacement: &PreparedColumnarGenerationV1,
+        process_generation: [u8; 16],
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        PreparedColumnarGenerationRepository::advance_published_v1(
+            &self.operational(),
+            expected,
+            replacement,
+            process_generation,
+        )
+    }
+
+    fn publish_prepared_generation(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+        prepared: &PreparedColumnarGenerationV1,
+        process_generation: [u8; 16],
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        PreparedColumnarGenerationRepository::publish_prepared_generation(
+            &self.operational(),
+            expected,
+            prepared,
+            process_generation,
+        )
     }
 }
 

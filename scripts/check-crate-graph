@@ -53,6 +53,7 @@ EXCEPTIONS = {
   %w[riffdb-policy riffdb-auth] => "ADR-0038",
   %w[riffdb-projection riffdb-catalog] => "ADR-0049",
   %w[riffdb-storage-redb riffdb-catalog] => "ADR-0042",
+  %w[riffdb-storage-redb riffdb-columnar] => "ADR-0192",
   %w[riffdb-diagnostics riffdb-query-module] => "ADR-0053",
   %w[riffdb-cli riffdb-client-rust] => "ADR-0037",
   %w[riffdb-mcp-stdio riffdb-client-rust] => "ADR-0065",
@@ -159,6 +160,21 @@ def self_test
     expected = "riffdb-types -> riffdb-server is an unapproved upward edge"
     abort "check-crate-graph self-test did not reject the injected edge" unless errors.include?(expected)
   end
+
+  unlisted_sideways = {
+    "workspace_members" => %w[catalog columnar],
+    "packages" => [
+      {
+        "id" => "catalog",
+        "name" => "riffdb-catalog",
+        "dependencies" => [{ "name" => "riffdb-columnar", "kind" => nil }]
+      },
+      { "id" => "columnar", "name" => "riffdb-columnar", "dependencies" => [] }
+    ]
+  }
+  errors = validate_graph(unlisted_sideways)
+  expected = "riffdb-catalog -> riffdb-columnar is an unapproved sideways edge"
+  abort "check-crate-graph self-test accepted an unlisted sideways edge" unless errors.include?(expected)
 
   errors = []
   validate_exception_registry(errors, EXCEPTIONS.merge(%w[riffdb-types riffdb-server] => ""))

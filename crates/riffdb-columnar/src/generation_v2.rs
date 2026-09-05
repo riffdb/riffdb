@@ -10,6 +10,7 @@ use std::sync::Arc;
 use riffdb_contract_ir::{ValueType, ValueTypeTag};
 use riffdb_storage_api::{
     ApplicationExportSnapshotReader, AuthoritativePointReader, AuthoritativeScanReader,
+    ColumnarControlError, StoredColumnarProjectionGenerationV1,
 };
 use riffdb_types::{
     CanonicalValue, DecimalSpec, FrontierPosition, MAX_DECIMAL_PRECISION, ProjectionGeneration,
@@ -25,11 +26,12 @@ use crate::streaming_v2::{
 };
 use crate::{
     COLUMNAR_GENERATION_ROOT_FILE_NAME_V1, ColumnarGenerationRootV1, ColumnarGenerationRootV1Entry,
-    ColumnarManifestV2, ColumnarManifestV2Entry, ColumnarSnapshot, ColumnarSpecReplayLimitsV1,
-    LiveRow, MAX_COLUMNAR_GENERATION_ROOT_V1_BYTES, MAX_COLUMNAR_MANIFEST_V2_BYTES,
-    MAX_SEGMENT_V2_BYTES, MAX_SEGMENT_V2_ROWS, OrgKey, PhysicalGenerationFingerprintV1,
-    PrimaryKeyBytes, RegisteredDefinition, SegmentV2, SegmentV2Cell, SegmentV2Codec,
-    SegmentV2Column, SegmentV2Identity, SegmentV2LogicalType, SegmentV2SegmentId,
+    ColumnarManifestV2, ColumnarManifestV2Entry, ColumnarProjectionSpecV1, ColumnarSnapshot,
+    ColumnarSpecReplayLimitsV1, LiveRow, MAX_COLUMNAR_GENERATION_ROOT_V1_BYTES,
+    MAX_COLUMNAR_MANIFEST_V2_BYTES, MAX_SEGMENT_V2_BYTES, MAX_SEGMENT_V2_ROWS, OrgKey,
+    PhysicalGenerationFingerprintV1, PrimaryKeyBytes, RegisteredDefinition, SegmentV2,
+    SegmentV2Cell, SegmentV2Codec, SegmentV2Column, SegmentV2Identity, SegmentV2LogicalType,
+    SegmentV2SegmentId,
 };
 
 /// Closed failures while finalizing or opening one immutable V2 generation.
@@ -64,6 +66,7 @@ impl std::error::Error for ColumnarV2GenerationError {}
 /// One completely reopened, cross-file validated, immutable V2 generation.
 pub struct ValidatedColumnarV2Generation {
     root: ColumnarGenerationRootV1,
+    snapshot_frontier: Option<FrontierPosition>,
     artifact_identity: (u64, [u8; 32]),
     snapshot: Arc<ColumnarSnapshot>,
     directory: PathBuf,
@@ -74,6 +77,34 @@ impl ValidatedColumnarV2Generation {
     #[must_use]
     pub fn supports_definition(definition: &RegisteredDefinition) -> bool {
         logical_types(definition).is_ok()
+    }
+
+    /// Mints a process-bound control witness only from this fully validated V2
+    /// root and a matching compiler-bound specification/pointer.
+    #[doc(hidden)]
+    pub fn prepared_generation(
+        &self,
+        spec: &ColumnarProjectionSpecV1,
+        generation: StoredColumnarProjectionGenerationV1,
+        process_generation: [u8; 16],
+    ) -> Result<crate::PreparedColumnarGenerationV1, ColumnarControlError> {
+        crate::prepared_generation::validate_v2_pointer_shape(&generation)?;
+        let root = self.root();
+        if generation.generation() != root.generation()
+            || generation.snapshot_frontier() != self.snapshot_frontier
+            || generation.frontier() != root.frontier()
+            || generation.history_incarnation() != root.history_incarnation()
+            || generation.definition_fingerprint() != root.definition_fingerprint()
+            || generation.physical_generation_fingerprint()
+                != Some(*root.physical_generation_fingerprint().as_bytes())
+            || generation
+                .artifact()
+                .map(|artifact| (artifact.length(), artifact.checksum()))
+                != Some(self.artifact_identity())
+        {
+            return Err(ColumnarControlError);
+        }
+        crate::PreparedColumnarGenerationV1::from_validated(spec, generation, process_generation)
     }
 
     /// Exact private evaluator/build directory for an allocated generation.
@@ -274,6 +305,7 @@ impl ValidatedColumnarV2Generation {
                 &definition,
                 history_incarnation,
                 generation,
+                Some(snapshot_frontier),
                 frontier,
                 None,
             )
@@ -455,6 +487,7 @@ impl ValidatedColumnarV2Generation {
             &definition,
             history_incarnation,
             generation,
+            Some(snapshot_frontier),
             frontier,
             None,
         )
@@ -514,6 +547,7 @@ impl ValidatedColumnarV2Generation {
                 &definition,
                 history_incarnation,
                 generation,
+                Some(snapshot_frontier),
                 expected.visible_frontier,
                 Some(expected),
             )?;
@@ -658,6 +692,7 @@ impl ValidatedColumnarV2Generation {
             &definition,
             history_incarnation,
             generation,
+            Some(snapshot_frontier),
             expected.visible_frontier,
             Some(expected),
         )?;
@@ -680,6 +715,7 @@ impl ValidatedColumnarV2Generation {
             &definition,
             history_incarnation,
             generation,
+            None,
             frontier,
             None,
         )?;
@@ -691,11 +727,46 @@ impl ValidatedColumnarV2Generation {
         Ok(opened)
     }
 
+    /// Reopens the exact prepared Candidate selected by its complete durable
+    /// pointer, retaining its snapshot frontier solely for witness minting.
+    #[doc(hidden)]
+    pub fn open_prepared_candidate(
+        source_directory: &Path,
+        definition: RegisteredDefinition,
+        generation: &StoredColumnarProjectionGenerationV1,
+    ) -> Result<Self, ColumnarV2GenerationError> {
+        crate::prepared_generation::validate_v2_pointer_shape(generation)
+            .map_err(|_| ColumnarV2GenerationError::Invalid)?;
+        let snapshot_frontier = generation
+            .snapshot_frontier()
+            .ok_or(ColumnarV2GenerationError::Invalid)?;
+        let artifact = generation
+            .artifact()
+            .ok_or(ColumnarV2GenerationError::Invalid)?;
+        let opened = Self::open_unchecked_artifact(
+            source_directory,
+            &definition,
+            generation.history_incarnation(),
+            generation.generation(),
+            Some(snapshot_frontier),
+            generation.frontier(),
+            None,
+        )?;
+        if opened.artifact_identity != (artifact.length(), artifact.checksum())
+            || generation.physical_generation_fingerprint()
+                != Some(*opened.root.physical_generation_fingerprint().as_bytes())
+        {
+            return Err(ColumnarV2GenerationError::Invalid);
+        }
+        Ok(opened)
+    }
+
     fn open_unchecked_artifact(
         source_directory: &Path,
         definition: &RegisteredDefinition,
         history_incarnation: u64,
         generation: ProjectionGeneration,
+        snapshot_frontier: Option<FrontierPosition>,
         frontier: FrontierPosition,
         expected: Option<&ColumnarSnapshot>,
     ) -> Result<Self, ColumnarV2GenerationError> {
@@ -828,6 +899,7 @@ impl ValidatedColumnarV2Generation {
         });
         Ok(Self {
             root,
+            snapshot_frontier,
             artifact_identity: (root_bytes.len() as u64, checksum_bytes(&root_bytes)),
             snapshot,
             directory,

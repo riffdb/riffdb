@@ -2247,6 +2247,7 @@ dependencies = [
  "cap-std",
  "redb",
  "riffdb-catalog",
+ "riffdb-columnar",
  "riffdb-contract-compiler",
  "riffdb-policy",
  "riffdb-projection",

@@ -65,3 +65,53 @@ fn worker_shutdown_seam_is_absent_from_application_transport_and_operator_surfac
         .collect::<Vec<_>>();
     assert_eq!(callers, ["columnar_worker.rs"]);
 }
+
+// req: PRJ-008, PRJ-009, PRJ-010, OQ-022
+#[test]
+fn prepared_generation_mint_authority_is_columnar_owned_and_absent_from_public_surfaces() {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("workspace root");
+    let storage_control = std::fs::read_to_string(
+        workspace.join("crates/riffdb-storage-api/src/columnar_control.rs"),
+    )
+    .expect("read storage control source");
+    assert!(!storage_control.contains("PreparedColumnarGenerationV1"));
+
+    let prepared = std::fs::read_to_string(
+        workspace.join("crates/riffdb-columnar/src/prepared_generation.rs"),
+    )
+    .expect("read prepared generation owner");
+    assert!(prepared.contains("pub struct PreparedColumnarGenerationV1"));
+    assert!(prepared.contains("pub(crate) fn from_validated("));
+    assert!(!prepared.contains("pub fn from_validated("));
+    for forbidden_field in [
+        "pub source:",
+        "pub definition_semantics_hash:",
+        "pub generation:",
+        "pub process_generation:",
+    ] {
+        assert!(!prepared.contains(forbidden_field));
+    }
+
+    for crate_name in [
+        "riffdb-api-grpc",
+        "riffdb-api-mcp",
+        "riffdb-cli",
+        "riffdb-client-python-native",
+        "riffdb-client-rust",
+        "riffdb-driver-host",
+        "riffdb-mcp-stdio",
+        "riffdb-service",
+    ] {
+        let root = workspace.join("crates").join(crate_name).join("src");
+        for (path, source) in rust_sources(&root) {
+            assert!(
+                !source.contains("PreparedColumnarGenerationV1"),
+                "{} exposes prepared-generation authority",
+                path.display()
+            );
+        }
+    }
+}
