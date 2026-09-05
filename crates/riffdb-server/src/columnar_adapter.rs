@@ -2504,6 +2504,18 @@ contract VectorBoard version 1 {
         runtime: &Arc<ColumnarRuntime>,
         scope: &tempfile::TempDir,
     ) -> PreparedV2Publication {
+        prepare_two_partition_v2_publication_at_frontier(
+            runtime,
+            scope,
+            FrontierPosition::BeforeFirst,
+        )
+    }
+
+    fn prepare_two_partition_v2_publication_at_frontier(
+        runtime: &Arc<ColumnarRuntime>,
+        scope: &tempfile::TempDir,
+        frontier: FrontierPosition,
+    ) -> PreparedV2Publication {
         request_projection(runtime, "ticket_board");
         assert!(crate::columnar_worker::run_one_test_pass(runtime));
         let binding = runtime
@@ -2529,7 +2541,8 @@ contract VectorBoard version 1 {
             .expect("read catching-up control")
             .expect("catching-up control");
         let candidate = catching_up.candidate().expect("V2 candidate");
-        let (snapshot, organizations) = two_partition_snapshot();
+        let (mut snapshot, organizations) = two_partition_snapshot();
+        snapshot.visible_frontier = frontier;
         let source_directory =
             controlled_source_directory(&scope.path().join("projections"), binding.spec().hash());
         let generation = ValidatedColumnarV2Generation::prepare(
@@ -2537,7 +2550,7 @@ contract VectorBoard version 1 {
             binding.definition().clone(),
             runtime.history_incarnation(),
             candidate.generation(),
-            FrontierPosition::BeforeFirst,
+            frontier,
             &snapshot,
         )
         .expect("prepare two-partition V2 root");
@@ -2545,8 +2558,8 @@ contract VectorBoard version 1 {
         let pointer = StoredColumnarProjectionGenerationV1::prepared_candidate(
             candidate.generation(),
             ColumnarProjectionLayoutV1::V2,
-            FrontierPosition::BeforeFirst,
-            FrontierPosition::BeforeFirst,
+            frontier,
+            frontier,
             runtime.history_incarnation(),
             ColumnarProjectionArtifactV1::new(length, checksum).expect("root artifact"),
             binding.definition().fingerprint(),
@@ -2853,6 +2866,93 @@ contract VectorBoard version 1 {
                 .observe("ticket_board")
                 .expect("validated V2 observation")
                 .has_published()
+        );
+    }
+
+    // req: PRJ-002, PRJ-006, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022, OQ-024
+    #[test]
+    fn columnar_control_publish_requires_prepared_root_and_transaction_current_head() {
+        let (runtime, scope) = board_runtime("prepared-root-publication");
+        let publication = prepare_two_partition_v2_publication(&runtime, &scope);
+        let rejected = runtime
+            .storage()
+            .publish_prepared_generation(&publication.expected, &publication.prepared, [0x99; 16])
+            .expect_err("another process cannot consume the validated root witness");
+        assert_eq!(rejected.kind(), StorageErrorKind::InvariantViolation);
+        assert_eq!(
+            runtime
+                .storage()
+                .recover_expected_control(publication.binding.spec().source())
+                .expect("reread after process-generation refusal")
+                .expect("control remains selected"),
+            publication.expected,
+            "witness refusal occurs before the exact-control transaction"
+        );
+        assert_eq!(
+            runtime
+                .storage()
+                .publish_prepared_generation(
+                    &publication.expected,
+                    &publication.prepared,
+                    runtime.process_generation(),
+                )
+                .expect("publish exact validated root"),
+            ColumnarProjectionControlWriteResultV1::Applied
+        );
+        let selected = runtime
+            .storage()
+            .recover_expected_control(publication.binding.spec().source())
+            .expect("reread exact selection")
+            .expect("selected control");
+        let selected_generation = selected.published().expect("selected V2");
+        let witnessed_generation = publication.prepared.generation();
+        assert_eq!(
+            selected_generation.generation(),
+            witnessed_generation.generation()
+        );
+        assert_eq!(selected_generation.layout(), witnessed_generation.layout());
+        assert_eq!(
+            selected_generation.frontier(),
+            witnessed_generation.frontier()
+        );
+        assert_eq!(
+            selected_generation.artifact(),
+            witnessed_generation.artifact()
+        );
+        assert_eq!(
+            selected_generation.physical_generation_fingerprint(),
+            witnessed_generation.physical_generation_fingerprint(),
+            "only the immutable root identity carried by the validated witness is selected"
+        );
+
+        let (racing_runtime, racing_scope) = board_runtime("prepared-root-head-race");
+        let ahead = FrontierPosition::AppliedThrough(riffdb_types::CommitSequence::first());
+        assert_eq!(
+            racing_runtime.read_application_head().expect("empty head"),
+            FrontierPosition::BeforeFirst
+        );
+        let racing =
+            prepare_two_partition_v2_publication_at_frontier(&racing_runtime, &racing_scope, ahead);
+        let retained_v1 = racing.expected.published().cloned();
+        let rejected = racing_runtime
+            .storage()
+            .publish_prepared_generation(
+                &racing.expected,
+                &racing.prepared,
+                racing_runtime.process_generation(),
+            )
+            .expect_err("a complete root ahead of the transaction-current head must refuse");
+        assert_eq!(rejected.kind(), StorageErrorKind::InvariantViolation);
+        let after_refusal = racing_runtime
+            .storage()
+            .recover_expected_control(racing.binding.spec().source())
+            .expect("reread head-race refusal")
+            .expect("control survives refusal");
+        assert_eq!(after_refusal, racing.expected);
+        assert_eq!(
+            after_refusal.published().cloned(),
+            retained_v1,
+            "head-race refusal cannot change the independently selected projection"
         );
     }
 
