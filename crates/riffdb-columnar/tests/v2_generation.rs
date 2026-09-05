@@ -3,12 +3,16 @@
 mod common;
 
 use std::collections::BTreeMap;
+use std::hint::black_box;
+use std::path::Path;
+use std::time::Instant;
 
 use riffdb_columnar::{
-    AggregateOp, AggregateValue, ColumnPredicate, ColumnarManifestV2, ColumnarQueryRequest,
-    ColumnarSnapshot, ColumnarTestBoundary, ColumnarTestController, ColumnarV2GenerationError,
-    LiveRow, OrgKey, PrimaryKeyBytes, QueryBudget, QueryError, QueryResult, SegmentV2Codec,
-    ValidatedColumnarV2Generation, query_snapshot, query_snapshot_with_policy_admission,
+    AggregateOp, AggregateValue, ColumnPredicate, ColumnarEngine, ColumnarManifestV2,
+    ColumnarQueryRequest, ColumnarSnapshot, ColumnarTestBoundary, ColumnarTestController,
+    ColumnarV2GenerationError, LiveRow, OpenOptions, OrgKey, PrimaryKeyBytes, QueryBudget,
+    QueryError, QueryResult, SegmentV2Codec, ValidatedColumnarV2Generation, query_snapshot,
+    query_snapshot_with_policy_admission,
 };
 use riffdb_policy::AuthorizedProjectedRowAdmissionV1;
 use riffdb_types::{
@@ -214,6 +218,238 @@ fn dataful_v2_rebuild_reopens_repeatedly_and_refuses_mixed_or_stale_state() {
         physical,
     )
     .expect("exact V2 remains reopenable after mixed member removal");
+}
+
+// req: PRJ-002, PRJ-004, PRJ-009, OQ-020, OQ-022, PERF-007, PERF-008
+#[test]
+#[ignore = "fixed WP-711 production-activation receipt; run explicitly in release mode"]
+fn wp711_production_v2_activation_receipt() {
+    const ROWS: usize = 16_384;
+    const SAMPLES: usize = 31;
+    let scope = temp_dir("wp711-activation-receipt");
+    let bundle = compile_bundle();
+    let definition = register_ticket_board(&bundle);
+    let organization = common::uuid(0x63);
+    let organization_value = CanonicalValue::Uuid(organization);
+    let organization_key = OrgKey::from_value(&organization_value).expect("organization");
+    let no_projection_directory = scope.join("no-projection");
+    assert!(!no_projection_directory.exists());
+
+    let mut source = HistorySource::default();
+    let mut oracle = Oracle::default();
+    for index in 0..ROWS {
+        push_ticket_create(
+            &mut source,
+            &mut oracle,
+            &bundle,
+            u64::try_from(index + 1).expect("sequence"),
+            organization,
+            u64::try_from(index + 1).expect("ticket"),
+            u64::try_from(index % 4).expect("status"),
+            match index % 4 {
+                0 => "open",
+                1 => "closed",
+                2 => "queued",
+                _ => "running",
+            },
+            i64::try_from(index).expect("priority"),
+        );
+    }
+
+    let v1_directory = scope.join("v1");
+    let mut v1 = ColumnarEngine::open(
+        definition.clone(),
+        OpenOptions::new(v1_directory.clone()).with_history_incarnation(1),
+    )
+    .expect("open V1 control");
+    v1.apply_available(&source).expect("build V1 control");
+    v1.checkpoint().expect("checkpoint V1 control");
+    let frontier = v1.published_frontier_position();
+    let head = u64::try_from(source.commits.len()).expect("head");
+    let lag = head.saturating_sub(frontier_sequence(frontier));
+    assert_eq!(lag, 0);
+    let v1_bytes = directory_bytes(&v1_directory);
+    let query = ColumnarQueryRequest {
+        org_scope: organization_value.clone(),
+        select: Vec::new(),
+        predicates: Vec::new(),
+        order: Vec::new(),
+        limit: None,
+        group_by: None,
+        aggregate: Some(AggregateOp::Count),
+        budget: QueryBudget::default(),
+    };
+    let expected = QueryResult::Aggregate(AggregateValue::Count(ROWS as u64));
+    assert_eq!(v1.query(&query).expect("V1 matched result"), expected);
+    let v1_query_ns = stage_samples(SAMPLES, || {
+        assert_eq!(
+            black_box(&v1).query(black_box(&query)).expect("V1 query"),
+            expected
+        );
+    });
+    let v1_recovery_ns = stage_samples(SAMPLES, || {
+        let reopened = ColumnarEngine::open(
+            definition.clone(),
+            OpenOptions::new(v1_directory.clone()).with_history_incarnation(1),
+        )
+        .expect("V1 recovery");
+        assert_eq!(
+            reopened.query(&query).expect("recovered V1 query"),
+            expected
+        );
+    });
+
+    let mut matched = ColumnarSnapshot::empty();
+    matched.visible_frontier = frontier;
+    let flattened = v1
+        .published_snapshot()
+        .merged_org(&organization_key)
+        .into_iter()
+        .map(|(key, row)| {
+            (
+                key,
+                LiveRow {
+                    entity_version: row.entity_version,
+                    cells: row.cells,
+                },
+            )
+        })
+        .collect();
+    matched.delta.insert(organization_key, flattened);
+
+    let v2_directory = scope.join("v2");
+    let rebuild_start = Instant::now();
+    let prepared = ValidatedColumnarV2Generation::prepare(
+        &v2_directory,
+        definition.clone(),
+        1,
+        ProjectionGeneration::new(101).expect("rebuild generation"),
+        FrontierPosition::BeforeFirst,
+        &matched,
+    )
+    .expect("production V2 rebuild");
+    let rebuild_ns = rebuild_start.elapsed().as_nanos();
+    let root = prepared.root().clone();
+    let artifact = prepared.artifact_identity();
+    let physical = root.physical_generation_fingerprint();
+    let generation = root.generation();
+    let v2_bytes = directory_bytes(prepared.directory());
+    assert_eq!(root.frontier(), frontier);
+    assert_eq!(root.total_rows(), ROWS as u64);
+    assert_eq!(
+        query_snapshot(&definition, prepared.snapshot(), &query).expect("prepared V2 query"),
+        expected
+    );
+    let v1_matched_results = corpus_results(&v1, &bundle, &organization_value);
+    let v2_matched_results = corpus_requests(&bundle, &CanonicalValue::Uuid(organization))
+        .iter()
+        .map(|request| {
+            query_snapshot(&definition, prepared.snapshot(), request).expect("matched V2 result")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(v2_matched_results, v1_matched_results);
+    let matched_query_cases = v1_matched_results.len();
+    let v2_recovery_ns = stage_samples(SAMPLES, || {
+        let reopened = ValidatedColumnarV2Generation::open(
+            &v2_directory,
+            definition.clone(),
+            1,
+            generation,
+            frontier,
+            artifact,
+            physical,
+        )
+        .expect("V2 recovery");
+        assert_eq!(
+            query_snapshot(&definition, reopened.snapshot(), &query).expect("recovered V2 query"),
+            expected
+        );
+    });
+    let v2 = ColumnarEngine::from_validated_v2(definition.clone(), prepared)
+        .expect("install validated V2");
+    let v2_query_ns = stage_samples(SAMPLES, || {
+        assert_eq!(
+            black_box(&v2).query(black_box(&query)).expect("V2 query"),
+            expected
+        );
+    });
+
+    let compaction_start = Instant::now();
+    let compacted = ValidatedColumnarV2Generation::prepare(
+        &v2_directory,
+        definition.clone(),
+        1,
+        ProjectionGeneration::new(102).expect("compaction generation"),
+        FrontierPosition::BeforeFirst,
+        &matched,
+    )
+    .expect("production V2 compaction");
+    let compaction_ns = compaction_start.elapsed().as_nanos();
+    assert_eq!(
+        query_snapshot(&definition, compacted.snapshot(), &query),
+        Ok(expected.clone())
+    );
+
+    let segment_count = usize::try_from(root.total_segments()).expect("segments");
+    let v1_modeled_owned_allocations = ROWS * 6;
+    let v2_modeled_owned_allocations = ROWS * 6 + segment_count * 17;
+    println!(
+        "WP711_ACTIVATION corpus=wp711-low-cardinality-v1-v2-v1 rows={ROWS} samples={SAMPLES} cpu_method=single-thread_elapsed_ns allocation_method=wp710_modeled_owned_allocations_not_allocator_calls matched_frontier={} matched_query_cases={matched_query_cases} projection_lag={lag} no_projection_bytes=0 no_projection_modeled_owned_allocations=0 no_projection_population_passes=0 no_v2_bytes={v1_bytes} no_v2_modeled_owned_allocations={v1_modeled_owned_allocations} v1_query_p50_ns={} v1_query_p95_ns={} v1_query_p99_ns={} v1_recovery_p50_ns={} v1_recovery_p95_ns={} v1_recovery_p99_ns={} v2_bytes={v2_bytes} v2_modeled_owned_allocations={v2_modeled_owned_allocations} v2_query_p50_ns={} v2_query_p95_ns={} v2_query_p99_ns={} v2_recovery_p50_ns={} v2_recovery_p95_ns={} v2_recovery_p99_ns={} rebuild_ns={rebuild_ns} compaction_ns={compaction_ns} result_count={ROWS}",
+        frontier_sequence(frontier),
+        percentile(&v1_query_ns, 50),
+        percentile(&v1_query_ns, 95),
+        percentile(&v1_query_ns, 99),
+        percentile(&v1_recovery_ns, 50),
+        percentile(&v1_recovery_ns, 95),
+        percentile(&v1_recovery_ns, 99),
+        percentile(&v2_query_ns, 50),
+        percentile(&v2_query_ns, 95),
+        percentile(&v2_query_ns, 99),
+        percentile(&v2_recovery_ns, 50),
+        percentile(&v2_recovery_ns, 95),
+        percentile(&v2_recovery_ns, 99),
+    );
+}
+
+fn frontier_sequence(frontier: FrontierPosition) -> u64 {
+    match frontier {
+        FrontierPosition::BeforeFirst => 0,
+        FrontierPosition::AppliedThrough(sequence) => sequence.get(),
+    }
+}
+
+fn directory_bytes(directory: &Path) -> u64 {
+    std::fs::read_dir(directory)
+        .expect("read receipt directory")
+        .map(|entry| {
+            let entry = entry.expect("read receipt member");
+            let metadata = entry.metadata().expect("receipt member metadata");
+            if metadata.is_dir() {
+                directory_bytes(&entry.path())
+            } else {
+                metadata.len()
+            }
+        })
+        .sum()
+}
+
+fn stage_samples(samples: usize, mut operation: impl FnMut()) -> Vec<u128> {
+    for _ in 0..5 {
+        operation();
+    }
+    let mut measured = (0..samples)
+        .map(|_| {
+            let start = Instant::now();
+            operation();
+            start.elapsed().as_nanos()
+        })
+        .collect::<Vec<_>>();
+    measured.sort_unstable();
+    measured
+}
+
+fn percentile(samples: &[u128], percentile: usize) -> u128 {
+    samples[(samples.len() - 1) * percentile / 100]
 }
 
 // req: PRJ-004, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022, OQ-024, PERF-007
