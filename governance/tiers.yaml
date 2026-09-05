@@ -93,7 +93,8 @@ checks:           # path-triggered checks; `run` entries are executed in order; 
   - when: [Cargo.toml, Cargo.lock, crates/*/Cargo.toml, deny.toml, xtask/**]
     run: [./scripts/check-workspace-policy, cargo deny check, cargo machete]
   - when: [adr/**, SPEC.md, work_packages.yaml, governance/**]
-    run: [./scripts/check-requirement-coverage, ./scripts/check-adr-obligations, ./scripts/adr-index --check]
+    run: [./scripts/check-requirement-coverage, ./scripts/check-adr-obligations,
+      ./scripts/adr-new --self-test, ./scripts/adr-index --check]
   - when: [crates/**]
     run: [./scripts/check-file-size-guard, ./scripts/check-panic-allowances]
   - when: [release/container/**, release/kubernetes/**, release/helm/**]

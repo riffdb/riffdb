@@ -233,6 +233,8 @@ jobs:
         run: ./scripts/check-requirement-coverage
       - name: Check ADR obligations
         run: ./scripts/check-adr-obligations
+      - name: Self-test canonical ADR allocation
+        run: ./scripts/adr-new --self-test
       - name: Check the ADR index
         run: ./scripts/adr-index --check
       - name: Check the three hand-written operation places
