@@ -22213,10 +22213,11 @@ work_packages:
   depends_on: [WP-748, WP-749]
   objective: Run ADR-0093's six acceptance criteria as one receipted campaign against the
     app-baseline harness with a repeated kill loop on primary, follower, stream, and archive
-    sink; prove no hot-path regression; publish release evidence; and record the provider and
-    performance freeze lifting only when the campaign passes.
+    sink; prove no hot-path regression; publish release evidence; and record the provider gate
+    plus one prerequisite and its evidence for a later, separately accepted performance-freeze
+    lifting ADR. WP-750 closure alone changes no freeze state.
   requirements: [REP-008, REP-009, PERF-008, END-003]
-  required_adrs: [ADR-0093, ADR-0142, ADR-0171, ADR-0178, ADR-0186]
+  required_adrs: [ADR-0093, ADR-0142, ADR-0171, ADR-0178, ADR-0186, ADR-0199]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0178-follower-activation-and-changelog-derived-backup.md, adr/README.md,
     benchmarks/**, scripts/**, tests/**, crates/riffdb-testkit/**, crates/riffdb-sim/**,
@@ -22232,6 +22233,10 @@ work_packages:
   - Release evidence under `release/evidence/replication/` bound to the exact source, lock, and
     binary identity, and release-notes and known-limitations updates retiring the single-node
     availability statement
+  - While the ADR-0183 freeze is in force, only the exact pre-freeze definition, its existing
+    non-candidate replication objective and no-hot-path-regression evidence, and a new closure
+    are authorized; no new PERF requirement, performance candidate, threshold, admitted package,
+    or direct freeze lift is part of WP-750
   - Test `replication_acceptance_campaign_meets_every_adr_0093_criterion` under
     `tests/replication_acceptance.rs` verifying the receipt schema and every criterion result
   acceptance_commands:
@@ -22801,7 +22806,7 @@ work_packages:
   requirements: [REC-005, REC-006, REC-007, REC-008, REC-001, REC-002, REC-004, PERF-014,
     PERF-019]
   required_adrs: [ADR-0019, ADR-0050, ADR-0073, ADR-0085, ADR-0156, ADR-0157, ADR-0163,
-    ADR-0165, ADR-0182]
+    ADR-0165, ADR-0182, ADR-0199]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0182-bounded-dirty-recovery-and-online-retention.md, adr/README.md,
     crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**, crates/riffdb-server/**,
@@ -22835,6 +22840,10 @@ work_packages:
     recovery-owned-state evidence, while WP-705's production-scale LimitExceeded receipt is an input
     rather than a passing result; handbook startup-integrity, troubleshooting, and known-limitations
     updates
+  - While the ADR-0183 freeze is in force, only the exact pre-freeze definition, its existing
+    non-candidate bounded dirty-recovery objective and recovery-performance evidence, and a new
+    closure are authorized; no new PERF requirement, performance candidate, threshold, admitted
+    package, or direct freeze lift is part of WP-760
   acceptance_commands:
   - ./scripts/acceptance --wp WP-760
   - ./scripts/ci-all
@@ -22947,26 +22956,39 @@ work_packages:
     identities match the banked revision
   - assemble-wp674-unary-manifest --require-both-profiles, which refuses an N1-only manifest or a
     receipt whose stability rule is not bound to the gated backend
+  - A freeze record in work_packages.yaml created in the same change as the banked receipts. It
+    inventories every then-open PERF package with a 64-lowercase-hex SHA-256 digest of the RFC
+    8785 JCS UTF-8 bytes of its entire parsed package mapping after removing only top-level
+    closure, and rejects non-JSON scalars and non-finite numbers. The record names exactly
+    WP-750/WP-760 closure-only prerequisite authority plus WP-762/WP-763 existing authority;
+    WP-750 and WP-760 are lifting conditions, never direct lifts
   - scripts/check-performance-freeze with its self-test, wired into ci-all and the WP-762 and
-    WP-763 acceptance commands; the freeze record in work_packages.yaml names WP-750 and WP-760
-    as the lifting conditions
+    WP-763 acceptance commands; the self-test accepts exact WP-750 and WP-760 closure-only
+    transitions and covers rejection of a new PERF package, an inert-package edit and closure,
+    a widened prerequisite definition or PERF set, a fifth exception, and a premature lift
   - SPEC 19.6 human-review trigger entry and docs/performance/wp-762-baseline-bank.md recording
     receipt digests, the freeze start, and the exact c32, p95, seed, and unary values banked
   acceptance_commands:
   - ./scripts/acceptance --wp WP-762
   - ./scripts/ci-all
   exit_gate: Both profiles hold qualified c32, write-only, and unary receipts bound to the
-    gated-backend rule with matching artifact identities; the freeze is recorded and its check
-    fails a synthetic frozen PERF package while passing WP-762 and WP-763; no performance value
-    moved upward relative to the WP-644 baseline without a receipted attribution.
+    gated-backend rule with matching artifact identities; the freeze record seals every then-open
+    PERF-package definition, its checker passes only exact inert entries, WP-750/WP-760 closure-only
+    transitions, and WP-762/WP-763 existing authority, and rejects every listed unauthorized arm;
+    no performance value moved upward relative to the WP-644 baseline without a receipted
+    attribution.
   standing_design_tests:
     interface_safety: No application or operator surface changes; the package produces receipts
       and a repository check, and no caller can select a stability rule, profile, or retry.
     scale: Baselines are per inventoried single-node profile; the freeze check is a bounded read
       of the manifest and does not grow with database size or command count.
   human_review_triggers: &id0183
-  - A performance package other than WP-762 or WP-763 would be registered or activated before
-    WP-750 and WP-760 close, or the freeze would be lifted by anything other than an accepted ADR.
+  - A fifth package would be permitted to advance while the freeze is in force, or an inert
+    pre-freeze PERF package would change or close.
+  - WP-750 or WP-760 would add a PERF requirement, activate a performance candidate, alter a
+    threshold, admit another package, or lift the freeze.
+  - The freeze would start without the WP-762 bank, or lift before WP-750 and WP-760 close or
+    without a separately accepted ADR.
   - A banked baseline value would be moved upward, a failed generation retried or replaced, or a
     receipt banked without both inventoried profiles.
   - PERF-009 acknowledgement, fence, or durability semantics would change, or any fsync, fence,
@@ -23009,6 +23031,9 @@ work_packages:
   - Candidate receipts on N1 and E2 retaining group-size, frame-byte, physical-fence, and
     ordered-fence-latency evidence; unchanged crash, recovery, replay, uncertainty, and
     storage-recovery matrices run against the candidate before any activation receipt
+  - During the ADR-0183 freeze, WP-763 retains only its existing authority to build and either
+    activate or remove this one candidate; it cannot widen its PERF set, admit another package,
+    or lift the freeze
   - docs/performance/wp-763-durable-group-lever.md with the activation or removal verdict; a
     missed gate on either profile removes the candidate code before merge
   acceptance_commands:
@@ -24116,6 +24141,17 @@ work_packages:
     sealed pre-freeze inventory, four exact advancing packages, closure-only non-candidate authority
     for WP-750/WP-760, and lift only after both close through a later accepted ADR; no checker,
     threshold, receipt, runtime, or public surface changes in this package.
+  closure:
+    status: complete
+    completed_at: "2026-09-05"
+    evidence: Accepted ADR-0199 is reconciled into ADR-0183 OBL-0183-1 and Decision 1, SPEC
+      PERF-020, and the WP-750/WP-760/WP-762/WP-763 contracts. The common text seals every
+      pre-freeze PERF-package definition with the exact RFC 8785 JCS and SHA-256 rule, permits
+      exactly four named transitions, limits WP-750/WP-760 to their existing non-candidate work
+      and a closure, and retains lifting for a later separately accepted ADR after both close.
+    decision: Governance-only reconciliation; performance thresholds, evidence identities,
+      activation arithmetic, lift timing, runtime paths, durable behavior, and public surfaces
+      remain unchanged.
   standing_design_tests:
     interface_safety: Repository governance gains no application or operator surface, and no caller
       can select an exception, performance candidate, threshold, durability rule, or lift state.
