@@ -2265,23 +2265,64 @@ fn cold_fresh_database_publications_complete_without_history_scans() {
     drop(prepared);
     let ports = open_operational(RedbStore::open(&path.0).expect("reopen fresh database"));
 
-    for ordinal in 1..=PUBLICATIONS {
-        let fixture = two_phase_command_fixture_at(ordinal);
-        assert_eq!(
-            ports
+    for first_ordinal in (1..=PUBLICATIONS).step_by(3) {
+        let mut pipeline = Vec::with_capacity(3);
+        for ordinal in first_ordinal..=first_ordinal + 2 {
+            let fixture = two_phase_command_fixture_at(ordinal);
+            assert_eq!(
+                ports
+                    .lookup_admission(fixture.candidates.clone())
+                    .expect("direct-inspection novel identity"),
+                AdmissionLookupResultV1::NotFound
+            );
+            let request = AdmissionRequestV1::new(fixture.candidates.clone(), &fixture.context)
+                .expect("bounded admission request");
+            assert_eq!(
+                ports
+                    .admit_or_resolve(request)
+                    .expect("admit novel identity"),
+                AdmissionResultV1::Created(fixture.pending.clone())
+            );
+            let epoch = ports
+                .begin_deferred_command_epoch()
+                .expect("begin bounded pipelined epoch");
+            let fence =
+                DeferredCommandEpoch::seal(apply_unpublished_command_fixture(epoch, &fixture))
+                    .expect("seal bounded pipelined epoch");
+            pipeline.push((fixture, fence));
+        }
+        assert_eq!(pipeline.len(), 3, "each pipeline is exactly A/B/C");
+        for (offset, (fixture, fence)) in pipeline.into_iter().enumerate() {
+            let expected = first_ordinal + u64::try_from(offset).expect("bounded pipeline offset");
+            let committed = fence.wait().expect("publish FIFO pipeline member");
+            assert_eq!(committed.len(), 1);
+            assert_eq!(
+                committed[0].batch().outcomes()[0].commit_sequence(),
+                CommitSequence::new(expected).expect("pipeline sequence")
+            );
+            assert_eq!(
+                ports
+                    .read_commit(CommitSequence::new(expected).expect("published sequence"))
+                    .expect("read FIFO-published commit"),
+                Some(fixture.records.commit().clone())
+            );
+            let AdmissionLookupResultV1::Found(admission) = ports
                 .lookup_admission(fixture.candidates.clone())
-                .expect("direct-inspection novel identity"),
-            AdmissionLookupResultV1::NotFound
-        );
-        let request = AdmissionRequestV1::new(fixture.candidates.clone(), &fixture.context)
-            .expect("bounded admission request");
-        assert_eq!(
-            ports
-                .admit_or_resolve(request)
-                .expect("admit novel identity"),
-            AdmissionResultV1::Created(fixture.pending.clone())
-        );
-        commit_command_fixture(&ports, &fixture);
+                .expect("read FIFO-published identity")
+            else {
+                panic!("each FIFO-published identity must be terminal");
+            };
+            assert_eq!(
+                *admission,
+                StoredAdmissionStateV1::StoredOutcome(fixture.records.stored_outcome().clone())
+            );
+            assert_eq!(
+                ports
+                    .read_entity(&fixture.target)
+                    .expect("read FIFO-published entity"),
+                Some(fixture.records.entities()[0].post_image().clone())
+            );
+        }
     }
 
     let final_fixture = two_phase_command_fixture_at(PUBLICATIONS);
@@ -4578,6 +4619,110 @@ fn an_idempotency_locator_naming_the_wrong_segment_fails_closed() {
     );
 }
 
+// req: OUT-001, OUT-002, TXN-042
+#[test]
+fn fresh_locator_miss_preserves_prior_identity_and_rejects_malformed_locators() {
+    let prior_path = TestDatabasePath::new("fresh-locator-prior-identity");
+    let (first, second) = prepare_two_command_database(&prior_path.0);
+    let ports = open_operational(RedbStore::open(&prior_path.0).expect("reopen two-command store"));
+    ports
+        .write_clean_close_lifecycle()
+        .expect("certify bounded locator-only reopen");
+    drop(ports);
+    let ports = open_operational(RedbStore::open(&prior_path.0).expect("bounded reopen"));
+    assert!(ports.clean_close_fast_startup());
+    assert_eq!(ports.transient_index_rebuilds(), 0);
+    for fixture in [&first, &second] {
+        let AdmissionLookupResultV1::Found(state) = ports
+            .lookup_admission(fixture.candidates.clone())
+            .expect("every prior locator remains readable")
+        else {
+            panic!("every prior identity must remain terminal");
+        };
+        assert_eq!(
+            *state,
+            StoredAdmissionStateV1::StoredOutcome(fixture.records.stored_outcome().clone())
+        );
+    }
+
+    let malformed_path = TestDatabasePath::new("fresh-locator-malformed-row");
+    let (malformed, _) = prepare_committed_command_database(&malformed_path.0);
+    overwrite_first_row(
+        &malformed_path.0,
+        "idempotency_locators",
+        &[0xff, 0xff, 0xff, 0xff],
+    );
+    assert!(readmission_is_corrupt(&malformed_path.0, &malformed));
+
+    let wrong_capsule_path = TestDatabasePath::new("fresh-locator-wrong-capsule-identity");
+    let (expected, _) = prepare_two_command_database(&wrong_capsule_path.0);
+    let wrong_locator = riffdb_storage_api::encode_command_locator_v1(
+        riffdb_storage_api::StoredCommandLocatorV1::new(
+            CommitSequence::new(2).expect("existing wrong command sequence"),
+        ),
+    )
+    .expect("encode locator to a real but differently identified command");
+    overwrite_exact_row(
+        &wrong_capsule_path.0,
+        "idempotency_locators",
+        expected
+            .pending
+            .identity()
+            .storage_key()
+            .expect("canonical identity key")
+            .as_bytes(),
+        wrong_locator.as_bytes(),
+    );
+    assert!(
+        readmission_is_corrupt(&wrong_capsule_path.0, &expected),
+        "a real capsule with the wrong complete identity must be corruption"
+    );
+}
+
+// req: OUT-001, OUT-002, TXN-042
+#[test]
+fn fresh_locator_write_miss_retains_current_semantics_and_gates_only_coverage() {
+    let path = TestDatabasePath::new("fresh-locator-write-miss-result-algebra");
+    prepare_command_database(&path.0);
+    let first = two_phase_command_fixture_at(1);
+    let ports = open_operational(RedbStore::open(&path.0).expect("open empty command store"));
+    let request =
+        AdmissionRequestV1::new(first.candidates, &first.context).expect("first admission request");
+    assert_eq!(
+        ports.admit_or_resolve(request).expect("first admission"),
+        AdmissionResultV1::Created(first.pending)
+    );
+    drop(ports);
+
+    let second = two_phase_command_fixture_at(2);
+    let ports = open_operational(RedbStore::open(&path.0).expect("reopen nonempty command store"));
+    assert_eq!(
+        ports
+            .lookup_admission(second.candidates.clone())
+            .expect("operational novel-key miss"),
+        AdmissionLookupResultV1::NotFound
+    );
+    let request = AdmissionRequestV1::new(second.candidates.clone(), &second.context)
+        .expect("second admission request");
+    assert_eq!(
+        ports
+            .admit_or_resolve(request)
+            .expect("nonempty authority disables only the optimization"),
+        AdmissionResultV1::Created(second.pending.clone())
+    );
+    let candidate = ports
+        .begin_empty_batch()
+        .expect("begin transaction-adjacent revalidation")
+        .begin_candidate(Box::new(second.intent))
+        .expect("begin admitted candidate");
+    assert!(matches!(
+        candidate
+            .recheck_admission()
+            .expect("transaction-adjacent miss retains Proceed"),
+        CandidateAdmissionResult::Proceed(_)
+    ));
+}
+
 /// Replaces the first row's value in a raw table, leaving its key intact.
 fn overwrite_first_row(path: &Path, table_name: &str, value: &[u8]) {
     let database = Database::open(path).expect("open raw");
@@ -4594,6 +4739,23 @@ fn overwrite_first_row(path: &Path, table_name: &str, value: &[u8]) {
             .expect("a locator row to damage");
         let mut table = write.open_table(definition).expect("raw table");
         table.insert(key.as_slice(), value).expect("overwrite");
+    }
+    write.commit().expect("commit raw damage");
+}
+
+fn overwrite_exact_row(path: &Path, table_name: &str, key: &[u8], value: &[u8]) {
+    let database = Database::open(path).expect("open raw");
+    let definition = TableDefinition::<&[u8], &[u8]>::new(table_name);
+    let write = database.begin_write().expect("begin raw write");
+    {
+        let mut table = write.open_table(definition).expect("raw table");
+        assert!(
+            table
+                .insert(key, value)
+                .expect("overwrite exact row")
+                .is_some(),
+            "the exact locator row must already exist"
+        );
     }
     write.commit().expect("commit raw damage");
 }

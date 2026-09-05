@@ -2055,9 +2055,25 @@ fn fresh_locator_preserving_immediate_permits_are_closed_exact_and_bounded() {
     ];
     assert!(
         exact_tables
-            .into_iter()
-            .all(|(class, table, key)| { fresh_locator_table_allowed(class, table, key) })
+            .iter()
+            .all(|(class, table, key)| { fresh_locator_table_allowed(*class, table, key) })
     );
+    for (class, table, key) in exact_tables {
+        let expected = FreshLocatorMutationPermit {
+            table: table.into(),
+            key: key.into(),
+            kind: FreshLocatorMutationKind::Insert,
+        };
+        let actual = FreshLocatorMutationPermit {
+            table: table.into(),
+            key: key.into(),
+            kind: FreshLocatorMutationKind::Insert,
+        };
+        assert!(
+            matching_fresh_locator_mutations(class, &[expected], &[actual]).is_some(),
+            "the exact typed {table} mutation must preserve its named lane"
+        );
+    }
     for excluded in [
         "commits",
         "idempotency_locators",
@@ -2109,6 +2125,22 @@ fn preserving_lane_expected_and_actual_sets_are_independent_exact_and_maximal() 
     );
 
     for (expected, actual) in [
+        (
+            vec![mutation(
+                "event_consumers",
+                b"missing-actual".as_slice(),
+                FreshLocatorMutationKind::Insert,
+            )],
+            vec![],
+        ),
+        (
+            vec![],
+            vec![mutation(
+                "event_consumers",
+                b"unregistered-actual".as_slice(),
+                FreshLocatorMutationKind::Insert,
+            )],
+        ),
         (
             vec![mutation(
                 "event_consumers",
