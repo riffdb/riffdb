@@ -41,10 +41,9 @@ use riffdb_storage_api::{
     VectorProjectionControlWriteResultV1, VectorProjectionSourceV1,
 };
 use riffdb_types::{
-    ApplicationRoleHash, CapabilityId, CapabilityTokenDigest, ColumnarProjectionSourceV1,
-    ColumnarProjectionSpecHashV1, CommitSequence, ContractBundleHash, ContractLineage,
-    ContractVersion, DefinitionFingerprint, EventId, FrontierPosition, ProjectionIdentity,
-    ProvenanceId, QueryModuleHash,
+    CapabilityId, CapabilityTokenDigest, ColumnarProjectionSourceV1, ColumnarProjectionSpecHashV1,
+    CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, DefinitionFingerprint,
+    EventId, FrontierPosition, ProjectionIdentity, ProvenanceId, QueryModuleHash,
 };
 
 use crate::store::{RedbOperationalPorts, SharedRedb};

@@ -14,9 +14,10 @@ use std::time::Duration;
 
 use riffdb_catalog::ActiveCatalogSnapshot;
 use riffdb_columnar::{
-    CheckpointError, ColumnarEngine, ColumnarError, ColumnarOutcome, ColumnarProjectionDefinition,
-    NearestCandidate, NearestCandidateAdmission, NearestQueryAdmissionError, NearestQueryRequest,
-    OpenOptions, QueryBudget, QueryError, RegisteredDefinition,
+    ColumnarEngine, ColumnarError, ColumnarOutcome, ColumnarProjectionDefinition,
+    ColumnarProjectionSpecV1, NearestCandidate, NearestCandidateAdmission,
+    NearestQueryAdmissionError, NearestQueryRequest, OpenOptions, QueryBudget, QueryError,
+    RegisteredDefinition,
 };
 use riffdb_contract_ir::{ContractBundle, ExpressionKind, ValueType, ValueTypeTag};
 use riffdb_service::{
@@ -26,12 +27,12 @@ use riffdb_service::{
 };
 use riffdb_storage_api::{
     AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest, AuthoritativePointReader,
-    AuthoritativeScanReader, CommitScanPageV1, CommitScanRequest, EntityTarget,
-    IdempotencyIdentity, StorageError, StorageErrorKind, StorageScanLimit, StoredCommitRecordV1,
-    StoredDurableEventV1, StoredEntityRecordV1, StoredOutcomeV1, StoredProvenanceRecordV1,
-    StoredVectorProjectionControlV1, VectorProjectionControlRepository,
-    VectorProjectionControlWriteResultV1, VectorProjectionLifecycleV1,
-    VectorProjectionRebuildReasonV1, VectorProjectionReplayLimitsV1, VectorProjectionSourceV1,
+    AuthoritativeScanReader, ColumnarProjectionControlRepository,
+    ColumnarProjectionControlWriteResultV1, ColumnarProjectionLayoutV1, CommitScanPageV1,
+    CommitScanRequest, EntityTarget, FreshColumnarProjectionControlV1, IdempotencyIdentity,
+    StorageError, StorageErrorKind, StorageScanLimit, StoredColumnarProjectionControlV1,
+    StoredCommitRecordV1, StoredDurableEventV1, StoredEntityRecordV1, StoredOutcomeV1,
+    StoredProvenanceRecordV1,
 };
 use riffdb_types::{
     CommitSequence, EntityKey, EventId, FieldId, FrontierPosition, ProjectionFrontier,
@@ -163,19 +164,22 @@ pub(crate) struct ColumnarActivationSpec {
     directory: PathBuf,
     generation: Option<ProjectionGeneration>,
     expected_durable_frontier: Option<FrontierPosition>,
+    controlled_manifest: Option<Option<(u64, [u8; 32])>>,
 }
 
 impl ColumnarActivationSpec {
-    pub(crate) fn with_vector_selection(
+    pub(crate) fn with_control_selection(
         &self,
         directory: PathBuf,
         generation: ProjectionGeneration,
+        manifest: Option<(u64, [u8; 32])>,
     ) -> Self {
         Self {
             definition: self.definition.clone(),
             directory,
             generation: Some(generation),
             expected_durable_frontier: None,
+            controlled_manifest: Some(manifest),
         }
     }
 
@@ -188,10 +192,12 @@ impl ColumnarActivationSpec {
         self,
         history_incarnation: u64,
     ) -> Result<(ColumnarEngine, Option<ProjectionGeneration>), ColumnarError> {
-        let engine = ColumnarEngine::open(
-            self.definition,
-            OpenOptions::new(self.directory).with_history_incarnation(history_incarnation),
-        )?;
+        let mut options =
+            OpenOptions::new(self.directory).with_history_incarnation(history_incarnation);
+        if let Some(selected) = self.controlled_manifest {
+            options = options.with_controlled_manifest(selected);
+        }
+        let engine = ColumnarEngine::open(self.definition, options)?;
         if self
             .expected_durable_frontier
             .is_some_and(|expected| engine.durable_frontier().position() != expected)
@@ -231,11 +237,24 @@ impl ColumnarEngineSlot {
                 directory,
                 generation,
                 expected_durable_frontier: None,
+                controlled_manifest: None,
             },
             definition,
             cold_snapshot: Arc::new(riffdb_columnar::ColumnarSnapshot::empty()),
             cold_frontier,
         }
+    }
+
+    fn cold_controlled(
+        definition: RegisteredDefinition,
+        directory: PathBuf,
+        generation: ProjectionGeneration,
+        cold_frontier: FrontierPosition,
+        manifest: Option<(u64, [u8; 32])>,
+    ) -> Self {
+        let mut slot = Self::cold(definition, directory, Some(generation), cold_frontier);
+        slot.activation.controlled_manifest = Some(manifest);
+        slot
     }
 
     /// Registered definition for this projection.
@@ -358,6 +377,7 @@ impl ColumnarEngineSlot {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn with_engine_mut<T>(
         &self,
         operation: impl FnOnce(&mut ColumnarEngine) -> T,
@@ -465,10 +485,10 @@ pub(crate) struct ColumnarRuntime {
     engines: RwLock<BTreeMap<String, Arc<ColumnarEngineSlot>>>,
     notifier: ColumnarNotifier,
     names: RwLock<Vec<String>>,
-    configured_names: BTreeSet<String>,
-    vector_registrations: RwLock<BTreeMap<String, VectorProjectionRegistration>>,
+    control_bindings: BTreeMap<String, ColumnarControlBinding>,
     projections_root: PathBuf,
     history_incarnation: u64,
+    process_generation: [u8; 16],
     apply_source: ServerColumnarApplySource,
     activation_wake: Arc<ColumnarActivationWake>,
     admitted_cold_sources: AtomicU64,
@@ -483,29 +503,25 @@ pub(crate) struct ColumnarRuntime {
     observed_head: AtomicU64,
 }
 
-#[derive(Clone)]
-pub(crate) struct VectorProjectionRegistration {
-    source: VectorProjectionSourceV1,
-    limits: VectorProjectionReplayLimitsV1,
-    definition_fingerprint: [u8; 32],
+#[derive(Clone, Debug)]
+pub(crate) struct ColumnarControlBinding {
+    name: String,
     definition: RegisteredDefinition,
+    spec: ColumnarProjectionSpecV1,
+    is_vector: bool,
 }
 
-impl VectorProjectionRegistration {
-    pub(crate) const fn source(&self) -> &VectorProjectionSourceV1 {
-        &self.source
-    }
-
-    pub(crate) const fn limits(&self) -> VectorProjectionReplayLimitsV1 {
-        self.limits
-    }
-
-    pub(crate) const fn definition_fingerprint(&self) -> &[u8; 32] {
-        &self.definition_fingerprint
+impl ColumnarControlBinding {
+    pub(crate) fn name(&self) -> &str {
+        &self.name
     }
 
     pub(crate) fn definition(&self) -> &RegisteredDefinition {
         &self.definition
+    }
+
+    pub(crate) const fn spec(&self) -> &ColumnarProjectionSpecV1 {
+        &self.spec
     }
 }
 
@@ -516,15 +532,16 @@ impl ColumnarRuntime {
         storage: SharedRedbOperationalPorts,
         projections_root: PathBuf,
         history_incarnation: u64,
+        process_generation: [u8; 16],
     ) -> Arc<Self> {
         Arc::new(Self {
             engines: RwLock::new(BTreeMap::new()),
             notifier: ColumnarNotifier::from_names(Vec::new()),
             names: RwLock::new(Vec::new()),
-            configured_names: BTreeSet::new(),
-            vector_registrations: RwLock::new(BTreeMap::new()),
+            control_bindings: BTreeMap::new(),
             projections_root,
             history_incarnation,
+            process_generation,
             apply_source: ServerColumnarApplySource::new(storage),
             activation_wake: Arc::new(ColumnarActivationWake::default()),
             admitted_cold_sources: AtomicU64::new(0),
@@ -534,82 +551,79 @@ impl ColumnarRuntime {
         })
     }
 
-    /// Resolves configured projections while retaining their artifacts cold.
+    /// Test-only composition of pre-I/O resolution/control setup and cold open.
+    #[cfg(test)]
     pub(crate) fn open(
         storage: SharedRedbOperationalPorts,
         projections: &[ConfiguredProjection],
         projections_root: &Path,
         history_incarnation: u64,
+        process_generation: [u8; 16],
     ) -> Result<Arc<Self>, ColumnarRegistrationError> {
-        let active = ActiveCatalogSnapshot::read(&storage).map_err(|error| {
-            ColumnarRegistrationError::storage(error, first_projection_name(projections))
-        })?;
-        let Some(active) = active else {
-            if projections.is_empty() {
-                return Ok(Self::empty(
-                    storage,
-                    projections_root.to_path_buf(),
-                    history_incarnation,
-                ));
-            }
-            return Err(ColumnarRegistrationError::no_active_catalog(
-                first_projection_name(projections),
+        let bindings =
+            prepare_columnar_control_foundation(&storage, projections, history_incarnation)?;
+        Self::open_prepared(
+            storage,
+            bindings,
+            projections_root,
+            history_incarnation,
+            process_generation,
+        )
+    }
+
+    /// Admits schema-bound controls as cold slots without opening an artifact.
+    pub(crate) fn open_prepared(
+        storage: SharedRedbOperationalPorts,
+        bindings: Vec<ColumnarControlBinding>,
+        projections_root: &Path,
+        history_incarnation: u64,
+        process_generation: [u8; 16],
+    ) -> Result<Arc<Self>, ColumnarRegistrationError> {
+        if bindings.is_empty() {
+            return Ok(Self::empty(
+                storage,
+                projections_root.to_path_buf(),
+                history_incarnation,
+                process_generation,
             ));
-        };
-        let bundle = active.bundle().bundle();
-        let mut engines = BTreeMap::new();
-        let mut names =
-            Vec::with_capacity(projections.len() + bundle.schema().vector_production_specs().len());
-        let mut configured_names = BTreeSet::new();
-        let mut vector_registrations = BTreeMap::new();
-        for configured in projections {
-            let name = configured.name().to_owned();
-            if engines.contains_key(&name) {
-                return Err(ColumnarRegistrationError::duplicate_name(name));
-            }
-            let definition = resolve_configured_projection(configured, bundle)?;
-            let directory = projection_directory(projections_root, &name);
-            engines.insert(
-                name.clone(),
-                Arc::new(ColumnarEngineSlot::cold(
-                    definition,
-                    directory,
-                    None,
-                    FrontierPosition::BeforeFirst,
-                )),
-            );
-            configured_names.insert(name.clone());
-            names.push(name);
         }
-        for spec in bundle.schema().vector_production_specs() {
-            let entity = bundle
-                .schema()
-                .entity(spec.entity())
-                .ok_or_else(|| ColumnarRegistrationError::definition("production-vector"))?;
-            let vector = entity
-                .record()
-                .field(spec.field())
-                .ok_or_else(|| ColumnarRegistrationError::definition("production-vector"))?;
-            let name = format!("{}.{}", entity.name(), vector.name());
-            if engines.contains_key(&name) {
-                return Err(ColumnarRegistrationError::duplicate_name(name));
+        let mut engines = BTreeMap::new();
+        let mut names = Vec::with_capacity(bindings.len());
+        let mut control_bindings = BTreeMap::new();
+        for binding in bindings {
+            let name = binding.name.clone();
+            let control = storage
+                .recover_expected_control(binding.spec.source())
+                .map_err(|error| ColumnarRegistrationError::control_storage(error, &name))?
+                .ok_or_else(ColumnarRegistrationError::synchronization)?;
+            if !common_control_matches(&control, &binding.spec) {
+                return Err(ColumnarRegistrationError::synchronization());
             }
-            let registration = resolve_vector_registration(bundle, entity, spec, &name)?;
-            let control = reconcile_vector_control(&storage, &registration)?;
-            let definition = registration.definition().clone();
-            let directory =
-                vector_generation_directory(projections_root, &name, control.generation());
+            let selected = control
+                .servable_generation()
+                .or_else(|| control.candidate())
+                .ok_or_else(ColumnarRegistrationError::synchronization)?;
+            if selected.layout() != ColumnarProjectionLayoutV1::V1 {
+                return Err(ColumnarRegistrationError::synchronization());
+            }
             engines.insert(
                 name.clone(),
-                Arc::new(ColumnarEngineSlot::cold(
-                    definition,
-                    directory,
-                    Some(control.generation()),
-                    control.published_frontier(),
+                Arc::new(ColumnarEngineSlot::cold_controlled(
+                    binding.definition.clone(),
+                    controlled_generation_directory(
+                        projections_root,
+                        binding.spec.hash(),
+                        selected.generation(),
+                    ),
+                    selected.generation(),
+                    selected.frontier(),
+                    selected
+                        .artifact()
+                        .map(|artifact| (artifact.length(), artifact.checksum())),
                 )),
             );
-            vector_registrations.insert(name.clone(), registration);
-            names.push(name);
+            names.push(name.clone());
+            control_bindings.insert(name, binding);
         }
         names.sort();
         let notifier = ColumnarNotifier::from_names(names.iter().cloned());
@@ -618,10 +632,10 @@ impl ColumnarRuntime {
             engines: RwLock::new(engines),
             notifier,
             names: RwLock::new(names),
-            configured_names,
-            vector_registrations: RwLock::new(vector_registrations),
+            control_bindings,
             projections_root: projections_root.to_path_buf(),
             history_incarnation,
+            process_generation,
             apply_source: ServerColumnarApplySource::new(storage),
             activation_wake: Arc::new(ColumnarActivationWake::default()),
             admitted_cold_sources: AtomicU64::new(admitted_cold_sources),
@@ -651,6 +665,11 @@ impl ColumnarRuntime {
         self.history_incarnation
     }
 
+    #[must_use]
+    pub(crate) const fn process_generation(&self) -> [u8; 16] {
+        self.process_generation
+    }
+
     /// Registered engine slots in name order.
     pub(crate) fn engines(
         &self,
@@ -676,28 +695,38 @@ impl ColumnarRuntime {
             .map_err(|_| ColumnarPortError::Unavailable)
     }
 
-    pub(crate) fn vector_registrations(
-        &self,
-    ) -> Result<Vec<(String, VectorProjectionRegistration)>, ColumnarPortError> {
-        self.vector_registrations
-            .read()
-            .map(|registrations| {
-                registrations
-                    .iter()
-                    .map(|(name, registration)| (name.clone(), registration.clone()))
-                    .collect()
-            })
-            .map_err(|_| ColumnarPortError::Unavailable)
+    fn control_binding(&self, name: &str) -> Option<&ColumnarControlBinding> {
+        self.control_bindings.get(name)
     }
 
-    fn vector_registration(
+    pub(crate) fn control_bindings(&self) -> Vec<ColumnarControlBinding> {
+        self.control_bindings.values().cloned().collect()
+    }
+
+    pub(crate) fn open_controlled_generation(
         &self,
-        name: &str,
-    ) -> Result<Option<VectorProjectionRegistration>, ColumnarPortError> {
-        self.vector_registrations
-            .read()
-            .map(|registrations| registrations.get(name).cloned())
-            .map_err(|_| ColumnarPortError::Unavailable)
+        binding: &ColumnarControlBinding,
+        generation: &riffdb_storage_api::StoredColumnarProjectionGenerationV1,
+    ) -> Result<ColumnarEngine, ColumnarError> {
+        let artifact = generation
+            .artifact()
+            .map(|artifact| (artifact.length(), artifact.checksum()));
+        let mut spec = ColumnarActivationSpec {
+            definition: binding.definition.clone(),
+            directory: controlled_generation_directory(
+                &self.projections_root,
+                binding.spec.hash(),
+                generation.generation(),
+            ),
+            generation: Some(generation.generation()),
+            expected_durable_frontier: None,
+            controlled_manifest: Some(artifact),
+        };
+        if artifact.is_some() {
+            spec = spec.with_expected_durable_frontier(generation.frontier());
+        }
+        spec.open(self.history_incarnation)
+            .map(|(engine, _)| engine)
     }
 
     pub(crate) fn replace_vector_engine(
@@ -714,137 +743,6 @@ impl ColumnarRuntime {
             .get(name)
             .ok_or(ColumnarPortError::Integrity)?
             .replace_active(engine, generation)
-    }
-
-    pub(crate) fn projections_root(&self) -> &Path {
-        &self.projections_root
-    }
-
-    /// Reconciles compiler-declared vector projections after catalog activation.
-    ///
-    /// A definition change never reuses an existing engine generation. Until
-    /// the durable rebuild lifecycle replaces it, the worker fails closed.
-    pub(crate) fn synchronize_active_vector_projections(
-        &self,
-    ) -> Result<(), ColumnarRegistrationError> {
-        let active = ActiveCatalogSnapshot::read(self.storage())
-            .map_err(|error| ColumnarRegistrationError::storage(error, "production-vector"))?;
-        let Some(active) = active else {
-            return Ok(());
-        };
-        let bundle = active.bundle().bundle();
-        let mut desired = BTreeMap::new();
-        for spec in bundle.schema().vector_production_specs() {
-            let entity = bundle
-                .schema()
-                .entity(spec.entity())
-                .ok_or_else(|| ColumnarRegistrationError::definition("production-vector"))?;
-            let vector = entity
-                .record()
-                .field(spec.field())
-                .ok_or_else(|| ColumnarRegistrationError::definition("production-vector"))?;
-            let name = format!("{}.{}", entity.name(), vector.name());
-            if self.configured_names.contains(&name) || desired.contains_key(&name) {
-                return Err(ColumnarRegistrationError::duplicate_name(name));
-            }
-            desired.insert(
-                name.clone(),
-                resolve_vector_registration(bundle, entity, spec, &name)?,
-            );
-        }
-
-        let previous_registrations = self
-            .vector_registrations
-            .read()
-            .map_err(|_| ColumnarRegistrationError::synchronization())?
-            .clone();
-        for (name, registration) in &previous_registrations {
-            if desired.contains_key(name) {
-                continue;
-            }
-            if let Some(control) = self
-                .storage()
-                .read_vector_projection_control(registration.source())
-                .map_err(|error| ColumnarRegistrationError::storage(error.into(), name.clone()))?
-            {
-                let invalid = StoredVectorProjectionControlV1::new(
-                    registration.source().clone(),
-                    control.generation(),
-                    *control.definition_fingerprint(),
-                    VectorProjectionLifecycleV1::Invalid,
-                    control.published_frontier(),
-                    None,
-                    None,
-                    control.limits(),
-                )
-                .map_err(|_| ColumnarRegistrationError::definition(name.clone()))?;
-                match self
-                    .storage()
-                    .compare_and_set_vector_projection_control(Some(&control), &invalid)
-                    .map_err(|error| {
-                        ColumnarRegistrationError::storage(error.into(), name.clone())
-                    })? {
-                    VectorProjectionControlWriteResultV1::Applied
-                    | VectorProjectionControlWriteResultV1::Unchanged => {}
-                    VectorProjectionControlWriteResultV1::CompareMismatch => {
-                        return Err(ColumnarRegistrationError::synchronization());
-                    }
-                }
-            }
-        }
-
-        let existing = self
-            .engines
-            .read()
-            .map_err(|_| ColumnarRegistrationError::synchronization())?;
-        let mut additions = Vec::new();
-        for (name, registration) in &desired {
-            let control = reconcile_vector_control(self.storage(), registration)?;
-            if let Some(slot) = existing.get(name)
-                && slot.definition().fingerprint() == registration.definition().fingerprint()
-                && (slot.generation() == Some(control.generation())
-                    || slot.lifecycle() == Ok(ColumnarSlotLifecycle::Active))
-            {
-                continue;
-            }
-            additions.push((
-                name.clone(),
-                Arc::new(ColumnarEngineSlot::cold(
-                    registration.definition().clone(),
-                    vector_generation_directory(&self.projections_root, name, control.generation()),
-                    Some(control.generation()),
-                    control.published_frontier(),
-                )),
-            ));
-        }
-        drop(existing);
-
-        let mut engines = self
-            .engines
-            .write()
-            .map_err(|_| ColumnarRegistrationError::synchronization())?;
-        engines
-            .retain(|name, _| self.configured_names.contains(name) || desired.contains_key(name));
-        for (name, slot) in additions {
-            engines.insert(name, slot);
-        }
-        let names = engines.keys().cloned().collect::<Vec<_>>();
-        self.notifier
-            .synchronize_names(names.iter().cloned())
-            .map_err(|_| ColumnarRegistrationError::synchronization())?;
-        *self
-            .names
-            .write()
-            .map_err(|_| ColumnarRegistrationError::synchronization())? = names;
-        *self
-            .vector_registrations
-            .write()
-            .map_err(|_| ColumnarRegistrationError::synchronization())? = desired;
-        self.admitted_cold_sources.store(
-            u64::try_from(engines.len()).unwrap_or(u64::MAX),
-            Ordering::Release,
-        );
-        Ok(())
     }
 
     /// Apply source used by the worker (`AuthoritativeScanReader` + point reads).
@@ -905,29 +803,37 @@ impl ColumnarRuntime {
         let Some(mut spec) = slot.pending_activation()? else {
             return Ok(None);
         };
-        let Some(registration) = self.vector_registration(name)? else {
-            return Ok(Some(spec));
-        };
+        let binding = self
+            .control_binding(name)
+            .ok_or(ColumnarPortError::Integrity)?;
         let control = self
             .storage()
-            .read_vector_projection_control(registration.source())
-            .map_err(|error| match error.kind() {
-                StorageErrorKind::Unavailable => ColumnarPortError::Unavailable,
-                _ => ColumnarPortError::Integrity,
-            })?
+            .recover_expected_control(binding.spec.source())
+            .map_err(map_port_storage)?
             .ok_or(ColumnarPortError::Integrity)?;
-        if control.definition_fingerprint() != registration.definition_fingerprint()
-            || control.limits() != registration.limits()
-            || control.lifecycle() == VectorProjectionLifecycleV1::Invalid
-        {
+        if !common_control_matches(&control, &binding.spec) {
             return Err(ColumnarPortError::Integrity);
         }
-        spec = spec.with_vector_selection(
-            vector_generation_directory(&self.projections_root, name, control.generation()),
-            control.generation(),
+        let selected = control
+            .servable_generation()
+            .or_else(|| control.candidate())
+            .ok_or(ColumnarPortError::Integrity)?;
+        if selected.layout() != ColumnarProjectionLayoutV1::V1 {
+            return Err(ColumnarPortError::Integrity);
+        }
+        spec = spec.with_control_selection(
+            controlled_generation_directory(
+                &self.projections_root,
+                binding.spec.hash(),
+                selected.generation(),
+            ),
+            selected.generation(),
+            selected
+                .artifact()
+                .map(|artifact| (artifact.length(), artifact.checksum())),
         );
-        if control.lifecycle() == VectorProjectionLifecycleV1::Ready {
-            spec = spec.with_expected_durable_frontier(control.published_frontier());
+        if selected.artifact().is_some() {
+            spec = spec.with_expected_durable_frontier(selected.frontier());
         }
         Ok(Some(spec))
     }
@@ -938,25 +844,21 @@ impl ColumnarRuntime {
         slot: &ColumnarEngineSlot,
         head: ProjectionFrontier,
     ) -> Result<ColumnarObservation, ColumnarPortError> {
-        let frontier = if let Some(registration) = self.vector_registration(name)? {
-            let control = self
-                .storage()
-                .read_vector_projection_control(registration.source())
-                .map_err(|error| match error.kind() {
-                    StorageErrorKind::Unavailable => ColumnarPortError::Unavailable,
-                    _ => ColumnarPortError::Integrity,
-                })?
-                .ok_or(ColumnarPortError::Integrity)?;
-            if control.definition_fingerprint() != registration.definition_fingerprint()
-                || control.limits() != registration.limits()
-                || control.lifecycle() == VectorProjectionLifecycleV1::Invalid
-            {
-                return Err(ColumnarPortError::Integrity);
-            }
-            control.published_frontier()
-        } else {
-            slot.cold_frontier
-        };
+        let binding = self
+            .control_binding(name)
+            .ok_or(ColumnarPortError::Integrity)?;
+        let control = self
+            .storage()
+            .recover_expected_control(binding.spec.source())
+            .map_err(map_port_storage)?
+            .ok_or(ColumnarPortError::Integrity)?;
+        if !common_control_matches(&control, &binding.spec) {
+            return Err(ColumnarPortError::Integrity);
+        }
+        let frontier = control
+            .servable_generation()
+            .or_else(|| control.candidate())
+            .map_or(slot.cold_frontier, |generation| generation.frontier());
         Ok(slot.cold_observation(head, frontier))
     }
 
@@ -1006,6 +908,210 @@ impl ColumnarRuntime {
     }
 }
 
+/// Resolves every configured/compiler-declared source before installing any
+/// common control or touching the projection filesystem.
+pub(crate) fn prepare_columnar_control_foundation(
+    storage: &SharedRedbOperationalPorts,
+    projections: &[ConfiguredProjection],
+    history_incarnation: u64,
+) -> Result<Vec<ColumnarControlBinding>, ColumnarRegistrationError> {
+    if projections.len() > 256
+        || projections.iter().any(|projection| {
+            let name = projection.name();
+            name.is_empty()
+                || name.len() > 256
+                || name == "."
+                || name == ".."
+                || name.contains('/')
+                || name.contains('\\')
+        })
+    {
+        return Err(ColumnarRegistrationError::definition(
+            first_projection_name(projections),
+        ));
+    }
+    let active = ActiveCatalogSnapshot::read(storage).map_err(|error| {
+        ColumnarRegistrationError::storage(error, first_projection_name(projections))
+    })?;
+    let Some(active) = active else {
+        if projections.is_empty() {
+            return Ok(Vec::new());
+        }
+        return Err(ColumnarRegistrationError::no_active_catalog(
+            first_projection_name(projections),
+        ));
+    };
+    let bundle = active.bundle().bundle();
+    let mut bindings =
+        Vec::with_capacity(projections.len() + bundle.schema().vector_production_specs().len());
+    let mut names = BTreeSet::new();
+    let mut sources = BTreeSet::new();
+    for configured in projections {
+        let name = configured.name().to_owned();
+        let definition = resolve_configured_projection(configured, bundle)?;
+        let spec = ColumnarProjectionSpecV1::for_scalar(&definition, bundle)
+            .map_err(|_| ColumnarRegistrationError::definition(name.clone()))?;
+        insert_control_binding(
+            &mut bindings,
+            &mut names,
+            &mut sources,
+            ColumnarControlBinding {
+                name,
+                definition,
+                spec,
+                is_vector: false,
+            },
+        )?;
+    }
+    for production in bundle.schema().vector_production_specs() {
+        let entity = bundle
+            .schema()
+            .entity(production.entity())
+            .ok_or_else(|| ColumnarRegistrationError::definition("production-vector"))?;
+        let vector_field = entity
+            .record()
+            .field(production.field())
+            .ok_or_else(|| ColumnarRegistrationError::definition("production-vector"))?;
+        let name = format!("{}.{}", entity.name(), vector_field.name());
+        let definition = resolve_vector_registration(bundle, entity, &name)?;
+        let spec = ColumnarProjectionSpecV1::for_vector(&definition, production.field(), bundle)
+            .map_err(|_| ColumnarRegistrationError::definition(name.clone()))?;
+        insert_control_binding(
+            &mut bindings,
+            &mut names,
+            &mut sources,
+            ColumnarControlBinding {
+                name,
+                definition,
+                spec,
+                is_vector: true,
+            },
+        )?;
+    }
+    if bindings.len() > 256 {
+        return Err(ColumnarRegistrationError::definition("columnar-control"));
+    }
+
+    let mut fresh = Vec::new();
+    for binding in &bindings {
+        let observed = storage
+            .recover_expected_control(binding.spec.source())
+            .map_err(|error| ColumnarRegistrationError::control_storage(error, &binding.name))?;
+        if observed.is_none() {
+            fresh.push(
+                FreshColumnarProjectionControlV1::new(
+                    binding.spec.source().clone(),
+                    binding.spec.definition_fingerprint(),
+                    binding.spec.hash(),
+                    binding.spec.replay_limits(),
+                    history_incarnation,
+                )
+                .map_err(|_| ColumnarRegistrationError::definition(&binding.name))?,
+            );
+        }
+    }
+    if !fresh.is_empty() {
+        let _ = storage.initialize_fresh_v1(&fresh).map_err(|error| {
+            ColumnarRegistrationError::control_storage(error, "columnar-control")
+        })?;
+    }
+    // Applied and transaction-current mismatch both resolve by complete reread;
+    // no initialization outcome is inferred from the attempted write.
+    for binding in &bindings {
+        let observed = storage
+            .recover_expected_control(binding.spec.source())
+            .map_err(|error| ColumnarRegistrationError::control_storage(error, &binding.name))?
+            .ok_or_else(ColumnarRegistrationError::synchronization)?;
+        reconcile_common_control(storage, binding, observed)?;
+    }
+    bindings.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(bindings)
+}
+
+fn insert_control_binding(
+    bindings: &mut Vec<ColumnarControlBinding>,
+    names: &mut BTreeSet<String>,
+    sources: &mut BTreeSet<Vec<u8>>,
+    binding: ColumnarControlBinding,
+) -> Result<(), ColumnarRegistrationError> {
+    if !names.insert(binding.name.clone())
+        || !sources.insert(binding.spec.source().to_canonical_bytes())
+    {
+        return Err(ColumnarRegistrationError::duplicate_name(binding.name));
+    }
+    bindings.push(binding);
+    Ok(())
+}
+
+fn reconcile_common_control(
+    storage: &SharedRedbOperationalPorts,
+    binding: &ColumnarControlBinding,
+    observed: StoredColumnarProjectionControlV1,
+) -> Result<(), ColumnarRegistrationError> {
+    if common_control_matches(&observed, &binding.spec) {
+        return Ok(());
+    }
+    let outcome = if observed.published().is_none() && observed.predecessor().is_none() {
+        storage.retarget_initial_candidate(
+            &observed,
+            binding.spec.definition_fingerprint(),
+            binding.spec.hash(),
+            binding.spec.replay_limits(),
+        )
+    } else {
+        storage.allocate_unservable_rebuild_candidate(
+            &observed,
+            binding.spec.definition_fingerprint(),
+            binding.spec.hash(),
+            binding.spec.replay_limits(),
+            ColumnarProjectionLayoutV1::V1,
+            None,
+        )
+    }
+    .map_err(|error| ColumnarRegistrationError::control_storage(error, &binding.name))?;
+    if outcome == ColumnarProjectionControlWriteResultV1::Applied {
+        return Ok(());
+    }
+    let recovered = storage
+        .recover_expected_control(binding.spec.source())
+        .map_err(|error| ColumnarRegistrationError::control_storage(error, &binding.name))?
+        .ok_or_else(ColumnarRegistrationError::synchronization)?;
+    if common_control_matches(&recovered, &binding.spec) {
+        Ok(())
+    } else {
+        Err(ColumnarRegistrationError::synchronization())
+    }
+}
+
+fn common_control_matches(
+    control: &StoredColumnarProjectionControlV1,
+    spec: &ColumnarProjectionSpecV1,
+) -> bool {
+    control.target_definition_fingerprint() == spec.definition_fingerprint()
+        && control.target_spec_hash() == spec.hash()
+        && control.replay_limits() == spec.replay_limits()
+}
+
+pub(crate) fn controlled_generation_directory(
+    projections_root: &Path,
+    spec_hash: riffdb_types::ColumnarProjectionSpecHashV1,
+    generation: ProjectionGeneration,
+) -> PathBuf {
+    projections_root
+        .join(format!("source-{}", lower_hex(spec_hash.as_bytes())))
+        .join(format!("generation-{:020}", generation.get()))
+}
+
+fn lower_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+
+    let mut text = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(&mut text, "{byte:02x}");
+    }
+    text
+}
+
 fn resolve_production_vector_projection(
     bundle: &ContractBundle,
     entity: &riffdb_contract_ir::EntitySchema,
@@ -1049,87 +1155,9 @@ fn resolve_production_vector_projection(
 fn resolve_vector_registration(
     bundle: &ContractBundle,
     entity: &riffdb_contract_ir::EntitySchema,
-    spec: &riffdb_contract_ir::VectorProductionSpecV1,
     name: &str,
-) -> Result<VectorProjectionRegistration, ColumnarRegistrationError> {
-    let definition = resolve_production_vector_projection(bundle, entity, name)?;
-    let limits = VectorProjectionReplayLimitsV1::new(
-        spec.replay_age_seconds(),
-        spec.replay_bytes(),
-        spec.replay_backlog(),
-    )
-    .ok_or_else(|| ColumnarRegistrationError::definition(name))?;
-    Ok(VectorProjectionRegistration {
-        source: VectorProjectionSourceV1::new(
-            bundle.lineage().clone(),
-            spec.entity(),
-            spec.field(),
-        ),
-        limits,
-        // The complete canonical bundle hash is deliberately conservative:
-        // every compiler-visible successor gets a distinct derived generation
-        // rather than risking reuse across model or replay-descriptor changes.
-        definition_fingerprint: *bundle.bundle_hash().as_bytes(),
-        definition,
-    })
-}
-
-fn reconcile_vector_control(
-    storage: &SharedRedbOperationalPorts,
-    registration: &VectorProjectionRegistration,
-) -> Result<StoredVectorProjectionControlV1, ColumnarRegistrationError> {
-    let current = storage
-        .read_vector_projection_control(registration.source())
-        .map_err(|error| ColumnarRegistrationError::storage(error.into(), "production-vector"))?;
-    let replacement = match current.as_ref() {
-        None => StoredVectorProjectionControlV1::initial(
-            registration.source().clone(),
-            registration.definition_fingerprint,
-            registration.limits,
-        ),
-        Some(control)
-            if control.definition_fingerprint() == registration.definition_fingerprint()
-                && control.limits() == registration.limits() =>
-        {
-            return Ok(control.clone());
-        }
-        Some(control) => StoredVectorProjectionControlV1::new(
-            registration.source().clone(),
-            control
-                .generation()
-                .checked_next()
-                .ok_or_else(|| ColumnarRegistrationError::definition("production-vector"))?,
-            registration.definition_fingerprint,
-            VectorProjectionLifecycleV1::RebuildRequired,
-            control.published_frontier(),
-            None,
-            Some(VectorProjectionRebuildReasonV1::DefinitionChanged),
-            registration.limits,
-        )
-        .map_err(|_| ColumnarRegistrationError::definition("production-vector"))?,
-    };
-    match storage
-        .compare_and_set_vector_projection_control(current.as_ref(), &replacement)
-        .map_err(|error| ColumnarRegistrationError::storage(error.into(), "production-vector"))?
-    {
-        VectorProjectionControlWriteResultV1::Applied
-        | VectorProjectionControlWriteResultV1::Unchanged => Ok(replacement),
-        VectorProjectionControlWriteResultV1::CompareMismatch => {
-            let observed = storage
-                .read_vector_projection_control(registration.source())
-                .map_err(|error| {
-                    ColumnarRegistrationError::storage(error.into(), "production-vector")
-                })?
-                .ok_or_else(ColumnarRegistrationError::synchronization)?;
-            if observed.definition_fingerprint() == registration.definition_fingerprint()
-                && observed.limits() == registration.limits()
-            {
-                Ok(observed)
-            } else {
-                Err(ColumnarRegistrationError::synchronization())
-            }
-        }
-    }
+) -> Result<RegisteredDefinition, ColumnarRegistrationError> {
+    resolve_production_vector_projection(bundle, entity, name)
 }
 
 fn production_column_type_supported(value_type: &ValueType) -> bool {
@@ -1250,39 +1278,47 @@ impl VectorProjectionPort for ServerColumnarProjectionPort {
         if must_return_building {
             return Err(VectorProjectionPortError::Building);
         }
-        if let Some(registration) = self
+        let binding = self
             .runtime
-            .vector_registration(request.source_name())
-            .map_err(map_vector_port_error)?
-        {
-            let control = self
-                .runtime
-                .storage()
-                .read_vector_projection_control(registration.source())
-                .map_err(|error| match error.kind() {
-                    StorageErrorKind::Unavailable => VectorProjectionPortError::Unavailable,
-                    _ => VectorProjectionPortError::Integrity,
-                })?
-                .ok_or(VectorProjectionPortError::Integrity)?;
-            if control.definition_fingerprint() != registration.definition_fingerprint() {
-                return Err(VectorProjectionPortError::Integrity);
-            }
-            if slot.generation() != Some(control.generation()) {
-                return Err(VectorProjectionPortError::Rebuilding);
-            }
-            match control.lifecycle() {
-                VectorProjectionLifecycleV1::Building => {
-                    return Err(VectorProjectionPortError::Building);
+            .control_binding(request.source_name())
+            .ok_or(VectorProjectionPortError::Integrity)?;
+        if !binding.is_vector {
+            return Err(VectorProjectionPortError::Integrity);
+        }
+        let control = self
+            .runtime
+            .storage()
+            .recover_expected_control(binding.spec.source())
+            .map_err(|error| match error.kind() {
+                StorageErrorKind::Unavailable => VectorProjectionPortError::Unavailable,
+                _ => VectorProjectionPortError::Integrity,
+            })?
+            .ok_or(VectorProjectionPortError::Integrity)?;
+        if !common_control_matches(&control, &binding.spec) {
+            return Err(VectorProjectionPortError::Integrity);
+        }
+        let selected = control
+            .servable_generation()
+            .ok_or_else(|| match control.lifecycle() {
+                riffdb_storage_api::ColumnarProjectionLifecycleV1::Building => {
+                    VectorProjectionPortError::Building
                 }
-                VectorProjectionLifecycleV1::RebuildRequired
-                | VectorProjectionLifecycleV1::Rebuilding => {
-                    return Err(VectorProjectionPortError::Rebuilding);
+                riffdb_storage_api::ColumnarProjectionLifecycleV1::Rebuilding => {
+                    VectorProjectionPortError::Rebuilding
                 }
-                VectorProjectionLifecycleV1::Invalid => {
-                    return Err(VectorProjectionPortError::Integrity);
+                riffdb_storage_api::ColumnarProjectionLifecycleV1::Degraded => {
+                    VectorProjectionPortError::Degraded
                 }
-                VectorProjectionLifecycleV1::Ready => {}
-            }
+                riffdb_storage_api::ColumnarProjectionLifecycleV1::Invalid => {
+                    VectorProjectionPortError::Integrity
+                }
+                riffdb_storage_api::ColumnarProjectionLifecycleV1::CatchingUp
+                | riffdb_storage_api::ColumnarProjectionLifecycleV1::Ready => {
+                    VectorProjectionPortError::Integrity
+                }
+            })?;
+        if slot.generation() != Some(selected.generation()) {
+            return Err(VectorProjectionPortError::Rebuilding);
         }
         let observation = self
             .observe(request.source_name())
@@ -1568,6 +1604,14 @@ impl ColumnarRegistrationError {
         }
     }
 
+    fn control_storage(error: StorageError, projection_name: impl Into<String>) -> Self {
+        let _ = error;
+        Self {
+            projection_name: projection_name.into(),
+            kind: ColumnarRegistrationErrorKind::Storage,
+        }
+    }
+
     fn synchronization() -> Self {
         Self {
             projection_name: "production-vector".to_owned(),
@@ -1629,20 +1673,6 @@ fn first_projection_name(projections: &[ConfiguredProjection]) -> String {
         .first()
         .map(|projection| projection.name().to_owned())
         .unwrap_or_else(|| "unknown".to_owned())
-}
-
-fn projection_directory(projections_root: &Path, name: &str) -> PathBuf {
-    projections_root.join(name)
-}
-
-pub(crate) fn vector_generation_directory(
-    projections_root: &Path,
-    name: &str,
-    generation: ProjectionGeneration,
-) -> PathBuf {
-    projections_root
-        .join(name)
-        .join(format!("generation-{:020}", generation.get()))
 }
 
 fn resolve_configured_projection(
@@ -1762,10 +1792,11 @@ const fn map_port_storage(error: StorageError) -> ColumnarPortError {
 
 /// Maps engine checkpoint failures that must not degrade the worker.
 #[must_use]
+#[cfg(test)]
 pub(crate) fn is_holdback_active(error: &ColumnarError) -> bool {
     matches!(
         error,
-        ColumnarError::Checkpoint(CheckpointError::HoldbackActive { .. })
+        ColumnarError::Checkpoint(riffdb_columnar::CheckpointError::HoldbackActive { .. })
     )
 }
 
@@ -1959,8 +1990,9 @@ contract VectorBoard version 1 {
             &["status", "title"],
             "organization_id",
         );
-        let runtime = ColumnarRuntime::open(storage, &[projection], &projections_root, 1)
-            .expect("open adapter columnar runtime");
+        let runtime =
+            ColumnarRuntime::open(storage, &[projection], &projections_root, 1, [0x5a; 16])
+                .expect("open adapter columnar runtime");
         (runtime, scope)
     }
 
@@ -2005,7 +2037,7 @@ contract VectorBoard version 1 {
         ));
         let storage =
             SharedRedbOperationalPorts::new(ports, None).expect("share adapter operational ports");
-        let runtime = ColumnarRuntime::open(storage, &[], &projections_root, 1)
+        let runtime = ColumnarRuntime::open(storage, &[], &projections_root, 1, [0x5a; 16])
             .expect("open production vector runtime");
         (runtime, scope)
     }
@@ -2021,8 +2053,14 @@ contract VectorBoard version 1 {
             &["status", "title"],
             "organization_id",
         );
-        ColumnarRuntime::open(storage, &[projection], &scope.path().join("projections"), 1)
-            .expect("reopen board columnar runtime")
+        ColumnarRuntime::open(
+            storage,
+            &[projection],
+            &scope.path().join("projections"),
+            1,
+            [0x5a; 16],
+        )
+        .expect("reopen board columnar runtime")
     }
 
     fn board_query() -> ColumnarQueryRequest {
@@ -2048,11 +2086,33 @@ contract VectorBoard version 1 {
             .expect("request projection activation");
     }
 
+    fn controlled_directory(
+        runtime: &ColumnarRuntime,
+        scope: &tempfile::TempDir,
+        name: &str,
+    ) -> PathBuf {
+        let binding = runtime.control_binding(name).expect("control binding");
+        let control = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("read control")
+            .expect("control");
+        let generation = control
+            .servable_generation()
+            .or_else(|| control.candidate())
+            .expect("selected or candidate generation");
+        controlled_generation_directory(
+            &scope.path().join("projections"),
+            binding.spec().hash(),
+            generation.generation(),
+        )
+    }
+
     // req: PERF-019, PRJ-004, OQ-022, PERF-007, PERF-008
     #[test]
     fn configured_columnar_artifacts_remain_cold_through_readiness_and_clean_close() {
         let (runtime, scope) = board_runtime("cold-lifecycle");
-        let directory = scope.path().join("projections").join("ticket_board");
+        let directory = controlled_directory(&runtime, &scope, "ticket_board");
 
         assert_eq!(runtime.lifecycle_observation().cold_sources(), 1);
         assert_eq!(runtime.lifecycle_observation().activations(), 0);
@@ -2079,7 +2139,7 @@ contract VectorBoard version 1 {
     fn first_columnar_demand_coalesces_one_activation_and_returns_building_without_rows() {
         const CALLERS: usize = 8;
         let (runtime, scope) = board_runtime("coalesced-activation");
-        let directory = scope.path().join("projections").join("ticket_board");
+        let directory = controlled_directory(&runtime, &scope, "ticket_board");
         let port = Arc::new(ServerColumnarProjectionPort::new(Arc::clone(&runtime)));
         let barrier = Arc::new(std::sync::Barrier::new(CALLERS));
         let mut callers = Vec::new();
@@ -2203,13 +2263,23 @@ contract VectorBoard version 1 {
             .with_engine_mut(|engine| engine.checkpoint().expect("checkpoint selected view"))
             .expect("engine lock")
             .expect("active engine");
+        let binding = runtime
+            .control_binding("ticket_board")
+            .expect("control binding");
+        let ready_control = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("read ready control")
+            .expect("ready control");
+        let published = ready_control.published().expect("published generation");
+        let artifact = published.artifact().expect("selected artifact");
+        let manifest = controlled_generation_directory(
+            &scope.path().join("projections"),
+            binding.spec().hash(),
+            published.generation(),
+        )
+        .join(format!("MANIFEST-V1-{}", lower_hex(&artifact.checksum())));
         drop(runtime);
-
-        let manifest = scope
-            .path()
-            .join("projections")
-            .join("ticket_board")
-            .join("MANIFEST");
         std::fs::write(&manifest, b"corrupt-selected-manifest").expect("corrupt selected manifest");
         let corrupt_bytes = std::fs::read(&manifest).expect("read corrupt manifest");
 
@@ -2254,28 +2324,39 @@ contract VectorBoard version 1 {
     #[test]
     fn production_vector_snapshot_generation_becomes_ready_only_after_checkpoint() {
         let (runtime, _scope) = production_vector_runtime("production-vector-rebuild");
-        let registration = runtime
-            .vector_registration("Document.embedding")
-            .expect("registration lock")
-            .expect("vector registration");
+        let binding = runtime
+            .control_bindings()
+            .into_iter()
+            .find(|binding| binding.name() == "Document.embedding")
+            .expect("vector control binding");
         let building = runtime
             .storage()
-            .read_vector_projection_control(registration.source())
+            .recover_expected_control(binding.spec().source())
             .expect("read building control")
             .expect("building control");
-        assert_eq!(building.lifecycle(), VectorProjectionLifecycleV1::Building);
-        assert!(!building.retention_attached());
+        assert_eq!(
+            building.lifecycle(),
+            riffdb_storage_api::ColumnarProjectionLifecycleV1::Building
+        );
+        assert_eq!(
+            building.retention_frontier(),
+            Some(FrontierPosition::BeforeFirst)
+        );
 
         request_projection(&runtime, "Document.embedding");
         assert!(crate::columnar_worker::run_one_test_pass(&runtime));
 
         let ready = runtime
             .storage()
-            .read_vector_projection_control(registration.source())
+            .recover_expected_control(binding.spec().source())
             .expect("read ready control")
             .expect("ready control");
-        assert_eq!(ready.lifecycle(), VectorProjectionLifecycleV1::Ready);
-        assert!(ready.retention_attached());
+        assert_eq!(
+            ready.lifecycle(),
+            riffdb_storage_api::ColumnarProjectionLifecycleV1::Ready
+        );
+        let published = ready.published().expect("published V1");
+        assert!(published.artifact().is_some());
         let engine = runtime
             .engine("Document.embedding")
             .expect("engine registry")
@@ -2283,187 +2364,222 @@ contract VectorBoard version 1 {
         assert_eq!(
             engine
                 .with_engine(|engine| engine.durable_frontier().position())
-                .expect("engine lock")
+                .expect("engine state")
                 .expect("active engine"),
-            ready.published_frontier()
+            published.frontier()
         );
     }
 
+    // req: PRJ-002, PRJ-004, PRJ-006, PRJ-007, PRJ-010
     #[test]
-    fn detached_and_rebuilding_vector_controls_resume_without_frontier_overclaim() {
-        let (runtime, _scope) = production_vector_runtime("production-vector-resume");
-        let registration = runtime
-            .vector_registration("Document.embedding")
-            .expect("registration lock")
-            .expect("vector registration");
-        request_projection(&runtime, "Document.embedding");
-        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
-        let first_ready = runtime
-            .storage()
-            .read_vector_projection_control(registration.source())
-            .expect("read first generation")
-            .expect("first generation");
+    fn fresh_common_v1_uses_only_schema_bound_paths() {
+        let (runtime, scope) = production_vector_runtime("legacy-inert");
+        let binding = runtime
+            .control_bindings()
+            .into_iter()
+            .next()
+            .expect("vector binding");
+        let legacy_directory = scope.path().join("projections/Document.embedding");
+        std::fs::create_dir_all(&legacy_directory).expect("legacy name directory");
+        std::fs::write(legacy_directory.join("MANIFEST"), b"not selected")
+            .expect("legacy manifest fixture");
 
-        let detached = StoredVectorProjectionControlV1::new(
-            registration.source().clone(),
-            first_ready
-                .generation()
-                .checked_next()
-                .expect("next generation"),
-            *first_ready.definition_fingerprint(),
-            VectorProjectionLifecycleV1::RebuildRequired,
-            first_ready.published_frontier(),
-            None,
-            Some(VectorProjectionRebuildReasonV1::ReplayBacklog),
-            first_ready.limits(),
-        )
-        .expect("detached control");
-        assert_eq!(
-            runtime
-                .storage()
-                .compare_and_set_vector_projection_control(Some(&first_ready), &detached)
-                .expect("detach"),
-            VectorProjectionControlWriteResultV1::Applied
-        );
-        assert!(
-            runtime
-                .storage()
-                .attached_vector_projection_frontiers()
-                .expect("retention frontiers")
-                .is_empty()
-        );
-        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
-        let second_ready = runtime
+        let initial = runtime
             .storage()
-            .read_vector_projection_control(registration.source())
-            .expect("read second generation")
-            .expect("second generation");
-        assert_eq!(second_ready.lifecycle(), VectorProjectionLifecycleV1::Ready);
-        assert_eq!(second_ready.generation(), detached.generation());
-
-        let rebuilding = StoredVectorProjectionControlV1::new(
-            registration.source().clone(),
-            second_ready
-                .generation()
-                .checked_next()
-                .expect("next generation"),
-            *second_ready.definition_fingerprint(),
-            VectorProjectionLifecycleV1::Rebuilding,
-            second_ready.published_frontier(),
-            Some(FrontierPosition::BeforeFirst),
-            Some(VectorProjectionRebuildReasonV1::ReplayBytes),
-            second_ready.limits(),
-        )
-        .expect("rebuilding control");
+            .recover_expected_control(binding.spec().source())
+            .expect("read common control")
+            .expect("fresh common control");
+        assert_eq!(initial.highest_generation(), ProjectionGeneration::first());
         assert_eq!(
-            runtime
-                .storage()
-                .compare_and_set_vector_projection_control(Some(&second_ready), &rebuilding)
-                .expect("persist rebuilding"),
-            VectorProjectionControlWriteResultV1::Applied
+            initial.retention_frontier(),
+            Some(FrontierPosition::BeforeFirst)
         );
-        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
-        let recovered = runtime
-            .storage()
-            .read_vector_projection_control(registration.source())
-            .expect("read recovered generation")
-            .expect("recovered generation");
-        assert_eq!(recovered.lifecycle(), VectorProjectionLifecycleV1::Ready);
-        assert_eq!(recovered.generation(), rebuilding.generation());
-        assert_eq!(
-            runtime
-                .engine("Document.embedding")
-                .expect("engine registry")
-                .expect("recovered engine")
-                .generation(),
-            Some(recovered.generation())
-        );
-    }
-
-    #[test]
-    fn persisted_vector_rebuild_resumes_after_storage_reopen_without_overclaim() {
-        let (runtime, scope) = production_vector_runtime("production-vector-reopen");
-        let registration = runtime
-            .vector_registration("Document.embedding")
-            .expect("registration lock")
-            .expect("vector registration");
         request_projection(&runtime, "Document.embedding");
         assert!(crate::columnar_worker::run_one_test_pass(&runtime));
         let ready = runtime
             .storage()
-            .read_vector_projection_control(registration.source())
-            .expect("read ready generation")
-            .expect("ready generation");
-        let rebuilding = StoredVectorProjectionControlV1::new(
-            registration.source().clone(),
-            ready.generation().checked_next().expect("next generation"),
-            *ready.definition_fingerprint(),
-            VectorProjectionLifecycleV1::Rebuilding,
-            ready.published_frontier(),
-            Some(ready.published_frontier()),
-            Some(VectorProjectionRebuildReasonV1::ReplayAge),
-            ready.limits(),
+            .recover_expected_control(binding.spec().source())
+            .expect("read common result")
+            .expect("common result");
+        assert_eq!(
+            ready.lifecycle(),
+            riffdb_storage_api::ColumnarProjectionLifecycleV1::Ready
+        );
+        assert!(legacy_directory.join("MANIFEST").is_file());
+    }
+
+    // req: PRJ-005, PRJ-007, PRJ-010, OQ-021, OQ-022
+    #[test]
+    fn columnar_projection_symbolic_name_resolves_one_schema_bound_source() {
+        let (runtime, scope) = board_runtime("symbolic-binding");
+        let original = runtime
+            .control_bindings()
+            .into_iter()
+            .next()
+            .expect("binding");
+        let renamed = ConfiguredProjection::for_test(
+            "renamed_board",
+            "Ticket",
+            &["status", "title"],
+            "organization_id",
+        );
+        let renamed_bindings = prepare_columnar_control_foundation(
+            runtime.storage(),
+            std::slice::from_ref(&renamed),
+            runtime.history_incarnation(),
         )
-        .expect("rebuilding control");
+        .expect("name-only replacement");
+        assert_eq!(renamed_bindings[0].spec.source(), original.spec.source());
+        assert_eq!(renamed_bindings[0].spec.hash(), original.spec.hash());
+
+        let duplicate = ConfiguredProjection::for_test(
+            "second_alias",
+            "Ticket",
+            &["status", "title"],
+            "organization_id",
+        );
+        let error = prepare_columnar_control_foundation(
+            runtime.storage(),
+            &[renamed, duplicate],
+            runtime.history_incarnation(),
+        )
+        .expect_err("two aliases for one source refuse");
+        assert_eq!(error.kind, ColumnarRegistrationErrorKind::DuplicateName);
+        assert!(!scope.path().join("projections/renamed_board").exists());
+
+        let unsafe_name =
+            ConfiguredProjection::for_test("../unsafe", "Ticket", &["status"], "organization_id");
+        assert!(
+            prepare_columnar_control_foundation(
+                runtime.storage(),
+                &[unsafe_name],
+                runtime.history_incarnation(),
+            )
+            .is_err()
+        );
+    }
+
+    // req: PRJ-004, PRJ-005, PRJ-006, PRJ-007, PRJ-010
+    #[test]
+    fn columnar_spec_hash_change_forces_closed_rebuild() {
+        let (runtime, _scope) = production_vector_runtime("spec-drift");
+        request_projection(&runtime, "Document.embedding");
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        let binding = runtime
+            .control_bindings()
+            .into_iter()
+            .next()
+            .expect("binding");
+        let ready = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("read control")
+            .expect("ready control");
+        let changed_bundle = riffdb_contract_compiler::compile_contract_source(
+            &PRODUCTION_VECTOR_CONTRACT
+                .replace("replay_age_seconds 86400", "replay_age_seconds 86401"),
+        )
+        .expect("changed replay contract");
+        let entity = changed_bundle.schema().entities().first().expect("entity");
+        let production = changed_bundle
+            .schema()
+            .vector_production_specs()
+            .first()
+            .expect("vector spec");
+        let changed_registration =
+            resolve_vector_registration(&changed_bundle, entity, "Document.embedding")
+                .expect("changed registration");
+        let changed_spec = ColumnarProjectionSpecV1::for_vector(
+            &changed_registration,
+            production.field(),
+            &changed_bundle,
+        )
+        .expect("changed compiler-bound spec");
+        assert_eq!(changed_spec.source(), binding.spec().source());
+        assert_ne!(changed_spec.hash(), binding.spec().hash());
         assert_eq!(
             runtime
                 .storage()
-                .compare_and_set_vector_projection_control(Some(&ready), &rebuilding)
-                .expect("persist rebuilding generation"),
-            VectorProjectionControlWriteResultV1::Applied
+                .allocate_unservable_rebuild_candidate(
+                    &ready,
+                    changed_spec.definition_fingerprint(),
+                    changed_spec.hash(),
+                    changed_spec.replay_limits(),
+                    ColumnarProjectionLayoutV1::V1,
+                    None,
+                )
+                .expect("allocate drift rebuild"),
+            ColumnarProjectionControlWriteResultV1::Applied
         );
+        let rebuilding = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("read rebuild")
+            .expect("rebuild control");
+        assert!(rebuilding.published().is_none());
+        assert!(rebuilding.predecessor().is_some());
+        assert!(rebuilding.servable_generation().is_none());
+        assert_eq!(
+            rebuilding.candidate().expect("candidate").frontier(),
+            FrontierPosition::BeforeFirst
+        );
+    }
+
+    // req: PRJ-004, PRJ-006, PRJ-007, PRJ-010
+    #[test]
+    fn common_v1_selection_reopens_only_its_control_bound_artifact() {
+        let (runtime, scope) = production_vector_runtime("production-vector-reopen");
+        let binding = runtime
+            .control_bindings()
+            .into_iter()
+            .next()
+            .expect("vector control binding");
+        request_projection(&runtime, "Document.embedding");
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        let ready = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("read ready generation")
+            .expect("ready generation");
+        let published = ready.published().expect("published generation").clone();
         drop(runtime);
 
         let store = RedbStore::open(scope.path().join("db.redb")).expect("reopen database");
         let ports = open_operational(store);
         let storage =
             SharedRedbOperationalPorts::new(ports, None).expect("share reopened operational ports");
-        let reopened = ColumnarRuntime::open(storage, &[], &scope.path().join("projections"), 1)
-            .expect("reopen vector runtime");
+        let reopened = ColumnarRuntime::open(
+            storage,
+            &[],
+            &scope.path().join("projections"),
+            1,
+            [0x5a; 16],
+        )
+        .expect("reopen vector runtime");
         let persisted = reopened
             .storage()
-            .read_vector_projection_control(registration.source())
-            .expect("read persisted rebuilding generation")
-            .expect("persisted rebuilding generation");
-        assert_eq!(
-            persisted.lifecycle(),
-            VectorProjectionLifecycleV1::Rebuilding
-        );
-        assert_eq!(persisted.generation(), rebuilding.generation());
-        assert_eq!(persisted.published_frontier(), ready.published_frontier());
-        assert!(
-            reopened
-                .storage()
-                .attached_vector_projection_frontiers()
-                .expect("detached retention frontiers")
-                .is_empty()
-        );
-
-        request_projection(&reopened, "Document.embedding");
-        assert!(crate::columnar_worker::run_one_test_pass(&reopened));
-        let recovered = reopened
-            .storage()
-            .read_vector_projection_control(registration.source())
-            .expect("read recovered generation")
-            .expect("recovered generation");
-        assert_eq!(recovered.lifecycle(), VectorProjectionLifecycleV1::Ready);
-        assert_eq!(recovered.generation(), rebuilding.generation());
+            .recover_expected_control(binding.spec().source())
+            .expect("read persisted control")
+            .expect("persisted control");
+        assert_eq!(persisted, ready);
         let engine = reopened
             .engine("Document.embedding")
             .expect("engine registry")
             .expect("recovered engine");
-        assert_eq!(engine.generation(), Some(recovered.generation()));
+        assert_eq!(engine.generation(), Some(published.generation()));
+        request_projection(&reopened, "Document.embedding");
+        assert!(crate::columnar_worker::run_one_test_pass(&reopened));
         assert_eq!(
             engine
                 .with_engine(|engine| engine.durable_frontier().position())
-                .expect("engine lock")
+                .expect("engine state")
                 .expect("active engine"),
-            recovered.published_frontier()
+            published.frontier()
         );
     }
 
     #[test]
-    fn first_contract_activation_registers_vector_source_without_process_restart() {
+    fn first_contract_activation_requires_reopen_before_admitting_a_new_source() {
         let scope = adapter_scope("dynamic-production-vector");
         let database_path = scope.path().join("db.redb");
         let projections_root = scope.path().join("projections");
@@ -2479,7 +2595,7 @@ contract VectorBoard version 1 {
         let ports = open_operational(store);
         let storage =
             SharedRedbOperationalPorts::new(ports, None).expect("share operational ports");
-        let runtime = ColumnarRuntime::open(storage.clone(), &[], &projections_root, 1)
+        let runtime = ColumnarRuntime::open(storage.clone(), &[], &projections_root, 1, [0x5a; 16])
             .expect("open empty runtime");
         assert!(runtime.names().expect("empty names").is_empty());
 
@@ -2511,20 +2627,17 @@ contract VectorBoard version 1 {
             CatalogActivationResult::Activated { .. }
         ));
 
-        runtime
-            .synchronize_active_vector_projections()
-            .expect("synchronize vector registry");
+        assert!(runtime.names().expect("runtime names").is_empty());
+        drop(runtime);
+
+        let reopened = ColumnarRuntime::open(storage, &[], &projections_root, 1, [0x5a; 16])
+            .expect("reopen admits source behind BeforeFirst fence");
         assert_eq!(
-            runtime.names().expect("runtime names"),
+            reopened.names().expect("runtime names"),
             ["Document.embedding"]
         );
-        let registration = runtime
-            .notifier()
-            .register("Document.embedding".to_owned())
-            .expect("new name must be waitable after synchronization");
-        drop(registration);
         assert!(
-            runtime
+            reopened
                 .engine("Document.embedding")
                 .expect("engine registry")
                 .is_some()
@@ -2668,7 +2781,7 @@ contract VectorBoard version 1 {
 
     #[test]
     fn holdback_active_is_recognized_for_retry() {
-        let error = ColumnarError::Checkpoint(CheckpointError::HoldbackActive {
+        let error = ColumnarError::Checkpoint(riffdb_columnar::CheckpointError::HoldbackActive {
             published: FrontierPosition::BeforeFirst,
             processed: FrontierPosition::BeforeFirst,
             deferred: 1,
