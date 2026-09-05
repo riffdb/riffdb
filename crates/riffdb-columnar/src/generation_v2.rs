@@ -416,6 +416,7 @@ impl ValidatedColumnarV2Generation {
             return Err(ColumnarV2GenerationError::LogicalMismatch);
         }
         for root_entry in root.partitions() {
+            let mut previous_primary_key: Option<PrimaryKeyBytes> = None;
             let mut expected_rows = expected
                 .and_then(|snapshot| snapshot.delta.get(root_entry.organization()))
                 .map(BTreeMap::iter);
@@ -446,7 +447,7 @@ impl ValidatedColumnarV2Generation {
                 {
                     return Err(ColumnarV2GenerationError::Invalid);
                 }
-                let segment = SegmentV2Codec::decode(&bytes)
+                let (segment, pruning) = SegmentV2Codec::decode_with_pruning(&bytes)
                     .map_err(|_| ColumnarV2GenerationError::Invalid)?;
                 validate_segment(
                     &segment,
@@ -458,6 +459,12 @@ impl ValidatedColumnarV2Generation {
                     entry,
                 )?;
                 let rows = decode_rows(&segment, definition)?;
+                if previous_primary_key.as_ref().is_some_and(|previous| {
+                    rows.keys().next().is_some_and(|first| previous >= first)
+                }) {
+                    return Err(ColumnarV2GenerationError::Invalid);
+                }
+                previous_primary_key = rows.keys().next_back().cloned();
                 if let Some(expected_rows) = &mut expected_rows {
                     for (key, row) in &rows {
                         let Some((expected_key, expected_row)) = expected_rows.next() else {
@@ -479,6 +486,7 @@ impl ValidatedColumnarV2Generation {
                     org: root_entry.organization().clone(),
                     rows,
                     checksum: *entry.checksum(),
+                    pruning: Some(pruning),
                 }));
             }
             if expected_rows.is_some_and(|mut rows| rows.next().is_some()) {

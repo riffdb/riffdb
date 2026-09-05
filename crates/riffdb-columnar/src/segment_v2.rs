@@ -1,8 +1,4 @@
-//! Independent bounded codec for the inactive columnar segment V2 candidate.
-//!
-//! Nothing in the production checkpoint, open, or query path calls this
-//! module.  It exists so WP-710 can prove the physical mechanics before a
-//! later work package is permitted to publish a V2 generation.
+//! Bounded codec and private validate-once pruning evidence for segment V2.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -407,6 +403,90 @@ pub enum SegmentV2PruningDecision {
     Skip,
 }
 
+/// Private statistics retained only after complete segment validation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SegmentV2PruningIndex {
+    columns: BTreeMap<FieldId, SegmentV2PruningColumn>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SegmentV2PruningColumn {
+    logical_type: SegmentV2LogicalType,
+    statistics: LaneStatistics,
+    dictionary: Option<BTreeSet<Vec<u8>>>,
+}
+
+impl SegmentV2PruningIndex {
+    fn from_validated(
+        segment: &SegmentV2,
+        directory: &[DirectoryEntry],
+    ) -> Result<Self, SegmentV2Error> {
+        let mut columns = BTreeMap::new();
+        for (column, entry) in segment.columns().iter().zip(directory.iter().skip(2)) {
+            if entry.kind != LaneKind::Field(column.field_id())
+                || entry.logical_type != *column.logical_type()
+            {
+                return Err(SegmentV2Error::Corrupt("pruning lane identity"));
+            }
+            let dictionary = if entry.encoding == PhysicalEncoding::Dictionary {
+                Some(
+                    column
+                        .cells()
+                        .iter()
+                        .filter_map(|cell| match cell {
+                            SegmentV2Cell::Value(value) => Some(value),
+                            SegmentV2Cell::Missing | SegmentV2Cell::Null => None,
+                        })
+                        .map(|value| {
+                            encode_canonical_value(value)
+                                .map_err(|_| SegmentV2Error::Corrupt("dictionary evidence"))
+                        })
+                        .collect::<Result<BTreeSet<_>, _>>()?,
+                )
+            } else {
+                None
+            };
+            if columns
+                .insert(
+                    column.field_id(),
+                    SegmentV2PruningColumn {
+                        logical_type: column.logical_type().clone(),
+                        statistics: column.statistics.clone(),
+                        dictionary,
+                    },
+                )
+                .is_some()
+            {
+                return Err(SegmentV2Error::Corrupt("duplicate pruning lane"));
+            }
+        }
+        if columns.len() != segment.columns().len() {
+            return Err(SegmentV2Error::Corrupt("pruning lane count"));
+        }
+        Ok(Self { columns })
+    }
+
+    pub(crate) fn proves_no_match(&self, field: FieldId, predicate: &SegmentV2Predicate) -> bool {
+        let Some(column) = self.columns.get(&field) else {
+            return false;
+        };
+        let Ok(decision) = pruning_decision(&column.logical_type, &column.statistics, predicate)
+        else {
+            return false;
+        };
+        if decision == SegmentV2PruningDecision::Skip {
+            return true;
+        }
+        let (Some(dictionary), SegmentV2Predicate::Equal(value)) = (&column.dictionary, predicate)
+        else {
+            return false;
+        };
+        encode_canonical_value(value)
+            .ok()
+            .is_some_and(|encoded| !dictionary.contains(&encoded))
+    }
+}
+
 /// Closed physical encodings in registry V1.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum PhysicalEncoding {
@@ -629,6 +709,12 @@ impl SegmentV2Codec {
     /// Decodes and independently validates every framing, bound, canonical
     /// representation, statistic, lane checksum, and complete checksum.
     pub fn decode(bytes: &[u8]) -> Result<SegmentV2, SegmentV2Error> {
+        Self::decode_with_pruning(bytes).map(|(segment, _)| segment)
+    }
+
+    pub(crate) fn decode_with_pruning(
+        bytes: &[u8],
+    ) -> Result<(SegmentV2, SegmentV2PruningIndex), SegmentV2Error> {
         if bytes.len() > MAX_SEGMENT_V2_BYTES {
             return Err(SegmentV2Error::BoundExceeded("segment bytes"));
         }
@@ -640,7 +726,7 @@ impl SegmentV2Codec {
         if checksum != checksum_bytes(body) {
             return Err(SegmentV2Error::ChecksumMismatch("complete file"));
         }
-        decode_body_fused(body, bytes.len()).map(|(segment, _audit)| segment)
+        decode_body_fused(body, bytes.len()).map(|(segment, _audit, pruning)| (segment, pruning))
     }
 }
 
@@ -681,7 +767,7 @@ fn decode_staged_for_test(bytes: &[u8]) -> Result<SegmentV2, SegmentV2Error> {
 #[cfg(test)]
 fn decode_fused_for_test(bytes: &[u8]) -> Result<(SegmentV2, FusedDecodeAudit), SegmentV2Error> {
     let (body, _) = validated_complete_body(bytes)?;
-    decode_body_fused(body, bytes.len())
+    decode_body_fused(body, bytes.len()).map(|(segment, audit, _)| (segment, audit))
 }
 
 #[cfg(test)]
@@ -1540,7 +1626,7 @@ fn decode_fused_entity_versions(
 fn decode_body_fused(
     body: &[u8],
     complete_length: usize,
-) -> Result<(SegmentV2, FusedDecodeAudit), SegmentV2Error> {
+) -> Result<(SegmentV2, FusedDecodeAudit, SegmentV2PruningIndex), SegmentV2Error> {
     let mut reader = Reader::new(body);
     if reader.read_exact(MAGIC.len())? != MAGIC {
         return Err(SegmentV2Error::Corrupt("bad magic"));
@@ -1643,7 +1729,8 @@ fn decode_body_fused(
     .map_err(|_| SegmentV2Error::Corrupt("segment identity"))?;
     let segment = SegmentV2::new(identity, primary_keys, entity_versions, columns)
         .map_err(|_| SegmentV2Error::Corrupt("logical segment"))?;
-    Ok((segment, audit))
+    let pruning = SegmentV2PruningIndex::from_validated(&segment, &directory)?;
+    Ok((segment, audit, pruning))
 }
 
 #[cfg(test)]
@@ -2808,6 +2895,53 @@ mod tests {
     use crate::checkpoint::{decode_segment_rows, encode_segment_rows};
     use crate::store::LiveRow;
 
+    fn one_test_segment(column: SegmentV2Column, identity_byte: u8) -> SegmentV2 {
+        let row_count = column.cells().len();
+        let keys = (0..row_count)
+            .map(|index| {
+                PrimaryKeyBytes::from_entity_key_bytes(
+                    u64::try_from(index).expect("bounded key").to_be_bytes(),
+                )
+            })
+            .collect();
+        let versions = (0..row_count)
+            .map(|index| {
+                EntityVersion::new(u64::try_from(index + 1).expect("bounded version"))
+                    .expect("nonzero version")
+            })
+            .collect();
+        let identity = SegmentV2Identity::new(
+            DefinitionFingerprint::from_bytes([0x44; 32]),
+            1,
+            ProjectionGeneration::first(),
+            OrgKey::from_encoded_bytes(vec![0x10, 0x20]),
+            SegmentV2SegmentId::from_bytes([identity_byte; 16]),
+            FrontierPosition::BeforeFirst,
+            FrontierPosition::AppliedThrough(CommitSequence::new(1).expect("frontier")),
+        )
+        .expect("identity");
+        SegmentV2::new(identity, keys, versions, vec![column]).expect("segment")
+    }
+
+    fn encode_test_lanes(segment: &SegmentV2, mut lanes: Vec<EncodedLane>) -> Vec<u8> {
+        let header_zero = encode_header(segment, lanes.len(), 0).expect("zero header");
+        let directory_zero = encode_directory(&lanes).expect("zero directory");
+        let mut next_offset = header_zero.len() + directory_zero.len();
+        for lane in &mut lanes {
+            lane.offset = next_offset;
+            next_offset += lane.bytes.len();
+        }
+        let total_length = next_offset + COMPLETE_CHECKSUM_BYTES;
+        let mut encoded = encode_header(segment, lanes.len(), total_length).expect("header");
+        encoded.extend_from_slice(&encode_directory(&lanes).expect("directory"));
+        for lane in lanes {
+            encoded.extend_from_slice(&lane.bytes);
+        }
+        let checksum = checksum_bytes(&encoded);
+        encoded.extend_from_slice(&checksum);
+        encoded
+    }
+
     #[test]
     fn zigzag_and_varint_cover_signed_extremes() {
         for value in [i128::MIN, -129, -1, 0, 1, 128, i128::MAX] {
@@ -2900,6 +3034,135 @@ mod tests {
         );
     }
 
+    // req: PRJ-004, OQ-020, OQ-022, PERF-007
+    #[test]
+    fn open_validated_pruning_preserves_boundaries_optional_states_and_exact_dictionary_equality() {
+        let field = FieldId::new(1).expect("field");
+        let boundary_column = SegmentV2Column::new(
+            field,
+            SegmentV2LogicalType::U64,
+            vec![
+                SegmentV2Cell::Missing,
+                SegmentV2Cell::Null,
+                SegmentV2Cell::Value(CanonicalValue::U64(10)),
+                SegmentV2Cell::Value(CanonicalValue::U64(20)),
+            ],
+        )
+        .expect("boundary column");
+        let boundary_bytes =
+            SegmentV2Codec::encode(&one_test_segment(boundary_column, 0x61)).expect("encode");
+        let (_, boundary) =
+            SegmentV2Codec::decode_with_pruning(&boundary_bytes).expect("validate once");
+        for (predicate, skip) in [
+            (SegmentV2Predicate::Equal(CanonicalValue::U64(9)), true),
+            (SegmentV2Predicate::Equal(CanonicalValue::U64(10)), false),
+            (SegmentV2Predicate::LessThan(CanonicalValue::U64(10)), true),
+            (
+                SegmentV2Predicate::LessThanOrEqual(CanonicalValue::U64(10)),
+                false,
+            ),
+            (
+                SegmentV2Predicate::GreaterThan(CanonicalValue::U64(20)),
+                true,
+            ),
+            (
+                SegmentV2Predicate::GreaterThanOrEqual(CanonicalValue::U64(20)),
+                false,
+            ),
+            (SegmentV2Predicate::IsMissing, false),
+            (SegmentV2Predicate::IsNull, false),
+            (SegmentV2Predicate::IsPresent, false),
+        ] {
+            assert_eq!(boundary.proves_no_match(field, &predicate), skip);
+        }
+
+        let (_, dictionary_bytes) = corpus_bytes(257, true);
+        let (dictionary_segment, dictionary) =
+            SegmentV2Codec::decode_with_pruning(&dictionary_bytes).expect("validated dictionary");
+        let dictionary_field = FieldId::new(1).expect("dictionary field");
+        let absent = SegmentV2Predicate::Equal(
+            CanonicalValue::string("middle").expect("within-zone absent value"),
+        );
+        assert_eq!(
+            dictionary_segment.columns()[0]
+                .pruning_decision(&absent)
+                .expect("zone decision"),
+            SegmentV2PruningDecision::Scan,
+            "the value is inside the zone and requires exact dictionary evidence"
+        );
+        assert!(dictionary.proves_no_match(dictionary_field, &absent));
+        for present in ["open", "closed", "queued", "running"] {
+            assert!(!dictionary.proves_no_match(
+                dictionary_field,
+                &SegmentV2Predicate::Equal(
+                    CanonicalValue::string(present).expect("present dictionary value")
+                )
+            ));
+        }
+    }
+
+    // req: PRJ-004, PRJ-009, OQ-020, OQ-022
+    #[test]
+    fn open_refuses_resealed_statistic_mismatch_and_reordered_dictionary_evidence() {
+        let field = FieldId::new(1).expect("field");
+        let values = (0..256)
+            .map(|index| {
+                SegmentV2Cell::Value(
+                    CanonicalValue::string(if index % 2 == 0 { "alpha" } else { "omega" })
+                        .expect("dictionary value"),
+                )
+            })
+            .collect();
+        let segment = one_test_segment(
+            SegmentV2Column::new(field, SegmentV2LogicalType::String, values)
+                .expect("dictionary column"),
+            0x62,
+        );
+
+        let mut mismatched_lanes = encode_all_lanes(&segment).expect("lanes");
+        mismatched_lanes[2].statistics.minimum =
+            Some(CanonicalValue::string("bravo").expect("mismatched minimum"));
+        let mismatched = encode_test_lanes(&segment, mismatched_lanes);
+        assert!(matches!(
+            SegmentV2Codec::decode_with_pruning(&mismatched),
+            Err(SegmentV2Error::Corrupt("lane statistics"))
+        ));
+
+        let mut reordered_lanes = encode_all_lanes(&segment).expect("lanes");
+        let dictionary_lane = &mut reordered_lanes[2];
+        assert_eq!(dictionary_lane.encoding, PhysicalEncoding::Dictionary);
+        let bitmap_bytes = bitmap_len(segment.primary_keys().len()).expect("bitmap bytes");
+        let payload_start = 8 + bitmap_bytes * 2;
+        let first_length_offset = payload_start + 4;
+        let first_length = u32::from_be_bytes(
+            dictionary_lane.bytes[first_length_offset..first_length_offset + 4]
+                .try_into()
+                .expect("first dictionary length"),
+        ) as usize;
+        let first_start = first_length_offset + 4;
+        let second_length_offset = first_start + first_length;
+        let second_length = u32::from_be_bytes(
+            dictionary_lane.bytes[second_length_offset..second_length_offset + 4]
+                .try_into()
+                .expect("second dictionary length"),
+        ) as usize;
+        assert_eq!(first_length, second_length);
+        let second_start = second_length_offset + 4;
+        let first_value = dictionary_lane.bytes[first_start..first_start + first_length].to_vec();
+        let second_value =
+            dictionary_lane.bytes[second_start..second_start + second_length].to_vec();
+        dictionary_lane.bytes[first_start..first_start + first_length]
+            .copy_from_slice(&second_value);
+        dictionary_lane.bytes[second_start..second_start + second_length]
+            .copy_from_slice(&first_value);
+        dictionary_lane.checksum = checksum_bytes(&dictionary_lane.bytes);
+        let reordered = encode_test_lanes(&segment, reordered_lanes);
+        assert!(matches!(
+            SegmentV2Codec::decode_with_pruning(&reordered),
+            Err(SegmentV2Error::Corrupt("noncanonical dictionary order"))
+        ));
+    }
+
     #[test]
     fn registered_corpus_meets_byte_and_exact_pruning_gates() {
         let (high_v1, high_v2) = corpus_bytes(4_096, false);
@@ -2928,10 +3191,17 @@ mod tests {
                 cells.clone(),
             )
             .expect("column");
-            let decision = column
-                .pruning_decision(&SegmentV2Predicate::Equal(CanonicalValue::U64(10_000)))
-                .expect("pruning");
-            if decision == SegmentV2PruningDecision::Skip {
+            let bytes = SegmentV2Codec::encode(&one_test_segment(
+                column,
+                u8::try_from(segment + 1).expect("segment identity"),
+            ))
+            .expect("encode corpus segment");
+            let (_, pruning) =
+                SegmentV2Codec::decode_with_pruning(&bytes).expect("validate corpus segment");
+            if pruning.proves_no_match(
+                FieldId::new(1).expect("field"),
+                &SegmentV2Predicate::Equal(CanonicalValue::U64(10_000)),
+            ) {
                 rejected += 1;
                 if cells
                     .iter()

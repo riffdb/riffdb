@@ -13,7 +13,8 @@ use riffdb_types::{
 };
 
 use crate::definition::RegisteredDefinition;
-use crate::store::{ColumnarSnapshot, MergedRow, OrgKey, PrimaryKeyBytes};
+use crate::segment_v2::SegmentV2Predicate;
+use crate::store::{ColumnarSnapshot, MergedRow, OrgKey, PrimaryKeyBytes, Segment};
 
 /// Hard budgets for scan-based prototype execution.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -861,7 +862,11 @@ pub(crate) fn execute_query(
             .ok_or(QueryError::ScanBudgetExceeded {
                 max: MAX_PROJECTED_POLICY_CANDIDATES_V1,
             })?,
-        None => snapshot.merged_org(&org),
+        None => snapshot
+            .merged_org_bounded_with_segment_filter(&org, usize::MAX, |segment| {
+                segment_may_match(definition, segment, &request.predicates)
+            })
+            .expect("usize::MAX cannot be exceeded by an in-memory map"),
     };
     let candidate_keys = admission
         .map(|_| {
@@ -960,6 +965,47 @@ pub(crate) fn execute_query(
             })
             .collect(),
     }))
+}
+
+fn segment_may_match(
+    definition: &RegisteredDefinition,
+    segment: &Segment,
+    predicates: &[ColumnPredicate],
+) -> bool {
+    let Some(pruning) = &segment.pruning else {
+        return true;
+    };
+    for predicate in predicates {
+        let field = predicate_field(predicate);
+        if field == definition.org_scope_field() {
+            continue;
+        }
+        let proves_no_match = match predicate {
+            ColumnPredicate::Eq { value, .. } if *value == CanonicalValue::Null => {
+                pruning.proves_no_match(field, &SegmentV2Predicate::IsNull)
+            }
+            ColumnPredicate::Eq { value, .. } => {
+                pruning.proves_no_match(field, &SegmentV2Predicate::Equal(value.clone()))
+            }
+            ColumnPredicate::Range { low, high, .. } => {
+                low.as_ref().is_some_and(|value| {
+                    value != &CanonicalValue::Null
+                        && pruning.proves_no_match(
+                            field,
+                            &SegmentV2Predicate::GreaterThanOrEqual(value.clone()),
+                        )
+                }) || high.as_ref().is_some_and(|value| {
+                    value != &CanonicalValue::Null
+                        && pruning
+                            .proves_no_match(field, &SegmentV2Predicate::LessThan(value.clone()))
+                })
+            }
+        };
+        if proves_no_match {
+            return false;
+        }
+    }
+    true
 }
 
 /// Resolves the select list: empty means all projected fields (CP1 compat).
