@@ -2397,50 +2397,79 @@ fn pruning_decision(
         }
         Predicate::LessThan(value) => {
             require_predicate_value(logical_type, value)?;
-            match &statistics.minimum {
-                Some(minimum)
-                    if compare_values(logical_type, minimum, value)? == Ordering::Less =>
-                {
-                    Scan
+            if !zone_map_order_matches_executor(logical_type) {
+                Scan
+            } else {
+                match &statistics.minimum {
+                    Some(minimum)
+                        if compare_values(logical_type, minimum, value)? == Ordering::Less =>
+                    {
+                        Scan
+                    }
+                    _ => Skip,
                 }
-                _ => Skip,
             }
         }
         Predicate::LessThanOrEqual(value) => {
             require_predicate_value(logical_type, value)?;
-            match &statistics.minimum {
-                Some(minimum)
-                    if compare_values(logical_type, minimum, value)? != Ordering::Greater =>
-                {
-                    Scan
+            if !zone_map_order_matches_executor(logical_type) {
+                Scan
+            } else {
+                match &statistics.minimum {
+                    Some(minimum)
+                        if compare_values(logical_type, minimum, value)? != Ordering::Greater =>
+                    {
+                        Scan
+                    }
+                    _ => Skip,
                 }
-                _ => Skip,
             }
         }
         Predicate::GreaterThan(value) => {
             require_predicate_value(logical_type, value)?;
-            match &statistics.maximum {
-                Some(maximum)
-                    if compare_values(logical_type, maximum, value)? == Ordering::Greater =>
-                {
-                    Scan
+            if !zone_map_order_matches_executor(logical_type) {
+                Scan
+            } else {
+                match &statistics.maximum {
+                    Some(maximum)
+                        if compare_values(logical_type, maximum, value)? == Ordering::Greater =>
+                    {
+                        Scan
+                    }
+                    _ => Skip,
                 }
-                _ => Skip,
             }
         }
         Predicate::GreaterThanOrEqual(value) => {
             require_predicate_value(logical_type, value)?;
-            match &statistics.maximum {
-                Some(maximum)
-                    if compare_values(logical_type, maximum, value)? != Ordering::Less =>
-                {
-                    Scan
+            if !zone_map_order_matches_executor(logical_type) {
+                Scan
+            } else {
+                match &statistics.maximum {
+                    Some(maximum)
+                        if compare_values(logical_type, maximum, value)? != Ordering::Less =>
+                    {
+                        Scan
+                    }
+                    _ => Skip,
                 }
-                _ => Skip,
             }
         }
     };
     Ok(decision)
+}
+
+/// Whether the persisted numeric zone order is the production predicate order.
+///
+/// Decimal and money statistics use their exact typed numeric order. The
+/// production executor deliberately orders those range predicates by canonical
+/// bytes, so a numeric minimum/maximum cannot safely exclude a segment for
+/// them. Equality remains exact and may still use the zone and dictionary.
+const fn zone_map_order_matches_executor(logical_type: &SegmentV2LogicalType) -> bool {
+    !matches!(
+        logical_type,
+        SegmentV2LogicalType::Decimal(_) | SegmentV2LogicalType::Money { .. }
+    )
 }
 
 fn require_predicate_value(
