@@ -22,12 +22,13 @@ obligations:
   - id: OBL-0202-3
     package: WP-783
     proof: scripts/check-published-helm-upgrade-evidence
-    says: A strict validator cross-checks two distinct releases, chart archives, source revisions, and appVersion images against immutable signed non-draft WP-728 publication attestations and independently signed/provenanced cluster evidence from one reviewed harness/workflow; actual separate-pod stable-application access, payload-free liveness, controlled-design-partner-network restriction, preflight, backup, upgrade, readiness, proxy, rotation, drain, and safe rollback/refusal all have terminal result digests, while truthful common runbook and durable-manifest digests may match.
+    says: WP-783's strict validator cross-checks WP-728's signed artifacts and consumer-verification outputs with authoritative immutable non-draft provider records for two distinct releases/assets/revisions/appVersion images and separately anchored signed/provenanced cluster evidence from one reviewed harness/workflow; separate-pod application access, payload-free liveness, controlled-network restriction, and every operation have terminal digests, while truthful common runbook and durable-manifest digests may match.
 review_triggers:
   - The chart would create a Secret, capability, credential, application installation, host-network path, loopback shortcut, unbounded listener or workload setting, or unsafe storage action.
   - The local rehearsal would use a published-looking identity, contact a cluster or registry, mutate a database, or satisfy any published-release evidence field.
   - Published evidence would omit stable-application access from a separate pod, payload-free liveness, an allowed-partner/refused-untrusted network-boundary probe, durable preflight, backup, or safe rollback/refusal.
-  - A hand-authored receipt, URL, mutable tag, draft release, repository-local claim, unsigned WP-728 publication record, or cluster result without a reviewed harness/workflow identity, external run anchor, terminal-result digests, signature, and provenance could satisfy evidence.
+  - A hand-authored receipt or URL, mutable tag, draft release, repository-local claim, unchecked WP-728 artifact/consumer-verification result, or provider record not queried by exact release/asset ID could satisfy evidence.
+  - Cluster evidence without the exact reviewed harness/workflow identity, external run anchor, terminal-result digests, signature, and provenance could satisfy evidence.
   - Distinctness would not cover release/chart versions, archives, source revisions, and intended appVersion images, or would incorrectly require truthful shared runbook or durable-manifest digests to differ.
   - Helm rollback would be presented as a durable database downgrade, or existing protocol, authorization, command, storage, durable-format, backup, or release-version semantics would change.
 ---
@@ -93,16 +94,29 @@ would create false evidence.
 
 7. WP-783 separately depends on both WP-727 and WP-728 and stays open until two
    distinct chart versions genuinely exist as immutable published artifacts.
-   The receipt is an index, not authority. The checker verifies WP-728's signed,
-   non-draft immutable publication attestation for each archive and a separately
-   signed/provenanced cluster attestation produced by one reviewed harness and
-   workflow, bound to their content hashes, external run identity, and terminal
-   result digests. The cluster run includes separate-pod stable-application
-   access through the proxy, closed payload-free liveness, authenticated
-   readiness, an allowed-partner/refused-untrusted boundary probe, and every
-   operation in OBL-0202-3. Publication and cluster evidence cross-bind exact
-   inputs and results using WP-728's accepted verifier; hand-authored receipt
-   fields or URLs grant nothing.
+   Its sole receipt is `release/evidence/wp-783/published-helm-upgrade-v1.json`,
+   closed schema `riffdb.published-helm-upgrade-evidence/v1`, with exact root keys
+   `schema`, `source`, `target`, `execution`, `status`. Source and target each
+   have exactly `provider`, `repository_id`, `release_id`, `asset_id`,
+   `published_at`, `draft`, `immutable`, `release_semver`, `chart_semver`,
+   `app_version`, `source_revision`, `archive_sha256`, `image_digest`,
+   `signature_sha256`, `provenance_sha256`, `consumer_verification_sha256`.
+   Canonical inputs beside it are `source-provider.json`, `target-provider.json`,
+   `source-consumer-verification.json`, `target-consumer-verification.json`, and
+   `cluster-execution.intoto.jsonl`; `status` is exactly `passed`.
+   WP-783's checker owns verification: by read-only exact-ID queries it compares
+   those outputs with authoritative provider records and requires published,
+   immutable, non-draft state. No new WP-728 evidence interface is introduced.
+
+   Execution has exactly `harness_path`, `harness_sha256`, `workflow_path`,
+   `workflow_sha256`, `workflow_revision`, `external_run_id`, `signature_sha256`,
+   `provenance_sha256`, `result_digests`, `runbook_sha256`,
+   `durable_manifest_sha256`. The anchored workflow artifact, not receipt prose, proves
+   separate-pod stable-application proxy access, closed payload-free liveness,
+   authenticated readiness, an allowed-partner/refused-untrusted boundary probe,
+   and every operation in OBL-0202-3. `--self-test` corrupts each provider ID,
+   state/time, distinct identity, signature/provenance, workflow/harness binding,
+   run anchor, operation digest, and redaction boundary and requires rejection.
 
    Source and target must differ in release SemVer, chart SemVer, archive hash,
    source revision, appVersion, and appVersion-resolved image digest. Truthful

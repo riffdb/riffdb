@@ -24209,11 +24209,17 @@ work_packages:
     scripts/run-published-helm-upgrade-evidence, docs/operations/**, docs/**,
     .github/workflows/**]
   deliverables:
-  - One versioned bounded receipt indexing two immutable signed non-draft WP-728 publication
-    attestations and independently anchored cluster evidence from an exact reviewed harness/workflow;
-    it cross-binds distinct release/chart SemVer, archive SHA-256, source revision, appVersion, and
-    appVersion-resolved image digest plus the external workflow-run identity, harness/workflow hashes,
-    signature/provenance, and every terminal result digest, without trusting hand-authored fields or URLs
+  - Sole bounded `riffdb.published-helm-upgrade-evidence/v1` receipt at
+    `release/evidence/wp-783/published-helm-upgrade-v1.json` with exact root keys `schema`, `source`,
+    `target`, `execution`, `status`; source and target each bind exact provider/repository/release/asset
+    IDs, publication state/time, release/chart/app versions, source revision, archive/image identities,
+    and WP-728's existing signed-artifact provenance and documented consumer-verification outputs
+  - WP-783-owned checker uses read-only exact-ID provider queries to compare each WP-728 artifact and
+    consumer-verification output with authoritative immutable published non-draft provider records;
+    it consumes only WP-728's existing promised outputs and makes no external mutation
+  - Independently anchored cluster evidence binds the exact reviewed harness/workflow paths, revision,
+    content hashes, external workflow-run identity, signature/provenance, and every terminal result
+    digest; hand-authored receipt fields, URLs, local claims, or unanchored logs grant nothing
   - Actual source-chart install, closed payload-free unauthenticated liveness, authenticated readiness,
     and stable-application access from a separate pod through service DNS and the pass-through proxy;
     an allowed-partner/refused-untrusted probe verifies the controlled-design-partner-network boundary
@@ -24224,11 +24230,12 @@ work_packages:
     deployment-object rollback is allowed only before candidate storage access, otherwise requiring
     forward recovery or verified destructive restore while unsupported binary/database downgrade
     remains refused
-  - Strict validator rejecting local rehearsal identities, draft/mutable releases, unsigned or
-    unprovenanced publication records, equal release/chart versions, archives, source revisions,
-    appVersions, or intended image digests, any appVersion/image mismatch, and cluster evidence lacking
-    an independent external run anchor, reviewed harness/workflow identity, terminal result digests,
-    signature, or provenance; exact truthful runbook and durable-manifest digests may be identical
+  - Strict validator and negative self-test reject each missing/mismatched provider, repository,
+    release, or asset ID; draft/mutable/unpublished state or invalid timestamp; unsigned,
+    unprovenanced, or consumer-unverified WP-728 artifact; equal release/chart versions, archives,
+    source revisions, appVersions, or intended image digests; appVersion/image mismatch; and cluster
+    evidence lacking an external run anchor, reviewed harness/workflow binding, terminal result
+    digests, signature, or provenance; truthful runbook/durable-manifest digests may be identical
   - Negative cases also reject missing separate-pod stable-application access, non-payload-free
     liveness, absent allowed/refused network probes, hand-edited manifests, loopback/host networking,
     unbounded settings, missing preflight/backup/operation results, prose-only claims, and secret/value
@@ -24236,6 +24243,7 @@ work_packages:
   acceptance_commands:
   - ./scripts/acceptance --wp WP-783
   - ./scripts/run-published-helm-upgrade-evidence --self-test
+  - ./scripts/check-published-helm-upgrade-evidence --self-test
   - ./scripts/check-published-helm-upgrade-evidence
   - ./scripts/check-helm-operator-package
   - ./scripts/check-helm-render
@@ -24243,13 +24251,15 @@ work_packages:
   - ./scripts/check-generated
   - ./scripts/handbook check
   - ./scripts/ci-all
-  exit_gate: Two distinct immutable signed non-draft WP-728 chart publications and their distinct
-    revisions/appVersion-bound images cross-validate against independently anchored, signed/provenanced
-    execution from the reviewed harness/workflow; the controlled cluster proves payload-free liveness,
-    authenticated readiness, allowed/refused network boundaries, separate-pod stable-application proxy
-    access, drain, verified backup, stopped-database preflight, target upgrade, both rotations, bounded
-    shutdown, restore, and safe rollback/refusal with terminal result digests; shared truthful runbook
-    or durable-manifest digests may match, and no local/draft/hand-authored claim substitutes.
+  exit_gate: WP-783's checker independently matches WP-728 signed artifacts and consumer-verification
+    outputs to authoritative exact-ID provider records proving two distinct immutable published
+    non-draft chart assets and revisions/appVersion-bound images, then cross-validates independently
+    anchored signed/provenanced execution from the reviewed harness/workflow; the controlled cluster
+    proves payload-free liveness, authenticated readiness, allowed/refused network boundaries,
+    separate-pod stable-application proxy access, drain, verified backup, stopped-database preflight,
+    target upgrade, both rotations, bounded shutdown, restore, and safe rollback/refusal with terminal
+    result digests; shared truthful runbook or durable-manifest digests may match, and no local,
+    draft, URL-only, unanchored, or hand-authored claim substitutes.
   standing_design_tests:
     interface_safety: Evidence observes existing operator and application-service operations only;
       it grants no authority, carries no bearer or data value, enables no application/MCP install,
@@ -24258,9 +24268,11 @@ work_packages:
       existing runtime bounds, bounded timestamps/counts/digests, and one fixed-size receipt; it
       retains no request stream, database contents, cluster inventory, or duration-proportional log.
   human_review_triggers: &id0202
-  - Either release lacks an immutable signed non-draft WP-728 publication attestation, or cluster
-    execution is not independently anchored to the exact reviewed harness/workflow, external run,
-    terminal result digests, signature, and provenance.
+  - Either WP-728 signed artifact or consumer-verification output would not match an authoritative
+    immutable published non-draft provider record queried by exact repository/release/asset ID, or
+    WP-728 would be broadened beyond its existing artifact/provenance and consumer-verification promises.
+  - Cluster execution is not independently anchored to the exact reviewed harness/workflow, external
+    run, terminal result digests, signature, and provenance.
   - Separate-pod stable-application proxy access, closed payload-free liveness, or the verified
     allowed-partner/refused-untrusted controlled-network boundary would be absent or prose-only.
   - Release/chart version, archive, source revision, appVersion, or intended image distinctness would
