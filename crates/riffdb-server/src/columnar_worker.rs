@@ -23,9 +23,10 @@ use riffdb_observability::{MetricRegistry, RequiredGauge};
 use riffdb_storage_api::{
     ApplicationExportSnapshotPort, ApplicationExportSourceRecordV1, ColumnarProjectionArtifactV1,
     ColumnarProjectionControlRepository, ColumnarProjectionControlWriteResultV1,
-    ColumnarProjectionFailureReasonV1, ColumnarProjectionGenerationRoleV1,
-    ColumnarProjectionLayoutV1, ColumnarProjectionLifecycleV1, StorageError, StorageErrorKind,
-    StorageScanLimit, StoredColumnarProjectionControlV1, StoredColumnarProjectionGenerationV1,
+    ColumnarProjectionFailureReasonV1, ColumnarProjectionFailureTargetV1,
+    ColumnarProjectionGenerationRoleV1, ColumnarProjectionLayoutV1, ColumnarProjectionLifecycleV1,
+    StorageError, StorageErrorKind, StorageScanLimit, StoredColumnarProjectionControlV1,
+    StoredColumnarProjectionGenerationV1,
 };
 use riffdb_types::{FrontierPosition, ProjectionGeneration};
 
@@ -380,6 +381,13 @@ enum ColumnarPublicationResolution {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PublishedV1AdvanceResolution {
+    InstallSelectedAndAcknowledge,
+    RetainSelectedWithoutAcknowledgement,
+    RemainClosed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PreparedV2HeadResolution {
     Publish,
     ReplaceCandidate,
@@ -438,6 +446,20 @@ fn selected_matches_prepared(
         && selected.physical_generation_fingerprint() == prepared.physical_generation_fingerprint()
 }
 
+fn published_v1_advance_resolution(
+    durable: &StoredColumnarProjectionControlV1,
+    expected: &StoredColumnarProjectionControlV1,
+    replacement: &StoredColumnarProjectionGenerationV1,
+) -> PublishedV1AdvanceResolution {
+    if durable.servable_generation() == Some(replacement) {
+        PublishedV1AdvanceResolution::InstallSelectedAndAcknowledge
+    } else if durable.servable_generation() == expected.servable_generation() {
+        PublishedV1AdvanceResolution::RetainSelectedWithoutAcknowledgement
+    } else {
+        PublishedV1AdvanceResolution::RemainClosed
+    }
+}
+
 fn maintain_common_generations(
     runtime: &ColumnarRuntime,
     stop_before_engine: &mut impl FnMut() -> bool,
@@ -451,19 +473,55 @@ fn maintain_common_generations(
             .engine(binding.name())
             .map_err(map_port_error)?
             .ok_or(ColumnarWorkerError::Integrity)?;
-        if slot.lifecycle().map_err(map_port_error)? != ColumnarSlotLifecycle::Active {
+        let control = recover_control(runtime, &binding)?;
+        let lifecycle = slot.lifecycle().map_err(map_port_error)?;
+        if lifecycle != ColumnarSlotLifecycle::Active
+            && !(matches!(
+                lifecycle,
+                ColumnarSlotLifecycle::Activating | ColumnarSlotLifecycle::Failed
+            ) && control.servable_generation().is_none())
+        {
             continue;
         }
         runtime.record_population_pass();
-        let control = recover_control(runtime, &binding)?;
         if control.target_definition_fingerprint() != binding.spec().definition_fingerprint()
             || control.target_spec_hash() != binding.spec().hash()
             || control.replay_limits() != binding.spec().replay_limits()
         {
             return Err(ColumnarWorkerError::Integrity);
         }
-        let completed = if let Some(candidate) = control.candidate()
+        let completed = if control.lifecycle() == ColumnarProjectionLifecycleV1::Degraded
+            && control.candidate().is_none()
+            && control.failure().is_some_and(|failure| {
+                failure.target() == ColumnarProjectionFailureTargetV1::Published
+                    && failure.reason() == ColumnarProjectionFailureReasonV1::ArtifactInvalid
+            }) {
+            let published = control.published().ok_or(ColumnarWorkerError::Integrity)?;
+            let physical = match published.layout() {
+                ColumnarProjectionLayoutV1::V1 => None,
+                ColumnarProjectionLayoutV1::V2 => Some(
+                    *PhysicalGenerationFingerprintV1::compute(binding.definition().fingerprint())
+                        .as_bytes(),
+                ),
+            };
+            let _ = runtime
+                .storage()
+                .allocate_unservable_rebuild_candidate(
+                    &control,
+                    binding.spec().definition_fingerprint(),
+                    binding.spec().hash(),
+                    binding.spec().replay_limits(),
+                    published.layout(),
+                    physical,
+                )
+                .map_err(map_storage_error)?;
+            true
+        } else if let Some(candidate) = control.candidate()
             && control.lifecycle() == ColumnarProjectionLifecycleV1::Degraded
+            && control.failure().is_some_and(|failure| {
+                failure.target() == ColumnarProjectionFailureTargetV1::Candidate
+                    && failure.generation() == Some(candidate.generation())
+            })
         {
             let physical = match candidate.layout() {
                 ColumnarProjectionLayoutV1::V1 => None,
@@ -485,6 +543,12 @@ fn maintain_common_generations(
             )
         {
             advance_v1_candidate(runtime, &binding, &slot, &control, stop_before_next_page)?
+        } else if let Some(candidate) = control.candidate()
+            && candidate.layout() == ColumnarProjectionLayoutV1::V2
+            && control.servable_generation().is_none()
+            && control.lifecycle() == ColumnarProjectionLifecycleV1::Rebuilding
+        {
+            advance_v2_candidate(runtime, &binding, &slot, &control, stop_before_next_page)?
         } else if let Some(published) = control.servable_generation()
             && published.layout() == ColumnarProjectionLayoutV1::V1
         {
@@ -1196,18 +1260,163 @@ fn advance_published_v1(
     .map_err(|_| ColumnarWorkerError::Integrity)?;
     let (reopened, replacement) = reopen_prepared_v1(runtime, binding, &replacement)?;
     successor = reopened;
-    if runtime
+    advance_published_v1_under_capture_gate(runtime, binding, control, &replacement, successor)
+}
+
+fn advance_published_v1_under_capture_gate(
+    runtime: &ColumnarRuntime,
+    binding: &ColumnarControlBinding,
+    expected: &StoredColumnarProjectionControlV1,
+    replacement: &PreparedColumnarGenerationV1,
+    successor: riffdb_columnar::ColumnarEngine,
+) -> Result<bool, ColumnarWorkerError> {
+    advance_published_v1_under_capture_gate_controlled(
+        runtime,
+        binding,
+        expected,
+        replacement,
+        successor,
+        ColumnarPublicationMode::Ordinary,
+        || {},
+    )
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the deterministic proof adds only a closed result class and gate hook to production inputs"
+)]
+pub(crate) fn advance_published_v1_under_capture_gate_for_test(
+    runtime: &ColumnarRuntime,
+    binding: &ColumnarControlBinding,
+    expected: &StoredColumnarProjectionControlV1,
+    replacement: &PreparedColumnarGenerationV1,
+    successor: riffdb_columnar::ColumnarEngine,
+    mode: ColumnarPublicationTestMode,
+    after_gate_closed: impl FnOnce(),
+) -> Result<bool, ()> {
+    advance_published_v1_under_capture_gate_controlled(
+        runtime,
+        binding,
+        expected,
+        replacement,
+        successor,
+        mode,
+        after_gate_closed,
+    )
+    .map_err(|_| ())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn advance_published_v1_under_capture_gate_controlled(
+    runtime: &ColumnarRuntime,
+    binding: &ColumnarControlBinding,
+    expected: &StoredColumnarProjectionControlV1,
+    replacement: &PreparedColumnarGenerationV1,
+    successor: riffdb_columnar::ColumnarEngine,
+    mode: ColumnarPublicationMode,
+    after_gate_closed: impl FnOnce(),
+) -> Result<bool, ColumnarWorkerError> {
+    let slot = runtime
+        .engine(binding.name())
+        .map_err(map_port_error)?
+        .ok_or(ColumnarWorkerError::Integrity)?;
+    let mut gate = slot.close_capture_gate().map_err(map_port_error)?;
+    after_gate_closed();
+    let result = issue_published_v1_advance(runtime, expected, replacement, mode);
+    let attempt = ColumnarPublicationAttempt::from_result(&result);
+    let durable = match runtime
         .storage()
-        .advance_published_v1(control, &replacement, runtime.process_generation())
-        .map_err(map_storage_error)?
-        == ColumnarProjectionControlWriteResultV1::Applied
+        .recover_expected_control(binding.spec().source())
     {
-        runtime
-            .replace_vector_engine(binding.name(), successor, published.generation())
-            .map_err(map_port_error)?;
-        let _ = runtime.notifier().notify(binding.name());
+        Ok(Some(durable)) => durable,
+        Ok(None) => {
+            gate.remain_closed(expected.published().map(|value| value.generation()));
+            return Err(ColumnarWorkerError::Integrity);
+        }
+        Err(error) => {
+            gate.remain_closed(expected.published().map(|value| value.generation()));
+            return Err(map_storage_error(error));
+        }
+    };
+    if durable.source() != binding.spec().source()
+        || durable.target_definition_fingerprint() != binding.spec().definition_fingerprint()
+        || durable.target_spec_hash() != binding.spec().hash()
+        || durable.replay_limits() != binding.spec().replay_limits()
+    {
+        gate.remain_closed(durable.published().map(|value| value.generation()));
+        return Err(ColumnarWorkerError::Integrity);
     }
-    Ok(true)
+    match published_v1_advance_resolution(&durable, expected, replacement.generation()) {
+        PublishedV1AdvanceResolution::InstallSelectedAndAcknowledge => {
+            let _ = gate
+                .install_selected(successor, replacement.generation().generation())
+                .map_err(map_port_error)?;
+            drop(gate);
+            let _ = runtime.notifier().notify(binding.name());
+            Ok(true)
+        }
+        PublishedV1AdvanceResolution::RetainSelectedWithoutAcknowledgement => {
+            drop(gate);
+            if attempt.requires_error() {
+                Err(ColumnarWorkerError::Unavailable)
+            } else {
+                Ok(true)
+            }
+        }
+        PublishedV1AdvanceResolution::RemainClosed => {
+            gate.remain_closed(durable.published().map(|value| value.generation()));
+            Err(ColumnarWorkerError::Integrity)
+        }
+    }
+}
+
+fn issue_published_v1_advance(
+    runtime: &ColumnarRuntime,
+    expected: &StoredColumnarProjectionControlV1,
+    replacement: &PreparedColumnarGenerationV1,
+    mode: ColumnarPublicationMode,
+) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+    let issue = || {
+        runtime
+            .storage()
+            .advance_published_v1(expected, replacement, runtime.process_generation())
+    };
+    match mode {
+        ColumnarPublicationMode::Ordinary => issue(),
+        #[cfg(test)]
+        ColumnarPublicationMode::StateChangedAfterApplied => {
+            if issue()? != ColumnarProjectionControlWriteResultV1::Applied {
+                return Err(StorageError::new(
+                    StorageErrorKind::InvariantViolation,
+                    None,
+                ));
+            }
+            issue()
+        }
+        #[cfg(test)]
+        ColumnarPublicationMode::StorageFailureBeforeCommit => {
+            Err(StorageError::new(StorageErrorKind::Unavailable, None))
+        }
+        #[cfg(test)]
+        ColumnarPublicationMode::UnknownAfterApplied => {
+            if issue()? != ColumnarProjectionControlWriteResultV1::Applied {
+                return Err(StorageError::new(
+                    StorageErrorKind::InvariantViolation,
+                    None,
+                ));
+            }
+            Err(StorageError::new(
+                StorageErrorKind::CommitStatusUnknown,
+                None,
+            ))
+        }
+        #[cfg(test)]
+        ColumnarPublicationMode::UnknownBeforeCommit => Err(StorageError::new(
+            StorageErrorKind::CommitStatusUnknown,
+            None,
+        )),
+    }
 }
 
 fn recover_control(
