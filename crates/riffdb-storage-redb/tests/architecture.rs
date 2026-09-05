@@ -1658,3 +1658,83 @@ fn production_functions(source: &str) -> Vec<(String, String)> {
     }
     functions
 }
+
+// req: OUT-001, OUT-002, TXN-042, REC-004, PERF-019
+#[test]
+fn fresh_locator_roles_are_private_affine_and_bound_to_existing_publication_edges() {
+    let source_dir = crate_root().join("src");
+    let coverage = production_source(source_dir.join("fresh_locator_coverage.rs"));
+    for role in [
+        "PrivateChainWitness",
+        "CommandPublicationWitness",
+        "PreservePublicationWitness",
+        "DirectCommandWitness",
+        "CoverageRebaseWitness",
+    ] {
+        let declaration = coverage
+            .find(&format!("struct {role}"))
+            .expect("affine coverage role");
+        let attributes = &coverage[declaration.saturating_sub(160)..declaration];
+        assert!(!attributes.contains("derive(Clone"));
+        assert!(!attributes.contains("derive(Copy"));
+        assert!(!attributes.contains("derive(Default"));
+    }
+    assert!(!coverage.contains("pub struct FreshLocatorCoverage"));
+    assert!(!coverage.contains("serde"));
+
+    let application = without_whitespace(&production_source(source_dir.join("application.rs")));
+    let admission = application
+        .split_once("fnadmit_or_resolve_group(")
+        .expect("grouped admission entry")
+        .1
+        .split_once("fnlookup_admission(")
+        .expect("grouped admission end")
+        .0;
+    let begin = admission
+        .find("self.begin_write()?")
+        .expect("mutation gate");
+    let arm = admission
+        .find("access.arm_fresh_locator_coverage()?")
+        .expect("fresh proof arm");
+    let stage = admission
+        .find("stage_admission_group(&access")
+        .expect("admission staging");
+    assert!(begin < arm && arm < stage);
+
+    let operational = application
+        .split_once("fncommand_outcome_from_operational_indexes(")
+        .expect("operational lookup")
+        .1
+        .split_once("fncommand_derived_index_covers(")
+        .expect("operational lookup end")
+        .0;
+    let locator = operational
+        .find("JournalTable::IdempotencyLocators")
+        .expect("exact durable locator");
+    let proof = operational
+        .find("fresh_locator_proves_absence")
+        .expect("public-prefix absence proof");
+    let scan = operational
+        .find("JournalTable::Commits")
+        .expect("bounded history fallback");
+    assert!(locator < proof && proof < scan);
+
+    let store = without_whitespace(&production_source(source_dir.join("store.rs")));
+    let publish = store
+        .split_once("fnpublish_pending_command(")
+        .expect("queued command publication")
+        .1
+        .split_once("fnpublish_pending_service_audit(")
+        .expect("queued command publication end")
+        .0;
+    let successor = publish
+        .find("publish_composite_successor")
+        .expect("ADR-0100 successor publication");
+    let coverage = publish
+        .find(".publish_command(witness)")
+        .expect("queued coverage publication");
+    let observation = publish
+        .find("observe_changelog_publication")
+        .expect("ADR-0100 observation");
+    assert!(successor < coverage && coverage < observation);
+}

@@ -43,6 +43,7 @@ mod error;
 mod fixtures;
 mod format_preflight;
 mod format_upgrade;
+mod fresh_locator_coverage;
 mod gate;
 mod hooks;
 mod journal;

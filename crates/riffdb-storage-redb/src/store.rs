@@ -56,6 +56,7 @@ use crate::format_preflight::{
 };
 use crate::gate::{ExclusiveGate, ExclusiveLease};
 use crate::hooks::{RedbTestController, RedbTestOperation};
+use crate::journal::JournalTable;
 use crate::keys::{
     decode_application_sequence_key, decode_audit_by_request_key, decode_audit_key,
     decode_index_range_prefix_key, decode_partition_index_key, decode_vector_evidence_index_key,
@@ -252,6 +253,8 @@ pub(crate) struct SharedRedb {
     command_segment_preparation: crate::command_segment_preparation::CommandSegmentPreparationPool,
     test_controller: Option<RedbTestController>,
     transient_indexes: RwLock<TransientIndexState>,
+    /// Process-local affine proof for ADR-0197's fresh-history locator prefix.
+    fresh_locator_coverage: Mutex<crate::fresh_locator_coverage::FreshLocatorCoverage>,
     /// Exact identities in sealed command epochs that are not public yet.
     /// Writers consult this overlay; operational readers never do.
     unpublished_command_indexes: Mutex<UnpublishedCommandIndexes>,
@@ -1126,6 +1129,7 @@ struct CommandPublication {
     audit_count: usize,
     composite_predecessor: Arc<crate::composite_view::RedbCompositeReadView>,
     composite_successor: Arc<crate::composite_view::RedbCompositeReadView>,
+    coverage_witness: Option<crate::fresh_locator_coverage::CommandPublicationWitness>,
 }
 
 struct ServiceAuditPublication {
@@ -1138,6 +1142,12 @@ struct ServiceAuditPublication {
     covered_administration_sequence: Option<AdministrationSequence>,
     composite_predecessor: Arc<crate::composite_view::RedbCompositeReadView>,
     composite_successor: Arc<crate::composite_view::RedbCompositeReadView>,
+    coverage_witness: Option<crate::fresh_locator_coverage::PreservePublicationWitness>,
+}
+
+enum ImmediateCoverageWitness {
+    Direct(crate::fresh_locator_coverage::DirectCommandWitness),
+    Preserve(crate::fresh_locator_coverage::PreservingImmediateWitness),
 }
 
 #[derive(Clone, Copy)]
@@ -1416,6 +1426,33 @@ impl RedbReadAccess {
             Self::Composite(view) => view.overlay().checkpoint().application_frontier(),
             Self::Current(_) | Self::Durable(_) => self.application_frontier().ok().flatten(),
         }
+    }
+
+    fn fresh_locator_coverage_stamp(
+        &self,
+    ) -> Result<crate::fresh_locator_coverage::CoverageStamp, StorageError> {
+        let allocator = self
+            .read_value(JournalTable::Meta, META_APPLICATION_SEQUENCE.as_bytes())?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        let allocator = crate::codec::decode_application_sequence_allocator_v1(&allocator)?
+            .into_parts()
+            .0;
+        let administration = self
+            .read_value(JournalTable::Meta, META_ADMINISTRATION_SEQUENCE.as_bytes())?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        let administration =
+            crate::codec::decode_administration_sequence_allocator_v1(&administration)?
+                .into_parts()
+                .0;
+        Ok(crate::fresh_locator_coverage::CoverageStamp::new(
+            match self {
+                Self::Current(root) | Self::Durable(root) => Arc::as_ptr(root) as usize,
+                Self::Composite(view) => std::ptr::from_ref(view.checkpoint_root()) as usize,
+            },
+            self.application_frontier()?,
+            administration_frontier_from_allocator(administration),
+            allocator,
+        ))
     }
 }
 
@@ -1883,6 +1920,9 @@ impl RedbStore {
                 command_segment_preparation,
                 test_controller,
                 transient_indexes: RwLock::new(TransientIndexState::Dormant),
+                fresh_locator_coverage: Mutex::new(
+                    crate::fresh_locator_coverage::FreshLocatorCoverage::new(),
+                ),
                 unpublished_command_indexes: Mutex::new(UnpublishedCommandIndexes::default()),
                 startup_validation_clean: AtomicBool::new(false),
                 checkpoint_write_failures: AtomicU64::new(0),
@@ -4517,6 +4557,19 @@ impl RedbOperationalPorts {
         self.shared.application_commit_profile == RedbCommitProfile::Standard
     }
 
+    pub(crate) fn fresh_locator_proves_absence(
+        &self,
+        access: &RedbReadAccess,
+    ) -> Result<bool, StorageError> {
+        let stamp = access.fresh_locator_coverage_stamp()?;
+        Ok(self
+            .shared
+            .fresh_locator_coverage
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .proves_public_absence(stamp))
+    }
+
     pub(crate) fn command_derived_member(
         &self,
         kind: riffdb_storage_api::CommandDerivedIndexKindV1,
@@ -5024,6 +5077,82 @@ impl RedbOperationalPorts {
 }
 
 impl RedbWriteAccess {
+    pub(crate) fn arm_fresh_locator_coverage(&self) -> Result<(), StorageError> {
+        let transaction = self.transaction()?;
+        let commits_empty = transaction
+            .open_table(COMMITS)
+            .map_err(table_error)?
+            .is_empty()
+            .map_err(precommit_storage_error)?;
+        let idempotency_empty = transaction
+            .open_table(crate::layout::IDEMPOTENCY)
+            .map_err(table_error)?
+            .is_empty()
+            .map_err(precommit_storage_error)?;
+        let pending_empty = transaction
+            .open_table(crate::layout::IDEMPOTENCY_PENDING)
+            .map_err(table_error)?
+            .is_empty()
+            .map_err(precommit_storage_error)?;
+        let locators_empty = transaction
+            .open_table(crate::layout::IDEMPOTENCY_LOCATORS)
+            .map_err(table_error)?
+            .is_empty()
+            .map_err(precommit_storage_error)?;
+        let stamp = self.fresh_locator_coverage_stamp()?;
+        let transient_dormant = self.transient_indexes_dormant()?;
+        let proof = crate::fresh_locator_coverage::EmptyAuthorityProof::new(
+            stamp.application_is_none() && self.shared.retention_watermark() == 0,
+            commits_empty,
+            idempotency_empty,
+            pending_empty,
+            locators_empty,
+            stamp.allocator_is_initial(),
+            transient_dormant,
+            !self.shared.write_fenced.load(Ordering::Acquire),
+        );
+        self.shared
+            .fresh_locator_coverage
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .try_arm(proof, stamp);
+        Ok(())
+    }
+
+    pub(crate) fn fresh_locator_coverage_stamp(
+        &self,
+    ) -> Result<crate::fresh_locator_coverage::CoverageStamp, StorageError> {
+        let allocator = self
+            .read_command_value(JournalTable::Meta, META_APPLICATION_SEQUENCE.as_bytes())?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        let allocator = crate::codec::decode_application_sequence_allocator_v1(&allocator)?
+            .into_parts()
+            .0;
+        let administration = self
+            .read_command_value(JournalTable::Meta, META_ADMINISTRATION_SEQUENCE.as_bytes())?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        let administration =
+            crate::codec::decode_administration_sequence_allocator_v1(&administration)?
+                .into_parts()
+                .0;
+        Ok(crate::fresh_locator_coverage::CoverageStamp::new(
+            self.shared.fresh_locator_current_root_identity()?,
+            application_frontier_from_allocator(allocator),
+            administration_frontier_from_allocator(administration),
+            allocator,
+        ))
+    }
+
+    pub(crate) fn fresh_locator_allows_miss(&self) -> Result<bool, StorageError> {
+        let stamp = self.fresh_locator_coverage_stamp()?;
+        Ok(self
+            .shared
+            .fresh_locator_coverage
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .allows_private_miss(stamp))
+    }
+
     pub(crate) fn prepare_command_segment_capsules(
         &self,
         capsules: Vec<riffdb_storage_api::StoredCommandCapsuleV2>,
@@ -5606,11 +5735,35 @@ impl RedbWriteAccess {
         if let Some(controller) = &self.shared.test_controller {
             controller.before_commit(operation)?;
         }
+        let expected = self.fresh_locator_coverage_stamp()?;
+        let coverage_witness = {
+            let mut coverage = self
+                .shared
+                .fresh_locator_coverage
+                .lock()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            let predecessor = coverage.private_stamp();
+            if operation == RedbTestOperation::CommandBatch && delta.is_some() {
+                predecessor
+                    .and_then(|predecessor| coverage.begin_direct(predecessor, expected))
+                    .map(ImmediateCoverageWitness::Direct)
+            } else if preserving_immediate_operation(operation) {
+                predecessor
+                    .and_then(|predecessor| coverage.begin_preserving_immediate(predecessor))
+                    .map(ImmediateCoverageWitness::Preserve)
+            } else {
+                coverage.disable();
+                None
+            }
+        };
         let transaction = self
             .transaction
             .take()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
         if let Err(error) = self.shared.commit_durable(transaction) {
+            if let Ok(mut coverage) = self.shared.fresh_locator_coverage.lock() {
+                coverage.disable();
+            }
             self.invalidate_transient_indexes();
             // `commit_durable` fences writes on any commit error, and a fenced
             // handle can no longer pass `ensure_writable`, so no checkpoint is
@@ -5619,6 +5772,26 @@ impl RedbWriteAccess {
             return Err(error);
         }
         self.shared.refresh_durable_read_frontier()?;
+        if let Some(witness) = coverage_witness {
+            let successor = self.shared.fresh_locator_current_stamp()?;
+            let mut coverage = self
+                .shared
+                .fresh_locator_coverage
+                .lock()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            let restored = match witness {
+                ImmediateCoverageWitness::Direct(witness) => {
+                    coverage.finish_direct(witness, successor)
+                }
+                ImmediateCoverageWitness::Preserve(witness) => {
+                    coverage.finish_preserving_immediate(witness, successor)
+                }
+            };
+            if !restored {
+                self.shared.fence_writes();
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+        }
         if let Some(runtime) = self.journal_checkpoint.take()
             && let Err(error) = self.shared.finish_journal_checkpoint(runtime)
         {
@@ -5927,9 +6100,21 @@ impl RedbWriteAccess {
         };
         self.shared
             .install_private_composite_successor(&composite_predecessor, &composite_successor)?;
+        let coverage_witness = {
+            let successor_stamp = self
+                .shared
+                .fresh_locator_composite_stamp(&composite_successor)?;
+            let mut coverage = self
+                .shared
+                .fresh_locator_coverage
+                .lock()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            coverage
+                .private_stamp()
+                .and_then(|predecessor| coverage.seal_preserve(predecessor, successor_stamp))
+        };
         let successor = composite_predecessor.checkpoint_root_shared();
-        let publication_ticket = self.shared.register_publication(
-            receipt.clone(),
+        let publication_payload =
             PendingPublicationPayload::ServiceAudit(ServiceAuditPublication {
                 successor: Arc::clone(&successor),
                 transition_count,
@@ -5940,8 +6125,18 @@ impl RedbWriteAccess {
                 covered_administration_sequence,
                 composite_predecessor: Arc::clone(&composite_predecessor),
                 composite_successor,
-            }),
-        )?;
+                coverage_witness,
+            });
+        let publication_ticket = match self
+            .shared
+            .register_publication(receipt.clone(), publication_payload)
+        {
+            Ok(ticket) => ticket,
+            Err(error) => {
+                self.shared.disable_fresh_locator_coverage();
+                return Err(error);
+            }
+        };
         let fence = RedbSubmittedServiceAuditFence {
             shared: Arc::clone(&self.shared),
             receipt: Some(receipt),
@@ -6274,6 +6469,23 @@ impl RedbDurabilityEpoch {
                 composite_successor,
             )?;
         }
+        let coverage_witness = if let Some(composite_successor) = composite_successor.as_ref() {
+            let successor_stamp = self
+                .shared
+                .fresh_locator_composite_stamp(composite_successor)?;
+            let command_count = u16::try_from(self.command_count)
+                .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+            let mut coverage = self
+                .shared
+                .fresh_locator_coverage
+                .lock()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            coverage.private_stamp().and_then(|predecessor| {
+                coverage.seal_command(predecessor, successor_stamp, command_count)
+            })
+        } else {
+            None
+        };
         {
             let mut unpublished = self
                 .shared
@@ -6295,22 +6507,29 @@ impl RedbDurabilityEpoch {
             let published = composite_successor
                 .take()
                 .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-            Some(self.shared.register_publication(
-                journal_receipt,
-                PendingPublicationPayload::Command(CommandPublication {
-                    successor: Arc::clone(&successor),
-                    transient_deltas: std::mem::take(&mut self.transient_deltas),
-                    command_count: self.command_count,
-                    encoded_bytes,
-                    first_sequence,
-                    last_sequence,
-                    predecessor_administration_sequence,
-                    last_administration_sequence,
-                    audit_count,
-                    composite_predecessor: Arc::clone(&self.composite_predecessor),
-                    composite_successor: published,
-                }),
-            )?)
+            let payload = PendingPublicationPayload::Command(CommandPublication {
+                successor: Arc::clone(&successor),
+                transient_deltas: std::mem::take(&mut self.transient_deltas),
+                command_count: self.command_count,
+                encoded_bytes,
+                first_sequence,
+                last_sequence,
+                predecessor_administration_sequence,
+                last_administration_sequence,
+                audit_count,
+                composite_predecessor: Arc::clone(&self.composite_predecessor),
+                composite_successor: published,
+                coverage_witness,
+            });
+            Some(
+                match self.shared.register_publication(journal_receipt, payload) {
+                    Ok(ticket) => ticket,
+                    Err(error) => {
+                        self.shared.disable_fresh_locator_coverage();
+                        return Err(error);
+                    }
+                },
+            )
         } else {
             None
         };
@@ -6339,6 +6558,104 @@ impl RedbDurabilityEpoch {
 }
 
 impl SharedRedb {
+    fn fresh_locator_current_stamp(
+        &self,
+    ) -> Result<crate::fresh_locator_coverage::CoverageStamp, StorageError> {
+        self.begin_composite_operational_read()?
+            .fresh_locator_coverage_stamp()
+    }
+
+    fn fresh_locator_current_root_identity(&self) -> Result<usize, StorageError> {
+        Ok(match self.begin_composite_operational_read()? {
+            RedbReadAccess::Current(root) | RedbReadAccess::Durable(root) => {
+                Arc::as_ptr(&root) as usize
+            }
+            RedbReadAccess::Composite(view) => std::ptr::from_ref(view.checkpoint_root()) as usize,
+        })
+    }
+
+    fn fresh_locator_composite_stamp(
+        &self,
+        view: &crate::composite_view::RedbCompositeReadView,
+    ) -> Result<crate::fresh_locator_coverage::CoverageStamp, StorageError> {
+        let allocator = view
+            .resolve_point(
+                JournalTable::Meta.composite(),
+                META_APPLICATION_SEQUENCE.as_bytes(),
+            )?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        let allocator = crate::codec::decode_application_sequence_allocator_v1(&allocator)?
+            .into_parts()
+            .0;
+        Ok(crate::fresh_locator_coverage::CoverageStamp::new(
+            std::ptr::from_ref(view.checkpoint_root()) as usize,
+            view.overlay().published_application(),
+            view.overlay().published_administration(),
+            allocator,
+        ))
+    }
+
+    fn disable_fresh_locator_coverage(&self) {
+        if let Ok(mut coverage) = self.fresh_locator_coverage.lock() {
+            coverage.disable();
+        }
+    }
+
+    fn begin_fresh_locator_rebase(
+        &self,
+    ) -> Result<Option<crate::fresh_locator_coverage::CoverageRebaseWitness>, StorageError> {
+        let predecessor = self.fresh_locator_current_stamp()?;
+        let mut coverage = self
+            .fresh_locator_coverage
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        Ok(match coverage.private_stamp() {
+            Some(private) if private == predecessor => coverage.begin_rebase(private),
+            Some(_) => {
+                coverage.disable();
+                None
+            }
+            None => None,
+        })
+    }
+
+    fn abort_fresh_locator_rebase(
+        &self,
+        witness: Option<crate::fresh_locator_coverage::CoverageRebaseWitness>,
+    ) -> Result<(), StorageError> {
+        if let Some(witness) = witness {
+            let restored = self
+                .fresh_locator_coverage
+                .lock()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+                .abort_rebase(witness);
+            if !restored {
+                self.fence_writes();
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+        }
+        Ok(())
+    }
+
+    fn finish_fresh_locator_rebase(
+        &self,
+        witness: Option<crate::fresh_locator_coverage::CoverageRebaseWitness>,
+    ) -> Result<(), StorageError> {
+        if let Some(witness) = witness {
+            let successor = self.fresh_locator_current_stamp()?;
+            let restored = self
+                .fresh_locator_coverage
+                .lock()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+                .finish_rebase(witness, successor);
+            if !restored {
+                self.fence_writes();
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+        }
+        Ok(())
+    }
+
     fn checkpoint_published_journal_suffix_for_barrier(
         self: &Arc<Self>,
     ) -> Result<(), StorageError> {
@@ -6346,10 +6663,12 @@ impl SharedRedb {
         let Some(runtime) = self.take_published_journal_suffix_locked(true)? else {
             return Ok(());
         };
+        let coverage_rebase = self.begin_fresh_locator_rebase()?;
         let mut transaction = match self.database.begin_write() {
             Ok(transaction) => transaction,
             Err(error) => {
                 self.restore_journal_runtime(runtime)?;
+                self.abort_fresh_locator_rebase(coverage_rebase)?;
                 return Err(transaction_error(error));
             }
         };
@@ -6357,16 +6676,28 @@ impl SharedRedb {
         if transaction.set_durability(Durability::Immediate).is_err() {
             let _ = transaction.abort();
             self.restore_journal_runtime(runtime)?;
+            self.abort_fresh_locator_rebase(coverage_rebase)?;
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         if let Err(error) = self.apply_published_journal_suffix(&transaction, &runtime) {
             let _ = transaction.abort();
             self.restore_journal_runtime(runtime)?;
+            self.abort_fresh_locator_rebase(coverage_rebase)?;
             return Err(error);
         }
-        self.commit_durable(transaction)?;
-        self.refresh_durable_read_frontier()?;
-        self.finish_journal_checkpoint(runtime)
+        if let Err(error) = self.commit_durable(transaction) {
+            self.disable_fresh_locator_coverage();
+            return Err(error);
+        }
+        if let Err(error) = self.refresh_durable_read_frontier() {
+            self.disable_fresh_locator_coverage();
+            return Err(error);
+        }
+        if let Err(error) = self.finish_journal_checkpoint(runtime) {
+            self.disable_fresh_locator_coverage();
+            return Err(error);
+        }
+        self.finish_fresh_locator_rebase(coverage_rebase)
     }
 
     fn capture_or_initialize_composite_view(
@@ -6630,9 +6961,22 @@ impl SharedRedb {
             &publication.composite_predecessor,
             publication.composite_successor,
         ) {
+            self.disable_fresh_locator_coverage();
             *transient = TransientIndexState::Invalid;
             self.fence_writes();
             return Err(error);
+        }
+        if let Some(witness) = publication.coverage_witness.take() {
+            let advanced = self
+                .fresh_locator_coverage
+                .lock()
+                .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?
+                .publish_command(witness);
+            if !advanced {
+                *transient = TransientIndexState::Invalid;
+                self.fence_writes();
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
         }
         let mut frontier = self
             .durable_read_frontier
@@ -6703,7 +7047,7 @@ impl SharedRedb {
 
     fn publish_pending_service_audit(
         &self,
-        publication: ServiceAuditPublication,
+        mut publication: ServiceAuditPublication,
         fence: crate::journal::JournalFence,
     ) -> Result<(), StorageError> {
         if fence.covered_sequence != publication.covered_sequence
@@ -6714,10 +7058,25 @@ impl SharedRedb {
         }
         self.after_test_commit(RedbTestOperation::ServiceAudit)?;
         let published_snapshot = Arc::clone(&publication.composite_successor);
-        self.publish_composite_successor(
+        if let Err(error) = self.publish_composite_successor(
             &publication.composite_predecessor,
             publication.composite_successor,
-        )?;
+        ) {
+            self.disable_fresh_locator_coverage();
+            self.fence_writes();
+            return Err(error);
+        }
+        if let Some(witness) = publication.coverage_witness.take() {
+            let advanced = self
+                .fresh_locator_coverage
+                .lock()
+                .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?
+                .publish_preserve(witness);
+            if !advanced {
+                self.fence_writes();
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+        }
         let mut frontier = self
             .durable_read_frontier
             .write()
@@ -7634,6 +7993,62 @@ pub(crate) fn read_administration_tail(
 
 fn next_commit_sequence(sequence: Option<CommitSequence>) -> Option<CommitSequence> {
     sequence.map_or(Some(CommitSequence::first()), CommitSequence::checked_next)
+}
+
+fn preserving_immediate_operation(operation: RedbTestOperation) -> bool {
+    matches!(
+        operation,
+        RedbTestOperation::Admission
+            | RedbTestOperation::ExecutionFailure
+            | RedbTestOperation::ServiceAudit
+            | RedbTestOperation::CatalogAdministration
+            | RedbTestOperation::QueryModuleAdministration
+            | RedbTestOperation::ReactiveModuleAdministration
+            | RedbTestOperation::ApplicationInstallationCampaign
+            | RedbTestOperation::ApplicationExportOperation
+            | RedbTestOperation::EventConsumerTransition
+            | RedbTestOperation::CapabilityAdministration
+            | RedbTestOperation::CapabilityBootstrap
+            | RedbTestOperation::OutboxTransition
+            | RedbTestOperation::ProjectionMutation
+            | RedbTestOperation::ColumnarProjectionControl
+    )
+}
+
+fn application_frontier_from_allocator(
+    allocator: riffdb_storage_api::ApplicationSequenceAllocator,
+) -> Option<CommitSequence> {
+    match allocator {
+        riffdb_storage_api::ApplicationSequenceAllocator::Next(next)
+            if next == CommitSequence::first() =>
+        {
+            None
+        }
+        riffdb_storage_api::ApplicationSequenceAllocator::Next(next) => {
+            CommitSequence::new(next.get() - 1)
+        }
+        riffdb_storage_api::ApplicationSequenceAllocator::Exhausted => {
+            CommitSequence::new(u64::MAX)
+        }
+    }
+}
+
+fn administration_frontier_from_allocator(
+    allocator: riffdb_storage_api::AdministrationSequenceAllocator,
+) -> Option<AdministrationSequence> {
+    match allocator {
+        riffdb_storage_api::AdministrationSequenceAllocator::Next(next)
+            if next == AdministrationSequence::first() =>
+        {
+            None
+        }
+        riffdb_storage_api::AdministrationSequenceAllocator::Next(next) => {
+            AdministrationSequence::new(next.get() - 1)
+        }
+        riffdb_storage_api::AdministrationSequenceAllocator::Exhausted => {
+            AdministrationSequence::new(u64::MAX)
+        }
+    }
 }
 
 fn journal_storage_error(error: crate::journal::JournalCodecError) -> StorageError {
