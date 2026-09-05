@@ -24167,3 +24167,53 @@ work_packages:
     threshold, admit another package, or lift the freeze.
   - The freeze would start without the WP-762 bank, or lift before WP-750 and WP-760 close or
     without a separately accepted ADR.
+- id: WP-781
+  name: Columnar history-incarnation reset authority reconciliation
+  tier: guarantee
+  depends_on: [WP-776]
+  objective: After exact acceptance of ADR-0200, reconcile ADR-0192 and WP-711 so restored stale
+    tag-67 controls can reach one current-incarnation unprepared V1 candidate without relabelling,
+    bypassing the control CAS, changing restore, or widening any public or durable surface.
+  requirements: [REC-001, PRJ-004, PRJ-006, PRJ-008, PRJ-009, PRJ-010]
+  required_adrs: [ADR-0072, ADR-0160, ADR-0190, ADR-0192, ADR-0200]
+  allowed_paths: [work_packages.yaml,
+    adr/0192-compiler-bound-columnar-publication-control.md,
+    adr/0200-columnar-control-reset-for-history-incarnation.md, adr/README.md]
+  deliverables:
+  - Exact human acceptance of ADR-0200 followed by matching amendment text in ADR-0192 Decisions
+    11 through 16; Decision 17 remains unchanged and the proposed record alone changes no accepted
+    authority
+  - One closed ResetForCurrentHistoryIncarnation contract that consumes exact expected control,
+    reads transaction-current authoritative history metadata internally, accepts no caller-selected
+    identity, and produces only the exact fresh Building/Unprepared-V1/BeforeFirst shape
+  - WP-711 dependency, allowed-path, obligation, crash-matrix, and acceptance-plan reconciliation
+    for all current, stale, future, mixed, malformed, exhausted, Applied, mismatch, failure,
+    unknown-commit, repeated-restart, path-collision, stale-plus-spec-drift, no-serving,
+    no-retention, rebuild, publication, and acknowledgement arms
+  - Governance diff proof that durable encodings, registry and storage keys, restore mechanics,
+    application/administration sequencing, acknowledgements, public surfaces, and ordinary current-
+    incarnation control transitions remain unchanged; only bounded derived cleanup quarantine names
+    and reset-scoped cross-incarnation generation identity are added
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-781
+  - ./scripts/check-adr-obligations
+  - ./scripts/check-requirement-coverage
+  - ./scripts/adr-index --check
+  exit_gate: Accepted ADR-0200, ADR-0192, and WP-711 agree on exactly one transaction-current stale-
+    incarnation reset and bounded exact-path retirement; every other state refuses or uses its
+    existing transition, no stale pointer serves or fences retention, and no authoritative format,
+    restore, runtime gate ordering, or public contract changes in this governance package.
+  standing_design_tests:
+    interface_safety: Repository governance adds no application or operator surface and gives no
+      caller authority to choose an incarnation, mutation, repair target, or fallback.
+    scale: Startup reconciles at most 256 controls with one bounded metadata read and exact CAS each;
+      the subsequent rebuild retains every existing streaming and resource ceiling.
+  human_review_triggers: &id0200
+  - A stale pointer could serve, contribute a retention frontier, or be relabelled current.
+  - A caller could choose the replacement incarnation, reset a current or mixed-incarnation control,
+    delete the control outside its repository, or change authoritative application state.
+  - Collision handling would scan a parent directory, recurse without the frozen bounds, reuse an
+    artifact or same-incarnation generation, delete without a reference proof, touch any path other
+    than the exact final-candidate/quarantine pairs, or open a gate early.
+  - A durable encoding, registry, storage key, restore operation, application/administration
+    sequence, acknowledgement rule, runtime gate ordering, or public surface would change.
