@@ -36,7 +36,6 @@ use riffdb_types::{
     AdministrationSequence, CommitSequence, DatabaseId, DualFrontier, EmbeddingMetadata,
     IndexEpoch, IndexId, SchemaHash,
 };
-use sha2::{Digest, Sha256};
 
 use crate::codec::{
     decode_administration_audit_with_command_tables, decode_commit_with_event_table,
@@ -1521,7 +1520,7 @@ impl RedbReadAccess {
             self.application_frontier()?,
             administration_frontier_from_allocator(administration),
             allocator,
-            Sha256::digest(&allocator_bytes).into(),
+            crate::fresh_locator_coverage::application_authority_digest(&allocator_bytes),
         ))
     }
 }
@@ -5324,16 +5323,15 @@ impl RedbWriteAccess {
             self.disable_fresh_locator_coverage();
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        let mut digest = Sha256::new();
-        digest.update(b"riffdb-fresh-locator-preserving-permit-v1");
-        for permit in canonical {
-            digest.update((permit.table.len() as u64).to_le_bytes());
-            digest.update(permit.table.as_bytes());
-            digest.update([permit.kind as u8]);
-            digest.update((permit.key.len() as u64).to_le_bytes());
-            digest.update(permit.key.as_ref());
-        }
-        let exact_set_digest: [u8; 32] = digest.finalize().into();
+        let exact_set_digest = crate::fresh_locator_coverage::preserving_permit_digest(
+            canonical.into_iter().map(|permit| {
+                (
+                    permit.table.as_ref(),
+                    permit.kind as u8,
+                    permit.key.as_ref(),
+                )
+            }),
+        );
         Ok(Some(
             crate::fresh_locator_coverage::FreshLocatorCoverage::preserving_permit(
                 mutation_count,
@@ -5445,7 +5443,7 @@ impl RedbWriteAccess {
             application_frontier_from_allocator(allocator),
             administration_frontier_from_allocator(administration),
             allocator,
-            Sha256::digest(&allocator_bytes).into(),
+            crate::fresh_locator_coverage::application_authority_digest(&allocator_bytes),
         ))
     }
 
@@ -6926,7 +6924,7 @@ impl SharedRedb {
             view.overlay().published_application(),
             view.overlay().published_administration(),
             allocator,
-            Sha256::digest(&allocator_bytes).into(),
+            crate::fresh_locator_coverage::application_authority_digest(&allocator_bytes),
         ))
     }
 

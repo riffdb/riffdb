@@ -1,5 +1,25 @@
 use riffdb_storage_api::ApplicationSequenceAllocator;
 use riffdb_types::{AdministrationSequence, CommitSequence};
+use sha2::{Digest, Sha256};
+
+pub(crate) fn application_authority_digest(bytes: &[u8]) -> [u8; 32] {
+    Sha256::digest(bytes).into()
+}
+
+pub(crate) fn preserving_permit_digest<'a>(
+    mutations: impl IntoIterator<Item = (&'a str, u8, &'a [u8])>,
+) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"riffdb-fresh-locator-preserving-permit-v1");
+    for (table, kind, key) in mutations {
+        digest.update((table.len() as u64).to_le_bytes());
+        digest.update(table.as_bytes());
+        digest.update([kind]);
+        digest.update((key.len() as u64).to_le_bytes());
+        digest.update(key);
+    }
+    digest.finalize().into()
+}
 
 /// Fixed-size identity of one process-local published or writer-private view.
 ///
