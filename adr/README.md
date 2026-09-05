@@ -232,6 +232,7 @@ record with no front matter.
 | [0195](0195-demand-activated-columnar-runtime-materialization.md) | Demand-Activated Columnar Runtime Materialization | Accepted | guarantee |
 | [0196](0196-cold-columnar-query-outcome-alignment.md) | Cold Columnar Query Outcome Alignment | Accepted | guarantee |
 | [0197](0197-fresh-process-contiguous-idempotency-locator-coverage.md) | Fresh-Process Contiguous Idempotency Locator Coverage | Accepted | guarantee |
+| [0198](0198-generated-mcp-catalog-descriptor-parity.md) | Generated MCP Catalog Descriptor Parity | Accepted | surface |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
