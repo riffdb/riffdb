@@ -23935,9 +23935,9 @@ work_packages:
   name: Generated MCP catalog descriptor parity
   tier: surface
   depends_on: [WP-137, WP-140, WP-701, WP-702]
-  objective: Implement ADR-0198 Decisions 1 through 8 by adding the V6 command-bearing generated
-    MCP catalog, composing its exact compiler-owned command schemas with the accepted service-owned
-    envelope, and proving its complete role-visible descriptor projection equals hosted discovery.
+  objective: Implement ADR-0198 Decisions 1 through 10 by adding a strict V6 successor for nonempty
+    command registries, composing exact compiler command schemas with the accepted service envelope,
+    and streaming an independently authorized expected descriptor set against hosted discovery.
   requirements: [MCP-001, MCP-020, MCP-021, MCP-026, MCP-040, MCP-043, MCP-045,
     DX-044, DX-047, DX-049, VER-001, VER-002, VER-003, VER-004, VER-008]
   required_adrs: [ADR-0198, ADR-0008, ADR-0020, ADR-0040, ADR-0047, ADR-0064,
@@ -23948,33 +23948,46 @@ work_packages:
     crates/riffdb-api-mcp/**, crates/riffdb-cli/**, crates/riffdb-testkit-server/**,
     templates/**, fixtures/**, tests/**, scripts/**, docs/**]
   deliverables:
-  - One `riffdb-generated-application-operations/v6` command entry carrying the exact compiler
-    registry name, input schema, declared-outcome union, composed output schema, immutable
-    bundle/plan identities, and accepted service-envelope ID/hash, with no alternate compiler,
-    service, or MCP semantic source
-  - One bounded pure MCP-owned composition path reused by hosted descriptor construction and
-    generated-artifact assembly, with exact envelope identity, placeholder, Draft 2020-12,
-    canonical-byte, hash, depth, node, individual-schema, aggregate-artifact, and one-byte-excess
-    refusal tests and no compiler-to-service or compiler-to-MCP dependency
-  - Exact V6 descriptor projection using the ADR-0020 name, absent title/description, conservative
-    annotations, compiler input, and composed output; command-free V2-V5 least-sufficient selection
-    and all applicable V3 SDK-only, V4 vector, and V5 pagination registries remain exact
+  - One strict `riffdb-generated-application-operations/v6` successor selected exactly when the
+    post-reimport-exclusion command registry is nonempty, recording the selected V2-V5 predecessor
+    and retaining `application_manifest_hash`, tools, commands, reactive tools, applicable SDK/vector
+    registries, entry bytes, merge rules, and order while adding only the closed V6 identity and
+    descriptor members
+  - V6 identities binding nonzero command ID, exact ADR-0064 underscore `McpCommandToolNameV2` and
+    ADR-0020 normalization/stable-ID order, `CommandInput(id)`/`CommandOutcomeUnion(id)` keys, exact
+    input/outcome document IDs/bodies/hashes, service-envelope ID/hash/body, and composed output
+    ID/body/hash; dotted names, stale/rebound keys, and every cross-command substitution reject
+  - Exact serialized `mcp_descriptor` root keys `name`, `inputSchema`, `outputSchema`, `annotations`;
+    exact four annotation keys/booleans; and structural absence of title, description,
+    `annotations.title`, execution, icons, `_meta`, and every unknown optional for commands and
+    named queries
+  - One bounded pure MCP-common composition/projection owner reused by hosted descriptors and CLI
+    artifact assembly; the explicitly reviewed default-feature-disabled `riffdb-cli` to
+    `riffdb-api-mcp` Cargo edge enables no stdio/HTTP, service, or auth feature, adds no duplicate
+    source/composer, and creates no compiler/query-module-to-MCP/service dependency
   - Req-tagged proof `generated_mcp_command_catalog_v6_composes_authoritative_schemas` covering
-    representative and maximum command schemas, nested outcome composition, mismatched envelope
-    ID/hash/body, duplicate or missing placeholder, noncanonical source, stale compiler artifacts,
-    and raw-outcome-as-output refusal
+    zero/one/many command selection, every predecessor profile, exact retained root/registry/entry
+    structure, representative/maximum nested schemas, all identity bindings, mismatched envelope
+    ID/hash/body, duplicate/missing placeholder, noncanonical input, stale/rebound compiler schemas,
+    wrong output hash, raw-outcome-as-output refusal, and every one-byte/depth/node/aggregate excess
   - Req-tagged process proof `generated_mcp_catalog_matches_complete_hosted_descriptor_pages`
-    deploying the exact lock and role, traversing every sequential `tools/list` page to terminal
-    `nextCursor`, and comparing the full ordered fixed-plus-generated inventory across name, title,
-    description, annotations, inputSchema, and outputSchema
-  - Adversarial hosted discovery cases for a missing, extra, duplicate, reordered, malformed, or
-    schema-different tool; 500-item page, three-call, 1,024-item, schema, retained-byte, 4-MiB,
-    cursor-canonicality, repeated-cursor, loop, empty-page, and continuation-after-limit refusal,
-    with no filtering of unknown dynamic-looking entries and no partial success receipt
+    deploying the exact lock and a closed role explicitly granting every fixed operation, command ID,
+    and module-hash/query pair; independently deriving visibility/order from role, compiler artifacts,
+    and the fixed permission registry; then streaming each full descriptor/schema page against it
+    through the exact terminal cursor without using returned tools to construct expectations
+  - Adversarial full-discovery cases for missing, extra, duplicate, reordered, malformed,
+    schema/metadata-different, fixed/dynamic-colliding, and dynamic/dynamic-colliding tools; limit 500,
+    fewer byte-fitted items, independent 4-MiB per-page ledgers, schema bounds, nonempty continuation,
+    canonical/new/bound cursors, loops, excess pages/items, and continuation after the final expected
+    item, with one current descriptor/page retained and no aggregate full-schema inventory
+  - Separate compact-watcher regression preserving only its accepted three-call 500/500/24 sequence,
+    1,024-fingerprint retention ceiling, and item-1,025/cursor-after-1,024 refusal; compact hashes or
+    those bounds cannot substitute for the full-schema parity proof
   - Req-tagged proof `generated_mcp_catalog_v6_topology_and_lock_migration_are_exact` freezing V2-V6
-    source locators, readers/writers/current identities, command-bearing writer selection, reviewed
-    fixture hashes, explicit migration preview/acceptance, V8 application-lock hash rotation, old
-    exact lock/artifact validation, and old catalogs' lack of a parity claim
+    source locators, readers/writers/current identities, exact nonempty-command writer predicate,
+    predecessor preservation, Cargo feature/lock graph, reviewed fixture hashes, explicit migration
+    preview/acceptance, V8 application-lock hash rotation, old exact artifact validation, and old
+    catalogs' lack of a parity claim
   - Updated MCP/generated-operation fixtures and handbook compatibility guidance, with exact human
     review of every changed catalog, composed schema, artifact hash, and application-lock identity;
     hosted runtime, authorization, dispatch, execution, notifications, protocol, Protobuf, IR,
@@ -23985,6 +23998,7 @@ work_packages:
     -p riffdb-testkit-server --all-features
   - ./scripts/check-version-topology
   - ./scripts/check-generated
+  - ./scripts/check-workspace-policy
   - ./scripts/driver-conformance --all-languages --remote
   - ./scripts/mcp-inspector-smoke
   - ./scripts/handbook check
@@ -23992,15 +24006,16 @@ work_packages:
   - cargo +1.97.0 clippy -p riffdb-query-module -p riffdb-api-mcp -p riffdb-cli
     -p riffdb-testkit-server --all-targets --all-features -- -D warnings
   - ./scripts/ci-all
-  exit_gate: Every newly compiled command-bearing MCP artifact is V6 and its exact role-visible
-    descriptor projection equals the complete bounded hosted `tools/list` inventory through terminal
-    pagination; all schema-owner, envelope, name, metadata, ordering, cursor, bound, artifact, and
-    lock mismatches fail closed; predecessors remain byte-exact; and no runtime semantic changes.
+  exit_gate: Every nonempty-command MCP artifact is a strict V6 successor with exact current command
+    identities and closed descriptors; its independently authorized expected set streams equal to
+    every bounded full-schema hosted page through the terminal cursor; all owner, key, ID, hash,
+    metadata, authority, collision, order, page, cursor, dependency, artifact, and lock mismatches
+    fail closed; compact watching stays separate; and no hosted runtime semantic changes.
   standing_design_tests:
     interface_safety: Generated catalogs are deterministic expectation evidence only; no application,
       agent, SDK, transport, role, or configuration can supply a schema or envelope, alter descriptor
       metadata, grant or hide authority, dispatch a tool, or request a raw-outcome fallback.
-    scale: Each schema is composed once under existing checked schema and artifact ceilings, and
-      parity retains at most 1,024 bounded descriptors across at most three sequential 500-item pages
-      inside the existing 4-MiB response ledger with no concurrent or population-sized walk.
+    scale: Each schema is composed once under existing checked schema/artifact ceilings; full parity
+      streams one independently 4-MiB-bounded page and current descriptor at a time through terminal
+      cursor, while only the separate compact watcher retains at most 1,024 fingerprints.
   human_review_triggers: *id001
