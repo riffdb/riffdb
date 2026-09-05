@@ -23940,9 +23940,9 @@ work_packages:
     envelope, and proving its complete role-visible descriptor projection equals hosted discovery.
   requirements: [MCP-001, MCP-020, MCP-021, MCP-026, MCP-040, MCP-043, MCP-045,
     DX-044, DX-047, DX-049, VER-001, VER-002, VER-003, VER-004, VER-008]
-  required_adrs: [ADR-0198, ADR-0008, ADR-0020, ADR-0040, ADR-0047, ADR-0124,
-    ADR-0155, ADR-0194]
-  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+  required_adrs: [ADR-0198, ADR-0008, ADR-0020, ADR-0040, ADR-0047, ADR-0064,
+    ADR-0124, ADR-0155, ADR-0194]
+  allowed_paths: [SPEC.md, work_packages.yaml, Cargo.toml, Cargo.lock, adr/README.md,
     adr/0198-generated-mcp-catalog-descriptor-parity.md,
     release/version-topology-v1.json, crates/riffdb-query-module/**,
     crates/riffdb-api-mcp/**, crates/riffdb-cli/**, crates/riffdb-testkit-server/**,
