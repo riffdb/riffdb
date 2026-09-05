@@ -8,101 +8,139 @@ accepted: null
 requires: [ADR-0110, ADR-0117, ADR-0148]
 amends: [ADR-0110, ADR-0117]
 supersedes: []
-requirements: [SAFE-001, DRV-014, APE-001, APE-013, EXP-014, END-001]
+requirements: [SAFE-001, DRV-014, BLK-014, BLK-064, BLK-070, DEL-012,
+  OQ-016, OQ-030, OQ-100, OQ-112, WF-014, APE-001, APE-013, RAP-016, EXP-014,
+  END-001, QSO-012]
 packages: [WP-724, WP-782]
 obligations:
   - id: OBL-0201-1
     package: WP-724
     proof: scripts/check-adapter-evidence-claims
-    says: One canonical inventory and every SPEC, handbook, and release-gate claim agree that only OpenFGA has upstream-suite evidence, Better Auth has exact materialized-profile integration evidence, and MLflow and Woodpecker have only RiffDB-owned language-expressiveness fixture evidence.
+    says: The canonical V1 inventory has exactly the ten claim records, scopes, classes, custody values, upstream-suite booleans, and source locators fixed by this record, and every SPEC, handbook, and release-gate statement agrees with its applicable record.
   - id: OBL-0201-2
     package: WP-724
+    proof: adapter_evidence_normative_claim_inventory_is_complete
+    says: Every named adapter claim in BLK-014, BLK-064, BLK-070, DEL-012, OQ-016, OQ-030, OQ-100, OQ-112, WF-014, APE-013, RAP-016, EXP-014, END-001, and QSO-012 is either reconciled or explicitly preserved at its exact evidence scope.
+  - id: OBL-0201-3
+    package: WP-724
     proof: adapter_evidence_claim_negative_self_test
-    says: The claim guard rejects missing, duplicate, or widened classifications, any MLflow or Woodpecker upstream promotion, the legacy four-adapter wording, and any Better Auth claim wider than its materialized profile.
+    says: The guard rejects a missing, duplicate, reordered, widened, or unknown record; scope collapse; invented source locators; fixture-to-external or partial-to-complete promotion; legacy equal-adapter wording; and weakening the compiled-profile dispatcher boundary.
 review_triggers:
-  - Any named evidence class, owner, upstream-suite flag, source claim, adapter set, or release-gate wording would change without exact human review of the inventory and every derived claim.
-  - Better Auth would gain dynamic schema, plugin, CRUD, transaction, or runtime fallback behavior, or be described beyond an exactly generated materialized profile.
-  - A language-expressiveness fixture would be presented as upstream framework conformance, or repository-local evidence would be presented as an external execution receipt.
-  - Any public interface, runtime behavior, durable byte, protocol, storage key, authorization, transaction, evidence artifact, acceptance threshold, or 72-hour evidence result would change.
+  - Any inventory path, schema, claim ID, subject, scope, class, custody, complete-upstream-suite value, source locator, named requirement, or release-gate wording would change without exact human review of the fixture and derived text.
+  - A capability-specific external receipt would be erased by a general matrix label, or a repository fixture or partial profile would be presented as a complete upstream suite.
+  - Better Auth would gain a generic RiffDB mutation surface, uncompiled transaction behavior, dynamic schema, runtime fallback, or a profile-facade claim wider than generated configuration.
+  - Any runtime/public/durable/protocol/storage/authorization/transaction behavior, evidence byte or result, acceptance threshold, or 72-hour execution would change.
 ---
 # ADR-0201: Exact Adapter Evidence Classifications
 
 ## Context
 
-ADR-0110 Amendment 1 says the alpha conformance set is OpenFGA, MLflow,
-Better Auth, and Woodpecker and says Better Auth uses its published upstream
-suite. The current evidence does not support those equal claims: OpenFGA has
-an upstream-suite adapter, MLflow and Woodpecker are repository-authored domain
-fixtures, and Better Auth proves an exact generated profile boundary but no
-current upstream-suite execution. WP-724 cannot resolve this accepted-authority
-conflict because its paths exclude `adr/**`.
+ADR-0110 Amendment 1 gives OpenFGA, MLflow, Better Auth, and Woodpecker one
+undifferentiated alpha-conformance label and says Better Auth runs its complete
+upstream suite. The evidence is not uniform. OpenFGA has accepted live upstream-
+suite evidence; RiffDB's general MLflow and Woodpecker matrices are authored
+fixtures; and Better Auth is a generated compiled profile without a complete
+upstream-suite receipt. But completed WP-630, WP-648/WP-655, WP-738, WP-743,
+and WP-744 also retain narrower external profile and live receipts. A global
+“fixture” label would make those truthful claims false.
 
-ADR-0117's safety boundary remains right: an external framework-support release
-must live in its owning repository, use a compiled profile, fail unsupported
-configuration at generation, and run the framework's suite where one exists.
-That prerequisite must not be mistaken for evidence the current alpha gate has
-already banked. ADR-0148's driver-core equivalence proves no adapter class.
+ADR-0117 remains authoritative. RiffDB exposes no generic CRUD or transaction
+surface. An external adapter may implement its framework's generic facade only
+as a profile-bound dispatcher to exact generated commands and named queries.
+Selected fields, plugins, schemas, and transaction shapes are resolved when the
+profile is generated/configured; unsupported configuration fails there. An
+unknown runtime call refuses rather than falling back or synthesizing behavior.
 
 ## Decision
 
-1. The canonical inventory has exactly four entries. OpenFGA is
-   `upstream_suite_adapter`, externally owned, with `upstream_suite: true`.
-   Better Auth is `materialized_profile_integration`, externally owned, with
-   `upstream_suite: false`. MLflow and Woodpecker are each
-   `language_expressiveness_fixture`, RiffDB-owned, with
-   `upstream_suite: false`. Payload remains a named post-alpha RiffDB-owned
-   language-expressiveness fixture and is not a fifth alpha entry.
+1. WP-724 creates exactly `fixtures/adapters/adapter-evidence-v1.json`, with
+   schema identity `riffdb.adapter-evidence-inventory/v1`. Its root has exactly
+   `schema`,`claims`. Each claim has exactly `claim_id`,`subject`,`scope`,
+   `evidence_class`,`custody`,`complete_upstream_suite`,`source_claims`.
+   Claims are ordered by unique ASCII `claim_id`; source locators are ordered,
+   unique nonempty strings. No defaults, aliases, extra members, or inference
+   from fixture names are permitted.
 
-2. Only OpenFGA may satisfy a named upstream-suite release claim. MLflow and
-   Woodpecker installation/evolution, generated clients, export/reimport,
-   restore, and endurance observations prove only that exact RiffDB-authored
-   domain shape. They do not prove upstream framework compatibility or complete
-   adapter conformance.
+2. The four `wp578_wp579_general_alpha` records are exact:
+   - `alpha.better_auth.general`: subject `better_auth`, class
+     `materialized_profile_matrix`, custody `mixed`,
+     `complete_upstream_suite: false`; sources
+     `release/evidence/alpha/conformance-better-auth-v1.json` and
+     `work_packages.yaml#WP-630.closure`.
+   - `alpha.mlflow.general`: subject `mlflow`, class
+     `language_expressiveness_matrix`, custody `riffdb`,
+     `complete_upstream_suite: false`;
+     source `release/evidence/alpha/conformance-mlflow-v1.json`.
+   - `alpha.openfga.general`: subject `openfga`, class
+     `upstream_suite_adapter`, custody `external`,
+     `complete_upstream_suite: true`; sources
+     `adr/0169-optional-aggregate-root-materialization.md#testing` and
+     `release/evidence/alpha/conformance-openfga-v1.json`.
+   - `alpha.woodpecker.general`: subject `woodpecker`, class
+     `language_expressiveness_matrix`, custody `riffdb`,
+     `complete_upstream_suite: false`; source
+     `release/evidence/alpha/conformance-woodpecker-v1.json`.
 
-3. Better Auth evidence covers only the exactly generated materialized profile:
-   its selected configuration, fields, plugins, schema, named compiled
-   commands, queries, roles, and policies. Additional fields or plugins require
-   generation and review of a new profile. Unsupported configurations fail at
-   generation or installation; no runtime field omission, generic CRUD,
-   sequential transaction emulation, or fallback is allowed. A future Better
-   Auth support claim still requires ADR-0117's owning-repository upstream-suite
-   evidence; current alpha text must not imply that receipt exists.
+3. Six separately scoped records preserve narrower evidence:
+   - `partial.better_auth.admin`: subject `better_auth`, scope `OQ-030`, class
+     `external_materialized_profile`, custody `external`,
+     `complete_upstream_suite: false`; sources
+     `work_packages.yaml#WP-648.closure` and `work_packages.yaml#WP-655.closure`.
+   - `partial.better_auth.lifecycle`: subject `better_auth`, scope
+     `DEL-012,QSO-012`, the same class and custody,
+     `complete_upstream_suite: false`; source
+     `work_packages.yaml#WP-630.closure`.
+   - `partial.mlflow.filtered_search`: subject `mlflow`, scope `OQ-100`, class
+     `external_partial_profile_live`, custody `external`,
+     `complete_upstream_suite: false`; source
+     `release/evidence/long-pattern-readiness-mlflow-loopback-v1.json`.
+   - `partial.mlflow.large_run`: subject `mlflow`, scope `BLK-064`, the same
+     class and custody, `complete_upstream_suite: false`; source
+     `release/evidence/large-atomic-command-envelope-v1.json#/mlflow_loopback`.
+   - `partial.mlflow.partition_search`: subject `mlflow`, scope `OQ-112`, the
+     same class and custody, `complete_upstream_suite: false`; sources
+     `release/evidence/partition-set-exact-prefix-repro-v1.json` and
+     `release/evidence/partition-set-mlflow-loopback-v1.json`.
+   - `post_alpha.payload.shape`: subject `payload`, scope `BLK-014,RAP-016`, class
+     `post_alpha_language_expressiveness`, custody `riffdb`,
+     `complete_upstream_suite: false`; source
+     `work_packages.yaml#WP-569.closure`.
 
-4. `APE-013`, `EXP-014`, and `END-001` retain their installation, evolution,
-   export/reimport, and restore semantics, but “adapter” in those release claims
-   is qualified by this inventory. Each entry must complete its required
-   RiffDB public-surface drills; only its declared evidence class determines the
-   compatibility claim those drills support. WP-578 remains the separate owner
-   of the actual 72-hour receipt and gains no substitute or early closure.
+4. These records classify claims, not products. No general-alpha record may
+   erase a partial record, and no partial record proves complete upstream-suite
+   compatibility. Only `alpha.openfga.general` has
+   `complete_upstream_suite: true`. Better Auth fields/plugins require a newly
+   generated and reviewed materialized profile; ADR-0117 still requires an
+   owning-repository upstream suite before a complete framework-support claim.
 
-5. WP-782 performs governance reconciliation only after exact acceptance: it
-   aligns ADR-0110/ADR-0117, the named SPEC requirements and milestone, and the
-   WP-724/WP-578/WP-579 package claims. WP-724 then owns the canonical inventory,
-   handbook/release wording, requirement-tagged positive guard, and adversarial
-   negative self-test named by `OBL-0201-1` and `OBL-0201-2`.
+5. `BLK-014`, `OQ-016`, `WF-014`, and `RAP-016` remain language/domain-shape
+   corpora; `BLK-064`, `DEL-012`, `OQ-030`, `OQ-100`, `OQ-112`, and `QSO-012` retain their
+   exact bounded real-profile claims; `BLK-070` retains its generated/redb
+   execution rule. `APE-001` and `DRV-014` remain unchanged. `APE-013`,
+   `EXP-014`, `END-001`, and the WP-578/WP-579 general matrix are reconciled to
+   the four alpha records without weakening any drill or promoting its claim.
 
-6. Human fixture review covers every one of the four inventory entries and its
-   exact class, owner, `upstream_suite` value, and source claim; every changed
-   SPEC, handbook, and release-gate sentence; and every future classification
-   change. A green local fixture cannot silently promote its evidence class.
+6. WP-578 remains the separate 72-hour evidence owner and depends on completed
+   WP-782 and WP-724 classification work. WP-579 remains downstream of WP-578
+   and WP-724. Both require this ADR; neither may use classification metadata as
+   execution evidence or as a substitute for any installation, export, restore,
+   conformance, or endurance observation.
 
-7. This decision changes evidence labels and claim custody only. Runtime and
-   public behavior, durable formats, protocols, storage, authorization,
-   transaction semantics, fixtures' evidence bytes, acceptance thresholds, and
-   retained evidence results are unchanged.
+7. Human review covers the complete V1 fixture diff, every source locator and
+   referenced evidence-class claim, and every changed SPEC, handbook, and gate
+   sentence. This changes claim custody only: runtime, public and durable
+   formats, protocols, storage, authorization, transactions, evidence bytes and
+   results, thresholds, and retained receipts remain exact.
 
 ## Standing design tests
 
-- **Interface safety:** evidence metadata adds no application or operator
-  surface and cannot enable generic writes, callbacks, runtime fallback, or a
-  caller-selected guarantee. Better Auth remains fail-closed at generation.
-- **Scale:** the inventory has four bounded alpha entries and claim validation
-  scans bounded repository text; it reads no database or duration-sized state.
+- **Interface safety:** classification adds no callable surface. ADR-0117's
+  generated profile is the only map from a framework facade to safe operations.
+- **Scale:** ten closed records and bounded repository text are checked; no
+  database, population, or duration-sized state is read.
 
 ## Checks
 
-- `scripts/check-adapter-evidence-claims` proves exact inventory/source parity
-  and every normative and handbook claim after WP-724 implements it.
-- `adapter_evidence_claim_negative_self_test` proves every widening and legacy-
-  wording negative in `OBL-0201-2`; governance and allowed-path checks prove
-  WP-782 changes only authority text.
+- The three WP-724 obligations freeze exact records, normative coverage,
+  negative promotion/refusal cases, and human-reviewed fixture/text parity.
+- Governance and allowed-path checks prove WP-782 changes authority only.
