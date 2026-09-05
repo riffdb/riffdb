@@ -222,7 +222,8 @@ pub use durable_fixtures::{MigrationDurableFixture, migration_durable_fixture_se
 #[cfg(feature = "test-fixtures")]
 #[doc(hidden)]
 pub use fixtures::{
-    downgrade_all_index_rows_to_v1_fixture, read_validated_prefix_checkpoint_bytes_fixture,
+    append_columnar_worker_commit_fixture, downgrade_all_index_rows_to_v1_fixture,
+    read_validated_prefix_checkpoint_bytes_fixture,
     read_validated_prefix_checkpoint_commit_sequence_fixture,
 };
 pub use format_preflight::{

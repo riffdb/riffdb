@@ -4,8 +4,9 @@ use std::path::Path;
 
 use redb::{Database, ReadableDatabase, ReadableTable};
 use riffdb_storage_api::{
-    ActiveCatalogPointerV1, DatabaseInitializationPort, StorageError, StorageErrorKind,
-    StoredContractBundleV1, StoredEntityRecordV1, StoredIndexEntryV1,
+    ActiveCatalogPointerV1, ApplicationSequenceAllocator, DatabaseInitializationPort, StorageError,
+    StorageErrorKind, StoredCommitRecordV1, StoredContractBundleV1, StoredEntityRecordV1,
+    StoredIndexEntryV1,
 };
 
 use crate::error::{
@@ -13,9 +14,52 @@ use crate::error::{
     transaction_error,
 };
 use crate::layout::{
-    CATALOG_ACTIVE, CATALOG_ACTIVE_KEY, CONTRACT_BUNDLES, ENTITIES, META,
-    META_CLEAN_CLOSE_LIFECYCLE, META_VALIDATED_PREFIX_CHECKPOINT, SECONDARY_INDEXES,
+    CATALOG_ACTIVE, CATALOG_ACTIVE_KEY, COMMITS, CONTRACT_BUNDLES, ENTITIES, META,
+    META_APPLICATION_SEQUENCE, META_CLEAN_CLOSE_LIFECYCLE, META_VALIDATED_PREFIX_CHECKPOINT,
+    SECONDARY_INDEXES,
 };
+
+/// Appends one exact authoritative entity/commit pair for server worker tests.
+#[doc(hidden)]
+pub fn append_columnar_worker_commit_fixture(
+    ports: &crate::store::RedbOperationalPorts,
+    row: &StoredEntityRecordV1,
+    commit: &StoredCommitRecordV1,
+) -> Result<(), StorageError> {
+    let access = ports.begin_write()?;
+    let transaction = access.transaction()?;
+    let encoded_row = crate::codec::encode_entity_record_v1(row)?;
+    transaction
+        .open_table(ENTITIES)
+        .map_err(table_error)?
+        .insert(
+            crate::keys::encode_entity_key(row.target().key()),
+            encoded_row.as_bytes(),
+        )
+        .map_err(precommit_storage_error)?;
+    let encoded_commit = crate::codec::encode_commit_record_v1(commit)?;
+    let commit_key = crate::keys::encode_application_sequence_key(commit.commit_sequence());
+    if transaction
+        .open_table(COMMITS)
+        .map_err(table_error)?
+        .insert(commit_key.as_slice(), encoded_commit.as_bytes())
+        .map_err(precommit_storage_error)?
+        .is_some()
+    {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    }
+    let allocator = commit.commit_sequence().checked_next().map_or(
+        ApplicationSequenceAllocator::Exhausted,
+        ApplicationSequenceAllocator::Next,
+    );
+    let encoded_allocator = crate::codec::encode_application_sequence_allocator_v1(allocator)?;
+    transaction
+        .open_table(META)
+        .map_err(table_error)?
+        .insert(META_APPLICATION_SEQUENCE, encoded_allocator.as_bytes())
+        .map_err(precommit_storage_error)?;
+    access.commit_for(crate::hooks::RedbTestOperation::CommandBatch)
+}
 
 /// Seeds and opens least-authority ports for one isolated contract-migration fixture.
 pub(crate) fn contract_migration_stage_ports_fixture(

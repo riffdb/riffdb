@@ -126,6 +126,17 @@ impl SharedRedbOperationalPorts {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn append_columnar_worker_commit_fixture(
+        &self,
+        row: &riffdb_storage_api::StoredEntityRecordV1,
+        commit: &riffdb_storage_api::StoredCommitRecordV1,
+    ) -> Result<(), StorageError> {
+        self.cell.with_mut(|ports| {
+            riffdb_storage_redb::append_columnar_worker_commit_fixture(ports, row, commit)
+        })
+    }
+
     pub(crate) const fn bounded_clean_startup(&self) -> bool {
         self.bounded_clean_startup
     }

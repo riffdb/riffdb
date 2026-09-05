@@ -266,7 +266,12 @@ impl ColumnarCaptureGate<'_> {
         engine: ColumnarEngine,
         generation: ProjectionGeneration,
     ) -> Result<Option<RetiredColumnarGeneration>, ColumnarPortError> {
-        if !matches!(&*self.state, ColumnarSlotState::Active(_)) {
+        if !matches!(
+            &*self.state,
+            ColumnarSlotState::Active(_)
+                | ColumnarSlotState::Activating
+                | ColumnarSlotState::Failed { .. }
+        ) {
             return Err(ColumnarPortError::Unavailable);
         }
         let replacement = ColumnarSlotState::Active(Box::new(ActiveColumnarEngine {
@@ -274,17 +279,22 @@ impl ColumnarCaptureGate<'_> {
             generation: Some(generation),
         }));
         let previous = std::mem::replace(&mut *self.state, replacement);
-        let ColumnarSlotState::Active(previous) = previous else {
-            return Err(ColumnarPortError::Unavailable);
-        };
-        if previous.generation == Some(generation) {
-            return Ok(None);
+        match previous {
+            ColumnarSlotState::Active(previous) => {
+                if previous.generation == Some(generation) {
+                    return Ok(None);
+                }
+                let snapshot = previous.engine.published_snapshot();
+                Ok(Some(RetiredColumnarGeneration {
+                    directory: previous.engine.directory().to_path_buf(),
+                    captured_view: Arc::downgrade(&snapshot),
+                }))
+            }
+            ColumnarSlotState::Activating | ColumnarSlotState::Failed { .. } => Ok(None),
+            ColumnarSlotState::Cold | ColumnarSlotState::Stopped => {
+                Err(ColumnarPortError::Unavailable)
+            }
         }
-        let snapshot = previous.engine.published_snapshot();
-        Ok(Some(RetiredColumnarGeneration {
-            directory: previous.engine.directory().to_path_buf(),
-            captured_view: Arc::downgrade(&snapshot),
-        }))
     }
 
     /// Leaves the source closed when durable selection cannot be validated.
@@ -420,32 +430,18 @@ impl ColumnarEngineSlot {
         }
     }
 
-    pub(crate) fn replace_active(
-        &self,
-        engine: ColumnarEngine,
-        generation: ProjectionGeneration,
-    ) -> Result<(), ColumnarPortError> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| ColumnarPortError::Unavailable)?;
-        if matches!(&*state, ColumnarSlotState::Stopped) {
-            return Err(ColumnarPortError::Unavailable);
-        }
-        *state = ColumnarSlotState::Active(Box::new(ActiveColumnarEngine {
-            engine,
-            generation: Some(generation),
-        }));
-        Ok(())
-    }
-
     /// Closes new query-view capture for one publication decision.
     pub(crate) fn close_capture_gate(&self) -> Result<ColumnarCaptureGate<'_>, ColumnarPortError> {
         let state = self
             .state
             .lock()
             .map_err(|_| ColumnarPortError::Unavailable)?;
-        if !matches!(&*state, ColumnarSlotState::Active(_)) {
+        if !matches!(
+            &*state,
+            ColumnarSlotState::Active(_)
+                | ColumnarSlotState::Activating
+                | ColumnarSlotState::Failed { .. }
+        ) {
             return Err(ColumnarPortError::Unavailable);
         }
         Ok(ColumnarCaptureGate { state })
@@ -723,55 +719,73 @@ impl ColumnarRuntime {
                 .recover_expected_control(binding.spec.source())
                 .map_err(|error| ColumnarRegistrationError::control_storage(error, &name))?
                 .ok_or_else(ColumnarRegistrationError::synchronization)?;
-            if !common_control_matches(&control, &binding.spec) {
+            if !common_control_matches(&control, &binding.spec)
+                || !common_control_history_incarnation_matches(&control, history_incarnation)
+            {
                 return Err(ColumnarRegistrationError::synchronization());
             }
-            let selected = control
+            let allocation = control
                 .servable_generation()
                 .or_else(|| control.candidate())
                 .ok_or_else(ColumnarRegistrationError::synchronization)?;
             let source_directory =
                 controlled_source_directory(projections_root, binding.spec.hash());
-            let (directory, manifest, v2_selection) = match selected.layout() {
-                ColumnarProjectionLayoutV1::V1 => (
+            let selected = control.servable_generation();
+            let (directory, manifest, v2_selection, cold_frontier) = match selected {
+                None => (
                     controlled_generation_directory(
                         projections_root,
                         binding.spec.hash(),
-                        selected.generation(),
+                        allocation.generation(),
                     ),
-                    selected
-                        .artifact()
-                        .map(|artifact| (artifact.length(), artifact.checksum())),
                     None,
+                    None,
+                    FrontierPosition::BeforeFirst,
                 ),
-                ColumnarProjectionLayoutV1::V2 => {
-                    let artifact = selected
-                        .artifact()
-                        .ok_or_else(ColumnarRegistrationError::synchronization)?;
-                    let expected_physical =
-                        PhysicalGenerationFingerprintV1::compute(binding.definition.fingerprint());
-                    if selected.physical_generation_fingerprint()
-                        != Some(*expected_physical.as_bytes())
-                    {
-                        return Err(ColumnarRegistrationError::synchronization());
-                    }
-                    (
-                        source_directory,
+                Some(selected) => match selected.layout() {
+                    ColumnarProjectionLayoutV1::V1 => (
+                        controlled_generation_directory(
+                            projections_root,
+                            binding.spec.hash(),
+                            selected.generation(),
+                        ),
+                        selected
+                            .artifact()
+                            .map(|artifact| (artifact.length(), artifact.checksum())),
                         None,
-                        Some((
+                        selected.frontier(),
+                    ),
+                    ColumnarProjectionLayoutV1::V2 => {
+                        let artifact = selected
+                            .artifact()
+                            .ok_or_else(ColumnarRegistrationError::synchronization)?;
+                        let expected_physical = PhysicalGenerationFingerprintV1::compute(
+                            binding.definition.fingerprint(),
+                        );
+                        if selected.physical_generation_fingerprint()
+                            != Some(*expected_physical.as_bytes())
+                        {
+                            return Err(ColumnarRegistrationError::synchronization());
+                        }
+                        (
+                            source_directory,
+                            None,
+                            Some((
+                                selected.frontier(),
+                                (artifact.length(), artifact.checksum()),
+                            )),
                             selected.frontier(),
-                            (artifact.length(), artifact.checksum()),
-                        )),
-                    )
-                }
+                        )
+                    }
+                },
             };
             engines.insert(
                 name.clone(),
                 Arc::new(ColumnarEngineSlot::cold_controlled(
                     binding.definition.clone(),
                     directory,
-                    selected.generation(),
-                    selected.frontier(),
+                    allocation.generation(),
+                    cold_frontier,
                     manifest,
                 )),
             );
@@ -1040,22 +1054,6 @@ impl ColumnarRuntime {
         Ok((engine, prepared))
     }
 
-    pub(crate) fn replace_vector_engine(
-        &self,
-        name: &str,
-        engine: ColumnarEngine,
-        generation: ProjectionGeneration,
-    ) -> Result<(), ColumnarPortError> {
-        let engines = self
-            .engines
-            .read()
-            .map_err(|_| ColumnarPortError::Unavailable)?;
-        engines
-            .get(name)
-            .ok_or(ColumnarPortError::Integrity)?
-            .replace_active(engine, generation)
-    }
-
     /// Apply source used by the worker (`AuthoritativeScanReader` + point reads).
     #[must_use]
     pub(crate) fn apply_source(&self) -> &ServerColumnarApplySource {
@@ -1122,13 +1120,14 @@ impl ColumnarRuntime {
             .recover_expected_control(binding.spec.source())
             .map_err(map_port_storage)?
             .ok_or(ColumnarPortError::Integrity)?;
-        if !common_control_matches(&control, &binding.spec) {
+        if !common_control_matches(&control, &binding.spec)
+            || !common_control_history_incarnation_matches(&control, self.history_incarnation)
+        {
             return Err(ColumnarPortError::Integrity);
         }
-        let selected = control
-            .servable_generation()
-            .or_else(|| control.candidate())
-            .ok_or(ColumnarPortError::Integrity)?;
+        let Some(selected) = control.servable_generation() else {
+            return Ok(None);
+        };
         if selected.layout() == ColumnarProjectionLayoutV1::V2 {
             let artifact = selected.artifact().ok_or(ColumnarPortError::Integrity)?;
             let expected_physical =
@@ -1177,12 +1176,13 @@ impl ColumnarRuntime {
             .recover_expected_control(binding.spec.source())
             .map_err(map_port_storage)?
             .ok_or(ColumnarPortError::Integrity)?;
-        if !common_control_matches(&control, &binding.spec) {
+        if !common_control_matches(&control, &binding.spec)
+            || !common_control_history_incarnation_matches(&control, self.history_incarnation)
+        {
             return Err(ColumnarPortError::Integrity);
         }
         let frontier = control
             .servable_generation()
-            .or_else(|| control.candidate())
             .map_or(slot.cold_frontier, |generation| generation.frontier());
         Ok(slot.cold_observation(head, frontier))
     }
@@ -1347,6 +1347,9 @@ pub(crate) fn prepare_columnar_control_foundation(
             .recover_expected_control(binding.spec.source())
             .map_err(|error| ColumnarRegistrationError::control_storage(error, &binding.name))?
             .ok_or_else(ColumnarRegistrationError::synchronization)?;
+        if !common_control_history_incarnation_matches(&observed, history_incarnation) {
+            return Err(ColumnarRegistrationError::synchronization());
+        }
         reconcile_common_control(storage, binding, observed)?;
     }
     bindings.sort_by(|left, right| left.name.cmp(&right.name));
@@ -1415,6 +1418,20 @@ fn common_control_matches(
     control.target_definition_fingerprint() == spec.definition_fingerprint()
         && control.target_spec_hash() == spec.hash()
         && control.replay_limits() == spec.replay_limits()
+}
+
+fn common_control_history_incarnation_matches(
+    control: &StoredColumnarProjectionControlV1,
+    history_incarnation: u64,
+) -> bool {
+    [
+        control.published(),
+        control.candidate(),
+        control.predecessor(),
+    ]
+    .into_iter()
+    .flatten()
+    .all(|generation| generation.history_incarnation() == history_incarnation)
 }
 
 pub(crate) fn controlled_generation_directory(
@@ -1665,7 +1682,12 @@ impl VectorProjectionPort for ServerColumnarProjectionPort {
                 _ => VectorProjectionPortError::Integrity,
             })?
             .ok_or(VectorProjectionPortError::Integrity)?;
-        if !common_control_matches(&control, &binding.spec) {
+        if !common_control_matches(&control, &binding.spec)
+            || !common_control_history_incarnation_matches(
+                &control,
+                self.runtime.history_incarnation,
+            )
+        {
             return Err(VectorProjectionPortError::Integrity);
         }
         let selected = control
@@ -2189,17 +2211,22 @@ mod tests {
     };
     use riffdb_storage_api::{
         AuditPrincipalV1, CatalogActivationIntentV1, CatalogActivationResult,
-        CatalogAdministrationRepository, ColumnarProjectionArtifactV1, DatabaseInitializationPort,
-        DatabaseInitializationResult, EvidencePageLimit, ReadableCapabilityDigestInventory,
-        ReadableDigestKey, ReadableIdempotencyDigestInventory, StartupValidationInputs,
+        CatalogAdministrationRepository, ColumnarProjectionArtifactV1, CommittedEntityReferenceV2,
+        DatabaseInitializationPort, DatabaseInitializationResult, DeclaredOutcome, DurabilityMode,
+        DurableKeySchemaBindingV1, EvidencePageLimit, ExecutablePlanRef, ExpectedEntityState,
+        ReadDependencies, ReadDependency, ReadableCapabilityDigestInventory, ReadableDigestKey,
+        ReadableIdempotencyDigestInventory, StartupValidationInputs,
         StoredColumnarProjectionControlV1, StoredColumnarProjectionGenerationV1,
+        StoredCommitRecordV1, StoredEntityRecordV1, StoredReadDependenciesV1,
         StructuralEvidenceCursor, StructuralEvidenceOpen, StructuralEvidencePage,
         StructuralEvidenceSession, StructuralOpenOutcome,
     };
     use riffdb_storage_redb::{RedbDormantPorts, RedbOperationalPorts, RedbStore};
     use riffdb_types::{
-        ActorId, ActorKind, CanonicalValue, CapabilityId, DatabaseId, DigestKeyId, EntityVersion,
-        RequestId, Timestamp,
+        ActorId, ActorKind, AdmittedActorContext, CanonicalInputHash, CanonicalRecord,
+        CanonicalValue, CapabilityId, CommitSequence, DatabaseId, DigestKeyId, EntityKeyBuilder,
+        EntityVersion, LogicalTime, OutcomeId, PartitionKeyHash, ProvenanceId, RequestId,
+        TenantScope, Timestamp,
     };
 
     use super::*;
@@ -2423,6 +2450,13 @@ contract VectorBoard version 1 {
     }
 
     fn open_board_runtime_at(scope: &Path) -> Arc<ColumnarRuntime> {
+        open_board_runtime_at_incarnation(scope, 1).expect("reopen board columnar runtime")
+    }
+
+    fn open_board_runtime_at_incarnation(
+        scope: &Path,
+        history_incarnation: u64,
+    ) -> Result<Arc<ColumnarRuntime>, ColumnarRegistrationError> {
         let store = RedbStore::open(scope.join("db.redb")).expect("reopen board database");
         let ports = open_operational(store);
         let storage =
@@ -2437,10 +2471,9 @@ contract VectorBoard version 1 {
             storage,
             &[projection],
             &scope.join("projections"),
-            1,
+            history_incarnation,
             [0x5a; 16],
         )
-        .expect("reopen board columnar runtime")
     }
 
     fn board_query() -> ColumnarQueryRequest {
@@ -2454,6 +2487,97 @@ contract VectorBoard version 1 {
             aggregate: None,
             budget: QueryBudget::default(),
         }
+    }
+
+    fn append_board_ticket_for_worker(runtime: &ColumnarRuntime) {
+        let bundle = riffdb_contract_compiler::compile_contract_source(ADAPTER_BOARD_CONTRACT)
+            .expect("compile board contract");
+        let entity = bundle
+            .schema()
+            .entities()
+            .iter()
+            .find(|entity| entity.name() == "Ticket")
+            .expect("Ticket entity");
+        let field = |name: &str| {
+            entity
+                .record()
+                .fields()
+                .iter()
+                .find(|field| field.name() == name)
+                .expect("Ticket field")
+                .id()
+        };
+        let command = bundle.commands().first().expect("CreateTicket command");
+        let plan = ExecutablePlanRef::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+            command.command_id(),
+            command.plan_hash(),
+        );
+        let organization = uuid_bytes(0x41);
+        let ticket = uuid_bytes(0x42);
+        let mut key = EntityKeyBuilder::new(entity.id());
+        key.push_uuid(&organization).expect("organization key");
+        key.push_uuid(&ticket).expect("ticket key");
+        let target = EntityTarget::new(entity.id(), key.finish().expect("entity key"))
+            .expect("entity target");
+        let row = StoredEntityRecordV1::new(
+            target.clone(),
+            EntityVersion::first(),
+            bundle.contract_version(),
+            DurableKeySchemaBindingV1::from_plan(&plan),
+            CanonicalRecord::new(vec![
+                (field("organization_id"), CanonicalValue::Uuid(organization)),
+                (field("ticket_id"), CanonicalValue::Uuid(ticket)),
+                (field("status"), CanonicalValue::U64(1)),
+                (
+                    field("title"),
+                    CanonicalValue::string("one").expect("title"),
+                ),
+            ])
+            .expect("canonical row"),
+        )
+        .expect("stored row");
+        let dependencies = StoredReadDependenciesV1::from_live(
+            &ReadDependencies::new(vec![ReadDependency::EntityObservation {
+                target,
+                expected: ExpectedEntityState::Absent,
+            }])
+            .expect("read dependencies"),
+        )
+        .expect("stored dependencies");
+        let commit = StoredCommitRecordV1::new(
+            CommitSequence::first(),
+            RequestId::from_bytes(uuid_bytes(0x51)).expect("request id"),
+            plan,
+            CanonicalInputHash::from_bytes([0x52; 32]),
+            AdmittedActorContext::new(
+                ActorId::new("columnar-worker-test").expect("actor"),
+                ActorKind::Human,
+                TenantScope::Global,
+                None,
+            ),
+            LogicalTime::new(Timestamp::new(1_700_200_002, 0).expect("logical time")),
+            PartitionKeyHash::from_bytes([0x53; 32]),
+            Vec::new(),
+            dependencies,
+            vec![CommittedEntityReferenceV2::from_post_image(&row).expect("row reference")],
+            Vec::new(),
+            DeclaredOutcome::new(
+                OutcomeId::first(),
+                CanonicalRecord::new(Vec::new()).expect("outcome record"),
+            )
+            .expect("outcome"),
+            ProvenanceId::from_bytes(uuid_bytes(0x54)).expect("provenance"),
+            Vec::new(),
+            DurabilityMode::Sync,
+        )
+        .expect("stored commit");
+        runtime
+            .storage()
+            .append_columnar_worker_commit_fixture(&row, &commit)
+            .expect("append worker commit fixture");
     }
 
     fn request_projection(runtime: &ColumnarRuntime, name: &str) {
@@ -2867,6 +2991,238 @@ contract VectorBoard version 1 {
                 .expect("validated V2 observation")
                 .has_published()
         );
+    }
+
+    // req: PRJ-006, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022
+    #[test]
+    fn prepared_initial_candidate_is_never_exposed_before_publication_cas() {
+        let (runtime, scope) = board_runtime("prepared-initial-not-selected");
+        let binding = runtime
+            .control_binding("ticket_board")
+            .expect("control binding")
+            .clone();
+        let initial = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("read initial control")
+            .expect("initial control");
+        assert!(initial.servable_generation().is_none());
+        let candidate = initial.candidate().expect("initial candidate");
+        let mut engine = runtime
+            .open_controlled_generation(&binding, candidate)
+            .expect("open unpublished candidate for worker construction");
+        let manifest = engine.checkpoint().expect("prepare candidate manifest");
+        let (length, checksum) = manifest.artifact_identity();
+        let prepared_pointer = StoredColumnarProjectionGenerationV1::prepared_candidate(
+            candidate.generation(),
+            ColumnarProjectionLayoutV1::V1,
+            FrontierPosition::BeforeFirst,
+            manifest.durable_frontier,
+            candidate.history_incarnation(),
+            ColumnarProjectionArtifactV1::new(length, checksum).expect("manifest artifact"),
+            candidate.definition_fingerprint(),
+            candidate.spec_hash(),
+            None,
+        )
+        .expect("prepared candidate pointer");
+        let (prepared_engine, prepared) = runtime
+            .open_prepared_generation(&binding, &prepared_pointer)
+            .expect("open prepared candidate witness");
+        drop(prepared_engine);
+        assert_eq!(
+            runtime
+                .storage()
+                .record_durable_snapshot(&initial, &prepared, runtime.process_generation())
+                .expect("record prepared candidate"),
+            ColumnarProjectionControlWriteResultV1::Applied
+        );
+        drop(runtime);
+
+        let reopened = reopen_board_runtime(&scope);
+        let port = ServerColumnarProjectionPort::new(Arc::clone(&reopened));
+        let before = port.observe("ticket_board").expect("cold observation");
+        assert!(!before.has_published());
+        assert!(!crate::columnar_worker::activate_one_test_slot(
+            &reopened,
+            "ticket_board"
+        ));
+        let after_activation = port
+            .observe("ticket_board")
+            .expect("observation before publication CAS");
+        assert!(
+            !after_activation.has_published(),
+            "opening a prepared Candidate cannot turn its manifest into request-visible authority"
+        );
+        let durable = reopened
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("durable reread")
+            .expect("control remains present");
+        assert!(durable.servable_generation().is_none());
+        assert_eq!(durable.candidate(), Some(&prepared_pointer));
+    }
+
+    fn prepare_published_v1_frontier_advance(
+        runtime: &Arc<ColumnarRuntime>,
+    ) -> (
+        ColumnarControlBinding,
+        StoredColumnarProjectionControlV1,
+        ColumnarEngine,
+        PreparedColumnarGenerationV1,
+    ) {
+        request_projection(runtime, "ticket_board");
+        assert!(crate::columnar_worker::run_one_test_pass(runtime));
+        append_board_ticket_for_worker(runtime);
+        let binding = runtime
+            .control_binding("ticket_board")
+            .expect("control binding")
+            .clone();
+        let expected = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("read selected V1")
+            .expect("selected V1");
+        let published = expected.published().expect("published V1");
+        let mut successor = runtime
+            .open_controlled_generation(&binding, published)
+            .expect("open V1 successor");
+        let _ = successor
+            .apply_available_for_worker(runtime.apply_source(), || false)
+            .expect("apply authoritative advancement");
+        let manifest = successor.checkpoint().expect("checkpoint V1 successor");
+        let (length, checksum) = manifest.artifact_identity();
+        let replacement = StoredColumnarProjectionGenerationV1::selected(
+            published.generation(),
+            ColumnarProjectionLayoutV1::V1,
+            manifest.durable_frontier,
+            published.history_incarnation(),
+            ColumnarProjectionArtifactV1::new(length, checksum).expect("manifest artifact"),
+            published.definition_fingerprint(),
+            published.spec_hash(),
+            None,
+            riffdb_storage_api::ColumnarProjectionGenerationRoleV1::Published,
+        )
+        .expect("replacement pointer");
+        let (successor, prepared) = runtime
+            .open_prepared_generation(&binding, &replacement)
+            .expect("validate prepared V1 successor");
+        (binding, expected, successor, prepared)
+    }
+
+    // req: PRJ-002, PRJ-006, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022, PERF-007
+    #[test]
+    fn published_v1_frontier_cas_closes_capture_rereads_and_installs_before_ack() {
+        use crate::columnar_worker::{
+            ColumnarPublicationTestMode, advance_published_v1_under_capture_gate_for_test,
+        };
+
+        for (label, mode, advances) in [
+            ("applied", ColumnarPublicationTestMode::Ordinary, true),
+            (
+                "state-changed-after-applied",
+                ColumnarPublicationTestMode::StateChangedAfterApplied,
+                true,
+            ),
+            (
+                "storage-failure-before-commit",
+                ColumnarPublicationTestMode::StorageFailureBeforeCommit,
+                false,
+            ),
+            (
+                "unknown-after-applied",
+                ColumnarPublicationTestMode::UnknownAfterApplied,
+                true,
+            ),
+            (
+                "unknown-before-commit",
+                ColumnarPublicationTestMode::UnknownBeforeCommit,
+                false,
+            ),
+        ] {
+            let (runtime, _scope) = board_runtime(&format!("v1-frontier-gate-{label}"));
+            let (binding, expected, successor, prepared) =
+                prepare_published_v1_frontier_advance(&runtime);
+            let successor_snapshot = successor.published_snapshot();
+            let port = ServerColumnarProjectionPort::new(Arc::clone(&runtime));
+            let predecessor = port
+                .observe("ticket_board")
+                .expect("capture predecessor")
+                .snapshot_arc();
+            assert!(!Arc::ptr_eq(&predecessor, &successor_snapshot));
+            let waiter = runtime
+                .notifier()
+                .register("ticket_board".to_owned())
+                .expect("register acknowledgement");
+            let slot = runtime
+                .engine("ticket_board")
+                .expect("engine registry")
+                .expect("active slot");
+            let (attempt_tx, attempt_rx) = mpsc::sync_channel(1);
+            slot.set_capture_attempt_probe(Some(attempt_tx));
+            let (gate_tx, gate_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            let publisher_runtime = Arc::clone(&runtime);
+            let publisher_binding = binding.clone();
+            let publisher_expected = expected.clone();
+            let publisher_prepared = prepared.clone();
+            let publisher = thread::spawn(move || {
+                advance_published_v1_under_capture_gate_for_test(
+                    &publisher_runtime,
+                    &publisher_binding,
+                    &publisher_expected,
+                    &publisher_prepared,
+                    successor,
+                    mode,
+                    || {
+                        gate_tx.send(()).expect("signal closed gate");
+                        release_rx.recv().expect("release publication CAS");
+                    },
+                )
+            });
+            gate_rx.recv().expect("observe closed gate");
+            let (captured_tx, captured_rx) = mpsc::channel();
+            let capture_runtime = Arc::clone(&runtime);
+            let capture = thread::spawn(move || {
+                let snapshot = ServerColumnarProjectionPort::new(capture_runtime)
+                    .observe("ticket_board")
+                    .expect("capture after durable resolution")
+                    .snapshot_arc();
+                captured_tx
+                    .send(Arc::clone(&snapshot))
+                    .expect("send capture");
+                snapshot
+            });
+            attempt_rx.recv().expect("capture reached held mutex");
+            assert!(matches!(
+                captured_rx.try_recv(),
+                Err(mpsc::TryRecvError::Empty)
+            ));
+            slot.set_capture_attempt_probe(None);
+            release_tx.send(()).expect("allow publication CAS");
+            let result = publisher.join().expect("join publisher");
+            let captured = capture.join().expect("join capture");
+            let durable = runtime
+                .storage()
+                .recover_expected_control(binding.spec().source())
+                .expect("durable reread")
+                .expect("durable control");
+            let wake = waiter.wait(Instant::now()).expect("ack observation");
+            if advances {
+                assert_eq!(result, Ok(true), "{label}");
+                assert_eq!(
+                    durable.published(),
+                    Some(prepared.generation()),
+                    "{label}: durable selection is the prepared frontier"
+                );
+                assert!(Arc::ptr_eq(&captured, &successor_snapshot), "{label}");
+                assert_eq!(wake, riffdb_service::ColumnarWake::Notified, "{label}");
+            } else {
+                assert_eq!(result, Err(()), "{label}");
+                assert_eq!(durable.published(), expected.published(), "{label}");
+                assert!(Arc::ptr_eq(&captured, &predecessor), "{label}");
+                assert_eq!(wake, riffdb_service::ColumnarWake::TimedOut, "{label}");
+            }
+        }
     }
 
     // req: PRJ-002, PRJ-006, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022, OQ-024
@@ -3350,6 +3706,58 @@ contract VectorBoard version 1 {
         );
     }
 
+    // req: PRJ-004, PRJ-009, OQ-022
+    #[test]
+    fn selected_v1_from_stale_history_incarnation_is_refused_without_relabeling() {
+        let (runtime, scope) = board_runtime("selected-v1-stale-incarnation");
+        request_projection(&runtime, "ticket_board");
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        let binding = runtime
+            .control_binding("ticket_board")
+            .expect("control binding")
+            .clone();
+        let selected = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("read selected V1 control")
+            .expect("selected V1 control");
+        let selected = selected
+            .servable_generation()
+            .expect("selected V1 generation")
+            .clone();
+        assert_eq!(selected.layout(), ColumnarProjectionLayoutV1::V1);
+        assert_eq!(selected.history_incarnation(), 1);
+        let generation_directory = controlled_generation_directory(
+            &scope.path().join("projections"),
+            binding.spec().hash(),
+            selected.generation(),
+        );
+        let manifest_name = format!(
+            "MANIFEST-V1-{}",
+            lower_hex(
+                &selected
+                    .artifact()
+                    .expect("selected V1 artifact")
+                    .checksum()
+            )
+        );
+        let manifest_before = std::fs::read(generation_directory.join(&manifest_name))
+            .expect("read selected V1 manifest");
+        drop(runtime);
+
+        let error = match open_board_runtime_at_incarnation(scope.path(), 2) {
+            Err(error) => error,
+            Ok(_) => panic!("a selected V1 from another history incarnation must fail closed"),
+        };
+        assert_eq!(error.kind, ColumnarRegistrationErrorKind::Synchronization);
+        assert_eq!(
+            std::fs::read(generation_directory.join(&manifest_name))
+                .expect("reread selected V1 manifest"),
+            manifest_before,
+            "frozen V1 bytes are neither mutated nor relabeled"
+        );
+    }
+
     // req: PRJ-002, PRJ-004, PRJ-006, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022
     #[test]
     fn columnar_v2_compaction_reuses_generation_root_and_queries_validate_once() {
@@ -3593,7 +4001,7 @@ contract VectorBoard version 1 {
         assert_eq!(reopened.lifecycle_observation().activations(), 1);
     }
 
-    // req: PRJ-008, PRJ-009, OQ-020, OQ-022
+    // req: PRJ-004, PRJ-008, PRJ-009, OQ-020, OQ-022
     #[test]
     fn columnar_control_recovery_refuses_corrupt_selected_v2_without_v1_fallback() {
         const CHILD_MODE: &str = "RIFFDB_SERVER_CORRUPT_V2_CRASH_CHILD";
@@ -3676,6 +4084,75 @@ contract VectorBoard version 1 {
         assert!(
             !Arc::ptr_eq(&retained_v1, &selected_v2),
             "a still-live predecessor capability never becomes fallback authority"
+        );
+
+        assert!(
+            !crate::columnar_worker::run_one_test_pass(&reopened),
+            "recovery remains unavailable while only a new unprepared candidate exists"
+        );
+        let rebuilding = reopened
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("reread allocated recovery")
+            .expect("recovery control");
+        assert!(rebuilding.servable_generation().is_none());
+        assert_eq!(
+            rebuilding.predecessor().map(|value| value.generation()),
+            Some(published_v2.generation())
+        );
+        let recovery_generation = rebuilding
+            .candidate()
+            .expect("fresh recovery candidate")
+            .generation();
+        assert!(recovery_generation > published_v2.generation());
+        assert!(
+            !crate::columnar_worker::run_one_test_pass(&reopened),
+            "recovery remains unavailable while the rebuilt root is only prepared"
+        );
+        let prepared_recovery = reopened
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("reread prepared recovery")
+            .expect("prepared recovery control");
+        assert!(
+            prepared_recovery.candidate().is_some_and(|candidate| {
+                candidate.generation() == recovery_generation && candidate.artifact().is_some()
+            }),
+            "recovery candidate was not prepared: {prepared_recovery:?}"
+        );
+        let recovery_completed = crate::columnar_worker::run_one_test_pass(&reopened);
+        assert!(
+            recovery_completed,
+            "recovery publication failed: lifecycle={:?}, control={:?}",
+            reopened
+                .engine("ticket_board")
+                .expect("engine registry")
+                .expect("recovery slot")
+                .lifecycle(),
+            reopened
+                .storage()
+                .recover_expected_control(binding.spec().source())
+        );
+        let recovered = reopened
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("reread recovered control")
+            .expect("recovered control");
+        assert_eq!(
+            recovered
+                .servable_generation()
+                .map(|value| value.generation()),
+            Some(recovery_generation)
+        );
+        assert_eq!(
+            recovered.servable_generation().map(|value| value.layout()),
+            Some(ColumnarProjectionLayoutV1::V2)
+        );
+        assert!(
+            reopened_port
+                .observe("ticket_board")
+                .expect("capture rebuilt V2")
+                .has_published()
         );
 
         for (label, abort_at, unknown) in [
