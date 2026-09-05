@@ -1910,3 +1910,170 @@ fn current_digest_still_runs_index_generation_row_repair() {
     // encoding; the retained epoch is at least the legacy maximum.
     assert!(generation.epoch().get() >= 3);
 }
+
+// req: OUT-001, OUT-002, TXN-042, REC-004, PERF-019
+#[test]
+fn fresh_locator_preserving_immediate_permits_are_closed_exact_and_bounded() {
+    use crate::hooks::RedbTestOperation;
+
+    let preserving = [
+        RedbTestOperation::Admission,
+        RedbTestOperation::ExecutionFailure,
+        RedbTestOperation::ServiceAudit,
+        RedbTestOperation::CatalogAdministration,
+        RedbTestOperation::QueryModuleAdministration,
+        RedbTestOperation::ReactiveModuleAdministration,
+        RedbTestOperation::CapabilityAdministration,
+        RedbTestOperation::CapabilityBootstrap,
+        RedbTestOperation::ProjectionMutation,
+        RedbTestOperation::OutboxTransition,
+        RedbTestOperation::EventConsumerTransition,
+        RedbTestOperation::ColumnarProjectionControl,
+        RedbTestOperation::ApplicationInstallationCampaign,
+        RedbTestOperation::ApplicationExportOperation,
+    ];
+    assert!(
+        preserving
+            .into_iter()
+            .all(|operation| { PreservingImmediateClass::from_operation(operation).is_some() })
+    );
+    for disabling in [
+        RedbTestOperation::CommandBatch,
+        RedbTestOperation::DeferredCommandBatch,
+        RedbTestOperation::StorageFormatMigrationBatch,
+        RedbTestOperation::ContractMigrationBatch,
+        RedbTestOperation::ContractMigrationCutover,
+        RedbTestOperation::Restore,
+        RedbTestOperation::RetentionPruneSubrange,
+    ] {
+        assert!(PreservingImmediateClass::from_operation(disabling).is_none());
+    }
+
+    let insert_only = [
+        PreservingImmediateClass::Admission,
+        PreservingImmediateClass::ServiceAudit,
+        PreservingImmediateClass::Catalog,
+        PreservingImmediateClass::QueryModule,
+        PreservingImmediateClass::ReactiveModule,
+        PreservingImmediateClass::CapabilityAdministration,
+        PreservingImmediateClass::CapabilityBootstrap,
+        PreservingImmediateClass::ColumnarControl,
+        PreservingImmediateClass::Installation,
+        PreservingImmediateClass::Export,
+    ];
+    assert!(insert_only.into_iter().all(|class| {
+        fresh_locator_action_allowed(class, FreshLocatorMutationKind::Insert)
+            && !fresh_locator_action_allowed(class, FreshLocatorMutationKind::Delete)
+    }));
+    for class in [
+        PreservingImmediateClass::ExecutionFailure,
+        PreservingImmediateClass::Projection,
+        PreservingImmediateClass::Outbox,
+        PreservingImmediateClass::Consumer,
+    ] {
+        assert!(fresh_locator_action_allowed(
+            class,
+            FreshLocatorMutationKind::Insert
+        ));
+        assert!(fresh_locator_action_allowed(
+            class,
+            FreshLocatorMutationKind::Delete
+        ));
+    }
+
+    let exact_tables = [
+        (
+            PreservingImmediateClass::Admission,
+            "idempotency_pending",
+            b"k".as_slice(),
+        ),
+        (
+            PreservingImmediateClass::ExecutionFailure,
+            "idempotency",
+            b"k".as_slice(),
+        ),
+        (
+            PreservingImmediateClass::ServiceAudit,
+            "audit",
+            b"k".as_slice(),
+        ),
+        (
+            PreservingImmediateClass::Catalog,
+            "contract_bundles",
+            b"k".as_slice(),
+        ),
+        (
+            PreservingImmediateClass::QueryModule,
+            "query_modules",
+            b"k".as_slice(),
+        ),
+        (
+            PreservingImmediateClass::ReactiveModule,
+            "reactive_modules",
+            b"k".as_slice(),
+        ),
+        (
+            PreservingImmediateClass::CapabilityAdministration,
+            "capabilities",
+            b"k".as_slice(),
+        ),
+        (
+            PreservingImmediateClass::CapabilityBootstrap,
+            "meta",
+            crate::layout::META_CAPABILITY_BOOTSTRAP.as_bytes(),
+        ),
+        (
+            PreservingImmediateClass::Projection,
+            "projection_state",
+            b"k".as_slice(),
+        ),
+        (
+            PreservingImmediateClass::Outbox,
+            "outbox_status",
+            b"k".as_slice(),
+        ),
+        (
+            PreservingImmediateClass::Consumer,
+            "event_consumers",
+            b"k".as_slice(),
+        ),
+        (
+            PreservingImmediateClass::ColumnarControl,
+            "columnar_projection_controls",
+            b"k".as_slice(),
+        ),
+        (
+            PreservingImmediateClass::Installation,
+            "application_installation_campaigns",
+            b"k".as_slice(),
+        ),
+        (
+            PreservingImmediateClass::Export,
+            "application_export_operations",
+            b"k".as_slice(),
+        ),
+    ];
+    assert!(
+        exact_tables
+            .into_iter()
+            .all(|(class, table, key)| { fresh_locator_table_allowed(class, table, key) })
+    );
+    for excluded in [
+        "commits",
+        "idempotency_locators",
+        "provenance_locators",
+        "audit_by_request_locators",
+        "contract_migrations",
+    ] {
+        assert!(!fresh_locator_table_allowed(
+            PreservingImmediateClass::Admission,
+            excluded,
+            b"extra"
+        ));
+    }
+    assert!(!fresh_locator_table_allowed(
+        PreservingImmediateClass::CapabilityBootstrap,
+        "meta",
+        META_APPLICATION_SEQUENCE.as_bytes()
+    ));
+}

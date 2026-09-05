@@ -13,6 +13,7 @@ pub(crate) struct CoverageStamp {
     application: Option<CommitSequence>,
     administration: Option<AdministrationSequence>,
     allocator: ApplicationSequenceAllocator,
+    application_authority_digest: [u8; 32],
 }
 
 impl CoverageStamp {
@@ -21,12 +22,14 @@ impl CoverageStamp {
         application: Option<CommitSequence>,
         administration: Option<AdministrationSequence>,
         allocator: ApplicationSequenceAllocator,
+        application_authority_digest: [u8; 32],
     ) -> Self {
         Self {
             root_identity,
             application,
             administration,
             allocator,
+            application_authority_digest,
         }
     }
 
@@ -128,7 +131,14 @@ pub(crate) struct DirectCommandWitness {
     pair: PairToken,
     expected: CoverageStamp,
 }
-pub(crate) struct PreservingImmediateWitness(PairToken);
+pub(crate) struct PreservingImmediatePermit {
+    mutation_count: u16,
+    exact_set_digest: [u8; 32],
+}
+pub(crate) struct PreservingImmediateWitness {
+    pair: PairToken,
+    permit: PreservingImmediatePermit,
+}
 pub(crate) struct CoverageRebaseWitness(PairToken);
 
 enum CoverageState {
@@ -261,6 +271,7 @@ impl FreshLocatorCoverage {
         if predecessor.root_identity != successor.root_identity
             || predecessor.application != successor.application
             || predecessor.allocator != successor.allocator
+            || predecessor.application_authority_digest != successor.application_authority_digest
         {
             self.disable();
             return None;
@@ -343,8 +354,14 @@ impl FreshLocatorCoverage {
     pub(crate) fn begin_preserving_immediate(
         &mut self,
         predecessor: CoverageStamp,
+        permit: PreservingImmediatePermit,
     ) -> Option<PreservingImmediateWitness> {
-        self.begin_pair(predecessor).map(PreservingImmediateWitness)
+        if permit.mutation_count == 0 {
+            self.disable();
+            return None;
+        }
+        self.begin_pair(predecessor)
+            .map(|pair| PreservingImmediateWitness { pair, permit })
     }
 
     pub(crate) fn finish_preserving_immediate(
@@ -352,15 +369,27 @@ impl FreshLocatorCoverage {
         witness: PreservingImmediateWitness,
         successor: CoverageStamp,
     ) -> bool {
-        let predecessor = witness.0.public.stamp;
+        let predecessor = witness.pair.public.stamp;
         if predecessor.root_identity == successor.root_identity
             || predecessor.application != successor.application
             || predecessor.allocator != successor.allocator
+            || witness.permit.mutation_count == 0
+            || witness.permit.exact_set_digest == [0; 32]
         {
             self.disable();
             return false;
         }
-        self.finish_pair(witness.0, successor)
+        self.finish_pair(witness.pair, successor)
+    }
+
+    pub(crate) const fn preserving_permit(
+        mutation_count: u16,
+        exact_set_digest: [u8; 32],
+    ) -> PreservingImmediatePermit {
+        PreservingImmediatePermit {
+            mutation_count,
+            exact_set_digest,
+        }
     }
 
     pub(crate) fn begin_rebase(
@@ -468,6 +497,7 @@ mod tests {
                         ApplicationSequenceAllocator::next,
                     )
             }),
+            [0xa5; 32],
         )
     }
 

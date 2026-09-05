@@ -1226,8 +1226,10 @@ fn stage_admission_with_tables(
     }
     let key = identity_key(request.proposed_pending().identity())?;
     let encoded = encode_pending_admission_v1(request.proposed_pending())?;
+    let encoded_key = encode_idempotency_key(&key);
+    access.register_fresh_locator_raw_insert(JournalTable::IdempotencyPending, &encoded_key)?;
     if pending
-        .insert(encode_idempotency_key(&key), encoded.as_bytes())
+        .insert(encoded_key, encoded.as_bytes())
         .map_err(precommit_storage_error)?
         .is_some()
     {
@@ -1369,6 +1371,7 @@ impl RedbExecutionFailureAwaitingDecision {
             }
         }
         let key = identity_key(self.request.expected_pending().identity())?;
+        let encoded_key = encode_idempotency_key(&key);
         let encoded = encode_execution_failed_v1(&terminal)?;
         if matches!(
             self.request.admission_expectation(),
@@ -1377,8 +1380,10 @@ impl RedbExecutionFailureAwaitingDecision {
             let mut pending = transaction
                 .open_table(IDEMPOTENCY_PENDING)
                 .map_err(table_error)?;
+            self.access
+                .register_fresh_locator_byte_delete(IDEMPOTENCY_PENDING, encoded_key)?;
             if pending
-                .remove(encode_idempotency_key(&key))
+                .remove(encoded_key)
                 .map_err(precommit_storage_error)?
                 .is_none()
             {
@@ -1387,8 +1392,10 @@ impl RedbExecutionFailureAwaitingDecision {
         }
         {
             let mut outcomes = transaction.open_table(IDEMPOTENCY).map_err(table_error)?;
+            self.access
+                .register_fresh_locator_byte_insert(IDEMPOTENCY, encoded_key)?;
             if outcomes
-                .insert(encode_idempotency_key(&key), encoded.as_bytes())
+                .insert(encoded_key, encoded.as_bytes())
                 .map_err(precommit_storage_error)?
                 .is_some()
             {

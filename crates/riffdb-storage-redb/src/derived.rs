@@ -279,6 +279,7 @@ impl RedbOperationalPorts {
             let transaction = access.transaction()?;
             let mut statuses = transaction.open_table(OUTBOX_STATUS).map_err(table_error)?;
             let key = encode_event_key(event_id);
+            access.register_fresh_locator_byte_insert(OUTBOX_STATUS, &key)?;
             let previous = statuses
                 .insert(key.as_slice(), encoded.as_bytes())
                 .map_err(precommit_storage_error)?;
@@ -758,11 +759,10 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
                 .open_table(PROJECTION_STATE)
                 .map_err(table_error)?;
             for row in &prepared_rows {
+                let key = encode_projection_group_key(&row.key);
+                access.register_fresh_locator_byte_insert(PROJECTION_STATE, &key)?;
                 let previous = rows
-                    .insert(
-                        encode_projection_group_key(&row.key),
-                        row.encoded.as_bytes(),
-                    )
+                    .insert(key, row.encoded.as_bytes())
                     .map_err(precommit_storage_error)?;
                 match (&row.current, previous.as_ref()) {
                     (None, None) => {}
@@ -785,11 +785,10 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
             let mut markers = transaction
                 .open_table(PROJECTION_APPLIED)
                 .map_err(table_error)?;
+            let key = encode_projection_apply_key(&marker_key);
+            access.register_fresh_locator_byte_insert(PROJECTION_APPLIED, &key)?;
             if markers
-                .insert(
-                    encode_projection_apply_key(&marker_key),
-                    encoded_marker.as_bytes(),
-                )
+                .insert(key, encoded_marker.as_bytes())
                 .map_err(precommit_storage_error)?
                 .is_some()
             {
@@ -798,14 +797,13 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
         }
         {
             let key = ProjectionFrontierKey::new(request.identity().clone());
+            let encoded_key = encode_projection_frontier_key(&key);
             let mut controls = transaction
                 .open_table(PROJECTION_FRONTIER)
                 .map_err(table_error)?;
+            access.register_fresh_locator_byte_insert(PROJECTION_FRONTIER, &encoded_key)?;
             let previous = controls
-                .insert(
-                    encode_projection_frontier_key(&key),
-                    encoded_control.as_bytes(),
-                )
+                .insert(encoded_key, encoded_control.as_bytes())
                 .map_err(precommit_storage_error)?
                 .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
             let observed = decode_projection_control_v1(previous.value())?
@@ -846,11 +844,13 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
         let encoded = encode_projection_control_v1(&updated)?;
         {
             let key = ProjectionFrontierKey::new(identity);
+            let encoded_key = encode_projection_frontier_key(&key);
             let mut controls = transaction
                 .open_table(PROJECTION_FRONTIER)
                 .map_err(table_error)?;
+            access.register_fresh_locator_byte_insert(PROJECTION_FRONTIER, &encoded_key)?;
             let previous = controls
-                .insert(encode_projection_frontier_key(&key), encoded.as_bytes())
+                .insert(encoded_key, encoded.as_bytes())
                 .map_err(precommit_storage_error)?;
             match (current.as_ref(), previous.as_ref()) {
                 (None, None) => {}

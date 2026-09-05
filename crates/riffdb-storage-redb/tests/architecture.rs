@@ -1669,6 +1669,8 @@ fn fresh_locator_roles_are_private_affine_and_bound_to_existing_publication_edge
         "CommandPublicationWitness",
         "PreservePublicationWitness",
         "DirectCommandWitness",
+        "PreservingImmediatePermit",
+        "PreservingImmediateWitness",
         "CoverageRebaseWitness",
     ] {
         let declaration = coverage
@@ -1737,4 +1739,53 @@ fn fresh_locator_roles_are_private_affine_and_bound_to_existing_publication_edge
         .find("observe_changelog_publication")
         .expect("ADR-0100 observation");
     assert!(successor < coverage && coverage < observation);
+
+    for excluded in [
+        "commits",
+        "idempotency_locators",
+        "provenance_locators",
+        "audit_by_request_locators",
+        "META_APPLICATION_SEQUENCE.as_bytes()",
+    ] {
+        assert!(
+            store.contains(excluded),
+            "the closed permit validator must reject {excluded}"
+        );
+    }
+    assert!(store.contains("riffdb-fresh-locator-preserving-permit-v1"));
+    assert!(store.contains("canonical.windows(2).any"));
+    assert!(store.contains("publication_queue.lock()"));
+
+    for (file, registrations) in [
+        ("application_installation.rs", 1),
+        ("application_export.rs", 1),
+        ("columnar_projection_control.rs", 2),
+        ("derived.rs", 5),
+        ("consumer.rs", 4),
+    ] {
+        let source = production_source(source_dir.join(file));
+        assert_eq!(
+            source.matches("register_fresh_locator_").count(),
+            registrations,
+            "every raw preserving mutation in {file} has one exact pre-staging permit"
+        );
+    }
+    let administration = production_source(source_dir.join("administration.rs"));
+    for permit_site in [
+        "register_fresh_locator_meta_insert(META_ADMINISTRATION_SEQUENCE)",
+        "register_fresh_locator_byte_insert(AUDIT, &key)",
+        "register_fresh_locator_byte_insert(CONTRACT_BUNDLES, &key)",
+        "register_fresh_locator_byte_insert(CATALOG_ACTIVE, &CATALOG_ACTIVE_KEY)",
+        "register_fresh_locator_byte_insert(QUERY_MODULES, &key)",
+        "register_fresh_locator_byte_insert(QUERY_MODULE_ACTIVE, &key)",
+        "register_fresh_locator_byte_insert(REACTIVE_MODULES, &key)",
+        "register_fresh_locator_byte_insert(CAPABILITIES, &key)",
+        "register_fresh_locator_byte_insert(CAPABILITY_TOKENS, &key)",
+        "register_fresh_locator_meta_insert(META_CAPABILITY_BOOTSTRAP)",
+    ] {
+        assert!(
+            administration.contains(permit_site),
+            "administration raw mutation is missing {permit_site}"
+        );
+    }
 }
