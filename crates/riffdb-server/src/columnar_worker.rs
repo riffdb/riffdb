@@ -361,10 +361,24 @@ pub(crate) enum SelectedFailureRecordMode {
     StateChangedBeforeCommit,
     #[cfg(test)]
     StorageFailureBeforeCommit,
+    #[cfg(test)]
+    CandidateAllocationBeforeCommit,
+    #[cfg(test)]
+    RepeatedStorageFailureBeforeCommit,
 }
 
 #[cfg(test)]
 pub(crate) use SelectedFailureRecordMode as SelectedFailureRecordTestMode;
+
+impl SelectedFailureRecordMode {
+    const fn repeats_injected_failure(self) -> bool {
+        #[cfg(test)]
+        if matches!(self, Self::RepeatedStorageFailureBeforeCommit) {
+            return true;
+        }
+        false
+    }
+}
 
 impl ColumnarPublicationAttempt {
     const fn from_result(
@@ -1600,10 +1614,16 @@ fn activate_requested_slot_controlled(
         Ok(opened) => opened,
         Err(error) => {
             slot.fail_activation(generation);
-            if let Some(generation) = generation
-                && record_selected_open_failure(runtime, name, generation, failure_mode)?
-            {
-                return Ok(true);
+            if let Some(generation) = generation {
+                match record_selected_open_failure(runtime, name, generation, failure_mode) {
+                    Ok(true) => return Ok(true),
+                    Ok(false) => {}
+                    Err(classification_error) => {
+                        slot.retry_failed_activation(generation)
+                            .map_err(map_port_error)?;
+                        return Err(classification_error);
+                    }
+                }
             }
             return Err(ColumnarWorkerError::Apply(error));
         }
@@ -1634,10 +1654,13 @@ fn record_selected_open_failure(
     }
 
     let published = published.clone();
+    let mut expected = control;
     let mut next_mode = mode;
     for attempt_index in 0..2 {
-        let result = issue_selected_failure_record(runtime, &control, next_mode);
-        next_mode = SelectedFailureRecordMode::Ordinary;
+        let result = issue_selected_failure_record(runtime, &binding, &expected, next_mode);
+        if !next_mode.repeats_injected_failure() {
+            next_mode = SelectedFailureRecordMode::Ordinary;
+        }
         let durable = recover_control(runtime, &binding)?;
         if durable.published() == Some(&published) && durable.servable_generation().is_none() {
             abort_selected_failure_test_process_at("after-record");
@@ -1647,6 +1670,16 @@ fn record_selected_open_failure(
             return install_selected_after_failed_open(runtime, &binding, &durable);
         }
         if attempt_index == 0 {
+            if durable.source() != binding.spec().source()
+                || durable.target_definition_fingerprint()
+                    != binding.spec().definition_fingerprint()
+                || durable.target_spec_hash() != binding.spec().hash()
+                || durable.replay_limits() != binding.spec().replay_limits()
+                || published.history_incarnation() != runtime.history_incarnation()
+            {
+                return Err(ColumnarWorkerError::Integrity);
+            }
+            expected = durable;
             continue;
         }
         return match result {
@@ -1699,6 +1732,7 @@ fn install_selected_after_failed_open(
 
 fn issue_selected_failure_record(
     runtime: &ColumnarRuntime,
+    _binding: &ColumnarControlBinding,
     expected: &StoredColumnarProjectionControlV1,
     mode: SelectedFailureRecordMode,
 ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
@@ -1710,6 +1744,26 @@ fn issue_selected_failure_record(
         }
         #[cfg(test)]
         SelectedFailureRecordMode::StorageFailureBeforeCommit => {
+            Err(StorageError::new(StorageErrorKind::Unavailable, None))
+        }
+        #[cfg(test)]
+        SelectedFailureRecordMode::CandidateAllocationBeforeCommit => {
+            let physical =
+                PhysicalGenerationFingerprintV1::compute(_binding.definition().fingerprint());
+            if runtime
+                .storage()
+                .begin_v2_candidate(expected, *physical.as_bytes())?
+                != ColumnarProjectionControlWriteResultV1::Applied
+            {
+                return Err(StorageError::new(
+                    StorageErrorKind::InvariantViolation,
+                    None,
+                ));
+            }
+            runtime.storage().record_published_failure(expected)
+        }
+        #[cfg(test)]
+        SelectedFailureRecordMode::RepeatedStorageFailureBeforeCommit => {
             Err(StorageError::new(StorageErrorKind::Unavailable, None))
         }
     }
