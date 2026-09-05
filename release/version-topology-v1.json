@@ -446,6 +446,23 @@
       "last_change": {"classification":"new_domain_identity","decision":"ADR-0160/WP-710 inactive V2 codec candidate"}
     },
     {
+      "id": "executable_ir.columnar_generation_root",
+      "title": "Derived columnar generation root",
+      "classification": "executable_ir",
+      "owner": "riffdb-columnar",
+      "source_assertions": [{"kind":"literal","path":"crates/riffdb-columnar/src/generation_root.rs","literal":"pub const COLUMNAR_GENERATION_ROOT_FORMAT_VERSION_V1: u16 = 1;"}],
+      "readable_identities": ["1"], "writable_identities": ["1"], "current_identities": ["1"],
+      "writer_policy": "single_current",
+      "compatibility_rule": "Root V1 canonically binds one complete bounded V2 partition inventory, physical format tuple, incarnation, generation, matched frontier, counts, lengths, and checksums.",
+      "breaking_when": "Root magic, field order, numeric identity, physical-fingerprint preimage, filename derivation, bounds, checksum, or canonical inventory rules change under identity 1.",
+      "supported_release_posture": "Root V1 is the current complete V2 generation publication artifact.",
+      "lifecycle": {"active":["1"],"read_only":[],"retirement_candidate":[],"retired":[]},
+      "reserved_identity_policy": "Generation-root identities, field positions, and physical tuple components are never reused.",
+      "evidence": ["crates/riffdb-columnar/tests/generation_root.rs", "fixtures/compatibility/columnar-generation-root-v1.txt"],
+      "checks": ["./scripts/check-version-topology"],
+      "last_change": {"classification":"new_domain_identity","decision":"ADR-0190/WP-711 generation-root V1"}
+    },
+    {
       "id": "executable_ir.columnar_layout",
       "title": "Derived columnar layout",
       "classification": "executable_ir",
