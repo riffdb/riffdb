@@ -98,8 +98,9 @@ unknown runtime call refuses rather than falling back or synthesizing behavior.
      `riffdb_shape_live_loopback`, custody `riffdb`,
      `complete_upstream_suite: false`; source
      `release/evidence/large-atomic-command-envelope-v1.json#/mlflow_loopback`.
-   - `partial.mlflow.partition_search`: subject `mlflow`, scope `OQ-112`, the
-     same class and custody, `complete_upstream_suite: false`; sources
+   - `partial.mlflow.partition_search`: subject `mlflow`, scope `OQ-112`, class
+     `external_partial_profile_live`, custody `external`,
+     `complete_upstream_suite: false`; sources
      `release/evidence/partition-set-exact-prefix-repro-v1.json` and
      `release/evidence/partition-set-mlflow-loopback-v1.json`.
    - `post_alpha.payload.shape`: subject `payload`, scope `BLK-014,RAP-016`, class
