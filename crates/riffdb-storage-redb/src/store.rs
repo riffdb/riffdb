@@ -500,7 +500,8 @@ impl SharedRedb {
         );
     }
 
-    fn fresh_locator_history_fallback_scans(&self) -> u64 {
+    #[cfg(test)]
+    pub(crate) fn fresh_locator_history_fallback_scans(&self) -> u64 {
         self.fresh_locator_history_fallback_scans
             .load(Ordering::Relaxed)
     }
@@ -4867,16 +4868,6 @@ impl RedbOperationalPorts {
     #[must_use]
     pub fn transient_index_commit_rows(&self) -> u64 {
         self.shared.transient_index_commit_rows()
-    }
-
-    /// Bounded command-history fallbacks entered after an exact locator miss.
-    ///
-    /// This is closed test evidence for ADR-0197. Application decisions must
-    /// never depend on it.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn fresh_locator_history_fallback_scans(&self) -> u64 {
-        self.shared.fresh_locator_history_fallback_scans()
     }
 
     /// Per-reason counts of ignored validated-prefix checkpoints on this database.
