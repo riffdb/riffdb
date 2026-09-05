@@ -1465,6 +1465,7 @@ enum RegistryMigration {
     VectorHealthObservations,
     VectorProjectionControls,
     CleanCloseLifecycle,
+    ColumnarProjectionControls,
 }
 
 const FORMAT_MIGRATION_MAX_ROWS: usize = 500;
@@ -1565,6 +1566,12 @@ pub(crate) const PRE_VECTOR_PROJECTION_CONTROL_REGISTRY_DIGEST: [u8; 32] = [
 pub(crate) const PRE_CLEAN_CLOSE_LIFECYCLE_REGISTRY_DIGEST: [u8; 32] = [
     0x55, 0xb6, 0x04, 0x06, 0xf6, 0x56, 0x87, 0xad, 0x6d, 0x5b, 0x16, 0x7f, 0xd4, 0x28, 0x16, 0x00,
     0x39, 0x90, 0x10, 0x25, 0x8f, 0x75, 0x2a, 0xb1, 0x41, 0x28, 0xb4, 0x31, 0x56, 0xe6, 0x8e, 0xcc,
+];
+/// Registry digest immediately before common schema-bound columnar controls
+/// became writable. This is the complete WP-688 clean-close registry.
+pub(crate) const PRE_COLUMNAR_PROJECTION_CONTROL_REGISTRY_DIGEST: [u8; 32] = [
+    0x71, 0x3f, 0x2a, 0xab, 0xc2, 0x42, 0xd6, 0xd2, 0x26, 0x3f, 0xd2, 0x76, 0x75, 0x58, 0x64, 0x53,
+    0xab, 0x41, 0xc7, 0x54, 0xae, 0xf8, 0x4b, 0x48, 0xd4, 0x23, 0x30, 0x60, 0xfe, 0x03, 0xa1, 0x31,
 ];
 
 /// Last observed redb repair progress in basis points (0..=10_000), for recovery telemetry.
@@ -2140,6 +2147,10 @@ impl RedbStore {
                     == &SchemaHash::from_bytes(PRE_CLEAN_CLOSE_LIFECYCLE_REGISTRY_DIGEST)
                 {
                     RegistryMigration::CleanCloseLifecycle
+                } else if observed.value()
+                    == &SchemaHash::from_bytes(PRE_COLUMNAR_PROJECTION_CONTROL_REGISTRY_DIGEST)
+                {
+                    RegistryMigration::ColumnarProjectionControls
                 } else {
                     return Err(storage_error(StorageErrorKind::IncompatibleFormat));
                 }
@@ -2414,8 +2425,29 @@ impl RedbStore {
             publish_record_registry(
                 &self.shared,
                 SchemaHash::from_bytes(PRE_CLEAN_CLOSE_LIFECYCLE_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_COLUMNAR_PROJECTION_CONTROL_REGISTRY_DIGEST),
+            )?;
+        }
+        if format == StorageFormatVersion::V2
+            && (matches!(
+                registry_migration,
+                RegistryMigration::ColumnarProjectionControls
+            ) || observed_registry_digest(&self.shared)?
+                == SchemaHash::from_bytes(PRE_COLUMNAR_PROJECTION_CONTROL_REGISTRY_DIGEST))
+        {
+            install_columnar_projection_controls_table(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_COLUMNAR_PROJECTION_CONTROL_REGISTRY_DIGEST),
                 riffdb_storage_api::proto_codec::current_record_registry_digest(),
             )?;
+        }
+
+        // ADR-0192 keeps tag 65 only as a bounded structural predecessor.
+        // Its decoded values are discarded and never participate in common
+        // control, selection, retention, health, or path resolution.
+        if format == StorageFormatVersion::V2 {
+            validate_inert_legacy_vector_controls(&self.shared)?;
         }
 
         // This additive proof table reuses the already-frozen entity-chain-head
@@ -3872,6 +3904,44 @@ fn install_vector_projection_controls_table(shared: &SharedRedb) -> Result<(), S
             .map_err(table_error)?,
     );
     shared.commit_durable(transaction)
+}
+
+fn install_columnar_projection_controls_table(shared: &SharedRedb) -> Result<(), StorageError> {
+    let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
+    transaction
+        .set_durability(Durability::Immediate)
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    drop(
+        transaction
+            .open_table(crate::layout::COLUMNAR_PROJECTION_CONTROLS)
+            .map_err(table_error)?,
+    );
+    shared.commit_durable(transaction)
+}
+
+pub(crate) fn validate_inert_legacy_vector_controls(
+    shared: &SharedRedb,
+) -> Result<(), StorageError> {
+    const MAX_LEGACY_VECTOR_CONTROLS: u64 = 4_096;
+
+    let transaction = shared.database.begin_read().map_err(transaction_error)?;
+    let table = transaction
+        .open_table(VECTOR_PROJECTION_CONTROLS)
+        .map_err(table_error)?;
+    if table.len().map_err(precommit_storage_error)? > MAX_LEGACY_VECTOR_CONTROLS {
+        return Err(storage_error(StorageErrorKind::LimitExceeded));
+    }
+    for row in table.iter().map_err(precommit_storage_error)? {
+        let (key, value) = row.map_err(precommit_storage_error)?;
+        let source = crate::keys::decode_vector_projection_control_key(key.value())
+            .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+        let control = riffdb_storage_api::decode_vector_projection_control_v1(value.value())
+            .map_err(crate::error::codec_error)?;
+        if control.value().source() != &source {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+    }
+    Ok(())
 }
 
 fn backfill_vector_evidence_index(shared: &SharedRedb) -> Result<(), StorageError> {
@@ -8249,8 +8319,9 @@ fn classify_table_names(
         .collect::<BTreeSet<_>>();
     // The newest additive tables are empty on install and carry no history, so
     // their absence is normalized while classifying the already-enumerated
-    // predecessor layouts below. `vector_projection_controls` is installed by
-    // the registry migration before it publishes the successor digest; the
+    // predecessor layouts below. The vector and common columnar control tables
+    // are installed by their registry migrations before the successor digest;
+    // the
     // ADR-0165 locator tables add no message type, so no digest advances for
     // them and `install_command_locator_tables` installs them at open instead.
     // Only these exact names are normalized. No other missing or extra table is
@@ -8258,6 +8329,7 @@ fn classify_table_names(
     let mut with_newest_additive = tables.clone();
     for name in [
         "vector_projection_controls",
+        "columnar_projection_controls",
         "idempotency_locators",
         "provenance_locators",
         "audit_by_request_locators",

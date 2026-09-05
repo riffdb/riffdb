@@ -489,6 +489,71 @@ fn pre_vector_projection_control_registry_installs_table_before_publication() {
     );
 }
 
+// req: PRJ-007, PRJ-010, OQ-024, OQ-053
+#[test]
+fn pre_columnar_control_registry_installs_table_before_publication() {
+    let scope = crate::test_path::ScopedDirectory::new("pre-columnar-control-registry");
+    let path = scope.join("db.redb");
+    let mut store = RedbStore::open(&path).expect("open");
+    let database_id = DatabaseId::from_bytes({
+        let mut bytes = [0x26; 16];
+        bytes[6] = 0x76;
+        bytes[8] = 0xa6;
+        bytes
+    })
+    .expect("database");
+    store.initialize_database(database_id).expect("initialize");
+    {
+        let mut transaction = store
+            .shared
+            .database
+            .begin_write()
+            .expect("begin predecessor write");
+        transaction
+            .set_durability(Durability::Immediate)
+            .expect("durability");
+        transaction
+            .delete_table(crate::layout::COLUMNAR_PROJECTION_CONTROLS)
+            .expect("remove successor table");
+        let predecessor = encode_record_registry_v2(SchemaHash::from_bytes(
+            PRE_COLUMNAR_PROJECTION_CONTROL_REGISTRY_DIGEST,
+        ))
+        .expect("predecessor registry");
+        transaction
+            .open_table(META)
+            .expect("metadata")
+            .insert(META_RECORD_REGISTRY, predecessor.as_bytes())
+            .expect("pin predecessor registry");
+        transaction.commit().expect("commit predecessor fixture");
+    }
+    drop(store);
+
+    let reopened = RedbStore::open(&path).expect("migrate predecessor");
+    let transaction = reopened
+        .shared
+        .database
+        .begin_read()
+        .expect("read migrated database");
+    assert!(
+        transaction
+            .open_table(crate::layout::COLUMNAR_PROJECTION_CONTROLS)
+            .expect("columnar projection control table")
+            .is_empty()
+            .expect("table length")
+    );
+    let metadata = transaction.open_table(META).expect("metadata");
+    let encoded = metadata
+        .get(META_RECORD_REGISTRY)
+        .expect("registry read")
+        .expect("registry");
+    assert_eq!(
+        *decode_record_registry_v2(encoded.value())
+            .expect("decode registry")
+            .value(),
+        riffdb_storage_api::proto_codec::current_record_registry_digest()
+    );
+}
+
 #[test]
 fn async_checkpoint_starts_half_full_and_reserves_one_maximum_physical_frame() {
     assert_eq!(JOURNAL_CHECKPOINT_START_TRANSITIONS, 4_096);
