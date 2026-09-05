@@ -436,18 +436,18 @@ fn maintain_common_generations(
             return Err(ColumnarWorkerError::Integrity);
         }
         let completed = if let Some(candidate) = control.candidate()
-            && candidate.layout() == ColumnarProjectionLayoutV1::V2
             && control.lifecycle() == ColumnarProjectionLifecycleV1::Degraded
         {
-            let physical =
-                PhysicalGenerationFingerprintV1::compute(binding.definition().fingerprint());
+            let physical = match candidate.layout() {
+                ColumnarProjectionLayoutV1::V1 => None,
+                ColumnarProjectionLayoutV1::V2 => Some(
+                    *PhysicalGenerationFingerprintV1::compute(binding.definition().fingerprint())
+                        .as_bytes(),
+                ),
+            };
             let _ = runtime
                 .storage()
-                .replace_failed_candidate(
-                    &control,
-                    ColumnarProjectionLayoutV1::V2,
-                    Some(*physical.as_bytes()),
-                )
+                .replace_failed_candidate(&control, candidate.layout(), physical)
                 .map_err(map_storage_error)?;
             true
         } else if let Some(candidate) = control.candidate()

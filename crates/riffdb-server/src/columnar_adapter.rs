@@ -2651,6 +2651,179 @@ contract VectorBoard version 1 {
         );
     }
 
+    // req: PRJ-006, PRJ-007, PRJ-010, OQ-020, OQ-022
+    #[test]
+    fn failed_initial_and_unservable_v1_candidates_are_replaced_before_reclamation() {
+        let (initial_runtime, initial_scope) = board_runtime("failed-initial-v1-replacement");
+        let initial_binding = initial_runtime
+            .control_binding("ticket_board")
+            .expect("initial binding")
+            .clone();
+        let initial = initial_runtime
+            .storage()
+            .recover_expected_control(initial_binding.spec().source())
+            .expect("read initial control")
+            .expect("initial control");
+        let failed_initial = initial_runtime
+            .storage()
+            .record_candidate_failure(
+                &initial,
+                riffdb_storage_api::ColumnarProjectionFailureReasonV1::ReplayBytes,
+            )
+            .expect("record initial candidate failure");
+        assert_eq!(
+            failed_initial,
+            ColumnarProjectionControlWriteResultV1::Applied
+        );
+        let failed_initial_directory = controlled_generation_directory(
+            &initial_scope.path().join("projections"),
+            initial_binding.spec().hash(),
+            ProjectionGeneration::first(),
+        );
+        std::fs::create_dir_all(&failed_initial_directory)
+            .expect("create failed initial candidate directory");
+        std::fs::write(failed_initial_directory.join("orphan"), b"failed candidate")
+            .expect("write failed initial candidate member");
+
+        request_projection(&initial_runtime, "ticket_board");
+        assert!(crate::columnar_worker::run_one_test_pass(&initial_runtime));
+        let replaced_initial = initial_runtime
+            .storage()
+            .recover_expected_control(initial_binding.spec().source())
+            .expect("read replaced initial control")
+            .expect("replaced initial control");
+        assert_eq!(
+            replaced_initial.lifecycle(),
+            riffdb_storage_api::ColumnarProjectionLifecycleV1::Building
+        );
+        assert_eq!(replaced_initial.highest_generation().get(), 2);
+        assert_eq!(
+            replaced_initial.retention_frontier(),
+            Some(FrontierPosition::BeforeFirst)
+        );
+        assert!(
+            !failed_initial_directory.exists(),
+            "the failed Candidate is reclaimed only after its replacement CAS"
+        );
+
+        let (unservable_runtime, unservable_scope) =
+            board_runtime("failed-unservable-v1-replacement");
+        let unservable_binding = unservable_runtime
+            .control_binding("ticket_board")
+            .expect("unservable binding")
+            .clone();
+        request_projection(&unservable_runtime, "ticket_board");
+        assert!(crate::columnar_worker::run_one_test_pass(
+            &unservable_runtime
+        ));
+        let ready = unservable_runtime
+            .storage()
+            .recover_expected_control(unservable_binding.spec().source())
+            .expect("read ready control")
+            .expect("ready control");
+        let selected = ready.published().expect("selected V1").clone();
+        assert_eq!(
+            unservable_runtime
+                .storage()
+                .record_published_failure(&ready)
+                .expect("record selected corruption"),
+            ColumnarProjectionControlWriteResultV1::Applied
+        );
+        let corrupt = unservable_runtime
+            .storage()
+            .recover_expected_control(unservable_binding.spec().source())
+            .expect("read corrupt control")
+            .expect("corrupt control");
+        assert_eq!(
+            unservable_runtime
+                .storage()
+                .allocate_unservable_rebuild_candidate(
+                    &corrupt,
+                    unservable_binding.spec().definition_fingerprint(),
+                    unservable_binding.spec().hash(),
+                    unservable_binding.spec().replay_limits(),
+                    ColumnarProjectionLayoutV1::V1,
+                    None,
+                )
+                .expect("allocate corruption rebuild"),
+            ColumnarProjectionControlWriteResultV1::Applied
+        );
+        let rebuilding = unservable_runtime
+            .storage()
+            .recover_expected_control(unservable_binding.spec().source())
+            .expect("read corruption rebuild")
+            .expect("corruption rebuild");
+        let failed_generation = rebuilding.candidate().expect("V1 candidate").generation();
+        assert_eq!(
+            unservable_runtime
+                .storage()
+                .record_candidate_failure(
+                    &rebuilding,
+                    riffdb_storage_api::ColumnarProjectionFailureReasonV1::ReplayBacklog,
+                )
+                .expect("record unservable candidate failure"),
+            ColumnarProjectionControlWriteResultV1::Applied
+        );
+        let failed_unservable_directory = controlled_generation_directory(
+            &unservable_scope.path().join("projections"),
+            unservable_binding.spec().hash(),
+            failed_generation,
+        );
+        std::fs::create_dir_all(&failed_unservable_directory)
+            .expect("create failed unservable candidate directory");
+        std::fs::write(
+            failed_unservable_directory.join("orphan"),
+            b"failed candidate",
+        )
+        .expect("write failed unservable candidate member");
+
+        assert!(crate::columnar_worker::run_one_test_pass(
+            &unservable_runtime
+        ));
+        let replaced_unservable = unservable_runtime
+            .storage()
+            .recover_expected_control(unservable_binding.spec().source())
+            .expect("read replaced unservable control")
+            .expect("replaced unservable control");
+        assert_eq!(
+            replaced_unservable.lifecycle(),
+            riffdb_storage_api::ColumnarProjectionLifecycleV1::Rebuilding
+        );
+        let retained_predecessor = replaced_unservable
+            .predecessor()
+            .expect("retained corrupt predecessor");
+        assert_eq!(retained_predecessor.generation(), selected.generation());
+        assert_eq!(retained_predecessor.layout(), selected.layout());
+        assert_eq!(retained_predecessor.frontier(), selected.frontier());
+        assert_eq!(retained_predecessor.artifact(), selected.artifact());
+        assert_eq!(
+            retained_predecessor.definition_fingerprint(),
+            selected.definition_fingerprint()
+        );
+        assert_eq!(retained_predecessor.spec_hash(), selected.spec_hash());
+        assert_eq!(
+            replaced_unservable.highest_generation().get(),
+            failed_generation.get() + 1
+        );
+        assert_eq!(
+            replaced_unservable.retention_frontier(),
+            Some(FrontierPosition::BeforeFirst)
+        );
+        assert!(
+            !failed_unservable_directory.exists(),
+            "the failed unservable Candidate is reclaimed only after replacement"
+        );
+        assert!(
+            controlled_generation_directory(
+                &unservable_scope.path().join("projections"),
+                unservable_binding.spec().hash(),
+                selected.generation(),
+            )
+            .exists(),
+            "the unservable predecessor remains retained byte-exact"
+        );
+    }
+
     // req: PRJ-002, PRJ-004, PRJ-006, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022
     #[test]
     fn columnar_v2_compaction_reuses_generation_root_and_queries_validate_once() {
