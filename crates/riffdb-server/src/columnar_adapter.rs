@@ -32,8 +32,8 @@ use riffdb_storage_api::{
     ColumnarProjectionControlWriteResultV1, ColumnarProjectionLayoutV1, CommitScanPageV1,
     CommitScanRequest, EntityTarget, FreshColumnarProjectionControlV1, IdempotencyIdentity,
     StorageError, StorageErrorKind, StorageScanLimit, StoredColumnarProjectionControlV1,
-    StoredCommitRecordV1, StoredDurableEventV1, StoredEntityRecordV1, StoredOutcomeV1,
-    StoredProvenanceRecordV1,
+    StoredColumnarProjectionGenerationV1, StoredCommitRecordV1, StoredDurableEventV1,
+    StoredEntityRecordV1, StoredOutcomeV1, StoredProvenanceRecordV1,
 };
 use riffdb_types::{
     CommitSequence, EntityKey, EventId, FieldId, FrontierPosition, ProjectionFrontier,
@@ -1448,7 +1448,37 @@ fn reconcile_common_control(
     observed: StoredColumnarProjectionControlV1,
 ) -> Result<(), ColumnarRegistrationError> {
     if common_control_matches(&observed, &binding.spec) {
-        return Ok(());
+        let Some(published) = selected_corruption_without_rebuild_candidate(&observed) else {
+            return Ok(());
+        };
+        let physical = match published.layout() {
+            ColumnarProjectionLayoutV1::V1 => None,
+            ColumnarProjectionLayoutV1::V2 => Some(
+                *PhysicalGenerationFingerprintV1::compute(binding.definition.fingerprint())
+                    .as_bytes(),
+            ),
+        };
+        let _ = storage
+            .allocate_unservable_rebuild_candidate(
+                &observed,
+                binding.spec.definition_fingerprint(),
+                binding.spec.hash(),
+                binding.spec.replay_limits(),
+                published.layout(),
+                physical,
+            )
+            .map_err(|error| ColumnarRegistrationError::control_storage(error, &binding.name))?;
+        let recovered = storage
+            .recover_expected_control(binding.spec.source())
+            .map_err(|error| ColumnarRegistrationError::control_storage(error, &binding.name))?
+            .ok_or_else(ColumnarRegistrationError::synchronization)?;
+        return if common_control_matches(&recovered, &binding.spec)
+            && (recovered.servable_generation().is_some() || recovered.candidate().is_some())
+        {
+            Ok(())
+        } else {
+            Err(ColumnarRegistrationError::synchronization())
+        };
     }
     let outcome = if observed.published().is_none() && observed.predecessor().is_none() {
         storage.retarget_initial_candidate(
@@ -1480,6 +1510,22 @@ fn reconcile_common_control(
     } else {
         Err(ColumnarRegistrationError::synchronization())
     }
+}
+
+fn selected_corruption_without_rebuild_candidate(
+    control: &StoredColumnarProjectionControlV1,
+) -> Option<&StoredColumnarProjectionGenerationV1> {
+    let published = control.published()?;
+    (control.lifecycle() == riffdb_storage_api::ColumnarProjectionLifecycleV1::Degraded
+        && control.candidate().is_none()
+        && control.predecessor().is_none()
+        && control.failure().is_some_and(|failure| {
+            failure.target() == riffdb_storage_api::ColumnarProjectionFailureTargetV1::Published
+                && failure.reason()
+                    == riffdb_storage_api::ColumnarProjectionFailureReasonV1::ArtifactInvalid
+                && failure.generation() == Some(published.generation())
+        }))
+    .then_some(published)
 }
 
 fn common_control_matches(
@@ -3313,6 +3359,175 @@ contract VectorBoard version 1 {
             .expect("control remains present");
         assert!(durable.servable_generation().is_none());
         assert_eq!(durable.candidate(), Some(&prepared_pointer));
+    }
+
+    // req: PRJ-004, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022
+    #[test]
+    fn corrupt_prepared_candidates_record_failure_and_replace_across_process_reopen() {
+        const CHILD_MODE: &str = "RIFFDB_SERVER_CORRUPT_CANDIDATE_CHILD";
+        const CHILD_PATH: &str = "RIFFDB_SERVER_CORRUPT_CANDIDATE_PATH";
+        const EXACT_TEST: &str = "columnar_adapter::tests::corrupt_prepared_candidates_record_failure_and_replace_across_process_reopen";
+
+        if std::env::var_os(CHILD_MODE).is_some() {
+            let path = PathBuf::from(std::env::var_os(CHILD_PATH).expect("child path"));
+            let runtime = open_board_runtime_at(&path);
+            request_projection(&runtime, "ticket_board");
+            for _ in 0..5 {
+                let _ = crate::columnar_worker::run_one_test_pass(&runtime);
+            }
+            panic!("candidate crash child did not abort at the requested boundary");
+        }
+
+        for layout in [
+            ColumnarProjectionLayoutV1::V1,
+            ColumnarProjectionLayoutV1::V2,
+        ] {
+            let label = match layout {
+                ColumnarProjectionLayoutV1::V1 => "v1",
+                ColumnarProjectionLayoutV1::V2 => "v2",
+            };
+            let (runtime, scope) = board_runtime(&format!("corrupt-prepared-candidate-{label}"));
+            append_board_ticket_for_worker(&runtime);
+            let binding = runtime
+                .control_binding("ticket_board")
+                .expect("control binding")
+                .clone();
+            if layout == ColumnarProjectionLayoutV1::V2 {
+                request_projection(&runtime, "ticket_board");
+                assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+                assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+            }
+            drop(runtime);
+
+            let status = std::process::Command::new(
+                std::env::current_exe().expect("server test executable"),
+            )
+            .arg("--exact")
+            .arg(EXACT_TEST)
+            .arg("--nocapture")
+            .env(CHILD_MODE, "prepare")
+            .env(CHILD_PATH, scope.path())
+            .env("RIFFDB_COLUMNAR_PUBLICATION_ABORT_AT", "before-cas")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("spawn candidate preparation child");
+            assert_eq!(status.code(), None, "{label} preparation stops before CAS");
+
+            let prepared_runtime = reopen_board_runtime(&scope);
+            let prepared_control = prepared_runtime
+                .storage()
+                .recover_expected_control(binding.spec().source())
+                .expect("read prepared candidate")
+                .expect("prepared candidate control");
+            let prepared = prepared_control
+                .candidate()
+                .expect("prepared candidate")
+                .clone();
+            assert_eq!(prepared.layout(), layout);
+            let artifact = prepared.artifact().expect("prepared artifact");
+            let candidate_path = match layout {
+                ColumnarProjectionLayoutV1::V1 => controlled_generation_directory(
+                    &scope.path().join("projections"),
+                    binding.spec().hash(),
+                    prepared.generation(),
+                )
+                .join(format!("MANIFEST-V1-{}", lower_hex(&artifact.checksum()))),
+                ColumnarProjectionLayoutV1::V2 => controlled_source_directory(
+                    &scope.path().join("projections"),
+                    binding.spec().hash(),
+                )
+                .join(format!("generation-{:016x}", prepared.generation().get()))
+                .join("ROOT-V1"),
+            };
+            drop(prepared_runtime);
+            std::fs::write(&candidate_path, b"corrupt prepared candidate")
+                .expect("corrupt prepared candidate artifact");
+
+            let status = std::process::Command::new(
+                std::env::current_exe().expect("server test executable"),
+            )
+            .arg("--exact")
+            .arg(EXACT_TEST)
+            .arg("--nocapture")
+            .env(CHILD_MODE, "recover")
+            .env(CHILD_PATH, scope.path())
+            .env("RIFFDB_COLUMNAR_CANDIDATE_FAILURE_ABORT_AT", "after-record")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("spawn candidate failure-record child");
+            assert_eq!(
+                status.code(),
+                None,
+                "{label} failure record is crash durable"
+            );
+
+            let reopened = reopen_board_runtime(&scope);
+            let failed = reopened
+                .storage()
+                .recover_expected_control(binding.spec().source())
+                .expect("read failed candidate")
+                .expect("failed candidate control");
+            assert_eq!(failed.candidate(), Some(&prepared));
+            assert_eq!(
+                failed.failure().map(|failure| (
+                    failure.target(),
+                    failure.reason(),
+                    failure.generation(),
+                )),
+                Some((
+                    riffdb_storage_api::ColumnarProjectionFailureTargetV1::Candidate,
+                    riffdb_storage_api::ColumnarProjectionFailureReasonV1::ArtifactInvalid,
+                    Some(prepared.generation()),
+                ))
+            );
+            request_projection(&reopened, "ticket_board");
+            assert!(crate::columnar_worker::run_one_test_pass(&reopened));
+            let replaced = reopened
+                .storage()
+                .recover_expected_control(binding.spec().source())
+                .expect("read replacement candidate")
+                .expect("replacement candidate control");
+            let replacement = replaced.candidate().expect("replacement candidate");
+            assert!(replacement.generation() > prepared.generation());
+            assert_eq!(replacement.layout(), layout);
+            assert!(replacement.artifact().is_none());
+            let recovery_passes = match layout {
+                ColumnarProjectionLayoutV1::V1 => 1,
+                ColumnarProjectionLayoutV1::V2 => 2,
+            };
+            for _ in 0..recovery_passes {
+                let _ = crate::columnar_worker::run_one_test_pass(&reopened);
+            }
+            let recovered = reopened
+                .storage()
+                .recover_expected_control(binding.spec().source())
+                .expect("read recovered selection")
+                .expect("recovered selection control");
+            assert_eq!(
+                recovered
+                    .servable_generation()
+                    .map(|selected| (selected.layout(), selected.generation())),
+                Some((layout, replacement.generation()))
+            );
+            let rows = query_snapshot(
+                binding.definition(),
+                ServerColumnarProjectionPort::new(Arc::clone(&reopened))
+                    .observe("ticket_board")
+                    .expect("capture recovered candidate")
+                    .snapshot()
+                    .as_ref(),
+                &board_query(),
+            )
+            .expect("query recovered data-bearing candidate");
+            let QueryResult::Rows(rows) = rows else {
+                panic!("board query returns rows");
+            };
+            assert_eq!(rows.rows.len(), 1, "{label} authoritative row survives");
+        }
     }
 
     fn prepare_published_v1_frontier_advance(
@@ -5296,6 +5511,94 @@ contract VectorBoard version 1 {
         );
     }
 
+    // req: PRJ-004, PRJ-008, PRJ-009, OQ-019, OQ-020, OQ-022
+    #[test]
+    fn selected_failure_no_commit_and_same_selection_state_changed_retry_classification() {
+        use crate::columnar_worker::{
+            SelectedFailureRecordTestMode, activate_one_test_slot_with_selected_failure_mode,
+        };
+
+        for (label, mode) in [
+            (
+                "storage-no-commit",
+                SelectedFailureRecordTestMode::StorageFailureBeforeCommit,
+            ),
+            (
+                "same-selection-state-changed",
+                SelectedFailureRecordTestMode::StateChangedBeforeCommit,
+            ),
+        ] {
+            let (runtime, scope) = board_runtime(&format!("selected-failure-{label}"));
+            append_board_ticket_for_worker(&runtime);
+            request_projection(&runtime, "ticket_board");
+            assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+            runtime
+                .engine("ticket_board")
+                .expect("engine registry")
+                .expect("board slot")
+                .with_engine_mut(|engine| engine.checkpoint().expect("checkpoint selected V1"))
+                .expect("engine lock")
+                .expect("active engine");
+            let binding = runtime
+                .control_binding("ticket_board")
+                .expect("control binding")
+                .clone();
+            let ready = runtime
+                .storage()
+                .recover_expected_control(binding.spec().source())
+                .expect("read selected V1")
+                .expect("selected V1 control");
+            let published = ready.published().expect("published V1").clone();
+            let artifact = published.artifact().expect("selected artifact");
+            let manifest = controlled_generation_directory(
+                &scope.path().join("projections"),
+                binding.spec().hash(),
+                published.generation(),
+            )
+            .join(format!("MANIFEST-V1-{}", lower_hex(&artifact.checksum())));
+            drop(runtime);
+            std::fs::write(&manifest, b"corrupt selected V1")
+                .expect("corrupt selected V1 manifest");
+
+            let reopened = reopen_board_runtime(&scope);
+            let port = ServerColumnarProjectionPort::new(Arc::clone(&reopened));
+            assert!(
+                !port
+                    .observe("ticket_board")
+                    .expect("request selected validation")
+                    .has_published()
+            );
+            assert!(
+                !activate_one_test_slot_with_selected_failure_mode(&reopened, "ticket_board", mode,),
+                "the corrupt selected view is never activated for {label}"
+            );
+            let durable = reopened
+                .storage()
+                .recover_expected_control(binding.spec().source())
+                .expect("reread classification result")
+                .expect("classification control");
+            assert_eq!(durable.published(), Some(&published), "{label}");
+            assert!(durable.servable_generation().is_none(), "{label}");
+            assert_eq!(
+                durable.failure().map(|failure| (
+                    failure.target(),
+                    failure.reason(),
+                    failure.generation(),
+                )),
+                Some((
+                    riffdb_storage_api::ColumnarProjectionFailureTargetV1::Published,
+                    riffdb_storage_api::ColumnarProjectionFailureReasonV1::ArtifactInvalid,
+                    Some(published.generation()),
+                )),
+                "the bounded retry durably classifies the unchanged selected artifact for {label}"
+            );
+            assert!(matches!(
+                port.observe("ticket_board"),
+                Err(ColumnarPortError::Unavailable)
+            ));
+        }
+    }
+
     // req: PRJ-004, PRJ-008, PRJ-009, OQ-020, OQ-022
     #[test]
     fn columnar_control_recovery_refuses_corrupt_selected_v2_without_v1_fallback() {
@@ -5366,31 +5669,50 @@ contract VectorBoard version 1 {
         std::fs::write(&root, b"corrupt selected V2 root").expect("corrupt selected root");
         let corrupt_bytes = std::fs::read(&root).expect("read corrupt root");
 
+        let status =
+            std::process::Command::new(std::env::current_exe().expect("server test executable"))
+                .arg("--exact")
+                .arg(EXACT_TEST)
+                .arg("--nocapture")
+                .env(CHILD_MODE, "1")
+                .env(CHILD_PATH, scope.path())
+                .env("RIFFDB_COLUMNAR_SELECTED_FAILURE_ABORT_AT", "after-record")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .expect("spawn selected-corruption failure-record child");
+        assert_eq!(
+            status.code(),
+            None,
+            "the first recovery process must abort after the durable failure record"
+        );
+
         let reopened = reopen_board_runtime(&scope);
         let reopened_port = ServerColumnarProjectionPort::new(Arc::clone(&reopened));
         let cold = reopened_port
             .observe("ticket_board")
             .expect("cold observation before validation");
         assert!(!cold.has_published());
-        assert!(
-            !crate::columnar_worker::run_one_test_pass(&reopened),
-            "complete selected-V2 validation must fail closed"
-        );
         assert!(matches!(
             reopened_port.observe("ticket_board"),
-            Err(ColumnarPortError::Unavailable)
+            Ok(observation) if !observation.has_published()
         ));
-        let degraded = reopened
+        let allocated = reopened
             .storage()
             .recover_expected_control(binding.spec().source())
-            .expect("reread degraded control")
-            .expect("degraded control");
-        assert_eq!(degraded.published(), Some(&published_v2));
-        assert!(degraded.servable_generation().is_none());
+            .expect("reread startup-allocated recovery")
+            .expect("startup-allocated recovery");
+        assert!(allocated.servable_generation().is_none());
         assert_eq!(
-            degraded.failure().map(|failure| failure.reason()),
-            Some(riffdb_storage_api::ColumnarProjectionFailureReasonV1::ArtifactInvalid)
+            allocated
+                .predecessor()
+                .map(|generation| generation.generation()),
+            Some(published_v2.generation())
         );
+        assert!(allocated.candidate().is_some_and(|candidate| {
+            candidate.generation() > stale_candidate && candidate.artifact().is_none()
+        }));
         assert_eq!(std::fs::read(&root).expect("reread root"), corrupt_bytes);
         assert_eq!(
             query_snapshot(binding.definition(), &retained_v1, &board_query())
@@ -5402,9 +5724,19 @@ contract VectorBoard version 1 {
             "a still-live predecessor capability never becomes fallback authority"
         );
 
+        drop(reopened_port);
+        drop(reopened);
+        let reopened = reopen_board_runtime(&scope);
+        let reopened_port = ServerColumnarProjectionPort::new(Arc::clone(&reopened));
         assert!(
-            !crate::columnar_worker::run_one_test_pass(&reopened),
-            "recovery remains unavailable while only a new unprepared candidate exists"
+            !reopened_port
+                .observe("ticket_board")
+                .expect("request repeated-open recovery")
+                .has_published()
+        );
+        assert!(
+            crate::columnar_worker::run_one_test_pass(&reopened),
+            "a second cold open prepares the startup-allocated recovery candidate"
         );
         let rebuilding = reopened
             .storage()
@@ -5424,10 +5756,6 @@ contract VectorBoard version 1 {
         assert!(
             recovery_generation > stale_candidate,
             "published-corruption recovery allocates from Predecessor and never reuses the stale candidate"
-        );
-        assert!(
-            !crate::columnar_worker::run_one_test_pass(&reopened),
-            "recovery remains unavailable while the rebuilt root is only prepared"
         );
         let prepared_recovery = reopened
             .storage()
