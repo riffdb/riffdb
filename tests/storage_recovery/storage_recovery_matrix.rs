@@ -329,6 +329,15 @@ fn uuid_bytes(fill: u8) -> [u8; 16] {
     bytes
 }
 
+fn ordinal_uuid_bytes(fill: u8, ordinal: u64) -> [u8; 16] {
+    if ordinal <= u64::from(u8::MAX) {
+        return uuid_bytes(fill.wrapping_add(ordinal as u8));
+    }
+    let mut bytes = uuid_bytes(fill);
+    bytes[9..].copy_from_slice(&ordinal.to_be_bytes()[1..]);
+    bytes
+}
+
 fn run_crashing_child(mode: &str, path: &Path) {
     run_crashing_child_with_profile(mode, path, RedbCommitProfile::Standard);
 }
@@ -713,6 +722,10 @@ fn build_command_fixture(
         tenant_scope.clone(),
         None,
     );
+    let mut idempotency_digest = [0x40_u8.wrapping_add(ordinal_u8); 32];
+    if ordinal > u64::from(u8::MAX) {
+        idempotency_digest[..8].copy_from_slice(&ordinal.to_be_bytes());
+    }
     let identity = IdempotencyIdentity::new(
         database_id(),
         Environment::new("test").expect("environment"),
@@ -722,13 +735,12 @@ fn build_command_fixture(
         plan.command_id(),
         IdempotencyKeyDigest::from_hmac_bytes(
             DigestKeyId::new(1).expect("digest key"),
-            [0x40_u8.wrapping_add(ordinal_u8); 32],
+            idempotency_digest,
         ),
     );
-    let request_id =
-        RequestId::from_bytes(uuid_bytes(0x30_u8.wrapping_add(ordinal_u8))).expect("request ID");
-    let provenance_id = ProvenanceId::from_bytes(uuid_bytes(0x50_u8.wrapping_add(ordinal_u8)))
-        .expect("provenance ID");
+    let request_id = RequestId::from_bytes(ordinal_uuid_bytes(0x30, ordinal)).expect("request ID");
+    let provenance_id =
+        ProvenanceId::from_bytes(ordinal_uuid_bytes(0x50, ordinal)).expect("provenance ID");
     let logical_time =
         LogicalTime::new(Timestamp::new(1_700_000_001, 0).expect("logical timestamp"));
     let mut partition = PartitionKeyBuilder::new(AggregateTypeId::new(1).expect("aggregate"));
@@ -2220,6 +2232,56 @@ fn multiple_deferred_subgroups_publish_together_in_sequence_order() {
             ServiceAuditPhaseV1::Succeeded,
         ]
     );
+}
+
+// req: OUT-001, OUT-002, TXN-042, REC-004, PERF-019
+#[test]
+fn cold_fresh_database_publications_complete_without_history_scans() {
+    const PUBLICATIONS: u64 = 288;
+
+    let path = TestDatabasePath::new("fresh-locator-no-history-scans");
+    prepare_command_database(&path.0);
+    let prepared = open_operational(RedbStore::open(&path.0).expect("validate fresh database"));
+    let _clean = prepared.complete_graceful_close();
+    drop(prepared);
+    let ports = open_operational(RedbStore::open(&path.0).expect("reopen fresh database"));
+
+    for ordinal in 1..=PUBLICATIONS {
+        let fixture = two_phase_command_fixture_at(ordinal);
+        assert_eq!(
+            ports
+                .lookup_admission(fixture.candidates.clone())
+                .expect("direct-inspection novel identity"),
+            AdmissionLookupResultV1::NotFound
+        );
+        let request = AdmissionRequestV1::new(fixture.candidates.clone(), &fixture.context)
+            .expect("bounded admission request");
+        assert_eq!(
+            ports
+                .admit_or_resolve(request)
+                .expect("admit novel identity"),
+            AdmissionResultV1::Created(fixture.pending.clone())
+        );
+        commit_command_fixture(&ports, &fixture);
+    }
+
+    let final_fixture = two_phase_command_fixture_at(PUBLICATIONS);
+    let AdmissionLookupResultV1::Found(final_state) = ports
+        .lookup_admission(final_fixture.candidates)
+        .expect("exact final admitted outcome")
+    else {
+        panic!("final identity must resolve to its committed outcome");
+    };
+    let StoredAdmissionStateV1::StoredOutcome(final_outcome) = *final_state else {
+        panic!("final identity must resolve to its committed outcome");
+    };
+    assert_eq!(
+        final_outcome.commit_sequence(),
+        CommitSequence::new(PUBLICATIONS).expect("bounded final sequence")
+    );
+    assert_eq!(ports.fresh_locator_history_fallback_scans(), 0);
+    assert_eq!(ports.transient_index_rebuilds(), 0);
+    assert_eq!(ports.transient_index_commit_rows(), 0);
 }
 
 #[test]
