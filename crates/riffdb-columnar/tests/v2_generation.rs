@@ -5,13 +5,18 @@ mod common;
 use std::collections::BTreeMap;
 
 use riffdb_columnar::{
-    ColumnarManifestV2, ColumnarSnapshot, ColumnarTestBoundary, ColumnarTestController,
-    ColumnarV2GenerationError, LiveRow, OrgKey, PrimaryKeyBytes, SegmentV2Codec,
-    ValidatedColumnarV2Generation,
+    AggregateOp, AggregateValue, ColumnPredicate, ColumnarManifestV2, ColumnarQueryRequest,
+    ColumnarSnapshot, ColumnarTestBoundary, ColumnarTestController, ColumnarV2GenerationError,
+    LiveRow, OrgKey, PrimaryKeyBytes, QueryBudget, QueryError, QueryResult, SegmentV2Codec,
+    ValidatedColumnarV2Generation, query_snapshot, query_snapshot_with_policy_admission,
 };
-use riffdb_types::{CanonicalValue, EntityVersion, FrontierPosition, ProjectionGeneration};
+use riffdb_policy::AuthorizedProjectedRowAdmissionV1;
+use riffdb_types::{
+    CanonicalValue, EntityKey, EntityKeyBuilder, EntityVersion, FrontierPosition,
+    ProjectionGeneration,
+};
 
-use common::{compile_bundle, register_ticket_board, temp_dir};
+use common::{compile_bundle, entity_type_id, field_id, register_ticket_board, temp_dir};
 
 fn row(version: u64, status: u64, title: &str, priority: i64) -> LiveRow {
     LiveRow {
@@ -37,6 +42,118 @@ fn test_snapshot() -> ColumnarSnapshot {
         )]),
     )]);
     snapshot
+}
+
+fn ticket_key(
+    entity: riffdb_types::EntityTypeId,
+    organization: &[u8; 16],
+    ticket: u64,
+) -> PrimaryKeyBytes {
+    let mut key = EntityKeyBuilder::new(entity);
+    key.push_uuid(organization).expect("organization key");
+    key.push_u64(ticket).expect("ticket key");
+    PrimaryKeyBytes::from_entity_key_bytes(key.finish().expect("entity key").into_bytes())
+}
+
+// req: PRJ-004, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022, OQ-024, PERF-007
+#[test]
+fn selected_v2_queries_use_open_validated_private_pruning_with_fixed_policy_work() {
+    let bundle = compile_bundle();
+    let definition = register_ticket_board(&bundle);
+    let entity = entity_type_id(&bundle, "Ticket");
+    let title = field_id(&bundle, "Ticket", "title");
+    let organization = [0x45; 16];
+    let org = OrgKey::from_value(&CanonicalValue::Uuid(organization)).expect("organization");
+    let mut rows = BTreeMap::new();
+    for index in 0..=riffdb_columnar::MAX_SEGMENT_V2_ROWS {
+        let title_value = if index == riffdb_columnar::MAX_SEGMENT_V2_ROWS {
+            "middle"
+        } else if index % 2 == 0 {
+            "alpha"
+        } else {
+            "omega"
+        };
+        rows.insert(
+            ticket_key(entity, &organization, index as u64 + 1),
+            row(index as u64 + 1, 1, title_value, 0),
+        );
+    }
+    let frontier =
+        FrontierPosition::AppliedThrough(riffdb_types::CommitSequence::new(1).expect("frontier"));
+    let mut snapshot = ColumnarSnapshot::empty();
+    snapshot.visible_frontier = frontier;
+    snapshot.delta.insert(org.clone(), rows);
+
+    let source_directory = temp_dir("v2-selected-private-pruning");
+    let generation = ProjectionGeneration::new(20).expect("generation");
+    let selected = ValidatedColumnarV2Generation::prepare(
+        &source_directory,
+        definition.clone(),
+        1,
+        generation,
+        FrontierPosition::BeforeFirst,
+        &snapshot,
+    )
+    .expect("open-validate selected V2");
+    assert_eq!(selected.root().total_segments(), 2);
+
+    let request = ColumnarQueryRequest {
+        org_scope: CanonicalValue::Uuid(organization),
+        select: Vec::new(),
+        predicates: vec![ColumnPredicate::Eq {
+            field: title,
+            value: CanonicalValue::string("middle").expect("needle"),
+        }],
+        order: Vec::new(),
+        limit: None,
+        group_by: None,
+        aggregate: Some(AggregateOp::Count),
+        budget: QueryBudget {
+            max_scanned_rows: 1,
+            max_group_cardinality: 1,
+        },
+    };
+
+    let offline_directory = source_directory.join("selected.offline");
+    std::fs::rename(selected.directory(), &offline_directory)
+        .expect("hide all durable V2 material after selected open");
+    for _ in 0..2 {
+        assert_eq!(
+            query_snapshot(&definition, selected.snapshot(), &request).expect("private pruning"),
+            QueryResult::Aggregate(AggregateValue::Count(1)),
+            "a within-zone dictionary miss is rejected without any hot durable access"
+        );
+    }
+
+    let candidate_keys = selected
+        .snapshot()
+        .merged_org(&org)
+        .keys()
+        .map(|key| EntityKey::from_bytes(key.as_bytes().to_vec()).expect("candidate key"))
+        .collect::<Vec<_>>();
+    for admitted in [
+        vec![candidate_keys[0].clone(), candidate_keys[1].clone()],
+        vec![candidate_keys[2].clone(), candidate_keys[3].clone()],
+    ] {
+        let admission = AuthorizedProjectedRowAdmissionV1::test_fixture(
+            entity,
+            candidate_keys.clone(),
+            admitted,
+        )
+        .expect("complete policy proof");
+        assert_eq!(
+            query_snapshot_with_policy_admission(
+                &definition,
+                selected.snapshot(),
+                &request,
+                &admission,
+            ),
+            Err(QueryError::ScanBudgetExceeded { max: 1 }),
+            "policy shape cannot enable statistics or alter the fixed scan-work class"
+        );
+    }
+    std::fs::rename(&offline_directory, selected.directory())
+        .expect("restore selected directory for cleanup");
 }
 
 // req: PRJ-002, PRJ-004, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022, OQ-024

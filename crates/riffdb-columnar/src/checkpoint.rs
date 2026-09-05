@@ -448,6 +448,7 @@ impl CheckpointDir {
                 org: entry.org.clone(),
                 rows,
                 checksum,
+                pruning: None,
             }));
         }
         self.sweep_unreferenced(&referenced)?;
@@ -564,6 +565,7 @@ impl CheckpointDir {
                 org,
                 rows,
                 checksum,
+                pruning: None,
             }));
         }
 
