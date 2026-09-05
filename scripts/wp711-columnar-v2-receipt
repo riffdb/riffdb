@@ -8,6 +8,7 @@ require "open3"
 require "pathname"
 require "tempfile"
 require "etc"
+require "tmpdir"
 
 SCHEMA = "riffdb.wp711.columnar-v2-activation-receipt.v1"
 ROWS = 16_384
@@ -43,6 +44,56 @@ def capture!(*command)
   warn stdout
   warn stderr
   raise ReceiptError, "command failed: #{command.join(" ")}"
+end
+
+def cargo_home
+  Pathname.new(ENV.fetch("CARGO_HOME", Pathname.new(Dir.home).join(".cargo").to_s))
+end
+
+def executable_on_path(name, path)
+  path.to_s.split(File::PATH_SEPARATOR).each do |directory|
+    candidate = Pathname.new(directory).join(name)
+    return candidate.realpath.to_s if candidate.file? && candidate.executable?
+  rescue Errno::ENOENT
+    next
+  end
+  nil
+end
+
+def pinned_cargo?(candidate)
+  return false unless candidate
+
+  stdout, _stderr, status = Open3.capture3(candidate, "+1.97.0", "--version")
+  status.success? && stdout.start_with?("cargo 1.97.0 ")
+rescue Errno::ENOENT
+  false
+end
+
+def resolve_pinned_cargo(path: ENV.fetch("PATH", ""), home: cargo_home, explicit: ENV["CARGO"])
+  candidates = [explicit, executable_on_path("cargo", path), home.join("bin/cargo").to_s].compact.uniq
+  selected = candidates.find { |candidate| pinned_cargo?(candidate) }
+  return selected if selected
+
+  raise ReceiptError, "a validated rustup cargo proxy with toolchain 1.97.0 is required"
+end
+
+def pinned_cargo
+  @pinned_cargo ||= resolve_pinned_cargo
+end
+
+def pinned_rustc
+  candidate = Pathname.new(pinned_cargo).dirname.join("rustc")
+  stdout, _stderr, status = Open3.capture3(candidate.to_s, "+1.97.0", "--version")
+  unless status.success? && stdout.start_with?("rustc 1.97.0 ")
+    raise ReceiptError, "the selected rustup proxy directory lacks pinned rustc 1.97.0"
+  end
+  candidate.to_s
+end
+
+def run_cargo(command)
+  raise ReceiptError, "internal cargo command identity differs" unless command.first == "cargo"
+
+  capture(pinned_cargo, *command.drop(1))
 end
 
 def marker(output, name)
@@ -172,7 +223,7 @@ def receipt(mechanics_line, activation_line, revision, before_host, after_load)
     "implementation_revision" => revision,
     "configuration" => {
       "cargo_profile" => "release",
-      "rust_toolchain" => capture!("rustc", "+1.97.0", "--version", "--verbose").strip,
+      "rust_toolchain" => capture!(pinned_rustc, "+1.97.0", "--version", "--verbose").strip,
       "rows" => ROWS,
       "samples" => SAMPLES,
       "cpu_method" => CPU_METHOD,
@@ -272,6 +323,18 @@ def self_test
       raise if error.message.start_with?("self-test")
     end
   end
+  Dir.mktmpdir("riffdb-wp711-poison-cargo-") do |directory|
+    poison = Pathname.new(directory).join("cargo")
+    poison.write("#!/bin/sh\nexit 97\n")
+    poison.chmod(0o755)
+    selected = resolve_pinned_cargo(path: directory, home: cargo_home, explicit: nil)
+    raise ReceiptError, "self-test selected poisoned system cargo" if Pathname.new(selected).realpath == poison.realpath
+
+    stdout, _stderr, status = Open3.capture3(selected, "+1.97.0", "--version")
+    unless status.success? && stdout.start_with?("cargo 1.97.0 ")
+      raise ReceiptError, "self-test did not invoke exact cargo 1.97.0"
+    end
+  end
   puts "WP-711 receipt validator self-test passed"
 end
 
@@ -283,13 +346,13 @@ def generate
 
   revision = capture!("git", "rev-parse", "HEAD").strip
   before_host = host_metadata
-  mechanics_stdout, mechanics_stderr, mechanics_status = capture(*MECHANICS_COMMAND)
+  mechanics_stdout, mechanics_stderr, mechanics_status = run_cargo(MECHANICS_COMMAND)
   warn mechanics_stderr
   raise ReceiptError, "frozen WP-710 threshold gate failed; no WP-711 receipt written" unless mechanics_status.success?
   mechanics_line = marker(mechanics_stdout, "WP710_MECHANICS")
   validate_mechanics(parse_marker(mechanics_line, "WP710_MECHANICS"))
 
-  activation_stdout, activation_stderr, activation_status = capture(*ACTIVATION_COMMAND)
+  activation_stdout, activation_stderr, activation_status = run_cargo(ACTIVATION_COMMAND)
   warn activation_stderr
   raise ReceiptError, "WP-711 activation evidence failed; no receipt written" unless activation_status.success?
   activation_line = marker(activation_stdout, "WP711_ACTIVATION")

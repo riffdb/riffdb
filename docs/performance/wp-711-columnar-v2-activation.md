@@ -68,6 +68,11 @@ cargo +1.97.0 test --release -p riffdb-columnar --test v2_generation \
 ```
 
 Generation refuses a dirty worktree and refuses to replace an existing receipt.
-The JSON is created only after both child processes and independent marker
-validation succeed. A later evidence-only commit may add the generated receipt;
-this infrastructure revision intentionally contains none.
+The script accepts only a rustup cargo proxy that proves the exact 1.97.0
+selector. It tests `cargo` from `PATH` first, then the conventional
+`$CARGO_HOME/bin/cargo` proxy, and fails rather than using an unpinned binary.
+Its self-test places a rejecting cargo earlier on a synthetic `PATH` and proves
+that the validated 1.97.0 proxy is selected. The JSON is created only after both
+child processes and independent marker validation succeed. A later
+evidence-only commit may add the generated receipt; this infrastructure revision
+intentionally contains none.
