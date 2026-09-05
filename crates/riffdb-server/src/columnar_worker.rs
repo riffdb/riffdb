@@ -337,6 +337,22 @@ enum ColumnarPublicationAttempt {
     UnknownCommit,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ColumnarPublicationMode {
+    Ordinary,
+    #[cfg(test)]
+    StateChangedAfterApplied,
+    #[cfg(test)]
+    StorageFailureBeforeCommit,
+    #[cfg(test)]
+    UnknownAfterApplied,
+    #[cfg(test)]
+    UnknownBeforeCommit,
+}
+
+#[cfg(test)]
+pub(crate) use ColumnarPublicationMode as ColumnarPublicationTestMode;
+
 impl ColumnarPublicationAttempt {
     const fn from_result(
         result: &Result<ColumnarProjectionControlWriteResultV1, StorageError>,
@@ -344,7 +360,7 @@ impl ColumnarPublicationAttempt {
         match result {
             Ok(ColumnarProjectionControlWriteResultV1::Applied) => Self::Applied,
             Ok(ColumnarProjectionControlWriteResultV1::StateChanged) => Self::StateChanged,
-            Err(error) if matches!(error.kind(), StorageErrorKind::Unavailable) => {
+            Err(error) if matches!(error.kind(), StorageErrorKind::CommitStatusUnknown) => {
                 Self::UnknownCommit
             }
             Err(_) => Self::StorageFailure,
@@ -811,10 +827,62 @@ fn publish_prepared_under_capture_gate(
     prepared: &PreparedColumnarGenerationV1,
     successor: riffdb_columnar::ColumnarEngine,
 ) -> Result<bool, ColumnarWorkerError> {
+    publish_prepared_under_capture_gate_controlled(
+        runtime,
+        binding,
+        slot,
+        expected,
+        prepared,
+        successor,
+        ColumnarPublicationMode::Ordinary,
+        || {},
+    )
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the proof injects only result and schedule beside the exact production publication inputs"
+)]
+pub(crate) fn publish_prepared_under_capture_gate_for_test(
+    runtime: &ColumnarRuntime,
+    binding: &ColumnarControlBinding,
+    slot: &ColumnarEngineSlot,
+    expected: &StoredColumnarProjectionControlV1,
+    prepared: &PreparedColumnarGenerationV1,
+    successor: riffdb_columnar::ColumnarEngine,
+    mode: ColumnarPublicationTestMode,
+    after_gate_closed: impl FnOnce(),
+) -> Result<bool, ()> {
+    publish_prepared_under_capture_gate_controlled(
+        runtime,
+        binding,
+        slot,
+        expected,
+        prepared,
+        successor,
+        mode,
+        after_gate_closed,
+    )
+    .map_err(|_| ())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_prepared_under_capture_gate_controlled(
+    runtime: &ColumnarRuntime,
+    binding: &ColumnarControlBinding,
+    slot: &ColumnarEngineSlot,
+    expected: &StoredColumnarProjectionControlV1,
+    prepared: &PreparedColumnarGenerationV1,
+    successor: riffdb_columnar::ColumnarEngine,
+    mode: ColumnarPublicationMode,
+    after_gate_closed: impl FnOnce(),
+) -> Result<bool, ColumnarWorkerError> {
     let mut gate = slot.close_capture_gate().map_err(map_port_error)?;
-    let publication = runtime
-        .storage()
-        .publish_prepared_generation(expected, prepared);
+    after_gate_closed();
+    abort_publication_test_process_at("before-cas");
+    let publication = issue_prepared_publication(runtime, expected, prepared, mode);
+    abort_publication_test_process_at("after-cas");
     let attempt = ColumnarPublicationAttempt::from_result(&publication);
 
     // The write result is never publication evidence. This exact durable
@@ -834,6 +902,7 @@ fn publish_prepared_under_capture_gate(
             return Err(map_storage_error(error));
         }
     };
+    abort_publication_test_process_at("after-reread");
     if durable.source() != binding.spec().source()
         || durable.target_definition_fingerprint() != binding.spec().definition_fingerprint()
         || durable.target_spec_hash() != binding.spec().hash()
@@ -858,6 +927,7 @@ fn publish_prepared_under_capture_gate(
             {
                 runtime.defer_retirement(retired).map_err(map_port_error)?;
             }
+            abort_publication_test_process_at("after-view-install");
             drop(gate);
             let _ = runtime.notifier().notify(binding.name());
             Ok(true)
@@ -895,6 +965,80 @@ fn publish_prepared_under_capture_gate(
         }
     }
 }
+
+fn issue_prepared_publication(
+    runtime: &ColumnarRuntime,
+    expected: &StoredColumnarProjectionControlV1,
+    prepared: &PreparedColumnarGenerationV1,
+    mode: ColumnarPublicationMode,
+) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+    #[cfg(test)]
+    let mode = if mode == ColumnarPublicationMode::Ordinary
+        && std::env::var("RIFFDB_COLUMNAR_PUBLICATION_RESULT").as_deref()
+            == Ok("unknown-after-applied")
+    {
+        ColumnarPublicationMode::UnknownAfterApplied
+    } else {
+        mode
+    };
+    match mode {
+        ColumnarPublicationMode::Ordinary => runtime
+            .storage()
+            .publish_prepared_generation(expected, prepared),
+        #[cfg(test)]
+        ColumnarPublicationMode::StateChangedAfterApplied => {
+            if runtime
+                .storage()
+                .publish_prepared_generation(expected, prepared)?
+                != ColumnarProjectionControlWriteResultV1::Applied
+            {
+                return Err(StorageError::new(
+                    StorageErrorKind::InvariantViolation,
+                    None,
+                ));
+            }
+            runtime
+                .storage()
+                .publish_prepared_generation(expected, prepared)
+        }
+        #[cfg(test)]
+        ColumnarPublicationMode::StorageFailureBeforeCommit => {
+            Err(StorageError::new(StorageErrorKind::Unavailable, None))
+        }
+        #[cfg(test)]
+        ColumnarPublicationMode::UnknownAfterApplied => {
+            if runtime
+                .storage()
+                .publish_prepared_generation(expected, prepared)?
+                != ColumnarProjectionControlWriteResultV1::Applied
+            {
+                return Err(StorageError::new(
+                    StorageErrorKind::InvariantViolation,
+                    None,
+                ));
+            }
+            Err(StorageError::new(
+                StorageErrorKind::CommitStatusUnknown,
+                None,
+            ))
+        }
+        #[cfg(test)]
+        ColumnarPublicationMode::UnknownBeforeCommit => Err(StorageError::new(
+            StorageErrorKind::CommitStatusUnknown,
+            None,
+        )),
+    }
+}
+
+#[cfg(test)]
+fn abort_publication_test_process_at(boundary: &str) {
+    if std::env::var("RIFFDB_COLUMNAR_PUBLICATION_ABORT_AT").as_deref() == Ok(boundary) {
+        std::process::abort();
+    }
+}
+
+#[cfg(not(test))]
+fn abort_publication_test_process_at(_boundary: &str) {}
 
 fn build_fresh_v1_snapshot(
     runtime: &ColumnarRuntime,
@@ -1228,6 +1372,14 @@ pub(crate) fn run_one_test_pass_stopping_before_page(runtime: &ColumnarRuntime) 
     )
 }
 
+#[cfg(test)]
+pub(crate) fn activate_one_test_slot(runtime: &ColumnarRuntime, name: &str) -> bool {
+    let Ok(Some(slot)) = runtime.engine(name) else {
+        return false;
+    };
+    activate_requested_slot(runtime, name, &slot).unwrap_or(false)
+}
+
 fn read_head(runtime: &ColumnarRuntime) -> Result<FrontierPosition, ColumnarWorkerError> {
     runtime
         .read_application_head()
@@ -1267,8 +1419,8 @@ mod publication_tests {
     use riffdb_columnar::{ColumnarV2GenerationError, ColumnarV2StreamingError};
     use riffdb_storage_api::{
         ColumnarProjectionArtifactV1, ColumnarProjectionLayoutV1, ColumnarProjectionReplayLimitsV1,
-        PreparedColumnarGenerationV1, StoredColumnarProjectionControlV1,
-        StoredColumnarProjectionGenerationV1,
+        PreparedColumnarGenerationV1, StorageError, StorageErrorKind,
+        StoredColumnarProjectionControlV1, StoredColumnarProjectionGenerationV1,
     };
     use riffdb_types::{
         ColumnarDefinitionSemanticsHashV1, ColumnarProjectionSourceV1,
@@ -1356,8 +1508,24 @@ mod publication_tests {
 
     // req: PRJ-006, PRJ-008, PRJ-009, OQ-020, OQ-022, PERF-007
     #[test]
-    fn columnar_control_gate_recovers_every_cas_result_before_acknowledgement() {
+    fn publication_attempt_taxonomy_and_durable_resolution_are_closed() {
         let (prepared_control, prepared, published) = prepared_v2();
+        assert_eq!(
+            ColumnarPublicationAttempt::from_result(&Err(StorageError::new(
+                StorageErrorKind::Unavailable,
+                None,
+            ))),
+            ColumnarPublicationAttempt::StorageFailure,
+            "a proved non-commit is not an unknown commit"
+        );
+        assert_eq!(
+            ColumnarPublicationAttempt::from_result(&Err(StorageError::new(
+                StorageErrorKind::CommitStatusUnknown,
+                None,
+            ))),
+            ColumnarPublicationAttempt::UnknownCommit,
+            "only the closed unknown-commit class is uncertain"
+        );
         for attempt in [
             ColumnarPublicationAttempt::Applied,
             ColumnarPublicationAttempt::StateChanged,
@@ -1388,40 +1556,11 @@ mod publication_tests {
             ColumnarPublicationResolution::RemainClosed,
             "selected V2 corruption has no V1 fallback"
         );
-
-        let source = include_str!("columnar_worker.rs");
-        let helper = source
-            .find("fn publish_prepared_under_capture_gate")
-            .expect("publication helper");
-        let helper_source = &source[helper
-            ..source
-                .find("#[cfg(test)]\nmod publication_tests")
-                .expect("test boundary")];
-        let gate = helper_source
-            .find("close_capture_gate()")
-            .expect("gate close");
-        let cas = helper_source[gate..]
-            .find("publish_prepared_generation")
-            .map(|offset| gate + offset)
-            .expect("publication CAS");
-        let recover = helper_source[cas..]
-            .find("recover_expected_control")
-            .map(|offset| cas + offset)
-            .expect("durable recovery");
-        let install = helper_source[recover..]
-            .find("install_selected")
-            .map(|offset| recover + offset)
-            .expect("view install");
-        let acknowledge = helper_source[install..]
-            .find("notifier().notify")
-            .map(|offset| install + offset)
-            .expect("acknowledgement");
-        assert!(gate < cas && cas < recover && recover < install && install < acknowledge);
     }
 
     // req: PRJ-008, PRJ-009
     #[test]
-    fn columnar_control_recovery_refuses_corrupt_selected_v2_without_v1_fallback() {
+    fn corrupt_selected_control_has_no_servable_generation() {
         let (_, prepared, published) = prepared_v2();
         let selected_corrupt = published
             .record_published_failure()
