@@ -2103,6 +2103,8 @@ work_packages:
   - ./scripts/check-workspace-policy
   - ./scripts/check-requirement-coverage
   - ./scripts/check-adr-obligations
+  - ./scripts/wp711-columnar-v2-receipt --self-test
+  - ./scripts/wp711-columnar-v2-receipt --validate docs/performance/wp-711-columnar-v2-activation.json
   - cargo +1.97.0 fmt --all -- --check
   - cargo +1.97.0 clippy -p riffdb-columnar -p riffdb-projection -p riffdb-service -p riffdb-server --all-targets --all-features -- -D warnings
   exit_gate: A stale restored tag-67 control first reaches only one transaction-current fresh V1

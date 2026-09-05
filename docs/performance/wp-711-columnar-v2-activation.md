@@ -1,6 +1,7 @@
 # WP-711 columnar V2 production-activation receipt
 
-Status: **production-activation mechanics accepted for WP-711 human review**.
+Status: **production-path receipt refresh in progress; the tracked lower-level
+receipt is non-terminal until replaced**.
 
 WP-711 uses the frozen WP-710 mechanics gate as a mandatory preflight, then
 measures one production-shaped V1/V2 activation corpus. The generator writes no
@@ -18,11 +19,17 @@ one compiled organization scope and performs one ordinary bounded count. The
 private evidence referee alone sums the two 8,192-row results; neither runtime
 nor a public query crosses the frozen aggregate arithmetic limit. The receipt
 retains both per-partition p50/count fields and combined two-query timings/count.
-The V1 control is built through the ordinary production projection engine and
-checkpoint path. The V2 arm prepares and completely validates an immutable
-generation, compares both partition-scoped results with V1, installs the
-validated view in the production engine, reopens it from durable bytes, and
-prepares a disjoint compaction generation.
+The V1 control is built by the server columnar worker from the authoritative
+redb snapshot and published through the durable common control. The V2 arm uses
+that same worker to allocate, stream, completely validate, and publish the
+immutable generation through the transaction-current CAS and capture gate. The
+test registers the real acknowledgement observer before publication, rereads
+the durable selection, and proves repeated request captures reuse the exact
+selected `Arc`. Queries use those request-captured immutable views. Recovery
+measurements use the server's controlled-generation reopen seam, and compaction
+uses a fresh durable candidate plus the same worker/CAS/gate/acknowledgement
+path. The older `riffdb-columnar` diagnostic remains explicitly non-terminal
+and emits a different marker.
 
 CPU fields are **single-thread elapsed ns** measured with `Instant`; they are not
 hardware-counter samples. Allocation fields are the accepted **WP-710
@@ -41,12 +48,20 @@ The generated JSON schema is
 `riffdb.wp711.columnar-v2-activation-receipt.v1`. It pins the clean 40-character
 implementation revision, Rust 1.97 release profile, corpus identities, sample
 count, exact commands, raw marker lines, host CPU/load metadata, measurement
-terminology, all metrics, and a passing verdict. The validator refuses unknown,
-missing, duplicated, malformed, empty, or out-of-bound marker fields. Its
-self-test proves refusal at each frozen WP-710 threshold and for nonzero
-activation lag/control fields or a mismatched result count.
+terminology, all metrics, and a passing verdict. The validator enforces every
+exact nested key set, verifies that the pinned revision is an ancestor whose
+production and evidence sources are unchanged in the current checkout, and
+refuses unknown, missing, duplicated, malformed, empty, or out-of-bound marker
+fields. Its self-test proves nested-schema and source-identity refusal, each
+frozen WP-710 threshold, nonzero activation lag/control fields, a mismatched
+result count, and any missing production worker/gate/acknowledgement evidence.
 
-## Generated receipt and verdict
+## Prior non-terminal receipt (awaiting replacement)
+
+The JSON and observations in this section came from the superseded lower-level
+diagnostic. They remain historical only until the clean deletion/generation
+protocol replaces them with the production worker receipt; they do not close
+WP-711 or qualify activation.
 
 The generated receipt is
 `docs/performance/wp-711-columnar-v2-activation.json`. Its schema is
@@ -113,8 +128,9 @@ cargo +1.97.0 test --release -p riffdb-columnar \
 Only after it passes does the generator run:
 
 ```bash
-cargo +1.97.0 test --release -p riffdb-columnar --test v2_generation \
-  wp711_production_v2_activation_receipt -- --ignored --exact --nocapture \
+cargo +1.97.0 test --release -p riffdb-server --lib \
+  columnar_adapter::tests::wp711_production_v2_activation_receipt \
+  -- --ignored --exact --nocapture \
   --test-threads=1
 ```
 

@@ -2195,6 +2195,7 @@ pub(crate) fn is_holdback_active(error: &ColumnarError) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::hint::black_box;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::mpsc;
     use std::thread;
@@ -2205,9 +2206,9 @@ mod tests {
         ValidatedContractBundle, validate_catalog_history,
     };
     use riffdb_columnar::{
-        ColumnarQueryRequest, ColumnarSnapshot, ColumnarTestBoundary, ColumnarTestController,
-        LiveRow, OrgKey, PreparedColumnarGenerationRepository, PrimaryKeyBytes, QueryBudget,
-        QueryResult, query_snapshot,
+        AggregateOp, AggregateValue, ColumnarQueryRequest, ColumnarSnapshot, ColumnarTestBoundary,
+        ColumnarTestController, LiveRow, OrgKey, PreparedColumnarGenerationRepository,
+        PrimaryKeyBytes, QueryBudget, QueryResult, query_snapshot,
     };
     use riffdb_storage_api::{
         AuditPrincipalV1, CatalogActivationIntentV1, CatalogActivationResult,
@@ -2576,8 +2577,132 @@ contract VectorBoard version 1 {
         .expect("stored commit");
         runtime
             .storage()
-            .append_columnar_worker_commit_fixture(&row, &commit)
+            .append_columnar_worker_commit_fixture(&[row], &[commit])
             .expect("append worker commit fixture");
+    }
+
+    fn sequence_uuid(domain: u8, sequence: u64) -> [u8; 16] {
+        let mut value = [0_u8; 16];
+        value[0] = domain;
+        value[8..].copy_from_slice(&sequence.to_be_bytes());
+        value[6] = 0x70 | (domain & 0x0f);
+        value[8] = 0x80 | (value[8] & 0x3f);
+        value
+    }
+
+    fn columnar_receipt_rows_and_commits(
+        rows_per_partition: usize,
+    ) -> (Vec<StoredEntityRecordV1>, Vec<StoredCommitRecordV1>) {
+        let bundle = riffdb_contract_compiler::compile_contract_source(ADAPTER_BOARD_CONTRACT)
+            .expect("compile receipt board contract");
+        let entity = bundle
+            .schema()
+            .entities()
+            .iter()
+            .find(|entity| entity.name() == "Ticket")
+            .expect("Ticket entity");
+        let field = |name: &str| {
+            entity
+                .record()
+                .fields()
+                .iter()
+                .find(|field| field.name() == name)
+                .expect("Ticket field")
+                .id()
+        };
+        let command = bundle.commands().first().expect("CreateTicket command");
+        let plan = ExecutablePlanRef::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+            command.command_id(),
+            command.plan_hash(),
+        );
+        let total = rows_per_partition.checked_mul(2).expect("bounded corpus");
+        let mut rows = Vec::with_capacity(total);
+        let mut commits = Vec::with_capacity(total);
+        for index in 0..total {
+            let partition = index / rows_per_partition;
+            let partition_row = index % rows_per_partition;
+            let organization = uuid_bytes(if partition == 0 { 0x63 } else { 0x64 });
+            let ticket = sequence_uuid(
+                0x70 + u8::try_from(partition).expect("partition"),
+                u64::try_from(partition_row + 1).expect("ticket"),
+            );
+            let mut key = EntityKeyBuilder::new(entity.id());
+            key.push_uuid(&organization).expect("organization key");
+            key.push_uuid(&ticket).expect("ticket key");
+            let target = EntityTarget::new(entity.id(), key.finish().expect("entity key"))
+                .expect("entity target");
+            let row = StoredEntityRecordV1::new(
+                target.clone(),
+                EntityVersion::first(),
+                bundle.contract_version(),
+                DurableKeySchemaBindingV1::from_plan(&plan),
+                CanonicalRecord::new(vec![
+                    (field("organization_id"), CanonicalValue::Uuid(organization)),
+                    (field("ticket_id"), CanonicalValue::Uuid(ticket)),
+                    (
+                        field("status"),
+                        CanonicalValue::U64(u64::try_from(partition_row % 4).expect("status")),
+                    ),
+                    (
+                        field("title"),
+                        CanonicalValue::string(match partition_row % 4 {
+                            0 => "open",
+                            1 => "closed",
+                            2 => "queued",
+                            _ => "running",
+                        })
+                        .expect("title"),
+                    ),
+                ])
+                .expect("canonical row"),
+            )
+            .expect("stored row");
+            let dependencies = StoredReadDependenciesV1::from_live(
+                &ReadDependencies::new(vec![ReadDependency::EntityObservation {
+                    target,
+                    expected: ExpectedEntityState::Absent,
+                }])
+                .expect("read dependencies"),
+            )
+            .expect("stored dependencies");
+            let sequence = CommitSequence::new(u64::try_from(index + 1).expect("sequence"))
+                .expect("commit sequence");
+            let commit = StoredCommitRecordV1::new(
+                sequence,
+                RequestId::from_bytes(sequence_uuid(0x80, sequence.get())).expect("request id"),
+                plan.clone(),
+                CanonicalInputHash::from_bytes([0x52; 32]),
+                AdmittedActorContext::new(
+                    ActorId::new("columnar-receipt").expect("actor"),
+                    ActorKind::Human,
+                    TenantScope::Global,
+                    None,
+                ),
+                LogicalTime::new(Timestamp::new(1_700_200_002, 0).expect("logical time")),
+                PartitionKeyHash::from_bytes(
+                    [0x53 + u8::try_from(partition).expect("partition"); 32],
+                ),
+                Vec::new(),
+                dependencies,
+                vec![CommittedEntityReferenceV2::from_post_image(&row).expect("row reference")],
+                Vec::new(),
+                DeclaredOutcome::new(
+                    OutcomeId::first(),
+                    CanonicalRecord::new(Vec::new()).expect("outcome record"),
+                )
+                .expect("outcome"),
+                ProvenanceId::from_bytes(sequence_uuid(0x90, sequence.get())).expect("provenance"),
+                Vec::new(),
+                DurabilityMode::Sync,
+            )
+            .expect("stored commit");
+            rows.push(row);
+            commits.push(commit);
+        }
+        (rows, commits)
     }
 
     fn request_projection(runtime: &ColumnarRuntime, name: &str) {
@@ -3086,9 +3211,9 @@ contract VectorBoard version 1 {
         let mut successor = runtime
             .open_controlled_generation(&binding, published)
             .expect("open V1 successor");
-        let _ = successor
-            .apply_available_for_worker(runtime.apply_source(), || false)
-            .expect("apply authoritative advancement");
+        let _ =
+            crate::columnar_worker::apply_available_for_worker_for_test(runtime, &mut successor)
+                .expect("apply authoritative advancement");
         let manifest = successor.checkpoint().expect("checkpoint V1 successor");
         let (length, checksum) = manifest.artifact_identity();
         let replacement = StoredColumnarProjectionGenerationV1::selected(
@@ -3755,6 +3880,326 @@ contract VectorBoard version 1 {
                 .expect("reread selected V1 manifest"),
             manifest_before,
             "frozen V1 bytes are neither mutated nor relabeled"
+        );
+    }
+
+    fn receipt_query(organization: [u8; 16]) -> ColumnarQueryRequest {
+        ColumnarQueryRequest {
+            org_scope: CanonicalValue::Uuid(organization),
+            select: Vec::new(),
+            predicates: Vec::new(),
+            order: Vec::new(),
+            limit: None,
+            group_by: None,
+            aggregate: Some(AggregateOp::Count),
+            budget: QueryBudget::default(),
+        }
+    }
+
+    fn receipt_samples(samples: usize, mut operation: impl FnMut()) -> Vec<u128> {
+        for _ in 0..5 {
+            operation();
+        }
+        let mut measured = (0..samples)
+            .map(|_| {
+                let start = Instant::now();
+                operation();
+                start.elapsed().as_nanos()
+            })
+            .collect::<Vec<_>>();
+        measured.sort_unstable();
+        measured
+    }
+
+    fn receipt_percentile(samples: &[u128], percentile: usize) -> u128 {
+        samples[(samples.len() - 1) * percentile / 100]
+    }
+
+    fn receipt_directory_bytes(directory: &Path) -> u64 {
+        std::fs::read_dir(directory)
+            .expect("read receipt directory")
+            .map(|entry| {
+                let entry = entry.expect("read receipt member");
+                let metadata = entry.metadata().expect("receipt member metadata");
+                if metadata.is_dir() {
+                    receipt_directory_bytes(&entry.path())
+                } else {
+                    metadata.len()
+                }
+            })
+            .sum()
+    }
+
+    // req: PRJ-002, PRJ-004, PRJ-009, PRJ-010, OQ-020, OQ-022, PERF-007, PERF-008
+    #[test]
+    #[ignore = "fixed WP-711 production worker/control/gate activation receipt; run explicitly in release mode"]
+    fn wp711_production_v2_activation_receipt() {
+        const ROWS: usize = 16_384;
+        const PARTITIONS: usize = 2;
+        const ROWS_PER_PARTITION: usize = ROWS / PARTITIONS;
+        const SAMPLES: usize = 31;
+        let (runtime, scope) = board_runtime("production-v2-activation-receipt");
+        let projections_root = scope.path().join("projections");
+        assert_eq!(receipt_directory_bytes(&projections_root), 0);
+        assert_eq!(runtime.lifecycle_observation().population_passes(), 0);
+        let (rows, commits) = columnar_receipt_rows_and_commits(ROWS_PER_PARTITION);
+        runtime
+            .storage()
+            .append_columnar_worker_commit_fixture(&rows, &commits)
+            .expect("seed exact authoritative receipt corpus");
+        drop(rows);
+        drop(commits);
+        let binding = runtime
+            .control_binding("ticket_board")
+            .expect("receipt control binding")
+            .clone();
+        let organizations = [uuid_bytes(0x63), uuid_bytes(0x64)];
+        let queries = organizations.map(receipt_query);
+        let expected = QueryResult::Aggregate(AggregateValue::Count(
+            u64::try_from(ROWS_PER_PARTITION).expect("partition count"),
+        ));
+        let port = ServerColumnarProjectionPort::new(Arc::clone(&runtime));
+
+        request_projection(&runtime, "ticket_board");
+        let v1_waiter = runtime
+            .notifier()
+            .register("ticket_board".to_owned())
+            .expect("register V1 publication acknowledgement");
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        assert_eq!(
+            v1_waiter.wait(Instant::now()).expect("V1 acknowledgement"),
+            riffdb_service::ColumnarWake::Notified
+        );
+        let v1_control = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("reread selected V1")
+            .expect("selected V1 control");
+        let v1_pointer = v1_control
+            .servable_generation()
+            .expect("selected V1 pointer")
+            .clone();
+        assert_eq!(v1_pointer.layout(), ColumnarProjectionLayoutV1::V1);
+        let v1_snapshot = port
+            .observe("ticket_board")
+            .expect("capture selected V1")
+            .snapshot_arc();
+        let v1_results = queries
+            .iter()
+            .map(|query| query_snapshot(binding.definition(), &v1_snapshot, query))
+            .collect::<Result<Vec<_>, _>>()
+            .expect("query selected V1");
+        assert_eq!(v1_results, vec![expected.clone(); PARTITIONS]);
+        let v1_directory = controlled_generation_directory(
+            &projections_root,
+            binding.spec().hash(),
+            v1_pointer.generation(),
+        );
+        let v1_bytes = receipt_directory_bytes(&v1_directory);
+        let v1_partition_query_ns = queries
+            .iter()
+            .map(|query| {
+                receipt_samples(SAMPLES, || {
+                    assert_eq!(
+                        query_snapshot(
+                            binding.definition(),
+                            black_box(&v1_snapshot),
+                            black_box(query)
+                        )
+                        .expect("V1 query"),
+                        expected
+                    );
+                })
+            })
+            .collect::<Vec<_>>();
+        let v1_query_ns = receipt_samples(SAMPLES, || {
+            let actual = queries
+                .iter()
+                .map(|query| {
+                    query_snapshot(
+                        binding.definition(),
+                        black_box(&v1_snapshot),
+                        black_box(query),
+                    )
+                    .expect("V1 query")
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(actual, vec![expected.clone(); PARTITIONS]);
+        });
+        let v1_recovery_ns = receipt_samples(SAMPLES, || {
+            let recovered = runtime
+                .open_controlled_generation(&binding, &v1_pointer)
+                .expect("V1 recovery");
+            let recovered = recovered.published_snapshot();
+            for query in &queries {
+                assert_eq!(
+                    query_snapshot(binding.definition(), &recovered, query)
+                        .expect("recovered V1 query"),
+                    expected
+                );
+            }
+        });
+
+        let rebuild_start = Instant::now();
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        let v2_waiter = runtime
+            .notifier()
+            .register("ticket_board".to_owned())
+            .expect("register V2 publication acknowledgement");
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        let rebuild_ns = rebuild_start.elapsed().as_nanos();
+        assert_eq!(
+            v2_waiter.wait(Instant::now()).expect("V2 acknowledgement"),
+            riffdb_service::ColumnarWake::Notified
+        );
+        let v2_control = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("reread selected V2")
+            .expect("selected V2 control");
+        let v2_pointer = v2_control
+            .servable_generation()
+            .expect("selected V2 pointer")
+            .clone();
+        assert_eq!(v2_pointer.layout(), ColumnarProjectionLayoutV1::V2);
+        let v2_snapshot = port
+            .observe("ticket_board")
+            .expect("capture selected V2")
+            .snapshot_arc();
+        let repeated_v2_snapshot = port
+            .observe("ticket_board")
+            .expect("recapture selected V2")
+            .snapshot_arc();
+        assert!(Arc::ptr_eq(&v2_snapshot, &repeated_v2_snapshot));
+        let v2_results = queries
+            .iter()
+            .map(|query| query_snapshot(binding.definition(), &v2_snapshot, query))
+            .collect::<Result<Vec<_>, _>>()
+            .expect("query selected V2");
+        assert_eq!(v2_results, v1_results);
+        let source_directory =
+            controlled_source_directory(&projections_root, binding.spec().hash());
+        let v2_directory =
+            source_directory.join(format!("generation-{:016x}", v2_pointer.generation().get()));
+        let v2_bytes = receipt_directory_bytes(&v2_directory);
+        let v2_partition_query_ns = queries
+            .iter()
+            .map(|query| {
+                receipt_samples(SAMPLES, || {
+                    assert_eq!(
+                        query_snapshot(
+                            binding.definition(),
+                            black_box(&v2_snapshot),
+                            black_box(query)
+                        )
+                        .expect("V2 query"),
+                        expected
+                    );
+                })
+            })
+            .collect::<Vec<_>>();
+        let v2_query_ns = receipt_samples(SAMPLES, || {
+            let actual = queries
+                .iter()
+                .map(|query| {
+                    query_snapshot(
+                        binding.definition(),
+                        black_box(&v2_snapshot),
+                        black_box(query),
+                    )
+                    .expect("V2 query")
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(actual, v1_results);
+        });
+        let v2_recovery_ns = receipt_samples(SAMPLES, || {
+            let recovered = runtime
+                .open_controlled_generation(&binding, &v2_pointer)
+                .expect("V2 recovery");
+            let recovered = recovered.published_snapshot();
+            for query in &queries {
+                assert_eq!(
+                    query_snapshot(binding.definition(), &recovered, query)
+                        .expect("recovered V2 query"),
+                    expected
+                );
+            }
+        });
+
+        let compaction_start = Instant::now();
+        let physical = PhysicalGenerationFingerprintV1::compute(binding.definition().fingerprint());
+        assert_eq!(
+            runtime
+                .storage()
+                .allocate_same_spec_candidate(&v2_control, *physical.as_bytes())
+                .expect("allocate production compaction candidate"),
+            ColumnarProjectionControlWriteResultV1::Applied
+        );
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        let compaction_waiter = runtime
+            .notifier()
+            .register("ticket_board".to_owned())
+            .expect("register compaction acknowledgement");
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        let compaction_ns = compaction_start.elapsed().as_nanos();
+        assert_eq!(
+            compaction_waiter
+                .wait(Instant::now())
+                .expect("compaction acknowledgement"),
+            riffdb_service::ColumnarWake::Notified
+        );
+        let compacted = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("reread compacted selection")
+            .expect("compacted control");
+        let compacted_pointer = compacted
+            .servable_generation()
+            .expect("selected compacted pointer");
+        assert!(compacted_pointer.generation() > v2_pointer.generation());
+        let compacted_snapshot = port
+            .observe("ticket_board")
+            .expect("capture compacted selected V2")
+            .snapshot_arc();
+        assert!(!Arc::ptr_eq(&compacted_snapshot, &v2_snapshot));
+        let compacted_results = queries
+            .iter()
+            .map(|query| query_snapshot(binding.definition(), &compacted_snapshot, query))
+            .collect::<Result<Vec<_>, _>>()
+            .expect("query compacted selected V2");
+        assert_eq!(compacted_results, v1_results);
+
+        let matched_frontier = match compacted_pointer.frontier() {
+            FrontierPosition::BeforeFirst => 0,
+            FrontierPosition::AppliedThrough(sequence) => sequence.get(),
+        };
+        let projection_lag = u64::try_from(ROWS)
+            .expect("row count")
+            .saturating_sub(matched_frontier);
+        let segment_count = v2_snapshot.segments.len();
+        let v1_modeled_owned_allocations = ROWS * 6;
+        let v2_modeled_owned_allocations = ROWS * 6 + segment_count * 17;
+        println!(
+            "WP711_ACTIVATION corpus=wp711-low-cardinality-v1-v2-v1 rows={ROWS} partitions={PARTITIONS} rows_per_partition={ROWS_PER_PARTITION} samples={SAMPLES} cpu_method=single-thread_elapsed_ns allocation_method=wp710_modeled_owned_allocations_not_allocator_calls matched_frontier={matched_frontier} matched_query_cases={PARTITIONS} partition_0_result_count={ROWS_PER_PARTITION} partition_1_result_count={ROWS_PER_PARTITION} projection_lag={projection_lag} no_projection_bytes=0 no_projection_modeled_owned_allocations=0 no_projection_population_passes=0 no_v2_bytes={v1_bytes} no_v2_modeled_owned_allocations={v1_modeled_owned_allocations} v1_partition_0_query_p50_ns={} v1_partition_1_query_p50_ns={} v1_query_p50_ns={} v1_query_p95_ns={} v1_query_p99_ns={} v1_recovery_p50_ns={} v1_recovery_p95_ns={} v1_recovery_p99_ns={} v2_bytes={v2_bytes} v2_modeled_owned_allocations={v2_modeled_owned_allocations} v2_partition_0_query_p50_ns={} v2_partition_1_query_p50_ns={} v2_query_p50_ns={} v2_query_p95_ns={} v2_query_p99_ns={} v2_recovery_p50_ns={} v2_recovery_p95_ns={} v2_recovery_p99_ns={} rebuild_ns={rebuild_ns} compaction_ns={compaction_ns} result_count={ROWS} production_worker_passes=6 publication_acknowledgements=3 durable_v2_generation={} compaction_generation={} selected_arc_reused=1",
+            receipt_percentile(&v1_partition_query_ns[0], 50),
+            receipt_percentile(&v1_partition_query_ns[1], 50),
+            receipt_percentile(&v1_query_ns, 50),
+            receipt_percentile(&v1_query_ns, 95),
+            receipt_percentile(&v1_query_ns, 99),
+            receipt_percentile(&v1_recovery_ns, 50),
+            receipt_percentile(&v1_recovery_ns, 95),
+            receipt_percentile(&v1_recovery_ns, 99),
+            receipt_percentile(&v2_partition_query_ns[0], 50),
+            receipt_percentile(&v2_partition_query_ns[1], 50),
+            receipt_percentile(&v2_query_ns, 50),
+            receipt_percentile(&v2_query_ns, 95),
+            receipt_percentile(&v2_query_ns, 99),
+            receipt_percentile(&v2_recovery_ns, 50),
+            receipt_percentile(&v2_recovery_ns, 95),
+            receipt_percentile(&v2_recovery_ns, 99),
+            v2_pointer.generation().get(),
+            compacted_pointer.generation().get(),
         );
     }
 

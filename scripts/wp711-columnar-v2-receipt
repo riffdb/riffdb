@@ -21,8 +21,8 @@ MECHANICS_COMMAND = [
   "--test-threads=1"
 ].freeze
 ACTIVATION_COMMAND = [
-  "cargo", "+1.97.0", "test", "--release", "-p", "riffdb-columnar", "--test",
-  "v2_generation", "wp711_production_v2_activation_receipt", "--", "--ignored",
+  "cargo", "+1.97.0", "test", "--release", "-p", "riffdb-server", "--lib",
+  "columnar_adapter::tests::wp711_production_v2_activation_receipt", "--", "--ignored",
   "--exact", "--nocapture", "--test-threads=1"
 ].freeze
 OUTPUT = "docs/performance/wp-711-columnar-v2-activation.json"
@@ -36,6 +36,10 @@ end
 
 def capture(*command)
   Open3.capture3(*command, chdir: root.to_s)
+end
+
+def capture_in(directory, *command)
+  Open3.capture3(*command, chdir: directory.to_s)
 end
 
 def capture!(*command)
@@ -116,7 +120,7 @@ def marker(output, name)
                    when "WP710_MECHANICS"
                      "test segment_v2::tests::wp710_fixed_corpus_mechanics_receipt ... "
                    when "WP711_ACTIVATION"
-                     "test wp711_production_v2_activation_receipt ... "
+                     "test columnar_adapter::tests::wp711_production_v2_activation_receipt ... "
                    else
                      raise ReceiptError, "unknown marker identity #{name}"
                    end
@@ -160,12 +164,25 @@ rescue KeyError, ArgumentError
 end
 
 def require_exact_keys(fields, expected, marker_name)
+  raise ReceiptError, "#{marker_name} is not an object" unless fields.is_a?(Hash)
+
   actual = fields.keys.sort
   wanted = expected.sort
   return if actual == wanted
 
   raise ReceiptError, "#{marker_name} fields differ: missing=#{wanted - actual} extra=#{actual - wanted}"
 end
+
+CONFIGURATION_KEYS = %w[
+  cargo_profile rust_toolchain rows partitions rows_per_partition samples cpu_method allocation_method
+].freeze
+CORPORA_KEYS = %w[mechanics activation].freeze
+COMMAND_KEYS = %w[wp710_gate wp711_activation].freeze
+HOST_KEYS = %w[uname logical_cpus cpu_model load_average_before load_average_after].freeze
+RAW_MARKER_KEYS = %w[wp710 wp711].freeze
+SOURCE_IDENTITY_PATHS = %w[
+  Cargo.toml Cargo.lock crates scripts/wp711-columnar-v2-receipt
+].freeze
 
 MECHANICS_KEYS = %w[
   rows samples high_v1_bytes high_v2_bytes high_ratio_bps low_v1_bytes low_v2_bytes
@@ -185,6 +202,8 @@ ACTIVATION_KEYS = %w[
   v2_partition_0_query_p50_ns v2_partition_1_query_p50_ns
   v2_query_p50_ns v2_query_p95_ns v2_query_p99_ns v2_recovery_p50_ns
   v2_recovery_p95_ns v2_recovery_p99_ns rebuild_ns compaction_ns result_count
+  production_worker_passes publication_acknowledgements durable_v2_generation
+  compaction_generation selected_arc_reused
 ].freeze
 
 def validate_mechanics(fields)
@@ -239,6 +258,14 @@ def validate_activation(fields)
     raise ReceiptError, "WP-711 #{key} is not positive" unless integer(fields, key).positive?
   end
   raise ReceiptError, "WP-711 result count differs" unless integer(fields, "result_count") == ROWS
+  raise ReceiptError, "WP-711 production worker path differs" unless integer(fields, "production_worker_passes") == 6
+  raise ReceiptError, "WP-711 publication acknowledgements differ" unless integer(fields, "publication_acknowledgements") == 3
+  raise ReceiptError, "WP-711 selected Arc proof differs" unless integer(fields, "selected_arc_reused") == 1
+  durable_generation = integer(fields, "durable_v2_generation")
+  compaction_generation = integer(fields, "compaction_generation")
+  unless durable_generation.positive? && compaction_generation > durable_generation
+    raise ReceiptError, "WP-711 durable generation order differs"
+  end
 end
 
 def numeric_fields(fields)
@@ -296,13 +323,17 @@ def receipt(mechanics_line, activation_line, revision, before_host, after_load)
   }
 end
 
-def validate_receipt(document)
+def validate_receipt(document, verify_repository: true)
   expected = %w[schema implementation_revision configuration corpora commands host wp710_mechanics wp711_activation raw_markers verdict]
   require_exact_keys(document, expected, "receipt")
   raise ReceiptError, "receipt schema differs" unless document.fetch("schema") == SCHEMA
-  raise ReceiptError, "receipt revision is invalid" unless document.fetch("implementation_revision").match?(/\A[0-9a-f]{40}\z/)
+  revision = document.fetch("implementation_revision")
+  unless revision.is_a?(String) && revision.match?(/\A[0-9a-f]{40}\z/)
+    raise ReceiptError, "receipt revision is invalid"
+  end
   raise ReceiptError, "receipt verdict is not pass" unless document.fetch("verdict") == "pass"
   config = document.fetch("configuration")
+  require_exact_keys(config, CONFIGURATION_KEYS, "receipt configuration")
   raise ReceiptError, "receipt CPU terminology differs" unless config.fetch("cpu_method") == CPU_METHOD
   raise ReceiptError, "receipt allocation terminology differs" unless config.fetch("allocation_method") == ALLOCATION_METHOD
   raise ReceiptError, "receipt release profile differs" unless config.fetch("cargo_profile") == "release"
@@ -310,14 +341,59 @@ def validate_receipt(document)
          config.fetch("rows_per_partition") == 8_192 && config.fetch("samples") == SAMPLES
     raise ReceiptError, "receipt shape differs"
   end
+  toolchain = config.fetch("rust_toolchain")
+  unless toolchain.is_a?(String) && toolchain.start_with?("rustc 1.97.0 ") && toolchain.bytesize <= 4_096
+    raise ReceiptError, "receipt Rust toolchain differs"
+  end
+  corpora = document.fetch("corpora")
+  require_exact_keys(corpora, CORPORA_KEYS, "receipt corpora")
+  unless corpora.fetch("mechanics") == "WP-710 registered high/low-cardinality and clustered-selectivity corpora" &&
+         corpora.fetch("activation") == "wp711-low-cardinality-v1-v2-v1"
+    raise ReceiptError, "receipt corpus identity differs"
+  end
+  commands = document.fetch("commands")
+  require_exact_keys(commands, COMMAND_KEYS, "receipt commands")
   raise ReceiptError, "receipt WP-710 command differs" unless document.dig("commands", "wp710_gate") == MECHANICS_COMMAND.join(" ")
   raise ReceiptError, "receipt WP-711 command differs" unless document.dig("commands", "wp711_activation") == ACTIVATION_COMMAND.join(" ")
+  host = document.fetch("host")
+  require_exact_keys(host, HOST_KEYS, "receipt host")
+  raise ReceiptError, "receipt logical CPU count is invalid" unless host.fetch("logical_cpus").is_a?(Integer) && host.fetch("logical_cpus").positive?
+  %w[uname cpu_model load_average_before load_average_after].each do |key|
+    value = host.fetch(key)
+    unless value.is_a?(String) && !value.empty? && value.bytesize <= 4_096
+      raise ReceiptError, "receipt host #{key} is invalid"
+    end
+  end
+  require_exact_keys(document.fetch("wp710_mechanics"), MECHANICS_KEYS, "receipt WP-710 mechanics")
+  require_exact_keys(document.fetch("wp711_activation"), ACTIVATION_KEYS, "receipt WP-711 activation")
   mechanics = document.fetch("wp710_mechanics").transform_values(&:to_s)
   activation = document.fetch("wp711_activation").transform_values(&:to_s)
   validate_mechanics(mechanics)
   validate_activation(activation)
-  raise ReceiptError, "receipt WP-710 marker differs" unless parse_marker(document.dig("raw_markers", "wp710"), "WP710_MECHANICS") == mechanics
-  raise ReceiptError, "receipt WP-711 marker differs" unless parse_marker(document.dig("raw_markers", "wp711"), "WP711_ACTIVATION") == activation
+  raw_markers = document.fetch("raw_markers")
+  require_exact_keys(raw_markers, RAW_MARKER_KEYS, "receipt raw markers")
+  raise ReceiptError, "receipt WP-710 marker differs" unless parse_marker(raw_markers.fetch("wp710"), "WP710_MECHANICS") == mechanics
+  raise ReceiptError, "receipt WP-711 marker differs" unless parse_marker(raw_markers.fetch("wp711"), "WP711_ACTIVATION") == activation
+  validate_repository_revision(revision) if verify_repository
+end
+
+def validate_repository_revision(revision, repository: root, source_paths: SOURCE_IDENTITY_PATHS)
+  _stdout, _stderr, object_status = capture_in(repository, "git", "cat-file", "-e", "#{revision}^{commit}")
+  raise ReceiptError, "receipt revision does not resolve to a commit" unless object_status.success?
+
+  _stdout, _stderr, ancestor_status = capture_in(repository, "git", "merge-base", "--is-ancestor", revision, "HEAD")
+  raise ReceiptError, "receipt revision is not an ancestor of the current checkout" unless ancestor_status.success?
+
+  changed, stderr, diff_status = capture_in(repository, "git", "diff", "--name-only", "#{revision}..HEAD", "--", *source_paths)
+  raise ReceiptError, "could not verify receipt source identity: #{stderr.strip}" unless diff_status.success?
+  raise ReceiptError, "receipt production or evidence source differs from its pinned revision" unless changed.empty?
+
+  dirty, stderr, status = capture_in(
+    repository,
+    "git", "status", "--porcelain=v1", "--untracked-files=all", "--", *source_paths
+  )
+  raise ReceiptError, "could not verify current receipt source state: #{stderr.strip}" unless status.success?
+  raise ReceiptError, "current production or evidence source is not clean" unless dirty.empty?
 end
 
 def self_test
@@ -345,6 +421,9 @@ def self_test
             when "cpu_method" then "single-thread_elapsed_ns"
             when "allocation_method" then "wp710_modeled_owned_allocations_not_allocator_calls"
             when "projection_lag", "no_projection_bytes", "no_projection_modeled_owned_allocations", "no_projection_population_passes" then 0
+            when "production_worker_passes" then 6
+            when "publication_acknowledgements", "compaction_generation" then 3
+            when "durable_v2_generation" then 2
             else 1
             end
     "#{key}=#{value}"
@@ -353,6 +432,10 @@ def self_test
   activation_fields = parse_marker(activation, "WP711_ACTIVATION")
   framed = "test segment_v2::tests::wp710_fixed_corpus_mechanics_receipt ... #{mechanics}\n"
   raise ReceiptError, "self-test did not accept a libtest-framed stderr marker" unless marker(child_output("", framed), "WP710_MECHANICS") == mechanics
+  activation_framed = "test columnar_adapter::tests::wp711_production_v2_activation_receipt ... #{activation}\n"
+  unless marker(child_output("", activation_framed), "WP711_ACTIVATION") == activation
+    raise ReceiptError, "self-test did not accept the exact production activation marker"
+  end
   begin
     marker(child_output("", "#{mechanics}\n#{mechanics}\n"), "WP710_MECHANICS")
     raise ReceiptError, "self-test accepted duplicate WP-710 markers"
@@ -403,11 +486,81 @@ def self_test
       raise if error.message.start_with?("self-test")
     end
   end
-  %w[projection_lag no_projection_bytes result_count].each do |key|
-    changed = activation_fields.merge(key => "1")
+  {
+    "projection_lag" => "1",
+    "no_projection_bytes" => "1",
+    "result_count" => "1",
+    "production_worker_passes" => "1",
+    "publication_acknowledgements" => "1",
+    "selected_arc_reused" => "0"
+  }.each do |key, value|
+    changed = activation_fields.merge(key => value)
     begin
       validate_activation(changed)
       raise ReceiptError, "self-test accepted failing WP-711 #{key}"
+    rescue ReceiptError => error
+      raise if error.message.start_with?("self-test")
+    end
+  end
+  current_revision = capture!("git", "rev-parse", "HEAD").strip
+  before_host = {
+    "uname" => "self-test",
+    "logical_cpus" => 1,
+    "cpu_model" => "self-test",
+    "load_average_before" => "0 0 0"
+  }
+  document = receipt(mechanics, activation, current_revision, before_host, "0 0 0")
+  validate_receipt(document, verify_repository: false)
+  [
+    lambda { |candidate| candidate.fetch("configuration")["unexpected"] = 1 },
+    lambda { |candidate| candidate.fetch("corpora").delete("activation") },
+    lambda { |candidate| candidate.fetch("commands")["wp711_activation"] = "cargo unpinned" },
+    lambda { |candidate| candidate.fetch("wp711_activation").delete("selected_arc_reused") },
+    lambda { |candidate| candidate["implementation_revision"] = 1 }
+  ].each do |mutate|
+    candidate = JSON.parse(JSON.generate(document))
+    mutate.call(candidate)
+    begin
+      validate_receipt(candidate)
+      raise ReceiptError, "self-test accepted a malformed nested receipt"
+    rescue ReceiptError => error
+      raise if error.message.start_with?("self-test")
+    end
+  end
+  Dir.mktmpdir("riffdb-wp711-source-identity-") do |directory|
+    repository = Pathname.new(directory)
+    source = repository.join("Cargo.toml")
+    source.write("[workspace]\n")
+    capture_in(repository, "git", "init", "--quiet")
+    capture_in(repository, "git", "config", "user.name", "WP-711 self-test")
+    capture_in(repository, "git", "config", "user.email", "wp711@example.invalid")
+    capture_in(repository, "git", "add", "Cargo.toml")
+    _stdout, stderr, status = capture_in(repository, "git", "commit", "--quiet", "-m", "source")
+    raise ReceiptError, "self-test source commit failed: #{stderr.strip}" unless status.success?
+    revision = capture_in(repository, "git", "rev-parse", "HEAD").first.strip
+    validate_repository_revision(revision, repository: repository, source_paths: ["Cargo.toml"])
+
+    source.write("[workspace]\nresolver = \"3\"\n")
+    begin
+      validate_repository_revision(revision, repository: repository, source_paths: ["Cargo.toml"])
+      raise ReceiptError, "self-test accepted dirty production source"
+    rescue ReceiptError => error
+      raise if error.message.start_with?("self-test")
+    end
+    source.write("[workspace]\n")
+    repository.join("README.md").write("unrelated\n")
+    capture_in(repository, "git", "add", "README.md")
+    _stdout, stderr, status = capture_in(repository, "git", "commit", "--quiet", "-m", "unrelated")
+    raise ReceiptError, "self-test unrelated commit failed: #{stderr.strip}" unless status.success?
+    validate_repository_revision(revision, repository: repository, source_paths: ["Cargo.toml"])
+
+    source.write("[workspace]\nresolver = \"3\"\n")
+    capture_in(repository, "git", "add", "Cargo.toml")
+    _stdout, stderr, status = capture_in(repository, "git", "commit", "--quiet", "-m", "source changed")
+    raise ReceiptError, "self-test changed-source commit failed: #{stderr.strip}" unless status.success?
+    begin
+      validate_repository_revision(revision, repository: repository, source_paths: ["Cargo.toml"])
+      raise ReceiptError, "self-test accepted committed production-source drift"
     rescue ReceiptError => error
       raise if error.message.start_with?("self-test")
     end

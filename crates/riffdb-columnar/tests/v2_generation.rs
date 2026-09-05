@@ -736,8 +736,8 @@ fn dataful_v2_rebuild_reopens_repeatedly_and_refuses_mixed_or_stale_state() {
 
 // req: PRJ-002, PRJ-004, PRJ-009, OQ-020, OQ-022, PERF-007, PERF-008
 #[test]
-#[ignore = "fixed WP-711 production-activation receipt; run explicitly in release mode"]
-fn wp711_production_v2_activation_receipt() {
+#[ignore = "non-terminal lower-level mechanics diagnostic; production receipt runs in riffdb-server"]
+fn wp711_lower_level_v2_activation_diagnostic() {
     const ROWS: usize = 16_384;
     const PARTITIONS: usize = 2;
     const ROWS_PER_PARTITION: usize = ROWS / PARTITIONS;
@@ -960,7 +960,7 @@ fn wp711_production_v2_activation_receipt() {
     let v1_modeled_owned_allocations = ROWS * 6;
     let v2_modeled_owned_allocations = ROWS * 6 + segment_count * 17;
     println!(
-        "WP711_ACTIVATION corpus=wp711-low-cardinality-v1-v2-v1 rows={ROWS} partitions={PARTITIONS} rows_per_partition={ROWS_PER_PARTITION} samples={SAMPLES} cpu_method=single-thread_elapsed_ns allocation_method=wp710_modeled_owned_allocations_not_allocator_calls matched_frontier={} matched_query_cases={matched_query_cases} partition_0_result_count={ROWS_PER_PARTITION} partition_1_result_count={ROWS_PER_PARTITION} projection_lag={lag} no_projection_bytes=0 no_projection_modeled_owned_allocations=0 no_projection_population_passes=0 no_v2_bytes={v1_bytes} no_v2_modeled_owned_allocations={v1_modeled_owned_allocations} v1_partition_0_query_p50_ns={} v1_partition_1_query_p50_ns={} v1_query_p50_ns={} v1_query_p95_ns={} v1_query_p99_ns={} v1_recovery_p50_ns={} v1_recovery_p95_ns={} v1_recovery_p99_ns={} v2_bytes={v2_bytes} v2_modeled_owned_allocations={v2_modeled_owned_allocations} v2_partition_0_query_p50_ns={} v2_partition_1_query_p50_ns={} v2_query_p50_ns={} v2_query_p95_ns={} v2_query_p99_ns={} v2_recovery_p50_ns={} v2_recovery_p95_ns={} v2_recovery_p99_ns={} rebuild_ns={rebuild_ns} compaction_ns={compaction_ns} result_count={ROWS}",
+        "WP711_LOWER_LEVEL corpus=wp711-low-cardinality-v1-v2-v1 rows={ROWS} partitions={PARTITIONS} rows_per_partition={ROWS_PER_PARTITION} samples={SAMPLES} cpu_method=single-thread_elapsed_ns allocation_method=wp710_modeled_owned_allocations_not_allocator_calls matched_frontier={} matched_query_cases={matched_query_cases} partition_0_result_count={ROWS_PER_PARTITION} partition_1_result_count={ROWS_PER_PARTITION} projection_lag={lag} no_projection_bytes=0 no_projection_modeled_owned_allocations=0 no_projection_population_passes=0 no_v2_bytes={v1_bytes} no_v2_modeled_owned_allocations={v1_modeled_owned_allocations} v1_partition_0_query_p50_ns={} v1_partition_1_query_p50_ns={} v1_query_p50_ns={} v1_query_p95_ns={} v1_query_p99_ns={} v1_recovery_p50_ns={} v1_recovery_p95_ns={} v1_recovery_p99_ns={} v2_bytes={v2_bytes} v2_modeled_owned_allocations={v2_modeled_owned_allocations} v2_partition_0_query_p50_ns={} v2_partition_1_query_p50_ns={} v2_query_p50_ns={} v2_query_p95_ns={} v2_query_p99_ns={} v2_recovery_p50_ns={} v2_recovery_p95_ns={} v2_recovery_p99_ns={} rebuild_ns={rebuild_ns} compaction_ns={compaction_ns} result_count={ROWS}",
         frontier_sequence(frontier),
         percentile(&v1_partition_query_ns[0], 50),
         percentile(&v1_partition_query_ns[1], 50),
