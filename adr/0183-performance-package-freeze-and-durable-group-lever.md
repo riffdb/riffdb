@@ -17,9 +17,12 @@ obligations:
   - id: OBL-0183-1
     package: WP-762
     proof: check-performance-freeze
-    says: A work package that lists a PERF-* requirement while the freeze is in
-      force fails repository checks unless it is WP-762, WP-763, or a package named
-      by the accepted lifting record.
+    says: While the freeze is in force, `check-performance-freeze` seals all
+      pre-freeze PERF-package definitions and rejects every new package or
+      unauthorized state change. Only WP-750 and WP-760 may retain their exact
+      definitions and add a closure for their named non-candidate prerequisites;
+      WP-762 and WP-763 retain their existing authority. No other open package may
+      change or close, and no fifth exception exists.
   - id: OBL-0183-2
     package: WP-762
     proof: assemble-wp674-unary-manifest --require-both-profiles
@@ -48,9 +51,12 @@ obligations:
     says: Graceful shutdown evidence reports commands per durable flush as a
       fixed-cardinality histogram.
 review_triggers:
-  - A performance package other than WP-762 or WP-763 would be registered or
-    activated before WP-750 and WP-760 close, or the freeze would be lifted by
-    anything other than an accepted ADR.
+  - A fifth package would be permitted to advance while the freeze is in force,
+    or an inert pre-freeze PERF package would change or close.
+  - WP-750 or WP-760 would add a PERF requirement, activate a performance candidate,
+    alter a performance threshold, admit another package, or lift the freeze.
+  - The freeze would start without the WP-762 bank, or lift before WP-750 and WP-760
+    close or without a separately accepted ADR.
   - A banked baseline value would be moved upward, a failed generation retried or
     replaced, or a receipt banked without both inventoried profiles.
   - PERF-009 acknowledgement, fence, or durability semantics would change, or any
@@ -104,14 +110,35 @@ does. This record turns that ranking into a rule.
 
 ### 1. Performance packages are frozen behind availability and recovery
 
-No work package other than WP-762 and WP-763 may register or activate a
-`PERF-*` requirement until WP-750 (ADR-0178 replication acceptance) and WP-760
-(ADR-0182 bounded dirty recovery) both close. The freeze is enforced by
-`scripts/check-performance-freeze`, which reads `work_packages.yaml`, the
-freeze record it carries, and the closure status of WP-750 and WP-760, and
-fails on any other package listing a `PERF-*` requirement without a `closure`
-that predates the freeze. Registering a performance package during the freeze
-is a SPEC 19.6 human review trigger.
+WP-762 records the freeze only in the same change that banks its qualified
+baseline. The freeze record inventories every package that lists a `PERF-*`
+requirement at that point. For each then-open package it stores SHA-256 over
+the RFC 8785 JSON Canonicalization Scheme UTF-8 bytes of the entire parsed
+package mapping after removing only its top-level `closure` member, encoded as
+64 lowercase hexadecimal characters. A non-JSON scalar or non-finite number
+invalidates the record.
+
+While the freeze is in force, `scripts/check-performance-freeze` accepts a
+package closed before the recorded start and an exact inert open entry from
+that sealed inventory. An inert entry may neither change its normalized
+definition nor gain a closure. A package absent from the inventory may not add
+or activate a `PERF-*` requirement.
+
+Exactly four packages may advance. WP-762 may bank the baseline and start the
+freeze. WP-763 may build and either activate or remove the one candidate this
+record defines. WP-750 may complete only its already-registered replication
+acceptance campaign and existing no-hot-path-regression evidence, and WP-760
+may complete only its already-registered bounded dirty-recovery work and
+existing recovery-performance evidence. WP-750 and WP-760 may retain their
+exact pre-freeze definitions and add a `closure`; they may not add a `PERF-*`
+requirement, authorize or activate a performance candidate, alter a threshold,
+admit another package, or lift the freeze. No fifth exception exists.
+
+The freeze lifts only after WP-750 and WP-760 both close and a later,
+separately accepted ADR carries the banked baseline as its starting receipt
+and names admitted packages. A closure, manifest edit, or exception does not
+lift it. Registering a performance package during the freeze is a SPEC 19.6
+human review trigger.
 
 The freeze does not stop measurement. The performance sentinel, the endurance
 harness, host-validity preflight, and every existing acceptance command keep

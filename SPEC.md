@@ -1512,15 +1512,29 @@ blocker on qualification. The remaining performance work is one banked
 baseline, one structural lever with fixed arithmetic, and a freeze that keeps
 engine effort on availability and bounded recovery until they close.
 
-- `PERF-020`: While the ADR-0183 freeze is in force, no work package other
-  than WP-762 and WP-763 MAY register or activate a `PERF-*` requirement. The
-  freeze MUST be recorded in `work_packages.yaml` together with the banked
-  baseline, MUST be enforced by a repository check that fails on any other
-  package listing a `PERF-*` requirement, and MUST lift only through an
-  accepted ADR that carries the banked baseline as its starting receipt after
-  WP-750 and WP-760 close. Registering a performance package during the
-  freeze is a mandatory human review trigger. Sentinel, endurance, and
-  host-validity measurement MUST continue during the freeze, and a detected
+- `PERF-020`: The ADR-0183 freeze MUST be recorded in `work_packages.yaml`
+  together with the WP-762 banked baseline. Its record MUST inventory every
+  package listing a `PERF-*` requirement at freeze start and, for each then-open
+  package, store SHA-256 as 64 lowercase hexadecimal characters over the RFC
+  8785 JSON Canonicalization Scheme UTF-8 bytes of the entire parsed package
+  mapping after removing only its top-level `closure` member; a non-JSON scalar
+  or non-finite number MUST invalidate the record. While the freeze is in
+  force, the repository check MUST accept packages closed before its recorded
+  start and unchanged inert open entries from the sealed inventory. An inert
+  entry MUST NOT change or close, and an absent package MUST NOT add or activate
+  a `PERF-*` requirement. Exactly four packages MAY advance: WP-762 MAY bank the
+  baseline and start the freeze; WP-763 MAY build and activate or remove the one
+  ADR-0183 candidate; and WP-750 and WP-760 MAY retain their exact pre-freeze
+  definitions and add only a closure for their already-registered non-candidate
+  prerequisite work and existing performance evidence. WP-750 and WP-760 MUST
+  NOT add a `PERF-*` requirement, authorize or activate a performance candidate,
+  alter a threshold, admit another package, or lift the freeze. There is no
+  fifth exception. The freeze MUST lift only through a later, separately
+  accepted ADR that carries the banked baseline as its starting receipt and
+  names admitted packages after WP-750 and WP-760 both close; no closure,
+  manifest edit, or exception lifts it. Registering a performance package
+  during the freeze is a mandatory human review trigger. Sentinel, endurance,
+  and host-validity measurement MUST continue during the freeze, and a detected
   regression is handled as a defect against the banked baseline.
 - `PERF-021`: The freeze MUST start from one qualified baseline receipt set
   on both N1 and E2 comprising the `PERF-018` interactive c32 and write-only
