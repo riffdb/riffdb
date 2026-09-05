@@ -11,11 +11,12 @@ use crate::{
     ApplicationInstallationReceiptHash, ApplicationLockHash, ApplicationManifestHash,
     ApplicationPortabilityManifestHash, ApplicationReimportReceiptHash,
     ApplicationRoleDefinitionHash, ApplicationRoleHash, ApplicationSourceHash, CanonicalInputHash,
-    CanonicalValueHash, CapabilityTokenDigest, ConflictKeyHash, ContractBundleHash,
-    ContractMigrationInputHash, ContractMigrationJournalHash, ContractMigrationValidationDigest,
-    ContractPlanRootHash, DigestKey, DigestKeyId, EntityKeyHash, EntityRecordHash,
-    EntityTransitionHash, EventConsumerIdentityHash, EventHash, GeneratedArtifactHash,
-    MigrationBundleHash, MigrationSourceHash, OfflineMaintenanceInputHash, PartitionKeyHash,
+    CanonicalValueHash, CapabilityTokenDigest, ColumnarDefinitionSemanticsHashV1,
+    ColumnarProjectionSpecHashV1, ConflictKeyHash, ContractBundleHash, ContractMigrationInputHash,
+    ContractMigrationJournalHash, ContractMigrationValidationDigest, ContractPlanRootHash,
+    DigestKey, DigestKeyId, EntityKeyHash, EntityRecordHash, EntityTransitionHash,
+    EventConsumerIdentityHash, EventHash, GeneratedArtifactHash, MigrationBundleHash,
+    MigrationSourceHash, OfflineMaintenanceInputHash, PartitionKeyHash,
     PartitionSetObservationHash, PlanHash, ProjectionApplyHash, ProjectionPlanHash,
     ProjectionProviderDescriptorHash, QueryModuleHash, QueryParameterHash, QueryPlanHash,
     QuerySourceHash, ReactiveModuleHash, ReactiveOperationHash, ReactiveSourceHash,
@@ -133,11 +134,13 @@ pub enum HashDomain {
     ApplicationReimportReceipt,
     /// One complete exact-result provider activation checkpoint.
     ExactResultCheckpoint,
+    /// One schema-bound columnar definition or complete projection specification.
+    ColumnarProjectionSpec,
 }
 
 impl HashDomain {
     /// Every registered unkeyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 51] = [
+    pub const ALL: [Self; 52] = [
         Self::CanonicalValue,
         Self::Source,
         Self::MigrationSource,
@@ -189,6 +192,7 @@ impl HashDomain {
         Self::ApplicationPortabilityManifest,
         Self::ApplicationReimportReceipt,
         Self::ExactResultCheckpoint,
+        Self::ColumnarProjectionSpec,
     ];
 
     /// Returns the immutable ASCII v1 domain label.
@@ -245,6 +249,7 @@ impl HashDomain {
             Self::ApplicationPortabilityManifest => "riffdb.application-portability-manifest/v1",
             Self::ApplicationReimportReceipt => "riffdb.application-reimport-receipt/v1",
             Self::ExactResultCheckpoint => "riffdb.exact-result-checkpoint/v1",
+            Self::ColumnarProjectionSpec => "riffdb.columnar-projection-spec/v1",
         }
     }
 }
@@ -396,6 +401,19 @@ typed_hash_function!(
     hash_canonical_value,
     CanonicalValue,
     CanonicalValueHash
+);
+
+typed_hash_function!(
+    /// Hashes one purpose-framed canonical columnar definition-semantics document.
+    hash_columnar_definition_semantics,
+    ColumnarProjectionSpec,
+    ColumnarDefinitionSemanticsHashV1
+);
+typed_hash_function!(
+    /// Hashes one purpose-framed complete schema-bound columnar specification.
+    hash_columnar_projection_spec,
+    ColumnarProjectionSpec,
+    ColumnarProjectionSpecHashV1
 );
 typed_hash_function!(
     /// Hashes canonical contract source in its immutable v1 domain.

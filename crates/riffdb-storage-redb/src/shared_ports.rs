@@ -15,20 +15,24 @@ use riffdb_storage_api::{
     AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest, AuthoritativePointReader,
     AuthoritativeScanReader, CapabilityAdministrationTransactionPort, CapabilityCreateCandidateV1,
     CapabilityInventoryPageV1, CapabilityInventoryReader, CapabilityLookupResult, CapabilityReader,
-    CapabilityRevokeCandidateV1, CatalogRepository, CommitScanPageV1, CommitScanRequest,
+    CapabilityRevokeCandidateV1, CatalogRepository, ColumnarProjectionControlRepository,
+    ColumnarProjectionControlWriteResultV1, ColumnarProjectionFailureReasonV1,
+    ColumnarProjectionLayoutV1, ColumnarProjectionReplayLimitsV1,
+    ColumnarProjectionRetentionRepository, CommitScanPageV1, CommitScanRequest,
     DeferredCommandEpochPort, EntityTarget, ExecutionFailureAdmissionResult,
     ExecutionFailureTransitionPort, ExecutionFailureTransitionRequestV1,
     FilteredAuthoritativeIndexScanPage, FilteredAuthoritativeIndexScanRequest,
-    FilteredAuthoritativeScanReader, IdempotencyIdentity, IdempotencyLookupCandidatesV1,
-    OutboxClaimV1, OutboxDeadLetterV1, OutboxPageLimit, OutboxRenewV1, OutboxRepository,
-    OutboxRetryV1, OutboxStatusReadResultV1, OutboxSucceedV1, OutboxTransitionResultV1,
-    PendingOutboxScanV1, ProjectionApplySnapshot, ProjectionApplySnapshotReader,
-    ProjectionApplySnapshotRequest, ProjectionControlScanV1, ProjectionQueryReader,
-    ProjectionQueryRequest, ProjectionQueryResult, ProjectionRecoveryPageLimit,
-    ProjectionRecoveryRepository, ProjectionRecoveryValidationRequestV1,
-    ProjectionRecoveryValidationResultV1, ProjectionStatus, QueryModuleRepository, ReadSnapshot,
-    SnapshotReader, SnapshotRequest, StorageError, StorageErrorKind, StorageScanLimit,
-    StoredCapabilityRecordV1, StoredCommitRecordV1, StoredContractBundleV1,
+    FilteredAuthoritativeScanReader, FreshColumnarProjectionControlV1, IdempotencyIdentity,
+    IdempotencyLookupCandidatesV1, OutboxClaimV1, OutboxDeadLetterV1, OutboxPageLimit,
+    OutboxRenewV1, OutboxRepository, OutboxRetryV1, OutboxStatusReadResultV1, OutboxSucceedV1,
+    OutboxTransitionResultV1, PendingOutboxScanV1, ProjectionApplySnapshot,
+    ProjectionApplySnapshotReader, ProjectionApplySnapshotRequest, ProjectionControlScanV1,
+    ProjectionQueryReader, ProjectionQueryRequest, ProjectionQueryResult,
+    ProjectionRecoveryPageLimit, ProjectionRecoveryRepository,
+    ProjectionRecoveryValidationRequestV1, ProjectionRecoveryValidationResultV1, ProjectionStatus,
+    QueryModuleRepository, ReadSnapshot, SnapshotReader, SnapshotRequest, StorageError,
+    StorageErrorKind, StorageScanLimit, StoredCapabilityRecordV1,
+    StoredColumnarProjectionControlV1, StoredCommitRecordV1, StoredContractBundleV1,
     StoredContractMigrationEdgeV1, StoredDurableEventV1, StoredEntityRecordV1, StoredOutcomeV1,
     StoredProvenanceRecordV1, StoredQueryModuleV1, StoredVectorProjectionControlV1,
     UndeliveredOutboxStatusScanRequestV1, UndeliveredOutboxStatusScanV1, VectorEvidenceIndexPageV1,
@@ -37,8 +41,10 @@ use riffdb_storage_api::{
     VectorProjectionControlWriteResultV1, VectorProjectionSourceV1,
 };
 use riffdb_types::{
-    CapabilityId, CapabilityTokenDigest, CommitSequence, ContractBundleHash, ContractLineage,
-    ContractVersion, EventId, ProjectionIdentity, ProvenanceId, QueryModuleHash,
+    ApplicationRoleHash, CapabilityId, CapabilityTokenDigest, ColumnarProjectionSourceV1,
+    ColumnarProjectionSpecHashV1, CommitSequence, ContractBundleHash, ContractLineage,
+    ContractVersion, DefinitionFingerprint, EventId, FrontierPosition, ProjectionIdentity,
+    ProvenanceId, QueryModuleHash,
 };
 
 use crate::store::{RedbOperationalPorts, SharedRedb};
@@ -262,6 +268,181 @@ impl VectorProjectionControlRepository for RedbSharedPorts {
         &self,
     ) -> Result<Vec<riffdb_types::FrontierPosition>, StorageError> {
         VectorProjectionControlRepository::attached_vector_projection_frontiers(&self.operational())
+    }
+}
+
+impl ColumnarProjectionControlRepository for RedbSharedPorts {
+    fn initialize_fresh_v1(
+        &self,
+        controls: &[FreshColumnarProjectionControlV1],
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        ColumnarProjectionControlRepository::initialize_fresh_v1(&self.operational(), controls)
+    }
+
+    fn record_durable_snapshot(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+        prepared: &riffdb_storage_api::PreparedColumnarGenerationV1,
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        ColumnarProjectionControlRepository::record_durable_snapshot(
+            &self.operational(),
+            expected,
+            prepared,
+        )
+    }
+
+    fn record_candidate_frontier(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+        replacement: &riffdb_storage_api::PreparedColumnarGenerationV1,
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        ColumnarProjectionControlRepository::record_candidate_frontier(
+            &self.operational(),
+            expected,
+            replacement,
+        )
+    }
+
+    fn advance_published_v1(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+        replacement: &riffdb_storage_api::PreparedColumnarGenerationV1,
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        ColumnarProjectionControlRepository::advance_published_v1(
+            &self.operational(),
+            expected,
+            replacement,
+        )
+    }
+
+    fn begin_v2_candidate(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+        physical_generation_fingerprint: [u8; 32],
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        ColumnarProjectionControlRepository::begin_v2_candidate(
+            &self.operational(),
+            expected,
+            physical_generation_fingerprint,
+        )
+    }
+
+    fn allocate_same_spec_candidate(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+        physical_generation_fingerprint: [u8; 32],
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        ColumnarProjectionControlRepository::allocate_same_spec_candidate(
+            &self.operational(),
+            expected,
+            physical_generation_fingerprint,
+        )
+    }
+
+    fn allocate_unservable_rebuild_candidate(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+        target_definition_fingerprint: DefinitionFingerprint,
+        target_spec_hash: ColumnarProjectionSpecHashV1,
+        replay_limits: ColumnarProjectionReplayLimitsV1,
+        layout: ColumnarProjectionLayoutV1,
+        physical_generation_fingerprint: Option<[u8; 32]>,
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        ColumnarProjectionControlRepository::allocate_unservable_rebuild_candidate(
+            &self.operational(),
+            expected,
+            target_definition_fingerprint,
+            target_spec_hash,
+            replay_limits,
+            layout,
+            physical_generation_fingerprint,
+        )
+    }
+
+    fn publish_prepared_generation(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+        prepared: &riffdb_storage_api::PreparedColumnarGenerationV1,
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        ColumnarProjectionControlRepository::publish_prepared_generation(
+            &self.operational(),
+            expected,
+            prepared,
+        )
+    }
+
+    fn record_candidate_failure(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+        reason: ColumnarProjectionFailureReasonV1,
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        ColumnarProjectionControlRepository::record_candidate_failure(
+            &self.operational(),
+            expected,
+            reason,
+        )
+    }
+
+    fn replace_failed_candidate(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+        layout: ColumnarProjectionLayoutV1,
+        physical_generation_fingerprint: Option<[u8; 32]>,
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        ColumnarProjectionControlRepository::replace_failed_candidate(
+            &self.operational(),
+            expected,
+            layout,
+            physical_generation_fingerprint,
+        )
+    }
+
+    fn retarget_initial_candidate(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+        target_definition_fingerprint: DefinitionFingerprint,
+        target_spec_hash: ColumnarProjectionSpecHashV1,
+        replay_limits: ColumnarProjectionReplayLimitsV1,
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        ColumnarProjectionControlRepository::retarget_initial_candidate(
+            &self.operational(),
+            expected,
+            target_definition_fingerprint,
+            target_spec_hash,
+            replay_limits,
+        )
+    }
+
+    fn record_published_failure(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        ColumnarProjectionControlRepository::record_published_failure(&self.operational(), expected)
+    }
+
+    fn recover_expected_control(
+        &self,
+        source: &ColumnarProjectionSourceV1,
+    ) -> Result<Option<StoredColumnarProjectionControlV1>, StorageError> {
+        ColumnarProjectionControlRepository::recover_expected_control(&self.operational(), source)
+    }
+
+    fn mark_invalid(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+        reason: ColumnarProjectionFailureReasonV1,
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        ColumnarProjectionControlRepository::mark_invalid(&self.operational(), expected, reason)
+    }
+}
+
+impl ColumnarProjectionRetentionRepository for RedbSharedPorts {
+    fn columnar_projection_retention_frontiers(
+        &self,
+    ) -> Result<Vec<(ColumnarProjectionSourceV1, Option<FrontierPosition>)>, StorageError> {
+        ColumnarProjectionRetentionRepository::columnar_projection_retention_frontiers(
+            &self.operational(),
+        )
     }
 }
 

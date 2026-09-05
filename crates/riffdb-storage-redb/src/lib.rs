@@ -30,6 +30,7 @@ mod changelog;
 mod checkpoint_root;
 mod clean_close;
 mod codec;
+mod columnar_projection_control;
 mod command_authority;
 mod command_segment_preparation;
 mod composite_view;

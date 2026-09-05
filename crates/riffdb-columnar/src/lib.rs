@@ -65,6 +65,7 @@ mod engine;
 mod error;
 mod hnsw;
 mod hooks;
+mod identity;
 mod manifest_v2;
 pub mod nearest;
 mod outcome;
@@ -83,6 +84,12 @@ pub use definition::{
 };
 pub use engine::{ColumnarEngine, ColumnarSnapshotRebuild, OpenOptions};
 pub use error::{ColumnarError, StorageFailure};
+pub use identity::{
+    ColumnarDefinitionSemanticsV1, ColumnarIdentityError, ColumnarProjectionSpecV1,
+    ColumnarSpecReplayLimitsV1, ColumnarVectorSpecExtensionV1,
+    MAX_COLUMNAR_DEFINITION_SEMANTICS_V1_BYTES, MAX_COLUMNAR_PROJECTION_SPEC_PAYLOAD_V1_BYTES,
+    MAX_COLUMNAR_VECTOR_EXTENSION_V1_BYTES,
+};
 pub use manifest_v2::{
     ColumnarManifestV2, ColumnarManifestV2Entry, MAX_COLUMNAR_MANIFEST_V2_BYTES,
     MAX_COLUMNAR_MANIFEST_V2_SEGMENTS,
@@ -100,6 +107,7 @@ pub use query::{
     nearest_query_snapshot, nearest_query_snapshot_with_admission, query_snapshot,
     query_snapshot_with_policy_admission,
 };
+pub use riffdb_types::ColumnarProjectionSourceV1;
 pub use segment_v2::{
     COLUMNAR_ENCODING_REGISTRY_VERSION_V1, COLUMNAR_MANIFEST_FORMAT_VERSION_V1,
     COLUMNAR_MANIFEST_FORMAT_VERSION_V2, COLUMNAR_SEGMENT_FORMAT_VERSION_V2, MAX_SEGMENT_V2_BYTES,

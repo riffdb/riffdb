@@ -42,6 +42,8 @@ pub enum RedbTestOperation {
     ServiceAudit,
     OutboxTransition,
     ProjectionMutation,
+    /// Specialized schema-bound columnar expected-control transition.
+    ColumnarProjectionControl,
     Backup,
     Restore,
     /// Validated-prefix startup checkpoint write (ADR-0085 A1).

@@ -1,0 +1,115 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+message StoredColumnarScalarSourceV1 {
+  string contract_lineage = 1;
+  bytes definition_fingerprint = 2;
+  reserved 3 to 15;
+}
+
+message StoredColumnarVectorSourceV1 {
+  string contract_lineage = 1;
+  uint32 entity_type_id = 2;
+  uint32 vector_field_id = 3;
+  reserved 4 to 15;
+}
+
+message StoredColumnarProjectionSourceV1 {
+  oneof source {
+    StoredColumnarScalarSourceV1 scalar = 1;
+    StoredColumnarVectorSourceV1 vector = 2;
+  }
+  reserved 3 to 15;
+}
+
+message StoredColumnarProjectionFrontierV1 {
+  optional uint64 applied_through = 1;
+  reserved 2 to 15;
+}
+
+message StoredColumnarProjectionFailureV1 {
+  ColumnarProjectionFailureTargetV1 target = 1;
+  ColumnarProjectionFailureReasonV1 reason = 2;
+  optional uint64 generation = 3;
+  reserved 4 to 15;
+}
+
+message StoredColumnarProjectionGenerationV1 {
+  uint64 generation = 1;
+  ColumnarProjectionLayoutV1 layout = 2;
+  StoredColumnarProjectionFrontierV1 frontier = 3;
+  uint64 history_incarnation = 4;
+  optional uint64 artifact_length = 5;
+  optional bytes checksum_bytes = 6;
+  bytes definition_fingerprint = 7;
+  bytes spec_hash = 8;
+  optional bytes physical_generation_fingerprint = 9;
+  optional StoredColumnarProjectionFrontierV1 snapshot_frontier = 10;
+  ColumnarProjectionGenerationRoleV1 role = 11;
+  reserved 12 to 15;
+}
+
+message StoredColumnarProjectionControlV1 {
+  StoredColumnarProjectionSourceV1 source = 1;
+  bytes target_definition_fingerprint = 2;
+  bytes target_spec_hash = 3;
+  uint64 highest_generation = 4;
+  optional StoredColumnarProjectionGenerationV1 published = 5;
+  optional StoredColumnarProjectionGenerationV1 candidate = 6;
+  optional StoredColumnarProjectionGenerationV1 predecessor = 7;
+  ColumnarProjectionLifecycleV1 lifecycle = 8;
+  optional StoredColumnarProjectionFailureV1 failure = 9;
+  uint64 replay_age_seconds = 10;
+  uint64 replay_bytes = 11;
+  uint64 replay_backlog = 12;
+  reserved 13 to 31;
+}
+
+enum ColumnarProjectionLayoutV1 {
+  COLUMNAR_PROJECTION_LAYOUT_UNSPECIFIED = 0;
+  COLUMNAR_PROJECTION_LAYOUT_V1 = 1;
+  COLUMNAR_PROJECTION_LAYOUT_V2 = 2;
+  reserved 3 to 15;
+}
+
+enum ColumnarProjectionGenerationRoleV1 {
+  COLUMNAR_PROJECTION_GENERATION_ROLE_UNSPECIFIED = 0;
+  COLUMNAR_PROJECTION_GENERATION_ROLE_PUBLISHED = 1;
+  COLUMNAR_PROJECTION_GENERATION_ROLE_CANDIDATE = 2;
+  COLUMNAR_PROJECTION_GENERATION_ROLE_PREDECESSOR = 3;
+  reserved 4 to 15;
+}
+
+enum ColumnarProjectionLifecycleV1 {
+  COLUMNAR_PROJECTION_LIFECYCLE_UNSPECIFIED = 0;
+  COLUMNAR_PROJECTION_LIFECYCLE_BUILDING = 1;
+  COLUMNAR_PROJECTION_LIFECYCLE_CATCHING_UP = 2;
+  COLUMNAR_PROJECTION_LIFECYCLE_READY = 3;
+  COLUMNAR_PROJECTION_LIFECYCLE_REBUILDING = 4;
+  COLUMNAR_PROJECTION_LIFECYCLE_DEGRADED = 5;
+  COLUMNAR_PROJECTION_LIFECYCLE_INVALID = 6;
+  reserved 7 to 15;
+}
+
+enum ColumnarProjectionFailureTargetV1 {
+  COLUMNAR_PROJECTION_FAILURE_TARGET_UNSPECIFIED = 0;
+  COLUMNAR_PROJECTION_FAILURE_TARGET_CANDIDATE = 1;
+  COLUMNAR_PROJECTION_FAILURE_TARGET_PUBLISHED = 2;
+  COLUMNAR_PROJECTION_FAILURE_TARGET_PREDECESSOR = 3;
+  COLUMNAR_PROJECTION_FAILURE_TARGET_CONTROL = 4;
+  reserved 5 to 15;
+}
+
+enum ColumnarProjectionFailureReasonV1 {
+  COLUMNAR_PROJECTION_FAILURE_REASON_UNSPECIFIED = 0;
+  COLUMNAR_PROJECTION_FAILURE_REASON_REPLAY_AGE = 1;
+  COLUMNAR_PROJECTION_FAILURE_REASON_REPLAY_BYTES = 2;
+  COLUMNAR_PROJECTION_FAILURE_REASON_REPLAY_BACKLOG = 3;
+  COLUMNAR_PROJECTION_FAILURE_REASON_SPEC_CHANGED = 4;
+  COLUMNAR_PROJECTION_FAILURE_REASON_ARTIFACT_INVALID = 5;
+  COLUMNAR_PROJECTION_FAILURE_REASON_RESOURCE_LIMIT = 6;
+  COLUMNAR_PROJECTION_FAILURE_REASON_STORAGE = 7;
+  COLUMNAR_PROJECTION_FAILURE_REASON_CANCELLED = 8;
+  reserved 9 to 31;
+}

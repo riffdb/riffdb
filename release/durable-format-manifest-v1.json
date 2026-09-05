@@ -27,7 +27,7 @@
   "writable_format_upgrade_receipt_versions": [1],
   "readable_format_marker_versions": [1],
   "writable_format_marker_versions": [1],
-  "record_registry_digest": "713f2aabc242d6d2263fd27675586453ab41c754aef84b48d4233060fe03a131",
+  "record_registry_digest": "9c44ee378921101a16324eb22326c26c048eddab0fcfe5cb9a1408890a5f54ed",
   "readable_records": [
     {"record_type":"riffdb.storage.v1.StoredStorageFormatVersionV1","tag":1,"revision":1,"schema_hash":"07371c0b9eba9bfcad3118b345064b3d33a20a13641c6bde017e5c99dc6020ab"},
     {"record_type":"riffdb.storage.v1.StoredDatabaseIdentityV1","tag":2,"revision":1,"schema_hash":"de6f4f35fa52ca7664a85d9ffaa0041c506f3c5eb22632ba0ecd757dc6df1dea"},
@@ -121,6 +121,7 @@
     {"record_type":"riffdb.storage.v1.StoredCommandCapsuleV6","tag":54,"revision":5,"schema_hash":"0bc288e0f08ec4b83379f5abb4b872ebfc3ea7b7a64983eedcd53a9da25731bb"},
     {"record_type":"riffdb.storage.v1.StoredCommandSegmentV5","tag":55,"revision":5,"schema_hash":"0df52ca7232d2383b820b4b8ab844cf08d35529aa78e4b9b2bdd43b28afbd7dd"},
     {"record_type":"riffdb.storage.v1.StoredCleanCloseLifecycleV1","tag":66,"revision":1,"schema_hash":"ef813946ec4a744d127f2ba43060f5e3b2f1930e2b23cf044804206de56b8b51"},
+    {"record_type":"riffdb.storage.v1.StoredColumnarProjectionControlV1","tag":67,"revision":1,"schema_hash":"c1f21728900fac6f2c3b3b1d37d6a6cb1107d769e3ca2d83da25958c497baadd"},
     {"record_type":"riffdb.storage.v1.CapabilityRecordV1","tag":18,"revision":1,"schema_hash":"cb42c4ebbce8280123f8b34d4dcde74ca9483406847531f34d5fb3f18d40b342"},
     {"record_type":"riffdb.storage.v1.CapabilityRecordV1","tag":18,"revision":2,"schema_hash":"dee2398ebbc71824471fe5a5f96fcbebdde09e511fe6c11531c2b30210f9e6bf"},
     {"record_type":"riffdb.storage.v1.CapabilityTokenLookupV1","tag":19,"revision":1,"schema_hash":"e00696f3d2c110c5b2b99685e7987f7204d2f9576f8b41c5fcd5a894c746bc86"},
@@ -201,9 +202,10 @@
     {"record_type":"riffdb.storage.v1.StoredVectorProjectionControlV1","tag":65,"revision":1,"schema_hash":"b869020aa2f32bd878a31d87d7b6f52094c59a5e441155beb8b51dbba4e574d2"},
     {"record_type":"riffdb.storage.v1.StoredCommandCapsuleV6","tag":54,"revision":5,"schema_hash":"0bc288e0f08ec4b83379f5abb4b872ebfc3ea7b7a64983eedcd53a9da25731bb"},
     {"record_type":"riffdb.storage.v1.StoredCommandSegmentV5","tag":55,"revision":5,"schema_hash":"0df52ca7232d2383b820b4b8ab844cf08d35529aa78e4b9b2bdd43b28afbd7dd"},
-    {"record_type":"riffdb.storage.v1.StoredCleanCloseLifecycleV1","tag":66,"revision":1,"schema_hash":"ef813946ec4a744d127f2ba43060f5e3b2f1930e2b23cf044804206de56b8b51"}
+    {"record_type":"riffdb.storage.v1.StoredCleanCloseLifecycleV1","tag":66,"revision":1,"schema_hash":"ef813946ec4a744d127f2ba43060f5e3b2f1930e2b23cf044804206de56b8b51"},
+    {"record_type":"riffdb.storage.v1.StoredColumnarProjectionControlV1","tag":67,"revision":1,"schema_hash":"c1f21728900fac6f2c3b3b1d37d6a6cb1107d769e3ca2d83da25958c497baadd"}
   ],
-  "compatibility_fixture_digest": "d470c83835811ade882f8db6d614579e8cb74effc60ce4e21b319b74d12143bd",
+  "compatibility_fixture_digest": "2a08a3c2ee5a5a8160e663a21e0ce5c5e2f3df2de1a012895f73e62fb951d959",
   "upgrade_table": "compatibility/release-pairs-v1.json",
   "physical_format_inventory": "compatibility/physical-formats-v1.json",
   "backup_required_before_upgrade": true,

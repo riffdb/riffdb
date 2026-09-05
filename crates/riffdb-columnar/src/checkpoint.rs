@@ -102,6 +102,7 @@ pub struct ManifestV1 {
 }
 
 const MANIFEST_NAME: &str = "MANIFEST";
+const CONTROLLED_MANIFEST_PREFIX: &str = "MANIFEST-V1-";
 const MAGIC: &[u8; 4] = b"RCOL";
 
 impl ManifestV1 {
@@ -119,6 +120,13 @@ impl ManifestV1 {
             out.extend_from_slice(&segment.checksum);
         }
         out
+    }
+
+    /// Positive byte length and SHA-256 selecting this exact encoded manifest.
+    #[must_use]
+    pub fn artifact_identity(&self) -> (u64, [u8; 32]) {
+        let bytes = self.encode();
+        (bytes.len() as u64, checksum_bytes(&bytes))
     }
 
     /// Decodes a manifest from bytes.
@@ -322,10 +330,11 @@ pub(crate) struct CheckpointDir {
     next_generation: u64,
     /// Cumulative rewrite amplification observed by this directory.
     amplification: ColumnarAmplification,
+    controlled: bool,
 }
 
 impl CheckpointDir {
-    pub(crate) fn new(root: PathBuf) -> Result<Self, CheckpointError> {
+    pub(crate) fn new(root: PathBuf, controlled: bool) -> Result<Self, CheckpointError> {
         fs::create_dir_all(&root)?;
         let mut max_generation = 0u64;
         for entry in fs::read_dir(&root)? {
@@ -340,6 +349,7 @@ impl CheckpointDir {
             controller: None,
             next_generation: max_generation.saturating_add(1),
             amplification: ColumnarAmplification::default(),
+            controlled,
         })
     }
 
@@ -362,12 +372,34 @@ impl CheckpointDir {
     }
 
     /// Loads manifest if present; `None` means empty projection directory.
-    pub(crate) fn load_manifest(&self) -> Result<Option<ManifestV1>, CheckpointError> {
-        let path = self.root.join(MANIFEST_NAME);
+    pub(crate) fn load_manifest(
+        &self,
+        selected: Option<(u64, [u8; 32])>,
+    ) -> Result<Option<ManifestV1>, CheckpointError> {
+        let path = match (self.controlled, selected) {
+            (false, _) => self.root.join(MANIFEST_NAME),
+            (true, None) => return Ok(None),
+            (true, Some((length, checksum))) => {
+                self.root.join(controlled_manifest_name(&checksum, length)?)
+            }
+        };
         if !path.exists() {
+            if self.controlled && selected.is_some() {
+                return Err(CheckpointError::CorruptManifest(
+                    "selected artifact missing",
+                ));
+            }
             return Ok(None);
         }
         let bytes = fs::read(&path)?;
+        if let Some((length, checksum)) = selected
+            && (u64::try_from(bytes.len()).ok() != Some(length)
+                || checksum_bytes(&bytes) != checksum)
+        {
+            return Err(CheckpointError::CorruptManifest(
+                "selected artifact identity",
+            ));
+        }
         Ok(Some(ManifestV1::decode(&bytes)?))
     }
 
@@ -420,7 +452,10 @@ impl CheckpointDir {
             let entry = entry?;
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if name == MANIFEST_NAME || name.starts_with('.') {
+            if name == MANIFEST_NAME
+                || name.starts_with(CONTROLLED_MANIFEST_PREFIX)
+                || name.starts_with('.')
+            {
                 continue;
             }
             let orphan_segment = name.starts_with("seg-") && !referenced.contains(name.as_ref());
@@ -550,7 +585,12 @@ impl CheckpointDir {
         let bytes = manifest.encode();
         let digest = checksum_bytes(&bytes);
         let hex = hex32(&digest);
-        let final_path = self.root.join(MANIFEST_NAME);
+        let final_name = if self.controlled {
+            controlled_manifest_name(&digest, bytes.len() as u64)?
+        } else {
+            MANIFEST_NAME.to_owned()
+        };
+        let final_path = self.root.join(final_name);
         let mut temporary = final_path.as_os_str().to_owned();
         temporary.push(".");
         temporary.push(&hex);
@@ -567,7 +607,17 @@ impl CheckpointDir {
         }
 
         self.hit(ColumnarTestBoundary::BeforeManifestRename);
-        fs::rename(&temporary, &final_path)?;
+        if self.controlled && final_path.exists() {
+            let existing = fs::read(&final_path)?;
+            if existing != bytes {
+                return Err(CheckpointError::CorruptManifest(
+                    "immutable manifest collision",
+                ));
+            }
+            fs::remove_file(&temporary)?;
+        } else {
+            fs::rename(&temporary, &final_path)?;
+        }
         self.hit(ColumnarTestBoundary::AfterManifestRename);
 
         // Parent directory fsync so the rename is durable.
@@ -575,6 +625,16 @@ impl CheckpointDir {
         dir.sync_all()?;
         Ok(())
     }
+}
+
+fn controlled_manifest_name(
+    checksum: &[u8; 32],
+    artifact_length: u64,
+) -> Result<String, CheckpointError> {
+    if artifact_length == 0 {
+        return Err(CheckpointError::CorruptManifest("zero artifact length"));
+    }
+    Ok(format!("{CONTROLLED_MANIFEST_PREFIX}{}", hex32(checksum)))
 }
 
 fn inventory_from_segments(segments: &[std::sync::Arc<Segment>]) -> Vec<SegmentInventoryEntry> {

@@ -153,11 +153,13 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 - Production `nearest()` requires one explicit compiler-owned projected source
   and `available`, causal, or duration-bounded freshness. The exact adapter
   admits current-policy rows before ranking and enforces the shared 500-row
-  ceiling. Vector projection generations rebuild from a stable authoritative
-  snapshot plus retained tail and publish only after an exact checkpoint.
-  Compiler-owned replay age/byte/backlog ceilings detach over-budget
-  generations from retention; building or rebuilding is a typed refusal, and
-  restart never overclaims the persisted frontier. Multi-source vector
+  ceiling. Scalar and vector columnar generations share one schema-bound
+  durable control. Fresh V1 state rebuilds from a stable authoritative snapshot
+  plus retained tail and publishes only after an immutable manifest is reopened
+  and selected by exact checksum. The symbolic projection name remains public
+  but never supplies a durable identity or path. Building or an unservable
+  rebuild is a typed refusal, and restart never overclaims the persisted
+  frontier. Multi-source vector
   queries, vector joins/aggregates, and
   production ANN routing remain deferred and never fall back to row-store
   scans or mixed snapshots.

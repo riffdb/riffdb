@@ -328,6 +328,13 @@ borrowed_codec!(
     encode_vector_projection_control_v1,
     decode_vector_projection_control_v1
 );
+borrowed_codec!(
+    encode_columnar_projection_control_v1,
+    decode_columnar_projection_control_v1,
+    storage::StoredColumnarProjectionControlV1,
+    encode_columnar_projection_control_v1,
+    decode_columnar_projection_control_v1
+);
 
 #[allow(
     dead_code,

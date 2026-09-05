@@ -65,6 +65,7 @@ use crate::auth_adapters::{
 use crate::clocks::ProductionWallClocks;
 use crate::columnar_adapter::{
     ColumnarRegistrationError, ColumnarRuntime, ServerColumnarProjectionPort,
+    prepare_columnar_control_foundation,
 };
 use crate::columnar_worker::{
     ColumnarWorkerShutdownError, ColumnarWorkerShutdownObservation, ColumnarWorkerStartError,
@@ -460,6 +461,18 @@ impl ProductionGraphBuilder {
         if !bounded_clean_startup {
             outbox_health.refresh(&storage);
         }
+        // No writer, projection worker, or pruning authority exists yet. The
+        // all-or-nothing common-control batch therefore installs every fresh
+        // BeforeFirst retention fence before those capabilities can open.
+        let columnar_bindings = prepare_columnar_control_foundation(
+            &storage,
+            &projections,
+            retained_metadata.history_incarnation(),
+        )
+        .map_err(|source| ProductionGraphBuildError::ColumnarRegistration {
+            source,
+            cleanup: None,
+        })?;
         let blocking = BlockingPortDriver::new(runtime.clone())
             .map_err(ProductionGraphBuildError::BlockingDriver)?;
         let notifications = FirstCommitNotificationHub::from_retained_application_sequence(
@@ -609,11 +622,12 @@ impl ProductionGraphBuilder {
             };
         let projection_status = projection_worker.status();
 
-        let columnar_runtime = match ColumnarRuntime::open(
+        let columnar_runtime = match ColumnarRuntime::open_prepared(
             storage.clone(),
-            &projections,
+            columnar_bindings,
             &projections_root,
             retained_metadata.history_incarnation(),
+            server_generation.bytes(),
         ) {
             Ok(runtime) => runtime,
             Err(source) => {

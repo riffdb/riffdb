@@ -1,6 +1,5 @@
 //! Durable vector-projection lifecycle and retention controls.
 
-use redb::ReadableTable;
 use riffdb_storage_api::{
     StorageError, StorageErrorKind, StoredVectorProjectionControlV1,
     VectorProjectionControlRepository, VectorProjectionControlWriteResultV1,
@@ -8,14 +7,13 @@ use riffdb_storage_api::{
 };
 use riffdb_types::FrontierPosition;
 
-use crate::codec::{decode_vector_projection_control_v1, encode_vector_projection_control_v1};
+use crate::codec::decode_vector_projection_control_v1;
+#[cfg(test)]
+use crate::codec::encode_vector_projection_control_v1;
 use crate::error::{precommit_storage_error, storage_error, table_error};
-use crate::hooks::RedbTestOperation;
 use crate::keys::{decode_vector_projection_control_key, encode_vector_projection_control_key};
 use crate::layout::VECTOR_PROJECTION_CONTROLS;
 use crate::store::RedbOperationalPorts;
-
-const MAX_VECTOR_PROJECTION_CONTROLS: usize = 256;
 
 fn corrupt() -> StorageError {
     storage_error(StorageErrorKind::CorruptData)
@@ -56,68 +54,28 @@ impl VectorProjectionControlRepository for RedbOperationalPorts {
         expected: Option<&StoredVectorProjectionControlV1>,
         replacement: &StoredVectorProjectionControlV1,
     ) -> Result<VectorProjectionControlWriteResultV1, StorageError> {
-        if expected.is_some_and(|expected| expected.source() != replacement.source()) {
-            return Err(storage_error(StorageErrorKind::InvariantViolation));
-        }
-        let key = encode_vector_projection_control_key(replacement.source())
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        let access = self.begin_write()?;
-        let mut table = access
-            .transaction()?
-            .open_table(VECTOR_PROJECTION_CONTROLS)
-            .map_err(table_error)?;
-        let current = table
-            .get(key.as_slice())
-            .map_err(precommit_storage_error)?
-            .map(|value| decode_checked(&key, value.value()))
-            .transpose()?;
-        if current.as_ref() == Some(replacement) {
-            drop(table);
-            access.abort()?;
-            return Ok(VectorProjectionControlWriteResultV1::Unchanged);
-        }
-        if current.as_ref() != expected {
-            drop(table);
-            access.abort()?;
-            return Ok(VectorProjectionControlWriteResultV1::CompareMismatch);
-        }
-        let encoded = encode_vector_projection_control_v1(replacement)?;
-        table
-            .insert(key.as_slice(), encoded.as_bytes())
-            .map_err(precommit_storage_error)?;
-        drop(table);
-        access.commit_for(RedbTestOperation::ProjectionMutation)?;
-        Ok(VectorProjectionControlWriteResultV1::Applied)
+        let _ = (expected, replacement);
+        Err(storage_error(StorageErrorKind::IncompatibleFormat))
     }
 
     fn attached_vector_projection_frontiers(&self) -> Result<Vec<FrontierPosition>, StorageError> {
-        let transaction = self.begin_read()?;
-        let table = transaction
-            .open_table(VECTOR_PROJECTION_CONTROLS)
-            .map_err(table_error)?;
-        let mut frontiers = Vec::new();
-        for row in table.iter().map_err(precommit_storage_error)? {
-            if frontiers.len() == MAX_VECTOR_PROJECTION_CONTROLS {
-                return Err(storage_error(StorageErrorKind::LimitExceeded));
-            }
-            let (key, value) = row.map_err(precommit_storage_error)?;
-            let control = decode_checked(key.value(), value.value())?;
-            if control.retention_attached() {
-                frontiers.push(control.published_frontier());
-            }
-        }
-        Ok(frontiers)
+        Ok(Vec::new())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use redb::ReadableDatabase;
     use riffdb_storage_api::{
-        DatabaseInitializationPort, DatabaseInitializationResult, VectorProjectionLifecycleV1,
-        VectorProjectionRebuildReasonV1, VectorProjectionReplayLimitsV1,
+        ColumnarProjectionControlRepository, DatabaseInitializationPort,
+        DatabaseInitializationResult, FreshColumnarProjectionControlV1,
+        VectorProjectionLifecycleV1, VectorProjectionRebuildReasonV1,
+        VectorProjectionReplayLimitsV1,
     };
     use riffdb_types::{
-        CommitSequence, ContractLineage, DatabaseId, EntityTypeId, FieldId, ProjectionGeneration,
+        ColumnarProjectionReplayLimitsV1, ColumnarProjectionSourceV1, ColumnarProjectionSpecHashV1,
+        CommitSequence, ContractLineage, DatabaseId, DefinitionFingerprint, EntityTypeId, FieldId,
+        ProjectionGeneration,
     };
 
     use super::*;
@@ -191,42 +149,104 @@ mod tests {
         (path, ports)
     }
 
+    // req: PRJ-002, PRJ-004, PRJ-006, PRJ-007, PRJ-010
     #[test]
-    fn compare_set_detaches_retention_in_the_same_durable_fact() {
+    fn columnar_control_fresh_rebuild_ignores_every_legacy_selector() {
         let (_path, ports) = ports("vector-control-cas");
-        let initial = control(VectorProjectionLifecycleV1::Building);
-        encode_vector_projection_control_v1(&initial).expect("encode initial control");
-        assert_eq!(
-            ports
-                .compare_and_set_vector_projection_control(None, &initial)
-                .expect("create"),
-            VectorProjectionControlWriteResultV1::Applied
-        );
         let ready = control(VectorProjectionLifecycleV1::Ready);
+        let key = encode_vector_projection_control_key(ready.source()).expect("legacy key");
+        let encoded = encode_vector_projection_control_v1(&ready).expect("legacy envelope");
+        let mut transaction = ports.shared.database.begin_write().expect("write fixture");
+        transaction
+            .set_durability(redb::Durability::Immediate)
+            .expect("durability");
+        {
+            let mut table = transaction
+                .open_table(VECTOR_PROJECTION_CONTROLS)
+                .expect("table");
+            table
+                .insert(key.as_slice(), encoded.as_bytes())
+                .expect("insert fixture");
+        }
+        transaction.commit().expect("commit fixture");
         assert_eq!(
             ports
-                .compare_and_set_vector_projection_control(Some(&initial), &ready)
-                .expect("ready"),
-            VectorProjectionControlWriteResultV1::Applied
+                .read_vector_projection_control(ready.source())
+                .expect("structural read"),
+            Some(ready.clone())
         );
+        let source = ColumnarProjectionSourceV1::vector(ready.source().clone());
+        let fresh = FreshColumnarProjectionControlV1::new(
+            source.clone(),
+            DefinitionFingerprint::from_bytes([0x55; 32]),
+            ColumnarProjectionSpecHashV1::from_bytes([0x66; 32]),
+            ColumnarProjectionReplayLimitsV1::new(60, 1_024, 10).expect("common limits"),
+            1,
+        )
+        .expect("fresh common control");
         assert_eq!(
             ports
-                .attached_vector_projection_frontiers()
-                .expect("attached"),
-            vec![ready.published_frontier()]
+                .initialize_fresh_v1(std::slice::from_ref(&fresh))
+                .expect("common insert"),
+            riffdb_storage_api::ColumnarProjectionControlWriteResultV1::Applied
         );
-        let detached = control(VectorProjectionLifecycleV1::RebuildRequired);
+        let common = ports
+            .recover_expected_control(&source)
+            .expect("common read")
+            .expect("common control");
+        assert_eq!(common.highest_generation(), ProjectionGeneration::first());
         assert_eq!(
-            ports
-                .compare_and_set_vector_projection_control(Some(&ready), &detached)
-                .expect("detach"),
-            VectorProjectionControlWriteResultV1::Applied
+            common.retention_frontier(),
+            Some(FrontierPosition::BeforeFirst)
         );
+        assert_ne!(
+            common.target_definition_fingerprint().as_bytes(),
+            ready.definition_fingerprint(),
+            "legacy definition bytes never seed common control"
+        );
+        let transaction = ports.shared.database.begin_read().expect("retention read");
+        assert_eq!(
+            crate::retention::min_projection_durable_frontier(
+                &transaction,
+                &std::collections::BTreeSet::new(),
+            )
+            .expect("common retention input"),
+            Some(0),
+            "only the common BeforeFirst fence participates in pruning"
+        );
+        let error = ports
+            .compare_and_set_vector_projection_control(Some(&ready), &ready)
+            .expect_err("legacy writes are retired");
+        assert_eq!(error.kind(), StorageErrorKind::IncompatibleFormat);
         assert!(
             ports
                 .attached_vector_projection_frontiers()
-                .expect("detached")
+                .expect("legacy retention is inert")
                 .is_empty()
         );
+    }
+
+    // req: PRJ-007, PRJ-010
+    #[test]
+    fn legacy_structural_scan_refuses_row_4097_before_decode() {
+        let (_path, ports) = ports("legacy-vector-control-bound");
+        let mut transaction = ports.shared.database.begin_write().expect("write fixture");
+        transaction
+            .set_durability(redb::Durability::Immediate)
+            .expect("durability");
+        {
+            let mut table = transaction
+                .open_table(VECTOR_PROJECTION_CONTROLS)
+                .expect("table");
+            for index in 0_u32..4_097 {
+                table
+                    .insert(index.to_be_bytes().as_slice(), [0xff].as_slice())
+                    .expect("insert bounded fixture");
+            }
+        }
+        transaction.commit().expect("commit fixture");
+        let error = crate::store::validate_inert_legacy_vector_controls(&ports.shared)
+            .expect_err("row 4097 refuses before semantic decode");
+        assert_eq!(error.kind(), StorageErrorKind::LimitExceeded);
     }
 }

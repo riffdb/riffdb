@@ -313,6 +313,10 @@ fn storage_source_import_and_type_inventory_is_exact() {
                 vec![],
             ),
             (
+                "riffdb/storage/v1/columnar_projection_control_v1.proto".to_owned(),
+                vec![],
+            ),
+            (
                 "riffdb/storage/v1/command_capsule_v1.proto".to_owned(),
                 vec![
                     "riffdb/storage/v1/application.proto",
@@ -503,8 +507,8 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.message_type.len())
             .sum::<usize>(),
-        182,
-        "178 semantic messages plus the unchanged StoredEnvelope"
+        189,
+        "185 semantic messages plus the unchanged StoredEnvelope and registry support"
     );
     assert_eq!(
         descriptors
@@ -512,30 +516,29 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.enum_type.len())
             .sum::<usize>(),
-        25
+        30
     );
     assert!(
         descriptors
             .file
             .iter()
             .flat_map(|file| &file.message_type)
-            .all(|message| message.reserved_name.is_empty() && message.reserved_range.is_empty())
+            .all(|message| message.reserved_name.is_empty())
     );
     assert!(
         descriptors
             .file
             .iter()
             .flat_map(|file| &file.enum_type)
-            .all(|enumeration| enumeration.reserved_name.is_empty()
-                && enumeration.reserved_range.is_empty())
+            .all(|enumeration| enumeration.reserved_name.is_empty())
     );
 }
 
 #[test]
 fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
-    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 74);
-    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 97);
-    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 74);
+    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 75);
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 98);
+    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 75);
     assert_eq!(
         CURRENT_RECORD_SCHEMAS
             .iter()
@@ -621,6 +624,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     readable_names.push("riffdb.storage.v1.StoredCommandCapsuleV6".to_owned());
     readable_names.push("riffdb.storage.v1.StoredCommandSegmentV5".to_owned());
     readable_names.push("riffdb.storage.v1.StoredCleanCloseLifecycleV1".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredColumnarProjectionControlV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityTokenLookupV1".to_owned());
@@ -687,6 +691,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     writable_names.push("riffdb.storage.v1.StoredCommandCapsuleV6".to_owned());
     writable_names.push("riffdb.storage.v1.StoredCommandSegmentV5".to_owned());
     writable_names.push("riffdb.storage.v1.StoredCleanCloseLifecycleV1".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredColumnarProjectionControlV1".to_owned());
     assert_eq!(
         READABLE_RECORD_SCHEMAS
             .iter()
@@ -818,11 +823,240 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     }
 }
 
+// req: PRJ-005, PRJ-006, PRJ-007, PRJ-010, OQ-020, OQ-024, OQ-053
+#[test]
+fn columnar_control_v1_freezes_numeric_registry_and_bounds() {
+    let descriptors = descriptors();
+    let source = descriptors
+        .file
+        .iter()
+        .find(|file| file.name() == "riffdb/storage/v1/columnar_projection_control_v1.proto")
+        .expect("columnar control source descriptor");
+    assert!(source.dependency.is_empty());
+    assert_eq!(source.package(), "riffdb.storage.v1");
+    assert_eq!(
+        source
+            .message_type
+            .iter()
+            .map(|message| message.name())
+            .collect::<Vec<_>>(),
+        vec![
+            "StoredColumnarScalarSourceV1",
+            "StoredColumnarVectorSourceV1",
+            "StoredColumnarProjectionSourceV1",
+            "StoredColumnarProjectionFrontierV1",
+            "StoredColumnarProjectionFailureV1",
+            "StoredColumnarProjectionGenerationV1",
+            "StoredColumnarProjectionControlV1",
+        ]
+    );
+    let messages = message_map(&descriptors);
+    let fields = |name: &str| {
+        messages[name]
+            .field
+            .iter()
+            .map(|field| {
+                (
+                    field.name(),
+                    field.number(),
+                    field.r#type(),
+                    field.proto3_optional(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        fields("riffdb.storage.v1.StoredColumnarScalarSourceV1"),
+        vec![
+            ("contract_lineage", 1, Type::String, false),
+            ("definition_fingerprint", 2, Type::Bytes, false),
+        ]
+    );
+    assert_eq!(
+        fields("riffdb.storage.v1.StoredColumnarVectorSourceV1"),
+        vec![
+            ("contract_lineage", 1, Type::String, false),
+            ("entity_type_id", 2, Type::Uint32, false),
+            ("vector_field_id", 3, Type::Uint32, false),
+        ]
+    );
+    assert_eq!(
+        fields("riffdb.storage.v1.StoredColumnarProjectionFrontierV1"),
+        vec![("applied_through", 1, Type::Uint64, true)]
+    );
+    assert_eq!(
+        fields("riffdb.storage.v1.StoredColumnarProjectionFailureV1"),
+        vec![
+            ("target", 1, Type::Enum, false),
+            ("reason", 2, Type::Enum, false),
+            ("generation", 3, Type::Uint64, true),
+        ]
+    );
+    assert_eq!(
+        fields("riffdb.storage.v1.StoredColumnarProjectionGenerationV1"),
+        vec![
+            ("generation", 1, Type::Uint64, false),
+            ("layout", 2, Type::Enum, false),
+            ("frontier", 3, Type::Message, false),
+            ("history_incarnation", 4, Type::Uint64, false),
+            ("artifact_length", 5, Type::Uint64, true),
+            ("checksum_bytes", 6, Type::Bytes, true),
+            ("definition_fingerprint", 7, Type::Bytes, false),
+            ("spec_hash", 8, Type::Bytes, false),
+            ("physical_generation_fingerprint", 9, Type::Bytes, true),
+            ("snapshot_frontier", 10, Type::Message, true),
+            ("role", 11, Type::Enum, false),
+        ]
+    );
+    assert_eq!(
+        fields("riffdb.storage.v1.StoredColumnarProjectionControlV1"),
+        vec![
+            ("source", 1, Type::Message, false),
+            ("target_definition_fingerprint", 2, Type::Bytes, false),
+            ("target_spec_hash", 3, Type::Bytes, false),
+            ("highest_generation", 4, Type::Uint64, false),
+            ("published", 5, Type::Message, true),
+            ("candidate", 6, Type::Message, true),
+            ("predecessor", 7, Type::Message, true),
+            ("lifecycle", 8, Type::Enum, false),
+            ("failure", 9, Type::Message, true),
+            ("replay_age_seconds", 10, Type::Uint64, false),
+            ("replay_bytes", 11, Type::Uint64, false),
+            ("replay_backlog", 12, Type::Uint64, false),
+        ]
+    );
+    let reserved = |name: &str| {
+        messages[name]
+            .reserved_range
+            .iter()
+            .map(|range| (range.start(), range.end()))
+            .collect::<Vec<_>>()
+    };
+    for (message, expected) in [
+        ("StoredColumnarScalarSourceV1", (3, 16)),
+        ("StoredColumnarVectorSourceV1", (4, 16)),
+        ("StoredColumnarProjectionSourceV1", (3, 16)),
+        ("StoredColumnarProjectionFrontierV1", (2, 16)),
+        ("StoredColumnarProjectionFailureV1", (4, 16)),
+        ("StoredColumnarProjectionGenerationV1", (12, 16)),
+        ("StoredColumnarProjectionControlV1", (13, 32)),
+    ] {
+        assert_eq!(
+            reserved(&format!("riffdb.storage.v1.{message}")),
+            vec![expected],
+            "{message} reserved field range"
+        );
+    }
+    let source_union = &messages["riffdb.storage.v1.StoredColumnarProjectionSourceV1"];
+    assert_eq!(source_union.oneof_decl.len(), 1);
+    assert_eq!(source_union.oneof_decl[0].name(), "source");
+    assert_eq!(
+        source_union
+            .field
+            .iter()
+            .map(|field| (field.name(), field.number(), field.oneof_index))
+            .collect::<Vec<_>>(),
+        vec![("scalar", 1, Some(0)), ("vector", 2, Some(0))]
+    );
+    let enum_values = |name: &str| {
+        source
+            .enum_type
+            .iter()
+            .find(|item| item.name() == name)
+            .expect("named columnar enum")
+            .value
+            .iter()
+            .map(|value| (value.name(), value.number()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        enum_values("ColumnarProjectionLayoutV1"),
+        vec![
+            ("COLUMNAR_PROJECTION_LAYOUT_UNSPECIFIED", 0),
+            ("COLUMNAR_PROJECTION_LAYOUT_V1", 1),
+            ("COLUMNAR_PROJECTION_LAYOUT_V2", 2),
+        ]
+    );
+    assert_eq!(
+        enum_values("ColumnarProjectionGenerationRoleV1"),
+        vec![
+            ("COLUMNAR_PROJECTION_GENERATION_ROLE_UNSPECIFIED", 0),
+            ("COLUMNAR_PROJECTION_GENERATION_ROLE_PUBLISHED", 1),
+            ("COLUMNAR_PROJECTION_GENERATION_ROLE_CANDIDATE", 2),
+            ("COLUMNAR_PROJECTION_GENERATION_ROLE_PREDECESSOR", 3),
+        ]
+    );
+    assert_eq!(
+        enum_values("ColumnarProjectionLifecycleV1"),
+        vec![
+            ("COLUMNAR_PROJECTION_LIFECYCLE_UNSPECIFIED", 0),
+            ("COLUMNAR_PROJECTION_LIFECYCLE_BUILDING", 1),
+            ("COLUMNAR_PROJECTION_LIFECYCLE_CATCHING_UP", 2),
+            ("COLUMNAR_PROJECTION_LIFECYCLE_READY", 3),
+            ("COLUMNAR_PROJECTION_LIFECYCLE_REBUILDING", 4),
+            ("COLUMNAR_PROJECTION_LIFECYCLE_DEGRADED", 5),
+            ("COLUMNAR_PROJECTION_LIFECYCLE_INVALID", 6),
+        ]
+    );
+    assert_eq!(
+        enum_values("ColumnarProjectionFailureTargetV1"),
+        vec![
+            ("COLUMNAR_PROJECTION_FAILURE_TARGET_UNSPECIFIED", 0),
+            ("COLUMNAR_PROJECTION_FAILURE_TARGET_CANDIDATE", 1),
+            ("COLUMNAR_PROJECTION_FAILURE_TARGET_PUBLISHED", 2),
+            ("COLUMNAR_PROJECTION_FAILURE_TARGET_PREDECESSOR", 3),
+            ("COLUMNAR_PROJECTION_FAILURE_TARGET_CONTROL", 4),
+        ]
+    );
+    assert_eq!(
+        enum_values("ColumnarProjectionFailureReasonV1"),
+        vec![
+            ("COLUMNAR_PROJECTION_FAILURE_REASON_UNSPECIFIED", 0),
+            ("COLUMNAR_PROJECTION_FAILURE_REASON_REPLAY_AGE", 1),
+            ("COLUMNAR_PROJECTION_FAILURE_REASON_REPLAY_BYTES", 2),
+            ("COLUMNAR_PROJECTION_FAILURE_REASON_REPLAY_BACKLOG", 3),
+            ("COLUMNAR_PROJECTION_FAILURE_REASON_SPEC_CHANGED", 4),
+            ("COLUMNAR_PROJECTION_FAILURE_REASON_ARTIFACT_INVALID", 5),
+            ("COLUMNAR_PROJECTION_FAILURE_REASON_RESOURCE_LIMIT", 6),
+            ("COLUMNAR_PROJECTION_FAILURE_REASON_STORAGE", 7),
+            ("COLUMNAR_PROJECTION_FAILURE_REASON_CANCELLED", 8),
+        ]
+    );
+    for (enumeration, expected) in [
+        ("ColumnarProjectionLayoutV1", (3, 15)),
+        ("ColumnarProjectionGenerationRoleV1", (4, 15)),
+        ("ColumnarProjectionLifecycleV1", (7, 15)),
+        ("ColumnarProjectionFailureTargetV1", (5, 15)),
+        ("ColumnarProjectionFailureReasonV1", (9, 31)),
+    ] {
+        let ranges = source
+            .enum_type
+            .iter()
+            .find(|item| item.name() == enumeration)
+            .expect("named columnar enum")
+            .reserved_range
+            .iter()
+            .map(|range| (range.start(), range.end()))
+            .collect::<Vec<_>>();
+        assert_eq!(ranges, vec![expected], "{enumeration} reserved range");
+    }
+    let schema = writable_record_schema("riffdb.storage.v1.StoredColumnarProjectionControlV1")
+        .expect("tag-67 common columnar control is registered");
+    assert_eq!(schema.compact_tag(), 67);
+    assert_eq!(schema.schema_revision(), 1);
+    assert_eq!(schema.max_payload_bytes(), 8_192);
+    assert_eq!(schema.max_envelope_bytes(), 8_289);
+    assert_eq!(
+        schema_hash_hex(schema),
+        "c1f21728900fac6f2c3b3b1d37d6a6cb1107d769e3ca2d83da25958c497baadd"
+    );
+}
+
 #[test]
 fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
     let legacy = registry_fixture_entries(LEGACY_REGISTRY_FIXTURE, 26);
-    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 97);
-    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 74);
+    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 98);
+    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 75);
 
     assert_eq!(legacy, readable[..legacy.len()]);
     assert_eq!(
@@ -1043,7 +1277,7 @@ fn schema_hash_hex(schema: &riffdb_proto::envelope::RecordSchema<'_>) -> String 
 
 #[test]
 // req: STO-012
-fn clean_close_successor_registry_digest_is_frozen() {
+fn tag_67_successor_registry_digest_is_frozen() {
     let actual = record_registry_digest()
         .as_bytes()
         .iter()
@@ -1051,7 +1285,7 @@ fn clean_close_successor_registry_digest_is_frozen() {
         .collect::<String>();
     assert_eq!(
         actual,
-        "713f2aabc242d6d2263fd27675586453ab41c754aef84b48d4233060fe03a131"
+        "9c44ee378921101a16324eb22326c26c048eddab0fcfe5cb9a1408890a5f54ed"
     );
 }
 
@@ -1148,6 +1382,16 @@ fn semantic_optional_wire_presence_is_exact() {
         "StoredCatalogAdministrationV1.approval_id",
         "StoredChangelogV2RotationReceiptV1.predecessor_administration_frontier",
         "StoredChangelogV2RotationReceiptV1.predecessor_application_frontier",
+        "StoredColumnarProjectionControlV1.candidate",
+        "StoredColumnarProjectionControlV1.failure",
+        "StoredColumnarProjectionControlV1.predecessor",
+        "StoredColumnarProjectionControlV1.published",
+        "StoredColumnarProjectionFailureV1.generation",
+        "StoredColumnarProjectionFrontierV1.applied_through",
+        "StoredColumnarProjectionGenerationV1.artifact_length",
+        "StoredColumnarProjectionGenerationV1.checksum_bytes",
+        "StoredColumnarProjectionGenerationV1.physical_generation_fingerprint",
+        "StoredColumnarProjectionGenerationV1.snapshot_frontier",
         "StoredCommittedEntityTransitionV1.prior_transition_hash",
         "StoredCommandAuditInvocationV1.approval_id",
         "StoredContractMigrationJournalV1.exclusive_cursor",
@@ -1282,6 +1526,10 @@ fn closed_oneof_and_enum_registries_are_exact() {
                 vec![("next_commit_sequence", 1), ("exhausted", 2)],
             ),
             (
+                "riffdb.storage.v1.StoredColumnarProjectionSourceV1.source".to_owned(),
+                vec![("scalar", 1), ("vector", 2)],
+            ),
+            (
                 "riffdb.storage.v1.StoredDurableEventVariantV1.value".to_owned(),
                 vec![("unanchored", 1), ("anchored", 2)],
             ),
@@ -1334,6 +1582,11 @@ fn closed_oneof_and_enum_registries_are_exact() {
             ("CapabilityApplicationReimportScopeV1", "CAPABILITY_APPLICATION_REIMPORT_SCOPE_UNSPECIFIED=0,CAPABILITY_APPLICATION_REIMPORT_SCOPE_PRINCIPAL_FILTERED=1,CAPABILITY_APPLICATION_REIMPORT_SCOPE_WHOLE_APPLICATION=2"),
             ("CapabilityPermissionKindV1", "CAPABILITY_PERMISSION_KIND_UNSPECIFIED=0,CAPABILITY_PERMISSION_KIND_VALIDATE_CONTRACT=1,CAPABILITY_PERMISSION_KIND_READ_CONTRACT=2,CAPABILITY_PERMISSION_KIND_EXPLAIN_COMMAND=3,CAPABILITY_PERMISSION_KIND_DEPLOY_CONTRACT=4,CAPABILITY_PERMISSION_KIND_INVOKE_COMMAND=5,CAPABILITY_PERMISSION_KIND_READ_ENTITY=6,CAPABILITY_PERMISSION_KIND_SCAN_INDEX=7,CAPABILITY_PERMISSION_KIND_QUERY_PROJECTION=8,CAPABILITY_PERMISSION_KIND_READ_PROJECTION_STATUS=9,CAPABILITY_PERMISSION_KIND_READ_COMMIT=10,CAPABILITY_PERMISSION_KIND_SCAN_COMMITS=11,CAPABILITY_PERMISSION_KIND_SUBSCRIBE_COMMITS=12,CAPABILITY_PERMISSION_KIND_READ_PROVENANCE=13,CAPABILITY_PERMISSION_KIND_INSPECT_OUTBOX=14,CAPABILITY_PERMISSION_KIND_READ_HEALTH=15,CAPABILITY_PERMISSION_KIND_READ_STATISTICS=16,CAPABILITY_PERMISSION_KIND_CREATE_CAPABILITY=17,CAPABILITY_PERMISSION_KIND_REVOKE_CAPABILITY=18,CAPABILITY_PERMISSION_KIND_ADMINISTER_CAPABILITIES=19,CAPABILITY_PERMISSION_KIND_CHECK_AD_HOC_QUERY=20,CAPABILITY_PERMISSION_KIND_EXPLAIN_AD_HOC_QUERY=21,CAPABILITY_PERMISSION_KIND_EXECUTE_AD_HOC_QUERY=22,CAPABILITY_PERMISSION_KIND_EXPLAIN_NAMED_QUERY=23,CAPABILITY_PERMISSION_KIND_EXECUTE_NAMED_QUERY=24,CAPABILITY_PERMISSION_KIND_APPLICATION_ROLE_IDENTITY=25,CAPABILITY_PERMISSION_KIND_CONSUME_EVENT_STREAM=27,CAPABILITY_PERMISSION_KIND_SEEK_EVENT_STREAM_CONSUMER=28,CAPABILITY_PERMISSION_KIND_WATCH_NAMED_QUERY=29,CAPABILITY_PERMISSION_KIND_CONSUME_CONTEXTUAL_SUBSCRIPTION=30"),
             ("CapabilityRowPolicyOperationV1", "CAPABILITY_ROW_POLICY_OPERATION_UNSPECIFIED=0,CAPABILITY_ROW_POLICY_OPERATION_READ=1,CAPABILITY_ROW_POLICY_OPERATION_CREATE=2,CAPABILITY_ROW_POLICY_OPERATION_UPDATE=3,CAPABILITY_ROW_POLICY_OPERATION_DELETE=4"),
+            ("ColumnarProjectionFailureReasonV1", "COLUMNAR_PROJECTION_FAILURE_REASON_UNSPECIFIED=0,COLUMNAR_PROJECTION_FAILURE_REASON_REPLAY_AGE=1,COLUMNAR_PROJECTION_FAILURE_REASON_REPLAY_BYTES=2,COLUMNAR_PROJECTION_FAILURE_REASON_REPLAY_BACKLOG=3,COLUMNAR_PROJECTION_FAILURE_REASON_SPEC_CHANGED=4,COLUMNAR_PROJECTION_FAILURE_REASON_ARTIFACT_INVALID=5,COLUMNAR_PROJECTION_FAILURE_REASON_RESOURCE_LIMIT=6,COLUMNAR_PROJECTION_FAILURE_REASON_STORAGE=7,COLUMNAR_PROJECTION_FAILURE_REASON_CANCELLED=8"),
+            ("ColumnarProjectionFailureTargetV1", "COLUMNAR_PROJECTION_FAILURE_TARGET_UNSPECIFIED=0,COLUMNAR_PROJECTION_FAILURE_TARGET_CANDIDATE=1,COLUMNAR_PROJECTION_FAILURE_TARGET_PUBLISHED=2,COLUMNAR_PROJECTION_FAILURE_TARGET_PREDECESSOR=3,COLUMNAR_PROJECTION_FAILURE_TARGET_CONTROL=4"),
+            ("ColumnarProjectionGenerationRoleV1", "COLUMNAR_PROJECTION_GENERATION_ROLE_UNSPECIFIED=0,COLUMNAR_PROJECTION_GENERATION_ROLE_PUBLISHED=1,COLUMNAR_PROJECTION_GENERATION_ROLE_CANDIDATE=2,COLUMNAR_PROJECTION_GENERATION_ROLE_PREDECESSOR=3"),
+            ("ColumnarProjectionLayoutV1", "COLUMNAR_PROJECTION_LAYOUT_UNSPECIFIED=0,COLUMNAR_PROJECTION_LAYOUT_V1=1,COLUMNAR_PROJECTION_LAYOUT_V2=2"),
+            ("ColumnarProjectionLifecycleV1", "COLUMNAR_PROJECTION_LIFECYCLE_UNSPECIFIED=0,COLUMNAR_PROJECTION_LIFECYCLE_BUILDING=1,COLUMNAR_PROJECTION_LIFECYCLE_CATCHING_UP=2,COLUMNAR_PROJECTION_LIFECYCLE_READY=3,COLUMNAR_PROJECTION_LIFECYCLE_REBUILDING=4,COLUMNAR_PROJECTION_LIFECYCLE_DEGRADED=5,COLUMNAR_PROJECTION_LIFECYCLE_INVALID=6"),
             ("CommandDerivedIndexKindV1", "COMMAND_DERIVED_INDEX_KIND_UNSPECIFIED=0,COMMAND_DERIVED_INDEX_KIND_IDEMPOTENCY=1,COMMAND_DERIVED_INDEX_KIND_PROVENANCE=2,COMMAND_DERIVED_INDEX_KIND_AUDIT_SEQUENCE=3,COMMAND_DERIVED_INDEX_KIND_AUDIT_REQUEST=4,COMMAND_DERIVED_INDEX_KIND_EVENT_ROUTE=5,COMMAND_DERIVED_INDEX_KIND_PENDING_OUTBOX=6"),
             ("CommandDerivedMemberV1", "COMMAND_DERIVED_MEMBER_UNSPECIFIED=0,COMMAND_DERIVED_MEMBER_COMMAND=1,COMMAND_DERIVED_MEMBER_AUDIT_STARTED=2,COMMAND_DERIVED_MEMBER_AUDIT_TERMINAL=3,COMMAND_DERIVED_MEMBER_EVENT=4"),
             ("ContractMigrationJournalStepV1", "CONTRACT_MIGRATION_JOURNAL_STEP_UNSPECIFIED=0,CONTRACT_MIGRATION_JOURNAL_STEP_TRANSFORMING=1,CONTRACT_MIGRATION_JOURNAL_STEP_REBUILDING_PROJECTIONS=2,CONTRACT_MIGRATION_JOURNAL_STEP_VALIDATING=3,CONTRACT_MIGRATION_JOURNAL_STEP_READY_FOR_CUTOVER=4,CONTRACT_MIGRATION_JOURNAL_STEP_COMPLETE=5"),

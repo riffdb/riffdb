@@ -3,6 +3,7 @@
 use std::fmt;
 
 use riffdb_contract_ir::{ContractBundle, KeySchema, ValueType, ValueTypeTag};
+pub use riffdb_types::DefinitionFingerprint;
 use riffdb_types::{
     EntityTypeId, FieldId, HashDomain, ProjectionProviderCapabilitiesV1,
     ProjectionProviderDescriptorV1, ProjectionProviderKindV1, ProjectionProviderPolicyModeV1,
@@ -29,33 +30,6 @@ pub struct ColumnarProjectionDefinition {
     pub projected_fields: Vec<FieldId>,
     /// Organization scope field (must exist on the entity).
     pub org_scope_field: FieldId,
-}
-
-/// Stable fingerprint over entity id, ordered fields + types, org field, layout.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct DefinitionFingerprint([u8; 32]);
-
-impl DefinitionFingerprint {
-    /// Returns the 32 digest bytes.
-    #[must_use]
-    pub const fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-
-    /// Reconstructs from exact digest bytes.
-    #[must_use]
-    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-}
-
-impl fmt::Display for DefinitionFingerprint {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for byte in &self.0 {
-            write!(f, "{byte:02x}")?;
-        }
-        Ok(())
-    }
 }
 
 /// Definition validated against a contract bundle and ready for engine open.
@@ -284,6 +258,14 @@ impl RegisteredDefinition {
     #[must_use]
     pub fn vector_ann_config(&self, field: FieldId) -> Option<VectorAnnConfig> {
         self.vector_ann.get(&field).copied()
+    }
+
+    pub(crate) fn vector_ann_configs(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (FieldId, VectorAnnConfig)> + '_ {
+        self.vector_ann
+            .iter()
+            .map(|(field, config)| (*field, *config))
     }
 
     /// Definition fingerprint.

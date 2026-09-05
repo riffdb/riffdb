@@ -123,6 +123,15 @@ Only an unchanged, completely and gracefully stopped lifecycle unit can reuse a
 matching record. The sealed primitive and its internal receipt are not public;
 the authorized maintenance operation and durable receipt are not yet available.
 
+The current registry also adds durable tag 67
+`StoredColumnarProjectionControlV1` and the `columnar_projection_controls`
+table. New scalar and vector controls always begin from authoritative state at
+a `BeforeFirst` fence; existing scalar manifests, name-derived directories, and
+tag-65 vector controls are not migrated. Tag 65 remains structurally readable
+under a 4,096-row startup bound but is inert and unwritable until its mandatory
+epoch-2 removal. Controlled V1 manifests are immutable and selected only by the
+exact length and checksum in tag 67.
+
 Inspect the same decision while the server is stopped:
 
 ```bash

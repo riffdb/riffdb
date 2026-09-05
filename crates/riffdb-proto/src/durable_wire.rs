@@ -988,8 +988,36 @@ shape!(CLEAN_CLOSE_LIFECYCLE [
     bytes(6, 32),
     fixed_bytes(7, 32),
 ]);
+shape!(COLUMNAR_SCALAR_SOURCE [
+    string(1, MAX_TEXT_ID_BYTES),
+    fixed_bytes(2, 32),
+]);
+shape!(COLUMNAR_VECTOR_SOURCE[string(1, MAX_TEXT_ID_BYTES)]);
+shape!(COLUMNAR_SOURCE [
+    message(1, &COLUMNAR_SCALAR_SOURCE),
+    message(2, &COLUMNAR_VECTOR_SOURCE),
+]);
+shape!(COLUMNAR_FRONTIER []);
+shape!(COLUMNAR_FAILURE []);
+shape!(COLUMNAR_GENERATION [
+    message(3, &COLUMNAR_FRONTIER),
+    fixed_bytes(6, 32),
+    fixed_bytes(7, 32),
+    fixed_bytes(8, 32),
+    fixed_bytes(9, 32),
+    message(10, &COLUMNAR_FRONTIER),
+]);
+shape!(COLUMNAR_CONTROL [
+    message(1, &COLUMNAR_SOURCE),
+    fixed_bytes(2, 32),
+    fixed_bytes(3, 32),
+    message(5, &COLUMNAR_GENERATION),
+    message(6, &COLUMNAR_GENERATION),
+    message(7, &COLUMNAR_GENERATION),
+    message(9, &COLUMNAR_FAILURE),
+]);
 
-const ROOTS: [&Shape; 92] = [
+const ROOTS: [&Shape; 93] = [
     &ROOT_EMPTY,
     &ROOT_DATABASE_ID,
     &ROOT_OPTIONAL_UNIT_FIELD_TWO,
@@ -1093,6 +1121,7 @@ const ROOTS: [&Shape; 92] = [
     &COMMAND_CAPSULE_V6,
     &COMMAND_SEGMENT_V5,
     &CLEAN_CLOSE_LIFECYCLE,
+    &COLUMNAR_CONTROL,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {

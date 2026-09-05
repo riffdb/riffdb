@@ -10,12 +10,12 @@ use riffdb_storage_api::{
     StructurallyDecodedIndexRangePrefixV1, VectorObservationTargetV1, VectorProjectionSourceV1,
 };
 use riffdb_types::{
-    AdministrationSequence, CapabilityId, CapabilityTokenDigest, CommitSequence,
-    ContractBundleHash, ContractLineage, ContractMigrationOperationId, ContractVersion,
-    DIGEST_SCHEME_V1, DigestKeyId, EntityKey, EntityTypeId, EventConsumerIdentityHash, EventId,
-    IndexEntryKey, IndexId, MAX_CONTRACT_LINEAGE_BYTES, PartitionKey, PartitionKeyHash,
-    ProjectionApplyKey, ProjectionFrontierKey, ProjectionGroupKey, ProvenanceId, QueryModuleHash,
-    ReactiveModuleHash, RequestId,
+    AdministrationSequence, CapabilityId, CapabilityTokenDigest, ColumnarProjectionSourceV1,
+    CommitSequence, ContractBundleHash, ContractLineage, ContractMigrationOperationId,
+    ContractVersion, DIGEST_SCHEME_V1, DigestKeyId, EntityKey, EntityTypeId,
+    EventConsumerIdentityHash, EventId, IndexEntryKey, IndexId, MAX_CONTRACT_LINEAGE_BYTES,
+    PartitionKey, PartitionKeyHash, ProjectionApplyKey, ProjectionFrontierKey, ProjectionGroupKey,
+    ProvenanceId, QueryModuleHash, ReactiveModuleHash, RequestId,
 };
 
 pub(crate) const SINGLETON_KEY: [u8; 1] = [0x01];
@@ -775,6 +775,27 @@ pub(crate) fn decode_vector_projection_control_key(
     Ok(source)
 }
 
+/// Encodes the exact ADR-0192 canonical scalar/vector source as the table key.
+pub(crate) fn encode_columnar_projection_control_key(
+    source: &ColumnarProjectionSourceV1,
+) -> Result<Vec<u8>, PhysicalKeyError> {
+    let encoded = source.to_canonical_bytes();
+    if encoded.len() > riffdb_types::MAX_COLUMNAR_PROJECTION_SOURCE_V1_BYTES {
+        return Err(PhysicalKeyError::InvalidLength);
+    }
+    Ok(encoded)
+}
+
+/// Decodes, fully consumes, and re-encodes one canonical tag-67 control key.
+pub(crate) fn decode_columnar_projection_control_key(
+    bytes: &[u8],
+) -> Result<ColumnarProjectionSourceV1, PhysicalKeyError> {
+    let source = ColumnarProjectionSourceV1::from_canonical_bytes(bytes)
+        .map_err(|_| PhysicalKeyError::InvalidComponent)?;
+    require_canonical(bytes, &encode_columnar_projection_control_key(&source)?)?;
+    Ok(source)
+}
+
 pub(crate) fn encode_vector_evidence_index_prefix(
     target: &VectorObservationTargetV1,
 ) -> Result<Vec<u8>, PhysicalKeyError> {
@@ -1115,6 +1136,25 @@ mod tests {
             decode_vector_projection_control_key(&trailing),
             Err(PhysicalKeyError::InvalidLength)
         );
+    }
+
+    // req: PRJ-005, PRJ-006, PRJ-010, OQ-024, OQ-053
+    #[test]
+    fn columnar_projection_control_key_is_exact_bounded_source_bytes() {
+        let definition = riffdb_types::DefinitionFingerprint::from_bytes([0x42; 32]);
+        let scalar = ColumnarProjectionSourceV1::scalar(
+            ContractLineage::new("columnar").expect("lineage"),
+            definition,
+        );
+        let encoded = encode_columnar_projection_control_key(&scalar).expect("encode");
+        assert_eq!(encoded, scalar.to_canonical_bytes());
+        assert_eq!(
+            decode_columnar_projection_control_key(&encoded).expect("decode"),
+            scalar
+        );
+        let mut trailing = encoded;
+        trailing.push(0);
+        assert!(decode_columnar_projection_control_key(&trailing).is_err());
     }
 
     #[test]
