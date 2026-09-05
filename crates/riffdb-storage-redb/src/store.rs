@@ -6916,14 +6916,14 @@ impl RedbDurabilityEpoch {
                 )
             }
         };
-        if let Some(composite_successor) = composite_successor.as_ref() {
-            if let Err(error) = self.shared.install_private_composite_successor(
+        if let Some(composite_successor) = composite_successor.as_ref()
+            && let Err(error) = self.shared.install_private_composite_successor(
                 &self.composite_predecessor,
                 composite_successor,
-            ) {
-                self.shared.disable_and_fence_fresh_locator_coverage();
-                return Err(error);
-            }
+            )
+        {
+            self.shared.disable_and_fence_fresh_locator_coverage();
+            return Err(error);
         }
         {
             let mut unpublished = self
