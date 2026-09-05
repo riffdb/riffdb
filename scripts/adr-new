@@ -11,6 +11,7 @@
 # act; no script and no agent may set it.
 
 require "date"
+require "tmpdir"
 require_relative "lib/riffdb_adr"
 
 ROOT = RiffdbAdr.root
@@ -19,6 +20,7 @@ USAGE = <<~TEXT
   usage: adr-new --title "Short Title In Title Case" --tier surface|guarantee
                  [--requires ADR-0093 ...] [--requirements REP-002 ...]
                  [--packages WP-746 ...] [--date YYYY-MM-DD] [--help]
+         adr-new --self-test
 
     --title         the record title, also the body heading and the file slug
     --tier          surface (short record) or guarantee (may add options and
@@ -66,6 +68,46 @@ def parse_arguments(argv)
   options
 end
 
+def self_test
+  options = {
+    "title" => "Canonical Identifier Test",
+    "tier" => "surface",
+    "date" => "2026-09-05",
+    "requires" => [],
+    "requirements" => [],
+    "packages" => []
+  }
+  generated = skeleton("0202", options)
+
+  Dir.mktmpdir("riffdb-adr-new-self-test") do |directory|
+    valid = File.join(directory, "0202-canonical-identifier-test.md")
+    File.write(valid, generated)
+    record = RiffdbAdr.parse(valid)
+    abort "adr-new self-test did not preserve 0202 as a string" unless record.front["adr"] == "0202"
+    abort "adr-new self-test did not preserve the filename identity" unless record.number == "0202"
+
+    octal = File.join(directory, "0202-octal-identifier.md")
+    File.write(octal, generated.sub('adr: "0202"', "adr: 0202"))
+    begin
+      RiffdbAdr.parse(octal)
+      abort "adr-new self-test accepted an unquoted zero-padded identifier"
+    rescue ArgumentError => error
+      abort error.message unless error.message.include?("quoted four-digit string")
+    end
+
+    mismatch = File.join(directory, "0203-mismatched-identifier.md")
+    File.write(mismatch, generated)
+    begin
+      RiffdbAdr.parse(mismatch)
+      abort "adr-new self-test accepted a filename/front-matter mismatch"
+    rescue ArgumentError => error
+      abort error.message unless error.message.include?("does not match filename")
+    end
+  end
+
+  puts "adr-new canonical identifier self-test passed."
+end
+
 def slug(title)
   value = title.downcase.gsub(/[^a-z0-9]+/, "-").gsub(/\A-+|-+\z/, "")
   value.empty? ? "record" : value
@@ -80,7 +122,7 @@ def skeleton(number, options)
   extra = guarantee ? "\n## Options considered\n\n1. **Option:** consequence, and the reason to choose or reject it.\n\n## Consequences\n\n- Positive consequence.\n- Cost or constraint.\n- Explicitly deferred behavior.\n" : ""
   <<~MARKDOWN
     ---
-    adr: #{number}
+    adr: "#{number}"
     title: #{options['title']}
     status: proposed
     tier: #{options['tier']}
@@ -119,6 +161,11 @@ def skeleton(number, options)
 
     - The fixtures, tests, scripts, and architecture checks that freeze this decision.
   MARKDOWN
+end
+
+if ARGV == ["--self-test"]
+  self_test
+  exit 0
 end
 
 options = parse_arguments(ARGV)

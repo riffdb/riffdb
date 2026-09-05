@@ -98,7 +98,7 @@ module RiffdbAdr
     Record.new(
       path: path,
       basename: basename,
-      number: normalize_number(front["adr"], basename),
+      number: normalize_v2_number(front["adr"], basename),
       title: front["title"].to_s.strip,
       status: normalize_status(front["status"]),
       tier: front["tier"].to_s.strip,
@@ -141,6 +141,26 @@ module RiffdbAdr
   def normalize_number(value, basename)
     digits = value.to_s[/\d+/] || basename[/\A(\d{4})/, 1]
     format("%04d", digits.to_i)
+  end
+
+  def normalize_v2_number(value, basename)
+    filename_number = basename[/\A(\d{4})-/, 1]
+    raise ArgumentError, "#{basename}: filename must begin with a four-digit ADR identifier" unless filename_number
+
+    # The legacy template predates v2's canonical scalar rule. Real records use
+    # a quoted string so YAML 1.1 readers cannot reinterpret 0202 as octal 130.
+    return "0000" if basename == "0000-template.md" && value == 0
+
+    unless value.is_a?(String) && value.match?(/\A\d{4}\z/)
+      raise ArgumentError,
+            "#{basename}: front-matter adr must be a quoted four-digit string"
+    end
+    unless value == filename_number
+      raise ArgumentError,
+            "#{basename}: front-matter adr #{value.inspect} does not match filename #{filename_number.inspect}"
+    end
+
+    value
   end
 
   def normalize_status(value)
