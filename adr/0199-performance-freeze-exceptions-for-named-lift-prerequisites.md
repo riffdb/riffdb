@@ -51,11 +51,16 @@ sealed pre-freeze inventory and an exact, purpose-limited progress set.
 2. **Pre-freeze declarations are sealed, not grandfathered for work.** The
    WP-762 freeze record inventories every package that lists a `PERF-*`
    requirement at freeze start. For each then-open package it stores an exact
-   digest of the normalized package definition excluding `closure`. An
-   unchanged entry may remain open without failing checks. Unless named in
-   Decision 3, it may not change that definition or gain a closure while the
-   freeze is in force. A package absent from the inventory may not add or
-   activate a `PERF-*` requirement.
+   digest of the normalized package definition excluding `closure`. The digest
+   input is the entire parsed package mapping after removing only its top-level
+   `closure` member. Normalization preserves scalar types and list order,
+   orders mapping keys recursively by their UTF-8 byte sequence, and emits
+   whitespace-free UTF-8 JSON. The stored digest is SHA-256 over those exact
+   bytes, encoded as 64 lowercase hexadecimal characters. An unchanged entry
+   may remain open without failing checks. Unless named in Decision 3, it may
+   not change that definition or gain a closure while the freeze is in force.
+   A package absent from the inventory may not add or activate a `PERF-*`
+   requirement.
 3. **Exactly four packages may advance.** WP-762 may bank the baseline and
    start the freeze, and WP-763 may build and either activate or remove the one
    ADR-0183 candidate. WP-750 may complete only its already-registered
