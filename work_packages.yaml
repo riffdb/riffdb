@@ -2705,26 +2705,37 @@ work_packages:
 
 - id: WP-724
   name: Real adapter workload comprehensiveness
-  depends_on: [WP-569, WP-573]
-  objective: Close the gap between what the release gate claims and what it exercises. OpenFGA is a
-    real out-of-tree adapter running its upstream conformance suite against a live service; MLflow
-    and Woodpecker are in-tree fixtures this repository authored. A fixture proves the language can
-    express a shape, not that the upstream system works.
-  requirements: [SAFE-001, DRV-014, APE-001]
-  required_adrs: [ADR-0148]
+  tier: surface
+  depends_on: [WP-569, WP-573, WP-782]
+  objective: Close the gap between what the release gate claims and what it exercises. OpenFGA has
+    live upstream-suite evidence; the general WP-578/WP-579 MLflow and Woodpecker rows are RiffDB-
+    authored language-expressiveness matrices; and narrower completed MLflow and Better Auth
+    external profile receipts retain only their exact capability-specific claims.
+  requirements: [SAFE-001, DRV-014, BLK-014, BLK-064, BLK-070, DEL-012,
+    OQ-016, OQ-030, OQ-100, OQ-112, WF-014, APE-001, APE-013, RAP-016, EXP-014,
+    END-001, QSO-012]
+  required_adrs: [ADR-0148, ADR-0201]
   allowed_paths: [SPEC.md, work_packages.yaml, fixtures/adapters/**, docs/**, scripts/**]
   deliverables:
-  - One of MLflow or Woodpecker promoted to a real adapter that runs its upstream suite against a
-    live RiffDB, or both reclassified in SPEC and the release gate as language-expressiveness
-    fixtures rather than adapter workloads
+  - Canonical `fixtures/adapters/adapter-evidence-v1.json` containing ADR-0201's exact ten scoped
+    claim records and source locators, with the four general-alpha rows distinguished from every
+    preserved capability-specific external receipt
+  - MLflow and Woodpecker's WP-578/WP-579 general rows classified as language-expressiveness
+    matrices without erasing or widening the separate WP-738, WP-743/OQ-112, and WP-744/BLK-064
+    MLflow live receipts
   - Better Auth's supported surface stated where an adopter meets it, including that additional
-    fields and plugins require a materialized profile rather than failing at runtime
+    fields and plugins require generation/configuration of a reviewed materialized profile, and
+    that the framework's generic facade is an exact profile-bound dispatcher rather than generic
+    RiffDB CRUD or a runtime fallback
   - The release gate's adapter claim rewritten to match what each adapter actually demonstrates
   acceptance_commands:
+  - ./scripts/check-adapter-evidence-claims
+  - ./scripts/check-adapter-evidence-claims --self-test
   - ./scripts/adapter-conformance --all-domains --all-languages
   - ./scripts/downstream-adapter-check
-  exit_gate: Every adapter named in the release gate either runs an upstream suite or is described
-    as a fixture, and no gate sentence overstates what its evidence covers.
+  exit_gate: Every named claim maps to one exact scoped inventory record; only OpenFGA carries a
+    complete upstream-suite claim, each partial external receipt remains truthful and narrow, every
+    repository matrix is labeled as such, and no gate sentence overstates what its evidence covers.
 
 - id: WP-725
   name: Seeded-campaign determinism restoration
@@ -16377,17 +16388,18 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-578
   name: Portability, disaster-recovery, and 72-hour endurance evidence
-  depends_on: [WP-573, WP-575, WP-576, WP-577, WP-609, WP-610, WP-623, WP-705, WP-760]
-  objective: Bank release-candidate evidence that every adapter preserves policy and portable data,
-    restores after total local disk loss, and remains correct/resource-bounded for 72 continuous
-    hours through repeated journal, checkpoint, retention, backup, rotation, and restart cycles.
+  depends_on: [WP-573, WP-575, WP-576, WP-577, WP-609, WP-610, WP-623, WP-705, WP-724, WP-760]
+  objective: Bank release-candidate evidence that each ADR-0201 general-alpha subject preserves
+    policy and portable data, restores after total local disk loss, and remains correct/resource-
+    bounded for 72 continuous hours through repeated journal, checkpoint, retention, backup,
+    rotation, and restart cycles without promoting its evidence classification.
   requirements: [AAA-003, AAA-010, AAA-012, AAA-013, AAA-014, AAA-018,
     SEC-001, SEC-002, SEC-003, SAFE-001, SAFE-002, SAFE-006, SAFE-007,
     SAFE-008, PERF-001, PERF-003, PERF-004, PERF-007, PERF-008, PERF-013,
     PERF-014, REC-001, REC-002, STO-001, STO-002, END-009, END-010, END-011]
   required_adrs: [ADR-0050, ADR-0080, ADR-0082, ADR-0085, ADR-0101,
     ADR-0103, ADR-0104, ADR-0110, ADR-0111, ADR-0112, ADR-0115, ADR-0116,
-    ADR-0118, ADR-0119]
+    ADR-0118, ADR-0119, ADR-0201]
   allowed_paths: [SPEC.md, work_packages.yaml, fixtures/adapters/**,
     fixtures/endurance/**, examples/**, benchmarks/**, tests/**, scripts/**,
     docs/**, release/evidence/**, .github/**,
@@ -16402,16 +16414,17 @@ work_packages:
     crates/riffdb-sim/tests/seeded_campaign/**,
     tests/migrations/contract_migration_gate_a.rs]
   deliverables:
-  - One retained 72-hour remote mixed-load receipt with all four adapter shapes/languages, periodic
-    conformance and policy probes, zero silent loss/leak, and no unsupported storage-unavailable path
+  - One retained 72-hour remote mixed-load receipt with all four general-alpha subjects/languages,
+    periodic conformance and policy probes, exact ADR-0201 claim scopes, zero silent loss/leak, and
+    no unsupported storage-unavailable path
   - Periodic semantic probes are built once from a clean release revision, sealed with their fixtures
     and release identity, and remain unaffected by later live-checkout edits throughout the run
   - Forced journal recycling across many generations, repeated checkpoint/recovery, supported
     retention and backup cycles, capability/certificate rotation, deploy-under-load, and restarts
   - Bounded RSS/file/backlog/queue slopes after accounting for declared retained data; final full
-    startup validation and every adapter conformance manifest pass
-  - Each adapter completes symbolic export/reimport and remote destroy/restore drills, with receipts
-    linked to the exact format manifest and observation digests
+    startup validation and every applicable general-alpha conformance manifest pass
+  - Each general-alpha subject completes symbolic export/reimport and remote destroy/restore drills,
+    with receipts linked to its exact classification, format manifest, and observation digests
   - A 24-hour rehearsal may qualify harness changes, but cannot satisfy alpha; interruption,
     interference, missing lifecycle coverage, or an invalid observation makes the 72-hour run fail
   acceptance_commands:
@@ -16428,8 +16441,9 @@ work_packages:
   - ./scripts/check-requirement-coverage
   - ./scripts/handbook check
   exit_gate: Retained 72-hour evidence covers every required lifecycle with bounded growth and exact
-    correctness, every adapter exits/reimports and restores after disk loss, and no short/interfered/
-    partial run or policy/format/backup omission can be classified as an alpha pass.
+    correctness, every general-alpha subject exports/reimports and restores after disk loss, no claim
+    is promoted beyond ADR-0201, and no short/interfered/partial run or policy/format/backup omission
+    can be classified as an alpha pass.
   standing_design_tests:
     interface_safety: Evidence uses the same installed public and generated surfaces alpha ships;
       every policy/export/restore negative is required and no test-only authority enters the daemon.
@@ -16476,7 +16490,8 @@ work_packages:
   required_adrs: [ADR-0055, ADR-0056, ADR-0065, ADR-0074, ADR-0076, ADR-0079,
     ADR-0080, ADR-0101, ADR-0102, ADR-0103, ADR-0104, ADR-0105, ADR-0106,
     ADR-0107, ADR-0108, ADR-0109, ADR-0110, ADR-0111, ADR-0112, ADR-0114,
-    ADR-0115, ADR-0116, ADR-0117, ADR-0118, ADR-0119, ADR-0130, ADR-0131]
+    ADR-0115, ADR-0116, ADR-0117, ADR-0118, ADR-0119, ADR-0130, ADR-0131,
+    ADR-0201]
   allowed_paths: [SPEC.md, PLAN.md, work_packages.yaml, Cargo.lock, crates/**, proto/**,
     clients/**, fixtures/**, fuzz/**, tests/**, examples/**, benchmarks/**, scripts/**,
     templates/**, docs/**, release/**, .github/**]
@@ -16485,9 +16500,9 @@ work_packages:
     certificate and application-credential rotation, backup/restore, and no host-loopback shortcut
   - Installed Rust, Go, TypeScript, and Python driver conformance over pooling, cancellation,
     typed errors, retries/uncertainty, read-after-commit, reactive streams, and overload
-  - OpenFGA, MLflow, Better Auth, and Woodpecker empty-install/populated-upgrade workloads exercising
-    collection commands, operational queries, row policies, workflows, events, migrations,
-    portability/disaster recovery, and adapter manifests
+  - OpenFGA, MLflow, Better Auth, and Woodpecker general-alpha empty-install/populated-upgrade
+    workloads exercising collection commands, operational queries, row policies, workflows, events,
+    migrations, portability/disaster recovery, and manifests within ADR-0201's exact claim scopes
   - Better Auth per-user record and MLflow experiment/run policy probes cover isolation,
     revocation, mutation races, projections/aggregates/live queries, and inference negatives;
     Payload remains a generated post-alpha regression fixture
@@ -16509,8 +16524,8 @@ work_packages:
     unseen domain from public sources alone. Evaluating generated bindings is not evidence that the
     contract and query languages are authorable
   - WP-723 continuous adapter protection green, so no language change lands while breaking a pinned
-    out-of-tree adapter, and WP-724 has settled which named adapters run an upstream suite and which
-    are fixtures with the gate text matching
+    out-of-tree adapter, and WP-724 has settled every general, partial-profile, and post-alpha claim
+    record without erasing narrower external evidence or promoting a fixture to an upstream suite
   - WP-725 seeded campaign green; no release runs with a red first-party suite
   - WP-726 has decomposed the unary outside-service residual and either reduced it or accepted it on
     the record, with published service levels that constrain the artifact rather than admit it
@@ -24174,7 +24189,9 @@ work_packages:
   objective: After exact acceptance of ADR-0201, reconcile accepted authority so every alpha
     adapter claim states exactly what its evidence proves, without changing runtime, public,
     durable, protocol, storage, authorization, transaction, threshold, or evidence behavior.
-  requirements: [SAFE-001, DRV-014, APE-001, APE-013, EXP-014, END-001]
+  requirements: [SAFE-001, DRV-014, BLK-014, BLK-064, BLK-070, DEL-012,
+    OQ-016, OQ-030, OQ-100, OQ-112, WF-014, APE-001, APE-013, RAP-016, EXP-014,
+    END-001, QSO-012]
   required_adrs: [ADR-0201, ADR-0110, ADR-0117, ADR-0148]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0110-application-installation-and-adapter-conformance.md,
@@ -24182,17 +24199,20 @@ work_packages:
     adr/0201-exact-adapter-evidence-classifications.md, adr/README.md]
   deliverables:
   - Exact human acceptance of ADR-0201 followed by matching evidence-class text in ADR-0110
-    Amendment 1, ADR-0117's current-alpha versus future-support boundary, SPEC APE-013/EXP-014/
-    END-001 and milestone text, and WP-578/WP-579 release claims; the proposed record alone changes
+    Amendment 1, ADR-0117's current-alpha versus future-support boundary, every named SPEC claim
+    listed by OBL-0201-2, milestone text, and WP-724/WP-578/WP-579; the proposed record alone changes
     no accepted authority
-  - WP-724 reconciled to surface tier with WP-782 as a hard dependency and ADR-0201 as required
-    authority, while retaining only its existing fixture, documentation, script, and SPEC paths
-  - One exact four-entry contract where OpenFGA is the sole upstream-suite adapter; Better Auth is an
-    external materialized-profile integration with no current upstream-suite claim; MLflow and
-    Woodpecker are RiffDB-owned language-expressiveness fixtures; Payload stays post-alpha
-  - OBL-0201-1 and OBL-0201-2 remain owned by WP-724, whose later implementation must add the
-    canonical inventory, exact claim guard, requirement tags, negative self-test, handbook updates,
-    and human fixture review; WP-782 does not implement or close either obligation
+  - WP-724 remains surface tier, depends on WP-782, requires ADR-0201, owns all seventeen requirements
+    whose claim guard it proves, and retains only its fixture, documentation, script, and SPEC paths;
+    WP-578 depends on WP-724, while WP-578 and WP-579 both require ADR-0201
+  - Exact ten-record `riffdb.adapter-evidence-inventory/v1` contract at
+    fixtures/adapters/adapter-evidence-v1.json, preserving four general-alpha classifications plus
+    Better Auth lifecycle/admin, MLflow filtered/partition/large-Run, and post-alpha Payload claims
+    at their separate exact scopes and source locators
+  - OBL-0201-1 through OBL-0201-3 remain owned by WP-724, whose later implementation must add the
+    canonical inventory, exact claim guard, requirement tags, normative-claim completeness test,
+    adversarial self-test, handbook updates, and human fixture review; WP-782 does not implement or
+    close those obligations
   - Governance diff proof that no runtime/public/durable/protocol/storage/authorization/transaction
     behavior, evidence bytes or result, acceptance threshold, adapter implementation, or WP-578
     72-hour receipt changes
@@ -24202,18 +24222,23 @@ work_packages:
   - ./scripts/check-adr-obligations
   - ./scripts/check-requirement-coverage
   - ./scripts/adr-index --check
-  exit_gate: Accepted authority agrees on all four exact evidence classes, current alpha claims no
-    nonexistent upstream suite, future Better Auth support still requires ADR-0117 evidence, WP-724
-    owns both proof obligations, and the diff contains only governance reconciliation paths.
+  exit_gate: Accepted authority agrees on the ten scoped claim records, current alpha claims no
+    nonexistent upstream suite, completed external partial-profile receipts remain exact, future
+    Better Auth support still requires ADR-0117 evidence, WP-724 owns all three proof obligations,
+    and the diff contains only governance reconciliation paths.
   standing_design_tests:
     interface_safety: Governance labels add no public or operator surface, caller choice, generic
       mutation, transaction callback, runtime fallback, or way to claim a stronger guarantee.
-    scale: Reconciliation covers one fixed four-entry inventory and bounded text; it reads no
+    scale: Reconciliation covers one fixed ten-record inventory and bounded text; it reads no
       database, runtime, adapter-repository, duration-sized, or population-sized state.
   human_review_triggers: &id0201
-  - Any exact inventory class, owner, upstream-suite flag, source claim, named adapter, or release-
-    gate wording would differ from ADR-0201 or change without human fixture review.
-  - Better Auth would be described beyond its exact materialized profile or gain dynamic schema,
-    plugin, CRUD, transaction, field-omission, or runtime fallback behavior.
+  - Any inventory path/schema, claim ID, subject, scope, class, custody, upstream-suite flag, source
+    locator, named requirement, or release-gate wording would differ from ADR-0201 or change without
+    human fixture review.
+  - Better Auth would be described beyond its exact materialized profile, its profile-bound generic
+    facade would be mistaken for generic RiffDB CRUD, or it would gain dynamic schema, uncompiled
+    transactions, field omission, or runtime fallback.
+  - Any completed MLflow or Better Auth external partial-profile evidence would be erased, widened,
+    or presented as complete upstream-suite conformance.
   - Runtime/public/durable/protocol/storage/authorization/transaction behavior, evidence artifacts
     or results, acceptance thresholds, adapter code, or the WP-578 72-hour execution would change.
