@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, RwLock};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock};
 use std::time::Duration;
 
 use riffdb_catalog::ActiveCatalogSnapshot;
@@ -223,6 +223,36 @@ pub(crate) struct ColumnarEngineSlot {
     cold_frontier: FrontierPosition,
 }
 
+/// Exclusive publication guard over the same mutex used to capture query
+/// snapshots. Captures completed before this guard was acquired retain their
+/// immutable `Arc`; no later capture can start until the guard is dropped.
+pub(crate) struct ColumnarCaptureGate<'a> {
+    state: MutexGuard<'a, ColumnarSlotState>,
+}
+
+impl ColumnarCaptureGate<'_> {
+    /// Installs the exact durable selection while capture remains closed.
+    pub(crate) fn install_selected(
+        &mut self,
+        engine: ColumnarEngine,
+        generation: ProjectionGeneration,
+    ) -> Result<(), ColumnarPortError> {
+        if !matches!(&*self.state, ColumnarSlotState::Active(_)) {
+            return Err(ColumnarPortError::Unavailable);
+        }
+        *self.state = ColumnarSlotState::Active(Box::new(ActiveColumnarEngine {
+            engine,
+            generation: Some(generation),
+        }));
+        Ok(())
+    }
+
+    /// Leaves the source closed when durable selection cannot be validated.
+    pub(crate) fn remain_closed(&mut self, generation: Option<ProjectionGeneration>) {
+        *self.state = ColumnarSlotState::Failed { generation };
+    }
+}
+
 impl ColumnarEngineSlot {
     fn cold(
         definition: RegisteredDefinition,
@@ -360,6 +390,18 @@ impl ColumnarEngineSlot {
         Ok(())
     }
 
+    /// Closes new query-view capture for one publication decision.
+    pub(crate) fn close_capture_gate(&self) -> Result<ColumnarCaptureGate<'_>, ColumnarPortError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| ColumnarPortError::Unavailable)?;
+        if !matches!(&*state, ColumnarSlotState::Active(_)) {
+            return Err(ColumnarPortError::Unavailable);
+        }
+        Ok(ColumnarCaptureGate { state })
+    }
+
     pub(crate) fn with_engine<T>(
         &self,
         operation: impl FnOnce(&ColumnarEngine) -> T,
@@ -370,6 +412,23 @@ impl ColumnarEngineSlot {
             .map_err(|_| ColumnarPortError::Unavailable)?;
         match &*state {
             ColumnarSlotState::Active(active) => Ok(Some(operation(&active.engine))),
+            ColumnarSlotState::Cold | ColumnarSlotState::Activating => Ok(None),
+            ColumnarSlotState::Failed { .. } | ColumnarSlotState::Stopped => {
+                Err(ColumnarPortError::Unavailable)
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn try_capture_snapshot_for_test(
+        &self,
+    ) -> Result<Option<Arc<riffdb_columnar::ColumnarSnapshot>>, ColumnarPortError> {
+        let state = self
+            .state
+            .try_lock()
+            .map_err(|_| ColumnarPortError::Unavailable)?;
+        match &*state {
+            ColumnarSlotState::Active(active) => Ok(Some(active.engine.published_snapshot())),
             ColumnarSlotState::Cold | ColumnarSlotState::Activating => Ok(None),
             ColumnarSlotState::Failed { .. } | ColumnarSlotState::Stopped => {
                 Err(ColumnarPortError::Unavailable)
@@ -2248,6 +2307,63 @@ contract VectorBoard version 1 {
         let ready = port.observe("ticket_board").expect("installed observation");
         assert!(ready.has_published());
         assert_eq!(ready.published_frontier().position(), selected_frontier);
+    }
+
+    // req: PRJ-008, PRJ-009, OQ-020, OQ-022, PERF-007
+    #[test]
+    fn columnar_capture_gate_retains_predecessor_and_exposes_only_installed_successor() {
+        let (runtime, _scope) = board_runtime("capture-gate");
+        request_projection(&runtime, "ticket_board");
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+
+        let port = ServerColumnarProjectionPort::new(Arc::clone(&runtime));
+        let predecessor = port
+            .observe("ticket_board")
+            .expect("capture predecessor")
+            .snapshot_arc();
+        let binding = runtime
+            .control_binding("ticket_board")
+            .expect("control binding");
+        let durable = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("reread durable selection")
+            .expect("durable selection");
+        let selected = durable.servable_generation().expect("selected generation");
+        let successor = runtime
+            .open_controlled_generation(binding, selected)
+            .expect("open exact successor");
+        let slot = runtime
+            .engine("ticket_board")
+            .expect("engine registry")
+            .expect("active slot");
+
+        let mut gate = slot.close_capture_gate().expect("close capture gate");
+        let probe_slot = Arc::clone(&slot);
+        let probe = thread::spawn(move || probe_slot.try_capture_snapshot_for_test());
+        assert!(
+            matches!(
+                probe.join().expect("join gated capture"),
+                Err(ColumnarPortError::Unavailable)
+            ),
+            "new capture must be closed while publication owns the slot mutex"
+        );
+        assert!(
+            predecessor.segments.is_empty() && predecessor.delta.is_empty(),
+            "a captured predecessor remains independently usable while the gate is closed"
+        );
+
+        gate.install_selected(successor, selected.generation())
+            .expect("install exact selected successor");
+        drop(gate);
+        let installed = port
+            .observe("ticket_board")
+            .expect("capture installed successor")
+            .snapshot_arc();
+        assert!(
+            !Arc::ptr_eq(&predecessor, &installed),
+            "capture reopens only after a distinct validated successor Arc is installed"
+        );
     }
 
     // req: PRJ-004, PRJ-008, PRJ-009, OQ-019, OQ-020, PERF-007, PERF-008
