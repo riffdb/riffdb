@@ -6158,6 +6158,19 @@ impl RedbWriteAccess {
                 None
             }
         };
+        #[cfg(test)]
+        if self
+            .shared
+            .test_controller
+            .as_ref()
+            .is_some_and(RedbTestController::take_fresh_locator_successor_stamp_corruption)
+        {
+            self.transaction()?
+                .open_table(META)
+                .map_err(table_error)?
+                .insert(META_APPLICATION_SEQUENCE, b"malformed".as_slice())
+                .map_err(precommit_storage_error)?;
+        }
         let transaction = self
             .transaction
             .take()
