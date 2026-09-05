@@ -1550,7 +1550,8 @@ mod order_proof_tests {
     use super::{compare_values, key_type_preserves_value_order};
     use riffdb_contract_ir::ValueType;
     use riffdb_types::{
-        CanonicalValue, Date, EntityKeyBuilder, EntityTypeId, EnumTypeId, EnumVariantId, Timestamp,
+        CanonicalValue, CurrencyCode, Date, Decimal, DecimalSpec, EntityKeyBuilder, EntityTypeId,
+        EnumTypeId, EnumVariantId, Money, Timestamp,
     };
     use std::cmp::Ordering;
 
@@ -1780,6 +1781,43 @@ mod order_proof_tests {
             ),
             Ordering::Greater,
             "lexicographic value order disagrees with the key byte order above"
+        );
+    }
+
+    // req: OQ-019, OQ-021
+    #[test]
+    fn decimal_and_money_range_order_is_canonical_not_numeric() {
+        let spec = DecimalSpec::new(12, 2).expect("decimal spec");
+        let negative = Decimal::new(spec, -1).expect("negative");
+        let zero = Decimal::new(spec, 0).expect("zero");
+        assert_eq!(
+            compare_values(
+                &CanonicalValue::Decimal(zero),
+                &CanonicalValue::Decimal(negative),
+            ),
+            Ordering::Less,
+            "the production range executor uses canonical bytes"
+        );
+        assert_eq!(
+            zero.checked_cmp(negative).expect("same decimal type"),
+            Ordering::Greater,
+            "typed numeric order is intentionally not the executor order"
+        );
+
+        let currency = CurrencyCode::new("USD").expect("currency");
+        let negative = Money::new(currency, negative);
+        let zero = Money::new(currency, zero);
+        assert_eq!(
+            compare_values(
+                &CanonicalValue::Money(zero),
+                &CanonicalValue::Money(negative),
+            ),
+            Ordering::Less,
+            "money inherits the canonical decimal coefficient ordering"
+        );
+        assert_eq!(
+            zero.checked_cmp(negative).expect("same money type"),
+            Ordering::Greater
         );
     }
 }
