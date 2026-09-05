@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 import hashlib
 import json
 import os
@@ -279,6 +279,30 @@ def run_self_test() -> None:
     assert interval_churn(stable_process, {})["exited_processes"] == 1
     assert interval_churn({}, stable_process)["started_processes"] == 1
 
+    # A process that disappears while one endpoint is sampled is host churn,
+    # not an untyped inventory failure. Retain a bounded unstable identity so
+    # the ordinary V2 refusal path can receipt the invalid host attempt.
+    unavailable_before = snapshot(
+        set(),
+        candidate_names=["7"],
+        reader=lambda _pid: None,
+        unavailable_starttime_ticks=-1,
+    )
+    unavailable_after = snapshot(
+        set(),
+        candidate_names=["7"],
+        reader=lambda _pid: None,
+        unavailable_starttime_ticks=-2,
+    )
+    unavailable_churn = interval_churn(unavailable_before, unavailable_after)
+    assert unavailable_churn == {
+        "stable_identity_required": True,
+        "started_processes": 1,
+        "exited_processes": 1,
+        "pid_reuses": 1,
+    }
+    assert process_interval_is_stable(unavailable_churn) is False
+
 
 def ancestors(pid: int) -> set[int]:
     result: set[int] = set()
@@ -347,15 +371,41 @@ def bounded_numeric_pids(names: Iterable[str]) -> list[int]:
     return result
 
 
-def snapshot(excluded: set[int]) -> dict[int, dict[str, int | str]]:
+def snapshot(
+    excluded: set[int],
+    *,
+    candidate_names: Iterable[str] | None = None,
+    reader: Callable[[int], dict[str, int | str] | None] = read_process,
+    unavailable_starttime_ticks: int,
+) -> dict[int, dict[str, int | str]]:
+    if unavailable_starttime_ticks >= 0:
+        raise ValueError("unavailable process identity marker must be negative")
     result: dict[int, dict[str, int | str]] = {}
-    pids = bounded_numeric_pids(entry.name for entry in Path("/proc").iterdir())
+    names = (
+        candidate_names
+        if candidate_names is not None
+        else (entry.name for entry in Path("/proc").iterdir())
+    )
+    pids = bounded_numeric_pids(names)
     for pid in pids:
         if pid in excluded:
             continue
-        process = read_process(pid)
+        process = reader(pid)
         if process is None:
-            raise ValueError("process inventory changed during a bounded snapshot")
+            # The PID was present in the bounded directory inventory but its
+            # identity could not be confirmed. Preserve one fixed-size marker
+            # instead of skipping it or aborting without a V2 receipt. Distinct
+            # endpoint markers make even two unavailable reads classify as
+            # churn through the existing started/exited/reuse counters.
+            process = {
+                "pid": pid,
+                "comm": "unavailable",
+                "cpu_ticks": 0,
+                "starttime_ticks": unavailable_starttime_ticks,
+                "rss_bytes": 0,
+                "read_bytes": 0,
+                "write_bytes": 0,
+            }
         result[pid] = process
     return result
 
@@ -377,6 +427,13 @@ def interval_churn(
         "exited_processes": len(before_identities - after_identities),
         "pid_reuses": reused,
     }
+
+
+def process_interval_is_stable(value: dict[str, int | bool]) -> bool:
+    return all(
+        value[key] == 0
+        for key in ("started_processes", "exited_processes", "pid_reuses")
+    )
 
 
 def bounded_active_inventory(
@@ -479,11 +536,11 @@ def main() -> int:
 
     excluded = ancestors(os.getpid())
     before_load = load_average()
-    before = snapshot(excluded)
+    before = snapshot(excluded, unavailable_starttime_ticks=-1)
     started = time.monotonic()
     time.sleep(args.interval_ms / 1000.0)
     elapsed = max(time.monotonic() - started, 0.001)
-    after = snapshot(excluded)
+    after = snapshot(excluded, unavailable_starttime_ticks=-2)
     process_interval = interval_churn(before, after)
     ticks_per_second = os.sysconf("SC_CLK_TCK")
 
@@ -532,10 +589,7 @@ def main() -> int:
             current_hardware_identity=hardware,
             current_logical_cpus=logical_cpus,
         )
-    interval_stable = all(
-        process_interval[key] == 0
-        for key in ("started_processes", "exited_processes", "pid_reuses")
-    )
+    interval_stable = process_interval_is_stable(process_interval)
     valid = not interferers and interval_stable and (whole_cell is None or whole_cell["valid"])
     report = {
         "schema": SCHEMA,
