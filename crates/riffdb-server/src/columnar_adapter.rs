@@ -4393,7 +4393,7 @@ contract VectorBoard version 1 {
 
     // req: PRJ-004, PRJ-008, PRJ-009, OQ-019, OQ-020, PERF-007, PERF-008
     #[test]
-    fn failed_columnar_activation_never_serves_rows_or_falls_back() {
+    fn corrupt_selected_v1_fails_closed_then_records_failure_and_rebuilds() {
         let (runtime, scope) = board_runtime("failed-activation");
         request_projection(&runtime, "ticket_board");
         assert!(crate::columnar_worker::run_one_test_pass(&runtime));
@@ -4406,13 +4406,17 @@ contract VectorBoard version 1 {
             .expect("active engine");
         let binding = runtime
             .control_binding("ticket_board")
-            .expect("control binding");
+            .expect("control binding")
+            .clone();
         let ready_control = runtime
             .storage()
             .recover_expected_control(binding.spec().source())
             .expect("read ready control")
             .expect("ready control");
-        let published = ready_control.published().expect("published generation");
+        let published = ready_control
+            .published()
+            .expect("published generation")
+            .clone();
         let artifact = published.artifact().expect("selected artifact");
         let manifest = controlled_generation_directory(
             &scope.path().join("projections"),
@@ -4443,7 +4447,59 @@ contract VectorBoard version 1 {
             corrupt_bytes,
             "failure must not overwrite or fall back from the selected artifact"
         );
+        let degraded = reopened
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("reread degraded V1 control")
+            .expect("degraded V1 control");
+        assert_eq!(degraded.published(), Some(&published));
+        assert!(degraded.servable_generation().is_none());
+        assert_eq!(
+            degraded.failure().map(|failure| failure.reason()),
+            Some(riffdb_storage_api::ColumnarProjectionFailureReasonV1::ArtifactInvalid)
+        );
         assert_eq!(reopened.lifecycle_observation().activations(), 1);
+
+        assert!(
+            !crate::columnar_worker::run_one_test_pass(&reopened),
+            "V1 remains unavailable while the rebuild candidate is only allocated"
+        );
+        let rebuilding = reopened
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("reread V1 rebuilding control")
+            .expect("V1 rebuilding control");
+        assert_eq!(
+            rebuilding
+                .predecessor()
+                .map(|generation| generation.generation()),
+            Some(published.generation())
+        );
+        let rebuilt_generation = rebuilding
+            .candidate()
+            .expect("fresh V1 rebuild candidate")
+            .generation();
+        assert!(rebuilt_generation > published.generation());
+        assert!(
+            crate::columnar_worker::run_one_test_pass(&reopened),
+            "the fresh V1 candidate rebuilds and publishes"
+        );
+        let recovered = reopened
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("reread rebuilt V1 control")
+            .expect("rebuilt V1 control");
+        assert_eq!(
+            recovered
+                .servable_generation()
+                .map(|generation| generation.generation()),
+            Some(rebuilt_generation)
+        );
+        assert!(
+            port.observe("ticket_board")
+                .expect("capture rebuilt V1")
+                .has_published()
+        );
     }
 
     // req: PRJ-004, PRJ-008, PRJ-009, OQ-020, OQ-022
@@ -4482,6 +4538,20 @@ contract VectorBoard version 1 {
             .expect("selected V2");
         let published_v2 = selected.published().expect("published V2").clone();
         assert_eq!(published_v2.layout(), ColumnarProjectionLayoutV1::V2);
+        let physical = PhysicalGenerationFingerprintV1::compute(binding.definition().fingerprint());
+        assert_eq!(
+            runtime
+                .storage()
+                .allocate_same_spec_candidate(&selected, *physical.as_bytes())
+                .expect("allocate stale candidate"),
+            riffdb_storage_api::ColumnarProjectionControlWriteResultV1::Applied
+        );
+        let selected = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("reread selected V2 with stale candidate")
+            .expect("selected V2 with stale candidate");
+        let stale_candidate = selected.candidate().expect("stale candidate").generation();
         let selected_v2 = port
             .observe("ticket_board")
             .expect("capture selected V2")
@@ -4550,6 +4620,10 @@ contract VectorBoard version 1 {
             .expect("fresh recovery candidate")
             .generation();
         assert!(recovery_generation > published_v2.generation());
+        assert!(
+            recovery_generation > stale_candidate,
+            "published-corruption recovery allocates from Predecessor and never reuses the stale candidate"
+        );
         assert!(
             !crate::columnar_worker::run_one_test_pass(&reopened),
             "recovery remains unavailable while the rebuilt root is only prepared"
