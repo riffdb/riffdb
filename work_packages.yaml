@@ -22927,13 +22927,14 @@ work_packages:
 - id: WP-762
   name: Dual-profile baseline bank under ADR-0171 and performance-package freeze
   tier: internal
-  depends_on: [WP-674, WP-745]
+  depends_on: [WP-674, WP-745, WP-780]
   objective: Bank one qualified interactive c32, write-only, and unary baseline receipt set on
     both N1 and E2 under ADR-0171's gated-backend stability rule, then record the ADR-0183
     performance-package freeze in the same change so the freeze starts from banked receipts rather
     than the retained failed attempts.
   requirements: [PERF-020, PERF-021, PERF-018]
-  required_adrs: [ADR-0123, ADR-0142, ADR-0143, ADR-0146, ADR-0171, ADR-0183]
+  required_adrs: [ADR-0123, ADR-0142, ADR-0143, ADR-0146, ADR-0171, ADR-0183,
+    ADR-0199]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0183-performance-package-freeze-and-durable-group-lever.md, adr/README.md,
     benchmarks/**, scripts/**, release/evidence/**, docs/performance/**, docs/**]
@@ -22984,7 +22985,7 @@ work_packages:
     both profiles or remove the candidate.
   requirements: [PERF-022, PERF-008, PERF-007]
   required_adrs: [ADR-0059, ADR-0098, ADR-0101, ADR-0104, ADR-0129, ADR-0142, ADR-0171,
-    ADR-0183]
+    ADR-0183, ADR-0199]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0183-performance-package-freeze-and-durable-group-lever.md, adr/README.md,
     crates/riffdb-commit/**, crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
@@ -23831,3 +23832,54 @@ work_packages:
     to join the activation owner before storage closes.
   - A durable control, generation-root, manifest, segment, retention fence, public protocol,
     lifecycle enum, freshness outcome, or canonical identity would change.
+
+- id: WP-780
+  name: ADR-0183 freeze exception reconciliation
+  tier: guarantee
+  depends_on: [WP-745]
+  objective: After exact acceptance of ADR-0199, reconcile ADR-0183, PERF-020, and the named
+    work-package contracts so the freeze seals every pre-freeze PERF declaration, permits only
+    WP-750/WP-760 prerequisite closure plus WP-762/WP-763, and retains a separately accepted lift.
+  requirements: [PERF-020]
+  required_adrs: [ADR-0199, ADR-0178, ADR-0182, ADR-0183]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0183-performance-package-freeze-and-durable-group-lever.md,
+    adr/0199-performance-freeze-exceptions-for-named-lift-prerequisites.md,
+    adr/README.md]
+  deliverables:
+  - Exact human acceptance of ADR-0199 followed by matching replacement text in ADR-0183
+    OBL-0183-1 and Decision 1, SPEC PERF-020, and the WP-750/WP-760/WP-762/WP-763 package notes;
+    the proposed record alone changes no accepted authority
+  - One closed freeze-record contract for WP-762 that seals normalized definition digests for
+    every then-open PERF package, treats unchanged non-exempt declarations as inert, and names
+    only WP-750, WP-760, WP-762, and WP-763 as packages permitted to advance
+  - Exact WP-750 and WP-760 exception text allowing only their existing non-candidate objectives,
+    existing PERF evidence, and a closure field, with no new PERF requirement, candidate,
+    threshold, admitted package, or direct freeze lift
+  - Reconciled WP-762 checker acceptance contract requiring check-performance-freeze --self-test
+    arms for a new PERF package, inert-package edit and closure, exact prerequisite closures,
+    widened prerequisite, fifth exception, and premature lift; checker implementation remains
+    owned by WP-762 and is not part of this package
+  - Governance diff review proving all ADR-0183 performance thresholds, evidence identities,
+    activation arithmetic, lift timing, runtime paths, and public surfaces are unchanged
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-780
+  - ./scripts/check-adr-obligations
+  - ./scripts/check-requirement-coverage
+  - ./scripts/adr-index --check
+  exit_gate: ADR-0199 is exactly accepted and every authoritative freeze statement agrees on one
+    sealed pre-freeze inventory, four exact advancing packages, closure-only non-candidate authority
+    for WP-750/WP-760, and lift only after both close through a later accepted ADR; no checker,
+    threshold, receipt, runtime, or public surface changes in this package.
+  standing_design_tests:
+    interface_safety: Repository governance gains no application or operator surface, and no caller
+      can select an exception, performance candidate, threshold, durability rule, or lift state.
+    scale: The future check hashes one finite work-package manifest and stores bounded identity
+      metadata; it reads no database state and assumes no co-located runtime or full-state rewrite.
+  human_review_triggers: &id0199
+  - A fifth package would be permitted to advance while the freeze is in force, or an inert
+    pre-freeze PERF package would change or close.
+  - WP-750 or WP-760 would add a PERF requirement, activate a performance candidate, alter a
+    threshold, admit another package, or lift the freeze.
+  - The freeze would start without the WP-762 bank, or lift before WP-750 and WP-760 close or
+    without a separately accepted ADR.
