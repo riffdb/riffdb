@@ -27,7 +27,8 @@ use riffdb_storage_api::{
 use riffdb_types::FrontierPosition;
 
 use crate::columnar_adapter::{
-    ColumnarRuntime, VectorProjectionRegistration, is_holdback_active, vector_generation_directory,
+    ColumnarEngineSlot, ColumnarRuntime, ColumnarSlotLifecycle, VectorProjectionRegistration,
+    is_holdback_active, vector_generation_directory,
 };
 
 const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(25);
@@ -163,6 +164,8 @@ pub(crate) struct RunningColumnarWorker {
     task: Option<JoinHandle<()>>,
     status: ColumnarWorkerStatus,
     shutdown_status: ColumnarWorkerShutdownStatus,
+    runtime: Option<Arc<ColumnarRuntime>>,
+    activation_wake: Arc<crate::columnar_adapter::ColumnarActivationWake>,
 }
 
 impl RunningColumnarWorker {
@@ -180,10 +183,14 @@ impl RunningColumnarWorker {
         let worker_stop = Arc::clone(&stop);
         let worker_status = status.clone();
         let worker_shutdown_status = shutdown_status.clone();
+        let activation_wake = runtime.activation_wake();
+        let worker_activation_wake = Arc::clone(&activation_wake);
+        let retained_runtime = Arc::clone(&runtime);
         let task = thread::Builder::new()
             .name("riffdb-columnar".to_owned())
             .spawn(move || {
                 let mut state = ColumnarWorkerState::new(runtime.as_ref());
+                let mut activation_epoch = worker_activation_wake.current();
                 loop {
                     if stop_requested(&worker_stop) {
                         break;
@@ -196,7 +203,14 @@ impl RunningColumnarWorker {
                         || stop_requested(&worker_stop),
                     ) {
                         Ok(ColumnarPassOutcome::Completed) => {
-                            worker_status.publish(ColumnarWorkerReadiness::Ready);
+                            worker_status.publish(match runtime.aggregate_lifecycle() {
+                                ColumnarSlotLifecycle::Active => ColumnarWorkerReadiness::Ready,
+                                ColumnarSlotLifecycle::Cold | ColumnarSlotLifecycle::Activating => {
+                                    ColumnarWorkerReadiness::Starting
+                                }
+                                ColumnarSlotLifecycle::Failed => ColumnarWorkerReadiness::Degraded,
+                                ColumnarSlotLifecycle::Stopped => ColumnarWorkerReadiness::Stopped,
+                            });
                         }
                         Ok(ColumnarPassOutcome::StoppedBetweenEngines) => break,
                         Ok(ColumnarPassOutcome::AbandonedUnpublished) => {
@@ -206,7 +220,9 @@ impl RunningColumnarWorker {
                         }
                         Err(_) => worker_status.publish(ColumnarWorkerReadiness::Degraded),
                     }
-                    if wait_for_stop(&worker_stop, WORKER_POLL_INTERVAL) {
+                    activation_epoch =
+                        worker_activation_wake.wait(activation_epoch, WORKER_POLL_INTERVAL);
+                    if stop_requested(&worker_stop) {
                         break;
                     }
                 }
@@ -218,6 +234,8 @@ impl RunningColumnarWorker {
             task: Some(task),
             status,
             shutdown_status,
+            runtime: Some(retained_runtime),
+            activation_wake,
         })
     }
 
@@ -257,6 +275,8 @@ impl RunningColumnarWorker {
             task: Some(task),
             status,
             shutdown_status,
+            runtime: None,
+            activation_wake: Arc::new(crate::columnar_adapter::ColumnarActivationWake::default()),
         }
     }
 
@@ -269,6 +289,7 @@ impl RunningColumnarWorker {
                 .publish(ColumnarWorkerShutdownObservation::Failed);
             return Err(ColumnarWorkerShutdownError);
         }
+        self.activation_wake.signal();
         let task = self
             .task
             .take()
@@ -277,6 +298,9 @@ impl RunningColumnarWorker {
             self.shutdown_status
                 .publish(ColumnarWorkerShutdownObservation::Failed);
             return Err(ColumnarWorkerShutdownError);
+        }
+        if let Some(runtime) = &self.runtime {
+            runtime.stop_slots();
         }
         if self.status.readiness() == ColumnarWorkerReadiness::Stopped {
             Ok(self.shutdown_status.observation())
@@ -309,8 +333,9 @@ impl ColumnarWorkerState {
         let mut engines = BTreeMap::new();
         for (name, slot) in runtime.engines().unwrap_or_default() {
             let published = slot
-                .lock_engine()
-                .map(|engine| engine.published_frontier_position())
+                .with_engine(ColumnarEngine::published_frontier_position)
+                .ok()
+                .flatten()
                 .unwrap_or(FrontierPosition::BeforeFirst);
             engines.insert(
                 name.clone(),
@@ -329,6 +354,13 @@ impl ColumnarWorkerState {
 
 fn maintain_vector_generations(runtime: &ColumnarRuntime) -> Result<(), ColumnarWorkerError> {
     for (name, registration) in runtime.vector_registrations().map_err(map_port_error)? {
+        let slot = runtime
+            .engine(&name)
+            .map_err(map_port_error)?
+            .ok_or(ColumnarWorkerError::Integrity)?;
+        if slot.lifecycle().map_err(map_port_error)? != ColumnarSlotLifecycle::Active {
+            continue;
+        }
         let control = runtime
             .storage()
             .read_vector_projection_control(registration.source())
@@ -347,15 +379,10 @@ fn maintain_vector_generations(runtime: &ColumnarRuntime) -> Result<(), Columnar
                 rebuild_vector_generation(runtime, &name, &registration, control)?;
             }
             VectorProjectionLifecycleV1::Ready => {
-                let slot = runtime
-                    .engine(&name)
+                let durable = slot
+                    .with_engine(|engine| engine.durable_frontier().position())
                     .map_err(map_port_error)?
                     .ok_or(ColumnarWorkerError::Integrity)?;
-                let durable = slot
-                    .lock_engine()
-                    .map_err(map_port_error)?
-                    .durable_frontier()
-                    .position();
                 if slot.generation() != Some(control.generation())
                     || durable != control.published_frontier()
                 {
@@ -422,6 +449,7 @@ fn rebuild_vector_generation(
     registration: &VectorProjectionRegistration,
     mut control: StoredVectorProjectionControlV1,
 ) -> Result<(), ColumnarWorkerError> {
+    runtime.record_population_pass();
     let snapshot = runtime
         .storage()
         .capture_application_export_snapshot(registration.source().lineage())
@@ -601,6 +629,35 @@ enum ColumnarPassOutcome {
     AbandonedUnpublished,
 }
 
+fn activate_requested_slot(
+    runtime: &ColumnarRuntime,
+    name: &str,
+    slot: &ColumnarEngineSlot,
+) -> Result<bool, ColumnarWorkerError> {
+    let spec = match runtime.current_activation_spec(name, slot) {
+        Ok(spec) => spec,
+        Err(error) => {
+            slot.fail_activation(slot.generation());
+            return Err(map_port_error(error));
+        }
+    };
+    let Some(spec) = spec else {
+        return Ok(false);
+    };
+    let generation = spec.generation();
+    let (engine, generation) = match spec.open(runtime.history_incarnation()) {
+        Ok(opened) => opened,
+        Err(error) => {
+            slot.fail_activation(generation);
+            return Err(ColumnarWorkerError::Apply(error));
+        }
+    };
+    slot.complete_activation(engine, generation)
+        .map_err(map_port_error)?;
+    let _ = runtime.notifier().notify(name);
+    Ok(true)
+}
+
 fn run_columnar_pass(
     runtime: &ColumnarRuntime,
     metrics: Option<&MetricRegistry>,
@@ -611,6 +668,15 @@ fn run_columnar_pass(
     runtime
         .synchronize_active_vector_projections()
         .map_err(|_| ColumnarWorkerError::Registration)?;
+    for (name, slot) in runtime
+        .engines()
+        .map_err(|_| ColumnarWorkerError::Unavailable)?
+    {
+        if stop_before_engine() {
+            return Ok(ColumnarPassOutcome::StoppedBetweenEngines);
+        }
+        let _ = activate_requested_slot(runtime, &name, &slot)?;
+    }
     maintain_vector_generations(runtime)?;
     state.polls_since_checkpoint = state.polls_since_checkpoint.saturating_add(1);
     let force_checkpoint = state.polls_since_checkpoint >= CHECKPOINT_POLL_CADENCE;
@@ -644,54 +710,62 @@ fn run_columnar_pass(
                 last_published: FrontierPosition::BeforeFirst,
                 commits_since_checkpoint: 0,
             });
-        let published_after;
-        {
-            let mut engine = slot
-                .lock_engine()
-                .map_err(|_| ColumnarWorkerError::Integrity)?;
-            let processed_before = engine.processed_frontier().position();
-            let published_before = engine.published_frontier_position();
-            let progress = match engine
-                .apply_available_for_worker(apply_source, &mut stop_before_next_page)
-                .map_err(ColumnarWorkerError::Apply)?
-            {
-                WorkerApplyOutcome::Completed(progress) => progress,
-                WorkerApplyOutcome::AbandonedUnpublished => {
-                    return Ok(ColumnarPassOutcome::AbandonedUnpublished);
-                }
-            };
-            published_after = progress.published_frontier;
-            let commits_applied = sequences_advanced(processed_before, progress.processed);
-            catchup.commits_since_checkpoint = catchup
-                .commits_since_checkpoint
-                .saturating_add(commits_applied);
+        let pass = slot
+            .with_engine_mut(
+                |engine| -> Result<Option<FrontierPosition>, ColumnarWorkerError> {
+                    runtime.record_population_pass();
+                    let processed_before = engine.processed_frontier().position();
+                    let published_before = engine.published_frontier_position();
+                    let progress = match engine
+                        .apply_available_for_worker(apply_source, &mut stop_before_next_page)
+                        .map_err(ColumnarWorkerError::Apply)?
+                    {
+                        WorkerApplyOutcome::Completed(progress) => progress,
+                        WorkerApplyOutcome::AbandonedUnpublished => {
+                            return Ok(None);
+                        }
+                    };
+                    let published_after = progress.published_frontier;
+                    let commits_applied = sequences_advanced(processed_before, progress.processed);
+                    catchup.commits_since_checkpoint = catchup
+                        .commits_since_checkpoint
+                        .saturating_add(commits_applied);
 
-            if published_after != published_before {
-                let _ = runtime.notifier().notify(&name);
-            }
-            catchup.last_published = published_after;
+                    if published_after != published_before {
+                        let _ = runtime.notifier().notify(&name);
+                    }
+                    catchup.last_published = published_after;
 
-            let should_checkpoint =
-                force_checkpoint || catchup.commits_since_checkpoint >= CHECKPOINT_COMMIT_CADENCE;
-            if should_checkpoint {
-                match engine.checkpoint() {
-                    Ok(manifest) => {
-                        catchup.commits_since_checkpoint = 0;
-                        if let Some(registration) = vector_registrations.get(&name) {
-                            record_vector_durable_frontier(
-                                runtime,
-                                registration,
-                                manifest.durable_frontier,
-                            )?;
+                    let should_checkpoint = force_checkpoint
+                        || catchup.commits_since_checkpoint >= CHECKPOINT_COMMIT_CADENCE;
+                    if should_checkpoint {
+                        match engine.checkpoint() {
+                            Ok(manifest) => {
+                                catchup.commits_since_checkpoint = 0;
+                                if let Some(registration) = vector_registrations.get(&name) {
+                                    record_vector_durable_frontier(
+                                        runtime,
+                                        registration,
+                                        manifest.durable_frontier,
+                                    )?;
+                                }
+                            }
+                            Err(error) if is_holdback_active(&error) => {
+                                // HoldbackActive: retry after the next apply pull.
+                            }
+                            Err(error) => return Err(ColumnarWorkerError::Apply(error)),
                         }
                     }
-                    Err(error) if is_holdback_active(&error) => {
-                        // HoldbackActive: retry after the next apply pull.
-                    }
-                    Err(error) => return Err(ColumnarWorkerError::Apply(error)),
-                }
-            }
-        }
+                    Ok(Some(published_after))
+                },
+            )
+            .map_err(map_port_error)?;
+        let Some(pass) = pass else {
+            continue;
+        };
+        let Some(published_after) = pass? else {
+            return Ok(ColumnarPassOutcome::AbandonedUnpublished);
+        };
 
         if let Some(lag) = frontier_lag_sequences(published_after, head) {
             max_lag = max_lag.max(lag);
@@ -763,19 +837,6 @@ const fn sequences_advanced(from: FrontierPosition, to: FrontierPosition) -> u64
 
 fn stop_requested(stop: &StopState) -> bool {
     stop.requested.lock().map_or(true, |requested| *requested)
-}
-
-fn wait_for_stop(stop: &StopState, duration: Duration) -> bool {
-    let Ok(requested) = stop.requested.lock() else {
-        return true;
-    };
-    if *requested {
-        return true;
-    }
-    match stop.changed.wait_timeout(requested, duration) {
-        Ok((requested, _)) => *requested,
-        Err(_) => true,
-    }
 }
 
 fn request_stop(stop: &StopState) -> Result<(), ColumnarWorkerShutdownError> {
@@ -871,7 +932,7 @@ mod tests {
 
     // req: PERF-007, PERF-008, PERF-019
     #[test]
-    fn real_worker_shutdown_observes_the_monotonic_stop_at_a_deterministic_boundary() {
+    fn columnar_activation_shutdown_abandons_without_stop_caused_publication() {
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let worker =

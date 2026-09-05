@@ -609,6 +609,12 @@ impl ProductionGraphBuilder {
                 ));
             }
         };
+        let columnar_lifecycle = columnar_runtime.lifecycle_observation();
+        crate::startup_census::record_columnar_lifecycle(
+            columnar_lifecycle.cold_sources(),
+            columnar_lifecycle.activations(),
+            columnar_lifecycle.population_passes(),
+        );
         let columnar_worker = match RunningColumnarWorker::start(
             Arc::clone(&columnar_runtime),
             Some(observability.metrics().clone()),

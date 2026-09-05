@@ -92,6 +92,10 @@ pub(crate) fn format_v1_line() -> String {
                 .to_string(),
         );
     }
+    line.push_str("\tcolumnar_activations=");
+    line.push_str(&crate::startup_census::columnar_activations().to_string());
+    line.push_str("\tcolumnar_population_passes=");
+    line.push_str(&crate::startup_census::columnar_population_passes().to_string());
     line
 }
 
@@ -110,5 +114,7 @@ mod tests {
                 stage.as_str()
             );
         }
+        assert!(line.contains("\tcolumnar_activations="));
+        assert!(line.contains("\tcolumnar_population_passes="));
     }
 }

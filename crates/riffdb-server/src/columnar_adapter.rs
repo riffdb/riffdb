@@ -9,7 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
+use std::time::Duration;
 
 use riffdb_catalog::ActiveCatalogSnapshot;
 use riffdb_columnar::{
@@ -126,28 +127,114 @@ impl fmt::Debug for ServerColumnarApplySource {
     }
 }
 
-/// One named engine guarded so observe never holds the lock across query work.
-pub(crate) struct ColumnarEngineSlot {
-    engine: Mutex<ColumnarEngine>,
-    definition: RegisteredDefinition,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ColumnarSlotLifecycle {
+    Cold,
+    Activating,
+    Active,
+    Failed,
+    Stopped,
+}
+
+struct ActiveColumnarEngine {
+    engine: ColumnarEngine,
     generation: Option<ProjectionGeneration>,
 }
 
-impl ColumnarEngineSlot {
-    fn new(engine: ColumnarEngine) -> Self {
-        Self::with_generation(engine, None)
-    }
+enum ColumnarSlotState {
+    Cold,
+    Activating,
+    Active(Box<ActiveColumnarEngine>),
+    Failed {
+        generation: Option<ProjectionGeneration>,
+    },
+    Stopped,
+}
 
-    fn new_vector(engine: ColumnarEngine, generation: ProjectionGeneration) -> Self {
-        Self::with_generation(engine, Some(generation))
-    }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ColumnarActivationRequest {
+    Building { started: bool },
+    Active,
+}
 
-    fn with_generation(engine: ColumnarEngine, generation: Option<ProjectionGeneration>) -> Self {
-        let definition = engine.definition().clone();
+#[derive(Clone)]
+pub(crate) struct ColumnarActivationSpec {
+    definition: RegisteredDefinition,
+    directory: PathBuf,
+    generation: Option<ProjectionGeneration>,
+    expected_durable_frontier: Option<FrontierPosition>,
+}
+
+impl ColumnarActivationSpec {
+    pub(crate) fn with_vector_selection(
+        &self,
+        directory: PathBuf,
+        generation: ProjectionGeneration,
+    ) -> Self {
         Self {
-            engine: Mutex::new(engine),
+            definition: self.definition.clone(),
+            directory,
+            generation: Some(generation),
+            expected_durable_frontier: None,
+        }
+    }
+
+    pub(crate) fn with_expected_durable_frontier(mut self, frontier: FrontierPosition) -> Self {
+        self.expected_durable_frontier = Some(frontier);
+        self
+    }
+
+    pub(crate) fn open(
+        self,
+        history_incarnation: u64,
+    ) -> Result<(ColumnarEngine, Option<ProjectionGeneration>), ColumnarError> {
+        let engine = ColumnarEngine::open(
+            self.definition,
+            OpenOptions::new(self.directory).with_history_incarnation(history_incarnation),
+        )?;
+        if self
+            .expected_durable_frontier
+            .is_some_and(|expected| engine.durable_frontier().position() != expected)
+        {
+            return Err(ColumnarError::InvalidState(
+                "selected durable frontier does not match the opened artifact",
+            ));
+        }
+        Ok((engine, self.generation))
+    }
+
+    pub(crate) const fn generation(&self) -> Option<ProjectionGeneration> {
+        self.generation
+    }
+}
+
+/// One named engine retained cold until semantic demand.
+pub(crate) struct ColumnarEngineSlot {
+    state: Mutex<ColumnarSlotState>,
+    definition: RegisteredDefinition,
+    activation: ColumnarActivationSpec,
+    cold_snapshot: Arc<riffdb_columnar::ColumnarSnapshot>,
+    cold_frontier: FrontierPosition,
+}
+
+impl ColumnarEngineSlot {
+    fn cold(
+        definition: RegisteredDefinition,
+        directory: PathBuf,
+        generation: Option<ProjectionGeneration>,
+        cold_frontier: FrontierPosition,
+    ) -> Self {
+        Self {
+            state: Mutex::new(ColumnarSlotState::Cold),
+            activation: ColumnarActivationSpec {
+                definition: definition.clone(),
+                directory,
+                generation,
+                expected_durable_frontier: None,
+            },
             definition,
-            generation,
+            cold_snapshot: Arc::new(riffdb_columnar::ColumnarSnapshot::empty()),
+            cold_frontier,
         }
     }
 
@@ -157,17 +244,156 @@ impl ColumnarEngineSlot {
         &self.definition
     }
 
-    pub(crate) const fn generation(&self) -> Option<ProjectionGeneration> {
-        self.generation
+    pub(crate) fn generation(&self) -> Option<ProjectionGeneration> {
+        self.state.lock().ok().and_then(|state| match &*state {
+            ColumnarSlotState::Active(active) => active.generation,
+            ColumnarSlotState::Cold | ColumnarSlotState::Activating => self.activation.generation,
+            ColumnarSlotState::Failed { generation } => *generation,
+            ColumnarSlotState::Stopped => None,
+        })
     }
 
-    /// Locks the engine briefly for apply or observe snapshot capture.
-    pub(crate) fn lock_engine(
-        &self,
-    ) -> Result<std::sync::MutexGuard<'_, ColumnarEngine>, ColumnarPortError> {
-        self.engine
+    pub(crate) fn lifecycle(&self) -> Result<ColumnarSlotLifecycle, ColumnarPortError> {
+        self.state
             .lock()
+            .map(|state| match &*state {
+                ColumnarSlotState::Cold => ColumnarSlotLifecycle::Cold,
+                ColumnarSlotState::Activating => ColumnarSlotLifecycle::Activating,
+                ColumnarSlotState::Active(_) => ColumnarSlotLifecycle::Active,
+                ColumnarSlotState::Failed { .. } => ColumnarSlotLifecycle::Failed,
+                ColumnarSlotState::Stopped => ColumnarSlotLifecycle::Stopped,
+            })
             .map_err(|_| ColumnarPortError::Unavailable)
+    }
+
+    fn request_activation(&self) -> Result<ColumnarActivationRequest, ColumnarPortError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ColumnarPortError::Unavailable)?;
+        match &*state {
+            ColumnarSlotState::Cold => {
+                *state = ColumnarSlotState::Activating;
+                Ok(ColumnarActivationRequest::Building { started: true })
+            }
+            ColumnarSlotState::Activating => {
+                Ok(ColumnarActivationRequest::Building { started: false })
+            }
+            ColumnarSlotState::Active(_) => Ok(ColumnarActivationRequest::Active),
+            ColumnarSlotState::Failed { .. } | ColumnarSlotState::Stopped => {
+                Err(ColumnarPortError::Unavailable)
+            }
+        }
+    }
+
+    pub(crate) fn pending_activation(
+        &self,
+    ) -> Result<Option<ColumnarActivationSpec>, ColumnarPortError> {
+        self.state
+            .lock()
+            .map(|state| match &*state {
+                ColumnarSlotState::Activating => Some(self.activation.clone()),
+                _ => None,
+            })
+            .map_err(|_| ColumnarPortError::Unavailable)
+    }
+
+    pub(crate) fn complete_activation(
+        &self,
+        engine: ColumnarEngine,
+        generation: Option<ProjectionGeneration>,
+    ) -> Result<(), ColumnarPortError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ColumnarPortError::Unavailable)?;
+        if !matches!(&*state, ColumnarSlotState::Activating) {
+            return Err(ColumnarPortError::Integrity);
+        }
+        *state = ColumnarSlotState::Active(Box::new(ActiveColumnarEngine { engine, generation }));
+        Ok(())
+    }
+
+    pub(crate) fn fail_activation(&self, generation: Option<ProjectionGeneration>) {
+        if let Ok(mut state) = self.state.lock()
+            && matches!(&*state, ColumnarSlotState::Activating)
+        {
+            *state = ColumnarSlotState::Failed { generation };
+        }
+    }
+
+    pub(crate) fn replace_active(
+        &self,
+        engine: ColumnarEngine,
+        generation: ProjectionGeneration,
+    ) -> Result<(), ColumnarPortError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ColumnarPortError::Unavailable)?;
+        if matches!(&*state, ColumnarSlotState::Stopped) {
+            return Err(ColumnarPortError::Unavailable);
+        }
+        *state = ColumnarSlotState::Active(Box::new(ActiveColumnarEngine {
+            engine,
+            generation: Some(generation),
+        }));
+        Ok(())
+    }
+
+    pub(crate) fn with_engine<T>(
+        &self,
+        operation: impl FnOnce(&ColumnarEngine) -> T,
+    ) -> Result<Option<T>, ColumnarPortError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| ColumnarPortError::Unavailable)?;
+        match &*state {
+            ColumnarSlotState::Active(active) => Ok(Some(operation(&active.engine))),
+            ColumnarSlotState::Cold | ColumnarSlotState::Activating => Ok(None),
+            ColumnarSlotState::Failed { .. } | ColumnarSlotState::Stopped => {
+                Err(ColumnarPortError::Unavailable)
+            }
+        }
+    }
+
+    pub(crate) fn with_engine_mut<T>(
+        &self,
+        operation: impl FnOnce(&mut ColumnarEngine) -> T,
+    ) -> Result<Option<T>, ColumnarPortError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ColumnarPortError::Unavailable)?;
+        match &mut *state {
+            ColumnarSlotState::Active(active) => Ok(Some(operation(&mut active.engine))),
+            ColumnarSlotState::Cold | ColumnarSlotState::Activating => Ok(None),
+            ColumnarSlotState::Failed { .. } | ColumnarSlotState::Stopped => {
+                Err(ColumnarPortError::Unavailable)
+            }
+        }
+    }
+
+    fn cold_observation(
+        &self,
+        head: ProjectionFrontier,
+        frontier: FrontierPosition,
+    ) -> ColumnarObservation {
+        ColumnarObservation::new(
+            self.definition.clone(),
+            Arc::clone(&self.cold_snapshot),
+            ProjectionFrontier::new(head.history_incarnation(), frontier),
+            head,
+            false,
+            Some(ColumnarLifecycle::Building),
+        )
+    }
+
+    pub(crate) fn stop(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            *state = ColumnarSlotState::Stopped;
+        }
     }
 }
 
@@ -176,8 +402,61 @@ impl fmt::Debug for ColumnarEngineSlot {
         formatter
             .debug_struct("ColumnarEngineSlot")
             .field("name", &self.definition.name())
-            .field("generation", &self.generation)
+            .field("generation", &self.generation())
+            .field("lifecycle", &self.lifecycle().ok())
             .finish()
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct ColumnarActivationWake {
+    epoch: Mutex<u64>,
+    changed: Condvar,
+}
+
+impl ColumnarActivationWake {
+    pub(crate) fn signal(&self) {
+        if let Ok(mut epoch) = self.epoch.lock() {
+            *epoch = epoch.saturating_add(1);
+            self.changed.notify_all();
+        }
+    }
+
+    pub(crate) fn current(&self) -> u64 {
+        self.epoch.lock().map_or(u64::MAX, |epoch| *epoch)
+    }
+
+    pub(crate) fn wait(&self, observed: u64, duration: Duration) -> u64 {
+        let Ok(epoch) = self.epoch.lock() else {
+            return u64::MAX;
+        };
+        if *epoch != observed {
+            return *epoch;
+        }
+        self.changed
+            .wait_timeout(epoch, duration)
+            .map_or(u64::MAX, |(epoch, _)| *epoch)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ColumnarRuntimeLifecycleObservation {
+    cold_sources: u64,
+    activations: u64,
+    population_passes: u64,
+}
+
+impl ColumnarRuntimeLifecycleObservation {
+    pub(crate) const fn cold_sources(self) -> u64 {
+        self.cold_sources
+    }
+
+    pub(crate) const fn activations(self) -> u64 {
+        self.activations
+    }
+
+    pub(crate) const fn population_passes(self) -> u64 {
+        self.population_passes
     }
 }
 
@@ -191,6 +470,10 @@ pub(crate) struct ColumnarRuntime {
     projections_root: PathBuf,
     history_incarnation: u64,
     apply_source: ServerColumnarApplySource,
+    activation_wake: Arc<ColumnarActivationWake>,
+    admitted_cold_sources: AtomicU64,
+    activations: AtomicU64,
+    population_passes: AtomicU64,
     /// Highest application commit sequence this process has observed, or 0
     /// before the first observation.
     ///
@@ -243,11 +526,15 @@ impl ColumnarRuntime {
             projections_root,
             history_incarnation,
             apply_source: ServerColumnarApplySource::new(storage),
+            activation_wake: Arc::new(ColumnarActivationWake::default()),
+            admitted_cold_sources: AtomicU64::new(0),
+            activations: AtomicU64::new(0),
+            population_passes: AtomicU64::new(0),
             observed_head: AtomicU64::new(0),
         })
     }
 
-    /// Opens engines for each configured projection against the active catalog.
+    /// Resolves configured projections while retaining their artifacts cold.
     pub(crate) fn open(
         storage: SharedRedbOperationalPorts,
         projections: &[ConfiguredProjection],
@@ -282,12 +569,15 @@ impl ColumnarRuntime {
             }
             let definition = resolve_configured_projection(configured, bundle)?;
             let directory = projection_directory(projections_root, &name);
-            let engine = ColumnarEngine::open(
-                definition,
-                OpenOptions::new(directory).with_history_incarnation(history_incarnation),
-            )
-            .map_err(|error| ColumnarRegistrationError::open(name.clone(), error))?;
-            engines.insert(name.clone(), Arc::new(ColumnarEngineSlot::new(engine)));
+            engines.insert(
+                name.clone(),
+                Arc::new(ColumnarEngineSlot::cold(
+                    definition,
+                    directory,
+                    None,
+                    FrontierPosition::BeforeFirst,
+                )),
+            );
             configured_names.insert(name.clone());
             names.push(name);
         }
@@ -309,20 +599,21 @@ impl ColumnarRuntime {
             let definition = registration.definition().clone();
             let directory =
                 vector_generation_directory(projections_root, &name, control.generation());
-            let engine = ColumnarEngine::open(
-                definition,
-                OpenOptions::new(directory).with_history_incarnation(history_incarnation),
-            )
-            .map_err(|error| ColumnarRegistrationError::open(name.clone(), error))?;
             engines.insert(
                 name.clone(),
-                Arc::new(ColumnarEngineSlot::new_vector(engine, control.generation())),
+                Arc::new(ColumnarEngineSlot::cold(
+                    definition,
+                    directory,
+                    Some(control.generation()),
+                    control.published_frontier(),
+                )),
             );
             vector_registrations.insert(name.clone(), registration);
             names.push(name);
         }
         names.sort();
         let notifier = ColumnarNotifier::from_names(names.iter().cloned());
+        let admitted_cold_sources = u64::try_from(names.len()).unwrap_or(u64::MAX);
         Ok(Arc::new(Self {
             engines: RwLock::new(engines),
             notifier,
@@ -332,6 +623,10 @@ impl ColumnarRuntime {
             projections_root: projections_root.to_path_buf(),
             history_incarnation,
             apply_source: ServerColumnarApplySource::new(storage),
+            activation_wake: Arc::new(ColumnarActivationWake::default()),
+            admitted_cold_sources: AtomicU64::new(admitted_cold_sources),
+            activations: AtomicU64::new(0),
+            population_passes: AtomicU64::new(0),
             observed_head: AtomicU64::new(0),
         }))
     }
@@ -411,16 +706,14 @@ impl ColumnarRuntime {
         engine: ColumnarEngine,
         generation: ProjectionGeneration,
     ) -> Result<(), ColumnarPortError> {
-        let replacement = Arc::new(ColumnarEngineSlot::new_vector(engine, generation));
-        let mut engines = self
+        let engines = self
             .engines
-            .write()
+            .read()
             .map_err(|_| ColumnarPortError::Unavailable)?;
-        if !engines.contains_key(name) {
-            return Err(ColumnarPortError::Integrity);
-        }
-        engines.insert(name.to_owned(), replacement);
-        Ok(())
+        engines
+            .get(name)
+            .ok_or(ColumnarPortError::Integrity)?
+            .replace_active(engine, generation)
     }
 
     pub(crate) fn projections_root(&self) -> &Path {
@@ -509,20 +802,19 @@ impl ColumnarRuntime {
             let control = reconcile_vector_control(self.storage(), registration)?;
             if let Some(slot) = existing.get(name)
                 && slot.definition().fingerprint() == registration.definition().fingerprint()
-                && slot.generation() == Some(control.generation())
+                && (slot.generation() == Some(control.generation())
+                    || slot.lifecycle() == Ok(ColumnarSlotLifecycle::Active))
             {
                 continue;
             }
-            let directory =
-                vector_generation_directory(&self.projections_root, name, control.generation());
-            let engine = ColumnarEngine::open(
-                registration.definition().clone(),
-                OpenOptions::new(directory).with_history_incarnation(self.history_incarnation),
-            )
-            .map_err(|error| ColumnarRegistrationError::open(name.clone(), error))?;
             additions.push((
                 name.clone(),
-                Arc::new(ColumnarEngineSlot::new_vector(engine, control.generation())),
+                Arc::new(ColumnarEngineSlot::cold(
+                    registration.definition().clone(),
+                    vector_generation_directory(&self.projections_root, name, control.generation()),
+                    Some(control.generation()),
+                    control.published_frontier(),
+                )),
             ));
         }
         drop(existing);
@@ -548,6 +840,10 @@ impl ColumnarRuntime {
             .vector_registrations
             .write()
             .map_err(|_| ColumnarRegistrationError::synchronization())? = desired;
+        self.admitted_cold_sources.store(
+            u64::try_from(engines.len()).unwrap_or(u64::MAX),
+            Ordering::Release,
+        );
         Ok(())
     }
 
@@ -578,6 +874,135 @@ impl ColumnarRuntime {
                 .fetch_max(sequence.get(), Ordering::AcqRel);
         }
         Ok(head)
+    }
+
+    pub(crate) fn request_activation(
+        &self,
+        slot: &ColumnarEngineSlot,
+    ) -> Result<bool, ColumnarPortError> {
+        match slot.request_activation()? {
+            ColumnarActivationRequest::Building { started } => {
+                if started {
+                    self.activations.fetch_add(1, Ordering::AcqRel);
+                    crate::startup_census::record_columnar_activation();
+                    self.activation_wake.signal();
+                }
+                Ok(true)
+            }
+            ColumnarActivationRequest::Active => Ok(false),
+        }
+    }
+
+    pub(crate) fn activation_wake(&self) -> Arc<ColumnarActivationWake> {
+        Arc::clone(&self.activation_wake)
+    }
+
+    pub(crate) fn current_activation_spec(
+        &self,
+        name: &str,
+        slot: &ColumnarEngineSlot,
+    ) -> Result<Option<ColumnarActivationSpec>, ColumnarPortError> {
+        let Some(mut spec) = slot.pending_activation()? else {
+            return Ok(None);
+        };
+        let Some(registration) = self.vector_registration(name)? else {
+            return Ok(Some(spec));
+        };
+        let control = self
+            .storage()
+            .read_vector_projection_control(registration.source())
+            .map_err(|error| match error.kind() {
+                StorageErrorKind::Unavailable => ColumnarPortError::Unavailable,
+                _ => ColumnarPortError::Integrity,
+            })?
+            .ok_or(ColumnarPortError::Integrity)?;
+        if control.definition_fingerprint() != registration.definition_fingerprint()
+            || control.limits() != registration.limits()
+            || control.lifecycle() == VectorProjectionLifecycleV1::Invalid
+        {
+            return Err(ColumnarPortError::Integrity);
+        }
+        spec = spec.with_vector_selection(
+            vector_generation_directory(&self.projections_root, name, control.generation()),
+            control.generation(),
+        );
+        if control.lifecycle() == VectorProjectionLifecycleV1::Ready {
+            spec = spec.with_expected_durable_frontier(control.published_frontier());
+        }
+        Ok(Some(spec))
+    }
+
+    fn cold_observation(
+        &self,
+        name: &str,
+        slot: &ColumnarEngineSlot,
+        head: ProjectionFrontier,
+    ) -> Result<ColumnarObservation, ColumnarPortError> {
+        let frontier = if let Some(registration) = self.vector_registration(name)? {
+            let control = self
+                .storage()
+                .read_vector_projection_control(registration.source())
+                .map_err(|error| match error.kind() {
+                    StorageErrorKind::Unavailable => ColumnarPortError::Unavailable,
+                    _ => ColumnarPortError::Integrity,
+                })?
+                .ok_or(ColumnarPortError::Integrity)?;
+            if control.definition_fingerprint() != registration.definition_fingerprint()
+                || control.limits() != registration.limits()
+                || control.lifecycle() == VectorProjectionLifecycleV1::Invalid
+            {
+                return Err(ColumnarPortError::Integrity);
+            }
+            control.published_frontier()
+        } else {
+            slot.cold_frontier
+        };
+        Ok(slot.cold_observation(head, frontier))
+    }
+
+    pub(crate) fn record_population_pass(&self) {
+        self.population_passes.fetch_add(1, Ordering::AcqRel);
+        crate::startup_census::record_columnar_population_pass();
+    }
+
+    pub(crate) fn lifecycle_observation(&self) -> ColumnarRuntimeLifecycleObservation {
+        ColumnarRuntimeLifecycleObservation {
+            cold_sources: self.admitted_cold_sources.load(Ordering::Acquire),
+            activations: self.activations.load(Ordering::Acquire),
+            population_passes: self.population_passes.load(Ordering::Acquire),
+        }
+    }
+
+    pub(crate) fn stop_slots(&self) {
+        if let Ok(engines) = self.engines.read() {
+            for slot in engines.values() {
+                slot.stop();
+            }
+        }
+    }
+
+    pub(crate) fn aggregate_lifecycle(&self) -> ColumnarSlotLifecycle {
+        let Ok(engines) = self.engines.read() else {
+            return ColumnarSlotLifecycle::Failed;
+        };
+        let mut observed = ColumnarSlotLifecycle::Active;
+        for slot in engines.values() {
+            match slot.lifecycle() {
+                Ok(ColumnarSlotLifecycle::Failed) | Err(_) => {
+                    return ColumnarSlotLifecycle::Failed;
+                }
+                Ok(ColumnarSlotLifecycle::Stopped) => {
+                    observed = ColumnarSlotLifecycle::Stopped;
+                }
+                Ok(ColumnarSlotLifecycle::Cold | ColumnarSlotLifecycle::Activating) => {
+                    if observed == ColumnarSlotLifecycle::Active {
+                        observed = ColumnarSlotLifecycle::Cold;
+                    }
+                }
+                Ok(ColumnarSlotLifecycle::Active) => {}
+            }
+        }
+        observed
     }
 }
 
@@ -761,12 +1186,15 @@ impl ColumnarProjectionPort for ServerColumnarProjectionPort {
             .engine(projection_name)
             .map_err(|_| ColumnarPortError::Unavailable)?
             .ok_or(ColumnarPortError::Integrity)?;
+        let must_return_building = self.runtime.request_activation(&slot)?;
         // Head from storage without holding the engine lock.
         let head_position = self.runtime.read_application_head()?;
         let head = ProjectionFrontier::new(self.runtime.history_incarnation(), head_position);
         // Lock only long enough to clone Arc snapshot + frontiers + lifecycle.
-        let observation = {
-            let engine = slot.lock_engine()?;
+        if must_return_building {
+            return self.runtime.cold_observation(projection_name, &slot, head);
+        }
+        let observation = slot.with_engine(|engine| {
             let definition = engine.definition().clone();
             let snapshot = engine.published_snapshot();
             let published_frontier = engine.published_frontier();
@@ -776,13 +1204,16 @@ impl ColumnarProjectionPort for ServerColumnarProjectionPort {
                 definition,
                 snapshot,
                 published_frontier,
-                head,
+                head.clone(),
                 has_published,
                 lifecycle,
             )
-        };
+        })?;
         // Engine lock dropped before return; callers query the Arc snapshot freely.
-        Ok(observation)
+        match observation {
+            Some(observation) => Ok(observation),
+            None => self.runtime.cold_observation(projection_name, &slot, head),
+        }
     }
 
     fn definition(&self, projection_name: &str) -> Option<RegisteredDefinition> {
@@ -807,6 +1238,18 @@ impl VectorProjectionPort for ServerColumnarProjectionPort {
         &self,
         request: VectorProjectionRequest,
     ) -> Result<VectorProjectionResult, VectorProjectionPortError> {
+        let slot = self
+            .runtime
+            .engine(request.source_name())
+            .map_err(map_vector_port_error)?
+            .ok_or(VectorProjectionPortError::Integrity)?;
+        let must_return_building = self
+            .runtime
+            .request_activation(&slot)
+            .map_err(map_vector_port_error)?;
+        if must_return_building {
+            return Err(VectorProjectionPortError::Building);
+        }
         if let Some(registration) = self
             .runtime
             .vector_registration(request.source_name())
@@ -824,11 +1267,6 @@ impl VectorProjectionPort for ServerColumnarProjectionPort {
             if control.definition_fingerprint() != registration.definition_fingerprint() {
                 return Err(VectorProjectionPortError::Integrity);
             }
-            let slot = self
-                .runtime
-                .engine(request.source_name())
-                .map_err(map_vector_port_error)?
-                .ok_or(VectorProjectionPortError::Integrity)?;
             if slot.generation() != Some(control.generation()) {
                 return Err(VectorProjectionPortError::Rebuilding);
             }
@@ -1080,7 +1518,6 @@ enum ColumnarRegistrationErrorKind {
     UnknownEntity,
     UnknownField { field_name: String },
     Definition,
-    Open,
     Storage,
     Synchronization,
 }
@@ -1120,14 +1557,6 @@ impl ColumnarRegistrationError {
         Self {
             projection_name: projection_name.into(),
             kind: ColumnarRegistrationErrorKind::Definition,
-        }
-    }
-
-    fn open(projection_name: impl Into<String>, error: ColumnarError) -> Self {
-        let _ = error;
-        Self {
-            projection_name: projection_name.into(),
-            kind: ColumnarRegistrationErrorKind::Open,
         }
     }
 
@@ -1179,11 +1608,6 @@ impl fmt::Display for ColumnarRegistrationError {
             ColumnarRegistrationErrorKind::Definition => write!(
                 formatter,
                 "columnar projection '{}' failed definition registration",
-                self.projection_name()
-            ),
-            ColumnarRegistrationErrorKind::Open => write!(
-                formatter,
-                "columnar projection '{}' could not open durable engine state",
                 self.projection_name()
             ),
             ColumnarRegistrationErrorKind::Storage => write!(
@@ -1586,6 +2010,21 @@ contract VectorBoard version 1 {
         (runtime, scope)
     }
 
+    fn reopen_board_runtime(scope: &tempfile::TempDir) -> Arc<ColumnarRuntime> {
+        let store = RedbStore::open(scope.path().join("db.redb")).expect("reopen board database");
+        let ports = open_operational(store);
+        let storage =
+            SharedRedbOperationalPorts::new(ports, None).expect("share reopened board ports");
+        let projection = ConfiguredProjection::for_test(
+            "ticket_board",
+            "Ticket",
+            &["status", "title"],
+            "organization_id",
+        );
+        ColumnarRuntime::open(storage, &[projection], &scope.path().join("projections"), 1)
+            .expect("reopen board columnar runtime")
+    }
+
     fn board_query() -> ColumnarQueryRequest {
         ColumnarQueryRequest {
             org_scope: CanonicalValue::Uuid(uuid_bytes(0x41)),
@@ -1597,6 +2036,203 @@ contract VectorBoard version 1 {
             aggregate: None,
             budget: QueryBudget::default(),
         }
+    }
+
+    fn request_projection(runtime: &ColumnarRuntime, name: &str) {
+        let slot = runtime
+            .engine(name)
+            .expect("engine registry")
+            .expect("known projection");
+        runtime
+            .request_activation(&slot)
+            .expect("request projection activation");
+    }
+
+    // req: PERF-019, PRJ-004, OQ-022, PERF-007, PERF-008
+    #[test]
+    fn configured_columnar_artifacts_remain_cold_through_readiness_and_clean_close() {
+        let (runtime, scope) = board_runtime("cold-lifecycle");
+        let directory = scope.path().join("projections").join("ticket_board");
+
+        assert_eq!(runtime.lifecycle_observation().cold_sources(), 1);
+        assert_eq!(runtime.lifecycle_observation().activations(), 0);
+        assert_eq!(runtime.lifecycle_observation().population_passes(), 0);
+        assert!(
+            !directory.exists(),
+            "registration must not open the artifact"
+        );
+
+        let worker =
+            crate::columnar_worker::RunningColumnarWorker::start(Arc::clone(&runtime), None)
+                .expect("start cold worker");
+        assert_eq!(
+            worker.shutdown().expect("stop cold worker"),
+            crate::columnar_worker::ColumnarWorkerShutdownObservation::BetweenPasses
+        );
+        assert_eq!(runtime.lifecycle_observation().activations(), 0);
+        assert_eq!(runtime.lifecycle_observation().population_passes(), 0);
+        assert!(!directory.exists(), "cold close must not open the artifact");
+    }
+
+    // req: PRJ-002, PRJ-004, PRJ-008, OQ-019, OQ-020, OQ-022, PERF-007, PERF-008
+    #[test]
+    fn first_columnar_demand_coalesces_one_activation_and_returns_building_without_rows() {
+        const CALLERS: usize = 8;
+        let (runtime, scope) = board_runtime("coalesced-activation");
+        let directory = scope.path().join("projections").join("ticket_board");
+        let port = Arc::new(ServerColumnarProjectionPort::new(Arc::clone(&runtime)));
+        let barrier = Arc::new(std::sync::Barrier::new(CALLERS));
+        let mut callers = Vec::new();
+
+        for _ in 0..CALLERS {
+            let port = Arc::clone(&port);
+            let barrier = Arc::clone(&barrier);
+            callers.push(thread::spawn(move || {
+                barrier.wait();
+                let observation = port.observe("ticket_board").expect("cold observation");
+                assert!(!observation.has_published());
+                assert!(matches!(
+                    observation.lifecycle(),
+                    Some(ColumnarLifecycle::Building)
+                ));
+                assert!(observation.snapshot().segments.is_empty());
+                assert!(observation.snapshot().delta.is_empty());
+            }));
+        }
+        for caller in callers {
+            caller.join().expect("join first-demand caller");
+        }
+
+        assert_eq!(runtime.lifecycle_observation().activations(), 1);
+        assert_eq!(runtime.lifecycle_observation().population_passes(), 0);
+        assert!(!directory.exists(), "requests never open the artifact");
+
+        let activation_completion = runtime
+            .notifier()
+            .register("ticket_board".to_owned())
+            .expect("register activation completion");
+        let cancelled_wait = runtime
+            .notifier()
+            .register("ticket_board".to_owned())
+            .expect("register cancelled request");
+        let cancellation = runtime.notifier().cancellation();
+        cancellation.cancel().expect("cancel triggering request");
+        assert_eq!(
+            cancelled_wait
+                .wait_controlled(
+                    std::time::Instant::now() + Duration::from_secs(1),
+                    &cancellation
+                )
+                .expect("observe request cancellation"),
+            riffdb_service::ColumnarWake::Cancelled
+        );
+        assert_eq!(runtime.lifecycle_observation().activations(), 1);
+
+        let worker =
+            crate::columnar_worker::RunningColumnarWorker::start(Arc::clone(&runtime), None)
+                .expect("start activation owner");
+        assert_eq!(
+            activation_completion
+                .wait(std::time::Instant::now() + Duration::from_secs(5))
+                .expect("wait for shared activation"),
+            riffdb_service::ColumnarWake::Notified
+        );
+        assert_eq!(
+            runtime
+                .engine("ticket_board")
+                .expect("engine registry")
+                .expect("activated projection")
+                .lifecycle(),
+            Ok(ColumnarSlotLifecycle::Active)
+        );
+        assert_eq!(runtime.lifecycle_observation().activations(), 1);
+        assert!(directory.exists(), "the sole worker owns artifact opening");
+        worker.shutdown().expect("stop activation owner");
+    }
+
+    // req: PRJ-002, PRJ-004, PRJ-008, PRJ-009, OQ-019, OQ-020, OQ-022, PERF-007, PERF-008
+    #[test]
+    fn columnar_activation_installs_only_the_validated_selected_immutable_view() {
+        let (runtime, scope) = board_runtime("selected-view");
+        request_projection(&runtime, "ticket_board");
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        let selected_frontier = runtime
+            .engine("ticket_board")
+            .expect("engine registry")
+            .expect("board slot")
+            .with_engine_mut(|engine| {
+                engine.checkpoint().expect("checkpoint selected view");
+                engine.durable_frontier().position()
+            })
+            .expect("engine lock")
+            .expect("active engine");
+        drop(runtime);
+
+        let reopened = reopen_board_runtime(&scope);
+        let slot = reopened
+            .engine("ticket_board")
+            .expect("engine registry")
+            .expect("cold board slot");
+        assert_eq!(slot.lifecycle(), Ok(ColumnarSlotLifecycle::Cold));
+        let port = ServerColumnarProjectionPort::new(Arc::clone(&reopened));
+        let cold = port.observe("ticket_board").expect("cold observation");
+        assert!(!cold.has_published());
+        assert!(matches!(
+            cold.lifecycle(),
+            Some(ColumnarLifecycle::Building)
+        ));
+        assert_eq!(slot.lifecycle(), Ok(ColumnarSlotLifecycle::Activating));
+
+        assert!(crate::columnar_worker::run_one_test_pass(&reopened));
+        assert_eq!(slot.lifecycle(), Ok(ColumnarSlotLifecycle::Active));
+        let ready = port.observe("ticket_board").expect("installed observation");
+        assert!(ready.has_published());
+        assert_eq!(ready.published_frontier().position(), selected_frontier);
+    }
+
+    // req: PRJ-004, PRJ-008, PRJ-009, OQ-019, OQ-020, PERF-007, PERF-008
+    #[test]
+    fn failed_columnar_activation_never_serves_rows_or_falls_back() {
+        let (runtime, scope) = board_runtime("failed-activation");
+        request_projection(&runtime, "ticket_board");
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        runtime
+            .engine("ticket_board")
+            .expect("engine registry")
+            .expect("board slot")
+            .with_engine_mut(|engine| engine.checkpoint().expect("checkpoint selected view"))
+            .expect("engine lock")
+            .expect("active engine");
+        drop(runtime);
+
+        let manifest = scope
+            .path()
+            .join("projections")
+            .join("ticket_board")
+            .join("MANIFEST");
+        std::fs::write(&manifest, b"corrupt-selected-manifest").expect("corrupt selected manifest");
+        let corrupt_bytes = std::fs::read(&manifest).expect("read corrupt manifest");
+
+        let reopened = reopen_board_runtime(&scope);
+        let port = ServerColumnarProjectionPort::new(Arc::clone(&reopened));
+        let cold = port.observe("ticket_board").expect("cold observation");
+        assert!(!cold.has_published());
+        assert!(!crate::columnar_worker::run_one_test_pass(&reopened));
+        let slot = reopened
+            .engine("ticket_board")
+            .expect("engine registry")
+            .expect("failed board slot");
+        assert_eq!(slot.lifecycle(), Ok(ColumnarSlotLifecycle::Failed));
+        assert!(matches!(
+            port.observe("ticket_board"),
+            Err(ColumnarPortError::Unavailable)
+        ));
+        assert_eq!(
+            std::fs::read(&manifest).expect("reread corrupt manifest"),
+            corrupt_bytes,
+            "failure must not overwrite or fall back from the selected artifact"
+        );
+        assert_eq!(reopened.lifecycle_observation().activations(), 1);
     }
 
     #[test]
@@ -1630,6 +2266,7 @@ contract VectorBoard version 1 {
         assert_eq!(building.lifecycle(), VectorProjectionLifecycleV1::Building);
         assert!(!building.retention_attached());
 
+        request_projection(&runtime, "Document.embedding");
         assert!(crate::columnar_worker::run_one_test_pass(&runtime));
 
         let ready = runtime
@@ -1645,10 +2282,9 @@ contract VectorBoard version 1 {
             .expect("ready vector engine");
         assert_eq!(
             engine
-                .lock_engine()
+                .with_engine(|engine| engine.durable_frontier().position())
                 .expect("engine lock")
-                .durable_frontier()
-                .position(),
+                .expect("active engine"),
             ready.published_frontier()
         );
     }
@@ -1660,6 +2296,7 @@ contract VectorBoard version 1 {
             .vector_registration("Document.embedding")
             .expect("registration lock")
             .expect("vector registration");
+        request_projection(&runtime, "Document.embedding");
         assert!(crate::columnar_worker::run_one_test_pass(&runtime));
         let first_ready = runtime
             .storage()
@@ -1750,6 +2387,7 @@ contract VectorBoard version 1 {
             .vector_registration("Document.embedding")
             .expect("registration lock")
             .expect("vector registration");
+        request_projection(&runtime, "Document.embedding");
         assert!(crate::columnar_worker::run_one_test_pass(&runtime));
         let ready = runtime
             .storage()
@@ -1801,6 +2439,7 @@ contract VectorBoard version 1 {
                 .is_empty()
         );
 
+        request_projection(&reopened, "Document.embedding");
         assert!(crate::columnar_worker::run_one_test_pass(&reopened));
         let recovered = reopened
             .storage()
@@ -1816,10 +2455,9 @@ contract VectorBoard version 1 {
         assert_eq!(engine.generation(), Some(recovered.generation()));
         assert_eq!(
             engine
-                .lock_engine()
+                .with_engine(|engine| engine.durable_frontier().position())
                 .expect("engine lock")
-                .durable_frontier()
-                .position(),
+                .expect("active engine"),
             recovered.published_frontier()
         );
     }
@@ -1923,18 +2561,12 @@ contract VectorBoard version 1 {
     #[test]
     fn held_observation_and_running_queries_never_block_apply_or_checkpoint() {
         let (runtime, _scope) = board_runtime("lockfree");
-        // First worker pass publishes the (empty) snapshot.
-        {
-            let slot = runtime
-                .engine("ticket_board")
-                .expect("engine registry")
-                .expect("board slot");
-            let mut engine = slot.lock_engine().expect("engine lock");
-            engine
-                .apply_available(runtime.apply_source())
-                .expect("initial apply pass");
-        }
         let port = ServerColumnarProjectionPort::new(Arc::clone(&runtime));
+        let cold = port
+            .observe("ticket_board")
+            .expect("cold board observation");
+        assert!(!cold.has_published());
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
         let observation = port.observe("ticket_board").expect("board observation");
         assert!(observation.has_published());
 
@@ -1970,19 +2602,21 @@ contract VectorBoard version 1 {
                     .engine("ticket_board")
                     .expect("engine registry")
                     .expect("board slot");
-                let mut engine = slot.lock_engine().expect("worker engine lock");
-                locked_sender.send(()).expect("report lock acquisition");
-                proceed_receiver
-                    .recv_timeout(Duration::from_secs(30))
-                    .expect("queries must complete while the engine lock is held");
-                engine
-                    .apply_available(runtime.apply_source())
-                    .expect("apply under held observation");
-                match engine.checkpoint() {
-                    Ok(_) => {}
-                    Err(error) => assert!(is_holdback_active(&error), "checkpoint failed"),
-                }
-                drop(engine);
+                slot.with_engine_mut(|engine| {
+                    locked_sender.send(()).expect("report lock acquisition");
+                    proceed_receiver
+                        .recv_timeout(Duration::from_secs(30))
+                        .expect("queries must complete while the engine lock is held");
+                    engine
+                        .apply_available(runtime.apply_source())
+                        .expect("apply under held observation");
+                    match engine.checkpoint() {
+                        Ok(_) => {}
+                        Err(error) => assert!(is_holdback_active(&error), "checkpoint failed"),
+                    }
+                })
+                .expect("worker engine lock")
+                .expect("active worker engine");
                 done_sender.send(()).expect("report pass completion");
             })
         };
