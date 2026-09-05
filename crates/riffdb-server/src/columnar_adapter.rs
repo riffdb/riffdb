@@ -446,6 +446,27 @@ impl ColumnarEngineSlot {
         }
     }
 
+    /// Re-enters only the exact activation whose durable failure classification
+    /// could not be committed within the worker's bounded attempt.
+    pub(crate) fn retry_failed_activation(
+        &self,
+        generation: ProjectionGeneration,
+    ) -> Result<(), ColumnarPortError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ColumnarPortError::Unavailable)?;
+        match &*state {
+            ColumnarSlotState::Failed {
+                generation: Some(failed),
+            } if *failed == generation => {
+                *state = ColumnarSlotState::Activating;
+                Ok(())
+            }
+            _ => Err(ColumnarPortError::Integrity),
+        }
+    }
+
     /// Closes new query-view capture for one publication decision.
     pub(crate) fn close_capture_gate(&self) -> Result<ColumnarCaptureGate<'_>, ColumnarPortError> {
         let state = self
@@ -5513,19 +5534,31 @@ contract VectorBoard version 1 {
 
     // req: PRJ-004, PRJ-008, PRJ-009, OQ-019, OQ-020, OQ-022
     #[test]
-    fn selected_failure_no_commit_and_same_selection_state_changed_retry_classification() {
+    fn selected_failure_revision_race_and_repeated_no_commit_recover_without_wedge() {
         use crate::columnar_worker::{
             SelectedFailureRecordTestMode, activate_one_test_slot_with_selected_failure_mode,
         };
 
-        for (label, mode) in [
+        for (label, mode, requires_later_pass) in [
             (
                 "storage-no-commit",
                 SelectedFailureRecordTestMode::StorageFailureBeforeCommit,
+                false,
             ),
             (
                 "same-selection-state-changed",
                 SelectedFailureRecordTestMode::StateChangedBeforeCommit,
+                false,
+            ),
+            (
+                "concurrent-candidate-allocation",
+                SelectedFailureRecordTestMode::CandidateAllocationBeforeCommit,
+                false,
+            ),
+            (
+                "repeated-storage-no-commit",
+                SelectedFailureRecordTestMode::RepeatedStorageFailureBeforeCommit,
+                true,
             ),
         ] {
             let (runtime, scope) = board_runtime(&format!("selected-failure-{label}"));
@@ -5572,13 +5605,44 @@ contract VectorBoard version 1 {
                 !activate_one_test_slot_with_selected_failure_mode(&reopened, "ticket_board", mode,),
                 "the corrupt selected view is never activated for {label}"
             );
-            let durable = reopened
+            let mut durable = reopened
                 .storage()
                 .recover_expected_control(binding.spec().source())
                 .expect("reread classification result")
                 .expect("classification control");
+            if requires_later_pass {
+                assert_eq!(durable, ready, "both injected writes are proven absent");
+                assert_eq!(
+                    reopened
+                        .engine("ticket_board")
+                        .expect("engine registry")
+                        .expect("failed activation slot")
+                        .lifecycle(),
+                    Ok(ColumnarSlotLifecycle::Activating),
+                    "only the exact failed activation is re-entered for a later bounded retry"
+                );
+                assert!(
+                    !crate::columnar_worker::run_one_test_pass(&reopened),
+                    "the later pass still refuses the corrupt selection while classifying it"
+                );
+                durable = reopened
+                    .storage()
+                    .recover_expected_control(binding.spec().source())
+                    .expect("reread later classification result")
+                    .expect("later classification control");
+            }
             assert_eq!(durable.published(), Some(&published), "{label}");
             assert!(durable.servable_generation().is_none(), "{label}");
+            if label == "concurrent-candidate-allocation" {
+                assert!(
+                    durable.highest_generation() > published.generation(),
+                    "the real competing Candidate allocation changed the durable control revision"
+                );
+                assert!(
+                    durable.candidate().is_none(),
+                    "classification against the reread revision detaches the competing Candidate"
+                );
+            }
             assert_eq!(
                 durable.failure().map(|failure| (
                     failure.target(),
