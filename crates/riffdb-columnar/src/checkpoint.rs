@@ -353,6 +353,19 @@ impl CheckpointDir {
         })
     }
 
+    /// Retains only the already validated immutable V2 directory identity.
+    /// No filesystem operation is performed and all mutation entry points are
+    /// rejected by the owning query-only engine before reaching this value.
+    pub(crate) fn validated_read_only(root: PathBuf) -> Self {
+        Self {
+            root,
+            controller: None,
+            next_generation: 0,
+            amplification: ColumnarAmplification::default(),
+            controlled: true,
+        }
+    }
+
     pub(crate) const fn amplification(&self) -> ColumnarAmplification {
         self.amplification
     }

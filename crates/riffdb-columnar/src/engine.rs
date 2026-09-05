@@ -8,6 +8,7 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{FrontierPosition, ProjectionFrontier};
 
+use crate::ValidatedColumnarV2Generation;
 use crate::apply::{ApplyProgress, ApplyState, WorkerApplyOutcome};
 use crate::checkpoint::{CheckpointDir, CheckpointError, ManifestV1};
 use crate::definition::{DefinitionFingerprint, RegisteredDefinition};
@@ -155,6 +156,9 @@ pub struct ColumnarEngine {
     has_manifest: bool,
     /// History incarnation bound into published frontiers (immutable for engine life).
     history_incarnation: u64,
+    /// V2 generations are immutable and may be queried but never advanced or
+    /// checkpointed in place.
+    writable_layout_v1: bool,
 }
 
 impl ColumnarEngine {
@@ -209,6 +213,45 @@ impl ColumnarEngine {
             durable_frontier,
             has_manifest,
             history_incarnation: options.history_incarnation,
+            writable_layout_v1: true,
+        })
+    }
+
+    /// Installs one already fully validated immutable V2 generation as a
+    /// query-only engine. No request path reopens or revalidates its files.
+    #[doc(hidden)]
+    pub fn from_validated_v2(
+        definition: RegisteredDefinition,
+        generation: ValidatedColumnarV2Generation,
+    ) -> Result<Self, ColumnarError> {
+        if generation.root().definition_fingerprint() != definition.fingerprint() {
+            return Err(ColumnarError::Integrity("V2 definition mismatch"));
+        }
+        let history_incarnation = generation.root().history_incarnation();
+        let durable_frontier = generation.root().frontier();
+        let snapshot = Arc::clone(generation.snapshot());
+        let working = WorkingState {
+            segments: snapshot.segments.clone(),
+            delta: snapshot.delta.clone(),
+            processed: durable_frontier,
+        };
+        let checkpoint = CheckpointDir::validated_read_only(generation.directory().to_path_buf());
+        Ok(Self {
+            definition: definition.clone(),
+            apply: ApplyState {
+                definition,
+                working,
+                published: snapshot,
+                deferred: std::collections::BTreeMap::new(),
+                #[cfg(test)]
+                publish_observer: None,
+            },
+            checkpoint,
+            has_published: true,
+            durable_frontier,
+            has_manifest: true,
+            history_incarnation,
+            writable_layout_v1: false,
         })
     }
 
@@ -294,6 +337,11 @@ impl ColumnarEngine {
         &mut self,
         reader: &(impl AuthoritativeScanReader + AuthoritativePointReader),
     ) -> Result<ApplyProgress, ColumnarError> {
+        if !self.writable_layout_v1 {
+            return Err(ColumnarError::InvalidState(
+                "immutable V2 generation cannot apply in place",
+            ));
+        }
         let progress = self.apply.apply_available(reader)?;
         self.record_completed_apply(&progress);
         Ok(progress)
@@ -312,6 +360,11 @@ impl ColumnarEngine {
         reader: &(impl AuthoritativeScanReader + AuthoritativePointReader),
         stop_before_next_page: impl FnMut() -> bool,
     ) -> Result<WorkerApplyOutcome, ColumnarError> {
+        if !self.writable_layout_v1 {
+            return Err(ColumnarError::InvalidState(
+                "immutable V2 generation cannot apply in place",
+            ));
+        }
         let outcome = self
             .apply
             .apply_available_for_worker(reader, stop_before_next_page)?;
@@ -392,6 +445,11 @@ impl ColumnarEngine {
     /// applied-but-unpublished effects of a half-visible commit. Retry after
     /// the next apply pull applies the superseding commit.
     pub fn checkpoint(&mut self) -> Result<ManifestV1, ColumnarError> {
+        if !self.writable_layout_v1 {
+            return Err(ColumnarError::InvalidState(
+                "immutable V2 generation cannot checkpoint in place",
+            ));
+        }
         self.ensure_no_holdback()?;
         let durable = self.apply.published.visible_frontier;
         // The worker forces a checkpoint on a poll cadence whether or not
@@ -436,6 +494,11 @@ impl ColumnarEngine {
     /// Refuses with [`CheckpointError::HoldbackActive`] during a holdback
     /// window, exactly like [`Self::checkpoint`].
     pub fn compact(&mut self) -> Result<(), ColumnarError> {
+        if !self.writable_layout_v1 {
+            return Err(ColumnarError::InvalidState(
+                "immutable V2 generation cannot compact in place",
+            ));
+        }
         self.ensure_no_holdback()?;
         let frontier = self.apply.published.visible_frontier;
         let _ = self.checkpoint.checkpoint(

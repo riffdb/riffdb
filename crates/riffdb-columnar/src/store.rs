@@ -78,6 +78,10 @@ impl PrimaryKeyBytes {
 pub struct SegmentId(pub(crate) String);
 
 impl SegmentId {
+    pub(crate) fn from_file_name(file_name: String) -> Self {
+        Self(file_name)
+    }
+
     /// Segment file name relative to the projection directory.
     #[must_use]
     pub fn file_name(&self) -> &str {

@@ -12,7 +12,9 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use riffdb_columnar::{
-    ColumnarError, ColumnarSnapshotRebuild, WorkerApplyOutcome, frontier_lag_sequences,
+    ColumnarEngine, ColumnarError, ColumnarSnapshotRebuild, OpenOptions,
+    PhysicalGenerationFingerprintV1, ValidatedColumnarV2Generation, WorkerApplyOutcome,
+    frontier_lag_sequences,
 };
 use riffdb_observability::{MetricRegistry, RequiredGauge};
 use riffdb_storage_api::{
@@ -22,10 +24,11 @@ use riffdb_storage_api::{
     PreparedColumnarGenerationV1, StorageError, StorageErrorKind, StorageScanLimit,
     StoredColumnarProjectionControlV1, StoredColumnarProjectionGenerationV1,
 };
-use riffdb_types::FrontierPosition;
+use riffdb_types::{FrontierPosition, ProjectionGeneration};
 
 use crate::columnar_adapter::{
     ColumnarControlBinding, ColumnarEngineSlot, ColumnarRuntime, ColumnarSlotLifecycle,
+    controlled_source_directory,
 };
 
 const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(25);
@@ -357,6 +360,23 @@ enum ColumnarPublicationResolution {
     RemainClosed,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PreparedV2HeadResolution {
+    Publish,
+    ReplaceCandidate,
+}
+
+fn prepared_v2_head_resolution(
+    candidate_frontier: FrontierPosition,
+    authoritative_head: FrontierPosition,
+) -> PreparedV2HeadResolution {
+    if candidate_frontier == authoritative_head {
+        PreparedV2HeadResolution::Publish
+    } else {
+        PreparedV2HeadResolution::ReplaceCandidate
+    }
+}
+
 fn publication_resolution(
     _attempt: ColumnarPublicationAttempt,
     durable: &StoredColumnarProjectionControlV1,
@@ -424,7 +444,31 @@ fn maintain_common_generations(
         } else if let Some(published) = control.servable_generation()
             && published.layout() == ColumnarProjectionLayoutV1::V1
         {
-            advance_published_v1(runtime, &binding, &control, stop_before_next_page)?
+            if !advance_published_v1(runtime, &binding, &control, stop_before_next_page)? {
+                false
+            } else {
+                let current = recover_control(runtime, &binding)?;
+                match current.candidate() {
+                    Some(candidate) if candidate.layout() == ColumnarProjectionLayoutV1::V2 => {
+                        advance_v2_candidate(
+                            runtime,
+                            &binding,
+                            &slot,
+                            &current,
+                            stop_before_next_page,
+                        )?
+                    }
+                    None if current.lifecycle() == ColumnarProjectionLifecycleV1::Ready
+                        && ValidatedColumnarV2Generation::supports_definition(
+                            binding.definition(),
+                        ) =>
+                    {
+                        begin_v2_candidate(runtime, &binding, &current)?;
+                        true
+                    }
+                    None | Some(_) => true,
+                }
+            }
         } else {
             true
         };
@@ -433,6 +477,181 @@ fn maintain_common_generations(
         }
     }
     Ok(ColumnarPassOutcome::Completed)
+}
+
+fn begin_v2_candidate(
+    runtime: &ColumnarRuntime,
+    binding: &ColumnarControlBinding,
+    control: &StoredColumnarProjectionControlV1,
+) -> Result<(), ColumnarWorkerError> {
+    let physical = PhysicalGenerationFingerprintV1::compute(binding.definition().fingerprint());
+    let _ = runtime
+        .storage()
+        .begin_v2_candidate(control, *physical.as_bytes())
+        .map_err(map_storage_error)?;
+    Ok(())
+}
+
+fn advance_v2_candidate(
+    runtime: &ColumnarRuntime,
+    binding: &ColumnarControlBinding,
+    slot: &ColumnarEngineSlot,
+    control: &StoredColumnarProjectionControlV1,
+    stop_before_next_page: &mut impl FnMut() -> bool,
+) -> Result<bool, ColumnarWorkerError> {
+    let candidate = control.candidate().ok_or(ColumnarWorkerError::Integrity)?;
+    if candidate.layout() != ColumnarProjectionLayoutV1::V2 {
+        return Err(ColumnarWorkerError::Integrity);
+    }
+    if candidate.artifact().is_none() {
+        return prepare_v2_candidate(
+            runtime,
+            binding,
+            control,
+            candidate.generation(),
+            stop_before_next_page,
+        );
+    }
+
+    // A prepared V2 root is immutable. If the authoritative head advanced,
+    // replace it through the accepted never-reused allocation transition;
+    // the ordinary V1 published pointer remains selected and byte-exact.
+    if prepared_v2_head_resolution(
+        candidate.frontier(),
+        runtime.read_application_head().map_err(map_port_error)?,
+    ) == PreparedV2HeadResolution::ReplaceCandidate
+    {
+        let physical = PhysicalGenerationFingerprintV1::compute(binding.definition().fingerprint());
+        let _ = runtime
+            .storage()
+            .allocate_same_spec_candidate(control, *physical.as_bytes())
+            .map_err(map_storage_error)?;
+        return Ok(true);
+    }
+
+    let successor = runtime
+        .open_controlled_generation(binding, candidate)
+        .map_err(ColumnarWorkerError::Apply)?;
+    let prepared = PreparedColumnarGenerationV1::v2(
+        binding.spec().source().clone(),
+        binding.spec().definition_semantics_hash(),
+        candidate.clone(),
+        runtime.process_generation(),
+    )
+    .map_err(|_| ColumnarWorkerError::Integrity)?;
+    let _ =
+        publish_prepared_under_capture_gate(runtime, binding, slot, control, &prepared, successor)?;
+    Ok(true)
+}
+
+fn prepare_v2_candidate(
+    runtime: &ColumnarRuntime,
+    binding: &ColumnarControlBinding,
+    control: &StoredColumnarProjectionControlV1,
+    generation: ProjectionGeneration,
+    stop_before_next_page: &mut impl FnMut() -> bool,
+) -> Result<bool, ColumnarWorkerError> {
+    let snapshot = runtime
+        .storage()
+        .capture_application_export_snapshot(binding.spec().source().lineage())
+        .map_err(map_storage_error)?;
+    let snapshot_frontier = snapshot.binding().application_frontier().map_or(
+        FrontierPosition::BeforeFirst,
+        FrontierPosition::AppliedThrough,
+    );
+    let source_directory =
+        controlled_source_directory(runtime.projections_root(), binding.spec().hash());
+    let evaluator_directory =
+        ValidatedColumnarV2Generation::temporary_directory(&source_directory, generation);
+    let mut evaluator = ColumnarEngine::open(
+        binding.definition().clone(),
+        OpenOptions::new(evaluator_directory)
+            .with_history_incarnation(runtime.history_incarnation()),
+    )
+    .map_err(ColumnarWorkerError::Apply)?;
+    let mut rebuild = ColumnarSnapshotRebuild::new(binding.definition().clone());
+    let limit = StorageScanLimit::new(500).ok_or(ColumnarWorkerError::Integrity)?;
+    let mut continuation: Option<Box<[u8]>> = None;
+    loop {
+        if stop_before_next_page() {
+            return Ok(false);
+        }
+        let page = snapshot
+            .read_application_export_entity_page(
+                binding.definition().entity_type_id(),
+                continuation.as_deref(),
+                limit,
+            )
+            .map_err(map_storage_error)?;
+        let records = page
+            .records()
+            .iter()
+            .map(|record| match record {
+                ApplicationExportSourceRecordV1::Entity(entity) => Ok((**entity).clone()),
+                _ => Err(ColumnarWorkerError::Integrity),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        rebuild
+            .apply_page(&records)
+            .map_err(ColumnarWorkerError::Apply)?;
+        if page.exact_end() {
+            break;
+        }
+        continuation = page.continuation().map(Into::into);
+    }
+    rebuild
+        .install(&mut evaluator, snapshot_frontier)
+        .map_err(ColumnarWorkerError::Apply)?;
+    match evaluator
+        .apply_available_for_worker(runtime.apply_source(), stop_before_next_page)
+        .map_err(ColumnarWorkerError::Apply)?
+    {
+        WorkerApplyOutcome::Completed(_) => {}
+        WorkerApplyOutcome::AbandonedUnpublished => return Ok(false),
+    }
+    let frontier = evaluator.published_frontier().position();
+    let expected = evaluator.published_snapshot();
+    drop(evaluator);
+    let generation_view = ValidatedColumnarV2Generation::prepare(
+        &source_directory,
+        binding.definition().clone(),
+        runtime.history_incarnation(),
+        generation,
+        snapshot_frontier,
+        &expected,
+    )
+    .map_err(|_| ColumnarWorkerError::Integrity)?;
+    let (length, checksum) = generation_view.artifact_identity();
+    let artifact = ColumnarProjectionArtifactV1::new(length, checksum)
+        .ok_or(ColumnarWorkerError::Integrity)?;
+    let physical = *generation_view
+        .root()
+        .physical_generation_fingerprint()
+        .as_bytes();
+    let pointer = StoredColumnarProjectionGenerationV1::prepared_candidate(
+        generation,
+        ColumnarProjectionLayoutV1::V2,
+        snapshot_frontier,
+        frontier,
+        runtime.history_incarnation(),
+        artifact,
+        binding.definition().fingerprint(),
+        binding.spec().hash(),
+        Some(physical),
+    )
+    .map_err(|_| ColumnarWorkerError::Integrity)?;
+    let prepared = PreparedColumnarGenerationV1::v2(
+        binding.spec().source().clone(),
+        binding.spec().definition_semantics_hash(),
+        pointer,
+        runtime.process_generation(),
+    )
+    .map_err(|_| ColumnarWorkerError::Integrity)?;
+    let _ = runtime
+        .storage()
+        .record_durable_snapshot(control, &prepared)
+        .map_err(map_storage_error)?;
+    Ok(true)
 }
 
 fn advance_v1_candidate(
@@ -936,7 +1155,8 @@ mod publication_tests {
     };
 
     use super::{
-        ColumnarPublicationAttempt, ColumnarPublicationResolution, publication_resolution,
+        ColumnarPublicationAttempt, ColumnarPublicationResolution, PreparedV2HeadResolution,
+        prepared_v2_head_resolution, publication_resolution,
     };
 
     fn prepared_v2() -> (
@@ -960,11 +1180,14 @@ mod publication_tests {
         )
         .expect("initial");
         let initial_candidate = initial.candidate().expect("candidate");
+        let matched_frontier = FrontierPosition::AppliedThrough(
+            riffdb_types::CommitSequence::new(3).expect("matched frontier"),
+        );
         let v1_pointer = StoredColumnarProjectionGenerationV1::prepared_candidate(
             initial_candidate.generation(),
             ColumnarProjectionLayoutV1::V1,
             FrontierPosition::BeforeFirst,
-            FrontierPosition::BeforeFirst,
+            matched_frontier,
             1,
             ColumnarProjectionArtifactV1::new(64, [0x31; 32]).expect("V1 artifact"),
             definition,
@@ -975,7 +1198,7 @@ mod publication_tests {
         let ready_v1 = initial
             .record_durable_snapshot(v1_pointer)
             .expect("prepare V1")
-            .publish_prepared_generation(FrontierPosition::BeforeFirst)
+            .publish_prepared_generation(matched_frontier)
             .expect("publish V1");
         let physical = [0x41; 32];
         let catching_up = ready_v1.begin_v2_candidate(physical).expect("begin V2");
@@ -983,8 +1206,8 @@ mod publication_tests {
         let v2_pointer = StoredColumnarProjectionGenerationV1::prepared_candidate(
             candidate.generation(),
             ColumnarProjectionLayoutV1::V2,
-            FrontierPosition::BeforeFirst,
-            FrontierPosition::BeforeFirst,
+            FrontierPosition::AppliedThrough(riffdb_types::CommitSequence::first()),
+            matched_frontier,
             1,
             ColumnarProjectionArtifactV1::new(128, [0x51; 32]).expect("root artifact"),
             definition,
@@ -1004,7 +1227,7 @@ mod publication_tests {
         .expect("prepared witness");
         let published = prepared_control
             .clone()
-            .publish_prepared_generation(FrontierPosition::BeforeFirst)
+            .publish_prepared_generation(matched_frontier)
             .expect("publish V2");
         (prepared_control, prepared, published)
     }
@@ -1089,6 +1312,39 @@ mod publication_tests {
                 &prepared,
             ),
             ColumnarPublicationResolution::RemainClosed
+        );
+    }
+
+    // req: PRJ-002, PRJ-004, PRJ-006, PRJ-010, OQ-020
+    #[test]
+    fn retained_tail_head_movement_replaces_v2_candidate_and_preserves_v1_selection() {
+        let (prepared_control, _, _) = prepared_v2();
+        let stale = prepared_control.candidate().expect("prepared V2").clone();
+        let published = prepared_control.published().expect("selected V1").clone();
+        let moved_head = FrontierPosition::AppliedThrough(
+            riffdb_types::CommitSequence::new(4).expect("advanced head"),
+        );
+        assert_eq!(
+            prepared_v2_head_resolution(stale.frontier(), moved_head),
+            PreparedV2HeadResolution::ReplaceCandidate
+        );
+
+        let replacement = prepared_control
+            .allocate_same_spec_candidate(
+                stale
+                    .physical_generation_fingerprint()
+                    .expect("physical fingerprint"),
+            )
+            .expect("replace stale immutable candidate");
+        assert_eq!(replacement.published(), Some(&published));
+        let candidate = replacement.candidate().expect("replacement candidate");
+        assert!(candidate.generation() > stale.generation());
+        assert!(candidate.artifact().is_none());
+        assert_eq!(candidate.frontier(), FrontierPosition::BeforeFirst);
+        assert_eq!(
+            replacement.retention_frontier(),
+            Some(FrontierPosition::BeforeFirst),
+            "new snapshot cannot release retained tail before durable preparation"
         );
     }
 }
