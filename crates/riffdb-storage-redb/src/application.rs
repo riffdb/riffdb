@@ -1098,6 +1098,7 @@ impl AdmissionRepository for RedbOperationalPorts {
             return Err(storage_error(StorageErrorKind::LimitExceeded));
         }
         let access = self.begin_write()?;
+        access.arm_fresh_locator_coverage()?;
         let mut created_any = false;
         let staged = stage_admission_group(&access, requests.iter())?;
         let mut results = Vec::with_capacity(staged.len());
@@ -2550,6 +2551,7 @@ fn command_outcome_from_write_indexes(
     // locator is absence.
     let Some(encoded) = access.read_command_value(JournalTable::IdempotencyLocators, exact_key)?
     else {
+        let _coverage_survives = access.fresh_locator_allows_miss()?;
         return Ok(None);
     };
     let locator = crate::codec::decode_command_locator_v1(&encoded)?
@@ -2710,6 +2712,9 @@ fn command_outcome_from_operational_indexes(
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
         return Ok(Some(capsule.outcome().clone()));
+    }
+    if ports.fresh_locator_proves_absence(access)? {
+        return Ok(None);
     }
     let Some(frontier) = frontier else {
         return Ok(None);
