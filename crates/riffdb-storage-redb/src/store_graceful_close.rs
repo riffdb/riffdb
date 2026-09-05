@@ -98,6 +98,7 @@ impl SharedRedb {
             if frontier.is_none() {
                 *frontier = Some(Arc::new(CheckpointRoot::new(
                     self.database.begin_read().map_err(transaction_error)?,
+                    self.durable_commit_epoch.load(Ordering::Acquire),
                 )));
                 self.retire_current_read_root();
             }

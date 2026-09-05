@@ -1,6 +1,10 @@
 use riffdb_storage_api::ApplicationSequenceAllocator;
 use riffdb_types::{AdministrationSequence, CommitSequence};
 use sha2::{Digest, Sha256};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 pub(crate) fn application_authority_digest(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
@@ -29,7 +33,7 @@ pub(crate) fn preserving_permit_digest<'a>(
 /// it. The value is never serialized or exposed outside the storage crate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoverageStamp {
-    root_identity: usize,
+    root_identity: u64,
     application: Option<CommitSequence>,
     administration: Option<AdministrationSequence>,
     allocator: ApplicationSequenceAllocator,
@@ -38,7 +42,7 @@ pub(crate) struct CoverageStamp {
 
 impl CoverageStamp {
     pub(crate) const fn new(
-        root_identity: usize,
+        root_identity: u64,
         application: Option<CommitSequence>,
         administration: Option<AdministrationSequence>,
         allocator: ApplicationSequenceAllocator,
@@ -140,22 +144,58 @@ impl PrivateChainWitness {
 pub(crate) struct CommandPublicationWitness {
     predecessor: CoverageStamp,
     successor: CoverageStamp,
+    loss: WitnessLossGuard,
 }
 
 pub(crate) struct PreservePublicationWitness {
     predecessor: CoverageStamp,
     successor: CoverageStamp,
+    loss: WitnessLossGuard,
+}
+
+struct WitnessLossGuard {
+    lost: Arc<AtomicBool>,
+    armed: bool,
+}
+
+impl WitnessLossGuard {
+    fn new(lost: &Arc<AtomicBool>) -> Self {
+        Self {
+            lost: Arc::clone(lost),
+            armed: true,
+        }
+    }
+
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for WitnessLossGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.lost.store(true, Ordering::Release);
+        }
+    }
 }
 
 struct PairToken {
     epoch: u64,
     public: PublicPrefixProof,
     private: PrivateChainWitness,
+    loss: WitnessLossGuard,
 }
 
 pub(crate) struct DirectCommandWitness {
     pair: PairToken,
     expected: CoverageStamp,
+}
+pub(crate) struct DirectCommandSpanEvidence {
+    first: CommitSequence,
+    last: CommitSequence,
+    count: u16,
+    first_administration: AdministrationSequence,
+    last_administration: AdministrationSequence,
 }
 pub(crate) struct PreservingImmediatePermit {
     mutation_count: u16,
@@ -185,16 +225,30 @@ enum CoverageState {
 /// owns its exact durable idempotency locator.
 pub(crate) struct FreshLocatorCoverage {
     state: CoverageState,
+    lost_witness: Arc<AtomicBool>,
 }
 
 impl FreshLocatorCoverage {
-    pub(crate) const fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             state: CoverageState::Uninitialized,
+            lost_witness: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn reconcile_witness_loss(&mut self) -> bool {
+        if self.lost_witness.load(Ordering::Acquire) {
+            self.disable();
+            false
+        } else {
+            true
         }
     }
 
     pub(crate) fn try_arm(&mut self, proof: EmptyAuthorityProof, stamp: CoverageStamp) -> bool {
+        if !self.reconcile_witness_loss() {
+            return false;
+        }
         if !matches!(self.state, CoverageState::Uninitialized) {
             return false;
         }
@@ -219,11 +273,15 @@ impl FreshLocatorCoverage {
         self.state = CoverageState::Disabled;
     }
 
-    pub(crate) const fn is_armed(&self) -> bool {
-        matches!(self.state, CoverageState::Armed { .. })
+    pub(crate) fn is_armed(&self) -> bool {
+        !self.lost_witness.load(Ordering::Acquire)
+            && matches!(self.state, CoverageState::Armed { .. })
     }
 
     pub(crate) fn proves_public_absence(&self, captured: CoverageStamp) -> bool {
+        if self.lost_witness.load(Ordering::Acquire) {
+            return false;
+        }
         matches!(
             &self.state,
             CoverageState::Armed { public, .. } if public.stamp == captured
@@ -234,6 +292,9 @@ impl FreshLocatorCoverage {
     }
 
     pub(crate) fn allows_private_miss(&mut self, captured: CoverageStamp) -> bool {
+        if !self.reconcile_witness_loss() {
+            return false;
+        }
         let matches = matches!(
             &self.state,
             CoverageState::Armed { private: Some(private), .. } if private.stamp == captured
@@ -249,6 +310,9 @@ impl FreshLocatorCoverage {
         successor: CoverageStamp,
         count: u16,
     ) -> Option<CommandPublicationWitness> {
+        if !self.reconcile_witness_loss() {
+            return None;
+        }
         if count == 0 || !successor.allocator_matches_frontier() {
             self.disable();
             return None;
@@ -281,6 +345,7 @@ impl FreshLocatorCoverage {
         Some(CommandPublicationWitness {
             predecessor,
             successor,
+            loss: WitnessLossGuard::new(&self.lost_witness),
         })
     }
 
@@ -288,6 +353,9 @@ impl FreshLocatorCoverage {
         &mut self,
         successor: CoverageStamp,
     ) -> Option<PreservePublicationWitness> {
+        if !self.reconcile_witness_loss() {
+            return None;
+        }
         let CoverageState::Armed { private, .. } = &mut self.state else {
             self.disable();
             return None;
@@ -309,18 +377,36 @@ impl FreshLocatorCoverage {
         Some(PreservePublicationWitness {
             predecessor,
             successor,
+            loss: WitnessLossGuard::new(&self.lost_witness),
         })
     }
 
     pub(crate) fn publish_command(&mut self, witness: CommandPublicationWitness) -> bool {
-        self.publish(witness.predecessor, witness.successor)
+        let CommandPublicationWitness {
+            predecessor,
+            successor,
+            loss,
+        } = witness;
+        let published = self.publish(predecessor, successor);
+        loss.disarm();
+        published
     }
 
     pub(crate) fn publish_preserve(&mut self, witness: PreservePublicationWitness) -> bool {
-        self.publish(witness.predecessor, witness.successor)
+        let PreservePublicationWitness {
+            predecessor,
+            successor,
+            loss,
+        } = witness;
+        let published = self.publish(predecessor, successor);
+        loss.disarm();
+        published
     }
 
     fn publish(&mut self, predecessor: CoverageStamp, successor: CoverageStamp) -> bool {
+        if !self.reconcile_witness_loss() {
+            return false;
+        }
         let CoverageState::Armed { public, .. } = &mut self.state else {
             self.disable();
             return false;
@@ -333,17 +419,61 @@ impl FreshLocatorCoverage {
         true
     }
 
-    pub(crate) fn begin_direct(&mut self, expected: CoverageStamp) -> Option<DirectCommandWitness> {
+    pub(crate) fn direct_command_span_evidence(
+        first: CommitSequence,
+        last: CommitSequence,
+        count: u16,
+        first_administration: AdministrationSequence,
+        last_administration: AdministrationSequence,
+    ) -> Option<DirectCommandSpanEvidence> {
+        if count == 0 {
+            return None;
+        }
+        let command_last = first
+            .get()
+            .checked_add(u64::from(count) - 1)
+            .and_then(CommitSequence::new)?;
+        let audit_count = u64::from(count).checked_mul(2)?;
+        let audit_last = first_administration
+            .get()
+            .checked_add(audit_count - 1)
+            .and_then(AdministrationSequence::new)?;
+        if command_last != last || audit_last != last_administration {
+            return None;
+        }
+        Some(DirectCommandSpanEvidence {
+            first,
+            last,
+            count,
+            first_administration,
+            last_administration,
+        })
+    }
+
+    pub(crate) fn begin_direct(
+        &mut self,
+        expected: CoverageStamp,
+        span: DirectCommandSpanEvidence,
+    ) -> Option<DirectCommandWitness> {
+        if !self.reconcile_witness_loss() {
+            return None;
+        }
         let pair = self.begin_pair()?;
         let predecessor = pair.public.stamp;
-        let contiguous = match (predecessor.application, expected.application) {
-            (None, Some(last)) => last.get() >= 1,
-            (Some(first), Some(last)) => last > first,
-            _ => false,
-        };
+        let expected_first = predecessor
+            .application
+            .map_or(Some(CommitSequence::first()), CommitSequence::checked_next);
+        let expected_first_administration = predecessor.administration.map_or(
+            Some(AdministrationSequence::first()),
+            AdministrationSequence::checked_next,
+        );
         if predecessor.root_identity != expected.root_identity
             || !expected.allocator_matches_frontier()
-            || !contiguous
+            || expected_first != Some(span.first)
+            || expected.application != Some(span.last)
+            || expected_first_administration != Some(span.first_administration)
+            || expected.administration != Some(span.last_administration)
+            || span.count == 0
         {
             self.disable();
             return None;
@@ -356,6 +486,9 @@ impl FreshLocatorCoverage {
         witness: DirectCommandWitness,
         successor: CoverageStamp,
     ) -> bool {
+        if !self.reconcile_witness_loss() {
+            return false;
+        }
         let predecessor = witness.pair.public.stamp;
         if successor.root_identity == predecessor.root_identity
             || !successor.allocator_matches_frontier()
@@ -375,6 +508,9 @@ impl FreshLocatorCoverage {
         &mut self,
         permit: PreservingImmediatePermit,
     ) -> Option<PreservingImmediateWitness> {
+        if !self.reconcile_witness_loss() {
+            return None;
+        }
         if permit.mutation_count == 0 {
             self.disable();
             return None;
@@ -388,6 +524,9 @@ impl FreshLocatorCoverage {
         witness: PreservingImmediateWitness,
         successor: CoverageStamp,
     ) -> bool {
+        if !self.reconcile_witness_loss() {
+            return false;
+        }
         let predecessor = witness.pair.public.stamp;
         if predecessor.root_identity == successor.root_identity
             || predecessor.application != successor.application
@@ -416,6 +555,9 @@ impl FreshLocatorCoverage {
         &mut self,
         predecessor: CoverageStamp,
     ) -> Option<CoverageRebaseWitness> {
+        if !self.reconcile_witness_loss() {
+            return None;
+        }
         let pair = self.begin_pair()?;
         if pair.public.stamp != predecessor {
             self.disable();
@@ -429,6 +571,9 @@ impl FreshLocatorCoverage {
         witness: CoverageRebaseWitness,
         successor: CoverageStamp,
     ) -> bool {
+        if !self.reconcile_witness_loss() {
+            return false;
+        }
         let predecessor = witness.0.public.stamp;
         if predecessor.root_identity == successor.root_identity
             || predecessor.application != successor.application
@@ -443,6 +588,9 @@ impl FreshLocatorCoverage {
     }
 
     pub(crate) fn abort_rebase(&mut self, witness: CoverageRebaseWitness) -> bool {
+        if !self.reconcile_witness_loss() {
+            return false;
+        }
         self.restore_pair(witness.0)
     }
 
@@ -473,6 +621,7 @@ impl FreshLocatorCoverage {
             epoch: next,
             public,
             private,
+            loss: WitnessLossGuard::new(&self.lost_witness),
         })
     }
 
@@ -487,6 +636,7 @@ impl FreshLocatorCoverage {
             public: token.public,
             private: Some(token.private.replace(successor)),
         };
+        token.loss.disarm();
         true
     }
 
@@ -495,11 +645,18 @@ impl FreshLocatorCoverage {
             self.disable();
             return false;
         }
+        let PairToken {
+            epoch,
+            public,
+            private,
+            loss,
+        } = token;
         self.state = CoverageState::Armed {
-            epoch: token.epoch,
-            public: token.public,
-            private: Some(token.private),
+            epoch,
+            public,
+            private: Some(private),
         };
+        loss.disarm();
         true
     }
 }
@@ -510,7 +667,24 @@ mod tests {
     use riffdb_storage_api::ApplicationSequenceAllocator;
     use riffdb_types::{AdministrationSequence, CommitSequence};
 
-    fn stamp(root: usize, application: Option<u64>, administration: Option<u64>) -> CoverageStamp {
+    fn direct_span(
+        first: u64,
+        last: u64,
+        count: u16,
+        first_administration: u64,
+        last_administration: u64,
+    ) -> DirectCommandSpanEvidence {
+        FreshLocatorCoverage::direct_command_span_evidence(
+            CommitSequence::new(first).expect("first command"),
+            CommitSequence::new(last).expect("last command"),
+            count,
+            AdministrationSequence::new(first_administration).expect("first audit"),
+            AdministrationSequence::new(last_administration).expect("last audit"),
+        )
+        .expect("exact direct span")
+    }
+
+    fn stamp(root: u64, application: Option<u64>, administration: Option<u64>) -> CoverageStamp {
         stamp_with(
             root,
             application,
@@ -528,7 +702,7 @@ mod tests {
     }
 
     fn stamp_with(
-        root: usize,
+        root: u64,
         application: Option<u64>,
         administration: Option<u64>,
         allocator: ApplicationSequenceAllocator,
@@ -647,10 +821,22 @@ mod tests {
     // req: OUT-001, OUT-002, TXN-042, REC-004, PERF-019
     #[test]
     fn fresh_locator_coverage_classifies_every_publication_rebase_failure_and_restart() {
+        for invalid_span in [(1, 1, 0, 1, 2), (1, 2, 1, 1, 2), (1, 1, 1, 1, 3)] {
+            assert!(
+                FreshLocatorCoverage::direct_command_span_evidence(
+                    CommitSequence::new(invalid_span.0).expect("first command"),
+                    CommitSequence::new(invalid_span.1).expect("last command"),
+                    invalid_span.2,
+                    AdministrationSequence::new(invalid_span.3).expect("first audit"),
+                    AdministrationSequence::new(invalid_span.4).expect("last audit"),
+                )
+                .is_none()
+            );
+        }
         let mut direct = FreshLocatorCoverage::new();
         assert!(direct.try_arm(empty_authority(), stamp(4, None, None)));
         let token = direct
-            .begin_direct(stamp(4, Some(1), Some(2)))
+            .begin_direct(stamp(4, Some(1), Some(2)), direct_span(1, 1, 1, 1, 2))
             .expect("direct token");
         assert!(direct.finish_direct(token, stamp(5, Some(1), Some(2))));
         assert!(direct.proves_public_absence(stamp(5, Some(1), Some(2))));
@@ -659,7 +845,7 @@ mod tests {
         let mut wrong = FreshLocatorCoverage::new();
         assert!(wrong.try_arm(empty_authority(), stamp(4, None, None)));
         let token = wrong
-            .begin_direct(stamp(4, Some(1), Some(2)))
+            .begin_direct(stamp(4, Some(1), Some(2)), direct_span(1, 1, 1, 1, 2))
             .expect("token");
         assert!(!wrong.finish_direct(token, stamp(5, Some(2), Some(2))));
         assert!(wrong.is_disabled());
@@ -667,7 +853,7 @@ mod tests {
         let mut wrong_direct_authority = FreshLocatorCoverage::new();
         assert!(wrong_direct_authority.try_arm(empty_authority(), stamp(4, None, None)));
         let token = wrong_direct_authority
-            .begin_direct(stamp(4, Some(1), Some(2)))
+            .begin_direct(stamp(4, Some(1), Some(2)), direct_span(1, 1, 1, 1, 2))
             .expect("direct token");
         assert!(!wrong_direct_authority.finish_direct(
             token,
@@ -686,6 +872,8 @@ mod tests {
         for invalid_expected in [
             stamp(5, Some(1), Some(2)),
             stamp(4, None, Some(2)),
+            stamp(4, Some(2), Some(4)),
+            stamp(4, Some(1), Some(3)),
             stamp_with(
                 4,
                 Some(1),
@@ -696,7 +884,11 @@ mod tests {
         ] {
             let mut invalid = FreshLocatorCoverage::new();
             assert!(invalid.try_arm(empty_authority(), stamp(4, None, None)));
-            assert!(invalid.begin_direct(invalid_expected).is_none());
+            assert!(
+                invalid
+                    .begin_direct(invalid_expected, direct_span(1, 1, 1, 1, 2))
+                    .is_none()
+            );
             assert!(invalid.is_disabled());
         }
 
@@ -850,5 +1042,60 @@ mod tests {
             assert!(coverage.publish_command(witness));
         }
         assert!(coverage.proves_public_absence(stamp(10, Some(288), Some(576))));
+    }
+
+    // req: OUT-001, OUT-002, TXN-042, REC-004
+    #[test]
+    fn dropping_each_sole_live_coverage_witness_disables_fail_closed() {
+        let mut command = FreshLocatorCoverage::new();
+        assert!(command.try_arm(empty_authority(), stamp(1, None, None)));
+        drop(
+            command
+                .seal_command(stamp(1, Some(1), Some(2)), 1)
+                .expect("command publication witness"),
+        );
+        assert!(!command.is_armed());
+        assert!(!command.allows_private_miss(stamp(1, Some(1), Some(2))));
+        assert!(command.is_disabled());
+
+        let mut preserve = FreshLocatorCoverage::new();
+        assert!(preserve.try_arm(empty_authority(), stamp(1, None, None)));
+        drop(
+            preserve
+                .seal_preserve(stamp(1, None, Some(1)))
+                .expect("preserve publication witness"),
+        );
+        assert!(!preserve.allows_private_miss(stamp(1, None, Some(1))));
+        assert!(preserve.is_disabled());
+
+        let mut direct = FreshLocatorCoverage::new();
+        assert!(direct.try_arm(empty_authority(), stamp(4, None, None)));
+        drop(
+            direct
+                .begin_direct(stamp(4, Some(1), Some(2)), direct_span(1, 1, 1, 1, 2))
+                .expect("direct witness"),
+        );
+        assert!(!direct.allows_private_miss(stamp(4, None, None)));
+        assert!(direct.is_disabled());
+
+        let mut immediate = FreshLocatorCoverage::new();
+        assert!(immediate.try_arm(empty_authority(), stamp(6, None, None)));
+        drop(
+            immediate
+                .begin_preserving_immediate(FreshLocatorCoverage::preserving_permit(1, [1; 32]))
+                .expect("preserving Immediate witness"),
+        );
+        assert!(!immediate.allows_private_miss(stamp(6, None, None)));
+        assert!(immediate.is_disabled());
+
+        let mut rebase = FreshLocatorCoverage::new();
+        assert!(rebase.try_arm(empty_authority(), stamp(7, None, None)));
+        drop(
+            rebase
+                .begin_rebase(stamp(7, None, None))
+                .expect("rebase witness"),
+        );
+        assert!(!rebase.allows_private_miss(stamp(7, None, None)));
+        assert!(rebase.is_disabled());
     }
 }

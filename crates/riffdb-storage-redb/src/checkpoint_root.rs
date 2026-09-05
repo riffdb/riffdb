@@ -77,6 +77,7 @@ const JOURNAL_TABLE_SLOTS: usize = JournalTable::ALL.len();
 /// either way; ordering it explicitly keeps the cache visibly subordinate to
 /// the snapshot it was resolved from.
 pub(crate) struct CheckpointRoot {
+    identity: u64,
     meta: OnceLock<MetaTable>,
     capabilities: OnceLock<ByteTable>,
     journal_tables: [OnceLock<ByteTable>; JOURNAL_TABLE_SLOTS],
@@ -86,14 +87,19 @@ pub(crate) struct CheckpointRoot {
 
 impl CheckpointRoot {
     /// Wraps one captured snapshot with an empty handle cache.
-    pub(crate) fn new(transaction: ReadTransaction) -> Self {
+    pub(crate) fn new(transaction: ReadTransaction, identity: u64) -> Self {
         Self {
+            identity,
             meta: OnceLock::new(),
             capabilities: OnceLock::new(),
             journal_tables: std::array::from_fn(|_| OnceLock::new()),
             snapshot_head: OnceLock::new(),
             transaction,
         }
+    }
+
+    pub(crate) const fn identity(&self) -> u64 {
+        self.identity
     }
 
     /// Resolves the snapshot-visible application frontier once per snapshot.

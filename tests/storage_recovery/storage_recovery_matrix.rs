@@ -2263,26 +2263,45 @@ fn cold_fresh_database_publications_complete_without_history_scans() {
     let prepared = open_operational(RedbStore::open(&path.0).expect("validate fresh database"));
     let _clean = prepared.complete_graceful_close();
     drop(prepared);
-    let ports = open_operational(RedbStore::open(&path.0).expect("reopen fresh database"));
+    let controller = RedbTestController::observe_index_migration();
+    let ports = open_operational(
+        RedbStore::open_with_test_controller(&path.0, controller.clone())
+            .expect("reopen fresh database"),
+    );
 
-    for first_ordinal in (1..=PUBLICATIONS).step_by(3) {
+    let mut fixtures = Vec::with_capacity(usize::try_from(PUBLICATIONS).expect("bounded proof"));
+    for ordinal in 1..=PUBLICATIONS {
+        let fixture = two_phase_command_fixture_at(ordinal);
+        assert_eq!(
+            ports
+                .lookup_admission(fixture.candidates.clone())
+                .expect("direct-inspection novel identity"),
+            AdmissionLookupResultV1::NotFound
+        );
+        assert_eq!(
+            controller.fresh_locator_history_fallback_scans(),
+            0,
+            "admission {ordinal} must use the exact public-prefix proof"
+        );
+        let request = AdmissionRequestV1::new(fixture.candidates.clone(), &fixture.context)
+            .expect("bounded admission request");
+        assert_eq!(
+            ports
+                .admit_or_resolve(request)
+                .unwrap_or_else(|error| panic!("admit novel identity {ordinal}: {error:?}")),
+            AdmissionResultV1::Created(fixture.pending.clone())
+        );
+        fixtures.push(fixture);
+    }
+
+    for (pipeline_ordinal, group) in fixtures.chunks_exact(3).enumerate() {
+        let first_ordinal = u64::try_from(pipeline_ordinal)
+            .expect("bounded pipeline ordinal")
+            .checked_mul(3)
+            .and_then(|value| value.checked_add(1))
+            .expect("bounded first ordinal");
         let mut pipeline = Vec::with_capacity(3);
-        for ordinal in first_ordinal..=first_ordinal + 2 {
-            let fixture = two_phase_command_fixture_at(ordinal);
-            assert_eq!(
-                ports
-                    .lookup_admission(fixture.candidates.clone())
-                    .expect("direct-inspection novel identity"),
-                AdmissionLookupResultV1::NotFound
-            );
-            let request = AdmissionRequestV1::new(fixture.candidates.clone(), &fixture.context)
-                .expect("bounded admission request");
-            assert_eq!(
-                ports
-                    .admit_or_resolve(request)
-                    .expect("admit novel identity"),
-                AdmissionResultV1::Created(fixture.pending.clone())
-            );
+        for fixture in group {
             let epoch = ports
                 .begin_deferred_command_epoch()
                 .expect("begin bounded pipelined epoch");
@@ -2325,9 +2344,9 @@ fn cold_fresh_database_publications_complete_without_history_scans() {
         }
     }
 
-    let final_fixture = two_phase_command_fixture_at(PUBLICATIONS);
+    let final_fixture = fixtures.last().expect("final bounded fixture");
     let AdmissionLookupResultV1::Found(final_state) = ports
-        .lookup_admission(final_fixture.candidates)
+        .lookup_admission(final_fixture.candidates.clone())
         .expect("exact final admitted outcome")
     else {
         panic!("final identity must resolve to its committed outcome");
@@ -2341,6 +2360,7 @@ fn cold_fresh_database_publications_complete_without_history_scans() {
     );
     assert_eq!(ports.transient_index_rebuilds(), 0);
     assert_eq!(ports.transient_index_commit_rows(), 0);
+    assert_eq!(controller.fresh_locator_history_fallback_scans(), 0);
 }
 
 // req: OUT-001, OUT-002, TXN-042, REC-004, PERF-019

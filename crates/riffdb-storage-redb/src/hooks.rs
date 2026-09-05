@@ -111,6 +111,7 @@ struct TestControllerInner {
     events: Mutex<Vec<RedbTestEvent>>,
     index_migration: Mutex<IndexMigrationObservation>,
     audit_sequence_begin_reads: AtomicU64,
+    fresh_locator_history_fallback_scans: AtomicU64,
     #[cfg(feature = "test-fixtures")]
     external_kill_barrier: Option<PathBuf>,
     #[cfg(feature = "test-fixtures")]
@@ -146,6 +147,7 @@ impl RedbTestController {
                 events: Mutex::new(Vec::new()),
                 index_migration: Mutex::new(IndexMigrationObservation::default()),
                 audit_sequence_begin_reads: AtomicU64::new(0),
+                fresh_locator_history_fallback_scans: AtomicU64::new(0),
                 #[cfg(feature = "test-fixtures")]
                 external_kill_barrier: None,
                 #[cfg(feature = "test-fixtures")]
@@ -172,6 +174,23 @@ impl RedbTestController {
         self.inner
             .audit_sequence_begin_reads
             .load(Ordering::Relaxed)
+    }
+
+    /// Returns how many operational idempotency misses used history fallback.
+    #[must_use]
+    pub fn fresh_locator_history_fallback_scans(&self) -> u64 {
+        self.inner
+            .fresh_locator_history_fallback_scans
+            .load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn observe_fresh_locator_history_fallback_scan(&self) {
+        let _ = self
+            .inner
+            .fresh_locator_history_fallback_scans
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_add(1))
+            });
     }
 
     /// Injects one proven-not-committed storage failure.
@@ -239,6 +258,7 @@ impl RedbTestController {
                 events: Mutex::new(Vec::new()),
                 index_migration: Mutex::new(IndexMigrationObservation::default()),
                 audit_sequence_begin_reads: AtomicU64::new(0),
+                fresh_locator_history_fallback_scans: AtomicU64::new(0),
                 external_kill_barrier: Some(marker.into()),
                 external_engine_sync_armed: AtomicU64::new(0),
             }),
@@ -268,6 +288,7 @@ impl RedbTestController {
                 events: Mutex::new(Vec::new()),
                 index_migration: Mutex::new(IndexMigrationObservation::default()),
                 audit_sequence_begin_reads: AtomicU64::new(0),
+                fresh_locator_history_fallback_scans: AtomicU64::new(0),
                 external_kill_barrier: Some(marker.into()),
                 external_engine_sync_armed: AtomicU64::new(0),
             }),
@@ -346,6 +367,7 @@ impl RedbTestController {
                 events: Mutex::new(Vec::new()),
                 index_migration: Mutex::new(IndexMigrationObservation::default()),
                 audit_sequence_begin_reads: AtomicU64::new(0),
+                fresh_locator_history_fallback_scans: AtomicU64::new(0),
                 #[cfg(feature = "test-fixtures")]
                 external_kill_barrier: None,
                 #[cfg(feature = "test-fixtures")]
