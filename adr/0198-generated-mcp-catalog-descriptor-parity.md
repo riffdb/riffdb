@@ -1,10 +1,10 @@
 ---
 adr: 0198
 title: Generated MCP Catalog Descriptor Parity
-status: proposed
+status: accepted
 tier: surface
 date: 2026-09-05
-accepted: null
+accepted: "2026-09-05"
 requires: [ADR-0008, ADR-0020, ADR-0040, ADR-0047, ADR-0064, ADR-0124,
   ADR-0155, ADR-0194]
 amends:
