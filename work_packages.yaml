@@ -2709,8 +2709,8 @@ work_packages:
   depends_on: [WP-569, WP-573, WP-782]
   objective: Close the gap between what the release gate claims and what it exercises. OpenFGA has
     live upstream-suite evidence; the general WP-578/WP-579 MLflow and Woodpecker rows are RiffDB-
-    authored language-expressiveness matrices; and narrower completed MLflow and Better Auth
-    external profile receipts retain only their exact capability-specific claims.
+    authored language-expressiveness matrices; and narrower completed MLflow and Better Auth claims
+    retain only their exact RiffDB-matrix, RiffDB-live, or external-live evidence strength.
   requirements: [SAFE-001, DRV-014, BLK-014, BLK-064, BLK-070, DEL-012,
     OQ-016, OQ-030, OQ-100, OQ-112, WF-014, APE-001, APE-013, RAP-016, EXP-014,
     END-001, QSO-012]
@@ -2721,8 +2721,8 @@ work_packages:
     claim records and source locators, with the four general-alpha rows distinguished from every
     preserved capability-specific external receipt
   - MLflow and Woodpecker's WP-578/WP-579 general rows classified as language-expressiveness
-    matrices without erasing or widening the separate WP-738, WP-743/OQ-112, and WP-744/BLK-064
-    MLflow live receipts
+    matrices without erasing or widening the separate external WP-738 and WP-743/OQ-112 receipts or
+    the RiffDB-owned WP-744/BLK-064 live loopback
   - Better Auth's supported surface stated where an adopter meets it, including that additional
     fields and plugins require generation/configuration of a reviewed materialized profile, and
     that the framework's generic facade is an exact profile-bound dispatcher rather than generic
@@ -2734,8 +2734,8 @@ work_packages:
   - ./scripts/adapter-conformance --all-domains --all-languages
   - ./scripts/downstream-adapter-check
   exit_gate: Every named claim maps to one exact scoped inventory record; only OpenFGA carries a
-    complete upstream-suite claim, each partial external receipt remains truthful and narrow, every
-    repository matrix is labeled as such, and no gate sentence overstates what its evidence covers.
+    complete upstream-suite claim, each external, RiffDB-live, or matrix record remains truthful and
+    narrow, and no gate sentence overstates what its evidence covers.
 
 - id: WP-725
   name: Seeded-campaign determinism restoration
@@ -24238,7 +24238,7 @@ work_packages:
   - Better Auth would be described beyond its exact materialized profile, its profile-bound generic
     facade would be mistaken for generic RiffDB CRUD, or it would gain dynamic schema, uncompiled
     transactions, field omission, or runtime fallback.
-  - Any completed MLflow or Better Auth external partial-profile evidence would be erased, widened,
-    or presented as complete upstream-suite conformance.
+  - Any completed MLflow or Better Auth external, RiffDB-live, or matrix evidence would be erased,
+    widened, or presented as complete upstream-suite conformance.
   - Runtime/public/durable/protocol/storage/authorization/transaction behavior, evidence artifacts
     or results, acceptance thresholds, adapter code, or the WP-578 72-hour execution would change.
