@@ -81,7 +81,9 @@ impl ApplicationInstallationCampaignRepository for RedbOperationalPorts {
             return Ok(ApplicationInstallationCampaignWriteResultV1::CompareMismatch);
         }
         let encoded = encode_application_installation_campaign_v1(replacement)?;
-        access.register_fresh_locator_byte_insert(APPLICATION_INSTALLATION_CAMPAIGNS, key)?;
+        access.expect_fresh_locator_byte_insert(APPLICATION_INSTALLATION_CAMPAIGNS, key)?;
+        access.close_fresh_locator_mutation_expectations()?;
+        access.record_actual_fresh_locator_byte_insert(APPLICATION_INSTALLATION_CAMPAIGNS, key)?;
         table
             .insert(key.as_slice(), encoded.as_bytes())
             .map_err(precommit_storage_error)?;

@@ -103,7 +103,9 @@ impl RedbOperationalPorts {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         let encoded = encode_columnar_projection_control_v1(&replacement)?;
-        access.register_fresh_locator_byte_insert(COLUMNAR_PROJECTION_CONTROLS, &key)?;
+        access.expect_fresh_locator_byte_insert(COLUMNAR_PROJECTION_CONTROLS, &key)?;
+        access.close_fresh_locator_mutation_expectations()?;
+        access.record_actual_fresh_locator_byte_insert(COLUMNAR_PROJECTION_CONTROLS, &key)?;
         table
             .insert(key.as_slice(), encoded.as_bytes())
             .map_err(precommit_storage_error)?;
@@ -157,8 +159,12 @@ impl ColumnarProjectionControlRepository for RedbOperationalPorts {
                 return Ok(ColumnarProjectionControlWriteResultV1::StateChanged);
             }
         }
+        for (key, _) in &encoded {
+            access.expect_fresh_locator_byte_insert(COLUMNAR_PROJECTION_CONTROLS, key)?;
+        }
+        access.close_fresh_locator_mutation_expectations()?;
         for (key, value) in encoded {
-            access.register_fresh_locator_byte_insert(COLUMNAR_PROJECTION_CONTROLS, &key)?;
+            access.record_actual_fresh_locator_byte_insert(COLUMNAR_PROJECTION_CONTROLS, &key)?;
             table
                 .insert(key.as_slice(), value.as_bytes())
                 .map_err(precommit_storage_error)?;

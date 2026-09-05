@@ -1042,11 +1042,16 @@ impl EventConsumerRepository for RedbOperationalPorts {
                 Ok(result)
             }
             EvaluatedEventConsumerTransitionV1::Replace(replacement) => {
+                expect_snapshot_removal(&access, current.as_ref(), identity)?;
+                expect_snapshot_installation(&access, replacement.as_ref())?;
+                access.close_fresh_locator_mutation_expectations()?;
                 replace_snapshot(&access, current.as_ref(), replacement.as_ref())?;
                 access.commit_for(RedbTestOperation::EventConsumerTransition)?;
                 Ok(EventConsumerTransitionResultV1::Applied)
             }
             EvaluatedEventConsumerTransitionV1::Retire(identity) => {
+                expect_snapshot_removal(&access, current.as_ref(), identity)?;
+                access.close_fresh_locator_mutation_expectations()?;
                 remove_snapshot(&access, current.as_ref(), identity)?;
                 access.commit_for(RedbTestOperation::EventConsumerTransition)?;
                 Ok(EventConsumerTransitionResultV1::Applied)
@@ -1182,7 +1187,7 @@ fn replace_snapshot(
     let mut consumers = transaction
         .open_table(EVENT_CONSUMERS)
         .map_err(table_error)?;
-    access.register_fresh_locator_byte_insert(EVENT_CONSUMERS, &consumer_key)?;
+    access.record_actual_fresh_locator_byte_insert(EVENT_CONSUMERS, &consumer_key)?;
     if consumers
         .insert(consumer_key.as_slice(), consumer_value.as_bytes())
         .map_err(precommit_storage_error)?
@@ -1197,7 +1202,7 @@ fn replace_snapshot(
     for delivery in replacement.deliveries() {
         let key = encode_event_consumer_delivery_key(identity, delivery.event_id());
         let value = encode_event_consumer_delivery_v1(delivery)?;
-        access.register_fresh_locator_byte_insert(EVENT_CONSUMER_DELIVERIES, &key)?;
+        access.record_actual_fresh_locator_byte_insert(EVENT_CONSUMER_DELIVERIES, &key)?;
         if deliveries
             .insert(key.as_slice(), value.as_bytes())
             .map_err(precommit_storage_error)?
@@ -1219,7 +1224,7 @@ fn remove_snapshot(
     let mut consumers = transaction
         .open_table(EVENT_CONSUMERS)
         .map_err(table_error)?;
-    access.register_fresh_locator_byte_delete(EVENT_CONSUMERS, &consumer_key)?;
+    access.record_actual_fresh_locator_byte_delete(EVENT_CONSUMERS, &consumer_key)?;
     let removed = consumers
         .remove(consumer_key.as_slice())
         .map_err(precommit_storage_error)?;
@@ -1234,7 +1239,7 @@ fn remove_snapshot(
     if let Some(current) = current {
         for delivery in current.deliveries() {
             let key = encode_event_consumer_delivery_key(identity, delivery.event_id());
-            access.register_fresh_locator_byte_delete(EVENT_CONSUMER_DELIVERIES, &key)?;
+            access.record_actual_fresh_locator_byte_delete(EVENT_CONSUMER_DELIVERIES, &key)?;
             if deliveries
                 .remove(key.as_slice())
                 .map_err(precommit_storage_error)?
@@ -1243,6 +1248,40 @@ fn remove_snapshot(
                 return Err(corrupt());
             }
         }
+    }
+    Ok(())
+}
+
+fn expect_snapshot_removal(
+    access: &crate::store::RedbWriteAccess,
+    current: Option<&EventConsumerSnapshotV1>,
+    identity: EventConsumerIdentityHash,
+) -> Result<(), StorageError> {
+    access
+        .expect_fresh_locator_byte_delete(EVENT_CONSUMERS, &encode_event_consumer_key(identity))?;
+    if let Some(current) = current {
+        for delivery in current.deliveries() {
+            access.expect_fresh_locator_byte_delete(
+                EVENT_CONSUMER_DELIVERIES,
+                &encode_event_consumer_delivery_key(identity, delivery.event_id()),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn expect_snapshot_installation(
+    access: &crate::store::RedbWriteAccess,
+    replacement: &EventConsumerSnapshotV1,
+) -> Result<(), StorageError> {
+    let identity = replacement.consumer().identity().identity_hash();
+    access
+        .expect_fresh_locator_byte_insert(EVENT_CONSUMERS, &encode_event_consumer_key(identity))?;
+    for delivery in replacement.deliveries() {
+        access.expect_fresh_locator_byte_insert(
+            EVENT_CONSUMER_DELIVERIES,
+            &encode_event_consumer_delivery_key(identity, delivery.event_id()),
+        )?;
     }
     Ok(())
 }
