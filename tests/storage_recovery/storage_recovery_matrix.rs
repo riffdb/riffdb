@@ -1819,6 +1819,12 @@ fn process_recovery_child() {
         "after-command-batch-commit" => {
             RedbTestController::abort_after_commit(RedbTestOperation::CommandBatch)
         }
+        "before-fresh-locator-publication" => {
+            RedbTestController::abort_before_commit(RedbTestOperation::CommandBatch)
+        }
+        "after-fresh-locator-publication" => {
+            RedbTestController::abort_after_commit(RedbTestOperation::CommandBatch)
+        }
         "before-cross-aggregate-commit" => {
             RedbTestController::abort_before_commit(RedbTestOperation::CommandBatch)
         }
@@ -1917,6 +1923,19 @@ fn process_recovery_child() {
         | "after-command-batch-commit" => {
             let ports = open_operational(store);
             commit_command_fixture(&ports, &command_fixture());
+        }
+        "before-fresh-locator-publication" | "after-fresh-locator-publication" => {
+            let ports = open_operational(store);
+            let fixture = two_phase_command_fixture_at(1);
+            let request = AdmissionRequestV1::new(fixture.candidates.clone(), &fixture.context)
+                .expect("fresh crash-child admission request");
+            assert_eq!(
+                ports
+                    .admit_or_resolve(request)
+                    .expect("arm coverage through the exact first command write"),
+                AdmissionResultV1::Created(fixture.pending.clone())
+            );
+            commit_command_fixture(&ports, &fixture);
         }
         "before-cross-aggregate-commit" | "after-cross-aggregate-commit" => {
             let ports = open_operational(store);
@@ -2282,6 +2301,73 @@ fn cold_fresh_database_publications_complete_without_history_scans() {
     assert_eq!(ports.fresh_locator_history_fallback_scans(), 0);
     assert_eq!(ports.transient_index_rebuilds(), 0);
     assert_eq!(ports.transient_index_commit_rows(), 0);
+}
+
+// req: OUT-001, OUT-002, TXN-042, REC-004, PERF-019
+#[test]
+fn fresh_locator_before_and_after_publication_kills_drop_process_proof_and_fail_closed() {
+    for (mode, committed) in [
+        ("before-fresh-locator-publication", false),
+        ("after-fresh-locator-publication", true),
+    ] {
+        let path = TestDatabasePath::new(mode);
+        prepare_command_database(&path.0);
+        run_crashing_child(mode, &path.0);
+
+        let ports = open_operational(
+            RedbStore::open(&path.0).expect("recover killed fresh-locator publication"),
+        );
+        let prior = two_phase_command_fixture_at(1);
+        let AdmissionLookupResultV1::Found(prior_state) = ports
+            .lookup_admission(prior.candidates)
+            .expect("prior identity remains exactly readable after restart")
+        else {
+            panic!("the admitted pre-publication identity must survive both kill boundaries");
+        };
+        assert_eq!(
+            matches!(*prior_state, StoredAdmissionStateV1::StoredOutcome(_)),
+            committed,
+            "only the after-publication kill may expose the complete command outcome"
+        );
+        let _clean = ports.complete_graceful_close();
+        drop(ports);
+        let ports = open_operational(
+            RedbStore::open(&path.0).expect("clean reopen after killed publication recovery"),
+        );
+
+        let novel = two_phase_command_fixture_at(2);
+        assert_eq!(
+            ports
+                .lookup_admission(novel.candidates.clone())
+                .expect("restart novel-key inspection retains its prior result algebra"),
+            AdmissionLookupResultV1::NotFound
+        );
+        let fallback_after_first_lookup = ports.fresh_locator_history_fallback_scans();
+        assert!(
+            fallback_after_first_lookup <= 1,
+            "restart may use only the accepted checkpoint/index proof or one bounded history fallback"
+        );
+        let request = AdmissionRequestV1::new(novel.candidates.clone(), &novel.context)
+            .expect("post-restart admission request");
+        assert_eq!(
+            ports
+                .admit_or_resolve(request)
+                .expect("nonempty first command-write entry keeps current admission semantics"),
+            AdmissionResultV1::Created(novel.pending)
+        );
+        let later = two_phase_command_fixture_at(3);
+        assert_eq!(
+            ports
+                .lookup_admission(later.candidates)
+                .expect("disabled coverage keeps bounded operational fallback"),
+            AdmissionLookupResultV1::NotFound
+        );
+        assert!(
+            ports.fresh_locator_history_fallback_scans()
+                <= fallback_after_first_lookup.saturating_add(1),
+            "a lost process proof must never cause an unbounded or duplicate fallback"
+        );
+    }
 }
 
 #[test]
