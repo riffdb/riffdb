@@ -41,8 +41,8 @@ upstream suite. The evidence is not uniform. OpenFGA has accepted live upstream-
 suite evidence; RiffDB's general MLflow and Woodpecker matrices are authored
 fixtures; and Better Auth is a generated compiled profile without a complete
 upstream-suite receipt. But completed WP-630, WP-648/WP-655, WP-738, WP-743,
-and WP-744 also retain narrower external profile and live receipts. A global
-“fixture” label would make those truthful claims false.
+and WP-744 also retain narrower scoped profile, external-live, and RiffDB-live
+evidence. A global “fixture” label would make those truthful claims false.
 
 ADR-0117 remains authoritative. RiffDB exposes no generic CRUD or transaction
 surface. An external adapter may implement its framework's generic facade only
@@ -87,15 +87,16 @@ unknown runtime call refuses rather than falling back or synthesizing behavior.
      `complete_upstream_suite: false`; sources
      `work_packages.yaml#WP-648.closure` and `work_packages.yaml#WP-655.closure`.
    - `partial.better_auth.lifecycle`: subject `better_auth`, scope
-     `DEL-012,QSO-012`, the same class and custody,
+     `DEL-012,QSO-012`, class `materialized_profile_matrix`, custody `riffdb`,
      `complete_upstream_suite: false`; source
      `work_packages.yaml#WP-630.closure`.
    - `partial.mlflow.filtered_search`: subject `mlflow`, scope `OQ-100`, class
      `external_partial_profile_live`, custody `external`,
      `complete_upstream_suite: false`; source
      `release/evidence/long-pattern-readiness-mlflow-loopback-v1.json`.
-   - `partial.mlflow.large_run`: subject `mlflow`, scope `BLK-064`, the same
-     class and custody, `complete_upstream_suite: false`; source
+   - `partial.mlflow.large_run`: subject `mlflow`, scope `BLK-064`, class
+     `riffdb_shape_live_loopback`, custody `riffdb`,
+     `complete_upstream_suite: false`; source
      `release/evidence/large-atomic-command-envelope-v1.json#/mlflow_loopback`.
    - `partial.mlflow.partition_search`: subject `mlflow`, scope `OQ-112`, the
      same class and custody, `complete_upstream_suite: false`; sources
@@ -115,8 +116,9 @@ unknown runtime call refuses rather than falling back or synthesizing behavior.
 
 5. `BLK-014`, `OQ-016`, `WF-014`, and `RAP-016` remain language/domain-shape
    corpora; `BLK-064`, `DEL-012`, `OQ-030`, `OQ-100`, `OQ-112`, and `QSO-012` retain their
-   exact bounded real-profile claims; `BLK-070` retains its generated/redb
-   execution rule. `APE-001` and `DRV-014` remain unchanged. `APE-013`,
+   exact bounded capability requirements at the evidence strengths above;
+   `BLK-070` retains its generated/redb execution rule. `APE-001` and `DRV-014`
+   remain unchanged. `APE-013`,
    `EXP-014`, `END-001`, and the WP-578/WP-579 general matrix are reconciled to
    the four alpha records without weakening any drill or promoting its claim.
 
