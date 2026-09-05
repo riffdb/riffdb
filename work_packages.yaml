@@ -2838,7 +2838,8 @@ work_packages:
     release/kubernetes ships one raw riffdb.yaml and release/container ships a Compose file; there
     is no chart, no values surface, and no upgrade path between released versions.
   requirements: [NET-010, NET-012, APE-002]
-  required_adrs: [ADR-0202, ADR-0055, ADR-0056, ADR-0112, ADR-0124]
+  required_adrs: [ADR-0202, ADR-0055, ADR-0056, ADR-0105, ADR-0110, ADR-0112,
+    ADR-0124]
   allowed_paths: [work_packages.yaml, release/**, docs/operations/**, docs/**, scripts/**,
     .github/workflows/**]
   deliverables:
@@ -24201,30 +24202,40 @@ work_packages:
     operator runbook against two distinct immutable published chart versions and retaining one
     bounded redacted receipt that cannot be satisfied by local or draft artifacts.
   requirements: [NET-010, NET-012, APE-002]
-  required_adrs: [ADR-0202, ADR-0055, ADR-0056, ADR-0112, ADR-0124]
+  required_adrs: [ADR-0202, ADR-0055, ADR-0056, ADR-0105, ADR-0110, ADR-0112,
+    ADR-0124]
   allowed_paths: [work_packages.yaml, release/evidence/wp-783/**,
-    scripts/check-published-helm-upgrade-evidence, docs/operations/**, docs/**,
+    scripts/check-published-helm-upgrade-evidence,
+    scripts/run-published-helm-upgrade-evidence, docs/operations/**, docs/**,
     .github/workflows/**]
   deliverables:
-  - One versioned bounded evidence receipt binding two distinct already-published immutable chart
-    SemVer/appVersion pairs, exact RiffDB source revisions, archive SHA-256 values, signatures,
-    provenance, container digests, durable-format manifests, the accepted runbook digest, and a
-    controlled-cluster identity without retaining hostnames, principals, secrets, or application data
-  - Actual source-chart install and authenticated readiness through service DNS and the pass-through
-    proxy, followed by application admission drain, verified backup, stopped-database candidate
-    preflight, only the manifest-authorized action, target-chart upgrade, and authenticated readiness
-    before traffic is readmitted
+  - One versioned bounded receipt indexing two immutable signed non-draft WP-728 publication
+    attestations and independently anchored cluster evidence from an exact reviewed harness/workflow;
+    it cross-binds distinct release/chart SemVer, archive SHA-256, source revision, appVersion, and
+    appVersion-resolved image digest plus the external workflow-run identity, harness/workflow hashes,
+    signature/provenance, and every terminal result digest, without trusting hand-authored fields or URLs
+  - Actual source-chart install, closed payload-free unauthenticated liveness, authenticated readiness,
+    and stable-application access from a separate pod through service DNS and the pass-through proxy;
+    an allowed-partner/refused-untrusted probe verifies the controlled-design-partner-network boundary
+    before drain, verified backup, stopped-database candidate preflight, only the manifest-authorized
+    action, target-chart upgrade, authenticated readiness, and application traffic readmission
   - Actual certificate reload and successor-prove-switch-revoke credential rotation observations,
     bounded shutdown, backup/restore, and the runbook's exact safe rollback result whose
     deployment-object rollback is allowed only before candidate storage access, otherwise requiring
     forward recovery or verified destructive restore while unsupported binary/database downgrade
     remains refused
-  - Strict validator rejecting local rehearsal identities, draft or mutable URLs/tags, unsigned or
-    unprovenanced archives, equal versions/revisions/digests, appVersion/image mismatch, missing
-    durable preflight or backup, hand-edited manifests, loopback/host networking, unbounded settings,
-    prose-only observations, secret/value leakage, and absent terminal operation results
+  - Strict validator rejecting local rehearsal identities, draft/mutable releases, unsigned or
+    unprovenanced publication records, equal release/chart versions, archives, source revisions,
+    appVersions, or intended image digests, any appVersion/image mismatch, and cluster evidence lacking
+    an independent external run anchor, reviewed harness/workflow identity, terminal result digests,
+    signature, or provenance; exact truthful runbook and durable-manifest digests may be identical
+  - Negative cases also reject missing separate-pod stable-application access, non-payload-free
+    liveness, absent allowed/refused network probes, hand-edited manifests, loopback/host networking,
+    unbounded settings, missing preflight/backup/operation results, prose-only claims, and secret/value
+    leakage
   acceptance_commands:
   - ./scripts/acceptance --wp WP-783
+  - ./scripts/run-published-helm-upgrade-evidence --self-test
   - ./scripts/check-published-helm-upgrade-evidence
   - ./scripts/check-helm-operator-package
   - ./scripts/check-helm-render
@@ -24232,11 +24243,13 @@ work_packages:
   - ./scripts/check-generated
   - ./scripts/handbook check
   - ./scripts/ci-all
-  exit_gate: Two distinct immutable published chart artifacts and their appVersion-bound images have
-    passed the complete accepted runbook on a controlled cluster, including source readiness, drain,
-    verified backup, stopped-database preflight, target upgrade, proxy readiness, both rotations,
-    bounded shutdown, restore, and safe rollback/refusal; the strict redacted receipt validates and
-    no local rehearsal, draft artifact, or operator assertion substitutes for execution.
+  exit_gate: Two distinct immutable signed non-draft WP-728 chart publications and their distinct
+    revisions/appVersion-bound images cross-validate against independently anchored, signed/provenanced
+    execution from the reviewed harness/workflow; the controlled cluster proves payload-free liveness,
+    authenticated readiness, allowed/refused network boundaries, separate-pod stable-application proxy
+    access, drain, verified backup, stopped-database preflight, target upgrade, both rotations, bounded
+    shutdown, restore, and safe rollback/refusal with terminal result digests; shared truthful runbook
+    or durable-manifest digests may match, and no local/draft/hand-authored claim substitutes.
   standing_design_tests:
     interface_safety: Evidence observes existing operator and application-service operations only;
       it grants no authority, carries no bearer or data value, enables no application/MCP install,
@@ -24244,4 +24257,13 @@ work_packages:
     scale: The campaign uses two chart archives, one controlled cluster, finite operation attempts,
       existing runtime bounds, bounded timestamps/counts/digests, and one fixed-size receipt; it
       retains no request stream, database contents, cluster inventory, or duration-proportional log.
-  human_review_triggers: *id001
+  human_review_triggers: &id0202
+  - Either release lacks an immutable signed non-draft WP-728 publication attestation, or cluster
+    execution is not independently anchored to the exact reviewed harness/workflow, external run,
+    terminal result digests, signature, and provenance.
+  - Separate-pod stable-application proxy access, closed payload-free liveness, or the verified
+    allowed-partner/refused-untrusted controlled-network boundary would be absent or prose-only.
+  - Release/chart version, archive, source revision, appVersion, or intended image distinctness would
+    weaken, or truthful common runbook/durable-manifest digests would be forced to differ.
+  - A local render, draft/mutable artifact, URL, hand-authored receipt, operator assertion, loopback,
+    host network, secret/value-bearing evidence, or unsafe rollback/downgrade could close the package.

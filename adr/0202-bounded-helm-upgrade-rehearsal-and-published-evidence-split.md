@@ -5,7 +5,7 @@ status: proposed
 tier: surface
 date: 2026-09-05
 accepted: null
-requires: [ADR-0055, ADR-0056, ADR-0112, ADR-0124]
+requires: [ADR-0055, ADR-0056, ADR-0105, ADR-0110, ADR-0112, ADR-0124]
 amends: []
 supersedes: []
 requirements: [NET-010, NET-012, APE-002]
@@ -22,11 +22,13 @@ obligations:
   - id: OBL-0202-3
     package: WP-783
     proof: scripts/check-published-helm-upgrade-evidence
-    says: A bounded redacted receipt binds two distinct already-published immutable chart archives and source revisions to checksums, signatures, provenance, appVersion images, durable manifests, the exact runbook, and actual controlled-cluster install, preflight, backup, upgrade, readiness, proxy, rotation, drain, and safe rollback-or-refusal observations.
+    says: A strict validator cross-checks two distinct releases, chart archives, source revisions, and appVersion images against immutable signed non-draft WP-728 publication attestations and independently signed/provenanced cluster evidence from one reviewed harness/workflow; actual separate-pod stable-application access, payload-free liveness, controlled-design-partner-network restriction, preflight, backup, upgrade, readiness, proxy, rotation, drain, and safe rollback/refusal all have terminal result digests, while truthful common runbook and durable-manifest digests may match.
 review_triggers:
   - The chart would create a Secret, capability, credential, application installation, host-network path, loopback shortcut, unbounded listener or workload setting, or unsafe storage action.
   - The local rehearsal would use a published-looking identity, contact a cluster or registry, mutate a database, or satisfy any published-release evidence field.
-  - Published evidence would omit either immutable archive, exact source revision, checksum, signature, provenance, appVersion image, durable preflight, backup, controlled-cluster observation, or safe rollback/refusal result.
+  - Published evidence would omit stable-application access from a separate pod, payload-free liveness, an allowed-partner/refused-untrusted network-boundary probe, durable preflight, backup, or safe rollback/refusal.
+  - A hand-authored receipt, URL, mutable tag, draft release, repository-local claim, unsigned WP-728 publication record, or cluster result without a reviewed harness/workflow identity, external run anchor, terminal-result digests, signature, and provenance could satisfy evidence.
+  - Distinctness would not cover release/chart versions, archives, source revisions, and intended appVersion images, or would incorrectly require truthful shared runbook or durable-manifest digests to differ.
   - Helm rollback would be presented as a durable database downgrade, or existing protocol, authorization, command, storage, durable-format, backup, or release-version semantics would change.
 ---
 # ADR-0202: Bounded Helm Upgrade Rehearsal and Published Evidence Split
@@ -91,13 +93,24 @@ would create false evidence.
 
 7. WP-783 separately depends on both WP-727 and WP-728 and stays open until two
    distinct chart versions genuinely exist as immutable published artifacts.
-   Its receipt binds exact SemVer chart/app versions, source revisions, archive
-   hashes, signatures, provenance, container digests, durable manifests, cluster
-   identity, runbook digest, bounded timestamps/counts, and every actual
-   operation in OBL-0202-3. It contains no Secret, bearer, application data,
-   database path, hostname, tenant, principal, or schema value. A local render,
-   dry run, mutable tag, draft URL, unsigned archive, one release under two
-   names, or unverified operator statement cannot close WP-783.
+   The receipt is an index, not authority. The checker verifies WP-728's signed,
+   non-draft immutable publication attestation for each archive and a separately
+   signed/provenanced cluster attestation produced by one reviewed harness and
+   workflow, bound to their content hashes, external run identity, and terminal
+   result digests. The cluster run includes separate-pod stable-application
+   access through the proxy, closed payload-free liveness, authenticated
+   readiness, an allowed-partner/refused-untrusted boundary probe, and every
+   operation in OBL-0202-3. Publication and cluster evidence cross-bind exact
+   inputs and results using WP-728's accepted verifier; hand-authored receipt
+   fields or URLs grant nothing.
+
+   Source and target must differ in release SemVer, chart SemVer, archive hash,
+   source revision, appVersion, and appVersion-resolved image digest. Truthful
+   common inputs may remain equal, including the exact runbook and durable-
+   manifest digests. The bounded receipt contains no Secret, bearer, application
+   data, database path, hostname, tenant, principal, or schema value. A local
+   render, dry run, mutable tag, draft release, unsigned archive, or one release
+   under two names cannot close WP-783.
 
 8. This allocation changes deployment documentation, chart templates, and
    evidence custody only. It changes no application operation, MCP tool,
