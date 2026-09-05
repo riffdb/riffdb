@@ -478,7 +478,9 @@ impl ApplicationExportOperationRepository for RedbOperationalPorts {
             return Ok(ApplicationExportOperationWriteResultV1::CompareMismatch);
         }
         let encoded = encode_application_export_operation_v1(replacement)?;
-        access.register_fresh_locator_byte_insert(APPLICATION_EXPORT_OPERATIONS, key)?;
+        access.expect_fresh_locator_byte_insert(APPLICATION_EXPORT_OPERATIONS, key)?;
+        access.close_fresh_locator_mutation_expectations()?;
+        access.record_actual_fresh_locator_byte_insert(APPLICATION_EXPORT_OPERATIONS, key)?;
         table
             .insert(key.as_slice(), encoded.as_bytes())
             .map_err(precommit_storage_error)?;

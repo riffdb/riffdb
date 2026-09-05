@@ -2077,3 +2077,195 @@ fn fresh_locator_preserving_immediate_permits_are_closed_exact_and_bounded() {
         META_APPLICATION_SEQUENCE.as_bytes()
     ));
 }
+
+// req: OUT-001, OUT-002, TXN-042, REC-004, PERF-019
+#[test]
+fn preserving_lane_expected_and_actual_sets_are_independent_exact_and_maximal() {
+    fn mutation(
+        table: &str,
+        key: impl Into<Box<[u8]>>,
+        kind: FreshLocatorMutationKind,
+    ) -> FreshLocatorMutationPermit {
+        FreshLocatorMutationPermit {
+            table: table.into(),
+            key: key.into(),
+            kind,
+        }
+    }
+
+    let one = mutation(
+        "event_consumers",
+        b"consumer".as_slice(),
+        FreshLocatorMutationKind::Insert,
+    );
+    let same = mutation(
+        "event_consumers",
+        b"consumer".as_slice(),
+        FreshLocatorMutationKind::Insert,
+    );
+    assert!(
+        matching_fresh_locator_mutations(PreservingImmediateClass::Consumer, &[one], &[same],)
+            .is_some()
+    );
+
+    for (expected, actual) in [
+        (
+            vec![mutation(
+                "event_consumers",
+                b"expected".as_slice(),
+                FreshLocatorMutationKind::Insert,
+            )],
+            vec![mutation(
+                "event_consumers",
+                b"actual".as_slice(),
+                FreshLocatorMutationKind::Insert,
+            )],
+        ),
+        (
+            vec![mutation(
+                "event_consumers",
+                b"same".as_slice(),
+                FreshLocatorMutationKind::Insert,
+            )],
+            vec![
+                mutation(
+                    "event_consumers",
+                    b"same".as_slice(),
+                    FreshLocatorMutationKind::Insert,
+                ),
+                mutation(
+                    "event_consumers",
+                    b"extra".as_slice(),
+                    FreshLocatorMutationKind::Insert,
+                ),
+            ],
+        ),
+        (
+            vec![
+                mutation(
+                    "event_consumers",
+                    b"duplicate".as_slice(),
+                    FreshLocatorMutationKind::Insert,
+                ),
+                mutation(
+                    "event_consumers",
+                    b"duplicate".as_slice(),
+                    FreshLocatorMutationKind::Insert,
+                ),
+            ],
+            vec![mutation(
+                "event_consumers",
+                b"duplicate".as_slice(),
+                FreshLocatorMutationKind::Insert,
+            )],
+        ),
+        (
+            vec![mutation(
+                "event_consumers",
+                b"duplicate".as_slice(),
+                FreshLocatorMutationKind::Insert,
+            )],
+            vec![
+                mutation(
+                    "event_consumers",
+                    b"duplicate".as_slice(),
+                    FreshLocatorMutationKind::Insert,
+                ),
+                mutation(
+                    "event_consumers",
+                    b"duplicate".as_slice(),
+                    FreshLocatorMutationKind::Insert,
+                ),
+            ],
+        ),
+        (
+            vec![mutation(
+                "commits",
+                b"excluded".as_slice(),
+                FreshLocatorMutationKind::Insert,
+            )],
+            vec![mutation(
+                "commits",
+                b"excluded".as_slice(),
+                FreshLocatorMutationKind::Insert,
+            )],
+        ),
+    ] {
+        assert!(
+            matching_fresh_locator_mutations(
+                PreservingImmediateClass::Consumer,
+                &expected,
+                &actual,
+            )
+            .is_none()
+        );
+    }
+
+    let mut maximum = Vec::with_capacity(MAX_FRESH_LOCATOR_PRESERVING_MUTATIONS);
+    maximum.push(mutation(
+        "event_consumers",
+        b"consumer".as_slice(),
+        FreshLocatorMutationKind::Delete,
+    ));
+    maximum.push(mutation(
+        "event_consumers",
+        b"consumer".as_slice(),
+        FreshLocatorMutationKind::Insert,
+    ));
+    for ordinal in 0..riffdb_storage_api::MAX_CONSUMER_DELIVERY_RECORDS {
+        let key = u64::try_from(ordinal)
+            .expect("bounded ordinal")
+            .to_be_bytes();
+        maximum.push(mutation(
+            "event_consumer_deliveries",
+            key,
+            FreshLocatorMutationKind::Delete,
+        ));
+        maximum.push(mutation(
+            "event_consumer_deliveries",
+            key,
+            FreshLocatorMutationKind::Insert,
+        ));
+    }
+    assert_eq!(maximum.len(), 8_194);
+    assert_eq!(MAX_FRESH_LOCATOR_PRESERVING_MUTATIONS, 8_194);
+    assert_eq!(
+        matching_fresh_locator_mutations(PreservingImmediateClass::Consumer, &maximum, &maximum,)
+            .expect("legal maximum replacement")
+            .0,
+        8_194
+    );
+}
+
+// req: OUT-001, OUT-002, TXN-042
+#[test]
+fn preserving_expectations_close_before_the_first_actual_mutation() {
+    let path = TestDatabasePath::new("fresh-locator-expected-before-actual");
+    let mut store = RedbStore::open(&path.0).expect("open store");
+    store
+        .initialize_database(database_id(0x39))
+        .expect("initialize store");
+    let ports = RedbDormantPorts {
+        shared: store.shared,
+    }
+    .into_operational_after_catalog_validation()
+    .expect("activate ports");
+    let access = ports.begin_write().expect("begin write");
+    access
+        .expect_fresh_locator_byte_insert(crate::layout::EVENT_CONSUMERS, b"expected")
+        .expect("first expectation");
+    access
+        .close_fresh_locator_mutation_expectations()
+        .expect("close expectations");
+    access
+        .record_actual_fresh_locator_byte_insert(crate::layout::EVENT_CONSUMERS, b"expected")
+        .expect("first actual mutation");
+    assert_eq!(
+        access
+            .expect_fresh_locator_byte_insert(crate::layout::EVENT_CONSUMERS, b"late")
+            .expect_err("late expectation must fail closed")
+            .kind(),
+        StorageErrorKind::InvariantViolation
+    );
+    access.abort().expect("abort test write");
+}
