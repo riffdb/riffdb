@@ -7,6 +7,8 @@ const LOCKFILE: &str = include_str!("../../../Cargo.lock");
 const LIFECYCLE_SERVICE: &str = include_str!("../src/lifecycle_service.rs");
 const LIFECYCLE: &str = include_str!("../src/lifecycle.rs");
 const COLUMNAR_ADAPTER: &str = include_str!("../src/columnar_adapter.rs");
+const COLUMNAR_WORKER: &str = include_str!("../src/columnar_worker.rs");
+const PROCESS_GRAPH: &str = include_str!("../src/process_graph.rs");
 
 fn rust_sources(root: &std::path::Path) -> Vec<(std::path::PathBuf, String)> {
     fn visit(root: &std::path::Path, sources: &mut Vec<(std::path::PathBuf, String)>) {
@@ -137,6 +139,66 @@ fn production_vector_adapter_admits_current_authoritative_rows_before_ranking() 
     assert!(evidence < admission && admission < ranking);
     assert!(execution.contains("NonZeroU16::new(500)"));
     assert!(!execution.contains("nearest_query_snapshot("));
+}
+
+#[test]
+// req: PERF-019, PRJ-008, PRJ-009, OQ-019, OQ-020, OQ-022
+fn columnar_activation_is_private_single_worker_and_absent_from_public_surfaces() {
+    let cold_registration = COLUMNAR_ADAPTER
+        .split_once("pub(crate) fn open(\n        storage: SharedRedbOperationalPorts,")
+        .expect("columnar cold registration boundary")
+        .1
+        .split_once("/// Shared notifier for register-before-read waits.")
+        .expect("columnar cold registration end")
+        .0;
+    assert!(!cold_registration.contains("ColumnarEngine::open("));
+    assert_eq!(COLUMNAR_ADAPTER.matches("ColumnarEngine::open(").count(), 1);
+    let production_adapter = COLUMNAR_ADAPTER
+        .split_once("#[cfg(test)]")
+        .expect("columnar adapter test boundary")
+        .0;
+    for request_owned_task in ["thread::spawn", "tokio::spawn", "JoinHandle"] {
+        assert!(
+            !production_adapter.contains(request_owned_task),
+            "columnar request path acquired task ownership through `{request_owned_task}`"
+        );
+    }
+
+    assert_eq!(
+        COLUMNAR_WORKER
+            .matches(".name(\"riffdb-columnar\".to_owned())")
+            .count(),
+        1
+    );
+    let production_graph = PROCESS_GRAPH
+        .split_once("#[cfg(test)]")
+        .expect("process graph test boundary")
+        .0;
+    assert_eq!(
+        production_graph
+            .matches("RunningColumnarWorker::start(")
+            .count(),
+        1
+    );
+    assert!(COLUMNAR_WORKER.contains("RunningColumnarWorker([DERIVED_AUTHORITY])"));
+
+    let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    for public_boundary in ["config.rs", "daemon.rs", "hosted_mcp.rs", "main.rs"] {
+        let source = std::fs::read_to_string(source_root.join(public_boundary))
+            .expect("read public server boundary");
+        for forbidden in [
+            "columnar_activation",
+            "columnar_prewarm",
+            "columnar_eager",
+            "prewarm_columnar",
+            "eager_columnar",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{public_boundary} exposed private activation control `{forbidden}`"
+            );
+        }
+    }
 }
 
 fn locked_version(package: &str) -> &'static str {

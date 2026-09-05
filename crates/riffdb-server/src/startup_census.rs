@@ -155,11 +155,39 @@ pub(crate) fn record_graph_rest(started: Instant) {
 /// beside a long stage names both the cost and the code path that paid it.
 static TRANSIENT_REBUILDS: AtomicU64 = AtomicU64::new(0);
 static TRANSIENT_COMMIT_ROWS: AtomicU64 = AtomicU64::new(0);
+static COLUMNAR_COLD_SOURCES: AtomicU64 = AtomicU64::new(0);
+static COLUMNAR_ACTIVATIONS: AtomicU64 = AtomicU64::new(0);
+static COLUMNAR_POPULATION_PASSES: AtomicU64 = AtomicU64::new(0);
 
 /// Records the transient-index rebuild census observed at graph build.
 pub(crate) fn record_transient_index_rebuilds(rebuilds: u64, commit_rows: u64) {
     TRANSIENT_REBUILDS.store(rebuilds, Ordering::Relaxed);
     TRANSIENT_COMMIT_ROWS.store(commit_rows, Ordering::Relaxed);
+}
+
+/// Records the bounded columnar lifecycle state at graph readiness.
+pub(crate) fn record_columnar_lifecycle(sources: u64, activations: u64, population_passes: u64) {
+    COLUMNAR_COLD_SOURCES.fetch_add(sources, Ordering::AcqRel);
+    COLUMNAR_ACTIVATIONS.fetch_add(activations, Ordering::AcqRel);
+    COLUMNAR_POPULATION_PASSES.fetch_add(population_passes, Ordering::AcqRel);
+}
+
+/// Records one first-demand activation transition.
+pub(crate) fn record_columnar_activation() {
+    COLUMNAR_ACTIVATIONS.fetch_add(1, Ordering::AcqRel);
+}
+
+/// Records one worker apply or authoritative rebuild pass.
+pub(crate) fn record_columnar_population_pass() {
+    COLUMNAR_POPULATION_PASSES.fetch_add(1, Ordering::AcqRel);
+}
+
+pub(crate) fn columnar_activations() -> u64 {
+    COLUMNAR_ACTIVATIONS.load(Ordering::Acquire)
+}
+
+pub(crate) fn columnar_population_passes() -> u64 {
+    COLUMNAR_POPULATION_PASSES.load(Ordering::Acquire)
 }
 
 static PROCESS_START: OnceLock<Instant> = OnceLock::new();
@@ -189,6 +217,12 @@ pub(crate) fn format_v1_line() -> String {
     line.push_str(&TRANSIENT_REBUILDS.load(Ordering::Relaxed).to_string());
     line.push_str("\ttransient_index_commit_rows=");
     line.push_str(&TRANSIENT_COMMIT_ROWS.load(Ordering::Relaxed).to_string());
+    line.push_str("\tcolumnar_cold_sources=");
+    line.push_str(&COLUMNAR_COLD_SOURCES.load(Ordering::Acquire).to_string());
+    line.push_str("\tcolumnar_activations=");
+    line.push_str(&columnar_activations().to_string());
+    line.push_str("\tcolumnar_population_passes=");
+    line.push_str(&columnar_population_passes().to_string());
     line
 }
 
@@ -217,5 +251,8 @@ mod tests {
                 stage.as_str()
             );
         }
+        assert!(line.contains("\tcolumnar_cold_sources="));
+        assert!(line.contains("\tcolumnar_activations="));
+        assert!(line.contains("\tcolumnar_population_passes="));
     }
 }

@@ -40,6 +40,31 @@ one by editing or deleting the lifecycle record.
 
 ## Graceful shutdown
 
+Configured columnar sources remain cold while the authoritative graph reaches
+core readiness. Startup resolves their bounded checked registrations but does
+not open or decode a generation artifact, build a snapshot, catch up, publish,
+or checkpoint. Consequently a no-demand graceful close also performs no
+columnar population work. The `projection` health component is degraded while
+any registered columnar source remains cold or is activating; this derived
+health signal does not withdraw authoritative storage, catalog, or command
+readiness.
+
+The first semantic projected read requests activation from the single
+server-owned columnar worker and immediately receives the existing typed
+`Building` result with no rows. Concurrent first reads coalesce onto that same
+activation, and cancelling a requesting read does not cancel the shared worker
+operation. There is no prewarm, eager-mode, activation, artifact-selection, or
+validation-bypass setting in the CLI, configuration, SDKs, MCP, or transports.
+
+Only the current selected generation becomes queryable after its complete
+bounded validation. A corrupt, mismatched, stale, excessive, incompatible, or
+unavailable selection fails closed and serves no rows; RiffDB never substitutes
+another generation, layout, source, frontier, or authoritative scan. Repeated
+requests do not create an artifact reopen loop. Correct the underlying storage
+or selection problem and restart the process; a separately published vector
+generation may also be admitted through its normal durable lifecycle. Do not
+weaken freshness or emulate the query against authoritative rows.
+
 Shutdown first stops admission and drains writers, workers, and the journal.
 If the columnar worker is catching up, it observes the internal stop only after
 finishing its current authoritative page of at most 64 commit records. It may

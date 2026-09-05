@@ -161,6 +161,14 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   queries, vector joins/aggregates, and
   production ANN routing remain deferred and never fall back to row-store
   scans or mixed snapshots.
+- Columnar artifacts are demand activated. A configured scalar or vector source
+  does not open, decode, populate, publish, or checkpoint before its first
+  semantic query. That first query, and concurrent queries while activation is
+  running, receive the existing typed `Building` result with no rows. This POC
+  has no public prewarm or eager-mode control. An activation failure is rowless
+  and unavailable for the rest of that process generation; repair the selected
+  artifact or durable vector selection and restart instead of expecting a
+  request-owned retry or authoritative fallback.
 - Reactive applications are partition-local and bounded. P8 does not provide
   raw CDC, global or cross-partition order, physical time-based event
   retention, exactly-once external effects, event-sourced reconstruction,
