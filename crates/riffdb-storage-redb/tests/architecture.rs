@@ -1684,6 +1684,11 @@ fn fresh_locator_roles_are_private_affine_and_bound_to_existing_publication_edge
     }
     assert!(!coverage.contains("pub struct FreshLocatorCoverage"));
     assert!(!coverage.contains("serde"));
+    assert!(
+        !production_source(source_dir.join("store.rs"))
+            .contains("pub fn fresh_locator_history_fallback_scans"),
+        "scan-count evidence must remain crate-private"
+    );
 
     let application = without_whitespace(&production_source(source_dir.join("application.rs")));
     let admission = application

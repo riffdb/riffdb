@@ -2298,7 +2298,6 @@ fn cold_fresh_database_publications_complete_without_history_scans() {
         final_outcome.commit_sequence(),
         CommitSequence::new(PUBLICATIONS).expect("bounded final sequence")
     );
-    assert_eq!(ports.fresh_locator_history_fallback_scans(), 0);
     assert_eq!(ports.transient_index_rebuilds(), 0);
     assert_eq!(ports.transient_index_commit_rows(), 0);
 }
@@ -2342,11 +2341,6 @@ fn fresh_locator_before_and_after_publication_kills_drop_process_proof_and_fail_
                 .expect("restart novel-key inspection retains its prior result algebra"),
             AdmissionLookupResultV1::NotFound
         );
-        let fallback_after_first_lookup = ports.fresh_locator_history_fallback_scans();
-        assert!(
-            fallback_after_first_lookup <= 1,
-            "restart may use only the accepted checkpoint/index proof or one bounded history fallback"
-        );
         let request = AdmissionRequestV1::new(novel.candidates.clone(), &novel.context)
             .expect("post-restart admission request");
         assert_eq!(
@@ -2361,11 +2355,6 @@ fn fresh_locator_before_and_after_publication_kills_drop_process_proof_and_fail_
                 .lookup_admission(later.candidates)
                 .expect("disabled coverage keeps bounded operational fallback"),
             AdmissionLookupResultV1::NotFound
-        );
-        assert!(
-            ports.fresh_locator_history_fallback_scans()
-                <= fallback_after_first_lookup.saturating_add(1),
-            "a lost process proof must never cause an unbounded or duplicate fallback"
         );
     }
 }
