@@ -64,6 +64,7 @@ mod definition;
 mod engine;
 mod error;
 mod generation_root;
+mod generation_v2;
 mod hnsw;
 mod hooks;
 mod identity;
@@ -91,6 +92,7 @@ pub use generation_root::{
     MAX_COLUMNAR_GENERATION_ROOT_V1_BYTES, MAX_COLUMNAR_GENERATION_ROOT_V1_PARTITIONS,
     PhysicalGenerationFingerprintV1,
 };
+pub use generation_v2::{ColumnarV2GenerationError, ValidatedColumnarV2Generation};
 pub use identity::{
     ColumnarDefinitionSemanticsV1, ColumnarIdentityError, ColumnarProjectionSpecV1,
     ColumnarSpecReplayLimitsV1, ColumnarVectorSpecExtensionV1,

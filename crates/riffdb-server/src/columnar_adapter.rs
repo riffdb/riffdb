@@ -16,8 +16,8 @@ use riffdb_catalog::ActiveCatalogSnapshot;
 use riffdb_columnar::{
     ColumnarEngine, ColumnarError, ColumnarOutcome, ColumnarProjectionDefinition,
     ColumnarProjectionSpecV1, NearestCandidate, NearestCandidateAdmission,
-    NearestQueryAdmissionError, NearestQueryRequest, OpenOptions, QueryBudget, QueryError,
-    RegisteredDefinition,
+    NearestQueryAdmissionError, NearestQueryRequest, OpenOptions, PhysicalGenerationFingerprintV1,
+    QueryBudget, QueryError, RegisteredDefinition, ValidatedColumnarV2Generation,
 };
 use riffdb_contract_ir::{ContractBundle, ExpressionKind, ValueType, ValueTypeTag};
 use riffdb_service::{
@@ -165,6 +165,7 @@ pub(crate) struct ColumnarActivationSpec {
     generation: Option<ProjectionGeneration>,
     expected_durable_frontier: Option<FrontierPosition>,
     controlled_manifest: Option<Option<(u64, [u8; 32])>>,
+    v2_selection: Option<(FrontierPosition, (u64, [u8; 32]))>,
 }
 
 impl ColumnarActivationSpec {
@@ -180,6 +181,7 @@ impl ColumnarActivationSpec {
             generation: Some(generation),
             expected_durable_frontier: None,
             controlled_manifest: Some(manifest),
+            v2_selection: None,
         }
     }
 
@@ -192,6 +194,24 @@ impl ColumnarActivationSpec {
         self,
         history_incarnation: u64,
     ) -> Result<(ColumnarEngine, Option<ProjectionGeneration>), ColumnarError> {
+        if let Some((frontier, artifact)) = self.v2_selection {
+            let generation = self.generation.ok_or(ColumnarError::Integrity(
+                "selected V2 generation identity is absent",
+            ))?;
+            let physical = PhysicalGenerationFingerprintV1::compute(self.definition.fingerprint());
+            let validated = ValidatedColumnarV2Generation::open(
+                &self.directory,
+                self.definition.clone(),
+                history_incarnation,
+                generation,
+                frontier,
+                artifact,
+                physical,
+            )
+            .map_err(|_| ColumnarError::Integrity("selected V2 generation is invalid"))?;
+            return ColumnarEngine::from_validated_v2(self.definition, validated)
+                .map(|engine| (engine, Some(generation)));
+        }
         let mut options =
             OpenOptions::new(self.directory).with_history_incarnation(history_incarnation);
         if let Some(selected) = self.controlled_manifest {
@@ -268,6 +288,7 @@ impl ColumnarEngineSlot {
                 generation,
                 expected_durable_frontier: None,
                 controlled_manifest: None,
+                v2_selection: None,
             },
             definition,
             cold_snapshot: Arc::new(riffdb_columnar::ColumnarSnapshot::empty()),
@@ -662,25 +683,57 @@ impl ColumnarRuntime {
                 .servable_generation()
                 .or_else(|| control.candidate())
                 .ok_or_else(ColumnarRegistrationError::synchronization)?;
-            if selected.layout() != ColumnarProjectionLayoutV1::V1 {
-                return Err(ColumnarRegistrationError::synchronization());
-            }
-            engines.insert(
-                name.clone(),
-                Arc::new(ColumnarEngineSlot::cold_controlled(
-                    binding.definition.clone(),
+            let source_directory =
+                controlled_source_directory(projections_root, binding.spec.hash());
+            let (directory, manifest, v2_selection) = match selected.layout() {
+                ColumnarProjectionLayoutV1::V1 => (
                     controlled_generation_directory(
                         projections_root,
                         binding.spec.hash(),
                         selected.generation(),
                     ),
-                    selected.generation(),
-                    selected.frontier(),
                     selected
                         .artifact()
                         .map(|artifact| (artifact.length(), artifact.checksum())),
+                    None,
+                ),
+                ColumnarProjectionLayoutV1::V2 => {
+                    let artifact = selected
+                        .artifact()
+                        .ok_or_else(ColumnarRegistrationError::synchronization)?;
+                    let expected_physical =
+                        PhysicalGenerationFingerprintV1::compute(binding.definition.fingerprint());
+                    if selected.physical_generation_fingerprint()
+                        != Some(*expected_physical.as_bytes())
+                    {
+                        return Err(ColumnarRegistrationError::synchronization());
+                    }
+                    (
+                        source_directory,
+                        None,
+                        Some((
+                            selected.frontier(),
+                            (artifact.length(), artifact.checksum()),
+                        )),
+                    )
+                }
+            };
+            engines.insert(
+                name.clone(),
+                Arc::new(ColumnarEngineSlot::cold_controlled(
+                    binding.definition.clone(),
+                    directory,
+                    selected.generation(),
+                    selected.frontier(),
+                    manifest,
                 )),
             );
+            if let Some(slot) = engines.get_mut(&name) {
+                Arc::get_mut(slot)
+                    .ok_or_else(ColumnarRegistrationError::synchronization)?
+                    .activation
+                    .v2_selection = v2_selection;
+            }
             names.push(name.clone());
             control_bindings.insert(name, binding);
         }
@@ -729,6 +782,11 @@ impl ColumnarRuntime {
         self.process_generation
     }
 
+    #[must_use]
+    pub(crate) fn projections_root(&self) -> &Path {
+        &self.projections_root
+    }
+
     /// Registered engine slots in name order.
     pub(crate) fn engines(
         &self,
@@ -770,6 +828,28 @@ impl ColumnarRuntime {
         let artifact = generation
             .artifact()
             .map(|artifact| (artifact.length(), artifact.checksum()));
+        if generation.layout() == ColumnarProjectionLayoutV1::V2 {
+            let artifact = artifact.ok_or(ColumnarError::Integrity(
+                "selected V2 artifact identity is absent",
+            ))?;
+            let expected_physical =
+                PhysicalGenerationFingerprintV1::compute(binding.definition.fingerprint());
+            if generation.physical_generation_fingerprint() != Some(*expected_physical.as_bytes()) {
+                return Err(ColumnarError::Integrity(
+                    "selected V2 physical fingerprint does not match",
+                ));
+            }
+            return ColumnarActivationSpec {
+                definition: binding.definition.clone(),
+                directory: controlled_source_directory(&self.projections_root, binding.spec.hash()),
+                generation: Some(generation.generation()),
+                expected_durable_frontier: None,
+                controlled_manifest: None,
+                v2_selection: Some((generation.frontier(), artifact)),
+            }
+            .open(self.history_incarnation)
+            .map(|(engine, _)| engine);
+        }
         let mut spec = ColumnarActivationSpec {
             definition: binding.definition.clone(),
             directory: controlled_generation_directory(
@@ -780,6 +860,7 @@ impl ColumnarRuntime {
             generation: Some(generation.generation()),
             expected_durable_frontier: None,
             controlled_manifest: Some(artifact),
+            v2_selection: None,
         };
         if artifact.is_some() {
             spec = spec.with_expected_durable_frontier(generation.frontier());
@@ -877,20 +958,34 @@ impl ColumnarRuntime {
             .servable_generation()
             .or_else(|| control.candidate())
             .ok_or(ColumnarPortError::Integrity)?;
-        if selected.layout() != ColumnarProjectionLayoutV1::V1 {
-            return Err(ColumnarPortError::Integrity);
-        }
-        spec = spec.with_control_selection(
-            controlled_generation_directory(
-                &self.projections_root,
-                binding.spec.hash(),
+        if selected.layout() == ColumnarProjectionLayoutV1::V2 {
+            let artifact = selected.artifact().ok_or(ColumnarPortError::Integrity)?;
+            let expected_physical =
+                PhysicalGenerationFingerprintV1::compute(binding.definition.fingerprint());
+            if selected.physical_generation_fingerprint() != Some(*expected_physical.as_bytes()) {
+                return Err(ColumnarPortError::Integrity);
+            }
+            spec.directory =
+                controlled_source_directory(&self.projections_root, binding.spec.hash());
+            spec.generation = Some(selected.generation());
+            spec.controlled_manifest = None;
+            spec.v2_selection = Some((
+                selected.frontier(),
+                (artifact.length(), artifact.checksum()),
+            ));
+        } else {
+            spec = spec.with_control_selection(
+                controlled_generation_directory(
+                    &self.projections_root,
+                    binding.spec.hash(),
+                    selected.generation(),
+                ),
                 selected.generation(),
-            ),
-            selected.generation(),
-            selected
-                .artifact()
-                .map(|artifact| (artifact.length(), artifact.checksum())),
-        );
+                selected
+                    .artifact()
+                    .map(|artifact| (artifact.length(), artifact.checksum())),
+            );
+        }
         if selected.artifact().is_some() {
             spec = spec.with_expected_durable_frontier(selected.frontier());
         }
@@ -1159,6 +1254,13 @@ pub(crate) fn controlled_generation_directory(
     projections_root
         .join(format!("source-{}", lower_hex(spec_hash.as_bytes())))
         .join(format!("generation-{:020}", generation.get()))
+}
+
+pub(crate) fn controlled_source_directory(
+    projections_root: &Path,
+    spec_hash: riffdb_types::ColumnarProjectionSpecHashV1,
+) -> PathBuf {
+    projections_root.join(format!("source-{}", lower_hex(spec_hash.as_bytes())))
 }
 
 fn lower_hex(bytes: &[u8]) -> String {
@@ -2307,6 +2409,96 @@ contract VectorBoard version 1 {
         let ready = port.observe("ticket_board").expect("installed observation");
         assert!(ready.has_published());
         assert_eq!(ready.published_frontier().position(), selected_frontier);
+    }
+
+    // req: PRJ-002, PRJ-004, PRJ-006, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022
+    #[test]
+    fn columnar_v2_publication_requires_complete_root_and_transaction_current_head() {
+        let (runtime, scope) = board_runtime("v2-root-publication");
+        request_projection(&runtime, "ticket_board");
+
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        let binding = runtime
+            .control_binding("ticket_board")
+            .expect("control binding");
+        let ready_v1 = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("read V1 control")
+            .expect("V1 control");
+        assert_eq!(
+            ready_v1.published().expect("published V1").layout(),
+            ColumnarProjectionLayoutV1::V1
+        );
+
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        let catching_up = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("read catching-up control")
+            .expect("catching-up control");
+        assert_eq!(
+            catching_up.lifecycle(),
+            riffdb_storage_api::ColumnarProjectionLifecycleV1::CatchingUp
+        );
+        assert!(
+            catching_up
+                .candidate()
+                .expect("V2 candidate")
+                .artifact()
+                .is_none()
+        );
+        assert_eq!(catching_up.published(), ready_v1.published());
+
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        let prepared = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("read prepared control")
+            .expect("prepared control");
+        let candidate = prepared.candidate().expect("prepared V2 candidate");
+        assert_eq!(candidate.layout(), ColumnarProjectionLayoutV1::V2);
+        assert!(candidate.artifact().is_some());
+        assert_eq!(
+            candidate.frontier(),
+            runtime.read_application_head().expect("head")
+        );
+        assert_eq!(prepared.published(), ready_v1.published());
+
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        let selected = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("read selected control")
+            .expect("selected control");
+        assert_eq!(
+            selected.lifecycle(),
+            riffdb_storage_api::ColumnarProjectionLifecycleV1::Ready
+        );
+        assert_eq!(
+            selected.published().expect("published V2").layout(),
+            ColumnarProjectionLayoutV1::V2
+        );
+        assert!(selected.candidate().is_none());
+
+        drop(runtime);
+        let reopened = reopen_board_runtime(&scope);
+        request_projection(&reopened, "ticket_board");
+        assert!(crate::columnar_worker::run_one_test_pass(&reopened));
+        let slot = reopened
+            .engine("ticket_board")
+            .expect("engine registry")
+            .expect("V2 slot");
+        assert_eq!(
+            slot.generation(),
+            selected.published().map(|value| value.generation())
+        );
+        assert!(
+            ServerColumnarProjectionPort::new(reopened)
+                .observe("ticket_board")
+                .expect("validated V2 observation")
+                .has_published()
+        );
     }
 
     // req: PRJ-008, PRJ-009, OQ-020, OQ-022, PERF-007

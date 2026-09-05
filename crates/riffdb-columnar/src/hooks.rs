@@ -18,6 +18,16 @@ pub enum ColumnarTestBoundary {
     BeforeManifestRename,
     /// After manifest rename, before parent-directory `sync_all`.
     AfterManifestRename,
+    /// Before syncing one V2 candidate segment body.
+    BeforeV2SegmentSync,
+    /// After renaming one fully synced V2 candidate segment.
+    AfterV2SegmentRename,
+    /// After renaming one fully synced V2 partition manifest.
+    AfterV2ManifestRename,
+    /// After renaming the fully synced complete V2 generation root.
+    AfterV2RootRename,
+    /// After renaming the complete V2 candidate directory.
+    AfterV2GenerationRename,
 }
 
 /// Fixed failpoint actions.
