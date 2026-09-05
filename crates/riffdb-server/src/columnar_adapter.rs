@@ -17,7 +17,8 @@ use riffdb_columnar::{
     ColumnarEngine, ColumnarError, ColumnarOutcome, ColumnarProjectionDefinition,
     ColumnarProjectionSpecV1, NearestCandidate, NearestCandidateAdmission,
     NearestQueryAdmissionError, NearestQueryRequest, OpenOptions, PhysicalGenerationFingerprintV1,
-    QueryBudget, QueryError, RegisteredDefinition, ValidatedColumnarV2Generation,
+    PreparedColumnarGenerationV1, QueryBudget, QueryError, RegisteredDefinition,
+    ValidatedColumnarV2Generation,
 };
 use riffdb_contract_ir::{ContractBundle, ExpressionKind, ValueType, ValueTypeTag};
 use riffdb_service::{
@@ -1012,6 +1013,31 @@ impl ColumnarRuntime {
         }
         spec.open(self.history_incarnation)
             .map(|(engine, _)| engine)
+    }
+
+    pub(crate) fn open_prepared_generation(
+        &self,
+        binding: &ColumnarControlBinding,
+        generation: &riffdb_storage_api::StoredColumnarProjectionGenerationV1,
+    ) -> Result<(ColumnarEngine, PreparedColumnarGenerationV1), ColumnarError> {
+        if generation.layout() == ColumnarProjectionLayoutV1::V2 {
+            let validated = ValidatedColumnarV2Generation::open_prepared_candidate(
+                &controlled_source_directory(&self.projections_root, binding.spec.hash()),
+                binding.definition.clone(),
+                generation,
+            )
+            .map_err(|_| ColumnarError::Integrity("prepared V2 generation is invalid"))?;
+            let prepared = validated
+                .prepared_generation(&binding.spec, generation.clone(), self.process_generation)
+                .map_err(|_| ColumnarError::Integrity("prepared V2 witness does not match"))?;
+            let engine = ColumnarEngine::from_validated_v2(binding.definition.clone(), validated)?;
+            return Ok((engine, prepared));
+        }
+        let engine = self.open_controlled_generation(binding, generation)?;
+        let prepared = engine
+            .prepared_v1_generation(&binding.spec, generation.clone(), self.process_generation)
+            .map_err(|_| ColumnarError::Integrity("prepared V1 witness does not match"))?;
+        Ok((engine, prepared))
     }
 
     pub(crate) fn replace_vector_engine(
@@ -2158,16 +2184,17 @@ mod tests {
     };
     use riffdb_columnar::{
         ColumnarQueryRequest, ColumnarSnapshot, ColumnarTestBoundary, ColumnarTestController,
-        LiveRow, OrgKey, PrimaryKeyBytes, QueryBudget, QueryResult, query_snapshot,
+        LiveRow, OrgKey, PreparedColumnarGenerationRepository, PrimaryKeyBytes, QueryBudget,
+        QueryResult, query_snapshot,
     };
     use riffdb_storage_api::{
         AuditPrincipalV1, CatalogActivationIntentV1, CatalogActivationResult,
         CatalogAdministrationRepository, ColumnarProjectionArtifactV1, DatabaseInitializationPort,
-        DatabaseInitializationResult, EvidencePageLimit, PreparedColumnarGenerationV1,
-        ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
-        StartupValidationInputs, StoredColumnarProjectionControlV1,
-        StoredColumnarProjectionGenerationV1, StructuralEvidenceCursor, StructuralEvidenceOpen,
-        StructuralEvidencePage, StructuralEvidenceSession, StructuralOpenOutcome,
+        DatabaseInitializationResult, EvidencePageLimit, ReadableCapabilityDigestInventory,
+        ReadableDigestKey, ReadableIdempotencyDigestInventory, StartupValidationInputs,
+        StoredColumnarProjectionControlV1, StoredColumnarProjectionGenerationV1,
+        StructuralEvidenceCursor, StructuralEvidenceOpen, StructuralEvidencePage,
+        StructuralEvidenceSession, StructuralOpenOutcome,
     };
     use riffdb_storage_redb::{RedbDormantPorts, RedbOperationalPorts, RedbStore};
     use riffdb_types::{
@@ -2527,17 +2554,30 @@ contract VectorBoard version 1 {
             Some(*physical.as_bytes()),
         )
         .expect("prepared V2 pointer");
-        let prepared = PreparedColumnarGenerationV1::v2(
-            binding.spec().source().clone(),
-            binding.spec().definition_semantics_hash(),
-            pointer,
-            runtime.process_generation(),
-        )
-        .expect("prepared V2 witness");
+        let prepared = generation
+            .prepared_generation(binding.spec(), pointer, runtime.process_generation())
+            .expect("prepared V2 witness");
+        let mismatched_process = runtime
+            .storage()
+            .record_durable_snapshot(&catching_up, &prepared, [0x99; 16])
+            .expect_err("another process generation cannot consume the witness");
+        assert_eq!(
+            mismatched_process.kind(),
+            StorageErrorKind::InvariantViolation
+        );
         assert_eq!(
             runtime
                 .storage()
-                .record_durable_snapshot(&catching_up, &prepared)
+                .recover_expected_control(binding.spec().source())
+                .expect("reread after rejected process generation")
+                .expect("control remains present"),
+            catching_up,
+            "process-generation refusal happens before the redb control transaction"
+        );
+        assert_eq!(
+            runtime
+                .storage()
+                .record_durable_snapshot(&catching_up, &prepared, runtime.process_generation())
                 .expect("record prepared V2 root"),
             ColumnarProjectionControlWriteResultV1::Applied
         );
@@ -2546,9 +2586,10 @@ contract VectorBoard version 1 {
             .recover_expected_control(binding.spec().source())
             .expect("reread prepared V2")
             .expect("prepared V2");
-        let successor = runtime
-            .open_controlled_generation(&binding, expected.candidate().expect("candidate"))
+        let (successor, reopened_prepared) = runtime
+            .open_prepared_generation(&binding, expected.candidate().expect("candidate"))
             .expect("open exact prepared V2");
+        assert_eq!(reopened_prepared, prepared);
         let successor_snapshot = successor.published_snapshot();
         PreparedV2Publication {
             binding,

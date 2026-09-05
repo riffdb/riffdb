@@ -71,6 +71,7 @@ mod identity;
 mod manifest_v2;
 pub mod nearest;
 mod outcome;
+mod prepared_generation;
 mod query;
 mod segment_v2;
 mod store;
@@ -109,6 +110,7 @@ pub use outcome::{
     ProjectionLagging, ProjectionReady, ProjectionRebuilding, RebuildingReason,
     frontier_lag_sequences, lagging_for,
 };
+pub use prepared_generation::{PreparedColumnarGenerationRepository, PreparedColumnarGenerationV1};
 pub use query::{
     AggregateOp, AggregateValue, AnnExecutionStats, ColumnPredicate, ColumnarQueryRequest,
     GroupBySpec, NearestCandidate, NearestCandidateAdmission, NearestQueryAdmissionError,

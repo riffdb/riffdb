@@ -15,7 +15,8 @@ use std::time::Duration;
 use riffdb_columnar::ColumnarV2GenerationError;
 use riffdb_columnar::{
     ColumnarError, ColumnarSnapshotRebuild, ColumnarV2StreamingError,
-    PhysicalGenerationFingerprintV1, ValidatedColumnarV2Generation, WorkerApplyOutcome,
+    PhysicalGenerationFingerprintV1, PreparedColumnarGenerationRepository,
+    PreparedColumnarGenerationV1, ValidatedColumnarV2Generation, WorkerApplyOutcome,
     frontier_lag_sequences,
 };
 use riffdb_observability::{MetricRegistry, RequiredGauge};
@@ -23,9 +24,8 @@ use riffdb_storage_api::{
     ApplicationExportSnapshotPort, ApplicationExportSourceRecordV1, ColumnarProjectionArtifactV1,
     ColumnarProjectionControlRepository, ColumnarProjectionControlWriteResultV1,
     ColumnarProjectionFailureReasonV1, ColumnarProjectionGenerationRoleV1,
-    ColumnarProjectionLayoutV1, ColumnarProjectionLifecycleV1, PreparedColumnarGenerationV1,
-    StorageError, StorageErrorKind, StorageScanLimit, StoredColumnarProjectionControlV1,
-    StoredColumnarProjectionGenerationV1,
+    ColumnarProjectionLayoutV1, ColumnarProjectionLifecycleV1, StorageError, StorageErrorKind,
+    StorageScanLimit, StoredColumnarProjectionControlV1, StoredColumnarProjectionGenerationV1,
 };
 use riffdb_types::{FrontierPosition, ProjectionGeneration};
 
@@ -401,11 +401,20 @@ fn publication_resolution(
     durable: &StoredColumnarProjectionControlV1,
     prepared: &PreparedColumnarGenerationV1,
 ) -> ColumnarPublicationResolution {
+    publication_resolution_for(_attempt, durable, prepared.source(), prepared.generation())
+}
+
+fn publication_resolution_for(
+    _attempt: ColumnarPublicationAttempt,
+    durable: &StoredColumnarProjectionControlV1,
+    prepared_source: &riffdb_types::ColumnarProjectionSourceV1,
+    prepared_generation: &StoredColumnarProjectionGenerationV1,
+) -> ColumnarPublicationResolution {
     let Some(selected) = durable.servable_generation() else {
         return ColumnarPublicationResolution::RemainClosed;
     };
-    if durable.source() == prepared.source()
-        && selected_matches_prepared(selected, prepared.generation())
+    if durable.source() == prepared_source
+        && selected_matches_prepared(selected, prepared_generation)
     {
         ColumnarPublicationResolution::InstallSelectedAndAcknowledge
     } else {
@@ -603,16 +612,9 @@ fn advance_v2_candidate(
         return Ok(true);
     }
 
-    let successor = runtime
-        .open_controlled_generation(binding, candidate)
+    let (successor, prepared) = runtime
+        .open_prepared_generation(binding, candidate)
         .map_err(ColumnarWorkerError::Apply)?;
-    let prepared = PreparedColumnarGenerationV1::v2(
-        binding.spec().source().clone(),
-        binding.spec().definition_semantics_hash(),
-        candidate.clone(),
-        runtime.process_generation(),
-    )
-    .map_err(|_| ColumnarWorkerError::Integrity)?;
     let _ =
         publish_prepared_under_capture_gate(runtime, binding, slot, control, &prepared, successor)?;
     Ok(true)
@@ -697,16 +699,12 @@ fn prepare_v2_candidate(
         Some(physical),
     )
     .map_err(|_| ColumnarWorkerError::Integrity)?;
-    let prepared = PreparedColumnarGenerationV1::v2(
-        binding.spec().source().clone(),
-        binding.spec().definition_semantics_hash(),
-        pointer,
-        runtime.process_generation(),
-    )
-    .map_err(|_| ColumnarWorkerError::Integrity)?;
+    let prepared = generation_view
+        .prepared_generation(binding.spec(), pointer, runtime.process_generation())
+        .map_err(|_| ColumnarWorkerError::Integrity)?;
     let _ = runtime
         .storage()
-        .record_durable_snapshot(control, &prepared)
+        .record_durable_snapshot(control, &prepared, runtime.process_generation())
         .map_err(map_storage_error)?;
     Ok(true)
 }
@@ -786,19 +784,18 @@ fn advance_v1_candidate(
         let frontier = successor.processed_frontier().position();
         if frontier != candidate.frontier() {
             let manifest = successor.checkpoint().map_err(ColumnarWorkerError::Apply)?;
-            let replacement = prepared_candidate_from_manifest(
-                runtime,
-                binding,
+            let pointer = candidate_pointer_from_manifest(
                 current.candidate().ok_or(ColumnarWorkerError::Integrity)?,
                 candidate
                     .snapshot_frontier()
                     .ok_or(ColumnarWorkerError::Integrity)?,
                 &manifest,
             )?;
-            successor = reopen_prepared_v1(runtime, binding, replacement.generation())?;
+            let (reopened, replacement) = reopen_prepared_v1(runtime, binding, &pointer)?;
+            successor = reopened;
             if runtime
                 .storage()
-                .record_candidate_frontier(&current, &replacement)
+                .record_candidate_frontier(&current, &replacement, runtime.process_generation())
                 .map_err(map_storage_error)?
                 == ColumnarProjectionControlWriteResultV1::StateChanged
             {
@@ -807,16 +804,16 @@ fn advance_v1_candidate(
             current = recover_control(runtime, binding)?;
         }
     }
-    let prepared = PreparedColumnarGenerationV1::v1(
-        binding.spec().source().clone(),
-        binding.spec().definition_semantics_hash(),
-        current
-            .candidate()
-            .ok_or(ColumnarWorkerError::Integrity)?
-            .clone(),
-        runtime.process_generation(),
-    )
-    .map_err(|_| ColumnarWorkerError::Integrity)?;
+    let prepared = successor
+        .prepared_v1_generation(
+            binding.spec(),
+            current
+                .candidate()
+                .ok_or(ColumnarWorkerError::Integrity)?
+                .clone(),
+            runtime.process_generation(),
+        )
+        .map_err(|_| ColumnarWorkerError::Integrity)?;
     let _ = publish_prepared_under_capture_gate(
         runtime, binding, slot, &current, &prepared, successor,
     )?;
@@ -986,24 +983,29 @@ fn issue_prepared_publication(
         mode
     };
     match mode {
-        ColumnarPublicationMode::Ordinary => runtime
-            .storage()
-            .publish_prepared_generation(expected, prepared),
+        ColumnarPublicationMode::Ordinary => runtime.storage().publish_prepared_generation(
+            expected,
+            prepared,
+            runtime.process_generation(),
+        ),
         #[cfg(test)]
         ColumnarPublicationMode::StateChangedAfterApplied => {
-            if runtime
-                .storage()
-                .publish_prepared_generation(expected, prepared)?
-                != ColumnarProjectionControlWriteResultV1::Applied
+            if runtime.storage().publish_prepared_generation(
+                expected,
+                prepared,
+                runtime.process_generation(),
+            )? != ColumnarProjectionControlWriteResultV1::Applied
             {
                 return Err(StorageError::new(
                     StorageErrorKind::InvariantViolation,
                     None,
                 ));
             }
-            runtime
-                .storage()
-                .publish_prepared_generation(expected, prepared)
+            runtime.storage().publish_prepared_generation(
+                expected,
+                prepared,
+                runtime.process_generation(),
+            )
         }
         #[cfg(test)]
         ColumnarPublicationMode::StorageFailureBeforeCommit => {
@@ -1011,10 +1013,11 @@ fn issue_prepared_publication(
         }
         #[cfg(test)]
         ColumnarPublicationMode::UnknownAfterApplied => {
-            if runtime
-                .storage()
-                .publish_prepared_generation(expected, prepared)?
-                != ColumnarProjectionControlWriteResultV1::Applied
+            if runtime.storage().publish_prepared_generation(
+                expected,
+                prepared,
+                runtime.process_generation(),
+            )? != ColumnarProjectionControlWriteResultV1::Applied
             {
                 return Err(StorageError::new(
                     StorageErrorKind::InvariantViolation,
@@ -1101,17 +1104,12 @@ fn build_fresh_v1_snapshot(
     }
     let manifest = successor.checkpoint().map_err(ColumnarWorkerError::Apply)?;
     let candidate = control.candidate().ok_or(ColumnarWorkerError::Integrity)?;
-    let prepared = prepared_candidate_from_manifest(
-        runtime,
-        binding,
-        candidate,
-        snapshot_frontier,
-        &manifest,
-    )?;
-    *successor = reopen_prepared_v1(runtime, binding, prepared.generation())?;
+    let pointer = candidate_pointer_from_manifest(candidate, snapshot_frontier, &manifest)?;
+    let (reopened, prepared) = reopen_prepared_v1(runtime, binding, &pointer)?;
+    *successor = reopened;
     if runtime
         .storage()
-        .record_durable_snapshot(&control, &prepared)
+        .record_durable_snapshot(&control, &prepared, runtime.process_generation())
         .map_err(map_storage_error)?
         == ColumnarProjectionControlWriteResultV1::StateChanged
     {
@@ -1120,17 +1118,15 @@ fn build_fresh_v1_snapshot(
     recover_control(runtime, binding).map(Some)
 }
 
-fn prepared_candidate_from_manifest(
-    runtime: &ColumnarRuntime,
-    binding: &ColumnarControlBinding,
+fn candidate_pointer_from_manifest(
     candidate: &StoredColumnarProjectionGenerationV1,
     snapshot_frontier: FrontierPosition,
     manifest: &riffdb_columnar::ManifestV1,
-) -> Result<PreparedColumnarGenerationV1, ColumnarWorkerError> {
+) -> Result<StoredColumnarProjectionGenerationV1, ColumnarWorkerError> {
     let (length, checksum) = manifest.artifact_identity();
     let artifact = ColumnarProjectionArtifactV1::new(length, checksum)
         .ok_or(ColumnarWorkerError::Integrity)?;
-    let generation = StoredColumnarProjectionGenerationV1::prepared_candidate(
+    StoredColumnarProjectionGenerationV1::prepared_candidate(
         candidate.generation(),
         ColumnarProjectionLayoutV1::V1,
         snapshot_frontier,
@@ -1141,13 +1137,6 @@ fn prepared_candidate_from_manifest(
         candidate.spec_hash(),
         None,
     )
-    .map_err(|_| ColumnarWorkerError::Integrity)?;
-    PreparedColumnarGenerationV1::v1(
-        binding.spec().source().clone(),
-        binding.spec().definition_semantics_hash(),
-        generation,
-        runtime.process_generation(),
-    )
     .map_err(|_| ColumnarWorkerError::Integrity)
 }
 
@@ -1155,9 +1144,15 @@ fn reopen_prepared_v1(
     runtime: &ColumnarRuntime,
     binding: &ColumnarControlBinding,
     generation: &StoredColumnarProjectionGenerationV1,
-) -> Result<riffdb_columnar::ColumnarEngine, ColumnarWorkerError> {
+) -> Result<
+    (
+        riffdb_columnar::ColumnarEngine,
+        PreparedColumnarGenerationV1,
+    ),
+    ColumnarWorkerError,
+> {
     runtime
-        .open_controlled_generation(binding, generation)
+        .open_prepared_generation(binding, generation)
         .map_err(ColumnarWorkerError::Apply)
 }
 
@@ -1199,17 +1194,11 @@ fn advance_published_v1(
         ColumnarProjectionGenerationRoleV1::Published,
     )
     .map_err(|_| ColumnarWorkerError::Integrity)?;
-    let replacement = PreparedColumnarGenerationV1::v1(
-        binding.spec().source().clone(),
-        binding.spec().definition_semantics_hash(),
-        replacement,
-        runtime.process_generation(),
-    )
-    .map_err(|_| ColumnarWorkerError::Integrity)?;
-    successor = reopen_prepared_v1(runtime, binding, replacement.generation())?;
+    let (reopened, replacement) = reopen_prepared_v1(runtime, binding, &replacement)?;
+    successor = reopened;
     if runtime
         .storage()
-        .advance_published_v1(control, &replacement)
+        .advance_published_v1(control, &replacement, runtime.process_generation())
         .map_err(map_storage_error)?
         == ColumnarProjectionControlWriteResultV1::Applied
     {
@@ -1423,23 +1412,24 @@ mod publication_tests {
     use riffdb_columnar::{ColumnarV2GenerationError, ColumnarV2StreamingError};
     use riffdb_storage_api::{
         ColumnarProjectionArtifactV1, ColumnarProjectionLayoutV1, ColumnarProjectionReplayLimitsV1,
-        PreparedColumnarGenerationV1, StorageError, StorageErrorKind,
-        StoredColumnarProjectionControlV1, StoredColumnarProjectionGenerationV1,
+        StorageError, StorageErrorKind, StoredColumnarProjectionControlV1,
+        StoredColumnarProjectionGenerationV1,
     };
     use riffdb_types::{
-        ColumnarDefinitionSemanticsHashV1, ColumnarProjectionSourceV1,
-        ColumnarProjectionSpecHashV1, ContractLineage, DefinitionFingerprint, FrontierPosition,
+        ColumnarProjectionSourceV1, ColumnarProjectionSpecHashV1, ContractLineage,
+        DefinitionFingerprint, FrontierPosition,
     };
 
     use super::{
         ColumnarPublicationAttempt, ColumnarPublicationResolution, PreparedV2HeadResolution,
-        prepared_v2_head_resolution, publication_resolution, v2_candidate_failure_reason,
+        prepared_v2_head_resolution, publication_resolution_for, v2_candidate_failure_reason,
         v2_streaming_failure_reason,
     };
 
     fn prepared_v2() -> (
         StoredColumnarProjectionControlV1,
-        PreparedColumnarGenerationV1,
+        ColumnarProjectionSourceV1,
+        StoredColumnarProjectionGenerationV1,
         StoredColumnarProjectionControlV1,
     ) {
         let definition = DefinitionFingerprint::from_bytes([0x11; 32]);
@@ -1496,24 +1486,17 @@ mod publication_tests {
         let prepared_control = catching_up
             .record_durable_snapshot(v2_pointer.clone())
             .expect("prepare V2");
-        let prepared = PreparedColumnarGenerationV1::v2(
-            source,
-            ColumnarDefinitionSemanticsHashV1::from_bytes([0x61; 32]),
-            v2_pointer,
-            [0x71; 16],
-        )
-        .expect("prepared witness");
         let published = prepared_control
             .clone()
             .publish_prepared_generation(matched_frontier)
             .expect("publish V2");
-        (prepared_control, prepared, published)
+        (prepared_control, source, v2_pointer, published)
     }
 
     // req: PRJ-006, PRJ-008, PRJ-009, OQ-020, OQ-022, PERF-007
     #[test]
     fn publication_attempt_taxonomy_and_durable_resolution_are_closed() {
-        let (prepared_control, prepared, published) = prepared_v2();
+        let (prepared_control, source, prepared, published) = prepared_v2();
         assert_eq!(
             ColumnarPublicationAttempt::from_result(&Err(StorageError::new(
                 StorageErrorKind::Unavailable,
@@ -1537,12 +1520,12 @@ mod publication_tests {
             ColumnarPublicationAttempt::UnknownCommit,
         ] {
             assert_eq!(
-                publication_resolution(attempt, &published, &prepared),
+                publication_resolution_for(attempt, &published, &source, &prepared),
                 ColumnarPublicationResolution::InstallSelectedAndAcknowledge,
                 "durable exact selection, not the ambiguous attempt result, owns acknowledgement"
             );
             assert_eq!(
-                publication_resolution(attempt, &prepared_control, &prepared),
+                publication_resolution_for(attempt, &prepared_control, &source, &prepared),
                 ColumnarPublicationResolution::InstallPredecessorWithoutAcknowledgement,
                 "an unselected prepared root cannot be acknowledged"
             );
@@ -1552,9 +1535,10 @@ mod publication_tests {
             .record_published_failure()
             .expect("selected corruption");
         assert_eq!(
-            publication_resolution(
+            publication_resolution_for(
                 ColumnarPublicationAttempt::StorageFailure,
                 &selected_corrupt,
+                &source,
                 &prepared,
             ),
             ColumnarPublicationResolution::RemainClosed,
@@ -1565,15 +1549,16 @@ mod publication_tests {
     // req: PRJ-008, PRJ-009
     #[test]
     fn corrupt_selected_control_has_no_servable_generation() {
-        let (_, prepared, published) = prepared_v2();
+        let (_, source, prepared, published) = prepared_v2();
         let selected_corrupt = published
             .record_published_failure()
             .expect("selected corruption");
         assert!(selected_corrupt.servable_generation().is_none());
         assert_eq!(
-            publication_resolution(
+            publication_resolution_for(
                 ColumnarPublicationAttempt::UnknownCommit,
                 &selected_corrupt,
+                &source,
                 &prepared,
             ),
             ColumnarPublicationResolution::RemainClosed
@@ -1583,7 +1568,7 @@ mod publication_tests {
     // req: PRJ-002, PRJ-004, PRJ-006, PRJ-010, OQ-020
     #[test]
     fn retained_tail_head_movement_replaces_v2_candidate_and_preserves_v1_selection() {
-        let (prepared_control, _, _) = prepared_v2();
+        let (prepared_control, _, _, _) = prepared_v2();
         let stale = prepared_control.candidate().expect("prepared V2").clone();
         let published = prepared_control.published().expect("selected V1").clone();
         let moved_head = FrontierPosition::AppliedThrough(
@@ -1616,7 +1601,7 @@ mod publication_tests {
     // req: PRJ-002, PRJ-004, PRJ-006, PRJ-009, PRJ-010, OQ-020
     #[test]
     fn columnar_v2_enospc_before_publication_preserves_selected_generation() {
-        let (prepared_control, _, _) = prepared_v2();
+        let (prepared_control, _, _, _) = prepared_v2();
         let selected = prepared_control.published().expect("selected V1").clone();
         assert_eq!(
             v2_candidate_failure_reason(ColumnarV2GenerationError::Io),
@@ -1633,7 +1618,7 @@ mod publication_tests {
     // req: PRJ-002, PRJ-004, PRJ-006, PRJ-009, PRJ-010, OQ-020
     #[test]
     fn replay_limit_failures_retain_selection_until_exact_replacement() {
-        let (prepared_control, _, _) = prepared_v2();
+        let (prepared_control, _, _, _) = prepared_v2();
         let selected = prepared_control.published().expect("selected V1").clone();
         for (error, reason) in [
             (

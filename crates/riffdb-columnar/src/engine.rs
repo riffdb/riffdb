@@ -4,11 +4,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use riffdb_storage_api::{
-    AuthoritativePointReader, AuthoritativeScanReader, MAX_SCAN_PAGE_ENTRIES, StoredEntityRecordV1,
+    AuthoritativePointReader, AuthoritativeScanReader, ColumnarControlError, MAX_SCAN_PAGE_ENTRIES,
+    StoredColumnarProjectionGenerationV1, StoredEntityRecordV1,
 };
 use riffdb_types::{FrontierPosition, ProjectionFrontier};
 
-use crate::ValidatedColumnarV2Generation;
 use crate::apply::{ApplyProgress, ApplyState, WorkerApplyOutcome};
 use crate::checkpoint::{CheckpointDir, CheckpointError, ManifestV1};
 use crate::definition::{DefinitionFingerprint, RegisteredDefinition};
@@ -18,6 +18,9 @@ use crate::outcome::{ColumnarOutcome, ProjectionBuilding, ProjectionReady};
 use crate::query::{ColumnarQueryRequest, QueryResult, query_snapshot};
 use crate::store::{
     ColumnarSnapshot, LiveRow, OrgKey, PrimaryKeyBytes, WorkingState, project_cells,
+};
+use crate::{
+    ColumnarProjectionSpecV1, PreparedColumnarGenerationV1, ValidatedColumnarV2Generation,
 };
 
 /// Bounded-page builder for one complete authoritative snapshot generation.
@@ -159,6 +162,13 @@ pub struct ColumnarEngine {
     /// V2 generations are immutable and may be queried but never advanced or
     /// checkpointed in place.
     writable_layout_v1: bool,
+    validated_v1_reopen: Option<ValidatedV1Reopen>,
+}
+
+#[derive(Clone, Copy)]
+struct ValidatedV1Reopen {
+    artifact: (u64, [u8; 32]),
+    frontier: FrontierPosition,
 }
 
 impl ColumnarEngine {
@@ -172,11 +182,13 @@ impl ColumnarEngine {
         options: OpenOptions,
     ) -> Result<Self, ColumnarError> {
         let controlled = options.controlled_manifest.is_some();
+        let selected_artifact = options.controlled_manifest.flatten();
         let checkpoint = CheckpointDir::new(options.directory, controlled)?;
         let mut apply = ApplyState::new(definition.clone());
         let mut has_published = false;
         let mut durable_frontier = FrontierPosition::BeforeFirst;
         let mut has_manifest = false;
+        let mut validated_v1_reopen = None;
 
         match checkpoint.load_manifest(options.controlled_manifest.flatten())? {
             None => {
@@ -202,6 +214,12 @@ impl ColumnarEngine {
                 has_published = true;
                 durable_frontier = manifest.durable_frontier;
                 has_manifest = true;
+                if let Some(artifact) = selected_artifact {
+                    validated_v1_reopen = Some(ValidatedV1Reopen {
+                        artifact,
+                        frontier: manifest.durable_frontier,
+                    });
+                }
             }
         }
 
@@ -214,6 +232,7 @@ impl ColumnarEngine {
             has_manifest,
             history_incarnation: options.history_incarnation,
             writable_layout_v1: true,
+            validated_v1_reopen,
         })
     }
 
@@ -252,7 +271,32 @@ impl ColumnarEngine {
             has_manifest: true,
             history_incarnation,
             writable_layout_v1: false,
+            validated_v1_reopen: None,
         })
+    }
+
+    /// Mints a process-bound control witness only from this exact controlled
+    /// V1 reopen and a matching compiler-bound specification/pointer.
+    #[doc(hidden)]
+    pub fn prepared_v1_generation(
+        &self,
+        spec: &ColumnarProjectionSpecV1,
+        generation: StoredColumnarProjectionGenerationV1,
+        process_generation: [u8; 16],
+    ) -> Result<PreparedColumnarGenerationV1, ColumnarControlError> {
+        let validated = self.validated_v1_reopen.ok_or(ColumnarControlError)?;
+        crate::prepared_generation::validate_v1_pointer_shape(&generation)?;
+        if generation
+            .artifact()
+            .map(|artifact| (artifact.length(), artifact.checksum()))
+            != Some(validated.artifact)
+            || generation.frontier() != validated.frontier
+            || generation.history_incarnation() != self.history_incarnation
+            || generation.definition_fingerprint() != self.definition.fingerprint()
+        {
+            return Err(ColumnarControlError);
+        }
+        PreparedColumnarGenerationV1::from_validated(spec, generation, process_generation)
     }
 
     /// Installs a test controller for crash injection (never used in production).
