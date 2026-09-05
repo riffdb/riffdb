@@ -383,7 +383,8 @@ enum ColumnarPublicationResolution {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PublishedV1AdvanceResolution {
     InstallSelectedAndAcknowledge,
-    RetainSelectedWithoutAcknowledgement,
+    RetainPredecessorWithoutAcknowledgement,
+    InstallSelectedWithoutAcknowledgement,
     RemainClosed,
 }
 
@@ -448,13 +449,15 @@ fn selected_matches_prepared(
 
 fn published_v1_advance_resolution(
     durable: &StoredColumnarProjectionControlV1,
-    expected: &StoredColumnarProjectionControlV1,
+    predecessor: &StoredColumnarProjectionControlV1,
     replacement: &StoredColumnarProjectionGenerationV1,
 ) -> PublishedV1AdvanceResolution {
     if durable.servable_generation() == Some(replacement) {
         PublishedV1AdvanceResolution::InstallSelectedAndAcknowledge
-    } else if durable.servable_generation() == expected.servable_generation() {
-        PublishedV1AdvanceResolution::RetainSelectedWithoutAcknowledgement
+    } else if durable == predecessor {
+        PublishedV1AdvanceResolution::RetainPredecessorWithoutAcknowledgement
+    } else if durable.servable_generation().is_some() {
+        PublishedV1AdvanceResolution::InstallSelectedWithoutAcknowledgement
     } else {
         PublishedV1AdvanceResolution::RemainClosed
     }
@@ -1111,6 +1114,16 @@ fn abort_publication_test_process_at(boundary: &str) {
 #[cfg(not(test))]
 fn abort_publication_test_process_at(_boundary: &str) {}
 
+#[cfg(test)]
+fn abort_v1_publication_test_process_at(boundary: &str) {
+    if std::env::var("RIFFDB_COLUMNAR_V1_PUBLICATION_ABORT_AT").as_deref() == Ok(boundary) {
+        std::process::abort();
+    }
+}
+
+#[cfg(not(test))]
+fn abort_v1_publication_test_process_at(_boundary: &str) {}
+
 fn build_fresh_v1_snapshot(
     runtime: &ColumnarRuntime,
     binding: &ColumnarControlBinding,
@@ -1323,7 +1336,9 @@ fn advance_published_v1_under_capture_gate_controlled(
         .ok_or(ColumnarWorkerError::Integrity)?;
     let mut gate = slot.close_capture_gate().map_err(map_port_error)?;
     after_gate_closed();
+    abort_v1_publication_test_process_at("before-cas");
     let result = issue_published_v1_advance(runtime, expected, replacement, mode);
+    abort_v1_publication_test_process_at("after-cas");
     let attempt = ColumnarPublicationAttempt::from_result(&result);
     let durable = match runtime
         .storage()
@@ -1339,6 +1354,7 @@ fn advance_published_v1_under_capture_gate_controlled(
             return Err(map_storage_error(error));
         }
     };
+    abort_v1_publication_test_process_at("after-reread");
     if durable.source() != binding.spec().source()
         || durable.target_definition_fingerprint() != binding.spec().definition_fingerprint()
         || durable.target_spec_hash() != binding.spec().hash()
@@ -1349,19 +1365,53 @@ fn advance_published_v1_under_capture_gate_controlled(
     }
     match published_v1_advance_resolution(&durable, expected, replacement.generation()) {
         PublishedV1AdvanceResolution::InstallSelectedAndAcknowledge => {
-            let _ = gate
+            if let Some(retired) = gate
                 .install_selected(successor, replacement.generation().generation())
-                .map_err(map_port_error)?;
+                .map_err(map_port_error)?
+            {
+                runtime.defer_retirement(retired).map_err(map_port_error)?;
+            }
+            abort_v1_publication_test_process_at("after-view-install");
             drop(gate);
             let _ = runtime.notifier().notify(binding.name());
             Ok(true)
         }
-        PublishedV1AdvanceResolution::RetainSelectedWithoutAcknowledgement => {
+        PublishedV1AdvanceResolution::InstallSelectedWithoutAcknowledgement => {
+            let selected = durable
+                .servable_generation()
+                .ok_or(ColumnarWorkerError::Integrity)?;
+            let durable_engine = match runtime.open_controlled_generation(binding, selected) {
+                Ok(engine) => engine,
+                Err(error) => {
+                    gate.remain_closed(Some(selected.generation()));
+                    return Err(ColumnarWorkerError::Apply(error));
+                }
+            };
+            if let Some(retired) = gate
+                .install_selected(durable_engine, selected.generation())
+                .map_err(map_port_error)?
+            {
+                runtime.defer_retirement(retired).map_err(map_port_error)?;
+            }
             drop(gate);
             if attempt.requires_error() {
-                Err(ColumnarWorkerError::Unavailable)
+                match result {
+                    Err(error) => Err(map_storage_error(error)),
+                    Ok(_) => Err(ColumnarWorkerError::Integrity),
+                }
             } else {
-                Ok(true)
+                Ok(false)
+            }
+        }
+        PublishedV1AdvanceResolution::RetainPredecessorWithoutAcknowledgement => {
+            drop(gate);
+            if attempt.requires_error() {
+                match result {
+                    Err(error) => Err(map_storage_error(error)),
+                    Ok(_) => Err(ColumnarWorkerError::Integrity),
+                }
+            } else {
+                Ok(false)
             }
         }
         PublishedV1AdvanceResolution::RemainClosed => {
@@ -1377,6 +1427,15 @@ fn issue_published_v1_advance(
     replacement: &PreparedColumnarGenerationV1,
     mode: ColumnarPublicationMode,
 ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+    #[cfg(test)]
+    let mode = if mode == ColumnarPublicationMode::Ordinary
+        && std::env::var("RIFFDB_COLUMNAR_PUBLICATION_RESULT").as_deref()
+            == Ok("unknown-after-applied")
+    {
+        ColumnarPublicationMode::UnknownAfterApplied
+    } else {
+        mode
+    };
     let issue = || {
         runtime
             .storage()

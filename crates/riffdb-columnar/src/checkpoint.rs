@@ -451,7 +451,9 @@ impl CheckpointDir {
                 pruning: None,
             }));
         }
-        self.sweep_unreferenced(&referenced)?;
+        if !self.controlled {
+            self.sweep_unreferenced(&referenced)?;
+        }
         Ok(working)
     }
 
@@ -459,6 +461,56 @@ impl CheckpointDir {
     /// after a checkpoint torn before the first manifest rename).
     pub(crate) fn sweep_stray_files(&self) -> Result<(), CheckpointError> {
         self.sweep_unreferenced(&BTreeSet::new())
+    }
+
+    pub(crate) fn reclaim_controlled_v1_artifacts(
+        root: &Path,
+        retained: &[(u64, [u8; 32])],
+    ) -> Result<(), CheckpointError> {
+        let checkpoint = Self::new(root.to_path_buf(), true)?;
+        let mut retained_manifests = BTreeSet::new();
+        let mut retained_segments = BTreeSet::new();
+        for &(length, checksum) in retained {
+            let manifest_name = controlled_manifest_name(&checksum, length)?;
+            let manifest = checkpoint.load_manifest(Some((length, checksum)))?.ok_or(
+                CheckpointError::CorruptManifest("retained artifact missing"),
+            )?;
+            retained_manifests.insert(manifest_name);
+            retained_segments.extend(
+                manifest
+                    .segments
+                    .into_iter()
+                    .map(|segment| segment.file_name),
+            );
+        }
+
+        let entries = match fs::read_dir(root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        let mut removed = false;
+        for entry in entries {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let retired_manifest = name.starts_with(CONTROLLED_MANIFEST_PREFIX)
+                && !retained_manifests.contains(name.as_ref());
+            let retired_segment =
+                name.starts_with("seg-") && !retained_segments.contains(name.as_ref());
+            let torn_manifest_temp = name.starts_with("MANIFEST.") && name.ends_with(".tmp");
+            if retired_manifest || retired_segment || torn_manifest_temp {
+                fs::remove_file(entry.path())?;
+                removed = true;
+            }
+        }
+        if removed {
+            File::open(root)?.sync_all()?;
+        }
+        Ok(())
     }
 
     fn sweep_unreferenced(&self, referenced: &BTreeSet<String>) -> Result<(), CheckpointError> {

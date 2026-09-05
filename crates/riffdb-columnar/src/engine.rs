@@ -1,6 +1,6 @@
 //! Columnar engine open, apply, query, checkpoint, and compact.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use riffdb_storage_api::{
@@ -196,7 +196,9 @@ impl ColumnarEngine {
                 // Sweep stray files from a checkpoint torn before the first
                 // manifest rename (orphan segments, temp manifests) so a later
                 // checkpoint can never collide with them.
-                checkpoint.sweep_stray_files()?;
+                if !controlled {
+                    checkpoint.sweep_stray_files()?;
+                }
             }
             Some(manifest) => {
                 if manifest.fingerprint != definition.fingerprint() {
@@ -297,6 +299,25 @@ impl ColumnarEngine {
             return Err(ColumnarControlError);
         }
         PreparedColumnarGenerationV1::from_validated(spec, generation, process_generation)
+    }
+
+    /// Returns the exact immutable V1 artifact validated when this controlled
+    /// engine was opened. Query-only V2 and uncontrolled engines return none.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn controlled_v1_artifact_identity(&self) -> Option<(u64, [u8; 32])> {
+        self.validated_v1_reopen.map(|validated| validated.artifact)
+    }
+
+    /// Reclaims controlled V1 manifests and segments not named by any durable
+    /// pointer or still-live captured view.
+    #[doc(hidden)]
+    pub fn reclaim_controlled_v1_artifacts(
+        directory: &Path,
+        retained: &[(u64, [u8; 32])],
+    ) -> Result<(), ColumnarError> {
+        CheckpointDir::reclaim_controlled_v1_artifacts(directory, retained)
+            .map_err(ColumnarError::Checkpoint)
     }
 
     /// Installs a test controller for crash injection (never used in production).

@@ -256,6 +256,7 @@ pub(crate) struct ColumnarCaptureGate<'a> {
 
 pub(crate) struct RetiredColumnarGeneration {
     directory: PathBuf,
+    v1_artifact: Option<(u64, [u8; 32])>,
     captured_view: Weak<riffdb_columnar::ColumnarSnapshot>,
 }
 
@@ -281,12 +282,22 @@ impl ColumnarCaptureGate<'_> {
         let previous = std::mem::replace(&mut *self.state, replacement);
         match previous {
             ColumnarSlotState::Active(previous) => {
-                if previous.generation == Some(generation) {
+                let previous_v1_artifact = previous.engine.controlled_v1_artifact_identity();
+                let replacement_v1_artifact = match &*self.state {
+                    ColumnarSlotState::Active(replacement) => {
+                        replacement.engine.controlled_v1_artifact_identity()
+                    }
+                    _ => None,
+                };
+                if previous.generation == Some(generation)
+                    && previous_v1_artifact == replacement_v1_artifact
+                {
                     return Ok(None);
                 }
                 let snapshot = previous.engine.published_snapshot();
                 Ok(Some(RetiredColumnarGeneration {
                     directory: previous.engine.directory().to_path_buf(),
+                    v1_artifact: previous_v1_artifact,
                     captured_view: Arc::downgrade(&snapshot),
                 }))
             }
@@ -875,6 +886,7 @@ impl ColumnarRuntime {
         let source_directory =
             controlled_source_directory(&self.projections_root, binding.spec.hash());
         let mut retained = BTreeSet::new();
+        let mut retained_v1_artifacts = BTreeMap::<PathBuf, BTreeSet<(u64, [u8; 32])>>::new();
         for pointer in [
             control.published(),
             control.candidate(),
@@ -889,6 +901,14 @@ impl ColumnarRuntime {
                 pointer.generation(),
             );
             retained.insert(directory.clone());
+            if pointer.layout() == ColumnarProjectionLayoutV1::V1
+                && let Some(artifact) = pointer.artifact()
+            {
+                retained_v1_artifacts
+                    .entry(directory.clone())
+                    .or_default()
+                    .insert((artifact.length(), artifact.checksum()));
+            }
             if pointer.role() == riffdb_storage_api::ColumnarProjectionGenerationRoleV1::Candidate {
                 retained.insert(directory.with_file_name(format!(
                     "{}.tmp",
@@ -907,6 +927,18 @@ impl ColumnarRuntime {
         retired.retain(|generation| generation.captured_view.upgrade().is_some());
         for generation in retired.iter() {
             retained.insert(generation.directory.clone());
+            if let Some(artifact) = generation.v1_artifact {
+                retained_v1_artifacts
+                    .entry(generation.directory.clone())
+                    .or_default()
+                    .insert(artifact);
+            }
+        }
+
+        for (directory, artifacts) in &retained_v1_artifacts {
+            let artifacts = artifacts.iter().copied().collect::<Vec<_>>();
+            ColumnarEngine::reclaim_controlled_v1_artifacts(directory, &artifacts)
+                .map_err(|_| ColumnarPortError::Unavailable)?;
         }
 
         let entries = match std::fs::read_dir(&source_directory) {
@@ -2211,23 +2243,24 @@ mod tests {
         PrimaryKeyBytes, QueryBudget, QueryResult, query_snapshot,
     };
     use riffdb_storage_api::{
-        AuditPrincipalV1, CatalogActivationIntentV1, CatalogActivationResult,
+        AffectedEntityV1, AuditPrincipalV1, CatalogActivationIntentV1, CatalogActivationResult,
         CatalogAdministrationRepository, ColumnarProjectionArtifactV1, CommittedEntityReferenceV2,
         DatabaseInitializationPort, DatabaseInitializationResult, DeclaredOutcome, DurabilityMode,
         DurableKeySchemaBindingV1, EvidencePageLimit, ExecutablePlanRef, ExpectedEntityState,
-        ReadDependencies, ReadDependency, ReadableCapabilityDigestInventory, ReadableDigestKey,
-        ReadableIdempotencyDigestInventory, StartupValidationInputs,
+        IdempotencyIdentity, IdempotencyKeyDigest, ReadDependencies, ReadDependency,
+        ReadableCapabilityDigestInventory, ReadableDigestKey, ReadableIdempotencyDigestInventory,
+        StartupValidationInputs, StoredAdmittedProvenanceClaimsV1,
         StoredColumnarProjectionControlV1, StoredColumnarProjectionGenerationV1,
-        StoredCommitRecordV1, StoredEntityRecordV1, StoredReadDependenciesV1,
-        StructuralEvidenceCursor, StructuralEvidenceOpen, StructuralEvidencePage,
-        StructuralEvidenceSession, StructuralOpenOutcome,
+        StoredCommitRecordV1, StoredEntityRecordV1, StoredOutcomeV1, StoredProvenanceRecordV1,
+        StoredReadDependenciesV1, StructuralEvidenceCursor, StructuralEvidenceOpen,
+        StructuralEvidencePage, StructuralEvidenceSession, StructuralOpenOutcome,
     };
     use riffdb_storage_redb::{RedbDormantPorts, RedbOperationalPorts, RedbStore};
     use riffdb_types::{
-        ActorId, ActorKind, AdmittedActorContext, CanonicalInputHash, CanonicalRecord,
-        CanonicalValue, CapabilityId, CommitSequence, DatabaseId, DigestKeyId, EntityKeyBuilder,
-        EntityVersion, LogicalTime, OutcomeId, PartitionKeyHash, ProvenanceId, RequestId,
-        TenantScope, Timestamp,
+        ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, CanonicalInputHash,
+        CanonicalRecord, CanonicalValue, CapabilityId, CommitSequence, DatabaseId, DigestKeyId,
+        EntityKeyBuilder, EntityVersion, Environment, LogicalTime, OutcomeId, PartitionKeyBuilder,
+        PartitionKeyHash, ProvenanceId, RequestId, TenantScope, Timestamp, hash_partition_key,
     };
 
     use super::*;
@@ -2316,7 +2349,10 @@ contract VectorBoard version 1 {
                 .expect("read structural evidence")
             {
                 StructuralEvidencePage::Page { findings, next, .. } => {
-                    assert!(findings.is_empty(), "fresh adapter store has no findings");
+                    assert!(
+                        findings.is_empty(),
+                        "fresh adapter store has no findings: {findings:?}"
+                    );
                     cursor = next;
                 }
                 StructuralEvidencePage::ExactEnd(end) => break end,
@@ -2491,6 +2527,14 @@ contract VectorBoard version 1 {
     }
 
     fn append_board_ticket_for_worker(runtime: &ColumnarRuntime) {
+        append_board_ticket_for_worker_at(runtime, CommitSequence::first(), 0x42);
+    }
+
+    fn append_board_ticket_for_worker_at(
+        runtime: &ColumnarRuntime,
+        sequence: CommitSequence,
+        ticket_seed: u8,
+    ) {
         let bundle = riffdb_contract_compiler::compile_contract_source(ADAPTER_BOARD_CONTRACT)
             .expect("compile board contract");
         let entity = bundle
@@ -2517,7 +2561,7 @@ contract VectorBoard version 1 {
             command.plan_hash(),
         );
         let organization = uuid_bytes(0x41);
-        let ticket = uuid_bytes(0x42);
+        let ticket = uuid_bytes(ticket_seed);
         let mut key = EntityKeyBuilder::new(entity.id());
         key.push_uuid(&organization).expect("organization key");
         key.push_uuid(&ticket).expect("ticket key");
@@ -2548,36 +2592,103 @@ contract VectorBoard version 1 {
             .expect("read dependencies"),
         )
         .expect("stored dependencies");
+        let actor = AdmittedActorContext::new(
+            ActorId::new("columnar-worker-test").expect("actor"),
+            ActorKind::Human,
+            TenantScope::Global,
+            None,
+        );
+        let logical_time =
+            LogicalTime::new(Timestamp::new(1_700_200_002, 0).expect("logical time"));
+        let mut partition = PartitionKeyBuilder::new(AggregateTypeId::first());
+        partition
+            .push_uuid(&organization)
+            .expect("partition organization");
+        let partition_key = partition.finish().expect("partition key");
+        let partition_hash = hash_partition_key(partition_key.as_bytes());
+        let declared_outcome = DeclaredOutcome::new(
+            OutcomeId::first(),
+            CanonicalRecord::new(Vec::new()).expect("outcome record"),
+        )
+        .expect("outcome");
+        let provenance_id = ProvenanceId::from_bytes(uuid_bytes(ticket_seed.wrapping_add(0x12)))
+            .expect("provenance");
+        let request_id =
+            RequestId::from_bytes(uuid_bytes(ticket_seed.wrapping_add(0x0f))).expect("request id");
+        let canonical_input_hash =
+            CanonicalInputHash::from_bytes([ticket_seed.wrapping_add(0x10); 32]);
         let commit = StoredCommitRecordV1::new(
-            CommitSequence::first(),
-            RequestId::from_bytes(uuid_bytes(0x51)).expect("request id"),
-            plan,
-            CanonicalInputHash::from_bytes([0x52; 32]),
-            AdmittedActorContext::new(
-                ActorId::new("columnar-worker-test").expect("actor"),
-                ActorKind::Human,
-                TenantScope::Global,
-                None,
-            ),
-            LogicalTime::new(Timestamp::new(1_700_200_002, 0).expect("logical time")),
-            PartitionKeyHash::from_bytes([0x53; 32]),
+            sequence,
+            request_id,
+            plan.clone(),
+            canonical_input_hash,
+            actor.clone(),
+            logical_time,
+            partition_hash,
             Vec::new(),
             dependencies,
             vec![CommittedEntityReferenceV2::from_post_image(&row).expect("row reference")],
             Vec::new(),
-            DeclaredOutcome::new(
-                OutcomeId::first(),
-                CanonicalRecord::new(Vec::new()).expect("outcome record"),
-            )
-            .expect("outcome"),
-            ProvenanceId::from_bytes(uuid_bytes(0x54)).expect("provenance"),
+            declared_outcome.clone(),
+            provenance_id,
             Vec::new(),
             DurabilityMode::Sync,
         )
         .expect("stored commit");
+        let identity = IdempotencyIdentity::new(
+            DatabaseId::from_bytes(uuid_bytes(0x11)).expect("database id"),
+            Environment::new("test").expect("environment"),
+            TenantScope::Global,
+            actor.principal_id().clone(),
+            plan.contract_lineage().clone(),
+            plan.command_id(),
+            IdempotencyKeyDigest::from_hmac_bytes(
+                DigestKeyId::new(1).expect("digest key"),
+                [ticket_seed; 32],
+            ),
+        );
+        let outcome = StoredOutcomeV1::new(
+            identity.clone(),
+            sequence,
+            request_id,
+            plan.clone(),
+            canonical_input_hash,
+            actor.clone(),
+            logical_time,
+            partition_key,
+            partition_hash,
+            Vec::new(),
+            declared_outcome.clone(),
+            StoredAdmittedProvenanceClaimsV1::default(),
+            provenance_id,
+            DurabilityMode::Sync,
+        )
+        .expect("stored outcome");
+        let provenance = StoredProvenanceRecordV1::new(
+            provenance_id,
+            sequence,
+            identity,
+            request_id,
+            plan,
+            canonical_input_hash,
+            actor,
+            logical_time,
+            partition_hash,
+            Vec::new(),
+            declared_outcome.outcome_id(),
+            vec![AffectedEntityV1::from_record(&row)],
+            Vec::new(),
+            StoredAdmittedProvenanceClaimsV1::default(),
+        )
+        .expect("stored provenance");
         runtime
             .storage()
-            .append_columnar_worker_commit_fixture(&[row], &[commit])
+            .append_columnar_worker_commit_with_crosslinks_fixture(
+                &[row],
+                &[commit],
+                &[outcome],
+                &[provenance],
+            )
             .expect("append worker commit fixture");
     }
 
@@ -3347,6 +3458,415 @@ contract VectorBoard version 1 {
                 assert!(Arc::ptr_eq(&captured, &predecessor), "{label}");
                 assert_eq!(wake, riffdb_service::ColumnarWake::TimedOut, "{label}");
             }
+        }
+    }
+
+    // req: PRJ-002, PRJ-004, PRJ-006, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022
+    #[test]
+    fn controlled_v1_prepare_is_side_effect_free_and_retires_after_capture_release() {
+        use crate::columnar_worker::{
+            ColumnarPublicationTestMode, advance_published_v1_under_capture_gate_for_test,
+            apply_available_for_worker_for_test,
+        };
+
+        let (runtime, scope) = board_runtime("v1-artifact-retirement");
+        request_projection(&runtime, "ticket_board");
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        append_board_ticket_for_worker_at(&runtime, CommitSequence::first(), 0x42);
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+
+        let binding = runtime
+            .control_binding("ticket_board")
+            .expect("control binding")
+            .clone();
+        let expected = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("read selected predecessor")
+            .expect("selected predecessor");
+        let published = expected.published().expect("published V1");
+        let predecessor_artifact = published.artifact().expect("predecessor artifact");
+        let generation_directory = controlled_generation_directory(
+            &scope.path().join("projections"),
+            binding.spec().hash(),
+            published.generation(),
+        );
+        let predecessor_manifest = generation_directory.join(format!(
+            "MANIFEST-V1-{}",
+            lower_hex(&predecessor_artifact.checksum())
+        ));
+        let predecessor = riffdb_columnar::ManifestV1::decode(
+            &std::fs::read(&predecessor_manifest).expect("read predecessor manifest"),
+        )
+        .expect("decode predecessor manifest");
+        assert!(!predecessor.segments.is_empty());
+        let predecessor_segments = predecessor
+            .segments
+            .iter()
+            .map(|entry| generation_directory.join(&entry.file_name))
+            .collect::<Vec<_>>();
+        let captured_predecessor = ServerColumnarProjectionPort::new(Arc::clone(&runtime))
+            .observe("ticket_board")
+            .expect("capture predecessor")
+            .snapshot_arc();
+
+        append_board_ticket_for_worker_at(
+            &runtime,
+            CommitSequence::new(2).expect("second sequence"),
+            0x43,
+        );
+        let mut successor = runtime
+            .open_controlled_generation(&binding, published)
+            .expect("open predecessor for advancement");
+        apply_available_for_worker_for_test(&runtime, &mut successor).expect("apply second ticket");
+        let successor_manifest = successor.checkpoint().expect("checkpoint successor V1");
+        let (length, checksum) = successor_manifest.artifact_identity();
+        let replacement = StoredColumnarProjectionGenerationV1::selected(
+            published.generation(),
+            ColumnarProjectionLayoutV1::V1,
+            successor_manifest.durable_frontier,
+            published.history_incarnation(),
+            ColumnarProjectionArtifactV1::new(length, checksum).expect("successor artifact"),
+            published.definition_fingerprint(),
+            published.spec_hash(),
+            None,
+            riffdb_storage_api::ColumnarProjectionGenerationRoleV1::Published,
+        )
+        .expect("successor pointer");
+        let (successor, prepared) = runtime
+            .open_prepared_generation(&binding, &replacement)
+            .expect("side-effect-free successor validation");
+
+        assert!(predecessor_manifest.is_file());
+        assert!(
+            predecessor_segments.iter().all(|path| path.is_file()),
+            "pre-CAS validation must not delete predecessor-selected segments"
+        );
+        assert_eq!(
+            advance_published_v1_under_capture_gate_for_test(
+                &runtime,
+                &binding,
+                &expected,
+                &prepared,
+                successor,
+                ColumnarPublicationTestMode::Ordinary,
+                || {},
+            ),
+            Ok(true)
+        );
+        let durable = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("reread successor selection")
+            .expect("successor selection");
+        runtime
+            .reclaim_unselected_generations(&binding, &durable)
+            .expect("retain captured predecessor artifact");
+        assert!(predecessor_manifest.is_file());
+        assert!(predecessor_segments.iter().all(|path| path.is_file()));
+
+        drop(captured_predecessor);
+        runtime
+            .reclaim_unselected_generations(&binding, &durable)
+            .expect("retire released predecessor artifact");
+        assert!(!predecessor_manifest.exists());
+        assert!(
+            predecessor_segments.iter().all(|path| !path.exists()),
+            "artifact-specific segment retirement follows durable selection and captured-view release"
+        );
+    }
+
+    // req: PRJ-002, PRJ-006, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022
+    #[test]
+    fn published_v1_state_change_installs_the_later_durable_v1_selection() {
+        use crate::columnar_worker::{
+            ColumnarPublicationTestMode, advance_published_v1_under_capture_gate_for_test,
+            apply_available_for_worker_for_test,
+        };
+
+        let (runtime, _scope) = board_runtime("v1-later-durable-selection");
+        let (binding, expected, attempted_successor, attempted_prepared) =
+            prepare_published_v1_frontier_advance(&runtime);
+        append_board_ticket_for_worker_at(
+            &runtime,
+            CommitSequence::new(2).expect("second sequence"),
+            0x43,
+        );
+        let published = expected.published().expect("selected predecessor");
+        let mut later_successor = runtime
+            .open_controlled_generation(&binding, published)
+            .expect("open predecessor for later selection");
+        apply_available_for_worker_for_test(&runtime, &mut later_successor)
+            .expect("apply through later durable head");
+        let manifest = later_successor.checkpoint().expect("checkpoint later V1");
+        let (length, checksum) = manifest.artifact_identity();
+        let later_pointer = StoredColumnarProjectionGenerationV1::selected(
+            published.generation(),
+            ColumnarProjectionLayoutV1::V1,
+            manifest.durable_frontier,
+            published.history_incarnation(),
+            ColumnarProjectionArtifactV1::new(length, checksum).expect("later artifact"),
+            published.definition_fingerprint(),
+            published.spec_hash(),
+            None,
+            riffdb_storage_api::ColumnarProjectionGenerationRoleV1::Published,
+        )
+        .expect("later pointer");
+        let (later_successor, later_prepared) = runtime
+            .open_prepared_generation(&binding, &later_pointer)
+            .expect("validate later V1");
+        drop(later_successor);
+        let storage = Arc::clone(&runtime);
+        let hook_expected = expected.clone();
+        let result = advance_published_v1_under_capture_gate_for_test(
+            &runtime,
+            &binding,
+            &expected,
+            &attempted_prepared,
+            attempted_successor,
+            ColumnarPublicationTestMode::Ordinary,
+            move || {
+                assert_eq!(
+                    storage
+                        .storage()
+                        .advance_published_v1(
+                            &hook_expected,
+                            &later_prepared,
+                            storage.process_generation(),
+                        )
+                        .expect("install racing later V1"),
+                    ColumnarProjectionControlWriteResultV1::Applied
+                );
+            },
+        );
+        assert_eq!(result, Ok(false));
+        let installed = ServerColumnarProjectionPort::new(Arc::clone(&runtime))
+            .observe("ticket_board")
+            .expect("capture exact later durable selection");
+        assert_eq!(
+            installed.published_frontier().position(),
+            manifest.durable_frontier,
+            "StateChanged must install the exact later durable V1 before reopening capture"
+        );
+    }
+
+    // req: PRJ-002, PRJ-006, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022
+    #[test]
+    fn published_v1_state_change_installs_the_later_durable_v2_selection() {
+        use crate::columnar_worker::{
+            ColumnarPublicationTestMode, advance_published_v1_under_capture_gate_for_test,
+        };
+
+        let (runtime, _scope) = board_runtime("v1-later-durable-v2-selection");
+        let (binding, expected, successor, prepared) =
+            prepare_published_v1_frontier_advance(&runtime);
+        assert_eq!(
+            advance_published_v1_under_capture_gate_for_test(
+                &runtime,
+                &binding,
+                &expected,
+                &prepared,
+                successor,
+                ColumnarPublicationTestMode::Ordinary,
+                || {},
+            ),
+            Ok(true)
+        );
+        for _ in 0..3 {
+            assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        }
+        let durable_v2 = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("reread later V2 control")
+            .expect("later V2 control");
+        let selected_v2 = durable_v2.servable_generation().expect("selected later V2");
+        assert_eq!(selected_v2.layout(), ColumnarProjectionLayoutV1::V2);
+        let unused_attempt_view = runtime
+            .open_controlled_generation(&binding, selected_v2)
+            .expect("open a valid view for the stale attempted call");
+
+        assert_eq!(
+            advance_published_v1_under_capture_gate_for_test(
+                &runtime,
+                &binding,
+                &expected,
+                &prepared,
+                unused_attempt_view,
+                ColumnarPublicationTestMode::Ordinary,
+                || {},
+            ),
+            Ok(false)
+        );
+        let installed = ServerColumnarProjectionPort::new(Arc::clone(&runtime))
+            .observe("ticket_board")
+            .expect("capture exact later durable V2");
+        assert_eq!(
+            installed.published_frontier().position(),
+            selected_v2.frontier()
+        );
+        assert_eq!(
+            runtime
+                .engine("ticket_board")
+                .expect("engine registry")
+                .expect("active slot")
+                .generation(),
+            Some(selected_v2.generation())
+        );
+    }
+
+    // req: PRJ-002, PRJ-004, PRJ-006, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022
+    #[test]
+    fn published_v1_crash_reopens_the_exact_durable_artifact() {
+        const CHILD_MODE: &str = "RIFFDB_SERVER_V1_ADVANCE_CRASH_CHILD";
+        const CHILD_PATH: &str = "RIFFDB_SERVER_V1_ADVANCE_CRASH_PATH";
+        const EXACT_TEST: &str =
+            "columnar_adapter::tests::published_v1_crash_reopens_the_exact_durable_artifact";
+
+        if std::env::var(CHILD_MODE).as_deref() == Ok("1") {
+            let path = PathBuf::from(std::env::var_os(CHILD_PATH).expect("child path"));
+            let runtime = open_board_runtime_at(&path);
+            request_projection(&runtime, "ticket_board");
+            for _ in 0..4 {
+                let _ = crate::columnar_worker::run_one_test_pass(&runtime);
+            }
+            panic!("child did not abort at the requested V1 publication boundary");
+        }
+
+        for (label, boundary, unknown, expected_frontier) in [
+            (
+                "before-cas",
+                "before-cas",
+                false,
+                FrontierPosition::AppliedThrough(CommitSequence::first()),
+            ),
+            (
+                "after-cas",
+                "after-cas",
+                false,
+                FrontierPosition::AppliedThrough(CommitSequence::new(2).expect("second sequence")),
+            ),
+            (
+                "unknown-after-cas",
+                "after-cas",
+                true,
+                FrontierPosition::AppliedThrough(CommitSequence::new(2).expect("second sequence")),
+            ),
+            (
+                "after-reread",
+                "after-reread",
+                false,
+                FrontierPosition::AppliedThrough(CommitSequence::new(2).expect("second sequence")),
+            ),
+            (
+                "after-view-install",
+                "after-view-install",
+                false,
+                FrontierPosition::AppliedThrough(CommitSequence::new(2).expect("second sequence")),
+            ),
+        ] {
+            let (runtime, scope) = board_runtime(&format!("v1-crash-{label}"));
+            request_projection(&runtime, "ticket_board");
+            assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+            append_board_ticket_for_worker_at(&runtime, CommitSequence::first(), 0x42);
+            assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+            let binding = runtime
+                .control_binding("ticket_board")
+                .expect("control binding")
+                .clone();
+            let predecessor = runtime
+                .storage()
+                .recover_expected_control(binding.spec().source())
+                .expect("read predecessor control")
+                .expect("predecessor control")
+                .published()
+                .expect("published predecessor")
+                .clone();
+            let predecessor_artifact = predecessor.artifact().expect("predecessor artifact");
+            let predecessor_manifest = controlled_generation_directory(
+                &scope.path().join("projections"),
+                binding.spec().hash(),
+                predecessor.generation(),
+            )
+            .join(format!(
+                "MANIFEST-V1-{}",
+                lower_hex(&predecessor_artifact.checksum())
+            ));
+            append_board_ticket_for_worker_at(
+                &runtime,
+                CommitSequence::new(2).expect("second sequence"),
+                0x43,
+            );
+            assert_eq!(
+                runtime
+                    .storage()
+                    .recover_expected_control(binding.spec().source())
+                    .expect("reread predecessor before crash")
+                    .expect("predecessor before crash")
+                    .servable_generation()
+                    .expect("selected predecessor before crash")
+                    .frontier(),
+                FrontierPosition::AppliedThrough(CommitSequence::first())
+            );
+            drop(runtime);
+
+            let mut child = std::process::Command::new(
+                std::env::current_exe().expect("server test executable"),
+            );
+            child
+                .arg("--exact")
+                .arg(EXACT_TEST)
+                .arg("--nocapture")
+                .env(CHILD_MODE, "1")
+                .env(CHILD_PATH, scope.path())
+                .env("RIFFDB_COLUMNAR_V1_PUBLICATION_ABORT_AT", boundary)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            if unknown {
+                child.env(
+                    "RIFFDB_COLUMNAR_PUBLICATION_RESULT",
+                    "unknown-after-applied",
+                );
+            }
+            let status = child.status().expect("spawn V1 publication crash child");
+            assert_eq!(status.code(), None, "child must abort at {label}");
+            if boundary == "before-cas" {
+                assert!(
+                    predecessor_manifest.is_file(),
+                    "pre-CAS validation/crash preserves the selected predecessor artifact"
+                );
+            }
+
+            let reopened = open_board_runtime_at(scope.path());
+            let durable = reopened
+                .storage()
+                .recover_expected_control(binding.spec().source())
+                .expect("reread durable V1 after crash")
+                .expect("durable V1 after crash");
+            assert_eq!(
+                durable
+                    .servable_generation()
+                    .expect("servable V1 after crash")
+                    .frontier(),
+                expected_frontier,
+                "{label}"
+            );
+            let port = ServerColumnarProjectionPort::new(Arc::clone(&reopened));
+            let cold = port.observe("ticket_board").expect("request reopen");
+            assert!(!cold.has_published(), "{label}");
+            assert!(crate::columnar_worker::activate_one_test_slot(
+                &reopened,
+                "ticket_board"
+            ));
+            assert_eq!(
+                port.observe("ticket_board")
+                    .expect("capture exact crash-selected V1")
+                    .published_frontier()
+                    .position(),
+                expected_frontier,
+                "{label}"
+            );
         }
     }
 
