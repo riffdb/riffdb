@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, Weak};
 use std::time::Duration;
 
 use riffdb_catalog::ActiveCatalogSnapshot;
@@ -250,21 +250,37 @@ pub(crate) struct ColumnarCaptureGate<'a> {
     state: MutexGuard<'a, ColumnarSlotState>,
 }
 
+pub(crate) struct RetiredColumnarGeneration {
+    directory: PathBuf,
+    captured_view: Weak<riffdb_columnar::ColumnarSnapshot>,
+}
+
 impl ColumnarCaptureGate<'_> {
     /// Installs the exact durable selection while capture remains closed.
     pub(crate) fn install_selected(
         &mut self,
         engine: ColumnarEngine,
         generation: ProjectionGeneration,
-    ) -> Result<(), ColumnarPortError> {
+    ) -> Result<Option<RetiredColumnarGeneration>, ColumnarPortError> {
         if !matches!(&*self.state, ColumnarSlotState::Active(_)) {
             return Err(ColumnarPortError::Unavailable);
         }
-        *self.state = ColumnarSlotState::Active(Box::new(ActiveColumnarEngine {
+        let replacement = ColumnarSlotState::Active(Box::new(ActiveColumnarEngine {
             engine,
             generation: Some(generation),
         }));
-        Ok(())
+        let previous = std::mem::replace(&mut *self.state, replacement);
+        let ColumnarSlotState::Active(previous) = previous else {
+            return Err(ColumnarPortError::Unavailable);
+        };
+        if previous.generation == Some(generation) {
+            return Ok(None);
+        }
+        let snapshot = previous.engine.published_snapshot();
+        Ok(Some(RetiredColumnarGeneration {
+            directory: previous.engine.directory().to_path_buf(),
+            captured_view: Arc::downgrade(&snapshot),
+        }))
     }
 
     /// Leaves the source closed when durable selection cannot be validated.
@@ -581,6 +597,7 @@ pub(crate) struct ColumnarRuntime {
     /// head probe may resume from the last observation instead of rescanning
     /// the journal from sequence one.
     observed_head: AtomicU64,
+    retired_generations: Mutex<Vec<RetiredColumnarGeneration>>,
 }
 
 #[derive(Clone, Debug)]
@@ -628,6 +645,7 @@ impl ColumnarRuntime {
             activations: AtomicU64::new(0),
             population_passes: AtomicU64::new(0),
             observed_head: AtomicU64::new(0),
+            retired_generations: Mutex::new(Vec::new()),
         })
     }
 
@@ -754,6 +772,7 @@ impl ColumnarRuntime {
             activations: AtomicU64::new(0),
             population_passes: AtomicU64::new(0),
             observed_head: AtomicU64::new(0),
+            retired_generations: Mutex::new(Vec::new()),
         }))
     }
 
@@ -785,6 +804,97 @@ impl ColumnarRuntime {
     #[must_use]
     pub(crate) fn projections_root(&self) -> &Path {
         &self.projections_root
+    }
+
+    pub(crate) fn defer_retirement(
+        &self,
+        generation: RetiredColumnarGeneration,
+    ) -> Result<(), ColumnarPortError> {
+        self.retired_generations
+            .lock()
+            .map_err(|_| ColumnarPortError::Unavailable)?
+            .push(generation);
+        Ok(())
+    }
+
+    pub(crate) fn reclaim_unselected_generations(
+        &self,
+        binding: &ColumnarControlBinding,
+        control: &StoredColumnarProjectionControlV1,
+    ) -> Result<(), ColumnarPortError> {
+        let source_directory =
+            controlled_source_directory(&self.projections_root, binding.spec.hash());
+        let mut retained = BTreeSet::new();
+        for pointer in [
+            control.published(),
+            control.candidate(),
+            control.predecessor(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let directory = controlled_layout_generation_directory(
+                &source_directory,
+                pointer.layout(),
+                pointer.generation(),
+            );
+            retained.insert(directory.clone());
+            if pointer.role() == riffdb_storage_api::ColumnarProjectionGenerationRoleV1::Candidate {
+                retained.insert(directory.with_file_name(format!(
+                    "{}.tmp",
+                    directory
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .ok_or(ColumnarPortError::Integrity)?
+                )));
+            }
+        }
+
+        let mut retired = self
+            .retired_generations
+            .lock()
+            .map_err(|_| ColumnarPortError::Unavailable)?;
+        retired.retain(|generation| generation.captured_view.upgrade().is_some());
+        for generation in retired.iter() {
+            retained.insert(generation.directory.clone());
+        }
+
+        let entries = match std::fs::read_dir(&source_directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(_) => return Err(ColumnarPortError::Unavailable),
+        };
+        for entry in entries {
+            let entry = entry.map_err(|_| ColumnarPortError::Unavailable)?;
+            let file_type = entry
+                .file_type()
+                .map_err(|_| ColumnarPortError::Unavailable)?;
+            if !file_type.is_dir() {
+                continue;
+            }
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| ColumnarPortError::Integrity)?;
+            let Some((layout, generation, temporary)) = managed_generation_directory_name(&name)
+            else {
+                continue;
+            };
+            if retained.contains(&entry.path()) {
+                continue;
+            }
+            if layout == ColumnarProjectionLayoutV1::V2 && !temporary {
+                ValidatedColumnarV2Generation::reclaim(&source_directory, generation)
+                    .map_err(|_| ColumnarPortError::Unavailable)?;
+            } else {
+                std::fs::remove_dir_all(entry.path())
+                    .map_err(|_| ColumnarPortError::Unavailable)?;
+                std::fs::File::open(&source_directory)
+                    .and_then(|parent| parent.sync_all())
+                    .map_err(|_| ColumnarPortError::Unavailable)?;
+            }
+        }
+        Ok(())
     }
 
     /// Registered engine slots in name order.
@@ -1251,8 +1361,7 @@ pub(crate) fn controlled_generation_directory(
     spec_hash: riffdb_types::ColumnarProjectionSpecHashV1,
     generation: ProjectionGeneration,
 ) -> PathBuf {
-    projections_root
-        .join(format!("source-{}", lower_hex(spec_hash.as_bytes())))
+    controlled_source_directory(projections_root, spec_hash)
         .join(format!("generation-{:020}", generation.get()))
 }
 
@@ -1261,6 +1370,46 @@ pub(crate) fn controlled_source_directory(
     spec_hash: riffdb_types::ColumnarProjectionSpecHashV1,
 ) -> PathBuf {
     projections_root.join(format!("source-{}", lower_hex(spec_hash.as_bytes())))
+}
+
+fn controlled_layout_generation_directory(
+    source_directory: &Path,
+    layout: ColumnarProjectionLayoutV1,
+    generation: ProjectionGeneration,
+) -> PathBuf {
+    match layout {
+        ColumnarProjectionLayoutV1::V1 => {
+            source_directory.join(format!("generation-{:020}", generation.get()))
+        }
+        ColumnarProjectionLayoutV1::V2 => {
+            source_directory.join(format!("generation-{:016x}", generation.get()))
+        }
+    }
+}
+
+fn managed_generation_directory_name(
+    name: &str,
+) -> Option<(ColumnarProjectionLayoutV1, ProjectionGeneration, bool)> {
+    let (base, temporary) = name
+        .strip_suffix(".tmp")
+        .map_or((name, false), |base| (base, true));
+    let suffix = base.strip_prefix("generation-")?;
+    let (layout, value) = if suffix.len() == 20 && suffix.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        (ColumnarProjectionLayoutV1::V1, suffix.parse::<u64>().ok()?)
+    } else if suffix.len() == 16
+        && suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        (
+            ColumnarProjectionLayoutV1::V2,
+            u64::from_str_radix(suffix, 16).ok()?,
+        )
+    } else {
+        return None;
+    };
+    ProjectionGeneration::new(value).map(|generation| (layout, generation, temporary))
 }
 
 fn lower_hex(bytes: &[u8]) -> String {
@@ -2420,7 +2569,8 @@ contract VectorBoard version 1 {
         assert!(crate::columnar_worker::run_one_test_pass(&runtime));
         let binding = runtime
             .control_binding("ticket_board")
-            .expect("control binding");
+            .expect("control binding")
+            .clone();
         let ready_v1 = runtime
             .storage()
             .recover_expected_control(binding.spec().source())
@@ -2499,6 +2649,137 @@ contract VectorBoard version 1 {
                 .expect("validated V2 observation")
                 .has_published()
         );
+    }
+
+    // req: PRJ-002, PRJ-004, PRJ-006, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022
+    #[test]
+    fn columnar_v2_compaction_reuses_generation_root_and_queries_validate_once() {
+        let (runtime, scope) = board_runtime("v2-compaction-retirement");
+        request_projection(&runtime, "ticket_board");
+        for _ in 0..4 {
+            assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        }
+        let binding = runtime
+            .control_binding("ticket_board")
+            .expect("control binding")
+            .clone();
+        let selected = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("read V2 control")
+            .expect("V2 control");
+        let predecessor = selected.published().expect("published V2").clone();
+        assert_eq!(predecessor.layout(), ColumnarProjectionLayoutV1::V2);
+        let source_directory =
+            controlled_source_directory(&scope.path().join("projections"), binding.spec().hash());
+        let predecessor_directory = source_directory.join(format!(
+            "generation-{:016x}",
+            predecessor.generation().get()
+        ));
+        let predecessor_root =
+            std::fs::read(predecessor_directory.join("ROOT-V1")).expect("read predecessor root");
+
+        let port = ServerColumnarProjectionPort::new(Arc::clone(&runtime));
+        let captured = port
+            .observe("ticket_board")
+            .expect("capture predecessor")
+            .snapshot_arc();
+        let root_path = predecessor_directory.join("ROOT-V1");
+        let offline_path = predecessor_directory.join("ROOT-V1.offline");
+        std::fs::rename(&root_path, &offline_path).expect("hide durable root after validation");
+        assert!(matches!(
+            query_snapshot(
+                runtime
+                    .engine("ticket_board")
+                    .expect("engine registry")
+                    .expect("slot")
+                    .definition(),
+                &captured,
+                &board_query(),
+            ),
+            Ok(QueryResult::Rows(_))
+        ));
+        std::fs::rename(&offline_path, &root_path).expect("restore root for compaction");
+
+        let physical = PhysicalGenerationFingerprintV1::compute(binding.definition().fingerprint());
+        assert_eq!(
+            runtime
+                .storage()
+                .allocate_same_spec_candidate(&selected, *physical.as_bytes())
+                .expect("allocate immutable compaction candidate"),
+            ColumnarProjectionControlWriteResultV1::Applied
+        );
+        let rebuilding = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("read rebuilding control")
+            .expect("rebuilding control");
+        assert!(crate::columnar_worker::run_one_test_pass_stopping_before_page(&runtime));
+        let cancelled = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("read cancelled rebuild")
+            .expect("cancelled rebuild");
+        assert_eq!(cancelled, rebuilding);
+        assert_eq!(cancelled.published(), Some(&predecessor));
+        assert!(
+            predecessor_directory.exists(),
+            "cancellation cannot reclaim the selected generation"
+        );
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        let prepared_compaction = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("read prepared compaction")
+            .expect("prepared compaction");
+        let candidate = prepared_compaction.candidate().expect("prepared candidate");
+        let candidate_directory =
+            source_directory.join(format!("generation-{:016x}", candidate.generation().get()));
+        assert!(candidate_directory.join("ROOT-V1").is_file());
+        assert!(predecessor_directory.join("ROOT-V1").is_file());
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        let compacted = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("read compacted control")
+            .expect("compacted control");
+        let compacted_generation = compacted.published().expect("compacted V2").generation();
+        assert!(compacted_generation > predecessor.generation());
+        assert_eq!(
+            std::fs::read(predecessor_directory.join("ROOT-V1"))
+                .expect("captured predecessor remains durable"),
+            predecessor_root,
+            "compaction never mutates or reuses the predecessor root"
+        );
+
+        drop(captured);
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        assert!(
+            !predecessor_directory.exists(),
+            "an unselected generation is reclaimed after its last captured view"
+        );
+
+        let compacted_root = source_directory
+            .join(format!("generation-{:016x}", compacted_generation.get()))
+            .join("ROOT-V1");
+        drop(port);
+        drop(runtime);
+        std::fs::write(&compacted_root, b"corrupt selected compacted root")
+            .expect("corrupt selected compacted root");
+        let reopened = reopen_board_runtime(&scope);
+        request_projection(&reopened, "ticket_board");
+        assert!(
+            !crate::columnar_worker::run_one_test_pass(&reopened),
+            "selected compaction corruption fails closed instead of rolling back"
+        );
+        let degraded = reopened
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("read degraded selection")
+            .expect("degraded selection");
+        assert_eq!(degraded.published(), compacted.published());
+        assert!(degraded.servable_generation().is_none());
+        assert!(!predecessor_directory.exists());
     }
 
     // req: PRJ-008, PRJ-009, OQ-020, OQ-022, PERF-007
