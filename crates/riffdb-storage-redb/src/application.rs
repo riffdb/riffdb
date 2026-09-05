@@ -1227,7 +1227,7 @@ fn stage_admission_with_tables(
     let key = identity_key(request.proposed_pending().identity())?;
     let encoded = encode_pending_admission_v1(request.proposed_pending())?;
     let encoded_key = encode_idempotency_key(&key);
-    access.register_fresh_locator_raw_insert(JournalTable::IdempotencyPending, &encoded_key)?;
+    access.register_fresh_locator_raw_insert(JournalTable::IdempotencyPending, encoded_key)?;
     if pending
         .insert(encoded_key, encoded.as_bytes())
         .map_err(precommit_storage_error)?

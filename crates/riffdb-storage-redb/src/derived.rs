@@ -760,7 +760,7 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
                 .map_err(table_error)?;
             for row in &prepared_rows {
                 let key = encode_projection_group_key(&row.key);
-                access.register_fresh_locator_byte_insert(PROJECTION_STATE, &key)?;
+                access.register_fresh_locator_byte_insert(PROJECTION_STATE, key)?;
                 let previous = rows
                     .insert(key, row.encoded.as_bytes())
                     .map_err(precommit_storage_error)?;
@@ -786,7 +786,7 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
                 .open_table(PROJECTION_APPLIED)
                 .map_err(table_error)?;
             let key = encode_projection_apply_key(&marker_key);
-            access.register_fresh_locator_byte_insert(PROJECTION_APPLIED, &key)?;
+            access.register_fresh_locator_byte_insert(PROJECTION_APPLIED, key)?;
             if markers
                 .insert(key, encoded_marker.as_bytes())
                 .map_err(precommit_storage_error)?
@@ -801,7 +801,7 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
             let mut controls = transaction
                 .open_table(PROJECTION_FRONTIER)
                 .map_err(table_error)?;
-            access.register_fresh_locator_byte_insert(PROJECTION_FRONTIER, &encoded_key)?;
+            access.register_fresh_locator_byte_insert(PROJECTION_FRONTIER, encoded_key)?;
             let previous = controls
                 .insert(encoded_key, encoded_control.as_bytes())
                 .map_err(precommit_storage_error)?
@@ -848,7 +848,7 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
             let mut controls = transaction
                 .open_table(PROJECTION_FRONTIER)
                 .map_err(table_error)?;
-            access.register_fresh_locator_byte_insert(PROJECTION_FRONTIER, &encoded_key)?;
+            access.register_fresh_locator_byte_insert(PROJECTION_FRONTIER, encoded_key)?;
             let previous = controls
                 .insert(encoded_key, encoded.as_bytes())
                 .map_err(precommit_storage_error)?;

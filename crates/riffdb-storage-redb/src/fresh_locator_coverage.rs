@@ -560,7 +560,7 @@ mod tests {
             .expect("seal B");
         assert!(!wrong_order.publish_command(publish_b));
         assert!(wrong_order.is_disabled());
-        drop(publish_a);
+        let _lost_publication_witness = publish_a;
     }
 
     // req: OUT-001, OUT-002, TXN-042
