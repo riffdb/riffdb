@@ -1,6 +1,6 @@
 //! Immutable filesystem finalization and validate-once open for V2 generations.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -8,6 +8,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use riffdb_contract_ir::{ValueType, ValueTypeTag};
+use riffdb_storage_api::{
+    ApplicationExportSnapshotReader, AuthoritativePointReader, AuthoritativeScanReader,
+};
 use riffdb_types::{
     CanonicalValue, DecimalSpec, FrontierPosition, MAX_DECIMAL_PRECISION, ProjectionGeneration,
 };
@@ -15,13 +18,17 @@ use riffdb_types::{
 use crate::checkpoint::checksum_bytes;
 use crate::hooks::{ColumnarTestBoundary, ColumnarTestController};
 use crate::store::{Segment, SegmentId};
+use crate::streaming_v2::{
+    ColumnarV2StreamingError, ColumnarV2StreamingRows, open_partition_lane,
+    preflight_snapshot_partition_bound, remove_partition_lane,
+};
 use crate::{
     COLUMNAR_GENERATION_ROOT_FILE_NAME_V1, ColumnarGenerationRootV1, ColumnarGenerationRootV1Entry,
-    ColumnarManifestV2, ColumnarManifestV2Entry, ColumnarSnapshot, LiveRow,
-    MAX_COLUMNAR_GENERATION_ROOT_V1_BYTES, MAX_COLUMNAR_MANIFEST_V2_BYTES, MAX_SEGMENT_V2_BYTES,
-    MAX_SEGMENT_V2_ROWS, OrgKey, PhysicalGenerationFingerprintV1, PrimaryKeyBytes,
-    RegisteredDefinition, SegmentV2, SegmentV2Cell, SegmentV2Codec, SegmentV2Column,
-    SegmentV2Identity, SegmentV2LogicalType, SegmentV2SegmentId,
+    ColumnarManifestV2, ColumnarManifestV2Entry, ColumnarSnapshot, ColumnarSpecReplayLimitsV1,
+    LiveRow, MAX_COLUMNAR_GENERATION_ROOT_V1_BYTES, MAX_COLUMNAR_MANIFEST_V2_BYTES,
+    MAX_SEGMENT_V2_BYTES, MAX_SEGMENT_V2_ROWS, OrgKey, PhysicalGenerationFingerprintV1,
+    PrimaryKeyBytes, RegisteredDefinition, SegmentV2, SegmentV2Cell, SegmentV2Codec,
+    SegmentV2Column, SegmentV2Identity, SegmentV2LogicalType, SegmentV2SegmentId,
 };
 
 /// Closed failures while finalizing or opening one immutable V2 generation.
@@ -138,6 +145,313 @@ impl ValidatedColumnarV2Generation {
             expected,
             None,
         )
+    }
+
+    /// Builds one generation from a rewindable authoritative snapshot and one
+    /// frozen retained tail without materializing an authoritative population.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_streaming<R, S>(
+        source_directory: &Path,
+        definition: RegisteredDefinition,
+        history_incarnation: u64,
+        generation: ProjectionGeneration,
+        snapshot_frontier: FrontierPosition,
+        snapshot: &S,
+        reader: &R,
+        replay_limits: ColumnarSpecReplayLimitsV1,
+        mut stop_before_next_page: impl FnMut() -> bool,
+    ) -> Result<Self, ColumnarV2StreamingError>
+    where
+        R: AuthoritativePointReader + AuthoritativeScanReader + ?Sized,
+        S: ApplicationExportSnapshotReader + ?Sized,
+    {
+        Self::prepare_streaming_with_optional_controller(
+            source_directory,
+            definition,
+            history_incarnation,
+            generation,
+            snapshot_frontier,
+            snapshot,
+            reader,
+            replay_limits,
+            &mut stop_before_next_page,
+            None,
+        )
+    }
+
+    /// Identical streaming construction with fixed crash boundaries.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_streaming_with_controller<R, S>(
+        source_directory: &Path,
+        definition: RegisteredDefinition,
+        history_incarnation: u64,
+        generation: ProjectionGeneration,
+        snapshot_frontier: FrontierPosition,
+        snapshot: &S,
+        reader: &R,
+        replay_limits: ColumnarSpecReplayLimitsV1,
+        mut stop_before_next_page: impl FnMut() -> bool,
+        controller: &ColumnarTestController,
+    ) -> Result<Self, ColumnarV2StreamingError>
+    where
+        R: AuthoritativePointReader + AuthoritativeScanReader + ?Sized,
+        S: ApplicationExportSnapshotReader + ?Sized,
+    {
+        Self::prepare_streaming_with_optional_controller(
+            source_directory,
+            definition,
+            history_incarnation,
+            generation,
+            snapshot_frontier,
+            snapshot,
+            reader,
+            replay_limits,
+            &mut stop_before_next_page,
+            Some(controller),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_streaming_with_optional_controller<R, S>(
+        source_directory: &Path,
+        definition: RegisteredDefinition,
+        history_incarnation: u64,
+        generation: ProjectionGeneration,
+        snapshot_frontier: FrontierPosition,
+        snapshot: &S,
+        reader: &R,
+        replay_limits: ColumnarSpecReplayLimitsV1,
+        mut stop_before_next_page: impl FnMut() -> bool,
+        controller: Option<&ColumnarTestController>,
+    ) -> Result<Self, ColumnarV2StreamingError>
+    where
+        R: AuthoritativePointReader + AuthoritativeScanReader + ?Sized,
+        S: ApplicationExportSnapshotReader + ?Sized,
+    {
+        let logical_types = logical_types(&definition).map_err(map_generation_streaming_error)?;
+        preflight_snapshot_partition_bound(
+            snapshot,
+            &definition,
+            crate::MAX_COLUMNAR_GENERATION_ROOT_V1_PARTITIONS,
+            &mut stop_before_next_page,
+        )?;
+        fs::create_dir_all(source_directory).map_err(|_| ColumnarV2StreamingError::Io)?;
+        let final_directory = source_directory.join(generation_directory_name(generation));
+        let temporary_directory = Self::temporary_directory(source_directory, generation);
+        if temporary_directory.exists() {
+            fs::remove_dir_all(&temporary_directory).map_err(|_| ColumnarV2StreamingError::Io)?;
+        }
+        fs::create_dir(&temporary_directory).map_err(|_| ColumnarV2StreamingError::Io)?;
+        let mut temporary_guard = TemporaryGenerationGuard::new(temporary_directory.clone());
+        let streaming = ColumnarV2StreamingRows::build(
+            &temporary_directory,
+            &definition,
+            snapshot_frontier,
+            reader,
+            replay_limits,
+            &mut stop_before_next_page,
+            controller,
+        )?;
+        let frontier = streaming.frontier();
+
+        // A crash after the directory rename but before durable control CAS
+        // leaves a complete already-equal artifact. ROOT-V1 could only have
+        // been written after the row-by-row checks below and after scratch was
+        // removed, so structural reopen is sufficient for idempotent recovery.
+        if final_directory.exists() {
+            streaming.cleanup()?;
+            return Self::open_unchecked_artifact(
+                source_directory,
+                &definition,
+                history_incarnation,
+                generation,
+                frontier,
+                None,
+            )
+            .map_err(map_generation_streaming_error);
+        }
+
+        let mut organizations = BTreeSet::new();
+        streaming.visit_final_rows(snapshot, &definition, &mut stop_before_next_page, |row| {
+            let (organization, _, _) = row.into_parts();
+            organizations.insert(organization);
+            if organizations.len() > crate::MAX_COLUMNAR_GENERATION_ROOT_V1_PARTITIONS {
+                return Err(ColumnarV2StreamingError::BoundExceeded);
+            }
+            Ok(())
+        })?;
+        let organizations = organizations.into_iter().collect::<Vec<_>>();
+        let lanes = streaming.write_partition_lanes(
+            snapshot,
+            &definition,
+            &organizations,
+            &mut stop_before_next_page,
+        )?;
+
+        let mut root_entries = Vec::with_capacity(organizations.len());
+        let mut total_segments = 0u64;
+        let mut total_rows = 0u64;
+        let mut next_segment = 1u64;
+        for (organization, lane_path) in lanes {
+            let mut lane = open_partition_lane(&lane_path)?;
+            let mut manifest_entries = Vec::new();
+            loop {
+                let mut owned_rows = Vec::with_capacity(MAX_SEGMENT_V2_ROWS);
+                while owned_rows.len() < MAX_SEGMENT_V2_ROWS {
+                    let Some(row) = lane.next()? else {
+                        break;
+                    };
+                    let (observed_organization, key, live) = row.into_parts();
+                    if observed_organization != organization {
+                        return Err(ColumnarV2StreamingError::Invalid);
+                    }
+                    owned_rows.push((key, live));
+                }
+                if owned_rows.is_empty() {
+                    break;
+                }
+                let rows = owned_rows
+                    .iter()
+                    .map(|(key, row)| (key, row))
+                    .collect::<Vec<_>>();
+                let segment_id = segment_id(generation, next_segment);
+                next_segment = next_segment
+                    .checked_add(1)
+                    .ok_or(ColumnarV2StreamingError::BoundExceeded)?;
+                let segment = build_segment(
+                    &definition,
+                    &logical_types,
+                    history_incarnation,
+                    generation,
+                    organization.clone(),
+                    segment_id,
+                    snapshot_frontier,
+                    frontier,
+                    &rows,
+                )
+                .map_err(map_generation_streaming_error)?;
+                let bytes = SegmentV2Codec::encode(&segment)
+                    .map_err(|_| ColumnarV2StreamingError::Invalid)?;
+                let decoded = SegmentV2Codec::decode(&bytes)
+                    .map_err(|_| ColumnarV2StreamingError::Invalid)?;
+                let reopened =
+                    decode_rows(&decoded, &definition).map_err(map_generation_streaming_error)?;
+                let expected = owned_rows.iter().cloned().collect::<BTreeMap<_, _>>();
+                if reopened != expected {
+                    return Err(ColumnarV2StreamingError::Invalid);
+                }
+                let checksum = checksum_bytes(&bytes);
+                let entry = ColumnarManifestV2Entry::new(
+                    segment_id,
+                    snapshot_frontier,
+                    frontier,
+                    owned_rows.len(),
+                    bytes.len(),
+                    checksum,
+                )
+                .map_err(|_| ColumnarV2StreamingError::Invalid)?;
+                write_immutable_member(
+                    &temporary_directory,
+                    &entry.file_name(),
+                    &bytes,
+                    controller,
+                    Some(ColumnarTestBoundary::BeforeV2SegmentSync),
+                    Some(ColumnarTestBoundary::AfterV2SegmentRename),
+                )
+                .map_err(map_generation_streaming_error)?;
+                manifest_entries.push(entry);
+                total_segments = total_segments
+                    .checked_add(1)
+                    .ok_or(ColumnarV2StreamingError::BoundExceeded)?;
+                total_rows = total_rows
+                    .checked_add(owned_rows.len() as u64)
+                    .ok_or(ColumnarV2StreamingError::BoundExceeded)?;
+            }
+            drop(lane);
+            remove_partition_lane(&lane_path)?;
+            let manifest = ColumnarManifestV2::new(
+                definition.fingerprint(),
+                history_incarnation,
+                generation,
+                organization.clone(),
+                frontier,
+                manifest_entries,
+            )
+            .map_err(|_| ColumnarV2StreamingError::Invalid)?;
+            let bytes = manifest
+                .encode()
+                .map_err(|_| ColumnarV2StreamingError::Invalid)?;
+            let checksum = checksum_bytes(&bytes);
+            let root_entry =
+                ColumnarGenerationRootV1Entry::new(organization, bytes.len() as u64, checksum)
+                    .map_err(|_| ColumnarV2StreamingError::Invalid)?;
+            write_immutable_member(
+                &temporary_directory,
+                &root_entry.file_name(),
+                &bytes,
+                controller,
+                None,
+                Some(ColumnarTestBoundary::AfterV2ManifestRename),
+            )
+            .map_err(map_generation_streaming_error)?;
+            root_entries.push(root_entry);
+            if hit(controller, ColumnarTestBoundary::AfterV2PartitionFinalize) {
+                return Err(ColumnarV2StreamingError::Io);
+            }
+        }
+
+        streaming.cleanup()?;
+        if temporary_directory.join(".rebuild-scratch-v1").exists() {
+            return Err(ColumnarV2StreamingError::Invalid);
+        }
+        if hit(controller, ColumnarTestBoundary::BeforeV2RootFinalize) {
+            return Err(ColumnarV2StreamingError::Io);
+        }
+        let root = ColumnarGenerationRootV1::new(
+            definition.fingerprint(),
+            history_incarnation,
+            generation,
+            frontier,
+            total_segments,
+            total_rows,
+            root_entries,
+        )
+        .map_err(|_| ColumnarV2StreamingError::Invalid)?;
+        let root_bytes = root
+            .encode()
+            .map_err(|_| ColumnarV2StreamingError::Invalid)?;
+        write_immutable_member(
+            &temporary_directory,
+            COLUMNAR_GENERATION_ROOT_FILE_NAME_V1,
+            &root_bytes,
+            controller,
+            None,
+            Some(ColumnarTestBoundary::AfterV2RootRename),
+        )
+        .map_err(map_generation_streaming_error)?;
+        File::open(&temporary_directory)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|_| ColumnarV2StreamingError::Io)?;
+        fs::rename(&temporary_directory, &final_directory)
+            .map_err(|_| ColumnarV2StreamingError::Io)?;
+        temporary_guard.disarm();
+        if hit(controller, ColumnarTestBoundary::AfterV2GenerationRename) {
+            return Err(ColumnarV2StreamingError::Io);
+        }
+        File::open(source_directory)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|_| ColumnarV2StreamingError::Io)?;
+        Self::open_unchecked_artifact(
+            source_directory,
+            &definition,
+            history_incarnation,
+            generation,
+            frontier,
+            None,
+        )
+        .map_err(map_generation_streaming_error)
     }
 
     /// Identical finalization with fixed crash boundaries for process tests.
@@ -535,6 +849,41 @@ impl ValidatedColumnarV2Generation {
     #[must_use]
     pub fn directory(&self) -> &Path {
         &self.directory
+    }
+}
+
+struct TemporaryGenerationGuard {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl TemporaryGenerationGuard {
+    const fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for TemporaryGenerationGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+const fn map_generation_streaming_error(
+    error: ColumnarV2GenerationError,
+) -> ColumnarV2StreamingError {
+    match error {
+        ColumnarV2GenerationError::BoundExceeded => ColumnarV2StreamingError::BoundExceeded,
+        ColumnarV2GenerationError::Invalid
+        | ColumnarV2GenerationError::LogicalMismatch
+        | ColumnarV2GenerationError::UnsupportedDefinition => ColumnarV2StreamingError::Invalid,
+        ColumnarV2GenerationError::Io => ColumnarV2StreamingError::Io,
     }
 }
 

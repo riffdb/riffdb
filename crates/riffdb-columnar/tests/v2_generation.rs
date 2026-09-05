@@ -4,20 +4,28 @@ mod common;
 
 use std::collections::BTreeMap;
 use std::hint::black_box;
+use std::num::NonZeroU64;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use riffdb_columnar::{
     AggregateOp, AggregateValue, ColumnPredicate, ColumnarEngine, ColumnarManifestV2,
-    ColumnarQueryRequest, ColumnarSnapshot, ColumnarTestBoundary, ColumnarTestController,
-    ColumnarV2GenerationError, LiveRow, OpenOptions, OrgKey, PrimaryKeyBytes, QueryBudget,
-    QueryError, QueryResult, SegmentV2Codec, ValidatedColumnarV2Generation, query_snapshot,
-    query_snapshot_with_policy_admission,
+    ColumnarQueryRequest, ColumnarSnapshot, ColumnarSpecReplayLimitsV1, ColumnarTestBoundary,
+    ColumnarTestController, ColumnarV2GenerationError, ColumnarV2StreamingError, LiveRow,
+    OpenOptions, OrgKey, PrimaryKeyBytes, QueryBudget, QueryError, QueryResult, SegmentV2Codec,
+    ValidatedColumnarV2Generation, query_snapshot, query_snapshot_with_policy_admission,
 };
 use riffdb_policy::AuthorizedProjectedRowAdmissionV1;
+use riffdb_storage_api::{
+    ApplicationExportSnapshotReader, ApplicationExportSourcePageV1,
+    ApplicationExportSourceRecordV1, CommittedEntityReferenceV2, EntityTarget, ExpectedEntityState,
+    StorageError, StorageErrorKind, StorageScanLimit, StoredEntityRecordV1,
+};
 use riffdb_types::{
-    CanonicalValue, EntityKey, EntityKeyBuilder, EntityVersion, FrontierPosition,
-    ProjectionGeneration,
+    ApplicationExportClassV1, ApplicationExportSnapshotBindingV1, CanonicalValue,
+    ContractBundleHash, ContractVersion, DatabaseId, EntityKey, EntityKeyBuilder, EntityVersion,
+    FrontierPosition, PartitionKey, ProjectionGeneration,
 };
 
 use common::{
@@ -61,6 +69,442 @@ fn ticket_key(
     key.push_uuid(organization).expect("organization key");
     key.push_u64(ticket).expect("ticket key");
     PrimaryKeyBytes::from_entity_key_bytes(key.finish().expect("entity key").into_bytes())
+}
+
+struct CapturedEntitySnapshot {
+    binding: ApplicationExportSnapshotBindingV1,
+    records: Vec<StoredEntityRecordV1>,
+    passes: AtomicUsize,
+}
+
+impl CapturedEntitySnapshot {
+    fn new(frontier: u64, mut records: Vec<StoredEntityRecordV1>) -> Self {
+        records.sort_by(|left, right| {
+            left.target()
+                .key()
+                .as_bytes()
+                .cmp(right.target().key().as_bytes())
+        });
+        Self {
+            binding: ApplicationExportSnapshotBindingV1::new(
+                DatabaseId::from_bytes(common::uuid(0x71)).expect("database"),
+                NonZeroU64::new(1).expect("incarnation"),
+                Some(riffdb_types::CommitSequence::new(frontier).expect("frontier")),
+                None,
+                ContractVersion::new(1).expect("version"),
+                ContractBundleHash::from_bytes([0x72; 32]),
+                Vec::new(),
+                Vec::new(),
+            )
+            .expect("binding"),
+            records,
+            passes: AtomicUsize::new(0),
+        }
+    }
+
+    fn passes(&self) -> usize {
+        self.passes.load(Ordering::Relaxed)
+    }
+}
+
+impl ApplicationExportSnapshotReader for CapturedEntitySnapshot {
+    fn binding(&self) -> &ApplicationExportSnapshotBindingV1 {
+        &self.binding
+    }
+
+    fn contract_bundle_bytes(&self) -> &[u8] {
+        &[]
+    }
+
+    fn read_application_export_source_page(
+        &self,
+        _class: ApplicationExportClassV1,
+        _after: Option<&[u8]>,
+        _limit: StorageScanLimit,
+    ) -> Result<ApplicationExportSourcePageV1, StorageError> {
+        Err(StorageError::new(StorageErrorKind::Unavailable, None))
+    }
+
+    fn read_application_export_entity_page(
+        &self,
+        _entity_type: riffdb_types::EntityTypeId,
+        after: Option<&[u8]>,
+        limit: StorageScanLimit,
+    ) -> Result<ApplicationExportSourcePageV1, StorageError> {
+        let start = match after {
+            None => {
+                self.passes.fetch_add(1, Ordering::Relaxed);
+                0
+            }
+            Some(bytes) if bytes.len() == 8 => {
+                let mut value = [0u8; 8];
+                value.copy_from_slice(bytes);
+                usize::try_from(u64::from_be_bytes(value))
+                    .map_err(|_| StorageError::new(StorageErrorKind::CorruptData, None))?
+            }
+            Some(_) => return Err(StorageError::new(StorageErrorKind::CorruptData, None)),
+        };
+        let end = start
+            .saturating_add(usize::from(limit.get()))
+            .min(self.records.len());
+        let records = self.records[start..end]
+            .iter()
+            .cloned()
+            .map(|record| ApplicationExportSourceRecordV1::Entity(Box::new(record)))
+            .collect::<Vec<_>>();
+        let exact_end = end == self.records.len();
+        let continuation = (!exact_end).then(|| end.to_be_bytes().to_vec().into_boxed_slice());
+        ApplicationExportSourcePageV1::new(
+            ApplicationExportClassV1::Entity,
+            records,
+            continuation,
+            exact_end,
+            (end - start).saturating_mul(64),
+        )
+        .map_err(|_| StorageError::new(StorageErrorKind::CorruptData, None))
+    }
+
+    fn application_export_indexed_relationship_exists(
+        &self,
+        _index_prefix: &[u8],
+        _partition: &PartitionKey,
+    ) -> Result<bool, StorageError> {
+        Err(StorageError::new(StorageErrorKind::Unavailable, None))
+    }
+
+    fn read_application_export_policy_anchor(
+        &self,
+        _target: &EntityTarget,
+    ) -> Result<Option<StoredEntityRecordV1>, StorageError> {
+        Err(StorageError::new(StorageErrorKind::Unavailable, None))
+    }
+}
+
+fn moved_ticket(
+    bundle: &riffdb_contract_ir::ContractBundle,
+    target: EntityTarget,
+    version: u64,
+    organization: [u8; 16],
+) -> StoredEntityRecordV1 {
+    HistorySource::make_entity(
+        target,
+        EntityVersion::new(version).expect("version"),
+        common::ticket_fields(bundle, organization, 1, version, "moved", version as i64),
+    )
+}
+
+// req: PRJ-002, PRJ-004, PRJ-009, PRJ-010, OQ-020, OQ-022
+#[test]
+fn streaming_v2_rebuild_preserves_org_move_d4_bounds_and_zero_pre_root_scratch() {
+    let bundle = compile_bundle();
+    let definition = register_ticket_board(&bundle);
+    let entity = definition.entity_type_id();
+    let organization_a = common::uuid(0x11);
+    let organization_b = common::uuid(0x22);
+    let organization_c = common::uuid(0x33);
+    let target = HistorySource::ticket_target(entity, organization_a, 1);
+    let row_a = moved_ticket(&bundle, target.clone(), 1, organization_a);
+    let row_b = moved_ticket(&bundle, target.clone(), 2, organization_b);
+    let row_c = moved_ticket(&bundle, target.clone(), 3, organization_c);
+    let snapshot = CapturedEntitySnapshot::new(1, vec![row_a]);
+    let mut source = HistorySource::default();
+    source.append_commit(
+        riffdb_types::CommitSequence::new(2).expect("two"),
+        vec![CommittedEntityReferenceV2::from_post_image(&row_b).expect("B reference")],
+        vec![(
+            target.clone(),
+            ExpectedEntityState::Present(EntityVersion::new(1).expect("one")),
+        )],
+    );
+    source.append_commit(
+        riffdb_types::CommitSequence::new(3).expect("three"),
+        vec![CommittedEntityReferenceV2::from_post_image(&row_c).expect("C reference")],
+        vec![(
+            target,
+            ExpectedEntityState::Present(EntityVersion::new(2).expect("two")),
+        )],
+    );
+    source.put_entity(row_c);
+
+    let directory = temp_dir("v2-streaming-org-move");
+    let generation = ProjectionGeneration::new(81).expect("generation");
+    let limits = ColumnarSpecReplayLimitsV1::new(60, 128, 2).expect("inclusive limits");
+    let prepared = ValidatedColumnarV2Generation::prepare_streaming(
+        &directory,
+        definition.clone(),
+        1,
+        generation,
+        FrontierPosition::AppliedThrough(riffdb_types::CommitSequence::first()),
+        &snapshot,
+        &source,
+        limits,
+        || false,
+    )
+    .expect("streaming generation");
+    assert_eq!(
+        prepared.root().frontier(),
+        FrontierPosition::AppliedThrough(riffdb_types::CommitSequence::new(3).expect("three"))
+    );
+    assert_eq!(prepared.root().partitions().len(), 1);
+    assert_eq!(
+        prepared.root().partitions()[0].organization(),
+        &OrgKey::from_value(&CanonicalValue::Uuid(organization_c)).expect("C org")
+    );
+    assert_eq!(
+        snapshot.passes(),
+        3,
+        "one early bound pass plus two exact merged passes"
+    );
+    assert!(!ValidatedColumnarV2Generation::temporary_directory(&directory, generation).exists());
+    assert!(!prepared.directory().join(".rebuild-scratch-v1").exists());
+    assert!(
+        common::rows_of(
+            query_snapshot(
+                &definition,
+                prepared.snapshot(),
+                &common::board_query(CanonicalValue::Uuid(organization_a)),
+            )
+            .expect("A query")
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        common::rows_of(
+            query_snapshot(
+                &definition,
+                prepared.snapshot(),
+                &common::board_query(CanonicalValue::Uuid(organization_c)),
+            )
+            .expect("C query")
+        )
+        .len(),
+        1
+    );
+
+    for (name, limits, expected) in [
+        (
+            "backlog",
+            ColumnarSpecReplayLimitsV1::new(60, 128, 1).expect("limits"),
+            ColumnarV2StreamingError::ReplayBacklog,
+        ),
+        (
+            "bytes",
+            ColumnarSpecReplayLimitsV1::new(60, 127, 2).expect("limits"),
+            ColumnarV2StreamingError::ReplayBytes,
+        ),
+    ] {
+        let failed = temp_dir(&format!("v2-streaming-{name}"));
+        let generation = ProjectionGeneration::new(82).expect("generation");
+        assert_eq!(
+            ValidatedColumnarV2Generation::prepare_streaming(
+                &failed,
+                definition.clone(),
+                1,
+                generation,
+                FrontierPosition::AppliedThrough(riffdb_types::CommitSequence::first()),
+                &snapshot,
+                &source,
+                limits,
+                || false,
+            )
+            .map(|_| ()),
+            Err(expected)
+        );
+        assert!(!ValidatedColumnarV2Generation::temporary_directory(&failed, generation).exists());
+    }
+
+    let unresolved = temp_dir("v2-streaming-multiple-replay-limits");
+    let generation = ProjectionGeneration::new(86).expect("generation");
+    assert_eq!(
+        ValidatedColumnarV2Generation::prepare_streaming(
+            &unresolved,
+            definition.clone(),
+            1,
+            generation,
+            FrontierPosition::AppliedThrough(riffdb_types::CommitSequence::first()),
+            &snapshot,
+            &source,
+            ColumnarSpecReplayLimitsV1::new(60, 1, 1).expect("limits"),
+            || false,
+        )
+        .map(|_| ()),
+        Err(ColumnarV2StreamingError::ReplayLimitOrderUnresolved)
+    );
+    assert!(!ValidatedColumnarV2Generation::temporary_directory(&unresolved, generation).exists());
+
+    let failed = temp_dir("v2-streaming-pre-root-failure");
+    let generation = ProjectionGeneration::new(83).expect("generation");
+    let controller = ColumnarTestController::new();
+    controller.arm_io_failure_at(ColumnarTestBoundary::BeforeV2RootFinalize);
+    assert_eq!(
+        ValidatedColumnarV2Generation::prepare_streaming_with_controller(
+            &failed,
+            definition,
+            1,
+            generation,
+            FrontierPosition::AppliedThrough(riffdb_types::CommitSequence::first()),
+            &snapshot,
+            &source,
+            limits,
+            || false,
+            &controller,
+        )
+        .map(|_| ()),
+        Err(ColumnarV2StreamingError::Io)
+    );
+    assert!(
+        controller
+            .events()
+            .contains(&ColumnarTestBoundary::BeforeV2RootFinalize)
+    );
+    assert!(!ValidatedColumnarV2Generation::temporary_directory(&failed, generation).exists());
+}
+
+// req: PRJ-004, PRJ-009, PRJ-010, OQ-020
+#[test]
+fn streaming_v2_refuses_4097_snapshot_partitions_before_generation_scratch() {
+    let bundle = compile_bundle();
+    let definition = register_ticket_board(&bundle);
+    let entity = definition.entity_type_id();
+    let mut records = Vec::with_capacity(4_097);
+    for ordinal in 0..4_097u64 {
+        let mut organization = [0u8; 16];
+        organization[6] = 0x70;
+        organization[8] = 0x80;
+        organization[8..].copy_from_slice(&(ordinal | (0x8000_0000_0000_0000)).to_be_bytes());
+        let target = HistorySource::ticket_target(entity, organization, ordinal + 1);
+        records.push(moved_ticket(&bundle, target, 1, organization));
+    }
+    let snapshot = CapturedEntitySnapshot::new(1, records);
+    let source = HistorySource::default();
+    let parent = temp_dir("v2-streaming-partition-overflow");
+    let source_directory = parent.join("not-created-source");
+    let generation = ProjectionGeneration::new(84).expect("generation");
+    assert_eq!(
+        ValidatedColumnarV2Generation::prepare_streaming(
+            &source_directory,
+            definition,
+            1,
+            generation,
+            FrontierPosition::AppliedThrough(riffdb_types::CommitSequence::first()),
+            &snapshot,
+            &source,
+            ColumnarSpecReplayLimitsV1::new(60, 128, 2).expect("limits"),
+            || false,
+        )
+        .map(|_| ()),
+        Err(ColumnarV2StreamingError::BoundExceeded)
+    );
+    assert!(!source_directory.exists());
+    assert!(
+        !ValidatedColumnarV2Generation::temporary_directory(&source_directory, generation).exists()
+    );
+    assert_eq!(snapshot.passes(), 1);
+}
+
+fn multi_run_streaming_fixture() -> (
+    riffdb_columnar::RegisteredDefinition,
+    CapturedEntitySnapshot,
+    HistorySource,
+) {
+    let bundle = compile_bundle();
+    let definition = register_ticket_board(&bundle);
+    let entity = definition.entity_type_id();
+    let organization = common::uuid(0x44);
+    let snapshot = CapturedEntitySnapshot::new(1, Vec::new());
+    let mut source = HistorySource::default();
+    for sequence in 2..=260u64 {
+        let target = HistorySource::ticket_target(entity, organization, sequence);
+        let record = moved_ticket(&bundle, target.clone(), 1, organization);
+        source.append_commit(
+            riffdb_types::CommitSequence::new(sequence).expect("sequence"),
+            vec![CommittedEntityReferenceV2::from_post_image(&record).expect("reference")],
+            vec![(target, ExpectedEntityState::Absent)],
+        );
+        source.put_entity(record);
+    }
+    (definition, snapshot, source)
+}
+
+// req: PRJ-002, PRJ-004, PRJ-009, PRJ-010, OQ-020
+#[test]
+fn streaming_v2_crash_cleanup_covers_run_merge_partition_and_pre_root() {
+    const CHILD_MODE: &str = "RIFFDB_COLUMNAR_V2_STREAMING_CRASH_CHILD";
+    const CHILD_PATH: &str = "RIFFDB_COLUMNAR_V2_STREAMING_CRASH_PATH";
+    const CHILD_BOUNDARY: &str = "RIFFDB_COLUMNAR_V2_STREAMING_CRASH_BOUNDARY";
+    let generation = ProjectionGeneration::new(85).expect("generation");
+    let limits = ColumnarSpecReplayLimitsV1::new(60, 1_048_576, 1_000).expect("limits");
+
+    if std::env::var(CHILD_MODE).as_deref() == Ok("1") {
+        let directory =
+            std::path::PathBuf::from(std::env::var_os(CHILD_PATH).expect("streaming child path"));
+        let boundary = match std::env::var(CHILD_BOUNDARY)
+            .expect("streaming child boundary")
+            .as_str()
+        {
+            "scratch-run" => ColumnarTestBoundary::AfterV2ScratchRun,
+            "scratch-merge" => ColumnarTestBoundary::AfterV2ScratchMerge,
+            "partition-finalize" => ColumnarTestBoundary::AfterV2PartitionFinalize,
+            "pre-root" => ColumnarTestBoundary::BeforeV2RootFinalize,
+            other => panic!("unknown streaming boundary {other}"),
+        };
+        let (definition, snapshot, source) = multi_run_streaming_fixture();
+        let controller = ColumnarTestController::new();
+        controller.arm_abort_at(boundary);
+        let _ = ValidatedColumnarV2Generation::prepare_streaming_with_controller(
+            &directory,
+            definition,
+            1,
+            generation,
+            FrontierPosition::AppliedThrough(riffdb_types::CommitSequence::first()),
+            &snapshot,
+            &source,
+            limits,
+            || false,
+            &controller,
+        );
+        std::process::exit(0);
+    }
+
+    for name in [
+        "scratch-run",
+        "scratch-merge",
+        "partition-finalize",
+        "pre-root",
+    ] {
+        let directory = temp_dir(&format!("v2-streaming-crash-{name}"));
+        let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .arg("--exact")
+            .arg("streaming_v2_crash_cleanup_covers_run_merge_partition_and_pre_root")
+            .arg("--nocapture")
+            .env(CHILD_MODE, "1")
+            .env(CHILD_PATH, &directory)
+            .env(CHILD_BOUNDARY, name)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("spawn streaming crash child");
+        assert!(!status.success(), "child must abort at {name}");
+        let (definition, snapshot, source) = multi_run_streaming_fixture();
+        let recovered = ValidatedColumnarV2Generation::prepare_streaming(
+            &directory,
+            definition,
+            1,
+            generation,
+            FrontierPosition::AppliedThrough(riffdb_types::CommitSequence::first()),
+            &snapshot,
+            &source,
+            limits,
+            || false,
+        )
+        .unwrap_or_else(|error| panic!("recover {name}: {error}"));
+        assert_eq!(recovered.root().total_rows(), 259);
+        assert!(
+            !ValidatedColumnarV2Generation::temporary_directory(&directory, generation).exists()
+        );
+        assert!(!recovered.directory().join(".rebuild-scratch-v1").exists());
+    }
 }
 
 // req: PRJ-002, PRJ-004, PRJ-009, PRJ-010, OQ-020, OQ-022

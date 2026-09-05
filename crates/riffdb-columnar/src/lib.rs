@@ -74,6 +74,7 @@ mod outcome;
 mod query;
 mod segment_v2;
 mod store;
+mod streaming_v2;
 
 pub use apply::ApplyProgress;
 #[doc(hidden)]
@@ -128,6 +129,8 @@ pub use store::{
     ColumnarSnapshot, LiveRow, MergedRow, OrgDelta, OrgKey, PrimaryKeyBytes, SegmentId,
     encode_org_scope_key,
 };
+#[doc(hidden)]
+pub use streaming_v2::ColumnarV2StreamingError;
 
 #[doc(hidden)]
 pub use hooks::{ColumnarTestBoundary, ColumnarTestController};

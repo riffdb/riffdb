@@ -11,8 +11,10 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+#[cfg(test)]
+use riffdb_columnar::ColumnarV2GenerationError;
 use riffdb_columnar::{
-    ColumnarEngine, ColumnarError, ColumnarSnapshotRebuild, ColumnarV2GenerationError, OpenOptions,
+    ColumnarError, ColumnarSnapshotRebuild, ColumnarV2StreamingError,
     PhysicalGenerationFingerprintV1, ValidatedColumnarV2Generation, WorkerApplyOutcome,
     frontier_lag_sequences,
 };
@@ -607,6 +609,9 @@ fn prepare_v2_candidate(
     generation: ProjectionGeneration,
     stop_before_next_page: &mut impl FnMut() -> bool,
 ) -> Result<bool, ColumnarWorkerError> {
+    if stop_before_next_page() {
+        return Ok(false);
+    }
     let snapshot = runtime
         .storage()
         .capture_application_export_snapshot(binding.spec().source().lineage())
@@ -617,74 +622,43 @@ fn prepare_v2_candidate(
     );
     let source_directory =
         controlled_source_directory(runtime.projections_root(), binding.spec().hash());
-    let evaluator_directory =
-        ValidatedColumnarV2Generation::temporary_directory(&source_directory, generation);
-    let mut evaluator = ColumnarEngine::open(
-        binding.definition().clone(),
-        OpenOptions::new(evaluator_directory)
-            .with_history_incarnation(runtime.history_incarnation()),
-    )
-    .map_err(ColumnarWorkerError::Apply)?;
-    let mut rebuild = ColumnarSnapshotRebuild::new(binding.definition().clone());
-    let limit = StorageScanLimit::new(500).ok_or(ColumnarWorkerError::Integrity)?;
-    let mut continuation: Option<Box<[u8]>> = None;
-    loop {
-        if stop_before_next_page() {
-            return Ok(false);
-        }
-        let page = snapshot
-            .read_application_export_entity_page(
-                binding.definition().entity_type_id(),
-                continuation.as_deref(),
-                limit,
-            )
-            .map_err(map_storage_error)?;
-        let records = page
-            .records()
-            .iter()
-            .map(|record| match record {
-                ApplicationExportSourceRecordV1::Entity(entity) => Ok((**entity).clone()),
-                _ => Err(ColumnarWorkerError::Integrity),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        rebuild
-            .apply_page(&records)
-            .map_err(ColumnarWorkerError::Apply)?;
-        if page.exact_end() {
-            break;
-        }
-        continuation = page.continuation().map(Into::into);
-    }
-    rebuild
-        .install(&mut evaluator, snapshot_frontier)
-        .map_err(ColumnarWorkerError::Apply)?;
-    match evaluator
-        .apply_available_for_worker(runtime.apply_source(), stop_before_next_page)
-        .map_err(ColumnarWorkerError::Apply)?
-    {
-        WorkerApplyOutcome::Completed(_) => {}
-        WorkerApplyOutcome::AbandonedUnpublished => return Ok(false),
-    }
-    let frontier = evaluator.published_frontier().position();
-    let expected = evaluator.published_snapshot();
-    drop(evaluator);
-    let generation_view = match ValidatedColumnarV2Generation::prepare(
+    let generation_view = match ValidatedColumnarV2Generation::prepare_streaming(
         &source_directory,
         binding.definition().clone(),
         runtime.history_incarnation(),
         generation,
         snapshot_frontier,
-        &expected,
+        snapshot.as_ref(),
+        runtime.apply_source(),
+        binding.spec().replay_limits(),
+        stop_before_next_page,
     ) {
         Ok(generation) => generation,
+        Err(ColumnarV2StreamingError::Cancelled) => return Ok(false),
+        Err(ColumnarV2StreamingError::ReplayLimitOrderUnresolved) => {
+            return Err(ColumnarWorkerError::Integrity);
+        }
         Err(error) => {
-            let _ = runtime
+            let reason =
+                v2_streaming_failure_reason(error).ok_or(ColumnarWorkerError::Integrity)?;
+            let result = runtime
                 .storage()
-                .record_candidate_failure(control, v2_candidate_failure_reason(error))
+                .record_candidate_failure(control, reason)
                 .map_err(map_storage_error)?;
+            let durable = recover_control(runtime, binding)?;
+            if result == ColumnarProjectionControlWriteResultV1::Applied
+                && durable.failure().is_none_or(|failure| {
+                    failure.reason() != reason
+                        || failure.generation()
+                            != control.candidate().map(|value| value.generation())
+                })
+            {
+                return Err(ColumnarWorkerError::Integrity);
+            }
             return Ok(true);
         }
     };
+    let frontier = generation_view.root().frontier();
     let (length, checksum) = generation_view.artifact_identity();
     let artifact = ColumnarProjectionArtifactV1::new(length, checksum)
         .ok_or(ColumnarWorkerError::Integrity)?;
@@ -718,6 +692,29 @@ fn prepare_v2_candidate(
     Ok(true)
 }
 
+const fn v2_streaming_failure_reason(
+    error: ColumnarV2StreamingError,
+) -> Option<ColumnarProjectionFailureReasonV1> {
+    match error {
+        ColumnarV2StreamingError::Cancelled => Some(ColumnarProjectionFailureReasonV1::Cancelled),
+        ColumnarV2StreamingError::ReplayBytes => {
+            Some(ColumnarProjectionFailureReasonV1::ReplayBytes)
+        }
+        ColumnarV2StreamingError::ReplayBacklog => {
+            Some(ColumnarProjectionFailureReasonV1::ReplayBacklog)
+        }
+        ColumnarV2StreamingError::ReplayLimitOrderUnresolved => None,
+        ColumnarV2StreamingError::BoundExceeded => {
+            Some(ColumnarProjectionFailureReasonV1::ResourceLimit)
+        }
+        ColumnarV2StreamingError::Invalid => {
+            Some(ColumnarProjectionFailureReasonV1::ArtifactInvalid)
+        }
+        ColumnarV2StreamingError::Io => Some(ColumnarProjectionFailureReasonV1::Storage),
+    }
+}
+
+#[cfg(test)]
 const fn v2_candidate_failure_reason(
     error: ColumnarV2GenerationError,
 ) -> ColumnarProjectionFailureReasonV1 {
@@ -1267,7 +1264,7 @@ fn request_stop(stop: &StopState) -> Result<(), ColumnarWorkerShutdownError> {
 
 #[cfg(test)]
 mod publication_tests {
-    use riffdb_columnar::ColumnarV2GenerationError;
+    use riffdb_columnar::{ColumnarV2GenerationError, ColumnarV2StreamingError};
     use riffdb_storage_api::{
         ColumnarProjectionArtifactV1, ColumnarProjectionLayoutV1, ColumnarProjectionReplayLimitsV1,
         PreparedColumnarGenerationV1, StoredColumnarProjectionControlV1,
@@ -1281,6 +1278,7 @@ mod publication_tests {
     use super::{
         ColumnarPublicationAttempt, ColumnarPublicationResolution, PreparedV2HeadResolution,
         prepared_v2_head_resolution, publication_resolution, v2_candidate_failure_reason,
+        v2_streaming_failure_reason,
     };
 
     fn prepared_v2() -> (
@@ -1488,6 +1486,60 @@ mod publication_tests {
         assert_eq!(degraded.published(), Some(&selected));
         assert!(degraded.candidate().is_some());
     }
+
+    // req: PRJ-002, PRJ-004, PRJ-006, PRJ-009, PRJ-010, OQ-020
+    #[test]
+    fn replay_bytes_and_backlog_failures_retain_selection_until_exact_replacement() {
+        let (prepared_control, _, _) = prepared_v2();
+        let selected = prepared_control.published().expect("selected V1").clone();
+        for (error, reason) in [
+            (
+                ColumnarV2StreamingError::ReplayBytes,
+                riffdb_storage_api::ColumnarProjectionFailureReasonV1::ReplayBytes,
+            ),
+            (
+                ColumnarV2StreamingError::ReplayBacklog,
+                riffdb_storage_api::ColumnarProjectionFailureReasonV1::ReplayBacklog,
+            ),
+        ] {
+            assert_eq!(v2_streaming_failure_reason(error), Some(reason));
+            let failed = prepared_control
+                .clone()
+                .record_candidate_failure(reason)
+                .expect("accepted RecordCandidateFailure");
+            assert_eq!(failed.published(), Some(&selected));
+            assert_eq!(failed.servable_generation(), Some(&selected));
+            assert_eq!(failed.retention_frontier(), Some(selected.frontier()));
+            assert_eq!(failed.failure().expect("failure").reason(), reason);
+            let failed_generation = failed.candidate().expect("failed candidate").generation();
+            let replacement = failed
+                .replace_failed_candidate(
+                    ColumnarProjectionLayoutV1::V2,
+                    prepared_control
+                        .candidate()
+                        .and_then(|candidate| candidate.physical_generation_fingerprint()),
+                )
+                .expect("exact replacement transition");
+            assert_eq!(replacement.published(), Some(&selected));
+            assert!(replacement.failure().is_none());
+            assert!(replacement.candidate().expect("replacement").generation() > failed_generation);
+        }
+
+        let source = include_str!("columnar_worker.rs");
+        let start = source
+            .find("Err(error) => {")
+            .expect("streaming failure arm");
+        let arm = &source[start
+            ..source[start..]
+                .find("let frontier = generation_view")
+                .map(|offset| start + offset)
+                .expect("failure arm end")];
+        let record = arm
+            .find("record_candidate_failure")
+            .expect("durable failure CAS");
+        let reread = arm.find("recover_control").expect("durable reread");
+        assert!(record < reread);
+    }
 }
 
 /// Closed worker construction failure.
@@ -1567,6 +1619,24 @@ mod tests {
             format!("{:?}", ColumnarWorkerError::Integrity),
             "ColumnarWorkerError { class: \"integrity\" }"
         );
+    }
+
+    // req: PRJ-004, PRJ-009, OQ-020
+    #[test]
+    fn production_v2_worker_uses_streaming_rebuild_without_generation_wide_expected_maps() {
+        let source = include_str!("columnar_worker.rs");
+        let start = source
+            .find("fn prepare_v2_candidate")
+            .expect("V2 candidate worker");
+        let end = source[start..]
+            .find("const fn v2_streaming_failure_reason")
+            .map(|offset| start + offset)
+            .expect("V2 candidate boundary");
+        let candidate = &source[start..end];
+        assert!(candidate.contains("prepare_streaming"));
+        assert!(!candidate.contains("ColumnarSnapshotRebuild"));
+        assert!(!candidate.contains("published_snapshot"));
+        assert!(!candidate.contains("let expected"));
     }
 
     // req: PERF-007, PERF-008, PERF-019

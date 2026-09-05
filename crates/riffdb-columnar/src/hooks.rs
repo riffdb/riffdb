@@ -24,6 +24,14 @@ pub enum ColumnarTestBoundary {
     AfterV2SegmentRename,
     /// After renaming one fully synced V2 partition manifest.
     AfterV2ManifestRename,
+    /// After one bounded external rebuild run has been fully written.
+    AfterV2ScratchRun,
+    /// After one fixed-fan-in replacement run has been fully written.
+    AfterV2ScratchMerge,
+    /// After one partition lane has been finalized and removed.
+    AfterV2PartitionFinalize,
+    /// After all rebuild scratch is gone and before writing ROOT-V1.
+    BeforeV2RootFinalize,
     /// After renaming the fully synced complete V2 generation root.
     AfterV2RootRename,
     /// After renaming the complete V2 candidate directory.
