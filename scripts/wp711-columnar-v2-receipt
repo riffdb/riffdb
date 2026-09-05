@@ -26,6 +26,7 @@ ACTIVATION_COMMAND = [
   "--exact", "--nocapture", "--test-threads=1"
 ].freeze
 OUTPUT = "docs/performance/wp-711-columnar-v2-activation.json"
+MAX_CHILD_OUTPUT_BYTES = 4 * 1024 * 1024
 
 class ReceiptError < StandardError; end
 
@@ -97,10 +98,18 @@ def run_cargo(command)
 end
 
 def marker(output, name)
-  line = output.lines.find { |candidate| candidate.start_with?("#{name} ") }
-  raise ReceiptError, "missing #{name} marker" unless line
+  lines = output.lines.select { |candidate| candidate.start_with?("#{name} ") }
+  raise ReceiptError, "missing #{name} marker" if lines.empty?
+  raise ReceiptError, "duplicate #{name} marker" unless lines.one?
 
-  line.strip
+  lines.fetch(0).strip
+end
+
+def child_output(stdout, stderr)
+  if stdout.bytesize > MAX_CHILD_OUTPUT_BYTES || stderr.bytesize > MAX_CHILD_OUTPUT_BYTES
+    raise ReceiptError, "child output exceeds the bounded capture limit"
+  end
+  "#{stdout}\n#{stderr}"
 end
 
 def parse_marker(line, name)
@@ -298,6 +307,19 @@ def self_test
   end.join(" ")
   mechanics_fields = parse_marker(mechanics, "WP710_MECHANICS")
   activation_fields = parse_marker(activation, "WP711_ACTIVATION")
+  raise ReceiptError, "self-test did not accept a stderr marker" unless marker(child_output("", mechanics), "WP710_MECHANICS") == mechanics
+  begin
+    marker(child_output("", "#{mechanics}\n#{mechanics}\n"), "WP710_MECHANICS")
+    raise ReceiptError, "self-test accepted duplicate WP-710 markers"
+  rescue ReceiptError => error
+    raise if error.message.start_with?("self-test")
+  end
+  begin
+    marker(child_output("", "no marker\n"), "WP710_MECHANICS")
+    raise ReceiptError, "self-test accepted a missing WP-710 marker"
+  rescue ReceiptError => error
+    raise if error.message.start_with?("self-test")
+  end
   validate_mechanics(mechanics_fields)
   validate_activation(activation_fields)
   {
@@ -347,15 +369,17 @@ def generate
   revision = capture!("git", "rev-parse", "HEAD").strip
   before_host = host_metadata
   mechanics_stdout, mechanics_stderr, mechanics_status = run_cargo(MECHANICS_COMMAND)
-  warn mechanics_stderr
+  warn mechanics_stdout unless mechanics_stdout.empty?
+  warn mechanics_stderr unless mechanics_stderr.empty?
   raise ReceiptError, "frozen WP-710 threshold gate failed; no WP-711 receipt written" unless mechanics_status.success?
-  mechanics_line = marker(mechanics_stdout, "WP710_MECHANICS")
+  mechanics_line = marker(child_output(mechanics_stdout, mechanics_stderr), "WP710_MECHANICS")
   validate_mechanics(parse_marker(mechanics_line, "WP710_MECHANICS"))
 
   activation_stdout, activation_stderr, activation_status = run_cargo(ACTIVATION_COMMAND)
-  warn activation_stderr
+  warn activation_stdout unless activation_stdout.empty?
+  warn activation_stderr unless activation_stderr.empty?
   raise ReceiptError, "WP-711 activation evidence failed; no receipt written" unless activation_status.success?
-  activation_line = marker(activation_stdout, "WP711_ACTIVATION")
+  activation_line = marker(child_output(activation_stdout, activation_stderr), "WP711_ACTIVATION")
   validate_activation(parse_marker(activation_line, "WP711_ACTIVATION"))
   after_load = Pathname.new("/proc/loadavg").file? ? Pathname.new("/proc/loadavg").read.strip : "unavailable"
   document = receipt(mechanics_line, activation_line, revision, before_host, after_load)
