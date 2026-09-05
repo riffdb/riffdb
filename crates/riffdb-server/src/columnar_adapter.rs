@@ -39,6 +39,7 @@ use riffdb_types::{
     ProjectionGeneration, ProvenanceId,
 };
 
+use crate::clocks::ServerColumnarReplayClock;
 use crate::config::ConfiguredProjection;
 use crate::storage::SharedRedbOperationalPorts;
 
@@ -602,6 +603,7 @@ pub(crate) struct ColumnarRuntime {
     projections_root: PathBuf,
     history_incarnation: u64,
     process_generation: [u8; 16],
+    replay_clock: ServerColumnarReplayClock,
     apply_source: ServerColumnarApplySource,
     activation_wake: Arc<ColumnarActivationWake>,
     admitted_cold_sources: AtomicU64,
@@ -647,6 +649,7 @@ impl ColumnarRuntime {
         projections_root: PathBuf,
         history_incarnation: u64,
         process_generation: [u8; 16],
+        replay_clock: ServerColumnarReplayClock,
     ) -> Arc<Self> {
         Arc::new(Self {
             engines: RwLock::new(BTreeMap::new()),
@@ -656,6 +659,7 @@ impl ColumnarRuntime {
             projections_root,
             history_incarnation,
             process_generation,
+            replay_clock,
             apply_source: ServerColumnarApplySource::new(storage),
             activation_wake: Arc::new(ColumnarActivationWake::default()),
             admitted_cold_sources: AtomicU64::new(0),
@@ -677,12 +681,17 @@ impl ColumnarRuntime {
     ) -> Result<Arc<Self>, ColumnarRegistrationError> {
         let bindings =
             prepare_columnar_control_foundation(&storage, projections, history_incarnation)?;
+        let replay_clock = crate::clocks::ProductionWallClocks::settable(Arc::new(
+            std::sync::atomic::AtomicI64::new(1_700_000_000),
+        ))
+        .columnar_replay();
         Self::open_prepared(
             storage,
             bindings,
             projections_root,
             history_incarnation,
             process_generation,
+            replay_clock,
         )
     }
 
@@ -693,6 +702,7 @@ impl ColumnarRuntime {
         projections_root: &Path,
         history_incarnation: u64,
         process_generation: [u8; 16],
+        replay_clock: ServerColumnarReplayClock,
     ) -> Result<Arc<Self>, ColumnarRegistrationError> {
         if bindings.is_empty() {
             return Ok(Self::empty(
@@ -700,6 +710,7 @@ impl ColumnarRuntime {
                 projections_root.to_path_buf(),
                 history_incarnation,
                 process_generation,
+                replay_clock,
             ));
         }
         let mut engines = BTreeMap::new();
@@ -783,6 +794,7 @@ impl ColumnarRuntime {
             projections_root: projections_root.to_path_buf(),
             history_incarnation,
             process_generation,
+            replay_clock,
             apply_source: ServerColumnarApplySource::new(storage),
             activation_wake: Arc::new(ColumnarActivationWake::default()),
             admitted_cold_sources: AtomicU64::new(admitted_cold_sources),
@@ -816,6 +828,12 @@ impl ColumnarRuntime {
     #[must_use]
     pub(crate) const fn process_generation(&self) -> [u8; 16] {
         self.process_generation
+    }
+
+    pub(crate) fn sample_columnar_replay_utc(
+        &self,
+    ) -> Result<riffdb_types::Timestamp, crate::clocks::ServerProcessClockError> {
+        self.replay_clock.now()
     }
 
     #[must_use]

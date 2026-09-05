@@ -647,13 +647,16 @@ fn prepare_v2_candidate(
         snapshot.as_ref(),
         runtime.apply_source(),
         binding.spec().replay_limits(),
+        || {
+            runtime
+                .sample_columnar_replay_utc()
+                .map_err(|_| ColumnarV2StreamingError::Clock)
+        },
         stop_before_next_page,
     ) {
         Ok(generation) => generation,
         Err(ColumnarV2StreamingError::Cancelled) => return Ok(false),
-        Err(ColumnarV2StreamingError::ReplayLimitOrderUnresolved) => {
-            return Err(ColumnarWorkerError::Integrity);
-        }
+        Err(ColumnarV2StreamingError::Clock) => return Err(ColumnarWorkerError::Unavailable),
         Err(error) => {
             let reason =
                 v2_streaming_failure_reason(error).ok_or(ColumnarWorkerError::Integrity)?;
@@ -713,13 +716,14 @@ const fn v2_streaming_failure_reason(
 ) -> Option<ColumnarProjectionFailureReasonV1> {
     match error {
         ColumnarV2StreamingError::Cancelled => Some(ColumnarProjectionFailureReasonV1::Cancelled),
+        ColumnarV2StreamingError::ReplayAge => Some(ColumnarProjectionFailureReasonV1::ReplayAge),
         ColumnarV2StreamingError::ReplayBytes => {
             Some(ColumnarProjectionFailureReasonV1::ReplayBytes)
         }
         ColumnarV2StreamingError::ReplayBacklog => {
             Some(ColumnarProjectionFailureReasonV1::ReplayBacklog)
         }
-        ColumnarV2StreamingError::ReplayLimitOrderUnresolved => None,
+        ColumnarV2StreamingError::Clock => None,
         ColumnarV2StreamingError::BoundExceeded => {
             Some(ColumnarProjectionFailureReasonV1::ResourceLimit)
         }
@@ -1628,10 +1632,14 @@ mod publication_tests {
 
     // req: PRJ-002, PRJ-004, PRJ-006, PRJ-009, PRJ-010, OQ-020
     #[test]
-    fn replay_bytes_and_backlog_failures_retain_selection_until_exact_replacement() {
+    fn replay_limit_failures_retain_selection_until_exact_replacement() {
         let (prepared_control, _, _) = prepared_v2();
         let selected = prepared_control.published().expect("selected V1").clone();
         for (error, reason) in [
+            (
+                ColumnarV2StreamingError::ReplayAge,
+                riffdb_storage_api::ColumnarProjectionFailureReasonV1::ReplayAge,
+            ),
             (
                 ColumnarV2StreamingError::ReplayBytes,
                 riffdb_storage_api::ColumnarProjectionFailureReasonV1::ReplayBytes,

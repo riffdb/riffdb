@@ -628,6 +628,7 @@ impl ProductionGraphBuilder {
             &projections_root,
             retained_metadata.history_incarnation(),
             server_generation.bytes(),
+            clocks.columnar_replay(),
         ) {
             Ok(runtime) => runtime,
             Err(source) => {
