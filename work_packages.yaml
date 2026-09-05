@@ -23840,7 +23840,6 @@ work_packages:
   objective: After exact acceptance of ADR-0199, reconcile ADR-0183, PERF-020, and the named
     work-package contracts so the freeze seals every pre-freeze PERF declaration, permits only
     WP-750/WP-760 prerequisite closure plus WP-762/WP-763, and retains a separately accepted lift.
-  requirements: [PERF-020]
   required_adrs: [ADR-0199, ADR-0178, ADR-0182, ADR-0183]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0183-performance-package-freeze-and-durable-group-lever.md,
