@@ -19,11 +19,11 @@ obligations:
   - id: OBL-0198-1
     package: WP-779
     proof: generated_mcp_command_catalog_v6_composes_authoritative_schemas
-    says: A strict V6 successor binds each command ID to its exact V2 name registry entry, compiler input and outcome keys, IDs, bodies and hashes, accepted service envelope, composed output identity, and closed serialized descriptor.
+    says: A strict V6 successor emits the exact closed mcp_identity layout and binds its nonzero command ID, V2 name, compiler keys and exact generated-schema IDs/bodies/lowercase hashes, accepted envelope, exact composed ID/body/hash, and closed descriptor; outcome $defs rejects.
   - id: OBL-0198-2
     package: WP-779
     proof: generated_mcp_catalog_matches_complete_hosted_descriptor_pages
-    says: An independently derived fully authorized expected set streams against every bounded full-schema hosted page through the terminal cursor and rejects every descriptor, authority, collision, ordering, cursor, or bound mismatch.
+    says: A role artifact selects candidates but grants nothing; a separate closed Global/All/no-approval test capability with exact dynamic permissions and every fixed-kind witness drives policy visibility, and registry-sourced expected descriptors stream equal through the terminal cursor with collision/order/bound rejection.
   - id: OBL-0198-3
     package: WP-779
     proof: generated_mcp_catalog_v6_topology_and_lock_migration_are_exact
@@ -53,14 +53,24 @@ DTO, ADR-0047's root, ADR-0194's query envelope, and runtime behavior stay exact
    `predecessor_schema`. V6 is its strict structural successor: it retains
    `application_manifest_hash`, `tools`, `commands`, `reactive_tools`, and every
    applicable `sdk_tools`/`vector_tools` member and order, adding only V6 fields.
-2. Each retained command entry adds one closed identity object binding its
-   nonzero `CommandId`; exact `McpCommandNameRegistryV2` entry and underscore
-   `McpCommandToolNameV2` from ADR-0064; `CommandInput(id)` and
-   `CommandOutcomeUnion(id)` keys; exact `/command-input/<id>/v1` and
-   `/command-outcome-union/<id>/v1` document IDs, canonical bodies, and hashes;
-   service `riffdb.command-operation-envelope/v1` ID/hash; and composed ID/body/
-   hash. ADR-0020's lowercase mapping, source restrictions, stable-ID registry
-   order, collision rejection, and 128-byte limit remain; dotted V1 is forbidden.
+2. Each retained command entry adds only `mcp_identity`, a closed object whose
+   six required members in canonical order are `command_id`, `composed_output`, `input_schema`,
+   `operation_envelope`, `outcome_schema`, `tool_name`. `command_id` is a JSON
+   integer in 1..=4294967295; `tool_name` is the exact underscore
+   `McpCommandToolNameV2`. Each schema child is closed: compiler children order
+   `command_id`,`key`,`schema_hash`,`schema_id`, while the other children order
+   `schema_hash`,`schema_id`; all listed child members are required and no other
+   member is allowed. Child IDs are respectively
+   `riffdb.generated-schema/command-input/{id}/v1`,
+   `riffdb.generated-schema/command-outcome-union/{id}/v1`,
+   `riffdb.command-operation-envelope/v1`, and
+   `riffdb.command-operation-envelope/v1+compiler-outcome`; keys are exactly
+   `command_input`/`command_outcome_union`. Names, keys, IDs, and hashes are UTF-8
+   JSON strings; hashes contain exactly 64 lowercase hex characters.
+   `{id}` is unsigned canonical decimal without sign/zero/leading zero. All IDs,
+   keys, hashes, bodies, the identity's `command_id`, and the exact V2 name entry
+   cross-bind one command or reject. ADR-0020 normalization/order/collisions and
+   ADR-0064's 128-byte limit remain; dotted V1 is forbidden.
 3. Each V6 MCP-visible command/query entry adds a closed `mcp_descriptor` whose
    root keys are exactly `name`, `inputSchema`, `outputSchema`, `annotations`.
    `title`, `description`, `execution`, `icons`, `_meta`, and unknown optionals
@@ -72,20 +82,32 @@ DTO, ADR-0047's root, ADR-0194's query envelope, and runtime behavior stay exact
    one existing MCP algorithm: verify the exact envelope ID/hash/body and its
    sole false `$defs.outcome`, remove only the outcome union's Draft 2020-12
    `$schema`, replace that placeholder, validate bounds/canonical form, and hash.
-   Any other edit or identity mismatch rejects; raw outcome is never output.
+   The outcome union containing any `$defs` rejects. Any other edit or identity
+   mismatch rejects; raw outcome is never output.
 5. `riffdb-cli` may add one direct default-feature-disabled
    `riffdb-api-mcp` dependency solely for its safe common schema composer and
    descriptor projection. It enables no stdio/HTTP, service, or auth feature.
    `Cargo.toml`/`Cargo.lock` receive exact graph review. Hosted and artifact
    assembly call that one owner; no copied source/composer or compiler/query-
    module-to-MCP/service dependency is permitted.
-6. Expected visibility is derived before discovery from the exact deployed
-   bundle/query/role artifacts and the accepted fixed operation-permission
-   registry—not from returned tools or name patterns. The test role explicitly
-   grants every fixed operation and every exact command ID and module-hash/query
-   pair, with no wildcard/admin inference. Expected order is visible fixed tools
-   in registry order, then the lexicographically named merge of visible commands
-   and queries; any fixed/dynamic or dynamic/dynamic name collision rejects.
+6. The generated application-role artifact selects its declared commands and
+   queries from exact deployed bundle/module identities but is not authority.
+   Separately construct one closed catalog-test `CapabilityGrantV1`: tenant
+   `TenantScope::Global`, partition `PartitionScopeV1::All`, empty field
+   visibility, max scan
+   rows 65535, no approval-required kinds, and no wildcard/admin inference. Its
+   row-policy/export/reimport/vector-inspection extensions are `None`. Its
+   canonical permission-set union is exactly every selected `InvokeCommand(lineage,command_id)`
+   and `ExecuteNamedQuery(lineage,module_hash,query_name)`, plus one real atom
+   witnessing every distinct fixed kind: `Unparameterized(kind)` only where
+   permitted, otherwise the appropriate parameterized variant and valid fixture
+   lineage/ID/module/name. Expected fixed descriptors come from the
+   `riffdb-api-mcp` fixed registry; fixed visibility comes only from policy's
+   `FixedToolCandidate::ALL` candidate-to-permission mapping under that grant.
+   Dynamic visibility likewise comes only from exact policy candidates and the
+   grant. Reject fixed/dynamic and dynamic/dynamic collisions before comparison;
+   order visible fixed registry entries first, then visible dynamic names in
+   exact lexicographic order. Returned tools and name patterns supply nothing.
 7. Parity streams each full-schema hosted `tools/list` page against that expected
    iterator, comparing array order and every closed descriptor member without
    retaining an aggregate schema inventory. Each request uses the accepted limit

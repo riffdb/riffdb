@@ -23953,10 +23953,17 @@ work_packages:
     and retaining `application_manifest_hash`, tools, commands, reactive tools, applicable SDK/vector
     registries, entry bytes, merge rules, and order while adding only the closed V6 identity and
     descriptor members
-  - V6 identities binding nonzero command ID, exact ADR-0064 underscore `McpCommandToolNameV2` and
-    ADR-0020 normalization/stable-ID order, `CommandInput(id)`/`CommandOutcomeUnion(id)` keys, exact
-    input/outcome document IDs/bodies/hashes, service-envelope ID/hash/body, and composed output
-    ID/body/hash; dotted names, stale/rebound keys, and every cross-command substitution reject
+  - V6 `mcp_identity` with exactly required `command_id`, `composed_output`, `input_schema`,
+    `operation_envelope`, `outcome_schema`, `tool_name` in canonical order; closed compiler children
+    require `command_id`, `key`, `schema_hash`, `schema_id`, other children require `schema_hash`,
+    `schema_id`, and no child permits extras; nonzero u32 JSON command ID; exact ADR-0064 underscore
+    `McpCommandToolNameV2`; UTF-8 JSON-string names/keys/IDs, exact `command_input` and
+    `command_outcome_union` keys; exact `riffdb.generated-schema/command-input/{id}/v1` and
+    `riffdb.generated-schema/command-outcome-union/{id}/v1` IDs; canonical bodies and 64-lowercase-hex
+    hashes; exact envelope ID/hash/body; and composed
+    `riffdb.command-operation-envelope/v1+compiler-outcome` ID/body/hash, all cross-bound to one
+    command under ADR-0020 normalization/stable-ID order; dotted names, stale/rebound keys, outcome
+    `$defs`, and every cross-command substitution reject
   - Exact serialized `mcp_descriptor` root keys `name`, `inputSchema`, `outputSchema`, `annotations`;
     exact four annotation keys/booleans; and structural absence of title, description,
     `annotations.title`, execution, icons, `_meta`, and every unknown optional for commands and
@@ -23971,10 +23978,14 @@ work_packages:
     ID/hash/body, duplicate/missing placeholder, noncanonical input, stale/rebound compiler schemas,
     wrong output hash, raw-outcome-as-output refusal, and every one-byte/depth/node/aggregate excess
   - Req-tagged process proof `generated_mcp_catalog_matches_complete_hosted_descriptor_pages`
-    deploying the exact lock and a closed role explicitly granting every fixed operation, command ID,
-    and module-hash/query pair; independently deriving visibility/order from role, compiler artifacts,
-    and the fixed permission registry; then streaming each full descriptor/schema page against it
-    through the exact terminal cursor without using returned tools to construct expectations
+    deploying the exact lock and keeping the generated application-role artifact as candidate input,
+    never authority; a separate closed `CapabilityGrantV1` uses `TenantScope::Global`,
+    `PartitionScopeV1::All`, empty field visibility, max rows 65535, no approval-required kinds,
+    `None` row-policy/export/reimport/vector-inspection extensions, no wildcard/admin, exact
+    lineage/command and lineage/module-hash/query permissions, and one valid parameterized or
+    unparameterized witness for every fixed kind; fixed expected bytes come from `riffdb-api-mcp`'s
+    registry and all visibility comes from policy's fixed/dynamic candidate-to-permission mappings,
+    before streaming full descriptor/schema pages through the exact terminal cursor
   - Adversarial full-discovery cases for missing, extra, duplicate, reordered, malformed,
     schema/metadata-different, fixed/dynamic-colliding, and dynamic/dynamic-colliding tools; limit 500,
     fewer byte-fitted items, independent 4-MiB per-page ledgers, schema bounds, nonempty continuation,
