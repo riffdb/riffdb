@@ -5175,6 +5175,24 @@ impl RedbOperationalPorts {
 }
 
 impl RedbWriteAccess {
+    #[cfg(test)]
+    pub(crate) fn arm_fresh_locator_coverage_for_exact_empty_test(
+        &self,
+    ) -> Result<bool, StorageError> {
+        let stamp = self.fresh_locator_coverage_stamp()?;
+        Ok(self
+            .shared
+            .fresh_locator_coverage
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .try_arm(
+                crate::fresh_locator_coverage::EmptyAuthorityProof::new(
+                    true, true, true, true, true, true, true, true,
+                ),
+                stamp,
+            ))
+    }
+
     fn push_fresh_locator_mutation(
         &self,
         target: &RefCell<Vec<FreshLocatorMutationPermit>>,
