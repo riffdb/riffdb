@@ -190,6 +190,21 @@ external contract, schema, route, adapter, generated profile, or stored value
 into RiffDB, and it does not claim external runtime or full framework
 conformance.
 
+The separate terminal receipt at
+`fixtures/riffql/wp775-external-binary-text-interval-execution-v1.json`
+records one fresh owning-repository execution. A consumer pinned to the exact
+recorded RiffDB lock and generated Go artifact invoked one named strict-lower/
+strict-upper query twice over one partition and reused an original logical
+string returned by the first invocation as the second invocation's
+consumer-owned lower token. The receipt retains only exact identity hashes,
+bounded counts and duration, and closed verification facts. It proves this
+narrow delegation and bytewise-order case only—not a framework route, full
+adapter, or full-application conformance—and it neither imports consumer
+vocabulary or values nor turns that logical token into a RiffDB cursor.
+The receipt's `riffdb_revision` is the exact runtime revision that performed
+the run; the later repository revision that carries the immutable receipt is
+not reinterpreted as an execution revision.
+
 ## Feature preflight
 
 The authorized application catalog returns the closed

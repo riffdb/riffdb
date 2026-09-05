@@ -59,10 +59,18 @@ order, and that its exact package may declare only a generated Go surface.
 That receipt contains hashes and typed verification classes only; it contains
 no external schema, route, adapter, generated profile, or stored value. It
 explicitly does not claim external runtime, full external application, or
-framework conformance. The owning
-adapter repository must still prove that its real public surface delegates only
-to pinned generated operations without filtering, sorting, counting, page
-walking, raw query construction, or storage access.
+framework conformance.
+
+The distinct terminal
+`fixtures/riffql/wp775-external-binary-text-interval-execution-v1.json`
+receipt now proves one narrow owning-repository runtime case: two invocations
+of the same generated strict-lower/strict-upper query returned original logical
+strings in bytewise ascending order, and the consumer reused a returned string
+as its own next lower token. The run used one existing index, one partition,
+two bounded result pages, and no client filter, sort, page walk, duplicate
+index, or token conversion. This is not evidence that a framework route, the
+complete adapter surface, or a full external application conforms; those wider
+claims still require their own owning-repository acceptance.
 
 ## Keyless upstream retries
 
