@@ -354,6 +354,18 @@ pub(crate) enum ColumnarPublicationMode {
 #[cfg(test)]
 pub(crate) use ColumnarPublicationMode as ColumnarPublicationTestMode;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SelectedFailureRecordMode {
+    Ordinary,
+    #[cfg(test)]
+    StateChangedBeforeCommit,
+    #[cfg(test)]
+    StorageFailureBeforeCommit,
+}
+
+#[cfg(test)]
+pub(crate) use SelectedFailureRecordMode as SelectedFailureRecordTestMode;
+
 impl ColumnarPublicationAttempt {
     const fn from_result(
         result: &Result<ColumnarProjectionControlWriteResultV1, StorageError>,
@@ -689,9 +701,13 @@ fn advance_v2_candidate(
         return Ok(true);
     }
 
-    let (successor, prepared) = runtime
-        .open_prepared_generation(binding, candidate)
-        .map_err(ColumnarWorkerError::Apply)?;
+    let (successor, prepared) = match runtime.open_prepared_generation(binding, candidate) {
+        Ok(opened) => opened,
+        Err(_) => {
+            record_candidate_open_failure(runtime, binding, control, candidate)?;
+            return Ok(true);
+        }
+    };
     let _ =
         publish_prepared_under_capture_gate(runtime, binding, slot, control, &prepared, successor)?;
     Ok(true)
@@ -834,9 +850,14 @@ fn advance_v1_candidate(
     stop_before_next_page: &mut impl FnMut() -> bool,
 ) -> Result<bool, ColumnarWorkerError> {
     let candidate = control.candidate().ok_or(ColumnarWorkerError::Integrity)?;
-    let mut successor = runtime
-        .open_controlled_generation(binding, candidate)
-        .map_err(ColumnarWorkerError::Apply)?;
+    let mut successor = match runtime.open_controlled_generation(binding, candidate) {
+        Ok(successor) => successor,
+        Err(_error) if candidate.artifact().is_some() => {
+            record_candidate_open_failure(runtime, binding, control, candidate)?;
+            return Ok(true);
+        }
+        Err(error) => return Err(ColumnarWorkerError::Apply(error)),
+    };
     let mut current = control.clone();
     if candidate.artifact().is_none() {
         let Some(recovered) = build_fresh_v1_snapshot(
@@ -896,6 +917,48 @@ fn advance_v1_candidate(
     )?;
     Ok(true)
 }
+
+fn record_candidate_open_failure(
+    runtime: &ColumnarRuntime,
+    binding: &ColumnarControlBinding,
+    expected: &StoredColumnarProjectionControlV1,
+    candidate: &StoredColumnarProjectionGenerationV1,
+) -> Result<(), ColumnarWorkerError> {
+    let result = runtime
+        .storage()
+        .record_candidate_failure(expected, ColumnarProjectionFailureReasonV1::ArtifactInvalid);
+    let durable = recover_control(runtime, binding)?;
+    let exact_failure = durable.candidate() == Some(candidate)
+        && durable.failure().is_some_and(|failure| {
+            failure.target() == ColumnarProjectionFailureTargetV1::Candidate
+                && failure.reason() == ColumnarProjectionFailureReasonV1::ArtifactInvalid
+                && failure.generation() == Some(candidate.generation())
+        });
+    if exact_failure {
+        abort_candidate_failure_test_process_at("after-record");
+        return Ok(());
+    }
+    if durable != *expected {
+        return Ok(());
+    }
+    match result {
+        Err(error) => Err(map_storage_error(error)),
+        Ok(ColumnarProjectionControlWriteResultV1::Applied) => Err(ColumnarWorkerError::Integrity),
+        Ok(ColumnarProjectionControlWriteResultV1::StateChanged) => {
+            Err(ColumnarWorkerError::Unavailable)
+        }
+    }
+}
+
+#[cfg(test)]
+fn abort_candidate_failure_test_process_at(boundary: &str) {
+    if std::env::var("RIFFDB_COLUMNAR_CANDIDATE_FAILURE_ABORT_AT").as_deref() == Ok(boundary) {
+        std::process::abort();
+    }
+}
+
+#[cfg(not(test))]
+const fn abort_candidate_failure_test_process_at(_boundary: &str) {}
 
 fn publish_prepared_under_capture_gate(
     runtime: &ColumnarRuntime,
@@ -1513,6 +1576,15 @@ fn activate_requested_slot(
     name: &str,
     slot: &ColumnarEngineSlot,
 ) -> Result<bool, ColumnarWorkerError> {
+    activate_requested_slot_controlled(runtime, name, slot, SelectedFailureRecordMode::Ordinary)
+}
+
+fn activate_requested_slot_controlled(
+    runtime: &ColumnarRuntime,
+    name: &str,
+    slot: &ColumnarEngineSlot,
+    failure_mode: SelectedFailureRecordMode,
+) -> Result<bool, ColumnarWorkerError> {
     let spec = match runtime.current_activation_spec(name, slot) {
         Ok(spec) => spec,
         Err(error) => {
@@ -1528,8 +1600,10 @@ fn activate_requested_slot(
         Ok(opened) => opened,
         Err(error) => {
             slot.fail_activation(generation);
-            if let Some(generation) = generation {
-                record_selected_open_failure(runtime, name, generation)?;
+            if let Some(generation) = generation
+                && record_selected_open_failure(runtime, name, generation, failure_mode)?
+            {
+                return Ok(true);
             }
             return Err(ColumnarWorkerError::Apply(error));
         }
@@ -1544,7 +1618,8 @@ fn record_selected_open_failure(
     runtime: &ColumnarRuntime,
     name: &str,
     generation: ProjectionGeneration,
-) -> Result<(), ColumnarWorkerError> {
+    mode: SelectedFailureRecordMode,
+) -> Result<bool, ColumnarWorkerError> {
     let binding = runtime
         .control_bindings()
         .into_iter()
@@ -1552,19 +1627,103 @@ fn record_selected_open_failure(
         .ok_or(ColumnarWorkerError::Integrity)?;
     let control = recover_control(runtime, &binding)?;
     let Some(published) = control.published() else {
-        return Ok(());
+        return Ok(false);
     };
     if published.generation() != generation {
-        return Ok(());
+        return install_selected_after_failed_open(runtime, &binding, &control);
     }
-    let _ = runtime.storage().record_published_failure(&control);
-    let durable = recover_control(runtime, &binding)?;
-    if durable.published() == Some(published) && durable.servable_generation().is_none() {
-        Ok(())
-    } else {
-        Err(ColumnarWorkerError::Integrity)
+
+    let published = published.clone();
+    let mut next_mode = mode;
+    for attempt_index in 0..2 {
+        let result = issue_selected_failure_record(runtime, &control, next_mode);
+        next_mode = SelectedFailureRecordMode::Ordinary;
+        let durable = recover_control(runtime, &binding)?;
+        if durable.published() == Some(&published) && durable.servable_generation().is_none() {
+            abort_selected_failure_test_process_at("after-record");
+            return Ok(false);
+        }
+        if durable.servable_generation() != Some(&published) {
+            return install_selected_after_failed_open(runtime, &binding, &durable);
+        }
+        if attempt_index == 0 {
+            continue;
+        }
+        return match result {
+            Err(error) => Err(map_storage_error(error)),
+            Ok(ColumnarProjectionControlWriteResultV1::Applied) => {
+                Err(ColumnarWorkerError::Integrity)
+            }
+            Ok(ColumnarProjectionControlWriteResultV1::StateChanged) => {
+                Err(ColumnarWorkerError::Unavailable)
+            }
+        };
+    }
+    Err(ColumnarWorkerError::Integrity)
+}
+
+fn install_selected_after_failed_open(
+    runtime: &ColumnarRuntime,
+    binding: &ColumnarControlBinding,
+    durable: &StoredColumnarProjectionControlV1,
+) -> Result<bool, ColumnarWorkerError> {
+    let Some(selected) = durable.servable_generation() else {
+        return Ok(false);
+    };
+    if durable.source() != binding.spec().source()
+        || durable.target_definition_fingerprint() != binding.spec().definition_fingerprint()
+        || durable.target_spec_hash() != binding.spec().hash()
+        || durable.replay_limits() != binding.spec().replay_limits()
+        || selected.history_incarnation() != runtime.history_incarnation()
+    {
+        return Err(ColumnarWorkerError::Integrity);
+    }
+    let engine = runtime
+        .open_controlled_generation(binding, selected)
+        .map_err(ColumnarWorkerError::Apply)?;
+    let slot = runtime
+        .engine(binding.name())
+        .map_err(map_port_error)?
+        .ok_or(ColumnarWorkerError::Integrity)?;
+    let mut gate = slot.close_capture_gate().map_err(map_port_error)?;
+    if let Some(retired) = gate
+        .install_selected(engine, selected.generation())
+        .map_err(map_port_error)?
+    {
+        runtime.defer_retirement(retired).map_err(map_port_error)?;
+    }
+    drop(gate);
+    let _ = runtime.notifier().notify(binding.name());
+    Ok(true)
+}
+
+fn issue_selected_failure_record(
+    runtime: &ColumnarRuntime,
+    expected: &StoredColumnarProjectionControlV1,
+    mode: SelectedFailureRecordMode,
+) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+    match mode {
+        SelectedFailureRecordMode::Ordinary => runtime.storage().record_published_failure(expected),
+        #[cfg(test)]
+        SelectedFailureRecordMode::StateChangedBeforeCommit => {
+            Ok(ColumnarProjectionControlWriteResultV1::StateChanged)
+        }
+        #[cfg(test)]
+        SelectedFailureRecordMode::StorageFailureBeforeCommit => {
+            Err(StorageError::new(StorageErrorKind::Unavailable, None))
+        }
     }
 }
+
+#[cfg(test)]
+fn abort_selected_failure_test_process_at(boundary: &str) {
+    if std::env::var("RIFFDB_COLUMNAR_SELECTED_FAILURE_ABORT_AT").as_deref() == Ok(boundary) {
+        std::process::abort();
+    }
+}
+
+#[cfg(not(test))]
+const fn abort_selected_failure_test_process_at(_boundary: &str) {}
 
 fn run_columnar_pass(
     runtime: &ColumnarRuntime,
@@ -1637,6 +1796,18 @@ pub(crate) fn activate_one_test_slot(runtime: &ColumnarRuntime, name: &str) -> b
         return false;
     };
     activate_requested_slot(runtime, name, &slot).unwrap_or(false)
+}
+
+#[cfg(test)]
+pub(crate) fn activate_one_test_slot_with_selected_failure_mode(
+    runtime: &ColumnarRuntime,
+    name: &str,
+    mode: SelectedFailureRecordTestMode,
+) -> bool {
+    let Ok(Some(slot)) = runtime.engine(name) else {
+        return false;
+    };
+    activate_requested_slot_controlled(runtime, name, &slot, mode).unwrap_or(false)
 }
 
 #[cfg(test)]
