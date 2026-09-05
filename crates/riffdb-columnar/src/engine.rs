@@ -316,7 +316,18 @@ impl ColumnarEngine {
         directory: &Path,
         retained: &[(u64, [u8; 32])],
     ) -> Result<(), ColumnarError> {
-        CheckpointDir::reclaim_controlled_v1_artifacts(directory, retained)
+        CheckpointDir::reclaim_controlled_v1_artifacts(directory, retained, None)
+            .map_err(ColumnarError::Checkpoint)
+    }
+
+    /// Test-only variant of controlled V1 reclamation with one fixed crash controller.
+    #[doc(hidden)]
+    pub fn reclaim_controlled_v1_artifacts_with_test_controller(
+        directory: &Path,
+        retained: &[(u64, [u8; 32])],
+        controller: &ColumnarTestController,
+    ) -> Result<(), ColumnarError> {
+        CheckpointDir::reclaim_controlled_v1_artifacts(directory, retained, Some(controller))
             .map_err(ColumnarError::Checkpoint)
     }
 

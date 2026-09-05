@@ -383,7 +383,6 @@ enum ColumnarPublicationResolution {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PublishedV1AdvanceResolution {
     InstallSelectedAndAcknowledge,
-    RetainPredecessorWithoutAcknowledgement,
     InstallSelectedWithoutAcknowledgement,
     RemainClosed,
 }
@@ -449,13 +448,10 @@ fn selected_matches_prepared(
 
 fn published_v1_advance_resolution(
     durable: &StoredColumnarProjectionControlV1,
-    predecessor: &StoredColumnarProjectionControlV1,
     replacement: &StoredColumnarProjectionGenerationV1,
 ) -> PublishedV1AdvanceResolution {
     if durable.servable_generation() == Some(replacement) {
         PublishedV1AdvanceResolution::InstallSelectedAndAcknowledge
-    } else if durable == predecessor {
-        PublishedV1AdvanceResolution::RetainPredecessorWithoutAcknowledgement
     } else if durable.servable_generation().is_some() {
         PublishedV1AdvanceResolution::InstallSelectedWithoutAcknowledgement
     } else {
@@ -672,10 +668,24 @@ fn advance_v2_candidate(
     ) == PreparedV2HeadResolution::ReplaceCandidate
     {
         let physical = PhysicalGenerationFingerprintV1::compute(binding.definition().fingerprint());
-        let _ = runtime
-            .storage()
-            .allocate_same_spec_candidate(control, *physical.as_bytes())
-            .map_err(map_storage_error)?;
+        let result = if control.published().is_none()
+            && control.predecessor().is_some()
+            && control.servable_generation().is_none()
+        {
+            runtime.storage().allocate_unservable_rebuild_candidate(
+                control,
+                binding.spec().definition_fingerprint(),
+                binding.spec().hash(),
+                binding.spec().replay_limits(),
+                ColumnarProjectionLayoutV1::V2,
+                Some(*physical.as_bytes()),
+            )
+        } else {
+            runtime
+                .storage()
+                .allocate_same_spec_candidate(control, *physical.as_bytes())
+        };
+        let _ = result.map_err(map_storage_error)?;
         return Ok(true);
     }
 
@@ -1363,7 +1373,7 @@ fn advance_published_v1_under_capture_gate_controlled(
         gate.remain_closed(durable.published().map(|value| value.generation()));
         return Err(ColumnarWorkerError::Integrity);
     }
-    match published_v1_advance_resolution(&durable, expected, replacement.generation()) {
+    match published_v1_advance_resolution(&durable, replacement.generation()) {
         PublishedV1AdvanceResolution::InstallSelectedAndAcknowledge => {
             if let Some(retired) = gate
                 .install_selected(successor, replacement.generation().generation())
@@ -1393,17 +1403,6 @@ fn advance_published_v1_under_capture_gate_controlled(
             {
                 runtime.defer_retirement(retired).map_err(map_port_error)?;
             }
-            drop(gate);
-            if attempt.requires_error() {
-                match result {
-                    Err(error) => Err(map_storage_error(error)),
-                    Ok(_) => Err(ColumnarWorkerError::Integrity),
-                }
-            } else {
-                Ok(false)
-            }
-        }
-        PublishedV1AdvanceResolution::RetainPredecessorWithoutAcknowledgement => {
             drop(gate);
             if attempt.requires_error() {
                 match result {

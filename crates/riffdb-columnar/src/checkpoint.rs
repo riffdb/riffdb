@@ -466,6 +466,7 @@ impl CheckpointDir {
     pub(crate) fn reclaim_controlled_v1_artifacts(
         root: &Path,
         retained: &[(u64, [u8; 32])],
+        controller: Option<&ColumnarTestController>,
     ) -> Result<(), CheckpointError> {
         let checkpoint = Self::new(root.to_path_buf(), true)?;
         let mut retained_manifests = BTreeSet::new();
@@ -505,6 +506,13 @@ impl CheckpointDir {
             if retired_manifest || retired_segment || torn_manifest_temp {
                 fs::remove_file(entry.path())?;
                 removed = true;
+                if controller.is_some_and(|controller| {
+                    controller.hit(ColumnarTestBoundary::AfterV1ArtifactReclaim)
+                }) {
+                    return Err(CheckpointError::Io(
+                        "injected V1 artifact reclamation failure".to_owned(),
+                    ));
+                }
             }
         }
         if removed {
