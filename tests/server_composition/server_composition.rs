@@ -299,6 +299,7 @@ async fn real_process_hosts_policy_filtered_mcp_and_stops_on_sigterm() -> TestRe
     Ok(())
 }
 
+// req: PRJ-002, PRJ-004, PRJ-005, PRJ-006, PRJ-007, PRJ-010, OQ-022
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remote_generated_vector_client_writes_inspects_and_queries_exact_projection()
 -> TestResult<()> {
@@ -403,6 +404,21 @@ async fn remote_generated_vector_client_writes_inspects_and_queries_exact_projec
             "vector query module identity diverged from generated client",
         ));
     }
+
+    // Columnar source admission is startup-fixed so every new source receives
+    // its BeforeFirst retention fence before application writers reopen.
+    drop(administration);
+    process.signal_sigterm()?;
+    process.wait_for_successful_exit(PROCESS_STOP_TIMEOUT)?;
+    process = ServerProcess::spawn(
+        &database_path,
+        &capability_keys_path,
+        &idempotency_keys_path,
+        mcp_address,
+    )?;
+    let grpc_address = process.wait_for_ready_address()?;
+    process.close_stdin()?;
+    administration = connect(grpc_address).await?;
 
     let endpoint = Endpoint::from_shared(format!("http://{grpc_address}"))?
         .connect_timeout(RPC_TIMEOUT)
