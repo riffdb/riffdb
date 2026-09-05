@@ -61,7 +61,7 @@ use crate::keys::{
     decode_application_sequence_key, decode_audit_by_request_key, decode_audit_key,
     decode_index_range_prefix_key, decode_partition_index_key, decode_vector_evidence_index_key,
     encode_audit_by_request_key, encode_audit_by_request_prefix, encode_event_route_key,
-    encode_partition_index_key, encode_vector_health_observation_key,
+    encode_idempotency_key, encode_partition_index_key, encode_vector_health_observation_key,
     encode_vector_observation_key,
 };
 use crate::layout::{
@@ -292,6 +292,7 @@ pub(crate) struct SharedRedb {
     /// visible rather than inferred from wall clock.
     transient_index_rebuilds: AtomicU64,
     transient_index_commit_rows: AtomicU64,
+    fresh_locator_history_fallback_scans: AtomicU64,
     /// Retention watermark sequence, loaded and self-hash-verified once at
     /// open. The watermark advances only under exclusive OFFLINE maintenance,
     /// which cannot run while this handle holds the database open, so reads
@@ -489,6 +490,19 @@ impl SharedRedb {
 
     pub(crate) fn transient_index_commit_rows(&self) -> u64 {
         self.transient_index_commit_rows.load(Ordering::Relaxed)
+    }
+
+    fn note_fresh_locator_history_fallback_scan(&self) {
+        let _ = self.fresh_locator_history_fallback_scans.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some(current.saturating_add(1)),
+        );
+    }
+
+    fn fresh_locator_history_fallback_scans(&self) -> u64 {
+        self.fresh_locator_history_fallback_scans
+            .load(Ordering::Relaxed)
     }
 
     pub(crate) fn clean_close_decline_counts(&self) -> [(&'static str, u64); 11] {
@@ -1932,6 +1946,7 @@ impl RedbStore {
                 outbox_delivering_proven_absent: AtomicBool::new(false),
                 transient_index_rebuilds: AtomicU64::new(0),
                 transient_index_commit_rows: AtomicU64::new(0),
+                fresh_locator_history_fallback_scans: AtomicU64::new(0),
                 retention_watermark: AtomicU64::new(0),
                 terminal_execution_failure_rows: AtomicU64::new(0),
                 checkpoint_count_rows_walked: AtomicU64::new(0),
@@ -4570,6 +4585,10 @@ impl RedbOperationalPorts {
             .proves_public_absence(stamp))
     }
 
+    pub(crate) fn note_fresh_locator_history_fallback_scan(&self) {
+        self.shared.note_fresh_locator_history_fallback_scan();
+    }
+
     pub(crate) fn command_derived_member(
         &self,
         kind: riffdb_storage_api::CommandDerivedIndexKindV1,
@@ -4793,6 +4812,16 @@ impl RedbOperationalPorts {
     #[must_use]
     pub fn transient_index_commit_rows(&self) -> u64 {
         self.shared.transient_index_commit_rows()
+    }
+
+    /// Bounded command-history fallbacks entered after an exact locator miss.
+    ///
+    /// This is closed test evidence for ADR-0197. Application decisions must
+    /// never depend on it.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn fresh_locator_history_fallback_scans(&self) -> u64 {
+        self.shared.fresh_locator_history_fallback_scans()
     }
 
     /// Per-reason counts of ignored validated-prefix checkpoints on this database.
@@ -5077,6 +5106,38 @@ impl RedbOperationalPorts {
 }
 
 impl RedbWriteAccess {
+    fn fresh_locator_direct_segment_is_exact(
+        &self,
+        delta: &TransientIndexDelta,
+    ) -> Result<bool, StorageError> {
+        if self.composite_stage.is_some()
+            || self.journal_mutations.is_some()
+            || !self
+                .shared
+                .publication_queue
+                .lock()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+                .pending
+                .is_empty()
+        {
+            return Ok(false);
+        }
+        let Some(segment) = delta.command_segment() else {
+            return Ok(false);
+        };
+        let database_id = read_identity_from_write_transaction(self.transaction()?)?;
+        exact_fresh_locator_segment(
+            database_id,
+            segment,
+            |key| self.read_command_value(JournalTable::IdempotencyLocators, key),
+            |sequence| {
+                crate::command_authority::command_member_at_write_access(self, sequence).map(
+                    |member| member.map(|member| member.into_base().outcome().identity().clone()),
+                )
+            },
+        )
+    }
+
     pub(crate) fn arm_fresh_locator_coverage(&self) -> Result<(), StorageError> {
         let transaction = self.transaction()?;
         let commits_empty = transaction
@@ -5736,6 +5797,12 @@ impl RedbWriteAccess {
             controller.before_commit(operation)?;
         }
         let expected = self.fresh_locator_coverage_stamp()?;
+        let direct_segment_is_exact = match delta.as_ref() {
+            Some(delta) if operation == RedbTestOperation::CommandBatch => {
+                self.fresh_locator_direct_segment_is_exact(delta)?
+            }
+            _ => false,
+        };
         let coverage_witness = {
             let mut coverage = self
                 .shared
@@ -5743,7 +5810,7 @@ impl RedbWriteAccess {
                 .lock()
                 .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
             let predecessor = coverage.private_stamp();
-            if operation == RedbTestOperation::CommandBatch && delta.is_some() {
+            if operation == RedbTestOperation::CommandBatch && direct_segment_is_exact {
                 predecessor
                     .and_then(|predecessor| coverage.begin_direct(predecessor, expected))
                     .map(ImmediateCoverageWitness::Direct)
@@ -6475,14 +6542,26 @@ impl RedbDurabilityEpoch {
                 .fresh_locator_composite_stamp(composite_successor)?;
             let command_count = u16::try_from(self.command_count)
                 .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+            let segment_is_exact = self.shared.fresh_locator_queued_segments_are_exact(
+                composite_successor,
+                &self.transient_deltas,
+                first_sequence,
+                last_sequence,
+                self.command_count,
+            )?;
             let mut coverage = self
                 .shared
                 .fresh_locator_coverage
                 .lock()
                 .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-            coverage.private_stamp().and_then(|predecessor| {
-                coverage.seal_command(predecessor, successor_stamp, command_count)
-            })
+            if segment_is_exact {
+                coverage.private_stamp().and_then(|predecessor| {
+                    coverage.seal_command(predecessor, successor_stamp, command_count)
+                })
+            } else {
+                coverage.disable();
+                None
+            }
         } else {
             None
         };
@@ -6593,6 +6672,60 @@ impl SharedRedb {
             view.overlay().published_administration(),
             allocator,
         ))
+    }
+
+    fn fresh_locator_queued_segments_are_exact(
+        &self,
+        view: &Arc<crate::composite_view::RedbCompositeReadView>,
+        deltas: &[TransientIndexDelta],
+        first_sequence: CommitSequence,
+        last_sequence: CommitSequence,
+        command_count: usize,
+    ) -> Result<bool, StorageError> {
+        let database_id = read_identity_from_read_transaction(view.checkpoint_root())?;
+        let access = RedbReadAccess::Composite(Arc::clone(view));
+        let segments = deltas
+            .iter()
+            .filter_map(TransientIndexDelta::command_segment)
+            .collect::<Vec<_>>();
+        let retained_count = segments.iter().try_fold(0_usize, |total, segment| {
+            total
+                .checked_add(segment.commands().len())
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))
+        })?;
+        if retained_count != command_count
+            || segments
+                .first()
+                .map(|segment| segment.first_commit_sequence())
+                != Some(first_sequence)
+            || segments
+                .last()
+                .map(|segment| segment.last_commit_sequence())
+                != Some(last_sequence)
+            || segments.windows(2).any(|pair| {
+                pair[0].last_commit_sequence().checked_next()
+                    != Some(pair[1].first_commit_sequence())
+            })
+        {
+            return Ok(false);
+        }
+        for segment in segments {
+            if !exact_fresh_locator_segment(
+                database_id,
+                segment,
+                |key| view.resolve_point(JournalTable::IdempotencyLocators.composite(), key),
+                |sequence| {
+                    crate::command_authority::command_member_at_access(&access, sequence).map(
+                        |member| {
+                            member.map(|member| member.into_base().outcome().identity().clone())
+                        },
+                    )
+                },
+            )? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     fn disable_fresh_locator_coverage(&self) {
@@ -8024,6 +8157,76 @@ fn preserving_immediate_operation(operation: RedbTestOperation) -> bool {
             | RedbTestOperation::ProjectionMutation
             | RedbTestOperation::ColumnarProjectionControl
     )
+}
+
+fn exact_fresh_locator_segment(
+    database_id: DatabaseId,
+    segment: &riffdb_storage_api::StoredCommandSegmentV1,
+    mut read_locator: impl FnMut(&[u8]) -> Result<Option<Vec<u8>>, StorageError>,
+    mut resolved_identity: impl FnMut(
+        CommitSequence,
+    ) -> Result<
+        Option<riffdb_storage_api::IdempotencyIdentity>,
+        StorageError,
+    >,
+) -> Result<bool, StorageError> {
+    if segment.database_id() != database_id
+        || segment.commands().is_empty()
+        || segment.commands().len() > riffdb_storage_api::MAX_STAGED_COMMANDS
+    {
+        return Ok(false);
+    }
+    for (ordinal, command) in segment.commands().iter().enumerate() {
+        let sequence = command.commit_sequence();
+        let expected = segment
+            .first_commit_sequence()
+            .get()
+            .checked_add(
+                u64::try_from(ordinal)
+                    .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?,
+            )
+            .and_then(CommitSequence::new);
+        let identity = command.base().outcome().identity();
+        let identity_key = identity
+            .storage_key()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let exact_key = encode_idempotency_key(&identity_key);
+        let mut entries = segment.manifest().entries().iter().filter(|entry| {
+            entry.kind() == riffdb_storage_api::CommandDerivedIndexKindV1::Idempotency
+                && entry.exact_key() == exact_key
+        });
+        let Some(entry) = entries.next() else {
+            return Ok(false);
+        };
+        if entries.next().is_some()
+            || expected != Some(sequence)
+            || entry.segment_first_commit_sequence() != segment.first_commit_sequence()
+            || usize::from(entry.command_ordinal()) != ordinal
+            || entry.member_ordinal() != 0
+            || entry.member() != riffdb_storage_api::CommandDerivedMemberV1::Command
+        {
+            return Ok(false);
+        }
+        let Some(encoded_locator) = read_locator(exact_key)? else {
+            return Ok(false);
+        };
+        let locator = crate::codec::decode_command_locator_v1(&encoded_locator)?
+            .into_parts()
+            .0;
+        if locator.commit_sequence() != sequence
+            || resolved_identity(sequence)?.as_ref() != Some(identity)
+        {
+            return Ok(false);
+        }
+    }
+    Ok(segment
+        .commands()
+        .len()
+        .checked_sub(1)
+        .and_then(|offset| u64::try_from(offset).ok())
+        .and_then(|offset| segment.first_commit_sequence().get().checked_add(offset))
+        .and_then(CommitSequence::new)
+        == Some(segment.last_commit_sequence()))
 }
 
 fn application_frontier_from_allocator(

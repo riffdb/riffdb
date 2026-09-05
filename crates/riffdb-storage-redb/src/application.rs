@@ -2733,6 +2733,7 @@ fn command_outcome_from_operational_indexes(
     if first > frontier {
         return Ok(None);
     }
+    ports.note_fresh_locator_history_fallback_scan();
     let start = encode_application_sequence_key(first);
     let mut end = encode_application_sequence_key(frontier).to_vec();
     end.push(0);
