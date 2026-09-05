@@ -225,34 +225,41 @@ fn dataful_v2_rebuild_reopens_repeatedly_and_refuses_mixed_or_stale_state() {
 #[ignore = "fixed WP-711 production-activation receipt; run explicitly in release mode"]
 fn wp711_production_v2_activation_receipt() {
     const ROWS: usize = 16_384;
+    const PARTITIONS: usize = 2;
+    const ROWS_PER_PARTITION: usize = ROWS / PARTITIONS;
     const SAMPLES: usize = 31;
     let scope = temp_dir("wp711-activation-receipt");
     let bundle = compile_bundle();
     let definition = register_ticket_board(&bundle);
-    let organization = common::uuid(0x63);
-    let organization_value = CanonicalValue::Uuid(organization);
-    let organization_key = OrgKey::from_value(&organization_value).expect("organization");
+    let organizations = [common::uuid(0x63), common::uuid(0x64)];
+    let organization_values = organizations.map(CanonicalValue::Uuid);
+    let organization_keys = organization_values
+        .iter()
+        .map(|value| OrgKey::from_value(value).expect("organization"))
+        .collect::<Vec<_>>();
     let no_projection_directory = scope.join("no-projection");
     assert!(!no_projection_directory.exists());
 
     let mut source = HistorySource::default();
     let mut oracle = Oracle::default();
     for index in 0..ROWS {
+        let partition = index / ROWS_PER_PARTITION;
+        let partition_row = index % ROWS_PER_PARTITION;
         push_ticket_create(
             &mut source,
             &mut oracle,
             &bundle,
             u64::try_from(index + 1).expect("sequence"),
-            organization,
-            u64::try_from(index + 1).expect("ticket"),
-            u64::try_from(index % 4).expect("status"),
-            match index % 4 {
+            organizations[partition],
+            u64::try_from(partition_row + 1).expect("ticket"),
+            u64::try_from(partition_row % 4).expect("status"),
+            match partition_row % 4 {
                 0 => "open",
                 1 => "closed",
                 2 => "queued",
                 _ => "running",
             },
-            i64::try_from(index).expect("priority"),
+            i64::try_from(partition_row).expect("priority"),
         );
     }
 
@@ -269,23 +276,52 @@ fn wp711_production_v2_activation_receipt() {
     let lag = head.saturating_sub(frontier_sequence(frontier));
     assert_eq!(lag, 0);
     let v1_bytes = directory_bytes(&v1_directory);
-    let query = ColumnarQueryRequest {
-        org_scope: organization_value.clone(),
-        select: Vec::new(),
-        predicates: Vec::new(),
-        order: Vec::new(),
-        limit: None,
-        group_by: None,
-        aggregate: Some(AggregateOp::Count),
-        budget: QueryBudget::default(),
-    };
-    let expected = QueryResult::Aggregate(AggregateValue::Count(ROWS as u64));
-    assert_eq!(v1.query(&query).expect("V1 matched result"), expected);
-    let v1_query_ns = stage_samples(SAMPLES, || {
+    let queries = organization_values
+        .iter()
+        .cloned()
+        .map(|org_scope| ColumnarQueryRequest {
+            org_scope,
+            select: Vec::new(),
+            predicates: Vec::new(),
+            order: Vec::new(),
+            limit: None,
+            group_by: None,
+            aggregate: Some(AggregateOp::Count),
+            budget: QueryBudget::default(),
+        })
+        .collect::<Vec<_>>();
+    let expected_partition =
+        QueryResult::Aggregate(AggregateValue::Count(ROWS_PER_PARTITION as u64));
+    let expected = vec![expected_partition; PARTITIONS];
+    let initial_results = queries
+        .iter()
+        .map(|query| v1.query(query).expect("V1 partition result"))
+        .collect::<Vec<_>>();
+    assert_eq!(initial_results, expected);
+    for key in &organization_keys {
         assert_eq!(
-            black_box(&v1).query(black_box(&query)).expect("V1 query"),
-            expected
+            v1.published_snapshot().merged_org(key).len(),
+            ROWS_PER_PARTITION,
+            "every production request stays inside one compiled org partition"
         );
+    }
+    let v1_partition_query_ns = queries
+        .iter()
+        .map(|query| {
+            stage_samples(SAMPLES, || {
+                assert_eq!(
+                    black_box(&v1).query(black_box(query)).expect("V1 query"),
+                    expected[0]
+                );
+            })
+        })
+        .collect::<Vec<_>>();
+    let v1_query_ns = stage_samples(SAMPLES, || {
+        let actual = queries
+            .iter()
+            .map(|query| black_box(&v1).query(black_box(query)).expect("V1 query"))
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
     });
     let v1_recovery_ns = stage_samples(SAMPLES, || {
         let reopened = ColumnarEngine::open(
@@ -293,29 +329,32 @@ fn wp711_production_v2_activation_receipt() {
             OpenOptions::new(v1_directory.clone()).with_history_incarnation(1),
         )
         .expect("V1 recovery");
-        assert_eq!(
-            reopened.query(&query).expect("recovered V1 query"),
-            expected
-        );
+        let actual = queries
+            .iter()
+            .map(|query| reopened.query(query).expect("recovered V1 query"))
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
     });
 
     let mut matched = ColumnarSnapshot::empty();
     matched.visible_frontier = frontier;
-    let flattened = v1
-        .published_snapshot()
-        .merged_org(&organization_key)
-        .into_iter()
-        .map(|(key, row)| {
-            (
-                key,
-                LiveRow {
-                    entity_version: row.entity_version,
-                    cells: row.cells,
-                },
-            )
-        })
-        .collect();
-    matched.delta.insert(organization_key, flattened);
+    for organization_key in &organization_keys {
+        let flattened = v1
+            .published_snapshot()
+            .merged_org(organization_key)
+            .into_iter()
+            .map(|(key, row)| {
+                (
+                    key,
+                    LiveRow {
+                        entity_version: row.entity_version,
+                        cells: row.cells,
+                    },
+                )
+            })
+            .collect();
+        matched.delta.insert(organization_key.clone(), flattened);
+    }
 
     let v2_directory = scope.join("v2");
     let rebuild_start = Instant::now();
@@ -336,19 +375,14 @@ fn wp711_production_v2_activation_receipt() {
     let v2_bytes = directory_bytes(prepared.directory());
     assert_eq!(root.frontier(), frontier);
     assert_eq!(root.total_rows(), ROWS as u64);
-    assert_eq!(
-        query_snapshot(&definition, prepared.snapshot(), &query).expect("prepared V2 query"),
-        expected
-    );
-    let v1_matched_results = corpus_results(&v1, &bundle, &organization_value);
-    let v2_matched_results = corpus_requests(&bundle, &CanonicalValue::Uuid(organization))
+    let v2_matched_results = queries
         .iter()
-        .map(|request| {
-            query_snapshot(&definition, prepared.snapshot(), request).expect("matched V2 result")
+        .map(|query| {
+            query_snapshot(&definition, prepared.snapshot(), query).expect("matched V2 result")
         })
         .collect::<Vec<_>>();
-    assert_eq!(v2_matched_results, v1_matched_results);
-    let matched_query_cases = v1_matched_results.len();
+    assert_eq!(v2_matched_results, expected);
+    let matched_query_cases = v2_matched_results.len();
     let v2_recovery_ns = stage_samples(SAMPLES, || {
         let reopened = ValidatedColumnarV2Generation::open(
             &v2_directory,
@@ -360,18 +394,33 @@ fn wp711_production_v2_activation_receipt() {
             physical,
         )
         .expect("V2 recovery");
-        assert_eq!(
-            query_snapshot(&definition, reopened.snapshot(), &query).expect("recovered V2 query"),
-            expected
-        );
+        let actual = queries
+            .iter()
+            .map(|query| {
+                query_snapshot(&definition, reopened.snapshot(), query).expect("recovered V2 query")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
     });
     let v2 = ColumnarEngine::from_validated_v2(definition.clone(), prepared)
         .expect("install validated V2");
+    let v2_partition_query_ns = queries
+        .iter()
+        .map(|query| {
+            stage_samples(SAMPLES, || {
+                assert_eq!(
+                    black_box(&v2).query(black_box(query)).expect("V2 query"),
+                    expected[0]
+                );
+            })
+        })
+        .collect::<Vec<_>>();
     let v2_query_ns = stage_samples(SAMPLES, || {
-        assert_eq!(
-            black_box(&v2).query(black_box(&query)).expect("V2 query"),
-            expected
-        );
+        let actual = queries
+            .iter()
+            .map(|query| black_box(&v2).query(black_box(query)).expect("V2 query"))
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
     });
 
     let compaction_start = Instant::now();
@@ -385,23 +434,30 @@ fn wp711_production_v2_activation_receipt() {
     )
     .expect("production V2 compaction");
     let compaction_ns = compaction_start.elapsed().as_nanos();
-    assert_eq!(
-        query_snapshot(&definition, compacted.snapshot(), &query),
-        Ok(expected.clone())
-    );
+    let compacted_results = queries
+        .iter()
+        .map(|query| {
+            query_snapshot(&definition, compacted.snapshot(), query).expect("compacted V2 query")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(compacted_results, expected);
 
     let segment_count = usize::try_from(root.total_segments()).expect("segments");
     let v1_modeled_owned_allocations = ROWS * 6;
     let v2_modeled_owned_allocations = ROWS * 6 + segment_count * 17;
     println!(
-        "WP711_ACTIVATION corpus=wp711-low-cardinality-v1-v2-v1 rows={ROWS} samples={SAMPLES} cpu_method=single-thread_elapsed_ns allocation_method=wp710_modeled_owned_allocations_not_allocator_calls matched_frontier={} matched_query_cases={matched_query_cases} projection_lag={lag} no_projection_bytes=0 no_projection_modeled_owned_allocations=0 no_projection_population_passes=0 no_v2_bytes={v1_bytes} no_v2_modeled_owned_allocations={v1_modeled_owned_allocations} v1_query_p50_ns={} v1_query_p95_ns={} v1_query_p99_ns={} v1_recovery_p50_ns={} v1_recovery_p95_ns={} v1_recovery_p99_ns={} v2_bytes={v2_bytes} v2_modeled_owned_allocations={v2_modeled_owned_allocations} v2_query_p50_ns={} v2_query_p95_ns={} v2_query_p99_ns={} v2_recovery_p50_ns={} v2_recovery_p95_ns={} v2_recovery_p99_ns={} rebuild_ns={rebuild_ns} compaction_ns={compaction_ns} result_count={ROWS}",
+        "WP711_ACTIVATION corpus=wp711-low-cardinality-v1-v2-v1 rows={ROWS} partitions={PARTITIONS} rows_per_partition={ROWS_PER_PARTITION} samples={SAMPLES} cpu_method=single-thread_elapsed_ns allocation_method=wp710_modeled_owned_allocations_not_allocator_calls matched_frontier={} matched_query_cases={matched_query_cases} partition_0_result_count={ROWS_PER_PARTITION} partition_1_result_count={ROWS_PER_PARTITION} projection_lag={lag} no_projection_bytes=0 no_projection_modeled_owned_allocations=0 no_projection_population_passes=0 no_v2_bytes={v1_bytes} no_v2_modeled_owned_allocations={v1_modeled_owned_allocations} v1_partition_0_query_p50_ns={} v1_partition_1_query_p50_ns={} v1_query_p50_ns={} v1_query_p95_ns={} v1_query_p99_ns={} v1_recovery_p50_ns={} v1_recovery_p95_ns={} v1_recovery_p99_ns={} v2_bytes={v2_bytes} v2_modeled_owned_allocations={v2_modeled_owned_allocations} v2_partition_0_query_p50_ns={} v2_partition_1_query_p50_ns={} v2_query_p50_ns={} v2_query_p95_ns={} v2_query_p99_ns={} v2_recovery_p50_ns={} v2_recovery_p95_ns={} v2_recovery_p99_ns={} rebuild_ns={rebuild_ns} compaction_ns={compaction_ns} result_count={ROWS}",
         frontier_sequence(frontier),
+        percentile(&v1_partition_query_ns[0], 50),
+        percentile(&v1_partition_query_ns[1], 50),
         percentile(&v1_query_ns, 50),
         percentile(&v1_query_ns, 95),
         percentile(&v1_query_ns, 99),
         percentile(&v1_recovery_ns, 50),
         percentile(&v1_recovery_ns, 95),
         percentile(&v1_recovery_ns, 99),
+        percentile(&v2_partition_query_ns[0], 50),
+        percentile(&v2_partition_query_ns[1], 50),
         percentile(&v2_query_ns, 50),
         percentile(&v2_query_ns, 95),
         percentile(&v2_query_ns, 99),
