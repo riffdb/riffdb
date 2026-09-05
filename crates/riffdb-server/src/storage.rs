@@ -137,6 +137,21 @@ impl SharedRedbOperationalPorts {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn append_columnar_worker_commit_with_crosslinks_fixture(
+        &self,
+        rows: &[riffdb_storage_api::StoredEntityRecordV1],
+        commits: &[riffdb_storage_api::StoredCommitRecordV1],
+        outcomes: &[riffdb_storage_api::StoredOutcomeV1],
+        provenance: &[riffdb_storage_api::StoredProvenanceRecordV1],
+    ) -> Result<(), StorageError> {
+        self.cell.with_mut(|ports| {
+            riffdb_storage_redb::append_columnar_worker_commit_with_crosslinks_fixture(
+                ports, rows, commits, outcomes, provenance,
+            )
+        })
+    }
+
     pub(crate) const fn bounded_clean_startup(&self) -> bool {
         self.bounded_clean_startup
     }
