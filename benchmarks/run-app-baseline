@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Application-shaped baseline: live PostgreSQL vs live riffdbd (public gRPC).
-# req: PERF-008, PERF-018
+# req: PERF-008, PERF-018, PERF-019
 set -euo pipefail
 export LC_ALL=C
 export TZ=UTC
@@ -1557,6 +1557,32 @@ PY
     if ((require_stable)) && ! bounded_jq "$report" $((32 * 1024 * 1024)) \
         '.evidence_eligibility.host_idle == true' 'qualified app-baseline report' >/dev/null; then
         printf 'measurement-integrity: host interference invalidated %s\n' "$report" >&2
+        exit 1
+    fi
+fi
+
+if [[ "$wp705_lifecycle_evidence" == 1 ]]; then
+    if ! bounded_jq "$report" $((32 * 1024 * 1024)) '
+      .riffdb_process_evidence as $processes
+      | ($processes | type == "array" and length == 1)
+      and ($processes[0].production_lifecycle_evidence as $lifecycle
+        | ($lifecycle.clean_restart.startup as $startup
+          | ($startup | has("columnar_cold_sources"))
+          and ($startup.columnar_cold_sources
+            | type == "number" and . >= 0 and floor == .)
+          and $startup.columnar_activations == 0
+          and $startup.columnar_population_passes == 0)
+        and (if $lifecycle.scale_checkpoint == "production" then
+          $lifecycle.seeded_close.columnar_activations == 0
+          and $lifecycle.seeded_close.columnar_population_passes == 0
+          and $lifecycle.final_close.columnar_activations == 0
+          and $lifecycle.final_close.columnar_population_passes == 0
+        elif $lifecycle.scale_checkpoint == "rows_65536" then
+          $lifecycle.measured_clean_close.columnar_activations == 0
+          and $lifecycle.measured_clean_close.columnar_population_passes == 0
+        else false end))
+    ' 'WP-705 no-demand columnar lifecycle' >/dev/null; then
+        printf 'WP-705 lifecycle evidence observed columnar demand or omitted its census\n' >&2
         exit 1
     fi
 fi

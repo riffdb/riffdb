@@ -27,8 +27,8 @@ use riffdb_app_baseline_postgres::{
     PostgresResourceSnapshot,
 };
 use riffdb_app_baseline_riffdb::{
-    RiffDbProcessMemoryEvidence, RiffDbServerSession, RiffDbShutdownEvidence,
-    ServerStartOptions, min_free_bytes_for_full,
+    RiffDbProcessMemoryEvidence, RiffDbServerSession, RiffDbShutdownEvidence, ServerStartOptions,
+    min_free_bytes_for_full,
 };
 use riffdb_bench_root::{
     BenchRoot, BenchRootOptions, DeviceBaseline, StorageMedium, classify_medium,
@@ -844,10 +844,12 @@ fn process_resource_snapshot(
     let stat = fs::read(format!("/proc/{pid}/stat"))
         .map_err(|error| format!("read process stat for {pid}: {error}"))?;
     if stat.is_empty() || stat.len() > PROC_FILE_LIMIT {
-        return Err(format!("process stat for {pid} exceeded its evidence bound"));
+        return Err(format!(
+            "process stat for {pid} exceeded its evidence bound"
+        ));
     }
-    let stat = std::str::from_utf8(&stat)
-        .map_err(|_| format!("process stat for {pid} is not UTF-8"))?;
+    let stat =
+        std::str::from_utf8(&stat).map_err(|_| format!("process stat for {pid} is not UTF-8"))?;
     let close = stat
         .rfind(')')
         .ok_or_else(|| format!("process stat for {pid} has no command terminator"))?;
@@ -868,7 +870,9 @@ fn process_resource_snapshot(
     let status = fs::read(format!("/proc/{pid}/status"))
         .map_err(|error| format!("read process status for {pid}: {error}"))?;
     if status.is_empty() || status.len() > PROC_FILE_LIMIT {
-        return Err(format!("process status for {pid} exceeded its evidence bound"));
+        return Err(format!(
+            "process status for {pid} exceeded its evidence bound"
+        ));
     }
     let status = std::str::from_utf8(&status)
         .map_err(|_| format!("process status for {pid} is not UTF-8"))?;
@@ -996,23 +1000,41 @@ fn startup_evidence_json(
         "stages_us": evidence.stages_us,
         "transient_index_rebuilds": evidence.transient_index_rebuilds,
         "population_table_walk": evidence.population_table_walk,
+        "columnar_cold_sources": evidence.columnar_cold_sources,
+        "columnar_activations": evidence.columnar_activations,
+        "columnar_population_passes": evidence.columnar_population_passes,
         "prohibited_table_rows": prohibited_table_rows,
         "engine_repair_observed": evidence.engine_repair_observed,
     })
 }
 
-fn clean_close_evidence_json(
-    evidence: Option<&riffdb_app_baseline_riffdb::RiffDbCleanCloseStageEvidence>,
-) -> serde_json::Value {
-    evidence.map_or(serde_json::Value::Null, |evidence| {
-        json!({
-            "journal_barrier_us": evidence.journal_barrier_us,
-            "checkpoint_classification_us": evidence.checkpoint_classification_us,
-            "checkpoint_disposition": evidence.checkpoint_disposition,
-            "final_certificate_commit_us": evidence.final_certificate_commit_us,
-            "final_certificate_commit_succeeded": evidence.final_certificate_commit_succeeded,
+fn clean_close_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_json::Value {
+    evidence
+        .clean_close
+        .as_ref()
+        .map_or(serde_json::Value::Null, |close| {
+            json!({
+                "journal_barrier_us": close.journal_barrier_us,
+                "checkpoint_classification_us": close.checkpoint_classification_us,
+                "checkpoint_disposition": close.checkpoint_disposition,
+                "final_certificate_commit_us": close.final_certificate_commit_us,
+                "final_certificate_commit_succeeded": close.final_certificate_commit_succeeded,
+                "columnar_activations": evidence.columnar_activations,
+                "columnar_population_passes": evidence.columnar_population_passes,
+            })
         })
-    })
+}
+
+fn require_no_columnar_demand(
+    evidence: &RiffDbShutdownEvidence,
+    label: &'static str,
+) -> Result<(), String> {
+    if evidence.columnar_activations != Some(0) || evidence.columnar_population_passes != Some(0) {
+        return Err(format!(
+            "{label} did not retain a no-demand columnar lifecycle"
+        ));
+    }
+    Ok(())
 }
 
 fn shutdown_memory_window_json(
@@ -1121,6 +1143,8 @@ fn production_dirty_lifecycle_evidence(
     if clean_startup.mode != "clean_certificate"
         || clean_startup.transient_index_rebuilds != 0
         || clean_startup.population_table_walk != "none"
+        || clean_startup.columnar_activations != 0
+        || clean_startup.columnar_population_passes != 0
     {
         return Err("production clean restart was not bounded".to_owned());
     }
@@ -1170,7 +1194,8 @@ fn production_dirty_lifecycle_evidence(
         .checked_mul(1_000)
         .and_then(|value| value.checked_div(clean_process_to_ready_us))
         .ok_or_else(|| "startup ratio could not be represented".to_owned())?;
-    let measured_clean_close = dirty.clean_comparison_close.clean_close.clone();
+    let measured_clean_close = &dirty.clean_comparison_close;
+    require_no_columnar_demand(measured_clean_close, "measured clean close")?;
     let measured_close_memory = shutdown_memory_window_json(&dirty.clean_comparison_close, true)?;
     let dirty_final_close_memory = shutdown_memory_window_json(&dirty_shutdown, false)?;
     Ok((
@@ -1198,9 +1223,9 @@ fn production_dirty_lifecycle_evidence(
                 "second_restart_added_nothing": true,
                 "unclean_over_clean_process_to_ready_ratio_millis": unclean_over_clean_ratio_millis,
             },
-            "measured_clean_close": clean_close_evidence_json(measured_clean_close.as_ref()),
+            "measured_clean_close": clean_close_evidence_json(measured_clean_close),
             "measured_clean_close_memory": measured_close_memory,
-            "dirty_recovery_final_close": clean_close_evidence_json(dirty_shutdown.clean_close.as_ref()),
+            "dirty_recovery_final_close": clean_close_evidence_json(&dirty_shutdown),
             "dirty_recovery_final_close_memory": dirty_final_close_memory,
         }),
     ))
@@ -1226,6 +1251,8 @@ fn production_clean_lifecycle_evidence(
     if startup.mode != "clean_certificate"
         || startup.transient_index_rebuilds != 0
         || startup.population_table_walk != "none"
+        || startup.columnar_activations != 0
+        || startup.columnar_population_passes != 0
     {
         return Err("production clean restart was not bounded".to_owned());
     }
@@ -1234,15 +1261,13 @@ fn production_clean_lifecycle_evidence(
         clean_restarted.child_pid(),
         clean_restarted.session_directory(),
     )?;
-    let memory = lifecycle_memory_window_json(
-        "process_start_to_ready",
-        initial_memory,
-        resources,
-        true,
-    )?;
+    let memory =
+        lifecycle_memory_window_json("process_start_to_ready", initial_memory, resources, true)?;
     let final_close = clean_restarted
         .shutdown_with_evidence()
         .map_err(|error| error.to_string())?;
+    require_no_columnar_demand(&seeded_close, "seeded clean close")?;
+    require_no_columnar_demand(&final_close, "final clean close")?;
     let seeded_close_memory = shutdown_memory_window_json(&seeded_close, true)?;
     let final_close_memory = shutdown_memory_window_json(&final_close, true)?;
     let lifecycle = json!({
@@ -1254,9 +1279,9 @@ fn production_clean_lifecycle_evidence(
             "peak_rss_bytes_at_ready": resources.peak_rss_bytes,
             "memory": memory,
         },
-        "seeded_close": clean_close_evidence_json(seeded_close.clean_close.as_ref()),
+        "seeded_close": clean_close_evidence_json(&seeded_close),
         "seeded_close_memory": seeded_close_memory,
-        "final_close": clean_close_evidence_json(final_close.clean_close.as_ref()),
+        "final_close": clean_close_evidence_json(&final_close),
         "final_close_memory": final_close_memory,
         "shutdown_completed": true,
     });
@@ -1523,7 +1548,7 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
         .collect::<Vec<_>>();
     json!({
         "startup": evidence.startup.as_ref().map(startup_evidence_json),
-        "clean_close": clean_close_evidence_json(evidence.clean_close.as_ref()),
+        "clean_close": clean_close_evidence_json(evidence),
         "graph_shutdown_elapsed_us": evidence.graph_shutdown_elapsed_us,
         "shutdown_stages_us": evidence.shutdown_stages_us,
         "harness_shutdown_elapsed_us": evidence.harness_shutdown_elapsed_us,
@@ -3995,11 +4020,7 @@ fn measurement_sample_ceiling(wp674_receipt: bool, query_execute_diagnostics: bo
     }
 }
 
-fn riffdb_runs_first(
-    wp674_receipt: bool,
-    unary_qualification: bool,
-    generation: usize,
-) -> bool {
+fn riffdb_runs_first(wp674_receipt: bool, unary_qualification: bool, generation: usize) -> bool {
     (wp674_receipt || unary_qualification) && generation % 2 == 1
 }
 
@@ -4025,9 +4046,8 @@ mod tests {
         Args, RiffDbTransport, Scale, SeedDataset, WorkloadProfile, assert_all_parity,
         assert_write_parity, attach_rep_summaries, comparator_contract, gated_ratio,
         lifecycle_scale_checkpoint, load_rep_summaries, measurement_sample_ceiling,
-        median_scenarios, require_load_stable, require_stable, riffdb_runs_first,
-        scalar_summary, validate_wp674_receipt_shape, wp705_lifecycle_selector,
-        write_new_report,
+        median_scenarios, require_load_stable, require_stable, riffdb_runs_first, scalar_summary,
+        validate_wp674_receipt_shape, wp705_lifecycle_selector, write_new_report,
     };
 
     #[test]
@@ -4072,7 +4092,10 @@ mod tests {
         let linked = root.join("report.json");
         symlink(&target, &linked).expect("report symlink fixture");
         assert!(write_new_report(&linked, "replacement\n").is_err());
-        assert_eq!(fs::read_to_string(&target).expect("retained target"), "retained\n");
+        assert_eq!(
+            fs::read_to_string(&target).expect("retained target"),
+            "retained\n"
+        );
         fs::remove_file(linked).expect("remove owned fixture link");
         fs::remove_file(target).expect("remove owned fixture target");
         fs::remove_dir(root).expect("remove owned fixture root");
@@ -4549,8 +4572,10 @@ mod tests {
             .split_once("fn production_clean_lifecycle_evidence(")
             .expect("dirty lifecycle evidence end")
             .0;
-        assert!(dirty_lifecycle
-            .contains("shutdown_memory_window_json(&dirty.clean_comparison_close, true)"));
+        assert!(
+            dirty_lifecycle
+                .contains("shutdown_memory_window_json(&dirty.clean_comparison_close, true)")
+        );
         assert!(!dirty_lifecycle.contains("shutdown_memory_window_json(&measured_close, true)"));
         assert!(!wp705_lifecycle_selector(None, false, Scale::production()).expect("off"));
         assert!(
@@ -4610,9 +4635,13 @@ mod tests {
              heap_envelope_ceiling_bytes=67108864"
         );
 
-        let dirty_handoff =
-            super::lifecycle_memory_window_json("dirty_complete_validation", initial, over_ceiling, false)
-                .expect("WP-705 records dirty memory for WP-760 without claiming its gate");
+        let dirty_handoff = super::lifecycle_memory_window_json(
+            "dirty_complete_validation",
+            initial,
+            over_ceiling,
+            false,
+        )
+        .expect("WP-705 records dirty memory for WP-760 without claiming its gate");
         assert_eq!(dirty_handoff["heap_envelope_bytes"], 64 * 1024 * 1024 + 1);
         assert!(dirty_handoff["heap_envelope_ceiling_bytes"].is_null());
         assert!(dirty_handoff["passed"].is_null());
@@ -4623,6 +4652,9 @@ mod tests {
             stages_us: [0; 11],
             transient_index_rebuilds: 0,
             population_table_walk: "none".to_owned(),
+            columnar_cold_sources: 2,
+            columnar_activations: 0,
+            columnar_population_passes: 0,
             engine_repair_observed: false,
         };
         let encoded = super::startup_evidence_json(&startup);
@@ -4631,6 +4663,9 @@ mod tests {
             .expect("closed prohibited-table registry");
         assert_eq!(rows.len(), 10);
         assert!(rows.values().all(|value| value.as_u64() == Some(0)));
+        assert_eq!(encoded["columnar_cold_sources"], 2);
+        assert_eq!(encoded["columnar_activations"], 0);
+        assert_eq!(encoded["columnar_population_passes"], 0);
     }
 
     #[test]

@@ -62,6 +62,7 @@ const WRITER_PUBLICATION_STAGES_PREFIX: &str = "riffdb-writer-publication-stages
 const COMPLETION_LANE_PREFIX: &str = "riffdb-completion-lane-v1\t";
 const QUERY_EXECUTE_WINDOWS_PREFIX: &str = "riffdb-query-execute-windows-v1\t";
 const SHUTDOWN_STAGES_PREFIX: &str = "riffdb-shutdown-stages-v1\t";
+const SHUTDOWN_RELEASE_PREFIX: &str = "riffdb-shutdown-release-v1\t";
 const STARTUP_STAGES_PREFIX: &str = "riffdb-startup-stages-v1\t";
 const GRACEFUL_CHECKPOINT_CLOSE_PREFIX: &str = "riffdb-graceful-checkpoint-close-v1\t";
 const PROCESS_MEMORY_BASELINE_LINE: &str = "riffdb-process-memory-baseline-v1";
@@ -275,6 +276,10 @@ pub struct RiffDbShutdownEvidence {
     pub shutdown_stages_us: Option<[u64; 8]>,
     /// Complete harness-observed clean-shutdown wall time.
     pub harness_shutdown_elapsed_us: u64,
+    /// First-demand columnar activations observed across the process generation.
+    pub columnar_activations: Option<u64>,
+    /// Columnar population passes observed across the process generation.
+    pub columnar_population_passes: Option<u64>,
     /// Successful completion groups indexed by group size minus one.
     pub write_completion_groups: [u64; WRITE_GROUP_BUCKETS],
     /// Dispatch counts in full, barrier, queue-drained, receiver-closed order.
@@ -321,6 +326,12 @@ pub struct RiffDbStartupEvidence {
     pub transient_index_rebuilds: u64,
     /// `none` or `observed`; never a population cardinality.
     pub population_table_walk: String,
+    /// Columnar sources retained cold through readiness.
+    pub columnar_cold_sources: u64,
+    /// First-demand columnar activations observed before readiness.
+    pub columnar_activations: u64,
+    /// Columnar population passes observed before readiness.
+    pub columnar_population_passes: u64,
     /// The redb repair callback was observed on this generation.
     pub engine_repair_observed: bool,
 }
@@ -737,12 +748,12 @@ impl RiffDbServerSession {
         // snapshot authoritative and ensures it is captured only while no
         // writer owns the file. The armed generation below is the next and only
         // writer before recovery.
-        let clean_comparison_close = self
-            .process
-            .shutdown_cleanly()
-            .map_err(|error| RiffDbError::Server {
-                detail: error.to_string(),
-            })?;
+        let clean_comparison_close =
+            self.process
+                .shutdown_cleanly()
+                .map_err(|error| RiffDbError::Server {
+                    detail: error.to_string(),
+                })?;
         let database_path = self._temporary.path().join("riffdb.redb");
         let authority_before_recovery =
             riffdb_storage_redb::benchmark_support::recovery_authority_snapshot_v1(&database_path)
@@ -1218,7 +1229,9 @@ impl RiffDbServerSession {
     /// Current Linux process-memory sample, refusing PID reuse.
     #[doc(hidden)]
     pub fn current_process_memory(&self) -> Result<RiffDbProcessMemoryEvidence, String> {
-        self.process.process_memory().map_err(|error| error.to_string())
+        self.process
+            .process_memory()
+            .map_err(|error| error.to_string())
     }
 
     /// Private per-run directory containing the database, projection, and
@@ -1916,10 +1929,9 @@ impl ServerProcess {
             baseline_receiver
                 .recv_timeout(process_start_timeout())
                 .map_err(|error| match error {
-                    RecvTimeoutError::Timeout => io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "process memory baseline timed out",
-                    ),
+                    RecvTimeoutError::Timeout => {
+                        io::Error::new(io::ErrorKind::TimedOut, "process memory baseline timed out")
+                    }
                     RecvTimeoutError::Disconnected => {
                         io::Error::other("process memory baseline disconnected")
                     }
@@ -2007,9 +2019,7 @@ impl ServerProcess {
                 RecvTimeoutError::Timeout => {
                     io::Error::new(io::ErrorKind::TimedOut, "startup evidence timed out")
                 }
-                RecvTimeoutError::Disconnected => {
-                    io::Error::other("startup evidence disconnected")
-                }
+                RecvTimeoutError::Disconnected => io::Error::other("startup evidence disconnected"),
             })??;
         state.cached = Some(evidence.clone());
         Ok(evidence)
@@ -2200,6 +2210,10 @@ impl ServerProcess {
             let stderr = self.stderr_tail();
             evidence.startup = Some(parse_startup_evidence(&stderr)?);
             evidence.clean_close = Some(parse_clean_close_evidence(&stderr)?);
+            let (columnar_activations, columnar_population_passes) =
+                parse_shutdown_release_evidence(&stderr)?;
+            evidence.columnar_activations = Some(columnar_activations);
+            evidence.columnar_population_passes = Some(columnar_population_passes);
             evidence.process_memory_at_spawn = Some(self.initial_process_memory);
             evidence.process_memory_before_shutdown = Some(process_memory_before_shutdown);
             evidence.harness_shutdown_elapsed_us =
@@ -2438,6 +2452,8 @@ fn read_server_stdout(
                                                 graph_shutdown_elapsed_us,
                                                 shutdown_stages_us,
                                                 harness_shutdown_elapsed_us: 0,
+                                                columnar_activations: None,
+                                                columnar_population_passes: None,
                                                 write_completion_groups,
                                                 dispatch_reasons,
                                                 read_stages,
@@ -2899,15 +2915,70 @@ fn parse_startup_evidence(stderr: &str) -> io::Result<RiffDbStartupEvidence> {
         .filter(|value| matches!(value.as_str(), "none" | "observed"))
         .cloned()
         .ok_or_else(|| io::Error::other("startup population-walk class invalid"))?;
+    let parse_count = |name: &'static str| {
+        fields
+            .get(name)
+            .ok_or_else(|| io::Error::other(format!("startup {name} missing")))?
+            .parse::<u64>()
+            .map_err(|_| io::Error::other(format!("startup {name} invalid")))
+    };
     Ok(RiffDbStartupEvidence {
         mode,
         stages_us,
         transient_index_rebuilds,
         population_table_walk,
+        columnar_cold_sources: parse_count("columnar_cold_sources")?,
+        columnar_activations: parse_count("columnar_activations")?,
+        columnar_population_passes: parse_count("columnar_population_passes")?,
         engine_repair_observed: stderr
             .lines()
             .any(|line| line == ENGINE_REPAIR_DIAGNOSTIC_LINE),
     })
+}
+
+fn parse_shutdown_release_evidence(stderr: &str) -> io::Result<(u64, u64)> {
+    let lines = stderr
+        .lines()
+        .filter(|line| line.starts_with(SHUTDOWN_RELEASE_PREFIX))
+        .collect::<Vec<_>>();
+    if lines.len() != 2 {
+        return Err(io::Error::other("shutdown release census count mismatch"));
+    }
+    let parse_line = |line: &str| {
+        let fields = parse_key_values(line, SHUTDOWN_RELEASE_PREFIX)?;
+        const EXPECTED_FIELDS: [&str; 4] = [
+            "graph_storage_release",
+            "post_graph_release",
+            "columnar_activations",
+            "columnar_population_passes",
+        ];
+        if fields.len() != EXPECTED_FIELDS.len()
+            || EXPECTED_FIELDS
+                .iter()
+                .any(|name| !fields.contains_key(*name))
+        {
+            return Err(io::Error::other("shutdown release field registry mismatch"));
+        }
+        let parse_count = |name: &'static str| {
+            fields
+                .get(name)
+                .ok_or_else(|| io::Error::other(format!("shutdown release {name} missing")))?
+                .parse::<u64>()
+                .map_err(|_| io::Error::other(format!("shutdown release {name} invalid")))
+        };
+        Ok::<_, io::Error>((
+            parse_count("columnar_activations")?,
+            parse_count("columnar_population_passes")?,
+        ))
+    };
+    let graph_release = parse_line(lines[0])?;
+    let process_release = parse_line(lines[1])?;
+    if graph_release != process_release {
+        return Err(io::Error::other(
+            "columnar lifecycle changed after graph shutdown",
+        ));
+    }
+    Ok(process_release)
 }
 
 fn parse_clean_close_evidence(stderr: &str) -> io::Result<RiffDbCleanCloseStageEvidence> {
@@ -2946,7 +3017,9 @@ fn parse_clean_close_evidence(stderr: &str) -> io::Result<RiffDbCleanCloseStageE
         "retained_exact_current" | "left_absent" | "left_stale" | "left_ineligible"
     );
     if successful_disposition == (lifecycle == "clean_not_attempted") {
-        return Err(io::Error::other("clean-close disposition/lifecycle mismatch"));
+        return Err(io::Error::other(
+            "clean-close disposition/lifecycle mismatch",
+        ));
     }
     let durations = parts[2]
         .split(',')
@@ -2956,8 +3029,11 @@ fn parse_clean_close_evidence(stderr: &str) -> io::Result<RiffDbCleanCloseStageE
                 .map_err(|_| io::Error::other("clean-close duration invalid"))
         })
         .collect::<io::Result<Vec<_>>>()?;
-    let [journal_barrier_us, checkpoint_classification_us, final_certificate_commit_us] =
-        durations.as_slice()
+    let [
+        journal_barrier_us,
+        checkpoint_classification_us,
+        final_certificate_commit_us,
+    ] = durations.as_slice()
     else {
         return Err(io::Error::other("clean-close duration count mismatch"));
     };
@@ -3101,7 +3177,7 @@ mod tests {
     // req: PERF-014, PERF-019
     #[test]
     fn stderr_collector_publishes_startup_after_the_complete_line() {
-        let startup_line = "riffdb-startup-stages-v1\tmode=complete_validation\tstore_open=1\tevidence_begin=2\tstructural_drain=3\tcatalog_history=4\tevidence_finish=5\tport_activation=6\tcurrent_views=7\tconsumer_recovery=8\toutbox_recovery=9\tgraph_rest=10\tprocess_to_ready=11\ttransient_index_rebuilds=1\tpopulation_table_walk=observed\n";
+        let startup_line = "riffdb-startup-stages-v1\tmode=complete_validation\tstore_open=1\tevidence_begin=2\tstructural_drain=3\tcatalog_history=4\tevidence_finish=5\tport_activation=6\tcurrent_views=7\tconsumer_recovery=8\toutbox_recovery=9\tgraph_rest=10\tprocess_to_ready=11\ttransient_index_rebuilds=1\tpopulation_table_walk=observed\tcolumnar_cold_sources=2\tcolumnar_activations=0\tcolumnar_population_passes=0\n";
         let input = format!("{ENGINE_REPAIR_DIAGNOSTIC_LINE}\n{startup_line}");
         let ring = Arc::new(Mutex::new(VecDeque::new()));
         let (baseline_sender, _baseline_receiver) = mpsc::sync_channel(1);
@@ -3119,6 +3195,9 @@ mod tests {
             .expect("collector publishes one startup result")
             .expect("startup evidence parses");
         assert_eq!(startup.stages_us, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+        assert_eq!(startup.columnar_cold_sources, 2);
+        assert_eq!(startup.columnar_activations, 0);
+        assert_eq!(startup.columnar_population_passes, 0);
         assert!(startup.engine_repair_observed);
     }
 
@@ -3127,11 +3206,14 @@ mod tests {
     fn production_lifecycle_observations_are_closed_and_kill_is_owner_bound() {
         let startup = parse_startup_evidence(
             "[riffdbd-diag] trigger=startup clean_close_fast=false decline=engine_repaired_at_open (full validation pass; cost scales with retained history)\n\
-             riffdb-startup-stages-v1\tmode=complete_validation\tstore_open=1\tevidence_begin=2\tstructural_drain=3\tcatalog_history=4\tevidence_finish=5\tport_activation=6\tcurrent_views=7\tconsumer_recovery=8\toutbox_recovery=9\tgraph_rest=10\tprocess_to_ready=11\ttransient_index_rebuilds=1\tpopulation_table_walk=observed\n",
+             riffdb-startup-stages-v1\tmode=complete_validation\tstore_open=1\tevidence_begin=2\tstructural_drain=3\tcatalog_history=4\tevidence_finish=5\tport_activation=6\tcurrent_views=7\tconsumer_recovery=8\toutbox_recovery=9\tgraph_rest=10\tprocess_to_ready=11\ttransient_index_rebuilds=1\tpopulation_table_walk=observed\tcolumnar_cold_sources=2\tcolumnar_activations=0\tcolumnar_population_passes=0\n",
         )
         .expect("parse dirty production observation");
         assert_eq!(startup.mode, "complete_validation");
         assert_eq!(startup.stages_us, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+        assert_eq!(startup.columnar_cold_sources, 2);
+        assert_eq!(startup.columnar_activations, 0);
+        assert_eq!(startup.columnar_population_passes, 0);
         assert!(startup.engine_repair_observed);
         assert!(require_owned_child(41, 41).is_ok());
         assert!(require_owned_child(41, 42).is_err());
@@ -3205,6 +3287,23 @@ mod tests {
                 .expect("current shutdown evidence"),
             (Some(9), Some([1, 2, 3, 4, 5, 6, 7, 8]))
         );
+        assert_eq!(
+            parse_shutdown_release_evidence(
+                "riffdb-shutdown-release-v1\tgraph_storage_release=1\tpost_graph_release=0\tcolumnar_activations=0\tcolumnar_population_passes=0\n\
+                 riffdb-shutdown-release-v1\tgraph_storage_release=1\tpost_graph_release=2\tcolumnar_activations=0\tcolumnar_population_passes=0\n"
+            )
+            .expect("columnar shutdown evidence"),
+            (0, 0)
+        );
+        assert!(parse_shutdown_release_evidence(
+            "riffdb-shutdown-release-v1\tgraph_storage_release=1\tpost_graph_release=2\tcolumnar_activations=0\n"
+        )
+        .is_err());
+        assert!(parse_shutdown_release_evidence(
+            "riffdb-shutdown-release-v1\tgraph_storage_release=1\tpost_graph_release=0\tcolumnar_activations=0\tcolumnar_population_passes=0\n\
+             riffdb-shutdown-release-v1\tgraph_storage_release=1\tpost_graph_release=2\tcolumnar_activations=1\tcolumnar_population_passes=0\n"
+        )
+        .is_err());
 
         let buckets = (0_u64..16)
             .map(|value| value.to_string())
