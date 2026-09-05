@@ -17,8 +17,8 @@ use riffdb_storage_api::{
     StorageScanLimit,
 };
 use riffdb_types::{
-    CanonicalValue, CommitSequence, EntityVersion, FrontierPosition, MAX_KEY_BYTES,
-    decode_canonical_value, encode_canonical_value,
+    CanonicalValue, CommitSequence, EntityVersion, FrontierPosition, LogicalTime, MAX_KEY_BYTES,
+    NANOS_PER_SECOND, Timestamp, decode_canonical_value, encode_canonical_value,
 };
 
 use crate::checkpoint::checksum_bytes;
@@ -47,12 +47,14 @@ const FRAME_OVERHEAD: u64 = 4 + 32;
 pub enum ColumnarV2StreamingError {
     /// The worker's monotonic stop token was observed at a page boundary.
     Cancelled,
+    /// Exact retained-tail age exceeded the compiler-sealed limit.
+    ReplayAge,
     /// Exact encoded retained-tail bytes exceeded the compiler-sealed limit.
     ReplayBytes,
     /// Exact retained sequence distance exceeded the compiler-sealed limit.
     ReplayBacklog,
-    /// More than one replay ceiling was breached and accepted ordering is not frozen.
-    ReplayLimitOrderUnresolved,
+    /// The server-owned UTC sample failed after the frozen tail scan.
+    Clock,
     /// A fixed format or implementation bound was exceeded.
     BoundExceeded,
     /// Authoritative evidence or scratch bytes were inconsistent.
@@ -65,11 +67,10 @@ impl fmt::Display for ColumnarV2StreamingError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Cancelled => "columnar V2 streaming rebuild cancelled",
+            Self::ReplayAge => "columnar V2 replay-age ceiling exceeded",
             Self::ReplayBytes => "columnar V2 replay-byte ceiling exceeded",
             Self::ReplayBacklog => "columnar V2 replay-backlog ceiling exceeded",
-            Self::ReplayLimitOrderUnresolved => {
-                "columnar V2 replay-limit failure ordering is unresolved"
-            }
+            Self::Clock => "columnar V2 replay-age UTC sample failed",
             Self::BoundExceeded => "columnar V2 streaming rebuild bound exceeded",
             Self::Invalid => "columnar V2 streaming rebuild evidence is invalid",
             Self::Io => "columnar V2 streaming rebuild I/O failed",
@@ -364,12 +365,14 @@ where
 
 impl ColumnarV2StreamingRows {
     /// Scans one frozen retained tail and builds bounded external merge runs.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn build<R>(
         generation_tmp: &Path,
         definition: &RegisteredDefinition,
         snapshot_frontier: FrontierPosition,
         reader: &R,
         limits: ColumnarSpecReplayLimitsV1,
+        sample_utc_after_tail_scan: impl FnOnce() -> Result<Timestamp, ColumnarV2StreamingError>,
         mut stop_before_next_page: impl FnMut() -> bool,
         controller: Option<&ColumnarTestController>,
     ) -> Result<Self, ColumnarV2StreamingError>
@@ -385,6 +388,7 @@ impl ColumnarV2StreamingRows {
             snapshot_frontier,
             reader,
             limits,
+            sample_utc_after_tail_scan,
             &mut stop_before_next_page,
             &mut budget,
             &mut stats,
@@ -565,6 +569,7 @@ fn scan_observation_runs<R>(
     snapshot_frontier: FrontierPosition,
     reader: &R,
     limits: ColumnarSpecReplayLimitsV1,
+    sample_utc_after_tail_scan: impl FnOnce() -> Result<Timestamp, ColumnarV2StreamingError>,
     stop_before_next_page: &mut impl FnMut() -> bool,
     budget: &mut ScratchBudget,
     stats: &mut ColumnarV2StreamingStats,
@@ -586,6 +591,7 @@ where
     let mut replay_bytes = 0u64;
     let mut replay_bytes_exceeded = false;
     let mut replay_backlog_exceeded = false;
+    let mut oldest_logical_time = None;
     let mut expected = snapshot_frontier;
     let frontier;
     loop {
@@ -605,6 +611,11 @@ where
                 return Err(ColumnarV2StreamingError::Invalid);
             }
             expected = FrontierPosition::AppliedThrough(commit.commit_sequence());
+            oldest_logical_time = Some(
+                oldest_logical_time.map_or(commit.logical_time(), |oldest: LogicalTime| {
+                    oldest.min(commit.logical_time())
+                }),
+            );
             if replay_bytes_exceeded || replay_backlog_exceeded {
                 continue;
             }
@@ -687,11 +698,15 @@ where
             }
         }
     }
-    match (replay_bytes_exceeded, replay_backlog_exceeded) {
-        (true, true) => return Err(ColumnarV2StreamingError::ReplayLimitOrderUnresolved),
-        (true, false) => return Err(ColumnarV2StreamingError::ReplayBytes),
-        (false, true) => return Err(ColumnarV2StreamingError::ReplayBacklog),
-        (false, false) => {}
+    let sampled_utc = sample_utc_after_tail_scan()?;
+    let replay_age_exceeded =
+        replay_age_exceeded(sampled_utc, oldest_logical_time, limits.age_seconds());
+    if let Some(error) = replay_limit_failure(
+        replay_age_exceeded,
+        replay_bytes_exceeded,
+        replay_backlog_exceeded,
+    ) {
+        return Err(error);
     }
     if !buffer.is_empty() {
         paths.push(write_observation_run(
@@ -705,6 +720,39 @@ where
         }
     }
     Ok(ObservationRuns { paths, frontier })
+}
+
+fn replay_age_exceeded(
+    sampled_utc: Timestamp,
+    oldest_retained: Option<LogicalTime>,
+    ceiling_seconds: u64,
+) -> bool {
+    let Some(oldest_retained) = oldest_retained else {
+        return false;
+    };
+    let sampled_nanos = i128::from(sampled_utc.seconds()) * i128::from(NANOS_PER_SECOND)
+        + i128::from(sampled_utc.nanoseconds());
+    let oldest = oldest_retained.timestamp();
+    let oldest_nanos = i128::from(oldest.seconds()) * i128::from(NANOS_PER_SECOND)
+        + i128::from(oldest.nanoseconds());
+    let age_nanos = sampled_nanos.saturating_sub(oldest_nanos).max(0);
+    age_nanos > i128::from(ceiling_seconds) * i128::from(NANOS_PER_SECOND)
+}
+
+const fn replay_limit_failure(
+    age: bool,
+    bytes: bool,
+    backlog: bool,
+) -> Option<ColumnarV2StreamingError> {
+    if age {
+        Some(ColumnarV2StreamingError::ReplayAge)
+    } else if bytes {
+        Some(ColumnarV2StreamingError::ReplayBytes)
+    } else if backlog {
+        Some(ColumnarV2StreamingError::ReplayBacklog)
+    } else {
+        None
+    }
 }
 
 fn frontier_distance(
@@ -1656,6 +1704,52 @@ mod tests {
             1_024 + 4 * 2 * MAX_ENTITY_MUTATIONS as u64 * per_observation
         );
         assert_eq!(MAX_ENTITY_MUTATIONS, 4_096);
+    }
+
+    // req: PRJ-004, PRJ-009, PRJ-010, OQ-020
+    #[test]
+    fn replay_age_is_strict_second_precise_and_clamps_future_time_to_zero() {
+        let oldest = riffdb_types::LogicalTime::new(
+            riffdb_types::Timestamp::new(100, 500_000_000).expect("oldest"),
+        );
+        assert!(!replay_age_exceeded(
+            riffdb_types::Timestamp::new(160, 500_000_000).expect("inclusive boundary"),
+            Some(oldest),
+            60,
+        ));
+        assert!(replay_age_exceeded(
+            riffdb_types::Timestamp::new(160, 500_000_001).expect("one nanosecond over"),
+            Some(oldest),
+            60,
+        ));
+        assert!(!replay_age_exceeded(
+            riffdb_types::Timestamp::new(99, 0).expect("clock rollback"),
+            Some(oldest),
+            0,
+        ));
+        assert!(!replay_age_exceeded(
+            riffdb_types::Timestamp::new(200, 0).expect("empty tail sample"),
+            None,
+            0,
+        ));
+    }
+
+    // req: PRJ-004, PRJ-009, PRJ-010, OQ-020
+    #[test]
+    fn simultaneous_replay_failures_use_age_then_bytes_then_backlog_precedence() {
+        assert_eq!(
+            replay_limit_failure(true, true, true),
+            Some(ColumnarV2StreamingError::ReplayAge)
+        );
+        assert_eq!(
+            replay_limit_failure(false, true, true),
+            Some(ColumnarV2StreamingError::ReplayBytes)
+        );
+        assert_eq!(
+            replay_limit_failure(false, false, true),
+            Some(ColumnarV2StreamingError::ReplayBacklog)
+        );
+        assert_eq!(replay_limit_failure(false, false, false), None);
     }
 
     // req: PRJ-004, PRJ-009, OQ-020

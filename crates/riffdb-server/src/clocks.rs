@@ -128,6 +128,10 @@ impl ProductionWallClocks {
         ServerApplicationExportClock(Arc::clone(&self.shared))
     }
 
+    pub(crate) fn columnar_replay(&self) -> ServerColumnarReplayClock {
+        ServerColumnarReplayClock(Arc::clone(&self.shared))
+    }
+
     /// Samples server-owned process metadata without borrowing a semantic consumer port.
     pub(crate) fn process_time(&self) -> Result<Timestamp, ServerProcessClockError> {
         self.shared.now().map_err(|_| ServerProcessClockError)
@@ -177,6 +181,22 @@ impl ServerApplicationExportClock {
 impl fmt::Debug for ServerApplicationExportClock {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ServerApplicationExportClock([REDACTED])")
+    }
+}
+
+/// Server-owned UTC clock sampled once after a frozen columnar replay-tail scan.
+#[derive(Clone)]
+pub(crate) struct ServerColumnarReplayClock(Arc<CanonicalWallClock>);
+
+impl ServerColumnarReplayClock {
+    pub(crate) fn now(&self) -> Result<Timestamp, ServerProcessClockError> {
+        self.0.now().map_err(|_| ServerProcessClockError)
+    }
+}
+
+impl fmt::Debug for ServerColumnarReplayClock {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ServerColumnarReplayClock([REDACTED])")
     }
 }
 
@@ -400,6 +420,23 @@ mod tests {
             format!("{:?}", ServerProcessClockError),
             "ServerProcessClockError([REDACTED])"
         );
+    }
+
+    // req: PRJ-004, PRJ-009, PRJ-010, OQ-020
+    #[test]
+    fn columnar_replay_uses_one_type_distinct_server_utc_sample() {
+        let clocks = ProductionWallClocks {
+            shared: shared_clock([Ok(UNIX_EPOCH + Duration::new(19, 23))]),
+        };
+        let replay = clocks.columnar_replay();
+        assert_eq!(replay.now(), Ok(Timestamp::new(19, 23).expect("timestamp")));
+        assert_eq!(
+            format!("{replay:?}"),
+            "ServerColumnarReplayClock([REDACTED])"
+        );
+
+        let failing = ServerColumnarReplayClock(shared_clock([Err(CanonicalWallClockError)]));
+        assert_eq!(failing.now(), Err(ServerProcessClockError));
     }
 
     #[test]

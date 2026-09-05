@@ -13,6 +13,7 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{
     CanonicalValue, DecimalSpec, FrontierPosition, MAX_DECIMAL_PRECISION, ProjectionGeneration,
+    Timestamp,
 };
 
 use crate::checkpoint::checksum_bytes;
@@ -160,6 +161,7 @@ impl ValidatedColumnarV2Generation {
         snapshot: &S,
         reader: &R,
         replay_limits: ColumnarSpecReplayLimitsV1,
+        sample_utc_after_tail_scan: impl FnOnce() -> Result<Timestamp, ColumnarV2StreamingError>,
         mut stop_before_next_page: impl FnMut() -> bool,
     ) -> Result<Self, ColumnarV2StreamingError>
     where
@@ -175,6 +177,7 @@ impl ValidatedColumnarV2Generation {
             snapshot,
             reader,
             replay_limits,
+            sample_utc_after_tail_scan,
             &mut stop_before_next_page,
             None,
         )
@@ -192,6 +195,7 @@ impl ValidatedColumnarV2Generation {
         snapshot: &S,
         reader: &R,
         replay_limits: ColumnarSpecReplayLimitsV1,
+        sample_utc_after_tail_scan: impl FnOnce() -> Result<Timestamp, ColumnarV2StreamingError>,
         mut stop_before_next_page: impl FnMut() -> bool,
         controller: &ColumnarTestController,
     ) -> Result<Self, ColumnarV2StreamingError>
@@ -208,6 +212,7 @@ impl ValidatedColumnarV2Generation {
             snapshot,
             reader,
             replay_limits,
+            sample_utc_after_tail_scan,
             &mut stop_before_next_page,
             Some(controller),
         )
@@ -223,6 +228,7 @@ impl ValidatedColumnarV2Generation {
         snapshot: &S,
         reader: &R,
         replay_limits: ColumnarSpecReplayLimitsV1,
+        sample_utc_after_tail_scan: impl FnOnce() -> Result<Timestamp, ColumnarV2StreamingError>,
         mut stop_before_next_page: impl FnMut() -> bool,
         controller: Option<&ColumnarTestController>,
     ) -> Result<Self, ColumnarV2StreamingError>
@@ -251,6 +257,7 @@ impl ValidatedColumnarV2Generation {
             snapshot_frontier,
             reader,
             replay_limits,
+            sample_utc_after_tail_scan,
             &mut stop_before_next_page,
             controller,
         )?;

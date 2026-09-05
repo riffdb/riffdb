@@ -25,7 +25,7 @@ use riffdb_storage_api::{
 use riffdb_types::{
     ApplicationExportClassV1, ApplicationExportSnapshotBindingV1, CanonicalValue,
     ContractBundleHash, ContractVersion, DatabaseId, EntityKey, EntityKeyBuilder, EntityVersion,
-    FrontierPosition, PartitionKey, ProjectionGeneration,
+    FrontierPosition, PartitionKey, ProjectionGeneration, Timestamp,
 };
 
 use common::{
@@ -33,6 +33,10 @@ use common::{
     corpus_results, entity_type_id, field_id, open_engine, push_open_race_v1, push_ticket_create,
     register_ticket_board, resolve_open_race, temp_dir,
 };
+
+fn replay_sample() -> Result<Timestamp, ColumnarV2StreamingError> {
+    Ok(Timestamp::new(1_700_000_000, 0).expect("canonical test UTC"))
+}
 
 fn row(version: u64, status: u64, title: &str, priority: i64) -> LiveRow {
     LiveRow {
@@ -229,6 +233,8 @@ fn streaming_v2_rebuild_preserves_org_move_d4_bounds_and_zero_pre_root_scratch()
     let directory = temp_dir("v2-streaming-org-move");
     let generation = ProjectionGeneration::new(81).expect("generation");
     let limits = ColumnarSpecReplayLimitsV1::new(60, 128, 2).expect("inclusive limits");
+    let scans_before_sample = source.scan_calls();
+    let sample_calls = AtomicUsize::new(0);
     let prepared = ValidatedColumnarV2Generation::prepare_streaming(
         &directory,
         definition.clone(),
@@ -238,9 +244,18 @@ fn streaming_v2_rebuild_preserves_org_move_d4_bounds_and_zero_pre_root_scratch()
         &snapshot,
         &source,
         limits,
+        || {
+            assert!(
+                source.scan_calls() > scans_before_sample,
+                "UTC must be sampled after the exact frozen-tail scan"
+            );
+            sample_calls.fetch_add(1, Ordering::AcqRel);
+            replay_sample()
+        },
         || false,
     )
     .expect("streaming generation");
+    assert_eq!(sample_calls.load(Ordering::Acquire), 1);
     assert_eq!(
         prepared.root().frontier(),
         FrontierPosition::AppliedThrough(riffdb_types::CommitSequence::new(3).expect("three"))
@@ -305,6 +320,7 @@ fn streaming_v2_rebuild_preserves_org_move_d4_bounds_and_zero_pre_root_scratch()
                 &snapshot,
                 &source,
                 limits,
+                replay_sample,
                 || false,
             )
             .map(|_| ()),
@@ -325,12 +341,60 @@ fn streaming_v2_rebuild_preserves_org_move_d4_bounds_and_zero_pre_root_scratch()
             &snapshot,
             &source,
             ColumnarSpecReplayLimitsV1::new(60, 1, 1).expect("limits"),
+            replay_sample,
             || false,
         )
         .map(|_| ()),
-        Err(ColumnarV2StreamingError::ReplayLimitOrderUnresolved)
+        Err(ColumnarV2StreamingError::ReplayBytes)
     );
     assert!(!ValidatedColumnarV2Generation::temporary_directory(&unresolved, generation).exists());
+
+    let aged = temp_dir("v2-streaming-aged-replay");
+    let generation = ProjectionGeneration::new(87).expect("generation");
+    assert_eq!(
+        ValidatedColumnarV2Generation::prepare_streaming(
+            &aged,
+            definition.clone(),
+            1,
+            generation,
+            FrontierPosition::AppliedThrough(riffdb_types::CommitSequence::first()),
+            &snapshot,
+            &source,
+            ColumnarSpecReplayLimitsV1::new(60, 1, 1).expect("limits"),
+            || Ok(Timestamp::new(1_700_000_061, 0).expect("aged UTC")),
+            || false,
+        )
+        .map(|_| ()),
+        Err(ColumnarV2StreamingError::ReplayAge),
+        "age has deterministic precedence over bytes and backlog"
+    );
+    assert!(!ValidatedColumnarV2Generation::temporary_directory(&aged, generation).exists());
+
+    let clock_failed = temp_dir("v2-streaming-clock-failure");
+    let generation = ProjectionGeneration::new(88).expect("generation");
+    let scans_before_sample = source.scan_calls();
+    assert_eq!(
+        ValidatedColumnarV2Generation::prepare_streaming(
+            &clock_failed,
+            definition.clone(),
+            1,
+            generation,
+            FrontierPosition::AppliedThrough(riffdb_types::CommitSequence::first()),
+            &snapshot,
+            &source,
+            limits,
+            || {
+                assert!(source.scan_calls() > scans_before_sample);
+                Err(ColumnarV2StreamingError::Clock)
+            },
+            || false,
+        )
+        .map(|_| ()),
+        Err(ColumnarV2StreamingError::Clock)
+    );
+    assert!(
+        !ValidatedColumnarV2Generation::temporary_directory(&clock_failed, generation).exists()
+    );
 
     let failed = temp_dir("v2-streaming-pre-root-failure");
     let generation = ProjectionGeneration::new(83).expect("generation");
@@ -346,6 +410,7 @@ fn streaming_v2_rebuild_preserves_org_move_d4_bounds_and_zero_pre_root_scratch()
             &snapshot,
             &source,
             limits,
+            replay_sample,
             || false,
             &controller,
         )
@@ -390,6 +455,7 @@ fn streaming_v2_refuses_4097_snapshot_partitions_before_generation_scratch() {
             &snapshot,
             &source,
             ColumnarSpecReplayLimitsV1::new(60, 128, 2).expect("limits"),
+            replay_sample,
             || false,
         )
         .map(|_| ()),
@@ -460,6 +526,7 @@ fn streaming_v2_crash_cleanup_covers_run_merge_partition_and_pre_root() {
             &snapshot,
             &source,
             limits,
+            replay_sample,
             || false,
             &controller,
         );
@@ -496,6 +563,7 @@ fn streaming_v2_crash_cleanup_covers_run_merge_partition_and_pre_root() {
             &snapshot,
             &source,
             limits,
+            replay_sample,
             || false,
         )
         .unwrap_or_else(|error| panic!("recover {name}: {error}"));
