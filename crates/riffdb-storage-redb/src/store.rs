@@ -6394,6 +6394,7 @@ impl RedbWriteAccess {
             predecessor_sequence,
             predecessor_administration_sequence,
             composite_successor,
+            coverage_witness,
         ) = {
             let (checkpoint_transitions, checkpoint_bytes) =
                 self.shared.async_checkpoint_charge()?;
@@ -6485,6 +6486,15 @@ impl RedbWriteAccess {
                     frame_hash,
                 )?;
             let composite_successor = Arc::new(composite_successor);
+            let successor_stamp = self
+                .shared
+                .fresh_locator_composite_stamp(&composite_successor)?;
+            let coverage_witness = self
+                .shared
+                .fresh_locator_coverage
+                .lock()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+                .seal_preserve(successor_stamp);
             let retained_frame = frame.clone();
             let receipt = runtime.lane.submit(frame).map_err(journal_io_error)?;
             runtime.last_administration_sequence = covered_administration_sequence;
@@ -6516,21 +6526,16 @@ impl RedbWriteAccess {
                 predecessor_sequence,
                 predecessor_administration_sequence,
                 composite_successor,
+                coverage_witness,
             )
         };
-        self.shared
-            .install_private_composite_successor(&composite_predecessor, &composite_successor)?;
-        let coverage_witness = {
-            let successor_stamp = self
-                .shared
-                .fresh_locator_composite_stamp(&composite_successor)?;
-            let mut coverage = self
-                .shared
-                .fresh_locator_coverage
-                .lock()
-                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-            coverage.seal_preserve(successor_stamp)
-        };
+        if let Err(error) = self
+            .shared
+            .install_private_composite_successor(&composite_predecessor, &composite_successor)
+        {
+            self.shared.disable_and_fence_fresh_locator_coverage();
+            return Err(error);
+        }
         let successor = composite_predecessor.checkpoint_root_shared();
         let publication_payload =
             PendingPublicationPayload::ServiceAudit(ServiceAuditPublication {
@@ -6551,7 +6556,7 @@ impl RedbWriteAccess {
         {
             Ok(ticket) => ticket,
             Err(error) => {
-                self.shared.disable_fresh_locator_coverage();
+                self.shared.disable_and_fence_fresh_locator_coverage();
                 return Err(error);
             }
         };
@@ -6745,6 +6750,7 @@ impl RedbDurabilityEpoch {
             predecessor_administration_sequence,
             journaled,
             mut composite_successor,
+            coverage_witness,
         ) = {
             let (checkpoint_transitions, checkpoint_bytes) =
                 self.shared.async_checkpoint_charge()?;
@@ -6845,6 +6851,31 @@ impl RedbDurabilityEpoch {
                         frame_hash,
                     )?;
                 let composite_successor = Arc::new(composite_successor);
+                let successor_stamp = self
+                    .shared
+                    .fresh_locator_composite_stamp(&composite_successor)?;
+                let command_count = u16::try_from(self.command_count)
+                    .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+                let segment_is_exact = self.shared.fresh_locator_queued_segments_are_exact(
+                    &composite_successor,
+                    &self.transient_deltas,
+                    first_sequence,
+                    last_sequence,
+                    self.command_count,
+                )?;
+                let coverage_witness = {
+                    let mut coverage = self
+                        .shared
+                        .fresh_locator_coverage
+                        .lock()
+                        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+                    if segment_is_exact {
+                        coverage.seal_command(successor_stamp, command_count)
+                    } else {
+                        coverage.disable();
+                        None
+                    }
+                };
                 let retained_frame = frame.clone();
                 let receipt = runtime.lane.submit(frame).map_err(journal_io_error)?;
                 runtime.last_sequence = Some(last_sequence);
@@ -6881,42 +6912,19 @@ impl RedbDurabilityEpoch {
                     predecessor_administration_sequence,
                     true,
                     Some(composite_successor),
+                    coverage_witness,
                 )
             }
         };
         if let Some(composite_successor) = composite_successor.as_ref() {
-            self.shared.install_private_composite_successor(
+            if let Err(error) = self.shared.install_private_composite_successor(
                 &self.composite_predecessor,
                 composite_successor,
-            )?;
-        }
-        let coverage_witness = if let Some(composite_successor) = composite_successor.as_ref() {
-            let successor_stamp = self
-                .shared
-                .fresh_locator_composite_stamp(composite_successor)?;
-            let command_count = u16::try_from(self.command_count)
-                .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
-            let segment_is_exact = self.shared.fresh_locator_queued_segments_are_exact(
-                composite_successor,
-                &self.transient_deltas,
-                first_sequence,
-                last_sequence,
-                self.command_count,
-            )?;
-            let mut coverage = self
-                .shared
-                .fresh_locator_coverage
-                .lock()
-                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-            if segment_is_exact {
-                coverage.seal_command(successor_stamp, command_count)
-            } else {
-                coverage.disable();
-                None
+            ) {
+                self.shared.disable_and_fence_fresh_locator_coverage();
+                return Err(error);
             }
-        } else {
-            None
-        };
+        }
         {
             let mut unpublished = self
                 .shared
@@ -6956,7 +6964,7 @@ impl RedbDurabilityEpoch {
                 match self.shared.register_publication(journal_receipt, payload) {
                     Ok(ticket) => ticket,
                     Err(error) => {
-                        self.shared.disable_fresh_locator_coverage();
+                        self.shared.disable_and_fence_fresh_locator_coverage();
                         return Err(error);
                     }
                 },
