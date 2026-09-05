@@ -538,4 +538,216 @@ mod tests {
         );
         assert_eq!(replacement.highest_generation().get(), 2);
     }
+
+    // req: PRJ-002, PRJ-006, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022, OQ-024, OQ-053
+    #[test]
+    fn columnar_control_publish_requires_prepared_root_and_transaction_current_head() {
+        let (_path, ports) = ports(
+            "columnar-v2-prepared-root-cas",
+            RedbTestController::observe_index_migration(),
+        );
+        let (source, definition) = source();
+        let spec = ColumnarProjectionSpecHashV1::from_bytes([0x22; 32]);
+        let limits = ColumnarProjectionReplayLimitsV1::new(60, 1_024, 10).expect("limits");
+        let fresh =
+            FreshColumnarProjectionControlV1::new(source.clone(), definition, spec, limits, 1)
+                .expect("fresh");
+        assert_eq!(
+            ports
+                .initialize_fresh_v1(std::slice::from_ref(&fresh))
+                .expect("initialize"),
+            ColumnarProjectionControlWriteResultV1::Applied
+        );
+
+        let initial = ports
+            .recover_expected_control(&source)
+            .expect("read initial")
+            .expect("initial");
+        let initial_candidate = initial.candidate().expect("V1 candidate");
+        let v1_pointer =
+            riffdb_storage_api::StoredColumnarProjectionGenerationV1::prepared_candidate(
+                initial_candidate.generation(),
+                ColumnarProjectionLayoutV1::V1,
+                FrontierPosition::BeforeFirst,
+                FrontierPosition::BeforeFirst,
+                1,
+                riffdb_storage_api::ColumnarProjectionArtifactV1::new(64, [0x31; 32])
+                    .expect("V1 artifact"),
+                definition,
+                spec,
+                None,
+            )
+            .expect("prepared V1 pointer");
+        let semantics = riffdb_types::ColumnarDefinitionSemanticsHashV1::from_bytes([0x12; 32]);
+        let v1_prepared = riffdb_storage_api::PreparedColumnarGenerationV1::v1(
+            source.clone(),
+            semantics,
+            v1_pointer,
+            [0x41; 16],
+        )
+        .expect("prepared V1");
+        assert_eq!(
+            ports
+                .record_durable_snapshot(&initial, &v1_prepared)
+                .expect("record V1"),
+            ColumnarProjectionControlWriteResultV1::Applied
+        );
+        let prepared_v1_control = ports
+            .recover_expected_control(&source)
+            .expect("read V1")
+            .expect("V1");
+        let selected_v1 = riffdb_storage_api::PreparedColumnarGenerationV1::v1(
+            source.clone(),
+            semantics,
+            prepared_v1_control.candidate().expect("candidate").clone(),
+            [0x41; 16],
+        )
+        .expect("selected V1");
+        assert_eq!(
+            ports
+                .publish_prepared_generation(&prepared_v1_control, &selected_v1)
+                .expect("publish V1"),
+            ColumnarProjectionControlWriteResultV1::Applied
+        );
+
+        let ready_v1 = ports
+            .recover_expected_control(&source)
+            .expect("read ready V1")
+            .expect("ready V1");
+        let physical = [0x51; 32];
+        assert_eq!(
+            ports
+                .begin_v2_candidate(&ready_v1, physical)
+                .expect("allocate V2"),
+            ColumnarProjectionControlWriteResultV1::Applied
+        );
+        let catching_up = ports
+            .recover_expected_control(&source)
+            .expect("read catching up")
+            .expect("catching up");
+        let v2_candidate = catching_up.candidate().expect("V2 candidate");
+        let v2_pointer =
+            riffdb_storage_api::StoredColumnarProjectionGenerationV1::prepared_candidate(
+                v2_candidate.generation(),
+                ColumnarProjectionLayoutV1::V2,
+                FrontierPosition::BeforeFirst,
+                FrontierPosition::BeforeFirst,
+                1,
+                riffdb_storage_api::ColumnarProjectionArtifactV1::new(128, [0x61; 32])
+                    .expect("root artifact"),
+                definition,
+                spec,
+                Some(physical),
+            )
+            .expect("prepared V2 pointer");
+        let v2_prepared = riffdb_storage_api::PreparedColumnarGenerationV1::v2(
+            source.clone(),
+            semantics,
+            v2_pointer,
+            [0x41; 16],
+        )
+        .expect("prepared root");
+        assert_eq!(
+            ports
+                .record_durable_snapshot(&catching_up, &v2_prepared)
+                .expect("select prepared root"),
+            ColumnarProjectionControlWriteResultV1::Applied
+        );
+        let prepared_v2_control = ports
+            .recover_expected_control(&source)
+            .expect("read prepared V2")
+            .expect("prepared V2");
+
+        let unprepared = riffdb_storage_api::PreparedColumnarGenerationV1::v2(
+            source.clone(),
+            semantics,
+            catching_up.candidate().expect("unprepared V2").clone(),
+            [0x41; 16],
+        );
+        assert!(
+            unprepared.is_err(),
+            "an unprepared root cannot become a witness"
+        );
+
+        assert_eq!(
+            ports
+                .publish_prepared_generation(&prepared_v2_control, &v2_prepared)
+                .expect("publish at current head"),
+            ColumnarProjectionControlWriteResultV1::Applied
+        );
+        let published = ports
+            .recover_expected_control(&source)
+            .expect("read published")
+            .expect("published");
+        assert_eq!(
+            published.published().expect("selected V2").layout(),
+            ColumnarProjectionLayoutV1::V2
+        );
+
+        assert_eq!(
+            ports
+                .publish_prepared_generation(&prepared_v2_control, &v2_prepared)
+                .expect("stale exact control"),
+            ColumnarProjectionControlWriteResultV1::StateChanged,
+            "the complete consumed control is compared in the same transaction"
+        );
+
+        assert_eq!(
+            ports
+                .allocate_same_spec_candidate(&published, physical)
+                .expect("allocate head-racing candidate"),
+            ColumnarProjectionControlWriteResultV1::Applied
+        );
+        let rebuilding = ports
+            .recover_expected_control(&source)
+            .expect("read rebuilding")
+            .expect("rebuilding");
+        let racing_candidate = rebuilding.candidate().expect("racing candidate");
+        let ahead = FrontierPosition::AppliedThrough(
+            CommitSequence::new(1).expect("frontier ahead of empty current head"),
+        );
+        let racing_pointer =
+            riffdb_storage_api::StoredColumnarProjectionGenerationV1::prepared_candidate(
+                racing_candidate.generation(),
+                ColumnarProjectionLayoutV1::V2,
+                FrontierPosition::BeforeFirst,
+                ahead,
+                1,
+                riffdb_storage_api::ColumnarProjectionArtifactV1::new(129, [0x62; 32])
+                    .expect("racing root artifact"),
+                definition,
+                spec,
+                Some(physical),
+            )
+            .expect("racing pointer");
+        let racing_prepared = riffdb_storage_api::PreparedColumnarGenerationV1::v2(
+            source.clone(),
+            semantics,
+            racing_pointer,
+            [0x41; 16],
+        )
+        .expect("racing prepared root");
+        assert_eq!(
+            ports
+                .record_durable_snapshot(&rebuilding, &racing_prepared)
+                .expect("record racing root"),
+            ColumnarProjectionControlWriteResultV1::Applied
+        );
+        let racing_control = ports
+            .recover_expected_control(&source)
+            .expect("read racing control")
+            .expect("racing control");
+        let error = ports
+            .publish_prepared_generation(&racing_control, &racing_prepared)
+            .expect_err("candidate frontier above transaction-current head must refuse");
+        assert_eq!(error.kind(), StorageErrorKind::InvariantViolation);
+        assert_eq!(
+            ports
+                .recover_expected_control(&source)
+                .expect("recover refused head race")
+                .expect("control survives refusal"),
+            racing_control,
+            "head-race refusal cannot mutate the selected V2 or candidate"
+        );
+    }
 }

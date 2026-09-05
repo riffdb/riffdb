@@ -1465,6 +1465,34 @@ impl PreparedColumnarGenerationV1 {
         })
     }
 
+    /// Captures complete V2 evidence only after the caller has reopened and
+    /// fully validated the exact immutable generation root and every member,
+    /// and has matched its logical rows against the independent evaluator.
+    pub fn v2(
+        source: ColumnarProjectionSourceV1,
+        definition_semantics_hash: riffdb_types::ColumnarDefinitionSemanticsHashV1,
+        generation: StoredColumnarProjectionGenerationV1,
+        process_generation: [u8; 16],
+    ) -> Result<Self, ColumnarControlError> {
+        if generation.layout() != ColumnarProjectionLayoutV1::V2
+            || generation.artifact().is_none()
+            || generation.physical_generation_fingerprint().is_none()
+            || !matches!(
+                generation.role(),
+                ColumnarProjectionGenerationRoleV1::Candidate
+                    | ColumnarProjectionGenerationRoleV1::Published
+            )
+        {
+            return Err(ColumnarControlError);
+        }
+        Ok(Self {
+            source,
+            definition_semantics_hash,
+            generation,
+            process_generation,
+        })
+    }
+
     /// Schema-bound source validated with this artifact.
     #[must_use]
     pub const fn source(&self) -> &ColumnarProjectionSourceV1 {
