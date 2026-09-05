@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -759,13 +759,26 @@ fn hit(controller: Option<&ColumnarTestController>, boundary: ColumnarTestBounda
 }
 
 fn read_bounded(path: &Path, maximum: usize) -> Result<Vec<u8>, ColumnarV2GenerationError> {
-    let length = fs::metadata(path)
-        .map_err(|_| ColumnarV2GenerationError::Io)?
-        .len();
-    if length == 0 || length > maximum as u64 {
+    let file = File::open(path).map_err(|_| ColumnarV2GenerationError::Io)?;
+    read_bounded_from(file, maximum)
+}
+
+fn read_bounded_from(
+    reader: impl Read,
+    maximum: usize,
+) -> Result<Vec<u8>, ColumnarV2GenerationError> {
+    let read_limit = maximum
+        .checked_add(1)
+        .ok_or(ColumnarV2GenerationError::BoundExceeded)?;
+    let mut bytes = Vec::with_capacity(maximum.min(8 * 1024));
+    reader
+        .take(read_limit as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ColumnarV2GenerationError::Io)?;
+    if bytes.is_empty() || bytes.len() > maximum {
         return Err(ColumnarV2GenerationError::BoundExceeded);
     }
-    fs::read(path).map_err(|_| ColumnarV2GenerationError::Io)
+    Ok(bytes)
 }
 
 fn validate_exact_inventory(
@@ -776,62 +789,29 @@ fn validate_exact_inventory(
         .checked_add(root.partitions().len() as u64)
         .and_then(|value| value.checked_add(root.total_segments()))
         .ok_or(ColumnarV2GenerationError::BoundExceeded)?;
+    validate_inventory_count(directory, expected_count, || {})
+}
+
+fn validate_inventory_count(
+    directory: &Path,
+    expected_count: u64,
+    mut observed_entry: impl FnMut(),
+) -> Result<(), ColumnarV2GenerationError> {
     let mut observed_count = 0u64;
     for entry in fs::read_dir(directory).map_err(|_| ColumnarV2GenerationError::Io)? {
         let entry = entry.map_err(|_| ColumnarV2GenerationError::Io)?;
+        observed_entry();
+        observed_count = observed_count
+            .checked_add(1)
+            .ok_or(ColumnarV2GenerationError::BoundExceeded)?;
+        if observed_count > expected_count {
+            return Err(ColumnarV2GenerationError::Invalid);
+        }
         if !entry
             .file_type()
             .map_err(|_| ColumnarV2GenerationError::Io)?
             .is_file()
         {
-            return Err(ColumnarV2GenerationError::Invalid);
-        }
-        let name = entry
-            .file_name()
-            .into_string()
-            .map_err(|_| ColumnarV2GenerationError::Invalid)?;
-        observed_count = observed_count
-            .checked_add(1)
-            .ok_or(ColumnarV2GenerationError::BoundExceeded)?;
-        if name == COLUMNAR_GENERATION_ROOT_FILE_NAME_V1
-            || root
-                .partitions()
-                .iter()
-                .any(|partition| partition.file_name() == name)
-        {
-            continue;
-        }
-        // Segment filenames do not encode their organization. Decode this one
-        // bounded segment to select its bounded partition manifest, then prove
-        // exact membership. This keeps validation partition/segment bounded
-        // instead of retaining a generation-wide filename set.
-        let segment_bytes = read_bounded(&entry.path(), MAX_SEGMENT_V2_BYTES)?;
-        let segment = SegmentV2Codec::decode(&segment_bytes)
-            .map_err(|_| ColumnarV2GenerationError::Invalid)?;
-        let partition = root
-            .partitions()
-            .binary_search_by(|candidate| {
-                candidate
-                    .organization()
-                    .cmp(segment.identity().organization())
-            })
-            .ok()
-            .and_then(|position| root.partitions().get(position))
-            .ok_or(ColumnarV2GenerationError::Invalid)?;
-        let manifest_bytes = read_bounded(
-            &directory.join(partition.file_name()),
-            MAX_COLUMNAR_MANIFEST_V2_BYTES,
-        )?;
-        if manifest_bytes.len() as u64 != partition.manifest_length()
-            || checksum_bytes(&manifest_bytes) != *partition.manifest_checksum()
-        {
-            return Err(ColumnarV2GenerationError::Invalid);
-        }
-        let manifest = ColumnarManifestV2::decode(&manifest_bytes)
-            .map_err(|_| ColumnarV2GenerationError::Invalid)?;
-        if !manifest.segments().iter().any(|member| {
-            member.file_name() == name && member.segment_id() == segment.identity().segment_id()
-        }) {
             return Err(ColumnarV2GenerationError::Invalid);
         }
     }
@@ -851,4 +831,78 @@ fn segment_id(generation: ProjectionGeneration, ordinal: u64) -> SegmentV2Segmen
     bytes[..8].copy_from_slice(&generation.to_be_bytes());
     bytes[8..].copy_from_slice(&ordinal.to_be_bytes());
     SegmentV2SegmentId::from_bytes(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    struct GrowingReader {
+        remaining: usize,
+        served: Arc<AtomicUsize>,
+    }
+
+    impl Read for GrowingReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let length = buffer.len().min(self.remaining);
+            buffer[..length].fill(0x5a);
+            self.remaining -= length;
+            self.served.fetch_add(length, Ordering::Relaxed);
+            Ok(length)
+        }
+    }
+
+    // req: PRJ-006, PRJ-009, PRJ-010, OQ-020, OQ-022
+    #[test]
+    fn bounded_reader_refuses_size_growth_after_the_limit_without_overread() {
+        const MAXIMUM: usize = 4_096;
+        let served = Arc::new(AtomicUsize::new(0));
+        let result = read_bounded_from(
+            GrowingReader {
+                remaining: MAXIMUM * 4,
+                served: Arc::clone(&served),
+            },
+            MAXIMUM,
+        );
+        assert_eq!(result, Err(ColumnarV2GenerationError::BoundExceeded));
+        assert_eq!(
+            served.load(Ordering::Relaxed),
+            MAXIMUM + 1,
+            "a concurrently growing member is read only through the refusal byte"
+        );
+    }
+
+    // req: PRJ-006, PRJ-009, PRJ-010, OQ-020, OQ-022
+    #[test]
+    fn excessive_inventory_refuses_at_the_first_unexpected_entry_without_member_reads() {
+        static NEXT_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
+        let ordinal = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+        let directory = std::env::temp_dir().join(format!(
+            "riffdb-columnar-inventory-{}-{ordinal}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).expect("create inventory directory");
+        for index in 0..16 {
+            fs::write(
+                directory.join(format!("unexpected-{index}")),
+                b"not decoded",
+            )
+            .expect("write unexpected member");
+        }
+        let inspected = AtomicUsize::new(0);
+        let result = validate_inventory_count(&directory, 2, || {
+            inspected.fetch_add(1, Ordering::Relaxed);
+        });
+        fs::remove_dir_all(&directory).expect("remove inventory directory");
+
+        assert_eq!(result, Err(ColumnarV2GenerationError::Invalid));
+        assert_eq!(
+            inspected.load(Ordering::Relaxed),
+            3,
+            "inventory work is capped at expected count plus one"
+        );
+    }
 }
