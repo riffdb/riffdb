@@ -177,3 +177,14 @@ governed ordinary access-path corpus and binds one value-free external source-
 compilation and Go-only package receipt. It does not claim an external runtime,
 framework route, or full application has passed: that evidence remains the
 responsibility of the repository owning the adapter.
+
+The separately checksum-bound
+`fixtures/riffql/wp775-external-binary-text-interval-execution-v1.json` is
+terminal evidence for one much narrower external execution. It records that
+the owning consumer invoked one compiler-generated strict-lower/strict-upper
+binary-text query twice, received original logical strings in bytewise
+ascending order, and reused one returned string as its consumer-owned next
+lower endpoint. Its closed value-free facts exclude client shaping, a duplicate
+index, database-owned token conversion, and framework or full-application
+claims. It does not alter or advance V5, and neither external values nor
+consumer vocabulary enter this repository.

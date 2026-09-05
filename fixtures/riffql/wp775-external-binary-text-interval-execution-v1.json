@@ -1,0 +1,49 @@
+{
+  "schema": "riffdb.external-binary-text-interval-execution/v1",
+  "work_package": "WP-775",
+  "status": "passed",
+  "identity": {
+    "consumer_revision": "f65e7c709954aa6b53c056275803b1c78e974edf",
+    "riffdb_revision": "91ac7d8b37908f2880d631efa695864e78b44670",
+    "application_source_sha256": "aa159b2643f1e05995c159d3124be2d578f86eabf6ba7a1c24f45c1df9d7878d",
+    "application_lock_sha256": "218b361fe7e33cfc7d17ae13580351e3cb396a0317ae8eaae2ffc6e7ed983802",
+    "contract_source_sha256": "23932a7c2d6ec542470ec99df5c812627061321766ad705b17769aaeca300536",
+    "query_source_sha256": "042c019a4989c73a65599066cbdb081abf65873ea45f4ac933a8d211f01b952b",
+    "generated_go_sha256": "7968a88ceb9f382ac43642c5de38a2ed88077090d6e263a1719352a3a6ac2c6d",
+    "generated_manifest_sha256": "f6634d65ed2ca7ce5c6c4b18d04d056cd86e10f9f30d8ba08041f0a8dd48bd53",
+    "historical_receipt_sha256": "22e4a8a69869fd4867a578319a9a80d5ed2d84a37f372a64e3dfe3354ee12673",
+    "operational_query_capability_v5_sha256": "18b7659b3d20853c6171a49e63981e3d7542094f063eb584978600eecd50737c"
+  },
+  "execution": {
+    "partition_count": 1,
+    "seed_command_count": 1,
+    "seed_row_count": 6,
+    "named_query_invocation_count": 2,
+    "first_result_count": 2,
+    "second_result_count": 2,
+    "total_result_count": 4,
+    "maximum_page_rows": 2,
+    "maximum_query_invocations": 2,
+    "maximum_seed_rows": 6,
+    "elapsed_milliseconds": 11
+  },
+  "verification": {
+    "strict_lower_executed": true,
+    "strict_upper_executed": true,
+    "bytewise_ascending_results": true,
+    "original_logical_strings_returned": true,
+    "returned_consumer_token_reused": true,
+    "consumer_owned_token": true,
+    "one_generated_named_query": true,
+    "existing_index_only": true,
+    "client_filtering": false,
+    "client_sorting": false,
+    "client_page_walk": false,
+    "duplicate_index": false,
+    "database_owned_token_conversion": false,
+    "framework_conformance_claimed": false,
+    "full_application_conformance_claimed": false,
+    "external_vocabulary_retained": false,
+    "external_values_retained": false
+  }
+}

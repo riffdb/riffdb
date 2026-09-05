@@ -1,43 +1,255 @@
 #!/usr/bin/env python3
 # req: OQ-061
-"""Verify the immutable generic operational-query capability receipts."""
+"""Verify the immutable operational-query capability and execution receipts."""
 
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
+import json
 from pathlib import Path
+import re
 import sys
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTERNAL = ROOT / "fixtures/riffql/wp701-external-binary-text-interval-capability-v1.json"
 EXTERNAL_SHA256 = "22e4a8a69869fd4867a578319a9a80d5ed2d84a37f372a64e3dfe3354ee12673"
+EXECUTION = ROOT / "fixtures/riffql/wp775-external-binary-text-interval-execution-v1.json"
+EXECUTION_SHA256 = "2ab1eaf9f05d6a8aef21ba9f8aac9be48863a612f84355ca961bfb4745c2d7e7"
+EXECUTION_CONSUMER_REVISION = "f65e7c709954aa6b53c056275803b1c78e974edf"
+EXECUTION_RIFFDB_REVISION = "91ac7d8b37908f2880d631efa695864e78b44670"
 PREDECESSOR = ROOT / "fixtures/riffql/operational-query-capability-v4.json"
 PREDECESSOR_SHA256 = "d4df09daa026aad644bba0771b0bd2c3ecd108e96b7634c03712d9fb336fd38b"
 OUTPUT = ROOT / "fixtures/riffql/operational-query-capability-v5.json"
 OUTPUT_SHA256 = "18b7659b3d20853c6171a49e63981e3d7542094f063eb584978600eecd50737c"
+MAX_RECEIPT_BYTES = 8192
+HEX_40 = re.compile(r"[0-9a-f]{40}\Z")
+HEX_64 = re.compile(r"[0-9a-f]{64}\Z")
+
+IDENTITY_KEYS = {
+    "consumer_revision",
+    "riffdb_revision",
+    "application_source_sha256",
+    "application_lock_sha256",
+    "contract_source_sha256",
+    "query_source_sha256",
+    "generated_go_sha256",
+    "generated_manifest_sha256",
+    "historical_receipt_sha256",
+    "operational_query_capability_v5_sha256",
+}
+EXECUTION_KEYS = {
+    "partition_count",
+    "seed_command_count",
+    "seed_row_count",
+    "named_query_invocation_count",
+    "first_result_count",
+    "second_result_count",
+    "total_result_count",
+    "maximum_page_rows",
+    "maximum_query_invocations",
+    "maximum_seed_rows",
+    "elapsed_milliseconds",
+}
+VERIFICATION_TRUE = {
+    "strict_lower_executed",
+    "strict_upper_executed",
+    "bytewise_ascending_results",
+    "original_logical_strings_returned",
+    "returned_consumer_token_reused",
+    "consumer_owned_token",
+    "one_generated_named_query",
+    "existing_index_only",
+}
+VERIFICATION_FALSE = {
+    "client_filtering",
+    "client_sorting",
+    "client_page_walk",
+    "duplicate_index",
+    "database_owned_token_conversion",
+    "framework_conformance_claimed",
+    "full_application_conformance_claimed",
+    "external_vocabulary_retained",
+    "external_values_retained",
+}
+
+
+class ReceiptError(ValueError):
+    """A public-safe, value-free receipt validation failure."""
+
+
+def sha256_bytes(contents: bytes) -> str:
+    return hashlib.sha256(contents).hexdigest()
 
 
 def sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return sha256_bytes(path.read_bytes())
+
+
+def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ReceiptError("receipt contains a duplicate field")
+        result[key] = value
+    return result
+
+
+def decode_receipt(contents: bytes) -> dict[str, Any]:
+    if not contents or len(contents) > MAX_RECEIPT_BYTES:
+        raise ReceiptError("receipt exceeds its bounded encoding")
+    try:
+        value = json.loads(contents, object_pairs_hook=reject_duplicate_keys)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ReceiptError("receipt is not canonical JSON") from error
+    if not isinstance(value, dict):
+        raise ReceiptError("receipt root is not an object")
+    return value
+
+
+def exact_object(value: Any, keys: set[str], label: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != keys:
+        raise ReceiptError(f"{label} has an unknown or missing field")
+    return value
+
+
+def exact_integer(value: Any, expected: int, label: str) -> None:
+    if type(value) is not int or value != expected:
+        raise ReceiptError(f"{label} does not match the bounded execution")
+
+
+def validate_execution_receipt(contents: bytes, *, enforce_checksum: bool) -> dict[str, Any]:
+    receipt = decode_receipt(contents)
+    exact_object(receipt, {"schema", "work_package", "status", "identity", "execution", "verification"}, "receipt")
+    if receipt["schema"] != "riffdb.external-binary-text-interval-execution/v1":
+        raise ReceiptError("receipt identity is not execution/v1")
+    if receipt["work_package"] != "WP-775" or receipt["status"] != "passed":
+        raise ReceiptError("receipt is not terminal WP-775 evidence")
+
+    identity = exact_object(receipt["identity"], IDENTITY_KEYS, "identity")
+    for field in IDENTITY_KEYS - {"consumer_revision", "riffdb_revision"}:
+        if not isinstance(identity[field], str) or HEX_64.fullmatch(identity[field]) is None:
+            raise ReceiptError(f"identity.{field} is not an exact SHA-256")
+    if not isinstance(identity["consumer_revision"], str) or HEX_40.fullmatch(identity["consumer_revision"]) is None:
+        raise ReceiptError("identity.consumer_revision is not exact")
+    if not isinstance(identity["riffdb_revision"], str) or HEX_40.fullmatch(identity["riffdb_revision"]) is None:
+        raise ReceiptError("identity.riffdb_revision is not exact")
+    if identity["consumer_revision"] != EXECUTION_CONSUMER_REVISION:
+        raise ReceiptError("receipt is not bound to the accepted consumer revision")
+    if identity["riffdb_revision"] != EXECUTION_RIFFDB_REVISION:
+        raise ReceiptError("receipt is not bound to the executed RiffDB revision")
+    if identity["historical_receipt_sha256"] != EXTERNAL_SHA256:
+        raise ReceiptError("receipt does not bind the immutable historical receipt")
+    if identity["operational_query_capability_v5_sha256"] != OUTPUT_SHA256:
+        raise ReceiptError("receipt does not bind the immutable V5 capability")
+
+    execution = exact_object(receipt["execution"], EXECUTION_KEYS, "execution")
+    expected_counts = {
+        "partition_count": 1,
+        "seed_command_count": 1,
+        "seed_row_count": 6,
+        "named_query_invocation_count": 2,
+        "first_result_count": 2,
+        "second_result_count": 2,
+        "total_result_count": 4,
+        "maximum_page_rows": 2,
+        "maximum_query_invocations": 2,
+        "maximum_seed_rows": 6,
+    }
+    for field, expected in expected_counts.items():
+        exact_integer(execution[field], expected, f"execution.{field}")
+    elapsed = execution["elapsed_milliseconds"]
+    if type(elapsed) is not int or not 1 <= elapsed <= 120_000:
+        raise ReceiptError("execution duration is absent or unbounded")
+
+    verification = exact_object(
+        receipt["verification"], VERIFICATION_TRUE | VERIFICATION_FALSE, "verification"
+    )
+    for field in VERIFICATION_TRUE:
+        if verification[field] is not True:
+            raise ReceiptError(f"verification.{field} is not proved")
+    for field in VERIFICATION_FALSE:
+        if verification[field] is not False:
+            raise ReceiptError(f"verification.{field} is not excluded")
+
+    canonical = (json.dumps(receipt, indent=2) + "\n").encode()
+    if canonical != contents:
+        raise ReceiptError("receipt encoding is not canonical")
+    if enforce_checksum and sha256_bytes(contents) != EXECUTION_SHA256:
+        raise ReceiptError("immutable execution receipt changed")
+    return receipt
+
+
+def external_binary_text_interval_execution_receipt_is_fresh_value_free_and_exact() -> dict[str, Any]:
+    if not EXECUTION.exists():
+        raise ReceiptError("external execution receipt is missing")
+    return validate_execution_receipt(EXECUTION.read_bytes(), enforce_checksum=True)
+
+
+def historical_binary_text_interval_receipt_remains_byte_exact_and_nonterminal() -> None:
+    if not EXTERNAL.exists() or sha256(EXTERNAL) != EXTERNAL_SHA256:
+        raise ReceiptError("immutable historical receipt changed")
+    historical = decode_receipt(EXTERNAL.read_bytes())
+    verification = historical.get("verification")
+    if (
+        historical.get("schema") != "riffdb.external-operational-capability/v2"
+        or historical.get("work_package") != "WP-701"
+        or not isinstance(verification, dict)
+        or verification.get("external_runtime_execution_claimed") is not False
+    ):
+        raise ReceiptError("historical source receipt was promoted to execution evidence")
+    if not OUTPUT.exists() or sha256(OUTPUT) != OUTPUT_SHA256:
+        raise ReceiptError("immutable V5 capability fixture changed")
+    capability = decode_receipt(OUTPUT.read_bytes())
+    if capability.get("schema") != "riffdb.operational-query-capability/v5" or capability.get("status") != "development":
+        raise ReceiptError("immutable V5 capability was promoted or reinterpreted")
+
+
+def execution_receipt_validator_rejects_missing_and_mutated_facts(receipt: dict[str, Any]) -> None:
+    def rejected(candidate: dict[str, Any]) -> None:
+        encoded = (json.dumps(candidate, indent=2) + "\n").encode()
+        try:
+            validate_execution_receipt(encoded, enforce_checksum=False)
+        except ReceiptError:
+            return
+        raise ReceiptError("receipt validator accepted mutated evidence")
+
+    for section, fields in (
+        ("identity", IDENTITY_KEYS),
+        ("execution", EXECUTION_KEYS),
+        ("verification", VERIFICATION_TRUE | VERIFICATION_FALSE),
+    ):
+        for field in fields:
+            candidate = copy.deepcopy(receipt)
+            del candidate[section][field]
+            rejected(candidate)
+    for field in VERIFICATION_TRUE | VERIFICATION_FALSE:
+        candidate = copy.deepcopy(receipt)
+        candidate["verification"][field] = not candidate["verification"][field]
+        rejected(candidate)
+    candidate = copy.deepcopy(receipt)
+    candidate["external_route"] = "forbidden"
+    rejected(candidate)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
     arguments = parser.parse_args()
-    if not PREDECESSOR.exists() or sha256(PREDECESSOR) != PREDECESSOR_SHA256:
-        print(f"immutable predecessor receipt changed: {PREDECESSOR}", file=sys.stderr)
-        return 1
-    if not EXTERNAL.exists() or sha256(EXTERNAL) != EXTERNAL_SHA256:
-        print(f"immutable historical receipt changed: {EXTERNAL}", file=sys.stderr)
-        return 1
-    if not OUTPUT.exists() or sha256(OUTPUT) != OUTPUT_SHA256:
-        print(f"immutable V5 capability fixture changed: {OUTPUT}", file=sys.stderr)
+    try:
+        if not PREDECESSOR.exists() or sha256(PREDECESSOR) != PREDECESSOR_SHA256:
+            raise ReceiptError("immutable predecessor receipt changed")
+        historical_binary_text_interval_receipt_remains_byte_exact_and_nonterminal()
+        receipt = external_binary_text_interval_execution_receipt_is_fresh_value_free_and_exact()
+        execution_receipt_validator_rejects_missing_and_mutated_facts(receipt)
+    except (OSError, ReceiptError) as error:
+        print(str(error), file=sys.stderr)
         return 1
     if not arguments.check:
-        print(f"{OUTPUT.relative_to(ROOT)} is immutable; no files written")
+        print(f"{OUTPUT.relative_to(ROOT)} and {EXECUTION.relative_to(ROOT)} are immutable; no files written")
     return 0
 
 
