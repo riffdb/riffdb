@@ -1296,6 +1296,10 @@ fn expect_snapshot_installation(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::items_after_test_module,
+    reason = "the local proof is adjacent to the private replacement helper it exercises"
+)]
 mod tests {
     use super::*;
     use crate::{RedbDormantPorts, RedbStore};

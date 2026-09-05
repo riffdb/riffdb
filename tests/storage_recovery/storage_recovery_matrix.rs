@@ -2306,7 +2306,7 @@ fn cold_fresh_database_publications_complete_without_history_scans() {
                 .begin_deferred_command_epoch()
                 .expect("begin bounded pipelined epoch");
             let fence =
-                DeferredCommandEpoch::seal(apply_unpublished_command_fixture(epoch, &fixture))
+                DeferredCommandEpoch::seal(apply_unpublished_command_fixture(epoch, fixture))
                     .expect("seal bounded pipelined epoch");
             pipeline.push((fixture, fence));
         }
