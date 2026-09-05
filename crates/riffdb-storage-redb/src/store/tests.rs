@@ -86,6 +86,7 @@ fn warming_the_indexes_commits_under_the_callers_live_read_transaction() {
                     .database
                     .begin_read()
                     .expect("durable frontier read"),
+                store.shared.durable_commit_epoch.load(Ordering::Acquire),
             )));
         }
         drop(
@@ -2300,4 +2301,92 @@ fn preserving_expectations_close_before_the_first_actual_mutation() {
         StorageErrorKind::InvariantViolation
     );
     access.abort().expect("abort test write");
+}
+
+// req: OUT-001, OUT-002, TXN-042
+#[test]
+fn ordinary_command_bookkeeping_does_not_inherit_the_preserving_mutation_ceiling() {
+    let path = TestDatabasePath::new("fresh-locator-command-does-not-use-preserving-bound");
+    let mut store = RedbStore::open(&path.0).expect("open store");
+    store
+        .initialize_database(database_id(0x3a))
+        .expect("initialize store");
+    let ports = RedbDormantPorts {
+        shared: store.shared,
+    }
+    .into_operational_after_catalog_validation()
+    .expect("activate ports");
+    let access = ports.begin_write().expect("begin ordinary command write");
+
+    let legal_command_mutations = riffdb_storage_api::MAX_COMPOSITE_OVERLAY_TRANSITIONS
+        .checked_add(3)
+        .expect("bounded command mutation accounting");
+    for ordinal in 0..legal_command_mutations {
+        access
+            .record_actual_fresh_locator_byte_insert(
+                crate::layout::ENTITIES,
+                &u64::try_from(ordinal)
+                    .expect("bounded ordinal")
+                    .to_be_bytes(),
+            )
+            .expect("ordinary command mutation is not preserving bookkeeping");
+    }
+    assert!(
+        access.fresh_locator_actual_mutations.borrow().is_empty(),
+        "ordinary direct/queued commands must retain no preserving mutation inventory"
+    );
+    access.abort().expect("abort bookkeeping proof");
+}
+
+// req: OUT-001, OUT-002, TXN-042
+#[test]
+fn preserving_bookkeeping_refuses_omitted_or_late_expectations_when_armed() {
+    for (name, register_late) in [("omitted", false), ("late", true)] {
+        let path = TestDatabasePath::new(&format!("fresh-locator-preserving-{name}"));
+        let mut store = RedbStore::open(&path.0).expect("open store");
+        store
+            .initialize_database(database_id(if register_late { 0x3c } else { 0x3b }))
+            .expect("initialize store");
+        drop(store);
+        let store = RedbStore::open(&path.0).expect("reopen fresh process");
+        let ports = RedbDormantPorts {
+            shared: store.shared,
+        }
+        .into_operational_after_catalog_validation()
+        .expect("activate ports");
+        let access = ports.begin_write().expect("begin preserving write");
+        let stamp = access
+            .fresh_locator_coverage_stamp()
+            .expect("capture empty authority stamp");
+        assert!(
+            access
+                .shared
+                .fresh_locator_coverage
+                .lock()
+                .expect("coverage lock")
+                .try_arm(
+                    crate::fresh_locator_coverage::EmptyAuthorityProof::new(
+                        true, true, true, true, true, true, true, true,
+                    ),
+                    stamp,
+                )
+        );
+        access
+            .record_actual_fresh_locator_byte_insert(crate::layout::IDEMPOTENCY_PENDING, b"key")
+            .expect("pre-expectation mutation is not self-authorizing");
+        if register_late {
+            access
+                .expect_fresh_locator_byte_insert(crate::layout::IDEMPOTENCY_PENDING, b"key")
+                .expect("late expectation is recorded but has no matching actual inventory");
+            access
+                .close_fresh_locator_mutation_expectations()
+                .expect("close late expectation");
+        }
+        let Err(error) = access.fresh_locator_preserving_permit(RedbTestOperation::Admission)
+        else {
+            panic!("omitted or late permit must fail closed");
+        };
+        assert_eq!(error.kind(), StorageErrorKind::InvariantViolation);
+        access.abort().expect("abort preserving proof");
+    }
 }
