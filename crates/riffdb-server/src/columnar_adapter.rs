@@ -260,6 +260,11 @@ pub(crate) struct RetiredColumnarGeneration {
     captured_view: Weak<riffdb_columnar::ColumnarSnapshot>,
 }
 
+struct CapturedColumnarView {
+    observation: ColumnarObservation,
+    generation: Option<ProjectionGeneration>,
+}
+
 impl ColumnarCaptureGate<'_> {
     /// Installs the exact durable selection while capture remains closed.
     pub(crate) fn install_selected(
@@ -468,6 +473,40 @@ impl ColumnarEngineSlot {
             .map_err(|_| ColumnarPortError::Unavailable)?;
         match &*state {
             ColumnarSlotState::Active(active) => Ok(Some(operation(&active.engine))),
+            ColumnarSlotState::Cold | ColumnarSlotState::Activating => Ok(None),
+            ColumnarSlotState::Failed { .. } | ColumnarSlotState::Stopped => {
+                Err(ColumnarPortError::Unavailable)
+            }
+        }
+    }
+
+    fn capture_active(
+        &self,
+        head: ProjectionFrontier,
+    ) -> Result<Option<CapturedColumnarView>, ColumnarPortError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| ColumnarPortError::Unavailable)?;
+        match &*state {
+            ColumnarSlotState::Active(active) => {
+                let definition = active.engine.definition().clone();
+                let snapshot = active.engine.published_snapshot();
+                let published_frontier = active.engine.published_frontier();
+                let outcome = active.engine.outcome(head.position());
+                let (has_published, lifecycle) = map_outcome_lifecycle(&outcome);
+                Ok(Some(CapturedColumnarView {
+                    observation: ColumnarObservation::new(
+                        definition,
+                        snapshot,
+                        published_frontier,
+                        head,
+                        has_published,
+                        lifecycle,
+                    ),
+                    generation: active.generation,
+                }))
+            }
             ColumnarSlotState::Cold | ColumnarSlotState::Activating => Ok(None),
             ColumnarSlotState::Failed { .. } | ColumnarSlotState::Stopped => {
                 Err(ColumnarPortError::Unavailable)
@@ -1642,24 +1681,10 @@ impl ColumnarProjectionPort for ServerColumnarProjectionPort {
         if must_return_building {
             return self.runtime.cold_observation(projection_name, &slot, head);
         }
-        let observation = slot.with_engine(|engine| {
-            let definition = engine.definition().clone();
-            let snapshot = engine.published_snapshot();
-            let published_frontier = engine.published_frontier();
-            let outcome = engine.outcome(head_position);
-            let (has_published, lifecycle) = map_outcome_lifecycle(&outcome);
-            ColumnarObservation::new(
-                definition,
-                snapshot,
-                published_frontier,
-                head.clone(),
-                has_published,
-                lifecycle,
-            )
-        })?;
+        let observation = slot.capture_active(head.clone())?;
         // Engine lock dropped before return; callers query the Arc snapshot freely.
         match observation {
-            Some(observation) => Ok(observation),
+            Some(captured) => Ok(captured.observation),
             None => self.runtime.cold_observation(projection_name, &slot, head),
         }
     }
@@ -1705,49 +1730,19 @@ impl VectorProjectionPort for ServerColumnarProjectionPort {
         if !binding.is_vector {
             return Err(VectorProjectionPortError::Integrity);
         }
-        let control = self
+        let head_position = self
             .runtime
-            .storage()
-            .recover_expected_control(binding.spec.source())
-            .map_err(|error| match error.kind() {
-                StorageErrorKind::Unavailable => VectorProjectionPortError::Unavailable,
-                _ => VectorProjectionPortError::Integrity,
-            })?
-            .ok_or(VectorProjectionPortError::Integrity)?;
-        if !common_control_matches(&control, &binding.spec)
-            || !common_control_history_incarnation_matches(
-                &control,
-                self.runtime.history_incarnation,
-            )
-        {
-            return Err(VectorProjectionPortError::Integrity);
-        }
-        let selected = control
-            .servable_generation()
-            .ok_or_else(|| match control.lifecycle() {
-                riffdb_storage_api::ColumnarProjectionLifecycleV1::Building => {
-                    VectorProjectionPortError::Building
-                }
-                riffdb_storage_api::ColumnarProjectionLifecycleV1::Rebuilding => {
-                    VectorProjectionPortError::Rebuilding
-                }
-                riffdb_storage_api::ColumnarProjectionLifecycleV1::Degraded => {
-                    VectorProjectionPortError::Degraded
-                }
-                riffdb_storage_api::ColumnarProjectionLifecycleV1::Invalid => {
-                    VectorProjectionPortError::Integrity
-                }
-                riffdb_storage_api::ColumnarProjectionLifecycleV1::CatchingUp
-                | riffdb_storage_api::ColumnarProjectionLifecycleV1::Ready => {
-                    VectorProjectionPortError::Integrity
-                }
-            })?;
-        if slot.generation() != Some(selected.generation()) {
-            return Err(VectorProjectionPortError::Rebuilding);
-        }
-        let observation = self
-            .observe(request.source_name())
+            .read_application_head()
             .map_err(map_vector_port_error)?;
+        let head = ProjectionFrontier::new(self.runtime.history_incarnation(), head_position);
+        let captured = slot
+            .capture_active(head)
+            .map_err(map_vector_port_error)?
+            .ok_or(VectorProjectionPortError::Building)?;
+        let _installed_generation = captured
+            .generation
+            .ok_or(VectorProjectionPortError::Integrity)?;
+        let observation = captured.observation;
         match observation.lifecycle() {
             Some(ColumnarLifecycle::Building) => return Err(VectorProjectionPortError::Building),
             Some(ColumnarLifecycle::Rebuilding { .. }) => {
@@ -2258,7 +2253,8 @@ mod tests {
     use riffdb_storage_redb::{RedbDormantPorts, RedbOperationalPorts, RedbStore};
     use riffdb_types::{
         ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, CanonicalInputHash,
-        CanonicalRecord, CanonicalValue, CapabilityId, CommitSequence, DatabaseId, DigestKeyId,
+        CanonicalRecord, CanonicalValue, CanonicalVector, CapabilityId, CommitSequence,
+        ContractLineage, DatabaseId, DigestKeyId, DistanceMetric, EmbeddingMetadata,
         EntityKeyBuilder, EntityVersion, Environment, LogicalTime, OutcomeId, PartitionKeyBuilder,
         PartitionKeyHash, ProvenanceId, RequestId, TenantScope, Timestamp, hash_partition_key,
     };
@@ -2433,6 +2429,27 @@ contract VectorBoard version 1 {
         let runtime =
             ColumnarRuntime::open(storage, &[projection], &projections_root, 1, [0x5a; 16])
                 .expect("open adapter columnar runtime");
+        (runtime, scope)
+    }
+
+    fn empty_columnar_runtime(label: &str) -> (Arc<ColumnarRuntime>, tempfile::TempDir) {
+        let scope = adapter_scope(label);
+        let database_path = scope.path().join("db.redb");
+        let projections_root = scope.path().join("projections");
+        std::fs::create_dir_all(&projections_root).expect("create empty projections root");
+        let mut store = RedbStore::open(&database_path).expect("create empty adapter database");
+        let database_id = DatabaseId::from_bytes(uuid_bytes(0x14)).expect("database id");
+        assert_eq!(
+            store
+                .initialize_database(database_id)
+                .expect("initialize empty adapter database"),
+            DatabaseInitializationResult::Installed(database_id)
+        );
+        let ports = open_operational(store);
+        let storage =
+            SharedRedbOperationalPorts::new(ports, None).expect("share empty operational ports");
+        let runtime = ColumnarRuntime::open(storage, &[], &projections_root, 1, [0x5b; 16])
+            .expect("open empty columnar runtime");
         (runtime, scope)
     }
 
@@ -3455,7 +3472,7 @@ contract VectorBoard version 1 {
             } else {
                 assert_eq!(result, Err(()), "{label}");
                 assert_eq!(durable.published(), expected.published(), "{label}");
-                assert!(Arc::ptr_eq(&captured, &predecessor), "{label}");
+                assert!(!Arc::ptr_eq(&captured, &successor_snapshot), "{label}");
                 assert_eq!(wake, riffdb_service::ColumnarWake::TimedOut, "{label}");
             }
         }
@@ -3576,6 +3593,122 @@ contract VectorBoard version 1 {
         );
     }
 
+    // req: PRJ-002, PRJ-004, PRJ-006, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022
+    #[test]
+    fn controlled_v1_reclaim_crash_reopens_the_exact_selected_artifact() {
+        use crate::columnar_worker::{
+            ColumnarPublicationTestMode, advance_published_v1_under_capture_gate_for_test,
+        };
+        use riffdb_columnar::{ColumnarTestBoundary, ColumnarTestController};
+
+        const CHILD_MODE: &str = "RIFFDB_SERVER_V1_RECLAIM_CRASH_CHILD";
+        const CHILD_PATH: &str = "RIFFDB_SERVER_V1_RECLAIM_CRASH_PATH";
+        const EXACT_TEST: &str = "columnar_adapter::tests::controlled_v1_reclaim_crash_reopens_the_exact_selected_artifact";
+        if std::env::var(CHILD_MODE).as_deref() == Ok("1") {
+            let path = PathBuf::from(std::env::var_os(CHILD_PATH).expect("child path"));
+            let runtime = open_board_runtime_at(&path);
+            let binding = runtime
+                .control_binding("ticket_board")
+                .expect("child binding");
+            let durable = runtime
+                .storage()
+                .recover_expected_control(binding.spec().source())
+                .expect("child durable read")
+                .expect("child durable control");
+            let selected = durable.servable_generation().expect("child selected V1");
+            let artifact = selected.artifact().expect("child selected artifact");
+            let directory = controlled_generation_directory(
+                &path.join("projections"),
+                binding.spec().hash(),
+                selected.generation(),
+            );
+            let controller = ColumnarTestController::new();
+            controller.arm_abort_at(ColumnarTestBoundary::AfterV1ArtifactReclaim);
+            ColumnarEngine::reclaim_controlled_v1_artifacts_with_test_controller(
+                &directory,
+                &[(artifact.length(), artifact.checksum())],
+                &controller,
+            )
+            .expect("armed V1 reclamation must abort");
+            panic!("child did not abort inside V1 artifact reclamation");
+        }
+
+        let (runtime, scope) = board_runtime("v1-reclaim-crash");
+        let (binding, expected, successor, prepared) =
+            prepare_published_v1_frontier_advance(&runtime);
+        assert_eq!(
+            advance_published_v1_under_capture_gate_for_test(
+                &runtime,
+                &binding,
+                &expected,
+                &prepared,
+                successor,
+                ColumnarPublicationTestMode::Ordinary,
+                || {},
+            ),
+            Ok(true)
+        );
+        let expected_rows = query_snapshot(
+            binding.definition(),
+            ServerColumnarProjectionPort::new(Arc::clone(&runtime))
+                .observe("ticket_board")
+                .expect("capture selected successor")
+                .snapshot()
+                .as_ref(),
+            &board_query(),
+        )
+        .expect("query selected successor");
+        drop(runtime);
+
+        let status =
+            std::process::Command::new(std::env::current_exe().expect("server test executable"))
+                .arg("--exact")
+                .arg(EXACT_TEST)
+                .arg("--nocapture")
+                .env(CHILD_MODE, "1")
+                .env(CHILD_PATH, scope.path())
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .expect("spawn V1 reclamation crash child");
+        assert_eq!(
+            status.code(),
+            None,
+            "child aborts after one retired V1 deletion"
+        );
+
+        let reopened = reopen_board_runtime(&scope);
+        let reopened_port = ServerColumnarProjectionPort::new(Arc::clone(&reopened));
+        let cold = reopened_port
+            .observe("ticket_board")
+            .expect("request selected successor reopen after reclaim crash");
+        assert!(!cold.has_published());
+        assert!(crate::columnar_worker::activate_one_test_slot(
+            &reopened,
+            "ticket_board"
+        ));
+        let actual_rows = query_snapshot(
+            binding.definition(),
+            reopened_port
+                .observe("ticket_board")
+                .expect("capture selected successor after reclaim crash")
+                .snapshot()
+                .as_ref(),
+            &board_query(),
+        )
+        .expect("query selected successor after reclaim crash");
+        assert_eq!(actual_rows, expected_rows);
+        let durable = reopened
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("reread selected successor")
+            .expect("selected successor control");
+        reopened
+            .reclaim_unselected_generations(&binding, &durable)
+            .expect("retry artifact reclamation after crash");
+    }
+
     // req: PRJ-002, PRJ-006, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022
     #[test]
     fn published_v1_state_change_installs_the_later_durable_v1_selection() {
@@ -3647,6 +3780,94 @@ contract VectorBoard version 1 {
             installed.published_frontier().position(),
             manifest.durable_frontier,
             "StateChanged must install the exact later durable V1 before reopening capture"
+        );
+    }
+
+    // req: PRJ-002, PRJ-006, PRJ-008, PRJ-009, PRJ-010, OQ-020, OQ-022
+    #[test]
+    fn published_v1_no_commit_installs_durable_predecessor_when_local_view_lags() {
+        use crate::columnar_worker::{
+            ColumnarPublicationTestMode, advance_published_v1_under_capture_gate_for_test,
+            apply_available_for_worker_for_test,
+        };
+
+        let (runtime, _scope) = board_runtime("v1-local-view-lags-durable");
+        let (binding, initial, first_successor, first_prepared) =
+            prepare_published_v1_frontier_advance(&runtime);
+        assert_eq!(
+            runtime
+                .storage()
+                .advance_published_v1(&initial, &first_prepared, runtime.process_generation(),)
+                .expect("advance durable control without installing local view"),
+            ColumnarProjectionControlWriteResultV1::Applied
+        );
+        let durable_predecessor = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("reread durable predecessor")
+            .expect("durable predecessor control");
+        let durable_pointer = durable_predecessor
+            .published()
+            .expect("durable predecessor pointer");
+        assert_ne!(
+            ServerColumnarProjectionPort::new(Arc::clone(&runtime))
+                .observe("ticket_board")
+                .expect("capture lagging local view")
+                .published_frontier()
+                .position(),
+            durable_pointer.frontier()
+        );
+        drop(first_successor);
+
+        append_board_ticket_for_worker_at(
+            &runtime,
+            CommitSequence::new(2).expect("second sequence"),
+            0x43,
+        );
+        let mut second_successor = runtime
+            .open_controlled_generation(&binding, durable_pointer)
+            .expect("open durable predecessor for next advance");
+        apply_available_for_worker_for_test(&runtime, &mut second_successor)
+            .expect("apply second frontier");
+        let second_manifest = second_successor
+            .checkpoint()
+            .expect("checkpoint second frontier");
+        let (length, checksum) = second_manifest.artifact_identity();
+        let second_pointer = StoredColumnarProjectionGenerationV1::selected(
+            durable_pointer.generation(),
+            ColumnarProjectionLayoutV1::V1,
+            second_manifest.durable_frontier,
+            durable_pointer.history_incarnation(),
+            ColumnarProjectionArtifactV1::new(length, checksum).expect("second artifact"),
+            durable_pointer.definition_fingerprint(),
+            durable_pointer.spec_hash(),
+            None,
+            riffdb_storage_api::ColumnarProjectionGenerationRoleV1::Published,
+        )
+        .expect("second pointer");
+        let (second_successor, second_prepared) = runtime
+            .open_prepared_generation(&binding, &second_pointer)
+            .expect("validate second successor");
+        assert_eq!(
+            advance_published_v1_under_capture_gate_for_test(
+                &runtime,
+                &binding,
+                &durable_predecessor,
+                &second_prepared,
+                second_successor,
+                ColumnarPublicationTestMode::StorageFailureBeforeCommit,
+                || {},
+            ),
+            Err(())
+        );
+        assert_eq!(
+            ServerColumnarProjectionPort::new(runtime)
+                .observe("ticket_board")
+                .expect("capture exact durable predecessor")
+                .published_frontier()
+                .position(),
+            durable_pointer.frontier(),
+            "a failed CAS must still install the exact durable artifact when the local view lagged"
         );
     }
 
@@ -4450,6 +4671,60 @@ contract VectorBoard version 1 {
             .sum()
     }
 
+    fn receipt_query_via_port(
+        port: &ServerColumnarProjectionPort,
+        binding: &ColumnarControlBinding,
+        query: &ColumnarQueryRequest,
+    ) -> QueryResult {
+        let observation = port
+            .observe(binding.name())
+            .expect("capture gate-installed receipt view");
+        query_snapshot(binding.definition(), observation.snapshot().as_ref(), query)
+            .expect("query gate-installed receipt view")
+    }
+
+    fn receipt_no_projection_control(
+        label: &str,
+        source: &riffdb_types::ColumnarProjectionSourceV1,
+    ) -> (u64, usize, u64) {
+        let (runtime, scope) = empty_columnar_runtime(label);
+        let projections_root = scope.path().join("projections");
+        assert!(runtime.names().expect("empty names").is_empty());
+        assert!(runtime.control_bindings().is_empty());
+        assert_eq!(
+            runtime
+                .storage()
+                .recover_expected_control(source)
+                .expect("read actual no-projection control"),
+            None
+        );
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        let bytes = receipt_directory_bytes(&projections_root);
+        let modeled_owned_allocations = runtime
+            .names()
+            .expect("empty names for modeled allocation count")
+            .len()
+            .saturating_mul(6);
+        let population_passes = runtime.lifecycle_observation().population_passes();
+        (bytes, modeled_owned_allocations, population_passes)
+    }
+
+    // req: PERF-007, PERF-008, PRJ-009
+    #[test]
+    fn no_projection_receipt_control_uses_an_actual_empty_runtime_and_durable_control() {
+        let (runtime, _scope) = board_runtime("no-projection-control-source");
+        let binding = runtime
+            .control_binding("ticket_board")
+            .expect("source binding");
+        assert_eq!(
+            receipt_no_projection_control(
+                "no-projection-control-observation",
+                binding.spec().source(),
+            ),
+            (0, 0, 0)
+        );
+    }
+
     // req: PRJ-002, PRJ-004, PRJ-009, PRJ-010, OQ-020, OQ-022, PERF-007, PERF-008
     #[test]
     #[ignore = "fixed WP-711 production worker/control/gate activation receipt; run explicitly in release mode"]
@@ -4473,6 +4748,14 @@ contract VectorBoard version 1 {
             .control_binding("ticket_board")
             .expect("receipt control binding")
             .clone();
+        let (
+            no_projection_bytes,
+            no_projection_modeled_owned_allocations,
+            no_projection_population_passes,
+        ) = receipt_no_projection_control(
+            "production-v2-activation-no-projection-control",
+            binding.spec().source(),
+        );
         let organizations = [uuid_bytes(0x63), uuid_bytes(0x64)];
         let queries = organizations.map(receipt_query);
         let expected = QueryResult::Aggregate(AggregateValue::Count(
@@ -4521,12 +4804,7 @@ contract VectorBoard version 1 {
             .map(|query| {
                 receipt_samples(SAMPLES, || {
                     assert_eq!(
-                        query_snapshot(
-                            binding.definition(),
-                            black_box(&v1_snapshot),
-                            black_box(query)
-                        )
-                        .expect("V1 query"),
+                        receipt_query_via_port(&port, &binding, black_box(query)),
                         expected
                     );
                 })
@@ -4535,14 +4813,7 @@ contract VectorBoard version 1 {
         let v1_query_ns = receipt_samples(SAMPLES, || {
             let actual = queries
                 .iter()
-                .map(|query| {
-                    query_snapshot(
-                        binding.definition(),
-                        black_box(&v1_snapshot),
-                        black_box(query),
-                    )
-                    .expect("V1 query")
-                })
+                .map(|query| receipt_query_via_port(&port, &binding, black_box(query)))
                 .collect::<Vec<_>>();
             assert_eq!(actual, vec![expected.clone(); PARTITIONS]);
         });
@@ -4608,12 +4879,7 @@ contract VectorBoard version 1 {
             .map(|query| {
                 receipt_samples(SAMPLES, || {
                     assert_eq!(
-                        query_snapshot(
-                            binding.definition(),
-                            black_box(&v2_snapshot),
-                            black_box(query)
-                        )
-                        .expect("V2 query"),
+                        receipt_query_via_port(&port, &binding, black_box(query)),
                         expected
                     );
                 })
@@ -4622,14 +4888,7 @@ contract VectorBoard version 1 {
         let v2_query_ns = receipt_samples(SAMPLES, || {
             let actual = queries
                 .iter()
-                .map(|query| {
-                    query_snapshot(
-                        binding.definition(),
-                        black_box(&v2_snapshot),
-                        black_box(query),
-                    )
-                    .expect("V2 query")
-                })
+                .map(|query| receipt_query_via_port(&port, &binding, black_box(query)))
                 .collect::<Vec<_>>();
             assert_eq!(actual, v1_results);
         });
@@ -4701,7 +4960,7 @@ contract VectorBoard version 1 {
         let v1_modeled_owned_allocations = ROWS * 6;
         let v2_modeled_owned_allocations = ROWS * 6 + segment_count * 17;
         println!(
-            "WP711_ACTIVATION corpus=wp711-low-cardinality-v1-v2-v1 rows={ROWS} partitions={PARTITIONS} rows_per_partition={ROWS_PER_PARTITION} samples={SAMPLES} cpu_method=single-thread_elapsed_ns allocation_method=wp710_modeled_owned_allocations_not_allocator_calls matched_frontier={matched_frontier} matched_query_cases={PARTITIONS} partition_0_result_count={ROWS_PER_PARTITION} partition_1_result_count={ROWS_PER_PARTITION} projection_lag={projection_lag} no_projection_bytes=0 no_projection_modeled_owned_allocations=0 no_projection_population_passes=0 no_v2_bytes={v1_bytes} no_v2_modeled_owned_allocations={v1_modeled_owned_allocations} v1_partition_0_query_p50_ns={} v1_partition_1_query_p50_ns={} v1_query_p50_ns={} v1_query_p95_ns={} v1_query_p99_ns={} v1_recovery_p50_ns={} v1_recovery_p95_ns={} v1_recovery_p99_ns={} v2_bytes={v2_bytes} v2_modeled_owned_allocations={v2_modeled_owned_allocations} v2_partition_0_query_p50_ns={} v2_partition_1_query_p50_ns={} v2_query_p50_ns={} v2_query_p95_ns={} v2_query_p99_ns={} v2_recovery_p50_ns={} v2_recovery_p95_ns={} v2_recovery_p99_ns={} rebuild_ns={rebuild_ns} compaction_ns={compaction_ns} result_count={ROWS} production_worker_passes=6 publication_acknowledgements=3 durable_v2_generation={} compaction_generation={} selected_arc_reused=1",
+            "WP711_ACTIVATION corpus=wp711-low-cardinality-v1-v2-v1 rows={ROWS} partitions={PARTITIONS} rows_per_partition={ROWS_PER_PARTITION} samples={SAMPLES} cpu_method=single-thread_elapsed_ns allocation_method=wp710_modeled_owned_allocations_not_allocator_calls matched_frontier={matched_frontier} matched_query_cases={PARTITIONS} partition_0_result_count={ROWS_PER_PARTITION} partition_1_result_count={ROWS_PER_PARTITION} projection_lag={projection_lag} no_projection_bytes={no_projection_bytes} no_projection_modeled_owned_allocations={no_projection_modeled_owned_allocations} no_projection_population_passes={no_projection_population_passes} no_v2_bytes={v1_bytes} no_v2_modeled_owned_allocations={v1_modeled_owned_allocations} v1_partition_0_query_p50_ns={} v1_partition_1_query_p50_ns={} v1_query_p50_ns={} v1_query_p95_ns={} v1_query_p99_ns={} v1_recovery_p50_ns={} v1_recovery_p95_ns={} v1_recovery_p99_ns={} v2_bytes={v2_bytes} v2_modeled_owned_allocations={v2_modeled_owned_allocations} v2_partition_0_query_p50_ns={} v2_partition_1_query_p50_ns={} v2_query_p50_ns={} v2_query_p95_ns={} v2_query_p99_ns={} v2_recovery_p50_ns={} v2_recovery_p95_ns={} v2_recovery_p99_ns={} rebuild_ns={rebuild_ns} compaction_ns={compaction_ns} result_count={ROWS} production_worker_passes=6 publication_acknowledgements=3 durable_v2_generation={} compaction_generation={} selected_arc_reused=1",
             receipt_percentile(&v1_partition_query_ns[0], 50),
             receipt_percentile(&v1_partition_query_ns[1], 50),
             receipt_percentile(&v1_query_ns, 50),
@@ -4915,6 +5174,7 @@ contract VectorBoard version 1 {
     #[test]
     fn corrupt_selected_v1_fails_closed_then_records_failure_and_rebuilds() {
         let (runtime, scope) = board_runtime("failed-activation");
+        append_board_ticket_for_worker(&runtime);
         request_projection(&runtime, "ticket_board");
         assert!(crate::columnar_worker::run_one_test_pass(&runtime));
         runtime
@@ -4937,6 +5197,13 @@ contract VectorBoard version 1 {
             .published()
             .expect("published generation")
             .clone();
+        let selected_snapshot = ServerColumnarProjectionPort::new(Arc::clone(&runtime))
+            .observe("ticket_board")
+            .expect("capture selected data-bearing V1")
+            .snapshot_arc();
+        let expected_rows =
+            query_snapshot(binding.definition(), &selected_snapshot, &board_query())
+                .expect("query selected data-bearing V1");
         let artifact = published.artifact().expect("selected artifact");
         let manifest = controlled_generation_directory(
             &scope.path().join("projections"),
@@ -5015,10 +5282,17 @@ contract VectorBoard version 1 {
                 .map(|generation| generation.generation()),
             Some(rebuilt_generation)
         );
-        assert!(
-            port.observe("ticket_board")
-                .expect("capture rebuilt V1")
-                .has_published()
+        let rebuilt = port.observe("ticket_board").expect("capture rebuilt V1");
+        assert!(rebuilt.has_published());
+        assert_eq!(
+            query_snapshot(
+                binding.definition(),
+                rebuilt.snapshot().as_ref(),
+                &board_query()
+            )
+            .expect("query rebuilt V1"),
+            expected_rows,
+            "selected-corrupt V1 recovery preserves the authoritative row population"
         );
     }
 
@@ -5037,6 +5311,7 @@ contract VectorBoard version 1 {
         }
 
         let (runtime, scope) = board_runtime("corrupt-selected-v2-no-fallback");
+        append_board_ticket_for_worker(&runtime);
         request_projection(&runtime, "ticket_board");
         assert!(crate::columnar_worker::run_one_test_pass(&runtime));
         let port = ServerColumnarProjectionPort::new(Arc::clone(&runtime));
@@ -5076,6 +5351,8 @@ contract VectorBoard version 1 {
             .observe("ticket_board")
             .expect("capture selected V2")
             .snapshot_arc();
+        let expected_rows = query_snapshot(binding.definition(), &selected_v2, &board_query())
+            .expect("query selected data-bearing V2");
         assert!(!Arc::ptr_eq(&retained_v1, &selected_v2));
         let root =
             controlled_source_directory(&scope.path().join("projections"), binding.spec().hash())
@@ -5115,7 +5392,11 @@ contract VectorBoard version 1 {
             Some(riffdb_storage_api::ColumnarProjectionFailureReasonV1::ArtifactInvalid)
         );
         assert_eq!(std::fs::read(&root).expect("reread root"), corrupt_bytes);
-        assert!(retained_v1.segments.is_empty() && retained_v1.delta.is_empty());
+        assert_eq!(
+            query_snapshot(binding.definition(), &retained_v1, &board_query())
+                .expect("query retained V1 capability"),
+            expected_rows
+        );
         assert!(
             !Arc::ptr_eq(&retained_v1, &selected_v2),
             "a still-live predecessor capability never becomes fallback authority"
@@ -5159,19 +5440,45 @@ contract VectorBoard version 1 {
             }),
             "recovery candidate was not prepared: {prepared_recovery:?}"
         );
-        let recovery_completed = crate::columnar_worker::run_one_test_pass(&reopened);
-        assert!(
-            recovery_completed,
-            "recovery publication failed: lifecycle={:?}, control={:?}",
-            reopened
-                .engine("ticket_board")
-                .expect("engine registry")
-                .expect("recovery slot")
-                .lifecycle(),
-            reopened
-                .storage()
-                .recover_expected_control(binding.spec().source())
+        append_board_ticket_for_worker_at(
+            &reopened,
+            CommitSequence::new(2).expect("second sequence"),
+            0x43,
         );
+        let _ = crate::columnar_worker::run_one_test_pass(&reopened);
+        let replaced_recovery = reopened
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("reread replacement recovery")
+            .expect("replacement recovery control");
+        assert!(replaced_recovery.servable_generation().is_none());
+        assert_eq!(
+            replaced_recovery
+                .predecessor()
+                .map(|value| value.generation()),
+            Some(published_v2.generation())
+        );
+        let replacement_generation = replaced_recovery
+            .candidate()
+            .expect("replacement recovery candidate")
+            .generation();
+        assert!(replacement_generation > recovery_generation);
+        assert!(
+            replaced_recovery
+                .candidate()
+                .is_some_and(|candidate| candidate.artifact().is_none()),
+            "head movement allocates a new unprepared recovery candidate"
+        );
+        let _ = crate::columnar_worker::run_one_test_pass(&reopened);
+        let prepared_replacement = reopened
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("reread prepared replacement recovery")
+            .expect("prepared replacement recovery control");
+        assert!(prepared_replacement.candidate().is_some_and(|candidate| {
+            candidate.generation() == replacement_generation && candidate.artifact().is_some()
+        }));
+        let _ = crate::columnar_worker::run_one_test_pass(&reopened);
         let recovered = reopened
             .storage()
             .recover_expected_control(binding.spec().source())
@@ -5181,17 +5488,34 @@ contract VectorBoard version 1 {
             recovered
                 .servable_generation()
                 .map(|value| value.generation()),
-            Some(recovery_generation)
+            Some(replacement_generation)
         );
         assert_eq!(
             recovered.servable_generation().map(|value| value.layout()),
             Some(ColumnarProjectionLayoutV1::V2)
         );
+        let rebuilt = reopened_port
+            .observe("ticket_board")
+            .expect("capture rebuilt V2");
+        assert!(rebuilt.has_published());
+        let QueryResult::Rows(rebuilt_rows) = query_snapshot(
+            binding.definition(),
+            rebuilt.snapshot().as_ref(),
+            &board_query(),
+        )
+        .expect("query rebuilt V2") else {
+            panic!("board query returns rows");
+        };
+        let QueryResult::Rows(expected_rows) = expected_rows else {
+            panic!("board query returns rows");
+        };
+        assert_eq!(rebuilt_rows.rows.len(), expected_rows.rows.len() + 1);
         assert!(
-            reopened_port
-                .observe("ticket_board")
-                .expect("capture rebuilt V2")
-                .has_published()
+            expected_rows
+                .rows
+                .iter()
+                .all(|expected| rebuilt_rows.rows.contains(expected)),
+            "every authoritative row selected before corruption survives the rebuilt V2"
         );
 
         for (label, abort_at, unknown) in [
@@ -5718,6 +6042,58 @@ contract VectorBoard version 1 {
                 .expect("engine state")
                 .expect("active engine"),
             published.frontier()
+        );
+    }
+
+    // req: PERF-007, PERF-008, PRJ-008, PRJ-009, OQ-020, OQ-022
+    #[test]
+    fn production_vector_hot_path_performs_no_durable_control_reread() {
+        let (runtime, _scope) = production_vector_runtime("production-vector-hot-control");
+        request_projection(&runtime, "Document.embedding");
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        let binding = runtime
+            .control_binding("Document.embedding")
+            .expect("vector binding");
+        let vector_field = binding
+            .definition()
+            .projected_fields()
+            .iter()
+            .zip(binding.definition().projected_types())
+            .find_map(|(field, value_type)| {
+                (value_type.tag() == ValueTypeTag::Vector).then_some(*field)
+            })
+            .expect("vector field");
+        let organization = uuid_bytes(0x41);
+        let mut partition = PartitionKeyBuilder::new(AggregateTypeId::first());
+        partition
+            .push_uuid(&organization)
+            .expect("partition organization");
+        let request = VectorProjectionRequest::new(
+            "Document.embedding".to_owned(),
+            ContractLineage::new("VectorBoard").expect("lineage"),
+            partition.finish().expect("partition"),
+            CanonicalValue::Uuid(organization),
+            binding.definition().entity_type_id(),
+            vector_field,
+            EmbeddingMetadata::new("embed-v1", "2026-08-21").expect("model"),
+            0,
+            CanonicalVector::new(vec![1.0, 0.0, 0.0, 0.0]).expect("query vector"),
+            1,
+            DistanceMetric::Cosine,
+            Vec::new(),
+            None,
+            None,
+            None,
+        );
+        crate::storage::reset_columnar_control_recovery_reads();
+        assert!(matches!(
+            VectorProjectionPort::execute(&ServerColumnarProjectionPort::new(runtime), request),
+            Err(VectorProjectionPortError::Building)
+        ));
+        assert_eq!(
+            crate::storage::columnar_control_recovery_reads(),
+            0,
+            "the real vector port must use the gate-installed generation authority"
         );
     }
 

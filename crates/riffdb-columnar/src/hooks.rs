@@ -40,6 +40,8 @@ pub enum ColumnarTestBoundary {
     BeforeV2GenerationReclaim,
     /// After removing one durably unselected V2 generation, before parent sync.
     AfterV2GenerationReclaim,
+    /// After removing one retired V1 artifact member, before parent sync.
+    AfterV1ArtifactReclaim,
 }
 
 /// Fixed failpoint actions.

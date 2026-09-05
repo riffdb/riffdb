@@ -5,6 +5,8 @@
 
 //! Private sharing bridge for the one activated production redb port bundle.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -69,6 +71,21 @@ use riffdb_types::{
     EventConsumerIdentityHash, EventId, FrontierPosition, ProvenanceId, QueryModuleHash,
     ReactiveModuleHash,
 };
+
+#[cfg(test)]
+thread_local! {
+    static COLUMNAR_CONTROL_RECOVERY_READS: Cell<u64> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_columnar_control_recovery_reads() {
+    COLUMNAR_CONTROL_RECOVERY_READS.set(0);
+}
+
+#[cfg(test)]
+pub(crate) fn columnar_control_recovery_reads() -> u64 {
+    COLUMNAR_CONTROL_RECOVERY_READS.get()
+}
 
 /// A cloneable handle to the sole activated redb semantic-port bundle.
 ///
@@ -1238,6 +1255,8 @@ impl ColumnarProjectionControlRepository for SharedRedbOperationalPorts {
         &self,
         source: &ColumnarProjectionSourceV1,
     ) -> Result<Option<StoredColumnarProjectionControlV1>, StorageError> {
+        #[cfg(test)]
+        COLUMNAR_CONTROL_RECOVERY_READS.with(|reads| reads.set(reads.get().saturating_add(1)));
         ColumnarProjectionControlRepository::recover_expected_control(&self.shared, source)
     }
 
