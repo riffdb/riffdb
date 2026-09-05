@@ -23862,8 +23862,9 @@ work_packages:
     `PreservePublicationWitness`, and `DirectCommandWitness` roles with no `Clone`, `Copy`,
     `Default`, serialization, public constructor, or cross-role conversion. Queued sealing A/B/C
     consumes private P/A/B and produces private A/B/C plus separate FIFO P-to-A/A-to-B/B-to-C
-    publication witnesses. Preserve frames compose without advancing the application frontier;
-    publication consumes only its exact witness
+    publication witnesses. Queued service audit between A and B consumes private A, produces private
+    A-audit plus FIFO preserve A-to-A-audit without advancing the application frontier, and B consumes
+    private A-audit; publication consumes only its exact witness
   - Queued command-witness construction checks exact ADR-0104 composite predecessor/successor,
     inclusive
     `first = successor(predecessor)` and `count = last - first + 1`, segment/stage counts, and one
@@ -23919,9 +23920,11 @@ work_packages:
     `fresh_locator_miss_preserves_prior_identity_and_rejects_malformed_locators`, and
     `fresh_locator_coverage_classifies_every_publication_rebase_failure_and_restart`, covering
     `None`/raw zero/exhaustion, inclusive arithmetic, exact identity fields, prior locators, A/B/C
-    pipelining before A publication, wrong successors, witness loss, multiple private groups, direct
-    access with no composite stage, every exact permit and raw/extra mutation rejection, every named
-    preserving and disabling lane, suspended two-role Immediate rebind, 256 commands, 16 MiB, rebase
+    and A-to-audit-to-B pipelining before A publication, wrong successors, witness loss, multiple
+    private groups, direct access with no composite stage, same-successor Direct postcommit public-
+    prefix operational-miss use and private-chain continuation, wrong-role/root/frontier/allocator
+    negatives, every exact permit and raw/extra mutation rejection, every named preserving and
+    disabling lane, suspended two-role Immediate rebind, 256 commands, 16 MiB, rebase
     success/failure/uncertainty, and before/after-publication kills with hooks/channels and no sleeps
   - Req-tagged proof `cold_fresh_database_publications_complete_without_history_scans` running at
     least 288 bounded concurrent unique publications through direct inspection and
