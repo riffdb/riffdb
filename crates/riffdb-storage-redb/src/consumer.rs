@@ -411,7 +411,7 @@ impl RedbOperationalPorts {
                     status: current.as_ref().map(status_from_snapshot),
                 });
             };
-            replace_snapshot(&access, current.as_ref(), replacement.as_ref())?;
+            replace_snapshot_with_permit(&access, current.as_ref(), replacement.as_ref())?;
             access.commit_for(RedbTestOperation::EventConsumerTransition)?;
             return Ok(CoordinateConsumerLeaseResultV1 {
                 transition: EventConsumerTransitionResultV1::StateChanged,
@@ -572,7 +572,7 @@ impl RedbOperationalPorts {
             }
             EvaluatedEventConsumerTransitionV1::Retire(_) => return Err(corrupt()),
         };
-        replace_snapshot(&access, current.as_ref(), replacement.as_ref())?;
+        replace_snapshot_with_permit(&access, current.as_ref(), replacement.as_ref())?;
         access.commit_for(RedbTestOperation::EventConsumerTransition)?;
         Ok(CoordinateConsumerLeaseResultV1 {
             transition: EventConsumerTransitionResultV1::Applied,
@@ -636,7 +636,7 @@ impl RedbOperationalPorts {
             }
             EvaluatedEventConsumerTransitionV1::Retire(_) => return Err(corrupt()),
         };
-        replace_snapshot(&access, current.as_ref(), replacement.as_ref())?;
+        replace_snapshot_with_permit(&access, current.as_ref(), replacement.as_ref())?;
         access.commit_for(RedbTestOperation::EventConsumerTransition)?;
         Ok(EventConsumerTransitionResultV1::Applied)
     }
@@ -1042,10 +1042,7 @@ impl EventConsumerRepository for RedbOperationalPorts {
                 Ok(result)
             }
             EvaluatedEventConsumerTransitionV1::Replace(replacement) => {
-                expect_snapshot_removal(&access, current.as_ref(), identity)?;
-                expect_snapshot_installation(&access, replacement.as_ref())?;
-                access.close_fresh_locator_mutation_expectations()?;
-                replace_snapshot(&access, current.as_ref(), replacement.as_ref())?;
+                replace_snapshot_with_permit(&access, current.as_ref(), replacement.as_ref())?;
                 access.commit_for(RedbTestOperation::EventConsumerTransition)?;
                 Ok(EventConsumerTransitionResultV1::Applied)
             }
@@ -1214,6 +1211,18 @@ fn replace_snapshot(
     Ok(())
 }
 
+fn replace_snapshot_with_permit(
+    access: &crate::store::RedbWriteAccess,
+    current: Option<&EventConsumerSnapshotV1>,
+    replacement: &EventConsumerSnapshotV1,
+) -> Result<(), StorageError> {
+    let identity = replacement.consumer().identity().identity_hash();
+    expect_snapshot_removal(access, current, identity)?;
+    expect_snapshot_installation(access, replacement)?;
+    access.close_fresh_locator_mutation_expectations()?;
+    replace_snapshot(access, current, replacement)
+}
+
 fn remove_snapshot(
     access: &crate::store::RedbWriteAccess,
     current: Option<&EventConsumerSnapshotV1>,
@@ -1284,6 +1293,87 @@ fn expect_snapshot_installation(
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{RedbDormantPorts, RedbStore};
+    use riffdb_storage_api::{DatabaseInitializationPort, EventConsumerSnapshotV1};
+    use riffdb_types::{
+        EventConsumerName, QueryParameterHash, ReactiveModuleHash, ReactiveOperationName,
+    };
+    use std::path::PathBuf;
+
+    struct TestDatabasePath(
+        PathBuf,
+        #[allow(dead_code)] crate::test_path::ScopedDirectory,
+    );
+
+    impl TestDatabasePath {
+        fn new(name: &str) -> Self {
+            let scope = crate::test_path::ScopedDirectory::new(name);
+            Self(scope.join("database.redb"), scope)
+        }
+    }
+
+    fn test_database_id() -> DatabaseId {
+        DatabaseId::from_unix_milliseconds_and_random(1, [0x77; 10]).expect("database")
+    }
+
+    fn replacement() -> EventConsumerSnapshotV1 {
+        let identity = EventConsumerIdentityV1::new(
+            test_database_id(),
+            ReactiveModuleHash::from_bytes([1; 32]),
+            ReactiveOperationName::new("WorkspaceEvents").expect("operation"),
+            QueryParameterHash::from_bytes([2; 32]),
+            EventConsumerName::new("worker-1").expect("consumer"),
+        );
+        EventConsumerSnapshotV1::new(
+            StoredEventConsumerV1::initial(identity, PartitionKeyHash::from_bytes([3; 32]), 1)
+                .expect("initial consumer"),
+            Vec::new(),
+        )
+        .expect("replacement snapshot")
+    }
+
+    // req: OUT-001, OUT-002, TXN-042
+    #[test]
+    fn every_consumer_replacement_uses_one_closed_request_derived_permit() {
+        let path = TestDatabasePath::new("fresh-locator-consumer-replacement-permit");
+        let mut store = RedbStore::open(&path.0).expect("open store");
+        store
+            .initialize_database(test_database_id())
+            .expect("initialize store");
+        drop(store);
+        let store = RedbStore::open(&path.0).expect("reopen fresh process");
+        let ports = RedbDormantPorts {
+            shared: store.shared,
+        }
+        .into_operational_after_catalog_validation()
+        .expect("activate ports");
+
+        let access = ports.begin_write().expect("begin consumer write");
+        assert!(
+            access
+                .arm_fresh_locator_coverage_for_exact_empty_test()
+                .expect("arm exact empty test stamp")
+        );
+        let replacement = replacement();
+        replace_snapshot_with_permit(&access, None, &replacement)
+            .expect("typed replacement permit stages exact mutation set");
+        access
+            .commit_for(RedbTestOperation::EventConsumerTransition)
+            .expect("consumer replacement preserves coverage");
+
+        let continuation = ports.begin_write().expect("begin continuation");
+        assert!(
+            continuation
+                .fresh_locator_allows_miss()
+                .expect("matching private continuation")
+        );
+        continuation.abort().expect("abort continuation");
+    }
 }
 
 pub(crate) fn retention_low_water_from_table<T>(
