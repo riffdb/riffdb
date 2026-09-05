@@ -7697,91 +7697,102 @@ impl SharedRedb {
             return Ok(());
         };
         if let Err(error) = result {
+            self.disable_fresh_locator_coverage();
             self.fence_writes();
             return Err(error);
         }
         let batch = state.batch.clone();
         let covered_view = Arc::clone(&state.covered_view);
-        let current = self
-            .composite_publication
-            .read()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
-            .as_ref()
-            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
-            .capture()?;
-        let root = Arc::new(CheckpointRoot::new(
-            self.database.begin_read().map_err(transaction_error)?,
-        ));
-        if read_commit_tail(&root)? != batch.last_sequence
-            || read_administration_tail(&root)? != batch.last_administration_sequence
-        {
-            self.fence_writes();
-            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        let coverage_rebase = self.begin_fresh_locator_rebase()?;
+        let rebase_result = (|| -> Result<(), StorageError> {
+            let current = self
+                .composite_publication
+                .read()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+                .as_ref()
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+                .capture()?;
+            let root = Arc::new(CheckpointRoot::new(
+                self.database.begin_read().map_err(transaction_error)?,
+            ));
+            if read_commit_tail(&root)? != batch.last_sequence
+                || read_administration_tail(&root)? != batch.last_administration_sequence
+            {
+                self.fence_writes();
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+            if covered_view.overlay().published_application() != batch.last_sequence
+                || covered_view.overlay().published_administration()
+                    != batch.last_administration_sequence
+                || covered_view.overlay().terminal_frame_hash() != batch.last_hash
+            {
+                self.fence_writes();
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+            let successor = Arc::new(current.rebase_after(&covered_view, root, batch.last_hash)?);
+            let mut private = self
+                .private_composite_frontier
+                .lock()
+                .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+            if private
+                .as_ref()
+                .is_none_or(|private| !Arc::ptr_eq(private, &current))
+            {
+                self.fence_writes();
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+            self.composite_publication
+                .read()
+                .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?
+                .as_ref()
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+                .publish_rebased(&current, Arc::clone(&successor))?;
+            *private = Some(Arc::clone(&successor));
+            *self
+                .durable_read_frontier
+                .write()
+                .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))? =
+                Some(successor.checkpoint_root_shared());
+            let checkpoint_path = crate::journal::checkpoint_journal_path(&self.path);
+            let spare_path = crate::journal::spare_journal_path(&self.path);
+            let media = self.journal_media.as_ref();
+            if media
+                .try_exists(&spare_path)
+                .map_err(|_| storage_error(StorageErrorKind::Unavailable))?
+            {
+                self.fence_writes();
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+            media
+                .rename(&checkpoint_path, &spare_path)
+                .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
+            crate::journal::sync_parent_directory_with_media(media, &spare_path)
+                .map_err(journal_io_error)?;
+            let spare_header = crate::journal::JournalFileHeader::with_frontiers(
+                runtime.database_id,
+                runtime.last_sequence,
+                runtime.last_administration_sequence,
+                runtime.last_hash,
+            );
+            if let Err(error) = crate::journal::reset_journal_after_with_media(
+                media,
+                &spare_path,
+                &spare_header,
+                &crate::journal::journal_path(&self.path),
+            ) {
+                self.fence_writes();
+                return Err(journal_io_error(error));
+            }
+            *checkpoint = None;
+            Ok(())
+        })();
+        match rebase_result {
+            Ok(()) => self.finish_fresh_locator_rebase(coverage_rebase),
+            Err(error) => {
+                self.disable_fresh_locator_coverage();
+                Err(error)
+            }
         }
-        if covered_view.overlay().published_application() != batch.last_sequence
-            || covered_view.overlay().published_administration()
-                != batch.last_administration_sequence
-            || covered_view.overlay().terminal_frame_hash() != batch.last_hash
-        {
-            self.fence_writes();
-            return Err(storage_error(StorageErrorKind::InvariantViolation));
-        }
-        let successor = Arc::new(current.rebase_after(&covered_view, root, batch.last_hash)?);
-        let mut private = self
-            .private_composite_frontier
-            .lock()
-            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
-        if private
-            .as_ref()
-            .is_none_or(|private| !Arc::ptr_eq(private, &current))
-        {
-            self.fence_writes();
-            return Err(storage_error(StorageErrorKind::InvariantViolation));
-        }
-        self.composite_publication
-            .read()
-            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?
-            .as_ref()
-            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
-            .publish_rebased(&current, Arc::clone(&successor))?;
-        *private = Some(Arc::clone(&successor));
-        *self
-            .durable_read_frontier
-            .write()
-            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))? =
-            Some(successor.checkpoint_root_shared());
-        let checkpoint_path = crate::journal::checkpoint_journal_path(&self.path);
-        let spare_path = crate::journal::spare_journal_path(&self.path);
-        let media = self.journal_media.as_ref();
-        if media
-            .try_exists(&spare_path)
-            .map_err(|_| storage_error(StorageErrorKind::Unavailable))?
-        {
-            self.fence_writes();
-            return Err(storage_error(StorageErrorKind::InvariantViolation));
-        }
-        media
-            .rename(&checkpoint_path, &spare_path)
-            .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
-        crate::journal::sync_parent_directory_with_media(media, &spare_path)
-            .map_err(journal_io_error)?;
-        let spare_header = crate::journal::JournalFileHeader::with_frontiers(
-            runtime.database_id,
-            runtime.last_sequence,
-            runtime.last_administration_sequence,
-            runtime.last_hash,
-        );
-        if let Err(error) = crate::journal::reset_journal_after_with_media(
-            media,
-            &spare_path,
-            &spare_header,
-            &crate::journal::journal_path(&self.path),
-        ) {
-            self.fence_writes();
-            return Err(journal_io_error(error));
-        }
-        *checkpoint = None;
-        Ok(())
     }
 
     fn apply_published_journal_suffix(
