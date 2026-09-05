@@ -230,6 +230,7 @@ record with no front matter.
 | [0193](0193-separated-external-binary-text-interval-evidence.md) | Separated External Binary-Text Interval Evidence | Accepted | surface |
 | [0194](0194-generated-mcp-named-query-pagination-envelope.md) | Generated MCP Named-Query Pagination Envelope | Accepted | surface |
 | [0195](0195-demand-activated-columnar-runtime-materialization.md) | Demand-Activated Columnar Runtime Materialization | Accepted | guarantee |
+| [0196](0196-cold-columnar-query-outcome-alignment.md) | Cold Columnar Query Outcome Alignment | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented

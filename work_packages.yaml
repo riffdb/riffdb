@@ -23738,9 +23738,10 @@ work_packages:
     activation worker, and installing only the exactly selected validated immutable view.
   requirements: [PERF-019, PRJ-002, PRJ-004, PRJ-008, PRJ-009,
     OQ-019, OQ-020, OQ-022, PERF-007, PERF-008]
-  required_adrs: [ADR-0086, ADR-0156, ADR-0187, ADR-0190, ADR-0192, ADR-0195]
+  required_adrs: [ADR-0086, ADR-0156, ADR-0187, ADR-0190, ADR-0192, ADR-0195, ADR-0196]
   allowed_paths: [SPEC.md, work_packages.yaml,
-    adr/0195-demand-activated-columnar-runtime-materialization.md, adr/README.md,
+    adr/0195-demand-activated-columnar-runtime-materialization.md,
+    adr/0196-cold-columnar-query-outcome-alignment.md, adr/README.md,
     crates/riffdb-columnar/**, crates/riffdb-service/**, crates/riffdb-server/**,
     crates/riffdb-observability/**, crates/riffdb-testkit-server/**,
     fixtures/**, tests/**, scripts/**, docs/SUMMARY.md, docs/architecture/**,
