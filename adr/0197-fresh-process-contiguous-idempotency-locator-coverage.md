@@ -1,10 +1,10 @@
 ---
 adr: 0197
 title: Fresh-Process Contiguous Idempotency Locator Coverage
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-05
-accepted: null
+accepted: "2026-09-05"
 requires: [ADR-0004, ADR-0006, ADR-0058, ADR-0100, ADR-0101, ADR-0104, ADR-0156, ADR-0157, ADR-0165]
 amends: [ADR-0165]
 supersedes: []
