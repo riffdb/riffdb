@@ -36,6 +36,7 @@ use riffdb_types::{
     AdministrationSequence, CommitSequence, DatabaseId, DualFrontier, EmbeddingMetadata,
     IndexEpoch, IndexId, SchemaHash,
 };
+use sha2::{Digest, Sha256};
 
 use crate::codec::{
     decode_administration_audit_with_command_tables, decode_commit_with_event_table,
@@ -1020,6 +1021,20 @@ pub(crate) struct RedbWriteAccess {
     journal_checkpoint: Option<JournalRuntime>,
     composite_predecessor: Option<Arc<crate::composite_view::RedbCompositeReadView>>,
     composite_stage: Option<RefCell<crate::composite_view::RedbCompositeMutationStage>>,
+    fresh_locator_mutation_permits: RefCell<Vec<FreshLocatorMutationPermit>>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+#[repr(u8)]
+enum FreshLocatorMutationKind {
+    Insert,
+    Delete,
+}
+
+struct FreshLocatorMutationPermit {
+    table: Box<str>,
+    key: Box<[u8]>,
+    kind: FreshLocatorMutationKind,
 }
 
 enum RedbWriteOwnership {
@@ -1162,6 +1177,46 @@ struct ServiceAuditPublication {
 enum ImmediateCoverageWitness {
     Direct(crate::fresh_locator_coverage::DirectCommandWitness),
     Preserve(crate::fresh_locator_coverage::PreservingImmediateWitness),
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum PreservingImmediateClass {
+    Admission,
+    ExecutionFailure,
+    ServiceAudit,
+    Catalog,
+    QueryModule,
+    ReactiveModule,
+    CapabilityAdministration,
+    CapabilityBootstrap,
+    Projection,
+    Outbox,
+    Consumer,
+    ColumnarControl,
+    Installation,
+    Export,
+}
+
+impl PreservingImmediateClass {
+    const fn from_operation(operation: RedbTestOperation) -> Option<Self> {
+        match operation {
+            RedbTestOperation::Admission => Some(Self::Admission),
+            RedbTestOperation::ExecutionFailure => Some(Self::ExecutionFailure),
+            RedbTestOperation::ServiceAudit => Some(Self::ServiceAudit),
+            RedbTestOperation::CatalogAdministration => Some(Self::Catalog),
+            RedbTestOperation::QueryModuleAdministration => Some(Self::QueryModule),
+            RedbTestOperation::ReactiveModuleAdministration => Some(Self::ReactiveModule),
+            RedbTestOperation::CapabilityAdministration => Some(Self::CapabilityAdministration),
+            RedbTestOperation::CapabilityBootstrap => Some(Self::CapabilityBootstrap),
+            RedbTestOperation::ProjectionMutation => Some(Self::Projection),
+            RedbTestOperation::OutboxTransition => Some(Self::Outbox),
+            RedbTestOperation::EventConsumerTransition => Some(Self::Consumer),
+            RedbTestOperation::ColumnarProjectionControl => Some(Self::ColumnarControl),
+            RedbTestOperation::ApplicationInstallationCampaign => Some(Self::Installation),
+            RedbTestOperation::ApplicationExportOperation => Some(Self::Export),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1445,10 +1500,10 @@ impl RedbReadAccess {
     fn fresh_locator_coverage_stamp(
         &self,
     ) -> Result<crate::fresh_locator_coverage::CoverageStamp, StorageError> {
-        let allocator = self
+        let allocator_bytes = self
             .read_value(JournalTable::Meta, META_APPLICATION_SEQUENCE.as_bytes())?
             .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-        let allocator = crate::codec::decode_application_sequence_allocator_v1(&allocator)?
+        let allocator = crate::codec::decode_application_sequence_allocator_v1(&allocator_bytes)?
             .into_parts()
             .0;
         let administration = self
@@ -1466,6 +1521,7 @@ impl RedbReadAccess {
             self.application_frontier()?,
             administration_frontier_from_allocator(administration),
             allocator,
+            Sha256::digest(&allocator_bytes).into(),
         ))
     }
 }
@@ -4907,6 +4963,7 @@ impl RedbOperationalPorts {
             journal_checkpoint,
             composite_predecessor: None,
             composite_stage: None,
+            fresh_locator_mutation_permits: RefCell::new(Vec::new()),
         })
     }
 
@@ -5000,6 +5057,7 @@ impl RedbOperationalPorts {
             journal_checkpoint: None,
             composite_predecessor: Some(composite_predecessor),
             composite_stage: Some(RefCell::new(composite_stage)),
+            fresh_locator_mutation_permits: RefCell::new(Vec::new()),
         })
     }
 
@@ -5106,6 +5164,192 @@ impl RedbOperationalPorts {
 }
 
 impl RedbWriteAccess {
+    fn record_fresh_locator_mutation_permit(
+        &self,
+        table: &str,
+        key: &[u8],
+        kind: FreshLocatorMutationKind,
+    ) -> Result<(), StorageError> {
+        if key.is_empty() || key.len() > crate::journal::MAX_JOURNAL_FRAME_BYTES {
+            self.disable_fresh_locator_coverage();
+            return Err(storage_error(StorageErrorKind::LimitExceeded));
+        }
+        let Ok(mut permits) = self.fresh_locator_mutation_permits.try_borrow_mut() else {
+            self.disable_fresh_locator_coverage();
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        };
+        if permits.len() >= riffdb_storage_api::MAX_COMPOSITE_OVERLAY_TRANSITIONS {
+            drop(permits);
+            self.disable_fresh_locator_coverage();
+            return Err(storage_error(StorageErrorKind::LimitExceeded));
+        }
+        permits.push(FreshLocatorMutationPermit {
+            table: table.into(),
+            key: key.into(),
+            kind,
+        });
+        Ok(())
+    }
+
+    fn record_fresh_locator_journal_mutation(
+        &self,
+        mutation: &crate::journal::JournalMutation,
+    ) -> Result<(), StorageError> {
+        let kind = if mutation.value().is_some() {
+            FreshLocatorMutationKind::Insert
+        } else {
+            FreshLocatorMutationKind::Delete
+        };
+        self.record_fresh_locator_mutation_permit(mutation.table().label(), mutation.key(), kind)
+    }
+
+    pub(crate) fn register_fresh_locator_raw_insert(
+        &self,
+        table: JournalTable,
+        key: &[u8],
+    ) -> Result<(), StorageError> {
+        self.record_fresh_locator_mutation_permit(
+            table.label(),
+            key,
+            FreshLocatorMutationKind::Insert,
+        )
+    }
+
+    pub(crate) fn register_fresh_locator_byte_insert(
+        &self,
+        table: TableDefinition<'static, &'static [u8], &'static [u8]>,
+        key: &[u8],
+    ) -> Result<(), StorageError> {
+        self.record_fresh_locator_mutation_permit(
+            table.name(),
+            key,
+            FreshLocatorMutationKind::Insert,
+        )
+    }
+
+    pub(crate) fn register_fresh_locator_byte_delete(
+        &self,
+        table: TableDefinition<'static, &'static [u8], &'static [u8]>,
+        key: &[u8],
+    ) -> Result<(), StorageError> {
+        self.record_fresh_locator_mutation_permit(
+            table.name(),
+            key,
+            FreshLocatorMutationKind::Delete,
+        )
+    }
+
+    pub(crate) fn register_fresh_locator_meta_insert(
+        &self,
+        key: &'static str,
+    ) -> Result<(), StorageError> {
+        self.record_fresh_locator_mutation_permit(
+            crate::layout::META.name(),
+            key.as_bytes(),
+            FreshLocatorMutationKind::Insert,
+        )
+    }
+
+    fn fresh_locator_preserving_permit(
+        &self,
+        operation: RedbTestOperation,
+    ) -> Result<Option<crate::fresh_locator_coverage::PreservingImmediatePermit>, StorageError>
+    {
+        let Some(class) = PreservingImmediateClass::from_operation(operation) else {
+            return Ok(None);
+        };
+        let coverage_is_armed = self
+            .shared
+            .fresh_locator_coverage
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .private_stamp()
+            .is_some();
+        if !coverage_is_armed {
+            return Ok(None);
+        }
+        if !self
+            .shared
+            .publication_queue
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .pending
+            .is_empty()
+        {
+            self.disable_fresh_locator_coverage();
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let permits = self
+            .fresh_locator_mutation_permits
+            .try_borrow()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if permits.is_empty()
+            || permits.iter().any(|permit| {
+                matches!(
+                    permit.table.as_ref(),
+                    "commits"
+                        | "idempotency_locators"
+                        | "provenance_locators"
+                        | "audit_by_request_locators"
+                ) || (permit.table.as_ref() == crate::layout::META.name()
+                    && permit.key.as_ref() == META_APPLICATION_SEQUENCE.as_bytes())
+                    || !fresh_locator_action_allowed(class, permit.kind)
+                    || !fresh_locator_table_allowed(
+                        class,
+                        permit.table.as_ref(),
+                        permit.key.as_ref(),
+                    )
+            })
+        {
+            drop(permits);
+            self.disable_fresh_locator_coverage();
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let mutation_count = u16::try_from(permits.len())
+            .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+        let mut canonical = permits.iter().collect::<Vec<_>>();
+        canonical.sort_by(|left, right| {
+            left.table
+                .cmp(&right.table)
+                .then_with(|| left.key.cmp(&right.key))
+                .then_with(|| (left.kind as u8).cmp(&(right.kind as u8)))
+        });
+        if canonical.windows(2).any(|pair| {
+            pair[0].table == pair[1].table
+                && pair[0].key == pair[1].key
+                && pair[0].kind == pair[1].kind
+        }) {
+            drop(canonical);
+            drop(permits);
+            self.disable_fresh_locator_coverage();
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let mut digest = Sha256::new();
+        digest.update(b"riffdb-fresh-locator-preserving-permit-v1");
+        for permit in canonical {
+            digest.update((permit.table.len() as u64).to_le_bytes());
+            digest.update(permit.table.as_bytes());
+            digest.update([permit.kind as u8]);
+            digest.update((permit.key.len() as u64).to_le_bytes());
+            digest.update(permit.key.as_ref());
+        }
+        let exact_set_digest: [u8; 32] = digest.finalize().into();
+        Ok(Some(
+            crate::fresh_locator_coverage::FreshLocatorCoverage::preserving_permit(
+                mutation_count,
+                exact_set_digest,
+            ),
+        ))
+    }
+
+    fn disable_fresh_locator_coverage(&self) {
+        if let Ok(mut coverage) = self.shared.fresh_locator_coverage.lock() {
+            coverage.disable();
+        } else {
+            self.shared.fence_writes();
+        }
+    }
+
     fn fresh_locator_direct_segment_is_exact(
         &self,
         delta: &TransientIndexDelta,
@@ -5183,10 +5427,10 @@ impl RedbWriteAccess {
     pub(crate) fn fresh_locator_coverage_stamp(
         &self,
     ) -> Result<crate::fresh_locator_coverage::CoverageStamp, StorageError> {
-        let allocator = self
+        let allocator_bytes = self
             .read_command_value(JournalTable::Meta, META_APPLICATION_SEQUENCE.as_bytes())?
             .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-        let allocator = crate::codec::decode_application_sequence_allocator_v1(&allocator)?
+        let allocator = crate::codec::decode_application_sequence_allocator_v1(&allocator_bytes)?
             .into_parts()
             .0;
         let administration = self
@@ -5201,6 +5445,7 @@ impl RedbWriteAccess {
             application_frontier_from_allocator(allocator),
             administration_frontier_from_allocator(administration),
             allocator,
+            Sha256::digest(&allocator_bytes).into(),
         ))
     }
 
@@ -5482,6 +5727,7 @@ impl RedbWriteAccess {
             None => crate::journal::JournalMutation::put(table, key, value.into_bytes()),
         }
         .map_err(journal_storage_error)?;
+        self.record_fresh_locator_journal_mutation(&mutation)?;
         if let Some(transaction) = self.transaction.as_ref() {
             crate::journal::apply_mutation(transaction, &mutation).map_err(journal_io_error)?;
         }
@@ -5510,6 +5756,7 @@ impl RedbWriteAccess {
         let mutation =
             crate::journal::JournalMutation::delete_matching(table, key, &proven_current)
                 .map_err(journal_storage_error)?;
+        self.record_fresh_locator_journal_mutation(&mutation)?;
         if let Some(transaction) = self.transaction.as_ref() {
             crate::journal::apply_mutation(transaction, &mutation).map_err(journal_io_error)?;
         }
@@ -5582,6 +5829,7 @@ impl RedbWriteAccess {
             None => crate::journal::JournalMutation::put(table, key, value),
         }
         .map_err(journal_storage_error)?;
+        self.record_fresh_locator_journal_mutation(&mutation)?;
         if let Some(transaction) = self.transaction.as_ref() {
             crate::journal::apply_mutation(transaction, &mutation).map_err(journal_io_error)?;
         }
@@ -5609,6 +5857,7 @@ impl RedbWriteAccess {
     ) -> Result<(), StorageError> {
         let mutation = crate::journal::JournalMutation::put(table, key, value)
             .map_err(journal_storage_error)?;
+        self.record_fresh_locator_journal_mutation(&mutation)?;
         if let Some(transaction) = self.transaction.as_ref() {
             crate::journal::apply_mutation(transaction, &mutation).map_err(journal_io_error)?;
         }
@@ -5625,6 +5874,7 @@ impl RedbWriteAccess {
         };
         let mutation = crate::journal::JournalMutation::delete_matching(table, key, &prior)
             .map_err(journal_storage_error)?;
+        self.record_fresh_locator_journal_mutation(&mutation)?;
         if let Some(transaction) = self.transaction.as_ref() {
             crate::journal::apply_mutation(transaction, &mutation).map_err(journal_io_error)?;
         }
@@ -5652,6 +5902,7 @@ impl RedbWriteAccess {
             value.clone(),
         )
         .map_err(journal_storage_error)?;
+        self.record_fresh_locator_journal_mutation(&mutation)?;
         if let Some(transaction) = self.transaction.as_ref() {
             crate::journal::apply_mutation(transaction, &mutation).map_err(journal_io_error)?;
         }
@@ -5803,6 +6054,7 @@ impl RedbWriteAccess {
             }
             _ => false,
         };
+        let preserving_permit = self.fresh_locator_preserving_permit(operation)?;
         let coverage_witness = {
             let mut coverage = self
                 .shared
@@ -5814,9 +6066,11 @@ impl RedbWriteAccess {
                 predecessor
                     .and_then(|predecessor| coverage.begin_direct(predecessor, expected))
                     .map(ImmediateCoverageWitness::Direct)
-            } else if preserving_immediate_operation(operation) {
+            } else if let Some(permit) = preserving_permit {
                 predecessor
-                    .and_then(|predecessor| coverage.begin_preserving_immediate(predecessor))
+                    .and_then(|predecessor| {
+                        coverage.begin_preserving_immediate(predecessor, permit)
+                    })
                     .map(ImmediateCoverageWitness::Preserve)
             } else {
                 coverage.disable();
@@ -6339,6 +6593,7 @@ impl RedbDurabilityEpoch {
             journal_checkpoint: None,
             composite_predecessor: None,
             composite_stage: composite_stage.map(RefCell::new),
+            fresh_locator_mutation_permits: RefCell::new(Vec::new()),
         })
     }
 
@@ -6657,13 +6912,13 @@ impl SharedRedb {
         &self,
         view: &crate::composite_view::RedbCompositeReadView,
     ) -> Result<crate::fresh_locator_coverage::CoverageStamp, StorageError> {
-        let allocator = view
+        let allocator_bytes = view
             .resolve_point(
                 JournalTable::Meta.composite(),
                 META_APPLICATION_SEQUENCE.as_bytes(),
             )?
             .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-        let allocator = crate::codec::decode_application_sequence_allocator_v1(&allocator)?
+        let allocator = crate::codec::decode_application_sequence_allocator_v1(&allocator_bytes)?
             .into_parts()
             .0;
         Ok(crate::fresh_locator_coverage::CoverageStamp::new(
@@ -6671,6 +6926,7 @@ impl SharedRedb {
             view.overlay().published_application(),
             view.overlay().published_administration(),
             allocator,
+            Sha256::digest(&allocator_bytes).into(),
         ))
     }
 
@@ -8139,24 +8395,94 @@ fn next_commit_sequence(sequence: Option<CommitSequence>) -> Option<CommitSequen
     sequence.map_or(Some(CommitSequence::first()), CommitSequence::checked_next)
 }
 
-fn preserving_immediate_operation(operation: RedbTestOperation) -> bool {
-    matches!(
-        operation,
-        RedbTestOperation::Admission
-            | RedbTestOperation::ExecutionFailure
-            | RedbTestOperation::ServiceAudit
-            | RedbTestOperation::CatalogAdministration
-            | RedbTestOperation::QueryModuleAdministration
-            | RedbTestOperation::ReactiveModuleAdministration
-            | RedbTestOperation::ApplicationInstallationCampaign
-            | RedbTestOperation::ApplicationExportOperation
-            | RedbTestOperation::EventConsumerTransition
-            | RedbTestOperation::CapabilityAdministration
-            | RedbTestOperation::CapabilityBootstrap
-            | RedbTestOperation::OutboxTransition
-            | RedbTestOperation::ProjectionMutation
-            | RedbTestOperation::ColumnarProjectionControl
-    )
+fn fresh_locator_table_allowed(class: PreservingImmediateClass, table: &str, key: &[u8]) -> bool {
+    let administration_allocator =
+        table == crate::layout::META.name() && key == META_ADMINISTRATION_SEQUENCE.as_bytes();
+    match class {
+        PreservingImmediateClass::Admission => {
+            table == crate::layout::IDEMPOTENCY_PENDING.name()
+                || table == crate::layout::AUDIT.name()
+                || table == crate::layout::AUDIT_BY_REQUEST.name()
+                || administration_allocator
+        }
+        PreservingImmediateClass::ExecutionFailure => {
+            matches!(
+                table,
+                "idempotency_pending" | "idempotency" | "audit" | "audit_by_request"
+            ) || administration_allocator
+        }
+        PreservingImmediateClass::ServiceAudit => {
+            matches!(table, "audit" | "audit_by_request") || administration_allocator
+        }
+        PreservingImmediateClass::Catalog => {
+            matches!(
+                table,
+                "contract_bundles" | "catalog_active" | "audit" | "audit_by_request"
+            ) || administration_allocator
+        }
+        PreservingImmediateClass::QueryModule => {
+            matches!(
+                table,
+                "query_modules" | "query_module_active" | "audit" | "audit_by_request"
+            ) || administration_allocator
+        }
+        PreservingImmediateClass::ReactiveModule => {
+            matches!(table, "reactive_modules" | "audit" | "audit_by_request")
+                || administration_allocator
+        }
+        PreservingImmediateClass::CapabilityAdministration => {
+            matches!(
+                table,
+                "capabilities" | "capability_tokens" | "audit" | "audit_by_request"
+            ) || administration_allocator
+        }
+        PreservingImmediateClass::CapabilityBootstrap => {
+            matches!(
+                table,
+                "capabilities" | "capability_tokens" | "audit" | "audit_by_request" | "meta"
+            ) && (table != "meta"
+                || key == crate::layout::META_CAPABILITY_BOOTSTRAP.as_bytes()
+                || administration_allocator)
+        }
+        PreservingImmediateClass::Projection => matches!(
+            table,
+            "entities"
+                | "secondary_indexes"
+                | "index_epochs"
+                | "projection_state"
+                | "projection_frontier"
+                | "projection_applied"
+        ),
+        PreservingImmediateClass::Outbox => matches!(table, "outbox" | "outbox_status"),
+        PreservingImmediateClass::Consumer => {
+            matches!(table, "event_consumers" | "event_consumer_deliveries")
+        }
+        PreservingImmediateClass::ColumnarControl => table == "columnar_projection_controls",
+        PreservingImmediateClass::Installation => table == "application_installation_campaigns",
+        PreservingImmediateClass::Export => table == "application_export_operations",
+    }
+}
+
+const fn fresh_locator_action_allowed(
+    class: PreservingImmediateClass,
+    kind: FreshLocatorMutationKind,
+) -> bool {
+    match class {
+        PreservingImmediateClass::ExecutionFailure
+        | PreservingImmediateClass::Projection
+        | PreservingImmediateClass::Outbox
+        | PreservingImmediateClass::Consumer => true,
+        PreservingImmediateClass::Admission
+        | PreservingImmediateClass::ServiceAudit
+        | PreservingImmediateClass::Catalog
+        | PreservingImmediateClass::QueryModule
+        | PreservingImmediateClass::ReactiveModule
+        | PreservingImmediateClass::CapabilityAdministration
+        | PreservingImmediateClass::CapabilityBootstrap
+        | PreservingImmediateClass::ColumnarControl
+        | PreservingImmediateClass::Installation
+        | PreservingImmediateClass::Export => matches!(kind, FreshLocatorMutationKind::Insert),
+    }
 }
 
 fn exact_fresh_locator_segment(

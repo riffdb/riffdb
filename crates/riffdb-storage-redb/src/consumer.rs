@@ -411,7 +411,7 @@ impl RedbOperationalPorts {
                     status: current.as_ref().map(status_from_snapshot),
                 });
             };
-            replace_snapshot(transaction, current.as_ref(), replacement.as_ref())?;
+            replace_snapshot(&access, current.as_ref(), replacement.as_ref())?;
             access.commit_for(RedbTestOperation::EventConsumerTransition)?;
             return Ok(CoordinateConsumerLeaseResultV1 {
                 transition: EventConsumerTransitionResultV1::StateChanged,
@@ -572,7 +572,7 @@ impl RedbOperationalPorts {
             }
             EvaluatedEventConsumerTransitionV1::Retire(_) => return Err(corrupt()),
         };
-        replace_snapshot(transaction, current.as_ref(), replacement.as_ref())?;
+        replace_snapshot(&access, current.as_ref(), replacement.as_ref())?;
         access.commit_for(RedbTestOperation::EventConsumerTransition)?;
         Ok(CoordinateConsumerLeaseResultV1 {
             transition: EventConsumerTransitionResultV1::Applied,
@@ -636,7 +636,7 @@ impl RedbOperationalPorts {
             }
             EvaluatedEventConsumerTransitionV1::Retire(_) => return Err(corrupt()),
         };
-        replace_snapshot(transaction, current.as_ref(), replacement.as_ref())?;
+        replace_snapshot(&access, current.as_ref(), replacement.as_ref())?;
         access.commit_for(RedbTestOperation::EventConsumerTransition)?;
         Ok(EventConsumerTransitionResultV1::Applied)
     }
@@ -1042,12 +1042,12 @@ impl EventConsumerRepository for RedbOperationalPorts {
                 Ok(result)
             }
             EvaluatedEventConsumerTransitionV1::Replace(replacement) => {
-                replace_snapshot(transaction, current.as_ref(), replacement.as_ref())?;
+                replace_snapshot(&access, current.as_ref(), replacement.as_ref())?;
                 access.commit_for(RedbTestOperation::EventConsumerTransition)?;
                 Ok(EventConsumerTransitionResultV1::Applied)
             }
             EvaluatedEventConsumerTransitionV1::Retire(identity) => {
-                remove_snapshot(transaction, current.as_ref(), identity)?;
+                remove_snapshot(&access, current.as_ref(), identity)?;
                 access.commit_for(RedbTestOperation::EventConsumerTransition)?;
                 Ok(EventConsumerTransitionResultV1::Applied)
             }
@@ -1170,17 +1170,19 @@ where
 }
 
 fn replace_snapshot(
-    transaction: &redb::WriteTransaction,
+    access: &crate::store::RedbWriteAccess,
     current: Option<&EventConsumerSnapshotV1>,
     replacement: &EventConsumerSnapshotV1,
 ) -> Result<(), StorageError> {
+    let transaction = access.transaction()?;
     let identity = replacement.consumer().identity().identity_hash();
-    remove_snapshot(transaction, current, identity)?;
+    remove_snapshot(access, current, identity)?;
     let consumer_key = encode_event_consumer_key(identity);
     let consumer_value = encode_event_consumer_v1(replacement.consumer())?;
     let mut consumers = transaction
         .open_table(EVENT_CONSUMERS)
         .map_err(table_error)?;
+    access.register_fresh_locator_byte_insert(EVENT_CONSUMERS, &consumer_key)?;
     if consumers
         .insert(consumer_key.as_slice(), consumer_value.as_bytes())
         .map_err(precommit_storage_error)?
@@ -1195,6 +1197,7 @@ fn replace_snapshot(
     for delivery in replacement.deliveries() {
         let key = encode_event_consumer_delivery_key(identity, delivery.event_id());
         let value = encode_event_consumer_delivery_v1(delivery)?;
+        access.register_fresh_locator_byte_insert(EVENT_CONSUMER_DELIVERIES, &key)?;
         if deliveries
             .insert(key.as_slice(), value.as_bytes())
             .map_err(precommit_storage_error)?
@@ -1207,14 +1210,16 @@ fn replace_snapshot(
 }
 
 fn remove_snapshot(
-    transaction: &redb::WriteTransaction,
+    access: &crate::store::RedbWriteAccess,
     current: Option<&EventConsumerSnapshotV1>,
     identity: EventConsumerIdentityHash,
 ) -> Result<(), StorageError> {
+    let transaction = access.transaction()?;
     let consumer_key = encode_event_consumer_key(identity);
     let mut consumers = transaction
         .open_table(EVENT_CONSUMERS)
         .map_err(table_error)?;
+    access.register_fresh_locator_byte_delete(EVENT_CONSUMERS, &consumer_key)?;
     let removed = consumers
         .remove(consumer_key.as_slice())
         .map_err(precommit_storage_error)?;
@@ -1229,6 +1234,7 @@ fn remove_snapshot(
     if let Some(current) = current {
         for delivery in current.deliveries() {
             let key = encode_event_consumer_delivery_key(identity, delivery.event_id());
+            access.register_fresh_locator_byte_delete(EVENT_CONSUMER_DELIVERIES, &key)?;
             if deliveries
                 .remove(key.as_slice())
                 .map_err(precommit_storage_error)?
