@@ -175,11 +175,14 @@ MECHANICS_KEYS = %w[
 ].freeze
 
 ACTIVATION_KEYS = %w[
-  corpus rows samples cpu_method allocation_method matched_frontier matched_query_cases
-  projection_lag no_projection_bytes no_projection_modeled_owned_allocations
+  corpus rows partitions rows_per_partition samples cpu_method allocation_method matched_frontier
+  matched_query_cases partition_0_result_count partition_1_result_count projection_lag
+  no_projection_bytes no_projection_modeled_owned_allocations
   no_projection_population_passes no_v2_bytes no_v2_modeled_owned_allocations
+  v1_partition_0_query_p50_ns v1_partition_1_query_p50_ns
   v1_query_p50_ns v1_query_p95_ns v1_query_p99_ns v1_recovery_p50_ns
   v1_recovery_p95_ns v1_recovery_p99_ns v2_bytes v2_modeled_owned_allocations
+  v2_partition_0_query_p50_ns v2_partition_1_query_p50_ns
   v2_query_p50_ns v2_query_p95_ns v2_query_p99_ns v2_recovery_p50_ns
   v2_recovery_p95_ns v2_recovery_p99_ns rebuild_ns compaction_ns result_count
 ].freeze
@@ -205,12 +208,18 @@ def validate_activation(fields)
   require_exact_keys(fields, ACTIVATION_KEYS, "WP711_ACTIVATION")
   raise ReceiptError, "WP-711 corpus identity changed" unless fields.fetch("corpus") == "wp711-low-cardinality-v1-v2-v1"
   raise ReceiptError, "WP-711 corpus shape changed" unless integer(fields, "rows") == ROWS && integer(fields, "samples") == SAMPLES
+  unless integer(fields, "partitions") == 2 && integer(fields, "rows_per_partition") == 8_192
+    raise ReceiptError, "WP-711 partition shape changed"
+  end
   raise ReceiptError, "WP-711 CPU method changed" unless fields.fetch("cpu_method") == "single-thread_elapsed_ns"
   unless fields.fetch("allocation_method") == "wp710_modeled_owned_allocations_not_allocator_calls"
     raise ReceiptError, "WP-711 allocation method changed"
   end
   raise ReceiptError, "WP-711 matched frontier differs from corpus head" unless integer(fields, "matched_frontier") == ROWS
-  raise ReceiptError, "WP-711 matched result corpus is empty" unless integer(fields, "matched_query_cases").positive?
+  raise ReceiptError, "WP-711 matched result corpus differs" unless integer(fields, "matched_query_cases") == 2
+  unless integer(fields, "partition_0_result_count") == 8_192 && integer(fields, "partition_1_result_count") == 8_192
+    raise ReceiptError, "WP-711 partition result count differs"
+  end
   raise ReceiptError, "WP-711 projection lag is nonzero" unless integer(fields, "projection_lag").zero?
   %w[no_projection_bytes no_projection_modeled_owned_allocations no_projection_population_passes].each do |key|
     raise ReceiptError, "WP-711 no-projection control populated" unless integer(fields, key).zero?
@@ -220,8 +229,10 @@ def validate_activation(fields)
   raise ReceiptError, "WP-711 V2 artifact is empty" unless integer(fields, "v2_bytes").positive?
   raise ReceiptError, "WP-711 V2 allocation model is empty" unless integer(fields, "v2_modeled_owned_allocations").positive?
   %w[
+    v1_partition_0_query_p50_ns v1_partition_1_query_p50_ns
     v1_query_p50_ns v1_query_p95_ns v1_query_p99_ns v1_recovery_p50_ns
     v1_recovery_p95_ns v1_recovery_p99_ns v2_query_p50_ns v2_query_p95_ns
+    v2_partition_0_query_p50_ns v2_partition_1_query_p50_ns
     v2_query_p99_ns v2_recovery_p50_ns v2_recovery_p95_ns v2_recovery_p99_ns
     rebuild_ns compaction_ns
   ].each do |key|
@@ -260,6 +271,8 @@ def receipt(mechanics_line, activation_line, revision, before_host, after_load)
       "cargo_profile" => "release",
       "rust_toolchain" => capture!(pinned_rustc, "+1.97.0", "--version", "--verbose").strip,
       "rows" => ROWS,
+      "partitions" => 2,
+      "rows_per_partition" => 8_192,
       "samples" => SAMPLES,
       "cpu_method" => CPU_METHOD,
       "allocation_method" => ALLOCATION_METHOD
@@ -293,7 +306,10 @@ def validate_receipt(document)
   raise ReceiptError, "receipt CPU terminology differs" unless config.fetch("cpu_method") == CPU_METHOD
   raise ReceiptError, "receipt allocation terminology differs" unless config.fetch("allocation_method") == ALLOCATION_METHOD
   raise ReceiptError, "receipt release profile differs" unless config.fetch("cargo_profile") == "release"
-  raise ReceiptError, "receipt shape differs" unless config.fetch("rows") == ROWS && config.fetch("samples") == SAMPLES
+  unless config.fetch("rows") == ROWS && config.fetch("partitions") == 2 &&
+         config.fetch("rows_per_partition") == 8_192 && config.fetch("samples") == SAMPLES
+    raise ReceiptError, "receipt shape differs"
+  end
   raise ReceiptError, "receipt WP-710 command differs" unless document.dig("commands", "wp710_gate") == MECHANICS_COMMAND.join(" ")
   raise ReceiptError, "receipt WP-711 command differs" unless document.dig("commands", "wp711_activation") == ACTIVATION_COMMAND.join(" ")
   mechanics = document.fetch("wp710_mechanics").transform_values(&:to_s)
@@ -323,6 +339,8 @@ def self_test
     value = case key
             when "corpus" then "wp711-low-cardinality-v1-v2-v1"
             when "rows", "matched_frontier", "result_count" then ROWS
+            when "partitions", "matched_query_cases" then 2
+            when "rows_per_partition", "partition_0_result_count", "partition_1_result_count" then 8_192
             when "samples" then SAMPLES
             when "cpu_method" then "single-thread_elapsed_ns"
             when "allocation_method" then "wp710_modeled_owned_allocations_not_allocator_calls"

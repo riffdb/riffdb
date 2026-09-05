@@ -10,13 +10,19 @@ control pass. It never substitutes a model for a missing metric.
 ## Frozen method
 
 The activation corpus contains 16,384 primary-key-ordered `Ticket` rows at one
-matched authoritative frontier. It uses four deterministic low-cardinality
+matched authoritative frontier, divided between two compiled organization
+partitions of exactly 8,192 rows. It uses four deterministic low-cardinality
 titles and statuses, monotone primary keys and priorities, five unrecorded
-warmups, and 31 release-mode samples. The V1 control is built through the
-ordinary production projection engine and checkpoint path. The V2 arm prepares
-and completely validates an immutable generation, compares the registered query
-corpus with V1, installs the validated view in the production engine, reopens it
-from durable bytes, and prepares a disjoint compaction generation.
+warmups, and 31 release-mode samples. Each production request carries exactly
+one compiled organization scope and performs one ordinary bounded count. The
+private evidence referee alone sums the two 8,192-row results; neither runtime
+nor a public query crosses the frozen aggregate arithmetic limit. The receipt
+retains both per-partition p50/count fields and combined two-query timings/count.
+The V1 control is built through the ordinary production projection engine and
+checkpoint path. The V2 arm prepares and completely validates an immutable
+generation, compares both partition-scoped results with V1, installs the
+validated view in the production engine, reopens it from durable bytes, and
+prepares a disjoint compaction generation.
 
 CPU fields are **single-thread elapsed ns** measured with `Instant`; they are not
 hardware-counter samples. Allocation fields are the accepted **WP-710
