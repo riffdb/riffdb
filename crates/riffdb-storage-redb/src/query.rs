@@ -5,6 +5,8 @@
 
 //! One-transaction owned composite-query snapshots for redb.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::BTreeMap;
 #[cfg(test)]
 use std::sync::Mutex;
@@ -310,30 +312,24 @@ struct QueryTableOpenCounts {
 static QUERY_TABLE_OPEN_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[cfg(test)]
-static QUERY_TABLE_OPENS_COMMITS: AtomicU64 = AtomicU64::new(0);
-#[cfg(test)]
-static QUERY_TABLE_OPENS_ENTITIES: AtomicU64 = AtomicU64::new(0);
-#[cfg(test)]
-static QUERY_TABLE_OPENS_INDEXES: AtomicU64 = AtomicU64::new(0);
-#[cfg(test)]
-static QUERY_TABLE_OPENS_EPOCHS: AtomicU64 = AtomicU64::new(0);
+thread_local! {
+    static QUERY_TABLE_OPEN_COUNTS: Cell<QueryTableOpenCounts> =
+        const { Cell::new(QueryTableOpenCounts {
+            commits: 0,
+            entities: 0,
+            indexes: 0,
+            epochs: 0,
+        }) };
+}
 
 #[cfg(test)]
 fn reset_query_table_open_counts() {
-    QUERY_TABLE_OPENS_COMMITS.store(0, Ordering::Relaxed);
-    QUERY_TABLE_OPENS_ENTITIES.store(0, Ordering::Relaxed);
-    QUERY_TABLE_OPENS_INDEXES.store(0, Ordering::Relaxed);
-    QUERY_TABLE_OPENS_EPOCHS.store(0, Ordering::Relaxed);
+    QUERY_TABLE_OPEN_COUNTS.set(QueryTableOpenCounts::default());
 }
 
 #[cfg(test)]
 fn query_table_open_counts() -> QueryTableOpenCounts {
-    QueryTableOpenCounts {
-        commits: QUERY_TABLE_OPENS_COMMITS.load(Ordering::Relaxed),
-        entities: QUERY_TABLE_OPENS_ENTITIES.load(Ordering::Relaxed),
-        indexes: QUERY_TABLE_OPENS_INDEXES.load(Ordering::Relaxed),
-        epochs: QUERY_TABLE_OPENS_EPOCHS.load(Ordering::Relaxed),
-    }
+    QUERY_TABLE_OPEN_COUNTS.get()
 }
 
 #[derive(Clone, Copy)]
@@ -348,13 +344,17 @@ enum QueryTableKind {
 /// normal builds (same pattern as `note_query_module_pool_dispatch`).
 #[cfg(test)]
 fn note_query_table_open(kind: QueryTableKind) {
-    let counter = match kind {
-        QueryTableKind::Commits => &QUERY_TABLE_OPENS_COMMITS,
-        QueryTableKind::Entities => &QUERY_TABLE_OPENS_ENTITIES,
-        QueryTableKind::Indexes => &QUERY_TABLE_OPENS_INDEXES,
-        QueryTableKind::Epochs => &QUERY_TABLE_OPENS_EPOCHS,
-    };
-    counter.fetch_add(1, Ordering::Relaxed);
+    QUERY_TABLE_OPEN_COUNTS.with(|counts| {
+        let mut next = counts.get();
+        let counter = match kind {
+            QueryTableKind::Commits => &mut next.commits,
+            QueryTableKind::Entities => &mut next.entities,
+            QueryTableKind::Indexes => &mut next.indexes,
+            QueryTableKind::Epochs => &mut next.epochs,
+        };
+        *counter = counter.saturating_add(1);
+        counts.set(next);
+    });
 }
 
 #[cfg(not(test))]
@@ -2111,6 +2111,49 @@ query ProjectMembersInRange(
             );
         }
         codes
+    }
+
+    #[test]
+    fn query_table_open_counts_are_isolated_from_parallel_test_threads() {
+        reset_query_table_open_counts();
+        let worker_counts = std::thread::spawn(|| {
+            reset_query_table_open_counts();
+            note_query_table_open(QueryTableKind::Commits);
+            note_query_table_open(QueryTableKind::Entities);
+            query_table_open_counts()
+        })
+        .join()
+        .expect("counter thread");
+
+        assert_eq!(
+            worker_counts,
+            QueryTableOpenCounts {
+                commits: 1,
+                entities: 1,
+                indexes: 0,
+                epochs: 0,
+            }
+        );
+        assert_eq!(
+            query_table_open_counts(),
+            QueryTableOpenCounts::default(),
+            "another test thread must not perturb this thread's capture"
+        );
+
+        note_query_table_open(QueryTableKind::Indexes);
+        let other_counts = std::thread::spawn(query_table_open_counts)
+            .join()
+            .expect("second counter thread");
+        assert_eq!(other_counts, QueryTableOpenCounts::default());
+        assert_eq!(
+            query_table_open_counts(),
+            QueryTableOpenCounts {
+                commits: 0,
+                entities: 0,
+                indexes: 1,
+                epochs: 0,
+            }
+        );
     }
 
     // req: OQ-114, OQ-115
