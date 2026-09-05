@@ -1471,7 +1471,7 @@ fn activate_requested_slot(
         Err(error) => {
             slot.fail_activation(generation);
             if let Some(generation) = generation {
-                record_selected_v2_open_failure(runtime, name, generation)?;
+                record_selected_open_failure(runtime, name, generation)?;
             }
             return Err(ColumnarWorkerError::Apply(error));
         }
@@ -1482,7 +1482,7 @@ fn activate_requested_slot(
     Ok(true)
 }
 
-fn record_selected_v2_open_failure(
+fn record_selected_open_failure(
     runtime: &ColumnarRuntime,
     name: &str,
     generation: ProjectionGeneration,
@@ -1496,8 +1496,7 @@ fn record_selected_v2_open_failure(
     let Some(published) = control.published() else {
         return Ok(());
     };
-    if published.generation() != generation || published.layout() != ColumnarProjectionLayoutV1::V2
-    {
+    if published.generation() != generation {
         return Ok(());
     }
     let _ = runtime.storage().record_published_failure(&control);
