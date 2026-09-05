@@ -98,11 +98,37 @@ def run_cargo(command)
 end
 
 def marker(output, name)
-  lines = output.lines.select { |candidate| candidate.start_with?("#{name} ") }
-  raise ReceiptError, "missing #{name} marker" if lines.empty?
-  raise ReceiptError, "duplicate #{name} marker" unless lines.one?
+  token = "#{name} "
+  offsets = []
+  cursor = 0
+  while (offset = output.index(token, cursor))
+    offsets << offset
+    cursor = offset + token.bytesize
+  end
+  raise ReceiptError, "missing #{name} marker" if offsets.empty?
+  raise ReceiptError, "duplicate #{name} marker" unless offsets.one?
 
-  lines.fetch(0).strip
+  offset = offsets.fetch(0)
+  line_start = offset.zero? ? 0 : (output.rindex("\n", offset - 1)&.+(1) || 0)
+  line_end = output.index("\n", offset) || output.bytesize
+  prefix = output.byteslice(line_start...offset)
+  allowed_prefix = case name
+                   when "WP710_MECHANICS"
+                     "test segment_v2::tests::wp710_fixed_corpus_mechanics_receipt ... "
+                   when "WP711_ACTIVATION"
+                     "test wp711_production_v2_activation_receipt ... "
+                   else
+                     raise ReceiptError, "unknown marker identity #{name}"
+                   end
+  unless prefix.empty? || prefix == allowed_prefix
+    raise ReceiptError, "invalid #{name} line prefix"
+  end
+
+  result = output.byteslice(offset...line_end).strip
+  fields = parse_marker(result, name)
+  expected = name == "WP710_MECHANICS" ? MECHANICS_KEYS : ACTIVATION_KEYS
+  require_exact_keys(fields, expected, name)
+  result
 end
 
 def child_output(stdout, stderr)
@@ -307,13 +333,36 @@ def self_test
   end.join(" ")
   mechanics_fields = parse_marker(mechanics, "WP710_MECHANICS")
   activation_fields = parse_marker(activation, "WP711_ACTIVATION")
-  raise ReceiptError, "self-test did not accept a stderr marker" unless marker(child_output("", mechanics), "WP710_MECHANICS") == mechanics
+  framed = "test segment_v2::tests::wp710_fixed_corpus_mechanics_receipt ... #{mechanics}\n"
+  raise ReceiptError, "self-test did not accept a libtest-framed stderr marker" unless marker(child_output("", framed), "WP710_MECHANICS") == mechanics
   begin
     marker(child_output("", "#{mechanics}\n#{mechanics}\n"), "WP710_MECHANICS")
     raise ReceiptError, "self-test accepted duplicate WP-710 markers"
   rescue ReceiptError => error
     raise if error.message.start_with?("self-test")
   end
+  [
+    "warning: #{mechanics}\n",
+    "test segment_v2::tests::wp710_fixed_corpus_mechanics_receipt ... #{mechanics} trailing-junk\n",
+    "test segment_v2::tests::wp710_fixed_corpus_mechanics_receipt ... WP710_MECHANICS malformed\n"
+  ].each do |refused|
+    begin
+      marker(child_output("", refused), "WP710_MECHANICS")
+      raise ReceiptError, "self-test accepted spoofed or malformed WP-710 output"
+    rescue ReceiptError => error
+      raise if error.message.start_with?("self-test")
+    end
+  end
+  preserved_failed_attempt = <<~OUTPUT
+    running 1 test
+    test segment_v2::tests::wp710_fixed_corpus_mechanics_receipt ... WP710_MECHANICS rows=16384 samples=31 high_v1_bytes=1851404 high_v2_bytes=1609476 high_ratio_bps=8693 low_v1_bytes=1421324 low_v2_bytes=785287 low_ratio_bps=5525 v1_p50_ns=4148544 v1_p95_ns=4269694 v1_p99_ns=4449535 v2_p50_ns=4167364 v2_p95_ns=4253295 v2_p99_ns=4428394 decode_ratio_bps=10045 examined_rows_v1=16384 examined_rows_v2=16384 pruning_rejected=99 pruning_total=100 pruning_false_negatives=0 logical_allocations_v1=98304 logical_allocations_v2=98320
+    ok
+  OUTPUT
+  preserved = parse_marker(marker(child_output("", preserved_failed_attempt), "WP710_MECHANICS"), "WP710_MECHANICS")
+  unless preserved.values_at("high_ratio_bps", "low_ratio_bps", "decode_ratio_bps") == %w[8693 5525 10045]
+    raise ReceiptError, "self-test changed preserved failed-attempt metrics"
+  end
+  validate_mechanics(preserved)
   begin
     marker(child_output("", "no marker\n"), "WP710_MECHANICS")
     raise ReceiptError, "self-test accepted a missing WP-710 marker"
