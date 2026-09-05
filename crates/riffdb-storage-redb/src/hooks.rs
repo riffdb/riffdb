@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::io::Write;
 #[cfg(feature = "test-fixtures")]
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use riffdb_storage_api::{StorageError, StorageErrorKind};
@@ -112,6 +112,7 @@ struct TestControllerInner {
     index_migration: Mutex<IndexMigrationObservation>,
     audit_sequence_begin_reads: AtomicU64,
     fresh_locator_history_fallback_scans: AtomicU64,
+    corrupt_fresh_locator_successor_stamp: AtomicBool,
     #[cfg(feature = "test-fixtures")]
     external_kill_barrier: Option<PathBuf>,
     #[cfg(feature = "test-fixtures")]
@@ -148,6 +149,7 @@ impl RedbTestController {
                 index_migration: Mutex::new(IndexMigrationObservation::default()),
                 audit_sequence_begin_reads: AtomicU64::new(0),
                 fresh_locator_history_fallback_scans: AtomicU64::new(0),
+                corrupt_fresh_locator_successor_stamp: AtomicBool::new(false),
                 #[cfg(feature = "test-fixtures")]
                 external_kill_barrier: None,
                 #[cfg(feature = "test-fixtures")]
@@ -191,6 +193,24 @@ impl RedbTestController {
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 Some(current.saturating_add(1))
             });
+    }
+
+    /// Corrupts the successor allocator after coverage proof construction.
+    #[must_use]
+    pub fn corrupt_fresh_locator_successor_stamp_once() -> Self {
+        let controller = Self::observe_index_migration();
+        controller
+            .inner
+            .corrupt_fresh_locator_successor_stamp
+            .store(true, Ordering::Release);
+        controller
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_fresh_locator_successor_stamp_corruption(&self) -> bool {
+        self.inner
+            .corrupt_fresh_locator_successor_stamp
+            .swap(false, Ordering::AcqRel)
     }
 
     /// Injects one proven-not-committed storage failure.
@@ -259,6 +279,7 @@ impl RedbTestController {
                 index_migration: Mutex::new(IndexMigrationObservation::default()),
                 audit_sequence_begin_reads: AtomicU64::new(0),
                 fresh_locator_history_fallback_scans: AtomicU64::new(0),
+                corrupt_fresh_locator_successor_stamp: AtomicBool::new(false),
                 external_kill_barrier: Some(marker.into()),
                 external_engine_sync_armed: AtomicU64::new(0),
             }),
@@ -289,6 +310,7 @@ impl RedbTestController {
                 index_migration: Mutex::new(IndexMigrationObservation::default()),
                 audit_sequence_begin_reads: AtomicU64::new(0),
                 fresh_locator_history_fallback_scans: AtomicU64::new(0),
+                corrupt_fresh_locator_successor_stamp: AtomicBool::new(false),
                 external_kill_barrier: Some(marker.into()),
                 external_engine_sync_armed: AtomicU64::new(0),
             }),
@@ -368,6 +390,7 @@ impl RedbTestController {
                 index_migration: Mutex::new(IndexMigrationObservation::default()),
                 audit_sequence_begin_reads: AtomicU64::new(0),
                 fresh_locator_history_fallback_scans: AtomicU64::new(0),
+                corrupt_fresh_locator_successor_stamp: AtomicBool::new(false),
                 #[cfg(feature = "test-fixtures")]
                 external_kill_barrier: None,
                 #[cfg(feature = "test-fixtures")]

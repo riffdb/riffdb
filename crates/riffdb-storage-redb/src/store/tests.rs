@@ -2390,3 +2390,126 @@ fn preserving_bookkeeping_refuses_omitted_or_late_expectations_when_armed() {
         access.abort().expect("abort preserving proof");
     }
 }
+
+fn empty_armed_ports(
+    label: &str,
+    seed: u8,
+    controller: Option<RedbTestController>,
+) -> (RedbOperationalPorts, TestDatabasePath) {
+    let path = TestDatabasePath::new(label);
+    let mut store = RedbStore::open(&path.0).expect("open store");
+    store
+        .initialize_database(database_id(seed))
+        .expect("initialize store");
+    drop(store);
+    let store = match controller {
+        Some(controller) => RedbStore::open_with_test_controller(&path.0, controller)
+            .expect("reopen controlled fresh process"),
+        None => RedbStore::open(&path.0).expect("reopen fresh process"),
+    };
+    let ports = RedbDormantPorts {
+        shared: store.shared,
+    }
+    .into_operational_after_catalog_validation()
+    .expect("activate ports");
+    let access = ports.begin_write().expect("begin arm write");
+    assert!(
+        access
+            .arm_fresh_locator_coverage_for_exact_empty_test()
+            .expect("arm exact empty proof")
+    );
+    access.abort().expect("abort arm transaction");
+    (ports, path)
+}
+
+// req: OUT-001, OUT-002, TXN-042, REC-004
+#[test]
+fn postcommit_successor_stamp_failure_disables_fences_and_invalidates() {
+    let (ports, _path) = empty_armed_ports(
+        "fresh-locator-postcommit-stamp",
+        0x3d,
+        Some(RedbTestController::corrupt_fresh_locator_successor_stamp_once()),
+    );
+    let access = ports.begin_write().expect("begin preserving commit");
+    access
+        .expect_fresh_locator_byte_insert(crate::layout::EVENT_CONSUMERS, b"consumer")
+        .expect("expected consumer mutation");
+    access
+        .close_fresh_locator_mutation_expectations()
+        .expect("close exact permit");
+    access
+        .record_actual_fresh_locator_byte_insert(crate::layout::EVENT_CONSUMERS, b"consumer")
+        .expect("record actual consumer mutation");
+    access
+        .transaction()
+        .expect("transaction")
+        .open_table(crate::layout::EVENT_CONSUMERS)
+        .expect("consumer table")
+        .insert(b"consumer".as_slice(), b"row".as_slice())
+        .expect("stage consumer row");
+    let before = ports.shared.durable_commit_epoch.load(Ordering::Acquire);
+    let Err(error) = access.commit_for(RedbTestOperation::EventConsumerTransition) else {
+        panic!("postcommit successor decoding must not escape the fail-closed handler");
+    };
+    assert_eq!(
+        ports.shared.durable_commit_epoch.load(Ordering::Acquire),
+        before + 1,
+        "failure must be observed after the authoritative commit: {error:?}"
+    );
+    assert!(ports.shared.write_fenced.load(Ordering::Acquire));
+    assert!(matches!(
+        *ports.shared.transient_indexes.read().expect("indexes"),
+        TransientIndexState::Invalid
+    ));
+}
+
+// req: OUT-001, OUT-002, TXN-042, REC-004
+#[test]
+fn rebase_successor_read_and_coverage_lock_poison_fail_closed() {
+    let (ports, _path) = empty_armed_ports("fresh-locator-rebase-stamp", 0x3e, None);
+    let witness = ports
+        .shared
+        .begin_fresh_locator_rebase()
+        .expect("begin rebase")
+        .expect("armed rebase witness");
+    let transaction = ports.shared.database.begin_write().expect("raw test write");
+    transaction
+        .open_table(crate::layout::META)
+        .expect("meta table")
+        .insert(META_APPLICATION_SEQUENCE, b"malformed".as_slice())
+        .expect("corrupt successor allocator");
+    ports
+        .shared
+        .commit_durable(transaction)
+        .expect("publish malformed successor for handler proof");
+    assert!(
+        ports
+            .shared
+            .finish_fresh_locator_rebase(Some(witness))
+            .is_err()
+    );
+    assert!(ports.shared.write_fenced.load(Ordering::Acquire));
+
+    let (ports, _path) = empty_armed_ports("fresh-locator-rebase-lock-poison", 0x3f, None);
+    let witness = ports
+        .shared
+        .begin_fresh_locator_rebase()
+        .expect("begin rebase")
+        .expect("armed rebase witness");
+    let shared = Arc::clone(&ports.shared);
+    let poison = std::thread::spawn(move || {
+        let _guard = shared
+            .fresh_locator_coverage
+            .lock()
+            .expect("coverage lock before poison");
+        panic!("deterministic coverage-lock poison");
+    });
+    assert!(poison.join().is_err());
+    assert!(
+        ports
+            .shared
+            .abort_fresh_locator_rebase(Some(witness))
+            .is_err()
+    );
+    assert!(ports.shared.write_fenced.load(Ordering::Acquire));
+}
