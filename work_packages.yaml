@@ -2013,6 +2013,21 @@ work_packages:
     scale: One bundle/database has at most 256 specs/controls, structural legacy scanning stops at
       4,096 rows, keys are at most 291 bytes, definition semantics at most 1 MiB, control payloads
       at most 8,192 bytes, and rebuild streams within existing partition/segment/replay limits.
+  closure:
+    status: complete
+    completed_at: "2026-09-05"
+    requirements_satisfied: [PRJ-002, PRJ-004, PRJ-005, PRJ-006, PRJ-007, PRJ-010,
+      OQ-017, OQ-019, OQ-020, OQ-021, OQ-022, OQ-024, OQ-053]
+    evidence: Scalar and vector columnar sources now have schema-bound identities, complete
+      semantic hashes, and one bounded tag-67 durable control whose expected-control transitions,
+      retention inputs, uncertainty recovery, and V1 advancement preserve every disjoint V2
+      candidate. Startup establishes fresh authoritative BeforeFirst controls before reopening
+      readiness or pruning; legacy tag-65 values and name-derived files remain structurally
+      validated but inert. Checked-bundle resolution retains symbolic application names, rejects
+      duplicate or unsafe admission before I/O, and binds the closed provider, policy, replay, and
+      definition semantics. All six ADR-0192 obligations are proven, and package acceptance passed
+      all 9 gates with 1,526 of 1,526 tests; V2 publication remains owned by WP-711 and tag-65
+      removal remains owned by WP-757.
   human_review_triggers: *id001
 - id: WP-711
   name: Crash-safe columnar V2 rebuild, compaction, and zone-map activation
