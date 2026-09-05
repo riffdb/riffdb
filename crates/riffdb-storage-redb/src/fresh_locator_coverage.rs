@@ -362,6 +362,8 @@ impl FreshLocatorCoverage {
             || successor.application != witness.expected.application
             || successor.administration != witness.expected.administration
             || successor.allocator != witness.expected.allocator
+            || successor.application_authority_digest
+                != witness.expected.application_authority_digest
         {
             self.disable();
             return false;
@@ -390,6 +392,7 @@ impl FreshLocatorCoverage {
         if predecessor.root_identity == successor.root_identity
             || predecessor.application != successor.application
             || predecessor.allocator != successor.allocator
+            || predecessor.application_authority_digest != successor.application_authority_digest
             || witness.permit.mutation_count == 0
             || witness.permit.exact_set_digest == [0; 32]
         {
@@ -431,6 +434,7 @@ impl FreshLocatorCoverage {
             || predecessor.application != successor.application
             || predecessor.administration != successor.administration
             || predecessor.allocator != successor.allocator
+            || predecessor.application_authority_digest != successor.application_authority_digest
         {
             self.disable();
             return false;
@@ -507,10 +511,10 @@ mod tests {
     use riffdb_types::{AdministrationSequence, CommitSequence};
 
     fn stamp(root: usize, application: Option<u64>, administration: Option<u64>) -> CoverageStamp {
-        CoverageStamp::new(
+        stamp_with(
             root,
-            application.and_then(CommitSequence::new),
-            administration.and_then(AdministrationSequence::new),
+            application,
+            administration,
             application.map_or(ApplicationSequenceAllocator::initial(), |value| {
                 CommitSequence::new(value)
                     .and_then(CommitSequence::checked_next)
@@ -520,6 +524,22 @@ mod tests {
                     )
             }),
             [0xa5; 32],
+        )
+    }
+
+    fn stamp_with(
+        root: usize,
+        application: Option<u64>,
+        administration: Option<u64>,
+        allocator: ApplicationSequenceAllocator,
+        application_authority_digest: [u8; 32],
+    ) -> CoverageStamp {
+        CoverageStamp::new(
+            root,
+            application.and_then(CommitSequence::new),
+            administration.and_then(AdministrationSequence::new),
+            allocator,
+            application_authority_digest,
         )
     }
 
@@ -583,25 +603,45 @@ mod tests {
         assert!(!wrong_order.publish_command(publish_b));
         assert!(wrong_order.is_disabled());
         let _lost_publication_witness = publish_a;
-    }
 
-    // req: OUT-001, OUT-002, TXN-042
-    #[test]
-    fn fresh_locator_write_miss_retains_current_semantics_and_gates_only_coverage() {
-        let mut coverage = FreshLocatorCoverage::new();
-        assert!(coverage.try_arm(empty_authority(), stamp(2, None, None)));
-        assert!(coverage.allows_private_miss(stamp(2, None, None)));
-        assert!(!coverage.allows_private_miss(stamp(3, None, None)));
-        assert!(coverage.is_disabled());
-    }
+        let mut wrong_preserve_order = FreshLocatorCoverage::new();
+        assert!(wrong_preserve_order.try_arm(empty_authority(), stamp(1, None, None)));
+        let publish_a = wrong_preserve_order
+            .seal_command(stamp(1, Some(1), Some(2)), 1)
+            .expect("seal A");
+        let publish_audit = wrong_preserve_order
+            .seal_preserve(stamp(1, Some(1), Some(3)))
+            .expect("seal audit after A");
+        assert!(!wrong_preserve_order.publish_preserve(publish_audit));
+        assert!(wrong_preserve_order.is_disabled());
+        let _lost_command_witness = publish_a;
 
-    // req: OUT-001, OUT-002, TXN-042
-    #[test]
-    fn fresh_locator_miss_preserves_prior_identity_and_rejects_malformed_locators() {
-        let mut coverage = FreshLocatorCoverage::new();
-        assert!(coverage.try_arm(empty_authority(), stamp(3, None, None)));
-        assert!(!coverage.proves_public_absence(stamp(4, None, None)));
-        assert!(coverage.proves_public_absence(stamp(3, None, None)));
+        for invalid_successor in [
+            stamp(1, None, None),
+            stamp(1, Some(2), Some(2)),
+            stamp_with(
+                2,
+                Some(1),
+                Some(2),
+                ApplicationSequenceAllocator::next(
+                    CommitSequence::new(2).expect("allocator sequence"),
+                ),
+                [0xa5; 32],
+            ),
+        ] {
+            let mut invalid = FreshLocatorCoverage::new();
+            assert!(invalid.try_arm(empty_authority(), stamp(1, None, None)));
+            assert!(invalid.seal_command(invalid_successor, 1).is_none());
+            assert!(invalid.is_disabled());
+        }
+        let mut zero_count = FreshLocatorCoverage::new();
+        assert!(zero_count.try_arm(empty_authority(), stamp(1, None, None)));
+        assert!(
+            zero_count
+                .seal_command(stamp(1, Some(1), Some(2)), 0)
+                .is_none()
+        );
+        assert!(zero_count.is_disabled());
     }
 
     // req: OUT-001, OUT-002, TXN-042, REC-004, PERF-019
@@ -624,14 +664,175 @@ mod tests {
         assert!(!wrong.finish_direct(token, stamp(5, Some(2), Some(2))));
         assert!(wrong.is_disabled());
 
+        let mut wrong_direct_authority = FreshLocatorCoverage::new();
+        assert!(wrong_direct_authority.try_arm(empty_authority(), stamp(4, None, None)));
+        let token = wrong_direct_authority
+            .begin_direct(stamp(4, Some(1), Some(2)))
+            .expect("direct token");
+        assert!(!wrong_direct_authority.finish_direct(
+            token,
+            stamp_with(
+                5,
+                Some(1),
+                Some(2),
+                ApplicationSequenceAllocator::next(
+                    CommitSequence::new(2).expect("allocator sequence"),
+                ),
+                [0x5a; 32],
+            ),
+        ));
+        assert!(wrong_direct_authority.is_disabled());
+
+        for invalid_expected in [
+            stamp(5, Some(1), Some(2)),
+            stamp(4, None, Some(2)),
+            stamp_with(
+                4,
+                Some(1),
+                Some(2),
+                ApplicationSequenceAllocator::initial(),
+                [0xa5; 32],
+            ),
+        ] {
+            let mut invalid = FreshLocatorCoverage::new();
+            assert!(invalid.try_arm(empty_authority(), stamp(4, None, None)));
+            assert!(invalid.begin_direct(invalid_expected).is_none());
+            assert!(invalid.is_disabled());
+        }
+
+        let mut preserving = FreshLocatorCoverage::new();
+        assert!(preserving.try_arm(empty_authority(), stamp(6, None, None)));
+        let token = preserving
+            .begin_preserving_immediate(FreshLocatorCoverage::preserving_permit(1, [1; 32]))
+            .expect("preserving token");
+        assert!(!preserving.finish_preserving_immediate(
+            token,
+            stamp_with(
+                7,
+                None,
+                Some(1),
+                ApplicationSequenceAllocator::initial(),
+                [0x5a; 32],
+            ),
+        ));
+        assert!(preserving.is_disabled());
+
+        for (case, invalid_successor) in [
+            stamp(6, None, Some(1)),
+            stamp(7, Some(1), Some(1)),
+            stamp_with(
+                7,
+                None,
+                Some(1),
+                ApplicationSequenceAllocator::next(
+                    CommitSequence::new(2).expect("wrong allocator sequence"),
+                ),
+                [0xa5; 32],
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut invalid = FreshLocatorCoverage::new();
+            assert!(invalid.try_arm(empty_authority(), stamp(6, None, None)));
+            let token = invalid
+                .begin_preserving_immediate(FreshLocatorCoverage::preserving_permit(1, [1; 32]))
+                .expect("preserving token");
+            assert!(
+                !invalid.finish_preserving_immediate(token, invalid_successor),
+                "invalid preserving successor case {case}"
+            );
+            assert!(invalid.is_disabled());
+        }
+        for invalid_permit in [
+            FreshLocatorCoverage::preserving_permit(0, [1; 32]),
+            FreshLocatorCoverage::preserving_permit(1, [0; 32]),
+        ] {
+            let mut invalid = FreshLocatorCoverage::new();
+            assert!(invalid.try_arm(empty_authority(), stamp(6, None, None)));
+            match invalid.begin_preserving_immediate(invalid_permit) {
+                None => assert!(invalid.is_disabled()),
+                Some(token) => {
+                    assert!(!invalid.finish_preserving_immediate(token, stamp(7, None, Some(1))));
+                    assert!(invalid.is_disabled());
+                }
+            }
+        }
+
         let mut rebase = FreshLocatorCoverage::new();
         assert!(rebase.try_arm(empty_authority(), stamp(6, None, None)));
         let token = rebase.begin_rebase(stamp(6, None, None)).expect("rebase");
+        assert!(rebase.proves_public_absence(stamp(6, None, None)));
         assert!(rebase.abort_rebase(token));
+        assert!(rebase.allows_private_miss(stamp(6, None, None)));
         let token = rebase.begin_rebase(stamp(6, None, None)).expect("rebase");
         assert!(rebase.finish_rebase(token, stamp(7, None, None)));
         assert!(rebase.proves_public_absence(stamp(7, None, None)));
         assert!(rebase.allows_private_miss(stamp(7, None, None)));
+
+        let mut wrong_rebase_authority = FreshLocatorCoverage::new();
+        assert!(wrong_rebase_authority.try_arm(empty_authority(), stamp(8, None, None)));
+        let token = wrong_rebase_authority
+            .begin_rebase(stamp(8, None, None))
+            .expect("rebase token");
+        assert!(!wrong_rebase_authority.finish_rebase(
+            token,
+            stamp_with(
+                9,
+                None,
+                None,
+                ApplicationSequenceAllocator::initial(),
+                [0x5a; 32],
+            ),
+        ));
+        assert!(wrong_rebase_authority.is_disabled());
+
+        for (case, invalid_successor) in [
+            stamp(8, None, None),
+            stamp(9, Some(1), None),
+            stamp(9, None, Some(1)),
+            stamp_with(
+                9,
+                None,
+                None,
+                ApplicationSequenceAllocator::next(
+                    CommitSequence::new(2).expect("wrong allocator sequence"),
+                ),
+                [0xa5; 32],
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut invalid = FreshLocatorCoverage::new();
+            assert!(invalid.try_arm(empty_authority(), stamp(8, None, None)));
+            let token = invalid
+                .begin_rebase(stamp(8, None, None))
+                .expect("rebase token");
+            assert!(
+                !invalid.finish_rebase(token, invalid_successor),
+                "invalid rebase successor case {case}"
+            );
+            assert!(invalid.is_disabled());
+        }
+
+        let mut wrong_rebase_predecessor = FreshLocatorCoverage::new();
+        assert!(wrong_rebase_predecessor.try_arm(empty_authority(), stamp(10, None, None)));
+        assert!(
+            wrong_rebase_predecessor
+                .begin_rebase(stamp(11, None, None))
+                .is_none()
+        );
+        assert!(wrong_rebase_predecessor.is_disabled());
+
+        let mut uncertain_rebase = FreshLocatorCoverage::new();
+        assert!(uncertain_rebase.try_arm(empty_authority(), stamp(12, None, None)));
+        let token = uncertain_rebase
+            .begin_rebase(stamp(12, None, None))
+            .expect("rebase token");
+        uncertain_rebase.disable();
+        assert!(!uncertain_rebase.abort_rebase(token));
+        assert!(uncertain_rebase.is_disabled());
 
         let reopened = FreshLocatorCoverage::new();
         assert!(!reopened.proves_public_absence(stamp(7, None, None)));

@@ -6143,7 +6143,12 @@ impl RedbWriteAccess {
             // not have landed.
             return Err(error);
         }
-        self.shared.refresh_durable_read_frontier()?;
+        if let Err(error) = self.shared.refresh_durable_read_frontier() {
+            self.shared.disable_fresh_locator_coverage();
+            self.shared.fence_writes();
+            self.invalidate_transient_indexes();
+            return Err(error);
+        }
         if let Some(witness) = coverage_witness {
             let successor = self.shared.fresh_locator_current_stamp()?;
             let mut coverage = self
@@ -6167,6 +6172,7 @@ impl RedbWriteAccess {
         if let Some(runtime) = self.journal_checkpoint.take()
             && let Err(error) = self.shared.finish_journal_checkpoint(runtime)
         {
+            self.shared.disable_fresh_locator_coverage();
             self.invalidate_transient_indexes();
             return Err(error);
         }
@@ -6181,6 +6187,7 @@ impl RedbWriteAccess {
         if let Some(controller) = &self.shared.test_controller
             && let Err(error) = controller.after_commit(operation)
         {
+            self.shared.disable_fresh_locator_coverage();
             self.shared.write_fenced.store(true, Ordering::Release);
             return Err(error);
         }
@@ -7334,6 +7341,7 @@ impl SharedRedb {
             }
             pending.ticket.complete(publication.clone());
             if let Err(error) = publication {
+                self.disable_fresh_locator_coverage();
                 self.fence_writes();
                 for unpublished in queue.pending.drain(..) {
                     unpublished.ticket.complete(Err(error.clone()));
@@ -8132,6 +8140,7 @@ impl SharedRedb {
             return Ok(());
         };
         if let Err(error) = result {
+            self.disable_fresh_locator_coverage();
             self.fence_writes();
             return Err(error);
         }

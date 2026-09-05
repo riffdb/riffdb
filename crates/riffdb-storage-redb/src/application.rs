@@ -3358,7 +3358,7 @@ mod tests {
 
     // req: OUT-001, OUT-002, TXN-042, PERF-019
     #[test]
-    fn fresh_prefix_scan_count_is_proven_only_by_the_crate_private_hook() {
+    fn cold_fresh_database_publications_complete_without_history_scans() {
         let scope = crate::test_path::ScopedDirectory::new("fresh-prefix-private-scan-count");
         let path = scope.join("db.redb");
         let database_id =
