@@ -63,6 +63,7 @@ mod checkpoint;
 mod definition;
 mod engine;
 mod error;
+mod generation_root;
 mod hnsw;
 mod hooks;
 mod identity;
@@ -84,6 +85,12 @@ pub use definition::{
 };
 pub use engine::{ColumnarEngine, ColumnarSnapshotRebuild, OpenOptions};
 pub use error::{ColumnarError, StorageFailure};
+pub use generation_root::{
+    COLUMNAR_GENERATION_ROOT_FILE_NAME_V1, COLUMNAR_GENERATION_ROOT_FORMAT_VERSION_V1,
+    ColumnarGenerationRootError, ColumnarGenerationRootV1, ColumnarGenerationRootV1Entry,
+    MAX_COLUMNAR_GENERATION_ROOT_V1_BYTES, MAX_COLUMNAR_GENERATION_ROOT_V1_PARTITIONS,
+    PhysicalGenerationFingerprintV1,
+};
 pub use identity::{
     ColumnarDefinitionSemanticsV1, ColumnarIdentityError, ColumnarProjectionSpecV1,
     ColumnarSpecReplayLimitsV1, ColumnarVectorSpecExtensionV1,
