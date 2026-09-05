@@ -30,7 +30,7 @@ obligations:
   - id: OBL-0197-5
     package: WP-778
     proof: fresh_locator_coverage_classifies_every_publication_rebase_failure_and_restart
-    says: Every publication lane, checkpoint rebase, failure, uncertainty, invalidation, and restart preserves coverage only under the closed rules or disables it.
+    says: Every publication lane, checkpoint rebase, failure, uncertainty, invalidation, and restart preserves coverage only under the closed rules or disables it; Direct postcommit public-prefix operational-miss use and private-chain continuation share the exact successor, and wrong-role, root, frontier, or allocator evidence fails closed.
   - id: OBL-0197-6
     package: WP-778
     proof: cold_fresh_database_publications_complete_without_history_scans
@@ -57,7 +57,7 @@ history work stopped progress within the diagnostic bound.
 ADR-0165 does not authorize absence from a validated-prefix checkpoint. Locator
 tables are empty for pre-ADR histories and old clean certificates remain valid,
 so neither frontier nor cardinality proves every historical command has a
-locator. Proving at activation that no application command has ever existed does
+locator. Proving at the first command-write entry that no application command has ever existed does
 give an induction, but changes admission validation and requires this decision.
 
 ADR-0165 also contradicts itself: Decision 5 preserves registry digest and
@@ -95,7 +95,8 @@ opposite. If accepted, this record applies the exact correction marked there.
 4. Sealing a queued command consumes its matching `PrivateChainWitness` and
    returns a replacement private witness plus a distinct
    `CommandPublicationWitness` moved into that frame's FIFO payload. A queued
-   service audit returns a private replacement plus a distinct
+   service audit consumes its matching `PrivateChainWitness` and returns a
+   private replacement plus a distinct
    `PreservePublicationWitness`. Those roles and the direct witness in Decision
    9 implement no `Clone`, `Copy`, `Default`, serialization, public constructor,
    or cross-role conversion. Dropping, mismatching, or failing to consume one
