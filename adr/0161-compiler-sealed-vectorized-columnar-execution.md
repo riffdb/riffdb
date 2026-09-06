@@ -1,248 +1,239 @@
+---
+adr: "0161"
+title: Compiler-Sealed Vectorized Columnar Execution and Bounded Parallel Scans
+status: accepted
+tier: guarantee
+date: 2026-09-05
+accepted: "2026-09-06"
+requires: [ADR-0051, ADR-0053, ADR-0070, ADR-0071, ADR-0086, ADR-0087,
+  ADR-0111, ADR-0129, ADR-0130, ADR-0152, ADR-0160, ADR-0183, ADR-0187,
+  ADR-0190, ADR-0192, ADR-0195, ADR-0196, ADR-0200]
+amends: []
+supersedes: []
+requirements: [PRJ-001, PRJ-002, PRJ-003, PRJ-004, QRY-001, QRY-002,
+  QRY-003, QRY-004, QRY-005, OQ-017, OQ-019, OQ-020, OQ-021, OQ-022,
+  OQ-024, OQ-044, OQ-045, OQ-046, OQ-047, OQ-048, OQ-049, OQ-050,
+  OQ-051, OQ-052, OQ-055, PERF-001, PERF-007, PERF-008, PERF-018]
+packages: [WP-712, WP-713, WP-715]
+obligations:
+  - id: OBL-0161-1
+    package: WP-712
+    proof: vectorized_columnar_batches_match_independent_scalar_oracle
+    says: Every admitted V2 batch result and closed failure equals an independent scalar evaluation under the same logical order, bounds, and optional-value rules.
+  - id: OBL-0161-2
+    package: WP-712
+    proof: columnar_policy_precedes_selection_and_output_lane_materialization
+    says: Policy admission precedes every contribution to filtering or result shape, and rejected rows never decode output-only lanes.
+  - id: OBL-0161-3
+    package: WP-712
+    proof: columnar_batch_resources_and_failure_precedence_are_bounded
+    says: Widths, lane views, validity maps, selection vectors, partials, heaps, output, and deterministic failure precedence remain independently bounded.
+  - id: OBL-0161-4
+    package: WP-712
+    proof: scripts/columnar-vectorized-qualification
+    says: A fixed single-threaded V1, V2 scalar, and V2 batch receipt satisfies the predeclared mechanics gate before batch execution is selected.
+  - id: OBL-0161-5
+    package: WP-713
+    proof: parallel_columnar_scans_capture_one_active_generation
+    says: Every parallel query retains one validated Active generation and provider epoch and canonically merges bounded partials without mixed-frontier results.
+  - id: OBL-0161-6
+    package: WP-713
+    proof: parallel_columnar_scheduler_is_bounded_fair_and_shutdown_safe
+    says: The scan scheduler bounds workers, queues, tasks, buffers, fairness, cancellation, panic containment, and shutdown without partial results or storage authority.
+  - id: OBL-0161-7
+    package: WP-713
+    proof: cold_columnar_demand_never_enters_scan_scheduler
+    says: Cold and Activating demand returns the existing rowless Building outcome and only an already Active validated view can enter the query scheduler.
+  - id: OBL-0161-8
+    package: WP-713
+    proof: scripts/columnar-parallel-qualification
+    says: A fixed one/four-worker and simultaneous-interactive receipt satisfies the scaling and tail gates before parallel execution is selected.
+  - id: OBL-0161-9
+    package: WP-715
+    proof: scripts/columnar-program-b-referee
+    says: Cross-plane matched-frontier acceptance proves scalar, vectorized, parallel, policy, lifecycle, and public-surface equivalence on activated behavior.
+review_triggers:
+  - A caller or configuration value could select a lane, width, worker count, scheduler, pruning path, fallback, policy order, physical identity, or partial result.
+  - Policy could run after protected influence, an unauthorized row could affect a predicate, aggregate, order, top-N, work class, diagnostic, or timing class, or output-only data could be decoded for a rejected row.
+  - A query could mix generations or frontiers, bypass freshness or authorization safe points, expose a worker-owned handle, or fall back after a V2 failure.
+  - Batch or parallel execution would change exact arithmetic, optional-value meaning, total order, cursor identity, error precedence, saturation, cancellation, or public result bytes.
+  - A worker, queue, task, selection, partial, heap, buffer, wait, or diagnostic would lose its static global and per-query bound.
+  - The scan scheduler could activate, rebuild, catch up, publish, checkpoint, select, retain, or reclaim columnar state, or interfere with ADR-0187 shutdown abandonment.
+  - A query IR, module, descriptor, cursor, protocol, durable control, generation root, manifest, segment, provider-state identity, or topology window would change.
+  - WP-712, WP-713, or WP-715 would advance while barred by ADR-0183's performance-package freeze or would alter a frozen threshold or receipt identity.
+---
 # ADR-0161: Compiler-Sealed Vectorized Columnar Execution and Bounded Parallel Scans
-
-- **Status:** Proposed
-- **Direction approved:** No
-- **Exact text accepted:** No
-- **Decision deadline:** Before WP-712 adds a batch executor, selection vector,
-  late-materialization phase, or parallel segment scheduler
-- **Requires:** ADR-0051, ADR-0053, ADR-0070, ADR-0071, ADR-0086, ADR-0087,
-  ADR-0111, ADR-0129, ADR-0130, ADR-0152, ADR-0160
-- **Defines or blocks:** WP-712 and WP-713
-
-This record is planning input only until its exact text is accepted.
 
 ## Context
 
-ADR-0160 gives the derived columnar plane immutable typed lanes and exact
-segment-pruning evidence. The current executor remains row-at-a-time: it merges
-rows, reconstructs canonical cell values, evaluates predicates per row,
-materializes candidates, then sorts or folds them. Merely changing file layout
-would leave much of the CPU and allocation cost in that execution shape.
+ADR-0160 and WP-711 provide validated immutable V2 lane data, exact pruning,
+one durable generation selector, and atomic Active-view capture. The current
+query path still reconstructs row values before predicate, aggregate, order,
+and output work. Batch evaluation can avoid that cost, but its physical order,
+late decoding, and later parallel schedule must not change policy, exact
+results, failure precedence, freshness, cursor identity, or resource admission.
 
-Batch-at-a-time evaluation can amortize type dispatch, apply predicates to
-contiguous lanes, delay unrelated-column decode, and merge exact aggregate
-states efficiently. Parallel segment scans can use available cores on bounded
-analytical work. Both mechanisms are safety-sensitive. A different task order
-must not change exact arithmetic, total ordering, row-policy behavior, cursor
-identity, freshness, error precedence, or resource admission. Parallelism must
-not become an application knob or an unbounded task fan-out.
+Later accepted decisions also close boundaries the legacy proposal predates.
+ADR-0190/0192/0200 freeze V2 artifact and control identities; ADR-0195/0196
+keep sources cold until one activation worker installs a validated view and
+return rowless Building before then; ADR-0187 alone governs catch-up shutdown;
+ADR-0183 may bar these packages from advancing. This decision adds query
+mechanics only and grants none of those authorities to a scan executor.
 
-## Proposed Decision
+## Decision
 
-### 1. Compile one closed column-use and execution-phase program
+1. WP-712 adds one nonserializable, fields-private V2 batch program lowered
+   from the already checked compiler plan, provider descriptor, registered
+   definition, and Active generation. It seals exact fields, types, optional
+   states, predicates, aggregates, total order, result shape, bounds, and
+   charges. Requests and configuration supply none of that physical program.
 
-For each columnar plan, the compiler/provider descriptor seals the fields and
-operations needed for these ordered phases:
+2. An Active V2 view retains its already validated immutable segment owners,
+   primary-key and entity-version lanes, decoded directories, typed lane views,
+   and exact pruning evidence. Batch execution borrows those views; it does not
+   reread, rehash, reopen, or revalidate files per query and does not first
+   clone the complete generation into a second row-object population. V1 and a
+   database without selected V2 remain on their accepted scalar path.
 
-1. segment eligibility and exact zone-map pruning;
-2. policy evidence and row-policy evaluation;
-3. query predicates;
-4. grouping, aggregate input, or total-order keys;
-5. bounded top-K/window selection when requested; and
-6. final selected output materialization.
+3. Execution order is: capture one Active view and provider epoch; apply only
+   ADR-0160-authorized exact segment pruning; decode policy lanes and perform
+   policy admission; evaluate predicates; update grouping, aggregate, or order
+   state; select the bounded window/top-N; then decode selected output-only
+   lanes. Pruning before policy is allowed only for the already accepted
+   policy-aligned or fixed-work cases. A denied row influences no later stage.
 
-The program contains stable field IDs, exact types, predicate and aggregate
-identities, comparison/order semantics, missing/null behavior, fixed work and
-byte charges, and a compiler maximum batch width. It is immutable plan data,
-not request structure. Callers cannot submit a field, expression, operator,
-batch width, execution phase, physical lane, or fallback.
+4. One batch owns borrowed or bounded decoded lane slices, validity maps, and
+   a monotone selection vector. Selection begins in canonical segment row order
+   and may only clear positions; it cannot add, duplicate, or reorder them.
+   Every lane length equals the batch length before evaluation. No row owns a
+   task, proof, allocation, descriptor validation, or retained capability.
 
-Fields required by policy are read before a row can contribute to predicates,
-order, aggregation, counts, or output. Fields needed only for selected output
-are decoded after the final selection. Late materialization therefore narrows
-work but never postpones authorization.
+5. The closed widths are 64, 128, 256, 512, and 1024. The process-private
+   provider/program chooses one width no greater than the compiler maximum only
+   after checking worst-case lane, validity, selection, partial, and output
+   bytes. It remains fixed for that opened provider/program identity. Width is
+   neither caller-selected nor recorded in a durable generation, root,
+   manifest, segment, control, descriptor, query IR, module, plan, or cursor.
 
-### 2. Execute over bounded selection vectors
+6. Each operator has an independent scalar oracle using the same canonical
+   values and logical order. Vector results and closed failure classes equal it
+   for every admitted type, Missing/Null/Value state, direction, bound,
+   cancellation edge, and overflow. Batch width and completion order cannot
+   change error precedence. No floating point, CPU-specific arithmetic,
+   unsafe code, native dependency, or approximate substitute enters an exact
+   predicate, count, sum, mean, extrema, Boolean, distinct, or group operation.
 
-The V2 executor processes a segment in fixed-cardinality batches. One batch
-contains borrowed or bounded decoded lane slices, validity bitmaps, and a
-selection vector whose length never exceeds the plan maximum. Initial selection
-contains the segment's rows in primary-key order. Policy and predicate stages
-may only clear positions; they cannot introduce, duplicate, or reorder rows.
+7. Aggregate partials use ADR-0152's exact checked states and merge in canonical
+   root-inventory, segment-ID, then batch-ordinal order. Group keys retain
+   canonical typed order. A bounded top-N heap holds at most the compiler result
+   maximum plus its one continuation probe, compares the complete declared
+   total order plus unique entity-key tie-breaker, and sorts selected output
+   exactly once. Exhaustion returns no partial result.
 
-The initial closed batch-width set is `64`, `128`, `256`, `512`, and `1024`.
-The provider chooses one width at activation from the compiler maximum and
-checked worst-case row/intermediate bytes. The chosen width is recorded in the
-provider generation proof and remains fixed for that generation. It is not
-selected per request or from observed values.
+8. WP-712 is single-threaded and may select V2 batch execution only after the
+   differential, policy, allocation, and mechanics gates pass. The gate is at
+   least 35 percent less CPU per examined row on the registered full-scan
+   aggregate corpus or at least 1.5 times complete-query throughput, with no
+   more than five percent regression after selective zone-map pruning. A miss
+   leaves V2 scalar selected and publishes only value-free evidence. Once batch
+   execution is selected, its integrity, policy, bound, or lifecycle failure
+   never silently retries through scalar or V1.
 
-Each operator has an independent scalar reference implementation. Vectorized
-results must be bit-for-bit or value-for-value identical to that reference for
-every admitted type, optional state, direction, overflow, and boundary. No
-floating point or CPU-dependent arithmetic enters exact decimal, money, count,
-mean, min/max, or Boolean folds.
+9. WP-713 may add one process-global query-scan scheduler with a reviewed static
+   worker ceiling, bounded ready queue, bounded per-query tasks and buffers,
+   and finite fair-share admission. Its worker count is the lesser of that
+   ceiling and available parallelism and is not externally selectable. It owns
+   no storage, activation, catch-up, rebuild, control, frontier, publication,
+   checkpoint, retention, or fallback authority and cannot call an ADR-0187
+   worker-only apply entry point.
 
-### 3. Preserve deterministic aggregate and ordering semantics
+10. Only a request that already captured an Active validated view may submit
+    scan tasks. Cold or Activating demand follows ADR-0195 as corrected by
+    ADR-0196: it returns the existing rowless Building outcome immediately and
+    wakes only the sole activation worker. The scan scheduler neither opens a
+    source nor retains a cold request. Startup and no-demand close preserve
+    PERF-019's zero artifact-open and zero population-walk observations.
 
-Exact aggregate partial states use ADR-0152's checked merge laws. Parallel or
-batched execution merges them in canonical segment-ID then batch-ordinal order.
-An overflow, distinct-state bound, group bound, or invalid input returns the
-same closed failure independent of worker schedule.
+11. A parallel query retains one exact immutable generation, provider epoch,
+    and bounded task set. Compaction or publication may create a successor but
+    cannot replace captured handles. Workers return bounded partials tagged by
+    canonical segment and batch ordinal; the coordinator rejects missing,
+    duplicate, foreign, late, or excessive output and merges only after every
+    required task succeeds. No result combines generations, frontiers, or
+    policies, and a worker panic stops admission and returns no partial rows.
 
-For a compiler-declared bounded top-N query, the executor may maintain a heap
-bounded by the immutable maximum result cardinality plus continuation probe.
-Comparison uses the complete declared total order and unique entity-key
-tie-breaker. Final output is sorted exactly once by that order. A query without
-an admitted bounded top-N algorithm may use only its existing bounded candidate
-sort; it cannot silently materialize an unbounded population.
+12. Causal waiting and bounded freshness admission remain outside scan
+    execution; no scan task is submitted until an Active observation satisfies
+    the requested freshness, and causal waits retain post-wake authorization.
+    The existing pre-release safe point
+    catches revocation after execution. Deadlines and cancellation are checked
+    between batches and before response release, release all query-owned tasks,
+    buffers, handles, and proofs, and preserve typed saturation. Shutdown closes
+    scan admission, cancels and joins accepted query work before its retained
+    storage handles close, and causes no projection publication or checkpoint.
 
-Cursors bind the same logical result set, provider epoch, snapshot, order, and
-position as before. Physical batch width, segment task assignment, pruning
-count, and lane encoding never enter public cursor semantics.
+13. For inference-sensitive policy, task shape, pruning, early stop, aggregate
+    work, and telemetry use only policy-aligned state or one fixed admitted work
+    class independent of protected membership; otherwise the optimized plan is
+    unavailable. Public observations use fixed stage/work-class labels and no
+    source, tenant, segment, field, predicate, cardinality, skip count, key,
+    value, digest, path, or data-dependent dimension.
 
-### 4. Parallelize segments under one finite scheduler
+14. WP-713 selects parallel execution only after a registered 100k-row receipt
+    shows at least 1.5 times throughput from one to four admitted workers and
+    four-worker p95 at most 1.10 times single-worker p95 under simultaneous
+    interactive load, with unchanged correctness, write, catch-up, freshness,
+    lifecycle, and no-projection gates. A miss retains single-threaded batch
+    execution and value-free evidence.
 
-One process-global columnar scan scheduler owns a fixed worker ceiling, bounded
-ready queue, bounded per-query task count, and per-query cancellation token. A
-query may enqueue at most the compiler/provider segment ceiling and receives a
-fair-share admission bounded independently of tenant population. There is no
-thread or task per row, group, dictionary value, or result.
+15. This decision changes no authoritative or derived durable byte, generation
+    selection, artifact identity, retention fence, public protocol, generated
+    method, query result, cursor, freshness class, authorization safe point, or
+    acknowledgement. A need for serialized capability metadata or a new
+    topology node stops WP-712/WP-713 for separate review and scope. This record
+    does not lift ADR-0183; while its freeze is in force, WP-712, WP-713, and
+    WP-715 remain inert unless a later accepted lifting ADR names them.
 
-The production worker maximum is the lesser of a reviewed static ceiling and
-available parallelism. The scheduler may reduce active workers under service
-pressure, but cannot exceed that ceiling, change query semantics, admit more
-work, or suppress a typed saturation result. Query deadlines and cancellation
-are checked between batches and before result publication.
+## Options considered
 
-Parallel workers receive immutable validated segments, a nonserializable
-compiled program, an exact policy-evidence handle, and bounded output slots.
-They own no authoritative storage, capability mutation, projection frontier,
-publication, or fallback authority. The coordinator of one query validates one
-provider epoch, waits for its finite task set, canonically merges results, runs
-the existing pre-release authorization safe point, and only then releases the
-response.
-
-### 5. Keep freshness and publication atomic
-
-One query captures one published columnar snapshot and one provider epoch
-before scheduling. Every worker reads only that immutable snapshot. Compaction
-or a newer projection publication may proceed concurrently but cannot replace
-the query's retained segment handles. The response reports the captured
-frontier; it never combines batches from different frontiers or generations.
-
-Causal and bounded freshness waits remain outside scan execution and retain
-post-wake authorization. Revocation during execution is caught by the existing
-pre-release safe point. Cancellation releases tasks, buffers, snapshot handles,
-and provider proofs within a fixed deadline.
-
-### 6. Constrain policy-sensitive physical optimization
-
-Row policy is evaluated before any selected row contributes to result-shaping
-state. For policy shapes where physical pruning, task count, early top-K stop,
-or aggregate work could reveal a protected distribution, the compiler/provider
-must choose one of:
-
-- policy-aligned segment/provider state;
-- a fixed admitted work class independent of protected membership; or
-- typed unavailability for that optimized plan.
-
-It may not run a wider shared optimization and redact afterward. Public
-telemetry has fixed stage and work-class labels only; it carries no segment,
-field, predicate, tenant-cardinality, skip-count, or policy-result dimension.
-
-### 7. Retain a differential scalar oracle and fail closed
-
-The scalar reference evaluator remains test/runtime-diagnostic code until V2
-activation is complete. Production does not silently retry through V1 or a
-scalar scan after a V2 integrity, policy, bound, or lifecycle failure. A plan
-may name an existing compiler-proved equivalent fallback under ADR-0086, but
-the fallback decision is immutable plan policy and produces the existing typed
-lifecycle evidence.
-
-The implementation activates in two gates:
-
-- WP-712 proves single-threaded V2 batch execution and late materialization;
-- WP-713 adds bounded parallel scheduling and public projected-query use.
-
-WP-712 must reduce CPU per examined row by at least 35 percent on the registered
-full-scan aggregate corpus or improve its complete query throughput by at least
-1.5 times, with no more than five percent regression on selective queries after
-zone-map pruning. WP-713 must improve the registered 100k-row parallel scan by
-at least 1.5 times from one to four admitted workers while keeping p95 no more
-than 1.10 times the single-worker p95 under simultaneous interactive load.
-Failure leaves the prior production executor selected and retains value-free
-mechanics evidence.
-
-## Options Considered
-
-1. **SIMD-specialize the row evaluator:** rejected as the first step because
-   row objects and type dispatch remain the dominant representation boundary.
-2. **Spawn one task per segment without a shared scheduler:** rejected because
-   a query could monopolize runtime and memory by segment count.
-3. **Vectorize typed batches and schedule finite segment tasks:** proposed
-   because work remains compiler-bounded and deterministic while amortizing
-   dispatch and using available cores.
-4. **Return partial results when cancellation or one task fails:** rejected;
-   ordinary RiffDB query outcomes remain atomic.
+1. **Optimize reconstructed row objects:** rejected because it preserves the
+   allocation and dispatch boundary the V2 lane format was built to remove.
+2. **Put width or scheduling in generation evidence:** rejected because those
+   are execution mechanics and would rotate frozen durable identities.
+3. **Let each query spawn segment tasks:** rejected because segment count would
+   become uncoordinated global work and memory.
+4. **Use a sealed lane program, then a separate bounded scheduler:** selected;
+   it permits independent semantic and scheduling gates without granting query
+   workers projection-lifecycle authority.
 
 ## Consequences
 
-- Full and partially selective columnar scans consume less CPU and allocate far
-  fewer row objects.
-- Output-only fields are decoded only for authorized selected rows.
-- Parallel analytical work gains an explicit admission and fairness surface.
-- The engine must maintain scalar/vector differential tests and deterministic
-  merge rules.
-- CPU-specific SIMD, GPU execution, distributed scans, runtime plan changes,
-  and caller-selected parallelism remain deferred.
+- Selected V2 scans can avoid full-row reconstruction and output-only decoding.
+- Scalar, batch, and parallel implementations remain independently testable,
+  and failure leaves the last qualified executor selected.
+- Active-query CPU and buffers gain explicit fixed bounds; no scheduler work is
+  added to cold startup or no-demand clean close.
+- SIMD, GPU execution, distributed scans, caller tuning, partial results, and
+  incremental provider structures remain outside this decision.
 
-## Compatibility
+## Standing design tests
 
-This decision changes no RiffQL, query IR, module, plan, cursor, public wire,
-generated result, or authoritative format. Batch width and scheduling are
-private provider-generation facts. If a compiler/provider descriptor needs new
-physical capability metadata, it uses a least-sufficient successor registered
-under ADR-0124 while preserving old artifacts and semantics.
+- **Interface safety:** Applications and agents retain only compiled typed
+  operations and values. They cannot select physical lanes, width, workers,
+  scheduling, pruning, policy order, fallback, freshness, bounds, or partial
+  results, and no failure becomes success with fewer guarantees.
+- **Scale:** Batches, lane views, validity maps, selections, partials, heaps,
+  tasks, workers, queues, retained snapshots, outputs, waits, and diagnostics
+  have independent global and per-query bounds. The POC uses one process-local
+  scheduler over immutable derived segments but assumes neither co-located
+  authoritative storage, database-wide memory, nor a full-state rewrite.
 
-## Security
+## Checks
 
-Workers operate only on immutable authorized projection state and cannot access
-authoritative storage or widen policy. Policy fields are evaluated before
-result shaping, and inference-sensitive plans require policy-aligned state or a
-fixed work class. Cancellation, saturation, internal failures, and diagnostics
-release no partial protected rows or data-dependent labels.
-
-## Standing Design Tests
-
-- **Interface safety (AGENTS.md boundary 11):** applications still select one
-  finite compiled operation and typed values. They cannot select vectorization,
-  width, workers, pruning, policy order, fallback, partial results, freshness,
-  or budgets. Every failure remains typed and fail closed.
-- **Scale:** batches, selection vectors, partial states, top-K heaps, segment
-  tasks, workers, queues, retained snapshots, result buffers, waits, and
-  diagnostics are bounded before execution. Work is partition/segment scoped
-  and assumes neither database-wide memory nor co-located authoritative state.
-
-## Testing
-
-- Scalar/vector differential properties for every predicate, type, optional
-  state, aggregate, group, order, cursor, and overflow boundary.
-- Late-materialization spies proving output-only fields are untouched for
-  rejected rows while policy fields are always evaluated first.
-- Deterministic-schedule tests permuting segment and batch completion order and
-  asserting identical rows, ordering, exact states, failures, and digests.
-- Cancellation, saturation, slow-worker, panic containment, revocation,
-  compaction, publication, rebuild, and shutdown matrices.
-- Policy/inference tests proving hidden rows cannot affect released totals,
-  top-K, work classes, diagnostics, or partial output.
-- Architecture checks for one scheduler, no per-row task, no worker authority,
-  no public tuning input, and no unapproved scalar fallback.
-- Registered single/four-worker CPU, throughput, p50/p95/p99, allocation,
-  examined-row, skipped-segment, and projection-lag receipts.
-
-## Requirements and Work Packages
-
-- **Requirements:** `PRJ-001` through `PRJ-004`, `QRY-001` through `QRY-005`,
-  `OQ-017` through `OQ-024`, `OQ-044` through `OQ-055`, `PERF-001`,
-  `PERF-007`, `PERF-008`, `PERF-018`
-- **Vectorized executor:** `WP-712`
-- **Parallel scheduling and activation:** `WP-713`
-- **Final evidence:** `WP-715`
-
-## Decision Deadline
-
-Exact human acceptance is required before WP-712 adds a production batch
-program, selection-vector contract, batch-width identity, late-materialization
-path, or scan scheduler. Any change to row-policy ordering, freshness,
-authorization safe points, public results, or cursor semantics returns for
-separate review.
+- The nine front-matter obligations name the differential, policy-order,
+  resource, lifecycle, scheduler, performance, and cross-plane proofs.
+- Architecture checks freeze nonserializable program ownership, Active-only
+  scheduler admission, no worker lifecycle/storage authority, no physical
+  caller input, and no scalar fallback after selected V2 failure.
+- Deterministic schedules cover task permutations, cancellation, saturation,
+  panic, publication/compaction races, revocation, and shutdown without sleeps.
