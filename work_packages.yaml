@@ -24065,7 +24065,12 @@ work_packages:
     ADR-0124, ADR-0155, ADR-0194]
   allowed_paths: [SPEC.md, work_packages.yaml, Cargo.toml, Cargo.lock, adr/README.md,
     adr/0198-generated-mcp-catalog-descriptor-parity.md,
-    release/version-topology-v1.json, crates/riffdb-query-module/**,
+    release/version-topology-v1.json,
+    examples/agent-alpha/generated/mcp/tools.json,
+    examples/agent-alpha/riffdb.application.lock.json,
+    examples/ticketdesk/generated/mcp/tools.json,
+    examples/ticketdesk/riffdb.application.lock.json,
+    crates/riffdb-query-module/**,
     crates/riffdb-api-mcp/**, crates/riffdb-cli/**, crates/riffdb-testkit-server/**,
     templates/**, fixtures/**, tests/**, scripts/**, docs/**]
   deliverables:
