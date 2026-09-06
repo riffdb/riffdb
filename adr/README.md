@@ -235,6 +235,7 @@ record with no front matter.
 | [0198](0198-generated-mcp-catalog-descriptor-parity.md) | Generated MCP Catalog Descriptor Parity | Accepted | surface |
 | [0199](0199-performance-freeze-exceptions-for-named-lift-prerequisites.md) | Performance Freeze Exceptions for Named Lift Prerequisites | Accepted | guarantee |
 | [0200](0200-columnar-control-reset-for-history-incarnation.md) | Columnar Control Reset for History Incarnation | Proposed | guarantee |
+| [0201](0201-exact-adapter-evidence-classifications.md) | Exact Adapter Evidence Classifications | Proposed | surface |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
