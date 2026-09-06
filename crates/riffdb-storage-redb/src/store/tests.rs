@@ -2422,6 +2422,96 @@ fn empty_armed_ports(
     (ports, path)
 }
 
+// req: OUT-001, OUT-002, TXN-042, REC-004, PERF-019
+#[test]
+fn fresh_locator_raw_zero_allocator_is_corruption_and_disables_the_only_arm_opportunity() {
+    use riffdb_proto::storage::v1::{
+        StoredApplicationSequenceAllocatorV1, stored_application_sequence_allocator_v1::State,
+    };
+
+    let path = TestDatabasePath::new("fresh-locator-raw-zero-allocator");
+    let mut store = RedbStore::open(&path.0).expect("open store");
+    store
+        .initialize_database(database_id(0x41))
+        .expect("initialize store");
+    let ports = RedbDormantPorts {
+        shared: store.shared,
+    }
+    .into_operational_after_catalog_validation()
+    .expect("activate ports");
+    let raw_zero =
+        riffdb_proto::durable::encode_current_message(&StoredApplicationSequenceAllocatorV1 {
+            state: Some(State::NextCommitSequence(0)),
+        })
+        .expect("zero is wire-valid but semantically corrupt");
+    let transaction = ports.shared.database.begin_write().expect("raw test write");
+    transaction
+        .open_table(crate::layout::META)
+        .expect("meta table")
+        .insert(META_APPLICATION_SEQUENCE, raw_zero.as_slice())
+        .expect("install raw zero allocator");
+    ports
+        .shared
+        .commit_durable(transaction)
+        .expect("publish corrupt test fixture");
+
+    let access = ports.begin_write().expect("first command-write entry");
+    let error = access
+        .arm_fresh_locator_coverage()
+        .expect_err("raw Some(0) must not arm coverage");
+    assert_eq!(error.kind(), StorageErrorKind::CorruptData);
+    assert!(
+        access
+            .shared
+            .fresh_locator_coverage
+            .lock()
+            .expect("coverage state")
+            .is_disabled(),
+        "a corrupt first opportunity must be process-lifetime disabling"
+    );
+    access.abort().expect("abort corrupt arm transaction");
+}
+
+// req: OUT-001, OUT-002, TXN-042, REC-004, PERF-019
+#[test]
+fn fresh_locator_preserving_permit_accepts_exact_16_mib_and_refuses_one_byte_over() {
+    let (ports, _path) = empty_armed_ports("fresh-locator-16-mib-permit", 0x42, None);
+    let access = ports.begin_write().expect("begin exact-bound write");
+    let exact = vec![0x7a; crate::journal::MAX_JOURNAL_FRAME_BYTES];
+    access
+        .expect_fresh_locator_byte_insert(crate::layout::EVENT_CONSUMERS, &exact)
+        .expect("the exact 16-MiB verification input is bounded");
+    assert!(
+        access
+            .shared
+            .fresh_locator_coverage
+            .lock()
+            .expect("coverage state")
+            .is_armed()
+    );
+    access.abort().expect("abort exact-bound proof");
+    drop(exact);
+
+    let access = ports.begin_write().expect("begin one-over-bound write");
+    let oversized = vec![0x7b; crate::journal::MAX_JOURNAL_FRAME_BYTES + 1];
+    assert_eq!(
+        access
+            .expect_fresh_locator_byte_insert(crate::layout::EVENT_CONSUMERS, &oversized)
+            .expect_err("one byte beyond the frame ceiling must be refused")
+            .kind(),
+        StorageErrorKind::LimitExceeded
+    );
+    assert!(
+        access
+            .shared
+            .fresh_locator_coverage
+            .lock()
+            .expect("coverage state")
+            .is_disabled()
+    );
+    access.abort().expect("abort oversized proof");
+}
+
 // req: OUT-001, OUT-002, TXN-042, REC-004
 #[test]
 fn durable_root_capture_retries_the_engine_visible_before_identity_window() {
