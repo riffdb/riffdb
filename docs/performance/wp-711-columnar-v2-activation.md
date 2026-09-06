@@ -1,7 +1,7 @@
 # WP-711 columnar V2 production-activation receipt
 
-Status: **production-path receipt banked; WP-711 remains open pending exact
-human acceptance of stale-incarnation recovery authority and its proof**.
+Status: **production-path receipt banked and independently validated; WP-711 is
+complete with the accepted stale-incarnation recovery authority and proof**.
 
 WP-711 uses the frozen WP-710 mechanics gate as a mandatory preflight, then
 measures one production-shaped V1/V2 activation corpus. The generator writes no
@@ -59,18 +59,18 @@ result count, and any missing production worker/gate/acknowledgement evidence.
 ## Generated production-path receipt
 
 This receipt qualifies the production activation and non-regression evidence
-only. It does not close WP-711 or claim the still-pending stale-incarnation
-recovery proof.
+only. WP-711 closure additionally relies on the accepted ADR-0200
+stale-incarnation recovery proofs named in the package brief.
 
 The generated receipt is
 `docs/performance/wp-711-columnar-v2-activation.json`. Its schema is
 `riffdb.wp711.columnar-v2-activation-receipt.v1`, its SHA-256 is
-`61b00172d5fe9a6014728734ae9e308d4c1ca1fd6aa7486c131f0a878313d453`,
+`1d2d3607eea84af06dea24904b3214df3957ce7d1ea8cc3e1373dcfe0c1b7d9b`,
 and it is pinned to clean implementation and evidence-infrastructure revision
-`5fa2443090bcb76c77e420e8e3f57befd2768494`. The receipt was generated with
+`1660f9a36dbcffa54987f794e12ba703e135524b`. The receipt was generated with
 Rust 1.97.0 in release mode on an AMD Ryzen 9 7950X with 32 logical CPUs. The
 recorded load averages before and after the run were
-`6.02 14.24 14.48` and `9.14 14.37 14.51`, respectively.
+`31.29 34.80 35.39` and `60.09 47.57 40.38`, respectively.
 
 The unchanged WP-710 preflight passed every ADR-0160 threshold:
 
@@ -78,7 +78,7 @@ The unchanged WP-710 preflight passed every ADR-0160 threshold:
 |---|---:|---:|---|
 | High-cardinality bytes | 1,851,404 | 1,609,476 (8,693 bps) | Pass; maximum 11,000 bps |
 | Low-cardinality bytes | 1,421,324 | 785,287 (5,525 bps) | Pass; maximum 7,500 bps |
-| Full-decode p50 | 4,379,075 ns | 4,325,705 ns (9,878 bps) | Pass; maximum 10,500 bps |
+| Full-decode p50 | 9,477,204 ns | 6,133,828 ns (6,472 bps) | Pass; maximum 10,500 bps |
 | Clustered segment rejection | — | 99/100; zero false negatives | Pass; minimum 90 percent and zero false negatives |
 
 The production-activation corpus also passed every fail-closed control. Each of
@@ -93,19 +93,20 @@ publication acknowledgements, selected V2 generation 2, compaction generation
 |---|---:|---:|
 | Physical bytes | 1,372,395 | 841,935 |
 | Modeled owned allocations | 98,304 | 98,338 |
-| Combined bounded-query p50 | 4,227,975 ns | 4,146,925 ns |
-| Recovery p50 | 7,813,597 ns | 10,539,696 ns |
-| Rebuild elapsed | — | 245,713,753 ns |
-| Compaction elapsed | — | 267,661,139 ns |
+| Combined bounded-query p50 | 13,803,614 ns | 16,452,246 ns |
+| Recovery p50 | 27,119,137 ns | 71,551,873 ns |
+| Rebuild elapsed | — | 525,962,771 ns |
+| Compaction elapsed | — | 567,130,632 ns |
 
 V2 uses 38.65 percent fewer physical bytes in this production-shaped corpus;
-its combined hot-query p50 is 1.92 percent below V1. Cold V2 recovery p50 is
-34.89 percent above V1 because reopening pays complete selected-generation
-validation before an immutable view becomes available. That recovery delta is a
-review hazard, not a hidden failure. These single-host observations are package
-activation evidence, not public latency, storage-ratio, or allocation promises.
-The allocation figures remain the WP-710 modeled-owned-allocation metric and are
-not actual allocator calls.
+its combined hot-query p50 is 19.19 percent above V1. Cold V2 recovery p50 is
+163.84 percent above V1 because reopening pays complete selected-generation
+validation before an immutable view becomes available. Those latency deltas,
+recorded under the stated high host load, are review hazards, not hidden
+failures. These single-host observations are package activation evidence, not
+public latency, storage-ratio, or allocation promises. The allocation figures
+remain the WP-710 modeled-owned-allocation metric and are not actual allocator
+calls.
 
 ## Exact commands
 
