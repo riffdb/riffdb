@@ -61,8 +61,10 @@ data:
     database = "default"
     output = "json"
     max_attempts = 1
+    credential_file = "/run/riffdb-protected/readiness.credential"
     tls_trust_root = "/run/riffdb-protected/riffdb-ca.pem"
     tls_server_name = "riffdb.riffdb-alpha.svc"
+
 ---
 # Source: riffdb/templates/proxy.yaml
 apiVersion: v1
@@ -92,6 +94,7 @@ data:
       # Pass-through: TLS terminates at riffdbd, never at the proxy, so no
       # private key reaches this container.
       server riffdbd riffdb.riffdb-alpha.svc:7443
+
 ---
 # Source: riffdb/templates/pvc-backups.yaml
 apiVersion: v1
@@ -115,6 +118,7 @@ spec:
   resources:
     requests:
       storage: 20Gi
+
 ---
 # Source: riffdb/templates/proxy.yaml
 apiVersion: v1
@@ -137,6 +141,7 @@ spec:
     - name: grpc-tls
       port: 8443
       targetPort: grpc-tls
+
 ---
 # Source: riffdb/templates/service.yaml
 apiVersion: v1
@@ -161,6 +166,7 @@ spec:
     - name: grpc-tls
       port: 7443
       targetPort: grpc-tls
+
 ---
 # Source: riffdb/templates/proxy.yaml
 apiVersion: apps/v1
@@ -214,6 +220,7 @@ spec:
         - name: config
           configMap:
             name: riffdb-proxy-config
+
 ---
 # Source: riffdb/templates/statefulset.yaml
 apiVersion: apps/v1
@@ -242,7 +249,7 @@ spec:
       annotations:
         # Roll the pod when the rendered configuration changes, so a values edit
         # applies rather than sitting inert until the next unrelated restart.
-        riffdb.dev/config-checksum: 2376130e3a59a98ab7620d7d324dc2ed12587073917c93baa20779dba1621273
+        riffdb.dev/config-checksum: 0888265cf8ac63094c02bc01719fb997ab0a1ef698b207ae227092aeaf82885f
     spec:
       terminationGracePeriodSeconds: 25
       initContainers:

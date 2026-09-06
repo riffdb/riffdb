@@ -66,7 +66,8 @@ server:
       failureThreshold: 3
 
   # Name of a Secret holding server-chain.pem, server-key.pem, capability.keys,
-  # and idempotency.keys. The chart never renders these values.
+  # idempotency.keys, riffdb-ca.pem, and readiness.credential. The chart never
+  # renders these values.
   secretName: riffdb-server-secrets
   # Key within that Secret holding the trust root the health probes verify the
   # server's certificate against.
@@ -104,6 +105,19 @@ proxy:
 # evidence, not something an operator deploys, so they are opt-in here.
 acceptanceJobs:
   enabled: false
+  # These Secrets are provisioned outside this chart. Each must contain only
+  # the credential for its named principal and a ca.pem trust root.
+  applicationSecretName: riffdb-proof-application
+  operatorSecretName: riffdb-proof-operator
+  activeDeadlineSeconds: 60
+  backoffLimit: 0
+  resources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
 
 podSecurityContext:
   runAsNonRoot: true

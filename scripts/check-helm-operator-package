@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+# req: NET-010, NET-012, APE-002
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+fail() {
+    printf 'check-helm-operator-package: %s\n' "$1" >&2
+    exit 1
+}
+
+command -v helm >/dev/null 2>&1 || fail "helm is required"
+command -v ruby >/dev/null 2>&1 || fail "ruby is required for parsed manifest checks"
+
+chart="release/helm/riffdb"
+runbook="docs/operations/HELM-OPERATIONS.md"
+scratch="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-helm-operator.XXXXXX")"
+cleanup() {
+    rm -rf -- "$scratch"
+}
+trap cleanup EXIT INT TERM
+
+helm lint "$chart" >/dev/null
+helm template riffdb "$chart" \
+    --namespace riffdb-alpha \
+    --kube-version 1.29.0 \
+    --api-versions v1 \
+    --api-versions apps/v1 \
+    --api-versions batch/v1 >"$scratch/default.yaml"
+helm template riffdb "$chart" \
+    --namespace riffdb-alpha \
+    --kube-version 1.29.0 \
+    --api-versions v1 \
+    --api-versions apps/v1 \
+    --api-versions batch/v1 \
+    --set acceptanceJobs.enabled=true \
+    --set image.repository=wp727.invalid/riffdb >"$scratch/opt-in.yaml"
+
+ruby - "$scratch/default.yaml" "$scratch/opt-in.yaml" <<'RUBY'
+require "yaml"
+
+def fail(message)
+  warn "check-helm-operator-package: #{message}"
+  exit 1
+end
+
+def documents(path)
+  YAML.safe_load_stream(File.read(path), permitted_classes: [], aliases: false).compact
+rescue Psych::Exception => error
+  fail("cannot parse #{path}: #{error.message}")
+end
+
+def objects(documents, kind)
+  documents.select { |document| document["kind"] == kind }
+end
+
+default_documents = documents(ARGV.fetch(0))
+opt_in_documents = documents(ARGV.fetch(1))
+fail("the default render contains a proof Job") unless objects(default_documents, "Job").empty?
+fail("the chart renders a Secret") unless objects(default_documents, "Secret").empty? && objects(opt_in_documents, "Secret").empty?
+
+jobs = objects(opt_in_documents, "Job")
+fail("the opt-in render must contain exactly two Jobs") unless jobs.length == 2
+expected = {
+  "stable-application" => ["riffdb-proof-application", "riffdb-proof-application"],
+  "operator" => ["riffdb-proof-operator", "riffdb-proof-operator"]
+}
+actual_roles = jobs.map { |job| job.dig("metadata", "labels", "riffdb.dev/proof-role") }.sort
+fail("the two exact proof roles are absent") unless actual_roles == expected.keys.sort
+
+jobs.each do |job|
+  role = job.dig("metadata", "labels", "riffdb.dev/proof-role")
+  expected_name, expected_secret = expected.fetch(role)
+  fail("#{role} Job has the wrong name") unless job.dig("metadata", "name") == expected_name
+  spec = job.fetch("spec")
+  deadline = spec["activeDeadlineSeconds"]
+  fail("#{role} Job is not finitely deadline-bounded") unless deadline.is_a?(Integer) && deadline.between?(1, 300)
+  fail("#{role} Job may retry") unless spec["backoffLimit"] == 0
+
+  pod = spec.dig("template", "spec") || {}
+  fail("#{role} Job uses host networking") if pod["hostNetwork"]
+  fail("#{role} Job uses a host namespace") if pod["hostPID"] || pod["hostIPC"]
+  fail("#{role} Job restart policy is not Never") unless pod["restartPolicy"] == "Never"
+  containers = pod["containers"] || []
+  init_containers = pod["initContainers"] || []
+  fail("#{role} Job does not have one proof container") unless containers.length == 1
+  fail("#{role} Job does not have one protection init container") unless init_containers.length == 1
+  (containers + init_containers).each do |container|
+    fail("#{role} Job image is not chart appVersion-bound") unless container["image"] == "wp727.invalid/riffdb:0.1.0"
+    fail("#{role} Job exposes a host port") if (container["ports"] || []).any? { |port| port.key?("hostPort") }
+  end
+
+  init = init_containers.first
+  fail("#{role} Job does not use the protected-copy boundary") unless init["command"] == ["copy-protected", "/incoming", "/protected"]
+  health = containers.first
+  expected_args = [
+    "--endpoint", "https://riffdb.riffdb-alpha.svc:7443",
+    "--database", "default", "--output", "json", "--max-attempts", "1",
+    "--credential-file", "/run/riffdb-proof/credential", "server", "health"
+  ]
+  fail("#{role} Job is not the exact health-only command") unless health["command"] == ["riffdb"] && health["args"] == expected_args
+  serialized = YAML.dump(job)
+  fail("#{role} Job contains a loopback shortcut") if serialized.match?(/localhost|127\.0\.0\.1/)
+  fail("#{role} Job has no bounded resources") unless health["resources"].is_a?(Hash) && health["resources"].keys.sort == ["limits", "requests"]
+  fail("#{role} Job does not drop Linux capabilities") unless health.dig("securityContext", "capabilities", "drop") == ["ALL"]
+  fail("#{role} Job root filesystem is writable") unless health.dig("securityContext", "readOnlyRootFilesystem") == true
+
+  environment = (health["env"] || []).to_h { |entry| [entry["name"], entry["value"]] }
+  fail("#{role} Job lacks the protected TLS trust root") unless environment["RIFFDB_TLS_TRUST_ROOT"] == "/run/riffdb-proof/ca.pem"
+  fail("#{role} Job does not verify service DNS") unless environment["RIFFDB_TLS_SERVER_NAME"] == "riffdb.riffdb-alpha.svc"
+  volumes = (pod["volumes"] || []).to_h { |volume| [volume["name"], volume] }
+  fail("#{role} Job does not use its separate external Secret") unless volumes.dig("proof-secret", "secret", "secretName") == expected_secret
+  fail("#{role} Job Secret mode is not owner-readable only") unless volumes.dig("proof-secret", "secret", "defaultMode") == 256
+  fail("#{role} Job protected volume is not memory-backed") unless volumes.dig("protected", "emptyDir", "medium") == "Memory"
+end
+
+config = objects(opt_in_documents, "ConfigMap").find { |object| object.dig("metadata", "name") == "riffdb-config" }
+fail("server ConfigMap is absent") unless config
+liveness = config.dig("data", "liveness.toml") || ""
+readiness = config.dig("data", "readiness.toml") || ""
+fail("liveness is not payload-free and unauthenticated") if liveness.include?("credential_file")
+fail("readiness is not authenticated through the protected volume") unless readiness.include?('credential_file = "/run/riffdb-protected/readiness.credential"')
+
+stateful_set = objects(opt_in_documents, "StatefulSet").first
+fail("StatefulSet is absent") unless stateful_set
+server_container = stateful_set.dig("spec", "template", "spec", "containers")&.find { |container| container["name"] == "riffdbd" }
+fail("server resources are unbounded") unless server_container&.dig("resources", "requests") && server_container&.dig("resources", "limits")
+server_config = config.dig("data", "riffdbd.toml") || ""
+%w[max_connections max_streams_per_connection handshake_timeout_seconds idle_timeout_seconds keepalive_interval_seconds drain_timeout_seconds].each do |bound|
+  fail("server configuration omits #{bound}") unless server_config.match?(/^#{bound} = [1-9][0-9]*$/)
+end
+
+backup = objects(opt_in_documents, "PersistentVolumeClaim").find { |object| object.dig("metadata", "name") == "riffdb-backups" }
+fail("backup claim is absent") unless backup
+fail("backup claim lacks the keep policy") unless backup.dig("metadata", "annotations", "helm.sh/resource-policy") == "keep"
+RUBY
+
+[[ -f "$runbook" ]] || fail "operator runbook is missing: $runbook"
+for marker in \
+    "Install" \
+    "Controlled network" \
+    "Authenticated readiness" \
+    "Drain" \
+    "Verified backup" \
+    "Storage preflight" \
+    "Chart upgrade" \
+    "Certificate rotation" \
+    "Credential rotation" \
+    "Restore" \
+    "Deployment rollback" \
+    "Durable downgrade refusal"; do
+    rg -q "^## ${marker}$" "$runbook" \
+        || fail "operator runbook omits the exact '${marker}' operation marker"
+done
+rg -q 'controlled design-partner network' "$runbook" \
+    || fail "operator runbook omits the controlled-network boundary"
+rg -q 'riffdb storage preflight' "$runbook" \
+    || fail "operator runbook omits the durable-format compatibility preflight"
+rg -q 'successor.*prove.*switch.*revoke' "$runbook" \
+    || fail "operator runbook omits successor-prove-switch-revoke credential rotation"
+rg -q 'does not prove.*published|does not claim.*published' "$runbook" \
+    || fail "operator runbook does not separate local rehearsal from publication evidence"
+
+echo "check-helm-operator-package-v1 chart proofs and operator runbook passed"

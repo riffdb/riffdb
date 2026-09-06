@@ -55,5 +55,6 @@ data:
     database = "default"
     output = "json"
     max_attempts = 1
+    credential_file = "/run/riffdb-protected/readiness.credential"
     tls_trust_root = "/run/riffdb-protected/{{ .Values.server.tlsTrustRootFile }}"
     tls_server_name = {{ include "riffdb.serverName" . | quote }}
