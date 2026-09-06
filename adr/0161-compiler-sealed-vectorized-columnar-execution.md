@@ -162,8 +162,10 @@ mechanics only and grants none of those authorities to a scan executor.
     required task succeeds. No result combines generations, frontiers, or
     policies, and a worker panic stops admission and returns no partial rows.
 
-12. Causal/bounded freshness waiting remains before Active-view capture and
-    keeps its post-wake authorization. The existing pre-release safe point
+12. Causal waiting and bounded freshness admission remain outside scan
+    execution; no scan task is submitted until an Active observation satisfies
+    the requested freshness, and causal waits retain post-wake authorization.
+    The existing pre-release safe point
     catches revocation after execution. Deadlines and cancellation are checked
     between batches and before response release, release all query-owned tasks,
     buffers, handles, and proofs, and preserve typed saturation. Shutdown closes
