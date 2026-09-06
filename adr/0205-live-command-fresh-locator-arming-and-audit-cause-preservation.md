@@ -1,10 +1,10 @@
 ---
 adr: "0205"
 title: Live Command Fresh-Locator Arming and Audit Cause Preservation
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-05
-accepted: null
+accepted: 2026-09-06
 requires: [ADR-0070, ADR-0100, ADR-0104, ADR-0165, ADR-0197]
 amends: [ADR-0197]
 supersedes: []
@@ -29,7 +29,7 @@ review_triggers:
   - Any existing ADR-0197 private/public witness, epoch, locator validation, preservation, publication, rebase, disablement, uncertainty, restart, bound, or durable-byte rule would change.
   - The production proof would manually arm coverage, bypass the grouped coordinator, omit either direct or deferred reachability, or fail to assert zero later fallback scans.
   - An audit failure cause would be inferred from the command result instead of preserved from AuditAppendFailure, or the immediate subsystem stop, success reset, consecutive count, threshold of eight, deadline, cancellation, retry, or transport behavior would change.
-  - Implementation would touch a path other than the exact five paths named in Decision 9 or add any public, protocol, storage-key, durable-format, configuration, or operator surface.
+  - Implementation would touch a path other than the exact six paths named in Decision 9, let the bounded service-test barrier affect production or scheduling semantics, or add any public, protocol, storage-key, durable-format, configuration, or operator surface.
 ---
 # ADR-0205: Live Command Fresh-Locator Arming and Audit Cause Preservation
 
@@ -125,8 +125,15 @@ correction and preservation of that already accepted cause.
    `crates/riffdb-storage-redb/tests/architecture.rs`,
    `tests/command_semantics/command_concurrency.rs`,
    `crates/riffdb-service/src/command_operations.rs`, and
-   `tests/service/service_audit_orchestration.rs`. A required edit elsewhere
-   stops the package for another exact human-reviewed amendment.
+   `tests/service/service_audit_orchestration.rs`, plus
+   `tests/service/support/mod.rs` solely for a bounded deterministic one-shot
+   final-command-reauthorization barrier and capacity-holding helper that lets
+   the runtime proof drive `RequestScoped` terminal-audit failure through both
+   `finish_success` and `finish_failure`. The helper remains test-only and may
+   not add a production hook or public surface or change command or audit
+   scheduling, deadlines, cancellation, capacity, retry, or threshold
+   semantics. A required edit elsewhere stops the package for another exact
+   human-reviewed amendment.
 
 10. WP-705 reruns its unchanged production lifecycle and 65,536-row evidence
     only after these semantic and architecture proofs pass. Evidence collected
@@ -159,13 +166,15 @@ correction and preservation of that already accepted cause.
   loss, while every affected invocation and the unchanged eighth-failure
   threshold remain fail-closed.
 - General idempotency optimization, checkpoint policy, batch redesign, timeout
-  tuning, audit recovery, and changes outside the five paths remain deferred.
+  tuning, audit recovery, and changes outside the six paths remain deferred.
 
 ## Standing design tests
 
 - **Interface safety:** arming remains automatic and storage-private; no
   application, agent, operator, transport, or configuration can request,
-  inspect, preserve, reset, or bypass it or weaken audit readiness.
+  inspect, preserve, reset, or bypass it or weaken audit readiness. The
+  one-shot reauthorization barrier and capacity helper exist only in the
+  integration-test harness and create no production hook or public control.
 - **Scale:** one fixed proof and existing bounded witnesses replace repeated
   history scans; no population-proportional state is retained, and all command,
   journal, audit, and batch bounds remain unchanged.
@@ -177,7 +186,8 @@ correction and preservation of that already accepted cause.
 - `production_fresh_locator_arming_site_is_reachable_from_both_command_batch_paths`
   freezes the sole live call site, direct/deferred reachability, and ordering.
 - `request_scoped_command_terminal_audit_failure_preserves_threshold` proves
-  affected-command fail-closure, success reset, immediate subsystem stop, and
-  no global request-scoped stop before the unchanged eighth consecutive failure.
+  both command finish paths under the bounded one-shot barrier, affected-command
+  fail-closure, success reset, immediate subsystem stop, and no global
+  request-scoped stop before the unchanged eighth consecutive failure.
 - Existing ADR-0197 state-machine, locator, publication, rebase, restart,
   corruption, and cold-fresh proofs remain unchanged and pass together.
