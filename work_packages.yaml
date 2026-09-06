@@ -23534,7 +23534,7 @@ work_packages:
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0186-complete-authoritative-changelog-v3.md, adr/README.md,
     proto/**, crates/riffdb-proto/**, crates/riffdb-types/**, crates/riffdb-storage-api/**,
-    crates/riffdb-storage-redb/**, crates/riffdb-storage-memory/**, crates/riffdb-commit/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-commit/**,
     crates/riffdb-catalog/**, crates/riffdb-testkit/**, crates/riffdb-sim/**,
     release/version-topology-v1.json, release/durable-format-manifest-v1.json,
     fixtures/**, tests/**, scripts/**, docs/**]
@@ -23574,8 +23574,7 @@ work_packages:
     allocator commit, journal flush, checkpoint materialization, rotation, and reclamation
   acceptance_commands:
   - ./scripts/acceptance --wp WP-772
-  - cargo +1.97.0 test -p riffdb-storage-api -p riffdb-storage-redb -p riffdb-storage-memory
-    -p riffdb-commit --all-features
+  - cargo +1.97.0 test -p riffdb-storage-api -p riffdb-storage-redb -p riffdb-commit --all-features
   - ./scripts/recovery_full
   - ./scripts/ci-all
   exit_gate: Every current storage namespace has one reviewed authority class; journaled and
