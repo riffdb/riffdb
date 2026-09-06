@@ -801,6 +801,19 @@ mod tests {
             assert!(refused.is_disabled());
             assert!(!refused.try_arm(empty_authority(), stamp(9, None, None)));
         }
+
+        let mut exhausted = FreshLocatorCoverage::new();
+        assert!(!exhausted.try_arm(
+            empty_authority(),
+            stamp_with(
+                9,
+                Some(u64::MAX),
+                None,
+                ApplicationSequenceAllocator::Exhausted,
+                [0xa5; 32],
+            ),
+        ));
+        assert!(exhausted.is_disabled());
     }
 
     // req: OUT-001, OUT-002, TXN-042, REC-004, PERF-019
@@ -873,6 +886,75 @@ mod tests {
                 .is_none()
         );
         assert!(zero_count.is_disabled());
+
+        let mut maximum_frame = FreshLocatorCoverage::new();
+        assert!(maximum_frame.try_arm(empty_authority(), stamp(1, None, None)));
+        let maximum_count = u16::try_from(riffdb_storage_api::MAX_STAGED_COMMANDS)
+            .expect("the command-frame bound fits its durable count");
+        let maximum = maximum_frame
+            .seal_command(
+                stamp(
+                    1,
+                    Some(u64::from(maximum_count)),
+                    Some(u64::from(maximum_count) * 2),
+                ),
+                maximum_count,
+            )
+            .expect("the exact 256-command frame is admitted");
+        assert!(maximum_frame.publish_command(maximum));
+
+        let mut oversized_frame = FreshLocatorCoverage::new();
+        assert!(oversized_frame.try_arm(empty_authority(), stamp(1, None, None)));
+        let oversized_count = maximum_count.checked_add(1).expect("one over bound");
+        assert!(
+            oversized_frame
+                .seal_command(
+                    stamp(
+                        1,
+                        Some(u64::from(oversized_count)),
+                        Some(u64::from(oversized_count) * 2),
+                    ),
+                    oversized_count,
+                )
+                .is_none()
+        );
+        assert!(oversized_frame.is_disabled());
+
+        let maximum_predecessor = stamp_with(
+            1,
+            Some(u64::MAX - 1),
+            None,
+            ApplicationSequenceAllocator::next(
+                CommitSequence::new(u64::MAX).expect("maximum allocator successor"),
+            ),
+            [0xa5; 32],
+        );
+        let mut exhaustion = FreshLocatorCoverage {
+            state: CoverageState::Armed {
+                epoch: 1,
+                public: PublicPrefixProof {
+                    stamp: maximum_predecessor,
+                },
+                private: Some(PrivateChainWitness {
+                    stamp: maximum_predecessor,
+                }),
+            },
+            lost_witness: Arc::new(AtomicBool::new(false)),
+            loss_schedule: None,
+        };
+        let exhausted_successor = stamp_with(
+            1,
+            Some(u64::MAX),
+            None,
+            ApplicationSequenceAllocator::Exhausted,
+            [0xa5; 32],
+        );
+        let maximum = exhaustion
+            .seal_command(exhausted_successor, 1)
+            .expect("the exact final sequence is admitted");
+        assert!(exhaustion.publish_command(maximum));
+        assert!(exhaustion.seal_command(exhausted_successor, 1).is_none());
+        assert!(exhaustion.is_disabled());
     }
 
     // req: OUT-001, OUT-002, TXN-042, REC-004, PERF-019
