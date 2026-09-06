@@ -14,7 +14,7 @@ obligations:
   - id: OBL-0206-1
     package: WP-705
     proof: production_grouped_command_arms_fresh_locator_coverage_without_manual_arm
-    says: A real production Group-durability command observes the exact fresh-locator proof as armed after its first deferred command completes, before any later lookup, and later new-key inspections and transaction rechecks retain zero fallback history scans without manual arming.
+    says: A verified bounded fast start keeps transient indexes Dormant while two real production Group-durability commands and their post-publication novel-key inspections complete with zero rebuilds and zero fallback history scans without manual arming.
   - id: OBL-0206-2
     package: WP-705
     proof: production_fresh_locator_arming_site_is_reachable_from_both_command_batch_paths
@@ -22,8 +22,7 @@ obligations:
 review_triggers:
   - Logical emptiness would use a different view than the owning mutation-gated command access, inspect or return more than its fixed bound, infer emptiness from allocators or frontiers alone, or omit any of COMMITS, IDEMPOTENCY, IDEMPOTENCY_PENDING, and IDEMPOTENCY_LOCATORS.
   - The helper would mutate, persist, publish, checkpoint, drain, await, acquire scheduling authority, alter ordering, or turn a read, bound, borrow, poison, or contradiction failure into absence or an armed proof.
-  - The observation would compile outside test-fixtures, expose more than the exact armed boolean, arm/reset/disable coverage, expose a stamp, witness, role, epoch, frontier, key, table, or population, or add a hook, barrier, failpoint, callback, configuration, or production/public application surface.
-  - The grouped proof would rely only on the fallback counter or derived-index coverage, manually arm, bypass Group durability or the production coordinator, observe after a later lookup, or omit the explicit unarmed-to-armed transition.
+  - The grouped proof would start with active, rebuilt, invalid, or unknown transient indexes; manually arm; bypass the verified clean-close fast start, Group durability, or production coordinator; allow a rebuild; omit either post-publication novel miss; or change Dormant apply-delta behavior.
   - WP-705 would touch another path, or ADR-0205 audit-cause, threshold, transaction, acknowledgement, publication, failure, restart, bound, or evidence rules would otherwise change.
 ---
 # ADR-0206: Composite Fresh-Locator Arming and Observable Production Proof
@@ -40,18 +39,19 @@ invariant failure before the first deferred command can commit. Fixing that
 mechanism requires `crates/riffdb-storage-redb/src/store.rs`, outside
 ADR-0205's exact implementation paths.
 
-The accepted grouped semantic check is also masked on an exact fresh sequential
-handle: after the first command, the transient derived-index frontier can
-independently prove a later miss, leaving the fallback counter at zero even
-while fresh-locator coverage remains `Uninitialized`. The proof must observe
-arming itself without granting production code or callers a coverage control.
+The accepted grouped semantic check is masked when transient indexes are
+`Ready`: their derived frontier can independently prove a later miss, leaving
+the fallback counter at zero while fresh-locator coverage is uninitialized. A
+verified bounded clean-close fast start instead leaves the transient state
+`Dormant`; its current `apply_delta` is a no-op in that state. A later novel
+miss therefore scans unless the fresh-locator proof was armed and published.
 
 ## Decision
 
 1. ADR-0205 Decision 9 is amended only to add
    `crates/riffdb-storage-redb/src/store.rs` to WP-705's implementation
    authority. Its existing six paths, purposes, and restrictions remain exact.
-   The added path is solely for Decisions 2 through 5 below; another path or
+   The added path is solely for Decisions 2 through 4 below; another path or
    purpose requires a separately accepted amendment.
 
 2. `RedbWriteAccess::arm_fresh_locator_coverage` may use one private read-only
@@ -81,31 +81,31 @@ arming itself without granting production code or callers a coverage control.
    witness, publication, rebase, loss, mismatch, restart, and disablement rule
    remains exact.
 
-5. `store.rs` may add one `#[cfg(feature = "test-fixtures")]`, `#[doc(hidden)]`
-   fixed-size, non-cloneable read-only observer captured from the exact
-   `RedbOperationalPorts` before those ports move into the coordinator. It may
-   report only whether that handle's fresh-locator coverage is currently
-   `Armed`, by reading the existing coverage state under its existing lock. It
-   cannot arm, reset, disable, clone a proof role, expose a stamp, witness,
-   epoch, frontier, key, table, or population, affect scheduling, or survive in
-   a default production build. No hook, barrier, failpoint, callback, public
-   application API, protocol, configuration, or operator control is added.
+5. The production semantic proof creates an exact command-empty database,
+   completes a clean close, and reopens it through the verified bounded fast
+   start. It must assert `clean_close_fast_startup()` is true and
+   `transient_index_rebuilds()` is zero, then prepare commands only against
+   those live reopened ports. The first distinct command runs through the real
+   production coordinator with `CoordinatorDurability::Group`; rebuilds remain
+   zero. A post-publication novel-key operational preinspection returns the
+   existing absence result with fallback-history scans exactly zero. A second
+   distinct command then commits, rebuilds remain zero, and a second
+   post-publication novel-key miss leaves fallback scans exactly zero.
 
-6. The production semantic proof captures that observer, proves it reports
-   false before submission, then sends the first distinct command through the
-   real production coordinator with `CoordinatorDurability::Group`. After that
-   command completes and before any later lookup, it must report true. A later
-   novel-key operational preinspection and a second command's transaction-local
-   recheck must retain their existing absence results with the fallback-history
-   counter exactly zero. The test does not call a storage batch, repository
-   admission, arming method, or any state-changing test control.
+6. The proof does not call a storage batch, repository admission, arming
+   method, test-only arming hook, transient-index builder, or state-changing
+   test control. `TransientIndexState::apply_delta` remains a no-op while
+   `Dormant`; no command publication may activate it. Any rebuild, loss of the
+   fast-start classification, or unknown transient state invalidates the proof.
+   Without fresh-locator arming, the first post-command novel miss has neither
+   transient nor fresh coverage and must take the counted history fallback.
 
 7. The source architecture proof freezes one production arming call in
    `BatchCore::open_with_access`, before allocator read and staging; direct and
    deferred constructors both reach it; dormant admission no longer arms. It
    also freezes the two closed helper branches, the four exact tables, one-row
-   and inspected-work bounds, fail-closed propagation, and the observer's
-   test-fixture-only read-only shape.
+   and inspected-work bounds, fail-closed propagation, and Dormant `apply_delta`
+   as a no-op without authorizing an edit to transient-index code.
 
 8. ADR-0205 Decisions 4 and 7 through 10 otherwise remain exact. In particular,
    fused terminal admission, transaction and audit ordering, acknowledgement,
@@ -120,12 +120,12 @@ arming itself without granting production code or callers a coverage control.
    accepted durability and publication path instead of making the exact proof
    read its owning view.
 2. **Trust zero fallback scans alone:** rejected; derived-index coverage can
-   produce the same observation while fresh-locator coverage is uninitialized.
-3. **Add a controller hook or publication barrier:** rejected; arming is
-   synchronous before staging and needs observation, not scheduling control.
-4. **Use the bounded logical view plus a hidden test-fixture observer:** chosen;
-   it repairs deferred read access and distinguishes the proof without adding
-   production authority.
+   produce the same zero count while fresh-locator coverage is uninitialized.
+3. **Force a rebuild or add test authority:** rejected; either masks the proof
+   under another absence authority or adds unnecessary control surface.
+4. **Use the bounded logical view plus cold-Dormant behavior:** chosen; it
+   repairs deferred read access and makes fallback behavior discriminate the
+   proof without adding a surface or hook.
 
 ## Consequences
 
@@ -134,27 +134,29 @@ arming itself without granting production code or callers a coverage control.
   its commit path.
 - Four first-attempt logical emptiness checks inspect bounded work once per
   process; all later commands retain the existing constant state check.
-- General storage introspection, coverage controls, new hooks, and any change to
+- The cold-Dormant proof reuses existing startup classifications and counters;
+  general storage introspection, coverage controls, new hooks, and any change to
   audit-cause handling or production evidence remain unauthorized.
 
 ## Standing design tests
 
 - **Interface safety:** applications, agents, operators, transports, and default
   production builds cannot observe, request, reset, preserve, or bypass
-  coverage. The hidden fixture observer reports one boolean and has no mutation
-  or scheduling authority.
+  coverage. No test hook, public method, protocol, configuration, or scheduling
+  authority is added.
 - **Scale:** each of four logical table reads returns at most one row and has a
-  fixed inspected-work ceiling; the observer and proof retain fixed-size state,
-  and no key or population collection is retained.
+  fixed inspected-work ceiling; the proof retains fixed-size state, and no key
+  or population collection is retained.
 
 ## Checks
 
 - `production_grouped_command_arms_fresh_locator_coverage_without_manual_arm`
-  proves the explicit false-to-true arming transition on the real deferred
-  coordinator before later zero-scan misses.
+  proves verified cold-Dormant fast start, zero rebuilds across two real
+  deferred commands, and two post-publication novel misses with zero fallback
+  scans.
 - `production_fresh_locator_arming_site_is_reachable_from_both_command_batch_paths`
   freezes the sole arming site, both access shapes, exact tables and bounds,
-  fail-closed behavior, and test-only observation surface.
+  fail-closed behavior, and Dormant apply-delta behavior.
 - Existing ADR-0197 state-machine, exact-empty, direct/deferred publication,
   rebase, mismatch, corruption, restart, and fallback tests plus ADR-0205's
   terminal-audit threshold proof remain unchanged and pass together before any
