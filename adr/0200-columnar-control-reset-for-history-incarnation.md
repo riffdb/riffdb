@@ -1,10 +1,10 @@
 ---
 adr: "0200"
 title: Columnar Control Reset for History Incarnation
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-05
-accepted: null
+accepted: 2026-09-05
 requires: [ADR-0072, ADR-0160, ADR-0190, ADR-0192]
 amends: [ADR-0192]
 supersedes: []
