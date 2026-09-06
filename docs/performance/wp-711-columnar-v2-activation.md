@@ -1,8 +1,7 @@
 # WP-711 columnar V2 production-activation receipt
 
 Status: **integrated production-path receipt banked and independently
-validated**. WP-711 remains open only until final scoped acceptance reaffirms
-the closure evidence on this integrated tree.
+validated; WP-711 is complete on the current-main-integrated tree**.
 
 WP-711 uses the frozen WP-710 mechanics gate as a mandatory preflight, then
 measures one production-shaped V1/V2 activation corpus. The generator writes no
