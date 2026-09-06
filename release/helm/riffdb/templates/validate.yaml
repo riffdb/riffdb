@@ -1,0 +1,17 @@
+{{- if and (ne (toString .Values.image.tag) "") (ne (toString .Values.image.tag) .Chart.AppVersion) -}}
+{{- fail "image.tag must be empty or exactly Chart.appVersion" -}}
+{{- end -}}
+{{- if le (int .Values.server.terminationGracePeriodSeconds) (int .Values.server.listener.bounds.drainTimeoutSeconds) -}}
+{{- fail "server.terminationGracePeriodSeconds must exceed server.listener.bounds.drainTimeoutSeconds" -}}
+{{- end -}}
+{{- if has .Values.server.tlsTrustRootFile (list "server-chain.pem" "server-key.pem" "capability.keys" "idempotency.keys" "readiness.credential") -}}
+{{- fail "server.tlsTrustRootFile must not overlap another protected server input" -}}
+{{- end -}}
+{{- if .Values.acceptanceJobs.enabled -}}
+{{- if eq .Values.acceptanceJobs.applicationSecretName .Values.acceptanceJobs.operatorSecretName -}}
+{{- fail "acceptance Job Secret names must be distinct" -}}
+{{- end -}}
+{{- if or (eq .Values.acceptanceJobs.applicationSecretName .Values.server.secretName) (eq .Values.acceptanceJobs.operatorSecretName .Values.server.secretName) -}}
+{{- fail "acceptance Job Secrets must be distinct from server.secretName" -}}
+{{- end -}}
+{{- end -}}
