@@ -1,10 +1,10 @@
 ---
 adr: "0205"
 title: Live Command Fresh-Locator Arming and Audit Cause Preservation
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-05
-accepted: null
+accepted: 2026-09-06
 requires: [ADR-0070, ADR-0100, ADR-0104, ADR-0165, ADR-0197]
 amends: [ADR-0197]
 supersedes: []
