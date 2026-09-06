@@ -58,5 +58,8 @@ trap - EXIT INT TERM
 ./scripts/adr-new --self-test
 ./scripts/adr-index --check
 ./scripts/check-generated
+./scripts/check-helm-render
+./scripts/check-helm-operator-package
+./scripts/check-helm-upgrade-rehearsal
 ./scripts/wp722-authoring-acceptance
 ./scripts/release-source-install-smoke

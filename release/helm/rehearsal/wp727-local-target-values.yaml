@@ -1,0 +1,26 @@
+# Frozen inputs for WP-727's repository-local render rehearsal. Only the
+# declared server CPU request and proxy replica count move from the source.
+namespace:
+  name: wp727-local
+image:
+  repository: wp727.invalid/riffdb
+  tag: ""
+server:
+  secretName: wp727-external-server
+  replicas: 1
+  resources:
+    requests:
+      cpu: 750m
+      memory: 2Gi
+    limits:
+      memory: 4Gi
+  persistence:
+    data:
+      size: 10Gi
+    backups:
+      enabled: true
+      size: 20Gi
+proxy:
+  replicas: 2
+acceptanceJobs:
+  enabled: false

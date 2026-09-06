@@ -1,0 +1,371 @@
+#!/usr/bin/env bash
+# req: NET-010, NET-012, APE-002
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+fail() {
+    printf 'check-helm-operator-package: %s\n' "$1" >&2
+    exit 1
+}
+
+command -v helm >/dev/null 2>&1 || fail "helm is required"
+command -v ruby >/dev/null 2>&1 || fail "ruby is required for parsed manifest checks"
+
+chart="release/helm/riffdb"
+runbook="docs/operations/HELM-OPERATIONS.md"
+scratch="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-helm-operator.XXXXXX")"
+cleanup() {
+    rm -rf -- "$scratch"
+}
+trap cleanup EXIT INT TERM
+
+helm lint "$chart" >/dev/null
+helm template riffdb "$chart" \
+    --namespace riffdb-alpha \
+    --kube-version 1.29.0 \
+    --api-versions v1 \
+    --api-versions apps/v1 \
+    --api-versions batch/v1 >"$scratch/default.yaml"
+helm template riffdb "$chart" \
+    --namespace riffdb-alpha \
+    --kube-version 1.29.0 \
+    --api-versions v1 \
+    --api-versions apps/v1 \
+    --api-versions batch/v1 \
+    --set acceptanceJobs.enabled=true \
+    --set image.repository=wp727.invalid/riffdb >"$scratch/opt-in.yaml"
+app_version="$(ruby -ryaml -e 'print YAML.safe_load_file(ARGV.fetch(0), permitted_classes: [], aliases: false).fetch("appVersion")' "$chart/Chart.yaml")"
+helm template riffdb "$chart" \
+    --namespace riffdb-alpha \
+    --kube-version 1.29.0 \
+    --api-versions v1 \
+    --api-versions apps/v1 \
+    --api-versions batch/v1 \
+    --set-string image.tag="$app_version" >"$scratch/exact-tag.yaml"
+
+expect_render_refusal() {
+    local label="$1"
+    local diagnostic="$2"
+    shift 2
+    if helm template riffdb "$chart" \
+        --namespace riffdb-alpha \
+        --kube-version 1.29.0 \
+        --api-versions v1 \
+        --api-versions apps/v1 \
+        --api-versions batch/v1 \
+        "$@" >"$scratch/${label}.out" 2>"$scratch/${label}.err"; then
+        fail "unsafe values rendered successfully: ${label}"
+    fi
+    rg -Fq -- "$diagnostic" "$scratch/${label}.err" \
+        || fail "${label} refused without the expected bounded diagnostic: ${diagnostic}"
+}
+
+expect_render_refusal shared-proof-secrets \
+    "acceptance Job Secret names must be distinct" \
+    --set acceptanceJobs.enabled=true \
+    --set acceptanceJobs.applicationSecretName=shared-proof \
+    --set acceptanceJobs.operatorSecretName=shared-proof
+expect_render_refusal proof-reuses-server-secret \
+    "acceptance Job Secrets must be distinct from server.secretName" \
+    --set acceptanceJobs.enabled=true \
+    --set acceptanceJobs.applicationSecretName=riffdb-server-secrets
+expect_render_refusal operator-reuses-server-secret \
+    "acceptance Job Secrets must be distinct from server.secretName" \
+    --set acceptanceJobs.enabled=true \
+    --set acceptanceJobs.operatorSecretName=riffdb-server-secrets
+expect_render_refusal empty-proof-secret \
+    "/acceptanceJobs/applicationSecretName" \
+    --set acceptanceJobs.applicationSecretName=
+expect_render_refusal unrelated-image-tag \
+    "image.tag must be empty or exactly Chart.appVersion" \
+    --set-string image.tag=unrelated-build
+expect_render_refusal public-endpoint-override \
+    "additional properties 'publicEndpoint' not allowed" \
+    --set-string server.listener.publicEndpoint=https://localhost:7443
+expect_render_refusal tls-name-override \
+    "additional properties 'tlsServerName' not allowed" \
+    --set-string server.listener.tlsServerName=localhost
+expect_render_refusal overlapping-trust-root \
+    "server.tlsTrustRootFile must not overlap another protected server input" \
+    --set-string server.tlsTrustRootFile=server-key.pem
+expect_render_refusal missing-server-resources \
+    "missing property 'resources'" \
+    --set server.resources=null
+expect_render_refusal missing-proxy-resources \
+    "missing property 'resources'" \
+    --set proxy.resources=null
+expect_render_refusal missing-proof-resources \
+    "missing property 'resources'" \
+    --set acceptanceJobs.resources=null
+expect_render_refusal zero-connections \
+    "/server/listener/bounds/maxConnections" \
+    --set server.listener.bounds.maxConnections=0
+expect_render_refusal excessive-connections \
+    "/server/listener/bounds/maxConnections" \
+    --set server.listener.bounds.maxConnections=4097
+expect_render_refusal excessive-streams \
+    "/server/listener/bounds/maxStreamsPerConnection" \
+    --set server.listener.bounds.maxStreamsPerConnection=1025
+expect_render_refusal zero-probe-timeout \
+    "/server/probes/readiness/timeoutSeconds" \
+    --set server.probes.readiness.timeoutSeconds=0
+expect_render_refusal excessive-job-deadline \
+    "/acceptanceJobs/activeDeadlineSeconds" \
+    --set acceptanceJobs.activeDeadlineSeconds=301
+expect_render_refusal retrying-proof-job \
+    "/acceptanceJobs/backoffLimit" \
+    --set acceptanceJobs.backoffLimit=1
+expect_render_refusal multiple-writers \
+    "/server/replicas" \
+    --set server.replicas=2
+expect_render_refusal zero-data-volume \
+    "/server/persistence/data/size" \
+    --set-string server.persistence.data.size=0Gi
+expect_render_refusal disabled-retained-backups \
+    "/server/persistence/backups/enabled" \
+    --set server.persistence.backups.enabled=false
+expect_render_refusal insufficient-drain-grace \
+    "server.terminationGracePeriodSeconds must exceed server.listener.bounds.drainTimeoutSeconds" \
+    --set server.terminationGracePeriodSeconds=15 \
+    --set server.listener.bounds.drainTimeoutSeconds=15
+expect_render_refusal root-workload \
+    "/podSecurityContext/runAsNonRoot" \
+    --set podSecurityContext.runAsNonRoot=false
+
+ruby - "$scratch/default.yaml" "$scratch/opt-in.yaml" "$scratch/exact-tag.yaml" "$chart/Chart.yaml" "$scratch" <<'RUBY'
+require "open3"
+require "yaml"
+
+def fail(message)
+  warn "check-helm-operator-package: #{message}"
+  exit 1
+end
+
+def documents(path)
+  YAML.safe_load_stream(File.read(path), permitted_classes: [], aliases: false).compact
+rescue Psych::Exception => error
+  fail("cannot parse #{path}: #{error.message}")
+end
+
+def objects(documents, kind)
+  documents.select { |document| document["kind"] == kind }
+end
+
+default_documents = documents(ARGV.fetch(0))
+opt_in_documents = documents(ARGV.fetch(1))
+exact_tag_documents = documents(ARGV.fetch(2))
+chart = YAML.safe_load_file(ARGV.fetch(3), permitted_classes: [], aliases: false)
+app_version = chart.fetch("appVersion")
+exact_tag_images = []
+walk = lambda do |value|
+  if value.is_a?(Hash)
+    value.each do |key, child|
+      exact_tag_images << child if key == "image" && child == "riffdb:#{app_version}"
+      walk.call(child)
+    end
+  elsif value.is_a?(Array)
+    value.each { |child| walk.call(child) }
+  end
+end
+walk.call(exact_tag_documents)
+fail("an explicit exact appVersion tag does not retain the chart-bound image") unless exact_tag_images.length == 2
+fail("the default render contains a proof Job") unless objects(default_documents, "Job").empty?
+fail("the chart renders a Secret") unless objects(default_documents, "Secret").empty? && objects(opt_in_documents, "Secret").empty?
+default_yaml = YAML.dump_stream(*default_documents)
+fail("the default render references a proof Secret") if default_yaml.include?("riffdb-proof-application") || default_yaml.include?("riffdb-proof-operator")
+fail("the opt-in render contains a loopback shortcut") if YAML.dump_stream(*opt_in_documents).match?(/localhost|127\.0\.0\.1/)
+
+jobs = objects(opt_in_documents, "Job")
+fail("the opt-in render must contain exactly two Jobs") unless jobs.length == 2
+expected = {
+  "stable-application" => ["riffdb-proof-application", "riffdb-proof-application"],
+  "operator" => ["riffdb-proof-operator", "riffdb-proof-operator"]
+}
+actual_roles = jobs.map { |job| job.dig("metadata", "labels", "riffdb.dev/proof-role") }.sort
+fail("the two exact proof roles are absent") unless actual_roles == expected.keys.sort
+
+jobs.each do |job|
+  role = job.dig("metadata", "labels", "riffdb.dev/proof-role")
+  expected_name, expected_secret = expected.fetch(role)
+  fail("#{role} Job has the wrong name") unless job.dig("metadata", "name") == expected_name
+  spec = job.fetch("spec")
+  deadline = spec["activeDeadlineSeconds"]
+  fail("#{role} Job is not finitely deadline-bounded") unless deadline.is_a?(Integer) && deadline.between?(1, 300)
+  fail("#{role} Job may retry") unless spec["backoffLimit"] == 0
+
+  pod = spec.dig("template", "spec") || {}
+  fail("#{role} Job receives an ambient service-account token") unless pod["automountServiceAccountToken"] == false
+  fail("#{role} Job uses host networking") if pod["hostNetwork"]
+  fail("#{role} Job uses a host namespace") if pod["hostPID"] || pod["hostIPC"]
+  fail("#{role} Job restart policy is not Never") unless pod["restartPolicy"] == "Never"
+  containers = pod["containers"] || []
+  init_containers = pod["initContainers"] || []
+  fail("#{role} Job does not have one proof container") unless containers.length == 1
+  fail("#{role} Job does not have one protection init container") unless init_containers.length == 1
+  (containers + init_containers).each do |container|
+    fail("#{role} Job image is not chart appVersion-bound") unless container["image"] == "wp727.invalid/riffdb:#{app_version}"
+    fail("#{role} Job exposes a host port") if (container["ports"] || []).any? { |port| port.key?("hostPort") }
+    fail("#{role} Job container has no bounded resources") unless container["resources"].is_a?(Hash) && container["resources"].keys.sort == ["limits", "requests"]
+  end
+
+  init = init_containers.first
+  fail("#{role} Job does not use the protected-copy boundary") unless init["command"] == ["copy-protected", "/incoming", "/protected"]
+  fail("#{role} Job init root filesystem is writable") unless init.dig("securityContext", "readOnlyRootFilesystem") == true
+  fail("#{role} Job init capabilities are not least-authority") unless init.dig("securityContext", "capabilities") == {"drop" => ["ALL"], "add" => ["CHOWN"]}
+  expected_init_mounts = [
+    {"name" => "proof-secret", "mountPath" => "/incoming", "readOnly" => true},
+    {"name" => "protected", "mountPath" => "/protected"}
+  ]
+  fail("#{role} Job init mounts are not exact") unless init["volumeMounts"] == expected_init_mounts
+  health = containers.first
+  expected_args = [
+    "--endpoint", "https://riffdb.riffdb-alpha.svc:7443",
+    "--database", "default", "--output", "json", "--max-attempts", "1",
+    "--credential-file", "/run/riffdb-proof/credential", "server", "health"
+  ]
+  fail("#{role} Job is not the exact health-only command") unless health["command"] == ["riffdb"] && health["args"] == expected_args
+  fail("#{role} Job health mounts are not exact and protected") unless health["volumeMounts"] == [{"name" => "protected", "mountPath" => "/run/riffdb-proof", "readOnly" => true}]
+  serialized = YAML.dump(job)
+  fail("#{role} Job contains a loopback shortcut") if serialized.match?(/localhost|127\.0\.0\.1/)
+  fail("#{role} Job does not drop Linux capabilities") unless health.dig("securityContext", "capabilities", "drop") == ["ALL"]
+  fail("#{role} Job root filesystem is writable") unless health.dig("securityContext", "readOnlyRootFilesystem") == true
+
+  environment = (health["env"] || []).to_h { |entry| [entry["name"], entry["value"]] }
+  fail("#{role} Job lacks the protected TLS trust root") unless environment["RIFFDB_TLS_TRUST_ROOT"] == "/run/riffdb-proof/ca.pem"
+  fail("#{role} Job does not verify service DNS") unless environment["RIFFDB_TLS_SERVER_NAME"] == "riffdb.riffdb-alpha.svc"
+  volumes = (pod["volumes"] || []).to_h { |volume| [volume["name"], volume] }
+  fail("#{role} Job does not use its separate external Secret") unless volumes.dig("proof-secret", "secret", "secretName") == expected_secret
+  fail("#{role} Job Secret mode is not owner-readable only") unless volumes.dig("proof-secret", "secret", "defaultMode") == 256
+  expected_items = [
+    {"key" => "credential", "path" => "credential"},
+    {"key" => "ca.pem", "path" => "ca.pem"}
+  ]
+  fail("#{role} Job Secret projection is not exact") unless volumes.dig("proof-secret", "secret", "items") == expected_items
+  fail("#{role} Job protected volume is not memory-backed") unless volumes.dig("protected", "emptyDir", "medium") == "Memory"
+  fail("#{role} Job protected volume has no exact size bound") unless volumes.dig("protected", "emptyDir", "sizeLimit") == "1Mi"
+end
+
+config = objects(opt_in_documents, "ConfigMap").find { |object| object.dig("metadata", "name") == "riffdb-config" }
+fail("server ConfigMap is absent") unless config
+liveness = config.dig("data", "liveness.toml") || ""
+readiness = config.dig("data", "readiness.toml") || ""
+fail("liveness is not payload-free and unauthenticated") if liveness.include?("credential_file")
+fail("liveness names a database selector") if liveness.match?(/^database\s*=/)
+fail("readiness is not authenticated through the protected volume") unless readiness.include?('credential_file = "/run/riffdb-protected/readiness.credential"')
+service_endpoint = 'endpoint = "https://riffdb.riffdb-alpha.svc:7443"'
+service_name = 'tls_server_name = "riffdb.riffdb-alpha.svc"'
+fail("liveness does not use fixed service DNS") unless liveness.include?(service_endpoint) && liveness.include?(service_name)
+fail("readiness does not use fixed service DNS") unless readiness.include?(service_endpoint) && readiness.include?(service_name)
+
+stateful_set = objects(opt_in_documents, "StatefulSet").first
+fail("StatefulSet is absent") unless stateful_set
+server_pod = stateful_set.dig("spec", "template", "spec") || {}
+fail("StatefulSet receives an ambient service-account token") unless server_pod["automountServiceAccountToken"] == false
+server_container = server_pod["containers"]&.find { |container| container["name"] == "riffdbd" }
+fail("server resources are unbounded") unless server_container&.dig("resources", "requests") && server_container&.dig("resources", "limits")
+expected_liveness = ["riffdb", "--config", "/etc/riffdb/liveness.toml", "server", "health"]
+fail("liveness probe is absent or not exact") unless server_container&.dig("livenessProbe", "exec", "command") == expected_liveness
+readiness_command = server_container&.dig("readinessProbe", "exec", "command")
+fail("readiness probe does not use the bounded shell gate") unless readiness_command.is_a?(Array) && readiness_command[0, 2] == ["/bin/sh", "-ec"] && readiness_command.length == 3
+readiness_gate = readiness_command.fetch(2)
+fail("readiness probe does not invoke authenticated health exactly once") unless readiness_gate.scan("riffdb --config /etc/riffdb/readiness.toml server health").length == 1
+canonical_ready = '{"schema":"riffdb.cli.output/v1","command":"server.health","ok":true,"result":{"status":"ready",'
+fail("readiness probe does not require canonical typed ready") unless readiness_gate.include?(canonical_ready)
+fail("readiness probe accepts a non-ready spelling") if readiness_gate.include?('"status":"not_ready"') || readiness_gate.include?('"status":"degraded"')
+
+fake_bin = File.join(ARGV.fetch(4), "fake-bin")
+Dir.mkdir(fake_bin)
+fake_riffdb = File.join(fake_bin, "riffdb")
+File.write(fake_riffdb, <<~SH)
+  #!/bin/sh
+  [ "${WP727_HEALTH_EXIT:-0}" -eq 0 ] || exit "$WP727_HEALTH_EXIT"
+  printf '%s\n' "$WP727_HEALTH_RESPONSE"
+SH
+File.chmod(0o755, fake_riffdb)
+
+def readiness_accepts?(gate, fake_bin, response, health_exit = "0")
+  environment = {
+    "PATH" => "#{fake_bin}:#{ENV.fetch("PATH")}",
+    "WP727_HEALTH_RESPONSE" => response,
+    "WP727_HEALTH_EXIT" => health_exit
+  }
+  _stdout, _stderr, status = Open3.capture3(environment, "/bin/sh", "-ec", gate)
+  status.success?
+end
+
+ready_response = '{"schema":"riffdb.cli.output/v1","command":"server.health","ok":true,"result":{"status":"ready","database":"default"}}'
+fail("readiness probe rejects canonical typed ready") unless readiness_accepts?(readiness_gate, fake_bin, ready_response)
+%w[not_ready degraded].each do |status|
+  response = %Q({"schema":"riffdb.cli.output/v1","command":"server.health","ok":true,"result":{"status":"#{status}"}})
+  fail("readiness probe accepts typed #{status}") if readiness_accepts?(readiness_gate, fake_bin, response)
+end
+wrong_schema = '{"schema":"untrusted/v1","command":"server.health","ok":true,"result":{"status":"ready","database":"default"}}'
+fail("readiness probe accepts a noncanonical schema") if readiness_accepts?(readiness_gate, fake_bin, wrong_schema)
+failed_response = '{"schema":"riffdb.cli.output/v1","command":"server.health","ok":false,"result":{"status":"ready"}}'
+fail("readiness probe accepts a failed envelope") if readiness_accepts?(readiness_gate, fake_bin, failed_response)
+fail("readiness probe accepts a failed health process") if readiness_accepts?(readiness_gate, fake_bin, ready_response, "2")
+
+server_init = server_pod["initContainers"]&.find { |container| container["name"] == "protect-server-secrets" }
+fail("server Secret protection init is absent") unless server_init
+fail("server Secret protection init has no bounded resources") unless server_init["resources"].is_a?(Hash) && server_init["resources"].keys.sort == ["limits", "requests"]
+fail("server Secret protection command is not exact") unless server_init["command"] == ["copy-protected", "/incoming", "/protected"]
+expected_server_init_mounts = [
+  {"name" => "server-secrets", "mountPath" => "/incoming", "readOnly" => true},
+  {"name" => "protected", "mountPath" => "/protected"}
+]
+fail("server Secret protection mounts are not exact") unless server_init["volumeMounts"] == expected_server_init_mounts
+fail("server Secret protection capabilities are not least-authority") unless server_init.dig("securityContext", "capabilities") == {"drop" => ["ALL"], "add" => ["CHOWN"]}
+expected_server_mounts = [
+  {"name" => "config", "mountPath" => "/etc/riffdb", "readOnly" => true},
+  {"name" => "protected", "mountPath" => "/run/riffdb-protected", "readOnly" => true},
+  {"name" => "data", "mountPath" => "/var/lib/riffdb/data"},
+  {"name" => "backups", "mountPath" => "/var/lib/riffdb/backups"}
+]
+fail("server mounts are not exact") unless server_container["volumeMounts"] == expected_server_mounts
+server_volumes = (server_pod["volumes"] || []).to_h { |volume| [volume["name"], volume] }
+expected_server_items = %w[server-chain.pem server-key.pem capability.keys idempotency.keys riffdb-ca.pem readiness.credential].map { |name| {"key" => name, "path" => name} }
+fail("server Secret projection is not exact") unless server_volumes.dig("server-secrets", "secret", "items") == expected_server_items
+fail("server protected volume has no exact size bound") unless server_volumes.dig("protected", "emptyDir") == {"medium" => "Memory", "sizeLimit" => "2Mi"}
+server_config = config.dig("data", "riffdbd.toml") || ""
+%w[max_connections max_streams_per_connection handshake_timeout_seconds idle_timeout_seconds keepalive_interval_seconds drain_timeout_seconds].each do |bound|
+  fail("server configuration omits #{bound}") unless server_config.match?(/^#{bound} = [1-9][0-9]*$/)
+end
+
+backup = objects(opt_in_documents, "PersistentVolumeClaim").find { |object| object.dig("metadata", "name") == "riffdb-backups" }
+fail("backup claim is absent") unless backup
+fail("backup claim lacks the keep policy") unless backup.dig("metadata", "annotations", "helm.sh/resource-policy") == "keep"
+
+proxy = objects(opt_in_documents, "Deployment").find { |object| object.dig("metadata", "name") == "riffdb-proxy" }
+fail("proxy Deployment is absent") unless proxy
+fail("proxy receives an ambient service-account token") unless proxy.dig("spec", "template", "spec", "automountServiceAccountToken") == false
+RUBY
+
+[[ -f "$runbook" ]] || fail "operator runbook is missing: $runbook"
+for marker in \
+    "Install" \
+    "Controlled network" \
+    "Authenticated readiness" \
+    "Drain" \
+    "Verified backup" \
+    "Storage preflight" \
+    "Chart upgrade" \
+    "Certificate rotation" \
+    "Credential rotation" \
+    "Restore" \
+    "Deployment rollback" \
+    "Durable downgrade refusal"; do
+    rg -q "^## ${marker}$" "$runbook" \
+        || fail "operator runbook omits the exact '${marker}' operation marker"
+done
+rg -q 'controlled design-partner network' "$runbook" \
+    || fail "operator runbook omits the controlled-network boundary"
+rg -q 'riffdb storage preflight' "$runbook" \
+    || fail "operator runbook omits the durable-format compatibility preflight"
+rg -q 'successor.*prove.*switch.*revoke' "$runbook" \
+    || fail "operator runbook omits successor-prove-switch-revoke credential rotation"
+rg -q 'does not prove.*published|does not claim.*published' "$runbook" \
+    || fail "operator runbook does not separate local rehearsal from publication evidence"
+
+echo "check-helm-operator-package-v1 chart proofs and operator runbook passed"

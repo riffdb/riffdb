@@ -82,6 +82,7 @@
 # Operate RiffDB
 
 - [Configuration](configuration.md)
+- [Helm Operations](operations/HELM-OPERATIONS.md)
 - [Remote and Local Application Ingress](operations/REMOTE-INGRESS.md)
 - [Multiple Databases](operations/MULTIPLE-DATABASES.md)
 - [Startup Integrity and Clean Restarts](operations/STARTUP-INTEGRITY.md)
