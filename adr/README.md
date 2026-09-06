@@ -237,7 +237,7 @@ record with no front matter.
 | [0200](0200-columnar-control-reset-for-history-incarnation.md) | Columnar Control Reset for History Incarnation | Accepted | guarantee |
 | [0201](0201-exact-adapter-evidence-classifications.md) | Exact Adapter Evidence Classifications | Accepted | surface |
 | [0202](0202-bounded-helm-upgrade-rehearsal-and-published-evidence-split.md) | Bounded Helm Upgrade Rehearsal and Published Evidence Split | Accepted | surface |
-| [0203](0203-selector-free-offline-storage-scrub-operation.md) | Selector-Free Offline Storage Scrub Operation | Proposed | guarantee |
+| [0203](0203-selector-free-offline-storage-scrub-operation.md) | Selector-Free Offline Storage Scrub Operation | Accepted | guarantee |
 | [0204](0204-epoch-two-storage-reader-retirement-and-package-retiering.md) | Epoch-Two Storage Reader Retirement and Package Retiering | Proposed | guarantee |
 | [0205](0205-live-command-fresh-locator-arming-and-audit-cause-preservation.md) | Live Command Fresh-Locator Arming and Audit Cause Preservation | Proposed | guarantee |
 <!-- adr-index:end -->
