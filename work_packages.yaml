@@ -2032,15 +2032,16 @@ work_packages:
 - id: WP-711
   name: Crash-safe columnar V2 rebuild, compaction, and zone-map activation
   tier: guarantee
-  depends_on: [WP-610, WP-667, WP-710, WP-776]
+  depends_on: [WP-610, WP-667, WP-710, WP-776, WP-781]
   objective: Activate ADR-0160's accepted V2 format through disjoint generation rebuild, atomic
     publication, immutable compaction, validate-once reopen, and exact segment pruning while V1
     remains readable and published until a complete matched-frontier V2 candidate succeeds.
-  requirements: [PRJ-002, PRJ-004, PRJ-006, PRJ-008, PRJ-009, PRJ-010,
+  requirements: [REC-001, PRJ-002, PRJ-004, PRJ-006, PRJ-008, PRJ-009, PRJ-010,
     OQ-017, OQ-019, OQ-020, OQ-021, OQ-022, OQ-024, OQ-053,
     PERF-007, PERF-008]
   required_adrs: [ADR-0006, ADR-0010, ADR-0017, ADR-0072, ADR-0085, ADR-0086,
-    ADR-0111, ADR-0124, ADR-0130, ADR-0136, ADR-0160, ADR-0181, ADR-0190, ADR-0192]
+    ADR-0111, ADR-0124, ADR-0130, ADR-0136, ADR-0160, ADR-0181, ADR-0190, ADR-0192,
+    ADR-0200]
   # Cargo.lock is in scope solely to record the approved acyclic
   # riffdb-storage-redb -> riffdb-columnar -> riffdb-storage-api dependency edge required for
   # columnar-owned, unforgeable prepared-generation witness trait ownership.
@@ -2048,6 +2049,7 @@ work_packages:
     adr/0160-rebuildable-columnar-segment-v2.md,
     adr/0190-atomic-columnar-v2-generation-root-publication.md,
     adr/0192-compiler-bound-columnar-publication-control.md,
+    adr/0200-columnar-control-reset-for-history-incarnation.md,
     release/version-topology-v1.json, crates/riffdb-types/**,
     crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
     crates/riffdb-storage-redb/**, crates/riffdb-columnar/**,
@@ -2066,6 +2068,13 @@ work_packages:
   - Per-database V1/V2 lifecycle using the specialized never-reused common columnar control and
     transaction-current prepared-generation compare-and-set; V1 remains the ordinary readable and
     writable path until that database and source durably publishes one complete V2 root
+  - Startup invokes only ResetForCurrentHistoryIncarnation for one exact uniformly stale tag-67
+    control, reads the replacement incarnation inside the Immediate transaction, emits one fresh
+    Building/Unprepared-V1/BeforeFirst Candidate, and keeps serving and retention closed through
+    Applied, mismatch, storage-failure, unknown-commit, repeated-restart, and durable-reread arms
+  - After reset and ordinary spec retarget, every final Unprepared V1 Candidate retires only its
+    exact final, temporary, and deterministic quarantine paths through the bounded reference-safe
+    crash-repeating state machine before fresh construction; no pre-restore artifact is adopted
   - V1-published/V2-candidate lifecycle that rebuilds from one authoritative snapshot plus retained
     tail, verifies independent logical equality at a frontier, and atomically publishes one-layout
     V2 generation without mixed manifests or request-visible partial state
@@ -2079,21 +2088,28 @@ work_packages:
     handling for inference-sensitive policy shapes and no public statistic, skip count, or data-
     dependent diagnostic
   - Crash matrix at every segment/header/lane/manifest/checkpoint/publication/retirement boundary,
-    including unknown, mixed, corrupt, stale-incarnation, interrupted rebuild, and repeated reopen
+    including current, stale, future, zero, mixed, malformed and exhausted incarnation state;
+    stale-plus-spec-drift; every reset/path remove/rename/sync edge; Applied, mismatch, failure and
+    uncertainty; no-serving/no-retention; interrupted rebuild, publication, acknowledgement and
+    repeated reopen, proved by all five OBL-0200 test identities
   - Current V1/V2 matched-frontier query, recovery, compaction, rebuild, bytes, CPU, allocation,
     projection-lag, and no-projection/no-V2 non-regression receipts
   acceptance_commands:
+  - ./scripts/acceptance --wp WP-711
   - cargo +1.97.0 test -p riffdb-storage-api -p riffdb-storage-redb
     -p riffdb-columnar -p riffdb-projection -p riffdb-service -p riffdb-server --all-features
   - ./scripts/recovery_full
   - ./scripts/check-version-topology
   - ./scripts/check-workspace-policy
   - ./scripts/check-requirement-coverage
+  - ./scripts/check-adr-obligations
   - cargo +1.97.0 fmt --all -- --check
   - cargo +1.97.0 clippy -p riffdb-columnar -p riffdb-projection -p riffdb-service -p riffdb-server --all-targets --all-features -- -D warnings
-  exit_gate: A complete V2 generation publishes only after matched-frontier equality and survives
-    every crash/rebuild/compaction case; V1 remains exact and readable; pruning is exact and policy-
-    safe; no request repeats durable proof or observes mixed/partial derived state.
+  exit_gate: A stale restored tag-67 control first reaches only one transaction-current fresh V1
+    candidate through exact reset, reread, and bounded path retirement with all gates closed; a
+    complete V2 generation then publishes only after matched-frontier equality and survives every
+    crash/rebuild/compaction case; V1 remains exact and readable; pruning is exact and policy-safe;
+    no request repeats durable proof or observes mixed/partial derived state.
   standing_design_tests:
     interface_safety: V2 selection and pruning are private generation facts; applications cannot
       weaken policy, freshness, validation, lifecycle, fallback, or any query/resource bound.
@@ -24252,6 +24268,20 @@ work_packages:
     incarnation reset and bounded exact-path retirement; every other state refuses or uses its
     existing transition, no stale pointer serves or fences retention, and no authoritative format,
     restore, runtime gate ordering, or public contract changes in this governance package.
+  closure:
+    status: complete
+    completed_at: "2026-09-05"
+    evidence: Exact ADR-0200 acceptance is recorded without changing its decision body. ADR-0192
+      Decisions 11 through 16 now carry the same closed reset, retention, startup ordering,
+      repository operation, collision-retirement, witness, and all-result recovery rules while
+      Decision 17 remains unchanged. WP-711 depends on this package, requires ADR-0200, carries its
+      permitted record path, all five proof obligations, complete reset/path crash matrix, and
+      package/obligation acceptance checks. WP-781 acceptance, requirement coverage, ADR
+      obligations, index generation, and allowed-path checks pass.
+    decision: Governance reconciliation only. Durable encodings, registry and storage keys,
+      destructive restore, application/administration sequences, acknowledgement rules, runtime
+      gate ordering, ordinary current-incarnation transitions, and public surfaces remain
+      unchanged; runtime implementation remains owned by WP-711.
   standing_design_tests:
     interface_safety: Repository governance adds no application or operator surface and gives no
       caller authority to choose an incarnation, mutation, repair target, or fallback.
