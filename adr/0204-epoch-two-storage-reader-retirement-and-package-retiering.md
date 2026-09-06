@@ -5,7 +5,7 @@ status: proposed
 tier: guarantee
 date: 2026-09-05
 accepted: null
-requires: [ADR-0112, ADR-0124, ADR-0181, ADR-0190, ADR-0192, ADR-0195, ADR-0197]
+requires: [ADR-0112, ADR-0124, ADR-0181, ADR-0190, ADR-0192, ADR-0195, ADR-0197, ADR-0200]
 amends: [ADR-0181, ADR-0197]
 supersedes: []
 requirements: [GOV-001, GOV-002, GOV-003, AFC-005, AFC-006, VER-005]
