@@ -1,7 +1,8 @@
 # WP-711 columnar V2 production-activation receipt
 
-Status: **production-path receipt banked and independently validated; WP-711 is
-complete with the accepted stale-incarnation recovery authority and proof**.
+Status: **integrated production-path receipt pending**. The branch-local receipt
+was retired because current `main` changed protected production sources after
+its pinned revision; its committed history remains available for audit.
 
 WP-711 uses the frozen WP-710 mechanics gate as a mandatory preflight, then
 measures one production-shaped V1/V2 activation corpus. The generator writes no
@@ -56,57 +57,12 @@ fields. Its self-test proves nested-schema and source-identity refusal, each
 frozen WP-710 threshold, nonzero activation lag/control fields, a mismatched
 result count, and any missing production worker/gate/acknowledgement evidence.
 
-## Generated production-path receipt
+## Integrated production-path receipt
 
-This receipt qualifies the production activation and non-regression evidence
-only. WP-711 closure additionally relies on the accepted ADR-0200
-stale-incarnation recovery proofs named in the package brief.
-
-The generated receipt is
-`docs/performance/wp-711-columnar-v2-activation.json`. Its schema is
-`riffdb.wp711.columnar-v2-activation-receipt.v1`, its SHA-256 is
-`1d2d3607eea84af06dea24904b3214df3957ce7d1ea8cc3e1373dcfe0c1b7d9b`,
-and it is pinned to clean implementation and evidence-infrastructure revision
-`1660f9a36dbcffa54987f794e12ba703e135524b`. The receipt was generated with
-Rust 1.97.0 in release mode on an AMD Ryzen 9 7950X with 32 logical CPUs. The
-recorded load averages before and after the run were
-`31.29 34.80 35.39` and `60.09 47.57 40.38`, respectively.
-
-The unchanged WP-710 preflight passed every ADR-0160 threshold:
-
-| Gate | V1 | V2 | Verdict |
-|---|---:|---:|---|
-| High-cardinality bytes | 1,851,404 | 1,609,476 (8,693 bps) | Pass; maximum 11,000 bps |
-| Low-cardinality bytes | 1,421,324 | 785,287 (5,525 bps) | Pass; maximum 7,500 bps |
-| Full-decode p50 | 9,477,204 ns | 6,133,828 ns (6,472 bps) | Pass; maximum 10,500 bps |
-| Clustered segment rejection | — | 99/100; zero false negatives | Pass; minimum 90 percent and zero false negatives |
-
-The production-activation corpus also passed every fail-closed control. Each of
-the two queries returned its exact 8,192-row partition count, and the private
-referee obtained the combined 16,384 rows at matched frontier 16,384. Projection
-lag, no-projection bytes, no-projection modeled allocations, and no-projection
-population passes were all zero. Six worker passes produced three durable
-publication acknowledgements, selected V2 generation 2, compaction generation
-3, and pointer-equal reuse of the exact selected immutable `Arc`.
-
-| Observation | V1/no-V2 control | Selected V2 |
-|---|---:|---:|
-| Physical bytes | 1,372,395 | 841,935 |
-| Modeled owned allocations | 98,304 | 98,338 |
-| Combined bounded-query p50 | 13,803,614 ns | 16,452,246 ns |
-| Recovery p50 | 27,119,137 ns | 71,551,873 ns |
-| Rebuild elapsed | — | 525,962,771 ns |
-| Compaction elapsed | — | 567,130,632 ns |
-
-V2 uses 38.65 percent fewer physical bytes in this production-shaped corpus;
-its combined hot-query p50 is 19.19 percent above V1. Cold V2 recovery p50 is
-163.84 percent above V1 because reopening pays complete selected-generation
-validation before an immutable view becomes available. Those latency deltas,
-recorded under the stated high host load, are review hazards, not hidden
-failures. These single-host observations are package activation evidence, not
-public latency, storage-ratio, or allocation promises. The allocation figures
-remain the WP-710 modeled-owned-allocation metric and are not actual allocator
-calls.
+No current receipt is claimed. The next receipt must be generated exactly once
+from the clean, stable merge of current `main` into this branch and must pass the
+unchanged validator before WP-711 closure is reaffirmed. The retired receipt is
+preserved in Git history and is not evidence for the integrated source tree.
 
 ## Exact commands
 
