@@ -107,7 +107,7 @@ runtime package download, or per-call subprocess requires another accepted ADR.
 | Command-time delete invisible to follower | Delete compilation is gated on WP-559 changelog tombstones and validation proof |
 | Unsupported data opened or reset | Format manifest comparison refuses before any mutation |
 | Raw export/import escape | Symbolic paged export and compiled command/migration reimport only |
-| Paper-only disaster recovery | Every adapter destroys its volume, restores remotely, and reruns conformance |
+| Paper-only disaster recovery | Every general-alpha subject destroys its volume, restores remotely, and reruns its declared conformance without promoting its ADR-0201 evidence class |
 | Short or incomplete soak passed as evidence | Release requires one valid retained 72-hour lifecycle receipt |
 
 ## Deferred remote abuse controls

@@ -9,6 +9,8 @@ fi
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
+./scripts/check-adapter-evidence-claims
+
 task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
 mkdir -p "$task_tmp_root"
 export TMPDIR="$task_tmp_root"
@@ -93,4 +95,4 @@ for domain in "${domains[@]}"; do
     mv -f "$pending" "$destination"
 done
 
-echo "OpenFGA, MLflow, Better Auth, and Woodpecker passed exact install/evolution and public Rust, Go, TypeScript, and Python conformance."
+echo "The four general-alpha subjects passed their declared install/evolution and public Rust, Go, TypeScript, and Python matrices; only OpenFGA carries complete upstream-suite evidence."

@@ -1,0 +1,119 @@
+{
+  "schema": "riffdb.adapter-evidence-inventory/v1",
+  "claims": [
+    {
+      "claim_id": "alpha.better_auth.general",
+      "subject": "better_auth",
+      "scope": "wp578_wp579_general_alpha",
+      "evidence_class": "materialized_profile_matrix",
+      "custody": "mixed",
+      "complete_upstream_suite": false,
+      "source_claims": [
+        "release/evidence/alpha/conformance-better-auth-v1.json",
+        "work_packages.yaml#WP-630.closure"
+      ]
+    },
+    {
+      "claim_id": "alpha.mlflow.general",
+      "subject": "mlflow",
+      "scope": "wp578_wp579_general_alpha",
+      "evidence_class": "language_expressiveness_matrix",
+      "custody": "riffdb",
+      "complete_upstream_suite": false,
+      "source_claims": [
+        "release/evidence/alpha/conformance-mlflow-v1.json"
+      ]
+    },
+    {
+      "claim_id": "alpha.openfga.general",
+      "subject": "openfga",
+      "scope": "wp578_wp579_general_alpha",
+      "evidence_class": "upstream_suite_adapter",
+      "custody": "external",
+      "complete_upstream_suite": true,
+      "source_claims": [
+        "adr/0169-optional-aggregate-root-materialization.md#testing",
+        "release/evidence/alpha/conformance-openfga-v1.json"
+      ]
+    },
+    {
+      "claim_id": "alpha.woodpecker.general",
+      "subject": "woodpecker",
+      "scope": "wp578_wp579_general_alpha",
+      "evidence_class": "language_expressiveness_matrix",
+      "custody": "riffdb",
+      "complete_upstream_suite": false,
+      "source_claims": [
+        "release/evidence/alpha/conformance-woodpecker-v1.json"
+      ]
+    },
+    {
+      "claim_id": "partial.better_auth.admin",
+      "subject": "better_auth",
+      "scope": "OQ-030",
+      "evidence_class": "external_materialized_profile",
+      "custody": "external",
+      "complete_upstream_suite": false,
+      "source_claims": [
+        "work_packages.yaml#WP-648.closure",
+        "work_packages.yaml#WP-655.closure"
+      ]
+    },
+    {
+      "claim_id": "partial.better_auth.lifecycle",
+      "subject": "better_auth",
+      "scope": "DEL-012,QSO-012",
+      "evidence_class": "materialized_profile_matrix",
+      "custody": "riffdb",
+      "complete_upstream_suite": false,
+      "source_claims": [
+        "work_packages.yaml#WP-630.closure"
+      ]
+    },
+    {
+      "claim_id": "partial.mlflow.filtered_search",
+      "subject": "mlflow",
+      "scope": "OQ-100",
+      "evidence_class": "external_partial_profile_live",
+      "custody": "external",
+      "complete_upstream_suite": false,
+      "source_claims": [
+        "release/evidence/long-pattern-readiness-mlflow-loopback-v1.json"
+      ]
+    },
+    {
+      "claim_id": "partial.mlflow.large_run",
+      "subject": "mlflow",
+      "scope": "BLK-064",
+      "evidence_class": "riffdb_shape_live_loopback",
+      "custody": "riffdb",
+      "complete_upstream_suite": false,
+      "source_claims": [
+        "release/evidence/large-atomic-command-envelope-v1.json#/mlflow_loopback"
+      ]
+    },
+    {
+      "claim_id": "partial.mlflow.partition_search",
+      "subject": "mlflow",
+      "scope": "OQ-112",
+      "evidence_class": "external_partial_profile_live",
+      "custody": "external",
+      "complete_upstream_suite": false,
+      "source_claims": [
+        "release/evidence/partition-set-exact-prefix-repro-v1.json",
+        "release/evidence/partition-set-mlflow-loopback-v1.json"
+      ]
+    },
+    {
+      "claim_id": "post_alpha.payload.shape",
+      "subject": "payload",
+      "scope": "BLK-014,RAP-016",
+      "evidence_class": "post_alpha_language_expressiveness",
+      "custody": "riffdb",
+      "complete_upstream_suite": false,
+      "source_claims": [
+        "work_packages.yaml#WP-569.closure"
+      ]
+    }
+  ]
+}

@@ -128,4 +128,4 @@ for domain in "${domains[@]}"; do
     mv -f "$pending" "$destination"
 done
 
-echo "OpenFGA, MLflow, Better Auth, and Woodpecker passed exact portability, hidden-command, and Rust/Go/TypeScript/Python operator gates; Payload remains a generated regression fixture."
+echo "The four general-alpha subjects passed exact portability, hidden-command, and Rust/Go/TypeScript/Python operator gates at their ADR-0201 classes; Payload remains a post-alpha generated regression fixture."

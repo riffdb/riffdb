@@ -68,7 +68,7 @@ the same public maintenance API used by operators:
 ./scripts/remote-compose-acceptance --backup-restore
 ```
 
-The drill deploys and seeds the release-owned four-domain adapter corpus,
+The drill deploys and seeds the release-owned four-subject workload corpus,
 creates and polls a backup from the separate operator container, creates a
 post-backup authority record, stops the database container, empties only its
 freshly allocated test data root, starts an empty replacement, and restores the
@@ -93,11 +93,13 @@ The drill writes a secret-free JSON receipt beneath
 `target/adapter-disaster-recovery/`. The receipt binds both maintenance
 operation identities and input hashes, the verified backup-manifest checksum,
 the destroyed post-backup suffix, the exact contract bundle, startup
-validation, the accepted four-adapter inventory, the separately classified
+validation, the accepted four-subject inventory, the separately classified
 Payload regression, and the reconciled adapter-observation digest. The backup
 manifest is the frontier-bearing durable artifact; the receipt binds its
 checksum rather than decoding storage-format bytes in application or operator
-code.
+code. Recovery proves the declared lifecycle observation and does not promote any subject's evidence classification.
+In particular, the MLflow and Woodpecker matrix results do not become upstream-
+framework conformance through backup and restore.
 
 An existing named backup is never silently replaced.
 
