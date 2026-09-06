@@ -279,6 +279,9 @@ impl RedbOperationalPorts {
             let transaction = access.transaction()?;
             let mut statuses = transaction.open_table(OUTBOX_STATUS).map_err(table_error)?;
             let key = encode_event_key(event_id);
+            access.expect_fresh_locator_byte_insert(OUTBOX_STATUS, &key)?;
+            access.close_fresh_locator_mutation_expectations()?;
+            access.record_actual_fresh_locator_byte_insert(OUTBOX_STATUS, &key)?;
             let previous = statuses
                 .insert(key.as_slice(), encoded.as_bytes())
                 .map_err(precommit_storage_error)?;
@@ -753,16 +756,28 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
             return Err(storage_error(StorageErrorKind::LimitExceeded));
         }
 
+        for row in &prepared_rows {
+            access.expect_fresh_locator_byte_insert(
+                PROJECTION_STATE,
+                encode_projection_group_key(&row.key),
+            )?;
+        }
+        let encoded_marker_key = encode_projection_apply_key(&marker_key);
+        access.expect_fresh_locator_byte_insert(PROJECTION_APPLIED, encoded_marker_key)?;
+        let frontier_key = ProjectionFrontierKey::new(request.identity().clone());
+        let encoded_frontier_key = encode_projection_frontier_key(&frontier_key);
+        access.expect_fresh_locator_byte_insert(PROJECTION_FRONTIER, encoded_frontier_key)?;
+        access.close_fresh_locator_mutation_expectations()?;
+
         {
             let mut rows = transaction
                 .open_table(PROJECTION_STATE)
                 .map_err(table_error)?;
             for row in &prepared_rows {
+                let key = encode_projection_group_key(&row.key);
+                access.record_actual_fresh_locator_byte_insert(PROJECTION_STATE, key)?;
                 let previous = rows
-                    .insert(
-                        encode_projection_group_key(&row.key),
-                        row.encoded.as_bytes(),
-                    )
+                    .insert(key, row.encoded.as_bytes())
                     .map_err(precommit_storage_error)?;
                 match (&row.current, previous.as_ref()) {
                     (None, None) => {}
@@ -785,11 +800,10 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
             let mut markers = transaction
                 .open_table(PROJECTION_APPLIED)
                 .map_err(table_error)?;
+            let key = encode_projection_apply_key(&marker_key);
+            access.record_actual_fresh_locator_byte_insert(PROJECTION_APPLIED, key)?;
             if markers
-                .insert(
-                    encode_projection_apply_key(&marker_key),
-                    encoded_marker.as_bytes(),
-                )
+                .insert(key, encoded_marker.as_bytes())
                 .map_err(precommit_storage_error)?
                 .is_some()
             {
@@ -798,14 +812,13 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
         }
         {
             let key = ProjectionFrontierKey::new(request.identity().clone());
+            let encoded_key = encode_projection_frontier_key(&key);
             let mut controls = transaction
                 .open_table(PROJECTION_FRONTIER)
                 .map_err(table_error)?;
+            access.record_actual_fresh_locator_byte_insert(PROJECTION_FRONTIER, encoded_key)?;
             let previous = controls
-                .insert(
-                    encode_projection_frontier_key(&key),
-                    encoded_control.as_bytes(),
-                )
+                .insert(encoded_key, encoded_control.as_bytes())
                 .map_err(precommit_storage_error)?
                 .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
             let observed = decode_projection_control_v1(previous.value())?
@@ -846,11 +859,15 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
         let encoded = encode_projection_control_v1(&updated)?;
         {
             let key = ProjectionFrontierKey::new(identity);
+            let encoded_key = encode_projection_frontier_key(&key);
             let mut controls = transaction
                 .open_table(PROJECTION_FRONTIER)
                 .map_err(table_error)?;
+            access.expect_fresh_locator_byte_insert(PROJECTION_FRONTIER, encoded_key)?;
+            access.close_fresh_locator_mutation_expectations()?;
+            access.record_actual_fresh_locator_byte_insert(PROJECTION_FRONTIER, encoded_key)?;
             let previous = controls
-                .insert(encode_projection_frontier_key(&key), encoded.as_bytes())
+                .insert(encoded_key, encoded.as_bytes())
                 .map_err(precommit_storage_error)?;
             match (current.as_ref(), previous.as_ref()) {
                 (None, None) => {}
@@ -1989,6 +2006,58 @@ contract Recovery version 1 {
                 .expect("insert control");
         }
         access.commit().expect("commit control transaction");
+    }
+
+    // req: OUT-001, OUT-002, TXN-042
+    #[test]
+    fn armed_projection_control_transition_preserves_public_and_private_roles() {
+        let path = TestDatabasePath::new("projection-control-preserving-lane");
+        let mut store = RedbStore::open(&path.0).expect("open store");
+        store
+            .initialize_database(database_id())
+            .expect("initialize store");
+        let identity = projection_identity(0x30);
+        let initial = StoredProjectionControlV1::initial(identity.clone());
+        let encoded = encode_projection_control_v1(&initial).expect("encode control");
+        let transaction = store
+            .shared
+            .database
+            .begin_write()
+            .expect("raw setup write");
+        transaction
+            .open_table(PROJECTION_FRONTIER)
+            .expect("control table")
+            .insert(
+                encode_projection_frontier_key(&ProjectionFrontierKey::new(identity.clone())),
+                encoded.as_bytes(),
+            )
+            .expect("insert pre-activation control");
+        transaction.commit().expect("commit pre-activation setup");
+        let dormant = crate::store::RedbDormantPorts {
+            shared: store.shared,
+        };
+        let mut ports = dormant
+            .into_operational_after_catalog_validation()
+            .expect("activate test ports");
+        assert!(
+            ports
+                .arm_exact_empty_fresh_locator_coverage_for_test()
+                .expect("arm exact empty coverage")
+        );
+
+        assert!(matches!(
+            ports
+                .transition_projection_control(ProjectionControlOperation::StartInitialScan {
+                    expected: initial,
+                })
+                .expect("execute real projection control transition"),
+            ProjectionControlResult::Updated(_)
+        ));
+        assert!(
+            ports
+                .fresh_locator_public_and_private_roles_match_for_test()
+                .expect("projection lane preserves both roles")
+        );
     }
 
     #[test]

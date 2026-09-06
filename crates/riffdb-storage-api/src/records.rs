@@ -1137,10 +1137,11 @@ impl StoredDurableEventV2 {
     }
 
     fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
-        stored_event_semantic_bytes(self.event_type_id, self.payload_encoded.len())?
-            .checked_add(self.policy_anchor.semantic_bytes()?)
-            .and_then(|value| value.checked_add(4))
-            .ok_or(StorageValueError::SizeOverflow)
+        stored_event_semantic_bytes(
+            self.event_type_id,
+            self.payload_encoded.len(),
+            Some(&self.policy_anchor),
+        )
     }
 }
 
@@ -1435,14 +1436,11 @@ impl StoredDurableEventV1 {
     }
 
     fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
-        let base = stored_event_semantic_bytes(self.event_type_id, self.payload_encoded.len())?;
-        match &self.policy_anchor {
-            Some(anchor) => base
-                .checked_add(anchor.semantic_bytes()?)
-                .and_then(|value| value.checked_add(4))
-                .ok_or(StorageValueError::SizeOverflow),
-            None => Ok(base),
-        }
+        stored_event_semantic_bytes(
+            self.event_type_id,
+            self.payload_encoded.len(),
+            self.policy_anchor.as_ref(),
+        )
     }
 }
 
@@ -2076,9 +2074,13 @@ impl StoredCommitRecordV1 {
             self.entity_references
                 .iter()
                 .map(CommittedEntityReferenceV2::target),
-            self.events
-                .iter()
-                .map(|event| (event.event_type_id(), event.payload_encoded_len())),
+            self.events.iter().map(|event| {
+                (
+                    event.event_type_id(),
+                    event.payload_encoded_len(),
+                    event.policy_anchor(),
+                )
+            }),
             &self.declared_outcome,
             self.outbox_event_ids.len(),
         )
@@ -3422,10 +3424,18 @@ fn committed_entity_semantic_bytes_from_len(
 fn stored_event_semantic_bytes(
     _event_type_id: EventTypeId,
     payload_encoded_len: usize,
+    policy_anchor: Option<&StoredEventPolicyAnchorV1>,
 ) -> Result<usize, StorageValueError> {
-    framed_bytes(payload_encoded_len)?
+    let base = framed_bytes(payload_encoded_len)?
         .checked_add(12 + 4 + 32)
-        .ok_or(StorageValueError::SizeOverflow)
+        .ok_or(StorageValueError::SizeOverflow)?;
+    match policy_anchor {
+        Some(anchor) => base
+            .checked_add(4)
+            .and_then(|value| value.checked_add(anchor.semantic_bytes().ok()?))
+            .ok_or(StorageValueError::SizeOverflow),
+        None => Ok(base),
+    }
 }
 
 fn stored_outcome_semantic_bytes(
@@ -3514,7 +3524,7 @@ fn stored_commit_semantic_bytes<'a, R, E>(
 ) -> Result<usize, StorageValueError>
 where
     R: IntoIterator<Item = &'a EntityTarget>,
-    E: IntoIterator<Item = (EventTypeId, usize)>,
+    E: IntoIterator<Item = (EventTypeId, usize, Option<&'a StoredEventPolicyAnchorV1>)>,
 {
     let conflict_bytes = conflict_hashes
         .len()
@@ -3537,11 +3547,12 @@ where
             .and_then(|value| value.checked_add(8 + 32))
             .ok_or(StorageValueError::SizeOverflow)?;
     }
-    for (event_type_id, payload_encoded_len) in events {
+    for (event_type_id, payload_encoded_len, policy_anchor) in events {
         total = total
             .checked_add(stored_event_semantic_bytes(
                 event_type_id,
                 payload_encoded_len,
+                policy_anchor,
             )?)
             .ok_or(StorageValueError::SizeOverflow)?;
     }
@@ -3582,14 +3593,23 @@ fn validate_intent_event_derivation(
         evaluated.event_intents().iter().zip(events).enumerate()
     {
         let ordinal = u32::try_from(ordinal).map_err(|_| StorageValueError::LimitExceeded)?;
-        if committed_event.event_id() != EventId::new(sequence, ordinal)
-            || committed_event.event_type_id() != intent_event.event_type_id()
-            || committed_event.payload() != intent_event.payload()
-        {
+        if !event_derivation_matches(sequence, ordinal, intent_event, committed_event) {
             return Err(StorageValueError::IdentityMismatch);
         }
     }
     Ok(())
+}
+
+fn event_derivation_matches(
+    sequence: CommitSequence,
+    ordinal: u32,
+    intent: &crate::EventIntent,
+    committed: &StoredDurableEventV1,
+) -> bool {
+    committed.event_id() == EventId::new(sequence, ordinal)
+        && committed.event_type_id() == intent.event_type_id()
+        && committed.payload() == intent.payload()
+        && committed.policy_anchor() == intent.policy_anchor()
 }
 
 fn expected_next_allocator(sequence: CommitSequence) -> ApplicationSequenceAllocator {
@@ -3649,6 +3669,7 @@ fn projected_atomic_semantic_breakdown(
                 .checked_add(stored_event_semantic_bytes(
                     event.event_type_id(),
                     event.payload_encoded_len(),
+                    event.policy_anchor(),
                 )?)
                 .ok_or(StorageValueError::SizeOverflow)
         })?;
@@ -3696,10 +3717,13 @@ fn projected_atomic_semantic_breakdown(
             .iter()
             .filter(|mutation| !mutation.is_delete())
             .map(EntityMutation::target),
-        evaluated
-            .event_intents()
-            .iter()
-            .map(|event| (event.event_type_id(), event.payload_encoded_len())),
+        evaluated.event_intents().iter().map(|event| {
+            (
+                event.event_type_id(),
+                event.payload_encoded_len(),
+                event.policy_anchor(),
+            )
+        }),
         evaluated.outcome(),
         evaluated.event_intents().len(),
     )?;
@@ -4354,6 +4378,82 @@ mod tests {
             StoredDurableEventV2::new(event_id, event_type_id, payload, hash, changed_policy,),
             Err(StorageValueError::IdentityMismatch)
         );
+    }
+
+    // req: OUT-001, OUT-002, TXN-042
+    #[test]
+    fn committed_event_derivation_requires_exact_policy_anchor_presence_and_identity() {
+        let sequence = CommitSequence::first();
+        let event_id = EventId::new(sequence, 0);
+        let event_type_id = EventTypeId::first();
+        let payload = payload_record(7);
+        let exact_anchor = StoredEventPolicyAnchorV1::new(
+            DurableKeySchemaBindingV1::from_plan(&plan()),
+            event_type_id,
+            entity_target(),
+            RowPolicyName::new("TicketAccess").expect("policy"),
+        );
+        let wrong_anchor = StoredEventPolicyAnchorV1::new(
+            exact_anchor.contract().clone(),
+            event_type_id,
+            exact_anchor.source().clone(),
+            RowPolicyName::new("TicketAdminAccess").expect("other policy"),
+        );
+        let anchored_intent =
+            EventIntent::new_anchored(event_type_id, payload.clone(), exact_anchor.clone())
+                .expect("anchored intent");
+        let unanchored_intent =
+            EventIntent::new(event_type_id, payload.clone()).expect("unanchored intent");
+        let exact = StoredDurableEventV1::new_anchored(
+            event_id,
+            event_type_id,
+            payload.clone(),
+            derive_event_hash_v2(event_id, event_type_id, &payload, &exact_anchor)
+                .expect("anchored hash"),
+            exact_anchor,
+        )
+        .expect("anchored event");
+        let missing = StoredDurableEventV1::new(
+            event_id,
+            event_type_id,
+            payload.clone(),
+            derive_event_hash_v1(event_id, event_type_id, &payload).expect("legacy hash"),
+        )
+        .expect("unanchored event");
+        let wrong = StoredDurableEventV1::new_anchored(
+            event_id,
+            event_type_id,
+            payload.clone(),
+            derive_event_hash_v2(event_id, event_type_id, &payload, &wrong_anchor)
+                .expect("wrong-anchor hash"),
+            wrong_anchor,
+        )
+        .expect("wrong-anchor event");
+
+        assert!(event_derivation_matches(
+            sequence,
+            0,
+            &anchored_intent,
+            &exact
+        ));
+        assert!(!event_derivation_matches(
+            sequence,
+            0,
+            &anchored_intent,
+            &missing
+        ));
+        assert!(!event_derivation_matches(
+            sequence,
+            0,
+            &unanchored_intent,
+            &exact
+        ));
+        assert!(!event_derivation_matches(
+            sequence,
+            0,
+            &anchored_intent,
+            &wrong
+        ));
     }
 
     #[test]
