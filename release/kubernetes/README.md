@@ -1,13 +1,18 @@
-# Kubernetes remote alpha
+# Historical Kubernetes remote-alpha fixture
 
-`riffdb.yaml` is an intentionally closed deployment shape: one stateful RiffDB
-pod, one TCP pass-through proxy, and separate application/operator proof jobs.
-Only the RiffDB pod mounts data, backup storage, digest keys, or the TLS private
-key. The proof jobs receive disjoint client Secrets and no database volume.
+`riffdb.yaml` is retained as the historical manifest fixture accepted with the
+first remote-alpha transport proof. It is not the current NET-010 proof, a
+supported operator installation surface, or controlled-cluster evidence. Use
+the bounded chart under `release/helm/riffdb`, its committed golden render, and
+`scripts/check-helm-operator-package` for current Kubernetes packaging.
 
-Before applying it, build and publish the `riffdb:remote-alpha` image, replace
-that example tag with the exact published digest in every workload, and
-create these Secrets in `riffdb-alpha`:
+The fixture records one stateful RiffDB pod, one TCP pass-through proxy, and
+separate application/operator proof Jobs. Only the RiffDB pod mounts data,
+backup storage, digest keys, or the TLS private key. The proof Jobs receive
+disjoint client Secrets and no database volume. Do not apply it as an operator
+procedure.
+
+Its frozen Secret inventory is:
 
 - `riffdb-server-secrets`: `server-chain.pem`, `server-key.pem`,
   `riffdb-ca.pem`, `capability.keys`, `idempotency.keys`, and the separately
@@ -17,20 +22,9 @@ create these Secrets in `riffdb-alpha`:
 - `riffdb-operator-client`: `operator.toml`, `operator.credential`, and
   `riffdb-ca.pem`.
 
-The certificate DNS SAN must include both `riffdbd.riffdb-alpha.svc` and
-`127.0.0.1`. Bootstrap remains local-only: after liveness starts, execute the
-checked `capability bootstrap` request inside the `riffdbd` container against
-`https://127.0.0.1:7443`, writing its bearer only to
-`/run/riffdb-bootstrap`. Transfer that file through a protected operator
-ceremony, use it over the TLS Service to issue the least-authority readiness
-credential, update `riffdb-server-secrets`, and restart the pod. The Service
-publishes the not-yet-ready address for those post-bootstrap authenticated
-operations; protected application traffic must not be routed until readiness
-succeeds. The init containers
-copy Kubernetes Secret projections into a memory-backed owner-only directory,
-because RiffDB rejects a group-readable private key or bearer file.
-
-Replace Secrets by versioned rollout and atomic projected-volume publication.
-Credential replacement still uses RiffDB's role-exact rotation command; a
-Kubernetes Secret update is not revocation. Keep `terminationGracePeriodSeconds`
-greater than the configured RiffDB drain bound.
+The historical certificate included both `riffdbd.riffdb-alpha.svc` and the
+literal-loopback bootstrap identity. The current chart instead fixes all
+chart-owned traffic to its release Service DNS name, requires separately
+provisioned authority, disables ambient service-account tokens, and refuses
+unsafe values before rendering. Follow the
+[Helm operations runbook](../../docs/operations/HELM-OPERATIONS.md).

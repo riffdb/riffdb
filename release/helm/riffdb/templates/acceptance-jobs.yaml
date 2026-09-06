@@ -22,6 +22,7 @@ spec:
         {{- include "riffdb.selectorLabels" $root | nindent 8 }}
         riffdb.dev/proof-role: {{ $role.principal }}
     spec:
+      automountServiceAccountToken: false
       restartPolicy: Never
       {{- with $root.Values.image.pullSecrets }}
       imagePullSecrets:
@@ -35,7 +36,13 @@ spec:
             runAsUser: 0
             runAsGroup: 0
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN"]
           command: ["copy-protected", "/incoming", "/protected"]
+          resources:
+            {{- toYaml $root.Values.acceptanceJobs.resources | nindent 12 }}
           volumeMounts:
             - name: proof-secret
               mountPath: /incoming
@@ -49,7 +56,7 @@ spec:
           command: ["riffdb"]
           args:
             - --endpoint
-            - {{ include "riffdb.publicEndpoint" $root | quote }}
+            - {{ include "riffdb.serviceEndpoint" $root | quote }}
             - --database
             - default
             - --output
@@ -64,7 +71,7 @@ spec:
             - name: RIFFDB_TLS_TRUST_ROOT
               value: /run/riffdb-proof/ca.pem
             - name: RIFFDB_TLS_SERVER_NAME
-              value: {{ include "riffdb.serverName" $root | quote }}
+              value: {{ include "riffdb.serviceDnsName" $root | quote }}
           securityContext:
             runAsNonRoot: {{ $root.Values.podSecurityContext.runAsNonRoot }}
             runAsUser: {{ $root.Values.podSecurityContext.runAsUser }}
@@ -84,8 +91,14 @@ spec:
           secret:
             secretName: {{ $role.secret }}
             defaultMode: 256
+            items:
+              - key: credential
+                path: credential
+              - key: ca.pem
+                path: ca.pem
         - name: protected
           emptyDir:
             medium: Memory
+            sizeLimit: 1Mi
 {{- end }}
 {{- end }}

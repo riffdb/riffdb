@@ -28,17 +28,21 @@ knob beyond that surface. In particular:
   root come from a Kubernetes Secret named by `server.secretName`. The chart
   never renders their contents, and an init container copies them into a
   memory-backed volume with the restricted modes `riffdbd` requires.
+- **Chart-owned traffic has one identity.** Probes and proof Jobs always dial
+  the exact release Service DNS name and verify that same certificate name.
+  The values surface has no endpoint or TLS-name override.
 - **TLS terminates at `riffdbd`, not at the proxy.** The proxy is pass-through,
   so no private key reaches it.
-- **`server.replicas` is not horizontal scaling.** `riffdbd` is a single-writer
-  engine; a second replica is a second server against a second volume, not a
-  shard or a replica set.
+- **`server.replicas` is exactly one.** `riffdbd` is a single-writer engine;
+  the values schema refuses a second server rather than presenting it as a
+  shard or replica set.
 
 ## Version binding
 
-`image.tag` is empty by default and resolves to the chart's `appVersion`, so a
-chart release cannot silently deploy a different RiffDB release than it
-declares. WP-728 binds both to the tag it publishes.
+`image.tag` is empty by default and resolves to the chart's `appVersion`. A
+nonempty override is accepted only when it is exactly equal to `appVersion`, so
+the chart refuses release/image drift. WP-728 binds both to the tag it
+publishes.
 
 The proxy image is digest-pinned, matching the acceptance manifest.
 
@@ -58,8 +62,10 @@ anything whose durability you care about.
 
 The acceptance manifest states none. This chart sets modest requests and a
 memory limit, because an unbounded database pod is the first thing evicted
-under node pressure. Raise them against your own workload — the defaults are a
-floor that lets a small cluster schedule the pod, not a sizing recommendation.
+under node pressure. The values schema requires resource objects for the
+server, proxy, and proof containers and rejects missing or malformed bounds.
+Raise them against your own workload — the defaults are a floor that lets a
+small cluster schedule the pod, not a sizing recommendation.
 
 No CPU limit is set. Throttling a database's CPU produces latency behaviour
 that looks like a RiffDB problem and is not one.
@@ -112,11 +118,10 @@ mounts only `data` and `backups` under `readOnlyRootFilesystem: true`. The
 exact-text runtime could not open, and process graph construction refused. The
 chart now sets `projections_root` inside the data volume.
 
-`release/container/compose.yaml` and `release/kubernetes/riffdb.yaml` have the
-same shape — `read_only: true`, only `data` and `backups` mounted, no
-`projections_root` configured — so this is not a chart-only problem. Both need
-the same fix, and `remote-kubernetes-render-check` cannot catch it because it
-parses YAML rather than starting anything.
+The same defect originally existed in `release/container/compose.yaml` and the
+historical `release/kubernetes/riffdb.yaml`; commit `210ffcd8` repaired both and
+made the process-level startup check guard their shared release-image boundary.
+The historical YAML parser alone could not have detected that failure.
 
 The probes also need `tls_trust_root` and `tls_server_name`, which the first
 draft of this chart omitted. Without them the probe fails

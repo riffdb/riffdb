@@ -198,15 +198,19 @@ external connection controls; do not claim untrusted public multi-tenancy.
 
 ## Compose and Kubernetes
 
-The checked release examples are:
+The current checked release surfaces are:
 
 - `release/container/compose.yaml`,
   with a direct-TLS database, TCP pass-through proxy, and disjoint one-shot
   application/operator proof containers; and
-- `release/kubernetes/riffdb.yaml`,
-  with a stateful database pod, persistent backup volume, authenticated
-  readiness, payload-free liveness, proxy Deployment, and separate application
-  and operator Secrets.
+- `release/helm/riffdb`, with a stateful database pod, retained backup volume,
+  authenticated typed-readiness gate, payload-free liveness, pass-through proxy,
+  and exactly two opt-in proof Jobs using separate external Secrets.
+
+`release/kubernetes/riffdb.yaml` and
+`scripts/remote-kubernetes-render-check` are retained historical fixtures. They
+are not the current NET-010 proof, an operator installation path, or
+controlled-cluster execution evidence.
 
 The release container normalizes the installed `riffdb` and `riffdbd` modes
 inside the image before switching to its fixed non-root identity. A restrictive
@@ -218,24 +222,26 @@ the service as container root. Docker Engine uses the checked Compose file
 without that override.
 
 The application workloads mount no database, backup, digest key, TLS private
-key, or operator credential. Kubernetes Secret projections are copied by a
-bounded init container into a memory-backed owner-only directory because
-RiffDB deliberately rejects group-readable bearer and private-key files. The
-Kubernetes Service publishes the not-yet-ready TLS endpoint only so an operator
-can perform the initial bootstrap and issue the least-authority readiness
-credential; application routing begins only after authenticated readiness.
-Bootstrap itself remains local-authority-only. The Compose ceremony executes
-that one operation inside the database container's loopback namespace and
-publishes the result to a protected operator-only handoff directory. It does
-not permit bootstrap through the proxy; every post-bootstrap operation and all
-application traffic use authenticated TLS through the sibling network.
+key, or operator credential. Chart Secret projections select only the required
+keys and are copied by a bounded init container into a size-bounded,
+memory-backed owner-only directory because RiffDB deliberately rejects
+group-readable bearer and private-key files. Chart-owned probes and proof Jobs
+use the exact release Service DNS identity; the values surface has no endpoint
+or TLS-name override that can redirect them. Application routing begins only
+after the authenticated probe returns the canonical typed `ready` result.
+Bootstrap remains local-authority-only and outside chart assembly. The Compose
+ceremony executes that one operation inside the database container's loopback
+namespace and publishes the result to a protected operator-only handoff
+directory. It does not permit bootstrap through the proxy.
 
-Run `./scripts/remote-compose-acceptance` for the real container proof and
-`./scripts/remote-kubernetes-render-check` for the closed manifest gate. The
-Compose proof builds the release image, starts sibling containers, bootstraps
-through the TLS proxy, proves separate credentials, rotates certificate files
-and the application credential, rejects the revoked predecessor, and performs
-a bounded graceful stop. The pass-through proxy uses the container runtime's
-resolver with bounded retries, so replacing or restarting the database
-container cannot leave it pinned to a stale backend address. Neither example
-treats proxy headers or network placement as authority.
+Run `./scripts/remote-compose-acceptance` for the real container proof,
+`./scripts/check-helm-operator-package` for the parsed chart gate, and
+`./scripts/check-helm-upgrade-rehearsal` for the explicitly offline non-release
+lifecycle render. The Compose proof builds the release image, starts sibling
+containers, bootstraps through the TLS proxy, proves separate credentials,
+rotates certificate files and the application credential, rejects the revoked
+predecessor, and performs a bounded graceful stop. The pass-through proxy uses
+the container runtime's resolver with bounded retries, so replacing or
+restarting the database container cannot leave it pinned to a stale backend
+address. Neither surface treats proxy headers or network placement as
+authority.

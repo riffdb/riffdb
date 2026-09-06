@@ -42,6 +42,7 @@ spec:
         {{- include "riffdb.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: proxy
     spec:
+      automountServiceAccountToken: false
       containers:
         - name: haproxy
           image: {{ include "riffdb.proxyImage" . }}
