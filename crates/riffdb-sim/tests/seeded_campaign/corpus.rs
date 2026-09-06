@@ -307,7 +307,12 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             successor_seed: 0x51C2_C307,
             invalidated_by_commit: "fa5d906c3abc47af15590810676f27615233aef5",
             rotated: "2026-08-30",
-            restored_by: None,
+            // Integrating WP-778's fresh-locator storage changes with WP-711
+            // moved the physical operation stream back onto this coordinate:
+            // the replay again reaches the exact four-predicate territory.
+            // Retain both the truthful 2026-08-30 rotation receipt and its
+            // active successor witness.
+            restored_by: Some("5653fd908c9e4b288ac76dc9a3e281cb0a389f6f"),
         }),
         retirement: None,
     },
@@ -462,7 +467,12 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             CorpusExpectation::RecoveryWindowCrash,
             CorpusExpectation::InitializationBoundary,
         ]),
-        rotation: None,
+        rotation: Some(CorpusWitnessRotation {
+            successor_seed: 0x51C2_C301,
+            invalidated_by_commit: "5653fd908c9e4b288ac76dc9a3e281cb0a389f6f",
+            rotated: "2026-09-06",
+            restored_by: None,
+        }),
         retirement: None,
     },
     CorpusEntry {
@@ -512,6 +522,35 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             CorpusExpectation::RecoveryWindowCrash,
             CorpusExpectation::TornDecisionsAtLeast(10),
             CorpusExpectation::InFlightAdmitResolved,
+        ]),
+        rotation: None,
+        retirement: None,
+    },
+    // ---- successor appended for the WP-778/WP-711 integration -----------
+    //
+    // Merge 5653fd90 composed WP-778's fresh-locator storage work with
+    // WP-711 and moved the physical operation stream again. The earlier
+    // 0x51C2C000 coordinate was restored, while its active successor moved
+    // below the heavy-torn threshold. The old receipts and both historical
+    // coordinates remain replayed; this forward-only successor keeps the
+    // exact four-predicate territory active under the integrated layout.
+    CorpusEntry {
+        seed: 0x51C2_C301,
+        generator_version: 1,
+        config: COMMIT_ARMS_CONFIG,
+        caught: "active successor for the heavy torn-recovery territory after \
+                 integrating WP-778's fresh-locator storage work with WP-711 \
+                 moved the physical operation stream: 36 torn decisions \
+                 across 14 recoveries, one interrupted batch resolved absent, \
+                 five recovery-window crashes, and ten initialization \
+                 boundary resolutions with the oracle holding throughout; \
+                 rerun 12/12 with identical counters before pinning.",
+        pinned: "2026-09-06",
+        outcome: CorpusOutcome::Completes(&[
+            CorpusExpectation::TornDecisionsAtLeast(30),
+            CorpusExpectation::InFlightCommitAbsent,
+            CorpusExpectation::RecoveryWindowCrash,
+            CorpusExpectation::InitializationBoundary,
         ]),
         rotation: None,
         retirement: None,
