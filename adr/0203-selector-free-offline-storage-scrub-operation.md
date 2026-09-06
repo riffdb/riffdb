@@ -1,10 +1,10 @@
 ---
 adr: "0203"
 title: Selector-Free Offline Storage Scrub Operation
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-05
-accepted: null
+accepted: 2026-09-06
 requires: [ADR-0050, ADR-0156, ADR-0157, ADR-0179, ADR-0182, ADR-0199]
 amends:
   - ADR-0050 for the additive selector-free storage-scrub operation
