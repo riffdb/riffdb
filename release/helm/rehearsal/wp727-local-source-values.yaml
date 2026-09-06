@@ -1,0 +1,26 @@
+# Frozen inputs for WP-727's repository-local render rehearsal. These names are
+# deliberately non-release and must never be used as publication evidence.
+namespace:
+  name: wp727-local
+image:
+  repository: wp727.invalid/riffdb
+  tag: ""
+server:
+  secretName: wp727-external-server
+  replicas: 1
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      memory: 4Gi
+  persistence:
+    data:
+      size: 10Gi
+    backups:
+      enabled: true
+      size: 20Gi
+proxy:
+  replicas: 1
+acceptanceJobs:
+  enabled: false
