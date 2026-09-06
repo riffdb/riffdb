@@ -20,6 +20,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 INVENTORY = ROOT / "fixtures/adapters/adapter-evidence-v1.json"
 MAX_INVENTORY_BYTES = 64 * 1024
+JSON_SOURCE_FAILURE = object()
 
 SOURCE_TEXT_BYTE_LIMITS = {
     "SPEC.md": 1024 * 1024,
@@ -410,17 +411,17 @@ def validate_source_locators(
         source_cache[relative] = encoded
         return encoded
 
-    def json_source(relative: str) -> object | None:
+    def json_source(relative: str) -> object:
         if relative in json_cache:
             return json_cache[relative]
         encoded = source_bytes(relative)
         if encoded is None:
-            return None
+            return JSON_SOURCE_FAILURE
         try:
             value = parse_json_utf8(encoded, f"source locator {relative}")
         except ValueError as error:
             errors.append(str(error))
-            return None
+            return JSON_SOURCE_FAILURE
         json_cache[relative] = value
         return value
 
@@ -505,6 +506,8 @@ def validate_source_locators(
                     )
                     continue
                 value = json_source(relative)
+                if value is JSON_SOURCE_FAILURE:
+                    continue
                 key = fragment[1:]
                 if not isinstance(value, dict) or key not in value:
                     errors.append(f"{claim['claim_id']}: dangling JSON pointer: {locator}")
@@ -709,20 +712,34 @@ def adapter_evidence_claim_negative_self_test() -> None:
         pointer.write_bytes(
             json.dumps({"mlflow_loopback": {}}).encode("utf-16")
         )
-        if not validate_source_locators(
+        pointer_errors = validate_source_locators(
             root=root,
             claims=one_locator(
                 "release/evidence/large-atomic-command-envelope-v1.json#/mlflow_loopback"
             ),
-        ):
-            missed_guards.append("UTF-16 JSON pointer locator source")
-        if not validate_source_locators(
+        )
+        expected_pointer_errors = [
+            "source locator release/evidence/large-atomic-command-envelope-v1.json: "
+            "source is not UTF-8"
+        ]
+        if pointer_errors != expected_pointer_errors:
+            missed_guards.append(
+                f"UTF-16 JSON pointer locator diagnostic {pointer_errors!r}"
+            )
+        receipt_errors = validate_source_locators(
             root=root,
             claims=one_locator(
                 "release/evidence/large-atomic-command-envelope-v1.json"
             ),
-        ):
-            missed_guards.append("UTF-16 unfragmented JSON locator source")
+        )
+        expected_receipt_errors = [
+            "source locator release/evidence/large-atomic-command-envelope-v1.json: "
+            "source is not UTF-8"
+        ]
+        if receipt_errors != expected_receipt_errors:
+            missed_guards.append(
+                f"UTF-16 unfragmented JSON locator diagnostic {receipt_errors!r}"
+            )
 
         plain_json.unlink()
         symlink_target = root / "reviewed-locator.json"
@@ -747,8 +764,12 @@ def adapter_evidence_claim_negative_self_test() -> None:
         inventory.write_bytes(json.dumps(EXPECTED_INVENTORY).encode("utf-16"))
         try:
             load_inventory(inventory)
-        except ValueError:
-            pass
+        except ValueError as error:
+            expected = "canonical adapter evidence inventory: source is not UTF-8"
+            if str(error) != expected:
+                missed_guards.append(
+                    f"UTF-16 inventory diagnostic {str(error)!r}"
+                )
         else:
             missed_guards.append("UTF-16 inventory")
 
