@@ -1098,6 +1098,7 @@ impl AdmissionRepository for RedbOperationalPorts {
             return Err(storage_error(StorageErrorKind::LimitExceeded));
         }
         let access = self.begin_write()?;
+        access.arm_fresh_locator_coverage()?;
         let mut created_any = false;
         let staged = stage_admission_group(&access, requests.iter())?;
         let mut results = Vec::with_capacity(staged.len());
@@ -1176,66 +1177,85 @@ where
     let bundles = transaction
         .open_table(CONTRACT_BUNDLES)
         .map_err(table_error)?;
-    let mut staged = Vec::with_capacity(request_count);
+    struct PreparedAdmission {
+        result: AdmissionResultV1,
+        encoded: Option<(Vec<u8>, Vec<u8>)>,
+    }
+    let mut prepared: Vec<PreparedAdmission> = Vec::with_capacity(request_count);
     for request in requests {
-        staged.push(stage_admission_with_tables(
-            &mut pending,
+        let mut matches = matching_admissions_from_tables(
+            &pending,
             &terminal,
             &commits,
             &events,
-            &retirements,
-            &bundles,
-            request,
-            access,
-        )?);
+            request.lookup_candidates(),
+            |identity| command_outcome_from_write_indexes(access, identity),
+        )?;
+        for prior in &prepared {
+            if let AdmissionResultV1::Created(pending) = &prior.result
+                && request
+                    .lookup_candidates()
+                    .as_slice()
+                    .contains(pending.identity())
+            {
+                matches.push(StoredAdmissionStateV1::Pending(pending.clone()));
+            }
+        }
+        let result = if matches.len() > 1 {
+            PreparedAdmission {
+                result: AdmissionResultV1::MultipleMatches,
+                encoded: None,
+            }
+        } else if let Some(existing) = matches.first() {
+            PreparedAdmission {
+                result: admission_result(existing, request.proposed_pending()),
+                encoded: None,
+            }
+        } else {
+            if !plan_bundle_exists_from_tables(
+                &retirements,
+                &bundles,
+                request.proposed_pending().plan(),
+            )? {
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+            let key = identity_key(request.proposed_pending().identity())?;
+            let encoded_key = encode_idempotency_key(&key).to_vec();
+            let encoded = encode_pending_admission_v1(request.proposed_pending())?;
+            PreparedAdmission {
+                result: AdmissionResultV1::Created(request.proposed_pending().clone()),
+                encoded: Some((encoded_key, encoded.as_bytes().to_vec())),
+            }
+        };
+        prepared.push(result);
     }
-    Ok(staged)
-}
-
-#[allow(clippy::too_many_arguments)] // One borrowed table set keeps the grouped admission snapshot exact.
-fn stage_admission_with_tables(
-    pending: &mut redb::Table<'_, &'static [u8], &'static [u8]>,
-    terminal: &redb::Table<'_, &'static [u8], &'static [u8]>,
-    commits: &redb::Table<'_, &'static [u8], &'static [u8]>,
-    events: &redb::Table<'_, &'static [u8], &'static [u8]>,
-    retirements: &redb::Table<'_, &'static [u8], &'static [u8]>,
-    bundles: &redb::Table<'_, &'static [u8], &'static [u8]>,
-    request: &AdmissionRequestV1,
-    access: &RedbWriteAccess,
-) -> Result<(AdmissionResultV1, bool), StorageError> {
-    let matches = matching_admissions_from_tables(
-        pending,
-        terminal,
-        commits,
-        events,
-        request.lookup_candidates(),
-        |identity| command_outcome_from_write_indexes(access, identity),
-    )?;
-    if matches.len() > 1 {
-        return Ok((AdmissionResultV1::MultipleMatches, false));
+    for admission in &prepared {
+        if let Some((key, _)) = &admission.encoded {
+            access.expect_fresh_locator_raw_insert(JournalTable::IdempotencyPending, key)?;
+        }
     }
-    if let Some(existing) = matches.first() {
-        return Ok((
-            admission_result(existing, request.proposed_pending()),
-            false,
-        ));
+    if access.has_fresh_locator_mutation_expectations()? {
+        access.close_fresh_locator_mutation_expectations()?;
     }
-    if !plan_bundle_exists_from_tables(retirements, bundles, request.proposed_pending().plan())? {
-        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    for admission in &prepared {
+        if let Some((key, encoded)) = &admission.encoded {
+            access.record_actual_fresh_locator_byte_insert(IDEMPOTENCY_PENDING, key)?;
+            if pending
+                .insert(key.as_slice(), encoded.as_slice())
+                .map_err(precommit_storage_error)?
+                .is_some()
+            {
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+        }
     }
-    let key = identity_key(request.proposed_pending().identity())?;
-    let encoded = encode_pending_admission_v1(request.proposed_pending())?;
-    if pending
-        .insert(encode_idempotency_key(&key), encoded.as_bytes())
-        .map_err(precommit_storage_error)?
-        .is_some()
-    {
-        return Err(storage_error(StorageErrorKind::InvariantViolation));
-    }
-    Ok((
-        AdmissionResultV1::Created(request.proposed_pending().clone()),
-        true,
-    ))
+    Ok(prepared
+        .into_iter()
+        .map(|admission| {
+            let created = admission.encoded.is_some();
+            (admission.result, created)
+        })
+        .collect())
 }
 
 impl ExecutionFailureTransitionPort for RedbOperationalPorts {
@@ -1368,7 +1388,25 @@ impl RedbExecutionFailureAwaitingDecision {
             }
         }
         let key = identity_key(self.request.expected_pending().identity())?;
+        let encoded_key = encode_idempotency_key(&key);
         let encoded = encode_execution_failed_v1(&terminal)?;
+        if matches!(
+            self.request.admission_expectation(),
+            CommandAdmissionExpectationV1::ExistingPending
+        ) {
+            self.access
+                .expect_fresh_locator_byte_delete(IDEMPOTENCY_PENDING, encoded_key)?;
+        }
+        self.access
+            .expect_fresh_locator_byte_insert(IDEMPOTENCY, encoded_key)?;
+        let terminal_audit = if let Some(transition) = audit {
+            let intents = transition.into_intents();
+            let records = stage_service_audit_group_in_write(&self.access, &intents)?;
+            records.last().cloned()
+        } else {
+            self.access.close_fresh_locator_mutation_expectations()?;
+            None
+        };
         if matches!(
             self.request.admission_expectation(),
             CommandAdmissionExpectationV1::ExistingPending
@@ -1376,8 +1414,10 @@ impl RedbExecutionFailureAwaitingDecision {
             let mut pending = transaction
                 .open_table(IDEMPOTENCY_PENDING)
                 .map_err(table_error)?;
+            self.access
+                .record_actual_fresh_locator_byte_delete(IDEMPOTENCY_PENDING, encoded_key)?;
             if pending
-                .remove(encode_idempotency_key(&key))
+                .remove(encoded_key)
                 .map_err(precommit_storage_error)?
                 .is_none()
             {
@@ -1386,21 +1426,16 @@ impl RedbExecutionFailureAwaitingDecision {
         }
         {
             let mut outcomes = transaction.open_table(IDEMPOTENCY).map_err(table_error)?;
+            self.access
+                .record_actual_fresh_locator_byte_insert(IDEMPOTENCY, encoded_key)?;
             if outcomes
-                .insert(encode_idempotency_key(&key), encoded.as_bytes())
+                .insert(encoded_key, encoded.as_bytes())
                 .map_err(precommit_storage_error)?
                 .is_some()
             {
                 return Err(storage_error(StorageErrorKind::InvariantViolation));
             }
         }
-        let terminal_audit = if let Some(transition) = audit {
-            let intents = transition.into_intents();
-            let records = stage_service_audit_group_in_write(&self.access, &intents)?;
-            records.last().cloned()
-        } else {
-            None
-        };
         // The one lane that writes a terminal ExecutionFailed row commits through
         // the one path that counts it, so the checkpoint's StoredOutcome-only
         // idempotency count can be derived from the IDEMPOTENCY row count.
@@ -2550,6 +2585,7 @@ fn command_outcome_from_write_indexes(
     // locator is absence.
     let Some(encoded) = access.read_command_value(JournalTable::IdempotencyLocators, exact_key)?
     else {
+        let _coverage_survives = access.fresh_locator_allows_miss()?;
         return Ok(None);
     };
     let locator = crate::codec::decode_command_locator_v1(&encoded)?
@@ -2711,6 +2747,9 @@ fn command_outcome_from_operational_indexes(
         }
         return Ok(Some(capsule.outcome().clone()));
     }
+    if ports.fresh_locator_proves_absence(access)? {
+        return Ok(None);
+    }
     let Some(frontier) = frontier else {
         return Ok(None);
     };
@@ -2728,6 +2767,7 @@ fn command_outcome_from_operational_indexes(
     if first > frontier {
         return Ok(None);
     }
+    ports.note_fresh_locator_history_fallback_scan();
     let start = encode_application_sequence_key(first);
     let mut end = encode_application_sequence_key(frontier).to_vec();
     end.push(0);
@@ -3289,13 +3329,14 @@ mod tests {
 
     use riffdb_query_executor::{QueryExecutionPort, VectorInspectionTargetV1};
     use riffdb_storage_api::{
-        DatabaseInitializationPort, StorageScanLimit, VectorEvidenceIndexEntryV1,
-        VectorEvidenceIndexScanRequestV1, VectorHealthFieldObservationV1,
-        VectorHealthObservationV1, VectorObservationCountsV1,
+        DatabaseInitializationPort, IdempotencyKeyDigest, IdempotencyLookupCandidatesV1,
+        StorageScanLimit, VectorEvidenceIndexEntryV1, VectorEvidenceIndexScanRequestV1,
+        VectorHealthFieldObservationV1, VectorHealthObservationV1, VectorObservationCountsV1,
     };
     use riffdb_types::{
-        AggregateTypeId, ContractLineage, DatabaseId, EntityKeyBuilder, EntityTypeId, FieldId,
-        PartitionKeyBuilder,
+        ActorId, AggregateTypeId, CommandId, ContractLineage, DatabaseId, DigestKeyId,
+        EntityKeyBuilder, EntityTypeId, Environment, FieldId, PartitionKeyBuilder, TenantId,
+        TenantScope,
     };
 
     use super::*;
@@ -3313,6 +3354,49 @@ mod tests {
             EntityTypeId::new(7).expect("entity type"),
             FieldId::new(8).expect("vector field"),
         )
+    }
+
+    // req: OUT-001, OUT-002, TXN-042, PERF-019
+    #[test]
+    fn cold_fresh_database_publications_complete_without_history_scans() {
+        let scope = crate::test_path::ScopedDirectory::new("fresh-prefix-private-scan-count");
+        let path = scope.join("db.redb");
+        let database_id =
+            DatabaseId::from_unix_milliseconds_and_random(1, [0x74; 10]).expect("database ID");
+        let mut store = RedbStore::open(&path).expect("open store");
+        store
+            .initialize_database(database_id)
+            .expect("initialize store");
+        let ports = crate::store::RedbDormantPorts {
+            shared: Arc::clone(&store.shared),
+        }
+        .into_operational_after_catalog_validation()
+        .expect("activate ports");
+        let access = ports.begin_write().expect("first command-write entry");
+        access
+            .arm_fresh_locator_coverage()
+            .expect("arm exact empty authority");
+        access.abort().expect("abort mutation-free entry");
+
+        let identity = IdempotencyIdentity::new(
+            database_id,
+            Environment::new("test").expect("environment"),
+            TenantScope::Tenant(TenantId::new("tenant-a").expect("tenant")),
+            ActorId::new("principal-a").expect("actor"),
+            ContractLineage::new("fresh-prefix").expect("lineage"),
+            CommandId::new(1).expect("command"),
+            IdempotencyKeyDigest::from_hmac_bytes(
+                DigestKeyId::new(1).expect("digest key"),
+                [0x55; 32],
+            ),
+        );
+        let candidates =
+            IdempotencyLookupCandidatesV1::new(vec![identity]).expect("lookup candidates");
+        assert_eq!(
+            ports.lookup_admission(candidates).expect("covered miss"),
+            AdmissionLookupResultV1::NotFound
+        );
+        assert_eq!(ports.shared.fresh_locator_history_fallback_scans(), 0);
     }
 
     fn vector_index_entry(value: u64) -> VectorEvidenceIndexEntryV1 {

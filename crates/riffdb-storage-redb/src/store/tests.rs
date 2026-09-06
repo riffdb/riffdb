@@ -86,6 +86,7 @@ fn warming_the_indexes_commits_under_the_callers_live_read_transaction() {
                     .database
                     .begin_read()
                     .expect("durable frontier read"),
+                store.shared.durable_commit_epoch.load(Ordering::Acquire),
             )));
         }
         drop(
@@ -1909,4 +1910,968 @@ fn current_digest_still_runs_index_generation_row_repair() {
     // Migration rewrites prefix-keyed legacy rows to partition-keyed current
     // encoding; the retained epoch is at least the legacy maximum.
     assert!(generation.epoch().get() >= 3);
+}
+
+// req: OUT-001, OUT-002, TXN-042, REC-004, PERF-019
+#[test]
+fn fresh_locator_preserving_immediate_permits_are_closed_exact_and_bounded() {
+    use crate::hooks::RedbTestOperation;
+
+    let preserving = [
+        RedbTestOperation::Admission,
+        RedbTestOperation::ExecutionFailure,
+        RedbTestOperation::ServiceAudit,
+        RedbTestOperation::CatalogAdministration,
+        RedbTestOperation::QueryModuleAdministration,
+        RedbTestOperation::ReactiveModuleAdministration,
+        RedbTestOperation::CapabilityAdministration,
+        RedbTestOperation::CapabilityBootstrap,
+        RedbTestOperation::ProjectionMutation,
+        RedbTestOperation::OutboxTransition,
+        RedbTestOperation::EventConsumerTransition,
+        RedbTestOperation::ColumnarProjectionControl,
+        RedbTestOperation::ApplicationInstallationCampaign,
+        RedbTestOperation::ApplicationExportOperation,
+    ];
+    assert!(
+        preserving
+            .into_iter()
+            .all(|operation| { PreservingImmediateClass::from_operation(operation).is_some() })
+    );
+    for disabling in [
+        RedbTestOperation::CommandBatch,
+        RedbTestOperation::DeferredCommandBatch,
+        RedbTestOperation::StorageFormatMigrationBatch,
+        RedbTestOperation::ContractMigrationBatch,
+        RedbTestOperation::ContractMigrationCutover,
+        RedbTestOperation::Restore,
+        RedbTestOperation::RetentionPruneSubrange,
+    ] {
+        assert!(PreservingImmediateClass::from_operation(disabling).is_none());
+    }
+
+    let insert_only = [
+        PreservingImmediateClass::Admission,
+        PreservingImmediateClass::ServiceAudit,
+        PreservingImmediateClass::Catalog,
+        PreservingImmediateClass::QueryModule,
+        PreservingImmediateClass::ReactiveModule,
+        PreservingImmediateClass::CapabilityAdministration,
+        PreservingImmediateClass::CapabilityBootstrap,
+        PreservingImmediateClass::ColumnarControl,
+        PreservingImmediateClass::Installation,
+        PreservingImmediateClass::Export,
+    ];
+    assert!(insert_only.into_iter().all(|class| {
+        fresh_locator_action_allowed(class, FreshLocatorMutationKind::Insert)
+            && !fresh_locator_action_allowed(class, FreshLocatorMutationKind::Delete)
+    }));
+    for class in [
+        PreservingImmediateClass::ExecutionFailure,
+        PreservingImmediateClass::Projection,
+        PreservingImmediateClass::Outbox,
+        PreservingImmediateClass::Consumer,
+    ] {
+        assert!(fresh_locator_action_allowed(
+            class,
+            FreshLocatorMutationKind::Insert
+        ));
+        assert!(fresh_locator_action_allowed(
+            class,
+            FreshLocatorMutationKind::Delete
+        ));
+    }
+
+    let exact_tables = [
+        (
+            PreservingImmediateClass::Admission,
+            "idempotency_pending",
+            b"k".as_slice(),
+        ),
+        (
+            PreservingImmediateClass::ExecutionFailure,
+            "idempotency",
+            b"k".as_slice(),
+        ),
+        (
+            PreservingImmediateClass::ServiceAudit,
+            "audit",
+            b"k".as_slice(),
+        ),
+        (
+            PreservingImmediateClass::Catalog,
+            "contract_bundles",
+            b"k".as_slice(),
+        ),
+        (
+            PreservingImmediateClass::QueryModule,
+            "query_modules",
+            b"k".as_slice(),
+        ),
+        (
+            PreservingImmediateClass::ReactiveModule,
+            "reactive_modules",
+            b"k".as_slice(),
+        ),
+        (
+            PreservingImmediateClass::CapabilityAdministration,
+            "capabilities",
+            b"k".as_slice(),
+        ),
+        (
+            PreservingImmediateClass::CapabilityBootstrap,
+            "meta",
+            crate::layout::META_CAPABILITY_BOOTSTRAP.as_bytes(),
+        ),
+        (
+            PreservingImmediateClass::Projection,
+            "projection_state",
+            b"k".as_slice(),
+        ),
+        (
+            PreservingImmediateClass::Outbox,
+            "outbox_status",
+            b"k".as_slice(),
+        ),
+        (
+            PreservingImmediateClass::Consumer,
+            "event_consumers",
+            b"k".as_slice(),
+        ),
+        (
+            PreservingImmediateClass::ColumnarControl,
+            "columnar_projection_controls",
+            b"k".as_slice(),
+        ),
+        (
+            PreservingImmediateClass::Installation,
+            "application_installation_campaigns",
+            b"k".as_slice(),
+        ),
+        (
+            PreservingImmediateClass::Export,
+            "application_export_operations",
+            b"k".as_slice(),
+        ),
+    ];
+    assert!(
+        exact_tables
+            .iter()
+            .all(|(class, table, key)| { fresh_locator_table_allowed(*class, table, key) })
+    );
+    for (class, table, key) in exact_tables {
+        let expected = FreshLocatorMutationPermit {
+            table: table.into(),
+            key: key.into(),
+            kind: FreshLocatorMutationKind::Insert,
+        };
+        let actual = FreshLocatorMutationPermit {
+            table: table.into(),
+            key: key.into(),
+            kind: FreshLocatorMutationKind::Insert,
+        };
+        assert!(
+            matching_fresh_locator_mutations(class, &[expected], &[actual]).is_some(),
+            "the exact typed {table} mutation must preserve its named lane"
+        );
+    }
+    for excluded in [
+        "commits",
+        "idempotency_locators",
+        "provenance_locators",
+        "audit_by_request_locators",
+        "contract_migrations",
+    ] {
+        assert!(!fresh_locator_table_allowed(
+            PreservingImmediateClass::Admission,
+            excluded,
+            b"extra"
+        ));
+    }
+    assert!(!fresh_locator_table_allowed(
+        PreservingImmediateClass::CapabilityBootstrap,
+        "meta",
+        META_APPLICATION_SEQUENCE.as_bytes()
+    ));
+}
+
+// req: OUT-001, OUT-002, TXN-042, REC-004, PERF-019
+#[test]
+fn preserving_lane_expected_and_actual_sets_are_independent_exact_and_maximal() {
+    fn mutation(
+        table: &str,
+        key: impl Into<Box<[u8]>>,
+        kind: FreshLocatorMutationKind,
+    ) -> FreshLocatorMutationPermit {
+        FreshLocatorMutationPermit {
+            table: table.into(),
+            key: key.into(),
+            kind,
+        }
+    }
+
+    let one = mutation(
+        "event_consumers",
+        b"consumer".as_slice(),
+        FreshLocatorMutationKind::Insert,
+    );
+    let same = mutation(
+        "event_consumers",
+        b"consumer".as_slice(),
+        FreshLocatorMutationKind::Insert,
+    );
+    assert!(
+        matching_fresh_locator_mutations(PreservingImmediateClass::Consumer, &[one], &[same],)
+            .is_some()
+    );
+
+    for (expected, actual) in [
+        (
+            vec![mutation(
+                "event_consumers",
+                b"missing-actual".as_slice(),
+                FreshLocatorMutationKind::Insert,
+            )],
+            vec![],
+        ),
+        (
+            vec![],
+            vec![mutation(
+                "event_consumers",
+                b"unregistered-actual".as_slice(),
+                FreshLocatorMutationKind::Insert,
+            )],
+        ),
+        (
+            vec![mutation(
+                "event_consumers",
+                b"expected".as_slice(),
+                FreshLocatorMutationKind::Insert,
+            )],
+            vec![mutation(
+                "event_consumers",
+                b"actual".as_slice(),
+                FreshLocatorMutationKind::Insert,
+            )],
+        ),
+        (
+            vec![mutation(
+                "event_consumers",
+                b"same".as_slice(),
+                FreshLocatorMutationKind::Insert,
+            )],
+            vec![
+                mutation(
+                    "event_consumers",
+                    b"same".as_slice(),
+                    FreshLocatorMutationKind::Insert,
+                ),
+                mutation(
+                    "event_consumers",
+                    b"extra".as_slice(),
+                    FreshLocatorMutationKind::Insert,
+                ),
+            ],
+        ),
+        (
+            vec![
+                mutation(
+                    "event_consumers",
+                    b"duplicate".as_slice(),
+                    FreshLocatorMutationKind::Insert,
+                ),
+                mutation(
+                    "event_consumers",
+                    b"duplicate".as_slice(),
+                    FreshLocatorMutationKind::Insert,
+                ),
+            ],
+            vec![mutation(
+                "event_consumers",
+                b"duplicate".as_slice(),
+                FreshLocatorMutationKind::Insert,
+            )],
+        ),
+        (
+            vec![mutation(
+                "event_consumers",
+                b"duplicate".as_slice(),
+                FreshLocatorMutationKind::Insert,
+            )],
+            vec![
+                mutation(
+                    "event_consumers",
+                    b"duplicate".as_slice(),
+                    FreshLocatorMutationKind::Insert,
+                ),
+                mutation(
+                    "event_consumers",
+                    b"duplicate".as_slice(),
+                    FreshLocatorMutationKind::Insert,
+                ),
+            ],
+        ),
+        (
+            vec![mutation(
+                "commits",
+                b"excluded".as_slice(),
+                FreshLocatorMutationKind::Insert,
+            )],
+            vec![mutation(
+                "commits",
+                b"excluded".as_slice(),
+                FreshLocatorMutationKind::Insert,
+            )],
+        ),
+    ] {
+        assert!(
+            matching_fresh_locator_mutations(
+                PreservingImmediateClass::Consumer,
+                &expected,
+                &actual,
+            )
+            .is_none()
+        );
+    }
+
+    let mut maximum = Vec::with_capacity(MAX_FRESH_LOCATOR_PRESERVING_MUTATIONS);
+    maximum.push(mutation(
+        "event_consumers",
+        b"consumer".as_slice(),
+        FreshLocatorMutationKind::Delete,
+    ));
+    maximum.push(mutation(
+        "event_consumers",
+        b"consumer".as_slice(),
+        FreshLocatorMutationKind::Insert,
+    ));
+    for ordinal in 0..riffdb_storage_api::MAX_CONSUMER_DELIVERY_RECORDS {
+        let key = u64::try_from(ordinal)
+            .expect("bounded ordinal")
+            .to_be_bytes();
+        maximum.push(mutation(
+            "event_consumer_deliveries",
+            key,
+            FreshLocatorMutationKind::Delete,
+        ));
+        maximum.push(mutation(
+            "event_consumer_deliveries",
+            key,
+            FreshLocatorMutationKind::Insert,
+        ));
+    }
+    assert_eq!(maximum.len(), 8_194);
+    assert_eq!(MAX_FRESH_LOCATOR_PRESERVING_MUTATIONS, 8_194);
+    assert_eq!(
+        matching_fresh_locator_mutations(PreservingImmediateClass::Consumer, &maximum, &maximum,)
+            .expect("legal maximum replacement")
+            .0,
+        8_194
+    );
+}
+
+// req: OUT-001, OUT-002, TXN-042
+#[test]
+fn preserving_expectations_close_before_the_first_actual_mutation() {
+    let path = TestDatabasePath::new("fresh-locator-expected-before-actual");
+    let mut store = RedbStore::open(&path.0).expect("open store");
+    store
+        .initialize_database(database_id(0x39))
+        .expect("initialize store");
+    let ports = RedbDormantPorts {
+        shared: store.shared,
+    }
+    .into_operational_after_catalog_validation()
+    .expect("activate ports");
+    let access = ports.begin_write().expect("begin write");
+    access
+        .expect_fresh_locator_byte_insert(crate::layout::EVENT_CONSUMERS, b"expected")
+        .expect("first expectation");
+    access
+        .close_fresh_locator_mutation_expectations()
+        .expect("close expectations");
+    access
+        .record_actual_fresh_locator_byte_insert(crate::layout::EVENT_CONSUMERS, b"expected")
+        .expect("first actual mutation");
+    assert_eq!(
+        access
+            .expect_fresh_locator_byte_insert(crate::layout::EVENT_CONSUMERS, b"late")
+            .expect_err("late expectation must fail closed")
+            .kind(),
+        StorageErrorKind::InvariantViolation
+    );
+    access.abort().expect("abort test write");
+}
+
+// req: OUT-001, OUT-002, TXN-042
+#[test]
+fn ordinary_command_bookkeeping_does_not_inherit_the_preserving_mutation_ceiling() {
+    let path = TestDatabasePath::new("fresh-locator-command-does-not-use-preserving-bound");
+    let mut store = RedbStore::open(&path.0).expect("open store");
+    store
+        .initialize_database(database_id(0x3a))
+        .expect("initialize store");
+    let ports = RedbDormantPorts {
+        shared: store.shared,
+    }
+    .into_operational_after_catalog_validation()
+    .expect("activate ports");
+    let access = ports.begin_write().expect("begin ordinary command write");
+
+    let legal_command_mutations = riffdb_storage_api::MAX_COMPOSITE_OVERLAY_TRANSITIONS
+        .checked_add(3)
+        .expect("bounded command mutation accounting");
+    for ordinal in 0..legal_command_mutations {
+        access
+            .record_actual_fresh_locator_byte_insert(
+                crate::layout::ENTITIES,
+                &u64::try_from(ordinal)
+                    .expect("bounded ordinal")
+                    .to_be_bytes(),
+            )
+            .expect("ordinary command mutation is not preserving bookkeeping");
+    }
+    assert!(
+        access.fresh_locator_actual_mutations.borrow().is_empty(),
+        "ordinary direct/queued commands must retain no preserving mutation inventory"
+    );
+    access.abort().expect("abort bookkeeping proof");
+}
+
+// req: OUT-001, OUT-002, TXN-042
+#[test]
+fn preserving_bookkeeping_refuses_omitted_or_late_expectations_when_armed() {
+    for (name, register_late) in [("omitted", false), ("late", true)] {
+        let path = TestDatabasePath::new(&format!("fresh-locator-preserving-{name}"));
+        let mut store = RedbStore::open(&path.0).expect("open store");
+        store
+            .initialize_database(database_id(if register_late { 0x3c } else { 0x3b }))
+            .expect("initialize store");
+        drop(store);
+        let store = RedbStore::open(&path.0).expect("reopen fresh process");
+        let ports = RedbDormantPorts {
+            shared: store.shared,
+        }
+        .into_operational_after_catalog_validation()
+        .expect("activate ports");
+        let access = ports.begin_write().expect("begin preserving write");
+        let stamp = access
+            .fresh_locator_coverage_stamp()
+            .expect("capture empty authority stamp");
+        assert!(
+            access
+                .shared
+                .fresh_locator_coverage
+                .lock()
+                .expect("coverage lock")
+                .try_arm(
+                    crate::fresh_locator_coverage::EmptyAuthorityProof::new(
+                        true, true, true, true, true, true, true, true,
+                    ),
+                    stamp,
+                )
+        );
+        access
+            .record_actual_fresh_locator_byte_insert(crate::layout::IDEMPOTENCY_PENDING, b"key")
+            .expect("pre-expectation mutation is not self-authorizing");
+        if register_late {
+            access
+                .expect_fresh_locator_byte_insert(crate::layout::IDEMPOTENCY_PENDING, b"key")
+                .expect("late expectation is recorded but has no matching actual inventory");
+            access
+                .close_fresh_locator_mutation_expectations()
+                .expect("close late expectation");
+        }
+        let Err(error) = access.fresh_locator_preserving_permit(RedbTestOperation::Admission)
+        else {
+            panic!("omitted or late permit must fail closed");
+        };
+        assert_eq!(error.kind(), StorageErrorKind::InvariantViolation);
+        access.abort().expect("abort preserving proof");
+    }
+}
+
+fn empty_armed_ports(
+    label: &str,
+    seed: u8,
+    controller: Option<RedbTestController>,
+) -> (RedbOperationalPorts, TestDatabasePath) {
+    let path = TestDatabasePath::new(label);
+    let mut store = RedbStore::open(&path.0).expect("open store");
+    store
+        .initialize_database(database_id(seed))
+        .expect("initialize store");
+    drop(store);
+    let store = match controller {
+        Some(controller) => RedbStore::open_with_test_controller(&path.0, controller)
+            .expect("reopen controlled fresh process"),
+        None => RedbStore::open(&path.0).expect("reopen fresh process"),
+    };
+    let ports = RedbDormantPorts {
+        shared: store.shared,
+    }
+    .into_operational_after_catalog_validation()
+    .expect("activate ports");
+    let access = ports.begin_write().expect("begin arm write");
+    assert!(
+        access
+            .arm_fresh_locator_coverage_for_exact_empty_test()
+            .expect("arm exact empty proof")
+    );
+    access.abort().expect("abort arm transaction");
+    (ports, path)
+}
+
+// req: OUT-001, OUT-002, TXN-042, REC-004, PERF-019
+#[test]
+fn fresh_locator_raw_zero_allocator_is_corruption_and_disables_the_only_arm_opportunity() {
+    use riffdb_proto::storage::v1::{
+        StoredApplicationSequenceAllocatorV1, stored_application_sequence_allocator_v1::State,
+    };
+
+    let path = TestDatabasePath::new("fresh-locator-raw-zero-allocator");
+    let mut store = RedbStore::open(&path.0).expect("open store");
+    store
+        .initialize_database(database_id(0x41))
+        .expect("initialize store");
+    let ports = RedbDormantPorts {
+        shared: store.shared,
+    }
+    .into_operational_after_catalog_validation()
+    .expect("activate ports");
+    let raw_zero =
+        riffdb_proto::durable::encode_current_message(&StoredApplicationSequenceAllocatorV1 {
+            state: Some(State::NextCommitSequence(0)),
+        })
+        .expect("zero is wire-valid but semantically corrupt");
+    let transaction = ports.shared.database.begin_write().expect("raw test write");
+    transaction
+        .open_table(crate::layout::META)
+        .expect("meta table")
+        .insert(META_APPLICATION_SEQUENCE, raw_zero.as_slice())
+        .expect("install raw zero allocator");
+    ports
+        .shared
+        .commit_durable(transaction)
+        .expect("publish corrupt test fixture");
+
+    let access = ports.begin_write().expect("first command-write entry");
+    let error = access
+        .arm_fresh_locator_coverage()
+        .expect_err("raw Some(0) must not arm coverage");
+    assert_eq!(error.kind(), StorageErrorKind::CorruptData);
+    assert!(
+        access
+            .shared
+            .fresh_locator_coverage
+            .lock()
+            .expect("coverage state")
+            .is_disabled(),
+        "a corrupt first opportunity must be process-lifetime disabling"
+    );
+    access.abort().expect("abort corrupt arm transaction");
+}
+
+// req: OUT-001, OUT-002, TXN-042, REC-004, PERF-019
+#[test]
+fn fresh_locator_preserving_permit_accepts_exact_16_mib_and_refuses_one_byte_over() {
+    let (ports, _path) = empty_armed_ports("fresh-locator-16-mib-permit", 0x42, None);
+    let access = ports.begin_write().expect("begin exact-bound write");
+    let exact = vec![0x7a; crate::journal::MAX_JOURNAL_FRAME_BYTES];
+    access
+        .expect_fresh_locator_byte_insert(crate::layout::EVENT_CONSUMERS, &exact)
+        .expect("the exact 16-MiB verification input is bounded");
+    assert!(
+        access
+            .shared
+            .fresh_locator_coverage
+            .lock()
+            .expect("coverage state")
+            .is_armed()
+    );
+    access.abort().expect("abort exact-bound proof");
+    drop(exact);
+
+    let access = ports.begin_write().expect("begin one-over-bound write");
+    let oversized = vec![0x7b; crate::journal::MAX_JOURNAL_FRAME_BYTES + 1];
+    assert_eq!(
+        access
+            .expect_fresh_locator_byte_insert(crate::layout::EVENT_CONSUMERS, &oversized)
+            .expect_err("one byte beyond the frame ceiling must be refused")
+            .kind(),
+        StorageErrorKind::LimitExceeded
+    );
+    assert!(
+        access
+            .shared
+            .fresh_locator_coverage
+            .lock()
+            .expect("coverage state")
+            .is_disabled()
+    );
+    access.abort().expect("abort oversized proof");
+}
+
+// req: OUT-001, OUT-002, TXN-042, REC-004
+#[test]
+fn durable_root_capture_retries_the_engine_visible_before_identity_window() {
+    let path = TestDatabasePath::new("durable-root-publication-seqlock");
+    let mut store = RedbStore::open(&path.0).expect("open store");
+    store
+        .initialize_database(database_id(0x40))
+        .expect("initialize store");
+    drop(store);
+    let (controller, schedule) = RedbTestController::pause_root_publication_after_engine_commit();
+    let store = RedbStore::open_with_test_controller(&path.0, controller)
+        .expect("reopen controlled process");
+    let shared = Arc::clone(&store.shared);
+    let predecessor = shared.current_read_root().expect("predecessor root");
+    let predecessor_identity = predecessor.identity();
+    drop(predecessor);
+
+    let writer_shared = Arc::clone(&shared);
+    let writer = std::thread::spawn(move || {
+        let transaction = writer_shared.database.begin_write().expect("begin write");
+        transaction
+            .open_table(crate::layout::APPLICATION_INSTALLATION_CAMPAIGNS)
+            .expect("installation table")
+            .insert(b"visible-root".as_slice(), b"row".as_slice())
+            .expect("insert marker");
+        writer_shared
+            .commit_durable(transaction)
+            .expect("commit exact successor");
+    });
+    schedule.wait_until_commit_is_visible();
+
+    let reader_shared = Arc::clone(&shared);
+    let reader = std::thread::spawn(move || {
+        let root = reader_shared
+            .current_read_root()
+            .expect("capture stable successor root");
+        let present = root
+            .open_table(crate::layout::APPLICATION_INSTALLATION_CAMPAIGNS)
+            .expect("installation table")
+            .get(b"visible-root".as_slice())
+            .expect("read marker")
+            .is_some();
+        (root.identity(), present)
+    });
+    schedule.release_after_reader_retries();
+    writer.join().expect("writer joins");
+    let (successor_identity, present) = reader.join().expect("reader joins");
+    assert!(
+        present,
+        "captured successor must include the visible commit"
+    );
+    assert_ne!(successor_identity, predecessor_identity);
+    assert_eq!(
+        successor_identity,
+        shared.durable_root_publication.load(Ordering::Acquire)
+    );
+}
+
+// req: OUT-001, OUT-002, TXN-042, REC-004
+#[test]
+fn postcommit_successor_stamp_failure_disables_fences_and_invalidates() {
+    let (ports, _path) = empty_armed_ports(
+        "fresh-locator-postcommit-stamp",
+        0x3d,
+        Some(RedbTestController::corrupt_fresh_locator_successor_stamp_once()),
+    );
+    let access = ports.begin_write().expect("begin preserving commit");
+    access
+        .expect_fresh_locator_byte_insert(crate::layout::EVENT_CONSUMERS, b"consumer")
+        .expect("expected consumer mutation");
+    access
+        .close_fresh_locator_mutation_expectations()
+        .expect("close exact permit");
+    access
+        .record_actual_fresh_locator_byte_insert(crate::layout::EVENT_CONSUMERS, b"consumer")
+        .expect("record actual consumer mutation");
+    access
+        .transaction()
+        .expect("transaction")
+        .open_table(crate::layout::EVENT_CONSUMERS)
+        .expect("consumer table")
+        .insert(b"consumer".as_slice(), b"row".as_slice())
+        .expect("stage consumer row");
+    let before = ports.shared.durable_commit_epoch.load(Ordering::Acquire);
+    let Err(error) = access.commit_for(RedbTestOperation::EventConsumerTransition) else {
+        panic!("postcommit successor decoding must not escape the fail-closed handler");
+    };
+    assert_eq!(
+        ports.shared.durable_commit_epoch.load(Ordering::Acquire),
+        before + 1,
+        "failure must be observed after the authoritative commit: {error:?}"
+    );
+    assert!(ports.shared.write_fenced.load(Ordering::Acquire));
+    assert!(matches!(
+        *ports.shared.transient_indexes.read().expect("indexes"),
+        TransientIndexState::Invalid
+    ));
+}
+
+// req: OUT-001, OUT-002, TXN-042, REC-004
+#[test]
+fn rebase_successor_read_and_coverage_lock_poison_fail_closed() {
+    let (ports, _path) = empty_armed_ports("fresh-locator-rebase-stamp", 0x3e, None);
+    let witness = ports
+        .shared
+        .begin_fresh_locator_rebase()
+        .expect("begin rebase")
+        .expect("armed rebase witness");
+    let transaction = ports.shared.database.begin_write().expect("raw test write");
+    transaction
+        .open_table(crate::layout::META)
+        .expect("meta table")
+        .insert(META_APPLICATION_SEQUENCE, b"malformed".as_slice())
+        .expect("corrupt successor allocator");
+    ports
+        .shared
+        .commit_durable(transaction)
+        .expect("publish malformed successor for handler proof");
+    assert!(
+        ports
+            .shared
+            .finish_fresh_locator_rebase(Some(witness))
+            .is_err()
+    );
+    assert!(ports.shared.write_fenced.load(Ordering::Acquire));
+
+    let (ports, _path) = empty_armed_ports("fresh-locator-rebase-lock-poison", 0x3f, None);
+    let witness = ports
+        .shared
+        .begin_fresh_locator_rebase()
+        .expect("begin rebase")
+        .expect("armed rebase witness");
+    let shared = Arc::clone(&ports.shared);
+    let poison = std::thread::spawn(move || {
+        let _guard = shared
+            .fresh_locator_coverage
+            .lock()
+            .expect("coverage lock before poison");
+        panic!("deterministic coverage-lock poison");
+    });
+    assert!(poison.join().is_err());
+    assert!(
+        ports
+            .shared
+            .abort_fresh_locator_rebase(Some(witness))
+            .is_err()
+    );
+    assert!(ports.shared.write_fenced.load(Ordering::Acquire));
+}
+
+fn armed_shared_with_empty_journal_runtime(
+    label: &str,
+    seed: u8,
+) -> (Arc<SharedRedb>, TestDatabasePath) {
+    let (ports, path) = empty_armed_ports(label, seed, None);
+    {
+        let mut frontier = ports
+            .shared
+            .durable_read_frontier
+            .write()
+            .expect("frontier lock");
+        if frontier.is_none() {
+            *frontier = Some(
+                ports
+                    .shared
+                    .capture_checkpoint_root()
+                    .expect("capture exact journal predecessor"),
+            );
+        }
+    }
+    drop(
+        ports
+            .shared
+            .journal_runtime()
+            .expect("initialize empty journal runtime"),
+    );
+    (Arc::clone(&ports.shared), path)
+}
+
+fn install_completed_async_checkpoint(shared: &Arc<SharedRedb>) {
+    let covered_view = shared
+        .capture_or_initialize_composite_view()
+        .expect("capture covered view");
+    let batch = {
+        let runtime = shared.journal_runtime.lock().expect("journal runtime lock");
+        let runtime = runtime.as_ref().expect("journal runtime");
+        JournalCheckpointBatch {
+            database_id: runtime.database_id,
+            checkpoint_sequence: runtime.published_sequence,
+            checkpoint_administration_sequence: runtime.published_administration_sequence,
+            checkpoint_hash: runtime.published_hash,
+            last_sequence: runtime.last_sequence,
+            last_administration_sequence: runtime.last_administration_sequence,
+            last_hash: runtime.last_hash,
+            transition_count: runtime.suffix_transitions,
+            command_count: runtime.suffix_commands,
+            audit_count: runtime.suffix_audits,
+            encoded_bytes: runtime.suffix_bytes,
+            frames: runtime.suffix_frames.clone(),
+        }
+    };
+    *shared
+        .journal_checkpoint
+        .lock()
+        .expect("checkpoint state lock") = Some(AsyncJournalCheckpoint {
+        batch,
+        covered_view,
+        completion: None,
+        result: Some(Ok(())),
+    });
+}
+
+// req: OUT-001, OUT-002, TXN-042, REC-004
+#[test]
+fn sync_and_async_rebase_begin_poison_restore_owned_checkpoint_state_and_fence() {
+    let (sync, _path) =
+        armed_shared_with_empty_journal_runtime("fresh-locator-sync-begin-poison", 0x41);
+    let poison_shared = Arc::clone(&sync);
+    assert!(
+        std::thread::spawn(move || {
+            let _guard = poison_shared
+                .fresh_locator_coverage
+                .lock()
+                .expect("coverage lock before poison");
+            panic!("poison sync begin-rebase lock");
+        })
+        .join()
+        .is_err()
+    );
+    assert_eq!(
+        sync.checkpoint_published_journal_suffix_for_barrier()
+            .expect_err("sync begin poison must fail closed")
+            .kind(),
+        StorageErrorKind::CommitStatusUnknown
+    );
+    assert!(sync.write_fenced.load(Ordering::Acquire));
+    assert!(
+        sync.journal_runtime
+            .lock()
+            .expect("restored journal runtime")
+            .is_some(),
+        "the prepublication sync runtime must be restored"
+    );
+
+    let (asynchronous, _path) =
+        armed_shared_with_empty_journal_runtime("fresh-locator-async-begin-poison", 0x42);
+    install_completed_async_checkpoint(&asynchronous);
+    let poison_shared = Arc::clone(&asynchronous);
+    assert!(
+        std::thread::spawn(move || {
+            let _guard = poison_shared
+                .fresh_locator_coverage
+                .lock()
+                .expect("coverage lock before poison");
+            panic!("poison async begin-rebase lock");
+        })
+        .join()
+        .is_err()
+    );
+    assert_eq!(
+        asynchronous
+            .finish_async_checkpoint_if_quiescent()
+            .expect_err("async begin poison must fail closed")
+            .kind(),
+        StorageErrorKind::CommitStatusUnknown
+    );
+    assert!(asynchronous.write_fenced.load(Ordering::Acquire));
+    let checkpoint = asynchronous
+        .journal_checkpoint
+        .lock()
+        .expect("checkpoint state remains owned");
+    assert!(
+        checkpoint
+            .as_ref()
+            .is_some_and(|checkpoint| checkpoint.result.as_ref().is_some_and(Result::is_ok)),
+        "the completed async result must be restored before returning"
+    );
+}
+
+// req: OUT-001, OUT-002, TXN-042, REC-004
+#[test]
+fn completed_async_checkpoint_lock_poison_is_uncertain_and_fenced() {
+    for poison_checkpoint in [true, false] {
+        let (shared, _path) = armed_shared_with_empty_journal_runtime(
+            if poison_checkpoint {
+                "fresh-locator-async-state-poison"
+            } else {
+                "fresh-locator-async-runtime-poison"
+            },
+            if poison_checkpoint { 0x43 } else { 0x44 },
+        );
+        install_completed_async_checkpoint(&shared);
+        let poison_shared = Arc::clone(&shared);
+        assert!(
+            std::thread::spawn(move || {
+                if poison_checkpoint {
+                    let _guard = poison_shared
+                        .journal_checkpoint
+                        .lock()
+                        .expect("checkpoint lock before poison");
+                    panic!("poison completed checkpoint state");
+                }
+                let _guard = poison_shared
+                    .journal_runtime
+                    .lock()
+                    .expect("runtime lock before poison");
+                panic!("poison completed checkpoint runtime");
+            })
+            .join()
+            .is_err()
+        );
+        assert_eq!(
+            shared
+                .poll_async_checkpoint_locked(false)
+                .expect_err("completed checkpoint poison must be uncertain")
+                .kind(),
+            StorageErrorKind::CommitStatusUnknown
+        );
+        assert!(shared.write_fenced.load(Ordering::Acquire));
+    }
+}
+
+// req: OUT-001, OUT-002, TXN-042, REC-004
+#[test]
+fn journal_reset_then_frontier_lock_failure_is_uncertain_and_fenced() {
+    let (shared, _path) =
+        armed_shared_with_empty_journal_runtime("fresh-locator-after-reset-poison", 0x45);
+    let runtime = shared
+        .take_published_journal_suffix_locked(true)
+        .expect("take empty published suffix")
+        .expect("journal runtime");
+    let poison_shared = Arc::clone(&shared);
+    assert!(
+        std::thread::spawn(move || {
+            let _guard = poison_shared
+                .durable_read_frontier
+                .write()
+                .expect("frontier lock before poison");
+            panic!("poison frontier before post-reset install");
+        })
+        .join()
+        .is_err()
+    );
+    assert_eq!(
+        shared
+            .finish_journal_checkpoint(runtime)
+            .expect_err("post-reset frontier poison is uncertain")
+            .kind(),
+        StorageErrorKind::CommitStatusUnknown
+    );
+    assert!(shared.write_fenced.load(Ordering::Acquire));
+    assert!(
+        crate::journal::scan_journal_with_media(
+            shared.journal_media.as_ref(),
+            &crate::journal::journal_path(&shared.path),
+            database_id(0x45),
+            |_| Ok(()),
+        )
+        .expect("scan reset journal")
+        .is_some(),
+        "the canonical reset completed before the frontier lock failure"
+    );
 }

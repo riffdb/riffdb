@@ -19,13 +19,14 @@ use crate::{
 use super::vector_evidence::{VECTOR_HEALTH_OBSERVATION, VECTOR_OBSERVATION};
 use super::{
     COMMIT, CanonicalStoredEnvelopeV1, DurableCodecError, DurableCodecErrorKind, ENTITY, EVENT,
-    EVENT_ROUTE, INDEX_ENTRY, INDEX_EPOCH, OUTCOME_V3, PROVENANCE_V2, binding_to_proto,
+    EVENT_ROUTE, EVENT_V2, INDEX_ENTRY, INDEX_EPOCH, OUTCOME_V3, PROVENANCE_V2, binding_to_proto,
     causation_to_proto, claims_to_proto, dependencies_to_proto, durability_to_proto,
     encode_application_sequence_allocator_v1, encode_commit_record_v1, encode_durable_event_v1,
     encode_entity_record_v1, encode_event_route_v1, encode_index_entry_v2, encode_index_epoch_v1,
     encode_outbox_intent_v1, encode_provenance_record_v1, encode_stored_outcome_v1,
     encode_vector_evidence_index_v1, encode_vector_evidence_v1, entity_target_to_proto,
-    identity_to_proto, plan_to_proto, storage_result, timestamp_to_proto,
+    event_policy_anchor_to_proto, identity_to_proto, plan_to_proto, storage_result,
+    timestamp_to_proto,
 };
 
 const OUTBOX_INTENT: &str = "riffdb.storage.v1.StoredOutboxIntentV2";
@@ -520,8 +521,16 @@ pub fn command_write_set_upper_bound_with_vector_evidence_v1(
                 event.event_type_id().get(),
                 event.payload_encoded_len(),
                 event_ordinal,
+                event.policy_anchor(),
             )?;
-            sizing_charge_len(EVENT, payload_len)
+            sizing_charge_len(
+                if event.policy_anchor().is_some() {
+                    EVENT_V2
+                } else {
+                    EVENT
+                },
+                payload_len,
+            )
         },
     ))?;
     let event_route_charge = sum_sizes(evaluated.event_intents().iter().enumerate().map(
@@ -865,13 +874,23 @@ fn sizing_event_len(
     event_type_id: u32,
     payload_encoded_len: usize,
     ordinal: u32,
+    policy_anchor: Option<&crate::StoredEventPolicyAnchorV1>,
 ) -> Result<usize, DurableCodecError> {
-    sum_proto_fields([
+    let base = sum_proto_fields([
         message_field_len(1, sizing_event_id_len(ordinal)),
         varint_field_len(2, event_type_id),
         bytes_field_len(3, payload_encoded_len),
         bytes_field_len(4, SIZING_EVENT_HASH.len()),
-    ])
+    ])?;
+    match policy_anchor {
+        Some(anchor) => base
+            .checked_add(message_field_len(
+                5,
+                event_policy_anchor_to_proto(anchor).encoded_len(),
+            )?)
+            .ok_or_else(DurableCodecError::invariant),
+        None => Ok(base),
+    }
 }
 
 fn sizing_declared_outcome_len(
@@ -1238,7 +1257,14 @@ fn sum_optional_envelope_charges(
 mod aggregate_classification_tests {
     use super::*;
     use riffdb_types::{
-        CanonicalBytes, CanonicalList, CanonicalString, FieldId, encode_canonical_record,
+        CanonicalBytes, CanonicalList, CanonicalString, CommandId, CommitSequence,
+        ContractBundleHash, ContractLineage, ContractVersion, EntityKeyBuilder, EntityTypeId,
+        EventId, EventTypeId, FieldId, PlanHash, RowPolicyName, encode_canonical_record,
+    };
+
+    use crate::{
+        DurableKeySchemaBindingV1, EntityTarget, ExecutablePlanRef, StoredDurableEventV1,
+        StoredEventPolicyAnchorV1, derive_event_hash_v2,
     };
 
     #[test]
@@ -1311,6 +1337,68 @@ mod aggregate_classification_tests {
             encode_canonical_record(&record)
                 .expect("canonical encoding")
                 .len()
+        );
+    }
+
+    // req: TXN-042
+    #[test]
+    fn adversarial_anchored_event_v2_reservation_dominates_its_canonical_envelope() {
+        let event_type = EventTypeId::new(u32::MAX).expect("maximum event type");
+        let plan = ExecutablePlanRef::new(
+            ContractLineage::new("l".repeat(256)).expect("maximum lineage"),
+            ContractVersion::new(u64::MAX).expect("maximum contract version"),
+            ContractBundleHash::from_bytes([0xff; 32]),
+            CommandId::new(u32::MAX).expect("maximum command ID"),
+            PlanHash::from_bytes([0xff; 32]),
+        );
+        let entity_type = EntityTypeId::new(u32::MAX).expect("maximum entity type");
+        let mut key = EntityKeyBuilder::new(entity_type);
+        key.push_str(&"k".repeat(4_000)).expect("large bounded key");
+        let target = EntityTarget::new(entity_type, key.finish().expect("entity key"))
+            .expect("entity target");
+        let anchor = StoredEventPolicyAnchorV1::new(
+            DurableKeySchemaBindingV1::from_plan(&plan),
+            event_type,
+            target,
+            RowPolicyName::new("p".repeat(256)).expect("maximum policy name"),
+        );
+        let payload = CanonicalRecord::new(vec![(
+            FieldId::new(u32::MAX).expect("maximum field ID"),
+            CanonicalValue::Bytes(CanonicalBytes::new(vec![0xff; 4_096]).expect("payload")),
+        )])
+        .expect("canonical payload");
+        let event_id = EventId::new(
+            CommitSequence::new(u64::MAX).expect("maximum sequence"),
+            u32::MAX,
+        );
+        let event = StoredDurableEventV1::new_anchored(
+            event_id,
+            event_type,
+            payload.clone(),
+            derive_event_hash_v2(event_id, event_type, &payload, &anchor).expect("event hash"),
+            anchor.clone(),
+        )
+        .expect("anchored event");
+        let encoded = encode_durable_event_v1(&event).expect("canonical V2 envelope");
+        let payload_len = sizing_event_len(
+            event_type.get(),
+            event.payload_encoded_len(),
+            u32::MAX,
+            Some(&anchor),
+        )
+        .expect("anchored sizing payload");
+        let reserved = sizing_charge_len(EVENT_V2, payload_len).expect("anchored reservation");
+
+        assert!(reserved >= encoded.encoded_content_charge().get());
+        assert!(
+            payload_len
+                > sizing_event_len(
+                    event_type.get(),
+                    event.payload_encoded_len(),
+                    u32::MAX,
+                    None,
+                )
+                .expect("unanchored sizing payload")
         );
     }
 

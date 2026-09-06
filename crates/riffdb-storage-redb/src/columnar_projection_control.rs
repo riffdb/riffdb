@@ -103,6 +103,9 @@ impl RedbOperationalPorts {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         let encoded = encode_columnar_projection_control_v1(&replacement)?;
+        access.expect_fresh_locator_byte_insert(COLUMNAR_PROJECTION_CONTROLS, &key)?;
+        access.close_fresh_locator_mutation_expectations()?;
+        access.record_actual_fresh_locator_byte_insert(COLUMNAR_PROJECTION_CONTROLS, &key)?;
         table
             .insert(key.as_slice(), encoded.as_bytes())
             .map_err(precommit_storage_error)?;
@@ -156,7 +159,12 @@ impl ColumnarProjectionControlRepository for RedbOperationalPorts {
                 return Ok(ColumnarProjectionControlWriteResultV1::StateChanged);
             }
         }
+        for (key, _) in &encoded {
+            access.expect_fresh_locator_byte_insert(COLUMNAR_PROJECTION_CONTROLS, key)?;
+        }
+        access.close_fresh_locator_mutation_expectations()?;
         for (key, value) in encoded {
+            access.record_actual_fresh_locator_byte_insert(COLUMNAR_PROJECTION_CONTROLS, &key)?;
             table
                 .insert(key.as_slice(), value.as_bytes())
                 .map_err(precommit_storage_error)?;
@@ -463,12 +471,17 @@ mod tests {
         );
     }
 
-    // req: PRJ-002, PRJ-006, PRJ-007, PRJ-010, OQ-020, OQ-024, OQ-053
+    // req: PRJ-002, PRJ-006, PRJ-007, PRJ-010, OQ-020, OQ-024, OQ-053, OUT-001, OUT-002, TXN-042
     #[test]
     fn redb_columnar_control_concurrent_expected_cas_has_one_winner() {
         let (_path, ports) = ports(
             "columnar-control-concurrent-cas",
             RedbTestController::observe_index_migration(),
+        );
+        assert!(
+            ports
+                .arm_exact_empty_fresh_locator_coverage_for_test()
+                .expect("arm exact empty coverage")
         );
         let (source, definition) = source();
         let spec = ColumnarProjectionSpecHashV1::from_bytes([0x22; 32]);
@@ -537,5 +550,10 @@ mod tests {
             riffdb_storage_api::ColumnarProjectionLifecycleV1::Building
         );
         assert_eq!(replacement.highest_generation().get(), 2);
+        assert!(
+            ports
+                .fresh_locator_public_and_private_roles_match_for_test()
+                .expect("columnar control lane preserves both roles")
+        );
     }
 }
