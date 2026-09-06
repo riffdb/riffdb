@@ -20,6 +20,7 @@ spec:
         # applies rather than sitting inert until the next unrelated restart.
         riffdb.dev/config-checksum: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
     spec:
+      automountServiceAccountToken: false
       terminationGracePeriodSeconds: {{ .Values.server.terminationGracePeriodSeconds }}
       {{- with .Values.image.pullSecrets }}
       imagePullSecrets:
@@ -35,7 +36,18 @@ spec:
             runAsUser: 0
             runAsGroup: 0
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN"]
           command: ["copy-protected", "/incoming", "/protected"]
+          resources:
+            requests:
+              cpu: 5m
+              memory: 8Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
           volumeMounts:
             - name: server-secrets
               mountPath: /incoming
@@ -66,7 +78,15 @@ spec:
             failureThreshold: {{ .Values.server.probes.liveness.failureThreshold }}
           readinessProbe:
             exec:
-              command: ["riffdb", "--config", "/etc/riffdb/readiness.toml", "server", "health"]
+              command:
+                - /bin/sh
+                - -ec
+                - |
+                  result="$(riffdb --config /etc/riffdb/readiness.toml server health)"
+                  case "$result" in
+                    '{"schema":"riffdb.cli.output/v1","command":"server.health","ok":true,"result":{"status":"ready",'*) exit 0 ;;
+                    *) exit 1 ;;
+                  esac
             periodSeconds: {{ .Values.server.probes.readiness.periodSeconds }}
             timeoutSeconds: {{ .Values.server.probes.readiness.timeoutSeconds }}
             failureThreshold: {{ .Values.server.probes.readiness.failureThreshold }}
@@ -81,8 +101,6 @@ spec:
             - name: protected
               mountPath: /run/riffdb-protected
               readOnly: true
-            - name: bootstrap-handoff
-              mountPath: /run/riffdb-bootstrap
             - name: data
               mountPath: /var/lib/riffdb/data
             {{- if .Values.server.persistence.backups.enabled }}
@@ -109,12 +127,23 @@ spec:
           secret:
             secretName: {{ .Values.server.secretName }}
             defaultMode: 256
+            items:
+              - key: server-chain.pem
+                path: server-chain.pem
+              - key: server-key.pem
+                path: server-key.pem
+              - key: capability.keys
+                path: capability.keys
+              - key: idempotency.keys
+                path: idempotency.keys
+              - key: {{ .Values.server.tlsTrustRootFile }}
+                path: {{ .Values.server.tlsTrustRootFile }}
+              - key: readiness.credential
+                path: readiness.credential
         - name: protected
           emptyDir:
             medium: Memory
-        - name: bootstrap-handoff
-          emptyDir:
-            medium: Memory
+            sizeLimit: 2Mi
         {{- if .Values.server.persistence.backups.enabled }}
         - name: backups
           persistentVolumeClaim:
