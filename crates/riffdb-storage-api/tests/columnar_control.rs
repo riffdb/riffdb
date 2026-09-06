@@ -361,6 +361,90 @@ fn columnar_control_lifecycle_shapes_and_retention_inputs_are_closed() {
     assert_eq!(ColumnarProjectionFailureTargetV1::Predecessor.tag(), 3);
 }
 
+// req: REC-001, PRJ-004, PRJ-006, PRJ-008, PRJ-009, PRJ-010
+#[test]
+fn columnar_history_reset_transition_is_exact_and_closed() {
+    let definition = DefinitionFingerprint::from_bytes([0x71; 32]);
+    let spec = ColumnarProjectionSpecHashV1::from_bytes([0x72; 32]);
+    let limits = limits();
+    let initial = StoredColumnarProjectionControlV1::initialize_fresh_v1(
+        source(definition),
+        definition,
+        spec,
+        limits,
+        7,
+    )
+    .expect("stale initial control");
+    assert!(
+        initial
+            .clone()
+            .reset_for_current_history_incarnation(7)
+            .is_err(),
+        "equal incarnation is not a reset"
+    );
+    assert!(
+        initial
+            .clone()
+            .reset_for_current_history_incarnation(6)
+            .is_err(),
+        "future pointers refuse"
+    );
+    assert!(
+        initial
+            .clone()
+            .reset_for_current_history_incarnation(0)
+            .is_err(),
+        "zero current incarnation refuses"
+    );
+
+    let reset = initial
+        .reset_for_current_history_incarnation(8)
+        .expect("strictly stale reset");
+    assert_eq!(reset.source(), &source(definition));
+    assert_eq!(reset.target_definition_fingerprint(), definition);
+    assert_eq!(reset.target_spec_hash(), spec);
+    assert_eq!(reset.replay_limits(), limits);
+    assert_eq!(reset.highest_generation().get(), 2);
+    assert_eq!(reset.lifecycle(), ColumnarProjectionLifecycleV1::Building);
+    assert!(reset.published().is_none());
+    assert!(reset.predecessor().is_none());
+    assert!(reset.failure().is_none());
+    let candidate = reset.candidate().expect("sole reset candidate");
+    assert_eq!(candidate.generation().get(), 2);
+    assert_eq!(candidate.layout(), ColumnarProjectionLayoutV1::V1);
+    assert_eq!(candidate.history_incarnation(), 8);
+    assert_eq!(candidate.frontier(), FrontierPosition::BeforeFirst);
+    assert!(candidate.snapshot_frontier().is_none());
+    assert!(candidate.artifact().is_none());
+
+    let exhausted_candidate = StoredColumnarProjectionGenerationV1::unprepared_candidate(
+        ProjectionGeneration::new(u64::MAX).expect("maximum generation"),
+        ColumnarProjectionLayoutV1::V1,
+        7,
+        definition,
+        spec,
+        None,
+    )
+    .expect("exhausted stale candidate");
+    let exhausted = StoredColumnarProjectionControlV1::new(
+        source(definition),
+        definition,
+        spec,
+        ProjectionGeneration::new(u64::MAX).expect("maximum generation"),
+        None,
+        Some(exhausted_candidate),
+        None,
+        ColumnarProjectionLifecycleV1::Building,
+        None,
+        limits,
+    )
+    .expect("exhausted control");
+    assert!(
+        exhausted.reset_for_current_history_incarnation(8).is_err(),
+        "generation exhaustion refuses without mutation"
+    );
+}
+
 fn source(fingerprint: DefinitionFingerprint) -> ColumnarProjectionSourceV1 {
     ColumnarProjectionSourceV1::scalar(
         ContractLineage::new("ColumnarControl").expect("lineage"),

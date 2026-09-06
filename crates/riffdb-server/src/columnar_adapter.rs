@@ -28,12 +28,11 @@ use riffdb_service::{
 };
 use riffdb_storage_api::{
     AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest, AuthoritativePointReader,
-    AuthoritativeScanReader, ColumnarProjectionControlRepository,
-    ColumnarProjectionControlWriteResultV1, ColumnarProjectionLayoutV1, CommitScanPageV1,
-    CommitScanRequest, EntityTarget, FreshColumnarProjectionControlV1, IdempotencyIdentity,
-    StorageError, StorageErrorKind, StorageScanLimit, StoredColumnarProjectionControlV1,
-    StoredColumnarProjectionGenerationV1, StoredCommitRecordV1, StoredDurableEventV1,
-    StoredEntityRecordV1, StoredOutcomeV1, StoredProvenanceRecordV1,
+    AuthoritativeScanReader, ColumnarProjectionControlRepository, ColumnarProjectionLayoutV1,
+    CommitScanPageV1, CommitScanRequest, EntityTarget, FreshColumnarProjectionControlV1,
+    IdempotencyIdentity, StorageError, StorageErrorKind, StorageScanLimit,
+    StoredColumnarProjectionControlV1, StoredColumnarProjectionGenerationV1, StoredCommitRecordV1,
+    StoredDurableEventV1, StoredEntityRecordV1, StoredOutcomeV1, StoredProvenanceRecordV1,
 };
 use riffdb_types::{
     CommitSequence, EntityKey, EventId, FieldId, FrontierPosition, ProjectionFrontier,
@@ -747,8 +746,12 @@ impl ColumnarRuntime {
         history_incarnation: u64,
         process_generation: [u8; 16],
     ) -> Result<Arc<Self>, ColumnarRegistrationError> {
-        let bindings =
-            prepare_columnar_control_foundation(&storage, projections, history_incarnation)?;
+        let bindings = prepare_columnar_control_foundation(
+            &storage,
+            projections,
+            projections_root,
+            history_incarnation,
+        )?;
         let replay_clock = crate::clocks::ProductionWallClocks::settable(Arc::new(
             std::sync::atomic::AtomicI64::new(1_700_000_000),
         ))
@@ -1330,6 +1333,7 @@ impl ColumnarRuntime {
 pub(crate) fn prepare_columnar_control_foundation(
     storage: &SharedRedbOperationalPorts,
     projections: &[ConfiguredProjection],
+    projections_root: &Path,
     history_incarnation: u64,
 ) -> Result<Vec<ColumnarControlBinding>, ColumnarRegistrationError> {
     if projections.len() > 256
@@ -1435,14 +1439,37 @@ pub(crate) fn prepare_columnar_control_foundation(
     // Applied and transaction-current mismatch both resolve by complete reread;
     // no initialization outcome is inferred from the attempted write.
     for binding in &bindings {
-        let observed = storage
+        let mut observed = storage
             .recover_expected_control(binding.spec.source())
             .map_err(|error| ColumnarRegistrationError::control_storage(error, &binding.name))?
             .ok_or_else(ColumnarRegistrationError::synchronization)?;
         if !common_control_history_incarnation_matches(&observed, history_incarnation) {
-            return Err(ColumnarRegistrationError::synchronization());
+            let reset = storage.reset_for_current_history_incarnation(&observed);
+            observed = storage
+                .recover_expected_control(binding.spec.source())
+                .map_err(|error| ColumnarRegistrationError::control_storage(error, &binding.name))?
+                .ok_or_else(ColumnarRegistrationError::synchronization)?;
+            if !common_control_history_incarnation_matches(&observed, history_incarnation) {
+                return match reset {
+                    Err(error) => Err(ColumnarRegistrationError::control_storage(
+                        error,
+                        &binding.name,
+                    )),
+                    Ok(_) => Err(ColumnarRegistrationError::synchronization()),
+                };
+            }
         }
         reconcile_common_control(storage, binding, observed)?;
+        let reconciled = storage
+            .recover_expected_control(binding.spec.source())
+            .map_err(|error| ColumnarRegistrationError::control_storage(error, &binding.name))?
+            .ok_or_else(ColumnarRegistrationError::synchronization)?;
+        retire_unprepared_v1_candidate_paths(
+            projections_root,
+            binding,
+            &reconciled,
+            history_incarnation,
+        )?;
     }
     bindings.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(bindings)
@@ -1501,7 +1528,7 @@ fn reconcile_common_control(
             Err(ColumnarRegistrationError::synchronization())
         };
     }
-    let outcome = if observed.published().is_none() && observed.predecessor().is_none() {
+    let _ = if observed.published().is_none() && observed.predecessor().is_none() {
         storage.retarget_initial_candidate(
             &observed,
             binding.spec.definition_fingerprint(),
@@ -1519,9 +1546,8 @@ fn reconcile_common_control(
         )
     }
     .map_err(|error| ColumnarRegistrationError::control_storage(error, &binding.name))?;
-    if outcome == ColumnarProjectionControlWriteResultV1::Applied {
-        return Ok(());
-    }
+    // Applied, mismatch, storage uncertainty, and a racing later transition
+    // authorize nothing by inference; only this complete reread is consumed.
     let recovered = storage
         .recover_expected_control(binding.spec.source())
         .map_err(|error| ColumnarRegistrationError::control_storage(error, &binding.name))?
@@ -1531,6 +1557,150 @@ fn reconcile_common_control(
     } else {
         Err(ColumnarRegistrationError::synchronization())
     }
+}
+
+const MAX_RESET_CANDIDATE_FILES: usize =
+    riffdb_columnar::MAX_COLUMNAR_GENERATION_ROOT_V1_PARTITIONS + 2;
+const MAX_RESET_CANDIDATE_BYTES: u64 =
+    (riffdb_columnar::MAX_COLUMNAR_GENERATION_ROOT_V1_PARTITIONS as u64 + 2)
+        * riffdb_columnar::MAX_SEGMENT_V2_BYTES as u64;
+
+fn retire_unprepared_v1_candidate_paths(
+    projections_root: &Path,
+    binding: &ColumnarControlBinding,
+    control: &StoredColumnarProjectionControlV1,
+    history_incarnation: u64,
+) -> Result<(), ColumnarRegistrationError> {
+    let Some(candidate) = control.candidate() else {
+        return Ok(());
+    };
+    if control.lifecycle() != riffdb_storage_api::ColumnarProjectionLifecycleV1::Building
+        || control.published().is_some()
+        || control.predecessor().is_some()
+        || control.failure().is_some()
+        || candidate.layout() != ColumnarProjectionLayoutV1::V1
+        || candidate.history_incarnation() != history_incarnation
+        || candidate.frontier() != FrontierPosition::BeforeFirst
+        || candidate.snapshot_frontier().is_some()
+        || candidate.artifact().is_some()
+    {
+        return Ok(());
+    }
+    let final_path = controlled_generation_directory(
+        projections_root,
+        binding.spec.hash(),
+        candidate.generation(),
+    );
+    let temporary_path = final_path.with_file_name(format!(
+        "{}.tmp",
+        final_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(ColumnarRegistrationError::synchronization)?
+    ));
+    for path in [&final_path, &temporary_path] {
+        retire_exact_candidate_path(path, history_incarnation)
+            .map_err(|_| ColumnarRegistrationError::synchronization())?;
+    }
+    Ok(())
+}
+
+fn retire_exact_candidate_path(path: &Path, history_incarnation: u64) -> std::io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "candidate path has no parent",
+        )
+    })?;
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "candidate path is not UTF-8",
+            )
+        })?;
+    let quarantine = parent.join(format!(
+        "{name}.retired-before-history-{history_incarnation:016x}"
+    ));
+    if remove_bounded_candidate_directory(&quarantine)? {
+        sync_directory(parent)?;
+    }
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "candidate path is not an ordinary directory",
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    }
+    if std::fs::symlink_metadata(&quarantine).is_ok() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "candidate quarantine unexpectedly exists",
+        ));
+    }
+    std::fs::rename(path, &quarantine)?;
+    sync_directory(parent)
+}
+
+fn remove_bounded_candidate_directory(path: &Path) -> std::io::Result<bool> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "candidate quarantine is not an ordinary directory",
+        ));
+    }
+    let mut files = Vec::new();
+    let mut bytes = 0_u64;
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        if files.len() == MAX_RESET_CANDIDATE_FILES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "candidate quarantine exceeds file bound",
+            ));
+        }
+        let file_type = entry.file_type()?;
+        if !file_type.is_file() || file_type.is_symlink() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "candidate quarantine contains non-file material",
+            ));
+        }
+        let metadata = entry.metadata()?;
+        bytes = bytes.checked_add(metadata.len()).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "candidate byte bound overflow",
+            )
+        })?;
+        if bytes > MAX_RESET_CANDIDATE_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "candidate quarantine exceeds byte bound",
+            ));
+        }
+        files.push(entry.path());
+    }
+    for file in files {
+        std::fs::remove_file(file)?;
+    }
+    std::fs::remove_dir(path)?;
+    Ok(true)
+}
+
+fn sync_directory(path: &Path) -> std::io::Result<()> {
+    std::fs::File::open(path)?.sync_all()
 }
 
 fn selected_corruption_without_rebuild_candidate(
@@ -2328,6 +2498,9 @@ mod tests {
 
     use super::*;
     use crate::config::ConfiguredProjection;
+    use riffdb_storage_api::{
+        ColumnarProjectionControlWriteResultV1, ColumnarProjectionLifecycleV1,
+    };
 
     const ADAPTER_BOARD_CONTRACT: &str = r#"
 contract AdapterBoard version 1 {
@@ -4808,9 +4981,9 @@ contract VectorBoard version 1 {
         );
     }
 
-    // req: PRJ-004, PRJ-009, OQ-022
+    // req: REC-001, PRJ-004, PRJ-006, PRJ-008, PRJ-009, PRJ-010
     #[test]
-    fn selected_v1_from_stale_history_incarnation_is_refused_without_relabeling() {
+    fn stale_history_incarnation_resets_columnar_control_before_serving() {
         let (runtime, scope) = board_runtime("selected-v1-stale-incarnation");
         request_projection(&runtime, "ticket_board");
         assert!(crate::columnar_worker::run_one_test_pass(&runtime));
@@ -4847,16 +5020,242 @@ contract VectorBoard version 1 {
             .expect("read selected V1 manifest");
         drop(runtime);
 
-        let error = match open_board_runtime_at_incarnation(scope.path(), 2) {
-            Err(error) => error,
-            Ok(_) => panic!("a selected V1 from another history incarnation must fail closed"),
-        };
-        assert_eq!(error.kind, ColumnarRegistrationErrorKind::Synchronization);
+        riffdb_storage_redb::stamp_history_incarnation(scope.path().join("db.redb"), 2)
+            .expect("advance authoritative history incarnation");
+
+        let reopened = open_board_runtime_at_incarnation(scope.path(), 2)
+            .expect("stale derived control resets before runtime installation");
+        let reset = reopened
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("reread reset control")
+            .expect("reset control");
+        assert_eq!(reset.lifecycle(), ColumnarProjectionLifecycleV1::Building);
+        assert!(reset.published().is_none());
+        assert!(reset.predecessor().is_none());
+        assert!(reset.failure().is_none());
+        let candidate = reset.candidate().expect("fresh current candidate");
+        assert_eq!(candidate.history_incarnation(), 2);
+        assert_eq!(
+            candidate.generation().get(),
+            selected.generation().get() + 1
+        );
+        assert_eq!(candidate.frontier(), FrontierPosition::BeforeFirst);
+        assert!(candidate.artifact().is_none());
+        assert_eq!(
+            reset.retention_frontier(),
+            Some(FrontierPosition::BeforeFirst),
+            "only the fresh current-incarnation candidate supplies retention"
+        );
+        assert_eq!(
+            reopened
+                .engine("ticket_board")
+                .expect("engine registry")
+                .expect("cold reset slot")
+                .lifecycle(),
+            Ok(ColumnarSlotLifecycle::Cold),
+            "startup cannot install the stale selected view"
+        );
+        let observation = ServerColumnarProjectionPort::new(Arc::clone(&reopened))
+            .observe("ticket_board")
+            .expect("cold reset observation");
+        assert!(!observation.has_published());
         assert_eq!(
             std::fs::read(generation_directory.join(&manifest_name))
-                .expect("reread selected V1 manifest"),
+                .expect("reread stale V1 manifest"),
             manifest_before,
-            "frozen V1 bytes are neither mutated nor relabeled"
+            "frozen stale V1 bytes are neither mutated nor relabeled"
+        );
+
+        request_projection(&reopened, "ticket_board");
+        for _ in 0..4 {
+            assert!(crate::columnar_worker::run_one_test_pass(&reopened));
+            let durable = reopened
+                .storage()
+                .recover_expected_control(binding.spec().source())
+                .expect("reread rebuilt control")
+                .expect("rebuilt control");
+            if durable.servable_generation().is_some() {
+                assert!(
+                    durable
+                        .servable_generation()
+                        .is_some_and(|value| value.history_incarnation() == 2)
+                );
+                return;
+            }
+        }
+        panic!("fresh current-incarnation V1 candidate did not publish");
+    }
+
+    // req: REC-001, PRJ-004, PRJ-006, PRJ-008, PRJ-009, PRJ-010
+    #[test]
+    fn columnar_history_reset_retires_exact_colliding_candidate_paths() {
+        let (runtime, scope) = board_runtime("history-reset-path-collision");
+        let binding = runtime
+            .control_binding("ticket_board")
+            .expect("control binding")
+            .clone();
+        let stale = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("read stale control")
+            .expect("stale control");
+        let reset_generation = stale
+            .highest_generation()
+            .checked_next()
+            .expect("reset generation");
+        let final_path = controlled_generation_directory(
+            &scope.path().join("projections"),
+            binding.spec().hash(),
+            reset_generation,
+        );
+        let temporary_path = final_path.with_file_name(format!(
+            "{}.tmp",
+            final_path
+                .file_name()
+                .expect("final name")
+                .to_string_lossy()
+        ));
+        std::fs::create_dir_all(&final_path).expect("create colliding final path");
+        std::fs::write(final_path.join("seg-stale"), b"stale-final")
+            .expect("write colliding final path");
+        std::fs::create_dir_all(&temporary_path).expect("create colliding temporary path");
+        std::fs::write(
+            temporary_path.join("MANIFEST.stale.tmp"),
+            b"stale-temporary",
+        )
+        .expect("write colliding temporary path");
+        let unrelated = final_path
+            .parent()
+            .expect("source directory")
+            .join("unmanaged-sibling");
+        std::fs::create_dir_all(&unrelated).expect("create unrelated sibling");
+        std::fs::write(unrelated.join("keep"), b"keep").expect("write unrelated sibling");
+        drop(runtime);
+        riffdb_storage_redb::stamp_history_incarnation(scope.path().join("db.redb"), 2)
+            .expect("advance authoritative history");
+
+        let reopened = open_board_runtime_at_incarnation(scope.path(), 2)
+            .expect("retire exact collisions before cold runtime");
+        let quarantine_suffix = ".retired-before-history-0000000000000002";
+        let final_quarantine = final_path.with_file_name(format!(
+            "{}{quarantine_suffix}",
+            final_path
+                .file_name()
+                .expect("final name")
+                .to_string_lossy()
+        ));
+        let temporary_quarantine = temporary_path.with_file_name(format!(
+            "{}{quarantine_suffix}",
+            temporary_path
+                .file_name()
+                .expect("temporary name")
+                .to_string_lossy()
+        ));
+        assert!(!final_path.exists());
+        assert!(!temporary_path.exists());
+        assert_eq!(
+            std::fs::read(final_quarantine.join("seg-stale")).expect("quarantined final"),
+            b"stale-final"
+        );
+        assert_eq!(
+            std::fs::read(temporary_quarantine.join("MANIFEST.stale.tmp"))
+                .expect("quarantined temporary"),
+            b"stale-temporary"
+        );
+        assert_eq!(
+            std::fs::read(unrelated.join("keep")).expect("unrelated sibling survives"),
+            b"keep",
+            "the handler scans or touches no sibling"
+        );
+        drop(reopened);
+
+        let repeated = open_board_runtime_at_incarnation(scope.path(), 2)
+            .expect("repeated startup completes quarantine cleanup");
+        assert!(!final_quarantine.exists());
+        assert!(!temporary_quarantine.exists());
+        assert!(!final_path.exists());
+        assert!(!temporary_path.exists());
+        assert_eq!(
+            repeated
+                .storage()
+                .recover_expected_control(binding.spec().source())
+                .expect("reread repeat control")
+                .expect("repeat control")
+                .candidate()
+                .expect("same candidate")
+                .generation(),
+            reset_generation,
+            "repeated startup cannot allocate again"
+        );
+    }
+
+    // req: REC-001, PRJ-004, PRJ-006, PRJ-008, PRJ-009, PRJ-010
+    #[test]
+    fn columnar_history_reset_precedes_spec_retarget() {
+        let (runtime, scope) = board_runtime("history-reset-before-retarget");
+        let binding = runtime
+            .control_binding("ticket_board")
+            .expect("control binding")
+            .clone();
+        let initial = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("read initial control")
+            .expect("initial control");
+        let stale_spec = riffdb_types::ColumnarProjectionSpecHashV1::from_bytes([0x8d; 32]);
+        assert_eq!(
+            runtime
+                .storage()
+                .retarget_initial_candidate(
+                    &initial,
+                    binding.spec().definition_fingerprint(),
+                    stale_spec,
+                    binding.spec().replay_limits(),
+                )
+                .expect("install stale specification"),
+            ColumnarProjectionControlWriteResultV1::Applied
+        );
+        let stale = runtime
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("reread stale specification")
+            .expect("stale specification");
+        assert_eq!(stale.highest_generation().get(), 2);
+        assert_eq!(stale.target_spec_hash(), stale_spec);
+        drop(runtime);
+        riffdb_storage_redb::stamp_history_incarnation(scope.path().join("db.redb"), 2)
+            .expect("advance authoritative history");
+
+        let reopened = open_board_runtime_at_incarnation(scope.path(), 2)
+            .expect("reset then ordinary retarget");
+        let reconciled = reopened
+            .storage()
+            .recover_expected_control(binding.spec().source())
+            .expect("reread reconciled control")
+            .expect("reconciled control");
+        assert_eq!(
+            reconciled.highest_generation().get(),
+            4,
+            "reset allocates generation 3 before retarget allocates generation 4"
+        );
+        assert_eq!(reconciled.target_spec_hash(), binding.spec().hash());
+        assert_eq!(
+            reconciled.lifecycle(),
+            ColumnarProjectionLifecycleV1::Building
+        );
+        let candidate = reconciled.candidate().expect("final retarget candidate");
+        assert_eq!(candidate.history_incarnation(), 2);
+        assert_eq!(candidate.generation().get(), 4);
+        assert!(candidate.artifact().is_none());
+        assert_eq!(candidate.frontier(), FrontierPosition::BeforeFirst);
+        let observation = ServerColumnarProjectionPort::new(Arc::clone(&reopened))
+            .observe("ticket_board")
+            .expect("cold reconciled observation");
+        assert!(!observation.has_published());
+        assert_eq!(
+            reconciled.retention_frontier(),
+            Some(FrontierPosition::BeforeFirst)
         );
     }
 
@@ -6545,6 +6944,7 @@ contract VectorBoard version 1 {
         let renamed_bindings = prepare_columnar_control_foundation(
             runtime.storage(),
             std::slice::from_ref(&renamed),
+            runtime.projections_root(),
             runtime.history_incarnation(),
         )
         .expect("name-only replacement");
@@ -6560,6 +6960,7 @@ contract VectorBoard version 1 {
         let error = prepare_columnar_control_foundation(
             runtime.storage(),
             &[renamed, duplicate],
+            runtime.projections_root(),
             runtime.history_incarnation(),
         )
         .expect_err("two aliases for one source refuse");
@@ -6572,6 +6973,7 @@ contract VectorBoard version 1 {
             prepare_columnar_control_foundation(
                 runtime.storage(),
                 &[unsafe_name],
+                runtime.projections_root(),
                 runtime.history_incarnation(),
             )
             .is_err()
