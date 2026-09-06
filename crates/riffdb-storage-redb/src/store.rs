@@ -7,8 +7,8 @@ use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Mutex, RwLock};
-use std::time::Instant;
+use std::sync::{Condvar, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 #[path = "store_graceful_close.rs"]
 mod graceful_close;
@@ -221,6 +221,13 @@ pub(crate) struct SharedRedb {
     /// composition uses it to keep rebuildable population accelerators cold.
     pub(crate) bounded_clean_startup: AtomicBool,
     durable_commit_epoch: AtomicU64,
+    /// Even values name stable redb roots; odd values mean an engine commit is
+    /// in flight or visible but has not yet published its exact root identity.
+    /// Readers use the adjacent condition variable only while an odd value is
+    /// observed. The writer never holds that mutex across engine I/O.
+    durable_root_publication: AtomicU64,
+    durable_root_publication_wait: Mutex<()>,
+    durable_root_publication_changed: Condvar,
     /// Predecessor read root installed before the first unpublished subgroup.
     ///
     /// `None` means ordinary readers may open redb's newest root. While an
@@ -809,9 +816,57 @@ impl SharedRedb {
             self.fence_writes();
             return Err(storage_error(StorageErrorKind::SequenceExhausted));
         }
-        if let Err(error) = transaction.commit() {
+        let publication = self.durable_root_publication.load(Ordering::Acquire);
+        if !publication.is_multiple_of(2) {
+            self.fence_writes();
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let Some(stable_successor) = publication.checked_add(2) else {
+            self.fence_writes();
+            return Err(storage_error(StorageErrorKind::SequenceExhausted));
+        };
+        let in_progress = stable_successor - 1;
+        if self
+            .durable_root_publication
+            .compare_exchange(
+                publication,
+                in_progress,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            self.fence_writes();
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let committed = transaction.commit();
+        #[cfg(test)]
+        if committed.is_ok()
+            && let Some(controller) = &self.test_controller
+        {
+            controller.wait_after_engine_commit_before_root_publication();
+        }
+        let publication_wait = self.durable_root_publication_wait.lock();
+        self.durable_root_publication
+            .store(stable_successor, Ordering::Release);
+        self.durable_root_publication_changed.notify_all();
+        let publication_wait_poisoned = match publication_wait {
+            Ok(guard) => {
+                drop(guard);
+                false
+            }
+            Err(poisoned) => {
+                drop(poisoned.into_inner());
+                self.fence_writes();
+                true
+            }
+        };
+        if let Err(error) = committed {
             self.fence_writes();
             return Err(commit_error(error));
+        }
+        if publication_wait_poisoned {
+            return Err(storage_error(StorageErrorKind::CommitStatusUnknown));
         }
         if self
             .durable_commit_epoch
@@ -844,35 +899,19 @@ impl SharedRedb {
     ///
     /// A `ReadTransaction` is one fixed committed root, so the only question a
     /// reused one raises is freshness: may THIS access be served the snapshot
-    /// an earlier access opened? It may exactly when nothing has been committed
-    /// in between, and `durable_commit_epoch` is the authoritative witness of
-    /// that. Every write that changes what redb's newest root contains lands
-    /// through `SharedRedb::commit_durable`, which increments that epoch
-    /// strictly AFTER `WriteTransaction::commit` returns and therefore strictly
-    /// before its writer is told the write is durable.
-    ///
-    /// So, with `epoch` read before the snapshot is captured and both stamped
-    /// together:
-    ///
-    /// - A commit whose epoch increment precedes this call's load committed
-    ///   even earlier, so a snapshot stamped with the loaded epoch already
-    ///   contains it. Reuse can therefore never hide an acknowledged write.
-    /// - A commit whose increment follows this call's load is concurrent with
-    ///   this read — its writer has not been told it is durable — so ordering
-    ///   this read before it is a permitted linearization, exactly as it is
-    ///   today when `begin_read` happens to run first.
-    ///
-    /// The epoch is monotonic and the stamp is written under the exclusive
-    /// guard, so a reused root is never older than its stamp claims. A root
-    /// captured a moment newer than its stamp is harmless in the other
-    /// direction: serving a NEWER committed snapshot than required is never a
-    /// staleness violation.
+    /// an earlier access opened? `durable_root_publication` marks an engine
+    /// commit in progress before I/O, remains odd across the interval where
+    /// redb may expose the successor, and publishes one distinct even generation
+    /// after success or failure. A capture is accepted only when the same even
+    /// generation brackets `begin_read`; otherwise it waits or retries within
+    /// fixed bounds. The cached root therefore contains exactly the stable
+    /// generation in its stamp and can be reused only at that generation.
     ///
     /// The caller holds the durable-read-frontier guard, so a frontier install
     /// cannot interleave with the capture; once one does install, it retires
     /// this root rather than leaving it to pin pages no reader can select.
     fn current_read_root(&self) -> Result<Arc<CheckpointRoot>, StorageError> {
-        let epoch = self.durable_commit_epoch.load(Ordering::Acquire);
+        let epoch = self.stable_durable_root_version()?;
         {
             let cached = self
                 .current_read_root
@@ -892,19 +931,90 @@ impl SharedRedb {
         // must not be stamped with the older epoch, and a racing capture that
         // already installed the newest snapshot must be reused rather than
         // replaced by an equally new one.
-        let epoch = self.durable_commit_epoch.load(Ordering::Acquire);
+        let epoch = self.stable_durable_root_version()?;
         if let Some((captured, root)) = cached.as_ref()
             && *captured == epoch
         {
             return Ok(Arc::clone(root));
         }
-        let root = Arc::new(CheckpointRoot::new(
-            self.database.begin_read().map_err(transaction_error)?,
-            epoch,
-        ));
+        let root = self.capture_checkpoint_root_at(epoch)?;
         *cached = Some((epoch, Arc::clone(&root)));
         self.current_read_root_live.store(true, Ordering::Release);
         Ok(root)
+    }
+
+    fn stable_durable_root_version(&self) -> Result<u64, StorageError> {
+        const MAX_WAIT: Duration = Duration::from_secs(30);
+        let started = Instant::now();
+        loop {
+            let version = self.durable_root_publication.load(Ordering::Acquire);
+            if version.is_multiple_of(2) {
+                return Ok(version);
+            }
+            #[cfg(test)]
+            if let Some(controller) = &self.test_controller {
+                controller.observe_root_capture_retry();
+            }
+            let guard = match self.durable_root_publication_wait.lock() {
+                Ok(guard) => guard,
+                Err(_) => {
+                    self.fence_writes();
+                    return Err(storage_error(StorageErrorKind::CommitStatusUnknown));
+                }
+            };
+            if self
+                .durable_root_publication
+                .load(Ordering::Acquire)
+                .is_multiple_of(2)
+            {
+                drop(guard);
+                continue;
+            }
+            let remaining = MAX_WAIT
+                .checked_sub(started.elapsed())
+                .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
+            let (_guard, wait) = match self
+                .durable_root_publication_changed
+                .wait_timeout(guard, remaining)
+            {
+                Ok(wait) => wait,
+                Err(_) => {
+                    self.fence_writes();
+                    return Err(storage_error(StorageErrorKind::CommitStatusUnknown));
+                }
+            };
+            if wait.timed_out()
+                && !self
+                    .durable_root_publication
+                    .load(Ordering::Acquire)
+                    .is_multiple_of(2)
+            {
+                return Err(storage_error(StorageErrorKind::Unavailable));
+            }
+        }
+    }
+
+    fn capture_checkpoint_root_at(
+        &self,
+        expected: u64,
+    ) -> Result<Arc<CheckpointRoot>, StorageError> {
+        const MAX_CAPTURE_ATTEMPTS: usize = 64;
+        let mut version = expected;
+        for _ in 0..MAX_CAPTURE_ATTEMPTS {
+            let transaction = self.database.begin_read().map_err(transaction_error)?;
+            let after = self.durable_root_publication.load(Ordering::Acquire);
+            if version == after && after.is_multiple_of(2) {
+                return Ok(Arc::new(CheckpointRoot::new(transaction, after)));
+            }
+            drop(transaction);
+            version = self.stable_durable_root_version()?;
+        }
+        Err(storage_error(StorageErrorKind::Unavailable))
+    }
+
+    fn capture_checkpoint_root(&self) -> Result<Arc<CheckpointRoot>, StorageError> {
+        let version = self.stable_durable_root_version()?;
+        self.capture_checkpoint_root_at(version)
     }
 
     /// Whether a reusable frontier-free root is held right now.
@@ -1993,6 +2103,9 @@ impl RedbStore {
                 engine_initialized_at_open: initialize_marker_witness.is_some(),
                 bounded_clean_startup: AtomicBool::new(false),
                 durable_commit_epoch: AtomicU64::new(0),
+                durable_root_publication: AtomicU64::new(0),
+                durable_root_publication_wait: Mutex::new(()),
+                durable_root_publication_changed: Condvar::new(),
                 durable_read_frontier: RwLock::new(None),
                 current_read_root: RwLock::new(None),
                 current_read_root_live: AtomicBool::new(false),
@@ -4974,6 +5087,29 @@ impl RedbOperationalPorts {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn arm_exact_empty_fresh_locator_coverage_for_test(
+        &self,
+    ) -> Result<bool, StorageError> {
+        let access = self.begin_write()?;
+        let armed = access.arm_fresh_locator_coverage_for_exact_empty_test()?;
+        access.abort()?;
+        Ok(armed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fresh_locator_public_and_private_roles_match_for_test(
+        &self,
+    ) -> Result<bool, StorageError> {
+        let read = self.begin_read()?;
+        let public = self.fresh_locator_proves_absence(&read)?;
+        drop(read);
+        let access = self.begin_write()?;
+        let private = access.fresh_locator_allows_miss()?;
+        access.abort()?;
+        Ok(public && private)
+    }
+
     pub(crate) fn begin_deferred_epoch(&self) -> Result<RedbDurabilityEpoch, StorageError> {
         let lease = self.shared.mutation_gate.acquire()?;
         if self.shared.write_fenced.load(Ordering::Acquire)
@@ -4989,13 +5125,7 @@ impl RedbOperationalPorts {
             .write()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
         if frontier.is_none() {
-            let transaction = Arc::new(CheckpointRoot::new(
-                self.shared
-                    .database
-                    .begin_read()
-                    .map_err(transaction_error)?,
-                self.shared.durable_commit_epoch.load(Ordering::Acquire),
-            ));
+            let transaction = self.shared.capture_checkpoint_root()?;
             *frontier = Some(transaction);
             // Still under the write guard, so no frontier-free capture can be
             // in flight and none can begin: every later read takes the durable
@@ -5041,13 +5171,7 @@ impl RedbOperationalPorts {
             .write()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
         if frontier.is_none() {
-            *frontier = Some(Arc::new(CheckpointRoot::new(
-                self.shared
-                    .database
-                    .begin_read()
-                    .map_err(transaction_error)?,
-                self.shared.durable_commit_epoch.load(Ordering::Acquire),
-            )));
+            *frontier = Some(self.shared.capture_checkpoint_root()?);
             self.shared.retire_current_read_root();
         }
         drop(frontier);
@@ -6226,7 +6350,7 @@ impl RedbWriteAccess {
         if let Some(runtime) = self.journal_checkpoint.take()
             && let Err(error) = self.shared.finish_journal_checkpoint(runtime)
         {
-            self.shared.disable_fresh_locator_coverage();
+            self.shared.disable_and_fence_fresh_locator_coverage();
             self.invalidate_transient_indexes();
             return Err(error);
         }
@@ -7120,11 +7244,21 @@ impl SharedRedb {
     fn begin_fresh_locator_rebase(
         &self,
     ) -> Result<Option<crate::fresh_locator_coverage::CoverageRebaseWitness>, StorageError> {
-        let predecessor = self.fresh_locator_current_stamp()?;
-        let mut coverage = self
-            .fresh_locator_coverage
-            .lock()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let predecessor = match self.fresh_locator_current_stamp() {
+            Ok(predecessor) => predecessor,
+            Err(error) => {
+                self.disable_and_fence_fresh_locator_coverage();
+                return Err(error);
+            }
+        };
+        let mut coverage = match self.fresh_locator_coverage.lock() {
+            Ok(coverage) => coverage,
+            Err(poisoned) => {
+                poisoned.into_inner().disable();
+                self.fence_writes();
+                return Err(storage_error(StorageErrorKind::CommitStatusUnknown));
+            }
+        };
         Ok(if coverage.is_armed() {
             coverage.begin_rebase(predecessor)
         } else {
@@ -7188,7 +7322,15 @@ impl SharedRedb {
         let Some(runtime) = self.take_published_journal_suffix_locked(true)? else {
             return Ok(());
         };
-        let coverage_rebase = self.begin_fresh_locator_rebase()?;
+        let coverage_rebase = match self.begin_fresh_locator_rebase() {
+            Ok(witness) => witness,
+            Err(error) => {
+                if self.restore_journal_runtime(runtime).is_err() {
+                    self.disable_and_fence_fresh_locator_coverage();
+                }
+                return Err(error);
+            }
+        };
         let mut transaction = match self.database.begin_write() {
             Ok(transaction) => transaction,
             Err(error) => {
@@ -7504,10 +7646,15 @@ impl SharedRedb {
                 return Err(storage_error(StorageErrorKind::InvariantViolation));
             }
         }
-        let mut frontier = self
-            .durable_read_frontier
-            .write()
-            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+        let mut frontier = match self.durable_read_frontier.write() {
+            Ok(frontier) => frontier,
+            Err(poisoned) => {
+                drop(poisoned.into_inner());
+                *transient = TransientIndexState::Invalid;
+                self.disable_and_fence_fresh_locator_coverage();
+                return Err(storage_error(StorageErrorKind::CommitStatusUnknown));
+            }
+        };
         if frontier.is_none() {
             *transient = TransientIndexState::Invalid;
             self.fence_writes();
@@ -7603,10 +7750,14 @@ impl SharedRedb {
                 return Err(storage_error(StorageErrorKind::InvariantViolation));
             }
         }
-        let mut frontier = self
-            .durable_read_frontier
-            .write()
-            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+        let mut frontier = match self.durable_read_frontier.write() {
+            Ok(frontier) => frontier,
+            Err(poisoned) => {
+                drop(poisoned.into_inner());
+                self.disable_and_fence_fresh_locator_coverage();
+                return Err(storage_error(StorageErrorKind::CommitStatusUnknown));
+            }
+        };
         if frontier.is_none() {
             self.fence_writes();
             return Err(storage_error(StorageErrorKind::InvariantViolation));
@@ -8165,10 +8316,14 @@ impl SharedRedb {
 
     fn poll_async_checkpoint_locked(self: &Arc<Self>, wait: bool) -> Result<(), StorageError> {
         {
-            let mut checkpoint = self
-                .journal_checkpoint
-                .lock()
-                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            let mut checkpoint = match self.journal_checkpoint.lock() {
+                Ok(checkpoint) => checkpoint,
+                Err(poisoned) => {
+                    drop(poisoned.into_inner());
+                    self.disable_and_fence_fresh_locator_coverage();
+                    return Err(storage_error(StorageErrorKind::CommitStatusUnknown));
+                }
+            };
             let Some(checkpoint) = checkpoint.as_mut() else {
                 return Ok(());
             };
@@ -8202,17 +8357,25 @@ impl SharedRedb {
     }
 
     fn finish_async_checkpoint_if_quiescent(self: &Arc<Self>) -> Result<(), StorageError> {
-        let mut checkpoint = self
-            .journal_checkpoint
-            .lock()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let mut checkpoint = match self.journal_checkpoint.lock() {
+            Ok(checkpoint) => checkpoint,
+            Err(poisoned) => {
+                drop(poisoned.into_inner());
+                self.disable_and_fence_fresh_locator_coverage();
+                return Err(storage_error(StorageErrorKind::CommitStatusUnknown));
+            }
+        };
         let Some(state) = checkpoint.as_mut() else {
             return Ok(());
         };
-        let runtime = self
-            .journal_runtime
-            .lock()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let runtime = match self.journal_runtime.lock() {
+            Ok(runtime) => runtime,
+            Err(poisoned) => {
+                drop(poisoned.into_inner());
+                self.disable_and_fence_fresh_locator_coverage();
+                return Err(storage_error(StorageErrorKind::CommitStatusUnknown));
+            }
+        };
         let Some(runtime) = runtime.as_ref() else {
             return Ok(());
         };
@@ -8229,7 +8392,13 @@ impl SharedRedb {
         }
         let batch = state.batch.clone();
         let covered_view = Arc::clone(&state.covered_view);
-        let coverage_rebase = self.begin_fresh_locator_rebase()?;
+        let coverage_rebase = match self.begin_fresh_locator_rebase() {
+            Ok(witness) => witness,
+            Err(error) => {
+                state.result = Some(Ok(()));
+                return Err(error);
+            }
+        };
         let mut publication_began = false;
         let rebase_result = (|| -> Result<(), StorageError> {
             let current = self
@@ -8239,10 +8408,7 @@ impl SharedRedb {
                 .as_ref()
                 .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
                 .capture()?;
-            let root = Arc::new(CheckpointRoot::new(
-                self.database.begin_read().map_err(transaction_error)?,
-                self.durable_commit_epoch.load(Ordering::Acquire),
-            ));
+            let root = self.capture_checkpoint_root()?;
             if read_commit_tail(&root)? != batch.last_sequence
                 || read_administration_tail(&root)? != batch.last_administration_sequence
             {
@@ -8394,10 +8560,7 @@ impl SharedRedb {
 
     fn finish_journal_checkpoint(&self, runtime: JournalRuntime) -> Result<(), StorageError> {
         drop(runtime.lane);
-        let checkpoint = Arc::new(CheckpointRoot::new(
-            self.database.begin_read().map_err(transaction_error)?,
-            self.durable_commit_epoch.load(Ordering::Acquire),
-        ));
+        let checkpoint = self.capture_checkpoint_root()?;
         let checkpoint_database_id = read_identity_from_read_transaction(&checkpoint)?;
         let checkpoint_sequence = read_commit_tail(&checkpoint)?;
         let checkpoint_administration_sequence = read_administration_tail(&checkpoint)?;
@@ -8421,10 +8584,14 @@ impl SharedRedb {
             self.fence_writes();
             return Err(journal_io_error(error));
         }
-        let mut frontier = self
-            .durable_read_frontier
-            .write()
-            .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
+        let mut frontier = match self.durable_read_frontier.write() {
+            Ok(frontier) => frontier,
+            Err(poisoned) => {
+                drop(poisoned.into_inner());
+                self.disable_and_fence_fresh_locator_coverage();
+                return Err(storage_error(StorageErrorKind::CommitStatusUnknown));
+            }
+        };
         if frontier.is_none() {
             self.fence_writes();
             return Err(storage_error(StorageErrorKind::InvariantViolation));
@@ -8440,10 +8607,7 @@ impl SharedRedb {
             .write()
             .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))?;
         if frontier.is_some() {
-            *frontier = Some(Arc::new(CheckpointRoot::new(
-                self.database.begin_read().map_err(transaction_error)?,
-                self.durable_commit_epoch.load(Ordering::Acquire),
-            )));
+            *frontier = Some(self.capture_checkpoint_root()?);
         }
         Ok(())
     }

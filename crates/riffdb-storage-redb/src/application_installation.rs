@@ -141,6 +141,7 @@ mod tests {
         .expect("record")
     }
 
+    // req: OUT-001, OUT-002, TXN-042
     #[test]
     fn campaign_compare_and_swap_is_durable_and_retry_safe() {
         let path = TestPath::new();
@@ -154,6 +155,11 @@ mod tests {
         let mut ports = dormant
             .into_operational_after_catalog_validation()
             .expect("activate");
+        assert!(
+            ports
+                .arm_exact_empty_fresh_locator_coverage_for_test()
+                .expect("arm exact empty coverage")
+        );
         let first = record(b"state-one\n");
         let next = record(b"state-two\n");
 
@@ -186,6 +192,11 @@ mod tests {
                 .read_application_installation_campaign(next.campaign_id())
                 .expect("read"),
             Some(next.clone())
+        );
+        assert!(
+            ports
+                .fresh_locator_public_and_private_roles_match_for_test()
+                .expect("installation lane preserves both roles")
         );
         drop(ports);
 

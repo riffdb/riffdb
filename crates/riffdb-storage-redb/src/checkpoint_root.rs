@@ -40,10 +40,12 @@
 //! - `RedbReadAccess::Current` serves the newest snapshot a handle with no
 //!   durable frontier may open. `SharedRedb::current_read_root` reuses one such
 //!   snapshot for every access entitled to it — every access taken while
-//!   `durable_commit_epoch` is unchanged — so the cache spans those accesses
-//!   too. A daemon that has not written since startup has neither a durable
-//!   frontier nor a composite publication, so this is the only shape its reads
-//!   take.
+//!   the stable even `durable_root_publication` generation is unchanged — so
+//!   the cache spans those accesses too. The intervening odd generation marks
+//!   an engine commit whose successor root may already be visible but whose
+//!   exact identity has not yet been published. A daemon that has not written
+//!   since startup has neither a durable frontier nor a composite publication,
+//!   so this is the only shape its reads take.
 //!
 //! The same equivalence licenses caching a derived *value* rather than a
 //! handle, provided every input it reads is fixed by the snapshot. The

@@ -2008,6 +2008,58 @@ contract Recovery version 1 {
         access.commit().expect("commit control transaction");
     }
 
+    // req: OUT-001, OUT-002, TXN-042
+    #[test]
+    fn armed_projection_control_transition_preserves_public_and_private_roles() {
+        let path = TestDatabasePath::new("projection-control-preserving-lane");
+        let mut store = RedbStore::open(&path.0).expect("open store");
+        store
+            .initialize_database(database_id())
+            .expect("initialize store");
+        let identity = projection_identity(0x30);
+        let initial = StoredProjectionControlV1::initial(identity.clone());
+        let encoded = encode_projection_control_v1(&initial).expect("encode control");
+        let transaction = store
+            .shared
+            .database
+            .begin_write()
+            .expect("raw setup write");
+        transaction
+            .open_table(PROJECTION_FRONTIER)
+            .expect("control table")
+            .insert(
+                encode_projection_frontier_key(&ProjectionFrontierKey::new(identity.clone())),
+                encoded.as_bytes(),
+            )
+            .expect("insert pre-activation control");
+        transaction.commit().expect("commit pre-activation setup");
+        let dormant = crate::store::RedbDormantPorts {
+            shared: store.shared,
+        };
+        let mut ports = dormant
+            .into_operational_after_catalog_validation()
+            .expect("activate test ports");
+        assert!(
+            ports
+                .arm_exact_empty_fresh_locator_coverage_for_test()
+                .expect("arm exact empty coverage")
+        );
+
+        assert!(matches!(
+            ports
+                .transition_projection_control(ProjectionControlOperation::StartInitialScan {
+                    expected: initial,
+                })
+                .expect("execute real projection control transition"),
+            ProjectionControlResult::Updated(_)
+        ));
+        assert!(
+            ports
+                .fresh_locator_public_and_private_roles_match_for_test()
+                .expect("projection lane preserves both roles")
+        );
+    }
+
     #[test]
     fn pending_scan_and_status_cas_use_real_envelope_charges() {
         let (_path, mut ports) = operational("outbox-cas");

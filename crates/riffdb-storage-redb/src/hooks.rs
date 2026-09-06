@@ -5,6 +5,8 @@ use std::collections::VecDeque;
 use std::io::Write;
 #[cfg(feature = "test-fixtures")]
 use std::path::PathBuf;
+#[cfg(test)]
+use std::sync::Barrier;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -113,6 +115,8 @@ struct TestControllerInner {
     audit_sequence_begin_reads: AtomicU64,
     fresh_locator_history_fallback_scans: AtomicU64,
     corrupt_fresh_locator_successor_stamp: AtomicBool,
+    #[cfg(test)]
+    root_publication_schedule: Option<Arc<RootPublicationScheduleInner>>,
     #[cfg(feature = "test-fixtures")]
     external_kill_barrier: Option<PathBuf>,
     #[cfg(feature = "test-fixtures")]
@@ -124,6 +128,31 @@ struct IndexMigrationObservation {
     pages: usize,
     v1_rewrites: usize,
     v2_confirms: usize,
+}
+
+#[cfg(test)]
+struct RootPublicationScheduleInner {
+    commit_visible: Barrier,
+    reader_retry: Barrier,
+    release: Barrier,
+    reader_observed: AtomicBool,
+}
+
+#[cfg(test)]
+pub(crate) struct RootPublicationSchedule {
+    inner: Arc<RootPublicationScheduleInner>,
+}
+
+#[cfg(test)]
+impl RootPublicationSchedule {
+    pub(crate) fn wait_until_commit_is_visible(&self) {
+        self.inner.commit_visible.wait();
+    }
+
+    pub(crate) fn release_after_reader_retries(&self) {
+        self.inner.reader_retry.wait();
+        self.inner.release.wait();
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -150,6 +179,8 @@ impl RedbTestController {
                 audit_sequence_begin_reads: AtomicU64::new(0),
                 fresh_locator_history_fallback_scans: AtomicU64::new(0),
                 corrupt_fresh_locator_successor_stamp: AtomicBool::new(false),
+                #[cfg(test)]
+                root_publication_schedule: None,
                 #[cfg(feature = "test-fixtures")]
                 external_kill_barrier: None,
                 #[cfg(feature = "test-fixtures")]
@@ -204,6 +235,52 @@ impl RedbTestController {
             .corrupt_fresh_locator_successor_stamp
             .store(true, Ordering::Release);
         controller
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_root_publication_after_engine_commit() -> (Self, RootPublicationSchedule) {
+        let inner = Arc::new(RootPublicationScheduleInner {
+            commit_visible: Barrier::new(2),
+            reader_retry: Barrier::new(2),
+            release: Barrier::new(3),
+            reader_observed: AtomicBool::new(false),
+        });
+        let controller = Self {
+            inner: Arc::new(TestControllerInner {
+                operation: None,
+                steps: Mutex::new(VecDeque::new()),
+                events: Mutex::new(Vec::new()),
+                index_migration: Mutex::new(IndexMigrationObservation::default()),
+                audit_sequence_begin_reads: AtomicU64::new(0),
+                fresh_locator_history_fallback_scans: AtomicU64::new(0),
+                corrupt_fresh_locator_successor_stamp: AtomicBool::new(false),
+                root_publication_schedule: Some(Arc::clone(&inner)),
+                #[cfg(feature = "test-fixtures")]
+                external_kill_barrier: None,
+                #[cfg(feature = "test-fixtures")]
+                external_engine_sync_armed: AtomicU64::new(0),
+            }),
+        };
+        (controller, RootPublicationSchedule { inner })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn wait_after_engine_commit_before_root_publication(&self) {
+        if let Some(schedule) = &self.inner.root_publication_schedule {
+            schedule.commit_visible.wait();
+            schedule.release.wait();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observe_root_capture_retry(&self) {
+        let Some(schedule) = &self.inner.root_publication_schedule else {
+            return;
+        };
+        if !schedule.reader_observed.swap(true, Ordering::AcqRel) {
+            schedule.reader_retry.wait();
+            schedule.release.wait();
+        }
     }
 
     #[cfg(test)]
@@ -280,6 +357,8 @@ impl RedbTestController {
                 audit_sequence_begin_reads: AtomicU64::new(0),
                 fresh_locator_history_fallback_scans: AtomicU64::new(0),
                 corrupt_fresh_locator_successor_stamp: AtomicBool::new(false),
+                #[cfg(test)]
+                root_publication_schedule: None,
                 external_kill_barrier: Some(marker.into()),
                 external_engine_sync_armed: AtomicU64::new(0),
             }),
@@ -311,6 +390,8 @@ impl RedbTestController {
                 audit_sequence_begin_reads: AtomicU64::new(0),
                 fresh_locator_history_fallback_scans: AtomicU64::new(0),
                 corrupt_fresh_locator_successor_stamp: AtomicBool::new(false),
+                #[cfg(test)]
+                root_publication_schedule: None,
                 external_kill_barrier: Some(marker.into()),
                 external_engine_sync_armed: AtomicU64::new(0),
             }),
@@ -391,6 +472,8 @@ impl RedbTestController {
                 audit_sequence_begin_reads: AtomicU64::new(0),
                 fresh_locator_history_fallback_scans: AtomicU64::new(0),
                 corrupt_fresh_locator_successor_stamp: AtomicBool::new(false),
+                #[cfg(test)]
+                root_publication_schedule: None,
                 #[cfg(feature = "test-fixtures")]
                 external_kill_barrier: None,
                 #[cfg(feature = "test-fixtures")]
