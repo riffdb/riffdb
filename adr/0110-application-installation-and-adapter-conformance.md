@@ -188,9 +188,10 @@ detail or mutation.
   redaction matrices.
 - Empty, compatible-upgrade, migration-required, failed-seed, and resume
   acceptance against multiple databases.
-- Adapter conformance for OpenFGA, MLflow, Better Auth (Payload deferred
-  post-alpha; Amendment 1, 2026-08-11), and Woodpecker shapes in
-  Rust, Go, TypeScript, and Python where supported.
+- Adapter evidence for OpenFGA, MLflow, Better Auth, and Woodpecker at the
+  exact current-alpha classifications in Amendment 1 and ADR-0201, plus the
+  separately scoped Payload post-alpha language-expressiveness shape, in Rust,
+  Go, TypeScript, and Python where supported.
 
 ## Requirements and Work Packages
 
@@ -209,7 +210,18 @@ format, conformance manifest, role-widening flow, or receipt is implemented.
 - **Status:** Accepted — 2026-08-11, maintainer acceptance as written
 
 Maintainer scope decision: the alpha conformance adapter set is OpenFGA,
-MLflow, Better Auth, and Woodpecker. Payload's shape is retained as a named
-post-alpha adapter. Better Auth's conformance additionally uses the
-framework's own published adapter conformance suite as an external
-acceptance instrument, run from the integration repository per ADR-0117.
+MLflow, Better Auth, and Woodpecker, but their evidence is not interchangeable.
+ADR-0201 classifies the current general-alpha records exactly: OpenFGA is an
+external complete `upstream_suite_adapter`; Better Auth is a mixed-custody
+`materialized_profile_matrix` without a complete upstream-suite receipt; and
+MLflow and Woodpecker are RiffDB-custodied
+`language_expressiveness_matrix` records without complete upstream-suite
+receipts. The narrower Better Auth lifecycle/admin and MLflow filtered-search,
+large-Run, and partition-search records retain their separate exact evidence
+classes and scopes. Payload's BLK-014/RAP-016 shape remains a RiffDB-custodied
+post-alpha language-expressiveness record, not a general-alpha adapter claim.
+
+Additional Better Auth fields or plugins require a newly generated and
+reviewed materialized profile. ADR-0117's owning-repository upstream-suite
+evidence remains required before any future complete Better Auth framework-
+support claim; it is not evidence already held by the current alpha.
