@@ -80,8 +80,10 @@ ten ADR-0201 claims at its exact scope, class, custody, and upstream-suite
 strength; the checked JSON inventory is the repository source of truth.
 
 Checks run: package acceptance, the exact and adversarial claim guards, the
-four-subject/four-language adapter conformance gate, and all three pinned
-downstream application checks.
+four-subject/four-language adapter conformance gate, and local sibling compile
+checks against `riffdb-openfga`, `riffdb-better-auth`, and `riffdb-mlflow` with
+`./scripts/downstream-adapter-check --repo-root /home/user/dev`. Those local
+workstation checks are not pinned CI evidence.
 
 Compatibility: classification and wording only. Runtime behavior, public and
 durable formats, protocols, storage, authorization, transactions, evidence
@@ -89,4 +91,6 @@ bytes and results, thresholds, and retained receipts are unchanged.
 
 Hazards and follow-ups: any changed record, locator, requirement wording, or
 release claim requires human review. WP-578 still owns the separate 72-hour
-execution and classification metadata cannot satisfy it.
+execution and classification metadata cannot satisfy it. WP-723 remains open:
+immutable adapter revision locks and required CI enforcement are its separate
+unresolved concerns.

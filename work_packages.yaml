@@ -2782,7 +2782,10 @@ work_packages:
       obligations. The handbook and release gate preserve the four general-alpha classifications,
       all six narrower records, the Better Auth profile-bound dispatcher, and the separate WP-578
       72-hour evidence boundary. Package acceptance, generated and handbook checks, the complete
-      adapter-conformance matrix, and OpenFGA, Better Auth, and MLflow downstream checks pass.
+      adapter-conformance matrix, and local sibling compilation checks against `riffdb-openfga`,
+      `riffdb-better-auth`, and `riffdb-mlflow` pass with `--repo-root /home/user/dev`. These are
+      workstation checks, not immutable pinned CI evidence. WP-723 remains open and separately owns
+      adapter revision locks and required CI enforcement.
     decision: Classification and release wording now match retained evidence. Only OpenFGA carries
       a complete upstream-suite claim; external, RiffDB-live, matrix, and post-alpha records remain
       separate and exact. No runtime, public, durable, protocol, storage, authorization,
