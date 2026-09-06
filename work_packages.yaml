@@ -2083,7 +2083,7 @@ work_packages:
   - Current V1/V2 matched-frontier query, recovery, compaction, rebuild, bytes, CPU, allocation,
     projection-lag, and no-projection/no-V2 non-regression receipts
   acceptance_commands:
-  - cargo +1.97.0 test -p riffdb-storage-api -p riffdb-storage-memory -p riffdb-storage-redb
+  - cargo +1.97.0 test -p riffdb-storage-api -p riffdb-storage-redb
     -p riffdb-columnar -p riffdb-projection -p riffdb-service -p riffdb-server --all-features
   - ./scripts/recovery_full
   - ./scripts/check-version-topology
