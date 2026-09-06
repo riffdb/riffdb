@@ -2771,6 +2771,25 @@ work_packages:
   exit_gate: Every named claim maps to one exact scoped inventory record; only OpenFGA carries a
     complete upstream-suite claim, each external, RiffDB-live, or matrix record remains truthful and
     narrow, and no gate sentence overstates what its evidence covers.
+  closure:
+    status: complete
+    completed_at: "2026-09-06"
+    requirements_satisfied: [SAFE-001, DRV-014, BLK-014, BLK-064, BLK-070, DEL-012,
+      OQ-016, OQ-030, OQ-100, OQ-112, WF-014, APE-001, APE-013, RAP-016, EXP-014,
+      END-001, QSO-012]
+    evidence: The exact ten-record `riffdb.adapter-evidence-inventory/v1` fixture, bounded claim
+      guard, normative-coverage proof, and adversarial self-test implement all three ADR-0201
+      obligations. The handbook and release gate preserve the four general-alpha classifications,
+      all six narrower records, the Better Auth profile-bound dispatcher, and the separate WP-578
+      72-hour evidence boundary. Package acceptance, generated and handbook checks, the complete
+      adapter-conformance matrix, and local sibling compilation checks against `riffdb-openfga`,
+      `riffdb-better-auth`, and `riffdb-mlflow` pass with `--repo-root /home/user/dev`. These are
+      workstation checks, not immutable pinned CI evidence. WP-723 remains open and separately owns
+      adapter revision locks and required CI enforcement.
+    decision: Classification and release wording now match retained evidence. Only OpenFGA carries
+      a complete upstream-suite claim; external, RiffDB-live, matrix, and post-alpha records remain
+      separate and exact. No runtime, public, durable, protocol, storage, authorization,
+      transaction, evidence-result, threshold, or 72-hour execution behavior changed.
 
 - id: WP-725
   name: Seeded-campaign determinism restoration

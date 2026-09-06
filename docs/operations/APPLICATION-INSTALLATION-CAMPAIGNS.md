@@ -224,13 +224,17 @@ not executable extension points. The release-owned adapter acceptance runner
 executes those operations through public clients.
 
 The release corpus owns OpenFGA-, MLflow-, Payload-, and Woodpecker-shaped V2
-manifests. Each binds both an empty-install plan and a populated compatible
+manifest fixtures. Each binds both an empty-install plan and a populated compatible
 application-evolution plan. Compatible evolution can retain the exact contract
 version and bundle while generated artifacts, explicitly approved symbolic
 role authority, and credentials rotate; it is not permission to substitute a
 same-version contract bundle. The fixtures include terminal receipts, exact
 language-neutral operation observations, and immutable typed partial-campaign
-evidence. Run the complete corpus with:
+evidence. Only OpenFGA has complete upstream-suite evidence; MLflow and
+Woodpecker are language-expressiveness matrices, Payload remains post-alpha,
+and Better Auth's general record is limited to its exact materialized-profile
+matrix. Separately scoped external and live receipts retain their own claims.
+Run the complete RiffDB-owned corpus with:
 
 ```bash
 ./scripts/adapter-conformance --all-domains --all-languages

@@ -10,19 +10,27 @@ use a supported language driver, express its bounded operational reads and
 writes, coordinate workers safely, rotate authority, and upgrade without a
 storage or kernel escape hatch.
 
+The release gate preserves ADR-0201's evidence strengths. Only OpenFGA carries complete upstream-suite evidence.
+Better Auth general-alpha evidence is a mixed-custody materialized-profile matrix.
+MLflow and Woodpecker general-alpha rows are RiffDB-custodied language-expressiveness matrices.
+Separately scoped external and live Better Auth and MLflow receipts remain
+independent; the general rows do not erase or widen them. The exact ten records
+are listed in [Adapter evidence classes](../integrations/ADAPTER-EVIDENCE.md).
+
 ## Release gate
 
 The release gate is:
 
-> A fresh OpenFGA-, MLflow-, Better-Auth-, or Woodpecker-shaped adapter can be
-> installed and exercised through public symbolic surfaces from a separate
-> container, with encrypted authenticated transport, generated supported-
-> language bindings, bounded atomic application commands, indexed operational
-> RiffQL, compiler-owned per-row policy, compiled framework profiles,
-> structural secret-field redaction, fenced workflow concurrency, exact
-> upgrade/provisioning receipts, an honest durable-format and exit policy,
-> exercised disaster recovery, sustained endurance evidence, and no raw
-> kernel/storage access.
+> The owning OpenFGA adapter passes its upstream suite against live RiffDB; the
+> Better Auth matrix exercises its exact generated materialized profile; and
+> the RiffDB-owned MLflow and Woodpecker matrices exercise their declared
+> language/domain shapes. Every row uses public symbolic surfaces from a
+> separate container, with encrypted authenticated transport, generated
+> supported-language bindings, bounded atomic commands, indexed operational
+> RiffQL, compiler-owned row policy, compiled profiles, structural redaction,
+> fenced workflow concurrency, receipted evolution, recovery, endurance, and
+> no raw kernel or storage access. No row claims evidence beyond its ADR-0201
+> record.
 
 The gate has thirteen tracks. Prerequisite, compatibility, disaster, and
 endurance work cannot be deferred into release day.
@@ -142,32 +150,33 @@ framing or follower semantics.
    reconstitution gap without admitting a normal workflow-state write, then
    proves all-domain export/reimport into an empty database.
 10. **Disaster and endurance.** WP-576 exercises remote backup, volume loss, and
-   restore for every adapter. WP-577 builds the lifecycle harness; WP-609 closes
+   restore for every release-gate subject. WP-577 builds the lifecycle harness; WP-609 closes
    the offline-retention/journal rebase boundary exposed by its installed
    rehearsal; WP-610 closes the unreceipted backup-retirement boundary exposed
    by the repeated-cycle rehearsal; WP-578 then banks the uninterrupted 72-hour
    release receipt. A 24-hour run is rehearsal only.
-11. **WP-579 — installed alpha gate.** Run every adapter shape across the
-   supported language/platform matrix, recovery boundaries, and security
-   negatives. No waiver may introduce a kernel import, handwritten transport,
-   unencrypted remote listener, raw transaction, unbounded query, row-policy
-   bypass, silent format reset, nonportable data, untested restore, or shortened
-   endurance evidence.
+11. **WP-579 — installed alpha gate.** Run the OpenFGA upstream-suite adapter,
+   Better Auth materialized-profile matrix, and MLflow and Woodpecker language-
+   expressiveness matrices across their declared language/platform, recovery,
+   and security cells. No waiver may introduce a kernel import, handwritten
+   transport, unencrypted remote listener, raw transaction, unbounded query,
+   row-policy bypass, silent format reset, nonportable data, untested restore,
+   shortened endurance evidence, or a stronger evidence classification.
 
 ## Final acceptance matrix
 
 At minimum, final evidence includes:
 
-| Adapter shape | Critical semantics |
-|---|---|
-| OpenFGA | Atomic bounded tuple writes/deletes, revision tokens, indexed tuple lookup, remote Go client |
-| MLflow | Metric/parameter batches, exact decimal aggregates, per-experiment/per-run policy, run transitions and leases, Python wheel matrix |
-| Better Auth | Unique identities and provider/account links, single-use expiring verification tokens with replay refusal, atomic user/account/session workflows, concurrent session refresh and revocation, secret-field classification with guaranteed display-surface redaction, server-owned time and IDs, verification-email outbox intent, plugin schemas resolved at generation time, TypeScript long-lived transport |
-| Woodpecker | Pipeline-plus-step creation, claims/scheduler locks, state transitions, event/reactive worker flow |
+| Subject | General-alpha evidence class | Critical semantics and boundary |
+|---|---|---|
+| OpenFGA | External `upstream_suite_adapter` | Atomic bounded tuple writes/deletes, revision tokens, indexed tuple lookup, remote Go client, and owning-repository upstream-suite evidence against live RiffDB |
+| MLflow | RiffDB `language_expressiveness_matrix` | Metric/parameter batches, exact decimal aggregates, per-experiment/per-run policy, run transitions and leases, and Python generation; separate external/live capability receipts remain scoped and this row is not upstream MLflow conformance |
+| Better Auth | Mixed-custody `materialized_profile_matrix` | Exact generated-profile identities, links, tokens, workflows, redaction, service values, outbox intent, and TypeScript transport; separately scoped admin/lifecycle evidence remains exact and undeclared fields or plugins are unsupported |
+| Woodpecker | RiffDB `language_expressiveness_matrix` | Pipeline-plus-step creation, claims and scheduler fences, state transitions, and event/reactive worker shapes; no upstream Woodpecker-suite claim |
 
 Payload's adapter shape (document graph creation, per-document
 owner/team/public ACLs, optional/null/prefix queries, cursor pages) is
-retained as a named post-alpha adapter: every capability it forced has
+retained as a named post-alpha language-expressiveness shape: every capability it forced has
 already landed, and its shape moves down the list rather than out of it
 (maintainer scope decision, 2026-08-11). Framework integrations themselves
 live in dedicated repositories once the required capabilities exist; this
@@ -183,18 +192,20 @@ The bulk restrict-delete conformance case emits no event. Adding a protected
 deletion event to any gate adapter requires the separately accepted immutable-
 event-policy design rather than weakening current-row anchor semantics.
 
-Every shape must install from an empty selected database, upgrade a populated
-database through the supported evolution class, rotate its application
-credential, survive process/network interruption, and pass an adapter-owned
-manifest without accessing RiffDB source or kernel APIs.
+Every general-alpha subject must install into an empty selected database,
+upgrade a populated database through the supported evolution class, rotate its
+application credential, survive process/network interruption, and pass its
+declared conformance manifest without RiffDB source or kernel APIs. MLflow and
+Woodpecker success proves the exact RiffDB-owned matrix shape, not operation of
+their upstream frameworks.
 
-Every shape must also export and reimport its portable application data into an
-empty database, take a verified remote backup, lose the original database
-volume, restore the backup, and pass the same conformance manifest against the
-restored state. The release candidate must then pass a retained 72-hour mixed
-load run that forces retention, checkpoint, journal-recycle, backup, rotation,
-deployment, and restart cycles and asserts bounded memory, file, queue, and
-backlog growth.
+Every general-alpha subject must also export and reimport its portable data into
+an empty database, take a verified remote backup, lose the original database
+volume, restore the backup, and pass the same declared conformance manifest.
+Those lifecycle observations retain the subject's evidence class. The release
+candidate must then pass a retained 72-hour mixed-load run that forces
+retention, checkpoint, journal recycle, backup, rotation, deployment, and
+restart cycles and asserts bounded memory, file, queue, and backlog growth.
 
 The independent authoring gate uses six fresh Terra contexts from one sealed
 release bundle: Blog in Go, Rust, and TypeScript, and Orders in Python, Rust,
