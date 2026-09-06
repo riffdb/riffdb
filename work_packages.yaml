@@ -23911,11 +23911,14 @@ work_packages:
     exact contiguous locator-bearing successors, and proves bounded novel-key absence without a
     history scan while preserving every existing idempotency and publication boundary.
   requirements: [OUT-001, OUT-002, TXN-042, REC-004, PERF-019]
-  required_adrs: [ADR-0004, ADR-0006, ADR-0058, ADR-0100, ADR-0101, ADR-0104, ADR-0156,
-    ADR-0157, ADR-0165, ADR-0197]
+  required_adrs: [ADR-0004, ADR-0006, ADR-0058, ADR-0100, ADR-0101, ADR-0104, ADR-0116,
+    ADR-0156, ADR-0157, ADR-0165, ADR-0197]
   allowed_paths: [work_packages.yaml,
     adr/0165-durable-command-derived-locator-tables.md,
     adr/0197-fresh-process-contiguous-idempotency-locator-coverage.md, adr/README.md,
+    crates/riffdb-storage-api/src/records.rs,
+    crates/riffdb-storage-api/src/proto_codec/application.rs,
+    crates/riffdb-storage-api/src/proto_codec/bounds.rs,
     crates/riffdb-storage-redb/**, crates/riffdb-commit/**, crates/riffdb-server/**,
     crates/riffdb-testkit-server/**, tests/storage_recovery/**, tests/command_semantics/**]
   deliverables:
