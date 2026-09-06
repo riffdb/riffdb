@@ -6,7 +6,7 @@ tier: guarantee
 date: 2026-09-06
 accepted: null
 requires: [ADR-0070, ADR-0100, ADR-0104, ADR-0165, ADR-0197, ADR-0205]
-amends: [ADR-0205]
+amends: [ADR-0197, ADR-0205]
 supersedes: []
 requirements: [OUT-001, OUT-002, TXN-042, REC-004, PERF-019]
 packages: [WP-705]
@@ -21,6 +21,7 @@ obligations:
     says: Architecture checks freeze the sole shared arming site and the private one-row exact logical-table emptiness implementation for both direct redb and deferred composite-stage access.
 review_triggers:
   - Logical emptiness would use a different view than the owning mutation-gated command access, inspect or return more than its fixed bound, infer emptiness from allocators or frontiers alone, or omit any of COMMITS, IDEMPOTENCY, IDEMPOTENCY_PENDING, and IDEMPOTENCY_LOCATORS.
+  - Composite evidence would come from a non-live, later, startup, checkpoint, reconstructed, caller-supplied, or externally supplied view, or direct access would stop using its original writer transaction.
   - The helper would mutate, persist, publish, checkpoint, drain, await, acquire scheduling authority, alter ordering, or turn a read, bound, borrow, poison, or contradiction failure into absence or an armed proof.
   - The grouped proof would start with active, rebuilt, invalid, or unknown transient indexes; manually arm; bypass the verified clean-close fast start, Group durability, or production coordinator; allow a rebuild; omit either post-publication novel miss; or change Dormant apply-delta behavior.
   - WP-705 would touch another path, or ADR-0205 audit-cause, threshold, transaction, acknowledgement, publication, failure, restart, bound, or evidence rules would otherwise change.
@@ -55,9 +56,13 @@ miss therefore scans unless the fresh-locator proof was armed and published.
    purpose requires a separately accepted amendment.
 
 2. `RedbWriteAccess::arm_fresh_locator_coverage` may use one private read-only
-   exact logical-table emptiness helper. For direct access, the helper retains
-   redb `Table::is_empty` on the access's writer transaction. For deferred
-   access, it borrows that access's existing writer-private composite mutation
+   exact logical-table emptiness helper. This narrows ADR-0197 Decision 1's
+   direct-redb-transaction-only clause solely for the live mutation-gated
+   deferred Group access's same writer-private composite view used by
+   `BatchCore::open_with_access`. Non-live, later, startup, checkpoint,
+   reconstructed, caller-supplied, or externally supplied composite evidence
+   remains refused. Direct access retains redb `Table::is_empty` on its original
+   writer transaction. Deferred access borrows its existing composite mutation
    stage and performs an ascending logical merge from the empty start key to an
    unbounded end, returning at most one row and inspecting at most the existing
    fixed composite-overlay bound plus that row. An empty page proves emptiness;
