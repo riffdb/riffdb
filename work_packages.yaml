@@ -24273,9 +24273,7 @@ work_packages:
   objective: After exact acceptance of ADR-0201, reconcile accepted authority so every alpha
     adapter claim states exactly what its evidence proves, without changing runtime, public,
     durable, protocol, storage, authorization, transaction, threshold, or evidence behavior.
-  requirements: [SAFE-001, DRV-014, BLK-014, BLK-064, BLK-070, DEL-012,
-    OQ-016, OQ-030, OQ-100, OQ-112, WF-014, APE-001, APE-013, RAP-016, EXP-014,
-    END-001, QSO-012]
+  requirements: []
   required_adrs: [ADR-0201, ADR-0110, ADR-0117, ADR-0148]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0110-application-installation-and-adapter-conformance.md,
@@ -24310,6 +24308,18 @@ work_packages:
     nonexistent upstream suite, completed external partial-profile receipts remain exact, future
     Better Auth support still requires ADR-0117 evidence, WP-724 owns all three proof obligations,
     and the diff contains only governance reconciliation paths.
+  closure:
+    status: complete
+    completed_at: "2026-09-05"
+    evidence: Accepted ADR-0201 and reconciled ADR-0110 Amendment 1, ADR-0117's current-alpha versus
+      future-support boundary, every OBL-0201-2 SPEC claim, the alpha milestone, and WP-724/WP-578/
+      WP-579 ownership and dependency text. Package acceptance, allowed-path, ADR-obligation,
+      requirement-coverage, and ADR-index checks pass without running or changing evidence.
+    decision: Governance now classifies the fixed ten scoped adapter claims exactly; only OpenFGA's
+      general record is a complete upstream suite, narrower Better Auth and MLflow receipts remain
+      intact, Payload remains post-alpha, and WP-724 retains all inventory/checker/proof work. No
+      runtime, public, durable, protocol, storage, authorization, transaction, threshold, evidence,
+      or WP-578 72-hour behavior changed.
   standing_design_tests:
     interface_safety: Governance labels add no public or operator surface, caller choice, generic
       mutation, transaction callback, runtime fallback, or way to claim a stronger guarantee.

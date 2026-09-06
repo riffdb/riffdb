@@ -8075,6 +8075,15 @@ language drivers, bounded operational application shapes, principal-aware row
 policy, explicit compatibility and exit, disaster recovery, and endurance. It
 does not create a kernel or storage escape hatch.
 
+Adapter evidence is classified by ADR-0201 rather than treated as uniform.
+The general-alpha records are an external complete upstream-suite adapter for
+OpenFGA, a mixed-custody materialized-profile matrix for Better Auth, and
+RiffDB-custodied language-expressiveness matrices for MLflow and Woodpecker.
+Only OpenFGA's general record proves a complete upstream suite. Capability-
+scoped Better Auth and MLflow records retain their exact matrix, external-live,
+or RiffDB-live strengths, while Payload remains a post-alpha language-
+expressiveness shape. Classification does not substitute for execution.
+
 ### 24.5.1 Authenticated remote ingress
 
 - `NET-001`: A non-loopback application TCP listener MUST use the closed
@@ -8261,7 +8270,9 @@ does not create a kernel or storage escape hatch.
 - `BLK-014`: Rust, Go, TypeScript, Python, CLI, and MCP generated bulk methods
   MUST share one schema/outcome/error corpus and prove OpenFGA, MLflow, Payload,
   and Woodpecker atomic collection shapes without handwritten transport or raw
-  storage access.
+  storage access. This is a language/domain-shape corpus; Payload is only the
+  ADR-0201 post-alpha language-expressiveness record, not a general-alpha or
+  upstream-suite claim.
 - `BLK-015`: The one list expanded by a `bulk command` MAY declare one positive
   compiler-owned `aggregate_bytes` literal bounding the sum of complete
   ADR-0011 canonical element documents. The bound MUST NOT use JSON, Protobuf,
@@ -8520,6 +8531,9 @@ does not create a kernel or storage escape hatch.
   real 100-tag MLflow Run creation retaining indexed children plus packed
   hydration with complete-or-absent visibility and no adapter split, filtering,
   reduced limit, or storage bypass.
+  The MLflow evidence class for this capability is the RiffDB-custodied
+  `riffdb_shape_live_loopback`; it does not prove a complete MLflow upstream
+  suite or general adapter conformance.
 - `BLK-065`: A least-sufficient successor collection tier MAY admit at most
   1,024 submitted elements and at most 4,096 statically possible authoritative
   mutation instances. The mutation proof MUST count every fixed non-read
@@ -8553,6 +8567,8 @@ does not create a kernel or storage escape hatch.
   bindings and redb, including replay and forced failure, with no adapter-side
   split, reduced advertised limit, staging protocol, raw storage access, or
   partially visible prefix.
+  This remains a generated-binding/redb execution rule and does not promote
+  any adapter evidence class.
 
 Compiler-bounded one-hop cascade deletion extends that closed bulk-command
 model without introducing recursive graph traversal or caller-selected delete
@@ -8612,6 +8628,9 @@ behavior:
   transaction escape hatches, and a real Better Auth adapter lifecycle MUST
   prove signup, lookup, session/account cleanup, bounded full-user deletion,
   idempotent replay, overflow, authorization, and race behavior.
+  Its Better Auth lifecycle evidence is the RiffDB-custodied
+  `materialized_profile_matrix` scoped to `DEL-012,QSO-012`, not a complete
+  upstream suite.
 
 ### 24.5.4 Bounded operational RiffQL
 
@@ -8672,7 +8691,10 @@ behavior:
   wide campaign retaining old decoders and detecting every partial mismatch.
 - `OQ-016`: Generated Rust, Go, TypeScript, Python, CLI, and MCP operational
   query methods MUST share one plan/schema/cursor/error corpus and prove all
-  four adapter shapes without SQL, client filtering, or raw catalog access.
+  four general-alpha subject shapes without SQL, client filtering, or raw
+  catalog access. This is a language/domain-shape corpus and each subject keeps
+  ADR-0201's exact general-alpha classification; it is not four equal upstream-
+  suite claims.
 - `OQ-017`: Every projection result provider MUST have one sealed canonical
   versioned descriptor naming its exact/approximate posture, closed predicate,
   rank/order, whole-result measure, facet, window, policy, freshness, bounds,
@@ -8754,6 +8776,8 @@ behavior:
   no adapter-side filter, count, sort, page walk, or query AST, but that profile,
   its generated clients, route host, and route-level evidence MUST live in the
   owning external adapter repository rather than the RiffDB repository.
+  That scoped record is an external `external_materialized_profile` with no
+  complete upstream-suite claim.
 - `OQ-031`: A generated named-query parameter whose compiler type is `cursor`
   or optional `cursor` MUST route its non-null value only through the existing
   protected continuation option and MUST NOT encode it as an ordinary symbolic
@@ -9093,6 +9117,9 @@ behavior:
   adapter filtering, sorting, counting, deduplication, restart, or framework
   branch. ADR-0159 exact ordered page assembly remains the only larger-logical-
   page adapter translation until a separately accepted framed query stream.
+  The MLflow filtered-search record is an external
+  `external_partial_profile_live` receipt scoped to `OQ-100`, not a complete
+  upstream suite or general adapter claim.
 - `OQ-101`: `Set<T, MAX>` MUST accept only a scalar, enum, or field-referenced
   scalar `T` and a canonical positive `MAX` through 65,535. Submitted values
   MUST be type-checked, encoded, sorted, and deduplicated once and refuse above
@@ -9154,6 +9181,9 @@ behavior:
   cardinality, concurrent-change typed behavior, revision-safe writes before
   and after search, and no adapter filter, sort, merge, snapshot, or cursor
   state. The value-free receipt MUST identify exact core and adapter artifacts.
+  The MLflow partition-search record is an external
+  `external_partial_profile_live` receipt scoped to `OQ-112`, not a complete
+  upstream suite or general adapter claim.
 
 ### 24.5.5 Compiled workflow concurrency
 
@@ -9199,7 +9229,9 @@ behavior:
   locks and exactly-once external effects remain unavailable.
 - `WF-014`: Generated workflow methods and MLflow/Woodpecker acceptance MUST
   prove transition, claim/renew/release/expire, stale-fence, crash, and
-  service-value semantics through public symbolic operations only.
+  service-value semantics through public symbolic operations only. This is a
+  language/domain-shape corpus and does not promote either general record
+  beyond ADR-0201's RiffDB-custodied language-expressiveness classification.
 
 ### 24.5.6 Exact application installation and adapter conformance
 
@@ -9242,10 +9274,14 @@ behavior:
   history, exact artifacts, nonsecret role/capability identities, migration/
   backup receipts, seed checkpoint, conformance digest, terminal state, and safe
   remediation without credentials, paths, values, or hidden schema.
-- `APE-013`: OpenFGA, MLflow, Payload, and Woodpecker adapters MUST each prove
-  empty installation, populated compatible evolution or explicit migration,
-  role/credential rotation, and exact public conformance without RiffDB source
-  or implementation hooks.
+- `APE-013`: OpenFGA, MLflow, Better Auth, and Woodpecker general-alpha subjects
+  MUST each prove empty installation, populated compatible evolution or
+  explicit migration, role/credential rotation, and exact public conformance
+  without RiffDB source or implementation hooks, at ADR-0201's exact evidence
+  classifications: only OpenFGA is a complete upstream-suite adapter; Better
+  Auth is a mixed-custody materialized-profile matrix; and MLflow and
+  Woodpecker are RiffDB-custodied language-expressiveness matrices. Payload
+  remains a separate post-alpha language-expressiveness regression shape.
 - `APE-014`: Programmatic installation, CLI, operator SDK, and deployment
   controllers MUST share one plan/receipt/error corpus and preserve the existing
   compiler, service, migration, authorization, and commit owners at every stage.
@@ -9306,7 +9342,9 @@ behavior:
 - `RAP-016`: Payload document ACL and MLflow experiment/run authorization MUST
   pass cross-language, cross-surface, race, revocation, and inference corpora
   without application-side filtering, middleware checks, hidden queries, or
-  broader credentials.
+  broader credentials. These are language/domain-shape corpora: Payload is the
+  ADR-0201 post-alpha language-expressiveness record, and neither subject is
+  promoted to a complete upstream-suite claim by this requirement.
 
 ### 24.5.8 Alpha format compatibility and application portability
 
@@ -9387,16 +9425,18 @@ behavior:
 - `EXP-013`: Export/reimport reconciliation MUST compare application identities,
   counts, hashes, event semantics, and adapter observations while explicitly
   permitting new physical commit sequences/identities where declared.
-- `EXP-014`: All four adapters and supported languages MUST complete export to
-  an empty database and compiled reimport with receipted observations and no
-  storage, policy, or write bypass.
+- `EXP-014`: All four ADR-0201 general-alpha subjects and supported languages
+  MUST complete export to an empty database and compiled reimport with
+  receipted observations and no storage, policy, or write bypass, while each
+  subject retains its exact evidence classification.
 
 ### 24.5.10 Disaster and endurance evidence
 
-- `END-001`: Every adapter MUST invoke offline backup and restore from a
+- `END-001`: Every ADR-0201 general-alpha subject MUST invoke offline backup and restore from a
   separate operator container through the public maintenance protocol and a
   least-authority maintenance credential; application credentials cannot
-  perform maintenance.
+  perform maintenance, and the drill does not promote the subject's evidence
+  classification.
 - `END-002`: The disaster drill MUST quiesce, create and externally retain a
   verified immutable checkpoint-plus-journal backup, destroy the original
   database volume, restore into an empty replacement, and reach readiness.
@@ -9632,6 +9672,9 @@ The `QSO-*` prefix registers ADR-0128's named-query secret-output family.
   bounded cascades, and atomic verification consumption. It MUST NOT introduce
   a read-only command solely to reveal stored secret query data; real state
   transitions may retain declared one-time secret outcomes under SECF-006.
+  This lifecycle evidence is the RiffDB-custodied
+  `materialized_profile_matrix` scoped to `DEL-012,QSO-012`, not a complete
+  upstream suite.
 
 ### 24.5.14 Tokenized text-search declarations and analyzers
 
@@ -9750,9 +9793,10 @@ matching under `OQ-025` through `OQ-030` remains a separate provider.
 The Deployable Application Alpha milestone is complete only when WP-550 through
 WP-570, WP-572 through WP-579, and WP-597, WP-598, and WP-600 pass in dependency
 order, every accepted format/interface fixture and release artifact is current, and WP-579's
-installed remote four-adapter, four-language, policy, compatibility, export,
+installed remote four-general-alpha-subject, four-language, policy, compatibility, export,
 restore, endurance, security, correctness, and performance matrix passes
-without a waiver that makes an unsafe pattern expressible.
+at ADR-0201's exact evidence classifications, without a waiver that makes an
+unsafe pattern expressible or treats classification as execution evidence.
 
 ---
 

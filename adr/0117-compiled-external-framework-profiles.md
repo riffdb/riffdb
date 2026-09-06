@@ -65,7 +65,10 @@ interface by dispatching to those compiled commands.
    gate corpus, and documentation. Each integration lives in its own
    repository, versions independently, and runs its framework's conformance
    suite (where one exists, e.g. Better Auth's adapter conformance suite) as
-   an external acceptance instrument against a released RiffDB.
+   an external acceptance instrument against a released RiffDB before a
+   complete framework-support claim. ADR-0201 classifies this as a future
+   support boundary; it is not a claim that the current Better Auth alpha
+   evidence has run a complete upstream suite.
 
 What RiffDB must therefore provide, as generic capability (verified or built
 under WP-597/WP-598): declared unique constraints with transactional
@@ -136,7 +139,22 @@ authentication flows the framework's own documentation warns about.
   secret-field redaction (framework-agnostic, part of the alpha corpus).
 - Per integration repository: the framework's own conformance suite against
   a released RiffDB, plus generation-refusal tests for unsupported plugins
-  and transaction shapes.
+  and transaction shapes, before a complete framework-support claim.
+
+## Current alpha evidence boundary (ADR-0201)
+
+Current alpha evidence is intentionally narrower than that future repository
+boundary. OpenFGA alone has a general external complete
+`upstream_suite_adapter` record. Better Auth has a mixed-custody
+`materialized_profile_matrix`; MLflow and Woodpecker have RiffDB-custodied
+`language_expressiveness_matrix` records; none of those three is a complete
+upstream-suite receipt. Better Auth lifecycle/admin and MLflow filtered-search,
+large-Run, and partition-search evidence remain separate capability-scoped
+records at their exact matrix, external-live, or RiffDB-live strengths.
+Payload remains a post-alpha language-expressiveness shape. New Better Auth
+fields or plugins require generation and review of a new materialized profile,
+and the complete owning-repository suite above remains required for any future
+complete framework-support claim.
 
 ## Requirements and Work Packages
 
