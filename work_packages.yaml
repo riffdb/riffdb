@@ -22065,7 +22065,7 @@ work_packages:
     adr/0186-complete-authoritative-changelog-v3.md, adr/README.md,
     proto/**, crates/riffdb-proto/**, crates/riffdb-types/**, crates/riffdb-auth/**,
     crates/riffdb-policy/**, crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
-    crates/riffdb-storage-memory/**, crates/riffdb-service/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-service/**, crates/riffdb-api-grpc/**,
     crates/riffdb-server/**, crates/riffdb-config/**, crates/riffdb-cli/**,
     crates/riffdb-testkit/**, crates/riffdb-sim/**, release/version-topology-v1.json,
     fixtures/**, tests/**, scripts/**, docs/**]
@@ -22084,8 +22084,9 @@ work_packages:
     metadata kept distinct, and the typed `RDB-REP` follower-mode refusal on every write surface
   - Paged staged bootstrap at one durable V3 fence with an unprunable hold through exact tail
     attachment, complete validation before publication, and crash-safe bounded resume
-  - V3 follower apply over every WP-772 replicated-authoritative namespace in redb and memory,
-    with required rebuildable state rebuilt and validated before ready
+  - V3 follower apply over every WP-772 replicated-authoritative namespace in redb, with the
+    `riffdb-testkit` authoritative model as the independent oracle and required rebuildable state
+    rebuilt and validated before ready
   - Tests `follower_applies_exact_prefix_byte_faithfully` and
     `replication_stream_resumes_gap_free_after_repeated_kills` under
     `tests/replication_follower.rs`, obligation proof
