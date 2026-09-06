@@ -456,19 +456,19 @@ impl JournalMutation {
         })
     }
 
-    fn table(&self) -> JournalTable {
+    pub(crate) fn table(&self) -> JournalTable {
         match self {
             Self::Put { table, .. } | Self::Delete { table, .. } => *table,
         }
     }
 
-    fn key(&self) -> &[u8] {
+    pub(crate) fn key(&self) -> &[u8] {
         match self {
             Self::Put { key, .. } | Self::Delete { key, .. } => key,
         }
     }
 
-    fn value(&self) -> Option<&[u8]> {
+    pub(crate) fn value(&self) -> Option<&[u8]> {
         match self {
             Self::Put { value, .. } => Some(value),
             Self::Delete { .. } => None,

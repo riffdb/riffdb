@@ -411,7 +411,7 @@ impl RedbOperationalPorts {
                     status: current.as_ref().map(status_from_snapshot),
                 });
             };
-            replace_snapshot(transaction, current.as_ref(), replacement.as_ref())?;
+            replace_snapshot_with_permit(&access, current.as_ref(), replacement.as_ref())?;
             access.commit_for(RedbTestOperation::EventConsumerTransition)?;
             return Ok(CoordinateConsumerLeaseResultV1 {
                 transition: EventConsumerTransitionResultV1::StateChanged,
@@ -572,7 +572,7 @@ impl RedbOperationalPorts {
             }
             EvaluatedEventConsumerTransitionV1::Retire(_) => return Err(corrupt()),
         };
-        replace_snapshot(transaction, current.as_ref(), replacement.as_ref())?;
+        replace_snapshot_with_permit(&access, current.as_ref(), replacement.as_ref())?;
         access.commit_for(RedbTestOperation::EventConsumerTransition)?;
         Ok(CoordinateConsumerLeaseResultV1 {
             transition: EventConsumerTransitionResultV1::Applied,
@@ -636,7 +636,7 @@ impl RedbOperationalPorts {
             }
             EvaluatedEventConsumerTransitionV1::Retire(_) => return Err(corrupt()),
         };
-        replace_snapshot(transaction, current.as_ref(), replacement.as_ref())?;
+        replace_snapshot_with_permit(&access, current.as_ref(), replacement.as_ref())?;
         access.commit_for(RedbTestOperation::EventConsumerTransition)?;
         Ok(EventConsumerTransitionResultV1::Applied)
     }
@@ -1042,12 +1042,14 @@ impl EventConsumerRepository for RedbOperationalPorts {
                 Ok(result)
             }
             EvaluatedEventConsumerTransitionV1::Replace(replacement) => {
-                replace_snapshot(transaction, current.as_ref(), replacement.as_ref())?;
+                replace_snapshot_with_permit(&access, current.as_ref(), replacement.as_ref())?;
                 access.commit_for(RedbTestOperation::EventConsumerTransition)?;
                 Ok(EventConsumerTransitionResultV1::Applied)
             }
             EvaluatedEventConsumerTransitionV1::Retire(identity) => {
-                remove_snapshot(transaction, current.as_ref(), identity)?;
+                expect_snapshot_removal(&access, current.as_ref(), identity)?;
+                access.close_fresh_locator_mutation_expectations()?;
+                remove_snapshot(&access, current.as_ref(), identity)?;
                 access.commit_for(RedbTestOperation::EventConsumerTransition)?;
                 Ok(EventConsumerTransitionResultV1::Applied)
             }
@@ -1170,17 +1172,19 @@ where
 }
 
 fn replace_snapshot(
-    transaction: &redb::WriteTransaction,
+    access: &crate::store::RedbWriteAccess,
     current: Option<&EventConsumerSnapshotV1>,
     replacement: &EventConsumerSnapshotV1,
 ) -> Result<(), StorageError> {
+    let transaction = access.transaction()?;
     let identity = replacement.consumer().identity().identity_hash();
-    remove_snapshot(transaction, current, identity)?;
+    remove_snapshot(access, current, identity)?;
     let consumer_key = encode_event_consumer_key(identity);
     let consumer_value = encode_event_consumer_v1(replacement.consumer())?;
     let mut consumers = transaction
         .open_table(EVENT_CONSUMERS)
         .map_err(table_error)?;
+    access.record_actual_fresh_locator_byte_insert(EVENT_CONSUMERS, &consumer_key)?;
     if consumers
         .insert(consumer_key.as_slice(), consumer_value.as_bytes())
         .map_err(precommit_storage_error)?
@@ -1195,6 +1199,7 @@ fn replace_snapshot(
     for delivery in replacement.deliveries() {
         let key = encode_event_consumer_delivery_key(identity, delivery.event_id());
         let value = encode_event_consumer_delivery_v1(delivery)?;
+        access.record_actual_fresh_locator_byte_insert(EVENT_CONSUMER_DELIVERIES, &key)?;
         if deliveries
             .insert(key.as_slice(), value.as_bytes())
             .map_err(precommit_storage_error)?
@@ -1206,15 +1211,29 @@ fn replace_snapshot(
     Ok(())
 }
 
+fn replace_snapshot_with_permit(
+    access: &crate::store::RedbWriteAccess,
+    current: Option<&EventConsumerSnapshotV1>,
+    replacement: &EventConsumerSnapshotV1,
+) -> Result<(), StorageError> {
+    let identity = replacement.consumer().identity().identity_hash();
+    expect_snapshot_removal(access, current, identity)?;
+    expect_snapshot_installation(access, replacement)?;
+    access.close_fresh_locator_mutation_expectations()?;
+    replace_snapshot(access, current, replacement)
+}
+
 fn remove_snapshot(
-    transaction: &redb::WriteTransaction,
+    access: &crate::store::RedbWriteAccess,
     current: Option<&EventConsumerSnapshotV1>,
     identity: EventConsumerIdentityHash,
 ) -> Result<(), StorageError> {
+    let transaction = access.transaction()?;
     let consumer_key = encode_event_consumer_key(identity);
     let mut consumers = transaction
         .open_table(EVENT_CONSUMERS)
         .map_err(table_error)?;
+    access.record_actual_fresh_locator_byte_delete(EVENT_CONSUMERS, &consumer_key)?;
     let removed = consumers
         .remove(consumer_key.as_slice())
         .map_err(precommit_storage_error)?;
@@ -1229,6 +1248,7 @@ fn remove_snapshot(
     if let Some(current) = current {
         for delivery in current.deliveries() {
             let key = encode_event_consumer_delivery_key(identity, delivery.event_id());
+            access.record_actual_fresh_locator_byte_delete(EVENT_CONSUMER_DELIVERIES, &key)?;
             if deliveries
                 .remove(key.as_slice())
                 .map_err(precommit_storage_error)?
@@ -1239,6 +1259,125 @@ fn remove_snapshot(
         }
     }
     Ok(())
+}
+
+fn expect_snapshot_removal(
+    access: &crate::store::RedbWriteAccess,
+    current: Option<&EventConsumerSnapshotV1>,
+    identity: EventConsumerIdentityHash,
+) -> Result<(), StorageError> {
+    access
+        .expect_fresh_locator_byte_delete(EVENT_CONSUMERS, &encode_event_consumer_key(identity))?;
+    if let Some(current) = current {
+        for delivery in current.deliveries() {
+            access.expect_fresh_locator_byte_delete(
+                EVENT_CONSUMER_DELIVERIES,
+                &encode_event_consumer_delivery_key(identity, delivery.event_id()),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn expect_snapshot_installation(
+    access: &crate::store::RedbWriteAccess,
+    replacement: &EventConsumerSnapshotV1,
+) -> Result<(), StorageError> {
+    let identity = replacement.consumer().identity().identity_hash();
+    access
+        .expect_fresh_locator_byte_insert(EVENT_CONSUMERS, &encode_event_consumer_key(identity))?;
+    for delivery in replacement.deliveries() {
+        access.expect_fresh_locator_byte_insert(
+            EVENT_CONSUMER_DELIVERIES,
+            &encode_event_consumer_delivery_key(identity, delivery.event_id()),
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::items_after_test_module,
+    reason = "the local proof is adjacent to the private replacement helper it exercises"
+)]
+mod tests {
+    use super::*;
+    use crate::{RedbDormantPorts, RedbStore};
+    use riffdb_storage_api::{DatabaseInitializationPort, EventConsumerSnapshotV1};
+    use riffdb_types::{
+        EventConsumerName, QueryParameterHash, ReactiveModuleHash, ReactiveOperationName,
+    };
+    use std::path::PathBuf;
+
+    struct TestDatabasePath(
+        PathBuf,
+        #[allow(dead_code)] crate::test_path::ScopedDirectory,
+    );
+
+    impl TestDatabasePath {
+        fn new(name: &str) -> Self {
+            let scope = crate::test_path::ScopedDirectory::new(name);
+            Self(scope.join("database.redb"), scope)
+        }
+    }
+
+    fn test_database_id() -> DatabaseId {
+        DatabaseId::from_unix_milliseconds_and_random(1, [0x77; 10]).expect("database")
+    }
+
+    fn replacement() -> EventConsumerSnapshotV1 {
+        let identity = EventConsumerIdentityV1::new(
+            test_database_id(),
+            ReactiveModuleHash::from_bytes([1; 32]),
+            ReactiveOperationName::new("WorkspaceEvents").expect("operation"),
+            QueryParameterHash::from_bytes([2; 32]),
+            EventConsumerName::new("worker-1").expect("consumer"),
+        );
+        EventConsumerSnapshotV1::new(
+            StoredEventConsumerV1::initial(identity, PartitionKeyHash::from_bytes([3; 32]), 1)
+                .expect("initial consumer"),
+            Vec::new(),
+        )
+        .expect("replacement snapshot")
+    }
+
+    // req: OUT-001, OUT-002, TXN-042
+    #[test]
+    fn every_consumer_replacement_uses_one_closed_request_derived_permit() {
+        let path = TestDatabasePath::new("fresh-locator-consumer-replacement-permit");
+        let mut store = RedbStore::open(&path.0).expect("open store");
+        store
+            .initialize_database(test_database_id())
+            .expect("initialize store");
+        drop(store);
+        let store = RedbStore::open(&path.0).expect("reopen fresh process");
+        let ports = RedbDormantPorts {
+            shared: store.shared,
+        }
+        .into_operational_after_catalog_validation()
+        .expect("activate ports");
+
+        let access = ports.begin_write().expect("begin consumer write");
+        assert!(
+            access
+                .arm_fresh_locator_coverage_for_exact_empty_test()
+                .expect("arm exact empty test stamp")
+        );
+        let replacement = replacement();
+        replace_snapshot_with_permit(&access, None, &replacement)
+            .expect("typed replacement permit stages exact mutation set");
+        access
+            .commit_for(RedbTestOperation::EventConsumerTransition)
+            .expect("consumer replacement preserves coverage");
+
+        let continuation = ports.begin_write().expect("begin continuation");
+        assert!(
+            continuation
+                .fresh_locator_allows_miss()
+                .expect("matching private continuation")
+        );
+        continuation.abort().expect("abort continuation");
+    }
 }
 
 pub(crate) fn retention_low_water_from_table<T>(

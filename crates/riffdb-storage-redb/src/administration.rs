@@ -549,6 +549,19 @@ pub(crate) fn write_administration_allocator(
     Ok(())
 }
 
+fn write_administration_allocator_in_permitted_access(
+    access: &RedbWriteAccess,
+    expected: AdministrationSequenceAllocator,
+    next: AdministrationSequenceAllocator,
+) -> Result<(), StorageError> {
+    access.record_actual_fresh_locator_meta_insert(META_ADMINISTRATION_SEQUENCE)?;
+    write_administration_allocator(access.transaction()?, expected, next)
+}
+
+fn expect_administration_allocator(access: &RedbWriteAccess) -> Result<(), StorageError> {
+    access.expect_fresh_locator_meta_insert(META_ADMINISTRATION_SEQUENCE)
+}
+
 fn write_administration_allocator_in_access(
     access: &RedbWriteAccess,
     expected: AdministrationSequenceAllocator,
@@ -614,6 +627,43 @@ pub(crate) fn append_audit_record(
             transaction,
             service.request_id(),
             service.administration_sequence(),
+        )?;
+    }
+    Ok(())
+}
+
+fn append_audit_record_in_permitted_access(
+    access: &RedbWriteAccess,
+    record: &StoredAdministrationAuditRecordV1,
+) -> Result<(), StorageError> {
+    let key = encode_audit_key(record.administration_sequence());
+    access.record_actual_fresh_locator_byte_insert(AUDIT, &key)?;
+    if let StoredAdministrationAuditRecordV1::Service(service) = record {
+        let index_key = crate::keys::encode_audit_by_request_key(
+            service.request_id(),
+            service.administration_sequence(),
+        );
+        access
+            .record_actual_fresh_locator_byte_insert(crate::layout::AUDIT_BY_REQUEST, &index_key)?;
+    }
+    append_audit_record(access.transaction()?, record)
+}
+
+fn expect_audit_record(
+    access: &RedbWriteAccess,
+    record: &StoredAdministrationAuditRecordV1,
+) -> Result<(), StorageError> {
+    access.expect_fresh_locator_byte_insert(
+        AUDIT,
+        &encode_audit_key(record.administration_sequence()),
+    )?;
+    if let StoredAdministrationAuditRecordV1::Service(service) = record {
+        access.expect_fresh_locator_byte_insert(
+            crate::layout::AUDIT_BY_REQUEST,
+            &crate::keys::encode_audit_by_request_key(
+                service.request_id(),
+                service.administration_sequence(),
+            ),
         )?;
     }
     Ok(())
@@ -1058,6 +1108,21 @@ impl CatalogAdministrationRepository for RedbOperationalPorts {
         let audit_record = StoredAdministrationAuditRecordV1::Catalog(record);
 
         if existing.is_none() {
+            access.expect_fresh_locator_byte_insert(
+                CONTRACT_BUNDLES,
+                &encode_contract_bundle_key(
+                    intent.bundle().lineage(),
+                    intent.bundle().contract_version(),
+                )
+                .map_err(|_| invariant())?,
+            )?;
+        }
+        access.expect_fresh_locator_byte_insert(CATALOG_ACTIVE, &CATALOG_ACTIVE_KEY)?;
+        expect_audit_record(&access, &audit_record)?;
+        expect_administration_allocator(&access)?;
+        access.close_fresh_locator_mutation_expectations()?;
+
+        if existing.is_none() {
             let key = encode_contract_bundle_key(
                 intent.bundle().lineage(),
                 intent.bundle().contract_version(),
@@ -1066,6 +1131,7 @@ impl CatalogAdministrationRepository for RedbOperationalPorts {
             let mut table = transaction
                 .open_table(CONTRACT_BUNDLES)
                 .map_err(table_error)?;
+            access.record_actual_fresh_locator_byte_insert(CONTRACT_BUNDLES, &key)?;
             if table
                 .insert(key.as_slice(), encoded_bundle.as_bytes())
                 .map_err(precommit_storage_error)?
@@ -1078,6 +1144,7 @@ impl CatalogAdministrationRepository for RedbOperationalPorts {
             let mut table = transaction
                 .open_table(CATALOG_ACTIVE)
                 .map_err(table_error)?;
+            access.record_actual_fresh_locator_byte_insert(CATALOG_ACTIVE, &CATALOG_ACTIVE_KEY)?;
             let prior = table
                 .insert(CATALOG_ACTIVE_KEY.as_slice(), encoded_active.as_bytes())
                 .map_err(precommit_storage_error)?;
@@ -1088,8 +1155,8 @@ impl CatalogAdministrationRepository for RedbOperationalPorts {
                 return Err(invariant());
             }
         }
-        append_audit_record(transaction, &audit_record)?;
-        write_administration_allocator(transaction, allocator, next)?;
+        append_audit_record_in_permitted_access(&access, &audit_record)?;
+        write_administration_allocator_in_permitted_access(&access, allocator, next)?;
         access.commit_for(RedbTestOperation::CatalogAdministration)?;
         Ok(CatalogActivationResult::Activated {
             active: requested,
@@ -1355,8 +1422,27 @@ impl QueryModuleAdministrationRepository for RedbOperationalPorts {
         let encoded_active = encode_query_module_administration_v1(&record)?;
         let audit_record = StoredAdministrationAuditRecordV1::QueryModule(record.clone());
         if existing.is_none() {
+            access.expect_fresh_locator_byte_insert(
+                QUERY_MODULES,
+                &encode_query_module_key(intent.module().module_hash()),
+            )?;
+        }
+        access.expect_fresh_locator_byte_insert(
+            QUERY_MODULE_ACTIVE,
+            &encode_active_query_module_key(
+                intent.module().contract_lineage(),
+                intent.module().contract_version(),
+                intent.module().contract_bundle_hash(),
+            )
+            .map_err(|_| invariant())?,
+        )?;
+        expect_audit_record(&access, &audit_record)?;
+        expect_administration_allocator(&access)?;
+        access.close_fresh_locator_mutation_expectations()?;
+        if existing.is_none() {
             let key = encode_query_module_key(intent.module().module_hash());
             let mut table = transaction.open_table(QUERY_MODULES).map_err(table_error)?;
+            access.record_actual_fresh_locator_byte_insert(QUERY_MODULES, &key)?;
             if table
                 .insert(key.as_slice(), encoded_module.as_bytes())
                 .map_err(precommit_storage_error)?
@@ -1375,6 +1461,7 @@ impl QueryModuleAdministrationRepository for RedbOperationalPorts {
             let mut table = transaction
                 .open_table(QUERY_MODULE_ACTIVE)
                 .map_err(table_error)?;
+            access.record_actual_fresh_locator_byte_insert(QUERY_MODULE_ACTIVE, &key)?;
             let prior = table
                 .insert(key.as_slice(), encoded_active.as_bytes())
                 .map_err(precommit_storage_error)?
@@ -1386,9 +1473,9 @@ impl QueryModuleAdministrationRepository for RedbOperationalPorts {
                 return Err(invariant());
             }
         }
-        append_audit_record(transaction, &audit_record)?;
-        write_administration_allocator(transaction, allocator, next)?;
-        access.commit_for(RedbTestOperation::ReactiveModuleAdministration)?;
+        append_audit_record_in_permitted_access(&access, &audit_record)?;
+        write_administration_allocator_in_permitted_access(&access, allocator, next)?;
+        access.commit_for(RedbTestOperation::QueryModuleAdministration)?;
         Ok(QueryModuleActivationResult::Activated {
             active: requested,
             administration_sequence: sequence,
@@ -1657,9 +1744,15 @@ impl RedbOperationalPorts {
         let record = StoredReactiveModuleAdministrationV1::from_committed_intent(sequence, intent);
         let encoded = encode_reactive_module_v1(candidate)?;
         let key = encode_reactive_module_key(candidate.module_hash());
+        let audit_record = StoredAdministrationAuditRecordV1::ReactiveModule(record);
+        access.expect_fresh_locator_byte_insert(REACTIVE_MODULES, &key)?;
+        expect_audit_record(&access, &audit_record)?;
+        expect_administration_allocator(&access)?;
+        access.close_fresh_locator_mutation_expectations()?;
         let mut modules = transaction
             .open_table(REACTIVE_MODULES)
             .map_err(table_error)?;
+        access.record_actual_fresh_locator_byte_insert(REACTIVE_MODULES, &key)?;
         if modules
             .insert(key.as_slice(), encoded.as_bytes())
             .map_err(precommit_storage_error)?
@@ -1668,12 +1761,9 @@ impl RedbOperationalPorts {
             return Err(invariant());
         }
         drop(modules);
-        append_audit_record(
-            transaction,
-            &StoredAdministrationAuditRecordV1::ReactiveModule(record),
-        )?;
-        write_administration_allocator(transaction, allocator, next)?;
-        access.commit_for(RedbTestOperation::QueryModuleAdministration)?;
+        append_audit_record_in_permitted_access(&access, &audit_record)?;
+        write_administration_allocator_in_permitted_access(&access, allocator, next)?;
+        access.commit_for(RedbTestOperation::ReactiveModuleAdministration)?;
         Ok(ReactiveModulePublicationResult::Published {
             module_hash: candidate.module_hash(),
             administration_sequence: sequence,
@@ -2551,26 +2641,43 @@ impl ServiceAuditAppendRepository for RedbOperationalPorts {
         }
         let (assigned, next) = allocate_sequences(allocator, append_count)?;
         let mut assigned = assigned.into_iter();
-        let mut results = Vec::with_capacity(intents.len());
-        for (intent, allowed) in intents.iter().zip(allowed) {
-            if !allowed {
-                results.push(ServiceAuditAppendResult::PhaseConflict);
-                continue;
-            }
-            let sequence = assigned
-                .next()
-                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-            let record = StoredServiceAuditRecordV1::from_intent(sequence, intent);
-            append_audit_record(
-                transaction,
-                &StoredAdministrationAuditRecordV1::Service(record.clone()),
-            )?;
-            results.push(ServiceAuditAppendResult::Appended(record));
+        let mut records = Vec::with_capacity(intents.len());
+        for (intent, allowed) in intents.iter().zip(&allowed) {
+            records.push(if *allowed {
+                Some(StoredServiceAuditRecordV1::from_intent(
+                    assigned
+                        .next()
+                        .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?,
+                    intent,
+                ))
+            } else {
+                None
+            });
         }
         if assigned.next().is_some() {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        write_administration_allocator(transaction, allocator, next)?;
+        for record in records.iter().flatten() {
+            expect_audit_record(
+                &access,
+                &StoredAdministrationAuditRecordV1::Service(record.clone()),
+            )?;
+        }
+        expect_administration_allocator(&access)?;
+        access.close_fresh_locator_mutation_expectations()?;
+        let mut results = Vec::with_capacity(intents.len());
+        for record in records {
+            let Some(record) = record else {
+                results.push(ServiceAuditAppendResult::PhaseConflict);
+                continue;
+            };
+            append_audit_record_in_permitted_access(
+                &access,
+                &StoredAdministrationAuditRecordV1::Service(record.clone()),
+            )?;
+            results.push(ServiceAuditAppendResult::Appended(record));
+        }
+        write_administration_allocator_in_permitted_access(&access, allocator, next)?;
         access.commit_for(RedbTestOperation::ServiceAudit)?;
         Ok(results)
     }
@@ -2725,11 +2832,25 @@ impl AuditedAdmissionRepository for RedbOperationalPorts {
         let count = u16::try_from(requests.len())
             .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
         let (assigned, next) = allocate_sequences(allocator, count)?;
+        let started_records = requests
+            .iter()
+            .zip(&assigned)
+            .map(|(request, &sequence)| {
+                StoredServiceAuditRecordV1::from_intent(sequence, request.started())
+            })
+            .collect::<Vec<_>>();
+        for started in &started_records {
+            expect_audit_record(
+                &access,
+                &StoredAdministrationAuditRecordV1::Service(started.clone()),
+            )?;
+        }
+        expect_administration_allocator(&access)?;
         let admissions =
             stage_admission_group(&access, requests.iter().map(|request| request.admission()))?;
         let mut outputs = Vec::with_capacity(requests.len());
-        for ((request, sequence), (admission, created)) in
-            requests.iter().zip(assigned).zip(admissions)
+        for ((request, started), (admission, created)) in
+            requests.iter().zip(started_records).zip(admissions)
         {
             if created
                 && request.started().request_id()
@@ -2740,9 +2861,8 @@ impl AuditedAdmissionRepository for RedbOperationalPorts {
             {
                 return Err(storage_error(StorageErrorKind::InvariantViolation));
             }
-            let started = StoredServiceAuditRecordV1::from_intent(sequence, request.started());
-            append_audit_record(
-                transaction,
+            append_audit_record_in_permitted_access(
+                &access,
                 &StoredAdministrationAuditRecordV1::Service(started.clone()),
             )?;
             outputs.push(
@@ -2750,7 +2870,7 @@ impl AuditedAdmissionRepository for RedbOperationalPorts {
                     .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?,
             );
         }
-        write_administration_allocator(transaction, allocator, next)?;
+        write_administration_allocator_in_permitted_access(&access, allocator, next)?;
         access.commit_for(RedbTestOperation::Admission)?;
         Ok(outputs)
     }
@@ -3112,16 +3232,30 @@ fn stage_service_audit_group_with_command_evidence(
     let count =
         u16::try_from(intents.len()).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
     let (assigned, next) = allocate_sequences(allocator, count)?;
-    let mut records = Vec::with_capacity(intents.len());
+    let records = intents
+        .into_iter()
+        .zip(assigned)
+        .map(|(intent, sequence)| StoredServiceAuditRecordV1::from_owned_intent(sequence, intent))
+        .collect::<Vec<_>>();
+    if !command_owned_audits {
+        for record in &records {
+            expect_audit_record(
+                access,
+                &StoredAdministrationAuditRecordV1::Service(record.clone()),
+            )?;
+        }
+        expect_administration_allocator(access)?;
+        access.close_fresh_locator_mutation_expectations()?;
+    }
     let mut journal_mutations =
-        Vec::with_capacity(intents.len().saturating_mul(2).saturating_add(1));
-    for (intent, sequence) in intents.into_iter().zip(assigned) {
-        let record = StoredServiceAuditRecordV1::from_owned_intent(sequence, intent);
+        Vec::with_capacity(records.len().saturating_mul(2).saturating_add(1));
+    for record in &records {
         if !command_owned_audits {
             let encoded = encode_administration_audit_record_v1(
                 &StoredAdministrationAuditRecordV1::Service(record.clone()),
             )?;
-            let key = encode_audit_key(sequence);
+            let key = encode_audit_key(record.administration_sequence());
+            access.record_actual_fresh_locator_byte_insert(AUDIT, &key)?;
             if audit
                 .insert(key.as_slice(), encoded.as_bytes())
                 .map_err(precommit_storage_error)?
@@ -3138,7 +3272,6 @@ fn stage_service_audit_group_with_command_evidence(
                 .map_err(|_| invariant())?,
             );
         }
-        records.push(record);
     }
     drop(audit);
     drop(authoritative_command_tables);
@@ -3160,6 +3293,10 @@ fn stage_service_audit_group_with_command_evidence(
                     record.administration_sequence(),
                 ),
             )?;
+            access.record_actual_fresh_locator_byte_insert(
+                crate::layout::AUDIT_BY_REQUEST,
+                &index_key,
+            )?;
             if request_index
                 .insert(index_key.as_slice(), index_value.as_bytes())
                 .map_err(precommit_storage_error)?
@@ -3180,7 +3317,7 @@ fn stage_service_audit_group_with_command_evidence(
     }
     let prior_allocator = encode_administration_sequence_allocator_v1(allocator)?;
     let encoded_allocator = encode_administration_sequence_allocator_v1(next)?;
-    write_administration_allocator(transaction, allocator, next)?;
+    write_administration_allocator_in_permitted_access(access, allocator, next)?;
     journal_mutations.push(
         JournalMutation::replace(
             JournalTable::Meta,
@@ -3383,10 +3520,23 @@ fn commit_capability_create(
     let encoded_capability = encode_capability_record_v1(&capability)?;
     let lookup = CapabilityTokenLookupV1::new(intent.capability_id());
     let encoded_lookup = encode_capability_token_lookup_v1(lookup)?;
+    let audit_record = StoredAdministrationAuditRecordV1::Capability(audit);
+    access.expect_fresh_locator_byte_insert(
+        CAPABILITIES,
+        &encode_capability_key(intent.capability_id()),
+    )?;
+    access.expect_fresh_locator_byte_insert(
+        CAPABILITY_TOKENS,
+        &encode_capability_token_key(intent.token_digest()),
+    )?;
+    expect_audit_record(&access, &audit_record)?;
+    expect_administration_allocator(&access)?;
+    access.close_fresh_locator_mutation_expectations()?;
 
     {
         let key = encode_capability_key(intent.capability_id());
         let mut table = transaction.open_table(CAPABILITIES).map_err(table_error)?;
+        access.record_actual_fresh_locator_byte_insert(CAPABILITIES, &key)?;
         if table
             .insert(key.as_slice(), encoded_capability.as_bytes())
             .map_err(precommit_storage_error)?
@@ -3400,6 +3550,7 @@ fn commit_capability_create(
         let mut table = transaction
             .open_table(CAPABILITY_TOKENS)
             .map_err(table_error)?;
+        access.record_actual_fresh_locator_byte_insert(CAPABILITY_TOKENS, &key)?;
         if table
             .insert(key.as_slice(), encoded_lookup.as_bytes())
             .map_err(precommit_storage_error)?
@@ -3408,11 +3559,8 @@ fn commit_capability_create(
             return Err(invariant());
         }
     }
-    append_audit_record(
-        transaction,
-        &StoredAdministrationAuditRecordV1::Capability(audit),
-    )?;
-    write_administration_allocator(transaction, allocator, next)?;
+    append_audit_record_in_permitted_access(&access, &audit_record)?;
+    write_administration_allocator_in_permitted_access(&access, allocator, next)?;
     access.commit_for(RedbTestOperation::CapabilityAdministration)?;
     Ok(CapabilityCreateResult::Created {
         capability_id: intent.capability_id(),
@@ -3519,9 +3667,18 @@ fn commit_capability_revoke(
     )
     .map_err(|_| invariant())?;
     let encoded = encode_capability_record_v1(&revoked)?;
+    let audit_record = StoredAdministrationAuditRecordV1::Capability(audit);
+    access.expect_fresh_locator_byte_insert(
+        CAPABILITIES,
+        &encode_capability_key(intent.capability_id()),
+    )?;
+    expect_audit_record(&access, &audit_record)?;
+    expect_administration_allocator(&access)?;
+    access.close_fresh_locator_mutation_expectations()?;
     {
         let key = encode_capability_key(intent.capability_id());
         let mut table = transaction.open_table(CAPABILITIES).map_err(table_error)?;
+        access.record_actual_fresh_locator_byte_insert(CAPABILITIES, &key)?;
         let prior = table
             .insert(key.as_slice(), encoded.as_bytes())
             .map_err(precommit_storage_error)?
@@ -3531,11 +3688,8 @@ fn commit_capability_revoke(
             return Err(invariant());
         }
     }
-    append_audit_record(
-        transaction,
-        &StoredAdministrationAuditRecordV1::Capability(audit),
-    )?;
-    write_administration_allocator(transaction, allocator, next)?;
+    append_audit_record_in_permitted_access(&access, &audit_record)?;
+    write_administration_allocator_in_permitted_access(&access, allocator, next)?;
     access.commit_for(RedbTestOperation::CapabilityAdministration)?;
     Ok(CapabilityRevokeResult::Revoked {
         capability_id: intent.capability_id(),
@@ -3720,10 +3874,26 @@ impl CapabilityBootstrapAdministrationRepository for RedbOperationalPorts {
             intent.capability_id(),
         ))?;
         let encoded_marker = encode_capability_bootstrap_marker_v1(marker)?;
+        let started_audit = StoredAdministrationAuditRecordV1::Service(started);
+        let capability_audit = StoredAdministrationAuditRecordV1::Capability(capability_audit);
+        access.expect_fresh_locator_byte_insert(
+            CAPABILITIES,
+            &encode_capability_key(intent.capability_id()),
+        )?;
+        access.expect_fresh_locator_byte_insert(
+            CAPABILITY_TOKENS,
+            &encode_capability_token_key(intent.digests().current_write()),
+        )?;
+        access.expect_fresh_locator_meta_insert(META_CAPABILITY_BOOTSTRAP)?;
+        expect_audit_record(&access, &started_audit)?;
+        expect_audit_record(&access, &capability_audit)?;
+        expect_administration_allocator(&access)?;
+        access.close_fresh_locator_mutation_expectations()?;
 
         {
             let key = encode_capability_key(intent.capability_id());
             let mut table = transaction.open_table(CAPABILITIES).map_err(table_error)?;
+            access.record_actual_fresh_locator_byte_insert(CAPABILITIES, &key)?;
             if table
                 .insert(key.as_slice(), encoded_capability.as_bytes())
                 .map_err(precommit_storage_error)?
@@ -3737,6 +3907,7 @@ impl CapabilityBootstrapAdministrationRepository for RedbOperationalPorts {
             let mut table = transaction
                 .open_table(CAPABILITY_TOKENS)
                 .map_err(table_error)?;
+            access.record_actual_fresh_locator_byte_insert(CAPABILITY_TOKENS, &key)?;
             if table
                 .insert(key.as_slice(), encoded_lookup.as_bytes())
                 .map_err(precommit_storage_error)?
@@ -3747,6 +3918,7 @@ impl CapabilityBootstrapAdministrationRepository for RedbOperationalPorts {
         }
         {
             let mut table = transaction.open_table(META).map_err(table_error)?;
+            access.record_actual_fresh_locator_meta_insert(META_CAPABILITY_BOOTSTRAP)?;
             if table
                 .insert(META_CAPABILITY_BOOTSTRAP, encoded_marker.as_bytes())
                 .map_err(precommit_storage_error)?
@@ -3755,15 +3927,9 @@ impl CapabilityBootstrapAdministrationRepository for RedbOperationalPorts {
                 return Err(invariant());
             }
         }
-        append_audit_record(
-            transaction,
-            &StoredAdministrationAuditRecordV1::Service(started),
-        )?;
-        append_audit_record(
-            transaction,
-            &StoredAdministrationAuditRecordV1::Capability(capability_audit),
-        )?;
-        write_administration_allocator(transaction, allocator, next)?;
+        append_audit_record_in_permitted_access(&access, &started_audit)?;
+        append_audit_record_in_permitted_access(&access, &capability_audit)?;
+        write_administration_allocator_in_permitted_access(&access, allocator, next)?;
         access.commit_for(RedbTestOperation::CapabilityBootstrap)?;
         Ok(CapabilityBootstrapResult::BootstrapCreated {
             capability_id: intent.capability_id(),
@@ -3812,11 +3978,12 @@ fn bootstrap_replay(
         marker.administration_sequence(),
     )
     .map_err(|_| corrupt())?;
-    append_audit_record(
-        transaction,
-        &StoredAdministrationAuditRecordV1::Service(started),
-    )?;
-    write_administration_allocator(transaction, allocator, next)?;
+    let started_audit = StoredAdministrationAuditRecordV1::Service(started);
+    expect_audit_record(&access, &started_audit)?;
+    expect_administration_allocator(&access)?;
+    access.close_fresh_locator_mutation_expectations()?;
+    append_audit_record_in_permitted_access(&access, &started_audit)?;
+    write_administration_allocator_in_permitted_access(&access, allocator, next)?;
     access.commit_for(RedbTestOperation::CapabilityBootstrap)?;
     Ok(CapabilityBootstrapResult::BootstrapReplayed {
         capability_id: capability.capability_id(),
@@ -4042,6 +4209,7 @@ mod tests {
     /// returns the ports, the module, and the publication's own sequence.
     fn published_reactive_module(
         label: &str,
+        arm_coverage: bool,
     ) -> (
         TestPath,
         RedbOperationalPorts,
@@ -4049,6 +4217,13 @@ mod tests {
         AdministrationSequence,
     ) {
         let (path, mut ports) = initialized_ports(label);
+        if arm_coverage {
+            assert!(
+                ports
+                    .arm_exact_empty_fresh_locator_coverage_for_test()
+                    .expect("arm exact empty coverage")
+            );
+        }
         let contract = bundle("reactive-hygiene", 1, 0x51);
         assert!(matches!(
             ports
@@ -4459,9 +4634,15 @@ mod tests {
         assert_eq!(error.kind(), StorageErrorKind::CorruptData);
     }
 
+    // req: OUT-001, OUT-002, TXN-042
     #[test]
     fn catalog_and_service_audit_share_one_contiguous_stream() {
         let (_path, mut ports) = initialized_ports("catalog-audit");
+        assert!(
+            ports
+                .arm_exact_empty_fresh_locator_coverage_for_test()
+                .expect("arm exact empty coverage")
+        );
         let deployed = bundle("budget", 1, 7);
         let activated = ports
             .activate_catalog(&catalog_intent(None, deployed.clone(), 10))
@@ -4520,11 +4701,22 @@ mod tests {
             .expect("detect bundle conflict");
         assert_eq!(conflict, CatalogActivationResult::BundleConflict);
         assert_eq!(audit_count(&ports), 2);
+        assert!(
+            ports
+                .fresh_locator_public_and_private_roles_match_for_test()
+                .expect("catalog and service-audit lanes preserve both roles")
+        );
     }
 
+    // req: OUT-001, OUT-002, TXN-042
     #[test]
     fn query_module_activation_is_atomic_cas_audited_and_restart_safe() {
         let (path, mut ports) = initialized_ports("query-module");
+        assert!(
+            ports
+                .arm_exact_empty_fresh_locator_coverage_for_test()
+                .expect("arm exact empty coverage")
+        );
         let contract = bundle("ticketdesk", 1, 7);
         ports
             .activate_catalog(&catalog_intent(None, contract.clone(), 30))
@@ -4574,6 +4766,11 @@ mod tests {
             } if administration_sequence == AdministrationSequence::new(2).expect("sequence two")
         ));
         assert_eq!(audit_count(&ports), 2);
+        assert!(
+            ports
+                .fresh_locator_public_and_private_roles_match_for_test()
+                .expect("query-module lane preserves both roles")
+        );
 
         drop(ports);
         let store = RedbStore::open(&path.0).expect("reopen database");
@@ -4595,9 +4792,15 @@ mod tests {
         );
     }
 
+    // req: OUT-001, OUT-002, TXN-042
     #[test]
     fn bootstrap_replay_appends_only_a_new_linked_start() {
         let (_path, mut ports) = initialized_ports("bootstrap");
+        assert!(
+            ports
+                .arm_exact_empty_fresh_locator_coverage_for_test()
+                .expect("arm exact empty coverage")
+        );
         let root = capability_id(3);
         let root_digest = digest(1);
         let first = bootstrap_intent(20, root, root_digest, 10);
@@ -4670,11 +4873,22 @@ mod tests {
             ServiceAuditAppendResult::Appended(_)
         ));
         assert_eq!(audit_count(&ports), 4);
+        assert!(
+            ports
+                .fresh_locator_public_and_private_roles_match_for_test()
+                .expect("capability bootstrap lane preserves both roles")
+        );
     }
 
+    // req: OUT-001, OUT-002, TXN-042
     #[test]
     fn consuming_create_and_revoke_transactions_are_atomic_and_replay_safe() {
         let (_path, mut ports) = initialized_ports("capability-transactions");
+        assert!(
+            ports
+                .arm_exact_empty_fresh_locator_coverage_for_test()
+                .expect("arm exact empty coverage")
+        );
         let root = capability_id(4);
         ports
             .bootstrap_capability(&bootstrap_intent(30, root, digest(3), 10))
@@ -4788,6 +5002,11 @@ mod tests {
             } if administration_sequence == AdministrationSequence::new(4).expect("sequence four")
         ));
         assert_eq!(audit_count(&ports), 4);
+        assert!(
+            ports
+                .fresh_locator_public_and_private_roles_match_for_test()
+                .expect("capability administration lane preserves both roles")
+        );
     }
 
     #[test]
@@ -4906,10 +5125,11 @@ mod tests {
             .expect("reuse attempt returns phase conflict, not success");
         assert!(matches!(reuse, ServiceAuditAppendResult::PhaseConflict));
     }
+    // req: OUT-001, OUT-002, TXN-042
     #[test]
     fn redb_reactive_republish_answers_without_taking_the_write_lock() {
         let (_path, mut ports, module, administration_sequence) =
-            published_reactive_module("reactive-republish-read");
+            published_reactive_module("reactive-republish-read", true);
         let records_before = audit_count(&ports);
 
         // The exclusive mutation gate is the operationally significant cost:
@@ -4940,12 +5160,17 @@ mod tests {
             records_before,
             "a republish writes nothing durable"
         );
+        assert!(
+            ports
+                .fresh_locator_public_and_private_roles_match_for_test()
+                .expect("reactive-module lane preserves both roles")
+        );
     }
 
     #[test]
     fn redb_reactive_republish_under_the_write_lock_serves_the_original_sequence() {
         let (_path, mut ports, module, administration_sequence) =
-            published_reactive_module("reactive-republish-locked");
+            published_reactive_module("reactive-republish-locked", false);
         let records_before = audit_count(&ports);
 
         // Simulates the lost race at the API level: a racing publish landed
@@ -4976,7 +5201,7 @@ mod tests {
     #[test]
     fn redb_reactive_republish_fails_closed_on_an_allocator_skewed_stream() {
         let (_path, mut ports, module, _sequence) =
-            published_reactive_module("reactive-republish-skew");
+            published_reactive_module("reactive-republish-skew", false);
 
         // Skew the allocator one ahead of the stream it owns. The write path has
         // always refused this through `validate_administration_tail` before
