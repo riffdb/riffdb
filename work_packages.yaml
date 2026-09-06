@@ -2843,12 +2843,14 @@ work_packages:
 
 - id: WP-727
   name: Kubernetes packaging and operator-grade deployment
+  tier: surface
   depends_on: [WP-558]
   objective: Give an operator a supported way to run RiffDB that is not a hand-edited manifest.
     release/kubernetes ships one raw riffdb.yaml and release/container ships a Compose file; there
     is no chart, no values surface, and no upgrade path between released versions.
   requirements: [NET-010, NET-012, APE-002]
-  required_adrs: []
+  required_adrs: [ADR-0202, ADR-0055, ADR-0056, ADR-0105, ADR-0110, ADR-0112,
+    ADR-0124]
   allowed_paths: [work_packages.yaml, release/**, docs/operations/**, docs/**, scripts/**,
     .github/workflows/**]
   deliverables:
@@ -2861,10 +2863,18 @@ work_packages:
     load-bearing by confirming a values change moves the recorded manifest. The acceptance manifest
     it replaces hardcoded an image and namespace, stated no resource requests at all, and bundled
     proof Jobs with the workload; those Jobs are opt-in here
-  - Documented upgrade between two released chart versions including the durable-format
-    compatibility check, and documented rollback
-  - Operator runbook covering install, upgrade, rotate, back up, restore, and drain, exercised
-    against the chart rather than against hand-written YAML
+  - Exact opt-in application and operator proof Jobs use separate external Secrets, the chart-bound
+    image, protected mounts, and service DNS without host networking or loopback; the default render
+    contains neither Job, the chart creates no secret or authority, and authenticated readiness uses
+    only a protected credential
+  - Bounded local Helm lifecycle rehearsal packages the reviewed chart under two reserved
+    non-release identities in temporary storage, renders install, upgrade, and rollback with frozen
+    values, and proves stable object/PVC/Secret identity plus declared value movement without a
+    registry, cluster, database, publication, durable-compatibility, or execution claim
+  - Operator runbook covering install, controlled-network restriction, authenticated readiness,
+    drain, verified backup, closed-database durable-format preflight and its sole authorized action,
+    chart upgrade, certificate and successor-then-revoke credential rotation, restore, and safe
+    deployment rollback or durable downgrade refusal, exercised structurally against the chart
   - Startup verification delivered as scripts/check-container-startup, which runs the release image
     read-only as uid 65532 with only the documented volumes and asserts the ready boundary and a
     projections root inside a mounted volume. Verified load-bearing by removing the fix and
@@ -2872,10 +2882,26 @@ work_packages:
     render-only checks cannot reach, where the shipped Compose and Kubernetes runtime
     configurations could not start riffdbd at all; both are now fixed
   acceptance_commands:
+  - ./scripts/acceptance --wp WP-727
+  - ./scripts/check-helm-render
+  - ./scripts/check-helm-operator-package
+  - ./scripts/check-helm-upgrade-rehearsal
+  - ./scripts/check-container-startup
   - ./scripts/remote-compose-acceptance
-  exit_gate: An operator installs, upgrades, rotates credentials and certificates, backs up,
-    restores, and drains a cluster deployment from released chart artifacts alone, and every NET-010
-    proof holds against the chart rather than a bespoke manifest.
+  - ./scripts/handbook check
+  - ./scripts/ci-all
+  exit_gate: The chart and exact runbook locally prove their bounded install, upgrade, rotation,
+    backup, restore, drain, and safe rollback/refusal mechanics; every repository-local NET-010 proof
+    uses the chart rather than a bespoke manifest; the local rehearsal is explicitly non-release
+    evidence; and no two-published-version or controlled-cluster execution claim is made.
+  standing_design_tests:
+    interface_safety: The chart assembles existing safe binaries and separately provisioned Secrets;
+      it cannot mint capabilities, start an installation campaign for an application or MCP caller,
+      expose raw storage or mutation, or provide force, reset, downgrade, or guarantee opt-outs.
+    scale: Every chart object, proof Job, render, values profile, rehearsal step, runbook assertion,
+      listener/stream/query/command setting, and retained receipt is explicitly bounded; no check
+      scans a cluster, registry, database population, or unbounded history.
+  human_review_triggers: *id001
 
 - id: WP-728
   name: Signed release automation, publication, and version enforcement
@@ -24292,3 +24318,89 @@ work_packages:
     widened, or presented as complete upstream-suite conformance.
   - Runtime/public/durable/protocol/storage/authorization/transaction behavior, evidence artifacts
     or results, acceptance thresholds, adapter code, or the WP-578 72-hour execution would change.
+
+- id: WP-783
+  name: Published Helm two-version upgrade evidence
+  tier: surface
+  depends_on: [WP-727, WP-728]
+  objective: Implement ADR-0202 Decision 7 after publication exists by executing the accepted
+    operator runbook against two distinct immutable published chart versions and retaining one
+    bounded redacted receipt that cannot be satisfied by local or draft artifacts.
+  requirements: [NET-010, NET-012, APE-002]
+  required_adrs: [ADR-0202, ADR-0055, ADR-0056, ADR-0105, ADR-0110, ADR-0112,
+    ADR-0124]
+  allowed_paths: [work_packages.yaml, release/evidence/wp-783/**,
+    scripts/check-published-helm-upgrade-evidence,
+    scripts/run-published-helm-upgrade-evidence, docs/operations/**, docs/**,
+    .github/workflows/**]
+  deliverables:
+  - Sole bounded `riffdb.published-helm-upgrade-evidence/v1` receipt at
+    `release/evidence/wp-783/published-helm-upgrade-v1.json` with exact root keys `schema`, `source`,
+    `target`, `execution`, `status`; source and target each bind exact provider/repository/release/asset
+    IDs, publication state/time, release/chart/app versions, source revision, archive/image identities,
+    and WP-728's existing signed-artifact provenance and documented consumer-verification outputs
+  - WP-783-owned checker uses read-only exact-ID provider queries to compare each WP-728 artifact and
+    consumer-verification output with authoritative immutable published non-draft provider records;
+    it consumes only WP-728's existing promised outputs and makes no external mutation
+  - Independently anchored cluster evidence binds the exact reviewed harness/workflow paths, revision,
+    content hashes, external workflow-run identity, signature/provenance, and every terminal result
+    digest; hand-authored receipt fields, URLs, local claims, or unanchored logs grant nothing
+  - Actual source-chart install, closed payload-free unauthenticated liveness, authenticated readiness,
+    and stable-application access from a separate pod through service DNS and the pass-through proxy;
+    an allowed-partner/refused-untrusted probe verifies the controlled-design-partner-network boundary
+    before drain, verified backup, stopped-database candidate preflight, only the manifest-authorized
+    action, target-chart upgrade, authenticated readiness, and application traffic readmission
+  - Actual certificate reload and successor-prove-switch-revoke credential rotation observations,
+    bounded shutdown, backup/restore, and the runbook's exact safe rollback result whose
+    deployment-object rollback is allowed only before candidate storage access, otherwise requiring
+    forward recovery or verified destructive restore while unsupported binary/database downgrade
+    remains refused
+  - Strict validator and negative self-test reject each missing/mismatched provider, repository,
+    release, or asset ID; draft/mutable/unpublished state or invalid timestamp; unsigned,
+    unprovenanced, or consumer-unverified WP-728 artifact; equal release/chart versions, archives,
+    source revisions, appVersions, or intended image digests; appVersion/image mismatch; and cluster
+    evidence lacking an external run anchor, reviewed harness/workflow binding, terminal result
+    digests, signature, or provenance; truthful runbook/durable-manifest digests may be identical
+  - Negative cases also reject missing separate-pod stable-application access, non-payload-free
+    liveness, absent allowed/refused network probes, hand-edited manifests, loopback/host networking,
+    unbounded settings, missing preflight/backup/operation results, prose-only claims, and secret/value
+    leakage
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-783
+  - ./scripts/run-published-helm-upgrade-evidence --self-test
+  - ./scripts/check-published-helm-upgrade-evidence --self-test
+  - ./scripts/check-published-helm-upgrade-evidence
+  - ./scripts/check-helm-operator-package
+  - ./scripts/check-helm-render
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/handbook check
+  - ./scripts/ci-all
+  exit_gate: WP-783's checker independently matches WP-728 signed artifacts and consumer-verification
+    outputs to authoritative exact-ID provider records proving two distinct immutable published
+    non-draft chart assets and revisions/appVersion-bound images, then cross-validates independently
+    anchored signed/provenanced execution from the reviewed harness/workflow; the controlled cluster
+    proves payload-free liveness, authenticated readiness, allowed/refused network boundaries,
+    separate-pod stable-application proxy access, drain, verified backup, stopped-database preflight,
+    target upgrade, both rotations, bounded shutdown, restore, and safe rollback/refusal with terminal
+    result digests; shared truthful runbook or durable-manifest digests may match, and no local,
+    draft, URL-only, unanchored, or hand-authored claim substitutes.
+  standing_design_tests:
+    interface_safety: Evidence observes existing operator and application-service operations only;
+      it grants no authority, carries no bearer or data value, enables no application/MCP install,
+      and cannot make downgrade, force, reset, raw storage, or handwritten deployment safe.
+    scale: The campaign uses two chart archives, one controlled cluster, finite operation attempts,
+      existing runtime bounds, bounded timestamps/counts/digests, and one fixed-size receipt; it
+      retains no request stream, database contents, cluster inventory, or duration-proportional log.
+  human_review_triggers: &id0202
+  - Either WP-728 signed artifact or consumer-verification output would not match an authoritative
+    immutable published non-draft provider record queried by exact repository/release/asset ID, or
+    WP-728 would be broadened beyond its existing artifact/provenance and consumer-verification promises.
+  - Cluster execution is not independently anchored to the exact reviewed harness/workflow, external
+    run, terminal result digests, signature, and provenance.
+  - Separate-pod stable-application proxy access, closed payload-free liveness, or the verified
+    allowed-partner/refused-untrusted controlled-network boundary would be absent or prose-only.
+  - Release/chart version, archive, source revision, appVersion, or intended image distinctness would
+    weaken, or truthful common runbook/durable-manifest digests would be forced to differ.
+  - A local render, draft/mutable artifact, URL, hand-authored receipt, operator assertion, loopback,
+    host network, secret/value-bearing evidence, or unsafe rollback/downgrade could close the package.
