@@ -2117,6 +2117,23 @@ work_packages:
       weaken policy, freshness, validation, lifecycle, fallback, or any query/resource bound.
     scale: Rebuild, validation, compaction, pruning, retained handles, and recovery are partition/
       segment bounded and streaming; failed candidates cannot pin history beyond replay budgets.
+  closure:
+    status: complete
+    completed_at: "2026-09-05"
+    requirements_satisfied: [REC-001, PRJ-002, PRJ-004, PRJ-006, PRJ-008, PRJ-009, PRJ-010,
+      OQ-017, OQ-019, OQ-020, OQ-021, OQ-022, OQ-024, OQ-053,
+      PERF-007, PERF-008]
+    evidence: Columnar V2 now rebuilds into a disjoint complete generation, independently proves
+      matched-frontier equality, publishes through the exact transaction-current control CAS,
+      installs one validated immutable view before reopening capture, and refuses corrupt selected
+      state without V1 fallback. Immutable compaction, validate-once reopen, bounded exact pruning,
+      retirement, and recovery preserve V1 until successful selection. Startup resets only one
+      uniformly stale tag-67 control using the transaction-current history incarnation, durably
+      rereads every result while gates remain closed, and retires only the exact colliding candidate
+      paths before reconstruction. All ADR-0190, ADR-0192, and ADR-0200 obligations are proven; the
+      process-level recovery matrix passed all 9 cases; the production receipt proves two 8,192-row
+      matched-frontier cases with zero lag and a smaller V2 footprint; and package acceptance passed
+      all 16 gates with 1,250 of 1,250 selected tests.
   human_review_triggers: *id001
 - id: WP-712
   name: Vectorized columnar batch executor and late materialization
