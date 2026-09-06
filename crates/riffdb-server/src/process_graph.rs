@@ -467,6 +467,7 @@ impl ProductionGraphBuilder {
         let columnar_bindings = prepare_columnar_control_foundation(
             &storage,
             &projections,
+            &projections_root,
             retained_metadata.history_incarnation(),
         )
         .map_err(|source| ProductionGraphBuildError::ColumnarRegistration {

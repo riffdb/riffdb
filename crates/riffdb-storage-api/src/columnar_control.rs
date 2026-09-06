@@ -570,6 +570,61 @@ impl StoredColumnarProjectionControlV1 {
         )
     }
 
+    /// Replaces one uniformly stale control with the sole fresh-current-history shape.
+    ///
+    /// The caller cannot choose this value across the durable boundary: repository
+    /// implementations obtain `current_history_incarnation` from authoritative
+    /// metadata inside the same transaction that compares this complete control.
+    pub fn reset_for_current_history_incarnation(
+        self,
+        current_history_incarnation: u64,
+    ) -> Result<Self, ColumnarControlError> {
+        let mut pointer_incarnation = None;
+        for pointer in [
+            self.published.as_ref(),
+            self.candidate.as_ref(),
+            self.predecessor.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if pointer.history_incarnation() == 0
+                || pointer_incarnation.is_some_and(|value| value != pointer.history_incarnation())
+            {
+                return Err(ColumnarControlError);
+            }
+            pointer_incarnation = Some(pointer.history_incarnation());
+        }
+        let stale_incarnation = pointer_incarnation.ok_or(ColumnarControlError)?;
+        if current_history_incarnation == 0 || stale_incarnation >= current_history_incarnation {
+            return Err(ColumnarControlError);
+        }
+        let next = self
+            .highest_generation
+            .checked_next()
+            .ok_or(ColumnarControlError)?;
+        let candidate = StoredColumnarProjectionGenerationV1::unprepared_candidate(
+            next,
+            ColumnarProjectionLayoutV1::V1,
+            current_history_incarnation,
+            self.target_definition_fingerprint,
+            self.target_spec_hash,
+            None,
+        )?;
+        Self::new(
+            self.source,
+            self.target_definition_fingerprint,
+            self.target_spec_hash,
+            next,
+            None,
+            Some(candidate),
+            None,
+            ColumnarProjectionLifecycleV1::Building,
+            None,
+            self.replay_limits,
+        )
+    }
+
     /// Reconstructs and validates one complete durable Protobuf state.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -1437,6 +1492,12 @@ pub trait ColumnarProjectionControlRepository {
     fn initialize_fresh_v1(
         &self,
         controls: &[FreshColumnarProjectionControlV1],
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError>;
+
+    /// Resets one exact uniformly stale control using transaction-current history metadata.
+    fn reset_for_current_history_incarnation(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
     ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError>;
 
     /// Allocates the first V2 Candidate beside healthy Published V1.

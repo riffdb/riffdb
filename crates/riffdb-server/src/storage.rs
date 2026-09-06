@@ -1158,6 +1158,16 @@ impl ColumnarProjectionControlRepository for SharedRedbOperationalPorts {
         ColumnarProjectionControlRepository::initialize_fresh_v1(&self.shared, controls)
     }
 
+    fn reset_for_current_history_incarnation(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        ColumnarProjectionControlRepository::reset_for_current_history_incarnation(
+            &self.shared,
+            expected,
+        )
+    }
+
     fn begin_v2_candidate(
         &self,
         expected: &StoredColumnarProjectionControlV1,

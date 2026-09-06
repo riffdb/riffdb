@@ -6,8 +6,9 @@ use riffdb_storage_api::{
     ApplicationSequenceAllocator, ColumnarProjectionControlRepository,
     ColumnarProjectionControlWriteResultV1, ColumnarProjectionFailureReasonV1,
     ColumnarProjectionLayoutV1, ColumnarProjectionReplayLimitsV1,
-    ColumnarProjectionRetentionRepository, FreshColumnarProjectionControlV1, StorageError,
-    StorageErrorKind, StoredColumnarProjectionControlV1, StoredColumnarProjectionGenerationV1,
+    ColumnarProjectionRetentionRepository, FreshColumnarProjectionControlV1,
+    HISTORY_INCARNATION_INITIAL, StorageError, StorageErrorKind, StoredColumnarProjectionControlV1,
+    StoredColumnarProjectionGenerationV1,
 };
 use riffdb_types::{
     ColumnarProjectionSourceV1, ColumnarProjectionSpecHashV1, CommitSequence,
@@ -16,12 +17,14 @@ use riffdb_types::{
 
 use crate::codec::{
     decode_application_sequence_allocator_v1, decode_columnar_projection_control_v1,
-    encode_columnar_projection_control_v1,
+    decode_history_incarnation_v1, encode_columnar_projection_control_v1,
 };
 use crate::error::{precommit_storage_error, storage_error, table_error};
 use crate::hooks::RedbTestOperation;
 use crate::keys::{decode_columnar_projection_control_key, encode_columnar_projection_control_key};
-use crate::layout::{COLUMNAR_PROJECTION_CONTROLS, META, META_APPLICATION_SEQUENCE};
+use crate::layout::{
+    COLUMNAR_PROJECTION_CONTROLS, META, META_APPLICATION_SEQUENCE, META_HISTORY_INCARNATION,
+};
 use crate::store::RedbOperationalPorts;
 
 const MAX_COLUMNAR_PROJECTION_CONTROLS: u64 = 256;
@@ -66,6 +69,21 @@ fn transaction_current_head(
             FrontierPosition::AppliedThrough(CommitSequence::new(u64::MAX).ok_or_else(corrupt)?)
         }
     })
+}
+
+fn transaction_current_history_incarnation(
+    transaction: &WriteTransaction,
+) -> Result<u64, StorageError> {
+    let meta = transaction.open_table(META).map_err(table_error)?;
+    let encoded = meta
+        .get(META_HISTORY_INCARNATION)
+        .map_err(precommit_storage_error)?
+        .ok_or_else(corrupt)?;
+    let incarnation = *decode_history_incarnation_v1(encoded.value())?.value();
+    if incarnation < HISTORY_INCARNATION_INITIAL {
+        return Err(corrupt());
+    }
+    Ok(incarnation)
 }
 
 impl RedbOperationalPorts {
@@ -205,6 +223,42 @@ impl ColumnarProjectionControlRepository for RedbOperationalPorts {
                 .insert(key.as_slice(), value.as_bytes())
                 .map_err(precommit_storage_error)?;
         }
+        drop(table);
+        access.commit_for(RedbTestOperation::ColumnarProjectionControl)?;
+        Ok(ColumnarProjectionControlWriteResultV1::Applied)
+    }
+
+    fn reset_for_current_history_incarnation(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        let key = encode_columnar_projection_control_key(expected.source())
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let access = self.begin_write()?;
+        let current_history_incarnation =
+            transaction_current_history_incarnation(access.transaction()?)?;
+        let mut table = access
+            .transaction()?
+            .open_table(COLUMNAR_PROJECTION_CONTROLS)
+            .map_err(table_error)?;
+        let current = table
+            .get(key.as_slice())
+            .map_err(precommit_storage_error)?
+            .map(|value| decode_checked(&key, value.value()))
+            .transpose()?;
+        if current.as_ref() != Some(expected) {
+            drop(table);
+            access.abort()?;
+            return Ok(ColumnarProjectionControlWriteResultV1::StateChanged);
+        }
+        let replacement = expected
+            .clone()
+            .reset_for_current_history_incarnation(current_history_incarnation)
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let encoded = encode_columnar_projection_control_v1(&replacement)?;
+        table
+            .insert(key.as_slice(), encoded.as_bytes())
+            .map_err(precommit_storage_error)?;
         drop(table);
         access.commit_for(RedbTestOperation::ColumnarProjectionControl)?;
         Ok(ColumnarProjectionControlWriteResultV1::Applied)
@@ -441,6 +495,152 @@ mod tests {
         .into_operational_after_catalog_validation()
         .expect("operational");
         (path, ports)
+    }
+
+    fn stamp_current_history(ports: &RedbOperationalPorts, incarnation: u64) {
+        let access = ports.begin_write().expect("begin history stamp");
+        let encoded = crate::codec::encode_history_incarnation_v1(incarnation)
+            .expect("encode history incarnation");
+        let mut meta = access
+            .transaction()
+            .expect("history transaction")
+            .open_table(META)
+            .expect("open metadata");
+        meta.insert(META_HISTORY_INCARNATION, encoded.as_bytes())
+            .expect("stamp current history");
+        drop(meta);
+        access
+            .commit_for(RedbTestOperation::Initialization)
+            .expect("commit history stamp");
+    }
+
+    fn install_control_without_columnar_failpoint(
+        ports: &RedbOperationalPorts,
+        control: &StoredColumnarProjectionControlV1,
+        current_history_incarnation: u64,
+    ) {
+        let access = ports.begin_write().expect("begin control install");
+        let key = encode_columnar_projection_control_key(control.source()).expect("control key");
+        let value = encode_columnar_projection_control_v1(control).expect("control value");
+        let mut controls = access
+            .transaction()
+            .expect("control transaction")
+            .open_table(COLUMNAR_PROJECTION_CONTROLS)
+            .expect("open controls");
+        controls
+            .insert(key.as_slice(), value.as_bytes())
+            .expect("install control");
+        drop(controls);
+        let encoded = crate::codec::encode_history_incarnation_v1(current_history_incarnation)
+            .expect("encode current history");
+        let mut meta = access
+            .transaction()
+            .expect("metadata transaction")
+            .open_table(META)
+            .expect("open metadata");
+        meta.insert(META_HISTORY_INCARNATION, encoded.as_bytes())
+            .expect("install current history");
+        drop(meta);
+        access
+            .commit_for(RedbTestOperation::Initialization)
+            .expect("commit control fixture");
+    }
+
+    // req: REC-001, PRJ-004, PRJ-006, PRJ-008, PRJ-009, PRJ-010
+    #[test]
+    fn columnar_history_reset_uses_transaction_current_incarnation() {
+        let (_path, ports) = ports(
+            "columnar-history-reset-current",
+            RedbTestController::observe_index_migration(),
+        );
+        let (source, definition) = source();
+        let spec = ColumnarProjectionSpecHashV1::from_bytes([0x72; 32]);
+        let limits = ColumnarProjectionReplayLimitsV1::new(60, 1_024, 10).expect("limits");
+        let fresh =
+            FreshColumnarProjectionControlV1::new(source.clone(), definition, spec, limits, 1)
+                .expect("stale fixture");
+        assert_eq!(
+            ports
+                .initialize_fresh_v1(std::slice::from_ref(&fresh))
+                .expect("install stale fixture"),
+            ColumnarProjectionControlWriteResultV1::Applied
+        );
+        stamp_current_history(&ports, 7);
+
+        assert_eq!(
+            ports
+                .reset_for_current_history_incarnation(fresh.control())
+                .expect("reset stale control"),
+            ColumnarProjectionControlWriteResultV1::Applied
+        );
+        let reset = ports
+            .recover_expected_control(&source)
+            .expect("reread reset")
+            .expect("reset control");
+        let candidate = reset.candidate().expect("fresh candidate");
+        assert_eq!(candidate.history_incarnation(), 7);
+        assert_eq!(candidate.generation().get(), 2);
+        assert_eq!(candidate.frontier(), FrontierPosition::BeforeFirst);
+        assert!(candidate.artifact().is_none());
+        assert_eq!(reset.target_definition_fingerprint(), definition);
+        assert_eq!(reset.target_spec_hash(), spec);
+        assert_eq!(reset.replay_limits(), limits);
+        assert_eq!(
+            ports
+                .reset_for_current_history_incarnation(fresh.control())
+                .expect("stale expected control is only a mismatch"),
+            ColumnarProjectionControlWriteResultV1::StateChanged
+        );
+        assert!(
+            ports.reset_for_current_history_incarnation(&reset).is_err(),
+            "a current control cannot reset again"
+        );
+    }
+
+    // req: REC-001, PRJ-004, PRJ-006, PRJ-008, PRJ-009, PRJ-010
+    #[test]
+    fn columnar_history_reset_unknown_commit_rereads_exact_control() {
+        let controller = RedbTestController::return_unknown_after_commit(
+            RedbTestOperation::ColumnarProjectionControl,
+        );
+        let (path, ports) = ports("columnar-history-reset-unknown", controller);
+        let (source, definition) = source();
+        let stale = StoredColumnarProjectionControlV1::initialize_fresh_v1(
+            source.clone(),
+            definition,
+            ColumnarProjectionSpecHashV1::from_bytes([0x73; 32]),
+            ColumnarProjectionReplayLimitsV1::new(60, 1_024, 10).expect("limits"),
+            1,
+        )
+        .expect("stale fixture");
+        install_control_without_columnar_failpoint(&ports, &stale, 2);
+
+        let error = ports
+            .reset_for_current_history_incarnation(&stale)
+            .expect_err("post-commit reset is uncertain");
+        assert_eq!(error.kind(), StorageErrorKind::CommitStatusUnknown);
+        let durable = ports
+            .recover_expected_control(&source)
+            .expect("exact durable reread")
+            .expect("reset is durable");
+        let candidate = durable.candidate().expect("replacement candidate");
+        assert_eq!(candidate.history_incarnation(), 2);
+        assert_eq!(candidate.generation().get(), 2);
+        assert!(candidate.artifact().is_none());
+        drop(ports);
+        let store = RedbStore::open(&path.0).expect("reopen after uncertain reset");
+        let reopened = RedbDormantPorts {
+            shared: store.shared,
+        }
+        .into_operational_after_catalog_validation()
+        .expect("reopen operational ports");
+        assert_eq!(
+            reopened
+                .reset_for_current_history_incarnation(&stale)
+                .expect("repeat with old expected control"),
+            ColumnarProjectionControlWriteResultV1::StateChanged,
+            "repeated restart cannot allocate a second replacement"
+        );
     }
 
     // req: PRJ-002, PRJ-006, PRJ-007, PRJ-010, OQ-020, OQ-024, OQ-053
