@@ -17,6 +17,10 @@ The Secret must contain `server-chain.pem`, `server-key.pem`,
 `capability.keys`, `idempotency.keys`, `riffdb-ca.pem`, and
 `readiness.credential`, all from the same reviewed deployment. Keep Secret
 values out of values files, rendered manifests, shell history, and logs.
+The application and operator proof Secrets, when enabled, must be nonempty and
+pairwise distinct from each other and from the server Secret. The chart refuses
+an overlapping name and projects only `credential` and `ca.pem` into each proof
+pod.
 
 Review a pinned values file and render it before applying anything:
 
@@ -28,25 +32,30 @@ helm upgrade --install riffdb release/helm/riffdb \
   --namespace riffdb-alpha --values /absolute/path/to/reviewed-values.yaml
 ```
 
-An empty `image.tag` deliberately resolves to the chart `appVersion`. If an
-explicit tag is necessary, bind it to the exact reviewed release; never use a
-mutable tag. The data claim belongs to the StatefulSet and the backup claim has
-Helm's keep policy, so neither is disposable release state.
+An empty `image.tag` deliberately resolves to the chart `appVersion`. A
+nonempty tag must equal that exact `appVersion`; the chart refuses any other
+value. Never use a mutable tag. The data claim belongs to the StatefulSet and
+the backup claim has Helm's keep policy, so neither is disposable release
+state.
 
 ## Controlled network
 
 Permit only reviewed design-partner sources to reach the TLS listener or the
-pass-through proxy. The chart uses service DNS and never grants host networking
-or a loopback shortcut. Refuse public or untrusted ingress at infrastructure
-boundaries. RiffDB authentication and authorization remain mandatory inside
-that restricted network; network location is not authority.
+pass-through proxy. Every chart-owned probe and proof Job uses the exact
+`<release>.<namespace>.svc` identity; there is no values override for another
+endpoint, host networking, or a loopback shortcut. Refuse public or untrusted
+ingress at infrastructure boundaries. RiffDB authentication and authorization
+remain mandatory inside that restricted network; network location is not
+authority.
 
 ## Authenticated readiness
 
 Liveness is the closed, payload-free pre-bootstrap health check and carries no
-credential. Readiness uses `readiness.credential` copied from the server Secret
-into the memory-backed protected volume and must return authenticated ready
-before traffic is admitted. A TLS-only or process-alive result does not satisfy
+credential or database selector. Readiness uses `readiness.credential` copied
+from the server Secret into the size-bounded memory-backed protected volume.
+Its exec gate exits successfully only for the canonical typed `ready` response;
+authenticated `not_ready`, `degraded`, malformed, or failed responses keep the
+pod out of Service routing. A TLS-only or process-alive result does not satisfy
 readiness.
 
 The optional proof Jobs are disabled by default. When explicitly enabled, the
