@@ -359,7 +359,10 @@ impl FreshLocatorCoverage {
         if !self.reconcile_witness_loss() {
             return None;
         }
-        if count == 0 || !successor.allocator_matches_frontier() {
+        if count == 0
+            || usize::from(count) > riffdb_storage_api::MAX_STAGED_COMMANDS
+            || !successor.allocator_matches_frontier()
+        {
             self.disable();
             return None;
         }

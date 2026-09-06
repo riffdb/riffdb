@@ -5589,45 +5589,51 @@ impl RedbWriteAccess {
     }
 
     pub(crate) fn arm_fresh_locator_coverage(&self) -> Result<(), StorageError> {
-        let transaction = self.transaction()?;
-        let commits_empty = transaction
-            .open_table(COMMITS)
-            .map_err(table_error)?
-            .is_empty()
-            .map_err(precommit_storage_error)?;
-        let idempotency_empty = transaction
-            .open_table(crate::layout::IDEMPOTENCY)
-            .map_err(table_error)?
-            .is_empty()
-            .map_err(precommit_storage_error)?;
-        let pending_empty = transaction
-            .open_table(crate::layout::IDEMPOTENCY_PENDING)
-            .map_err(table_error)?
-            .is_empty()
-            .map_err(precommit_storage_error)?;
-        let locators_empty = transaction
-            .open_table(crate::layout::IDEMPOTENCY_LOCATORS)
-            .map_err(table_error)?
-            .is_empty()
-            .map_err(precommit_storage_error)?;
-        let stamp = self.fresh_locator_coverage_stamp()?;
-        let transient_dormant = self.transient_indexes_dormant()?;
-        let proof = crate::fresh_locator_coverage::EmptyAuthorityProof::new(
-            stamp.application_is_none() && self.shared.retention_watermark() == 0,
-            commits_empty,
-            idempotency_empty,
-            pending_empty,
-            locators_empty,
-            stamp.allocator_is_initial(),
-            transient_dormant,
-            !self.shared.write_fenced.load(Ordering::Acquire),
-        );
-        self.shared
-            .fresh_locator_coverage
-            .lock()
-            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
-            .try_arm(proof, stamp);
-        Ok(())
+        let attempt = (|| {
+            let transaction = self.transaction()?;
+            let commits_empty = transaction
+                .open_table(COMMITS)
+                .map_err(table_error)?
+                .is_empty()
+                .map_err(precommit_storage_error)?;
+            let idempotency_empty = transaction
+                .open_table(crate::layout::IDEMPOTENCY)
+                .map_err(table_error)?
+                .is_empty()
+                .map_err(precommit_storage_error)?;
+            let pending_empty = transaction
+                .open_table(crate::layout::IDEMPOTENCY_PENDING)
+                .map_err(table_error)?
+                .is_empty()
+                .map_err(precommit_storage_error)?;
+            let locators_empty = transaction
+                .open_table(crate::layout::IDEMPOTENCY_LOCATORS)
+                .map_err(table_error)?
+                .is_empty()
+                .map_err(precommit_storage_error)?;
+            let stamp = self.fresh_locator_coverage_stamp()?;
+            let transient_dormant = self.transient_indexes_dormant()?;
+            let proof = crate::fresh_locator_coverage::EmptyAuthorityProof::new(
+                stamp.application_is_none() && self.shared.retention_watermark() == 0,
+                commits_empty,
+                idempotency_empty,
+                pending_empty,
+                locators_empty,
+                stamp.allocator_is_initial(),
+                transient_dormant,
+                !self.shared.write_fenced.load(Ordering::Acquire),
+            );
+            self.shared
+                .fresh_locator_coverage
+                .lock()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+                .try_arm(proof, stamp);
+            Ok(())
+        })();
+        if attempt.is_err() {
+            self.disable_fresh_locator_coverage();
+        }
+        attempt
     }
 
     pub(crate) fn fresh_locator_coverage_stamp(
