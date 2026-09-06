@@ -68,3 +68,25 @@ The first command checks the exact ten records, source locators, normative SPEC
 claims, handbook language, and gate wiring. The self-test proves that missing,
 duplicate, reordered, widened, unknown, collapsed, or promoted claims and the
 two unsafe legacy wordings are rejected.
+
+## Change note
+
+Package: WP-724
+
+Tier: surface
+
+Behavior added or changed: the release gate and handbook now report each of the
+ten ADR-0201 claims at its exact scope, class, custody, and upstream-suite
+strength; the checked JSON inventory is the repository source of truth.
+
+Checks run: package acceptance, the exact and adversarial claim guards, the
+four-subject/four-language adapter conformance gate, and all three pinned
+downstream application checks.
+
+Compatibility: classification and wording only. Runtime behavior, public and
+durable formats, protocols, storage, authorization, transactions, evidence
+bytes and results, thresholds, and retained receipts are unchanged.
+
+Hazards and follow-ups: any changed record, locator, requirement wording, or
+release claim requires human review. WP-578 still owns the separate 72-hour
+execution and classification metadata cannot satisfy it.
