@@ -17,7 +17,7 @@ data:
     [server.application_listener]
     mode = "direct_tls"
     listen = "0.0.0.0:{{ .Values.server.listener.port }}"
-    public_endpoint = {{ include "riffdb.publicEndpoint" . | quote }}
+    public_endpoint = {{ include "riffdb.serviceEndpoint" . | quote }}
     certificate_chain = "/run/riffdb-protected/server-chain.pem"
     private_key = "/run/riffdb-protected/server-key.pem"
 
@@ -39,8 +39,7 @@ data:
     projections_root = "/var/lib/riffdb/data/projections"
   liveness.toml: |
     [client]
-    endpoint = {{ include "riffdb.publicEndpoint" . | quote }}
-    database = "default"
+    endpoint = {{ include "riffdb.serviceEndpoint" . | quote }}
     output = "json"
     max_attempts = 1
     # The probe dials the server's own TLS listener, so it needs the trust root
@@ -48,12 +47,13 @@ data:
     # configuration_invalid and the pod never reports ready even though the
     # server is listening.
     tls_trust_root = "/run/riffdb-protected/{{ .Values.server.tlsTrustRootFile }}"
-    tls_server_name = {{ include "riffdb.serverName" . | quote }}
+    tls_server_name = {{ include "riffdb.serviceDnsName" . | quote }}
   readiness.toml: |
     [client]
-    endpoint = {{ include "riffdb.publicEndpoint" . | quote }}
+    endpoint = {{ include "riffdb.serviceEndpoint" . | quote }}
     database = "default"
     output = "json"
     max_attempts = 1
+    credential_file = "/run/riffdb-protected/readiness.credential"
     tls_trust_root = "/run/riffdb-protected/{{ .Values.server.tlsTrustRootFile }}"
-    tls_server_name = {{ include "riffdb.serverName" . | quote }}
+    tls_server_name = {{ include "riffdb.serviceDnsName" . | quote }}

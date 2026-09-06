@@ -32,11 +32,9 @@ server:
 
   listener:
     port: 7443
-    # Reachable name clients dial. It must match the certificate presented.
-    publicEndpoint: ""
-    # Name the server certificate is issued for; defaults to the service DNS
-    # name. The health probes verify against it.
-    tlsServerName: ""
+    # Chart-owned clients always dial the exact release Service DNS name. The
+    # server certificate must contain that DNS SAN; there is no override that
+    # can redirect a proof or probe to loopback or another host.
     bounds:
       maxConnections: 256
       maxStreamsPerConnection: 128
@@ -66,7 +64,8 @@ server:
       failureThreshold: 3
 
   # Name of a Secret holding server-chain.pem, server-key.pem, capability.keys,
-  # and idempotency.keys. The chart never renders these values.
+  # idempotency.keys, riffdb-ca.pem, and readiness.credential. The chart never
+  # renders these values.
   secretName: riffdb-server-secrets
   # Key within that Secret holding the trust root the health probes verify the
   # server's certificate against.
@@ -98,12 +97,26 @@ proxy:
       cpu: 100m
       memory: 64Mi
     limits:
+      cpu: 500m
       memory: 128Mi
 
 # The acceptance manifest bundles proof Jobs with the workload. They are
 # evidence, not something an operator deploys, so they are opt-in here.
 acceptanceJobs:
   enabled: false
+  # These Secrets are provisioned outside this chart. Each must contain only
+  # the credential for its named principal and a ca.pem trust root.
+  applicationSecretName: riffdb-proof-application
+  operatorSecretName: riffdb-proof-operator
+  activeDeadlineSeconds: 60
+  backoffLimit: 0
+  resources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
 
 podSecurityContext:
   runAsNonRoot: true

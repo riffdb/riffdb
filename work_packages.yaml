@@ -2936,6 +2936,22 @@ work_packages:
     scale: Every chart object, proof Job, render, values profile, rehearsal step, runbook assertion,
       listener/stream/query/command setting, and retained receipt is explicitly bounded; no check
       scans a cluster, registry, database population, or unbounded history.
+  closure:
+    status: complete
+    completed_at: "2026-09-05"
+    requirements_satisfied: [NET-010, NET-012, APE-002]
+    evidence: The supported chart now binds an empty or exact Chart.appVersion image tag, one fixed
+      internal service-DNS endpoint and TLS name, exact protected read-only Secret projections, a
+      payload-free unauthenticated liveness probe, and readiness that accepts only the canonical
+      authenticated typed ready state. Its two opt-in health-only Jobs require nonempty pairwise
+      distinct application, operator, and server Secrets; create no authority; disable service
+      account token mounting; and carry finite schema, runtime, storage, resource, probe, and retry
+      bounds. The parsed checker proves exact mounts, probes, identities, and least capabilities and
+      rejects every unsafe override. The generated golden, bounded install/upgrade/rollback
+      rehearsal, container startup, remote Compose acceptance, handbook check, package acceptance,
+      and full ci-all pass. This surface change alters no durable encoding, protocol, application
+      API, credential authority, or database semantics. Remaining published-version and controlled-
+      cluster execution evidence belongs to release work rather than this repository-local proof.
   human_review_triggers: *id001
 
 - id: WP-728

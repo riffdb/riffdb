@@ -21,13 +21,17 @@ SBOM; Fjall is not linked into any product binary.
 Checked-in files under this directory are inputs and candidate evidence. They
 are not a binary release and do not attest that POC exit passed.
 
-`release/container/` and `release/kubernetes/` contain the checked remote-alpha
-deployment shapes. Their application workloads receive only generated client
-configuration, an application credential, and the explicit TLS trust root;
-they never mount RiffDB data, backup media, digest keys, TLS private keys, or an
-operator credential. Use `scripts/remote-compose-acceptance` and
-`scripts/remote-kubernetes-render-check` rather than treating a successful YAML
-parse as deployment evidence.
+`release/container/` contains the checked Compose remote-alpha shape, while
+`release/helm/riffdb/` is the current supported Kubernetes packaging surface.
+Their application workloads receive only generated client configuration, an
+application credential, and the explicit TLS trust root; they never mount
+RiffDB data, backup media, digest keys, TLS private keys, or an operator
+credential. Use `scripts/remote-compose-acceptance`,
+`scripts/check-helm-operator-package`, and
+`scripts/check-helm-upgrade-rehearsal` rather than treating a successful YAML
+parse as deployment evidence. `release/kubernetes/riffdb.yaml` and its render
+checker are retained historical fixtures, not the current NET-010 proof or an
+operator installation surface.
 
 Every assembled release carries `release/durable-format-manifest-v1.json` and
 its exact `release/compatibility/` fixture inventory and upgrade table. The
