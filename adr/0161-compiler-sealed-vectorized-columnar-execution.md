@@ -1,10 +1,10 @@
 ---
 adr: "0161"
 title: Compiler-Sealed Vectorized Columnar Execution and Bounded Parallel Scans
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-05
-accepted: null
+accepted: "2026-09-06"
 requires: [ADR-0051, ADR-0053, ADR-0070, ADR-0071, ADR-0086, ADR-0087,
   ADR-0111, ADR-0129, ADR-0130, ADR-0152, ADR-0160, ADR-0183, ADR-0187,
   ADR-0190, ADR-0192, ADR-0195, ADR-0196, ADR-0200]
