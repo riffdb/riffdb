@@ -2,7 +2,7 @@
 
 //! Child-process crash and reopen evidence for the redb storage boundary.
 
-use std::num::{NonZeroU16, NonZeroU64};
+use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
@@ -24,34 +24,43 @@ use riffdb_storage_api::{
     AtomicCommandRecordSet, AuditPrincipalV1, AuditedAdmissionRepository,
     AuditedAdmissionRequestV1, AuditedAdmissionResultV1, AuthoritativeIndexScanPage,
     AuthoritativeIndexScanRequest, AuthoritativePointReader, AuthoritativeScanReader,
-    CandidateAdmissionResult, CandidateCapacityResult, CandidateStartResult,
-    CatalogActivationIntentV1, CatalogActivationResult, CatalogAdministrationRepository,
-    ChangelogEmissionStateV1, ChangelogEntryClassV1, ChangelogEntryClassV2, ChangelogFrameConsumer,
-    ChangelogFrameConsumerV2, ChangelogFrameV1, ChangelogFrameV2, ChangelogResyncReasonV1,
-    ChangelogStreamValidatorV1, ChangelogV2RotationReceipt, CommandCandidateAdmission,
-    CommandCandidateAffectedEpochRead, CommandCandidateAwaitingCapacity,
-    CommandCandidateAwaitingValidation, CommandCandidateCapacityReserved,
-    CommandCandidateSequenceAssigned, CommandCandidateStateRead, CommandWriteSetPlanV1,
-    CurrentIndexGenerationObservation, DatabaseIdentityProbe, DatabaseIdentityProbePort,
-    DatabaseInitializationPort, DeclaredOutcome, DeferredCommandEpoch, DeferredCommandEpochPort,
-    DeferredCommandFence, DeferredNonEmptyCommandBatch, DeleteAwareEntityFollowerV2,
-    DurabilityMode, DurableKeySchemaBindingV1, EmptyCommandBatch, EncodedChangelogFrameV1,
-    EncodedChangelogFrameV2, EncodedWriteSetUpperBoundResultV1, EntityMutation, EntityObservation,
-    EntityPostImage, EntityReplicaBootstrapManifestV2, EntityTarget, EntityTransitionFingerprint,
-    EvaluationBudget, EventIntent, EventRoutePageLimit, EventRouteScanRequestV1, EventRouteScanV1,
-    EventRouteUpperFenceV1, EvidencePageLimit, ExecutablePlanRef, ExpectedEntityState,
-    IdempotencyIdentity, IdempotencyKeyDigest, IdempotencyLookupCandidatesV1, IndexEntryMutationV1,
-    IndexEpochAdvanceV1, IndexEpochPosition, IndexRangeTarget, MAX_INDEX_MIGRATION_PAGE_BYTES,
-    MAX_INDEX_MIGRATION_PAGE_ENTRIES, NonEmptyCommandBatch, OpenSessionId, OutboxPageLimit,
-    OutboxRepository, OutboxStatusObservationV1, OutboxStatusReadResultV1,
-    PartitionEventRouteReader, PartitionIndexTarget, PendingOutboxScanV1,
-    PreEvaluationCommitContext, ReadSnapshot, ReadableCapabilityDigestInventory, ReadableDigestKey,
+    BootstrapDigestCandidatesV1, BootstrapServiceAuditStartV1, CandidateAdmissionResult,
+    CandidateCapacityResult, CandidateStartResult, CapabilityBootstrapAdministrationRepository,
+    CapabilityBootstrapIntentV1, CapabilityBootstrapResult, CapabilityGrantV1,
+    CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1, CapabilityReader,
+    CapabilityRequestedRecordV1, CatalogActivationIntentV1, CatalogActivationResult,
+    CatalogAdministrationRepository, ChangelogEmissionStateV1, ChangelogEntryClassV1,
+    ChangelogEntryClassV2, ChangelogFrameConsumer, ChangelogFrameConsumerV2, ChangelogFrameV1,
+    ChangelogFrameV2, ChangelogResyncReasonV1, ChangelogStreamValidatorV1,
+    ChangelogV2RotationReceipt, CommandCandidateAdmission, CommandCandidateAffectedEpochRead,
+    CommandCandidateAwaitingCapacity, CommandCandidateAwaitingValidation,
+    CommandCandidateCapacityReserved, CommandCandidateSequenceAssigned, CommandCandidateStateRead,
+    CommandWriteSetPlanV1, CoordinateConsumerAcknowledgementV1, CurrentIndexGenerationObservation,
+    DatabaseIdentityProbe, DatabaseIdentityProbePort, DatabaseInitializationPort, DeclaredOutcome,
+    DeferredCommandEpoch, DeferredCommandEpochPort, DeferredCommandFence,
+    DeferredNonEmptyCommandBatch, DeleteAwareEntityFollowerV2, DurabilityMode,
+    DurableKeySchemaBindingV1, EmptyCommandBatch, EncodedChangelogFrameV1, EncodedChangelogFrameV2,
+    EncodedWriteSetUpperBoundResultV1, EntityMutation, EntityObservation, EntityPostImage,
+    EntityReplicaBootstrapManifestV2, EntityTarget, EntityTransitionFingerprint, EvaluationBudget,
+    EventConsumerIdentityV1, EventConsumerTransitionResultV1, EventIntent,
+    EventPolicyAdmissionFenceV1, EventPolicyAdmissionObservationV1, EventRoutePageLimit,
+    EventRouteScanRequestV1, EventRouteScanV1, EventRouteUpperFenceV1, EvidencePageLimit,
+    ExecutablePlanRef, ExecutionFailureAdmissionRechecked, ExecutionFailureAdmissionResult,
+    ExecutionFailureAwaitingDecision, ExecutionFailureTransitionPort,
+    ExecutionFailureTransitionRequestV1, ExpectedEntityState, IdempotencyIdentity,
+    IdempotencyKeyDigest, IdempotencyLookupCandidatesV1, IndexEntryMutationV1, IndexEpochAdvanceV1,
+    IndexEpochPosition, IndexRangeTarget, MAX_INDEX_MIGRATION_PAGE_BYTES,
+    MAX_INDEX_MIGRATION_PAGE_ENTRIES, NonEmptyCommandBatch, OpenSessionId, OutboxClaimV1,
+    OutboxDestinationIdV1, OutboxPageLimit, OutboxRepository, OutboxStatusObservationV1,
+    OutboxStatusReadResultV1, OutboxTransitionResultV1, PartitionEventRouteReader,
+    PartitionIndexTarget, PartitionScopeV1, PendingOutboxScanV1, PreEvaluationCommitContext,
+    ReadSnapshot, ReadableCapabilityDigestInventory, ReadableDigestKey,
     ReadableIdempotencyDigestInventory, ServiceAuditAppendIntentV1, ServiceAuditAppendRepository,
     ServiceAuditAppendResult, SnapshotReader, SnapshotRequest, StartupValidationInputs,
     StorageScanLimit, StoredAdministrationAuditRecordV1, StoredAdmissionStateV1,
-    StoredAdmittedProvenanceClaimsV1, StoredContractBundleV1, StoredDurableEventV1,
-    StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2, StoredOutcomeV1,
-    StoredPendingAdmissionV1, StoredProvenanceRecordV1, StoredReadDependenciesV1,
+    StoredAdmittedProvenanceClaimsV1, StoredCapabilityRecordV1, StoredContractBundleV1,
+    StoredDurableEventV1, StoredEntityRecordV1, StoredIndexEntryV1, StoredIndexEntryV2,
+    StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1, StoredReadDependenciesV1,
     StoredServiceAuditRecordV1, StructuralEvidenceCursor, StructuralEvidenceOpen,
     StructuralEvidencePage, StructuralEvidenceSession, StructuralFinding, StructuralFindingCode,
     StructuralFindingScope, StructuralOpenOutcome, StructurallyOpened,
@@ -61,17 +70,20 @@ use riffdb_storage_api::{
     encode_index_entry_v2, encode_record_registry_v2, encode_service_audit_record_v2,
 };
 use riffdb_storage_redb::{
-    RedbCommitProfile, RedbDormantPorts, RedbDurabilityEpoch, RedbOperationalPorts,
-    RedbStartupIndexMigrationPort, RedbStore, RedbTestController, RedbTestOperation,
+    ProtectedEventConsumerLeaseV1, ProtectedEventConsumerResolutionV1, RedbCommitProfile,
+    RedbDormantPorts, RedbDurabilityEpoch, RedbOperationalPorts, RedbStartupIndexMigrationPort,
+    RedbStore, RedbTestController, RedbTestOperation,
 };
 use riffdb_types::{
-    ActorId, ActorKind, AdministrationSequence, AggregateTypeId, CanonicalInputHash,
-    CanonicalRecord, CanonicalValue, CapabilityId, CommitSequence, DatabaseId, DigestKeyId,
-    EntityKeyBuilder, EntityTypeId, EntityVersion, Environment, EventId, EventTypeId, FieldId,
+    ActorId, ActorKind, AdministrationSequence, AggregateTypeId, Audience, CanonicalInputHash,
+    CanonicalRecord, CanonicalValue, CapabilityId, CapabilityTokenDigest, CommitSequence,
+    DatabaseId, DigestKeyId, EntityKeyBuilder, EntityTypeId, EntityVersion, Environment,
+    EventConsumerName, EventId, EventLeaseToken, EventTypeId, ExecutionFailureCode, FieldId,
     IndexEntryKey, IndexEntryKeyBuilder, IndexId, LogicalTime, MAX_CANONICAL_DOCUMENT_BYTES,
-    OutcomeId, PartitionKeyBuilder, ProvenanceId, RequestId, ServiceAuditLinkV1,
-    ServiceAuditPhaseV1, ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1, TenantId,
-    TenantScope, Timestamp, hash_partition_key,
+    OutcomeId, PartitionKeyBuilder, PartitionKeyHash, ProvenanceId, QueryParameterHash,
+    ReactiveModuleHash, ReactiveOperationName, RequestId, ServiceAuditLinkV1, ServiceAuditPhaseV1,
+    ServiceAuditTargetV1, ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1,
+    TenantId, TenantScope, Timestamp, hash_partition_key,
 };
 
 const CHILD_MODE: &str = "RIFFDB_STORAGE_RECOVERY_CHILD_MODE";
@@ -96,6 +108,7 @@ contract StorageRecovery version 1 {
 
   event RowCreated {
     partition_by (id)
+    policy_anchor current Row(id: id)
     id: u64
     value: u64
   }
@@ -104,6 +117,10 @@ contract StorageRecovery version 1 {
     root Row
     partition_by id
     conflict_key (id)
+  }
+
+  row policy RowAccess on Row {
+    allow read when true
   }
 
   command CreateRow {
@@ -326,6 +343,15 @@ fn uuid_bytes(fill: u8) -> [u8; 16] {
     let mut bytes = [fill; 16];
     bytes[6] = 0x70 | (fill & 0x0f);
     bytes[8] = 0x80 | (fill & 0x3f);
+    bytes
+}
+
+fn ordinal_uuid_bytes(fill: u8, ordinal: u64) -> [u8; 16] {
+    if ordinal <= u64::from(u8::MAX) {
+        return uuid_bytes(fill.wrapping_add(ordinal as u8));
+    }
+    let mut bytes = uuid_bytes(fill);
+    bytes[9..].copy_from_slice(&ordinal.to_be_bytes()[1..]);
     bytes
 }
 
@@ -556,6 +582,7 @@ struct CommandFixture {
     intent: riffdb_storage_api::CommitIntent,
     affected_targets: AffectedIndexEpochTargets,
     write_plan: CommandWriteSetPlanV1,
+    snapshot: ReadSnapshot,
     records: AtomicCommandRecordSet,
     target: EntityTarget,
     range: IndexRangeTarget,
@@ -713,6 +740,10 @@ fn build_command_fixture(
         tenant_scope.clone(),
         None,
     );
+    let mut idempotency_digest = [0x40_u8.wrapping_add(ordinal_u8); 32];
+    if ordinal > u64::from(u8::MAX) {
+        idempotency_digest[..8].copy_from_slice(&ordinal.to_be_bytes());
+    }
     let identity = IdempotencyIdentity::new(
         database_id(),
         Environment::new("test").expect("environment"),
@@ -722,13 +753,12 @@ fn build_command_fixture(
         plan.command_id(),
         IdempotencyKeyDigest::from_hmac_bytes(
             DigestKeyId::new(1).expect("digest key"),
-            [0x40_u8.wrapping_add(ordinal_u8); 32],
+            idempotency_digest,
         ),
     );
-    let request_id =
-        RequestId::from_bytes(uuid_bytes(0x30_u8.wrapping_add(ordinal_u8))).expect("request ID");
-    let provenance_id = ProvenanceId::from_bytes(uuid_bytes(0x50_u8.wrapping_add(ordinal_u8)))
-        .expect("provenance ID");
+    let request_id = RequestId::from_bytes(ordinal_uuid_bytes(0x30, ordinal)).expect("request ID");
+    let provenance_id =
+        ProvenanceId::from_bytes(ordinal_uuid_bytes(0x50, ordinal)).expect("provenance ID");
     let logical_time =
         LogicalTime::new(Timestamp::new(1_700_000_001, 0).expect("logical timestamp"));
     let mut partition = PartitionKeyBuilder::new(AggregateTypeId::new(1).expect("aggregate"));
@@ -764,8 +794,16 @@ fn build_command_fixture(
     .expect("read snapshot");
     let post_image = EntityPostImage::new(target.clone(), plan.contract_version(), record(payload))
         .expect("entity post-image");
-    let event_intent = EventIntent::new(EventTypeId::new(1).expect("event type"), record(payload))
-        .expect("event intent");
+    let event_type_id = EventTypeId::new(1).expect("event type");
+    let event_policy_anchor = riffdb_storage_api::StoredEventPolicyAnchorV1::new(
+        DurableKeySchemaBindingV1::from_plan(&plan),
+        event_type_id,
+        target.clone(),
+        riffdb_types::RowPolicyName::new("RowAccess").expect("row policy name"),
+    );
+    let event_intent =
+        EventIntent::new_anchored(event_type_id, record(payload), event_policy_anchor.clone())
+            .expect("anchored event intent");
     let declared_outcome =
         DeclaredOutcome::new(OutcomeId::new(1).expect("outcome ID"), record(payload))
             .expect("declared outcome");
@@ -906,13 +944,19 @@ fn build_command_fixture(
 
     let assignment = AssignedCommandSequence::from_assigned(sequence);
     let event_id = EventId::new(sequence, 0);
-    let event_type_id = EventTypeId::new(1).expect("event type");
     let event_payload = record(payload);
-    let event = StoredDurableEventV1::new(
+    let event = StoredDurableEventV1::new_anchored(
         event_id,
         event_type_id,
         event_payload.clone(),
-        derive_event_hash_v1(event_id, event_type_id, &event_payload).expect("event hash"),
+        riffdb_storage_api::derive_event_hash_v2(
+            event_id,
+            event_type_id,
+            &event_payload,
+            &event_policy_anchor,
+        )
+        .expect("anchored event hash"),
+        event_policy_anchor,
     )
     .expect("durable event");
     let stored_outcome = StoredOutcomeV1::new(
@@ -993,6 +1037,7 @@ fn build_command_fixture(
         intent,
         affected_targets,
         write_plan,
+        snapshot,
         records,
         target,
         range,
@@ -1034,6 +1079,100 @@ fn prepare_command_database(path: &Path) {
         ),
         "unexpected catalog activation result: {result:?}"
     );
+}
+
+fn protected_event_capability_intent() -> CapabilityBootstrapIntentV1 {
+    let capability_id =
+        CapabilityId::from_bytes(uuid_bytes(0x73)).expect("protected event capability");
+    let issued_at = Timestamp::new(1_699_999_900, 0).expect("capability issue time");
+    let token_digest = CapabilityTokenDigest::from_hmac_bytes(
+        DigestKeyId::new(7).expect("capability digest key"),
+        [0x73; 32],
+    );
+    let permissions = CapabilityPermissionsV1::new(vec![
+        CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::AdministerCapabilities)
+            .expect("capability permission"),
+    ])
+    .expect("capability permissions");
+    let grant = CapabilityGrantV1::new(
+        TenantScope::Global,
+        PartitionScopeV1::All,
+        permissions,
+        Vec::new(),
+        NonZeroU16::MIN,
+        Vec::new(),
+    )
+    .expect("capability grant");
+    let requested = CapabilityRequestedRecordV1::new(
+        database_id(),
+        Environment::new("test").expect("capability environment"),
+        ActorId::new("protected-event-test").expect("capability principal"),
+        ActorKind::Human,
+        NonZeroU32::new(600).expect("capability duration"),
+        vec![Audience::new("riffdb-test").expect("capability audience")],
+        grant,
+    )
+    .expect("capability request");
+    let start = BootstrapServiceAuditStartV1::new(
+        RequestId::from_bytes(uuid_bytes(0x74)).expect("capability bootstrap request"),
+        issued_at,
+        ServiceIngressKindV1::Grpc,
+        ServiceAuditTargetsV1::new([ServiceAuditTargetV1::Capability(capability_id)])
+            .expect("capability audit target"),
+        None,
+    )
+    .expect("capability bootstrap audit start");
+    CapabilityBootstrapIntentV1::new(
+        capability_id,
+        requested,
+        BootstrapDigestCandidatesV1::new(vec![token_digest], token_digest)
+            .expect("capability digest candidates"),
+        issued_at,
+        Timestamp::new(1_700_000_500, 0).expect("capability expiry"),
+        start,
+    )
+    .expect("protected event capability intent")
+}
+
+fn prepare_protected_command_database(
+    path: &Path,
+    controller: RedbTestController,
+) -> (RedbOperationalPorts, StoredCapabilityRecordV1) {
+    let mut store = RedbStore::open_with_test_controller(path, controller)
+        .expect("open protected command database");
+    store
+        .initialize_database(database_id())
+        .expect("initialize protected command database");
+    let mut ports = open_operational(store);
+    let intent = protected_event_capability_intent();
+    assert!(matches!(
+        ports
+            .bootstrap_capability(&intent)
+            .expect("bootstrap protected event capability"),
+        CapabilityBootstrapResult::BootstrapCreated { capability_id, .. }
+            if capability_id == intent.capability_id()
+    ));
+    let capability = ports
+        .read_capability(intent.capability_id())
+        .expect("read protected event capability")
+        .expect("protected event capability exists");
+    let bundle = contract_bundle();
+    let result = ports
+        .activate_catalog(&CatalogActivationIntentV1::new(
+            None,
+            bundle.clone(),
+            RequestId::from_bytes(uuid_bytes(0x75)).expect("protected catalog request"),
+            catalog_principal(),
+            Timestamp::new(1_700_000_000, 0).expect("protected catalog timestamp"),
+            None,
+        ))
+        .expect("activate protected command catalog");
+    assert!(matches!(
+        &result,
+        CatalogActivationResult::Activated { active, .. }
+            if *active == riffdb_storage_api::ActiveCatalogPointerV1::from_bundle(&bundle)
+    ));
+    (ports, capability)
 }
 
 fn commit_command_fixture(ports: &RedbOperationalPorts, fixture: &CommandFixture) {
@@ -1807,6 +1946,12 @@ fn process_recovery_child() {
         "after-command-batch-commit" => {
             RedbTestController::abort_after_commit(RedbTestOperation::CommandBatch)
         }
+        "before-fresh-locator-publication" => {
+            RedbTestController::abort_before_commit(RedbTestOperation::CommandBatch)
+        }
+        "after-fresh-locator-publication" => {
+            RedbTestController::abort_after_commit(RedbTestOperation::CommandBatch)
+        }
         "before-cross-aggregate-commit" => {
             RedbTestController::abort_before_commit(RedbTestOperation::CommandBatch)
         }
@@ -1905,6 +2050,19 @@ fn process_recovery_child() {
         | "after-command-batch-commit" => {
             let ports = open_operational(store);
             commit_command_fixture(&ports, &command_fixture());
+        }
+        "before-fresh-locator-publication" | "after-fresh-locator-publication" => {
+            let ports = open_operational(store);
+            let fixture = two_phase_command_fixture_at(1);
+            let request = AdmissionRequestV1::new(fixture.candidates.clone(), &fixture.context)
+                .expect("fresh crash-child admission request");
+            assert_eq!(
+                ports
+                    .admit_or_resolve(request)
+                    .expect("arm coverage through the exact first command write"),
+                AdmissionResultV1::Created(fixture.pending.clone())
+            );
+            commit_command_fixture(&ports, &fixture);
         }
         "before-cross-aggregate-commit" | "after-cross-aggregate-commit" => {
             let ports = open_operational(store);
@@ -2220,6 +2378,429 @@ fn multiple_deferred_subgroups_publish_together_in_sequence_order() {
             ServiceAuditPhaseV1::Succeeded,
         ]
     );
+}
+
+// req: OUT-001, OUT-002, TXN-042, REC-004, PERF-019
+#[test]
+fn cold_fresh_database_publications_complete_without_history_scans() {
+    const PUBLICATIONS: u64 = 288;
+
+    let path = TestDatabasePath::new("fresh-locator-no-history-scans");
+    prepare_command_database(&path.0);
+    let prepared = open_operational(RedbStore::open(&path.0).expect("validate fresh database"));
+    let _clean = prepared.complete_graceful_close();
+    drop(prepared);
+    let controller = RedbTestController::observe_index_migration();
+    let ports = open_operational(
+        RedbStore::open_with_test_controller(&path.0, controller.clone())
+            .expect("reopen fresh database"),
+    );
+
+    let mut fixtures = Vec::with_capacity(usize::try_from(PUBLICATIONS).expect("bounded proof"));
+    for ordinal in 1..=PUBLICATIONS {
+        let fixture = two_phase_command_fixture_at(ordinal);
+        assert_eq!(
+            ports
+                .lookup_admission(fixture.candidates.clone())
+                .expect("direct-inspection novel identity"),
+            AdmissionLookupResultV1::NotFound
+        );
+        assert_eq!(
+            controller.fresh_locator_history_fallback_scans(),
+            0,
+            "admission {ordinal} must use the exact public-prefix proof"
+        );
+        let request = AdmissionRequestV1::new(fixture.candidates.clone(), &fixture.context)
+            .expect("bounded admission request");
+        assert_eq!(
+            ports
+                .admit_or_resolve(request)
+                .unwrap_or_else(|error| panic!("admit novel identity {ordinal}: {error:?}")),
+            AdmissionResultV1::Created(fixture.pending.clone())
+        );
+        fixtures.push(fixture);
+    }
+
+    for (pipeline_ordinal, group) in fixtures.chunks_exact(3).enumerate() {
+        let first_ordinal = u64::try_from(pipeline_ordinal)
+            .expect("bounded pipeline ordinal")
+            .checked_mul(3)
+            .and_then(|value| value.checked_add(1))
+            .expect("bounded first ordinal");
+        let mut pipeline = Vec::with_capacity(3);
+        for fixture in group {
+            let epoch = ports
+                .begin_deferred_command_epoch()
+                .expect("begin bounded pipelined epoch");
+            let fence =
+                DeferredCommandEpoch::seal(apply_unpublished_command_fixture(epoch, fixture))
+                    .expect("seal bounded pipelined epoch");
+            pipeline.push((fixture, fence));
+        }
+        assert_eq!(pipeline.len(), 3, "each pipeline is exactly A/B/C");
+        for (offset, (fixture, fence)) in pipeline.into_iter().enumerate() {
+            let expected = first_ordinal + u64::try_from(offset).expect("bounded pipeline offset");
+            let committed = fence.wait().expect("publish FIFO pipeline member");
+            assert_eq!(committed.len(), 1);
+            assert_eq!(
+                committed[0].batch().outcomes()[0].commit_sequence(),
+                CommitSequence::new(expected).expect("pipeline sequence")
+            );
+            assert_eq!(
+                ports
+                    .read_commit(CommitSequence::new(expected).expect("published sequence"))
+                    .expect("read FIFO-published commit"),
+                Some(fixture.records.commit().clone())
+            );
+            let AdmissionLookupResultV1::Found(admission) = ports
+                .lookup_admission(fixture.candidates.clone())
+                .expect("read FIFO-published identity")
+            else {
+                panic!("each FIFO-published identity must be terminal");
+            };
+            assert_eq!(
+                *admission,
+                StoredAdmissionStateV1::StoredOutcome(fixture.records.stored_outcome().clone())
+            );
+            assert_eq!(
+                ports
+                    .read_entity(&fixture.target)
+                    .expect("read FIFO-published entity"),
+                Some(fixture.records.entities()[0].post_image().clone())
+            );
+        }
+    }
+
+    let final_fixture = fixtures.last().expect("final bounded fixture");
+    let AdmissionLookupResultV1::Found(final_state) = ports
+        .lookup_admission(final_fixture.candidates.clone())
+        .expect("exact final admitted outcome")
+    else {
+        panic!("final identity must resolve to its committed outcome");
+    };
+    let StoredAdmissionStateV1::StoredOutcome(final_outcome) = *final_state else {
+        panic!("final identity must resolve to its committed outcome");
+    };
+    assert_eq!(
+        final_outcome.commit_sequence(),
+        CommitSequence::new(PUBLICATIONS).expect("bounded final sequence")
+    );
+    assert_eq!(ports.transient_index_rebuilds(), 0);
+    assert_eq!(ports.transient_index_commit_rows(), 0);
+    assert_eq!(controller.fresh_locator_history_fallback_scans(), 0);
+}
+
+// req: OUT-001, OUT-002, TXN-042, REC-004, PERF-019
+#[test]
+fn armed_execution_failure_and_outbox_lanes_preserve_public_and_private_coverage() {
+    let failure_path = TestDatabasePath::new("fresh-locator-execution-failure-lane");
+    prepare_command_database(&failure_path.0);
+    let failure_controller = RedbTestController::observe_index_migration();
+    let failure_ports = open_operational(
+        RedbStore::open_with_test_controller(&failure_path.0, failure_controller.clone())
+            .expect("open execution-failure database"),
+    );
+    let failure = two_phase_command_fixture_at(1);
+    assert!(matches!(
+        admit_audited_command(&failure_ports, &failure).admission(),
+        AdmissionResultV1::Created(_)
+    ));
+    let request = ExecutionFailureTransitionRequestV1::new(
+        failure.pending.clone(),
+        &failure.snapshot,
+        ExecutionFailureCode::ArithmeticFault,
+    )
+    .expect("execution-failure request");
+    let ExecutionFailureAdmissionResult::Rechecked(rechecked) = failure_ports
+        .begin_execution_failure(request)
+        .expect("begin execution-failure lane")
+    else {
+        panic!("the exact admitted pending row must be rechecked");
+    };
+    let (awaiting, current) = rechecked
+        .read_transaction_current()
+        .expect("read exact failure dependencies");
+    assert_eq!(current.bindings(), failure.snapshot.bindings());
+    let terminal = awaiting
+        .terminalize()
+        .expect("terminalize real failure lane");
+    assert_eq!(terminal.pending(), &failure.pending);
+    let failure_continuation = two_phase_command_fixture_at(2);
+    assert_eq!(
+        failure_ports
+            .lookup_admission(failure_continuation.candidates.clone())
+            .expect("public-prefix miss after failure"),
+        AdmissionLookupResultV1::NotFound
+    );
+    assert!(matches!(
+        admit_audited_command(&failure_ports, &failure_continuation).admission(),
+        AdmissionResultV1::Created(_)
+    ));
+    assert_eq!(failure_controller.fresh_locator_history_fallback_scans(), 0);
+
+    let outbox_path = TestDatabasePath::new("fresh-locator-outbox-lane");
+    prepare_command_database(&outbox_path.0);
+    let outbox_controller = RedbTestController::observe_index_migration();
+    let mut outbox_ports = open_operational(
+        RedbStore::open_with_test_controller(&outbox_path.0, outbox_controller.clone())
+            .expect("open outbox database"),
+    );
+    let command = two_phase_command_fixture_at(1);
+    assert!(matches!(
+        admit_audited_command(&outbox_ports, &command).admission(),
+        AdmissionResultV1::Created(_)
+    ));
+    commit_two_phase_command_fixture(&outbox_ports, &command);
+    let event_id = command.records.events()[0].event_id();
+    let claim = OutboxClaimV1::new(
+        event_id,
+        OutboxStatusObservationV1::AbsentInitialPending,
+        OutboxDestinationIdV1::new("fresh-locator-proof").expect("destination"),
+        Timestamp::new(1_700_000_010, 0).expect("claim time"),
+        Timestamp::new(1_700_000_020, 0).expect("lease deadline"),
+    )
+    .expect("outbox claim");
+    assert!(matches!(
+        outbox_ports
+            .claim_outbox(&claim)
+            .expect("claim real outbox row"),
+        OutboxTransitionResultV1::Applied(_)
+    ));
+    let outbox_continuation = two_phase_command_fixture_at(2);
+    assert_eq!(
+        outbox_ports
+            .lookup_admission(outbox_continuation.candidates.clone())
+            .expect("public-prefix miss after outbox transition"),
+        AdmissionLookupResultV1::NotFound
+    );
+    assert!(matches!(
+        admit_audited_command(&outbox_ports, &outbox_continuation).admission(),
+        AdmissionResultV1::Created(_)
+    ));
+    assert_eq!(outbox_controller.fresh_locator_history_fallback_scans(), 0);
+}
+
+fn protected_consumer_identity(seed: u8) -> EventConsumerIdentityV1 {
+    EventConsumerIdentityV1::new(
+        database_id(),
+        ReactiveModuleHash::from_bytes([seed; 32]),
+        ReactiveOperationName::new("ProtectedRows").expect("reactive operation"),
+        QueryParameterHash::from_bytes([seed.wrapping_add(1); 32]),
+        EventConsumerName::new(format!("protected-{seed}")).expect("consumer name"),
+    )
+}
+
+fn protected_event_admission(
+    capability: StoredCapabilityRecordV1,
+    event: StoredDurableEventV1,
+    current: StoredEntityRecordV1,
+    observed_at: Timestamp,
+) -> EventPolicyAdmissionFenceV1 {
+    EventPolicyAdmissionFenceV1::new(
+        capability,
+        observed_at,
+        vec![
+            EventPolicyAdmissionObservationV1::new(event, Some(current), Vec::new(), true)
+                .expect("admitted current-row observation"),
+        ],
+    )
+    .expect("protected event admission")
+}
+
+// req: OUT-001, OUT-002, TXN-042, REC-004, PERF-019
+#[test]
+fn every_protected_consumer_mutation_path_preserves_armed_public_and_private_coverage() {
+    let path = TestDatabasePath::new("fresh-locator-protected-consumer-lanes");
+    let controller = RedbTestController::observe_index_migration();
+    let (mut ports, capability) = prepare_protected_command_database(&path.0, controller.clone());
+
+    let command = two_phase_command_fixture_at(1);
+    assert!(matches!(
+        admit_audited_command(&ports, &command).admission(),
+        AdmissionResultV1::Created(_)
+    ));
+    commit_two_phase_command_fixture(&ports, &command);
+    let event = command.records.events()[0].clone();
+    assert!(
+        event.policy_anchor().is_some(),
+        "fixture event must be protected"
+    );
+    let current = command.records.entities()[0].post_image().clone();
+    let event_id = event.event_id();
+    let partition_hash = PartitionKeyHash::from_bytes([0x91; 32]);
+
+    let first_identity = protected_consumer_identity(0x81);
+    let first_token = EventLeaseToken::from_bytes([0x82; 32]);
+    let selected_at = Timestamp::new(1_700_000_010, 0).expect("selection time");
+    let selected = ports
+        .coordinate_protected_event_consumer_lease(ProtectedEventConsumerLeaseV1 {
+            identity: first_identity.clone(),
+            partition_hash,
+            history_incarnation: 1,
+            observed_at: selected_at,
+            expires_at: Timestamp::new(1_700_000_020, 0).expect("lease expiry"),
+            selected_events: vec![event_id],
+            tokens: vec![first_token],
+            batch_limit: 1,
+            in_flight_limit: 1,
+            admission: protected_event_admission(
+                capability.clone(),
+                event.clone(),
+                current.clone(),
+                selected_at,
+            ),
+        })
+        .expect("run protected policy-selection path");
+    assert_eq!(
+        selected.transition,
+        EventConsumerTransitionResultV1::Applied
+    );
+    assert_eq!(selected.leases.len(), 1);
+
+    let after_selection = two_phase_command_fixture_at(2);
+    assert_eq!(
+        ports
+            .lookup_admission(after_selection.candidates.clone())
+            .expect("public-prefix miss after protected selection"),
+        AdmissionLookupResultV1::NotFound
+    );
+
+    let resolved_at = Timestamp::new(1_700_000_011, 0).expect("resolution time");
+    assert_eq!(
+        ports
+            .coordinate_protected_event_consumer_resolution(ProtectedEventConsumerResolutionV1 {
+                acknowledgement: CoordinateConsumerAcknowledgementV1 {
+                    identity: first_identity,
+                    event_id,
+                    token: first_token,
+                    history_incarnation: 1,
+                    observed_at: resolved_at,
+                    selected_prefix: vec![event_id],
+                },
+                retry_at: None,
+                admission: protected_event_admission(
+                    capability.clone(),
+                    event.clone(),
+                    current.clone(),
+                    resolved_at,
+                ),
+            })
+            .expect("run protected resolution path"),
+        EventConsumerTransitionResultV1::Applied
+    );
+
+    let recovery_identity = protected_consumer_identity(0x83);
+    let recovery_token = EventLeaseToken::from_bytes([0x84; 32]);
+    let recovery_selected_at = Timestamp::new(1_700_000_012, 0).expect("recovery selection time");
+    let recovery_expiry = Timestamp::new(1_700_000_013, 0).expect("recovery lease expiry");
+    let recovery_selected = ports
+        .coordinate_protected_event_consumer_lease(ProtectedEventConsumerLeaseV1 {
+            identity: recovery_identity.clone(),
+            partition_hash,
+            history_incarnation: 1,
+            observed_at: recovery_selected_at,
+            expires_at: recovery_expiry,
+            selected_events: vec![event_id],
+            tokens: vec![recovery_token],
+            batch_limit: 1,
+            in_flight_limit: 1,
+            admission: protected_event_admission(
+                capability.clone(),
+                event.clone(),
+                current.clone(),
+                recovery_selected_at,
+            ),
+        })
+        .expect("seed one protected lease for recovery");
+    assert_eq!(recovery_selected.leases.len(), 1);
+    let recovered = ports
+        .coordinate_protected_event_consumer_lease(ProtectedEventConsumerLeaseV1 {
+            identity: recovery_identity,
+            partition_hash,
+            history_incarnation: 1,
+            observed_at: recovery_expiry,
+            expires_at: Timestamp::new(1_700_000_030, 0).expect("post-recovery expiry"),
+            selected_events: vec![event_id],
+            tokens: vec![EventLeaseToken::from_bytes([0x85; 32])],
+            batch_limit: 1,
+            in_flight_limit: 1,
+            admission: protected_event_admission(capability, event, current, recovery_expiry),
+        })
+        .expect("run protected expired-lease recovery path");
+    assert_eq!(
+        recovered.transition,
+        EventConsumerTransitionResultV1::StateChanged
+    );
+    assert!(recovered.leases.is_empty());
+
+    assert_eq!(
+        ports
+            .lookup_admission(after_selection.candidates.clone())
+            .expect("public-prefix miss after every protected consumer path"),
+        AdmissionLookupResultV1::NotFound
+    );
+    assert!(matches!(
+        admit_audited_command(&ports, &after_selection).admission(),
+        AdmissionResultV1::Created(_)
+    ));
+    assert_eq!(controller.fresh_locator_history_fallback_scans(), 0);
+}
+
+// req: OUT-001, OUT-002, TXN-042, REC-004, PERF-019
+#[test]
+fn fresh_locator_before_and_after_publication_kills_drop_process_proof_and_fail_closed() {
+    for (mode, committed) in [
+        ("before-fresh-locator-publication", false),
+        ("after-fresh-locator-publication", true),
+    ] {
+        let path = TestDatabasePath::new(mode);
+        prepare_command_database(&path.0);
+        run_crashing_child(mode, &path.0);
+
+        let ports = open_operational(
+            RedbStore::open(&path.0).expect("recover killed fresh-locator publication"),
+        );
+        let prior = two_phase_command_fixture_at(1);
+        let AdmissionLookupResultV1::Found(prior_state) = ports
+            .lookup_admission(prior.candidates)
+            .expect("prior identity remains exactly readable after restart")
+        else {
+            panic!("the admitted pre-publication identity must survive both kill boundaries");
+        };
+        assert_eq!(
+            matches!(*prior_state, StoredAdmissionStateV1::StoredOutcome(_)),
+            committed,
+            "only the after-publication kill may expose the complete command outcome"
+        );
+        let _clean = ports.complete_graceful_close();
+        drop(ports);
+        let ports = open_operational(
+            RedbStore::open(&path.0).expect("clean reopen after killed publication recovery"),
+        );
+
+        let novel = two_phase_command_fixture_at(2);
+        assert_eq!(
+            ports
+                .lookup_admission(novel.candidates.clone())
+                .expect("restart novel-key inspection retains its prior result algebra"),
+            AdmissionLookupResultV1::NotFound
+        );
+        let request = AdmissionRequestV1::new(novel.candidates.clone(), &novel.context)
+            .expect("post-restart admission request");
+        assert_eq!(
+            ports
+                .admit_or_resolve(request)
+                .expect("nonempty first command-write entry keeps current admission semantics"),
+            AdmissionResultV1::Created(novel.pending)
+        );
+        let later = two_phase_command_fixture_at(3);
+        assert_eq!(
+            ports
+                .lookup_admission(later.candidates)
+                .expect("disabled coverage keeps bounded operational fallback"),
+            AdmissionLookupResultV1::NotFound
+        );
+    }
 }
 
 #[test]
@@ -4441,6 +5022,110 @@ fn an_idempotency_locator_naming_the_wrong_segment_fails_closed() {
     );
 }
 
+// req: OUT-001, OUT-002, TXN-042
+#[test]
+fn fresh_locator_miss_preserves_prior_identity_and_rejects_malformed_locators() {
+    let prior_path = TestDatabasePath::new("fresh-locator-prior-identity");
+    let (first, second) = prepare_two_command_database(&prior_path.0);
+    let ports = open_operational(RedbStore::open(&prior_path.0).expect("reopen two-command store"));
+    ports
+        .write_clean_close_lifecycle()
+        .expect("certify bounded locator-only reopen");
+    drop(ports);
+    let ports = open_operational(RedbStore::open(&prior_path.0).expect("bounded reopen"));
+    assert!(ports.clean_close_fast_startup());
+    assert_eq!(ports.transient_index_rebuilds(), 0);
+    for fixture in [&first, &second] {
+        let AdmissionLookupResultV1::Found(state) = ports
+            .lookup_admission(fixture.candidates.clone())
+            .expect("every prior locator remains readable")
+        else {
+            panic!("every prior identity must remain terminal");
+        };
+        assert_eq!(
+            *state,
+            StoredAdmissionStateV1::StoredOutcome(fixture.records.stored_outcome().clone())
+        );
+    }
+
+    let malformed_path = TestDatabasePath::new("fresh-locator-malformed-row");
+    let (malformed, _) = prepare_committed_command_database(&malformed_path.0);
+    overwrite_first_row(
+        &malformed_path.0,
+        "idempotency_locators",
+        &[0xff, 0xff, 0xff, 0xff],
+    );
+    assert!(readmission_is_corrupt(&malformed_path.0, &malformed));
+
+    let wrong_capsule_path = TestDatabasePath::new("fresh-locator-wrong-capsule-identity");
+    let (expected, _) = prepare_two_command_database(&wrong_capsule_path.0);
+    let wrong_locator = riffdb_storage_api::encode_command_locator_v1(
+        riffdb_storage_api::StoredCommandLocatorV1::new(
+            CommitSequence::new(2).expect("existing wrong command sequence"),
+        ),
+    )
+    .expect("encode locator to a real but differently identified command");
+    overwrite_exact_row(
+        &wrong_capsule_path.0,
+        "idempotency_locators",
+        expected
+            .pending
+            .identity()
+            .storage_key()
+            .expect("canonical identity key")
+            .as_bytes(),
+        wrong_locator.as_bytes(),
+    );
+    assert!(
+        readmission_is_corrupt(&wrong_capsule_path.0, &expected),
+        "a real capsule with the wrong complete identity must be corruption"
+    );
+}
+
+// req: OUT-001, OUT-002, TXN-042
+#[test]
+fn fresh_locator_write_miss_retains_current_semantics_and_gates_only_coverage() {
+    let path = TestDatabasePath::new("fresh-locator-write-miss-result-algebra");
+    prepare_command_database(&path.0);
+    let first = two_phase_command_fixture_at(1);
+    let ports = open_operational(RedbStore::open(&path.0).expect("open empty command store"));
+    let request =
+        AdmissionRequestV1::new(first.candidates, &first.context).expect("first admission request");
+    assert_eq!(
+        ports.admit_or_resolve(request).expect("first admission"),
+        AdmissionResultV1::Created(first.pending)
+    );
+    drop(ports);
+
+    let second = two_phase_command_fixture_at(2);
+    let ports = open_operational(RedbStore::open(&path.0).expect("reopen nonempty command store"));
+    assert_eq!(
+        ports
+            .lookup_admission(second.candidates.clone())
+            .expect("operational novel-key miss"),
+        AdmissionLookupResultV1::NotFound
+    );
+    let request = AdmissionRequestV1::new(second.candidates.clone(), &second.context)
+        .expect("second admission request");
+    assert_eq!(
+        ports
+            .admit_or_resolve(request)
+            .expect("nonempty authority disables only the optimization"),
+        AdmissionResultV1::Created(second.pending.clone())
+    );
+    let candidate = ports
+        .begin_empty_batch()
+        .expect("begin transaction-adjacent revalidation")
+        .begin_candidate(Box::new(second.intent))
+        .expect("begin admitted candidate");
+    assert!(matches!(
+        candidate
+            .recheck_admission()
+            .expect("transaction-adjacent miss retains Proceed"),
+        CandidateAdmissionResult::Proceed(_)
+    ));
+}
+
 /// Replaces the first row's value in a raw table, leaving its key intact.
 fn overwrite_first_row(path: &Path, table_name: &str, value: &[u8]) {
     let database = Database::open(path).expect("open raw");
@@ -4457,6 +5142,23 @@ fn overwrite_first_row(path: &Path, table_name: &str, value: &[u8]) {
             .expect("a locator row to damage");
         let mut table = write.open_table(definition).expect("raw table");
         table.insert(key.as_slice(), value).expect("overwrite");
+    }
+    write.commit().expect("commit raw damage");
+}
+
+fn overwrite_exact_row(path: &Path, table_name: &str, key: &[u8], value: &[u8]) {
+    let database = Database::open(path).expect("open raw");
+    let definition = TableDefinition::<&[u8], &[u8]>::new(table_name);
+    let write = database.begin_write().expect("begin raw write");
+    {
+        let mut table = write.open_table(definition).expect("raw table");
+        assert!(
+            table
+                .insert(key, value)
+                .expect("overwrite exact row")
+                .is_some(),
+            "the exact locator row must already exist"
+        );
     }
     write.commit().expect("commit raw damage");
 }

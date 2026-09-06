@@ -40,10 +40,12 @@
 //! - `RedbReadAccess::Current` serves the newest snapshot a handle with no
 //!   durable frontier may open. `SharedRedb::current_read_root` reuses one such
 //!   snapshot for every access entitled to it — every access taken while
-//!   `durable_commit_epoch` is unchanged — so the cache spans those accesses
-//!   too. A daemon that has not written since startup has neither a durable
-//!   frontier nor a composite publication, so this is the only shape its reads
-//!   take.
+//!   the stable even `durable_root_publication` generation is unchanged — so
+//!   the cache spans those accesses too. The intervening odd generation marks
+//!   an engine commit whose successor root may already be visible but whose
+//!   exact identity has not yet been published. A daemon that has not written
+//!   since startup has neither a durable frontier nor a composite publication,
+//!   so this is the only shape its reads take.
 //!
 //! The same equivalence licenses caching a derived *value* rather than a
 //! handle, provided every input it reads is fixed by the snapshot. The
@@ -77,6 +79,7 @@ const JOURNAL_TABLE_SLOTS: usize = JournalTable::ALL.len();
 /// either way; ordering it explicitly keeps the cache visibly subordinate to
 /// the snapshot it was resolved from.
 pub(crate) struct CheckpointRoot {
+    identity: u64,
     meta: OnceLock<MetaTable>,
     capabilities: OnceLock<ByteTable>,
     journal_tables: [OnceLock<ByteTable>; JOURNAL_TABLE_SLOTS],
@@ -86,14 +89,19 @@ pub(crate) struct CheckpointRoot {
 
 impl CheckpointRoot {
     /// Wraps one captured snapshot with an empty handle cache.
-    pub(crate) fn new(transaction: ReadTransaction) -> Self {
+    pub(crate) fn new(transaction: ReadTransaction, identity: u64) -> Self {
         Self {
+            identity,
             meta: OnceLock::new(),
             capabilities: OnceLock::new(),
             journal_tables: std::array::from_fn(|_| OnceLock::new()),
             snapshot_head: OnceLock::new(),
             transaction,
         }
+    }
+
+    pub(crate) const fn identity(&self) -> u64 {
+        self.identity
     }
 
     /// Resolves the snapshot-visible application frontier once per snapshot.

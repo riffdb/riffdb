@@ -341,7 +341,7 @@ pub(super) fn event_from_proto(
     ))
 }
 
-fn event_policy_anchor_to_proto(
+pub(super) fn event_policy_anchor_to_proto(
     value: &StoredEventPolicyAnchorV1,
 ) -> wire::StoredEventPolicyAnchorV1 {
     wire::StoredEventPolicyAnchorV1 {
