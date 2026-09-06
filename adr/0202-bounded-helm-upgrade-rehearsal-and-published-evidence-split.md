@@ -1,10 +1,10 @@
 ---
 adr: "0202"
 title: Bounded Helm Upgrade Rehearsal and Published Evidence Split
-status: proposed
+status: accepted
 tier: surface
 date: 2026-09-05
-accepted: null
+accepted: "2026-09-05"
 requires: [ADR-0055, ADR-0056, ADR-0105, ADR-0110, ADR-0112, ADR-0124]
 amends: []
 supersedes: []
