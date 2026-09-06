@@ -22772,14 +22772,14 @@ work_packages:
 
 - id: WP-757
   name: Alpha format epoch 2 reset and one-identity-per-domain topology
-  tier: surface
+  tier: guarantee
   depends_on: [WP-612, WP-711]
   objective: Declare alpha format epoch 2 through the ADR-0112 ceremony, delete every superseded
     decoder, fixture, generated artifact, and topology row while the pre-external window is open,
     and make scripts/check-version-topology refuse a second readable identity per domain until the
     first external database is registered.
   requirements: [GOV-001, GOV-002, GOV-003, AFC-005, AFC-006, PRJ-007, VER-005]
-  required_adrs: [ADR-0006, ADR-0112, ADR-0124, ADR-0181, ADR-0190, ADR-0192]
+  required_adrs: [ADR-0006, ADR-0112, ADR-0124, ADR-0181, ADR-0190, ADR-0192, ADR-0204]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0181-pre-alpha-format-epoch-reset-and-governance-load.md, adr/README.md,
     release/version-topology-v1.json, release/durable-format-manifest-v1.json,
