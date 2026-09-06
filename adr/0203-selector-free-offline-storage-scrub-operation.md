@@ -1,192 +1,232 @@
 ---
 adr: "0203"
 title: Selector-Free Offline Storage Scrub Operation
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-05
-accepted: null
-requires: [ADR-0050, ADR-0156, ADR-0157, ADR-0182]
-amends: [ADR-0050, ADR-0182]
+accepted: 2026-09-06
+requires: [ADR-0050, ADR-0156, ADR-0157, ADR-0179, ADR-0182, ADR-0199]
+amends:
+  - ADR-0050 for the additive selector-free storage-scrub operation
+  - ADR-0179 for generated audit-exempt maintenance declarations
+  - ADR-0182 for the exact public health encoding and REC-004 reconciliation
+  - ADR-0199 for the one closed non-PERF WP-760 definition correction
+  - REC-004
 supersedes: []
-requirements: [REC-008]
+requirements: [REC-004, REC-007, REC-008]
 packages: [WP-760]
 obligations:
   - id: OBL-0203-1
     package: WP-760
     proof: public_offline_scrub_drives_the_complete_validation_path
     says: The selector-free public scrub uses the shared authorized offline-maintenance lifecycle, drives the one complete exact-end validation path, persists a bounded compatible receipt, and exposes no validation scope, target, path, backend, repair, force, or readiness selector.
+  - id: OBL-0203-2
+    package: WP-760
+    proof: every_public_operation_has_exactly_one_registry_declaration
+    says: Each of the five public receipted-maintenance RPCs has exactly one generated, audit-exempt, gRPC-only registry declaration separate from durable ServiceOperationV1.
 review_triggers:
-  - The request or CLI would gain any target, path, namespace, validation-scope, backend, repair, force, skip, readiness, rate, checkpoint, or resume selector.
-  - Scrub would bypass the API-neutral service, deny-by-default authorization, quiescence, receipt, exact-end validator, or ordinary post-maintenance readiness proof.
-  - Scrub would become an MCP tool or resource, grant application authority, reveal a path, hash, frontier, row count, key, catalog value, or corrupt payload, or mutate authoritative application state.
-  - Receipt compatibility, operation identity, phase ordering, failure classification, public field numbering, or the accepted one-incomplete-maintenance-operation rule would change.
+  - The scrub request, client, or CLI would gain a target, path, namespace, scope, backend, repair, force, skip, readiness, rate, checkpoint, resume, or kind selector.
+  - Scrub would bypass the API-neutral service, policy authorization, quiescence, receipt, exact-end validator, or ordinary post-maintenance readiness proof.
+  - Registry coverage, gRPC-only ingress, health numbering, state validity, incident exposure, aggregate classification, receipt phase ordering, failure classification, operation identity, or the one-incomplete-operation rule would change.
+  - The WP-760 correction would change anything except required_adrs and the seven named allowed-path families, change PERF authority, or lift the freeze.
 ---
 # ADR-0203: Selector-Free Offline Storage Scrub Operation
 
 ## Context
 
-ADR-0182 and REC-008 require the complete exact-end integrity path to become an
-authorized public offline scrub. ADR-0050, however, froze named backup and
-restore RPCs whose start requests carry backup-specific semantic input. Leaving
-the scrub RPC shape to WP-760 would let an implementation package accidentally
-invent a target, validation scope, repair mode, or generic maintenance selector
-that weakens the public safety boundary.
+ADR-0182 requires complete validation to move off dirty readiness and into first
+access, one background scrub, and one authorized public offline scrub. ADR-0050
+does not freeze that scrub's wire shape, and current health wire types cannot
+encode the scrub's five states. Implementation must not invent a selector or an
+ambiguous status mapping.
 
-The scrub has exactly one safe meaning: validate the configured database
-completely while ordinary work is quiesced. It neither selects storage nor
-repairs it. Its uncertainty identity still has to be caller-stable below the CLI
-so retries cannot start duplicate offline work.
+WP-760 also predates this record: its definition omits this required ADR and the
+seven public-interface path families the accepted deliverables necessarily touch.
+ADR-0199 otherwise seals that definition while the performance freeze is in
+force. Finally, SPEC REC-004 still says every ineligible clean certificate runs
+the complete exact-end path, although accepted ADR-0182 replaced that rule with
+bounded dirty recovery.
 
 ## Decision
 
-1. `AdminService` gains exactly one additive unary RPC:
+1. `AdminService` gains exactly this additive unary RPC and messages:
 
    ```proto
    rpc StartOfflineStorageScrub(StartOfflineStorageScrubRequest)
        returns (StartOfflineStorageScrubResponse);
-
    message StartOfflineStorageScrubRequest {
      bytes request_id = 1;
      bytes operation_id = 2;
    }
-
    message StartOfflineStorageScrubResponse {
      OfflineMaintenanceStartDisposition disposition = 1;
      OfflineMaintenanceOperation operation = 2;
    }
    ```
 
-   The request has exactly those two fields. It has no target, database name,
-   backup name, path, URI, namespace, table, row class, validation scope,
-   backend, repair, force, skip, readiness, rate, checkpoint, resume, or generic
-   operation-kind field. Unknown fields retain the existing bounded public-wire
-   handling and never select behavior.
+   The request has exactly those two fields. Unknown fields retain the bounded
+   public-wire refusal rules and never select behavior. It has no target,
+   database, path, URI, namespace, table, validation scope, backend, repair,
+   force, skip, readiness, rate, checkpoint, resume, or operation-kind field.
 
-2. `OfflineMaintenanceOperationKind` adds the single closed value
-   `OFFLINE_MAINTENANCE_OPERATION_KIND_STORAGE_SCRUB = 4`. The caller never
-   supplies that enum; the RPC identity fixes it. Existing enum numbers and all
-   existing request and response field numbers remain unchanged. In the shared
-   `OfflineMaintenanceOperation`, `backup_name` is empty exactly when `kind` is
-   `STORAGE_SCRUB`; a nonempty scrub name or an empty name for a backup operation
-   is invalid and fails closed.
+2. ADR-0179's registry coverage includes every public receipted-maintenance RPC:
+   `CreateOfflineBackup`, `RestoreOfflineBackup`, `RetireOfflineBackup`,
+   `GetOfflineMaintenanceOperation`, and `StartOfflineStorageScrub`. Each has
+   exactly one closed `MaintenanceOperationDeclaration`, keyed only by its fully
+   qualified service/method identity and distinct from `ServiceOperationV1`.
+   It names its Protobuf/DTO pair, bounds, field map, permission, idempotency,
+   redaction, and audience; generators emit request/response validation and
+   routing metadata from it. Each declaration admits exactly
+   `ServiceIngressKindV1::Grpc`; CLI is a gRPC client.
+   Neither `McpHttp` nor in-process comparison is a public ingress. This is not
+   an exemption from ADR-0179 generation or coverage. Per ADR-0050 it adds no
+   durable audit operation or tag; the receipt remains the sole audit record.
 
-3. The Rust client exposes one checked `StartOfflineStorageScrub` value built
-   only from a caller-stable checked UUIDv7 maintenance operation ID. Each
-   transport attempt supplies a fresh checked `RequestId`. The CLI surface is
-   exactly `storage.scrub` / `riffdb storage scrub`, with no scrub-specific
-   argument or flag; it generates the maintenance operation ID, prints it in
-   the existing bounded `riffdb.cli.output/v1` envelope, and uses the existing
-   `riffdb backup operation <maintenance-operation-id>` observation command.
-   SDK callers retain the same operation ID and exact empty semantic input
-   across uncertain retries.
+3. `OfflineMaintenanceOperationKind` adds only
+   `OFFLINE_MAINTENANCE_OPERATION_KIND_STORAGE_SCRUB = 4`. Existing enum and
+   field numbers remain unchanged. The RPC, never its caller, fixes the kind.
+   `OfflineMaintenanceOperation.backup_name` is empty exactly for scrub and is
+   nonempty for every backup kind; any other combination fails closed.
 
-4. Reusing an operation ID for a different maintenance kind, or reusing a scrub
-   operation ID with any nonempty semantic input, is the existing stable input-
-   mismatch failure and starts no work. A matching retry returns only
-   `Accepted`, `AlreadyAccepted`, or the stored terminal observation. Concurrent
-   admission retains ADR-0050's one-incomplete-operation rule; scrub adds no
-   second queue, worker, lease, writer, or storage handle.
+4. The authenticated health schema grows additively as follows; existing enums,
+   fields, and numbers remain unchanged:
 
-5. gRPC performs only bounded structural decoding and total wire conversion.
-   The API-neutral administration service fixes the scrub kind and supplies the
-   existing offline-maintenance authorization request. The operation requires
-   the same global `AdministerCapabilities` permission, tenant scope, expiry,
-   environment, audience, and approval obligations as the accepted ADR-0050
-   operations. Confirmation is neither requested nor applicable because scrub
-   performs no repair or replacement. CLI and client use only public gRPC; MCP
-   gains no tool, resource, schema, visibility, or dispatch path.
+   ```proto
+   enum StorageScrubHealthState {
+     STORAGE_SCRUB_HEALTH_STATE_UNSPECIFIED = 0;
+     STORAGE_SCRUB_HEALTH_STATE_PENDING = 1;
+     STORAGE_SCRUB_HEALTH_STATE_RUNNING = 2;
+     STORAGE_SCRUB_HEALTH_STATE_COMPLETE = 3;
+     STORAGE_SCRUB_HEALTH_STATE_FAILED = 4;
+     STORAGE_SCRUB_HEALTH_STATE_CANCELLED = 5;
+   }
+   message StorageScrubHealth {
+     StorageScrubHealthState state = 1;
+     optional bytes incident_id = 2;
+   }
+   message AuthenticatedHealth {
+     // existing fields 1..7 unchanged
+     optional StorageScrubHealth storage_scrub = 8;
+   }
+   ```
 
-6. After durable receipt admission, the existing maintenance controller stops
-   admission, drains accepted work under the fixed deadline, stops derived
-   workers, closes the authoritative database, and gives the one admitted
-   driver the private backend capability. Scrub drives the same complete
-   structural and catalog-semantic exact-end validator used by backup
-   verification, restore, format upgrade, and retention preflight. It performs
-   no repair and no authoritative application mutation. Any malformed,
-   incomplete, contradictory, over-limit, or corrupt evidence terminalizes as
-   failed closed with an incident-safe failure class; absence and partial
-   success are never invented.
+   ADR-0182's `scrub` component means exactly this dedicated member beside the
+   existing bounded `components` list; no generic `HealthComponentKind` or
+   `HealthComponentStatus` value is added. It is present in authenticated gRPC
+   health and has exactly one non-`UNSPECIFIED` state. `incident_id` is absent
+   except in `FAILED`, where it is one checked 16-byte server-generated UUIDv7
+   `IncidentId`. The process-local machine starts `PENDING`; only
+   `PENDING -> RUNNING|CANCELLED` and
+   `RUNNING -> COMPLETE|FAILED|CANCELLED` are valid, terminal states do not
+   transition, and restart begins again at `PENDING`. No other state/incident
+   combination is valid.
 
-7. A successful scrub proves only that this exact closed-database validation
-   reached its exact end. It does not create or preserve a clean-close
-   certificate, force readiness, suppress or complete the background scrub,
-   advance retention, authorize another operation, or make a corrupt row
-   readable. The ordinary bounded-root startup validation runs after reopen,
-   and readiness remains false until both that proof and the terminal receipt
-   are durable. Derived workers restart only afterward.
+5. A scrub failure also sets the existing `AUTHORITATIVE_STORAGE` component to
+   `DEGRADED`; together with the scrub member's incident ID this is ADR-0182's
+   “degrades Storage with an incident identifier” rule. That exact combination
+   yields aggregate `HEALTH_STATUS_DEGRADED` while serving continues and corrupt
+   rows fail closed on access. Existing authoritative unavailability still
+   yields `NOT_READY`. Pending, running, complete, and ordinary ready operation
+   yield `READY`; cancellation exists only during shutdown. Health exposes no
+   incident detail, diagnostic text, hash, frontier, count, path, key, catalog
+   value, or corrupt bytes.
 
-8. Scrub writes the least new compatible maintenance-receipt version required
-   to represent selector-free semantic input and scrub completion. Receipt V1
-   and V2 encodings, meanings, filenames, checksums, and readers remain byte-
-   frozen. The new receipt retains ADR-0050's checked operation identity,
-   canonical input hash, redacted actor/capability and approval identities,
-   database identity, bounded monotonic phase history, closed safe failure,
-   canonical checksum, atomic replacement, and parent-sync rules. Its canonical
-   input hash is domain-separated over the fixed scrub kind and empty input;
-   it contains no caller-controlled target or scope. Startup validates and
-   reconciles it before readiness under the existing one-incomplete-operation
-   bound; an old binary that cannot read the version refuses the maintenance
-   subtree before database mutation.
+6. The Rust client accepts only a caller-stable checked UUIDv7 maintenance
+   operation ID and supplies a fresh checked `RequestId` per transport attempt.
+   The CLI is exactly `riffdb storage scrub` (operation spelling
+   `storage.scrub`), has no scrub-specific argument or flag, generates the
+   operation ID, and prints it in the bounded `riffdb.cli.output/v1` envelope.
+   Observation reuses `riffdb backup operation <maintenance-operation-id>`.
+   MCP gains no tool, resource, schema, visibility, or dispatch path.
 
-9. The public operation observation remains bounded and closed. It exposes only
-   operation ID, closed kind, empty backup name, canonical input hash, phase,
-   and safe failure class already carried by `OfflineMaintenanceOperation`. No
-   filesystem path, storage key, hash from validated data, frontier, row count,
-   catalog value, corrupt bytes, credential, principal data, or incident detail
-   crosses the public boundary. Detailed causes remain redacted internal
-   tracing correlated by an incident identifier.
+7. Matching uncertain retries return only `Accepted`, `AlreadyAccepted`, or
+   the stored terminal observation. Reusing an operation ID for another kind or
+   nonempty scrub semantic input is the stable input-mismatch failure. Scrub
+   uses ADR-0050's one-incomplete-operation admission, API-neutral service,
+   global `AdministerCapabilities` authorization, controller, and receipt
+   recovery. It adds no queue, writer, lease, storage handle, or application
+   authority.
 
-10. WP-760 owns the additive Protobuf descriptors and fixtures, API-neutral
-    service and policy wiring, receipt compatibility, exact-end reuse, Rust
-    client, CLI JSONL goldens, handbook text, crash recovery, and conformance
-    proofs. This proposed record authorizes no implementation until a human
-    accepts its exact text. It changes no command, contract, MCP, application,
-    storage-key, database-format, audit-enum, capability-enum, retention, backup,
-    restore, or clean-certificate semantic.
+8. After durable admission, the controller stops admission, drains accepted
+   work under the fixed deadline, stops derived workers, closes the database,
+   and gives one private backend capability to the scrub driver. That driver
+   streams the shared complete structural and catalog-semantic exact-end
+   validator used by backup verification, restore, upgrade, and retention
+   preflight. It never repairs or mutates application state. Any incomplete,
+   contradictory, corrupt, or over-limit evidence fails closed.
 
-## Options considered
+9. Success proves only this closed-database pass reached exact end. It creates
+   no clean certificate, forces no readiness, suppresses no background scrub,
+   and advances no retention state. Reopen runs bounded-root startup validation;
+   readiness waits for that proof and the durable terminal receipt. Only scrub
+   writes maintenance receipt V3; create/restore remain V1 and retire remains
+   V2, whose bytes and meanings stay frozen. V3 retains ADR-0050's identity,
+   bounded phase history, redaction, checksum, atomic replacement, parent sync,
+   recovery, and unknown-version refusal, and adds only scrub kind plus explicit
+   absent backup input. Its sole success sequence is exactly
+   `Accepted -> Draining -> Offline -> Validating -> Succeeded`;
+   `FailedClosed` is reachable from any nonterminal state, `ArtifactPublished`
+   is never valid for scrub, and no other transition or re-entry is permitted.
+   Its input hash is domain-separated over fixed scrub kind and empty input.
 
-1. **A generic `StartOfflineMaintenance` request with a kind or scope:**
-   rejected because it creates a public selector whose future values can bypass
-   operation-specific safety and authorization review.
-2. **Add scrub fields to a backup start request:** rejected because an empty or
-   synthetic backup name obscures semantic identity and invites path coupling.
-3. **Expose scrub only in the CLI:** rejected because it would bypass the shared
-   public service/client path or require the CLI to own storage authority.
-4. **Expose repair or partial-table scrub modes:** rejected; corruption remains
-   fail-closed, and repair needs a separate guarantee decision.
+10. For REC-004, accepted ADR-0182 section 1 replaces only its stale first
+   sentence: startup with any missing, consumed, malformed, stale, repaired,
+   migrated, restored, or otherwise ineligible clean-close certificate executes
+   engine/format checks, complete journal-suffix recovery, bounded-root
+   validation, dirty-generation consumption, then readiness, with no population
+   walk. The complete exact-end path is required by explicit scrub and the
+   already accepted offline validation call sites, not dirty readiness. The
+   remaining REC-004 durability, ordering, and no-advance requirements are
+   unchanged. WP-760 updates the authoritative SPEC wording accordingly.
+
+11. This record makes one closed non-PERF amendment to ADR-0199 Decision 3.
+    While the freeze remains in force, WP-760 may change its normalized
+    definition only by adding `ADR-0203` to `required_adrs` and adding exactly
+    `proto/**`, `crates/riffdb-proto/**`, `crates/riffdb-api-grpc/**`,
+    `crates/riffdb-client-rust/**`, `crates/riffdb-policy/**`,
+    `crates/riffdb-types/**`, and `crates/riffdb-operation-registry/**` to
+    `allowed_paths`. Its requirements, objective,
+    deliverables, acceptance, exit gate, design tests, review triggers, PERF
+    requirements/evidence/thresholds, and all other fields remain byte-exact
+    apart from YAML formatting forced by those two additions. This authorizes no
+    candidate, new performance work, fifth exception, or freeze lift.
+
+12. If accepted, the companion reviewed package-metadata change applies exactly
+    Decision 11 to `work_packages.yaml`; it makes no closure change. WP-760 then
+    owns the registry, descriptors/fixtures, API-neutral DTO and service, policy, gRPC,
+    Rust client, CLI, health classification, receipt, docs, recovery, and tests.
+    This proposed record authorizes no implementation before exact-text human
+    acceptance.
 
 ## Consequences
 
-- Operators receive one idempotent uncertainty-safe way to request more
-  validation, with no way to request less.
-- The public Protobuf and external receipt inventories grow additively, so exact
-  descriptor, compatibility, redaction, retry, crash, and old-reader-refusal
-  fixtures are required.
-- Scrub is disruptive by design: it serializes with offline maintenance and
-  withholds readiness during close, validation, and reopen.
-- Online or partial repair, targeted scrub, resume checkpoints, remote or object
-  targets, MCP exposure, and public scrub scheduling remain deferred.
+- Operators gain one idempotent way to request more validation and no way to
+  request less; old wire readers ignore the additive health member.
+- Background scrub state and its one safe incident correlation become closed,
+  bounded, and testable; no free-form diagnostic crosses the public boundary.
+- Scrub is disruptive and serializes with offline maintenance. Targeted scrub,
+  repair, resume, remote targets, scheduling controls, and MCP remain deferred.
 
 ## Standing design tests
 
-- **Interface safety:** every public spelling selects the same configured
-  database and complete validator; application code and agents cannot express a
-  target, weaker scope, bypass, repair, force, or storage handle.
-- **Scale:** requests and receipts are fixed-size and bounded; validation streams
-  through the accepted bounded cursor and never builds a population-sized
-  index, result, diagnostic, or public response.
+- **Interface safety:** no application or agent can choose storage, scope,
+  target, weaker validation, bypass, repair, readiness, scrub suppression, or a
+  storage handle. The operator operation only performs the one complete pass;
+  health is observation-only and closed.
+- **Scale:** requests and health entries are fixed-size; receipts are bounded;
+  complete validation streams through the accepted bounded cursor and never
+  builds a population-sized index, result, diagnostic, or response.
 
 ## Checks
 
 - `public_offline_scrub_drives_the_complete_validation_path` proves shared
-  authorization, quiescence, exact-end reuse, receipt recovery, post-reopen
-  readiness, retry identity, and planted-corruption failure.
-- Public descriptor, Rust-client, CLI grammar/JSONL, source-span, unknown-field,
-  size, redaction, and MCP-exclusion fixtures freeze the selector-free surface.
-- Process failpoints cover receipt creation and sync, drain, close, exact-end
-  validation, terminalization, reopen, and readiness without duplicate work or
-  authoritative mutation.
-- Compatibility fixtures prove V1/V2 byte stability, the new receipt's exact
-  canonical bytes and bounds, corrupt/unknown-version refusal, and startup
-  reconciliation before readiness.
+  authorization, quiescence, exact-end reuse, receipt recovery, readiness,
+  retry identity, and planted-corruption failure.
+- `background_scrub_health_transitions_are_closed_and_cancellable` freezes all
+  state/incident combinations, Storage and aggregate classification, bounds,
+  rate, and cancellation; descriptor, conversion, redaction, and MCP-exclusion
+  fixtures freeze the additive wire.
+- Process failpoints cover receipt sync, drain, close, validation,
+  terminalization, reopen, and readiness; compatibility fixtures prove V1/V2
+  byte stability, new receipt bytes, corrupt/unknown-version refusal, and
+  startup reconciliation.
