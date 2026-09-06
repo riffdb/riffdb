@@ -6,10 +6,11 @@ to reason about. Rendered output is committed under `rendered/` and checked by
 
 ## Why this exists alongside `release/kubernetes/riffdb.yaml`
 
-That manifest is an **acceptance fixture**. It hardcodes `riffdb:remote-alpha`,
-pins one namespace, states no resource requests or limits, and bundles two
-proof Jobs with the workload. It proves NET-010's properties; it is not
-something an operator installs and upgrades.
+That manifest is a retained **historical acceptance fixture**. It hardcodes
+`riffdb:remote-alpha`, pins one namespace, states no resource requests or
+limits, and bundles two proof Jobs with the workload. It is not the current
+NET-010 proof and is not something an operator installs or upgrades. The chart
+and its parsed-object checks own the repository-local packaging proof.
 
 This chart deploys the same workload with the parts an operator must set
 exposed as values, and makes the proof Jobs opt-in
@@ -23,10 +24,10 @@ selector, general tuning surface, or secret value in TOML. The chart adds no
 knob beyond that surface. In particular:
 
 - **No secret values are templated.** Certificate chain, private key,
-  capability keys, and idempotency keys come from a Kubernetes Secret named by
-  `server.secretName`. The chart never renders their contents, and an init
-  container copies them into a memory-backed volume with the restricted modes
-  `riffdbd` requires.
+  capability keys, idempotency keys, readiness credential, and probe trust
+  root come from a Kubernetes Secret named by `server.secretName`. The chart
+  never renders their contents, and an init container copies them into a
+  memory-backed volume with the restricted modes `riffdbd` requires.
 - **TLS terminates at `riffdbd`, not at the proxy.** The proxy is pass-through,
   so no private key reaches it.
 - **`server.replicas` is not horizontal scaling.** `riffdbd` is a single-writer
@@ -75,16 +76,35 @@ The golden exists so a values or template edit is reviewable as a manifest
 diff. Reviewing the template alone reviews the source of a program whose output
 an operator runs; the golden reviews the output.
 
-## Verified against a real cluster
+`./scripts/check-helm-operator-package` parses both the default and opt-in
+renders. The opt-in render contains exactly one stable-application health Job
+and one operator health Job, each using its own pre-created external Secret,
+service DNS, the chart-bound image, and a protected memory volume. No Job or
+proof Secret reference appears in the default render.
+
+## Local lifecycle rehearsal
+
+`./scripts/check-helm-upgrade-rehearsal` packages the chart under two reserved
+`0.0.0-wp727.local-*` identities in temporary storage. It renders install,
+upgrade, and rollback with frozen values, parses their objects, and proves
+stable release, namespace, workload, PVC, and Secret identity while only the
+declared image, CPU request, proxy replica, and derived metadata move.
+
+This is deliberately offline, non-release evidence. It contacts no registry,
+cluster, or database and makes no publication, execution, storage compatibility,
+or durable rollback claim. Genuine two-published-version execution evidence is
+owned by WP-783.
+
+## Process-level startup boundary
 
 `helm lint` and `helm template` prove the chart renders. They prove nothing
-about whether the API server accepts the objects or the pods start. This chart
-was installed on a kind cluster (Kubernetes v1.34, podman provider) with an
-image built from `release/container/Dockerfile`, reaching `riffdb-0 1/1
-Running` with `server health` returning `status: pre_bootstrap`,
-`liveness: true`, `readiness: false` — the documented no-contract state.
+about whether an API server accepts the objects or a cluster starts the pods.
+WP-727 makes no controlled-cluster execution claim. The bounded
+`scripts/check-container-startup` check instead starts the release image with a
+read-only root filesystem, uid 65532, and only the documented volumes, and
+requires the server's ready marker.
 
-Doing that found a defect the render checks could not.
+That process-level check found a defect the render checks could not.
 
 **`projections_root` defaulted under a read-only path.** It falls back to
 `<cwd>/projections`, the image's `WORKDIR` is `/var/lib/riffdb`, and the pod
@@ -103,9 +123,10 @@ draft of this chart omitted. Without them the probe fails
 `configuration_invalid` and the pod never reports ready while the server is
 listening perfectly well.
 
-## Not yet covered
+## Operator procedure
 
-WP-727 also requires a documented upgrade between two released chart versions
-including the durable-format compatibility check, a documented rollback, and an
-operator runbook exercised against the chart rather than hand-written YAML.
-Those need two published chart versions to exist, which depends on WP-728.
+The [Helm operations runbook](../../docs/operations/HELM-OPERATIONS.md) covers
+install, controlled-network restriction, authenticated readiness, drain,
+verified backup, closed-database storage preflight, chart upgrade, certificate
+and capability rotation, restore, safe deployment rollback, and durable
+downgrade refusal.
