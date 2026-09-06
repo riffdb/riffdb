@@ -1,10 +1,10 @@
 ---
 adr: "0204"
 title: Epoch-Two Storage Reader Retirement and Package Retiering
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-05
-accepted: null
+accepted: "2026-09-06"
 requires: [ADR-0112, ADR-0124, ADR-0181, ADR-0190, ADR-0192, ADR-0195, ADR-0197, ADR-0200]
 amends: [ADR-0181, ADR-0197]
 supersedes: []
