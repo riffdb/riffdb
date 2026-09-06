@@ -1,10 +1,10 @@
 ---
 adr: "0201"
 title: Exact Adapter Evidence Classifications
-status: proposed
+status: accepted
 tier: surface
 date: 2026-09-05
-accepted: null
+accepted: 2026-09-05
 requires: [ADR-0110, ADR-0117, ADR-0148]
 amends: [ADR-0110, ADR-0117]
 supersedes: []
