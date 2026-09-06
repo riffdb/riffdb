@@ -3992,10 +3992,11 @@ from commits; source entities and commit records MUST not depend on projection
 state for correctness. Rebuild MUST NOT lower the published frontier of one exact
 `ProjectionIdentity` or expose candidate rows.
 
-`REC-004` Startup after a missing, consumed, malformed, stale, repaired,
-migrated, restored, or otherwise ineligible clean-close certificate MUST execute
-the existing complete structural and catalog-semantic recovery path through
-exact end. Clean eligibility MUST be consumed durably before any writer or
+`REC-004` Startup with any missing, consumed, malformed, stale, repaired,
+migrated, restored, or otherwise ineligible clean-close certificate executes
+engine/format checks, complete journal-suffix recovery, bounded-root validation,
+dirty-generation consumption, then readiness, with no population
+walk. Clean eligibility MUST be consumed durably before any writer or
 derived worker activates, so every crash boundary observes either the reusable
 unchanged clean state or an unambiguously dirty next generation. Repeated
 fallback, certificate consumption, and crash recovery MUST create no command,
