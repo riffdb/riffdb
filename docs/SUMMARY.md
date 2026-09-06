@@ -44,6 +44,7 @@
 - [Contextual Agent Subscriptions](reactive/CONTEXTUAL-SUBSCRIPTIONS.md)
 - [Safe Application Profiles](getting-started/SAFE-APPLICATION-PROFILES.md)
 - [Compiled Framework Profiles](integrations/COMPILED-FRAMEWORK-PROFILES.md)
+- [Adapter Evidence Classes](integrations/ADAPTER-EVIDENCE.md)
 - [Authoring Diagnostics](getting-started/AUTHORING-DIAGNOSTICS.md)
 - [Public-only Authoring Evaluation](evaluations/wp-722/README.md)
   - [Diagnostic-discovery Runs](evaluations/wp-722/failed-runs/README.md)

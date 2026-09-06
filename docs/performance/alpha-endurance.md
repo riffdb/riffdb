@@ -320,14 +320,15 @@ The release gate revalidates the retained 72-hour receipt independently:
   --verify-release-receipt release/evidence/alpha-endurance-v1.json
 ```
 
-This stricter mode requires all four adapter domains, green policy and data
+This stricter mode requires all four general-alpha subjects, green policy and data
 reconciliation, and content-addressed references to the exact durable-format,
 export/reimport, destructive-recovery, and adapter-conformance evidence. Each
 referenced file must be a bounded, non-symlink file below its closed release
 prefix, match its declared SHA-256, and carry the expected receipt schema. The
 environment and complete observation array are also bound by canonical digest.
 Merely copying a 72-hour raw controller receipt into `release/evidence` cannot
-pass release verification.
+pass release verification. Duration and lifecycle coverage do not promote a fixture or partial-profile claim;
+each subject keeps its exact ADR-0201 classification.
 
 Release evidence is attached with a checked path inventory rather than by
 hand-editing the raw receipt:

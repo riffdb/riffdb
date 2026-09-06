@@ -173,8 +173,10 @@ public start/page/status/cancel export campaign. A distinct operator-only
 destination campaign accepts that exact completed source through
 `reimport start`, `reimport page`, `reimport status`, and `reimport cancel`.
 It remains unavailable to application roles and MCP discovery.
-The earlier Payload fixture remains a post-alpha portability regression; it is
-not one of the four alpha acceptance adapters.
+Each general-alpha subject retains its ADR-0201 evidence classification through
+this portability evidence; an export result does not turn a matrix or partial
+profile into upstream-framework conformance. The earlier Payload fixture remains
+a post-alpha portability regression and is not a general-alpha record.
 
 ## Reimport an exact completed source
 

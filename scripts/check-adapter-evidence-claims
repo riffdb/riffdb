@@ -1,0 +1,464 @@
+#!/usr/bin/env python3
+# req: SAFE-001, DRV-014, BLK-014, BLK-064, BLK-070, DEL-012, OQ-016
+# req: OQ-030, OQ-100, OQ-112, WF-014, APE-001, APE-013, RAP-016
+# req: EXP-014, END-001, QSO-012
+"""Validate ADR-0201's closed adapter-evidence inventory and claim wording."""
+
+from __future__ import annotations
+
+import copy
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+
+ROOT = Path(__file__).resolve().parent.parent
+INVENTORY = ROOT / "fixtures/adapters/adapter-evidence-v1.json"
+MAX_INVENTORY_BYTES = 64 * 1024
+
+EXPECTED_CLAIMS: list[dict[str, Any]] = [
+    {
+        "claim_id": "alpha.better_auth.general",
+        "subject": "better_auth",
+        "scope": "wp578_wp579_general_alpha",
+        "evidence_class": "materialized_profile_matrix",
+        "custody": "mixed",
+        "complete_upstream_suite": False,
+        "source_claims": [
+            "release/evidence/alpha/conformance-better-auth-v1.json",
+            "work_packages.yaml#WP-630.closure",
+        ],
+    },
+    {
+        "claim_id": "alpha.mlflow.general",
+        "subject": "mlflow",
+        "scope": "wp578_wp579_general_alpha",
+        "evidence_class": "language_expressiveness_matrix",
+        "custody": "riffdb",
+        "complete_upstream_suite": False,
+        "source_claims": [
+            "release/evidence/alpha/conformance-mlflow-v1.json",
+        ],
+    },
+    {
+        "claim_id": "alpha.openfga.general",
+        "subject": "openfga",
+        "scope": "wp578_wp579_general_alpha",
+        "evidence_class": "upstream_suite_adapter",
+        "custody": "external",
+        "complete_upstream_suite": True,
+        "source_claims": [
+            "adr/0169-optional-aggregate-root-materialization.md#testing",
+            "release/evidence/alpha/conformance-openfga-v1.json",
+        ],
+    },
+    {
+        "claim_id": "alpha.woodpecker.general",
+        "subject": "woodpecker",
+        "scope": "wp578_wp579_general_alpha",
+        "evidence_class": "language_expressiveness_matrix",
+        "custody": "riffdb",
+        "complete_upstream_suite": False,
+        "source_claims": [
+            "release/evidence/alpha/conformance-woodpecker-v1.json",
+        ],
+    },
+    {
+        "claim_id": "partial.better_auth.admin",
+        "subject": "better_auth",
+        "scope": "OQ-030",
+        "evidence_class": "external_materialized_profile",
+        "custody": "external",
+        "complete_upstream_suite": False,
+        "source_claims": [
+            "work_packages.yaml#WP-648.closure",
+            "work_packages.yaml#WP-655.closure",
+        ],
+    },
+    {
+        "claim_id": "partial.better_auth.lifecycle",
+        "subject": "better_auth",
+        "scope": "DEL-012,QSO-012",
+        "evidence_class": "materialized_profile_matrix",
+        "custody": "riffdb",
+        "complete_upstream_suite": False,
+        "source_claims": [
+            "work_packages.yaml#WP-630.closure",
+        ],
+    },
+    {
+        "claim_id": "partial.mlflow.filtered_search",
+        "subject": "mlflow",
+        "scope": "OQ-100",
+        "evidence_class": "external_partial_profile_live",
+        "custody": "external",
+        "complete_upstream_suite": False,
+        "source_claims": [
+            "release/evidence/long-pattern-readiness-mlflow-loopback-v1.json",
+        ],
+    },
+    {
+        "claim_id": "partial.mlflow.large_run",
+        "subject": "mlflow",
+        "scope": "BLK-064",
+        "evidence_class": "riffdb_shape_live_loopback",
+        "custody": "riffdb",
+        "complete_upstream_suite": False,
+        "source_claims": [
+            "release/evidence/large-atomic-command-envelope-v1.json#/mlflow_loopback",
+        ],
+    },
+    {
+        "claim_id": "partial.mlflow.partition_search",
+        "subject": "mlflow",
+        "scope": "OQ-112",
+        "evidence_class": "external_partial_profile_live",
+        "custody": "external",
+        "complete_upstream_suite": False,
+        "source_claims": [
+            "release/evidence/partition-set-exact-prefix-repro-v1.json",
+            "release/evidence/partition-set-mlflow-loopback-v1.json",
+        ],
+    },
+    {
+        "claim_id": "post_alpha.payload.shape",
+        "subject": "payload",
+        "scope": "BLK-014,RAP-016",
+        "evidence_class": "post_alpha_language_expressiveness",
+        "custody": "riffdb",
+        "complete_upstream_suite": False,
+        "source_claims": [
+            "work_packages.yaml#WP-569.closure",
+        ],
+    },
+]
+
+EXPECTED_INVENTORY = {
+    "schema": "riffdb.adapter-evidence-inventory/v1",
+    "claims": EXPECTED_CLAIMS,
+}
+
+CLAIM_FIELDS = {
+    "claim_id",
+    "subject",
+    "scope",
+    "evidence_class",
+    "custody",
+    "complete_upstream_suite",
+    "source_claims",
+}
+
+SPEC_MARKERS = {
+    "BLK-014": ("post-alpha language-expressiveness record",),
+    "BLK-064": ("`riffdb_shape_live_loopback`", "RiffDB-custodied"),
+    "BLK-070": ("generated-binding/redb execution rule", "does not promote"),
+    "DEL-012": ("`materialized_profile_matrix` scoped to `DEL-012,QSO-012`",),
+    "OQ-016": ("ADR-0201's exact general-alpha classification", "not four equal upstream-"),
+    "OQ-030": ("external `external_materialized_profile`",),
+    "OQ-100": ("`external_partial_profile_live` receipt scoped to `OQ-100`",),
+    "OQ-112": ("`external_partial_profile_live` receipt scoped to `OQ-112`",),
+    "WF-014": ("RiffDB-custodied language-expressiveness classification",),
+    "APE-013": ("only OpenFGA is a complete upstream-suite adapter",),
+    "RAP-016": ("post-alpha language-expressiveness record",),
+    "EXP-014": ("retains its exact evidence classification",),
+    "END-001": ("drill does not promote the subject's evidence",),
+    "QSO-012": ("`materialized_profile_matrix` scoped to `DEL-012,QSO-012`",),
+}
+
+REQUIRED_SOURCE_TEXT = {
+    "docs/SUMMARY.md": (
+        "[Adapter Evidence Classes](integrations/ADAPTER-EVIDENCE.md)",
+    ),
+    "docs/integrations/ADAPTER-EVIDENCE.md": (
+        "`alpha.openfga.general`",
+        "`partial.better_auth.admin`",
+        "`partial.mlflow.filtered_search`",
+        "`partial.mlflow.large_run`",
+        "`partial.mlflow.partition_search`",
+        "`post_alpha.payload.shape`",
+        "Only `alpha.openfga.general` has `complete_upstream_suite: true`.",
+    ),
+    "docs/integrations/COMPILED-FRAMEWORK-PROFILES.md": (
+        "profile-bound dispatcher to exact generated commands and named queries",
+        "Additional fields or plugins require generation and review of a new materialized profile",
+        "Unknown runtime calls refuse",
+    ),
+    "docs/architecture/DEPLOYABLE-APPLICATION-ALPHA.md": (
+        "Only OpenFGA carries complete upstream-suite evidence.",
+        "MLflow and Woodpecker general-alpha rows are RiffDB-custodied language-expressiveness matrices.",
+        "Better Auth general-alpha evidence is a mixed-custody materialized-profile matrix.",
+    ),
+    "docs/backup-restore.md": (
+        "does not promote any subject's evidence classification",
+    ),
+    "docs/operations/APPLICATION-EXPORT.md": (
+        "retains its ADR-0201 evidence classification",
+    ),
+    "docs/operations/APPLICATION-INSTALLATION-CAMPAIGNS.md": (
+        "Only OpenFGA has complete upstream-suite evidence",
+    ),
+    "docs/performance/alpha-endurance.md": (
+        "do not promote a fixture or partial-profile claim",
+    ),
+    "scripts/adapter-conformance": (
+        "./scripts/check-adapter-evidence-claims",
+        "only OpenFGA carries complete upstream-suite evidence",
+    ),
+    "scripts/ci-all": (
+        "./scripts/check-adapter-evidence-claims --self-test",
+        "./scripts/check-adapter-evidence-claims",
+    ),
+}
+
+FORBIDDEN_SOURCE_TEXT = {
+    "docs/architecture/DEPLOYABLE-APPLICATION-ALPHA.md": (
+        "A fresh OpenFGA-, MLflow-, Better-Auth-, or Woodpecker-shaped adapter can be",
+        "Run every adapter shape across the",
+    ),
+    "docs/backup-restore.md": (
+        "accepted four-adapter inventory",
+    ),
+    "scripts/adapter-conformance": (
+        "OpenFGA, MLflow, Better Auth, and Woodpecker passed exact install/evolution",
+    ),
+}
+
+
+def reject_duplicate_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON member {key!r}")
+        result[key] = value
+    return result
+
+
+def load_inventory(path: Path = INVENTORY) -> object:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("canonical adapter evidence inventory is absent or linked")
+    if not 1 <= path.stat().st_size <= MAX_INVENTORY_BYTES:
+        raise ValueError("canonical adapter evidence inventory exceeds its byte bound")
+    encoded = path.read_bytes()
+    if len(encoded) > MAX_INVENTORY_BYTES:
+        raise ValueError("canonical adapter evidence inventory exceeds its byte bound")
+    try:
+        return json.loads(encoded, object_pairs_hook=reject_duplicate_members)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"canonical adapter evidence inventory is invalid JSON: {error}") from error
+
+
+def validate_inventory(value: object) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(value, dict):
+        return ["inventory top level must be an object"]
+    if set(value) != {"schema", "claims"}:
+        errors.append("inventory root members are not exact")
+    if value.get("schema") != EXPECTED_INVENTORY["schema"]:
+        errors.append("inventory schema identity is not exact")
+    claims = value.get("claims")
+    if not isinstance(claims, list):
+        return errors + ["inventory claims must be an array"]
+
+    claim_ids: list[str] = []
+    for index, claim in enumerate(claims):
+        if not isinstance(claim, dict):
+            errors.append(f"claim {index} must be an object")
+            continue
+        if set(claim) != CLAIM_FIELDS:
+            errors.append(f"claim {index} members are not exact")
+            continue
+        for field in ("claim_id", "subject", "scope", "evidence_class", "custody"):
+            if not isinstance(claim[field], str) or not claim[field]:
+                errors.append(f"claim {index} field {field} must be a nonempty string")
+        if type(claim["complete_upstream_suite"]) is not bool:
+            errors.append(f"claim {index} complete_upstream_suite must be boolean")
+        source_claims = claim["source_claims"]
+        if not isinstance(source_claims, list) or not source_claims:
+            errors.append(f"claim {index} source_claims must be a nonempty array")
+        elif any(not isinstance(source, str) or not source for source in source_claims):
+            errors.append(f"claim {index} source_claims must be nonempty strings")
+        elif source_claims != sorted(set(source_claims)):
+            errors.append(f"claim {index} source_claims must be ordered and unique")
+        claim_id = claim.get("claim_id")
+        if isinstance(claim_id, str):
+            claim_ids.append(claim_id)
+
+    if claim_ids != sorted(set(claim_ids)):
+        errors.append("claim IDs must be unique and ASCII ordered")
+    if claims != EXPECTED_CLAIMS:
+        errors.append("claim records differ from the human-reviewed ADR-0201 inventory")
+    return errors
+
+
+def validate_source_locators(root: Path = ROOT) -> list[str]:
+    errors: list[str] = []
+    for claim in EXPECTED_CLAIMS:
+        for locator in claim["source_claims"]:
+            relative = locator.split("#", 1)[0]
+            path = root / relative
+            if path.is_symlink() or not path.is_file():
+                errors.append(f"{claim['claim_id']}: source locator is absent or linked: {locator}")
+    return errors
+
+
+def requirement_block(spec: str, requirement: str) -> str | None:
+    marker = f"- `{requirement}`:"
+    start = spec.find(marker)
+    if start < 0:
+        return None
+    next_requirement = spec.find("\n- `", start + len(marker))
+    return spec[start:] if next_requirement < 0 else spec[start:next_requirement]
+
+
+def adapter_evidence_normative_claim_inventory_is_complete(
+    root: Path = ROOT,
+    overrides: dict[str, str] | None = None,
+) -> list[str]:
+    """Prove every ADR-0201-named normative and release claim remains scoped."""
+
+    errors: list[str] = []
+    paths = {"SPEC.md"} | set(REQUIRED_SOURCE_TEXT) | set(FORBIDDEN_SOURCE_TEXT)
+    texts: dict[str, str] = {}
+    for relative in sorted(paths):
+        try:
+            texts[relative] = (
+                overrides[relative]
+                if overrides is not None and relative in overrides
+                else (root / relative).read_text(encoding="utf-8")
+            )
+        except OSError as error:
+            errors.append(f"{relative}: {error}")
+
+    spec = texts.get("SPEC.md", "")
+    for requirement, markers in SPEC_MARKERS.items():
+        block = requirement_block(spec, requirement)
+        if block is None:
+            errors.append(f"SPEC.md: missing normative claim {requirement}")
+            continue
+        for marker in markers:
+            if marker not in block:
+                errors.append(f"SPEC.md: {requirement} omits exact evidence marker {marker!r}")
+
+    for relative, markers in REQUIRED_SOURCE_TEXT.items():
+        text = texts.get(relative, "")
+        for marker in markers:
+            if marker not in text:
+                errors.append(f"{relative}: missing reviewed claim {marker!r}")
+    for relative, markers in FORBIDDEN_SOURCE_TEXT.items():
+        text = texts.get(relative, "")
+        for marker in markers:
+            if marker in text:
+                errors.append(f"{relative}: retained legacy equal-adapter claim {marker!r}")
+    return errors
+
+
+def assert_rejected(value: object, label: str) -> None:
+    if not validate_inventory(value):
+        raise ValueError(f"negative self-test accepted {label}")
+
+
+def adapter_evidence_claim_negative_self_test() -> None:
+    """Exercise every ADR-0201 widening, collapse, and wording refusal."""
+
+    missing = copy.deepcopy(EXPECTED_INVENTORY)
+    missing["claims"].pop()
+    assert_rejected(missing, "missing record")
+
+    duplicate = copy.deepcopy(EXPECTED_INVENTORY)
+    duplicate["claims"].append(copy.deepcopy(duplicate["claims"][-1]))
+    assert_rejected(duplicate, "duplicate record")
+
+    reordered = copy.deepcopy(EXPECTED_INVENTORY)
+    reordered["claims"][0], reordered["claims"][1] = (
+        reordered["claims"][1],
+        reordered["claims"][0],
+    )
+    assert_rejected(reordered, "reordered records")
+
+    widened = copy.deepcopy(EXPECTED_INVENTORY)
+    widened["claims"][0]["evidence_class"] = "upstream_suite_adapter"
+    assert_rejected(widened, "widened general record")
+
+    unknown = copy.deepcopy(EXPECTED_INVENTORY)
+    unknown_record = copy.deepcopy(unknown["claims"][-1])
+    unknown_record["claim_id"] = "unknown.subject.claim"
+    unknown["claims"].append(unknown_record)
+    assert_rejected(unknown, "unknown record")
+
+    collapsed_scope = copy.deepcopy(EXPECTED_INVENTORY)
+    collapsed_scope["claims"][4]["scope"] = "wp578_wp579_general_alpha"
+    assert_rejected(collapsed_scope, "scope collapse")
+
+    invented_locator = copy.deepcopy(EXPECTED_INVENTORY)
+    invented_locator["claims"][6]["source_claims"] = ["release/evidence/invented.json"]
+    assert_rejected(invented_locator, "invented source locator")
+
+    promoted_fixture = copy.deepcopy(EXPECTED_INVENTORY)
+    promoted_fixture["claims"][1]["custody"] = "external"
+    assert_rejected(promoted_fixture, "fixture-to-external promotion")
+
+    promoted_partial = copy.deepcopy(EXPECTED_INVENTORY)
+    promoted_partial["claims"][8]["complete_upstream_suite"] = True
+    assert_rejected(promoted_partial, "partial-to-complete promotion")
+
+    synthetic = {
+        "SPEC.md": "\n".join(
+            f"- `{requirement}`: {' '.join(markers)}"
+            for requirement, markers in SPEC_MARKERS.items()
+        ),
+        **{
+            relative: "\n".join(markers)
+            for relative, markers in REQUIRED_SOURCE_TEXT.items()
+        },
+    }
+    if adapter_evidence_normative_claim_inventory_is_complete(overrides=synthetic):
+        raise ValueError("negative self-test fixture does not satisfy reviewed source claims")
+
+    legacy = dict(synthetic)
+    legacy["docs/architecture/DEPLOYABLE-APPLICATION-ALPHA.md"] += (
+        "\nA fresh OpenFGA-, MLflow-, Better-Auth-, or Woodpecker-shaped adapter can be\n"
+    )
+    if not adapter_evidence_normative_claim_inventory_is_complete(overrides=legacy):
+        raise ValueError("negative self-test accepted legacy equal-adapter wording")
+
+    weakened_dispatcher = dict(synthetic)
+    weakened_dispatcher["docs/integrations/COMPILED-FRAMEWORK-PROFILES.md"] = (
+        weakened_dispatcher["docs/integrations/COMPILED-FRAMEWORK-PROFILES.md"].replace(
+            "profile-bound dispatcher to exact generated commands and named queries",
+            "generic runtime store dispatcher",
+        )
+    )
+    if not adapter_evidence_normative_claim_inventory_is_complete(
+        overrides=weakened_dispatcher
+    ):
+        raise ValueError("negative self-test accepted a weakened profile dispatcher")
+
+
+def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        adapter_evidence_claim_negative_self_test()
+        print("adapter evidence claim negative self-test: passed")
+        return 0
+    if sys.argv[1:]:
+        raise ValueError("usage: check-adapter-evidence-claims [--self-test]")
+    value = load_inventory()
+    errors = (
+        validate_inventory(value)
+        + validate_source_locators()
+        + adapter_evidence_normative_claim_inventory_is_complete()
+    )
+    if errors:
+        for error in errors:
+            print(f"adapter evidence claim error: {error}", file=sys.stderr)
+        return 1
+    print("adapter evidence claims: exact")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except ValueError as error:
+        print(f"adapter evidence claim error: {error}", file=sys.stderr)
+        raise SystemExit(1) from error

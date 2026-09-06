@@ -322,7 +322,7 @@ fi
 if [[ "$backup_restore" == true ]]; then
     # Offline maintenance is intentionally unavailable while the database is
     # still in DeploymentRequired. Deploy and seed the release-owned corpus
-    # whose one bounded application covers all four alpha adapter shapes.
+    # whose one bounded application covers all four general-alpha subject shapes.
     cp -R "$workspace/fixtures/adapters/operational-conformance" \
         "$work_root/adapter-application"
     (
