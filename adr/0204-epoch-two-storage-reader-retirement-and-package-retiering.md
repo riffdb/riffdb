@@ -19,10 +19,15 @@ obligations:
     package: WP-757
     proof: epoch_two_removes_legacy_vector_control_bridge
     says: Epoch 2 removes the tag-65 vector-control reader, generated message, table, migration bridge, fixtures, and topology identity without translating, adopting, or relabelling its bytes and without changing tag-67 current control semantics.
+  - id: OBL-0204-3
+    package: WP-757
+    proof: epoch_two_descriptor_closure_rotations_are_exact
+    says: Deleting the exact obsolete Protobuf declarations rotates only the five enumerated current descriptor-closure hashes, preserves their payload fields, tags, and revisions, and permanently reserves and refuses the predecessor hashes.
 review_triggers:
   - Epoch-1 bytes could reach a retired decoder, table, migration, journal, repair, or mutation path before the typed epoch refusal.
-  - A current merged-main identity, tag-67 control, V2 columnar artifact, fresh-locator proof, transaction order, conflict owner, atomicity boundary, acknowledgement, or outcome sequence would change.
+  - Any current merged-main identity other than the five exact descriptor-closure hash rotations would change, or tag-67 control, V2 columnar state, fresh-locator proof, transaction order, conflict ownership, atomicity, acknowledgement, or outcome sequencing would change.
   - A retired tag, field, enum value, hash, filename, or symbolic identity would be reused, translated, parked as readable, or accepted as current.
+  - Generated review finds a sixth current hash rotation, a different new hash, or a field, tag, revision, payload, or descriptor-closure change for the five retained records beyond deleting the declarations named in decision 5.
   - The ceremony would omit validation, verified backup, export receipt, empty epoch-2 target, compiled reimport, reconciliation, final startup validation, or retained epoch-1 artifacts.
   - Implementation would require a guarantee path other than the two storage-redb files named in this record.
 ---
@@ -39,11 +44,11 @@ bytes, and a commit trailer may raise but not waive the missing guarantee
 decision.
 
 The dirty WP-757 prototype also predates WP-711 and WP-778. Blindly applying its
-old identity inventory would delete or reinterpret current tag-67 columnar and
-fresh-locator guarantees. The reset therefore needs an exact integration rule:
-retire only identities superseded in the merged authoritative epoch-2
-inventory, behind a format gate that refuses epoch 1 before retired code could
-run.
+old inventory would delete current tag-67 and fresh-locator guarantees. Durable
+schema hashes cover a complete Protobuf file-descriptor closure, so deleting an
+unreachable sibling declaration mechanically rotates five current hashes even
+though those five payload messages do not change. The reset therefore needs an
+exact integration and rotation rule behind the epoch refusal.
 
 ## Decision
 
@@ -80,15 +85,31 @@ run.
    in-place migration, restore shortcut, best-effort decode, raw copy, repair,
    relabelling, or application/operator selector that can reach retired bytes.
 
-5. Before retirement is applied, WP-757 merges the then-current main without
-   rebasing or dropping its prior patch and recomputes the complete generated
-   inventory from authoritative source. An identity is retired only when the
-   merged epoch-2 manifest and accepted ADRs name a distinct current successor.
-   Current tag-67 columnar-control semantics from ADR-0192, V2 root/publication
-   semantics from ADR-0190, and WP-711's selected artifacts remain unchanged.
-   WP-778's fresh-locator proof and every current registry/storage identity also
-   remain unchanged unless ADR-0181 explicitly names that identity as the
-   superseded side of the epoch reset.
+5. Before retirement, WP-757 merges current main without rebasing or dropping
+   its patch and regenerates from source. Against main
+   `886c50232465631cb5e7ffffe700fdc0b15d29c9`, the hash-rotation exception is
+   limited to deleting these 26 obsolete declarations: `CapabilityRecordV2`
+   through `V7`;
+   `ServiceAuditRecordV1`; `StoredCommandCapsuleV2` through `V5`;
+   `StoredCommandSegmentBodyV1` through `V4`; `StoredCommandSegmentV1` through
+   `V4`; `StoredCommitRecordV1` and `V2`; `StoredExecutionFailedV1` and `V2`;
+   `StoredIndexEntryV1`; `StoredIndexEpochV1`; and `StoredOutboxIntentV1`.
+
+   Their removal may rotate only these current schema hashes (old -> new):
+
+   - `CapabilityRecordV8`: `ff4fcbb031676932d6ab40e02b288e21fbb3c196034445c897f5170ff121aef9` -> `333df0f9fe3d1bc0898dd3bffd85401bbbdb0997c72b5607b905fb364ba3f27d`;
+   - `StoredCommandCapsuleV6`: `0bc288e0f08ec4b83379f5abb4b872ebfc3ea7b7a64983eedcd53a9da25731bb` -> `3844fed9b58af15252ec5076c121ac88e8b6e8a6687f4b8b37d03d8352d0c9be`;
+   - `StoredCommandSegmentV5`: `0df52ca7232d2383b820b4b8ab844cf08d35529aa78e4b9b2bdd43b28afbd7dd` -> `160ca56f9b7a685c33c4e6e82c55adfc9ba24b27989fb02de1781c9d46d2ea5d`;
+   - `StoredVectorEvidenceV1`: `de3451baade7dbe010de8f4bf227dbf267931cf9dafef170fde952b14a16d84f` -> `4ffdb4f20e06520804b029dfc29e3ab3ccb7154be0bef7cf7d3ad8cfe573d523`; and
+   - `StoredVectorEvidenceIndexV1`: `6129c2ee589159eab28081ba3d2aff16de85e67a80e6d86d9bc265957d1e7d4e` -> `1cd7f5ef12d681473acc7040d6e2adeddd398fbe06742eb89052c6d11ea11fb8`.
+
+   Tags, revisions, fields, payload encodings, and validation stay byte-exact;
+   the five old hashes become reserved and refused. Exact generated-diff review
+   must prove the named declaration deletions are the only changes to the five
+   retained records' descriptor closures. A changed closure or value stops
+   WP-757 for an amendment. Every other current identity and hash stays equal to
+   merged main, including ADR-0192 tag 67, ADR-0190/WP-711 V2 state, and WP-778
+   fresh-locator semantics.
 
 6. The legacy tag-65 vector-control bridge is retired completely in epoch 2:
    its Protobuf message and generated Rust type, decoder/encoder, redb table and
@@ -123,11 +144,12 @@ run.
    identities. Documentation states expected downtime, the refusal and sole
    ceremony, old-binary retention, unsupported data classes, and no downgrade.
 
-10. WP-757 cannot close until generated checks prove source/descriptor/fixture
-    equality, the topology and durable manifest each name one exact active
-    identity per domain, all retired numbers remain reserved, the two obligations
-    above pass, and the complete ceremony receipt is independently validated.
-    A clean build or a smaller registry is not evidence of safe retirement.
+10. WP-757 cannot close until generated checks and exact generated-diff review
+    prove source/descriptor/fixture equality, the topology and durable manifest
+    each name one exact active identity per domain, all retired numbers and
+    hashes remain reserved, the obligations above pass, and the complete
+    ceremony receipt is independently validated. A clean build or a smaller
+    registry is not evidence of safe retirement.
 
 ## Options considered
 
@@ -150,7 +172,8 @@ run.
 - WP-757 can truthfully remove old storage readers while retaining a full exact-
   text guarantee review and a bounded path owner.
 - Integration must reconcile a large generated diff against current main before
-  evidence, and every retired identity needs reservation and absence proofs.
+  evidence; it includes exactly five reviewed mechanical hash rotations, and
+  every retired identity needs reservation and absence proofs.
 - Old databases require the retained old binary and full export/reimport
   ceremony; direct open, restore, repair, and downgrade remain unavailable.
 - Further guarantee-path edits, post-external retirement, online migration, and
@@ -173,6 +196,9 @@ run.
 - `epoch_two_removes_legacy_vector_control_bridge` proves tag-65 source, generated
   code, registry, table, migration, fixtures, and topology are absent and their
   identities reserved while tag-67 behavior is unchanged.
+- `epoch_two_descriptor_closure_rotations_are_exact` proves the five old/new hash
+  pairs and their unchanged payload fields, tags, and revisions, and rejects any
+  other generated descriptor or current-identity change.
 - `epoch_two_ceremony_refuses_in_place_open_and_reconciles_reimport` proves the
   real retained-binary backup/export and empty-target reimport/reconciliation
   sequence with exact artifact hashes and final startup validation.
