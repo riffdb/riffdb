@@ -471,12 +471,17 @@ mod tests {
         );
     }
 
-    // req: PRJ-002, PRJ-006, PRJ-007, PRJ-010, OQ-020, OQ-024, OQ-053
+    // req: PRJ-002, PRJ-006, PRJ-007, PRJ-010, OQ-020, OQ-024, OQ-053, OUT-001, OUT-002, TXN-042
     #[test]
     fn redb_columnar_control_concurrent_expected_cas_has_one_winner() {
         let (_path, ports) = ports(
             "columnar-control-concurrent-cas",
             RedbTestController::observe_index_migration(),
+        );
+        assert!(
+            ports
+                .arm_exact_empty_fresh_locator_coverage_for_test()
+                .expect("arm exact empty coverage")
         );
         let (source, definition) = source();
         let spec = ColumnarProjectionSpecHashV1::from_bytes([0x22; 32]);
@@ -545,5 +550,10 @@ mod tests {
             riffdb_storage_api::ColumnarProjectionLifecycleV1::Building
         );
         assert_eq!(replacement.highest_generation().get(), 2);
+        assert!(
+            ports
+                .fresh_locator_public_and_private_roles_match_for_test()
+                .expect("columnar control lane preserves both roles")
+        );
     }
 }

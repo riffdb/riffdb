@@ -1,6 +1,8 @@
 use riffdb_storage_api::ApplicationSequenceAllocator;
 use riffdb_types::{AdministrationSequence, CommitSequence};
 use sha2::{Digest, Sha256};
+#[cfg(test)]
+use std::sync::Barrier;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -27,7 +29,7 @@ pub(crate) fn preserving_permit_digest<'a>(
 
 /// Fixed-size identity of one process-local published or writer-private view.
 ///
-/// `root_identity` is the address identity of the process-local immutable
+/// `root_identity` is the stable even generation of the process-local immutable
 /// checkpoint root. Standard journal successors share that root but differ in
 /// one of the two frontiers; Immediate commits and checkpoint rebases replace
 /// it. The value is never serialized or exposed outside the storage crate.
@@ -226,6 +228,31 @@ enum CoverageState {
 pub(crate) struct FreshLocatorCoverage {
     state: CoverageState,
     lost_witness: Arc<AtomicBool>,
+    #[cfg(test)]
+    loss_schedule: Option<Arc<WitnessLossScheduleInner>>,
+}
+
+#[cfg(test)]
+struct WitnessLossScheduleInner {
+    armed: AtomicBool,
+    observed: Barrier,
+    release: Barrier,
+}
+
+#[cfg(test)]
+struct WitnessLossSchedule {
+    inner: Arc<WitnessLossScheduleInner>,
+}
+
+#[cfg(test)]
+impl WitnessLossSchedule {
+    fn wait_until_operation_acquires_live(&self) {
+        self.inner.observed.wait();
+    }
+
+    fn release_operation(&self) {
+        self.inner.release.wait();
+    }
 }
 
 impl FreshLocatorCoverage {
@@ -233,11 +260,31 @@ impl FreshLocatorCoverage {
         Self {
             state: CoverageState::Uninitialized,
             lost_witness: Arc::new(AtomicBool::new(false)),
+            #[cfg(test)]
+            loss_schedule: None,
         }
     }
 
+    fn witness_is_live(&self) -> bool {
+        let live = !self.lost_witness.load(Ordering::Acquire);
+        #[cfg(test)]
+        if live
+            && self.loss_schedule.as_ref().is_some_and(|schedule| {
+                schedule
+                    .armed
+                    .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+            })
+        {
+            let schedule = self.loss_schedule.as_ref().expect("checked schedule");
+            schedule.observed.wait();
+            schedule.release.wait();
+        }
+        live
+    }
+
     fn reconcile_witness_loss(&mut self) -> bool {
-        if self.lost_witness.load(Ordering::Acquire) {
+        if !self.witness_is_live() {
             self.disable();
             false
         } else {
@@ -274,12 +321,11 @@ impl FreshLocatorCoverage {
     }
 
     pub(crate) fn is_armed(&self) -> bool {
-        !self.lost_witness.load(Ordering::Acquire)
-            && matches!(self.state, CoverageState::Armed { .. })
+        self.witness_is_live() && matches!(self.state, CoverageState::Armed { .. })
     }
 
     pub(crate) fn proves_public_absence(&self, captured: CoverageStamp) -> bool {
-        if self.lost_witness.load(Ordering::Acquire) {
+        if !self.witness_is_live() {
             return false;
         }
         matches!(
@@ -658,6 +704,17 @@ impl FreshLocatorCoverage {
         };
         loss.disarm();
         true
+    }
+
+    #[cfg(test)]
+    fn schedule_live_witness_observation(&mut self) -> WitnessLossSchedule {
+        let inner = Arc::new(WitnessLossScheduleInner {
+            armed: AtomicBool::new(true),
+            observed: Barrier::new(2),
+            release: Barrier::new(2),
+        });
+        self.loss_schedule = Some(Arc::clone(&inner));
+        WitnessLossSchedule { inner }
     }
 }
 
@@ -1097,5 +1154,76 @@ mod tests {
         );
         assert!(!rebase.allows_private_miss(stamp(7, None, None)));
         assert!(rebase.is_disabled());
+    }
+
+    // req: OUT-001, OUT-002, TXN-042, REC-004
+    #[test]
+    fn concurrent_witness_loss_linearizes_before_or_after_each_coverage_use() {
+        let mut public = FreshLocatorCoverage::new();
+        assert!(public.try_arm(empty_authority(), stamp(1, None, None)));
+        let lost = public
+            .seal_command(stamp(1, Some(1), Some(2)), 1)
+            .expect("outstanding publication witness");
+        let schedule = public.schedule_live_witness_observation();
+        let public_use = std::thread::spawn(move || {
+            let allowed = public.proves_public_absence(stamp(1, None, None));
+            (public, allowed)
+        });
+        schedule.wait_until_operation_acquires_live();
+        drop(lost);
+        schedule.release_operation();
+        let (mut public, allowed) = public_use.join().expect("public proof joins");
+        assert!(
+            allowed,
+            "the pre-loss operation uses only the old public view"
+        );
+        assert!(!public.allows_private_miss(stamp(1, Some(1), Some(2))));
+        assert!(public.is_disabled());
+
+        let mut private = FreshLocatorCoverage::new();
+        assert!(private.try_arm(empty_authority(), stamp(2, None, None)));
+        let lost = private
+            .seal_command(stamp(2, Some(1), Some(2)), 1)
+            .expect("outstanding private successor witness");
+        let schedule = private.schedule_live_witness_observation();
+        let private_use = std::thread::spawn(move || {
+            let allowed = private.allows_private_miss(stamp(2, Some(1), Some(2)));
+            (private, allowed)
+        });
+        schedule.wait_until_operation_acquires_live();
+        drop(lost);
+        schedule.release_operation();
+        let (mut private, allowed) = private_use.join().expect("private proof joins");
+        assert!(
+            allowed,
+            "the pre-loss operation uses only the existing private successor"
+        );
+        assert!(!private.allows_private_miss(stamp(2, Some(1), Some(2))));
+        assert!(private.is_disabled());
+
+        let mut publication = FreshLocatorCoverage::new();
+        assert!(publication.try_arm(empty_authority(), stamp(3, None, None)));
+        let first = publication
+            .seal_command(stamp(3, Some(1), Some(2)), 1)
+            .expect("first publication witness");
+        let later = publication
+            .seal_command(stamp(3, Some(2), Some(4)), 1)
+            .expect("later publication witness");
+        let schedule = publication.schedule_live_witness_observation();
+        let publication_use = std::thread::spawn(move || {
+            let advanced = publication.publish_command(first);
+            (publication, advanced)
+        });
+        schedule.wait_until_operation_acquires_live();
+        drop(later);
+        schedule.release_operation();
+        let (mut publication, advanced) =
+            publication_use.join().expect("publication attempt joins");
+        assert!(
+            advanced,
+            "the pre-loss publication may advance only its exact predecessor"
+        );
+        assert!(!publication.allows_private_miss(stamp(3, Some(2), Some(4))));
+        assert!(publication.is_disabled());
     }
 }

@@ -597,6 +597,7 @@ mod tests {
         bundle
     }
 
+    // req: OUT-001, OUT-002, TXN-042
     #[test]
     fn operation_compare_and_swap_is_durable_ordered_and_retry_safe() {
         let path = TestPath::new();
@@ -610,6 +611,11 @@ mod tests {
         let mut ports = dormant
             .into_operational_after_catalog_validation()
             .expect("activate");
+        assert!(
+            ports
+                .arm_exact_empty_fresh_locator_coverage_for_test()
+                .expect("arm exact empty coverage")
+        );
         let first = record(3, b"state-one\n");
         let next = record(3, b"state-two\n");
         let earlier = record(2, b"state-earlier\n");
@@ -647,6 +653,11 @@ mod tests {
         assert_eq!(
             ports.list_application_export_operations(2).expect("list"),
             vec![earlier.clone(), next.clone()]
+        );
+        assert!(
+            ports
+                .fresh_locator_public_and_private_roles_match_for_test()
+                .expect("export lane preserves both roles")
         );
         drop(ports);
 

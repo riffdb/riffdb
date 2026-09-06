@@ -96,10 +96,7 @@ impl SharedRedb {
                 .write()
                 .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
             if frontier.is_none() {
-                *frontier = Some(Arc::new(CheckpointRoot::new(
-                    self.database.begin_read().map_err(transaction_error)?,
-                    self.durable_commit_epoch.load(Ordering::Acquire),
-                )));
+                *frontier = Some(self.capture_checkpoint_root()?);
                 self.retire_current_read_root();
             }
         }

@@ -2424,6 +2424,64 @@ fn empty_armed_ports(
 
 // req: OUT-001, OUT-002, TXN-042, REC-004
 #[test]
+fn durable_root_capture_retries_the_engine_visible_before_identity_window() {
+    let path = TestDatabasePath::new("durable-root-publication-seqlock");
+    let mut store = RedbStore::open(&path.0).expect("open store");
+    store
+        .initialize_database(database_id(0x40))
+        .expect("initialize store");
+    drop(store);
+    let (controller, schedule) = RedbTestController::pause_root_publication_after_engine_commit();
+    let store = RedbStore::open_with_test_controller(&path.0, controller)
+        .expect("reopen controlled process");
+    let shared = Arc::clone(&store.shared);
+    let predecessor = shared.current_read_root().expect("predecessor root");
+    let predecessor_identity = predecessor.identity();
+    drop(predecessor);
+
+    let writer_shared = Arc::clone(&shared);
+    let writer = std::thread::spawn(move || {
+        let transaction = writer_shared.database.begin_write().expect("begin write");
+        transaction
+            .open_table(crate::layout::APPLICATION_INSTALLATION_CAMPAIGNS)
+            .expect("installation table")
+            .insert(b"visible-root".as_slice(), b"row".as_slice())
+            .expect("insert marker");
+        writer_shared
+            .commit_durable(transaction)
+            .expect("commit exact successor");
+    });
+    schedule.wait_until_commit_is_visible();
+
+    let reader_shared = Arc::clone(&shared);
+    let reader = std::thread::spawn(move || {
+        let root = reader_shared
+            .current_read_root()
+            .expect("capture stable successor root");
+        let present = root
+            .open_table(crate::layout::APPLICATION_INSTALLATION_CAMPAIGNS)
+            .expect("installation table")
+            .get(b"visible-root".as_slice())
+            .expect("read marker")
+            .is_some();
+        (root.identity(), present)
+    });
+    schedule.release_after_reader_retries();
+    writer.join().expect("writer joins");
+    let (successor_identity, present) = reader.join().expect("reader joins");
+    assert!(
+        present,
+        "captured successor must include the visible commit"
+    );
+    assert_ne!(successor_identity, predecessor_identity);
+    assert_eq!(
+        successor_identity,
+        shared.durable_root_publication.load(Ordering::Acquire)
+    );
+}
+
+// req: OUT-001, OUT-002, TXN-042, REC-004
+#[test]
 fn postcommit_successor_stamp_failure_disables_fences_and_invalidates() {
     let (ports, _path) = empty_armed_ports(
         "fresh-locator-postcommit-stamp",
@@ -2512,4 +2570,218 @@ fn rebase_successor_read_and_coverage_lock_poison_fail_closed() {
             .is_err()
     );
     assert!(ports.shared.write_fenced.load(Ordering::Acquire));
+}
+
+fn armed_shared_with_empty_journal_runtime(
+    label: &str,
+    seed: u8,
+) -> (Arc<SharedRedb>, TestDatabasePath) {
+    let (ports, path) = empty_armed_ports(label, seed, None);
+    {
+        let mut frontier = ports
+            .shared
+            .durable_read_frontier
+            .write()
+            .expect("frontier lock");
+        if frontier.is_none() {
+            *frontier = Some(
+                ports
+                    .shared
+                    .capture_checkpoint_root()
+                    .expect("capture exact journal predecessor"),
+            );
+        }
+    }
+    drop(
+        ports
+            .shared
+            .journal_runtime()
+            .expect("initialize empty journal runtime"),
+    );
+    (Arc::clone(&ports.shared), path)
+}
+
+fn install_completed_async_checkpoint(shared: &Arc<SharedRedb>) {
+    let covered_view = shared
+        .capture_or_initialize_composite_view()
+        .expect("capture covered view");
+    let batch = {
+        let runtime = shared.journal_runtime.lock().expect("journal runtime lock");
+        let runtime = runtime.as_ref().expect("journal runtime");
+        JournalCheckpointBatch {
+            database_id: runtime.database_id,
+            checkpoint_sequence: runtime.published_sequence,
+            checkpoint_administration_sequence: runtime.published_administration_sequence,
+            checkpoint_hash: runtime.published_hash,
+            last_sequence: runtime.last_sequence,
+            last_administration_sequence: runtime.last_administration_sequence,
+            last_hash: runtime.last_hash,
+            transition_count: runtime.suffix_transitions,
+            command_count: runtime.suffix_commands,
+            audit_count: runtime.suffix_audits,
+            encoded_bytes: runtime.suffix_bytes,
+            frames: runtime.suffix_frames.clone(),
+        }
+    };
+    *shared
+        .journal_checkpoint
+        .lock()
+        .expect("checkpoint state lock") = Some(AsyncJournalCheckpoint {
+        batch,
+        covered_view,
+        completion: None,
+        result: Some(Ok(())),
+    });
+}
+
+// req: OUT-001, OUT-002, TXN-042, REC-004
+#[test]
+fn sync_and_async_rebase_begin_poison_restore_owned_checkpoint_state_and_fence() {
+    let (sync, _path) =
+        armed_shared_with_empty_journal_runtime("fresh-locator-sync-begin-poison", 0x41);
+    let poison_shared = Arc::clone(&sync);
+    assert!(
+        std::thread::spawn(move || {
+            let _guard = poison_shared
+                .fresh_locator_coverage
+                .lock()
+                .expect("coverage lock before poison");
+            panic!("poison sync begin-rebase lock");
+        })
+        .join()
+        .is_err()
+    );
+    assert_eq!(
+        sync.checkpoint_published_journal_suffix_for_barrier()
+            .expect_err("sync begin poison must fail closed")
+            .kind(),
+        StorageErrorKind::CommitStatusUnknown
+    );
+    assert!(sync.write_fenced.load(Ordering::Acquire));
+    assert!(
+        sync.journal_runtime
+            .lock()
+            .expect("restored journal runtime")
+            .is_some(),
+        "the prepublication sync runtime must be restored"
+    );
+
+    let (asynchronous, _path) =
+        armed_shared_with_empty_journal_runtime("fresh-locator-async-begin-poison", 0x42);
+    install_completed_async_checkpoint(&asynchronous);
+    let poison_shared = Arc::clone(&asynchronous);
+    assert!(
+        std::thread::spawn(move || {
+            let _guard = poison_shared
+                .fresh_locator_coverage
+                .lock()
+                .expect("coverage lock before poison");
+            panic!("poison async begin-rebase lock");
+        })
+        .join()
+        .is_err()
+    );
+    assert_eq!(
+        asynchronous
+            .finish_async_checkpoint_if_quiescent()
+            .expect_err("async begin poison must fail closed")
+            .kind(),
+        StorageErrorKind::CommitStatusUnknown
+    );
+    assert!(asynchronous.write_fenced.load(Ordering::Acquire));
+    let checkpoint = asynchronous
+        .journal_checkpoint
+        .lock()
+        .expect("checkpoint state remains owned");
+    assert!(
+        checkpoint
+            .as_ref()
+            .is_some_and(|checkpoint| checkpoint.result.as_ref().is_some_and(Result::is_ok)),
+        "the completed async result must be restored before returning"
+    );
+}
+
+// req: OUT-001, OUT-002, TXN-042, REC-004
+#[test]
+fn completed_async_checkpoint_lock_poison_is_uncertain_and_fenced() {
+    for poison_checkpoint in [true, false] {
+        let (shared, _path) = armed_shared_with_empty_journal_runtime(
+            if poison_checkpoint {
+                "fresh-locator-async-state-poison"
+            } else {
+                "fresh-locator-async-runtime-poison"
+            },
+            if poison_checkpoint { 0x43 } else { 0x44 },
+        );
+        install_completed_async_checkpoint(&shared);
+        let poison_shared = Arc::clone(&shared);
+        assert!(
+            std::thread::spawn(move || {
+                if poison_checkpoint {
+                    let _guard = poison_shared
+                        .journal_checkpoint
+                        .lock()
+                        .expect("checkpoint lock before poison");
+                    panic!("poison completed checkpoint state");
+                }
+                let _guard = poison_shared
+                    .journal_runtime
+                    .lock()
+                    .expect("runtime lock before poison");
+                panic!("poison completed checkpoint runtime");
+            })
+            .join()
+            .is_err()
+        );
+        assert_eq!(
+            shared
+                .poll_async_checkpoint_locked(false)
+                .expect_err("completed checkpoint poison must be uncertain")
+                .kind(),
+            StorageErrorKind::CommitStatusUnknown
+        );
+        assert!(shared.write_fenced.load(Ordering::Acquire));
+    }
+}
+
+// req: OUT-001, OUT-002, TXN-042, REC-004
+#[test]
+fn journal_reset_then_frontier_lock_failure_is_uncertain_and_fenced() {
+    let (shared, _path) =
+        armed_shared_with_empty_journal_runtime("fresh-locator-after-reset-poison", 0x45);
+    let runtime = shared
+        .take_published_journal_suffix_locked(true)
+        .expect("take empty published suffix")
+        .expect("journal runtime");
+    let poison_shared = Arc::clone(&shared);
+    assert!(
+        std::thread::spawn(move || {
+            let _guard = poison_shared
+                .durable_read_frontier
+                .write()
+                .expect("frontier lock before poison");
+            panic!("poison frontier before post-reset install");
+        })
+        .join()
+        .is_err()
+    );
+    assert_eq!(
+        shared
+            .finish_journal_checkpoint(runtime)
+            .expect_err("post-reset frontier poison is uncertain")
+            .kind(),
+        StorageErrorKind::CommitStatusUnknown
+    );
+    assert!(shared.write_fenced.load(Ordering::Acquire));
+    assert!(
+        crate::journal::scan_journal_with_media(
+            shared.journal_media.as_ref(),
+            &crate::journal::journal_path(&shared.path),
+            database_id(0x45),
+            |_| Ok(()),
+        )
+        .expect("scan reset journal")
+        .is_some(),
+        "the canonical reset completed before the frontier lock failure"
+    );
 }
