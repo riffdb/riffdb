@@ -468,7 +468,7 @@ def validate_receipt(receipt: dict[str, Any], manifest: dict[str, Any], requeste
             conformance_probe_sha256 = current_probe
         else:
             require(current_probe == conformance_probe_sha256, "conformance_failed", "periodic conformance probe identity changed during the run")
-    require(exact_names(receipt.get("domains_completed"), REQUIRED_DOMAINS), "missing_domain", "not every adapter domain completed")
+    require(exact_names(receipt.get("domains_completed"), REQUIRED_DOMAINS), "missing_domain", "not every general-alpha subject completed")
     require(receipt.get("policy_probes", {}).get("all_passed") is True, "policy_mismatch", "periodic policy probes did not remain green")
     reconciliation = receipt.get("data_reconciliation", {})
     require(reconciliation.get("all_passed") is True and integer(reconciliation.get("silent_loss"), "invalid_receipt", "silent_loss") == 0, "data_loss", "endurance reconciliation found loss or drift")

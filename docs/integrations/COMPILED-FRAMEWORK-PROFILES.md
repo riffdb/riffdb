@@ -72,6 +72,28 @@ index, or token conversion. This is not evidence that a framework route, the
 complete adapter surface, or a full external application conforms; those wider
 claims still require their own owning-repository acceptance.
 
+## Better Auth support boundary
+
+The Better Auth integration supports only the exact materialized profile its
+owning repository generates, configures, and tests. The framework's generic
+facade is a profile-bound dispatcher to exact generated commands and named queries;
+it is not generic RiffDB CRUD or a public transaction surface. The profile fixes
+its models, fields, plugins, schemas, atomic command shapes, queries, roles, and
+generated identities before deployment.
+
+Additional fields or plugins require generation and review of a new materialized profile,
+followed by its generated operations, installation review, and conformance
+evidence. Unsupported configuration fails while the profile is generated or
+configured. Unknown runtime calls refuse instead of synthesizing an operation,
+omitting a field, falling back to a generic store, or splitting one framework
+transaction across several RiffDB commands. The RiffDB-owned neutral fixture
+proves underlying symbolic capabilities but does not widen the supported
+external profile or establish a complete Better Auth upstream-suite claim.
+
+The complete ten-record classification and the separately scoped Better Auth
+admin and lifecycle evidence are listed in
+[Adapter evidence classes](ADAPTER-EVIDENCE.md).
+
 ## Keyless upstream retries
 
 When an upstream framework supplies no idempotency key, the adapter owns the

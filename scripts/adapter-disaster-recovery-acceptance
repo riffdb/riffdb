@@ -68,4 +68,4 @@ cp "${receipts[0]}" "$pending"
 chmod 0600 "$pending"
 mv -f "$pending" "$destination"
 
-echo "OpenFGA, MLflow, Better Auth, and Woodpecker passed remote destructive backup/restore reconciliation."
+echo "The four general-alpha subjects passed remote destructive backup/restore reconciliation without promoting their ADR-0201 evidence classes."

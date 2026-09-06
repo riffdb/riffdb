@@ -1,0 +1,846 @@
+#!/usr/bin/env python3
+# req: SAFE-001, DRV-014, BLK-014, BLK-064, BLK-070, DEL-012, OQ-016
+# req: OQ-030, OQ-100, OQ-112, WF-014, APE-001, APE-013, RAP-016
+# req: EXP-014, END-001, QSO-012
+"""Validate ADR-0201's closed adapter-evidence inventory and claim wording."""
+
+from __future__ import annotations
+
+import copy
+import json
+import os
+import re
+import stat
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+
+ROOT = Path(__file__).resolve().parent.parent
+INVENTORY = ROOT / "fixtures/adapters/adapter-evidence-v1.json"
+MAX_INVENTORY_BYTES = 64 * 1024
+JSON_SOURCE_FAILURE = object()
+
+SOURCE_TEXT_BYTE_LIMITS = {
+    "SPEC.md": 1024 * 1024,
+    "docs/SUMMARY.md": 64 * 1024,
+    "docs/architecture/DEPLOYABLE-APPLICATION-ALPHA.md": 128 * 1024,
+    "docs/backup-restore.md": 128 * 1024,
+    "docs/integrations/ADAPTER-EVIDENCE.md": 64 * 1024,
+    "docs/integrations/COMPILED-FRAMEWORK-PROFILES.md": 128 * 1024,
+    "docs/operations/APPLICATION-EXPORT.md": 128 * 1024,
+    "docs/operations/APPLICATION-INSTALLATION-CAMPAIGNS.md": 128 * 1024,
+    "docs/performance/alpha-endurance.md": 128 * 1024,
+    "scripts/adapter-conformance": 64 * 1024,
+    "scripts/ci-all": 128 * 1024,
+    "work_packages.yaml": 2 * 1024 * 1024,
+}
+
+LOCATOR_BYTE_LIMITS = {
+    "adr/0169-optional-aggregate-root-materialization.md": 64 * 1024,
+    "release/evidence/alpha/conformance-better-auth-v1.json": 64 * 1024,
+    "release/evidence/alpha/conformance-mlflow-v1.json": 64 * 1024,
+    "release/evidence/alpha/conformance-openfga-v1.json": 64 * 1024,
+    "release/evidence/alpha/conformance-woodpecker-v1.json": 64 * 1024,
+    "release/evidence/large-atomic-command-envelope-v1.json": 64 * 1024,
+    "release/evidence/long-pattern-readiness-mlflow-loopback-v1.json": 64 * 1024,
+    "release/evidence/partition-set-exact-prefix-repro-v1.json": 64 * 1024,
+    "release/evidence/partition-set-mlflow-loopback-v1.json": 64 * 1024,
+    "work_packages.yaml": 2 * 1024 * 1024,
+}
+
+EXPECTED_CLAIMS: list[dict[str, Any]] = [
+    {
+        "claim_id": "alpha.better_auth.general",
+        "subject": "better_auth",
+        "scope": "wp578_wp579_general_alpha",
+        "evidence_class": "materialized_profile_matrix",
+        "custody": "mixed",
+        "complete_upstream_suite": False,
+        "source_claims": [
+            "release/evidence/alpha/conformance-better-auth-v1.json",
+            "work_packages.yaml#WP-630.closure",
+        ],
+    },
+    {
+        "claim_id": "alpha.mlflow.general",
+        "subject": "mlflow",
+        "scope": "wp578_wp579_general_alpha",
+        "evidence_class": "language_expressiveness_matrix",
+        "custody": "riffdb",
+        "complete_upstream_suite": False,
+        "source_claims": [
+            "release/evidence/alpha/conformance-mlflow-v1.json",
+        ],
+    },
+    {
+        "claim_id": "alpha.openfga.general",
+        "subject": "openfga",
+        "scope": "wp578_wp579_general_alpha",
+        "evidence_class": "upstream_suite_adapter",
+        "custody": "external",
+        "complete_upstream_suite": True,
+        "source_claims": [
+            "adr/0169-optional-aggregate-root-materialization.md#testing",
+            "release/evidence/alpha/conformance-openfga-v1.json",
+        ],
+    },
+    {
+        "claim_id": "alpha.woodpecker.general",
+        "subject": "woodpecker",
+        "scope": "wp578_wp579_general_alpha",
+        "evidence_class": "language_expressiveness_matrix",
+        "custody": "riffdb",
+        "complete_upstream_suite": False,
+        "source_claims": [
+            "release/evidence/alpha/conformance-woodpecker-v1.json",
+        ],
+    },
+    {
+        "claim_id": "partial.better_auth.admin",
+        "subject": "better_auth",
+        "scope": "OQ-030",
+        "evidence_class": "external_materialized_profile",
+        "custody": "external",
+        "complete_upstream_suite": False,
+        "source_claims": [
+            "work_packages.yaml#WP-648.closure",
+            "work_packages.yaml#WP-655.closure",
+        ],
+    },
+    {
+        "claim_id": "partial.better_auth.lifecycle",
+        "subject": "better_auth",
+        "scope": "DEL-012,QSO-012",
+        "evidence_class": "materialized_profile_matrix",
+        "custody": "riffdb",
+        "complete_upstream_suite": False,
+        "source_claims": [
+            "work_packages.yaml#WP-630.closure",
+        ],
+    },
+    {
+        "claim_id": "partial.mlflow.filtered_search",
+        "subject": "mlflow",
+        "scope": "OQ-100",
+        "evidence_class": "external_partial_profile_live",
+        "custody": "external",
+        "complete_upstream_suite": False,
+        "source_claims": [
+            "release/evidence/long-pattern-readiness-mlflow-loopback-v1.json",
+        ],
+    },
+    {
+        "claim_id": "partial.mlflow.large_run",
+        "subject": "mlflow",
+        "scope": "BLK-064",
+        "evidence_class": "riffdb_shape_live_loopback",
+        "custody": "riffdb",
+        "complete_upstream_suite": False,
+        "source_claims": [
+            "release/evidence/large-atomic-command-envelope-v1.json#/mlflow_loopback",
+        ],
+    },
+    {
+        "claim_id": "partial.mlflow.partition_search",
+        "subject": "mlflow",
+        "scope": "OQ-112",
+        "evidence_class": "external_partial_profile_live",
+        "custody": "external",
+        "complete_upstream_suite": False,
+        "source_claims": [
+            "release/evidence/partition-set-exact-prefix-repro-v1.json",
+            "release/evidence/partition-set-mlflow-loopback-v1.json",
+        ],
+    },
+    {
+        "claim_id": "post_alpha.payload.shape",
+        "subject": "payload",
+        "scope": "BLK-014,RAP-016",
+        "evidence_class": "post_alpha_language_expressiveness",
+        "custody": "riffdb",
+        "complete_upstream_suite": False,
+        "source_claims": [
+            "work_packages.yaml#WP-569.closure",
+        ],
+    },
+]
+
+EXPECTED_INVENTORY = {
+    "schema": "riffdb.adapter-evidence-inventory/v1",
+    "claims": EXPECTED_CLAIMS,
+}
+
+CLAIM_FIELDS = {
+    "claim_id",
+    "subject",
+    "scope",
+    "evidence_class",
+    "custody",
+    "complete_upstream_suite",
+    "source_claims",
+}
+
+SPEC_MARKERS = {
+    "BLK-014": ("post-alpha language-expressiveness record",),
+    "BLK-064": ("`riffdb_shape_live_loopback`", "RiffDB-custodied"),
+    "BLK-070": ("generated-binding/redb execution rule", "does not promote"),
+    "DEL-012": ("`materialized_profile_matrix` scoped to `DEL-012,QSO-012`",),
+    "OQ-016": ("ADR-0201's exact general-alpha classification", "not four equal upstream-"),
+    "OQ-030": ("external `external_materialized_profile`",),
+    "OQ-100": ("`external_partial_profile_live` receipt scoped to `OQ-100`",),
+    "OQ-112": ("`external_partial_profile_live` receipt scoped to `OQ-112`",),
+    "WF-014": ("RiffDB-custodied language-expressiveness classification",),
+    "APE-013": ("only OpenFGA is a complete upstream-suite adapter",),
+    "RAP-016": ("post-alpha language-expressiveness record",),
+    "EXP-014": ("retains its exact evidence classification",),
+    "END-001": ("drill does not promote the subject's evidence",),
+    "QSO-012": ("`materialized_profile_matrix` scoped to `DEL-012,QSO-012`",),
+}
+
+REQUIRED_SOURCE_TEXT = {
+    "docs/SUMMARY.md": (
+        "[Adapter Evidence Classes](integrations/ADAPTER-EVIDENCE.md)",
+    ),
+    "docs/integrations/ADAPTER-EVIDENCE.md": (
+        "`alpha.openfga.general`",
+        "`partial.better_auth.admin`",
+        "`partial.mlflow.filtered_search`",
+        "`partial.mlflow.large_run`",
+        "`partial.mlflow.partition_search`",
+        "`post_alpha.payload.shape`",
+        "Only `alpha.openfga.general` has `complete_upstream_suite: true`.",
+        "--repo-root /home/kevin/dev",
+        "workstation checks are not pinned CI evidence",
+        "WP-723 remains open",
+    ),
+    "docs/integrations/COMPILED-FRAMEWORK-PROFILES.md": (
+        "profile-bound dispatcher to exact generated commands and named queries",
+        "Additional fields or plugins require generation and review of a new materialized profile",
+        "Unknown runtime calls refuse",
+    ),
+    "docs/architecture/DEPLOYABLE-APPLICATION-ALPHA.md": (
+        "Only OpenFGA carries complete upstream-suite evidence.",
+        "MLflow and Woodpecker general-alpha rows are RiffDB-custodied language-expressiveness matrices.",
+        "Better Auth general-alpha evidence is a mixed-custody materialized-profile matrix.",
+    ),
+    "docs/backup-restore.md": (
+        "does not promote any subject's evidence classification",
+    ),
+    "docs/operations/APPLICATION-EXPORT.md": (
+        "retains its ADR-0201 evidence classification",
+    ),
+    "docs/operations/APPLICATION-INSTALLATION-CAMPAIGNS.md": (
+        "Only OpenFGA has complete upstream-suite evidence",
+    ),
+    "docs/performance/alpha-endurance.md": (
+        "do not promote a fixture or partial-profile claim",
+    ),
+    "scripts/adapter-conformance": (
+        "./scripts/check-adapter-evidence-claims",
+        "only OpenFGA carries complete upstream-suite evidence",
+    ),
+    "scripts/ci-all": (
+        "./scripts/check-adapter-evidence-claims --self-test",
+        "./scripts/check-adapter-evidence-claims",
+    ),
+    "work_packages.yaml": (
+        "local sibling compilation checks against `riffdb-openfga`",
+        "`--repo-root /home/kevin/dev`",
+        "workstation checks, not immutable pinned CI evidence",
+        "WP-723 remains open",
+    ),
+}
+
+FORBIDDEN_SOURCE_TEXT = {
+    "docs/architecture/DEPLOYABLE-APPLICATION-ALPHA.md": (
+        "A fresh OpenFGA-, MLflow-, Better-Auth-, or Woodpecker-shaped adapter can be",
+        "Run every adapter shape across the",
+    ),
+    "docs/backup-restore.md": (
+        "accepted four-adapter inventory",
+    ),
+    "scripts/adapter-conformance": (
+        "OpenFGA, MLflow, Better Auth, and Woodpecker passed exact install/evolution",
+    ),
+    "docs/integrations/ADAPTER-EVIDENCE.md": (
+        "pinned\ndownstream application checks",
+    ),
+    "work_packages.yaml": (
+        "pinned downstream application checks",
+    ),
+}
+
+
+def reject_duplicate_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON member {key!r}")
+        result[key] = value
+    return result
+
+
+def bounded_regular_file(path: Path, byte_limit: int, label: str) -> bytes:
+    if byte_limit <= 0:
+        raise ValueError(f"{label}: byte limit must be positive")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise ValueError(f"{label}: cannot open regular unlinked file: {error}") from error
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(f"{label}: source is not a regular file")
+        if not 1 <= metadata.st_size <= byte_limit:
+            raise ValueError(f"{label}: source exceeds its {byte_limit}-byte bound")
+        chunks: list[bytes] = []
+        total = 0
+        while total <= byte_limit:
+            chunk = os.read(descriptor, min(64 * 1024, byte_limit + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        encoded = b"".join(chunks)
+        if len(encoded) > byte_limit:
+            raise ValueError(f"{label}: source exceeds its {byte_limit}-byte bound")
+        if len(encoded) != metadata.st_size:
+            raise ValueError(f"{label}: source changed during its bounded read")
+        return encoded
+    finally:
+        os.close(descriptor)
+
+
+def bounded_text(path: Path, byte_limit: int, label: str) -> str:
+    try:
+        return bounded_regular_file(path, byte_limit, label).decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError(f"{label}: source is not UTF-8: {error}") from error
+
+
+def parse_json_utf8(encoded: bytes, label: str) -> object:
+    try:
+        decoded = encoded.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError(f"{label}: source is not UTF-8") from error
+    try:
+        return json.loads(decoded, object_pairs_hook=reject_duplicate_members)
+    except (json.JSONDecodeError, ValueError) as error:
+        raise ValueError(f"{label}: source is invalid JSON: {error}") from error
+
+
+def bounded_json(path: Path, byte_limit: int, label: str) -> object:
+    encoded = bounded_regular_file(path, byte_limit, label)
+    return parse_json_utf8(encoded, label)
+
+
+def load_inventory(path: Path = INVENTORY) -> object:
+    return bounded_json(path, MAX_INVENTORY_BYTES, "canonical adapter evidence inventory")
+
+
+def validate_inventory(value: object) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(value, dict):
+        return ["inventory top level must be an object"]
+    if set(value) != {"schema", "claims"}:
+        errors.append("inventory root members are not exact")
+    if value.get("schema") != EXPECTED_INVENTORY["schema"]:
+        errors.append("inventory schema identity is not exact")
+    claims = value.get("claims")
+    if not isinstance(claims, list):
+        return errors + ["inventory claims must be an array"]
+
+    claim_ids: list[str] = []
+    for index, claim in enumerate(claims):
+        if not isinstance(claim, dict):
+            errors.append(f"claim {index} must be an object")
+            continue
+        if set(claim) != CLAIM_FIELDS:
+            errors.append(f"claim {index} members are not exact")
+            continue
+        for field in ("claim_id", "subject", "scope", "evidence_class", "custody"):
+            if not isinstance(claim[field], str) or not claim[field]:
+                errors.append(f"claim {index} field {field} must be a nonempty string")
+        if type(claim["complete_upstream_suite"]) is not bool:
+            errors.append(f"claim {index} complete_upstream_suite must be boolean")
+        source_claims = claim["source_claims"]
+        if not isinstance(source_claims, list) or not source_claims:
+            errors.append(f"claim {index} source_claims must be a nonempty array")
+        elif any(not isinstance(source, str) or not source for source in source_claims):
+            errors.append(f"claim {index} source_claims must be nonempty strings")
+        elif source_claims != sorted(set(source_claims)):
+            errors.append(f"claim {index} source_claims must be ordered and unique")
+        claim_id = claim.get("claim_id")
+        if isinstance(claim_id, str):
+            claim_ids.append(claim_id)
+
+    if claim_ids != sorted(set(claim_ids)):
+        errors.append("claim IDs must be unique and ASCII ordered")
+    if claims != EXPECTED_CLAIMS:
+        errors.append("claim records differ from the human-reviewed ADR-0201 inventory")
+    return errors
+
+
+def validate_source_locators(
+    root: Path = ROOT,
+    claims: list[dict[str, Any]] = EXPECTED_CLAIMS,
+) -> list[str]:
+    errors: list[str] = []
+    source_cache: dict[str, bytes] = {}
+    json_cache: dict[str, object] = {}
+
+    def source_bytes(relative: str) -> bytes | None:
+        if relative in source_cache:
+            return source_cache[relative]
+        byte_limit = LOCATOR_BYTE_LIMITS.get(relative)
+        if byte_limit is None:
+            errors.append(f"source locator path has no accepted byte ceiling: {relative}")
+            return None
+        try:
+            encoded = bounded_regular_file(
+                root / relative,
+                byte_limit,
+                f"source locator {relative}",
+            )
+        except ValueError as error:
+            errors.append(str(error))
+            return None
+        source_cache[relative] = encoded
+        return encoded
+
+    def json_source(relative: str) -> object:
+        if relative in json_cache:
+            return json_cache[relative]
+        encoded = source_bytes(relative)
+        if encoded is None:
+            return JSON_SOURCE_FAILURE
+        try:
+            value = parse_json_utf8(encoded, f"source locator {relative}")
+        except ValueError as error:
+            errors.append(str(error))
+            return JSON_SOURCE_FAILURE
+        json_cache[relative] = value
+        return value
+
+    for claim in claims:
+        for locator in claim["source_claims"]:
+            if locator.count("#") > 1:
+                errors.append(f"{claim['claim_id']}: malformed source locator: {locator}")
+                continue
+            relative, separator, fragment = locator.partition("#")
+            if not relative or (separator and not fragment):
+                errors.append(f"{claim['claim_id']}: malformed source locator: {locator}")
+                continue
+            encoded = source_bytes(relative)
+            if encoded is None:
+                continue
+
+            if not separator:
+                if not relative.endswith(".json"):
+                    errors.append(
+                        f"{claim['claim_id']}: unfragmented locator is not JSON: {locator}"
+                    )
+                else:
+                    json_source(relative)
+                continue
+
+            if relative == "work_packages.yaml":
+                if re.fullmatch(r"WP-[0-9]{3}\.closure", fragment) is None:
+                    errors.append(
+                        f"{claim['claim_id']}: malformed work-package fragment: {locator}"
+                    )
+                    continue
+                try:
+                    work_packages = encoded.decode("utf-8")
+                except UnicodeDecodeError as error:
+                    errors.append(f"source locator {relative}: source is not UTF-8: {error}")
+                    continue
+                package_id = fragment.removesuffix(".closure")
+                package_marker = f"- id: {package_id}\n"
+                start = work_packages.find(package_marker)
+                next_package = work_packages.find("\n- id: WP-", start + len(package_marker))
+                package = (
+                    ""
+                    if start < 0
+                    else work_packages[start:] if next_package < 0 else work_packages[start:next_package]
+                )
+                if "\n  closure:\n" not in package or "\n    status: complete\n" not in package:
+                    errors.append(
+                        f"{claim['claim_id']}: dangling work-package fragment: {locator}"
+                    )
+                continue
+
+            if relative.endswith(".md"):
+                if re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", fragment) is None:
+                    errors.append(
+                        f"{claim['claim_id']}: malformed Markdown heading fragment: {locator}"
+                    )
+                    continue
+                try:
+                    markdown = encoded.decode("utf-8")
+                except UnicodeDecodeError as error:
+                    errors.append(f"source locator {relative}: source is not UTF-8: {error}")
+                    continue
+                anchors: set[str] = set()
+                for line in markdown.splitlines():
+                    heading = re.fullmatch(r"#{1,6}\s+(.+?)(?:\s+#+)?", line)
+                    if heading is None:
+                        continue
+                    anchor = heading.group(1).strip().lower()
+                    anchor = re.sub(r"[^a-z0-9 _-]", "", anchor)
+                    anchor = re.sub(r"[ _]+", "-", anchor)
+                    anchors.add(anchor)
+                if fragment not in anchors:
+                    errors.append(
+                        f"{claim['claim_id']}: dangling Markdown heading fragment: {locator}"
+                    )
+                continue
+
+            if relative.endswith(".json"):
+                if re.fullmatch(r"/[a-z][a-z0-9_]*", fragment) is None:
+                    errors.append(
+                        f"{claim['claim_id']}: malformed JSON pointer fragment: {locator}"
+                    )
+                    continue
+                value = json_source(relative)
+                if value is JSON_SOURCE_FAILURE:
+                    continue
+                key = fragment[1:]
+                if not isinstance(value, dict) or key not in value:
+                    errors.append(f"{claim['claim_id']}: dangling JSON pointer: {locator}")
+                continue
+
+            errors.append(f"{claim['claim_id']}: unsupported source fragment: {locator}")
+    return errors
+
+
+def requirement_block(spec: str, requirement: str) -> str | None:
+    marker = f"- `{requirement}`:"
+    start = spec.find(marker)
+    if start < 0:
+        return None
+    next_requirement = spec.find("\n- `", start + len(marker))
+    return spec[start:] if next_requirement < 0 else spec[start:next_requirement]
+
+
+def adapter_evidence_normative_claim_inventory_is_complete(
+    root: Path = ROOT,
+    overrides: dict[str, str] | None = None,
+) -> list[str]:
+    """Prove every ADR-0201-named normative and release claim remains scoped."""
+
+    errors: list[str] = []
+    paths = {"SPEC.md"} | set(REQUIRED_SOURCE_TEXT) | set(FORBIDDEN_SOURCE_TEXT)
+    if paths != set(SOURCE_TEXT_BYTE_LIMITS):
+        return ["guarded repository text paths do not have exact explicit byte ceilings"]
+    texts: dict[str, str] = {}
+    for relative in sorted(paths):
+        try:
+            texts[relative] = (
+                overrides[relative]
+                if overrides is not None and relative in overrides
+                else bounded_text(
+                    root / relative,
+                    SOURCE_TEXT_BYTE_LIMITS[relative],
+                    f"guarded repository text {relative}",
+                )
+            )
+        except (OSError, ValueError) as error:
+            errors.append(f"{relative}: {error}")
+
+    spec = texts.get("SPEC.md", "")
+    for requirement, markers in SPEC_MARKERS.items():
+        block = requirement_block(spec, requirement)
+        if block is None:
+            errors.append(f"SPEC.md: missing normative claim {requirement}")
+            continue
+        for marker in markers:
+            if marker not in block:
+                errors.append(f"SPEC.md: {requirement} omits exact evidence marker {marker!r}")
+
+    for relative, markers in REQUIRED_SOURCE_TEXT.items():
+        text = texts.get(relative, "")
+        for marker in markers:
+            if marker not in text:
+                errors.append(f"{relative}: missing reviewed claim {marker!r}")
+    for relative, markers in FORBIDDEN_SOURCE_TEXT.items():
+        text = texts.get(relative, "")
+        for marker in markers:
+            if marker in text:
+                errors.append(f"{relative}: retained legacy equal-adapter claim {marker!r}")
+    return errors
+
+
+def assert_rejected(value: object, label: str) -> None:
+    if not validate_inventory(value):
+        raise ValueError(f"negative self-test accepted {label}")
+
+
+def adapter_evidence_claim_negative_self_test() -> None:
+    """Exercise every ADR-0201 widening, collapse, and wording refusal."""
+
+    missing = copy.deepcopy(EXPECTED_INVENTORY)
+    missing["claims"].pop()
+    assert_rejected(missing, "missing record")
+
+    duplicate = copy.deepcopy(EXPECTED_INVENTORY)
+    duplicate["claims"].append(copy.deepcopy(duplicate["claims"][-1]))
+    assert_rejected(duplicate, "duplicate record")
+
+    reordered = copy.deepcopy(EXPECTED_INVENTORY)
+    reordered["claims"][0], reordered["claims"][1] = (
+        reordered["claims"][1],
+        reordered["claims"][0],
+    )
+    assert_rejected(reordered, "reordered records")
+
+    widened = copy.deepcopy(EXPECTED_INVENTORY)
+    widened["claims"][0]["evidence_class"] = "upstream_suite_adapter"
+    assert_rejected(widened, "widened general record")
+
+    unknown = copy.deepcopy(EXPECTED_INVENTORY)
+    unknown_record = copy.deepcopy(unknown["claims"][-1])
+    unknown_record["claim_id"] = "unknown.subject.claim"
+    unknown["claims"].append(unknown_record)
+    assert_rejected(unknown, "unknown record")
+
+    collapsed_scope = copy.deepcopy(EXPECTED_INVENTORY)
+    collapsed_scope["claims"][4]["scope"] = "wp578_wp579_general_alpha"
+    assert_rejected(collapsed_scope, "scope collapse")
+
+    invented_locator = copy.deepcopy(EXPECTED_INVENTORY)
+    invented_locator["claims"][6]["source_claims"] = ["release/evidence/invented.json"]
+    assert_rejected(invented_locator, "invented source locator")
+
+    promoted_fixture = copy.deepcopy(EXPECTED_INVENTORY)
+    promoted_fixture["claims"][1]["custody"] = "external"
+    assert_rejected(promoted_fixture, "fixture-to-external promotion")
+
+    promoted_partial = copy.deepcopy(EXPECTED_INVENTORY)
+    promoted_partial["claims"][8]["complete_upstream_suite"] = True
+    assert_rejected(promoted_partial, "partial-to-complete promotion")
+
+    synthetic = {
+        "SPEC.md": "\n".join(
+            f"- `{requirement}`: {' '.join(markers)}"
+            for requirement, markers in SPEC_MARKERS.items()
+        ),
+        **{
+            relative: "\n".join(markers)
+            for relative, markers in REQUIRED_SOURCE_TEXT.items()
+        },
+    }
+    if adapter_evidence_normative_claim_inventory_is_complete(overrides=synthetic):
+        raise ValueError("negative self-test fixture does not satisfy reviewed source claims")
+
+    missed_guards: list[str] = []
+    guarded_relative = "docs/SUMMARY.md"
+    guarded_text = synthetic[guarded_relative]
+    guarded_overrides = dict(synthetic)
+    del guarded_overrides[guarded_relative]
+    with tempfile.TemporaryDirectory(prefix="riffdb-adapter-evidence-negative-") as directory:
+        root = Path(directory)
+        guarded_path = root / guarded_relative
+        guarded_path.parent.mkdir(parents=True)
+        guarded_path.write_text(
+            guarded_text + ("x" * SOURCE_TEXT_BYTE_LIMITS[guarded_relative]),
+            encoding="utf-8",
+        )
+        if not adapter_evidence_normative_claim_inventory_is_complete(
+            root=root, overrides=guarded_overrides
+        ):
+            missed_guards.append("oversized guarded repository text")
+
+        guarded_path.unlink()
+        symlink_target = root / "reviewed-summary.md"
+        symlink_target.write_text(guarded_text, encoding="utf-8")
+        guarded_path.symlink_to(symlink_target)
+        if not adapter_evidence_normative_claim_inventory_is_complete(
+            root=root, overrides=guarded_overrides
+        ):
+            missed_guards.append("symlinked guarded repository text")
+
+    def one_locator(locator: str) -> list[dict[str, Any]]:
+        return [{"claim_id": "negative.locator", "source_claims": [locator]}]
+
+    with tempfile.TemporaryDirectory(prefix="riffdb-adapter-locator-negative-") as directory:
+        root = Path(directory)
+        work_packages = root / "work_packages.yaml"
+        work_packages.write_text(
+            "- id: WP-630\n  closure:\n    status: complete\n",
+            encoding="utf-8",
+        )
+        markdown = root / "adr/0169-optional-aggregate-root-materialization.md"
+        markdown.parent.mkdir(parents=True)
+        markdown.write_text("## Testing\n", encoding="utf-8")
+        pointer = root / "release/evidence/large-atomic-command-envelope-v1.json"
+        pointer.parent.mkdir(parents=True)
+        pointer.write_text('{"mlflow_loopback": {}}\n', encoding="utf-8")
+        plain_json = root / "release/evidence/alpha/conformance-mlflow-v1.json"
+        plain_json.parent.mkdir(parents=True)
+        plain_json.write_text(
+            '{"schema": "negative"}' + (" " * LOCATOR_BYTE_LIMITS[plain_json.relative_to(root).as_posix()]),
+            encoding="utf-8",
+        )
+
+        invalid_locators = {
+            "malformed work-package fragment": "work_packages.yaml#WP-630",
+            "dangling work-package fragment": "work_packages.yaml#WP-999.closure",
+            "malformed Markdown fragment": (
+                "adr/0169-optional-aggregate-root-materialization.md#Testing!"
+            ),
+            "dangling Markdown fragment": (
+                "adr/0169-optional-aggregate-root-materialization.md#missing"
+            ),
+            "malformed JSON pointer": (
+                "release/evidence/large-atomic-command-envelope-v1.json#//mlflow_loopback"
+            ),
+            "dangling JSON pointer": (
+                "release/evidence/large-atomic-command-envelope-v1.json#/missing"
+            ),
+            "oversized locator source": (
+                "release/evidence/alpha/conformance-mlflow-v1.json"
+            ),
+        }
+        for label, locator in invalid_locators.items():
+            if not validate_source_locators(root=root, claims=one_locator(locator)):
+                missed_guards.append(label)
+
+        pointer.write_bytes(
+            json.dumps({"mlflow_loopback": {}}).encode("utf-16")
+        )
+        pointer_errors = validate_source_locators(
+            root=root,
+            claims=one_locator(
+                "release/evidence/large-atomic-command-envelope-v1.json#/mlflow_loopback"
+            ),
+        )
+        expected_pointer_errors = [
+            "source locator release/evidence/large-atomic-command-envelope-v1.json: "
+            "source is not UTF-8"
+        ]
+        if pointer_errors != expected_pointer_errors:
+            missed_guards.append(
+                f"UTF-16 JSON pointer locator diagnostic {pointer_errors!r}"
+            )
+        receipt_errors = validate_source_locators(
+            root=root,
+            claims=one_locator(
+                "release/evidence/large-atomic-command-envelope-v1.json"
+            ),
+        )
+        expected_receipt_errors = [
+            "source locator release/evidence/large-atomic-command-envelope-v1.json: "
+            "source is not UTF-8"
+        ]
+        if receipt_errors != expected_receipt_errors:
+            missed_guards.append(
+                f"UTF-16 unfragmented JSON locator diagnostic {receipt_errors!r}"
+            )
+
+        plain_json.unlink()
+        symlink_target = root / "reviewed-locator.json"
+        symlink_target.write_text('{"schema": "negative"}\n', encoding="utf-8")
+        plain_json.symlink_to(symlink_target)
+        if not validate_source_locators(
+            root=root,
+            claims=one_locator("release/evidence/alpha/conformance-mlflow-v1.json"),
+        ):
+            missed_guards.append("symlinked locator source")
+
+        plain_json.unlink()
+        plain_json.mkdir()
+        if not validate_source_locators(
+            root=root,
+            claims=one_locator("release/evidence/alpha/conformance-mlflow-v1.json"),
+        ):
+            missed_guards.append("non-regular locator source")
+
+    with tempfile.TemporaryDirectory(prefix="riffdb-adapter-inventory-negative-") as directory:
+        inventory = Path(directory) / "adapter-evidence-v1.json"
+        inventory.write_bytes(json.dumps(EXPECTED_INVENTORY).encode("utf-16"))
+        try:
+            load_inventory(inventory)
+        except ValueError as error:
+            expected = "canonical adapter evidence inventory: source is not UTF-8"
+            if str(error) != expected:
+                missed_guards.append(
+                    f"UTF-16 inventory diagnostic {str(error)!r}"
+                )
+        else:
+            missed_guards.append("UTF-16 inventory")
+
+        inventory.write_bytes(b"{" + (b" " * MAX_INVENTORY_BYTES) + b"}")
+        try:
+            load_inventory(inventory)
+        except ValueError:
+            pass
+        else:
+            missed_guards.append("oversized inventory")
+
+        inventory.unlink()
+        inventory_target = Path(directory) / "reviewed-inventory.json"
+        inventory_target.write_text(json.dumps(EXPECTED_INVENTORY), encoding="utf-8")
+        inventory.symlink_to(inventory_target)
+        try:
+            load_inventory(inventory)
+        except ValueError:
+            pass
+        else:
+            missed_guards.append("symlinked inventory")
+
+    if missed_guards:
+        raise ValueError(
+            "negative self-test accepted: " + ", ".join(missed_guards)
+        )
+
+    legacy = dict(synthetic)
+    legacy["docs/architecture/DEPLOYABLE-APPLICATION-ALPHA.md"] += (
+        "\nA fresh OpenFGA-, MLflow-, Better-Auth-, or Woodpecker-shaped adapter can be\n"
+    )
+    if not adapter_evidence_normative_claim_inventory_is_complete(overrides=legacy):
+        raise ValueError("negative self-test accepted legacy equal-adapter wording")
+
+    weakened_dispatcher = dict(synthetic)
+    weakened_dispatcher["docs/integrations/COMPILED-FRAMEWORK-PROFILES.md"] = (
+        weakened_dispatcher["docs/integrations/COMPILED-FRAMEWORK-PROFILES.md"].replace(
+            "profile-bound dispatcher to exact generated commands and named queries",
+            "generic runtime store dispatcher",
+        )
+    )
+    if not adapter_evidence_normative_claim_inventory_is_complete(
+        overrides=weakened_dispatcher
+    ):
+        raise ValueError("negative self-test accepted a weakened profile dispatcher")
+
+
+def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        adapter_evidence_claim_negative_self_test()
+        print("adapter evidence claim negative self-test: passed")
+        return 0
+    if sys.argv[1:]:
+        raise ValueError("usage: check-adapter-evidence-claims [--self-test]")
+    value = load_inventory()
+    errors = (
+        validate_inventory(value)
+        + validate_source_locators()
+        + adapter_evidence_normative_claim_inventory_is_complete()
+    )
+    if errors:
+        for error in errors:
+            print(f"adapter evidence claim error: {error}", file=sys.stderr)
+        return 1
+    print("adapter evidence claims: exact")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except ValueError as error:
+        print(f"adapter evidence claim error: {error}", file=sys.stderr)
+        raise SystemExit(1) from error
