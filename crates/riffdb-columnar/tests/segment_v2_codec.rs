@@ -322,6 +322,82 @@ fn exact_statistics_prune_only_when_no_row_can_match() {
     ));
 }
 
+// req: OQ-019, OQ-021
+#[test]
+fn decimal_and_money_ranges_remain_conservative_at_negative_zero_boundaries() {
+    let decimal_spec = DecimalSpec::new(12, 2).expect("decimal type");
+    let currency = CurrencyCode::new("USD").expect("currency");
+    let decimal = |coefficient| {
+        CanonicalValue::Decimal(
+            Decimal::new(decimal_spec, coefficient).expect("bounded decimal coefficient"),
+        )
+    };
+    let money = |coefficient| {
+        CanonicalValue::Money(Money::new(
+            currency,
+            Decimal::new(decimal_spec, coefficient).expect("bounded money coefficient"),
+        ))
+    };
+
+    for (logical_type, values, zero, absent) in [
+        (
+            SegmentV2LogicalType::Decimal(decimal_spec),
+            vec![decimal(-2), decimal(-1)],
+            decimal(0),
+            decimal(1),
+        ),
+        (
+            SegmentV2LogicalType::Money {
+                currency,
+                amount: decimal_spec,
+            },
+            vec![money(-2), money(-1)],
+            money(0),
+            money(1),
+        ),
+    ] {
+        let negative = SegmentV2Column::new(
+            FieldId::new(1).expect("field"),
+            logical_type.clone(),
+            values.into_iter().map(SegmentV2Cell::Value).collect(),
+        )
+        .expect("negative column");
+        assert_eq!(
+            negative
+                .pruning_decision(&SegmentV2Predicate::GreaterThanOrEqual(zero.clone()))
+                .expect("range decision"),
+            SegmentV2PruningDecision::Scan,
+            "canonical executor order places negative coefficient bytes after zero"
+        );
+        assert_eq!(
+            negative
+                .pruning_decision(&SegmentV2Predicate::Equal(absent))
+                .expect("equality decision"),
+            SegmentV2PruningDecision::Skip,
+            "exact equality remains safe to prune outside the numeric zone"
+        );
+
+        let zero_column = SegmentV2Column::new(
+            FieldId::new(1).expect("field"),
+            logical_type,
+            vec![SegmentV2Cell::Value(zero.clone())],
+        )
+        .expect("zero column");
+        let negative_boundary = match zero {
+            CanonicalValue::Decimal(_) => decimal(-1),
+            CanonicalValue::Money(_) => money(-1),
+            _ => unreachable!("closed test corpus"),
+        };
+        assert_eq!(
+            zero_column
+                .pruning_decision(&SegmentV2Predicate::LessThan(negative_boundary))
+                .expect("boundary decision"),
+            SegmentV2PruningDecision::Scan,
+            "canonical executor order places zero coefficient bytes before negative bytes"
+        );
+    }
+}
+
 #[test]
 fn randomized_round_trip_and_pruning_have_zero_false_negatives() {
     let mut state = 0x9e37_79b9_7f4a_7c15u64;

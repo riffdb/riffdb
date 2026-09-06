@@ -1,10 +1,11 @@
 //! Columnar engine open, apply, query, checkpoint, and compact.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use riffdb_storage_api::{
-    AuthoritativePointReader, AuthoritativeScanReader, MAX_SCAN_PAGE_ENTRIES, StoredEntityRecordV1,
+    AuthoritativePointReader, AuthoritativeScanReader, ColumnarControlError, MAX_SCAN_PAGE_ENTRIES,
+    StoredColumnarProjectionGenerationV1, StoredEntityRecordV1,
 };
 use riffdb_types::{FrontierPosition, ProjectionFrontier};
 
@@ -17,6 +18,9 @@ use crate::outcome::{ColumnarOutcome, ProjectionBuilding, ProjectionReady};
 use crate::query::{ColumnarQueryRequest, QueryResult, query_snapshot};
 use crate::store::{
     ColumnarSnapshot, LiveRow, OrgKey, PrimaryKeyBytes, WorkingState, project_cells,
+};
+use crate::{
+    ColumnarProjectionSpecV1, PreparedColumnarGenerationV1, ValidatedColumnarV2Generation,
 };
 
 /// Bounded-page builder for one complete authoritative snapshot generation.
@@ -155,6 +159,16 @@ pub struct ColumnarEngine {
     has_manifest: bool,
     /// History incarnation bound into published frontiers (immutable for engine life).
     history_incarnation: u64,
+    /// V2 generations are immutable and may be queried but never advanced or
+    /// checkpointed in place.
+    writable_layout_v1: bool,
+    validated_v1_reopen: Option<ValidatedV1Reopen>,
+}
+
+#[derive(Clone, Copy)]
+struct ValidatedV1Reopen {
+    artifact: (u64, [u8; 32]),
+    frontier: FrontierPosition,
 }
 
 impl ColumnarEngine {
@@ -168,11 +182,13 @@ impl ColumnarEngine {
         options: OpenOptions,
     ) -> Result<Self, ColumnarError> {
         let controlled = options.controlled_manifest.is_some();
+        let selected_artifact = options.controlled_manifest.flatten();
         let checkpoint = CheckpointDir::new(options.directory, controlled)?;
         let mut apply = ApplyState::new(definition.clone());
         let mut has_published = false;
         let mut durable_frontier = FrontierPosition::BeforeFirst;
         let mut has_manifest = false;
+        let mut validated_v1_reopen = None;
 
         match checkpoint.load_manifest(options.controlled_manifest.flatten())? {
             None => {
@@ -180,7 +196,9 @@ impl ColumnarEngine {
                 // Sweep stray files from a checkpoint torn before the first
                 // manifest rename (orphan segments, temp manifests) so a later
                 // checkpoint can never collide with them.
-                checkpoint.sweep_stray_files()?;
+                if !controlled {
+                    checkpoint.sweep_stray_files()?;
+                }
             }
             Some(manifest) => {
                 if manifest.fingerprint != definition.fingerprint() {
@@ -198,6 +216,12 @@ impl ColumnarEngine {
                 has_published = true;
                 durable_frontier = manifest.durable_frontier;
                 has_manifest = true;
+                if let Some(artifact) = selected_artifact {
+                    validated_v1_reopen = Some(ValidatedV1Reopen {
+                        artifact,
+                        frontier: manifest.durable_frontier,
+                    });
+                }
             }
         }
 
@@ -209,7 +233,102 @@ impl ColumnarEngine {
             durable_frontier,
             has_manifest,
             history_incarnation: options.history_incarnation,
+            writable_layout_v1: true,
+            validated_v1_reopen,
         })
+    }
+
+    /// Installs one already fully validated immutable V2 generation as a
+    /// query-only engine. No request path reopens or revalidates its files.
+    #[doc(hidden)]
+    pub fn from_validated_v2(
+        definition: RegisteredDefinition,
+        generation: ValidatedColumnarV2Generation,
+    ) -> Result<Self, ColumnarError> {
+        if generation.root().definition_fingerprint() != definition.fingerprint() {
+            return Err(ColumnarError::Integrity("V2 definition mismatch"));
+        }
+        let history_incarnation = generation.root().history_incarnation();
+        let durable_frontier = generation.root().frontier();
+        let snapshot = Arc::clone(generation.snapshot());
+        let working = WorkingState {
+            segments: snapshot.segments.clone(),
+            delta: snapshot.delta.clone(),
+            processed: durable_frontier,
+        };
+        let checkpoint = CheckpointDir::validated_read_only(generation.directory().to_path_buf());
+        Ok(Self {
+            definition: definition.clone(),
+            apply: ApplyState {
+                definition,
+                working,
+                published: snapshot,
+                deferred: std::collections::BTreeMap::new(),
+                #[cfg(test)]
+                publish_observer: None,
+            },
+            checkpoint,
+            has_published: true,
+            durable_frontier,
+            has_manifest: true,
+            history_incarnation,
+            writable_layout_v1: false,
+            validated_v1_reopen: None,
+        })
+    }
+
+    /// Mints a process-bound control witness only from this exact controlled
+    /// V1 reopen and a matching compiler-bound specification/pointer.
+    #[doc(hidden)]
+    pub fn prepared_v1_generation(
+        &self,
+        spec: &ColumnarProjectionSpecV1,
+        generation: StoredColumnarProjectionGenerationV1,
+        process_generation: [u8; 16],
+    ) -> Result<PreparedColumnarGenerationV1, ColumnarControlError> {
+        let validated = self.validated_v1_reopen.ok_or(ColumnarControlError)?;
+        crate::prepared_generation::validate_v1_pointer_shape(&generation)?;
+        if generation
+            .artifact()
+            .map(|artifact| (artifact.length(), artifact.checksum()))
+            != Some(validated.artifact)
+            || generation.frontier() != validated.frontier
+            || generation.history_incarnation() != self.history_incarnation
+            || generation.definition_fingerprint() != self.definition.fingerprint()
+        {
+            return Err(ColumnarControlError);
+        }
+        PreparedColumnarGenerationV1::from_validated(spec, generation, process_generation)
+    }
+
+    /// Returns the exact immutable V1 artifact validated when this controlled
+    /// engine was opened. Query-only V2 and uncontrolled engines return none.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn controlled_v1_artifact_identity(&self) -> Option<(u64, [u8; 32])> {
+        self.validated_v1_reopen.map(|validated| validated.artifact)
+    }
+
+    /// Reclaims controlled V1 manifests and segments not named by any durable
+    /// pointer or still-live captured view.
+    #[doc(hidden)]
+    pub fn reclaim_controlled_v1_artifacts(
+        directory: &Path,
+        retained: &[(u64, [u8; 32])],
+    ) -> Result<(), ColumnarError> {
+        CheckpointDir::reclaim_controlled_v1_artifacts(directory, retained, None)
+            .map_err(ColumnarError::Checkpoint)
+    }
+
+    /// Test-only variant of controlled V1 reclamation with one fixed crash controller.
+    #[doc(hidden)]
+    pub fn reclaim_controlled_v1_artifacts_with_test_controller(
+        directory: &Path,
+        retained: &[(u64, [u8; 32])],
+        controller: &ColumnarTestController,
+    ) -> Result<(), ColumnarError> {
+        CheckpointDir::reclaim_controlled_v1_artifacts(directory, retained, Some(controller))
+            .map_err(ColumnarError::Checkpoint)
     }
 
     /// Installs a test controller for crash injection (never used in production).
@@ -294,6 +413,11 @@ impl ColumnarEngine {
         &mut self,
         reader: &(impl AuthoritativeScanReader + AuthoritativePointReader),
     ) -> Result<ApplyProgress, ColumnarError> {
+        if !self.writable_layout_v1 {
+            return Err(ColumnarError::InvalidState(
+                "immutable V2 generation cannot apply in place",
+            ));
+        }
         let progress = self.apply.apply_available(reader)?;
         self.record_completed_apply(&progress);
         Ok(progress)
@@ -312,6 +436,11 @@ impl ColumnarEngine {
         reader: &(impl AuthoritativeScanReader + AuthoritativePointReader),
         stop_before_next_page: impl FnMut() -> bool,
     ) -> Result<WorkerApplyOutcome, ColumnarError> {
+        if !self.writable_layout_v1 {
+            return Err(ColumnarError::InvalidState(
+                "immutable V2 generation cannot apply in place",
+            ));
+        }
         let outcome = self
             .apply
             .apply_available_for_worker(reader, stop_before_next_page)?;
@@ -392,6 +521,11 @@ impl ColumnarEngine {
     /// applied-but-unpublished effects of a half-visible commit. Retry after
     /// the next apply pull applies the superseding commit.
     pub fn checkpoint(&mut self) -> Result<ManifestV1, ColumnarError> {
+        if !self.writable_layout_v1 {
+            return Err(ColumnarError::InvalidState(
+                "immutable V2 generation cannot checkpoint in place",
+            ));
+        }
         self.ensure_no_holdback()?;
         let durable = self.apply.published.visible_frontier;
         // The worker forces a checkpoint on a poll cadence whether or not
@@ -436,6 +570,11 @@ impl ColumnarEngine {
     /// Refuses with [`CheckpointError::HoldbackActive`] during a holdback
     /// window, exactly like [`Self::checkpoint`].
     pub fn compact(&mut self) -> Result<(), ColumnarError> {
+        if !self.writable_layout_v1 {
+            return Err(ColumnarError::InvalidState(
+                "immutable V2 generation cannot compact in place",
+            ));
+        }
         self.ensure_no_holdback()?;
         let frontier = self.apply.published.visible_frontier;
         let _ = self.checkpoint.checkpoint(

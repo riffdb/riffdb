@@ -6,6 +6,11 @@ use riffdb_columnar::{
     ColumnarDefinitionSemanticsV1, ColumnarEngine, ColumnarProjectionSourceV1,
     ColumnarProjectionSpecV1, ColumnarVectorSpecExtensionV1, OpenOptions,
 };
+use riffdb_storage_api::{
+    ColumnarProjectionArtifactV1, ColumnarProjectionLayoutV1, FreshColumnarProjectionControlV1,
+    StoredColumnarProjectionGenerationV1,
+};
+use riffdb_types::{FrontierPosition, ProjectionGeneration};
 
 // req: PRJ-002, PRJ-004, PRJ-006, PRJ-007, PRJ-010, OQ-024, OQ-053
 #[test]
@@ -34,6 +39,52 @@ fn controlled_v1_manifest_opens_only_the_exact_immutable_artifact() {
     assert_eq!(
         reopened.durable_frontier().position(),
         manifest.durable_frontier
+    );
+    let spec = ColumnarProjectionSpecV1::for_scalar(&definition, &bundle).expect("scalar spec");
+    let pointer = StoredColumnarProjectionGenerationV1::prepared_candidate(
+        ProjectionGeneration::first(),
+        ColumnarProjectionLayoutV1::V1,
+        FrontierPosition::BeforeFirst,
+        manifest.durable_frontier,
+        1,
+        ColumnarProjectionArtifactV1::new(length, checksum).expect("artifact"),
+        definition.fingerprint(),
+        spec.hash(),
+        None,
+    )
+    .expect("prepared pointer");
+    let prepared = reopened
+        .prepared_v1_generation(&spec, pointer, [0x41; 16])
+        .expect("validated reopen mints the witness");
+    let expected = FreshColumnarProjectionControlV1::new(
+        spec.source().clone(),
+        spec.definition_fingerprint(),
+        spec.hash(),
+        spec.replay_limits(),
+        1,
+    )
+    .expect("fresh control");
+    assert!(
+        prepared
+            .replacement_for(expected.control(), [0x41; 16])
+            .is_ok()
+    );
+    assert!(
+        prepared
+            .replacement_for(expected.control(), [0x42; 16])
+            .is_err(),
+        "a witness is exact to the validating process generation"
+    );
+
+    let uncontrolled_directory = common::temp_dir("uncontrolled-v1-manifest");
+    let uncontrolled =
+        ColumnarEngine::open(definition.clone(), OpenOptions::new(uncontrolled_directory))
+            .expect("uncontrolled engine");
+    assert!(
+        uncontrolled
+            .prepared_v1_generation(&spec, prepared.generation().clone(), [0x41; 16])
+            .is_err(),
+        "an ordinary or fresh engine cannot forge validated reopen evidence"
     );
     assert!(
         ColumnarEngine::open(

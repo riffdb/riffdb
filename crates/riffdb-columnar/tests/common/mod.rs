@@ -9,6 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use riffdb_contract_compiler::compile_contract_source;
@@ -732,6 +733,7 @@ pub(crate) struct HistorySource {
     pub entities: BTreeMap<Vec<u8>, StoredEntityRecordV1>,
     /// Ordered commits.
     pub commits: Vec<StoredCommitRecordV1>,
+    scan_calls: Arc<AtomicU64>,
 }
 
 impl HistorySource {
@@ -767,6 +769,10 @@ impl HistorySource {
     pub(crate) fn put_entity(&mut self, record: StoredEntityRecordV1) {
         let key = Self::target_key(record.target());
         self.entities.insert(key, record);
+    }
+
+    pub(crate) fn scan_calls(&self) -> u64 {
+        self.scan_calls.load(Ordering::Acquire)
     }
 
     /// Appends a commit that references the given post-images (must already be current state
@@ -886,6 +892,7 @@ impl AuthoritativeScanReader for HistorySource {
     }
 
     fn scan_commits(&self, request: CommitScanRequest) -> Result<CommitScanPageV1, StorageError> {
+        self.scan_calls.fetch_add(1, Ordering::AcqRel);
         let inclusive_upper = request.inclusive_upper().map_or_else(
             || {
                 self.commits

@@ -15,6 +15,7 @@ test-fixtures = ["riffdb-storage-api/test-fixtures", "dep:tempfile"]
 cap-std = { version = "=4.0.2", default-features = false }
 redb = { version = "=4.2.0", default-features = false }
 riffdb-catalog = { version = "0.1.0", path = "../riffdb-catalog", default-features = false }
+riffdb-columnar = { version = "0.1.0", path = "../riffdb-columnar", default-features = false }
 riffdb-proto = { version = "0.1.0", path = "../riffdb-proto" }
 riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api" }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types" }

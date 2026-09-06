@@ -1567,6 +1567,7 @@ fn crash_child_process_matrix() {
                     );
                 }
             }
+            _ => panic!("{name}: V2-only boundary in V1 recovery matrix"),
         }
 
         // Replay from history must reach head without error.

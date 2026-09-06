@@ -132,6 +132,19 @@ under a 4,096-row startup bound but is inert and unwritable until its mandatory
 epoch-2 removal. Controlled V1 manifests are immutable and selected only by the
 exact length and checksum in tag 67.
 
+The same tag-67 control now supports the bounded per-database transition from a
+selected V1 generation to an additive immutable V2 generation. V1 remains
+readable and writable until one complete V2 `ROOT-V1` is durably selected; an
+incomplete candidate is never a compatibility signal. Segment V2,
+encoding-registry V1, Manifest V2, and generation-root V1 retain their exact
+registered readers, writers, fixtures, bounds, and definition bytes. Once V2
+is selected, open requires the exact control-bound generation, history
+incarnation, frontier, root identity, partition inventory, manifests, segments,
+and format tuple. Missing, extra, mixed V1/V2, stale-incarnation, unknown, or
+corrupt selected material fails closed without V1 fallback. Downgrade remains
+unsupported; a future removal of V1 identities still requires its separately
+governed retirement package.
+
 Inspect the same decision while the server is stopped:
 
 ```bash

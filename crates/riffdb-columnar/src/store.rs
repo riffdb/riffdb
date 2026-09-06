@@ -8,6 +8,7 @@ use riffdb_types::{
 };
 
 use crate::error::ColumnarError;
+use crate::segment_v2::SegmentV2PruningIndex;
 
 /// Opaque org-partition key: canonical encoding of the org scope value.
 ///
@@ -78,6 +79,10 @@ impl PrimaryKeyBytes {
 pub struct SegmentId(pub(crate) String);
 
 impl SegmentId {
+    pub(crate) fn from_file_name(file_name: String) -> Self {
+        Self(file_name)
+    }
+
     /// Segment file name relative to the projection directory.
     #[must_use]
     pub fn file_name(&self) -> &str {
@@ -108,6 +113,8 @@ pub struct Segment {
     pub rows: BTreeMap<PrimaryKeyBytes, LiveRow>,
     /// SHA-256 checksum of the durable file bytes.
     pub checksum: [u8; 32],
+    /// Private pruning facts retained only by a fully validated V2 open.
+    pub(crate) pruning: Option<SegmentV2PruningIndex>,
 }
 
 /// Published queryable snapshot (atomic publication unit).
@@ -150,11 +157,20 @@ impl ColumnarSnapshot {
         org: &OrgKey,
         maximum: usize,
     ) -> Option<BTreeMap<PrimaryKeyBytes, MergedRow>> {
+        self.merged_org_bounded_with_segment_filter(org, maximum, |_| true)
+    }
+
+    pub(crate) fn merged_org_bounded_with_segment_filter(
+        &self,
+        org: &OrgKey,
+        maximum: usize,
+        mut include_segment: impl FnMut(&Segment) -> bool,
+    ) -> Option<BTreeMap<PrimaryKeyBytes, MergedRow>> {
         let mut merged: BTreeMap<PrimaryKeyBytes, MergedRow> = BTreeMap::new();
 
         // Segments oldest → newest so later segments overwrite.
         for segment in &self.segments {
-            if &segment.org != org {
+            if &segment.org != org || !include_segment(segment) {
                 continue;
             }
             for (key, row) in &segment.rows {
@@ -315,6 +331,7 @@ mod tests {
             org: org.clone(),
             rows: BTreeMap::from([(pk(1), live(1, 10))]),
             checksum: [0; 32],
+            pruning: None,
         });
         let mut snapshot = ColumnarSnapshot::empty();
         snapshot.segments.push(segment);
@@ -334,6 +351,7 @@ mod tests {
             org: org.clone(),
             rows: BTreeMap::from([(pk(1), live(3, 30))]),
             checksum: [0; 32],
+            pruning: None,
         });
         let mut snapshot = ColumnarSnapshot::empty();
         snapshot.segments.push(segment);

@@ -63,15 +63,19 @@ mod checkpoint;
 mod definition;
 mod engine;
 mod error;
+mod generation_root;
+mod generation_v2;
 mod hnsw;
 mod hooks;
 mod identity;
 mod manifest_v2;
 pub mod nearest;
 mod outcome;
+mod prepared_generation;
 mod query;
 mod segment_v2;
 mod store;
+mod streaming_v2;
 
 pub use apply::ApplyProgress;
 #[doc(hidden)]
@@ -84,6 +88,13 @@ pub use definition::{
 };
 pub use engine::{ColumnarEngine, ColumnarSnapshotRebuild, OpenOptions};
 pub use error::{ColumnarError, StorageFailure};
+pub use generation_root::{
+    COLUMNAR_GENERATION_ROOT_FILE_NAME_V1, COLUMNAR_GENERATION_ROOT_FORMAT_VERSION_V1,
+    ColumnarGenerationRootError, ColumnarGenerationRootV1, ColumnarGenerationRootV1Entry,
+    MAX_COLUMNAR_GENERATION_ROOT_V1_BYTES, MAX_COLUMNAR_GENERATION_ROOT_V1_PARTITIONS,
+    PhysicalGenerationFingerprintV1,
+};
+pub use generation_v2::{ColumnarV2GenerationError, ValidatedColumnarV2Generation};
 pub use identity::{
     ColumnarDefinitionSemanticsV1, ColumnarIdentityError, ColumnarProjectionSpecV1,
     ColumnarSpecReplayLimitsV1, ColumnarVectorSpecExtensionV1,
@@ -99,6 +110,7 @@ pub use outcome::{
     ProjectionLagging, ProjectionReady, ProjectionRebuilding, RebuildingReason,
     frontier_lag_sequences, lagging_for,
 };
+pub use prepared_generation::{PreparedColumnarGenerationRepository, PreparedColumnarGenerationV1};
 pub use query::{
     AggregateOp, AggregateValue, AnnExecutionStats, ColumnPredicate, ColumnarQueryRequest,
     GroupBySpec, NearestCandidate, NearestCandidateAdmission, NearestQueryAdmissionError,
@@ -119,6 +131,8 @@ pub use store::{
     ColumnarSnapshot, LiveRow, MergedRow, OrgDelta, OrgKey, PrimaryKeyBytes, SegmentId,
     encode_org_scope_key,
 };
+#[doc(hidden)]
+pub use streaming_v2::ColumnarV2StreamingError;
 
 #[doc(hidden)]
 pub use hooks::{ColumnarTestBoundary, ColumnarTestController};
