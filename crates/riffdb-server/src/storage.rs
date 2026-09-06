@@ -5,11 +5,14 @@
 
 //! Private sharing bridge for the one activated production redb port bundle.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+use riffdb_columnar::{PreparedColumnarGenerationRepository, PreparedColumnarGenerationV1};
 use riffdb_query_executor::StorageQueryExecutor;
 use riffdb_service::{AuthoritativeReadinessFailure, ServiceHealthHooks};
 use riffdb_storage_api::{
@@ -69,6 +72,21 @@ use riffdb_types::{
     ReactiveModuleHash,
 };
 
+#[cfg(test)]
+thread_local! {
+    static COLUMNAR_CONTROL_RECOVERY_READS: Cell<u64> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_columnar_control_recovery_reads() {
+    COLUMNAR_CONTROL_RECOVERY_READS.set(0);
+}
+
+#[cfg(test)]
+pub(crate) fn columnar_control_recovery_reads() -> u64 {
+    COLUMNAR_CONTROL_RECOVERY_READS.get()
+}
+
 /// A cloneable handle to the sole activated redb semantic-port bundle.
 ///
 /// This type remains crate-private. Composition must pass clones only into the
@@ -122,6 +140,32 @@ impl SharedRedbOperationalPorts {
             query_modules: Arc::new(query_modules),
             bounded_clean_startup,
             health,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn append_columnar_worker_commit_fixture(
+        &self,
+        rows: &[riffdb_storage_api::StoredEntityRecordV1],
+        commits: &[riffdb_storage_api::StoredCommitRecordV1],
+    ) -> Result<(), StorageError> {
+        self.cell.with_mut(|ports| {
+            riffdb_storage_redb::append_columnar_worker_commit_fixture(ports, rows, commits)
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn append_columnar_worker_commit_with_crosslinks_fixture(
+        &self,
+        rows: &[riffdb_storage_api::StoredEntityRecordV1],
+        commits: &[riffdb_storage_api::StoredCommitRecordV1],
+        outcomes: &[riffdb_storage_api::StoredOutcomeV1],
+        provenance: &[riffdb_storage_api::StoredProvenanceRecordV1],
+    ) -> Result<(), StorageError> {
+        self.cell.with_mut(|ports| {
+            riffdb_storage_redb::append_columnar_worker_commit_with_crosslinks_fixture(
+                ports, rows, commits, outcomes, provenance,
+            )
         })
     }
 
@@ -1114,39 +1158,13 @@ impl ColumnarProjectionControlRepository for SharedRedbOperationalPorts {
         ColumnarProjectionControlRepository::initialize_fresh_v1(&self.shared, controls)
     }
 
-    fn record_durable_snapshot(
+    fn reset_for_current_history_incarnation(
         &self,
         expected: &StoredColumnarProjectionControlV1,
-        prepared: &riffdb_storage_api::PreparedColumnarGenerationV1,
     ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
-        ColumnarProjectionControlRepository::record_durable_snapshot(
+        ColumnarProjectionControlRepository::reset_for_current_history_incarnation(
             &self.shared,
             expected,
-            prepared,
-        )
-    }
-
-    fn record_candidate_frontier(
-        &self,
-        expected: &StoredColumnarProjectionControlV1,
-        replacement: &riffdb_storage_api::PreparedColumnarGenerationV1,
-    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
-        ColumnarProjectionControlRepository::record_candidate_frontier(
-            &self.shared,
-            expected,
-            replacement,
-        )
-    }
-
-    fn advance_published_v1(
-        &self,
-        expected: &StoredColumnarProjectionControlV1,
-        replacement: &riffdb_storage_api::PreparedColumnarGenerationV1,
-    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
-        ColumnarProjectionControlRepository::advance_published_v1(
-            &self.shared,
-            expected,
-            replacement,
         )
     }
 
@@ -1191,18 +1209,6 @@ impl ColumnarProjectionControlRepository for SharedRedbOperationalPorts {
             replay_limits,
             layout,
             physical_generation_fingerprint,
-        )
-    }
-
-    fn publish_prepared_generation(
-        &self,
-        expected: &StoredColumnarProjectionControlV1,
-        prepared: &riffdb_storage_api::PreparedColumnarGenerationV1,
-    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
-        ColumnarProjectionControlRepository::publish_prepared_generation(
-            &self.shared,
-            expected,
-            prepared,
         )
     }
 
@@ -1259,6 +1265,8 @@ impl ColumnarProjectionControlRepository for SharedRedbOperationalPorts {
         &self,
         source: &ColumnarProjectionSourceV1,
     ) -> Result<Option<StoredColumnarProjectionControlV1>, StorageError> {
+        #[cfg(test)]
+        COLUMNAR_CONTROL_RECOVERY_READS.with(|reads| reads.set(reads.get().saturating_add(1)));
         ColumnarProjectionControlRepository::recover_expected_control(&self.shared, source)
     }
 
@@ -1268,6 +1276,64 @@ impl ColumnarProjectionControlRepository for SharedRedbOperationalPorts {
         reason: ColumnarProjectionFailureReasonV1,
     ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
         ColumnarProjectionControlRepository::mark_invalid(&self.shared, expected, reason)
+    }
+}
+
+impl PreparedColumnarGenerationRepository for SharedRedbOperationalPorts {
+    fn record_durable_snapshot(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+        prepared: &PreparedColumnarGenerationV1,
+        process_generation: [u8; 16],
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        PreparedColumnarGenerationRepository::record_durable_snapshot(
+            &self.shared,
+            expected,
+            prepared,
+            process_generation,
+        )
+    }
+
+    fn record_candidate_frontier(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+        replacement: &PreparedColumnarGenerationV1,
+        process_generation: [u8; 16],
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        PreparedColumnarGenerationRepository::record_candidate_frontier(
+            &self.shared,
+            expected,
+            replacement,
+            process_generation,
+        )
+    }
+
+    fn advance_published_v1(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+        replacement: &PreparedColumnarGenerationV1,
+        process_generation: [u8; 16],
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        PreparedColumnarGenerationRepository::advance_published_v1(
+            &self.shared,
+            expected,
+            replacement,
+            process_generation,
+        )
+    }
+
+    fn publish_prepared_generation(
+        &self,
+        expected: &StoredColumnarProjectionControlV1,
+        prepared: &PreparedColumnarGenerationV1,
+        process_generation: [u8; 16],
+    ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
+        PreparedColumnarGenerationRepository::publish_prepared_generation(
+            &self.shared,
+            expected,
+            prepared,
+            process_generation,
+        )
     }
 }
 

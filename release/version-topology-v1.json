@@ -438,12 +438,29 @@
       "writer_policy": "single_current",
       "compatibility_rule": "Registry V1 is the closed exact fixed-width, offset/canonical, dictionary/ordinal, Boolean bitmap, and checked-delta family; unknown tags fail before use.",
       "breaking_when": "An existing physical encoding tag or canonical byte rule changes under registry identity 1.",
-      "supported_release_posture": "Registry V1 is implemented only by the inactive segment V2 candidate until WP-711 activation.",
+      "supported_release_posture": "Registry V1 is production-active only inside a complete selected Segment V2 generation; databases whose durable control selects layout V1 continue to use the independent row framing.",
       "lifecycle": {"active":["1"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Encoding registry identities and tags are never reused.",
       "evidence": ["crates/riffdb-columnar/tests/segment_v2_codec.rs", "fixtures/compatibility/columnar-v2-codec-v1.txt"],
       "checks": ["./scripts/check-version-topology"],
-      "last_change": {"classification":"new_domain_identity","decision":"ADR-0160/WP-710 inactive V2 codec candidate"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0160/ADR-0190/WP-711 exact V2 generation activation"}
+    },
+    {
+      "id": "executable_ir.columnar_generation_root",
+      "title": "Derived columnar generation root",
+      "classification": "executable_ir",
+      "owner": "riffdb-columnar",
+      "source_assertions": [{"kind":"literal","path":"crates/riffdb-columnar/src/generation_root.rs","literal":"pub const COLUMNAR_GENERATION_ROOT_FORMAT_VERSION_V1: u16 = 1;"}],
+      "readable_identities": ["1"], "writable_identities": ["1"], "current_identities": ["1"],
+      "writer_policy": "single_current",
+      "compatibility_rule": "Root V1 canonically binds one complete bounded V2 partition inventory, physical format tuple, incarnation, generation, matched frontier, counts, lengths, and checksums.",
+      "breaking_when": "Root magic, field order, numeric identity, physical-fingerprint preimage, filename derivation, bounds, checksum, or canonical inventory rules change under identity 1.",
+      "supported_release_posture": "Root V1 is the current complete V2 generation publication artifact.",
+      "lifecycle": {"active":["1"],"read_only":[],"retirement_candidate":[],"retired":[]},
+      "reserved_identity_policy": "Generation-root identities, field positions, and physical tuple components are never reused.",
+      "evidence": ["crates/riffdb-columnar/tests/generation_root.rs", "fixtures/compatibility/columnar-generation-root-v1.txt"],
+      "checks": ["./scripts/check-version-topology"],
+      "last_change": {"classification":"new_domain_identity","decision":"ADR-0190/WP-711 generation-root V1"}
     },
     {
       "id": "executable_ir.columnar_layout",
@@ -453,13 +470,13 @@
       "source_assertions": [{"kind":"identity_regex","path":"crates/riffdb-columnar/src/definition.rs","pattern":"pub const COLUMNAR_LAYOUT_VERSION_V([0-9]+): u32 = ([0-9]+);","identities":["1","2"]}],
       "readable_identities": ["1", "2"], "writable_identities": ["1", "2"], "current_identities": ["1", "2"],
       "writer_policy": "least_sufficient",
-      "compatibility_rule": "V1 remains the selected row-framed production layout; V2 is an exact disjoint derived candidate and cannot replace V1 without matched-frontier publication.",
+      "compatibility_rule": "V1 remains readable and writable for a database whose durable control selects V1; V2 can replace it only as one exact disjoint generation after matched-frontier publication.",
       "breaking_when": "A known layout is reinterpreted, V1 becomes unreadable, or V2 is selected without its accepted publication proof.",
-      "supported_release_posture": "Columnar layout V1 is production-selected; V2 is independently readable and writable only as an inactive candidate until WP-711.",
+      "supported_release_posture": "Layouts V1 and V2 are production-readable and writable; each database serves exactly its durable selected layout, remains on V1 until complete V2 publication, and never falls back from a corrupt selected V2.",
       "lifecycle": {"active":["1","2"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Layout versions are never reused.",
       "evidence": ["docs/architecture/OVERVIEW.md", "crates/riffdb-columnar/tests/segment_v2_codec.rs", "fixtures/compatibility/columnar-v2-codec-v1.txt"], "checks": ["./scripts/check-version-topology"],
-      "last_change": {"classification":"new_domain_identity","decision":"ADR-0160/WP-710 inactive layout V2 candidate"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0160/ADR-0190/WP-711 exact V2 generation activation"}
     },
     {
       "id": "executable_ir.columnar_manifest",
@@ -469,14 +486,14 @@
       "source_assertions": [{"kind":"identity_regex","path":"crates/riffdb-columnar/src/segment_v2.rs","pattern":"pub const COLUMNAR_MANIFEST_FORMAT_VERSION_V([0-9]+): u16 = ([0-9]+);","identities":["1","2"]}],
       "readable_identities": ["1", "2"], "writable_identities": ["1", "2"], "current_identities": ["1", "2"],
       "writer_policy": "least_sufficient",
-      "compatibility_rule": "V1 remains the production manifest; V2 binds one partition, definition, incarnation, generation, frontier, exact segment inventory, lengths, and checksums for a disjoint candidate.",
+      "compatibility_rule": "Manifest V1 remains readable and writable for selected layout V1; Manifest V2 binds one partition, definition, incarnation, generation, frontier, exact segment inventory, lengths, and checksums inside a disjoint V2 generation root.",
       "breaking_when": "A known manifest is reinterpreted, mixed identities are accepted, or candidate bytes become publishable without WP-711 lifecycle proof.",
-      "supported_release_posture": "Manifest V1 remains production-selected; V2 is an independently checked inactive candidate until WP-711.",
+      "supported_release_posture": "Manifest V1 and V2 are production-active within their selected layouts; Manifest V2 becomes servable only through one completely validated and durably selected generation root.",
       "lifecycle": {"active":["1","2"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Manifest identities and field positions are never reused.",
       "evidence": ["crates/riffdb-columnar/tests/segment_v2_codec.rs", "fixtures/compatibility/columnar-v2-codec-v1.txt"],
       "checks": ["./scripts/check-version-topology"],
-      "last_change": {"classification":"new_domain_identity","decision":"ADR-0160/WP-710 inactive manifest V2 candidate"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0160/ADR-0190/WP-711 exact V2 generation activation"}
     },
     {
       "id": "executable_ir.compiled_exact_text_query",

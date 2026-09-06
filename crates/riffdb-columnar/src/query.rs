@@ -13,7 +13,8 @@ use riffdb_types::{
 };
 
 use crate::definition::RegisteredDefinition;
-use crate::store::{ColumnarSnapshot, MergedRow, OrgKey, PrimaryKeyBytes};
+use crate::segment_v2::SegmentV2Predicate;
+use crate::store::{ColumnarSnapshot, MergedRow, OrgKey, PrimaryKeyBytes, Segment};
 
 /// Hard budgets for scan-based prototype execution.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -861,7 +862,11 @@ pub(crate) fn execute_query(
             .ok_or(QueryError::ScanBudgetExceeded {
                 max: MAX_PROJECTED_POLICY_CANDIDATES_V1,
             })?,
-        None => snapshot.merged_org(&org),
+        None => snapshot
+            .merged_org_bounded_with_segment_filter(&org, usize::MAX, |segment| {
+                segment_may_match(definition, segment, &request.predicates)
+            })
+            .expect("usize::MAX cannot be exceeded by an in-memory map"),
     };
     let candidate_keys = admission
         .map(|_| {
@@ -960,6 +965,47 @@ pub(crate) fn execute_query(
             })
             .collect(),
     }))
+}
+
+fn segment_may_match(
+    definition: &RegisteredDefinition,
+    segment: &Segment,
+    predicates: &[ColumnPredicate],
+) -> bool {
+    let Some(pruning) = &segment.pruning else {
+        return true;
+    };
+    for predicate in predicates {
+        let field = predicate_field(predicate);
+        if field == definition.org_scope_field() {
+            continue;
+        }
+        let proves_no_match = match predicate {
+            ColumnPredicate::Eq { value, .. } if *value == CanonicalValue::Null => {
+                pruning.proves_no_match(field, &SegmentV2Predicate::IsNull)
+            }
+            ColumnPredicate::Eq { value, .. } => {
+                pruning.proves_no_match(field, &SegmentV2Predicate::Equal(value.clone()))
+            }
+            ColumnPredicate::Range { low, high, .. } => {
+                low.as_ref().is_some_and(|value| {
+                    value != &CanonicalValue::Null
+                        && pruning.proves_no_match(
+                            field,
+                            &SegmentV2Predicate::GreaterThanOrEqual(value.clone()),
+                        )
+                }) || high.as_ref().is_some_and(|value| {
+                    value != &CanonicalValue::Null
+                        && pruning
+                            .proves_no_match(field, &SegmentV2Predicate::LessThan(value.clone()))
+                })
+            }
+        };
+        if proves_no_match {
+            return false;
+        }
+    }
+    true
 }
 
 /// Resolves the select list: empty means all projected fields (CP1 compat).
@@ -1504,7 +1550,8 @@ mod order_proof_tests {
     use super::{compare_values, key_type_preserves_value_order};
     use riffdb_contract_ir::ValueType;
     use riffdb_types::{
-        CanonicalValue, Date, EntityKeyBuilder, EntityTypeId, EnumTypeId, EnumVariantId, Timestamp,
+        CanonicalValue, CurrencyCode, Date, Decimal, DecimalSpec, EntityKeyBuilder, EntityTypeId,
+        EnumTypeId, EnumVariantId, Money, Timestamp,
     };
     use std::cmp::Ordering;
 
@@ -1734,6 +1781,43 @@ mod order_proof_tests {
             ),
             Ordering::Greater,
             "lexicographic value order disagrees with the key byte order above"
+        );
+    }
+
+    // req: OQ-019, OQ-021
+    #[test]
+    fn decimal_and_money_range_order_is_canonical_not_numeric() {
+        let spec = DecimalSpec::new(12, 2).expect("decimal spec");
+        let negative = Decimal::new(spec, -1).expect("negative");
+        let zero = Decimal::new(spec, 0).expect("zero");
+        assert_eq!(
+            compare_values(
+                &CanonicalValue::Decimal(zero),
+                &CanonicalValue::Decimal(negative),
+            ),
+            Ordering::Less,
+            "the production range executor uses canonical bytes"
+        );
+        assert_eq!(
+            zero.checked_cmp(negative).expect("same decimal type"),
+            Ordering::Greater,
+            "typed numeric order is intentionally not the executor order"
+        );
+
+        let currency = CurrencyCode::new("USD").expect("currency");
+        let negative = Money::new(currency, negative);
+        let zero = Money::new(currency, zero);
+        assert_eq!(
+            compare_values(
+                &CanonicalValue::Money(zero),
+                &CanonicalValue::Money(negative),
+            ),
+            Ordering::Less,
+            "money inherits the canonical decimal coefficient ordering"
+        );
+        assert_eq!(
+            zero.checked_cmp(negative).expect("same money type"),
+            Ordering::Greater
         );
     }
 }
