@@ -320,12 +320,20 @@ def bounded_text(path: Path, byte_limit: int, label: str) -> str:
         raise ValueError(f"{label}: source is not UTF-8: {error}") from error
 
 
+def parse_json_utf8(encoded: bytes, label: str) -> object:
+    try:
+        decoded = encoded.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError(f"{label}: source is not UTF-8") from error
+    try:
+        return json.loads(decoded, object_pairs_hook=reject_duplicate_members)
+    except (json.JSONDecodeError, ValueError) as error:
+        raise ValueError(f"{label}: source is invalid JSON: {error}") from error
+
+
 def bounded_json(path: Path, byte_limit: int, label: str) -> object:
     encoded = bounded_regular_file(path, byte_limit, label)
-    try:
-        return json.loads(encoded, object_pairs_hook=reject_duplicate_members)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise ValueError(f"{label}: source is invalid JSON: {error}") from error
+    return parse_json_utf8(encoded, label)
 
 
 def load_inventory(path: Path = INVENTORY) -> object:
@@ -409,9 +417,9 @@ def validate_source_locators(
         if encoded is None:
             return None
         try:
-            value = json.loads(encoded, object_pairs_hook=reject_duplicate_members)
-        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
-            errors.append(f"source locator {relative}: invalid JSON: {error}")
+            value = parse_json_utf8(encoded, f"source locator {relative}")
+        except ValueError as error:
+            errors.append(str(error))
             return None
         json_cache[relative] = value
         return value
@@ -698,6 +706,24 @@ def adapter_evidence_claim_negative_self_test() -> None:
             if not validate_source_locators(root=root, claims=one_locator(locator)):
                 missed_guards.append(label)
 
+        pointer.write_bytes(
+            json.dumps({"mlflow_loopback": {}}).encode("utf-16")
+        )
+        if not validate_source_locators(
+            root=root,
+            claims=one_locator(
+                "release/evidence/large-atomic-command-envelope-v1.json#/mlflow_loopback"
+            ),
+        ):
+            missed_guards.append("UTF-16 JSON pointer locator source")
+        if not validate_source_locators(
+            root=root,
+            claims=one_locator(
+                "release/evidence/large-atomic-command-envelope-v1.json"
+            ),
+        ):
+            missed_guards.append("UTF-16 unfragmented JSON locator source")
+
         plain_json.unlink()
         symlink_target = root / "reviewed-locator.json"
         symlink_target.write_text('{"schema": "negative"}\n', encoding="utf-8")
@@ -718,6 +744,14 @@ def adapter_evidence_claim_negative_self_test() -> None:
 
     with tempfile.TemporaryDirectory(prefix="riffdb-adapter-inventory-negative-") as directory:
         inventory = Path(directory) / "adapter-evidence-v1.json"
+        inventory.write_bytes(json.dumps(EXPECTED_INVENTORY).encode("utf-16"))
+        try:
+            load_inventory(inventory)
+        except ValueError:
+            pass
+        else:
+            missed_guards.append("UTF-16 inventory")
+
         inventory.write_bytes(b"{" + (b" " * MAX_INVENTORY_BYTES) + b"}")
         try:
             load_inventory(inventory)
