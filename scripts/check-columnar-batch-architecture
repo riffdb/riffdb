@@ -132,7 +132,7 @@ BATCH_REFERENCE_CANDIDATE = re.compile(
     re.M,
 )
 TOKEN_REFERENCE_CANDIDATE = re.compile(
-    r"\bbatch\b|#\s*\[\s*path\b|\binclude(?:_str)?\s*!|\briffdb_columnar\b"
+    r"batch|path|cfg_attr|include|riffdb_columnar"
 )
 DYNAMIC_CODE_INCLUDE_ALLOWLIST = {
     "crates/riffdb-api-grpc/src/lib.rs": {
@@ -1372,14 +1372,25 @@ def self_test(root: Path) -> None:
         owner = fixture / "crates" / "riffdb-columnar" / "src"
         owner.mkdir(parents=True)
         hidden = owner / "hidden.inc"
-        hidden.write_text("use crate::batch::ColumnarBatchWidth;", encoding="utf-8")
+        hidden.write_text("use crate::r#batch::ColumnarBatchWidth;", encoding="utf-8")
         for label, source in (
             ("path-target-content", '#[path = "hidden.inc"] mod hidden;'),
+            (
+                "cfg-path-target-content",
+                '#[cfg_attr(feature = "vector", path = "hidden.inc")] mod hidden;',
+            ),
+            ("raw-path-target-content", '#[r#path = "hidden.inc"] mod hidden;'),
+            (
+                "raw-cfg-path-target-content",
+                '#[r#cfg_attr(feature = "vector", r#path = "hidden.inc")] mod hidden;',
+            ),
             ("include-parentheses-target-content", 'include!("hidden.inc");'),
             ("include-braces-target-content", 'include!{"hidden.inc"}'),
             ("include-brackets-target-content", 'include!["hidden.inc"]'),
             ("raw-include-target-content", 'r#include!("hidden.inc");'),
         ):
+            if TOKEN_REFERENCE_CANDIDATE.search(source) is None:
+                raise CheckError(f"{label} self-test was skipped by the lexical prefilter")
             if not references_batch_path(
                 fixture,
                 "crates/riffdb-columnar/src/lib.rs",
