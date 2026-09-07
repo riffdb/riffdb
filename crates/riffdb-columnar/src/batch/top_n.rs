@@ -222,7 +222,10 @@ impl<'view> BoundedTopN<'view> {
         let capacity = limit.checked_add(1).ok_or(TopNError::ArithmeticOverflow)?;
         let requested_bytes = retained_state_bytes(capacity, 0)?;
         enforce_state_ceiling(requested_bytes)?;
-        let retained = Vec::with_capacity(capacity);
+        let mut retained = Vec::new();
+        retained
+            .try_reserve_exact(capacity)
+            .map_err(|_| TopNError::StateBoundExceeded)?;
         let retained_allocation_bytes = retained_state_bytes(retained.capacity(), 0)?;
         enforce_state_ceiling(retained_allocation_bytes)?;
         Ok(Self {
@@ -321,21 +324,23 @@ impl TopNPage<'_> {
         self.cursor.is_some()
     }
 
-    pub(crate) fn cursor_primary_key(&self) -> Option<&PrimaryKeyBytes> {
-        self.source.primary_key(self.cursor?).ok()
+    pub(crate) fn cursor_primary_key(&self) -> Result<Option<&PrimaryKeyBytes>, TopNError> {
+        self.cursor
+            .map(|cursor| self.source.primary_key(cursor))
+            .transpose()
     }
 
-    pub(crate) fn primary_key_slices(&self) -> impl Iterator<Item = &[u8]> {
-        self.rows.iter().filter_map(|row| {
-            self.source
-                .primary_key(*row)
-                .ok()
-                .map(PrimaryKeyBytes::as_bytes)
-        })
+    pub(crate) fn primary_key_slices(&self) -> impl Iterator<Item = Result<&[u8], TopNError>> {
+        self.rows
+            .iter()
+            .map(|row| self.source.primary_key(*row).map(PrimaryKeyBytes::as_bytes))
     }
 
-    pub(crate) fn compare_row_to_cursor(&self, row: usize) -> Option<Ordering> {
-        compare_rows(self.source, *self.rows.get(row)?, self.cursor?).ok()
+    pub(crate) fn compare_row_to_cursor(&self, row: usize) -> Result<Option<Ordering>, TopNError> {
+        let Some((row, cursor)) = self.rows.get(row).copied().zip(self.cursor) else {
+            return Ok(None);
+        };
+        compare_rows(self.source, row, cursor).map(Some)
     }
 }
 
@@ -584,7 +589,9 @@ mod tests {
     }
 
     fn key_bytes(page: &TopNPage<'_>) -> Vec<Vec<u8>> {
-        page.primary_key_slices().map(<[u8]>::to_vec).collect()
+        page.primary_key_slices()
+            .map(|key| key.expect("valid retained row").to_vec())
+            .collect()
     }
 
     fn source<'a>(
@@ -1113,12 +1120,15 @@ mod tests {
         );
         assert!(page.has_more());
         assert_eq!(
-            page.cursor_primary_key().expect("cursor").as_bytes(),
+            page.cursor_primary_key()
+                .expect("valid retained row")
+                .expect("cursor")
+                .as_bytes(),
             key(31).as_bytes()
         );
-        assert_eq!(page.compare_row_to_cursor(0), Some(Ordering::Less));
-        assert_eq!(page.compare_row_to_cursor(1), Some(Ordering::Equal));
-        assert_eq!(page.compare_row_to_cursor(2), None);
+        assert_eq!(page.compare_row_to_cursor(0), Ok(Some(Ordering::Less)));
+        assert_eq!(page.compare_row_to_cursor(1), Ok(Some(Ordering::Equal)));
+        assert_eq!(page.compare_row_to_cursor(2), Ok(None));
     }
 
     #[test]
