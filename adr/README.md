@@ -249,6 +249,7 @@ record with no front matter.
 | [0212](0212-independent-correlated-index-model-and-epoch-two-evidence.md) | Independent Correlated-Index Model and Epoch-Two Evidence | Accepted | guarantee |
 | [0213](0213-pre-arm-preservation-and-linear-queued-fresh-locator-validation.md) | Pre-Arm Preservation and Linear Queued Fresh-Locator Validation | Accepted | guarantee |
 | [0214](0214-fresh-locator-validation-module-and-fixture-authority.md) | Fresh-Locator Validation Module and Fixture Authority | Proposed | guarantee |
+| [0215](0215-epoch-one-columnar-control-obligation-retirement.md) | Epoch-One Columnar Control Obligation Retirement | Proposed | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
