@@ -1,6 +1,7 @@
 //! Interface-safety proof for the worker-only shutdown seam.
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 fn rust_sources(root: &Path) -> Vec<(PathBuf, String)> {
     let mut pending = vec![root.to_path_buf()];
@@ -114,4 +115,27 @@ fn prepared_generation_mint_authority_is_columnar_owned_and_absent_from_public_s
             );
         }
     }
+}
+
+#[test]
+fn private_batch_mechanics_have_no_activation_or_authority_surface() {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("workspace root");
+    let checker = workspace.join("scripts/check-columnar-batch-architecture");
+    // `--self-test` begins by running the exact live/default evaluation before
+    // exercising its negative fixtures. Running both modes here would scan the
+    // same bounded workspace twice in separate processes and exceed the test
+    // target's deadline without increasing coverage.
+    let output = Command::new(&checker)
+        .arg("--self-test")
+        .output()
+        .expect("launch bounded batch architecture checker");
+    assert!(
+        output.status.success(),
+        "batch architecture checker failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
 }
