@@ -291,6 +291,12 @@ mod tests {
             (64, 2, 127, Err(ColumnarBatchBoundError::NoAdmissibleWidth)),
             (128, 1, 127, Ok(64)),
             (128, 1, 128, Ok(128)),
+            (256, 1, 255, Ok(128)),
+            (256, 1, 256, Ok(256)),
+            (512, 1, 511, Ok(256)),
+            (512, 1, 512, Ok(512)),
+            (1_024, 1, 1_023, Ok(512)),
+            (1_024, 1, 1_024, Ok(1_024)),
             (256, 16, 2_047, Ok(64)),
             (256, 16, 2_048, Ok(128)),
         ] {
@@ -364,6 +370,10 @@ mod tests {
             Err(ColumnarBatchBoundError::LaneLength)
         ));
         let one = lane(1, 6);
+        let maximum_lanes = vec![one.as_slice(); MAX_SEGMENT_V2_COLUMNS];
+        let maximum_lane_batch =
+            BorrowedLaneBatch::new(width, &maximum_lanes).expect("exact maximum lane count");
+        assert_eq!(maximum_lane_batch.lanes().len(), MAX_SEGMENT_V2_COLUMNS);
         let too_many_lanes = vec![one.as_slice(); MAX_SEGMENT_V2_COLUMNS + 1];
         assert!(matches!(
             BorrowedLaneBatch::new(width, &too_many_lanes),
