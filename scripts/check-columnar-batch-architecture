@@ -40,7 +40,7 @@ EXPECTED_BATCH_FILES = (
 EXPECTED_PRODUCTION_HASHES = {
     "crates/riffdb-columnar/src/batch/aggregate.rs": "fae92024492b8d1a27191f03c207d1e63f44e595df0a065506eb6c71eaaab8fa",
     "crates/riffdb-columnar/src/batch/group.rs": "0a4016d1e70ee2b75c51450ce7f4248933ce9ca6852780c307172acdac6021f1",
-    "crates/riffdb-columnar/src/batch/mod.rs": "8be91c713a96199adeebb7e513433d06970ee223ec9bf70487f2ecc1c2c2e7ee",
+    "crates/riffdb-columnar/src/batch/mod.rs": "18b097b22d4cce3fbc29f840b2f53e9db176db1a8b0e34fb845a0ceec9beb2ea",
     "crates/riffdb-columnar/src/batch/program.rs": "50e88a5f5b2cb82c451a499554e422a093f18d9a816ea7b67c984af1aa74da48",
     "crates/riffdb-columnar/src/batch/top_n.rs": "6d317a00fd0863430cd79ae0085923554913a114f626269f182a5f5a6fa2db2d",
 }
@@ -94,6 +94,13 @@ EXPECTED_STRUCT_FIELDS = {
             ("poisoned", "bool"),
         ),
         "CanonicalGroups": (("owner", "Option < BoundedGroupOwner >"),),
+    },
+    "crates/riffdb-columnar/src/batch/mod.rs": {
+        "ColumnarPredicateKernel": (
+            ("lane", "usize"),
+            ("lane_kind", "IntegerLaneKind"),
+            ("predicate", "SegmentV2Predicate"),
+        ),
     },
     "crates/riffdb-columnar/src/batch/top_n.rs": {
         "TopNProgramBinding": (("comparison_profile", "TopNComparisonProfile"), ("plan_identity", "QueryPlanHash"), ("generation", "ProjectionGeneration")),
@@ -220,7 +227,20 @@ EXPECTED_STRUCTURAL_SITES = {
     "crates/riffdb-columnar/src/batch/mod.rs": (
         (("MonotoneSelection::all", "vec!"), ("ColumnarPredicateKernel::apply", "vec!")),
         (("ColumnarBatchWidth::choose", "checked_mul"),),
-        (("ColumnarBatchWidth::choose", "*"), ("MonotoneSelection::retain", "*"), ("MonotoneSelection::retain", "*"), ("MonotoneSelection::retain", "+="), ("MonotoneSelection::retain", "*"), ("<item>", "+"), ("PredicateWorkCharge::commit", "-="), ("ColumnarPredicateKernel::apply", "+=")),
+        (
+            ("ColumnarBatchWidth::choose", "*"),
+            ("MonotoneSelection::retain", "*"),
+            ("MonotoneSelection::retain", "*"),
+            ("MonotoneSelection::retain", "+="),
+            ("MonotoneSelection::retain", "*"),
+            ("<item>", "+"),
+            ("PredicateWorkCharge::commit", "-="),
+            ("ColumnarPredicateKernel::apply", "+="),
+            ("predicate_matches", "*"),
+            ("predicate_matches", "*"),
+            *(("signed_predicate_matches", "*"),) * 5,
+            *(("unsigned_predicate_matches", "*"),) * 5,
+        ),
     ),
     "crates/riffdb-columnar/src/batch/program.rs": (
         (("PreGenerationBatchProgramDraft::check", ".clone"), ("validate_phase_lanes", "vec!"), ("CheckedPreGenerationBatchProgram::lane_facts", ".clone")),
@@ -245,7 +265,7 @@ RESERVATION_PATTERN = re.compile(r"\.try_reserve(?:_exact)?\s*\(")
 REVIEWED_SITE_COUNTS = {
     # allocation, checked arithmetic, raw operators, fallible reservations
     "crates/riffdb-columnar/src/batch/aggregate.rs": (2, 11, 12, 0),
-    "crates/riffdb-columnar/src/batch/mod.rs": (2, 1, 6, 0),
+    "crates/riffdb-columnar/src/batch/mod.rs": (2, 1, 18, 0),
     "crates/riffdb-columnar/src/batch/program.rs": (1, 3, 8, 0),
     "crates/riffdb-columnar/src/batch/top_n.rs": (1, 6, 7, 1),
 }
@@ -705,6 +725,150 @@ def named_struct_fields(tokens: tuple[RustToken, ...]) -> dict[str, tuple[tuple[
         result[name] = tuple(fields)
         index = closing + 1
     return result
+
+
+def validate_integer_lane_kind(tokens: tuple[RustToken, ...]) -> None:
+    depth = 0
+    top_level_kernels: list[int] = []
+    top_level_lane_kinds: list[int] = []
+    top_level_kernel_impls: list[int] = []
+    top_level_predicates: list[int] = []
+    for index, token in enumerate(tokens[:-1]):
+        if depth == 0 and texts(tokens[index:index + 2]) == ("struct", "ColumnarPredicateKernel"):
+            top_level_kernels.append(index)
+        if depth == 0 and texts(tokens[index:index + 2]) == ("enum", "IntegerLaneKind"):
+            top_level_lane_kinds.append(index)
+        if depth == 0 and texts(tokens[index:index + 2]) == ("impl", "ColumnarPredicateKernel"):
+            top_level_kernel_impls.append(index)
+        if depth == 0 and texts(tokens[index:index + 2]) == ("fn", "predicate_matches"):
+            top_level_predicates.append(index)
+        if token.text == "{":
+            depth += 1
+        elif token.text == "}":
+            depth -= 1
+    if len(top_level_kernels) != 1 or texts(tokens[top_level_kernels[0] - 4:top_level_kernels[0] + 3]) != (
+        "pub", "(", "crate", ")", "struct", "ColumnarPredicateKernel", "{",
+    ):
+        raise CheckError("predicate kernel visibility changed")
+    kernel_opening = top_level_kernels[0] + 2
+    if tokens[kernel_opening].text != "{":
+        raise CheckError("predicate kernel does not have a named-field body")
+    kernel_closing = matching_delimiter(tokens, kernel_opening)
+    kernel_body = tokens[kernel_opening + 1:kernel_closing]
+    if texts(kernel_body) != (
+        "lane", ":", "usize", ",",
+        "lane_kind", ":", "IntegerLaneKind", ",",
+        "predicate", ":", "SegmentV2Predicate", ",",
+    ):
+        raise CheckError("predicate kernel fields or field visibility changed")
+    if len(top_level_lane_kinds) != 1:
+        raise CheckError("expected exactly one top-level integer lane kind")
+    lane_kind_index = top_level_lane_kinds[0]
+    prior_boundary = max(
+        (index for index in range(lane_kind_index) if tokens[index].text in ("}", ";")),
+        default=-1,
+    )
+    if texts(tokens[prior_boundary + 1:lane_kind_index]) != (
+        "#", "[", "derive", "(", "Clone", ",", "Copy", ")", "]",
+    ):
+        raise CheckError("integer lane kind attributes or visibility changed")
+    enum_opening = lane_kind_index + 2
+    if tokens[enum_opening].text != "{":
+        raise CheckError("integer lane kind does not have a variant body")
+    enum_closing = matching_delimiter(tokens, enum_opening)
+    enum_body = tokens[enum_opening + 1:enum_closing]
+    if texts(enum_body) != ("I64", ",", "U64", ","):
+        raise CheckError("integer lane kind is not the exact fieldless I64/U64 inventory")
+
+    if len(top_level_kernel_impls) != 1:
+        raise CheckError("expected exactly one top-level predicate kernel implementation")
+    impl_opening = top_level_kernel_impls[0] + 2
+    if tokens[impl_opening].text != "{":
+        raise CheckError("predicate kernel implementation body is missing")
+    impl_closing = matching_delimiter(tokens, impl_opening)
+    kernel_impl = tokens[impl_opening + 1:impl_closing]
+    new_header = function_header(kernel_impl, "new")
+    if new_header is None or "IntegerLaneKind" in new_header:
+        raise CheckError("callers may select or supply the sealed integer lane kind")
+    rhs_checks = [
+        index
+        for index in range(len(kernel_impl) - 5)
+        if texts(kernel_impl[index:index + 5]) == ("let", "matches_lane", "=", "matches", "!")
+    ]
+    if len(rhs_checks) != 1 or kernel_impl[rhs_checks[0] + 5].text != "(":
+        raise CheckError("sealed integer RHS check is missing")
+    rhs_opening = rhs_checks[0] + 5
+    rhs_closing = matching_delimiter(kernel_impl, rhs_opening)
+    if texts(kernel_impl[rhs_opening + 1:rhs_closing]) != (
+        "(", "lane_kind", ",", "value", ")", ",",
+        "(", "IntegerLaneKind", "::", "I64", ",", "riffdb_types", "::", "CanonicalValue", "::", "I64", "(", "_", ")", ")",
+        "|",
+        "(", "IntegerLaneKind", "::", "U64", ",", "riffdb_types", "::", "CanonicalValue", "::", "U64", "(", "_", ")", ")",
+    ):
+        raise CheckError("sealed integer RHS pair inventory changed")
+    required_constructor = (
+        (
+            "SegmentV2LogicalType", "::", "I64", "=>",
+            "IntegerLaneKind", "::", "I64",
+        ),
+        (
+            "SegmentV2LogicalType", "::", "U64", "=>",
+            "IntegerLaneKind", "::", "U64",
+        ),
+        (
+            "(", "IntegerLaneKind", "::", "I64", ",", "riffdb_types", "::",
+            "CanonicalValue", "::", "I64", "(", "_", ")", ")",
+        ),
+        (
+            "(", "IntegerLaneKind", "::", "U64", ",", "riffdb_types", "::",
+            "CanonicalValue", "::", "U64", "(", "_", ")", ")",
+        ),
+        ("lane", ",", "lane_kind", ",", "predicate", ","),
+        (
+            "for", "index", "in", "selection", ".", "indices", "(", ")", "{", "if",
+            "predicate_matches", "(", "self", ".", "lane_kind", ",", "&",
+            "self", ".", "predicate", ",", "&", "lane", "[", "index", "]", ")",
+        ),
+    )
+    for sequence in required_constructor:
+        if not contains_sequence(kernel_impl, sequence):
+            raise CheckError(f"sealed constructor/dispatch route changed near {' '.join(sequence)}")
+
+    if len(top_level_predicates) != 1:
+        raise CheckError("expected exactly one top-level predicate dispatch")
+    predicate_opening = next(
+        (
+            index
+            for index in range(top_level_predicates[0] + 2, len(tokens))
+            if tokens[index].text in ("{", ";")
+        ),
+        None,
+    )
+    if predicate_opening is None or tokens[predicate_opening].text != "{":
+        raise CheckError("top-level predicate dispatch body is missing")
+    predicate_closing = matching_delimiter(tokens, predicate_opening)
+    predicate_body = tokens[predicate_opening + 1:predicate_closing]
+    predicate_header = texts(tokens[top_level_predicates[0]:predicate_opening])
+    if (
+        not contains_sequence(
+            tuple(RustToken("", item, 0, 0, item) for item in predicate_header),
+            ("fn", "predicate_matches", "(", "lane_kind", ":", "IntegerLaneKind"),
+        )
+        or not contains_sequence(predicate_body, ("match", "(", "lane_kind", ",", "cell", ")"))
+    ):
+        raise CheckError("predicate dispatch is not based on the sealed lane kind")
+    for sequence in (
+        (
+            "(", "IntegerLaneKind", "::", "I64", ",", "SegmentV2Cell", "::", "Value",
+            "(", "riffdb_types", "::", "CanonicalValue", "::", "I64", "(", "left", ")", ")", ")",
+        ),
+        (
+            "(", "IntegerLaneKind", "::", "U64", ",", "SegmentV2Cell", "::", "Value",
+            "(", "riffdb_types", "::", "CanonicalValue", "::", "U64", "(", "left", ")", ")", ")",
+        ),
+    ):
+        if not contains_sequence(predicate_body, sequence):
+            raise CheckError(f"typed lane dispatch changed near {' '.join(sequence)}")
 
 
 def rust_literal_value(token: RustToken) -> str:
@@ -1375,6 +1539,10 @@ def evaluate(batch: dict[str, str], consumers: dict[str, str]) -> list[str]:
                 failures.add("public-surface", f"{path}: unreviewed visibility")
 
     module_path = str(BATCH_ROOT / "mod.rs")
+    try:
+        validate_integer_lane_kind(tokenized_production.get(module_path, ()))
+    except CheckError as error:
+        failures.add("integer-lane-kind", f"{module_path}: {error}")
     declarations = top_level_module_declarations(tokenized_production.get(module_path, ()))
     expected_declarations = (
         ("aggregate", False),
@@ -1530,6 +1698,164 @@ def self_test(root: Path) -> None:
         extra_compound[target], "fn unchecked_compound(mut value: usize) { value += 1; }"
     )
     require_failure("unreviewed-arithmetic", extra_compound, no_consumers, "extra-compound-assignment")
+
+    integer_kernel = "crates/riffdb-columnar/src/batch/mod.rs"
+    for label, old, new, expected in (
+        (
+            "integer-lane-field-removed",
+            "    lane_kind: IntegerLaneKind,\n",
+            "",
+            "struct-layout",
+        ),
+        (
+            "integer-lane-fields-reordered",
+            "    lane: usize,\n    lane_kind: IntegerLaneKind,\n",
+            "    lane_kind: IntegerLaneKind,\n    lane: usize,\n",
+            "struct-layout",
+        ),
+        (
+            "integer-lane-field-retyped",
+            "    lane_kind: IntegerLaneKind,",
+            "    lane_kind: bool,",
+            "struct-layout",
+        ),
+        (
+            "integer-lane-field-visible",
+            "    lane_kind: IntegerLaneKind,",
+            "    pub(crate) lane_kind: IntegerLaneKind,",
+            "integer-lane-kind",
+        ),
+        (
+            "integer-lane-enum-missing",
+            "    I64,\n    U64,",
+            "    I64,",
+            "integer-lane-kind",
+        ),
+        (
+            "integer-lane-enum-extra",
+            "    I64,\n    U64,",
+            "    I64,\n    U64,\n    Other,",
+            "integer-lane-kind",
+        ),
+        (
+            "integer-lane-enum-payload",
+            "    I64,",
+            "    I64(i64),",
+            "integer-lane-kind",
+        ),
+        (
+            "integer-lane-enum-public",
+            "enum IntegerLaneKind {",
+            "pub enum IntegerLaneKind {",
+            "integer-lane-kind",
+        ),
+        (
+            "integer-lane-enum-cfg",
+            "#[derive(Clone, Copy)]\nenum IntegerLaneKind {",
+            "#[cfg(any())]\n#[derive(Clone, Copy)]\nenum IntegerLaneKind {",
+            "integer-lane-kind",
+        ),
+        (
+            "integer-lane-enum-duplicate",
+            "enum IntegerLaneKind {\n    I64,\n    U64,\n}",
+            "enum IntegerLaneKind {\n    I64,\n    U64,\n}\nenum IntegerLaneKind {\n    I64,\n    U64,\n}",
+            "integer-lane-kind",
+        ),
+        (
+            "integer-kernel-public",
+            "pub(crate) struct ColumnarPredicateKernel {",
+            "pub struct ColumnarPredicateKernel {",
+            "integer-lane-kind",
+        ),
+        (
+            "caller-supplied-lane-kind",
+            "        lane: usize,\n        lane_types: &[SegmentV2LogicalType],",
+            "        lane: usize,\n        lane_kind: IntegerLaneKind,\n        lane_types: &[SegmentV2LogicalType],",
+            "integer-lane-kind",
+        ),
+        (
+            "integer-lane-binding-swapped",
+            "SegmentV2LogicalType::I64 => IntegerLaneKind::I64,",
+            "SegmentV2LogicalType::I64 => IntegerLaneKind::U64,",
+            "integer-lane-kind",
+        ),
+        (
+            "integer-rhs-kind-broadened",
+            "(IntegerLaneKind::I64, riffdb_types::CanonicalValue::I64(_))",
+            "(IntegerLaneKind::I64, riffdb_types::CanonicalValue::I64(_))\n                        | (IntegerLaneKind::I64, riffdb_types::CanonicalValue::U64(_))",
+            "integer-lane-kind",
+        ),
+        (
+            "integer-dispatch-from-cell",
+            "match (lane_kind, cell) {",
+            "match (IntegerLaneKind::U64, cell) {",
+            "integer-lane-kind",
+        ),
+        (
+            "integer-dispatch-argument-removed",
+            "predicate_matches(self.lane_kind, &self.predicate, &lane[index])?",
+            "predicate_matches(&self.predicate, &lane[index])?",
+            "integer-lane-kind",
+        ),
+        (
+            "integer-dispatch-argument-substituted",
+            "predicate_matches(self.lane_kind, &self.predicate, &lane[index])?",
+            "predicate_matches(IntegerLaneKind::U64, &self.predicate, &lane[index])?",
+            "integer-lane-kind",
+        ),
+        (
+            "integer-dispatch-dead-decoy",
+            "            if predicate_matches(self.lane_kind, &self.predicate, &lane[index])? {",
+            "            if false { let _ = predicate_matches(self.lane_kind, &self.predicate, &lane[index]); }\n            if predicate_matches(IntegerLaneKind::U64, &self.predicate, &lane[index])? {",
+            "integer-lane-kind",
+        ),
+    ):
+        changed = dict(batch)
+        if old not in changed[integer_kernel]:
+            raise CheckError(f"negative self-test {label} fixture no longer matches")
+        changed[integer_kernel] = changed[integer_kernel].replace(old, new, 1)
+        require_failure(expected, changed, no_consumers, label)
+    nested_enum_decoy = dict(batch)
+    nested_enum_decoy[integer_kernel] = nested_enum_decoy[integer_kernel].replace(
+        "#[derive(Clone, Copy)]\nenum IntegerLaneKind {\n    I64,\n    U64,\n}",
+        "const _: () = { enum IntegerLaneKind { I64, U64 } };\n"
+        "#[derive(Clone, Copy)]\nenum IntegerLaneKind {\n    I64,\n    U64,\n    Other,\n}",
+        1,
+    )
+    require_failure(
+        "integer-lane-kind", nested_enum_decoy, no_consumers, "nested-exact-enum-decoy"
+    )
+    nested_kernel_decoy = dict(batch)
+    nested_kernel_decoy[integer_kernel] = nested_kernel_decoy[integer_kernel].replace(
+        "pub(crate) struct ColumnarPredicateKernel {\n    lane: usize,\n    lane_kind: IntegerLaneKind,\n    predicate: SegmentV2Predicate,\n}",
+        "const _: () = { struct ColumnarPredicateKernel { lane: usize, lane_kind: IntegerLaneKind, predicate: SegmentV2Predicate } };\n"
+        "pub(crate) struct ColumnarPredicateKernel {\n    lane: usize,\n    predicate: SegmentV2Predicate,\n}",
+        1,
+    )
+    require_failure(
+        "integer-lane-kind", nested_kernel_decoy, no_consumers, "nested-exact-kernel-decoy"
+    )
+    nested_predicate_decoy = dict(batch)
+    nested_predicate_decoy[integer_kernel] = nested_predicate_decoy[integer_kernel].replace(
+        "fn predicate_matches(\n    lane_kind: IntegerLaneKind,",
+        "const _: () = {\n"
+        "fn predicate_matches(lane_kind: IntegerLaneKind, predicate: &SegmentV2Predicate, cell: &SegmentV2Cell) {\n"
+        "match (lane_kind, cell) {\n"
+        "(IntegerLaneKind::I64, SegmentV2Cell::Value(riffdb_types::CanonicalValue::I64(left))) => loop {},\n"
+        "(IntegerLaneKind::U64, SegmentV2Cell::Value(riffdb_types::CanonicalValue::U64(left))) => loop {},\n"
+        "_ => loop {},\n"
+        "}\n"
+        "}\n"
+        "};\n"
+        "fn predicate_matches(\n    _lane_kind: IntegerLaneKind,",
+        1,
+    )
+    require_failure(
+        "integer-lane-kind",
+        nested_predicate_decoy,
+        no_consumers,
+        "nested-exact-predicate-decoy",
+    )
 
     literal = dict(batch)
     literal[target] = literal[target].replace(
