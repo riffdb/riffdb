@@ -124,16 +124,18 @@ fn private_batch_mechanics_have_no_activation_or_authority_surface() {
         .and_then(Path::parent)
         .expect("workspace root");
     let checker = workspace.join("scripts/check-columnar-batch-architecture");
-    for arguments in [&[][..], &["--self-test"][..]] {
-        let output = Command::new(&checker)
-            .args(arguments)
-            .output()
-            .expect("launch bounded batch architecture checker");
-        assert!(
-            output.status.success(),
-            "batch architecture checker failed:\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
-    }
+    // `--self-test` begins by running the exact live/default evaluation before
+    // exercising its negative fixtures. Running both modes here would scan the
+    // same bounded workspace twice in separate processes and exceed the test
+    // target's deadline without increasing coverage.
+    let output = Command::new(&checker)
+        .arg("--self-test")
+        .output()
+        .expect("launch bounded batch architecture checker");
+    assert!(
+        output.status.success(),
+        "batch architecture checker failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
 }
