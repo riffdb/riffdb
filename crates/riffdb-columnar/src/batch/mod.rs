@@ -6,6 +6,8 @@ use crate::segment_v2::{
     MAX_SEGMENT_V2_COLUMNS, SegmentV2Cell, SegmentV2LogicalType, SegmentV2Predicate,
 };
 
+mod top_n;
+
 const CLOSED_BATCH_WIDTHS: [usize; 5] = [64, 128, 256, 512, 1_024];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
