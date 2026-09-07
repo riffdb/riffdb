@@ -119,6 +119,18 @@ impl CanonicalPartialIdentity {
             batch_ordinal,
         }
     }
+
+    pub(super) const fn root_inventory_ordinal(self) -> u16 {
+        self.root_inventory_ordinal
+    }
+
+    pub(super) const fn segment_id(self) -> SegmentV2SegmentId {
+        self.segment_id
+    }
+
+    pub(super) const fn batch_ordinal(self) -> u32 {
+        self.batch_ordinal
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -538,11 +550,13 @@ impl ExactAggregateMergeAccumulator {
         })
     }
 
-    pub(super) const fn value(&self) -> ExactAggregatePartialValue {
+    #[cfg(test)]
+    const fn value(&self) -> ExactAggregatePartialValue {
         self.value
     }
 
-    pub(super) const fn consumed_leaves(&self) -> usize {
+    #[cfg(test)]
+    const fn consumed_leaves(&self) -> usize {
         self.inventory.cursor
     }
 
