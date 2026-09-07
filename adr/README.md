@@ -250,6 +250,7 @@ record with no front matter.
 | [0213](0213-pre-arm-preservation-and-linear-queued-fresh-locator-validation.md) | Pre-Arm Preservation and Linear Queued Fresh-Locator Validation | Accepted | guarantee |
 | [0214](0214-fresh-locator-validation-module-and-fixture-authority.md) | Fresh-Locator Validation Module and Fixture Authority | Proposed | guarantee |
 | [0215](0215-epoch-one-columnar-control-obligation-retirement.md) | Epoch-One Columnar Control Obligation Retirement | Proposed | guarantee |
+| [0216](0216-epoch-two-sole-current-query-and-generated-operation-identities.md) | Epoch-Two Sole-Current Query and Generated-Operation Identities | Proposed | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
