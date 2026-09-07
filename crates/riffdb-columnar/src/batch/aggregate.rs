@@ -1,9 +1,12 @@
+use std::cmp::Ordering;
+
 use riffdb_types::{
     AggregateArithmeticV1, AggregateEmptyResultV1, AggregateInputClassV1, AggregateNoValueRuleV1,
     AggregatePartialStateV1, AggregateResultSchemaV1, AggregateSemanticIdentityV1, CanonicalValue,
     DecimalSpec, MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1, MAX_AGGREGATE_STATE_BYTES_V1,
 };
 
+use crate::segment_v2::compare_values as compare_segment_values;
 use crate::segment_v2::{SegmentV2Cell, SegmentV2LogicalType, SegmentV2SegmentId};
 
 const CANONICAL_INVENTORY_IDENTITY_BYTES: u32 = 2 + 16 + 4;
@@ -565,6 +568,363 @@ impl ExactAggregateMergeAccumulator {
     }
 }
 
+/// A non-owning aggregate input retained from one immutable V2 lane.
+/// `Missing` and `Null` normalize to the single ADR-0152 `NoValue` class.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum BorrowedAggregateScalar<'view> {
+    NoValue,
+    Value(&'view CanonicalValue),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BorrowedAggregateDefinition<'view> {
+    semantic: AggregateSemanticIdentityV1,
+    logical_type: &'view SegmentV2LogicalType,
+}
+
+impl<'view> BorrowedAggregateDefinition<'view> {
+    fn new(
+        semantic: AggregateSemanticIdentityV1,
+        logical_type: &'view SegmentV2LogicalType,
+        distinct_limit: Option<u16>,
+    ) -> Result<Self, AggregatePartialError> {
+        if distinct_limit.is_some() {
+            return Err(AggregatePartialError::UnsupportedSemantic);
+        }
+        validate_borrowed_registry(semantic)?;
+        if matches!(
+            semantic,
+            AggregateSemanticIdentityV1::Any | AggregateSemanticIdentityV1::All
+        ) && *logical_type != SegmentV2LogicalType::Bool
+        {
+            return Err(AggregatePartialError::InputShape);
+        }
+        Ok(Self {
+            semantic,
+            logical_type,
+        })
+    }
+
+    fn empty_value(self) -> Result<BorrowedAggregatePartialValue<'view>, AggregatePartialError> {
+        match self.semantic {
+            AggregateSemanticIdentityV1::Min | AggregateSemanticIdentityV1::Max => {
+                Ok(BorrowedAggregatePartialValue::Extreme(None))
+            }
+            AggregateSemanticIdentityV1::Any => Ok(BorrowedAggregatePartialValue::Boolean(false)),
+            AggregateSemanticIdentityV1::All => Ok(BorrowedAggregatePartialValue::Boolean(true)),
+            _ => Err(AggregatePartialError::UnsupportedSemantic),
+        }
+    }
+
+    fn state_bytes(self) -> Result<u32, AggregatePartialError> {
+        let bytes = match self.semantic {
+            AggregateSemanticIdentityV1::Min | AggregateSemanticIdentityV1::Max => {
+                std::mem::size_of::<Option<BorrowedAggregateScalar<'view>>>()
+            }
+            AggregateSemanticIdentityV1::Any | AggregateSemanticIdentityV1::All => {
+                std::mem::size_of::<bool>()
+            }
+            _ => return Err(AggregatePartialError::UnsupportedSemantic),
+        };
+        u32::try_from(bytes).map_err(|_| AggregatePartialError::StateBoundExceeded)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum BorrowedAggregatePartialValue<'view> {
+    Extreme(Option<BorrowedAggregateScalar<'view>>),
+    Boolean(bool),
+}
+
+impl<'view> BorrowedAggregatePartialValue<'view> {
+    fn accumulate(
+        self,
+        definition: BorrowedAggregateDefinition<'view>,
+        cells: &'view [SegmentV2Cell],
+    ) -> Result<Self, AggregatePartialError> {
+        match (definition.semantic, self) {
+            (
+                semantic @ (AggregateSemanticIdentityV1::Min | AggregateSemanticIdentityV1::Max),
+                Self::Extreme(mut selected),
+            ) => {
+                for cell in cells {
+                    let candidate = borrowed_extreme_input(definition.logical_type, cell)?;
+                    selected = Some(match selected {
+                        None => candidate,
+                        Some(current) => {
+                            let compared = compare_borrowed_scalars(
+                                definition.logical_type,
+                                candidate,
+                                current,
+                            )?;
+                            let replace = match semantic {
+                                AggregateSemanticIdentityV1::Min => compared == Ordering::Less,
+                                AggregateSemanticIdentityV1::Max => compared == Ordering::Greater,
+                                _ => return Err(AggregatePartialError::RegistryMismatch),
+                            };
+                            if replace { candidate } else { current }
+                        }
+                    });
+                }
+                Ok(Self::Extreme(selected))
+            }
+            (AggregateSemanticIdentityV1::Any, Self::Boolean(mut selected)) => {
+                for cell in cells {
+                    selected |= required_boolean(cell)?;
+                }
+                Ok(Self::Boolean(selected))
+            }
+            (AggregateSemanticIdentityV1::All, Self::Boolean(mut selected)) => {
+                for cell in cells {
+                    selected &= required_boolean(cell)?;
+                }
+                Ok(Self::Boolean(selected))
+            }
+            _ => Err(AggregatePartialError::RegistryMismatch),
+        }
+    }
+
+    fn merge(
+        self,
+        definition: BorrowedAggregateDefinition<'view>,
+        other: Self,
+    ) -> Result<Self, AggregatePartialError> {
+        match (definition.semantic, self, other) {
+            (
+                semantic @ (AggregateSemanticIdentityV1::Min | AggregateSemanticIdentityV1::Max),
+                Self::Extreme(left),
+                Self::Extreme(right),
+            ) => match (left, right) {
+                (None, other) | (other, None) => Ok(Self::Extreme(other)),
+                (Some(left), Some(right)) => {
+                    let compared = compare_borrowed_scalars(definition.logical_type, right, left)?;
+                    let replace = match semantic {
+                        AggregateSemanticIdentityV1::Min => compared == Ordering::Less,
+                        AggregateSemanticIdentityV1::Max => compared == Ordering::Greater,
+                        _ => return Err(AggregatePartialError::RegistryMismatch),
+                    };
+                    Ok(Self::Extreme(Some(if replace { right } else { left })))
+                }
+            },
+            (AggregateSemanticIdentityV1::Any, Self::Boolean(left), Self::Boolean(right)) => {
+                Ok(Self::Boolean(left | right))
+            }
+            (AggregateSemanticIdentityV1::All, Self::Boolean(left), Self::Boolean(right)) => {
+                Ok(Self::Boolean(left & right))
+            }
+            _ => Err(AggregatePartialError::IncompatibleLeaf),
+        }
+    }
+}
+
+pub(super) struct ExactBorrowedAggregateLeafBuilder<'view> {
+    identity: CanonicalPartialIdentity,
+    definition: BorrowedAggregateDefinition<'view>,
+    value: BorrowedAggregatePartialValue<'view>,
+}
+
+impl<'view> ExactBorrowedAggregateLeafBuilder<'view> {
+    pub(super) fn new(
+        identity: CanonicalPartialIdentity,
+        semantic: AggregateSemanticIdentityV1,
+        logical_type: &'view SegmentV2LogicalType,
+        distinct_limit: Option<u16>,
+        budget: &mut AggregatePartialBudget,
+    ) -> Result<Self, AggregatePartialError> {
+        let definition = BorrowedAggregateDefinition::new(semantic, logical_type, distinct_limit)?;
+        let state_bytes = definition.state_bytes()?;
+        budget.admits_state(state_bytes)?;
+        let value = definition.empty_value()?;
+        budget.commit_state(state_bytes);
+        Ok(Self {
+            identity,
+            definition,
+            value,
+        })
+    }
+
+    pub(super) fn accumulate(
+        &mut self,
+        cells: &'view [SegmentV2Cell],
+        budget: &mut AggregatePartialBudget,
+    ) -> Result<(), AggregatePartialError> {
+        let operations = budget.admits_operations(cells.len())?;
+        let next = self.value.accumulate(self.definition, cells)?;
+        self.value = next;
+        budget.commit_operations(operations);
+        Ok(())
+    }
+
+    pub(super) fn finalize(self) -> FinalizedBorrowedAggregateLeaf<'view> {
+        FinalizedBorrowedAggregateLeaf {
+            identity: self.identity,
+            definition: self.definition,
+            value: self.value,
+        }
+    }
+}
+
+pub(super) struct FinalizedBorrowedAggregateLeaf<'view> {
+    identity: CanonicalPartialIdentity,
+    definition: BorrowedAggregateDefinition<'view>,
+    value: BorrowedAggregatePartialValue<'view>,
+}
+
+pub(super) struct ExactBorrowedAggregateMergeAccumulator<'view> {
+    inventory: SealedCanonicalPartialInventory,
+    definition: BorrowedAggregateDefinition<'view>,
+    value: BorrowedAggregatePartialValue<'view>,
+}
+
+impl<'view> ExactBorrowedAggregateMergeAccumulator<'view> {
+    pub(super) fn new(
+        semantic: AggregateSemanticIdentityV1,
+        logical_type: &'view SegmentV2LogicalType,
+        distinct_limit: Option<u16>,
+        exact_inventory: &[CanonicalPartialIdentity],
+        budget: &mut AggregatePartialBudget,
+    ) -> Result<Self, AggregatePartialError> {
+        let definition = BorrowedAggregateDefinition::new(semantic, logical_type, distinct_limit)?;
+        SealedCanonicalPartialInventory::validate(exact_inventory)?;
+        let state_bytes = definition
+            .state_bytes()?
+            .checked_add(SealedCanonicalPartialInventory::state_bytes(
+                exact_inventory,
+            )?)
+            .ok_or(AggregatePartialError::StateBoundExceeded)?;
+        budget.admits_state(state_bytes)?;
+        let inventory = SealedCanonicalPartialInventory {
+            identities: exact_inventory.to_vec().into_boxed_slice(),
+            cursor: 0,
+        };
+        let value = definition.empty_value()?;
+        budget.commit_state(state_bytes);
+        Ok(Self {
+            inventory,
+            definition,
+            value,
+        })
+    }
+
+    pub(super) const fn value(&self) -> BorrowedAggregatePartialValue<'view> {
+        self.value
+    }
+
+    pub(super) const fn consumed_leaves(&self) -> usize {
+        self.inventory.cursor
+    }
+
+    pub(super) fn merge_leaf(
+        &mut self,
+        leaf: FinalizedBorrowedAggregateLeaf<'view>,
+        budget: &mut AggregatePartialBudget,
+    ) -> Result<(), AggregatePartialError> {
+        let Some(expected) = self.inventory.identities.get(self.inventory.cursor) else {
+            return Err(self.inventory.classify_mismatch(leaf.identity));
+        };
+        if leaf.identity != *expected {
+            return Err(self.inventory.classify_mismatch(leaf.identity));
+        }
+        if leaf.definition != self.definition {
+            return Err(AggregatePartialError::IncompatibleLeaf);
+        }
+        let operations = budget.admits_operations(1)?;
+        let next = self.value.merge(self.definition, leaf.value)?;
+        self.value = next;
+        self.inventory.cursor += 1;
+        budget.commit_operations(operations);
+        Ok(())
+    }
+
+    pub(super) fn finish(
+        self,
+    ) -> Result<BorrowedAggregatePartialValue<'view>, AggregatePartialError> {
+        if self.inventory.cursor == self.inventory.identities.len() {
+            Ok(self.value)
+        } else {
+            Err(AggregatePartialError::InventoryOmission)
+        }
+    }
+}
+
+fn borrowed_extreme_input<'view>(
+    logical_type: &SegmentV2LogicalType,
+    cell: &'view SegmentV2Cell,
+) -> Result<BorrowedAggregateScalar<'view>, AggregatePartialError> {
+    match cell {
+        SegmentV2Cell::Missing | SegmentV2Cell::Null => Ok(BorrowedAggregateScalar::NoValue),
+        SegmentV2Cell::Value(value) if logical_type.accepts(value) => {
+            Ok(BorrowedAggregateScalar::Value(value))
+        }
+        SegmentV2Cell::Value(_) => Err(AggregatePartialError::InputShape),
+    }
+}
+
+fn compare_borrowed_scalars(
+    logical_type: &SegmentV2LogicalType,
+    left: BorrowedAggregateScalar<'_>,
+    right: BorrowedAggregateScalar<'_>,
+) -> Result<Ordering, AggregatePartialError> {
+    match (left, right) {
+        (BorrowedAggregateScalar::NoValue, BorrowedAggregateScalar::NoValue) => Ok(Ordering::Equal),
+        (BorrowedAggregateScalar::NoValue, BorrowedAggregateScalar::Value(_)) => Ok(Ordering::Less),
+        (BorrowedAggregateScalar::Value(_), BorrowedAggregateScalar::NoValue) => {
+            Ok(Ordering::Greater)
+        }
+        (BorrowedAggregateScalar::Value(left), BorrowedAggregateScalar::Value(right)) => {
+            compare_segment_values(logical_type, left, right)
+                .map_err(|_| AggregatePartialError::InputShape)
+        }
+    }
+}
+
+fn required_boolean(cell: &SegmentV2Cell) -> Result<bool, AggregatePartialError> {
+    match cell {
+        SegmentV2Cell::Missing => Err(AggregatePartialError::MissingField),
+        SegmentV2Cell::Null => Err(AggregatePartialError::NoValue),
+        SegmentV2Cell::Value(CanonicalValue::Bool(value)) => Ok(*value),
+        SegmentV2Cell::Value(_) => Err(AggregatePartialError::InputShape),
+    }
+}
+
+fn validate_borrowed_registry(
+    semantic: AggregateSemanticIdentityV1,
+) -> Result<(), AggregatePartialError> {
+    let descriptor = semantic.descriptor();
+    let matches = match semantic {
+        AggregateSemanticIdentityV1::Min | AggregateSemanticIdentityV1::Max => {
+            descriptor.partial_state() == AggregatePartialStateV1::OptionalOrderedScalar
+                && descriptor.arithmetic() == AggregateArithmeticV1::FrozenTypedComparator
+                && descriptor.input_class() == AggregateInputClassV1::OrderedScalarField
+                && descriptor.no_value_rule() == AggregateNoValueRuleV1::ComparableState
+                && descriptor.empty_result() == AggregateEmptyResultV1::Absent
+                && descriptor.result_schema() == AggregateResultSchemaV1::OptionalInputScalar
+        }
+        AggregateSemanticIdentityV1::Any => {
+            descriptor.partial_state() == AggregatePartialStateV1::BooleanAny
+                && descriptor.arithmetic() == AggregateArithmeticV1::BooleanOr
+                && descriptor.input_class() == AggregateInputClassV1::RequiredBooleanField
+                && descriptor.no_value_rule() == AggregateNoValueRuleV1::InvalidInputType
+                && descriptor.empty_result() == AggregateEmptyResultV1::BooleanFalse
+                && descriptor.result_schema() == AggregateResultSchemaV1::Bool
+        }
+        AggregateSemanticIdentityV1::All => {
+            descriptor.partial_state() == AggregatePartialStateV1::BooleanAll
+                && descriptor.arithmetic() == AggregateArithmeticV1::BooleanAnd
+                && descriptor.input_class() == AggregateInputClassV1::RequiredBooleanField
+                && descriptor.no_value_rule() == AggregateNoValueRuleV1::InvalidInputType
+                && descriptor.empty_result() == AggregateEmptyResultV1::BooleanTrue
+                && descriptor.result_schema() == AggregateResultSchemaV1::Bool
+        }
+        _ => return Err(AggregatePartialError::UnsupportedSemantic),
+    };
+    if matches {
+        Ok(())
+    } else {
+        Err(AggregatePartialError::RegistryMismatch)
+    }
+}
+
 fn validate_registry(semantic: AggregateSemanticIdentityV1) -> Result<(), AggregatePartialError> {
     let descriptor = semantic.descriptor();
     let matches = match semantic {
@@ -616,7 +976,10 @@ mod tests {
     use rand::rngs::StdRng;
     use rand::seq::SliceRandom;
     use rand::{Rng, SeedableRng};
-    use riffdb_types::{CanonicalValue, Decimal, DecimalSpec};
+    use riffdb_types::{
+        CanonicalValue, CurrencyCode, Date, Decimal, DecimalSpec, EnumTypeId, EnumVariantId, Money,
+        Timestamp,
+    };
 
     fn budget(operations: u32, state_bytes: u32) -> AggregatePartialBudget {
         AggregatePartialBudget::new(operations, state_bytes).expect("bounded aggregate budget")
@@ -632,6 +995,13 @@ mod tests {
             .copied()
             .map(|value| SegmentV2Cell::Value(CanonicalValue::I64(value)))
             .collect()
+    }
+
+    fn present(cell: &SegmentV2Cell) -> &CanonicalValue {
+        let SegmentV2Cell::Value(value) = cell else {
+            panic!("fixture cell must be present")
+        };
+        value
     }
 
     fn i64_leaf(
@@ -1454,5 +1824,524 @@ mod tests {
             Some(AggregatePartialError::StateBoundExceeded)
         );
         assert_eq!(short_charge, short_before);
+    }
+
+    fn borrowed_leaf<'view>(
+        id: CanonicalPartialIdentity,
+        semantic: AggregateSemanticIdentityV1,
+        logical_type: &'view SegmentV2LogicalType,
+        cells: &'view [SegmentV2Cell],
+    ) -> FinalizedBorrowedAggregateLeaf<'view> {
+        let mut charge = budget(
+            u32::try_from(cells.len().max(1)).expect("small fixture"),
+            256,
+        );
+        let mut builder =
+            ExactBorrowedAggregateLeafBuilder::new(id, semantic, logical_type, None, &mut charge)
+                .expect("supported borrowed leaf");
+        builder
+            .accumulate(cells, &mut charge)
+            .expect("valid borrowed contributions");
+        builder.finalize()
+    }
+
+    fn merge_borrowed<'view>(
+        semantic: AggregateSemanticIdentityV1,
+        logical_type: &'view SegmentV2LogicalType,
+        partitions: &'view [&'view [SegmentV2Cell]],
+    ) -> BorrowedAggregatePartialValue<'view> {
+        let ids = (0..partitions.len())
+            .map(|batch| identity(0, 1, u32::try_from(batch).expect("small fixture")))
+            .collect::<Vec<_>>();
+        let mut charge = budget(
+            u32::try_from(
+                partitions.iter().map(|cells| cells.len()).sum::<usize>() + partitions.len(),
+            )
+            .expect("small fixture"),
+            4_096,
+        );
+        let mut accumulator = ExactBorrowedAggregateMergeAccumulator::new(
+            semantic,
+            logical_type,
+            None,
+            &ids,
+            &mut charge,
+        )
+        .expect("borrowed merge accumulator");
+        for (id, cells) in ids.into_iter().zip(partitions.iter().copied()) {
+            accumulator
+                .merge_leaf(
+                    borrowed_leaf(id, semantic, logical_type, cells),
+                    &mut charge,
+                )
+                .expect("canonical borrowed merge");
+        }
+        accumulator.finish().expect("complete borrowed inventory")
+    }
+
+    fn assert_extreme_pair(
+        logical_type: &SegmentV2LogicalType,
+        cells: &[SegmentV2Cell],
+        minimum: usize,
+        maximum: usize,
+    ) {
+        let split = cells.len() / 2;
+        let partitions = [&cells[..split], &cells[split..]];
+        assert_eq!(
+            merge_borrowed(AggregateSemanticIdentityV1::Min, logical_type, &partitions,),
+            BorrowedAggregatePartialValue::Extreme(Some(BorrowedAggregateScalar::Value(present(
+                &cells[minimum]
+            ))))
+        );
+        assert_eq!(
+            merge_borrowed(AggregateSemanticIdentityV1::Max, logical_type, &partitions,),
+            BorrowedAggregatePartialValue::Extreme(Some(BorrowedAggregateScalar::Value(present(
+                &cells[maximum]
+            ))))
+        );
+    }
+
+    #[test]
+    fn borrowed_extrema_and_boolean_partials_match_independent_identities() {
+        let i64_type = SegmentV2LogicalType::I64;
+        let i64_cells = i64_cells(&[5, -7, 9, 9]);
+        let partitions = [&i64_cells[..1], &i64_cells[1..3], &i64_cells[3..]];
+        assert_eq!(
+            merge_borrowed(AggregateSemanticIdentityV1::Min, &i64_type, &partitions),
+            BorrowedAggregatePartialValue::Extreme(Some(BorrowedAggregateScalar::Value(present(
+                &i64_cells[1]
+            ))))
+        );
+        assert_eq!(
+            merge_borrowed(AggregateSemanticIdentityV1::Max, &i64_type, &partitions),
+            BorrowedAggregatePartialValue::Extreme(Some(BorrowedAggregateScalar::Value(present(
+                &i64_cells[2]
+            ))))
+        );
+
+        let decimal = DecimalSpec::new(8, 2).expect("decimal spec");
+        let decimal_type = SegmentV2LogicalType::Decimal(decimal);
+        let decimal_cells = [-1, 0, 1]
+            .into_iter()
+            .map(|coefficient| {
+                SegmentV2Cell::Value(CanonicalValue::Decimal(
+                    Decimal::new(decimal, coefficient).expect("decimal"),
+                ))
+            })
+            .collect::<Vec<_>>();
+        let decimal_partitions = [&decimal_cells[..1], &decimal_cells[1..]];
+        assert_eq!(
+            merge_borrowed(
+                AggregateSemanticIdentityV1::Min,
+                &decimal_type,
+                &decimal_partitions,
+            ),
+            BorrowedAggregatePartialValue::Extreme(Some(BorrowedAggregateScalar::Value(present(
+                &decimal_cells[0]
+            ))))
+        );
+        assert_eq!(
+            merge_borrowed(
+                AggregateSemanticIdentityV1::Max,
+                &decimal_type,
+                &decimal_partitions,
+            ),
+            BorrowedAggregatePartialValue::Extreme(Some(BorrowedAggregateScalar::Value(present(
+                &decimal_cells[2]
+            ))))
+        );
+
+        let usd = CurrencyCode::new("USD").expect("currency");
+        let money_type = SegmentV2LogicalType::Money {
+            currency: usd,
+            amount: decimal,
+        };
+        let money_cells = [-2, 7, 1]
+            .into_iter()
+            .map(|coefficient| {
+                SegmentV2Cell::Value(CanonicalValue::Money(Money::new(
+                    usd,
+                    Decimal::new(decimal, coefficient).expect("amount"),
+                )))
+            })
+            .collect::<Vec<_>>();
+        let money_partitions = [&money_cells[..2], &money_cells[2..]];
+        assert_eq!(
+            merge_borrowed(
+                AggregateSemanticIdentityV1::Min,
+                &money_type,
+                &money_partitions,
+            ),
+            BorrowedAggregatePartialValue::Extreme(Some(BorrowedAggregateScalar::Value(present(
+                &money_cells[0]
+            ))))
+        );
+
+        let bool_type = SegmentV2LogicalType::Bool;
+        let bool_cells = [
+            SegmentV2Cell::Value(CanonicalValue::Bool(false)),
+            SegmentV2Cell::Value(CanonicalValue::Bool(true)),
+            SegmentV2Cell::Value(CanonicalValue::Bool(false)),
+        ];
+        let bool_partitions = [&bool_cells[..1], &bool_cells[1..]];
+        assert_eq!(
+            merge_borrowed(
+                AggregateSemanticIdentityV1::Any,
+                &bool_type,
+                &bool_partitions
+            ),
+            BorrowedAggregatePartialValue::Boolean(true)
+        );
+        assert_eq!(
+            merge_borrowed(
+                AggregateSemanticIdentityV1::All,
+                &bool_type,
+                &bool_partitions
+            ),
+            BorrowedAggregatePartialValue::Boolean(false)
+        );
+
+        let enum_type = EnumTypeId::new(7).expect("enum type");
+        for (logical_type, cells, minimum, maximum) in [
+            (
+                SegmentV2LogicalType::Bool,
+                vec![
+                    SegmentV2Cell::Value(CanonicalValue::Bool(true)),
+                    SegmentV2Cell::Value(CanonicalValue::Bool(false)),
+                ],
+                1,
+                0,
+            ),
+            (
+                SegmentV2LogicalType::U64,
+                vec![
+                    SegmentV2Cell::Value(CanonicalValue::U64(u64::MAX)),
+                    SegmentV2Cell::Value(CanonicalValue::U64(0)),
+                ],
+                1,
+                0,
+            ),
+            (
+                SegmentV2LogicalType::String,
+                vec![
+                    SegmentV2Cell::Value(CanonicalValue::string("z").expect("string")),
+                    SegmentV2Cell::Value(CanonicalValue::string("a").expect("string")),
+                ],
+                1,
+                0,
+            ),
+            (
+                SegmentV2LogicalType::Bytes,
+                vec![
+                    SegmentV2Cell::Value(CanonicalValue::bytes([2]).expect("bytes")),
+                    SegmentV2Cell::Value(CanonicalValue::bytes([1]).expect("bytes")),
+                ],
+                1,
+                0,
+            ),
+            (
+                SegmentV2LogicalType::Timestamp,
+                vec![
+                    SegmentV2Cell::Value(CanonicalValue::Timestamp(
+                        Timestamp::new(1, 0).expect("timestamp"),
+                    )),
+                    SegmentV2Cell::Value(CanonicalValue::Timestamp(
+                        Timestamp::new(-1, 0).expect("timestamp"),
+                    )),
+                ],
+                1,
+                0,
+            ),
+            (
+                SegmentV2LogicalType::Date,
+                vec![
+                    SegmentV2Cell::Value(CanonicalValue::Date(Date::new(1))),
+                    SegmentV2Cell::Value(CanonicalValue::Date(Date::new(-1))),
+                ],
+                1,
+                0,
+            ),
+            (
+                SegmentV2LogicalType::Uuid,
+                vec![
+                    SegmentV2Cell::Value(CanonicalValue::Uuid([2; 16])),
+                    SegmentV2Cell::Value(CanonicalValue::Uuid([1; 16])),
+                ],
+                1,
+                0,
+            ),
+            (
+                SegmentV2LogicalType::Enum(enum_type),
+                vec![
+                    SegmentV2Cell::Value(CanonicalValue::Enum {
+                        type_id: enum_type,
+                        variant_id: EnumVariantId::new(2).expect("variant"),
+                    }),
+                    SegmentV2Cell::Value(CanonicalValue::Enum {
+                        type_id: enum_type,
+                        variant_id: EnumVariantId::new(1).expect("variant"),
+                    }),
+                ],
+                1,
+                0,
+            ),
+        ] {
+            assert_extreme_pair(&logical_type, &cells, minimum, maximum);
+        }
+    }
+
+    #[test]
+    fn borrowed_extrema_boolean_empty_no_value_bounds_and_failures_are_closed() {
+        let i64_type = SegmentV2LogicalType::I64;
+        let bool_type = SegmentV2LogicalType::Bool;
+        for (semantic, logical_type, expected) in [
+            (
+                AggregateSemanticIdentityV1::Min,
+                &i64_type,
+                BorrowedAggregatePartialValue::Extreme(None),
+            ),
+            (
+                AggregateSemanticIdentityV1::Max,
+                &i64_type,
+                BorrowedAggregatePartialValue::Extreme(None),
+            ),
+            (
+                AggregateSemanticIdentityV1::Any,
+                &bool_type,
+                BorrowedAggregatePartialValue::Boolean(false),
+            ),
+            (
+                AggregateSemanticIdentityV1::All,
+                &bool_type,
+                BorrowedAggregatePartialValue::Boolean(true),
+            ),
+        ] {
+            let mut charge = budget(1, 64);
+            let accumulator = ExactBorrowedAggregateMergeAccumulator::new(
+                semantic,
+                logical_type,
+                None,
+                &[],
+                &mut charge,
+            )
+            .expect("empty identity");
+            assert_eq!(accumulator.finish(), Ok(expected));
+        }
+
+        let no_value_cells = [
+            SegmentV2Cell::Value(CanonicalValue::I64(5)),
+            SegmentV2Cell::Missing,
+            SegmentV2Cell::Null,
+        ];
+        let no_value_partitions = [&no_value_cells[..1], &no_value_cells[1..]];
+        assert_eq!(
+            merge_borrowed(
+                AggregateSemanticIdentityV1::Min,
+                &i64_type,
+                &no_value_partitions,
+            ),
+            BorrowedAggregatePartialValue::Extreme(Some(BorrowedAggregateScalar::NoValue))
+        );
+        assert_eq!(
+            merge_borrowed(
+                AggregateSemanticIdentityV1::Max,
+                &i64_type,
+                &no_value_partitions,
+            ),
+            BorrowedAggregatePartialValue::Extreme(Some(BorrowedAggregateScalar::Value(present(
+                &no_value_cells[0]
+            ))))
+        );
+
+        let id = identity(0, 1, 0);
+        for (invalid, expected) in [
+            (SegmentV2Cell::Missing, AggregatePartialError::MissingField),
+            (SegmentV2Cell::Null, AggregatePartialError::NoValue),
+            (
+                SegmentV2Cell::Value(CanonicalValue::I64(1)),
+                AggregatePartialError::InputShape,
+            ),
+        ] {
+            let valid = [SegmentV2Cell::Value(CanonicalValue::Bool(false))];
+            let invalid = [SegmentV2Cell::Value(CanonicalValue::Bool(true)), invalid];
+            let mut charge = budget(3, 64);
+            let mut builder = ExactBorrowedAggregateLeafBuilder::new(
+                id,
+                AggregateSemanticIdentityV1::Any,
+                &bool_type,
+                None,
+                &mut charge,
+            )
+            .expect("Boolean leaf");
+            builder
+                .accumulate(&valid, &mut charge)
+                .expect("valid Boolean contribution");
+            let value_before = builder.value;
+            let charge_before = charge;
+            assert_eq!(builder.accumulate(&invalid, &mut charge), Err(expected));
+            assert_eq!(builder.value, value_before);
+            assert_eq!(charge, charge_before);
+        }
+
+        let definition =
+            BorrowedAggregateDefinition::new(AggregateSemanticIdentityV1::Min, &i64_type, None)
+                .expect("minimum definition");
+        let exact_state = definition
+            .state_bytes()
+            .expect("minimum state")
+            .checked_add(CANONICAL_INVENTORY_IDENTITY_BYTES)
+            .expect("small exact state");
+        let mut exact_charge = budget(1, exact_state);
+        ExactBorrowedAggregateMergeAccumulator::new(
+            AggregateSemanticIdentityV1::Min,
+            &i64_type,
+            None,
+            &[id],
+            &mut exact_charge,
+        )
+        .expect("exact borrowed state budget");
+        assert_eq!(exact_charge.remaining_state_bytes(), 0);
+        let mut short_charge = budget(1, exact_state - 1);
+        let before = short_charge;
+        assert_eq!(
+            ExactBorrowedAggregateMergeAccumulator::new(
+                AggregateSemanticIdentityV1::Min,
+                &i64_type,
+                None,
+                &[id],
+                &mut short_charge,
+            )
+            .err(),
+            Some(AggregatePartialError::StateBoundExceeded)
+        );
+        assert_eq!(short_charge, before);
+    }
+
+    #[test]
+    fn extrema_are_partition_and_input_permutation_invariant() {
+        let logical_type = SegmentV2LogicalType::I64;
+        let mut rng = StdRng::seed_from_u64(0xE7E0_A11A);
+        for _ in 0..64 {
+            let mut values = (0..rng.gen_range(1..=64))
+                .map(|_| rng.gen_range(i64::MIN..=i64::MAX))
+                .collect::<Vec<_>>();
+            let expected_minimum = *values.iter().min().expect("nonempty values");
+            let expected_maximum = *values.iter().max().expect("nonempty values");
+            values.shuffle(&mut rng);
+            let cells = i64_cells(&values);
+            let split = rng.gen_range(0..=cells.len());
+            let partitions = [&cells[..split], &cells[split..]];
+            for (semantic, expected) in [
+                (AggregateSemanticIdentityV1::Min, expected_minimum),
+                (AggregateSemanticIdentityV1::Max, expected_maximum),
+            ] {
+                let actual = merge_borrowed(semantic, &logical_type, &partitions);
+                let BorrowedAggregatePartialValue::Extreme(Some(BorrowedAggregateScalar::Value(
+                    CanonicalValue::I64(actual),
+                ))) = actual
+                else {
+                    panic!("expected present i64 extreme")
+                };
+                assert_eq!(*actual, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn borrowed_partial_merge_uses_the_sealed_consuming_inventory() {
+        let logical_type = SegmentV2LogicalType::I64;
+        let first_cells = i64_cells(&[3]);
+        let second_cells = i64_cells(&[1]);
+        let ids = [identity(0, 1, 0), identity(0, 1, 1)];
+        let mut charge = budget(4, 256);
+        let mut accumulator = ExactBorrowedAggregateMergeAccumulator::new(
+            AggregateSemanticIdentityV1::Min,
+            &logical_type,
+            None,
+            &ids,
+            &mut charge,
+        )
+        .expect("sealed borrowed inventory");
+
+        let value_before = accumulator.value();
+        let cursor_before = accumulator.consumed_leaves();
+        let charge_before = charge;
+        assert_eq!(
+            accumulator.merge_leaf(
+                borrowed_leaf(
+                    ids[1],
+                    AggregateSemanticIdentityV1::Min,
+                    &logical_type,
+                    &second_cells,
+                ),
+                &mut charge,
+            ),
+            Err(AggregatePartialError::InventoryGap)
+        );
+        assert_eq!(accumulator.value(), value_before);
+        assert_eq!(accumulator.consumed_leaves(), cursor_before);
+        assert_eq!(charge, charge_before);
+
+        assert_eq!(
+            accumulator.merge_leaf(
+                borrowed_leaf(
+                    ids[0],
+                    AggregateSemanticIdentityV1::Max,
+                    &logical_type,
+                    &first_cells,
+                ),
+                &mut charge,
+            ),
+            Err(AggregatePartialError::IncompatibleLeaf)
+        );
+        assert_eq!(accumulator.value(), value_before);
+        assert_eq!(accumulator.consumed_leaves(), cursor_before);
+        assert_eq!(charge, charge_before);
+
+        accumulator
+            .merge_leaf(
+                borrowed_leaf(
+                    ids[0],
+                    AggregateSemanticIdentityV1::Min,
+                    &logical_type,
+                    &first_cells,
+                ),
+                &mut charge,
+            )
+            .expect("first exact leaf");
+        let value_after_first = accumulator.value();
+        let charge_after_first = charge;
+        assert_eq!(
+            accumulator.merge_leaf(
+                borrowed_leaf(
+                    ids[0],
+                    AggregateSemanticIdentityV1::Min,
+                    &logical_type,
+                    &first_cells,
+                ),
+                &mut charge,
+            ),
+            Err(AggregatePartialError::DuplicateOrReorderedLeaf)
+        );
+        assert_eq!(accumulator.value(), value_after_first);
+        assert_eq!(accumulator.consumed_leaves(), 1);
+        assert_eq!(charge, charge_after_first);
+        accumulator
+            .merge_leaf(
+                borrowed_leaf(
+                    ids[1],
+                    AggregateSemanticIdentityV1::Min,
+                    &logical_type,
+                    &second_cells,
+                ),
+                &mut charge,
+            )
+            .expect("second exact leaf");
+        assert_eq!(
+            accumulator.finish(),
+            Ok(BorrowedAggregatePartialValue::Extreme(Some(
+                BorrowedAggregateScalar::Value(present(&second_cells[0]))
+            )))
+        );
     }
 }
