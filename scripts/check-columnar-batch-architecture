@@ -690,10 +690,11 @@ def references_batch_path(
         # include!/include_str! with a simple literal or concat!(literal...).
         if index + 2 >= len(tokens):
             continue
-        if tokens[index].text != "include" or tokens[index + 1].text != "!":
+        macro_name = tokens[index].text.removeprefix("r#")
+        if macro_name != "include" or tokens[index + 1].text != "!":
             continue
         opening = index + 2
-        if tokens[opening].text != "(":
+        if tokens[opening].text not in ("(", "[", "{"):
             continue
         closing = matching_delimiter(tokens, opening)
         arguments = tokens[opening + 1:closing]
@@ -1360,7 +1361,10 @@ def self_test(root: Path) -> None:
         hidden.write_text("use crate::batch::ColumnarBatchWidth;", encoding="utf-8")
         for label, source in (
             ("path-target-content", '#[path = "hidden.inc"] mod hidden;'),
-            ("include-target-content", 'include!("hidden.inc");'),
+            ("include-parentheses-target-content", 'include!("hidden.inc");'),
+            ("include-braces-target-content", 'include!{"hidden.inc"}'),
+            ("include-brackets-target-content", 'include!["hidden.inc"]'),
+            ("raw-include-target-content", 'r#include!("hidden.inc");'),
         ):
             if not references_batch_path(
                 fixture,
@@ -1368,12 +1372,18 @@ def self_test(root: Path) -> None:
                 rust_tokens(source),
             ):
                 raise CheckError(f"{label} self-test missed hidden batch consumer")
-        if references_batch_path(
-            fixture,
-            "crates/riffdb-columnar/src/lib.rs",
-            rust_tokens('include_str!("hidden.inc");'),
+        for source in (
+            'include_str!("hidden.inc");',
+            'include_str!{"hidden.inc"}',
+            'include_str!["hidden.inc"]',
+            'r#include_str!("hidden.inc");',
         ):
-            raise CheckError("include_str data was treated as executable Rust")
+            if references_batch_path(
+                fixture,
+                "crates/riffdb-columnar/src/lib.rs",
+                rust_tokens(source),
+            ):
+                raise CheckError("include_str data was treated as executable Rust")
         hidden.unlink()
         hidden.symlink_to(owner / "real.inc")
         (owner / "real.inc").write_text("use crate::batch::ColumnarBatchWidth;", encoding="utf-8")
