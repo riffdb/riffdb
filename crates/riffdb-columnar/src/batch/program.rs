@@ -28,6 +28,8 @@ struct ProgramLaneType {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct PhaseLaneSets {
+    // These are disjoint first-materialization owners. A later phase may use an
+    // already materialized lane without claiming it a second time.
     eligibility: Vec<usize>,
     policy: Vec<usize>,
     predicate: Vec<usize>,
@@ -51,6 +53,8 @@ impl PhaseLaneSets {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ProgramResourcePlan {
+    // All values originate in the checked compiler/provider lowering. This
+    // module has no request or configuration constructor.
     rows: usize,
     validity_bytes: usize,
     selection_bytes: usize,
@@ -63,6 +67,8 @@ struct ProgramResourcePlan {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ProgramCharges {
+    rows: usize,
+    lanes: usize,
     row_lane_evaluations: usize,
     validity_bytes: usize,
     selection_bytes: usize,
@@ -186,6 +192,8 @@ impl BatchProgramDraft {
             lane_types: self.lane_types.clone(),
             phases: self.phases.clone(),
             charges: ProgramCharges {
+                rows: self.resources.rows,
+                lanes: lane_count,
                 row_lane_evaluations,
                 validity_bytes: self.resources.validity_bytes,
                 selection_bytes: self.resources.selection_bytes,
@@ -327,6 +335,8 @@ mod tests {
         assert_eq!(program.width.get(), 64);
         assert_eq!(program.lane_types, draft.lane_types);
         assert_eq!(program.phases, draft.phases);
+        assert_eq!(program.charges.rows, 64);
+        assert_eq!(program.charges.lanes, 6);
         assert_eq!(program.charges.row_lane_evaluations, 384);
         assert_eq!(program.charges.validity_bytes, 16);
         assert_eq!(program.charges.selection_bytes, 8);
@@ -442,7 +452,8 @@ mod tests {
             if resource == ProgramResource::Lanes {
                 install_lane_count(&mut accepted, exact);
             }
-            accepted.seal(identity()).expect("exact bound is accepted");
+            let program = accepted.seal(identity()).expect("exact bound is accepted");
+            assert_eq!(charged_resource(&program, resource), exact);
 
             let mut rejected = valid_draft();
             set_resource(&mut rejected, resource, excessive);
@@ -458,18 +469,28 @@ mod tests {
 
     #[test]
     fn arithmetic_overflow_and_other_failures_leave_the_draft_unchanged() {
-        let mut draft = valid_draft();
-        draft.resources.partial_rows = usize::MAX;
-        draft.resources.partial_bytes_per_row = 2;
-        let before = draft.clone();
+        let cases = [ProgramResource::Partial, ProgramResource::Output];
+        for resource in cases {
+            let mut draft = valid_draft();
+            match resource {
+                ProgramResource::Partial => {
+                    draft.resources.partial_rows = usize::MAX;
+                    draft.resources.partial_bytes_per_row = 2;
+                }
+                ProgramResource::Output => {
+                    draft.resources.output_rows = usize::MAX;
+                    draft.resources.output_bytes_per_row = 2;
+                }
+                _ => unreachable!("overflow fixture uses a multiplied byte charge"),
+            }
+            let before = draft.clone();
 
-        assert_eq!(
-            draft.seal(identity()).err(),
-            Some(ProgramSealError::ArithmeticOverflow(
-                ProgramResource::Partial
-            ))
-        );
-        assert_eq!(draft, before);
+            assert_eq!(
+                draft.seal(identity()).err(),
+                Some(ProgramSealError::ArithmeticOverflow(resource))
+            );
+            assert_eq!(draft, before);
+        }
     }
 
     fn set_resource(draft: &mut BatchProgramDraft, resource: ProgramResource, value: usize) {
@@ -496,6 +517,18 @@ mod tests {
             eligibility: (0..count).collect(),
             ..PhaseLaneSets::default()
         };
+    }
+
+    fn charged_resource(program: &SealedBatchProgram, resource: ProgramResource) -> usize {
+        match resource {
+            ProgramResource::Rows => program.charges.rows,
+            ProgramResource::Lanes => program.charges.lanes,
+            ProgramResource::Validity => program.charges.validity_bytes,
+            ProgramResource::Selection => program.charges.selection_bytes,
+            ProgramResource::Partial => program.charges.partial_bytes,
+            ProgramResource::Heap => program.charges.heap_entries,
+            ProgramResource::Output => program.charges.output_bytes,
+        }
     }
 
     #[test]
