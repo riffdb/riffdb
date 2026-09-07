@@ -1,10 +1,10 @@
 ---
 adr: "0207"
 title: Frozen Changelog Compatibility Exception During the Pre-External Window
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-06
-accepted: null
+accepted: "2026-09-06"
 requires: [ADR-0100, ADR-0112, ADR-0124, ADR-0178, ADR-0181, ADR-0186, ADR-0204]
 amends: [ADR-0181, ADR-0204]
 supersedes: []
