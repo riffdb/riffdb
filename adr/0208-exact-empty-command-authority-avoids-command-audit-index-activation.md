@@ -1,10 +1,10 @@
 ---
 adr: "0208"
 title: Exact-Empty Command Authority Avoids Command-Audit Index Activation
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-06
-accepted: null
+accepted: "2026-09-06"
 requires: [ADR-0156, ADR-0165, ADR-0197, ADR-0205, ADR-0206]
 amends: [ADR-0156, ADR-0205, ADR-0206]
 supersedes: []
