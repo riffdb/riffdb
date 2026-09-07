@@ -4,8 +4,8 @@ use std::cmp::Ordering;
 use std::mem::size_of;
 
 use riffdb_types::{
-    MAX_AGGREGATE_DISTINCT_VALUES_V1, MAX_AGGREGATE_STATE_BYTES_V1, canonical_value_encoded_len,
-    encode_canonical_value_into,
+    MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1, MAX_AGGREGATE_DISTINCT_VALUES_V1,
+    MAX_AGGREGATE_STATE_BYTES_V1, canonical_value_encoded_len, encode_canonical_value_into,
 };
 
 use super::aggregate::CanonicalPartialIdentity;
@@ -18,16 +18,21 @@ pub(super) enum GroupStateError {
     InvalidGroupBound,
     InvalidKeyBound,
     InvalidStateBound,
+    InvalidWorkBound,
     AllocationFailed,
     InputShape,
     TypeMismatch,
     KeyBoundExceeded,
     GroupBoundExceeded,
     StateBoundExceeded,
+    WorkBoundExceeded,
+    RowBoundExceeded,
     RowOrder,
+    UnexpectedNoValue,
     ArithmeticOverflow,
     Poisoned,
     InvalidInventory,
+    InventoryBoundExceeded,
     DuplicateOrReorderedLeaf,
     InventoryGap,
     ForeignRootInventory,
@@ -35,6 +40,51 @@ pub(super) enum GroupStateError {
     ExcessLeaf,
     InventoryOmission,
     IncompatibleLeaf,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct GroupWorkBudget {
+    remaining: u32,
+}
+
+impl GroupWorkBudget {
+    pub(super) const fn new(maximum_work: u32) -> Result<Self, GroupStateError> {
+        if maximum_work == 0 || maximum_work > MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1 {
+            return Err(GroupStateError::InvalidWorkBound);
+        }
+        Ok(Self {
+            remaining: maximum_work,
+        })
+    }
+
+    fn charge(&mut self, work: usize) -> Result<(), GroupStateError> {
+        let work = u32::try_from(work).map_err(|_| GroupStateError::WorkBoundExceeded)?;
+        self.remaining = self
+            .remaining
+            .checked_sub(work)
+            .ok_or(GroupStateError::WorkBoundExceeded)?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    const fn remaining(self) -> u32 {
+        self.remaining
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct CanonicalGroupLane<'schema> {
+    logical_type: &'schema SegmentV2LogicalType,
+    optional: bool,
+}
+
+impl<'schema> CanonicalGroupLane<'schema> {
+    pub(super) const fn new(logical_type: &'schema SegmentV2LogicalType, optional: bool) -> Self {
+        Self {
+            logical_type,
+            optional,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -151,12 +201,12 @@ impl BoundedGroupOwner {
 
     fn admit_cells(
         &mut self,
-        logical_types: &[SegmentV2LogicalType],
+        lanes: &[CanonicalGroupLane<'_>],
         cells: &[SegmentV2Cell],
         count: u64,
     ) -> Result<(), GroupStateError> {
         self.ensure_live()?;
-        let key_len = match encoded_key_len(logical_types, cells) {
+        let key_len = match encoded_key_len(lanes, cells) {
             Ok(key_len) => key_len,
             Err(error) => return Err(self.poison(error)),
         };
@@ -268,20 +318,25 @@ fn entry_key<'arena>(arena: &'arena [u8], entry: &GroupEntry) -> &'arena [u8] {
 }
 
 fn encoded_key_len(
-    logical_types: &[SegmentV2LogicalType],
+    lanes: &[CanonicalGroupLane<'_>],
     cells: &[SegmentV2Cell],
 ) -> Result<usize, GroupStateError> {
-    if logical_types.is_empty() || logical_types.len() != cells.len() {
+    if lanes.is_empty() || lanes.len() != cells.len() {
         return Err(GroupStateError::InputShape);
     }
-    logical_types
+    lanes
         .iter()
         .zip(cells)
-        .try_fold(0_usize, |total, (logical_type, cell)| {
+        .try_fold(0_usize, |total, (lane, cell)| {
             let value_len = match cell {
-                SegmentV2Cell::Missing | SegmentV2Cell::Null => NO_VALUE_BYTES.len(),
+                SegmentV2Cell::Missing | SegmentV2Cell::Null if lane.optional => {
+                    NO_VALUE_BYTES.len()
+                }
+                SegmentV2Cell::Missing | SegmentV2Cell::Null => {
+                    return Err(GroupStateError::UnexpectedNoValue);
+                }
                 SegmentV2Cell::Value(value) => {
-                    if !logical_type.accepts(value) {
+                    if !lane.logical_type.accepts(value) {
                         return Err(GroupStateError::TypeMismatch);
                     }
                     canonical_value_encoded_len(value).map_err(|_| GroupStateError::InputShape)?
@@ -319,23 +374,23 @@ fn append_key(arena: &mut Vec<u8>, cells: &[SegmentV2Cell]) -> Result<(), GroupS
 
 pub(super) struct CanonicalGroupLeafBuilder<'schema> {
     identity: CanonicalPartialIdentity,
-    logical_types: &'schema [SegmentV2LogicalType],
+    lanes: &'schema [CanonicalGroupLane<'schema>],
     owner: BoundedGroupOwner,
-    next_row_ordinal: u16,
+    next_row_ordinal: u32,
 }
 
 impl<'schema> CanonicalGroupLeafBuilder<'schema> {
     pub(super) fn new(
         identity: CanonicalPartialIdentity,
-        logical_types: &'schema [SegmentV2LogicalType],
+        lanes: &'schema [CanonicalGroupLane<'schema>],
         bounds: CanonicalGroupBounds,
     ) -> Result<Self, GroupStateError> {
-        if logical_types.is_empty() {
+        if lanes.is_empty() {
             return Err(GroupStateError::InputShape);
         }
         Ok(Self {
             identity,
-            logical_types,
+            lanes,
             owner: BoundedGroupOwner::new(bounds)?,
             next_row_ordinal: 0,
         })
@@ -343,10 +398,15 @@ impl<'schema> CanonicalGroupLeafBuilder<'schema> {
 
     pub(super) fn push_row(
         &mut self,
-        row_ordinal: u16,
+        row_ordinal: u32,
         cells: &[SegmentV2Cell],
+        work: &mut GroupWorkBudget,
     ) -> Result<(), GroupStateError> {
         self.owner.ensure_live()?;
+        work.charge(1)?;
+        if self.next_row_ordinal >= MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1 {
+            return Err(self.owner.poison(GroupStateError::RowBoundExceeded));
+        }
         if row_ordinal != self.next_row_ordinal {
             return Err(self.owner.poison(GroupStateError::RowOrder));
         }
@@ -354,7 +414,7 @@ impl<'schema> CanonicalGroupLeafBuilder<'schema> {
             Some(next) => next,
             None => return Err(self.owner.poison(GroupStateError::ArithmeticOverflow)),
         };
-        self.owner.admit_cells(self.logical_types, cells, 1)?;
+        self.owner.admit_cells(self.lanes, cells, 1)?;
         self.next_row_ordinal = next;
         Ok(())
     }
@@ -368,7 +428,7 @@ impl<'schema> CanonicalGroupLeafBuilder<'schema> {
         self.owner.sort_canonical();
         Ok(FinalizedGroupLeaf {
             identity: self.identity,
-            logical_types: self.logical_types,
+            lanes: self.lanes,
             owner: self.owner,
         })
     }
@@ -376,7 +436,7 @@ impl<'schema> CanonicalGroupLeafBuilder<'schema> {
 
 pub(super) struct FinalizedGroupLeaf<'schema> {
     identity: CanonicalPartialIdentity,
-    logical_types: &'schema [SegmentV2LogicalType],
+    lanes: &'schema [CanonicalGroupLane<'schema>],
     owner: BoundedGroupOwner,
 }
 
@@ -392,41 +452,64 @@ impl FinalizedGroupLeaf<'_> {
 }
 
 pub(super) struct CanonicalGroupMerge<'schema, 'inventory> {
-    logical_types: &'schema [SegmentV2LogicalType],
+    lanes: &'schema [CanonicalGroupLane<'schema>],
     inventory: &'inventory [CanonicalPartialIdentity],
     cursor: usize,
-    owner: BoundedGroupOwner,
+    owner: Option<BoundedGroupOwner>,
+    poisoned: bool,
 }
 
 impl<'schema, 'inventory> CanonicalGroupMerge<'schema, 'inventory> {
     pub(super) fn new(
-        logical_types: &'schema [SegmentV2LogicalType],
+        lanes: &'schema [CanonicalGroupLane<'schema>],
         inventory: &'inventory [CanonicalPartialIdentity],
         bounds: CanonicalGroupBounds,
+        work: &mut GroupWorkBudget,
     ) -> Result<Self, GroupStateError> {
-        if logical_types.is_empty() || !valid_inventory(inventory) {
-            return Err(GroupStateError::InvalidInventory);
+        if lanes.is_empty() {
+            return Err(GroupStateError::InputShape);
         }
+        validate_inventory(inventory, work)?;
+        let owner = if inventory.is_empty() {
+            None
+        } else {
+            Some(BoundedGroupOwner::new(bounds)?)
+        };
         Ok(Self {
-            logical_types,
+            lanes,
             inventory,
             cursor: 0,
-            owner: BoundedGroupOwner::new(bounds)?,
+            owner,
+            poisoned: false,
         })
     }
 
     pub(super) fn merge_leaf(
         &mut self,
         leaf: FinalizedGroupLeaf<'_>,
+        work: &mut GroupWorkBudget,
     ) -> Result<(), GroupStateError> {
-        self.owner.ensure_live()?;
+        if self.poisoned {
+            return Err(GroupStateError::Poisoned);
+        }
         if self.inventory.get(self.cursor) != Some(&leaf.identity) {
+            work.charge(self.inventory.len().max(1))?;
             let error = classify_mismatch(self.inventory, self.cursor, leaf.identity);
-            return Err(self.owner.poison(error));
+            self.poison();
+            return Err(error);
         }
-        if self.logical_types != leaf.logical_types {
-            return Err(self.owner.poison(GroupStateError::IncompatibleLeaf));
+        let merge_work = self
+            .lanes
+            .len()
+            .checked_add(leaf.owner.entries.len())
+            .ok_or(GroupStateError::WorkBoundExceeded)?
+            .max(1);
+        work.charge(merge_work)?;
+        if self.lanes != leaf.lanes {
+            self.poison();
+            return Err(GroupStateError::IncompatibleLeaf);
         }
+        let owner = self.owner.as_mut().ok_or(GroupStateError::ExcessLeaf)?;
         for index in 0..leaf.owner.entries.len() {
             let key = leaf
                 .owner
@@ -436,45 +519,59 @@ impl<'schema, 'inventory> CanonicalGroupMerge<'schema, 'inventory> {
                 .owner
                 .count(index)
                 .ok_or(GroupStateError::IncompatibleLeaf)?;
-            self.owner.admit_encoded(key, count)?;
+            if let Err(error) = owner.admit_encoded(key, count) {
+                self.poisoned = true;
+                return Err(error);
+            }
         }
         self.cursor += 1;
         Ok(())
     }
 
     pub(super) fn finish(mut self) -> Result<CanonicalGroups, GroupStateError> {
-        self.owner.ensure_live()?;
-        if self.cursor != self.inventory.len() {
-            return Err(self.owner.poison(GroupStateError::InventoryOmission));
+        if self.poisoned {
+            return Err(GroupStateError::Poisoned);
         }
-        self.owner.sort_canonical();
+        if self.cursor != self.inventory.len() {
+            self.poison();
+            return Err(GroupStateError::InventoryOmission);
+        }
+        if let Some(owner) = self.owner.as_mut() {
+            owner.ensure_live()?;
+            owner.sort_canonical();
+        }
         Ok(CanonicalGroups { owner: self.owner })
+    }
+
+    fn poison(&mut self) {
+        if let Some(owner) = self.owner.as_mut() {
+            owner.poisoned = true;
+            owner.entries.clear();
+            owner.arena.clear();
+        }
+        self.poisoned = true;
     }
 }
 
 pub(super) struct CanonicalGroups {
-    owner: BoundedGroupOwner,
+    owner: Option<BoundedGroupOwner>,
 }
 
-impl CanonicalGroups {
-    #[cfg(test)]
-    fn rows_for_test(&self) -> Vec<(Vec<u8>, u64)> {
-        (0..self.owner.entries.len())
-            .map(|index| {
-                (
-                    self.owner.key(index).expect("sealed index").to_vec(),
-                    self.owner.count(index).expect("sealed index"),
-                )
-            })
-            .collect()
+fn validate_inventory(
+    inventory: &[CanonicalPartialIdentity],
+    work: &mut GroupWorkBudget,
+) -> Result<(), GroupStateError> {
+    if inventory.len() > MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1 as usize {
+        return Err(GroupStateError::InventoryBoundExceeded);
     }
-}
-
-fn valid_inventory(inventory: &[CanonicalPartialIdentity]) -> bool {
-    if inventory.is_empty() || inventory.first().is_some_and(|id| id.batch_ordinal() != 0) {
-        return false;
+    work.charge(inventory.len())?;
+    if inventory.is_empty() {
+        return Ok(());
     }
-    inventory.windows(2).all(|pair| {
+    if inventory.first().is_some_and(|id| id.batch_ordinal() != 0) {
+        return Err(GroupStateError::InvalidInventory);
+    }
+    let valid = inventory.windows(2).all(|pair| {
         let previous = pair[0];
         let next = pair[1];
         if next <= previous {
@@ -487,7 +584,12 @@ fn valid_inventory(inventory: &[CanonicalPartialIdentity]) -> bool {
         } else {
             next.batch_ordinal() == 0
         }
-    })
+    });
+    if valid {
+        Ok(())
+    } else {
+        Err(GroupStateError::InvalidInventory)
+    }
 }
 
 fn classify_mismatch(
@@ -495,25 +597,30 @@ fn classify_mismatch(
     cursor: usize,
     actual: CanonicalPartialIdentity,
 ) -> GroupStateError {
-    if inventory[..cursor].contains(&actual) {
+    let mut seen_before = false;
+    let mut seen_after = false;
+    let mut root_exists = false;
+    let mut segment_exists = false;
+    for (index, identity) in inventory.iter().enumerate() {
+        seen_before |= index < cursor && *identity == actual;
+        seen_after |= index > cursor && *identity == actual;
+        root_exists |= identity.root_inventory_ordinal() == actual.root_inventory_ordinal();
+        segment_exists |= identity.root_inventory_ordinal() == actual.root_inventory_ordinal()
+            && identity.segment_id() == actual.segment_id();
+    }
+    if seen_before {
         return GroupStateError::DuplicateOrReorderedLeaf;
     }
     if cursor >= inventory.len() {
         return GroupStateError::ExcessLeaf;
     }
-    if inventory[cursor + 1..].contains(&actual) {
+    if seen_after {
         return GroupStateError::InventoryGap;
     }
-    if !inventory
-        .iter()
-        .any(|id| id.root_inventory_ordinal() == actual.root_inventory_ordinal())
-    {
+    if !root_exists {
         return GroupStateError::ForeignRootInventory;
     }
-    if !inventory.iter().any(|id| {
-        id.root_inventory_ordinal() == actual.root_inventory_ordinal()
-            && id.segment_id() == actual.segment_id()
-    }) {
+    if !segment_exists {
         return GroupStateError::ForeignSegment;
     }
     match actual.cmp(&inventory[cursor]) {
@@ -525,7 +632,8 @@ fn classify_mismatch(
 #[cfg(test)]
 mod tests {
     use super::{
-        CanonicalGroupBounds, CanonicalGroupLeafBuilder, CanonicalGroupMerge, GroupStateError,
+        CanonicalGroupBounds, CanonicalGroupLane, CanonicalGroupLeafBuilder, CanonicalGroupMerge,
+        CanonicalGroups, GroupStateError, GroupWorkBudget, MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1,
         MAX_AGGREGATE_DISTINCT_VALUES_V1, MAX_AGGREGATE_STATE_BYTES_V1,
     };
     use crate::batch::aggregate::CanonicalPartialIdentity;
@@ -542,6 +650,15 @@ mod tests {
     }
     fn bounds(groups: u16, key: u32, state: u32) -> CanonicalGroupBounds {
         CanonicalGroupBounds::new(groups, key, state).expect("valid bounds")
+    }
+    fn required(logical_type: &SegmentV2LogicalType) -> CanonicalGroupLane<'_> {
+        CanonicalGroupLane::new(logical_type, false)
+    }
+    fn optional(logical_type: &SegmentV2LogicalType) -> CanonicalGroupLane<'_> {
+        CanonicalGroupLane::new(logical_type, true)
+    }
+    fn work() -> GroupWorkBudget {
+        GroupWorkBudget::new(MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1).expect("global work ceiling")
     }
     fn oracle_key(cells: &[SegmentV2Cell]) -> Vec<u8> {
         let mut key = Vec::new();
@@ -563,16 +680,29 @@ mod tests {
         }
         groups.into_iter().collect()
     }
+    fn group_rows(groups: &CanonicalGroups) -> Vec<(Vec<u8>, u64)> {
+        groups.owner.as_ref().map_or_else(Vec::new, |owner| {
+            (0..owner.entries.len())
+                .map(|index| {
+                    (
+                        owner.key(index).expect("sealed index").to_vec(),
+                        owner.count(index).expect("sealed index"),
+                    )
+                })
+                .collect()
+        })
+    }
     fn leaf<'schema>(
         id: CanonicalPartialIdentity,
-        schema: &'schema [SegmentV2LogicalType],
+        schema: &'schema [CanonicalGroupLane<'schema>],
         rows: &[Vec<SegmentV2Cell>],
     ) -> super::FinalizedGroupLeaf<'schema> {
         let mut builder =
             CanonicalGroupLeafBuilder::new(id, schema, bounds(16, 256, 4_096)).expect("builder");
+        let mut work = work();
         for (ordinal, row) in rows.iter().enumerate() {
             builder
-                .push_row(ordinal as u16, row)
+                .push_row(ordinal as u32, row, &mut work)
                 .expect("canonical row");
         }
         builder.finish().expect("leaf")
@@ -580,7 +710,8 @@ mod tests {
 
     #[test]
     fn canonical_group_leaf_normalizes_missing_and_null_without_colliding_with_values() {
-        let schema = [SegmentV2LogicalType::U64];
+        let logical_type = SegmentV2LogicalType::U64;
+        let schema = [optional(&logical_type)];
         let rows = [
             vec![SegmentV2Cell::Missing],
             vec![SegmentV2Cell::Null],
@@ -593,8 +724,13 @@ mod tests {
         let mut wrong_type =
             CanonicalGroupLeafBuilder::new(identity(0, 7, 0), &schema, bounds(3, 64, 256))
                 .expect("owner");
+        let mut work = work();
         assert_eq!(
-            wrong_type.push_row(0, &[SegmentV2Cell::Value(CanonicalValue::I64(0))]),
+            wrong_type.push_row(
+                0,
+                &[SegmentV2Cell::Value(CanonicalValue::I64(0))],
+                &mut work,
+            ),
             Err(GroupStateError::TypeMismatch)
         );
         assert!(wrong_type.is_poisoned());
@@ -603,19 +739,24 @@ mod tests {
 
     #[test]
     fn independent_group_key_bounds_are_exact_and_plus_one_refuses_atomically() {
-        let schema = [SegmentV2LogicalType::U64];
+        let logical_type = SegmentV2LogicalType::U64;
+        let schema = [required(&logical_type)];
         let row = [SegmentV2Cell::Value(CanonicalValue::U64(7))];
         let exact = u32::try_from(oracle_key(&row).len()).expect("length");
         let mut accepted =
             CanonicalGroupLeafBuilder::new(identity(0, 1, 0), &schema, bounds(1, exact, 256))
                 .expect("owner");
-        accepted.push_row(0, &row).expect("exact");
+        let mut accepted_work = work();
+        accepted
+            .push_row(0, &row, &mut accepted_work)
+            .expect("exact");
         assert_eq!(accepted.finish().expect("leaf").group_count(), 1);
         let mut rejected =
             CanonicalGroupLeafBuilder::new(identity(0, 1, 0), &schema, bounds(1, exact - 1, 256))
                 .expect("owner");
+        let mut rejected_work = work();
         assert_eq!(
-            rejected.push_row(0, &row),
+            rejected.push_row(0, &row, &mut rejected_work),
             Err(GroupStateError::KeyBoundExceeded)
         );
         assert!(rejected.is_poisoned());
@@ -623,7 +764,8 @@ mod tests {
 
     #[test]
     fn independent_group_count_and_state_bounds_are_exact_and_plus_one_refuses() {
-        let schema = [SegmentV2LogicalType::U64];
+        let logical_type = SegmentV2LogicalType::U64;
+        let schema = [required(&logical_type)];
         let encoded_key_bytes = oracle_key(&[SegmentV2Cell::Value(CanonicalValue::U64(1))]);
         let key_bound = u32::try_from(encoded_key_bytes.len()).expect("small key");
         let group_state =
@@ -635,15 +777,28 @@ mod tests {
             bounds(2, key_bound, group_state),
         )
         .expect("owner");
+        let mut owner_work = work();
         assert_eq!(owner.owner.allocated_state_bytes(), group_state as usize);
         owner
-            .push_row(0, &[SegmentV2Cell::Value(CanonicalValue::U64(1))])
+            .push_row(
+                0,
+                &[SegmentV2Cell::Value(CanonicalValue::U64(1))],
+                &mut owner_work,
+            )
             .expect("one");
         owner
-            .push_row(1, &[SegmentV2Cell::Value(CanonicalValue::U64(2))])
+            .push_row(
+                1,
+                &[SegmentV2Cell::Value(CanonicalValue::U64(2))],
+                &mut owner_work,
+            )
             .expect("two");
         assert_eq!(
-            owner.push_row(2, &[SegmentV2Cell::Value(CanonicalValue::U64(3))]),
+            owner.push_row(
+                2,
+                &[SegmentV2Cell::Value(CanonicalValue::U64(3))],
+                &mut owner_work,
+            ),
             Err(GroupStateError::GroupBoundExceeded)
         );
         assert!(owner.owner.entries.is_empty() && owner.owner.arena.is_empty());
@@ -657,11 +812,20 @@ mod tests {
             bounds(1, exact_key_bytes.len() as u32, exact_state),
         )
         .expect("exact state owner");
+        let mut exact_work = work();
         exact_state_owner
-            .push_row(0, &[SegmentV2Cell::Value(CanonicalValue::U64(9))])
+            .push_row(
+                0,
+                &[SegmentV2Cell::Value(CanonicalValue::U64(9))],
+                &mut exact_work,
+            )
             .expect("exact retained state");
         exact_state_owner
-            .push_row(1, &[SegmentV2Cell::Value(CanonicalValue::U64(9))])
+            .push_row(
+                1,
+                &[SegmentV2Cell::Value(CanonicalValue::U64(9))],
+                &mut exact_work,
+            )
             .expect("duplicate uses the reserved scratch key");
         assert_eq!(
             exact_state_owner
@@ -676,8 +840,13 @@ mod tests {
             bounds(1, exact_key_bytes.len() as u32, exact_state - 1),
         )
         .expect("one-byte-short owner");
+        let mut short_work = work();
         assert_eq!(
-            plus_one_state.push_row(0, &[SegmentV2Cell::Value(CanonicalValue::U64(9))]),
+            plus_one_state.push_row(
+                0,
+                &[SegmentV2Cell::Value(CanonicalValue::U64(9))],
+                &mut short_work,
+            ),
             Err(GroupStateError::StateBoundExceeded)
         );
         assert!(plus_one_state.owner.entries.is_empty() && plus_one_state.owner.arena.is_empty());
@@ -699,7 +868,8 @@ mod tests {
 
     #[test]
     fn canonical_framing_prevents_component_collisions_and_row_order_is_sealed() {
-        let schema = [SegmentV2LogicalType::String, SegmentV2LogicalType::String];
+        let string_type = SegmentV2LogicalType::String;
+        let schema = [required(&string_type), required(&string_type)];
         let rows = [
             vec![
                 SegmentV2Cell::Value(CanonicalValue::string("ab").expect("string")),
@@ -716,8 +886,9 @@ mod tests {
         let mut reordered =
             CanonicalGroupLeafBuilder::new(identity(0, 1, 0), &schema, bounds(2, 128, 512))
                 .expect("owner");
+        let mut reordered_work = work();
         assert_eq!(
-            reordered.push_row(1, &rows[0]),
+            reordered.push_row(1, &rows[0], &mut reordered_work),
             Err(GroupStateError::RowOrder)
         );
         assert!(reordered.is_poisoned());
@@ -769,32 +940,37 @@ mod tests {
             ),
         ];
         for (logical_type, value) in cases {
-            let schema = [logical_type];
+            let schema = [optional(&logical_type)];
             let rows = vec![
                 vec![SegmentV2Cell::Missing],
                 vec![SegmentV2Cell::Null],
                 vec![SegmentV2Cell::Value(value)],
             ];
             let inventory = [identity(0, 4, 0)];
-            let mut merged = CanonicalGroupMerge::new(&schema, &inventory, bounds(4, 256, 1_024))
-                .expect("merge");
+            let mut merge_work = work();
+            let mut merged = CanonicalGroupMerge::new(
+                &schema,
+                &inventory,
+                bounds(4, 256, 1_024),
+                &mut merge_work,
+            )
+            .expect("merge");
             merged
-                .merge_leaf(leaf(inventory[0], &schema, &rows))
+                .merge_leaf(leaf(inventory[0], &schema, &rows), &mut merge_work)
                 .expect("leaf");
-            assert_eq!(
-                merged.finish().expect("groups").rows_for_test(),
-                oracle(&rows)
-            );
+            assert_eq!(group_rows(&merged.finish().expect("groups")), oracle(&rows));
         }
 
         let other_decimal = DecimalSpec::new(9, 2).expect("other decimal");
-        let schema = [SegmentV2LogicalType::Money {
+        let money_type = SegmentV2LogicalType::Money {
             currency: usd,
             amount: decimal,
-        }];
+        };
+        let schema = [required(&money_type)];
         let mut mismatched =
             CanonicalGroupLeafBuilder::new(identity(0, 4, 0), &schema, bounds(2, 128, 512))
                 .expect("owner");
+        let mut mismatch_work = work();
         assert_eq!(
             mismatched.push_row(
                 0,
@@ -802,6 +978,7 @@ mod tests {
                     usd,
                     Decimal::new(other_decimal, 1).expect("amount"),
                 )))],
+                &mut mismatch_work,
             ),
             Err(GroupStateError::TypeMismatch)
         );
@@ -809,7 +986,9 @@ mod tests {
 
     #[test]
     fn canonical_partition_merge_matches_independent_scalar_oracle() {
-        let schema = [SegmentV2LogicalType::U64, SegmentV2LogicalType::String];
+        let u64_type = SegmentV2LogicalType::U64;
+        let string_type = SegmentV2LogicalType::String;
+        let schema = [optional(&u64_type), optional(&string_type)];
         let rows = vec![
             vec![SegmentV2Cell::Missing, SegmentV2Cell::Null],
             vec![SegmentV2Cell::Null, SegmentV2Cell::Missing],
@@ -834,14 +1013,23 @@ mod tests {
                 3 => vec![identity(0, 8, 0), identity(0, 9, 0), identity(1, 1, 0)],
                 _ => unreachable!("closed test partitions"),
             };
-            let mut merged = CanonicalGroupMerge::new(&schema, &inventory, bounds(16, 256, 4_096))
-                .expect("merge");
+            let mut merge_work = work();
+            let mut merged = CanonicalGroupMerge::new(
+                &schema,
+                &inventory,
+                bounds(16, 256, 4_096),
+                &mut merge_work,
+            )
+            .expect("merge");
             for (batch, window) in cuts.windows(2).enumerate() {
                 merged
-                    .merge_leaf(leaf(inventory[batch], &schema, &rows[window[0]..window[1]]))
+                    .merge_leaf(
+                        leaf(inventory[batch], &schema, &rows[window[0]..window[1]]),
+                        &mut merge_work,
+                    )
                     .expect("merge leaf");
             }
-            assert_eq!(merged.finish().expect("complete").rows_for_test(), expected);
+            assert_eq!(group_rows(&merged.finish().expect("complete")), expected);
         }
 
         for permutation in [[0, 1, 2, 3, 4, 5], [5, 4, 3, 2, 1, 0], [2, 0, 5, 1, 4, 3]] {
@@ -850,20 +1038,27 @@ mod tests {
                 .map(|index| rows[index].clone())
                 .collect::<Vec<_>>();
             let inventory = [identity(0, 8, 0), identity(0, 9, 0), identity(1, 1, 0)];
-            let mut merged = CanonicalGroupMerge::new(&schema, &inventory, bounds(16, 256, 4_096))
-                .expect("merge");
+            let mut merge_work = work();
+            let mut merged = CanonicalGroupMerge::new(
+                &schema,
+                &inventory,
+                bounds(16, 256, 4_096),
+                &mut merge_work,
+            )
+            .expect("merge");
             for (batch, partition) in permuted.chunks(2).enumerate() {
                 merged
-                    .merge_leaf(leaf(inventory[batch], &schema, partition))
+                    .merge_leaf(leaf(inventory[batch], &schema, partition), &mut merge_work)
                     .expect("canonical partition permutation");
             }
-            assert_eq!(merged.finish().expect("complete").rows_for_test(), expected);
+            assert_eq!(group_rows(&merged.finish().expect("complete")), expected);
         }
     }
 
     #[test]
     fn merge_refuses_duplicate_gap_foreign_excess_and_omission_without_partial_state() {
-        let schema = [SegmentV2LogicalType::U64];
+        let logical_type = SegmentV2LogicalType::U64;
+        let schema = [required(&logical_type)];
         let rows = [vec![SegmentV2Cell::Value(CanonicalValue::U64(1))]];
         let inventory = [identity(0, 1, 0), identity(0, 1, 1)];
         for (actual, expected) in [
@@ -871,63 +1066,96 @@ mod tests {
             (identity(1, 1, 0), GroupStateError::ForeignRootInventory),
             (identity(0, 2, 0), GroupStateError::ForeignSegment),
         ] {
+            let mut merge_work = work();
             let mut merge =
-                CanonicalGroupMerge::new(&schema, &inventory, bounds(4, 64, 512)).expect("merge");
+                CanonicalGroupMerge::new(&schema, &inventory, bounds(4, 64, 512), &mut merge_work)
+                    .expect("merge");
             assert_eq!(
-                merge.merge_leaf(leaf(actual, &schema, &rows)),
+                merge.merge_leaf(leaf(actual, &schema, &rows), &mut merge_work),
                 Err(expected)
             );
-            assert!(merge.owner.entries.is_empty());
+            assert!(merge.owner.as_ref().expect("owner").entries.is_empty());
             assert_eq!(merge.finish().err(), Some(GroupStateError::Poisoned));
         }
+        let mut duplicate_work = work();
         let mut duplicate =
-            CanonicalGroupMerge::new(&schema, &inventory, bounds(4, 64, 512)).expect("merge");
+            CanonicalGroupMerge::new(&schema, &inventory, bounds(4, 64, 512), &mut duplicate_work)
+                .expect("merge");
         duplicate
-            .merge_leaf(leaf(inventory[0], &schema, &rows))
+            .merge_leaf(leaf(inventory[0], &schema, &rows), &mut duplicate_work)
             .expect("first");
         assert_eq!(
-            duplicate.merge_leaf(leaf(inventory[0], &schema, &rows)),
+            duplicate.merge_leaf(leaf(inventory[0], &schema, &rows), &mut duplicate_work,),
             Err(GroupStateError::DuplicateOrReorderedLeaf)
         );
-        assert!(duplicate.owner.entries.is_empty());
+        assert!(duplicate.owner.as_ref().expect("owner").entries.is_empty());
         let complete = [identity(0, 1, 0)];
+        let mut excess_work = work();
         let mut excess =
-            CanonicalGroupMerge::new(&schema, &complete, bounds(4, 64, 512)).expect("merge");
+            CanonicalGroupMerge::new(&schema, &complete, bounds(4, 64, 512), &mut excess_work)
+                .expect("merge");
         excess
-            .merge_leaf(leaf(complete[0], &schema, &rows))
+            .merge_leaf(leaf(complete[0], &schema, &rows), &mut excess_work)
             .expect("first");
         assert_eq!(
-            excess.merge_leaf(leaf(identity(0, 1, 1), &schema, &rows)),
+            excess.merge_leaf(leaf(identity(0, 1, 1), &schema, &rows), &mut excess_work,),
             Err(GroupStateError::ExcessLeaf)
         );
-        assert!(excess.owner.entries.is_empty());
+        assert!(excess.owner.as_ref().expect("owner").entries.is_empty());
+        let mut omission_work = work();
         let omission =
-            CanonicalGroupMerge::new(&schema, &inventory, bounds(4, 64, 512)).expect("merge");
+            CanonicalGroupMerge::new(&schema, &inventory, bounds(4, 64, 512), &mut omission_work)
+                .expect("merge");
         assert_eq!(
             omission.finish().err(),
             Some(GroupStateError::InventoryOmission)
         );
 
-        let other_schema = [SegmentV2LogicalType::I64];
+        let other_type = SegmentV2LogicalType::I64;
+        let other_schema = [required(&other_type)];
         let other_rows = [vec![SegmentV2Cell::Value(CanonicalValue::I64(1))]];
-        let mut incompatible =
-            CanonicalGroupMerge::new(&schema, &complete, bounds(4, 64, 512)).expect("merge");
+        let mut incompatible_work = work();
+        let mut incompatible = CanonicalGroupMerge::new(
+            &schema,
+            &complete,
+            bounds(4, 64, 512),
+            &mut incompatible_work,
+        )
+        .expect("merge");
         assert_eq!(
-            incompatible.merge_leaf(leaf(complete[0], &other_schema, &other_rows)),
+            incompatible.merge_leaf(
+                leaf(complete[0], &other_schema, &other_rows),
+                &mut incompatible_work,
+            ),
             Err(GroupStateError::IncompatibleLeaf)
         );
-        assert!(incompatible.owner.entries.is_empty());
+        assert!(
+            incompatible
+                .owner
+                .as_ref()
+                .expect("owner")
+                .entries
+                .is_empty()
+        );
     }
 
     #[test]
     fn malformed_inventory_and_arithmetic_overflow_fail_closed() {
-        let schema = [SegmentV2LogicalType::U64];
+        let logical_type = SegmentV2LogicalType::U64;
+        let schema = [required(&logical_type)];
         let duplicate = [identity(0, 1, 0), identity(0, 1, 0)];
         let gap = [identity(0, 1, 0), identity(0, 1, 2)];
         let nonzero_first = [identity(0, 1, 1)];
         for inventory in [&duplicate[..], &gap, &nonzero_first] {
+            let mut invalid_work = work();
             assert_eq!(
-                CanonicalGroupMerge::new(&schema, inventory, bounds(4, 64, 512)).err(),
+                CanonicalGroupMerge::new(
+                    &schema,
+                    inventory,
+                    bounds(4, 64, 512),
+                    &mut invalid_work,
+                )
+                .err(),
                 Some(GroupStateError::InvalidInventory)
             );
         }
@@ -941,19 +1169,145 @@ mod tests {
     }
 
     #[test]
+    fn row_inventory_and_mismatch_work_are_exact_bounded_and_single_attempt() {
+        assert_eq!(
+            GroupWorkBudget::new(0),
+            Err(GroupStateError::InvalidWorkBound)
+        );
+        assert_eq!(
+            GroupWorkBudget::new(MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1 + 1),
+            Err(GroupStateError::InvalidWorkBound)
+        );
+
+        let logical_type = SegmentV2LogicalType::U64;
+        let schema = [required(&logical_type)];
+        let maximum_inventory = (0..MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1)
+            .map(|batch| identity(0, 1, batch))
+            .collect::<Vec<_>>();
+        let mut exact_inventory_work =
+            GroupWorkBudget::new(MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1).expect("maximum work");
+        CanonicalGroupMerge::new(
+            &schema,
+            &maximum_inventory,
+            bounds(1, 16, 64),
+            &mut exact_inventory_work,
+        )
+        .expect("exact maximum inventory");
+        assert_eq!(exact_inventory_work.remaining(), 0);
+
+        let mut excessive_inventory = maximum_inventory;
+        excessive_inventory.push(identity(0, 1, MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1));
+        let mut untouched_work = GroupWorkBudget::new(1).expect("one work");
+        assert_eq!(
+            CanonicalGroupMerge::new(
+                &schema,
+                &excessive_inventory,
+                bounds(1, 16, 64),
+                &mut untouched_work,
+            )
+            .err(),
+            Some(GroupStateError::InventoryBoundExceeded)
+        );
+        assert_eq!(untouched_work.remaining(), 1);
+
+        let malformed = [identity(0, 1, 0), identity(0, 1, 2)];
+        let mut one_short_validation = GroupWorkBudget::new(1).expect("one work");
+        assert_eq!(
+            CanonicalGroupMerge::new(
+                &schema,
+                &malformed,
+                bounds(1, 16, 64),
+                &mut one_short_validation,
+            )
+            .err(),
+            Some(GroupStateError::WorkBoundExceeded)
+        );
+        assert_eq!(one_short_validation.remaining(), 1);
+
+        let inventory = [identity(0, 2, 0), identity(0, 2, 1)];
+        let rows = [vec![SegmentV2Cell::Value(CanonicalValue::U64(1))]];
+        let mut mismatch_work = GroupWorkBudget::new(6).expect("bounded work");
+        let mut mismatch =
+            CanonicalGroupMerge::new(&schema, &inventory, bounds(1, 16, 64), &mut mismatch_work)
+                .expect("merge");
+        assert_eq!(mismatch_work.remaining(), 4);
+        assert_eq!(
+            mismatch.merge_leaf(leaf(inventory[1], &schema, &rows), &mut mismatch_work,),
+            Err(GroupStateError::InventoryGap)
+        );
+        assert_eq!(mismatch_work.remaining(), 2);
+        let remaining_after_scan = mismatch_work.remaining();
+        assert_eq!(
+            mismatch.merge_leaf(leaf(inventory[1], &schema, &rows), &mut mismatch_work,),
+            Err(GroupStateError::Poisoned)
+        );
+        assert_eq!(mismatch_work.remaining(), remaining_after_scan);
+
+        let key_len = oracle_key(&rows[0]).len();
+        let exact_state =
+            u32::try_from(size_of::<super::GroupEntry>() + 2 * key_len).expect("small state");
+        let mut builder = CanonicalGroupLeafBuilder::new(
+            identity(0, 3, 0),
+            &schema,
+            bounds(1, key_len as u32, exact_state),
+        )
+        .expect("builder");
+        let mut exact_row_work =
+            GroupWorkBudget::new(MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1).expect("maximum work");
+        for row in 0..MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1 {
+            builder
+                .push_row(row, &rows[0], &mut exact_row_work)
+                .expect("exact row bound");
+        }
+        assert_eq!(exact_row_work.remaining(), 0);
+        let mut one_more_work = GroupWorkBudget::new(1).expect("independent work");
+        assert_eq!(
+            builder.push_row(
+                MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1,
+                &rows[0],
+                &mut one_more_work,
+            ),
+            Err(GroupStateError::RowBoundExceeded)
+        );
+        assert_eq!(one_more_work.remaining(), 0);
+        assert!(builder.is_poisoned());
+    }
+
+    #[test]
     fn production_group_owner_has_no_per_row_owned_key_or_map() {
         let source = include_str!("group.rs");
-        let production = source.split("#[cfg(test)]").next().expect("production");
+        let production = source
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("complete production source");
         assert!(
             production.contains("arena: Vec<u8>")
                 && production.contains("entries: Vec<GroupEntry>")
         );
+        assert!(production.contains("struct CanonicalGroupMerge"));
+        assert!(production.contains("fn classify_mismatch("));
+        assert!(production.contains("if lane.optional"));
+        assert!(production.contains("work.charge(self.inventory.len().max(1))"));
+        assert!(production.contains("inventory.len() > MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1"));
+        let classifier = production
+            .split("fn classify_mismatch(")
+            .nth(1)
+            .expect("classifier")
+            .split("\n}")
+            .next()
+            .expect("classifier body");
+        assert_eq!(classifier.matches("for (").count(), 1);
+        assert!(!classifier.contains(".contains(&actual)"));
+        assert!(!classifier.contains(".any("));
+        assert_eq!(production.matches(": Vec<").count(), 2);
         for forbidden in [
             "Vec<CanonicalValue>",
             "Vec<SegmentV2Cell>",
             "BTreeMap",
             "HashMap",
             ".to_vec()",
+            "Vec::with_capacity",
+            ".reserve(",
         ] {
             assert!(
                 !production.contains(forbidden),
@@ -970,7 +1324,9 @@ mod tests {
         let mut zero_work = super::GroupWorkBudget::new(1).expect("work ceiling");
         let empty = CanonicalGroupMerge::new(&required, &[], bounds(1, 16, 64), &mut zero_work)
             .expect("exact empty inventory");
-        assert_eq!(empty.finish().expect("empty groups").rows_for_test(), []);
+        let empty = empty.finish().expect("empty groups");
+        assert_eq!(group_rows(&empty), []);
+        assert!(empty.owner.is_none());
         assert_eq!(zero_work.remaining(), 1);
 
         let mut work = super::GroupWorkBudget::new(1).expect("work ceiling");
@@ -980,6 +1336,20 @@ mod tests {
         assert_eq!(
             required_leaf.push_row(0, &[SegmentV2Cell::Null], &mut work),
             Err(GroupStateError::UnexpectedNoValue)
+        );
+        assert_eq!(work.remaining(), 0);
+        assert!(required_leaf.owner.entries.is_empty() && required_leaf.owner.arena.is_empty());
+
+        let mut missing_work = super::GroupWorkBudget::new(1).expect("work ceiling");
+        let mut required_missing =
+            CanonicalGroupLeafBuilder::new(identity(0, 1, 0), &required, bounds(1, 16, 64))
+                .expect("required lane");
+        assert_eq!(
+            required_missing.push_row(0, &[SegmentV2Cell::Missing], &mut missing_work),
+            Err(GroupStateError::UnexpectedNoValue)
+        );
+        assert!(
+            required_missing.owner.entries.is_empty() && required_missing.owner.arena.is_empty()
         );
 
         let mut optional_work = super::GroupWorkBudget::new(2).expect("work ceiling");
