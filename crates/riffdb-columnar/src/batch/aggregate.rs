@@ -2791,26 +2791,34 @@ mod tests {
                 AggregatePartialError::InputShape,
             ),
         ] {
-            let valid = [SegmentV2Cell::Value(CanonicalValue::Bool(false))];
-            let invalid = [SegmentV2Cell::Value(CanonicalValue::Bool(true)), invalid];
-            let mut charge = budget(3, 64);
-            let mut builder = ExactBorrowedAggregateLeafBuilder::new(
-                id,
-                aggregate_facts(1, AggregateFieldOptionality::Required),
-                AggregateSemanticIdentityV1::Any,
-                &bool_type,
-                None,
-                &mut charge,
-            )
-            .expect("Boolean leaf");
-            builder
-                .accumulate(&valid, &mut charge)
-                .expect("valid Boolean contribution");
-            let value_before = builder.value;
-            let charge_before = charge;
-            assert_eq!(builder.accumulate(&invalid, &mut charge), Err(expected));
-            assert_eq!(builder.value, value_before);
-            assert_eq!(charge, charge_before);
+            for (semantic, valid, decisive_before_error) in [
+                (AggregateSemanticIdentityV1::Any, false, true),
+                (AggregateSemanticIdentityV1::All, true, false),
+            ] {
+                let valid = [SegmentV2Cell::Value(CanonicalValue::Bool(valid))];
+                let invalid = [
+                    SegmentV2Cell::Value(CanonicalValue::Bool(decisive_before_error)),
+                    invalid.clone(),
+                ];
+                let mut charge = budget(3, 64);
+                let mut builder = ExactBorrowedAggregateLeafBuilder::new(
+                    id,
+                    aggregate_facts(1, AggregateFieldOptionality::Required),
+                    semantic,
+                    &bool_type,
+                    None,
+                    &mut charge,
+                )
+                .expect("required Boolean leaf");
+                builder
+                    .accumulate(&valid, &mut charge)
+                    .expect("valid Boolean contribution");
+                let value_before = builder.value;
+                let charge_before = charge;
+                assert_eq!(builder.accumulate(&invalid, &mut charge), Err(expected));
+                assert_eq!(builder.value, value_before);
+                assert_eq!(charge, charge_before);
+            }
         }
 
         let definition = BorrowedAggregateDefinition::new(
