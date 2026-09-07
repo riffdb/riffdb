@@ -25,8 +25,12 @@ obligations:
     says: Cold startup opens no artifact and first semantic demand builds, validates, publishes, and installs only V2 without any V1 codec, artifact, prepared witness, transition, or fallback.
   - id: OBL-0209-4
     package: WP-757
-    proof: epoch_two_columnar_reset_retires_exact_v2_candidate_paths
-    says: Every reset- or retarget-born unprepared V2 candidate repeats the exact bounded final, temporary, quarantine, rename, sync, reference, and crash protocol before construction.
+    proof: epoch_two_unprepared_v2_retires_exact_candidate_paths
+    says: Every unprepared V2 candidate construction or restart repeats the exact aggregate-bounded final, temporary, quarantine, rename, sync, reference, and crash protocol before construction.
+  - id: OBL-0209-5
+    package: WP-757
+    proof: epoch_two_prepared_initial_v2_head_advance_allocates_checked_replacement
+    says: A prepared initial V2 candidate behind transaction-current head is retired only through the exact checked-next unprepared initial V2 replacement CAS and every refusal or uncertain result resolves by durable reread.
 review_triggers:
   - Tag 67, revision 1, its Protobuf declaration, descriptor, schema hash, field or enum number, payload byte, key, table, or bound would change.
   - Epoch 2 would semantically accept V1, CatchingUp, a missing or caller-selected physical fingerprint, mixed layout, or a state outside the closed table.
@@ -34,7 +38,7 @@ review_triggers:
   - V1 source, artifact bytes, filesystem dispatch, prepared witness, repository operation, fallback, or translation would remain reachable in production.
   - ADR-0200 collision cleanup would scan a parent, touch another path, adopt bytes, weaken reference proof or bounds, or omit a rename/remove/sync crash edge.
   - ADR-0195 cold registration, immediate rowless first-demand result, single worker, page-boundary cancellation, or no-demand evidence would change.
-  - Implementation would touch a production path outside Decision 9 or alter ADR-0204's 32/26/5/27 facts.
+  - Implementation would touch a production path outside Decision 10 or alter ADR-0204's 32/26/5/27 facts.
 ---
 # ADR-0209: Epoch-Two Direct Columnar V2 Control Activation
 
@@ -64,7 +68,7 @@ validation without changing or translating the retained wire record.
    bounds, fixture, table/key, and schema hash remain byte-exact. In particular wire layout value
    `1` and lifecycle value `2` remain declared only to preserve that descriptor. Epoch-2 semantic
    conversion refuses layout V1 and CatchingUp; those declarations grant no readable identity,
-   runtime variant, construction API, transition, artifact dispatch, or compatibility path.
+   semantic runtime variant, construction API, transition, artifact dispatch, or compatibility path.
 
 3. The complete epoch-2 semantic state table is:
 
@@ -107,6 +111,16 @@ validation without changing or translating the retained wire record.
    similarly choose only V2 and deterministically derive the applicable fingerprint. Their
    repository APIs accept no layout or digest. Generation exhaustion refuses before mutation.
 
+   `ReplaceAdvancedInitialV2Candidate` consumes only Building with one prepared Candidate V2 and no
+   Published, Predecessor, or failure. In one transaction it requires the complete expected control,
+   candidate fingerprint equal to the target computation, candidate incarnation equal to the
+   nonzero transaction-current history incarnation, and candidate frontier strictly below the
+   transaction-current application head. It retires that candidate and installs checked
+   `highest_generation + 1` as one unprepared Candidate V2 at BeforeFirst with the same incarnation,
+   targets, limits, and computed fingerprint; lifecycle remains Building. An unprepared, equal-head,
+   future-head, stale/mixed-incarnation, wrong-target/fingerprint, malformed, mismatched, or exhausted
+   input refuses. Applied, StateChanged, storage failure, and unknown commit resolve only by reread.
+
 7. First semantic demand rereads exact control. With no selection it captures one authoritative
    snapshot, streams the retained contiguous tail under existing bounds, writes/syncs/reopens one
    immutable V2 generation root, records its prepared witness, and publishes only at transaction-
@@ -116,7 +130,9 @@ validation without changing or translating the retained wire record.
    V1 prepared witness, Manifest V1 codec, V1 engine open/apply/checkpoint, and V1 path dispatch are
    removed. Published V2 opens only its exact validated root and never falls back.
 
-8. ADR-0200's collision protocol transposes without weakening to the V2 paths. For the exact final
+8. ADR-0200's collision protocol transposes without weakening to every unprepared V2 candidate,
+   whether fresh, reset, retargeted, failure-replaced, head-advanced, same-spec, compacted,
+   spec-change, or corruption-rebuild, and repeats before every construction or restart. For the exact final
    `generation-<sixteen lowercase hexadecimal generation>` directory and its `.tmp` sibling `P`,
    quarantine `Q` is `<P-name>.retired-before-history-<sixteen lowercase hexadecimal current
    incarnation>`. For each pair, a present Q is boundedly removed only after proving no control or
@@ -125,6 +141,25 @@ validation without changing or translating the retained wire record.
    rename, and sync edge is restart-repeatable. Symlinks, special files, escapes, excess material,
    failed reference proof, and unknown outcomes keep all gates closed. No parent scan, adoption,
    relabelling, or other path is permitted; construction starts only after both P paths are absent.
+
+   Bounds use checked arithmetic before construction and traversal. At most
+   `4096 * 4096 = 16,777,216` segment
+   files, 4,096 manifests, one root, and one in-flight member `.tmp` yield 16,781,314 regular member
+   files and 1,125,917,170,597,888 member bytes from the existing 64-MiB segment, 4-MiB manifest,
+   and 16-MiB root maxima. If `B` and `R` are the control's replay-backlog and replay-byte limits,
+   run ceiling `S = R + 4 * B * 4096 * (MAX_OBSERVATION_PAYLOAD + 36)` retains ADR-0192's checked
+   budget. At most 4,096 partition lanes add
+   `L = 4096 * 4096 * 65,536 * (MAX_PROJECTED_ROW_PAYLOAD + 36) + 4096 * 8` bytes. Scratch thus adds
+   at most `4096 + floor(S / 8)` files and `L + S` bytes because each lane/run has an eight-byte
+   header. The aggregate walker refuses above `16,785,410 + floor(S / 8)` regular files,
+   `1,125,917,170,597,888 + L + S` bytes, or two directories including its root and optional exact
+   scratch child. A 4,097th segment for one partition refuses before its file is created. Overflow
+   or platform-size conversion failure refuses without creation, traversal, rename, or deletion.
+
+   V2 construction never directly deletes or adopts a preexisting final or `.tmp` directory.
+   `TemporaryGenerationGuard`, scratch Drop, and error/cancellation cleanup leave abandoned material
+   for this protocol; only successful in-process scratch finalization removes its owned scratch
+   before ROOT-V1. Existing unselected-published-generation reclamation remains separately fenced.
 
 9. Candidate write, snapshot, replay-age/bytes/backlog, logical-equality, bound, cancellation,
    storage, sync, reopen, checksum, and root-validation failures retain the existing closed reason
@@ -135,12 +170,19 @@ validation without changing or translating the retained wire record.
    selects retry, install, failure, or continued refusal. Shutdown cancels only at the accepted
    page boundary and causes no publication, checkpoint, frontier advance, or acknowledgement.
 
+   Runtime constants `COLUMNAR_LAYOUT_VERSION_V1` and `COLUMNAR_MANIFEST_FORMAT_VERSION_V1` are
+   removed. Exact `LAYOUT_VERSION = 1` remains only as the frozen registered-definition fingerprint
+   preimage required by ADR-0190; it is not a layout identity, artifact format, or runtime selector.
+   Encoding-registry V1 and generation-root V1 remain their independently current V2 components.
+
 10. Production authority is limited to `crates/riffdb-types/src/columnar.rs`,
     `crates/riffdb-types/src/lib.rs`, `crates/riffdb-storage-api/src/columnar_control.rs`,
     `crates/riffdb-storage-redb/src/columnar_projection_control.rs`,
     `crates/riffdb-storage-redb/src/shared_ports.rs`, `crates/riffdb-columnar/src/apply.rs`,
     `crates/riffdb-columnar/src/checkpoint.rs`, `crates/riffdb-columnar/src/engine.rs`,
+    `crates/riffdb-columnar/src/definition.rs`, `crates/riffdb-columnar/src/segment_v2.rs`,
     `crates/riffdb-columnar/src/generation_root.rs`,
+    `crates/riffdb-columnar/src/generation_v2.rs`, `crates/riffdb-columnar/src/streaming_v2.rs`,
     `crates/riffdb-columnar/src/prepared_generation.rs`, `crates/riffdb-columnar/src/store.rs`,
     `crates/riffdb-columnar/src/lib.rs`, `crates/riffdb-server/src/columnar_adapter.rs`,
     `crates/riffdb-server/src/columnar_worker.rs`, and `crates/riffdb-server/src/storage.rs`.
@@ -151,7 +193,7 @@ validation without changing or translating the retained wire record.
 11. After exact acceptance, one separate governance commit adds ADR-0209 to WP-757
     `required_adrs`; narrows its control-retirement deliverable and exit gate to the Decision 3
     V2-only state table; permits only the frozen descriptor-only V1/CatchingUp declarations from
-    Decision 2; adds the four obligations above; and adds drift from Decisions 4 through 10 to its
+    Decision 2; adds the five obligations above; and adds drift from Decisions 4 through 10 to its
     human-review triggers. Dependencies, requirements, allowed paths, acceptance commands, epoch
     ceremony, tag-65 removal, changelog exception, and ADR-0204's 32/26/5/27 facts stay unchanged.
 
@@ -185,8 +227,8 @@ validation without changing or translating the retained wire record.
 
 ## Checks
 
-- The four obligations prove the closed state table, transaction-current reset, direct cold V2
-  activation, exact collision protocol, every failure/CAS outcome, and absence of V1 dispatch.
+- The five obligations prove the closed state table, transaction-current reset and head advance,
+  direct cold V2 activation, exact collision protocol, every failure/CAS outcome, and no V1 dispatch.
 - Existing ADR-0190 root/publication, ADR-0192 gate/no-fallback, ADR-0195 cold lifecycle,
   ADR-0200 reset uncertainty, and ADR-0204 epoch-first/inventory/rotation proofs remain green.
 - `scripts/check-epoch-two-inventory`, `scripts/check-version-topology`, generated and durable-schema
