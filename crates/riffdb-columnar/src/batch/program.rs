@@ -1,17 +1,17 @@
 //! Private, inert checking for one pre-generation logical V2 batch draft.
 
 use riffdb_types::{
-    ColumnarDefinitionSemanticsHashV1, FieldId, ProjectionProviderDescriptorHash, QueryPlanHash,
+    ColumnarDefinitionSemanticsHashV1, FieldId, MAX_AGGREGATE_STATE_BYTES_V1,
+    MAX_APPLICATION_QUERY_PAGE_ROWS, MAX_APPLICATION_QUERY_RESULT_BYTES,
+    ProjectionProviderDescriptorHash, QueryPlanHash,
 };
 
-use super::ColumnarBatchWidth;
-use crate::segment_v2::{MAX_SEGMENT_V2_COLUMNS, SegmentV2LogicalType};
+use super::{CLOSED_BATCH_WIDTHS, ColumnarBatchWidth};
+use crate::segment_v2::{MAX_LANE_BYTES, MAX_SEGMENT_V2_COLUMNS, SegmentV2LogicalType};
 
-const MAX_PROGRAM_VALIDITY_BYTES: usize = 128 * 1024;
-const MAX_PROGRAM_SELECTION_BYTES: usize = 128;
-const MAX_PROGRAM_PARTIAL_BYTES: usize = 4 * 1024 * 1024;
-const MAX_PROGRAM_HEAP_ENTRIES: usize = 500;
-const MAX_PROGRAM_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_PROGRAM_SELECTION_BYTES: usize = CLOSED_BATCH_WIDTHS[CLOSED_BATCH_WIDTHS.len() - 1] / 8;
+const MAX_PROGRAM_OPTIONAL_STATE_BYTES: usize =
+    MAX_SEGMENT_V2_COLUMNS * MAX_PROGRAM_SELECTION_BYTES * 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CheckedLogicalProgramIdentity {
@@ -57,13 +57,22 @@ struct ProgramResourcePlan {
     // All values originate in the checked compiler/provider lowering. This
     // module has no request or configuration constructor.
     rows: usize,
-    validity_bytes: usize,
+    decoded_lane_bytes: usize,
+    optional_state_bytes: usize,
     selection_bytes: usize,
-    partial_rows: usize,
-    partial_bytes_per_row: usize,
+    partial_count: usize,
+    partial_bytes_each: usize,
+    top_n_kind: TopNPlanKind,
+    result_maximum: usize,
     heap_entries: usize,
     output_rows: usize,
     output_bytes_per_row: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TopNPlanKind {
+    Absent,
+    OrderedRows,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -71,9 +80,11 @@ struct ProgramCharges {
     rows: usize,
     lanes: usize,
     row_lane_evaluations: usize,
-    validity_bytes: usize,
+    decoded_lane_bytes: usize,
+    optional_state_bytes: usize,
     selection_bytes: usize,
     partial_bytes: usize,
+    result_maximum: usize,
     heap_entries: usize,
     output_bytes: usize,
 }
@@ -97,9 +108,11 @@ enum ProgramLaneFact {
 enum ProgramResource {
     Rows,
     Lanes,
-    Validity,
+    DecodedLanes,
+    OptionalState,
     Selection,
     Partial,
+    ResultMaximum,
     Heap,
     Output,
 }
@@ -110,6 +123,7 @@ enum ProgramSealError {
     LaneSubstitution(ProgramLaneFact),
     BoundExceeded(ProgramResource),
     ArithmeticOverflow(ProgramResource),
+    ChargeMismatch(ProgramResource),
     NonCanonicalLaneCatalog,
     NonCanonicalLaneSet,
     OverlappingLane,
@@ -141,71 +155,135 @@ impl PreGenerationBatchProgramDraft {
         validate_lane_catalog(&checked.lanes)?;
         validate_logical_facts(&self.facts, checked)?;
 
-        let lane_count = self.facts.lanes.len();
-        let row_lane_evaluations = self
-            .resources
-            .rows
-            .checked_mul(lane_count)
-            .ok_or(ProgramSealError::ArithmeticOverflow(ProgramResource::Lanes))?;
-        let partial_bytes = self
-            .resources
-            .partial_rows
-            .checked_mul(self.resources.partial_bytes_per_row)
-            .ok_or(ProgramSealError::ArithmeticOverflow(
-                ProgramResource::Partial,
-            ))?;
-        let output_bytes = self
-            .resources
-            .output_rows
-            .checked_mul(self.resources.output_bytes_per_row)
-            .ok_or(ProgramSealError::ArithmeticOverflow(
-                ProgramResource::Output,
-            ))?;
-
         if self.resources.rows == 0 || self.resources.rows > self.width.get() {
             return Err(ProgramSealError::BoundExceeded(ProgramResource::Rows));
         }
+        let lane_count = self.facts.lanes.len();
         if lane_count == 0 || lane_count > MAX_SEGMENT_V2_COLUMNS {
             return Err(ProgramSealError::BoundExceeded(ProgramResource::Lanes));
         }
+        let row_lane_evaluations =
+            checked_charge_product(self.resources.rows, lane_count, ProgramResource::Lanes)?;
 
-        let validity_map_bytes =
+        if self.resources.decoded_lane_bytes == 0
+            || self.resources.decoded_lane_bytes > MAX_LANE_BYTES
+        {
+            return Err(ProgramSealError::BoundExceeded(
+                ProgramResource::DecodedLanes,
+            ));
+        }
+
+        let state_map_bytes =
             self.resources
                 .rows
                 .checked_add(7)
                 .ok_or(ProgramSealError::ArithmeticOverflow(
-                    ProgramResource::Validity,
+                    ProgramResource::OptionalState,
                 ))?
                 / 8;
         let optional_lanes = self.facts.lanes.iter().filter(|lane| lane.optional).count();
-        let required_validity_bytes = validity_map_bytes.checked_mul(optional_lanes).ok_or(
-            ProgramSealError::ArithmeticOverflow(ProgramResource::Validity),
+        // Optional lanes carry two independent state maps: Missing and Null.
+        let required_optional_state_bytes = checked_charge_product(
+            checked_charge_product(
+                state_map_bytes,
+                optional_lanes,
+                ProgramResource::OptionalState,
+            )?,
+            2,
+            ProgramResource::OptionalState,
         )?;
-        if self.resources.validity_bytes < required_validity_bytes
-            || self.resources.validity_bytes > MAX_PROGRAM_VALIDITY_BYTES
-        {
-            return Err(ProgramSealError::BoundExceeded(ProgramResource::Validity));
-        }
-        if self.resources.selection_bytes < validity_map_bytes
-            || self.resources.selection_bytes > MAX_PROGRAM_SELECTION_BYTES
-        {
-            return Err(ProgramSealError::BoundExceeded(ProgramResource::Selection));
+        check_maximum(
+            self.resources.optional_state_bytes,
+            MAX_PROGRAM_OPTIONAL_STATE_BYTES,
+            ProgramResource::OptionalState,
+        )?;
+        if self.resources.optional_state_bytes != required_optional_state_bytes {
+            return Err(ProgramSealError::ChargeMismatch(
+                ProgramResource::OptionalState,
+            ));
         }
         check_maximum(
-            partial_bytes,
-            MAX_PROGRAM_PARTIAL_BYTES,
+            self.resources.selection_bytes,
+            MAX_PROGRAM_SELECTION_BYTES,
+            ProgramResource::Selection,
+        )?;
+        if self.resources.selection_bytes != state_map_bytes {
+            return Err(ProgramSealError::ChargeMismatch(ProgramResource::Selection));
+        }
+
+        let max_partial_bytes = usize::try_from(MAX_AGGREGATE_STATE_BYTES_V1)
+            .expect("aggregate-state maximum fits usize");
+        check_maximum(
+            self.resources.partial_count,
+            self.resources.rows,
             ProgramResource::Partial,
         )?;
         check_maximum(
-            self.resources.heap_entries,
-            MAX_PROGRAM_HEAP_ENTRIES,
-            ProgramResource::Heap,
+            self.resources.partial_bytes_each,
+            max_partial_bytes,
+            ProgramResource::Partial,
         )?;
+        if (self.resources.partial_count == 0) != (self.resources.partial_bytes_each == 0) {
+            return Err(ProgramSealError::ChargeMismatch(ProgramResource::Partial));
+        }
+        let partial_bytes = checked_charge_product(
+            self.resources.partial_count,
+            self.resources.partial_bytes_each,
+            ProgramResource::Partial,
+        )?;
+        check_maximum(partial_bytes, max_partial_bytes, ProgramResource::Partial)?;
+
+        let max_result_rows = usize::try_from(MAX_APPLICATION_QUERY_PAGE_ROWS)
+            .expect("query page-row maximum fits usize");
         check_maximum(
-            output_bytes,
-            MAX_PROGRAM_OUTPUT_BYTES,
+            self.resources.result_maximum,
+            max_result_rows,
+            ProgramResource::ResultMaximum,
+        )?;
+        match self.resources.top_n_kind {
+            TopNPlanKind::Absent => {
+                if self.resources.result_maximum != 0 || self.resources.heap_entries != 0 {
+                    return Err(ProgramSealError::ChargeMismatch(ProgramResource::Heap));
+                }
+            }
+            TopNPlanKind::OrderedRows => {
+                if self.resources.result_maximum == 0 {
+                    return Err(ProgramSealError::ChargeMismatch(
+                        ProgramResource::ResultMaximum,
+                    ));
+                }
+                let required_heap_entries = self
+                    .resources
+                    .result_maximum
+                    .checked_add(1)
+                    .ok_or(ProgramSealError::ArithmeticOverflow(ProgramResource::Heap))?;
+                if self.resources.heap_entries != required_heap_entries {
+                    return Err(ProgramSealError::ChargeMismatch(ProgramResource::Heap));
+                }
+            }
+        }
+
+        let max_result_bytes = usize::try_from(MAX_APPLICATION_QUERY_RESULT_BYTES)
+            .expect("query result-byte maximum fits usize");
+        check_maximum(
+            self.resources.output_rows,
+            max_result_rows,
             ProgramResource::Output,
         )?;
+        check_maximum(
+            self.resources.output_bytes_per_row,
+            max_result_bytes,
+            ProgramResource::Output,
+        )?;
+        if (self.resources.output_rows == 0) != (self.resources.output_bytes_per_row == 0) {
+            return Err(ProgramSealError::ChargeMismatch(ProgramResource::Output));
+        }
+        let output_bytes = checked_charge_product(
+            self.resources.output_rows,
+            self.resources.output_bytes_per_row,
+            ProgramResource::Output,
+        )?;
+        check_maximum(output_bytes, max_result_bytes, ProgramResource::Output)?;
 
         validate_phase_lanes(&self.facts.phases, lane_count)?;
 
@@ -216,14 +294,26 @@ impl PreGenerationBatchProgramDraft {
                 rows: self.resources.rows,
                 lanes: lane_count,
                 row_lane_evaluations,
-                validity_bytes: self.resources.validity_bytes,
+                decoded_lane_bytes: self.resources.decoded_lane_bytes,
+                optional_state_bytes: self.resources.optional_state_bytes,
                 selection_bytes: self.resources.selection_bytes,
                 partial_bytes,
+                result_maximum: self.resources.result_maximum,
                 heap_entries: self.resources.heap_entries,
                 output_bytes,
             },
         })
     }
+}
+
+fn checked_charge_product(
+    count: usize,
+    bytes_each: usize,
+    resource: ProgramResource,
+) -> Result<usize, ProgramSealError> {
+    count
+        .checked_mul(bytes_each)
+        .ok_or(ProgramSealError::ArithmeticOverflow(resource))
 }
 
 fn validate_identity(
@@ -380,10 +470,13 @@ mod tests {
             width: width(),
             resources: ProgramResourcePlan {
                 rows: 64,
-                validity_bytes: 16,
+                decoded_lane_bytes: 4_096,
+                optional_state_bytes: 32,
                 selection_bytes: 8,
-                partial_rows: 16,
-                partial_bytes_per_row: 64,
+                partial_count: 16,
+                partial_bytes_each: 64,
+                top_n_kind: TopNPlanKind::OrderedRows,
+                result_maximum: 63,
                 heap_entries: 64,
                 output_rows: 16,
                 output_bytes_per_row: 256,
@@ -403,9 +496,11 @@ mod tests {
         assert_eq!(program.charges.rows, 64);
         assert_eq!(program.charges.lanes, 6);
         assert_eq!(program.charges.row_lane_evaluations, 384);
-        assert_eq!(program.charges.validity_bytes, 16);
+        assert_eq!(program.charges.decoded_lane_bytes, 4_096);
+        assert_eq!(program.charges.optional_state_bytes, 32);
         assert_eq!(program.charges.selection_bytes, 8);
         assert_eq!(program.charges.partial_bytes, 1024);
+        assert_eq!(program.charges.result_maximum, 63);
         assert_eq!(program.charges.heap_entries, 64);
         assert_eq!(program.charges.output_bytes, 4096);
     }
@@ -530,119 +625,266 @@ mod tests {
     }
 
     #[test]
-    fn accepts_each_exact_resource_bound_and_rejects_plus_one_independently() {
-        let cases = [
-            (ProgramResource::Rows, 64, 65),
-            (
-                ProgramResource::Lanes,
-                MAX_SEGMENT_V2_COLUMNS,
-                MAX_SEGMENT_V2_COLUMNS + 1,
-            ),
-            (
-                ProgramResource::Validity,
-                MAX_PROGRAM_VALIDITY_BYTES,
-                MAX_PROGRAM_VALIDITY_BYTES + 1,
-            ),
-            (
-                ProgramResource::Selection,
-                MAX_PROGRAM_SELECTION_BYTES,
-                MAX_PROGRAM_SELECTION_BYTES + 1,
-            ),
-            (
-                ProgramResource::Partial,
-                MAX_PROGRAM_PARTIAL_BYTES,
-                MAX_PROGRAM_PARTIAL_BYTES + 1,
-            ),
-            (
-                ProgramResource::Heap,
-                MAX_PROGRAM_HEAP_ENTRIES,
-                MAX_PROGRAM_HEAP_ENTRIES + 1,
-            ),
-            (
-                ProgramResource::Output,
-                MAX_PROGRAM_OUTPUT_BYTES,
-                MAX_PROGRAM_OUTPUT_BYTES + 1,
-            ),
-        ];
+    fn accepts_exact_independent_byte_bounds_and_rejects_plus_one() {
+        let max_partial = usize::try_from(MAX_AGGREGATE_STATE_BYTES_V1).expect("usize");
+        let max_rows = usize::try_from(MAX_APPLICATION_QUERY_PAGE_ROWS).expect("usize");
+        let max_output = usize::try_from(MAX_APPLICATION_QUERY_RESULT_BYTES).expect("usize");
 
-        for (resource, exact, excessive) in cases {
-            let mut accepted = valid_draft();
-            set_resource(&mut accepted, resource, exact);
-            if resource == ProgramResource::Lanes {
-                install_lane_count(&mut accepted, exact);
-            }
-            let program = accepted
-                .check(&accepted.facts.clone())
-                .expect("exact bound is accepted");
-            assert_eq!(charged_resource(&program, resource), exact);
+        let mut decoded = valid_draft();
+        decoded.resources.decoded_lane_bytes = MAX_LANE_BYTES;
+        assert_eq!(
+            decoded
+                .check(&decoded.facts.clone())
+                .expect("exact")
+                .charges
+                .decoded_lane_bytes,
+            MAX_LANE_BYTES
+        );
+        decoded.resources.decoded_lane_bytes += 1;
+        assert_eq!(
+            decoded.check(&decoded.facts.clone()).err(),
+            Some(ProgramSealError::BoundExceeded(
+                ProgramResource::DecodedLanes
+            ))
+        );
 
-            let mut rejected = valid_draft();
-            set_resource(&mut rejected, resource, excessive);
-            if resource == ProgramResource::Lanes {
-                install_lane_count(&mut rejected, excessive);
-            }
+        let mut partial = valid_draft();
+        partial.resources.partial_count = 1;
+        partial.resources.partial_bytes_each = max_partial;
+        assert_eq!(
+            partial
+                .check(&partial.facts.clone())
+                .expect("exact")
+                .charges
+                .partial_bytes,
+            max_partial
+        );
+        partial.resources.partial_bytes_each += 1;
+        assert_eq!(
+            partial.check(&partial.facts.clone()).err(),
+            Some(ProgramSealError::BoundExceeded(ProgramResource::Partial))
+        );
+
+        let mut partial_count = valid_draft();
+        partial_count.resources.partial_count = partial_count.resources.rows;
+        partial_count.resources.partial_bytes_each = 1;
+        assert_eq!(
+            partial_count
+                .check(&partial_count.facts.clone())
+                .expect("exact partial count")
+                .charges
+                .partial_bytes,
+            partial_count.resources.rows
+        );
+        partial_count.resources.partial_count += 1;
+        assert_eq!(
+            partial_count.check(&partial_count.facts.clone()).err(),
+            Some(ProgramSealError::BoundExceeded(ProgramResource::Partial))
+        );
+
+        let mut output = valid_draft();
+        output.resources.output_rows = 1;
+        output.resources.output_bytes_per_row = max_output;
+        assert_eq!(
+            output
+                .check(&output.facts.clone())
+                .expect("exact")
+                .charges
+                .output_bytes,
+            max_output
+        );
+        output.resources.output_bytes_per_row += 1;
+        assert_eq!(
+            output.check(&output.facts.clone()).err(),
+            Some(ProgramSealError::BoundExceeded(ProgramResource::Output))
+        );
+
+        let mut output_rows = valid_draft();
+        output_rows.resources.output_rows = max_rows;
+        output_rows.resources.output_bytes_per_row = 1;
+        assert_eq!(
+            output_rows
+                .check(&output_rows.facts.clone())
+                .expect("exact output row count")
+                .charges
+                .output_bytes,
+            max_rows
+        );
+        output_rows.resources.output_rows += 1;
+        assert_eq!(
+            output_rows.check(&output_rows.facts.clone()).err(),
+            Some(ProgramSealError::BoundExceeded(ProgramResource::Output))
+        );
+    }
+
+    #[test]
+    fn row_lane_selection_and_optional_maps_have_exact_bounds() {
+        let mut rows = valid_draft();
+        rows.resources.rows = 0;
+        assert_eq!(
+            rows.check(&rows.facts.clone()).err(),
+            Some(ProgramSealError::BoundExceeded(ProgramResource::Rows))
+        );
+        rows.resources.rows = 65;
+        assert_eq!(
+            rows.check(&rows.facts.clone()).err(),
+            Some(ProgramSealError::BoundExceeded(ProgramResource::Rows))
+        );
+
+        let mut lanes = valid_draft();
+        install_lane_count(&mut lanes, MAX_SEGMENT_V2_COLUMNS);
+        lanes.resources.optional_state_bytes = 0;
+        assert_eq!(
+            lanes
+                .check(&lanes.facts.clone())
+                .expect("exact lane count")
+                .charges
+                .lanes,
+            MAX_SEGMENT_V2_COLUMNS
+        );
+        install_lane_count(&mut lanes, MAX_SEGMENT_V2_COLUMNS + 1);
+        assert_eq!(
+            lanes.check(&lanes.facts.clone()).err(),
+            Some(ProgramSealError::BoundExceeded(ProgramResource::Lanes))
+        );
+
+        let mut maps = valid_draft();
+        maps.width = ColumnarBatchWidth::choose(1_024, 1, 1_024).expect("closed width");
+        maps.resources.rows = 1_024;
+        maps.resources.selection_bytes = MAX_PROGRAM_SELECTION_BYTES;
+        install_lane_count_with_optionality(&mut maps, MAX_SEGMENT_V2_COLUMNS, true);
+        maps.resources.optional_state_bytes = MAX_PROGRAM_OPTIONAL_STATE_BYTES;
+        let checked = maps.check(&maps.facts.clone()).expect("exact maps");
+        assert_eq!(checked.charges.selection_bytes, MAX_PROGRAM_SELECTION_BYTES);
+        assert_eq!(
+            checked.charges.optional_state_bytes,
+            MAX_PROGRAM_OPTIONAL_STATE_BYTES
+        );
+
+        let mut extra_selection = maps.clone();
+        extra_selection.resources.selection_bytes += 1;
+        assert_eq!(
+            extra_selection.check(&extra_selection.facts.clone()).err(),
+            Some(ProgramSealError::BoundExceeded(ProgramResource::Selection))
+        );
+        let mut extra_optional = maps;
+        extra_optional.resources.optional_state_bytes += 1;
+        assert_eq!(
+            extra_optional.check(&extra_optional.facts.clone()).err(),
+            Some(ProgramSealError::BoundExceeded(
+                ProgramResource::OptionalState
+            ))
+        );
+    }
+
+    #[test]
+    fn optional_state_charge_is_exactly_two_maps() {
+        let exact = valid_draft();
+        assert_eq!(
+            exact
+                .check(&checked_facts())
+                .expect("two exact state maps")
+                .charges
+                .optional_state_bytes,
+            32
+        );
+        for bytes in [31, 33] {
+            let mut mismatch = exact.clone();
+            mismatch.resources.optional_state_bytes = bytes;
             assert_eq!(
-                rejected.check(&rejected.facts.clone()).err(),
-                Some(ProgramSealError::BoundExceeded(resource))
+                mismatch.check(&checked_facts()).err(),
+                Some(ProgramSealError::ChargeMismatch(
+                    ProgramResource::OptionalState
+                ))
             );
         }
     }
 
     #[test]
-    fn arithmetic_overflow_and_other_failures_leave_the_draft_unchanged() {
-        let cases = [ProgramResource::Partial, ProgramResource::Output];
-        for resource in cases {
+    fn top_n_heap_is_result_maximum_plus_one_probe() {
+        let max_rows = usize::try_from(MAX_APPLICATION_QUERY_PAGE_ROWS).expect("usize");
+        let mut exact = valid_draft();
+        exact.resources.result_maximum = max_rows;
+        exact.resources.heap_entries = max_rows + 1;
+        let checked = exact
+            .check(&exact.facts.clone())
+            .expect("exact result and probe");
+        assert_eq!(checked.charges.result_maximum, max_rows);
+        assert_eq!(checked.charges.heap_entries, max_rows + 1);
+
+        let mut excessive = exact.clone();
+        excessive.resources.result_maximum += 1;
+        excessive.resources.heap_entries += 1;
+        assert_eq!(
+            excessive.check(&excessive.facts.clone()).err(),
+            Some(ProgramSealError::BoundExceeded(
+                ProgramResource::ResultMaximum
+            ))
+        );
+
+        let cases = [
+            (TopNPlanKind::Absent, 0, 0, true),
+            (TopNPlanKind::Absent, 1, 0, false),
+            (TopNPlanKind::Absent, 0, 1, false),
+            (TopNPlanKind::OrderedRows, 0, 1, false),
+            (TopNPlanKind::OrderedRows, 1, 1, false),
+            (TopNPlanKind::OrderedRows, 1, 2, true),
+            (TopNPlanKind::OrderedRows, 1, 3, false),
+        ];
+        for (kind, result_maximum, heap_entries, accepted) in cases {
             let mut draft = valid_draft();
-            match resource {
-                ProgramResource::Partial => {
-                    draft.resources.partial_rows = usize::MAX;
-                    draft.resources.partial_bytes_per_row = 2;
-                }
-                ProgramResource::Output => {
-                    draft.resources.output_rows = usize::MAX;
-                    draft.resources.output_bytes_per_row = 2;
-                }
-                _ => unreachable!("overflow fixture uses a multiplied byte charge"),
+            draft.resources.top_n_kind = kind;
+            draft.resources.result_maximum = result_maximum;
+            draft.resources.heap_entries = heap_entries;
+            assert_eq!(draft.check(&draft.facts.clone()).is_ok(), accepted);
+        }
+    }
+
+    #[test]
+    fn operands_are_bounded_before_products_and_failures_are_atomic() {
+        let cases = [
+            (ProgramResource::Partial, true),
+            (ProgramResource::Output, false),
+        ];
+        for (resource, partial) in cases {
+            let mut draft = valid_draft();
+            if partial {
+                draft.resources.partial_count = 0;
+                draft.resources.partial_bytes_each = usize::MAX;
+            } else {
+                draft.resources.output_rows = 0;
+                draft.resources.output_bytes_per_row = usize::MAX;
             }
             let before = draft.clone();
-
             assert_eq!(
                 draft.check(&checked_facts()).err(),
-                Some(ProgramSealError::ArithmeticOverflow(resource))
+                Some(ProgramSealError::BoundExceeded(resource))
             );
             assert_eq!(draft, before);
         }
-    }
-
-    fn set_resource(
-        draft: &mut PreGenerationBatchProgramDraft,
-        resource: ProgramResource,
-        value: usize,
-    ) {
-        match resource {
-            ProgramResource::Rows => draft.resources.rows = value,
-            ProgramResource::Lanes => {}
-            ProgramResource::Validity => draft.resources.validity_bytes = value,
-            ProgramResource::Selection => draft.resources.selection_bytes = value,
-            ProgramResource::Partial => {
-                draft.resources.partial_rows = 1;
-                draft.resources.partial_bytes_per_row = value;
-            }
-            ProgramResource::Heap => draft.resources.heap_entries = value,
-            ProgramResource::Output => {
-                draft.resources.output_rows = 1;
-                draft.resources.output_bytes_per_row = value;
-            }
-        }
+        assert_eq!(
+            checked_charge_product(usize::MAX, 2, ProgramResource::Output),
+            Err(ProgramSealError::ArithmeticOverflow(
+                ProgramResource::Output
+            ))
+        );
     }
 
     fn install_lane_count(draft: &mut PreGenerationBatchProgramDraft, count: usize) {
+        install_lane_count_with_optionality(draft, count, false);
+    }
+
+    fn install_lane_count_with_optionality(
+        draft: &mut PreGenerationBatchProgramDraft,
+        count: usize,
+        optional: bool,
+    ) {
         draft.facts.lanes = (0..count)
             .map(|index| {
                 lane(
                     u32::try_from(index + 1).expect("bounded field"),
                     SegmentV2LogicalType::U64,
-                    false,
+                    optional,
                 )
             })
             .collect();
@@ -650,21 +892,6 @@ mod tests {
             eligibility: (0..count).collect(),
             ..PhaseLaneSets::default()
         };
-    }
-
-    fn charged_resource(
-        program: &CheckedPreGenerationBatchProgram,
-        resource: ProgramResource,
-    ) -> usize {
-        match resource {
-            ProgramResource::Rows => program.charges.rows,
-            ProgramResource::Lanes => program.charges.lanes,
-            ProgramResource::Validity => program.charges.validity_bytes,
-            ProgramResource::Selection => program.charges.selection_bytes,
-            ProgramResource::Partial => program.charges.partial_bytes,
-            ProgramResource::Heap => program.charges.heap_entries,
-            ProgramResource::Output => program.charges.output_bytes,
-        }
     }
 
     #[test]
