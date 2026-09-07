@@ -189,7 +189,7 @@ impl SegmentV2LogicalType {
         }
     }
 
-    fn accepts(&self, value: &CanonicalValue) -> bool {
+    pub(crate) fn accepts(&self, value: &CanonicalValue) -> bool {
         match (self, value) {
             (Self::Bool, CanonicalValue::Bool(_))
             | (Self::I64, CanonicalValue::I64(_))

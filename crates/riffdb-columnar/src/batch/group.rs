@@ -1,46 +1,932 @@
+//! Private, inert canonical group-state mechanics.
+
+use std::cmp::Ordering;
+use std::mem::size_of;
+
+use riffdb_types::{
+    MAX_AGGREGATE_DISTINCT_VALUES_V1, MAX_AGGREGATE_STATE_BYTES_V1, canonical_value_encoded_len,
+    encode_canonical_value_into,
+};
+
+use super::aggregate::CanonicalPartialIdentity;
+use crate::segment_v2::{SegmentV2Cell, SegmentV2LogicalType};
+
+const NO_VALUE_BYTES: [u8; 2] = [1, 0];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum GroupStateError {
+    InvalidGroupBound,
+    InvalidKeyBound,
+    InvalidStateBound,
+    AllocationFailed,
+    InputShape,
+    TypeMismatch,
+    KeyBoundExceeded,
+    GroupBoundExceeded,
+    StateBoundExceeded,
+    RowOrder,
+    ArithmeticOverflow,
+    Poisoned,
+    InvalidInventory,
+    DuplicateOrReorderedLeaf,
+    InventoryGap,
+    ForeignRootInventory,
+    ForeignSegment,
+    ExcessLeaf,
+    InventoryOmission,
+    IncompatibleLeaf,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct CanonicalGroupBounds {
+    maximum_groups: u16,
+    maximum_key_bytes: u32,
+    maximum_state_bytes: u32,
+}
+
+impl CanonicalGroupBounds {
+    pub(super) const fn new(
+        maximum_groups: u16,
+        maximum_key_bytes: u32,
+        maximum_state_bytes: u32,
+    ) -> Result<Self, GroupStateError> {
+        if maximum_groups == 0 || maximum_groups > MAX_AGGREGATE_DISTINCT_VALUES_V1 {
+            return Err(GroupStateError::InvalidGroupBound);
+        }
+        if maximum_key_bytes == 0 || maximum_key_bytes > MAX_AGGREGATE_STATE_BYTES_V1 {
+            return Err(GroupStateError::InvalidKeyBound);
+        }
+        if maximum_state_bytes == 0 || maximum_state_bytes > MAX_AGGREGATE_STATE_BYTES_V1 {
+            return Err(GroupStateError::InvalidStateBound);
+        }
+        Ok(Self {
+            maximum_groups,
+            maximum_key_bytes,
+            maximum_state_bytes,
+        })
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct GroupEntry {
+    key_start: u32,
+    key_len: u32,
+    row_count: u64,
+}
+
+/// The sole fallibly allocated owner for one leaf or merged group state.
+///
+/// Both buffers are reserved once at construction. Admission checks capacity
+/// before writing, so no row, key, or merge operation can allocate.
+struct BoundedGroupOwner {
+    arena: Vec<u8>,
+    entries: Vec<GroupEntry>,
+    bounds: CanonicalGroupBounds,
+    poisoned: bool,
+}
+
+impl BoundedGroupOwner {
+    fn new(bounds: CanonicalGroupBounds) -> Result<Self, GroupStateError> {
+        let maximum_groups = usize::from(bounds.maximum_groups);
+        let requested_entry_bytes = maximum_groups
+            .checked_mul(size_of::<GroupEntry>())
+            .ok_or(GroupStateError::InvalidStateBound)?;
+        let state_ceiling = usize::try_from(bounds.maximum_state_bytes)
+            .map_err(|_| GroupStateError::InvalidStateBound)?;
+        if requested_entry_bytes > state_ceiling {
+            return Err(GroupStateError::InvalidStateBound);
+        }
+
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(maximum_groups)
+            .map_err(|_| GroupStateError::AllocationFailed)?;
+        let actual_entry_bytes = entries
+            .capacity()
+            .checked_mul(size_of::<GroupEntry>())
+            .ok_or(GroupStateError::InvalidStateBound)?;
+        let arena_capacity = state_ceiling
+            .checked_sub(actual_entry_bytes)
+            .ok_or(GroupStateError::InvalidStateBound)?;
+        let mut arena = Vec::new();
+        arena
+            .try_reserve_exact(arena_capacity)
+            .map_err(|_| GroupStateError::AllocationFailed)?;
+        let actual_state_bytes = actual_entry_bytes
+            .checked_add(arena.capacity())
+            .ok_or(GroupStateError::InvalidStateBound)?;
+        if actual_state_bytes > state_ceiling {
+            return Err(GroupStateError::InvalidStateBound);
+        }
+        Ok(Self {
+            arena,
+            entries,
+            bounds,
+            poisoned: false,
+        })
+    }
+
+    fn poison(&mut self, error: GroupStateError) -> GroupStateError {
+        self.entries.clear();
+        self.arena.clear();
+        self.poisoned = true;
+        error
+    }
+
+    fn ensure_live(&self) -> Result<(), GroupStateError> {
+        if self.poisoned {
+            Err(GroupStateError::Poisoned)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn admit_cells(
+        &mut self,
+        logical_types: &[SegmentV2LogicalType],
+        cells: &[SegmentV2Cell],
+        count: u64,
+    ) -> Result<(), GroupStateError> {
+        self.ensure_live()?;
+        let key_len = match encoded_key_len(logical_types, cells) {
+            Ok(key_len) => key_len,
+            Err(error) => return Err(self.poison(error)),
+        };
+        if key_len > self.bounds.maximum_key_bytes as usize {
+            return Err(self.poison(GroupStateError::KeyBoundExceeded));
+        }
+        let start = self.arena.len();
+        if start
+            .checked_add(key_len)
+            .is_none_or(|end| end > self.arena.capacity())
+        {
+            return Err(self.poison(GroupStateError::StateBoundExceeded));
+        }
+        if let Err(error) = append_key(&mut self.arena, cells) {
+            self.arena.truncate(start);
+            return Err(self.poison(error));
+        }
+        self.admit_appended(start, key_len, count)
+    }
+
+    fn admit_encoded(&mut self, key: &[u8], count: u64) -> Result<(), GroupStateError> {
+        self.ensure_live()?;
+        if count == 0 {
+            return Err(self.poison(GroupStateError::IncompatibleLeaf));
+        }
+        if key.len() > self.bounds.maximum_key_bytes as usize {
+            return Err(self.poison(GroupStateError::KeyBoundExceeded));
+        }
+        let start = self.arena.len();
+        if start
+            .checked_add(key.len())
+            .is_none_or(|end| end > self.arena.capacity())
+        {
+            return Err(self.poison(GroupStateError::StateBoundExceeded));
+        }
+        self.arena.extend_from_slice(key);
+        self.admit_appended(start, key.len(), count)
+    }
+
+    fn admit_appended(
+        &mut self,
+        start: usize,
+        key_len: usize,
+        count: u64,
+    ) -> Result<(), GroupStateError> {
+        let end = start + key_len;
+        if let Some(index) = self.entries.iter().position(|entry| {
+            let prior_start = entry.key_start as usize;
+            let prior_end = prior_start + entry.key_len as usize;
+            self.arena[prior_start..prior_end] == self.arena[start..end]
+        }) {
+            self.arena.truncate(start);
+            let next = match self.entries[index].row_count.checked_add(count) {
+                Some(next) => next,
+                None => return Err(self.poison(GroupStateError::ArithmeticOverflow)),
+            };
+            self.entries[index].row_count = next;
+            return Ok(());
+        }
+        if self.entries.len() >= usize::from(self.bounds.maximum_groups) {
+            self.arena.truncate(start);
+            return Err(self.poison(GroupStateError::GroupBoundExceeded));
+        }
+        let key_start = match u32::try_from(start) {
+            Ok(value) => value,
+            Err(_) => return Err(self.poison(GroupStateError::StateBoundExceeded)),
+        };
+        let key_len = match u32::try_from(key_len) {
+            Ok(value) => value,
+            Err(_) => return Err(self.poison(GroupStateError::KeyBoundExceeded)),
+        };
+        self.entries.push(GroupEntry {
+            key_start,
+            key_len,
+            row_count: count,
+        });
+        Ok(())
+    }
+
+    fn sort_canonical(&mut self) {
+        let arena = &self.arena;
+        self.entries
+            .sort_unstable_by(|left, right| entry_key(arena, left).cmp(entry_key(arena, right)));
+    }
+
+    fn key(&self, index: usize) -> Option<&[u8]> {
+        self.entries
+            .get(index)
+            .map(|entry| entry_key(&self.arena, entry))
+    }
+
+    fn count(&self, index: usize) -> Option<u64> {
+        self.entries.get(index).map(|entry| entry.row_count)
+    }
+
+    #[cfg(test)]
+    fn allocated_state_bytes(&self) -> usize {
+        self.arena.capacity() + self.entries.capacity() * size_of::<GroupEntry>()
+    }
+}
+
+fn entry_key<'arena>(arena: &'arena [u8], entry: &GroupEntry) -> &'arena [u8] {
+    let start = entry.key_start as usize;
+    &arena[start..start + entry.key_len as usize]
+}
+
+fn encoded_key_len(
+    logical_types: &[SegmentV2LogicalType],
+    cells: &[SegmentV2Cell],
+) -> Result<usize, GroupStateError> {
+    if logical_types.is_empty() || logical_types.len() != cells.len() {
+        return Err(GroupStateError::InputShape);
+    }
+    logical_types
+        .iter()
+        .zip(cells)
+        .try_fold(0_usize, |total, (logical_type, cell)| {
+            let value_len = match cell {
+                SegmentV2Cell::Missing | SegmentV2Cell::Null => NO_VALUE_BYTES.len(),
+                SegmentV2Cell::Value(value) => {
+                    if !logical_type.accepts(value) {
+                        return Err(GroupStateError::TypeMismatch);
+                    }
+                    canonical_value_encoded_len(value).map_err(|_| GroupStateError::InputShape)?
+                }
+            };
+            let framed = 4_usize
+                .checked_add(value_len)
+                .ok_or(GroupStateError::ArithmeticOverflow)?;
+            total
+                .checked_add(framed)
+                .ok_or(GroupStateError::ArithmeticOverflow)
+        })
+}
+
+fn append_key(arena: &mut Vec<u8>, cells: &[SegmentV2Cell]) -> Result<(), GroupStateError> {
+    for cell in cells {
+        let value_len = match cell {
+            SegmentV2Cell::Missing | SegmentV2Cell::Null => NO_VALUE_BYTES.len(),
+            SegmentV2Cell::Value(value) => {
+                canonical_value_encoded_len(value).map_err(|_| GroupStateError::InputShape)?
+            }
+        };
+        let value_len = u32::try_from(value_len).map_err(|_| GroupStateError::KeyBoundExceeded)?;
+        arena.extend_from_slice(&value_len.to_be_bytes());
+        match cell {
+            SegmentV2Cell::Missing | SegmentV2Cell::Null => {
+                arena.extend_from_slice(&NO_VALUE_BYTES)
+            }
+            SegmentV2Cell::Value(value) => encode_canonical_value_into(arena, value)
+                .map_err(|_| GroupStateError::InputShape)?,
+        }
+    }
+    Ok(())
+}
+
+pub(super) struct CanonicalGroupLeafBuilder<'schema> {
+    identity: CanonicalPartialIdentity,
+    logical_types: &'schema [SegmentV2LogicalType],
+    owner: BoundedGroupOwner,
+    next_row_ordinal: u16,
+}
+
+impl<'schema> CanonicalGroupLeafBuilder<'schema> {
+    pub(super) fn new(
+        identity: CanonicalPartialIdentity,
+        logical_types: &'schema [SegmentV2LogicalType],
+        bounds: CanonicalGroupBounds,
+    ) -> Result<Self, GroupStateError> {
+        if logical_types.is_empty() {
+            return Err(GroupStateError::InputShape);
+        }
+        Ok(Self {
+            identity,
+            logical_types,
+            owner: BoundedGroupOwner::new(bounds)?,
+            next_row_ordinal: 0,
+        })
+    }
+
+    pub(super) fn push_row(
+        &mut self,
+        row_ordinal: u16,
+        cells: &[SegmentV2Cell],
+    ) -> Result<(), GroupStateError> {
+        self.owner.ensure_live()?;
+        if row_ordinal != self.next_row_ordinal {
+            return Err(self.owner.poison(GroupStateError::RowOrder));
+        }
+        let next = match self.next_row_ordinal.checked_add(1) {
+            Some(next) => next,
+            None => return Err(self.owner.poison(GroupStateError::ArithmeticOverflow)),
+        };
+        self.owner.admit_cells(self.logical_types, cells, 1)?;
+        self.next_row_ordinal = next;
+        Ok(())
+    }
+
+    pub(super) const fn is_poisoned(&self) -> bool {
+        self.owner.poisoned
+    }
+
+    pub(super) fn finish(mut self) -> Result<FinalizedGroupLeaf<'schema>, GroupStateError> {
+        self.owner.ensure_live()?;
+        self.owner.sort_canonical();
+        Ok(FinalizedGroupLeaf {
+            identity: self.identity,
+            logical_types: self.logical_types,
+            owner: self.owner,
+        })
+    }
+}
+
+pub(super) struct FinalizedGroupLeaf<'schema> {
+    identity: CanonicalPartialIdentity,
+    logical_types: &'schema [SegmentV2LogicalType],
+    owner: BoundedGroupOwner,
+}
+
+impl FinalizedGroupLeaf<'_> {
+    #[cfg(test)]
+    fn group_count(&self) -> usize {
+        self.owner.entries.len()
+    }
+    #[cfg(test)]
+    fn row_count_for_test(&self, index: usize) -> Option<u64> {
+        self.owner.count(index)
+    }
+}
+
+pub(super) struct CanonicalGroupMerge<'schema, 'inventory> {
+    logical_types: &'schema [SegmentV2LogicalType],
+    inventory: &'inventory [CanonicalPartialIdentity],
+    cursor: usize,
+    owner: BoundedGroupOwner,
+}
+
+impl<'schema, 'inventory> CanonicalGroupMerge<'schema, 'inventory> {
+    pub(super) fn new(
+        logical_types: &'schema [SegmentV2LogicalType],
+        inventory: &'inventory [CanonicalPartialIdentity],
+        bounds: CanonicalGroupBounds,
+    ) -> Result<Self, GroupStateError> {
+        if logical_types.is_empty() || !valid_inventory(inventory) {
+            return Err(GroupStateError::InvalidInventory);
+        }
+        Ok(Self {
+            logical_types,
+            inventory,
+            cursor: 0,
+            owner: BoundedGroupOwner::new(bounds)?,
+        })
+    }
+
+    pub(super) fn merge_leaf(
+        &mut self,
+        leaf: FinalizedGroupLeaf<'_>,
+    ) -> Result<(), GroupStateError> {
+        self.owner.ensure_live()?;
+        if self.inventory.get(self.cursor) != Some(&leaf.identity) {
+            let error = classify_mismatch(self.inventory, self.cursor, leaf.identity);
+            return Err(self.owner.poison(error));
+        }
+        if self.logical_types != leaf.logical_types {
+            return Err(self.owner.poison(GroupStateError::IncompatibleLeaf));
+        }
+        for index in 0..leaf.owner.entries.len() {
+            let key = leaf
+                .owner
+                .key(index)
+                .ok_or(GroupStateError::IncompatibleLeaf)?;
+            let count = leaf
+                .owner
+                .count(index)
+                .ok_or(GroupStateError::IncompatibleLeaf)?;
+            self.owner.admit_encoded(key, count)?;
+        }
+        self.cursor += 1;
+        Ok(())
+    }
+
+    pub(super) fn finish(mut self) -> Result<CanonicalGroups, GroupStateError> {
+        self.owner.ensure_live()?;
+        if self.cursor != self.inventory.len() {
+            return Err(self.owner.poison(GroupStateError::InventoryOmission));
+        }
+        self.owner.sort_canonical();
+        Ok(CanonicalGroups { owner: self.owner })
+    }
+}
+
+pub(super) struct CanonicalGroups {
+    owner: BoundedGroupOwner,
+}
+
+impl CanonicalGroups {
+    #[cfg(test)]
+    fn rows_for_test(&self) -> Vec<(Vec<u8>, u64)> {
+        (0..self.owner.entries.len())
+            .map(|index| {
+                (
+                    self.owner.key(index).expect("sealed index").to_vec(),
+                    self.owner.count(index).expect("sealed index"),
+                )
+            })
+            .collect()
+    }
+}
+
+fn valid_inventory(inventory: &[CanonicalPartialIdentity]) -> bool {
+    if inventory.is_empty() || inventory.first().is_some_and(|id| id.batch_ordinal() != 0) {
+        return false;
+    }
+    inventory.windows(2).all(|pair| {
+        let previous = pair[0];
+        let next = pair[1];
+        if next <= previous {
+            return false;
+        }
+        if previous.root_inventory_ordinal() == next.root_inventory_ordinal()
+            && previous.segment_id() == next.segment_id()
+        {
+            previous.batch_ordinal().checked_add(1) == Some(next.batch_ordinal())
+        } else {
+            next.batch_ordinal() == 0
+        }
+    })
+}
+
+fn classify_mismatch(
+    inventory: &[CanonicalPartialIdentity],
+    cursor: usize,
+    actual: CanonicalPartialIdentity,
+) -> GroupStateError {
+    if inventory[..cursor].contains(&actual) {
+        return GroupStateError::DuplicateOrReorderedLeaf;
+    }
+    if cursor >= inventory.len() {
+        return GroupStateError::ExcessLeaf;
+    }
+    if inventory[cursor + 1..].contains(&actual) {
+        return GroupStateError::InventoryGap;
+    }
+    if !inventory
+        .iter()
+        .any(|id| id.root_inventory_ordinal() == actual.root_inventory_ordinal())
+    {
+        return GroupStateError::ForeignRootInventory;
+    }
+    if !inventory.iter().any(|id| {
+        id.root_inventory_ordinal() == actual.root_inventory_ordinal()
+            && id.segment_id() == actual.segment_id()
+    }) {
+        return GroupStateError::ForeignSegment;
+    }
+    match actual.cmp(&inventory[cursor]) {
+        Ordering::Less | Ordering::Equal => GroupStateError::DuplicateOrReorderedLeaf,
+        Ordering::Greater => GroupStateError::InventoryGap,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{CanonicalGroupBounds, CanonicalGroupLeafBuilder, GroupStateError};
+    use super::{
+        CanonicalGroupBounds, CanonicalGroupLeafBuilder, CanonicalGroupMerge, GroupStateError,
+        MAX_AGGREGATE_DISTINCT_VALUES_V1, MAX_AGGREGATE_STATE_BYTES_V1,
+    };
     use crate::batch::aggregate::CanonicalPartialIdentity;
     use crate::segment_v2::{SegmentV2Cell, SegmentV2LogicalType, SegmentV2SegmentId};
-    use riffdb_types::CanonicalValue;
+    use riffdb_types::{
+        CanonicalValue, CurrencyCode, Date, Decimal, DecimalSpec, EnumTypeId, EnumVariantId, Money,
+        Timestamp, encode_canonical_value,
+    };
+    use std::collections::BTreeMap;
+    use std::mem::size_of;
 
-    fn identity(batch: u32) -> CanonicalPartialIdentity {
-        CanonicalPartialIdentity::new(0, SegmentV2SegmentId::from_bytes([7; 16]), batch)
+    fn identity(root: u16, segment: u8, batch: u32) -> CanonicalPartialIdentity {
+        CanonicalPartialIdentity::new(root, SegmentV2SegmentId::from_bytes([segment; 16]), batch)
+    }
+    fn bounds(groups: u16, key: u32, state: u32) -> CanonicalGroupBounds {
+        CanonicalGroupBounds::new(groups, key, state).expect("valid bounds")
+    }
+    fn oracle_key(cells: &[SegmentV2Cell]) -> Vec<u8> {
+        let mut key = Vec::new();
+        for cell in cells {
+            let value = match cell {
+                SegmentV2Cell::Missing | SegmentV2Cell::Null => CanonicalValue::Null,
+                SegmentV2Cell::Value(value) => value.clone(),
+            };
+            let encoded = encode_canonical_value(&value).expect("oracle encoding");
+            key.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
+            key.extend_from_slice(&encoded);
+        }
+        key
+    }
+    fn oracle(rows: &[Vec<SegmentV2Cell>]) -> Vec<(Vec<u8>, u64)> {
+        let mut groups = BTreeMap::new();
+        for row in rows {
+            *groups.entry(oracle_key(row)).or_insert(0_u64) += 1;
+        }
+        groups.into_iter().collect()
+    }
+    fn leaf<'schema>(
+        id: CanonicalPartialIdentity,
+        schema: &'schema [SegmentV2LogicalType],
+        rows: &[Vec<SegmentV2Cell>],
+    ) -> super::FinalizedGroupLeaf<'schema> {
+        let mut builder =
+            CanonicalGroupLeafBuilder::new(id, schema, bounds(16, 256, 4_096)).expect("builder");
+        for (ordinal, row) in rows.iter().enumerate() {
+            builder
+                .push_row(ordinal as u16, row)
+                .expect("canonical row");
+        }
+        builder.finish().expect("leaf")
     }
 
     #[test]
     fn canonical_group_leaf_normalizes_missing_and_null_without_colliding_with_values() {
-        let bounds = CanonicalGroupBounds::new(3, 64, 256).expect("bounded plan");
-        let mut leaf = CanonicalGroupLeafBuilder::new(
-            identity(0),
-            &[SegmentV2LogicalType::U64],
-            bounds,
-        )
-        .expect("preallocated owner");
-
-        leaf.push_row(0, &[SegmentV2Cell::Missing])
-            .expect("missing");
-        leaf.push_row(1, &[SegmentV2Cell::Null])
-            .expect("null joins NoValue");
-        leaf.push_row(2, &[SegmentV2Cell::Value(CanonicalValue::U64(0))])
-            .expect("typed value");
-
-        let groups = leaf.finish().expect("complete leaf");
+        let schema = [SegmentV2LogicalType::U64];
+        let rows = [
+            vec![SegmentV2Cell::Missing],
+            vec![SegmentV2Cell::Null],
+            vec![SegmentV2Cell::Value(CanonicalValue::U64(0))],
+        ];
+        let groups = leaf(identity(0, 7, 0), &schema, &rows);
         assert_eq!(groups.group_count(), 2);
         assert_eq!(groups.row_count_for_test(0), Some(2));
         assert_eq!(groups.row_count_for_test(1), Some(1));
-
-        let mut wrong_type = CanonicalGroupLeafBuilder::new(
-            identity(0),
-            &[SegmentV2LogicalType::U64],
-            bounds,
-        )
-        .expect("preallocated owner");
+        let mut wrong_type =
+            CanonicalGroupLeafBuilder::new(identity(0, 7, 0), &schema, bounds(3, 64, 256))
+                .expect("owner");
         assert_eq!(
             wrong_type.push_row(0, &[SegmentV2Cell::Value(CanonicalValue::I64(0))]),
             Err(GroupStateError::TypeMismatch)
         );
         assert!(wrong_type.is_poisoned());
+        assert_eq!(wrong_type.finish().err(), Some(GroupStateError::Poisoned));
+    }
+
+    #[test]
+    fn independent_group_key_bounds_are_exact_and_plus_one_refuses_atomically() {
+        let schema = [SegmentV2LogicalType::U64];
+        let row = [SegmentV2Cell::Value(CanonicalValue::U64(7))];
+        let exact = u32::try_from(oracle_key(&row).len()).expect("length");
+        let mut accepted =
+            CanonicalGroupLeafBuilder::new(identity(0, 1, 0), &schema, bounds(1, exact, 256))
+                .expect("owner");
+        accepted.push_row(0, &row).expect("exact");
+        assert_eq!(accepted.finish().expect("leaf").group_count(), 1);
+        let mut rejected =
+            CanonicalGroupLeafBuilder::new(identity(0, 1, 0), &schema, bounds(1, exact - 1, 256))
+                .expect("owner");
+        assert_eq!(
+            rejected.push_row(0, &row),
+            Err(GroupStateError::KeyBoundExceeded)
+        );
+        assert!(rejected.is_poisoned());
+    }
+
+    #[test]
+    fn independent_group_count_and_state_bounds_are_exact_and_plus_one_refuses() {
+        let schema = [SegmentV2LogicalType::U64];
+        let mut owner =
+            CanonicalGroupLeafBuilder::new(identity(0, 1, 0), &schema, bounds(2, 64, 80))
+                .expect("owner");
+        assert_eq!(owner.owner.allocated_state_bytes(), 80);
+        owner
+            .push_row(0, &[SegmentV2Cell::Value(CanonicalValue::U64(1))])
+            .expect("one");
+        owner
+            .push_row(1, &[SegmentV2Cell::Value(CanonicalValue::U64(2))])
+            .expect("two");
+        assert_eq!(
+            owner.push_row(2, &[SegmentV2Cell::Value(CanonicalValue::U64(3))]),
+            Err(GroupStateError::GroupBoundExceeded)
+        );
+        assert!(owner.owner.entries.is_empty() && owner.owner.arena.is_empty());
+
+        let exact_key_bytes = oracle_key(&[SegmentV2Cell::Value(CanonicalValue::U64(9))]);
+        let exact_state = u32::try_from(size_of::<super::GroupEntry>() + exact_key_bytes.len())
+            .expect("small state");
+        let mut exact_state_owner =
+            CanonicalGroupLeafBuilder::new(identity(0, 1, 0), &schema, bounds(1, 64, exact_state))
+                .expect("exact state owner");
+        exact_state_owner
+            .push_row(0, &[SegmentV2Cell::Value(CanonicalValue::U64(9))])
+            .expect("exact retained state");
+        let mut plus_one_state = CanonicalGroupLeafBuilder::new(
+            identity(0, 1, 0),
+            &schema,
+            bounds(1, 64, exact_state - 1),
+        )
+        .expect("one-byte-short owner");
+        assert_eq!(
+            plus_one_state.push_row(0, &[SegmentV2Cell::Value(CanonicalValue::U64(9))]),
+            Err(GroupStateError::StateBoundExceeded)
+        );
+        assert!(plus_one_state.owner.entries.is_empty() && plus_one_state.owner.arena.is_empty());
+        assert!(CanonicalGroupBounds::new(MAX_AGGREGATE_DISTINCT_VALUES_V1, 1, 4_096).is_ok());
+        assert_eq!(
+            CanonicalGroupBounds::new(MAX_AGGREGATE_DISTINCT_VALUES_V1 + 1, 1, 4_096),
+            Err(GroupStateError::InvalidGroupBound)
+        );
+        assert!(CanonicalGroupBounds::new(1, 1, MAX_AGGREGATE_STATE_BYTES_V1).is_ok());
+        assert_eq!(
+            CanonicalGroupBounds::new(1, 1, MAX_AGGREGATE_STATE_BYTES_V1 + 1),
+            Err(GroupStateError::InvalidStateBound)
+        );
+        assert_eq!(
+            CanonicalGroupLeafBuilder::new(identity(0, 1, 0), &schema, bounds(2, 1, 31)).err(),
+            Some(GroupStateError::InvalidStateBound)
+        );
+    }
+
+    #[test]
+    fn canonical_framing_prevents_component_collisions_and_row_order_is_sealed() {
+        let schema = [SegmentV2LogicalType::String, SegmentV2LogicalType::String];
+        let rows = [
+            vec![
+                SegmentV2Cell::Value(CanonicalValue::string("ab").expect("string")),
+                SegmentV2Cell::Value(CanonicalValue::string("c").expect("string")),
+            ],
+            vec![
+                SegmentV2Cell::Value(CanonicalValue::string("a").expect("string")),
+                SegmentV2Cell::Value(CanonicalValue::string("bc").expect("string")),
+            ],
+        ];
+        let result = leaf(identity(0, 1, 0), &schema, &rows);
+        assert_eq!(result.group_count(), 2);
+        assert_ne!(result.owner.key(0), result.owner.key(1));
+        let mut reordered =
+            CanonicalGroupLeafBuilder::new(identity(0, 1, 0), &schema, bounds(2, 128, 512))
+                .expect("owner");
+        assert_eq!(
+            reordered.push_row(1, &rows[0]),
+            Err(GroupStateError::RowOrder)
+        );
+        assert!(reordered.is_poisoned());
+    }
+
+    #[test]
+    fn every_closed_group_key_type_matches_the_independent_canonical_oracle() {
+        let enum_type = EnumTypeId::new(7).expect("enum type");
+        let decimal = DecimalSpec::new(8, 2).expect("decimal");
+        let usd = CurrencyCode::new("USD").expect("currency");
+        let cases = vec![
+            (SegmentV2LogicalType::Bool, CanonicalValue::Bool(true)),
+            (SegmentV2LogicalType::I64, CanonicalValue::I64(-7)),
+            (SegmentV2LogicalType::U64, CanonicalValue::U64(7)),
+            (
+                SegmentV2LogicalType::String,
+                CanonicalValue::string("group").expect("string"),
+            ),
+            (
+                SegmentV2LogicalType::Bytes,
+                CanonicalValue::bytes([0, 1, 2]).expect("bytes"),
+            ),
+            (
+                SegmentV2LogicalType::Timestamp,
+                CanonicalValue::Timestamp(Timestamp::new(-1, 9).expect("timestamp")),
+            ),
+            (
+                SegmentV2LogicalType::Date,
+                CanonicalValue::Date(Date::new(-1)),
+            ),
+            (SegmentV2LogicalType::Uuid, CanonicalValue::Uuid([3; 16])),
+            (
+                SegmentV2LogicalType::Enum(enum_type),
+                CanonicalValue::Enum {
+                    type_id: enum_type,
+                    variant_id: EnumVariantId::new(9).expect("variant"),
+                },
+            ),
+            (
+                SegmentV2LogicalType::Decimal(decimal),
+                CanonicalValue::Decimal(Decimal::new(decimal, -123).expect("decimal")),
+            ),
+            (
+                SegmentV2LogicalType::Money {
+                    currency: usd,
+                    amount: decimal,
+                },
+                CanonicalValue::Money(Money::new(usd, Decimal::new(decimal, 123).expect("amount"))),
+            ),
+        ];
+        for (logical_type, value) in cases {
+            let schema = [logical_type];
+            let rows = vec![
+                vec![SegmentV2Cell::Missing],
+                vec![SegmentV2Cell::Null],
+                vec![SegmentV2Cell::Value(value)],
+            ];
+            let inventory = [identity(0, 4, 0)];
+            let mut merged = CanonicalGroupMerge::new(&schema, &inventory, bounds(4, 256, 1_024))
+                .expect("merge");
+            merged
+                .merge_leaf(leaf(inventory[0], &schema, &rows))
+                .expect("leaf");
+            assert_eq!(
+                merged.finish().expect("groups").rows_for_test(),
+                oracle(&rows)
+            );
+        }
+
+        let other_decimal = DecimalSpec::new(9, 2).expect("other decimal");
+        let schema = [SegmentV2LogicalType::Money {
+            currency: usd,
+            amount: decimal,
+        }];
+        let mut mismatched =
+            CanonicalGroupLeafBuilder::new(identity(0, 4, 0), &schema, bounds(2, 128, 512))
+                .expect("owner");
+        assert_eq!(
+            mismatched.push_row(
+                0,
+                &[SegmentV2Cell::Value(CanonicalValue::Money(Money::new(
+                    usd,
+                    Decimal::new(other_decimal, 1).expect("amount"),
+                )))],
+            ),
+            Err(GroupStateError::TypeMismatch)
+        );
+    }
+
+    #[test]
+    fn canonical_partition_merge_matches_independent_scalar_oracle() {
+        let schema = [SegmentV2LogicalType::U64, SegmentV2LogicalType::String];
+        let rows = vec![
+            vec![SegmentV2Cell::Missing, SegmentV2Cell::Null],
+            vec![SegmentV2Cell::Null, SegmentV2Cell::Missing],
+            vec![
+                SegmentV2Cell::Value(CanonicalValue::U64(2)),
+                SegmentV2Cell::Value(CanonicalValue::string("z").expect("string")),
+            ],
+            vec![
+                SegmentV2Cell::Value(CanonicalValue::U64(1)),
+                SegmentV2Cell::Value(CanonicalValue::string("a").expect("string")),
+            ],
+            vec![SegmentV2Cell::Missing, SegmentV2Cell::Null],
+            vec![
+                SegmentV2Cell::Value(CanonicalValue::U64(1)),
+                SegmentV2Cell::Value(CanonicalValue::string("a").expect("string")),
+            ],
+        ];
+        let expected = oracle(&rows);
+        for cuts in [vec![0, 2, 6], vec![0, 1, 4, 6], vec![0, 3, 5, 6]] {
+            let inventory = match cuts.len() - 1 {
+                2 => vec![identity(0, 9, 0), identity(0, 9, 1)],
+                3 => vec![identity(0, 8, 0), identity(0, 9, 0), identity(1, 1, 0)],
+                _ => unreachable!("closed test partitions"),
+            };
+            let mut merged = CanonicalGroupMerge::new(&schema, &inventory, bounds(16, 256, 4_096))
+                .expect("merge");
+            for (batch, window) in cuts.windows(2).enumerate() {
+                merged
+                    .merge_leaf(leaf(inventory[batch], &schema, &rows[window[0]..window[1]]))
+                    .expect("merge leaf");
+            }
+            assert_eq!(merged.finish().expect("complete").rows_for_test(), expected);
+        }
+
+        for permutation in [[0, 1, 2, 3, 4, 5], [5, 4, 3, 2, 1, 0], [2, 0, 5, 1, 4, 3]] {
+            let permuted = permutation
+                .into_iter()
+                .map(|index| rows[index].clone())
+                .collect::<Vec<_>>();
+            let inventory = [identity(0, 8, 0), identity(0, 9, 0), identity(1, 1, 0)];
+            let mut merged = CanonicalGroupMerge::new(&schema, &inventory, bounds(16, 256, 4_096))
+                .expect("merge");
+            for (batch, partition) in permuted.chunks(2).enumerate() {
+                merged
+                    .merge_leaf(leaf(inventory[batch], &schema, partition))
+                    .expect("canonical partition permutation");
+            }
+            assert_eq!(merged.finish().expect("complete").rows_for_test(), expected);
+        }
+    }
+
+    #[test]
+    fn merge_refuses_duplicate_gap_foreign_excess_and_omission_without_partial_state() {
+        let schema = [SegmentV2LogicalType::U64];
+        let rows = [vec![SegmentV2Cell::Value(CanonicalValue::U64(1))]];
+        let inventory = [identity(0, 1, 0), identity(0, 1, 1)];
+        for (actual, expected) in [
+            (identity(0, 1, 1), GroupStateError::InventoryGap),
+            (identity(1, 1, 0), GroupStateError::ForeignRootInventory),
+            (identity(0, 2, 0), GroupStateError::ForeignSegment),
+        ] {
+            let mut merge =
+                CanonicalGroupMerge::new(&schema, &inventory, bounds(4, 64, 512)).expect("merge");
+            assert_eq!(
+                merge.merge_leaf(leaf(actual, &schema, &rows)),
+                Err(expected)
+            );
+            assert!(merge.owner.entries.is_empty());
+            assert_eq!(merge.finish().err(), Some(GroupStateError::Poisoned));
+        }
+        let mut duplicate =
+            CanonicalGroupMerge::new(&schema, &inventory, bounds(4, 64, 512)).expect("merge");
+        duplicate
+            .merge_leaf(leaf(inventory[0], &schema, &rows))
+            .expect("first");
+        assert_eq!(
+            duplicate.merge_leaf(leaf(inventory[0], &schema, &rows)),
+            Err(GroupStateError::DuplicateOrReorderedLeaf)
+        );
+        assert!(duplicate.owner.entries.is_empty());
+        let complete = [identity(0, 1, 0)];
+        let mut excess =
+            CanonicalGroupMerge::new(&schema, &complete, bounds(4, 64, 512)).expect("merge");
+        excess
+            .merge_leaf(leaf(complete[0], &schema, &rows))
+            .expect("first");
+        assert_eq!(
+            excess.merge_leaf(leaf(identity(0, 1, 1), &schema, &rows)),
+            Err(GroupStateError::ExcessLeaf)
+        );
+        assert!(excess.owner.entries.is_empty());
+        let omission =
+            CanonicalGroupMerge::new(&schema, &inventory, bounds(4, 64, 512)).expect("merge");
+        assert_eq!(
+            omission.finish().err(),
+            Some(GroupStateError::InventoryOmission)
+        );
+
+        let other_schema = [SegmentV2LogicalType::I64];
+        let other_rows = [vec![SegmentV2Cell::Value(CanonicalValue::I64(1))]];
+        let mut incompatible =
+            CanonicalGroupMerge::new(&schema, &complete, bounds(4, 64, 512)).expect("merge");
+        assert_eq!(
+            incompatible.merge_leaf(leaf(complete[0], &other_schema, &other_rows)),
+            Err(GroupStateError::IncompatibleLeaf)
+        );
+        assert!(incompatible.owner.entries.is_empty());
+    }
+
+    #[test]
+    fn malformed_inventory_and_arithmetic_overflow_fail_closed() {
+        let schema = [SegmentV2LogicalType::U64];
+        let duplicate = [identity(0, 1, 0), identity(0, 1, 0)];
+        let gap = [identity(0, 1, 0), identity(0, 1, 2)];
+        let nonzero_first = [identity(0, 1, 1)];
+        for inventory in [&duplicate[..], &gap, &nonzero_first] {
+            assert_eq!(
+                CanonicalGroupMerge::new(&schema, inventory, bounds(4, 64, 512)).err(),
+                Some(GroupStateError::InvalidInventory)
+            );
+        }
+        let mut owner = super::BoundedGroupOwner::new(bounds(1, 64, 256)).expect("owner");
+        owner.admit_encoded(&[0], u64::MAX).expect("first");
+        assert_eq!(
+            owner.admit_encoded(&[0], 1),
+            Err(GroupStateError::ArithmeticOverflow)
+        );
+        assert!(owner.entries.is_empty() && owner.arena.is_empty());
+    }
+
+    #[test]
+    fn production_group_owner_has_no_per_row_owned_key_or_map() {
+        let source = include_str!("group.rs");
+        let production = source.split("#[cfg(test)]").next().expect("production");
+        assert!(
+            production.contains("arena: Vec<u8>")
+                && production.contains("entries: Vec<GroupEntry>")
+        );
+        for forbidden in [
+            "Vec<CanonicalValue>",
+            "Vec<SegmentV2Cell>",
+            "BTreeMap",
+            "HashMap",
+            ".to_vec()",
+        ] {
+            assert!(
+                !production.contains(forbidden),
+                "per-row allocation form {forbidden}"
+            );
+        }
     }
 }
