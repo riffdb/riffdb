@@ -39,6 +39,7 @@ review_triggers:
   - Any 1, 9, 19, 100, D, A, V, W, semantic-byte, inspection-page, or divergence-negative case would be omitted or its bound raised.
   - Changelog, audit, durability, recovery, remote, or performance evidence would be inferred from model equality instead of observed on its required production path.
   - Redb evidence would inspect a mutable or incomplete namespace, omit exact-end continuation, exceed 256 targets per page, or lack a bounded engine-side enumeration capable of finding undeclared targets.
+  - An evidence API would be shipped, lose its doc-hidden/dev-only boundary, add a production dependency edge, become reachable through service, protocol, configuration, daemon, or application code, or grant runtime authority.
   - Epoch-two could write or read a retired capsule or segment identity, alter V6/V5 message descriptors, tags, revisions, payload bytes, validation, or semantics, omit ADR-0204's exact registry-hash rotations, or make an identity caller-selectable.
   - WP-684 would retain the removed memory-backend path or omit the completed WP-756 and open WP-757 hard dependencies, testkit-server harness path, bounded inspection extension, or required governance edits in Decision 9.
 ---
@@ -174,8 +175,12 @@ identity without reinterpreting any durable bytes.
 10. No production data behavior changes. The coordinator still derives and seals once; redb still
     commits the identical bounded graph; V6/V5 still encode the identical messages. This decision
     changes the independent evidence source and reconciles epoch-specific identity selection. It
-    adds no public field, method, schema, transport, configuration, backend, model, inspection,
-    target, budget, fallback, or transaction control.
+    permits only the bounded `#[doc(hidden)]` or dev-only evidence APIs needed among
+    `riffdb-testkit`, redb durable inspection in `riffdb-storage-redb`, and
+    `riffdb-testkit-server` to prove these obligations. They add no shipped dependency edge,
+    service/protocol/configuration/daemon/application exposure, production runtime authority, or
+    application-facing field, method, schema, backend, model, inspection, target, budget, fallback,
+    or transaction control.
 
 ## Options considered
 
@@ -201,7 +206,8 @@ identity without reinterpreting any durable bytes.
 ## Standing design tests
 
 - **Interface safety:** application callers retain one generated compiled command and cannot select
-  the oracle, backend, targets, pages, budgets, transaction, split, fallback, or durable identity.
+  the oracle, backend, targets, pages, budgets, transaction, split, fallback, or durable identity;
+  the bounded doc-hidden/dev-only evidence APIs are unreachable from the shipped production graph.
 - **Scale:** `D <= 4,096`; `A`, `V`, and `W <= 65,535`; semantic/envelope ceilings remain 16 MiB;
   production derivation is once per attempt, linear, and performs no data/history scan. Offline
   evidence may stream the independently bounded corpus namespace from one immutable snapshot, with
