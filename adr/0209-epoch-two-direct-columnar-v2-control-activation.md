@@ -171,9 +171,11 @@ validation without changing or translating the retained wire record.
    page boundary and causes no publication, checkpoint, frontier advance, or acknowledgement.
 
    Runtime constants `COLUMNAR_LAYOUT_VERSION_V1` and `COLUMNAR_MANIFEST_FORMAT_VERSION_V1` are
-   removed. Exact `LAYOUT_VERSION = 1` remains only as the frozen registered-definition fingerprint
-   preimage required by ADR-0190; it is not a layout identity, artifact format, or runtime selector.
-   Encoding-registry V1 and generation-root V1 remain their independently current V2 components.
+   removed. Exact `LAYOUT_VERSION = 1` remains frozen for the registered-definition fingerprint and
+   existing provider-state identity and descriptor bytes required by ADR-0190; it is not a physical
+   runtime layout selector. Provider descriptor bytes and the resulting `ColumnarProjectionSpecHashV1`
+   semantics remain exact. Encoding-registry V1 and generation-root V1 remain their independently
+   current V2 components.
 
 10. Production authority is limited to `crates/riffdb-types/src/columnar.rs`,
     `crates/riffdb-types/src/lib.rs`, `crates/riffdb-storage-api/src/columnar_control.rs`,
