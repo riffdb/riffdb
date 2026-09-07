@@ -25,8 +25,8 @@ obligations:
     says: Architecture checks freeze the passive controller mirror, its sole increment site, both shared-state rebuild sites, the bounded-start exclusion on the raw ephemeral rebuild, saturation, and the fresh-locator arming location and bounds.
 review_triggers:
   - The controller observation would callback, block, allocate per rebuild, fail, reset, decrement, wrap, affect a branch or result, or expose state-changing authority.
-  - An ordinary `RedbStore::open`, production composition, application service, protocol, configuration, command, agent, or operator surface would install or expose the observation beyond the pre-existing explicit doc-hidden test open.
-  - A rebuild path would bypass the sole note method, the mirror would increment other than exactly once per note, or calibration would not prove exact parity after a real rebuild.
+  - Installation or observation would occur without explicitly selecting the pre-existing doc-hidden Rust test API, or ordinary `RedbStore::open`, production composition, a service, protocol, or configuration would select it.
+  - A shared-state rebuild or any rebuild reachable from verified bounded startup would bypass the sole note method, the mirror would increment other than exactly once per note, or calibration would not prove exact parity after a real rebuild.
   - The semantic proof would retain or fabricate another operational repository, widen shared-port traits, bypass the existing concrete production Group helper or coordinator inspector, manually arm, or omit any zero assertion.
   - WP-705 would touch another path, or fresh-locator, transient-index, audit-cause, threshold, transaction, acknowledgement, publication, restart, bound, or evidence rules would otherwise change.
 ---
@@ -149,11 +149,10 @@ there lets the test retain observation, not repository authority.
 ## Standing design tests
 
 - **Interface safety:** the passive read-only getter is a Rust-visible extension
-  of the pre-existing controller test API. Only the pre-existing explicit
-  doc-hidden test open can install and observe that controller; ordinary
-  `RedbStore::open`, production composition, services, protocols,
-  configuration, application authors, agents, and operators cannot. The getter
-  provides no control.
+  of the pre-existing controller test API. Installation and observation require
+  explicitly selecting that pre-existing doc-hidden Rust test API; ordinary
+  `RedbStore::open`, production composition, services, protocols, and
+  configuration never select it. The getter is passive and provides no control.
 - **Scale:** observation is one saturating fixed-size atomic update per actual
   rebuild and one atomic load per assertion. It retains no rows, keys, events,
   histories, callbacks, or population state.
