@@ -1274,6 +1274,58 @@ mod tests {
     }
 
     #[test]
+    fn work_exhaustion_after_success_poisons_and_releases_partial_groups() {
+        let logical_type = SegmentV2LogicalType::U64;
+        let schema = [required(&logical_type)];
+        let first = [SegmentV2Cell::Value(CanonicalValue::U64(1))];
+        let second = [SegmentV2Cell::Value(CanonicalValue::U64(2))];
+
+        let mut builder = CanonicalGroupLeafBuilder::new(
+            identity(0, 1, 0),
+            &schema,
+            bounds(2, 32, 256),
+        )
+        .expect("builder");
+        let mut builder_work = GroupWorkBudget::new(1).expect("one admitted row");
+        builder
+            .push_row(0, &first, &mut builder_work)
+            .expect("first row");
+        let work_before = builder_work;
+        assert_eq!(
+            builder.push_row(1, &second, &mut builder_work),
+            Err(GroupStateError::WorkBoundExceeded)
+        );
+        assert_eq!(builder_work, work_before);
+        assert!(builder.is_poisoned());
+        assert!(builder.owner.entries.is_empty() && builder.owner.arena.is_empty());
+        assert_eq!(builder.finish().err(), Some(GroupStateError::Poisoned));
+
+        let inventory = [identity(0, 2, 0), identity(0, 2, 1)];
+        let first_rows = [vec![SegmentV2Cell::Value(CanonicalValue::U64(1))]];
+        let second_rows = [vec![SegmentV2Cell::Value(CanonicalValue::U64(2))]];
+        let mut merge_work = GroupWorkBudget::new(4).expect("inventory plus first merge");
+        let mut merge = CanonicalGroupMerge::new(
+            &schema,
+            &inventory,
+            bounds(2, 32, 256),
+            &mut merge_work,
+        )
+        .expect("merge");
+        merge
+            .merge_leaf(leaf(inventory[0], &schema, &first_rows), &mut merge_work)
+            .expect("first leaf");
+        let work_before = merge_work;
+        assert_eq!(
+            merge.merge_leaf(leaf(inventory[1], &schema, &second_rows), &mut merge_work),
+            Err(GroupStateError::WorkBoundExceeded)
+        );
+        assert_eq!(merge_work, work_before);
+        assert!(merge.poisoned);
+        assert!(merge.owner.as_ref().expect("owner").entries.is_empty());
+        assert_eq!(merge.finish().err(), Some(GroupStateError::Poisoned));
+    }
+
+    #[test]
     fn production_group_owner_has_no_per_row_owned_key_or_map() {
         let source = include_str!("group.rs");
         let production = source
