@@ -380,7 +380,10 @@ fn validate_cell(term: &TopNOrderTerm, cell: &SegmentV2Cell) -> Result<(), TopNE
     }
 }
 
-fn validate_present_type(logical_type: &SegmentV2LogicalType, value: &CanonicalValue) -> bool {
+pub(super) fn validate_present_type(
+    logical_type: &SegmentV2LogicalType,
+    value: &CanonicalValue,
+) -> bool {
     match (logical_type, value) {
         (SegmentV2LogicalType::Bool, CanonicalValue::Bool(_))
         | (SegmentV2LogicalType::I64, CanonicalValue::I64(_))
@@ -463,7 +466,7 @@ fn compare_cells(
     Ok(compared)
 }
 
-fn compare_present(
+pub(super) fn compare_present(
     profile: TopNComparisonProfile,
     logical_type: &SegmentV2LogicalType,
     left: &CanonicalValue,
