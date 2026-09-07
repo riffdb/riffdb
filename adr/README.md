@@ -244,6 +244,7 @@ record with no front matter.
 | [0207](0207-frozen-changelog-compatibility-exception-during-the-pre-external-window.md) | Frozen Changelog Compatibility Exception During the Pre-External Window | Accepted | guarantee |
 | [0208](0208-exact-empty-command-authority-avoids-command-audit-index-activation.md) | Exact-Empty Command Authority Avoids Command-Audit Index Activation | Accepted | guarantee |
 | [0209](0209-epoch-two-direct-columnar-v2-control-activation.md) | Epoch-Two Direct Columnar V2 Control Activation | Proposed | guarantee |
+| [0210](0210-passive-transient-index-rebuild-observation-for-production-proof.md) | Passive Transient-Index Rebuild Observation for Production Proof | Proposed | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
