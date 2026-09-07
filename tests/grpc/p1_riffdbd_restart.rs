@@ -65,6 +65,7 @@ use tonic::transport::Endpoint;
 const AUDIENCE: &str = "riffdb-grpc-loopback";
 const ENVIRONMENT: &str = "p1-restart-test";
 const READY_PREFIX: &str = "riffdbd-ready-v1\t";
+const STARTUP_CENSUS_PREFIX: &str = "riffdb-startup-stages-v1\t";
 const SHUTDOWN_COMMAND: &[u8] = b"shutdown\n";
 const MAX_READY_LINE_BYTES: usize = 256;
 /// Bound on retained child stderr lines (diagnostics only, never payload).
@@ -563,6 +564,34 @@ fn streamable_budget_fixture_compiles_and_proves_application_routing() {
     let module = ValidatedReactiveModule::compile(BUDGET_STREAM_MODULE, &checked, &[])
         .expect("budget allocations stream module compiles");
     let _ = module.identity();
+}
+
+#[test]
+fn startup_census_observer_waits_after_readiness_for_stderr_delivery() -> TestResult<()> {
+    let (ready_sender, ready) = mpsc::sync_channel(1);
+    let (startup_census_sender, startup_census) = mpsc::sync_channel(0);
+    let expected = "riffdb-startup-stages-v1\tmode=clean_certificate".to_owned();
+    let produced = expected.clone();
+
+    let observer = thread::spawn(move || -> TestResult<String> {
+        ready
+            .recv()
+            .map_err(|_| test_failure("readiness sender disconnected"))?;
+        receive_startup_census(&startup_census, Duration::from_secs(1))
+    });
+
+    ready_sender
+        .send(())
+        .map_err(|_| test_failure("readiness observer disconnected"))?;
+    startup_census_sender
+        .send(produced)
+        .map_err(|_| test_failure("startup census observer disconnected"))?;
+
+    let observed = observer
+        .join()
+        .map_err(|_| test_failure("startup census observer panicked"))??;
+    assert_eq!(observed, expected);
+    Ok(())
 }
 
 // A successful DeployReactiveModule publication must be able to record its OWN
@@ -2369,6 +2398,7 @@ enum ReaperCommand {
 struct ServerProcess {
     stdin: Option<ChildStdin>,
     ready: Receiver<io::Result<String>>,
+    startup_census: Receiver<String>,
     reaper_commands: SyncSender<ReaperCommand>,
     exited: Receiver<io::Result<ExitStatus>>,
     reaper: Option<JoinHandle<()>>,
@@ -2426,7 +2456,10 @@ impl ServerProcess {
         let stdout = thread::spawn(move || read_ready_then_drain(stdout, ready_sender));
         let retained_stderr = Arc::new(Mutex::new(Vec::new()));
         let retained_stderr_worker = Arc::clone(&retained_stderr);
-        let stderr = thread::spawn(move || drain_stream(stderr, retained_stderr_worker));
+        let (startup_census_sender, startup_census) = mpsc::sync_channel(1);
+        let stderr = thread::spawn(move || {
+            drain_stream(stderr, retained_stderr_worker, startup_census_sender)
+        });
         let (reaper_commands, commands) = mpsc::sync_channel(1);
         let (exit_sender, exited) = mpsc::sync_channel(1);
         let reaper = thread::spawn(move || reap_child(child, commands, exit_sender));
@@ -2434,6 +2467,7 @@ impl ServerProcess {
         Ok(Self {
             stdin: Some(stdin),
             ready,
+            startup_census,
             reaper_commands,
             exited,
             reaper: Some(reaper),
@@ -2452,15 +2486,9 @@ impl ServerProcess {
             .unwrap_or_default()
     }
 
-    /// The child's `riffdb-startup-stages-v1` census, once it has been emitted.
-    ///
-    /// Emitted immediately before the ready line, so it is available to any
-    /// caller that has already observed readiness.
+    /// Waits for the child's `riffdb-startup-stages-v1` census.
     fn startup_census(&self) -> TestResult<String> {
-        self.stderr_lines()
-            .into_iter()
-            .find(|line| line.starts_with("riffdb-startup-stages-v1\t"))
-            .ok_or_else(|| test_failure("riffdbd emitted no startup stage census"))
+        receive_startup_census(&self.startup_census, PROCESS_START_TIMEOUT)
     }
 
     fn wait_for_ready_address(&self) -> TestResult<SocketAddr> {
@@ -2641,7 +2669,24 @@ fn drain_through_newline(reader: &mut impl Read) -> io::Result<()> {
 /// first line must be the ready line. Discarding stderr entirely meant those
 /// lines could not be asserted, which is how a readiness-path regression stayed
 /// invisible to this suite.
-fn drain_stream(stderr: ChildStderr, retained: Arc<Mutex<Vec<String>>>) -> usize {
+fn receive_startup_census(
+    startup_census: &Receiver<String>,
+    deadline: Duration,
+) -> TestResult<String> {
+    match startup_census.recv_timeout(deadline) {
+        Ok(line) => Ok(line),
+        Err(RecvTimeoutError::Timeout) => Err(test_failure("riffdbd startup census timed out")),
+        Err(RecvTimeoutError::Disconnected) => {
+            Err(test_failure("riffdbd startup census reader disconnected"))
+        }
+    }
+}
+
+fn drain_stream(
+    stderr: ChildStderr,
+    retained: Arc<Mutex<Vec<String>>>,
+    startup_census: SyncSender<String>,
+) -> usize {
     let mut reader = BufReader::new(stderr);
     let mut total = 0_usize;
     let mut line = String::new();
@@ -2651,10 +2696,14 @@ fn drain_stream(stderr: ChildStderr, retained: Arc<Mutex<Vec<String>>>) -> usize
             Ok(0) | Err(_) => return total,
             Ok(read) => {
                 total = total.saturating_add(read);
+                let line = line.trim_end().to_owned();
+                if line.starts_with(STARTUP_CENSUS_PREFIX) {
+                    let _ = startup_census.try_send(line.clone());
+                }
                 if let Ok(mut retained) = retained.lock()
                     && retained.len() < MAX_RETAINED_STDERR_LINES
                 {
-                    retained.push(line.trim_end().to_owned());
+                    retained.push(line);
                 }
             }
         }
