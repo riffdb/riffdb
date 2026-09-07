@@ -1,10 +1,9 @@
 //! Inert bounded mechanics for compiler-sealed V2 columnar batches.
 
-use std::cmp::Ordering;
 use std::num::NonZeroU16;
 
 use crate::segment_v2::{
-    MAX_SEGMENT_V2_COLUMNS, SegmentV2Cell, SegmentV2LogicalType, SegmentV2Predicate, compare_values,
+    MAX_SEGMENT_V2_COLUMNS, SegmentV2Cell, SegmentV2LogicalType, SegmentV2Predicate,
 };
 
 const CLOSED_BATCH_WIDTHS: [usize; 5] = [64, 128, 256, 512, 1_024];
@@ -146,9 +145,13 @@ impl MonotoneSelection {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ColumnarPredicateKernelError {
     InvalidLane,
-    InvalidPredicateType,
+    UnsupportedLane,
+    UnsupportedOperator,
+    RightHandTypeMismatch,
     InvalidWorkBound,
     WorkBoundExceeded,
+    MissingField,
+    UnsupportedPredicate,
     LaneIntegrity,
 }
 
@@ -168,41 +171,54 @@ impl PredicateWorkCharge {
         self.remaining
     }
 
-    fn consume(&mut self, required: usize) -> Result<(), ColumnarPredicateKernelError> {
-        self.remaining = self
-            .remaining
-            .checked_sub(required)
-            .ok_or(ColumnarPredicateKernelError::WorkBoundExceeded)?;
+    fn admits(&self, required: usize) -> Result<(), ColumnarPredicateKernelError> {
+        if required > self.remaining {
+            return Err(ColumnarPredicateKernelError::WorkBoundExceeded);
+        }
         Ok(())
+    }
+
+    fn commit(&mut self, consumed: usize) {
+        self.remaining -= consumed;
     }
 }
 
 pub(crate) struct ColumnarPredicateKernel {
     lane: usize,
-    logical_type: SegmentV2LogicalType,
     predicate: SegmentV2Predicate,
 }
 
 impl ColumnarPredicateKernel {
     pub(crate) fn new(
         lane: usize,
-        lane_count: usize,
-        logical_type: SegmentV2LogicalType,
+        lane_types: &[SegmentV2LogicalType],
         predicate: SegmentV2Predicate,
     ) -> Result<Self, ColumnarPredicateKernelError> {
-        if lane >= lane_count || lane_count == 0 || lane_count > MAX_SEGMENT_V2_COLUMNS {
+        if lane_types.is_empty()
+            || lane_types.len() > MAX_SEGMENT_V2_COLUMNS
+            || lane >= lane_types.len()
+        {
             return Err(ColumnarPredicateKernelError::InvalidLane);
         }
-        if let Some(value) = predicate_value(&predicate)
-            && !logical_type.accepts(value)
-        {
-            return Err(ColumnarPredicateKernelError::InvalidPredicateType);
+        if !matches!(lane_types[lane], SegmentV2LogicalType::U64) {
+            return Err(ColumnarPredicateKernelError::UnsupportedLane);
         }
-        Ok(Self {
-            lane,
-            logical_type,
-            predicate,
-        })
+        match &predicate {
+            SegmentV2Predicate::IsMissing => {
+                return Err(ColumnarPredicateKernelError::UnsupportedOperator);
+            }
+            SegmentV2Predicate::IsNull | SegmentV2Predicate::IsPresent => {}
+            SegmentV2Predicate::Equal(value)
+            | SegmentV2Predicate::LessThan(value)
+            | SegmentV2Predicate::LessThanOrEqual(value)
+            | SegmentV2Predicate::GreaterThan(value)
+            | SegmentV2Predicate::GreaterThanOrEqual(value) => {
+                if !matches!(value, riffdb_types::CanonicalValue::U64(_)) {
+                    return Err(ColumnarPredicateKernelError::RightHandTypeMismatch);
+                }
+            }
+        }
+        Ok(Self { lane, predicate })
     }
 
     pub(crate) fn apply(
@@ -218,64 +234,87 @@ impl ColumnarPredicateKernel {
             .lanes()
             .get(self.lane)
             .ok_or(ColumnarPredicateKernelError::InvalidLane)?;
-        charge.consume(selection.selected())?;
-        let mut matches = vec![false; batch.row_count()];
+        let consumed = selection.selected();
+        charge.admits(consumed)?;
+        let mut next = vec![false; batch.row_count()];
+        let mut next_selected = 0_usize;
         for index in selection.indices() {
-            matches[index] = predicate_matches(&self.logical_type, &self.predicate, &lane[index])?;
+            if predicate_matches(&self.predicate, &lane[index])? {
+                next[index] = true;
+                next_selected += 1;
+            }
         }
-        selection
-            .retain(&matches)
-            .map_err(|_| ColumnarPredicateKernelError::LaneIntegrity)
-    }
-}
-
-fn predicate_value(predicate: &SegmentV2Predicate) -> Option<&riffdb_types::CanonicalValue> {
-    match predicate {
-        SegmentV2Predicate::Equal(value)
-        | SegmentV2Predicate::LessThan(value)
-        | SegmentV2Predicate::LessThanOrEqual(value)
-        | SegmentV2Predicate::GreaterThan(value)
-        | SegmentV2Predicate::GreaterThanOrEqual(value) => Some(value),
-        SegmentV2Predicate::IsMissing
-        | SegmentV2Predicate::IsNull
-        | SegmentV2Predicate::IsPresent => None,
+        selection.retained = next;
+        selection.selected = next_selected;
+        charge.commit(consumed);
+        Ok(())
     }
 }
 
 fn predicate_matches(
-    logical_type: &SegmentV2LogicalType,
     predicate: &SegmentV2Predicate,
     cell: &SegmentV2Cell,
 ) -> Result<bool, ColumnarPredicateKernelError> {
-    match (cell, predicate) {
-        (SegmentV2Cell::Missing, SegmentV2Predicate::IsMissing)
-        | (SegmentV2Cell::Null, SegmentV2Predicate::IsNull)
-        | (SegmentV2Cell::Value(_), SegmentV2Predicate::IsPresent) => Ok(true),
-        (SegmentV2Cell::Value(left), predicate) => {
-            let Some(right) = predicate_value(predicate) else {
-                return Ok(false);
-            };
-            let ordering = compare_values(logical_type, left, right)
-                .map_err(|_| ColumnarPredicateKernelError::LaneIntegrity)?;
-            Ok(match predicate {
-                SegmentV2Predicate::Equal(_) => ordering == Ordering::Equal,
-                SegmentV2Predicate::LessThan(_) => ordering == Ordering::Less,
-                SegmentV2Predicate::LessThanOrEqual(_) => ordering != Ordering::Greater,
-                SegmentV2Predicate::GreaterThan(_) => ordering == Ordering::Greater,
-                SegmentV2Predicate::GreaterThanOrEqual(_) => ordering != Ordering::Less,
-                SegmentV2Predicate::IsMissing
-                | SegmentV2Predicate::IsNull
-                | SegmentV2Predicate::IsPresent => false,
-            })
-        }
-        (SegmentV2Cell::Missing | SegmentV2Cell::Null, _) => Ok(false),
+    match cell {
+        SegmentV2Cell::Value(riffdb_types::CanonicalValue::U64(left)) => Ok(match predicate {
+            SegmentV2Predicate::Equal(riffdb_types::CanonicalValue::U64(right)) => left == right,
+            SegmentV2Predicate::LessThan(riffdb_types::CanonicalValue::U64(right)) => left < right,
+            SegmentV2Predicate::LessThanOrEqual(riffdb_types::CanonicalValue::U64(right)) => {
+                left <= right
+            }
+            SegmentV2Predicate::GreaterThan(riffdb_types::CanonicalValue::U64(right)) => {
+                left > right
+            }
+            SegmentV2Predicate::GreaterThanOrEqual(riffdb_types::CanonicalValue::U64(right)) => {
+                left >= right
+            }
+            SegmentV2Predicate::IsNull => false,
+            // This is the sealed mapping to the scalar `IsNotNull` operator.
+            SegmentV2Predicate::IsPresent => true,
+            SegmentV2Predicate::Equal(_)
+            | SegmentV2Predicate::LessThan(_)
+            | SegmentV2Predicate::LessThanOrEqual(_)
+            | SegmentV2Predicate::GreaterThan(_)
+            | SegmentV2Predicate::GreaterThanOrEqual(_)
+            | SegmentV2Predicate::IsMissing => {
+                return Err(ColumnarPredicateKernelError::UnsupportedPredicate);
+            }
+        }),
+        SegmentV2Cell::Value(_) => Err(ColumnarPredicateKernelError::LaneIntegrity),
+        SegmentV2Cell::Missing => match predicate {
+            SegmentV2Predicate::Equal(_)
+            | SegmentV2Predicate::LessThan(_)
+            | SegmentV2Predicate::LessThanOrEqual(_)
+            | SegmentV2Predicate::GreaterThan(_)
+            | SegmentV2Predicate::GreaterThanOrEqual(_) => {
+                Err(ColumnarPredicateKernelError::MissingField)
+            }
+            SegmentV2Predicate::IsNull | SegmentV2Predicate::IsPresent => Ok(false),
+            SegmentV2Predicate::IsMissing => {
+                Err(ColumnarPredicateKernelError::UnsupportedPredicate)
+            }
+        },
+        SegmentV2Cell::Null => match predicate {
+            SegmentV2Predicate::Equal(_) => Ok(false),
+            SegmentV2Predicate::LessThan(_)
+            | SegmentV2Predicate::LessThanOrEqual(_)
+            | SegmentV2Predicate::GreaterThan(_)
+            | SegmentV2Predicate::GreaterThanOrEqual(_) => {
+                Err(ColumnarPredicateKernelError::UnsupportedPredicate)
+            }
+            SegmentV2Predicate::IsNull => Ok(true),
+            SegmentV2Predicate::IsPresent => Ok(false),
+            SegmentV2Predicate::IsMissing => {
+                Err(ColumnarPredicateKernelError::UnsupportedPredicate)
+            }
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use riffdb_types::CanonicalValue;
+    use riffdb_types::{CanonicalValue, CurrencyCode, DecimalSpec, EnumTypeId};
 
     fn lane(width: usize, value: u64) -> Vec<SegmentV2Cell> {
         vec![SegmentV2Cell::Value(riffdb_types::CanonicalValue::U64(value)); width]
@@ -418,96 +457,160 @@ mod tests {
         assert_eq!(selection.indices().collect::<Vec<_>>(), before_error);
     }
 
-    fn independent_u64_scalar_match(cell: &SegmentV2Cell, predicate: &SegmentV2Predicate) -> bool {
-        match (cell, predicate) {
-            (SegmentV2Cell::Missing, SegmentV2Predicate::IsMissing)
-            | (SegmentV2Cell::Null, SegmentV2Predicate::IsNull)
-            | (SegmentV2Cell::Value(_), SegmentV2Predicate::IsPresent) => true,
-            (
-                SegmentV2Cell::Value(CanonicalValue::U64(left)),
-                SegmentV2Predicate::Equal(CanonicalValue::U64(right)),
-            ) => left == right,
-            (
-                SegmentV2Cell::Value(CanonicalValue::U64(left)),
-                SegmentV2Predicate::LessThan(CanonicalValue::U64(right)),
-            ) => left < right,
-            (
-                SegmentV2Cell::Value(CanonicalValue::U64(left)),
-                SegmentV2Predicate::LessThanOrEqual(CanonicalValue::U64(right)),
-            ) => left <= right,
-            (
-                SegmentV2Cell::Value(CanonicalValue::U64(left)),
-                SegmentV2Predicate::GreaterThan(CanonicalValue::U64(right)),
-            ) => left > right,
-            (
-                SegmentV2Cell::Value(CanonicalValue::U64(left)),
-                SegmentV2Predicate::GreaterThanOrEqual(CanonicalValue::U64(right)),
-            ) => left >= right,
-            _ => false,
-        }
-    }
-
     // Inert predicate-kernel checkpoint only. The complete cross-type,
     // cross-operator differential obligation remains pending.
     #[test]
     fn columnar_predicate_kernel_matches_independent_optional_state_oracle() {
         let width = ColumnarBatchWidth::choose(64, 1, 64).expect("closed width");
-        let cells = vec![
-            SegmentV2Cell::Missing,
-            SegmentV2Cell::Null,
-            SegmentV2Cell::Value(CanonicalValue::U64(1)),
-            SegmentV2Cell::Value(CanonicalValue::U64(2)),
-            SegmentV2Cell::Value(CanonicalValue::U64(3)),
-            SegmentV2Cell::Value(CanonicalValue::U64(4)),
-            SegmentV2Cell::Value(CanonicalValue::U64(5)),
-            SegmentV2Cell::Value(CanonicalValue::U64(6)),
+        let cases = [
+            (
+                SegmentV2Cell::Missing,
+                SegmentV2Predicate::Equal(CanonicalValue::U64(3)),
+                Err(ColumnarPredicateKernelError::MissingField),
+            ),
+            (
+                SegmentV2Cell::Null,
+                SegmentV2Predicate::Equal(CanonicalValue::U64(3)),
+                Ok(false),
+            ),
+            (
+                SegmentV2Cell::Value(CanonicalValue::U64(3)),
+                SegmentV2Predicate::Equal(CanonicalValue::U64(3)),
+                Ok(true),
+            ),
+            (
+                SegmentV2Cell::Value(CanonicalValue::U64(2)),
+                SegmentV2Predicate::Equal(CanonicalValue::U64(3)),
+                Ok(false),
+            ),
+            (
+                SegmentV2Cell::Missing,
+                SegmentV2Predicate::LessThan(CanonicalValue::U64(3)),
+                Err(ColumnarPredicateKernelError::MissingField),
+            ),
+            (
+                SegmentV2Cell::Null,
+                SegmentV2Predicate::LessThan(CanonicalValue::U64(3)),
+                Err(ColumnarPredicateKernelError::UnsupportedPredicate),
+            ),
+            (
+                SegmentV2Cell::Missing,
+                SegmentV2Predicate::LessThanOrEqual(CanonicalValue::U64(3)),
+                Err(ColumnarPredicateKernelError::MissingField),
+            ),
+            (
+                SegmentV2Cell::Null,
+                SegmentV2Predicate::LessThanOrEqual(CanonicalValue::U64(3)),
+                Err(ColumnarPredicateKernelError::UnsupportedPredicate),
+            ),
+            (
+                SegmentV2Cell::Missing,
+                SegmentV2Predicate::GreaterThan(CanonicalValue::U64(3)),
+                Err(ColumnarPredicateKernelError::MissingField),
+            ),
+            (
+                SegmentV2Cell::Null,
+                SegmentV2Predicate::GreaterThan(CanonicalValue::U64(3)),
+                Err(ColumnarPredicateKernelError::UnsupportedPredicate),
+            ),
+            (
+                SegmentV2Cell::Missing,
+                SegmentV2Predicate::GreaterThanOrEqual(CanonicalValue::U64(3)),
+                Err(ColumnarPredicateKernelError::MissingField),
+            ),
+            (
+                SegmentV2Cell::Null,
+                SegmentV2Predicate::GreaterThanOrEqual(CanonicalValue::U64(3)),
+                Err(ColumnarPredicateKernelError::UnsupportedPredicate),
+            ),
+            (
+                SegmentV2Cell::Value(CanonicalValue::U64(2)),
+                SegmentV2Predicate::LessThan(CanonicalValue::U64(3)),
+                Ok(true),
+            ),
+            (
+                SegmentV2Cell::Value(CanonicalValue::U64(3)),
+                SegmentV2Predicate::LessThanOrEqual(CanonicalValue::U64(3)),
+                Ok(true),
+            ),
+            (
+                SegmentV2Cell::Value(CanonicalValue::U64(4)),
+                SegmentV2Predicate::GreaterThan(CanonicalValue::U64(3)),
+                Ok(true),
+            ),
+            (
+                SegmentV2Cell::Value(CanonicalValue::U64(3)),
+                SegmentV2Predicate::GreaterThanOrEqual(CanonicalValue::U64(3)),
+                Ok(true),
+            ),
+            (
+                SegmentV2Cell::Missing,
+                SegmentV2Predicate::IsNull,
+                Ok(false),
+            ),
+            (SegmentV2Cell::Null, SegmentV2Predicate::IsNull, Ok(true)),
+            (
+                SegmentV2Cell::Value(CanonicalValue::U64(3)),
+                SegmentV2Predicate::IsNull,
+                Ok(false),
+            ),
+            (
+                SegmentV2Cell::Missing,
+                SegmentV2Predicate::IsPresent,
+                Ok(false),
+            ),
+            (
+                SegmentV2Cell::Null,
+                SegmentV2Predicate::IsPresent,
+                Ok(false),
+            ),
+            (
+                SegmentV2Cell::Value(CanonicalValue::U64(3)),
+                SegmentV2Predicate::IsPresent,
+                Ok(true),
+            ),
         ];
-        let lanes = [cells.as_slice()];
-        let batch = BorrowedLaneBatch::new(width, &lanes).expect("bounded lane batch");
-        let predicates = [
-            SegmentV2Predicate::IsMissing,
-            SegmentV2Predicate::IsNull,
-            SegmentV2Predicate::IsPresent,
-            SegmentV2Predicate::Equal(CanonicalValue::U64(3)),
-            SegmentV2Predicate::LessThan(CanonicalValue::U64(3)),
-            SegmentV2Predicate::LessThanOrEqual(CanonicalValue::U64(3)),
-            SegmentV2Predicate::GreaterThan(CanonicalValue::U64(3)),
-            SegmentV2Predicate::GreaterThanOrEqual(CanonicalValue::U64(3)),
-        ];
-        for predicate in predicates {
-            let kernel = ColumnarPredicateKernel::new(
-                0,
-                batch.lanes().len(),
-                SegmentV2LogicalType::U64,
-                predicate.clone(),
-            )
-            .expect("compiler-sealed predicate");
+        for (cell, predicate, expected) in cases {
+            let cells = [cell];
+            let lanes = [cells.as_slice()];
+            let batch = BorrowedLaneBatch::new(width, &lanes).expect("one-row lane");
+            let kernel = ColumnarPredicateKernel::new(0, &[SegmentV2LogicalType::U64], predicate)
+                .expect("sealed U64 predicate");
             let mut selection = MonotoneSelection::all(&batch);
-            let mut charge = PredicateWorkCharge::new(batch.row_count()).expect("exact work cap");
-            kernel
-                .apply(&batch, &mut selection, &mut charge)
-                .expect("exact kernel");
-            let expected = cells
-                .iter()
-                .enumerate()
-                .filter_map(|(index, cell)| {
-                    independent_u64_scalar_match(cell, &predicate).then_some(index)
-                })
-                .collect::<Vec<_>>();
-            assert_eq!(selection.indices().collect::<Vec<_>>(), expected);
-            assert_eq!(charge.remaining(), 0);
+            let mut charge = PredicateWorkCharge::new(1).expect("one evaluation");
+            let result = kernel.apply(&batch, &mut selection, &mut charge);
+            match expected {
+                Ok(retained) => {
+                    assert_eq!(result, Ok(()));
+                    assert_eq!(
+                        selection.indices().collect::<Vec<_>>(),
+                        if retained { vec![0] } else { vec![] }
+                    );
+                    assert_eq!(charge.remaining(), 0);
+                }
+                Err(error) => {
+                    assert_eq!(result, Err(error));
+                    assert_eq!(selection.indices().collect::<Vec<_>>(), vec![0]);
+                    assert_eq!(charge.remaining(), 1);
+                }
+            }
         }
 
         let equality = ColumnarPredicateKernel::new(
             0,
-            1,
-            SegmentV2LogicalType::U64,
+            &[SegmentV2LogicalType::U64],
             SegmentV2Predicate::Equal(CanonicalValue::U64(3)),
         )
         .expect("equality kernel");
+        let cells = vec![
+            SegmentV2Cell::Value(CanonicalValue::I64(9)),
+            SegmentV2Cell::Value(CanonicalValue::U64(3)),
+        ];
+        let lanes = [cells.as_slice()];
+        let batch = BorrowedLaneBatch::new(width, &lanes).expect("poisoned lane fixture");
         let mut prefiltered = MonotoneSelection::all(&batch);
         let mut policy_mask = vec![true; batch.row_count()];
-        policy_mask[4] = false;
+        policy_mask[0] = false;
         prefiltered.retain(&policy_mask).expect("policy stage");
         let mut charge = PredicateWorkCharge::new(batch.row_count()).expect("bounded charge");
         equality
@@ -515,8 +618,8 @@ mod tests {
             .expect("predicate after policy");
         assert_eq!(
             prefiltered.selected(),
-            0,
-            "predicate cannot re-add a policy-denied row"
+            1,
+            "predicate neither evaluates nor re-adds the policy-denied poison row"
         );
         assert_eq!(
             charge.remaining(),
@@ -524,34 +627,84 @@ mod tests {
             "only policy-admitted rows consume predicate work"
         );
 
-        let mut unchanged = MonotoneSelection::all(&batch);
-        let before = unchanged.indices().collect::<Vec<_>>();
-        let mut insufficient = PredicateWorkCharge::new(batch.row_count() - 1).expect("small cap");
+        let mut insufficient_selection = MonotoneSelection::all(&batch);
+        let before = insufficient_selection.indices().collect::<Vec<_>>();
+        let mut insufficient = PredicateWorkCharge::new(1).expect("small cap");
         assert_eq!(
-            equality.apply(&batch, &mut unchanged, &mut insufficient),
+            equality.apply(&batch, &mut insufficient_selection, &mut insufficient),
             Err(ColumnarPredicateKernelError::WorkBoundExceeded)
         );
-        assert_eq!(unchanged.indices().collect::<Vec<_>>(), before);
-        assert_eq!(insufficient.remaining(), batch.row_count() - 1);
+        assert_eq!(insufficient_selection.indices().collect::<Vec<_>>(), before);
+        assert_eq!(insufficient.remaining(), 1);
+
+        let ordered_errors = vec![
+            SegmentV2Cell::Missing,
+            SegmentV2Cell::Value(CanonicalValue::I64(9)),
+        ];
+        let ordered_error_lanes = [ordered_errors.as_slice()];
+        let ordered_error_batch =
+            BorrowedLaneBatch::new(width, &ordered_error_lanes).expect("ordered errors");
+        let mut ordered_error_selection = MonotoneSelection::all(&ordered_error_batch);
+        let mut ordered_error_charge = PredicateWorkCharge::new(2).expect("exact cap");
+        assert_eq!(
+            equality.apply(
+                &ordered_error_batch,
+                &mut ordered_error_selection,
+                &mut ordered_error_charge,
+            ),
+            Err(ColumnarPredicateKernelError::MissingField),
+            "the first selected row's semantic error wins"
+        );
+        assert_eq!(
+            ordered_error_selection.indices().collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        assert_eq!(ordered_error_charge.remaining(), 2);
+
+        let later_poison = vec![
+            SegmentV2Cell::Value(CanonicalValue::U64(2)),
+            SegmentV2Cell::Value(CanonicalValue::I64(9)),
+        ];
+        let later_poison_lanes = [later_poison.as_slice()];
+        let later_poison_batch =
+            BorrowedLaneBatch::new(width, &later_poison_lanes).expect("later poison");
+        let mut atomic_selection = MonotoneSelection::all(&later_poison_batch);
+        let atomic_before = atomic_selection.indices().collect::<Vec<_>>();
+        let mut atomic_charge = PredicateWorkCharge::new(2).expect("exact cap");
+        assert_eq!(
+            equality.apply(
+                &later_poison_batch,
+                &mut atomic_selection,
+                &mut atomic_charge,
+            ),
+            Err(ColumnarPredicateKernelError::LaneIntegrity)
+        );
+        assert_eq!(
+            atomic_selection.indices().collect::<Vec<_>>(),
+            atomic_before
+        );
+        assert_eq!(atomic_charge.remaining(), 2);
+
         assert_eq!(
             PredicateWorkCharge::new(0).err(),
             Some(ColumnarPredicateKernelError::InvalidWorkBound)
         );
+        for predicate in [
+            SegmentV2Predicate::Equal(CanonicalValue::I64(3)),
+            SegmentV2Predicate::LessThan(CanonicalValue::I64(3)),
+            SegmentV2Predicate::LessThanOrEqual(CanonicalValue::I64(3)),
+            SegmentV2Predicate::GreaterThan(CanonicalValue::I64(3)),
+            SegmentV2Predicate::GreaterThanOrEqual(CanonicalValue::I64(3)),
+        ] {
+            assert_eq!(
+                ColumnarPredicateKernel::new(0, &[SegmentV2LogicalType::U64], predicate).err(),
+                Some(ColumnarPredicateKernelError::RightHandTypeMismatch)
+            );
+        }
         assert_eq!(
             ColumnarPredicateKernel::new(
-                0,
                 1,
-                SegmentV2LogicalType::U64,
-                SegmentV2Predicate::Equal(CanonicalValue::I64(3)),
-            )
-            .err(),
-            Some(ColumnarPredicateKernelError::InvalidPredicateType)
-        );
-        assert_eq!(
-            ColumnarPredicateKernel::new(
-                1,
-                1,
-                SegmentV2LogicalType::U64,
+                &[SegmentV2LogicalType::Bool],
                 SegmentV2Predicate::Equal(CanonicalValue::I64(3)),
             )
             .err(),
@@ -559,15 +712,187 @@ mod tests {
             "lane identity precedes dependent predicate validation"
         );
 
-        let short_cells = vec![SegmentV2Cell::Value(CanonicalValue::U64(1)); 2];
-        let short_lanes = [short_cells.as_slice()];
-        let short_batch = BorrowedLaneBatch::new(width, &short_lanes).expect("short batch");
-        let mut wrong_selection = MonotoneSelection::all(&batch);
-        let mut enough = PredicateWorkCharge::new(batch.row_count()).expect("bounded charge");
+        let decimal = DecimalSpec::new(8, 2).expect("decimal type");
+        let currency = CurrencyCode::new(b"USD").expect("currency type");
+        for unsupported_lane in [
+            SegmentV2LogicalType::Bool,
+            SegmentV2LogicalType::I64,
+            SegmentV2LogicalType::String,
+            SegmentV2LogicalType::Bytes,
+            SegmentV2LogicalType::Timestamp,
+            SegmentV2LogicalType::Date,
+            SegmentV2LogicalType::Uuid,
+            SegmentV2LogicalType::Enum(EnumTypeId::new(1).expect("enum type")),
+            SegmentV2LogicalType::Decimal(decimal),
+            SegmentV2LogicalType::Money {
+                currency,
+                amount: decimal,
+            },
+        ] {
+            assert_eq!(
+                ColumnarPredicateKernel::new(
+                    0,
+                    &[unsupported_lane],
+                    SegmentV2Predicate::Equal(CanonicalValue::U64(3)),
+                )
+                .err(),
+                Some(ColumnarPredicateKernelError::UnsupportedLane)
+            );
+        }
+        let excessive_lane_shape = vec![SegmentV2LogicalType::U64; MAX_SEGMENT_V2_COLUMNS + 1];
         assert_eq!(
-            equality.apply(&short_batch, &mut wrong_selection, &mut enough),
+            ColumnarPredicateKernel::new(0, &excessive_lane_shape, SegmentV2Predicate::IsMissing,)
+                .err(),
+            Some(ColumnarPredicateKernelError::InvalidLane),
+            "invalid lane shape precedes operator validation"
+        );
+
+        assert_eq!(
+            ColumnarPredicateKernel::new(
+                0,
+                &[SegmentV2LogicalType::Bool],
+                SegmentV2Predicate::IsMissing,
+            )
+            .err(),
+            Some(ColumnarPredicateKernelError::UnsupportedLane),
+            "unsupported lane precedes unsupported operator"
+        );
+        assert_eq!(
+            ColumnarPredicateKernel::new(
+                0,
+                &[SegmentV2LogicalType::U64],
+                SegmentV2Predicate::IsMissing,
+            )
+            .err(),
+            Some(ColumnarPredicateKernelError::UnsupportedOperator)
+        );
+
+        let missing_lane_kernel = ColumnarPredicateKernel::new(
+            1,
+            &[SegmentV2LogicalType::U64, SegmentV2LogicalType::U64],
+            SegmentV2Predicate::IsNull,
+        )
+        .expect("second sealed lane");
+        let valid_cells = [SegmentV2Cell::Value(CanonicalValue::U64(1))];
+        let valid_lanes = [valid_cells.as_slice()];
+        let one_lane_batch = BorrowedLaneBatch::new(width, &valid_lanes).expect("one lane");
+        let mut runtime_missing_selection = MonotoneSelection::all(&one_lane_batch);
+        let mut runtime_missing_charge = PredicateWorkCharge::new(1).expect("one evaluation");
+        assert_eq!(
+            missing_lane_kernel.apply(
+                &one_lane_batch,
+                &mut runtime_missing_selection,
+                &mut runtime_missing_charge,
+            ),
+            Err(ColumnarPredicateKernelError::InvalidLane)
+        );
+        assert_eq!(
+            runtime_missing_selection.indices().collect::<Vec<_>>(),
+            vec![0]
+        );
+        assert_eq!(runtime_missing_charge.remaining(), 1);
+
+        let mut wrong_length_selection = MonotoneSelection::all(&batch);
+        let wrong_length_before = wrong_length_selection.indices().collect::<Vec<_>>();
+        let mut wrong_length_charge = PredicateWorkCharge::new(2).expect("two evaluations");
+        assert_eq!(
+            equality.apply(
+                &one_lane_batch,
+                &mut wrong_length_selection,
+                &mut wrong_length_charge,
+            ),
             Err(ColumnarPredicateKernelError::LaneIntegrity)
         );
-        assert_eq!(enough.remaining(), batch.row_count());
+        assert_eq!(
+            wrong_length_selection.indices().collect::<Vec<_>>(),
+            wrong_length_before
+        );
+        assert_eq!(wrong_length_charge.remaining(), 2);
+
+        for predicate in [
+            SegmentV2Predicate::Equal(CanonicalValue::U64(9)),
+            SegmentV2Predicate::LessThan(CanonicalValue::U64(9)),
+            SegmentV2Predicate::IsNull,
+            SegmentV2Predicate::IsPresent,
+        ] {
+            let kernel = ColumnarPredicateKernel::new(0, &[SegmentV2LogicalType::U64], predicate)
+                .expect("supported operator");
+            let wrong_cells = [SegmentV2Cell::Value(CanonicalValue::I64(9))];
+            let wrong_lanes = [wrong_cells.as_slice()];
+            let wrong_batch = BorrowedLaneBatch::new(width, &wrong_lanes).expect("wrong value");
+            let mut wrong_selection = MonotoneSelection::all(&wrong_batch);
+            let mut wrong_charge = PredicateWorkCharge::new(1).expect("one evaluation");
+            assert_eq!(
+                kernel.apply(&wrong_batch, &mut wrong_selection, &mut wrong_charge),
+                Err(ColumnarPredicateKernelError::LaneIntegrity)
+            );
+            assert_eq!(wrong_selection.indices().collect::<Vec<_>>(), vec![0]);
+            assert_eq!(wrong_charge.remaining(), 1);
+        }
+
+        let cumulative_cells = (0_u64..8)
+            .map(|value| SegmentV2Cell::Value(CanonicalValue::U64(value)))
+            .collect::<Vec<_>>();
+        let cumulative_lanes = [cumulative_cells.as_slice()];
+        let cumulative_batch =
+            BorrowedLaneBatch::new(width, &cumulative_lanes).expect("cumulative batch");
+        let lower = ColumnarPredicateKernel::new(
+            0,
+            &[SegmentV2LogicalType::U64],
+            SegmentV2Predicate::GreaterThanOrEqual(CanonicalValue::U64(4)),
+        )
+        .expect("lower kernel");
+        let upper = ColumnarPredicateKernel::new(
+            0,
+            &[SegmentV2LogicalType::U64],
+            SegmentV2Predicate::LessThanOrEqual(CanonicalValue::U64(6)),
+        )
+        .expect("upper kernel");
+        let present = ColumnarPredicateKernel::new(
+            0,
+            &[SegmentV2LogicalType::U64],
+            SegmentV2Predicate::IsPresent,
+        )
+        .expect("present kernel");
+        let mut cumulative_selection = MonotoneSelection::all(&cumulative_batch);
+        let mut cumulative_charge = PredicateWorkCharge::new(12).expect("cumulative cap");
+        lower
+            .apply(
+                &cumulative_batch,
+                &mut cumulative_selection,
+                &mut cumulative_charge,
+            )
+            .expect("first kernel");
+        assert_eq!(
+            cumulative_selection.indices().collect::<Vec<_>>(),
+            vec![4, 5, 6, 7]
+        );
+        assert_eq!(cumulative_charge.remaining(), 4);
+        upper
+            .apply(
+                &cumulative_batch,
+                &mut cumulative_selection,
+                &mut cumulative_charge,
+            )
+            .expect("second kernel");
+        assert_eq!(
+            cumulative_selection.indices().collect::<Vec<_>>(),
+            vec![4, 5, 6]
+        );
+        assert_eq!(cumulative_charge.remaining(), 0);
+        let cumulative_before = cumulative_selection.indices().collect::<Vec<_>>();
+        assert_eq!(
+            present.apply(
+                &cumulative_batch,
+                &mut cumulative_selection,
+                &mut cumulative_charge,
+            ),
+            Err(ColumnarPredicateKernelError::WorkBoundExceeded)
+        );
+        assert_eq!(
+            cumulative_selection.indices().collect::<Vec<_>>(),
+            cumulative_before
+        );
+        assert_eq!(cumulative_charge.remaining(), 0);
     }
 }
