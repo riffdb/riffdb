@@ -1834,6 +1834,8 @@ dependencies = [
  "riffdb-contract-compiler",
  "riffdb-contract-ir",
  "riffdb-policy",
+ "riffdb-query-executor",
+ "riffdb-query-ir",
  "riffdb-storage-api",
  "riffdb-types",
 ]
