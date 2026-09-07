@@ -22775,11 +22775,13 @@ work_packages:
   tier: guarantee
   depends_on: [WP-612, WP-711]
   objective: Declare alpha format epoch 2 through the ADR-0112 ceremony, delete every superseded
-    decoder, fixture, generated artifact, and topology row while the pre-external window is open,
-    and make scripts/check-version-topology refuse a second readable identity per domain until the
-    first external database is registered.
+    decoder, fixture, generated artifact, and topology row while the pre-external window is open
+    except the exact ADR-0207 authoritative-changelog V1/V2 read-only compatibility evidence, and
+    make scripts/check-version-topology refuse a second readable identity for every other domain
+    until the first external database is registered.
   requirements: [GOV-001, GOV-002, GOV-003, AFC-005, AFC-006, PRJ-007, VER-005]
-  required_adrs: [ADR-0006, ADR-0112, ADR-0124, ADR-0181, ADR-0190, ADR-0192, ADR-0204]
+  required_adrs: [ADR-0006, ADR-0112, ADR-0124, ADR-0181, ADR-0190, ADR-0192, ADR-0204,
+    ADR-0207]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0181-pre-alpha-format-epoch-reset-and-governance-load.md, adr/README.md,
     release/version-topology-v1.json, release/durable-format-manifest-v1.json,
@@ -22791,13 +22793,23 @@ work_packages:
     safe action
   - Removal of every non-current reader, fixture, generated artifact, and topology identity across
     durable, executable-IR, wire, protocol, application-artifact, generated-surface, and evidence
-    domains, with deleted Protobuf field numbers and enum values retained as reserved
+    domains except ADR-0207's exact read-only ChangelogFrameV1/V2 decoders and compatibility
+    evidence for `durable.authoritative_changelog`, with deleted Protobuf field numbers and enum
+    values retained as reserved
   - Mandatory removal of the ADR-0192 tag-65 migration bridge, including source, decoder, table,
     generated message, fixture, durable-manifest row, and topology exception, proved by
     epoch_two_removes_legacy_vector_control_bridge
-  - external_databases array in the version topology, the open-window single-identity and
-    active-only rules in scripts/check-version-topology, and their relaxation once the array is
-    nonempty, proved by
+  - external_databases array in the version topology and open-window checks requiring every domain
+    except `durable.authoritative_changelog` to have one equal readable, writable, and current
+    active identity; the hard-coded exception has ordered readable identities exactly
+    `riffdb.changelog-frame/v1`, `riffdb.changelog-frame/v2`, and
+    `riffdb.changelog-frame/v3`, writable and current identities each exactly V3,
+    `single_current` writer policy, V1/V2 exactly read_only, V3 solely active, empty candidate and
+    retired sets, and exact Rust-type, numeric-version, frame-magic, and footer-magic bindings
+    ChangelogFrameV1/1/RDBCLF01/RDBCLE01, ChangelogFrameV2/2/RDBCLF02/RDBCLE02, and
+    ADR-0186 V3/3/RDBCLF03/RDBCLE03; the exception cannot be configured or expanded and ordinary
+    ADR-0124 behavior resumes once the array is nonempty, proved by
+    topology_allows_only_exact_changelog_compatibility_exception and
     topology_refuses_second_readable_identity_before_external_database
   - One real ceremony over a seeded TicketDesk epoch-1 database with export receipt, reimport
     reconciliation, and full epoch-2 startup validation, proved by
@@ -22809,11 +22821,14 @@ work_packages:
   acceptance_commands:
   - ./scripts/acceptance --wp WP-757
   - ./scripts/ci-all
-  exit_gate: Every topology domain lists exactly one readable and one writable identity and they are
-    equal; the manifest reports one version per family; an epoch-1 database is refused in place and
-    crosses only through the ceremony with reconciled counts and hashes; the topology check fails
-    on a second identity while external_databases is empty and passes once it is not; no deleted
-    field number or enum value is reused.
+  exit_gate: While external_databases is empty, every topology domain except exact
+    `durable.authoritative_changelog` lists one equal readable, writable, and current identity as
+    its sole active identity, and that exception matches ADR-0207's exact ordered V1/V2/V3 readable,
+    V3-only writable/current, single_current, V1/V2-read_only, V3-active, empty-candidate/retired,
+    immutable identity-binding topology; the checker rejects every variation or expansion and
+    ordinary ADR-0124 behavior resumes once the array is nonempty; the manifest reports one version
+    per family; an epoch-1 database is refused in place and crosses only through the ceremony with
+    reconciled counts and hashes; no deleted field number or enum value is reused.
   standing_design_tests:
     interface_safety: No application or agent surface gains an operation; the ceremony is
       operator-only, refuses before mutation, and applications cannot select an epoch, decoder, or
@@ -22823,11 +22838,13 @@ work_packages:
       storage.
   human_review_triggers: &id0181
   - A superseded identity would be retained as read_only or retirement_candidate instead of being
-    deleted, or a deleted field number, enum value, tag, or hash would be reused.
+    deleted outside ADR-0207's exact authoritative-changelog V1/V2 read-only evidence, or a deleted
+    field number, enum value, tag, or hash would be reused.
   - An epoch-1 database would be opened, upgraded, or restored in place rather than crossing the
     ceremony, or the ceremony would skip validation, backup, export, reconciliation, or retention.
   - The external_databases array would be populated without an operator-provided digest, date,
-    and release label, or the single-identity rule would be relaxed while it is empty.
+    and release label, or the single-identity rule would be relaxed beyond ADR-0207's exact
+    hard-coded authoritative-changelog exception while it is empty.
   - A ledger entry, ADR section, or public handbook page would be exempted from the new checks
     without a recorded reason.
 
@@ -23603,7 +23620,7 @@ work_packages:
   requirements: [REP-003, REC-001, PERF-007, STO-012]
   required_adrs: [ADR-0019, ADR-0061, ADR-0072, ADR-0082, ADR-0083, ADR-0085, ADR-0093,
     ADR-0100, ADR-0101, ADR-0104, ADR-0112, ADR-0124, ADR-0156, ADR-0157, ADR-0178,
-    ADR-0186]
+    ADR-0186, ADR-0207]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0186-complete-authoritative-changelog-v3.md, adr/README.md,
     proto/**, crates/riffdb-proto/**, crates/riffdb-types/**, crates/riffdb-storage-api/**,
@@ -23619,7 +23636,17 @@ work_packages:
   - Closed `riffdb.changelog-frame/v3` transaction-receipt and checked
     `ChangelogTransactionSequence` allocator formats with canonical expected-state puts/deletes,
     complete source attribution, hard bounds, redaction-safe diagnostics, frozen vectors, registry
-    migration, durable-format fixtures, and V1/V2-readable plus V3-writable topology registration
+    migration, and durable-format fixtures; exact `durable.authoritative_changelog` topology with
+    ordered readable identities `riffdb.changelog-frame/v1`, `riffdb.changelog-frame/v2`, and
+    `riffdb.changelog-frame/v3`, each bound respectively to
+    ChangelogFrameV1/1/RDBCLF01/RDBCLE01, ChangelogFrameV2/2/RDBCLF02/RDBCLE02, and ADR-0186
+    V3/3/RDBCLF03/RDBCLE03; writable and current identities each exactly V3, writer policy
+    `single_current`, V1/V2 exactly read_only, V3 solely active, and candidate and retired sets
+    empty; existing V1/V2 source decoders and unit/recovery tests remain and frozen standalone V1
+    and V2 frame fixtures are added alongside V3 without changing old bytes or interpretation;
+    production negotiation, emission, apply, bootstrap tail, and archive carry, accept, persist,
+    and select only exact V3 with no V1/V2 fallback, translation, bootstrap, restore, archive,
+    downgrade, or partial-authority mode
   - Standard-profile receipt source derived exactly from existing validated Journal V1 mutations
     and allocator state, exposed only as a bounded storage cursor over `PublishedDurableSnapshot`;
     Journal V1 identity and bytes remain unchanged
@@ -23669,6 +23696,9 @@ work_packages:
     single-writer property would change.
   - Journal V1 or changelog V1/V2 bytes, identity, tags, checksums, receipts, or interpretation
     would change.
+  - The ADR-0207 exception's domain, ordered identities, Rust-type, numeric-version, magic,
+    readable/writable/current, writer-policy, lifecycle, fixture-custody, or V3-only production
+    bindings would drift, become configurable, or expand to another domain.
   - A suffix receipt source or materialized history could be reclaimed before a known-durable
     subsuming checkpoint and every replication fence permits it.
   - A public error, diagnostic, log, metric, or receipt would expose replicated keys, values,
