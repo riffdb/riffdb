@@ -1,10 +1,10 @@
 ---
 adr: "0209"
 title: Epoch-Two Direct Columnar V2 Control Activation
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-06
-accepted: null
+accepted: "2026-09-07"
 requires: [ADR-0112, ADR-0160, ADR-0181, ADR-0190, ADR-0192, ADR-0195, ADR-0200, ADR-0204]
 amends: [ADR-0190, ADR-0192, ADR-0200, ADR-0204]
 supersedes: []
