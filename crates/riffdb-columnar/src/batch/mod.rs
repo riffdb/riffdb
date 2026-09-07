@@ -377,10 +377,84 @@ fn unsigned_predicate_matches(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use riffdb_types::{CanonicalValue, CurrencyCode, DecimalSpec, EnumTypeId};
+    use riffdb_query_executor::{
+        BoundPredicate, QueryExecutionError, covered_row_matches_predicates_v1,
+    };
+    use riffdb_query_ir::{
+        CoveredResultFieldV1, CoveredResultLayoutV1, CoveredResultSourceV1, QueryPredicateOperator,
+    };
+    use riffdb_types::{CanonicalValue, CurrencyCode, DecimalSpec, EnumTypeId, FieldId};
 
     fn lane(width: usize, value: u64) -> Vec<SegmentV2Cell> {
         vec![SegmentV2Cell::Value(riffdb_types::CanonicalValue::U64(value)); width]
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum ScalarOracleError {
+        MissingField,
+        UnsupportedPredicate,
+        OracleUnexpected,
+        KernelUnexpected,
+    }
+
+    fn independent_scalar_oracle(
+        cell: &SegmentV2Cell,
+        predicate: &SegmentV2Predicate,
+    ) -> Result<bool, ScalarOracleError> {
+        let field_id = FieldId::new(1).expect("field identity");
+        let field_name = if matches!(cell, SegmentV2Cell::Missing) {
+            "other"
+        } else {
+            "value"
+        };
+        let field = CoveredResultFieldV1::checked(
+            field_name.to_owned(),
+            field_id,
+            CoveredResultSourceV1::Cover,
+        )
+        .expect("one covered field");
+        let layout = CoveredResultLayoutV1::checked(
+            "Entity".to_owned(),
+            "by_value".to_owned(),
+            vec![field],
+            vec![field_id],
+        )
+        .expect("one covered layout");
+        let values = match cell {
+            SegmentV2Cell::Missing => vec![CanonicalValue::Null],
+            SegmentV2Cell::Null => vec![CanonicalValue::Null],
+            SegmentV2Cell::Value(value) => vec![value.clone()],
+        };
+        let (operator, value) = match predicate {
+            SegmentV2Predicate::Equal(value) => (QueryPredicateOperator::Equal, value.clone()),
+            SegmentV2Predicate::LessThan(value) => (QueryPredicateOperator::Less, value.clone()),
+            SegmentV2Predicate::LessThanOrEqual(value) => {
+                (QueryPredicateOperator::LessEqual, value.clone())
+            }
+            SegmentV2Predicate::GreaterThan(value) => {
+                (QueryPredicateOperator::Greater, value.clone())
+            }
+            SegmentV2Predicate::GreaterThanOrEqual(value) => {
+                (QueryPredicateOperator::GreaterEqual, value.clone())
+            }
+            SegmentV2Predicate::IsNull => (QueryPredicateOperator::IsNull, CanonicalValue::Null),
+            SegmentV2Predicate::IsPresent => {
+                (QueryPredicateOperator::IsNotNull, CanonicalValue::Null)
+            }
+            SegmentV2Predicate::IsMissing => {
+                return Err(ScalarOracleError::OracleUnexpected);
+            }
+        };
+        covered_row_matches_predicates_v1(
+            &layout,
+            &values,
+            &[BoundPredicate::new("value", operator, value)],
+        )
+        .map_err(|error| match error {
+            QueryExecutionError::MissingField { .. } => ScalarOracleError::MissingField,
+            QueryExecutionError::UnsupportedPredicate => ScalarOracleError::UnsupportedPredicate,
+            _ => ScalarOracleError::OracleUnexpected,
+        })
     }
 
     // Inert checkpoint coverage only. This does not discharge an ADR-0161
@@ -1554,5 +1628,122 @@ mod tests {
             .expect("unsigned phase");
         assert_eq!(selection.indices().collect::<Vec<_>>(), vec![1, 2]);
         assert_eq!(charge.remaining(), 0);
+    }
+
+    // Inert cross-crate differential checkpoint only. This intentionally does
+    // not claim the complete ADR-0161 predicate obligation.
+    #[test]
+    fn columnar_i64_predicate_kernel_matches_query_executor_scalar_oracle() {
+        assert_ne!(
+            ScalarOracleError::OracleUnexpected,
+            ScalarOracleError::KernelUnexpected,
+            "unrelated oracle and kernel failures must never compare equal",
+        );
+        let width = ColumnarBatchWidth::choose(64, 1, 64).expect("closed width");
+        let families = [
+            (
+                SegmentV2LogicalType::U64,
+                vec![
+                    SegmentV2Cell::Missing,
+                    SegmentV2Cell::Null,
+                    SegmentV2Cell::Value(CanonicalValue::U64(u64::MIN)),
+                    SegmentV2Cell::Value(CanonicalValue::U64(3)),
+                    SegmentV2Cell::Value(CanonicalValue::U64(u64::MAX)),
+                ],
+                vec![
+                    SegmentV2Predicate::Equal(CanonicalValue::U64(3)),
+                    SegmentV2Predicate::LessThan(CanonicalValue::U64(3)),
+                    SegmentV2Predicate::LessThanOrEqual(CanonicalValue::U64(3)),
+                    SegmentV2Predicate::GreaterThan(CanonicalValue::U64(3)),
+                    SegmentV2Predicate::GreaterThanOrEqual(CanonicalValue::U64(3)),
+                    SegmentV2Predicate::IsNull,
+                    SegmentV2Predicate::IsPresent,
+                ],
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                vec![
+                    SegmentV2Cell::Missing,
+                    SegmentV2Cell::Null,
+                    SegmentV2Cell::Value(CanonicalValue::I64(i64::MIN)),
+                    SegmentV2Cell::Value(CanonicalValue::I64(-1)),
+                    SegmentV2Cell::Value(CanonicalValue::I64(0)),
+                    SegmentV2Cell::Value(CanonicalValue::I64(1)),
+                    SegmentV2Cell::Value(CanonicalValue::I64(i64::MAX)),
+                ],
+                vec![
+                    SegmentV2Predicate::Equal(CanonicalValue::I64(0)),
+                    SegmentV2Predicate::LessThan(CanonicalValue::I64(0)),
+                    SegmentV2Predicate::LessThanOrEqual(CanonicalValue::I64(0)),
+                    SegmentV2Predicate::GreaterThan(CanonicalValue::I64(0)),
+                    SegmentV2Predicate::GreaterThanOrEqual(CanonicalValue::I64(0)),
+                    SegmentV2Predicate::IsNull,
+                    SegmentV2Predicate::IsPresent,
+                ],
+            ),
+        ];
+        for (logical_type, cells, predicates) in families {
+            for predicate in predicates {
+                for cell in &cells {
+                    let expected = independent_scalar_oracle(cell, &predicate);
+                    let one_cell = [cell.clone()];
+                    let lanes = [one_cell.as_slice()];
+                    let batch = BorrowedLaneBatch::new(width, &lanes).expect("one-row batch");
+                    let kernel = ColumnarPredicateKernel::new(
+                        0,
+                        std::slice::from_ref(&logical_type),
+                        predicate.clone(),
+                    )
+                    .expect("scalar-supported sealed predicate");
+                    let mut selection = MonotoneSelection::all(&batch);
+                    let mut charge = PredicateWorkCharge::new(1).expect("one evaluation");
+                    let actual = match kernel.apply(&batch, &mut selection, &mut charge) {
+                        Ok(()) => Ok(selection.selected() == 1),
+                        Err(ColumnarPredicateKernelError::MissingField) => {
+                            Err(ScalarOracleError::MissingField)
+                        }
+                        Err(ColumnarPredicateKernelError::UnsupportedPredicate) => {
+                            Err(ScalarOracleError::UnsupportedPredicate)
+                        }
+                        Err(_) => Err(ScalarOracleError::KernelUnexpected),
+                    };
+                    assert_eq!(actual, expected, "cell={cell:?} predicate={predicate:?}");
+                    if actual.is_ok() {
+                        assert_eq!(charge.remaining(), 0);
+                    } else {
+                        assert_eq!(selection.indices().collect::<Vec<_>>(), vec![0]);
+                        assert_eq!(charge.remaining(), 1);
+                    }
+                }
+            }
+        }
+
+        assert_eq!(
+            ColumnarPredicateKernel::new(
+                0,
+                &[SegmentV2LogicalType::I64],
+                SegmentV2Predicate::Equal(CanonicalValue::U64(0)),
+            )
+            .err(),
+            Some(ColumnarPredicateKernelError::RightHandTypeMismatch)
+        );
+        let wrong_value = [SegmentV2Cell::Value(CanonicalValue::U64(0))];
+        let wrong_value_lanes = [wrong_value.as_slice()];
+        let wrong_value_batch =
+            BorrowedLaneBatch::new(width, &wrong_value_lanes).expect("wrong I64 value fixture");
+        let i64_present = ColumnarPredicateKernel::new(
+            0,
+            &[SegmentV2LogicalType::I64],
+            SegmentV2Predicate::IsPresent,
+        )
+        .expect("I64 present kernel");
+        let mut selection = MonotoneSelection::all(&wrong_value_batch);
+        let mut charge = PredicateWorkCharge::new(1).expect("one evaluation");
+        assert_eq!(
+            i64_present.apply(&wrong_value_batch, &mut selection, &mut charge),
+            Err(ColumnarPredicateKernelError::LaneIntegrity)
+        );
+        assert_eq!(selection.indices().collect::<Vec<_>>(), vec![0]);
+        assert_eq!(charge.remaining(), 1);
     }
 }
