@@ -1,7 +1,7 @@
-//! Private, inert sealing for one compiler-owned V2 batch program.
+//! Private, inert checking for one pre-generation logical V2 batch draft.
 
 use riffdb_types::{
-    ColumnarDefinitionSemanticsHashV1, ProjectionProviderDescriptorHash, QueryPlanHash,
+    ColumnarDefinitionSemanticsHashV1, FieldId, ProjectionProviderDescriptorHash, QueryPlanHash,
 };
 
 use super::ColumnarBatchWidth;
@@ -14,14 +14,15 @@ const MAX_PROGRAM_HEAP_ENTRIES: usize = 500;
 const MAX_PROGRAM_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct CheckedProgramIdentity {
+struct CheckedLogicalProgramIdentity {
     definition: ColumnarDefinitionSemanticsHashV1,
     provider: ProjectionProviderDescriptorHash,
     plan: QueryPlanHash,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct ProgramLaneType {
+struct ProgramLane {
+    field: FieldId,
     logical: SegmentV2LogicalType,
     optional: bool,
 }
@@ -85,6 +86,14 @@ enum ProgramIdentityFact {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProgramLaneFact {
+    Field,
+    LogicalType,
+    OptionalState,
+    Phase,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProgramResource {
     Rows,
     Lanes,
@@ -98,27 +107,41 @@ enum ProgramResource {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProgramSealError {
     IdentitySubstitution(ProgramIdentityFact),
+    LaneSubstitution(ProgramLaneFact),
     BoundExceeded(ProgramResource),
     ArithmeticOverflow(ProgramResource),
+    NonCanonicalLaneCatalog,
     NonCanonicalLaneSet,
     OverlappingLane,
     MissingLane,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct BatchProgramDraft {
-    identity: CheckedProgramIdentity,
-    width: ColumnarBatchWidth,
-    lane_types: Vec<ProgramLaneType>,
+struct CheckedLogicalProgramFacts {
+    identity: CheckedLogicalProgramIdentity,
+    lanes: Vec<ProgramLane>,
     phases: PhaseLaneSets,
+}
+
+/// Compiler/provider facts before WP-757 attaches an Active root and generation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PreGenerationBatchProgramDraft {
+    facts: CheckedLogicalProgramFacts,
+    width: ColumnarBatchWidth,
     resources: ProgramResourcePlan,
 }
 
-impl BatchProgramDraft {
-    fn seal(&self, active: CheckedProgramIdentity) -> Result<SealedBatchProgram, ProgramSealError> {
-        validate_identity(self.identity, active)?;
+impl PreGenerationBatchProgramDraft {
+    fn check(
+        &self,
+        checked: &CheckedLogicalProgramFacts,
+    ) -> Result<CheckedPreGenerationBatchProgram, ProgramSealError> {
+        validate_identity(self.facts.identity, checked.identity)?;
+        validate_lane_catalog(&self.facts.lanes)?;
+        validate_lane_catalog(&checked.lanes)?;
+        validate_logical_facts(&self.facts, checked)?;
 
-        let lane_count = self.lane_types.len();
+        let lane_count = self.facts.lanes.len();
         let row_lane_evaluations = self
             .resources
             .rows
@@ -154,7 +177,7 @@ impl BatchProgramDraft {
                     ProgramResource::Validity,
                 ))?
                 / 8;
-        let optional_lanes = self.lane_types.iter().filter(|lane| lane.optional).count();
+        let optional_lanes = self.facts.lanes.iter().filter(|lane| lane.optional).count();
         let required_validity_bytes = validity_map_bytes.checked_mul(optional_lanes).ok_or(
             ProgramSealError::ArithmeticOverflow(ProgramResource::Validity),
         )?;
@@ -184,13 +207,11 @@ impl BatchProgramDraft {
             ProgramResource::Output,
         )?;
 
-        validate_phase_lanes(&self.phases, lane_count)?;
+        validate_phase_lanes(&self.facts.phases, lane_count)?;
 
-        Ok(SealedBatchProgram {
-            identity: self.identity,
+        Ok(CheckedPreGenerationBatchProgram {
+            facts: self.facts.clone(),
             width: self.width,
-            lane_types: self.lane_types.clone(),
-            phases: self.phases.clone(),
             charges: ProgramCharges {
                 rows: self.resources.rows,
                 lanes: lane_count,
@@ -206,23 +227,58 @@ impl BatchProgramDraft {
 }
 
 fn validate_identity(
-    expected: CheckedProgramIdentity,
-    active: CheckedProgramIdentity,
+    expected: CheckedLogicalProgramIdentity,
+    checked: CheckedLogicalProgramIdentity,
 ) -> Result<(), ProgramSealError> {
-    if expected.definition != active.definition {
+    if expected.definition != checked.definition {
         return Err(ProgramSealError::IdentitySubstitution(
             ProgramIdentityFact::Definition,
         ));
     }
-    if expected.provider != active.provider {
+    if expected.provider != checked.provider {
         return Err(ProgramSealError::IdentitySubstitution(
             ProgramIdentityFact::Provider,
         ));
     }
-    if expected.plan != active.plan {
+    if expected.plan != checked.plan {
         return Err(ProgramSealError::IdentitySubstitution(
             ProgramIdentityFact::Plan,
         ));
+    }
+    Ok(())
+}
+
+fn validate_lane_catalog(lanes: &[ProgramLane]) -> Result<(), ProgramSealError> {
+    if lanes.windows(2).any(|pair| pair[0].field >= pair[1].field) {
+        return Err(ProgramSealError::NonCanonicalLaneCatalog);
+    }
+    Ok(())
+}
+
+fn validate_logical_facts(
+    expected: &CheckedLogicalProgramFacts,
+    checked: &CheckedLogicalProgramFacts,
+) -> Result<(), ProgramSealError> {
+    if expected.lanes.len() != checked.lanes.len() {
+        return Err(ProgramSealError::LaneSubstitution(ProgramLaneFact::Field));
+    }
+    for (expected, checked) in expected.lanes.iter().zip(&checked.lanes) {
+        if expected.field != checked.field {
+            return Err(ProgramSealError::LaneSubstitution(ProgramLaneFact::Field));
+        }
+        if expected.logical != checked.logical {
+            return Err(ProgramSealError::LaneSubstitution(
+                ProgramLaneFact::LogicalType,
+            ));
+        }
+        if expected.optional != checked.optional {
+            return Err(ProgramSealError::LaneSubstitution(
+                ProgramLaneFact::OptionalState,
+            ));
+        }
+    }
+    if expected.phases != checked.phases {
+        return Err(ProgramSealError::LaneSubstitution(ProgramLaneFact::Phase));
     }
     Ok(())
 }
@@ -260,11 +316,10 @@ fn validate_phase_lanes(phases: &PhaseLaneSets, lane_count: usize) -> Result<(),
     Ok(())
 }
 
-struct SealedBatchProgram {
-    identity: CheckedProgramIdentity,
+struct CheckedPreGenerationBatchProgram {
+    // Active root/generation binding is deliberately deferred to WP-757.
+    facts: CheckedLogicalProgramFacts,
     width: ColumnarBatchWidth,
-    lane_types: Vec<ProgramLaneType>,
-    phases: PhaseLaneSets,
     charges: ProgramCharges,
 }
 
@@ -277,8 +332,8 @@ mod tests {
         [BYTE; 32]
     }
 
-    fn identity() -> CheckedProgramIdentity {
-        CheckedProgramIdentity {
+    fn identity() -> CheckedLogicalProgramIdentity {
+        CheckedLogicalProgramIdentity {
             definition: ColumnarDefinitionSemanticsHashV1::from_bytes(hash::<1>()),
             provider: ProjectionProviderDescriptorHash::from_bytes(hash::<2>()),
             plan: QueryPlanHash::from_bytes(hash::<3>()),
@@ -289,21 +344,24 @@ mod tests {
         ColumnarBatchWidth::choose(64, 1, 64).expect("closed width")
     }
 
-    fn lane(logical: SegmentV2LogicalType, optional: bool) -> ProgramLaneType {
-        ProgramLaneType { logical, optional }
+    fn lane(field: u32, logical: SegmentV2LogicalType, optional: bool) -> ProgramLane {
+        ProgramLane {
+            field: FieldId::new(field).expect("nonzero field"),
+            logical,
+            optional,
+        }
     }
 
-    fn valid_draft() -> BatchProgramDraft {
-        BatchProgramDraft {
+    fn checked_facts() -> CheckedLogicalProgramFacts {
+        CheckedLogicalProgramFacts {
             identity: identity(),
-            width: width(),
-            lane_types: vec![
-                lane(SegmentV2LogicalType::U64, false),
-                lane(SegmentV2LogicalType::String, true),
-                lane(SegmentV2LogicalType::Bool, false),
-                lane(SegmentV2LogicalType::I64, true),
-                lane(SegmentV2LogicalType::Bytes, false),
-                lane(SegmentV2LogicalType::Timestamp, false),
+            lanes: vec![
+                lane(1, SegmentV2LogicalType::U64, false),
+                lane(2, SegmentV2LogicalType::String, true),
+                lane(3, SegmentV2LogicalType::Bool, false),
+                lane(4, SegmentV2LogicalType::I64, true),
+                lane(5, SegmentV2LogicalType::Bytes, false),
+                lane(6, SegmentV2LogicalType::Timestamp, false),
             ],
             phases: PhaseLaneSets {
                 eligibility: vec![0],
@@ -313,6 +371,13 @@ mod tests {
                 order: vec![4],
                 output: vec![5],
             },
+        }
+    }
+
+    fn valid_draft() -> PreGenerationBatchProgramDraft {
+        PreGenerationBatchProgramDraft {
+            facts: checked_facts(),
+            width: width(),
             resources: ProgramResourcePlan {
                 rows: 64,
                 validity_bytes: 16,
@@ -329,12 +394,12 @@ mod tests {
     #[test]
     fn seals_exact_identities_types_phases_and_checked_charges() {
         let draft = valid_draft();
-        let program = draft.seal(identity()).expect("valid program seals");
+        let program = draft
+            .check(&checked_facts())
+            .expect("valid logical draft checks");
 
-        assert_eq!(program.identity, identity());
+        assert_eq!(program.facts, checked_facts());
         assert_eq!(program.width.get(), 64);
-        assert_eq!(program.lane_types, draft.lane_types);
-        assert_eq!(program.phases, draft.phases);
         assert_eq!(program.charges.rows, 64);
         assert_eq!(program.charges.lanes, 6);
         assert_eq!(program.charges.row_lane_evaluations, 384);
@@ -350,62 +415,116 @@ mod tests {
         let draft = valid_draft();
         let cases = [
             (
-                CheckedProgramIdentity {
+                CheckedLogicalProgramIdentity {
                     definition: ColumnarDefinitionSemanticsHashV1::from_bytes(hash::<9>()),
                     ..identity()
                 },
                 ProgramIdentityFact::Definition,
             ),
             (
-                CheckedProgramIdentity {
+                CheckedLogicalProgramIdentity {
                     provider: ProjectionProviderDescriptorHash::from_bytes(hash::<9>()),
                     ..identity()
                 },
                 ProgramIdentityFact::Provider,
             ),
             (
-                CheckedProgramIdentity {
+                CheckedLogicalProgramIdentity {
                     plan: QueryPlanHash::from_bytes(hash::<9>()),
                     ..identity()
                 },
                 ProgramIdentityFact::Plan,
             ),
         ];
-        for (active, fact) in cases {
+        for (identity, fact) in cases {
+            let mut checked = checked_facts();
+            checked.identity = identity;
             assert_eq!(
-                draft.seal(active).err(),
+                draft.check(&checked).err(),
                 Some(ProgramSealError::IdentitySubstitution(fact))
             );
         }
     }
 
     #[test]
+    fn rejects_field_type_optional_and_phase_substitution() {
+        let draft = valid_draft();
+        let mut cases = Vec::new();
+
+        let mut field = checked_facts();
+        field.lanes[5].field = FieldId::new(7).expect("field");
+        cases.push((field, ProgramLaneFact::Field));
+
+        let mut logical = checked_facts();
+        logical.lanes[0].logical = SegmentV2LogicalType::I64;
+        cases.push((logical, ProgramLaneFact::LogicalType));
+
+        let mut optional = checked_facts();
+        optional.lanes[0].optional = true;
+        cases.push((optional, ProgramLaneFact::OptionalState));
+
+        let mut phase = checked_facts();
+        phase.phases.eligibility.clear();
+        phase.phases.policy.insert(0, 0);
+        cases.push((phase, ProgramLaneFact::Phase));
+
+        for (checked, fact) in cases {
+            assert_eq!(
+                draft.check(&checked).err(),
+                Some(ProgramSealError::LaneSubstitution(fact))
+            );
+        }
+    }
+
+    #[test]
     fn rejects_duplicate_noncanonical_overlapping_and_missing_lanes() {
-        let mut duplicate = valid_draft();
-        duplicate.phases.policy = vec![1, 1];
+        let mut noncanonical_catalog = valid_draft();
+        noncanonical_catalog.facts.lanes.swap(0, 1);
+        let noncanonical_catalog_facts = noncanonical_catalog.facts.clone();
         assert_eq!(
-            duplicate.seal(identity()).err(),
+            noncanonical_catalog
+                .check(&noncanonical_catalog_facts)
+                .err(),
+            Some(ProgramSealError::NonCanonicalLaneCatalog)
+        );
+
+        let mut duplicate_field = valid_draft();
+        duplicate_field.facts.lanes[1].field = duplicate_field.facts.lanes[0].field;
+        let duplicate_field_facts = duplicate_field.facts.clone();
+        assert_eq!(
+            duplicate_field.check(&duplicate_field_facts).err(),
+            Some(ProgramSealError::NonCanonicalLaneCatalog)
+        );
+
+        let mut duplicate = valid_draft();
+        duplicate.facts.phases.policy = vec![1, 1];
+        let duplicate_facts = duplicate.facts.clone();
+        assert_eq!(
+            duplicate.check(&duplicate_facts).err(),
             Some(ProgramSealError::NonCanonicalLaneSet)
         );
 
         let mut noncanonical = valid_draft();
-        noncanonical.phases.predicate = vec![3, 2];
+        noncanonical.facts.phases.predicate = vec![3, 2];
+        let noncanonical_facts = noncanonical.facts.clone();
         assert_eq!(
-            noncanonical.seal(identity()).err(),
+            noncanonical.check(&noncanonical_facts).err(),
             Some(ProgramSealError::NonCanonicalLaneSet)
         );
 
         let mut overlap = valid_draft();
-        overlap.phases.output.insert(0, 4);
+        overlap.facts.phases.output.insert(0, 4);
+        let overlap_facts = overlap.facts.clone();
         assert_eq!(
-            overlap.seal(identity()).err(),
+            overlap.check(&overlap_facts).err(),
             Some(ProgramSealError::OverlappingLane)
         );
 
         let mut missing = valid_draft();
-        missing.phases.output.clear();
+        missing.facts.phases.output.clear();
+        let missing_facts = missing.facts.clone();
         assert_eq!(
-            missing.seal(identity()).err(),
+            missing.check(&missing_facts).err(),
             Some(ProgramSealError::MissingLane)
         );
     }
@@ -452,7 +571,9 @@ mod tests {
             if resource == ProgramResource::Lanes {
                 install_lane_count(&mut accepted, exact);
             }
-            let program = accepted.seal(identity()).expect("exact bound is accepted");
+            let program = accepted
+                .check(&accepted.facts.clone())
+                .expect("exact bound is accepted");
             assert_eq!(charged_resource(&program, resource), exact);
 
             let mut rejected = valid_draft();
@@ -461,7 +582,7 @@ mod tests {
                 install_lane_count(&mut rejected, excessive);
             }
             assert_eq!(
-                rejected.seal(identity()).err(),
+                rejected.check(&rejected.facts.clone()).err(),
                 Some(ProgramSealError::BoundExceeded(resource))
             );
         }
@@ -486,14 +607,18 @@ mod tests {
             let before = draft.clone();
 
             assert_eq!(
-                draft.seal(identity()).err(),
+                draft.check(&checked_facts()).err(),
                 Some(ProgramSealError::ArithmeticOverflow(resource))
             );
             assert_eq!(draft, before);
         }
     }
 
-    fn set_resource(draft: &mut BatchProgramDraft, resource: ProgramResource, value: usize) {
+    fn set_resource(
+        draft: &mut PreGenerationBatchProgramDraft,
+        resource: ProgramResource,
+        value: usize,
+    ) {
         match resource {
             ProgramResource::Rows => draft.resources.rows = value,
             ProgramResource::Lanes => {}
@@ -511,15 +636,26 @@ mod tests {
         }
     }
 
-    fn install_lane_count(draft: &mut BatchProgramDraft, count: usize) {
-        draft.lane_types = vec![lane(SegmentV2LogicalType::U64, false); count];
-        draft.phases = PhaseLaneSets {
+    fn install_lane_count(draft: &mut PreGenerationBatchProgramDraft, count: usize) {
+        draft.facts.lanes = (0..count)
+            .map(|index| {
+                lane(
+                    u32::try_from(index + 1).expect("bounded field"),
+                    SegmentV2LogicalType::U64,
+                    false,
+                )
+            })
+            .collect();
+        draft.facts.phases = PhaseLaneSets {
             eligibility: (0..count).collect(),
             ..PhaseLaneSets::default()
         };
     }
 
-    fn charged_resource(program: &SealedBatchProgram, resource: ProgramResource) -> usize {
+    fn charged_resource(
+        program: &CheckedPreGenerationBatchProgram,
+        resource: ProgramResource,
+    ) -> usize {
         match resource {
             ProgramResource::Rows => program.charges.rows,
             ProgramResource::Lanes => program.charges.lanes,
