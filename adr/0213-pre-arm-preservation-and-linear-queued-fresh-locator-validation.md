@@ -1,10 +1,10 @@
 ---
 adr: "0213"
 title: Pre-Arm Preservation and Linear Queued Fresh-Locator Validation
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-07
-accepted: null
+accepted: "2026-09-07"
 requires: [ADR-0100, ADR-0102, ADR-0104, ADR-0165, ADR-0197, ADR-0205, ADR-0206, ADR-0208, ADR-0210]
 amends: [ADR-0197, ADR-0205, ADR-0206, ADR-0208, ADR-0210]
 supersedes: []
