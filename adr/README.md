@@ -242,6 +242,7 @@ record with no front matter.
 | [0205](0205-live-command-fresh-locator-arming-and-audit-cause-preservation.md) | Live Command Fresh-Locator Arming and Audit Cause Preservation | Accepted | guarantee |
 | [0206](0206-composite-fresh-locator-arming-and-observable-production-proof.md) | Composite Fresh-Locator Arming and Observable Production Proof | Accepted | guarantee |
 | [0207](0207-frozen-changelog-compatibility-exception-during-the-pre-external-window.md) | Frozen Changelog Compatibility Exception During the Pre-External Window | Accepted | guarantee |
+| [0208](0208-exact-empty-command-authority-avoids-command-audit-index-activation.md) | Exact-Empty Command Authority Avoids Command-Audit Index Activation | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
