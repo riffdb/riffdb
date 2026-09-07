@@ -665,6 +665,100 @@ mod tests {
         }
     }
 
+    fn oracle_cell(term: &TopNOrderTerm, left: &SegmentV2Cell, right: &SegmentV2Cell) -> Ordering {
+        let left_no_value = matches!(left, SegmentV2Cell::Missing | SegmentV2Cell::Null);
+        let right_no_value = matches!(right, SegmentV2Cell::Missing | SegmentV2Cell::Null);
+        match (left_no_value, right_no_value) {
+            (true, true) => Ordering::Equal,
+            (true, false) => match term.no_value {
+                TopNNoValuePlacement::First => Ordering::Less,
+                TopNNoValuePlacement::Last => Ordering::Greater,
+                TopNNoValuePlacement::PresentOnly => {
+                    panic!("PresentOnly corpus contains NoValue")
+                }
+            },
+            (false, true) => match term.no_value {
+                TopNNoValuePlacement::First => Ordering::Greater,
+                TopNNoValuePlacement::Last => Ordering::Less,
+                TopNNoValuePlacement::PresentOnly => {
+                    panic!("PresentOnly corpus contains NoValue")
+                }
+            },
+            (false, false) => {
+                let (SegmentV2Cell::Value(left), SegmentV2Cell::Value(right)) = (left, right)
+                else {
+                    unreachable!()
+                };
+                let compared = oracle_present(&term.logical_type, left, right);
+                match term.direction {
+                    TopNValueDirection::Ascending => compared,
+                    TopNValueDirection::Descending => compared.reverse(),
+                }
+            }
+        }
+    }
+
+    fn oracle_row(
+        order: &[TopNOrderTerm],
+        keys: &[PrimaryKeyBytes],
+        lanes: &[&[SegmentV2Cell]],
+        left: usize,
+        right: usize,
+    ) -> Ordering {
+        for (term, lane) in order.iter().zip(lanes) {
+            let compared = oracle_cell(term, &lane[left], &lane[right]);
+            if compared != Ordering::Equal {
+                return compared;
+            }
+        }
+        keys[left].cmp(&keys[right])
+    }
+
+    fn assert_bounded_truncation_matches_full_sort(
+        order: &[TopNOrderTerm],
+        keys: &[PrimaryKeyBytes],
+        lanes: &[&[SegmentV2Cell]],
+    ) -> Vec<usize> {
+        let source = source(order, keys, lanes);
+        let mut expected = (0..source.row_count()).collect::<Vec<_>>();
+        expected.sort_unstable_by(|left, right| oracle_row(order, keys, lanes, *left, *right));
+
+        let maximum_applicable = usize::try_from(MAX_APPLICATION_QUERY_PAGE_ROWS)
+            .expect("page maximum")
+            .min(source.row_count() - 1);
+        let limits = [1, source.row_count() / 2, maximum_applicable];
+        for limit in limits {
+            let mut top = BoundedTopN::new(&source, limit).expect("bounded top-n");
+            for row in 0..source.row_count() {
+                top.push(row).expect("valid canonical row");
+                assert!(top.retained_len() <= limit + 1);
+            }
+            let page = top.finish().expect("complete bounded page");
+            let expected_keys = expected
+                .iter()
+                .take(limit)
+                .map(|row| keys[*row].as_bytes().to_vec())
+                .collect::<Vec<_>>();
+            assert_eq!(key_bytes(&page), expected_keys);
+            assert!(page.has_more());
+            assert_eq!(
+                page.cursor_primary_key()
+                    .expect("valid retained cursor")
+                    .expect("continuation cursor")
+                    .as_bytes(),
+                keys[expected[limit - 1]].as_bytes()
+            );
+            assert_eq!(
+                page.compare_row_to_cursor(limit - 1),
+                Ok(Some(Ordering::Equal))
+            );
+            if limit > 1 {
+                assert_eq!(page.compare_row_to_cursor(0), Ok(Some(Ordering::Less)));
+            }
+        }
+        expected
+    }
+
     fn assert_profile_differential(
         logical_type: SegmentV2LogicalType,
         values: Vec<CanonicalValue>,
@@ -882,6 +976,144 @@ mod tests {
                 CanonicalValue::Money(Money::new(usd, Decimal::new(decimal, 1).expect("amount"))),
                 CanonicalValue::Money(Money::new(usd, Decimal::new(decimal, 0).expect("amount"))),
             ],
+        );
+    }
+
+    #[test]
+    fn bounded_eviction_matches_full_sort_for_states_decimal_money_and_ties() {
+        let decimal = DecimalSpec::new(8, 2).expect("decimal spec");
+        let decimal_value = |coefficient| {
+            SegmentV2Cell::Value(CanonicalValue::Decimal(
+                Decimal::new(decimal, coefficient).expect("decimal"),
+            ))
+        };
+        let keys = (1..=7).map(key).collect::<Vec<_>>();
+        let decimal_lane = vec![
+            decimal_value(-2),
+            SegmentV2Cell::Missing,
+            decimal_value(9),
+            SegmentV2Cell::Null,
+            decimal_value(0),
+            decimal_value(1),
+            decimal_value(-1),
+        ];
+        let decimal_lanes = [decimal_lane.as_slice()];
+        for direction in [
+            TopNValueDirection::Ascending,
+            TopNValueDirection::Descending,
+        ] {
+            for placement in [TopNNoValuePlacement::First, TopNNoValuePlacement::Last] {
+                let order = [TopNOrderTerm::new(
+                    SegmentV2LogicalType::Decimal(decimal),
+                    direction,
+                    placement,
+                )];
+                let expected =
+                    assert_bounded_truncation_matches_full_sort(&order, &keys, &decimal_lanes);
+                assert_ne!(
+                    expected[0], 0,
+                    "the limit-one proof must require heap replacement"
+                );
+            }
+        }
+
+        for state in [SegmentV2Cell::Missing, SegmentV2Cell::Null] {
+            let present_only_lane = vec![state, decimal_value(0)];
+            let present_only_lanes = [present_only_lane.as_slice()];
+            for direction in [
+                TopNValueDirection::Ascending,
+                TopNValueDirection::Descending,
+            ] {
+                let present_only_order = [TopNOrderTerm::new(
+                    SegmentV2LogicalType::Decimal(decimal),
+                    direction,
+                    TopNNoValuePlacement::PresentOnly,
+                )];
+                let present_only_source =
+                    source(&present_only_order, &keys[..2], &present_only_lanes);
+                let mut top = BoundedTopN::new(&present_only_source, 1).expect("bounded top-n");
+                assert_eq!(top.push(0), Err(TopNError::UnexpectedNoValue));
+                assert_eq!(top.finish().unwrap_err(), TopNError::UnexpectedNoValue);
+            }
+        }
+
+        let usd = CurrencyCode::new("USD").expect("currency");
+        let money_value = |coefficient| {
+            SegmentV2Cell::Value(CanonicalValue::Money(Money::new(
+                usd,
+                Decimal::new(decimal, coefficient).expect("amount"),
+            )))
+        };
+        let money_lane = vec![
+            money_value(-1),
+            money_value(9),
+            money_value(1),
+            money_value(0),
+            money_value(-2),
+            money_value(1),
+            money_value(0),
+        ];
+        let money_lanes = [money_lane.as_slice()];
+        for direction in [
+            TopNValueDirection::Ascending,
+            TopNValueDirection::Descending,
+        ] {
+            let order = [TopNOrderTerm::new(
+                SegmentV2LogicalType::Money {
+                    currency: usd,
+                    amount: decimal,
+                },
+                direction,
+                TopNNoValuePlacement::PresentOnly,
+            )];
+            let expected = assert_bounded_truncation_matches_full_sort(&order, &keys, &money_lanes);
+            if direction == TopNValueDirection::Ascending {
+                assert_eq!(expected[0], 3, "canonical bytes place zero first");
+            } else {
+                assert_eq!(expected[0], 0, "canonical bytes place minus one first");
+            }
+        }
+
+        let first_lane = vec![
+            decimal_value(-1),
+            decimal_value(1),
+            decimal_value(1),
+            decimal_value(0),
+            decimal_value(0),
+            decimal_value(1),
+            decimal_value(1),
+        ];
+        let second_lane = vec![
+            money_value(0),
+            money_value(-1),
+            money_value(-1),
+            SegmentV2Cell::Null,
+            SegmentV2Cell::Missing,
+            money_value(1),
+            money_value(1),
+        ];
+        let multi_lanes = [first_lane.as_slice(), second_lane.as_slice()];
+        let multi_order = [
+            TopNOrderTerm::new(
+                SegmentV2LogicalType::Decimal(decimal),
+                TopNValueDirection::Ascending,
+                TopNNoValuePlacement::Last,
+            ),
+            TopNOrderTerm::new(
+                SegmentV2LogicalType::Money {
+                    currency: usd,
+                    amount: decimal,
+                },
+                TopNValueDirection::Descending,
+                TopNNoValuePlacement::First,
+            ),
+        ];
+        let expected =
+            assert_bounded_truncation_matches_full_sort(&multi_order, &keys, &multi_lanes);
+        assert_eq!(
+            expected,
+            vec![3, 4, 1, 2, 5, 6, 0],
+            "multi-term state placement, canonical values, and PK ties are independently pinned"
         );
     }
 
