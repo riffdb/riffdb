@@ -3272,10 +3272,13 @@ mod tests {
         let maximum_cells = (0..MAX_AGGREGATE_DISTINCT_VALUES_V1)
             .map(|value| SegmentV2Cell::Value(CanonicalValue::U64(u64::from(value))))
             .collect::<Vec<_>>();
-        let mut charge = budget(
-            MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1,
-            MAX_AGGREGATE_STATE_BYTES_V1,
-        );
+        let allocated_state =
+            BoundedDistinctSet::new(usize::from(MAX_AGGREGATE_DISTINCT_VALUES_V1))
+                .expect("bounded state probe")
+                .actual_state_bytes()
+                .expect("actual allocation charge");
+        let maximum_operations = u32::from(MAX_AGGREGATE_DISTINCT_VALUES_V1) + 2;
+        let mut charge = budget(maximum_operations, allocated_state);
         let mut builder = ExactDistinctAggregateLeafBuilder::new(
             id,
             AggregateSemanticIdentityV1::CountDistinct,
@@ -3284,6 +3287,8 @@ mod tests {
             &mut charge,
         )
         .expect("maximum distinct builder");
+        assert_eq!(builder.state.actual_state_bytes(), Ok(allocated_state));
+        assert_eq!(charge.remaining_state_bytes(), 0);
         let member_capacity = builder.state.members.capacity();
         let scratch_capacity = builder.state.scratch.capacity();
         builder
@@ -3293,6 +3298,22 @@ mod tests {
             builder.distinct_count(),
             usize::from(MAX_AGGREGATE_DISTINCT_VALUES_V1)
         );
+        assert_eq!(builder.state.members.capacity(), member_capacity);
+        assert_eq!(builder.state.scratch.capacity(), scratch_capacity);
+        assert_eq!(
+            charge.remaining_arithmetic_operations(),
+            maximum_operations - u32::from(MAX_AGGREGATE_DISTINCT_VALUES_V1)
+        );
+
+        let duplicate = [SegmentV2Cell::Value(CanonicalValue::U64(0))];
+        builder
+            .accumulate(&duplicate, &mut charge)
+            .expect("duplicate at the exact distinct ceiling");
+        assert_eq!(
+            builder.distinct_count(),
+            usize::from(MAX_AGGREGATE_DISTINCT_VALUES_V1)
+        );
+        assert_eq!(charge.remaining_arithmetic_operations(), 1);
         assert_eq!(builder.state.members.capacity(), member_capacity);
         assert_eq!(builder.state.scratch.capacity(), scratch_capacity);
 
@@ -3320,11 +3341,7 @@ mod tests {
         assert!(builder.state.scratch.is_empty());
         assert_eq!(charge, charge_before);
 
-        let requested = BoundedDistinctSet::requested_state_bytes(usize::from(
-            MAX_AGGREGATE_DISTINCT_VALUES_V1,
-        ))
-        .expect("maximum requested state");
-        let mut short_charge = budget(1, requested - 1);
+        let mut short_charge = budget(1, allocated_state - 1);
         let short_before = short_charge;
         assert_eq!(
             ExactDistinctAggregateLeafBuilder::new(
@@ -3338,6 +3355,34 @@ mod tests {
             Some(AggregatePartialError::StateBoundExceeded)
         );
         assert_eq!(short_charge, short_before);
+
+        let one = [SegmentV2Cell::Value(CanonicalValue::U64(7))];
+        let exact_one_state = BoundedDistinctSet::new(1)
+            .expect("one-value state probe")
+            .actual_state_bytes()
+            .expect("one-value actual allocation charge");
+        let mut exact_operation_charge = budget(1, exact_one_state);
+        let mut exact_operation_builder = ExactDistinctAggregateLeafBuilder::new(
+            id,
+            AggregateSemanticIdentityV1::CountDistinct,
+            &logical_type,
+            1,
+            &mut exact_operation_charge,
+        )
+        .expect("exact operation builder");
+        assert_eq!(exact_operation_charge.remaining_state_bytes(), 0);
+        exact_operation_builder
+            .accumulate(&one, &mut exact_operation_charge)
+            .expect("one exact charged contribution");
+        assert_eq!(exact_operation_charge.remaining_arithmetic_operations(), 0);
+        let count_before = exact_operation_builder.distinct_count();
+        let charge_before = exact_operation_charge;
+        assert_eq!(
+            exact_operation_builder.accumulate(&one, &mut exact_operation_charge),
+            Err(AggregatePartialError::ArithmeticBoundExceeded)
+        );
+        assert_eq!(exact_operation_builder.distinct_count(), count_before);
+        assert_eq!(exact_operation_charge, charge_before);
     }
 
     #[test]
@@ -3349,7 +3394,15 @@ mod tests {
         ];
         let second_cells = [SegmentV2Cell::Value(CanonicalValue::U64(3))];
         let ids = [identity(0, 1, 0), identity(0, 1, 1)];
-        let mut charge = budget(8, MAX_AGGREGATE_STATE_BYTES_V1);
+        let exact_merge_state = BoundedDistinctSet::new(2)
+            .expect("merge state probe")
+            .actual_state_bytes()
+            .expect("actual merge allocation charge")
+            .checked_add(
+                SealedCanonicalPartialInventory::state_bytes(&ids).expect("exact inventory charge"),
+            )
+            .expect("bounded combined state");
+        let mut charge = budget(8, exact_merge_state);
         let mut accumulator = ExactDistinctAggregateMergeAccumulator::new(
             AggregateSemanticIdentityV1::CountDistinct,
             &logical_type,
@@ -3358,6 +3411,7 @@ mod tests {
             &mut charge,
         )
         .expect("bounded distinct accumulator");
+        assert_eq!(charge.remaining_state_bytes(), 0);
         accumulator
             .merge_leaf(
                 distinct_leaf(
@@ -3407,6 +3461,99 @@ mod tests {
         assert_eq!(accumulator.distinct_count(), count_before);
         assert_eq!(accumulator.consumed_leaves(), cursor_before);
         assert_eq!(charge, charge_before);
+
+        for (foreign, expected) in [
+            (
+                identity(1, 1, 0),
+                AggregatePartialError::ForeignRootInventory,
+            ),
+            (identity(0, 9, 0), AggregatePartialError::ForeignSegment),
+        ] {
+            assert_eq!(
+                accumulator.merge_leaf(
+                    distinct_leaf(
+                        foreign,
+                        AggregateSemanticIdentityV1::CountDistinct,
+                        &logical_type,
+                        2,
+                        &second_cells,
+                    ),
+                    &mut charge,
+                ),
+                Err(expected)
+            );
+            assert_eq!(accumulator.distinct_count(), count_before);
+            assert_eq!(accumulator.consumed_leaves(), cursor_before);
+            assert_eq!(charge, charge_before);
+        }
+
+        let mut omission_charge = budget(4, MAX_AGGREGATE_STATE_BYTES_V1);
+        let mut omission = ExactDistinctAggregateMergeAccumulator::new(
+            AggregateSemanticIdentityV1::CountDistinct,
+            &logical_type,
+            2,
+            &ids,
+            &mut omission_charge,
+        )
+        .expect("omission accumulator");
+        omission
+            .merge_leaf(
+                distinct_leaf(
+                    ids[0],
+                    AggregateSemanticIdentityV1::CountDistinct,
+                    &logical_type,
+                    2,
+                    &first_cells,
+                ),
+                &mut omission_charge,
+            )
+            .expect("first omission leaf");
+        assert_eq!(
+            omission.finish(),
+            Err(AggregatePartialError::InventoryOmission)
+        );
+
+        let one_id = [ids[0]];
+        let mut excess_charge = budget(4, MAX_AGGREGATE_STATE_BYTES_V1);
+        let mut excess = ExactDistinctAggregateMergeAccumulator::new(
+            AggregateSemanticIdentityV1::CountDistinct,
+            &logical_type,
+            2,
+            &one_id,
+            &mut excess_charge,
+        )
+        .expect("excess accumulator");
+        excess
+            .merge_leaf(
+                distinct_leaf(
+                    ids[0],
+                    AggregateSemanticIdentityV1::CountDistinct,
+                    &logical_type,
+                    2,
+                    &first_cells,
+                ),
+                &mut excess_charge,
+            )
+            .expect("complete sole leaf");
+        let excess_count = excess.distinct_count();
+        let excess_cursor = excess.consumed_leaves();
+        let excess_charge_before = excess_charge;
+        assert_eq!(
+            excess.merge_leaf(
+                distinct_leaf(
+                    ids[1],
+                    AggregateSemanticIdentityV1::CountDistinct,
+                    &logical_type,
+                    2,
+                    &second_cells,
+                ),
+                &mut excess_charge,
+            ),
+            Err(AggregatePartialError::ExcessLeaf)
+        );
+        assert_eq!(excess.distinct_count(), excess_count);
+        assert_eq!(excess.consumed_leaves(), excess_cursor);
+        assert_eq!(excess_charge, excess_charge_before);
 
         for semantic in [
             AggregateSemanticIdentityV1::CountDistinct,
