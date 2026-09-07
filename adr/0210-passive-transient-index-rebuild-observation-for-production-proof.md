@@ -14,7 +14,7 @@ obligations:
   - id: OBL-0210-1
     package: WP-705
     proof: production_grouped_command_arms_fresh_locator_coverage_without_manual_arm
-    says: A cloned passive controller proves zero transient-index rebuilds while two real production Group commands and their distinct post-publication novel-key inspections complete with zero fallback scans.
+    says: A cloned passive controller proves zero transient-index rebuilds while two real production Group commands, their distinct post-publication novel-key inspections, and successful coordinator shutdown complete with zero fallback scans.
   - id: OBL-0210-2
     package: WP-705
     proof: passive_rebuild_observation_matches_one_real_rebuild
@@ -22,10 +22,10 @@ obligations:
   - id: OBL-0210-3
     package: WP-705
     proof: production_fresh_locator_arming_site_is_reachable_from_both_command_batch_paths
-    says: Architecture checks freeze the passive controller mirror, its sole increment site, both real rebuild sites, saturation, and the fresh-locator arming location and bounds.
+    says: Architecture checks freeze the passive controller mirror, its sole increment site, both shared-state rebuild sites, the bounded-start exclusion on the raw ephemeral rebuild, saturation, and the fresh-locator arming location and bounds.
 review_triggers:
   - The controller observation would callback, block, allocate per rebuild, fail, reset, decrement, wrap, affect a branch or result, or expose state-changing authority.
-  - A production open would install the controller, or an application service, protocol, configuration, command, agent, or operator surface would expose the observation.
+  - An ordinary `RedbStore::open`, production composition, application service, protocol, configuration, command, agent, or operator surface would install or expose the observation beyond the pre-existing explicit doc-hidden test open.
   - A rebuild path would bypass the sole note method, the mirror would increment other than exactly once per note, or calibration would not prove exact parity after a real rebuild.
   - The semantic proof would retain or fabricate another operational repository, widen shared-port traits, bypass the existing concrete production Group helper or coordinator inspector, manually arm, or omit any zero assertion.
   - WP-705 would touch another path, or fresh-locator, transient-index, audit-cause, threshold, transaction, acknowledgement, publication, restart, bound, or evidence rules would otherwise change.
@@ -78,7 +78,10 @@ there lets the test retain observation, not repository authority.
    lazy activation from `Dormant`. No other site increments the mirrored
    counter. Architecture checks freeze both call sites, the single forwarding
    call, all constructor initializers, saturation, read-only access, and absence
-   of reset or control authority.
+   of reset or control authority. The existing raw `TransientIndexes::rebuild`
+   exact-view branch remains ephemeral and uncounted, and is reachable only
+   while `bounded_clean_startup` is false; architecture checks freeze that guard
+   so raw rebuild cannot bypass observation on a verified bounded start.
 
 5. ADR-0206 Decisions 5 and 6 and ADR-0208 Decisions 5 and 6 are narrowed only
    in how the proof retains rebuild observation. The test clones an observing
@@ -94,7 +97,8 @@ there lets the test retain observation, not repository authority.
    `CommandIdempotencyPlanSelection::Absent`, and the existing cloned controller
    fallback counter remains zero. The proof does not call repository admission,
    a storage batch, arming, a transient builder, the private observation
-   increment, or any state-changing test control.
+   increment, or any state-changing test control. After successful coordinator
+   shutdown, the controller must still report zero rebuilds.
 
 7. A separate calibration opens storage with the controller and causes exactly
    one real transient-index rebuild through an existing production activation
@@ -144,10 +148,12 @@ there lets the test retain observation, not repository authority.
 
 ## Standing design tests
 
-- **Interface safety:** the Rust-visible getter remains inside the pre-existing
-  doc-hidden recovery-test controller surface. Applications, services,
-  protocols, configuration, agents, and operators cannot install or observe it;
-  it provides no control and production opens retain `None`.
+- **Interface safety:** the passive read-only getter is a Rust-visible extension
+  of the pre-existing controller test API. Only the pre-existing explicit
+  doc-hidden test open can install and observe that controller; ordinary
+  `RedbStore::open`, production composition, services, protocols,
+  configuration, application authors, agents, and operators cannot. The getter
+  provides no control.
 - **Scale:** observation is one saturating fixed-size atomic update per actual
   rebuild and one atomic load per assertion. It retains no rows, keys, events,
   histories, callbacks, or population state.
@@ -160,8 +166,9 @@ there lets the test retain observation, not repository authority.
 - `passive_rebuild_observation_matches_one_real_rebuild` proves a real rebuild
   yields exact controller/port parity of one.
 - `production_fresh_locator_arming_site_is_reachable_from_both_command_batch_paths`
-  freezes passive observation and both rebuild sites alongside the sole arming
-  site, direct/composite helper, tables, bounds, and fail-closed behavior.
+  freezes passive observation, both counted shared-state rebuild sites, and the
+  raw ephemeral branch's non-bounded-start guard alongside the sole arming site,
+  direct/composite helper, tables, bounds, and fail-closed behavior.
 - Existing controller, transient-index, clean-start, administration, ADR-0197,
   ADR-0205 threshold, and ADR-0206 arming tests remain green before evidence is
   eligible.
