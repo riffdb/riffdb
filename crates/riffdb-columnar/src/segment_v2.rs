@@ -189,7 +189,7 @@ impl SegmentV2LogicalType {
         }
     }
 
-    fn accepts(&self, value: &CanonicalValue) -> bool {
+    pub(crate) fn accepts(&self, value: &CanonicalValue) -> bool {
         match (self, value) {
             (Self::Bool, CanonicalValue::Bool(_))
             | (Self::I64, CanonicalValue::I64(_))
@@ -2314,7 +2314,7 @@ fn compute_statistics_inner(
     })
 }
 
-fn compare_values(
+pub(crate) fn compare_values(
     logical_type: &SegmentV2LogicalType,
     left: &CanonicalValue,
     right: &CanonicalValue,
