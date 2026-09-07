@@ -1,10 +1,10 @@
 ---
 adr: "0212"
 title: Independent Correlated-Index Model and Epoch-Two Evidence
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-07
-accepted: null
+accepted: "2026-09-07"
 requires: [ADR-0003, ADR-0004, ADR-0113, ADR-0124, ADR-0149, ADR-0180, ADR-0204]
 amends:
   - ADR-0149 Decisions 4, 5, and 7, its compatibility, testing, consequences, and WP-684 description only as stated here
