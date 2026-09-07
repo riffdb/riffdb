@@ -1,10 +1,10 @@
 ---
 adr: "0206"
 title: Composite Fresh-Locator Arming and Observable Production Proof
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-06
-accepted: null
+accepted: "2026-09-06"
 requires: [ADR-0070, ADR-0100, ADR-0104, ADR-0165, ADR-0197, ADR-0205]
 amends: [ADR-0197, ADR-0205]
 supersedes: []
