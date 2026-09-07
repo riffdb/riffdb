@@ -144,9 +144,25 @@ mod tests {
         vec![SegmentV2Cell::Value(riffdb_types::CanonicalValue::U64(value)); width]
     }
 
-    // req: QRY-001, OQ-019, OQ-022, OQ-050, OQ-051, OQ-055, PERF-008
+    // Inert checkpoint coverage only. This does not discharge an ADR-0161
+    // obligation or select the batch path for production execution.
     #[test]
     fn columnar_batch_width_lanes_and_selection_are_strictly_bounded() {
+        for (compiler_maximum, row_bytes, ceiling, expected) in [
+            (64, 1, 64, Ok(64)),
+            (64, 2, 128, Ok(64)),
+            (64, 2, 127, Err(ColumnarBatchBoundError::NoAdmissibleWidth)),
+            (128, 1, 127, Ok(64)),
+            (128, 1, 128, Ok(128)),
+            (256, 16, 2_047, Ok(64)),
+            (256, 16, 2_048, Ok(128)),
+        ] {
+            assert_eq!(
+                ColumnarBatchWidth::choose(compiler_maximum, row_bytes, ceiling)
+                    .map(ColumnarBatchWidth::get),
+                expected
+            );
+        }
         for closed in CLOSED_BATCH_WIDTHS {
             assert_eq!(
                 ColumnarBatchWidth::choose(closed, 1, usize::MAX)
@@ -174,6 +190,10 @@ mod tests {
             ColumnarBatchWidth::choose(64, 0, usize::MAX),
             Err(ColumnarBatchBoundError::InvalidByteBound)
         );
+        assert_eq!(
+            ColumnarBatchWidth::choose(64, 1, 0),
+            Err(ColumnarBatchBoundError::InvalidByteBound)
+        );
 
         let first = lane(width.get(), 1);
         let second = lane(width.get(), 2);
@@ -192,18 +212,57 @@ mod tests {
         let tail_batch = BorrowedLaneBatch::new(width, &tail_lanes).expect("partial tail batch");
         assert_eq!(tail_batch.maximum_width(), width);
         assert_eq!(tail_batch.row_count(), 63);
+        assert!(matches!(
+            BorrowedLaneBatch::new(width, &[]),
+            Err(ColumnarBatchBoundError::LaneCount)
+        ));
+        let empty: Vec<SegmentV2Cell> = Vec::new();
+        assert!(matches!(
+            BorrowedLaneBatch::new(width, &[empty.as_slice()]),
+            Err(ColumnarBatchBoundError::LaneLength)
+        ));
+        let over_width = lane(width.get() + 1, 5);
+        assert!(matches!(
+            BorrowedLaneBatch::new(width, &[over_width.as_slice()]),
+            Err(ColumnarBatchBoundError::LaneLength)
+        ));
+        let one = lane(1, 6);
+        let too_many_lanes = vec![one.as_slice(); MAX_SEGMENT_V2_COLUMNS + 1];
+        assert!(matches!(
+            BorrowedLaneBatch::new(width, &too_many_lanes),
+            Err(ColumnarBatchBoundError::LaneCount)
+        ));
 
         let mut selection = MonotoneSelection::all(&batch);
+        let all_indices = (0..batch.row_count()).collect::<Vec<_>>();
+        assert_eq!(selection.selected(), batch.row_count());
+        assert_eq!(selection.indices().collect::<Vec<_>>(), all_indices);
         let mut first_mask = vec![true; batch.row_count()];
         first_mask[1] = false;
         first_mask[7] = false;
         selection.retain(&first_mask).expect("first stage");
-        assert_eq!(selection.selected(), batch.row_count() - 2);
+        let after_first = (0..batch.row_count())
+            .filter(|index| *index != 1 && *index != 7)
+            .collect::<Vec<_>>();
+        assert_eq!(selection.selected(), after_first.len());
+        assert_eq!(selection.indices().collect::<Vec<_>>(), after_first);
         selection
             .retain(&vec![true; batch.row_count()])
             .expect("later permissive stage");
-        assert_eq!(selection.selected(), batch.row_count() - 2);
-        assert_eq!(selection.indices().nth(1), Some(2));
+        assert_eq!(selection.selected(), after_first.len());
+        assert_eq!(selection.indices().collect::<Vec<_>>(), after_first);
+        let restrictive = (0..batch.row_count())
+            .map(|index| index % 2 == 0)
+            .collect::<Vec<_>>();
+        selection
+            .retain(&restrictive)
+            .expect("later restrictive stage");
+        let after_restrictive = after_first
+            .into_iter()
+            .filter(|index| index % 2 == 0)
+            .collect::<Vec<_>>();
+        assert_eq!(selection.selected(), after_restrictive.len());
+        assert_eq!(selection.indices().collect::<Vec<_>>(), after_restrictive);
         let before_error = selection.indices().collect::<Vec<_>>();
         assert_eq!(
             selection.retain(&vec![true; batch.row_count() - 1]),
