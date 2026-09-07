@@ -961,4 +961,43 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn empty_inventory_and_sealed_optionality_have_explicit_bounded_contracts() {
+        let logical_type = SegmentV2LogicalType::U64;
+        let required = [super::CanonicalGroupLane::new(&logical_type, false)];
+        let optional = [super::CanonicalGroupLane::new(&logical_type, true)];
+        let mut zero_work = super::GroupWorkBudget::new(1).expect("work ceiling");
+        let empty = CanonicalGroupMerge::new(&required, &[], bounds(1, 16, 64), &mut zero_work)
+            .expect("exact empty inventory");
+        assert_eq!(empty.finish().expect("empty groups").rows_for_test(), []);
+        assert_eq!(zero_work.remaining(), 1);
+
+        let mut work = super::GroupWorkBudget::new(1).expect("work ceiling");
+        let mut required_leaf =
+            CanonicalGroupLeafBuilder::new(identity(0, 1, 0), &required, bounds(1, 16, 64))
+                .expect("required lane");
+        assert_eq!(
+            required_leaf.push_row(0, &[SegmentV2Cell::Null], &mut work),
+            Err(GroupStateError::UnexpectedNoValue)
+        );
+
+        let mut optional_work = super::GroupWorkBudget::new(2).expect("work ceiling");
+        let mut optional_leaf =
+            CanonicalGroupLeafBuilder::new(identity(0, 1, 0), &optional, bounds(2, 16, 128))
+                .expect("optional lane");
+        optional_leaf
+            .push_row(0, &[SegmentV2Cell::Missing], &mut optional_work)
+            .expect("optional missing");
+        optional_leaf
+            .push_row(1, &[SegmentV2Cell::Null], &mut optional_work)
+            .expect("optional null");
+        assert_eq!(
+            optional_leaf
+                .finish()
+                .expect("NoValue leaf")
+                .row_count_for_test(0),
+            Some(2)
+        );
+    }
 }
