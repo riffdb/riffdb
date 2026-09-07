@@ -1896,12 +1896,15 @@ mod tests {
     // repository-wide allocation checker remains a separate integration seam.
     const MAX_GROUP_SOURCE_BYTES: usize = 256 * 1024;
     const MAX_GROUP_SOURCE_TOKENS: usize = 32 * 1024;
-    const REVIEWED_GROUP_ITEM_TOKEN_HASHES: [u64; 4] = [
+    const REVIEWED_GROUP_ITEM_TOKEN_HASHES: [u64; 6] = [
         361_605_024_910_353_321,
         18_325_372_949_028_513_203,
         5_304_916_325_019_661_598,
         14_332_923_306_409_527_796,
+        4_583_225_306_792_871_116,
+        14_286_021_644_196_959_110,
     ];
+    const REVIEWED_PRODUCTION_PREFIX_BYTE_HASH: u64 = 6_761_605_506_267_740_943;
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     struct RustToken<'source> {
@@ -1914,6 +1917,40 @@ mod tests {
         start: usize,
         end: usize,
         label: String,
+    }
+
+    fn raw_string_end(bytes: &[u8], start: usize) -> Result<Option<usize>, &'static str> {
+        let mut marker = start;
+        if bytes.get(marker) == Some(&b'b') && bytes.get(marker + 1) == Some(&b'r') {
+            marker += 2;
+        } else if bytes.get(marker) == Some(&b'r') {
+            marker += 1;
+        } else {
+            return Ok(None);
+        }
+        let hash_start = marker;
+        while bytes.get(marker) == Some(&b'#') {
+            marker += 1;
+        }
+        let hash_count = marker - hash_start;
+        if bytes.get(marker) != Some(&b'"') {
+            return Ok(None);
+        }
+        marker += 1;
+        while marker < bytes.len() {
+            if bytes[marker] != b'"' {
+                marker += 1;
+                continue;
+            }
+            let closing_hashes = marker + 1..marker + 1 + hash_count;
+            if closing_hashes.end <= bytes.len()
+                && bytes[closing_hashes].iter().all(|byte| *byte == b'#')
+            {
+                return Ok(Some(marker + 1 + hash_count));
+            }
+            marker += 1;
+        }
+        Err("unterminated raw string literal")
     }
 
     fn lex_group_source(source: &str) -> Result<Vec<RustToken<'_>>, &'static str> {
@@ -1955,7 +1992,9 @@ mod tests {
                 continue;
             }
             let start = cursor;
-            if bytes[cursor] == b'"' {
+            if let Some(end) = raw_string_end(bytes, cursor)? {
+                cursor = end;
+            } else if bytes[cursor] == b'"' {
                 cursor += 1;
                 let mut escaped = false;
                 while cursor < bytes.len() {
@@ -2201,28 +2240,36 @@ mod tests {
             .min_by_key(|item| item.end - item.start)
     }
 
-    fn token_hash(tokens: &[RustToken<'_>], item: &ItemSpan) -> u64 {
+    fn fnv1a(bytes: impl IntoIterator<Item = u8>) -> u64 {
         let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-        for token in &tokens[item.start..=item.end] {
-            for byte in token.text.bytes().chain([0xff]) {
-                hash ^= u64::from(byte);
-                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-            }
+        for byte in bytes {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
         }
         hash
+    }
+
+    fn token_hash(tokens: &[RustToken<'_>], item: &ItemSpan) -> u64 {
+        fnv1a(
+            tokens[item.start..=item.end]
+                .iter()
+                .flat_map(|token| token.text.bytes().chain([0xff])),
+        )
     }
 
     fn reviewed_item_hashes(
         tokens: &[RustToken<'_>],
         items: &[ItemSpan],
-    ) -> Result<[u64; 4], &'static str> {
+    ) -> Result<[u64; 6], &'static str> {
         let labels = [
             "struct BoundedGroupOwner",
             "BoundedGroupOwner::new",
             "encoded_key_len",
             "append_key",
+            "BoundedGroupOwner::admit_encoded",
+            "BoundedGroupOwner::commit_appended",
         ];
-        let mut hashes = [0_u64; 4];
+        let mut hashes = [0_u64; 6];
         for (index, label) in labels.iter().enumerate() {
             let mut matches = items.iter().filter(|item| item.label == *label);
             let item = matches.next().ok_or("missing reviewed production item")?;
@@ -2242,8 +2289,54 @@ mod tests {
             .eq(expected.iter().copied())
     }
 
+    fn unique_sequence(
+        tokens: &[RustToken<'_>],
+        item: &ItemSpan,
+        expected: &[&str],
+    ) -> Result<usize, &'static str> {
+        let mut positions =
+            (item.start..=item.end).filter(|index| token_sequence(tokens, *index, expected));
+        let position = positions.next().ok_or("missing reviewed token sequence")?;
+        if positions.next().is_some() {
+            return Err("duplicate reviewed token sequence");
+        }
+        Ok(position)
+    }
+
+    fn guard_dominates(
+        tokens: &[RustToken<'_>],
+        item: &ItemSpan,
+        guard: &[&str],
+        mutation: &[&str],
+        refusal: &str,
+    ) -> Result<(), &'static str> {
+        let guard = unique_sequence(tokens, item, guard)?;
+        let mutation = unique_sequence(tokens, item, mutation)?;
+        if guard >= mutation {
+            return Err("guard does not precede mutation");
+        }
+        let guard_if = (item.start..guard)
+            .rev()
+            .find(|index| tokens[*index].text == "if")
+            .ok_or("guard is not controlled by if")?;
+        let opening = (guard..mutation)
+            .find(|index| tokens[*index].text == "{")
+            .ok_or("guard refusal body missing")?;
+        let closing = matching_brace(tokens, opening).ok_or("guard refusal body unclosed")?;
+        if guard_if >= opening || closing >= mutation {
+            return Err("guard refusal does not dominate mutation");
+        }
+        let body = &tokens[opening + 1..closing];
+        if !body.iter().any(|token| token.text == "return")
+            || !body.iter().any(|token| token.text == refusal)
+        {
+            return Err("guard refusal is not fail closed");
+        }
+        Ok(())
+    }
+
     fn check_group_allocation_architecture(source: &str) -> Result<(), &'static str> {
-        let (tokens, _) = production_layout(source)?;
+        let (tokens, module_start) = production_layout(source)?;
         let items = production_items(&tokens)?;
         let mut owner_vec_fields = 0_usize;
         let mut owner_vec_news = 0_usize;
@@ -2253,10 +2346,17 @@ mod tests {
         let mut length_helper_calls = 0_usize;
         let mut encoder_helper_imports = 0_usize;
         let mut encoder_helper_calls = 0_usize;
+        let mut encoded_extend_sites = 0_usize;
+        let mut key_extend_sites = 0_usize;
+        let mut entry_insert_sites = 0_usize;
 
         for (index, token) in tokens.iter().enumerate() {
             let item_span = item_span_for_token(&items, index);
             let item = item_span.map_or("<unparsed top-level item>", |item| item.label.as_str());
+            let identifier = token
+                .text
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
             if matches!(token.text, "Box" | "String")
                 || token.text.starts_with("Vec") && token.text != "Vec"
             {
@@ -2288,17 +2388,20 @@ mod tests {
             {
                 return Err("unreviewed allocating macro");
             }
-            if ["collect", "to_vec", "to_owned", "clone", "from_raw_parts"]
-                .iter()
-                .any(|needle| token.text.contains(needle))
-                || token.text.contains("reserve") && token.text != "try_reserve_exact"
+            if identifier
+                && (["collect", "to_vec", "to_owned", "clone", "from_raw_parts"]
+                    .iter()
+                    .any(|needle| token.text.contains(needle))
+                    || token.text.contains("from_iter")
+                    || token.text.contains("reserve") && token.text != "try_reserve_exact")
             {
                 return Err("unreviewed allocating call");
             }
-            if item == "use" && token.text.contains("alloc") {
+            if item == "use" && identifier && token.text.contains("alloc") {
                 return Err("aliased allocation module import");
             }
-            if (token.text.contains("alloc") || token.text == "encode_canonical_value")
+            if identifier
+                && (token.text.contains("alloc") || token.text == "encode_canonical_value")
                 && tokens
                     .get(index.wrapping_sub(1))
                     .is_none_or(|previous| previous.text != "fn")
@@ -2313,6 +2416,52 @@ mod tests {
                     return Err("unreviewed reserve site or alias");
                 }
                 reserve_sites += 1;
+            }
+            if token.text == "extend_from_slice" {
+                if item == "BoundedGroupOwner::admit_encoded"
+                    && index >= 4
+                    && token_sequence(
+                        &tokens,
+                        index - 4,
+                        &[
+                            "self",
+                            ".",
+                            "arena",
+                            ".",
+                            "extend_from_slice",
+                            "(",
+                            "key",
+                            ")",
+                        ],
+                    )
+                {
+                    encoded_extend_sites += 1;
+                } else if item == "append_key"
+                    && index >= 2
+                    && token_sequence(
+                        &tokens,
+                        index - 2,
+                        &["arena", ".", "extend_from_slice", "("],
+                    )
+                {
+                    key_extend_sites += 1;
+                } else {
+                    return Err("unreviewed extend route or site swap");
+                }
+            }
+            if token.text == "insert" {
+                if item == "BoundedGroupOwner::commit_appended"
+                    && index >= 4
+                    && token_sequence(
+                        &tokens,
+                        index - 4,
+                        &["self", ".", "entries", ".", "insert", "("],
+                    )
+                {
+                    entry_insert_sites += 1;
+                } else {
+                    return Err("unreviewed insert route or site swap");
+                }
             }
             for (helper, import_count, call_count, expected_item) in [
                 (
@@ -2368,8 +2517,74 @@ mod tests {
         {
             return Err("canonical encoder helper allowlist changed");
         }
+        if (encoded_extend_sites, key_extend_sites, entry_insert_sites) != (1, 2, 1) {
+            return Err("extend or insert site allowlist changed");
+        }
+        let admit_encoded = items
+            .iter()
+            .find(|item| item.label == "BoundedGroupOwner::admit_encoded")
+            .ok_or("missing admit_encoded item")?;
+        guard_dominates(
+            &tokens,
+            admit_encoded,
+            &["self", ".", "arena", ".", "capacity", "(", ")"],
+            &[
+                "self",
+                ".",
+                "arena",
+                ".",
+                "extend_from_slice",
+                "(",
+                "key",
+                ")",
+            ],
+            "StateBoundExceeded",
+        )?;
+        let commit_appended = items
+            .iter()
+            .find(|item| item.label == "BoundedGroupOwner::commit_appended")
+            .ok_or("missing commit_appended item")?;
+        let entry_insert = &["self", ".", "entries", ".", "insert", "("];
+        guard_dominates(
+            &tokens,
+            commit_appended,
+            &[
+                "self",
+                ".",
+                "entries",
+                ".",
+                "len",
+                "(",
+                ")",
+                ">",
+                "=",
+                "usize",
+                ":",
+                ":",
+                "from",
+                "(",
+                "self",
+                ".",
+                "bounds",
+                ".",
+                "maximum_groups",
+                ")",
+            ],
+            entry_insert,
+            "GroupBoundExceeded",
+        )?;
+        guard_dominates(
+            &tokens,
+            commit_appended,
+            &["end", ">", "self", ".", "retained_key_capacity"],
+            entry_insert,
+            "StateBoundExceeded",
+        )?;
         if reviewed_item_hashes(&tokens, &items)? != REVIEWED_GROUP_ITEM_TOKEN_HASHES {
             return Err("reviewed production item token hash changed");
+        }
+        if fnv1a(source[..module_start].bytes()) != REVIEWED_PRODUCTION_PREFIX_BYTE_HASH {
+            return Err("reviewed production prefix byte hash changed");
         }
         Ok(())
     }
@@ -2377,11 +2592,15 @@ mod tests {
     #[test]
     fn production_group_owner_has_no_per_row_owned_key_or_map() {
         let source = include_str!("group.rs");
-        let (tokens, _) = production_layout(source).expect("bounded structural source");
+        let (tokens, module_start) = production_layout(source).expect("bounded structural source");
         let items = production_items(&tokens).expect("production items");
         assert_eq!(
             reviewed_item_hashes(&tokens, &items),
             Ok(REVIEWED_GROUP_ITEM_TOKEN_HASHES)
+        );
+        assert_eq!(
+            fnv1a(source[..module_start].bytes()),
+            REVIEWED_PRODUCTION_PREFIX_BYTE_HASH
         );
         assert_eq!(check_group_allocation_architecture(source), Ok(()));
 
@@ -2408,6 +2627,14 @@ mod tests {
             ),
             (
                 "fn bypass(v:&[u8]){let _=v.iter().collect::<Vec<_>>();}",
+                "unreviewed allocating call",
+            ),
+            (
+                "fn bypass<I:Iterator>(i:I){let _=Iterator::collect(i);}",
+                "unreviewed allocating call",
+            ),
+            (
+                "fn bypass<I:IntoIterator>(i:I){let _=FromIterator::from_iter(i);}",
                 "unreviewed allocating call",
             ),
             (
@@ -2443,6 +2670,82 @@ mod tests {
         assert_eq!(
             check_group_allocation_architecture(&extra_test_item),
             Err("top-level cfg(test) item is not the final tests module")
+        );
+
+        let raw_decoys = format!(
+            "{}\nconst RAW_DECOY:&str=r####\"}} #[cfg(test)] mod tests {{ Vec::new(); \\\"quoted\\\" \"####;\nconst BYTE_RAW_DECOY:&[u8]=br######\"}} Iterator::collect {{\"######;\n{}",
+            &source[..module_start],
+            &source[module_start..]
+        );
+        let (raw_tokens, _) =
+            production_layout(&raw_decoys).expect("raw-string-aware tokenization");
+        assert_eq!(
+            raw_tokens
+                .iter()
+                .filter(|token| token.text == "Vec")
+                .count(),
+            tokens.iter().filter(|token| token.text == "Vec").count(),
+            "raw-string decoy leaked a Vec token"
+        );
+        assert!(!raw_tokens.iter().any(|token| token.text == "collect"));
+        assert_eq!(
+            check_group_allocation_architecture(&raw_decoys),
+            Err("reviewed production prefix byte hash changed")
+        );
+
+        let external_helper = format!(
+            "{}\nfn bypass(){{external::make();}}\n{}",
+            &source[..module_start],
+            &source[module_start..]
+        );
+        assert_eq!(
+            check_group_allocation_architecture(&external_helper),
+            Err("reviewed production prefix byte hash changed")
+        );
+
+        let without_arena_capacity = source.replacen(
+            "if start\n            .checked_add(key.len())\n            .is_none_or(|end| end > self.arena.capacity())",
+            "if false",
+            1,
+        );
+        assert_ne!(without_arena_capacity, source);
+        assert_eq!(
+            check_group_allocation_architecture(&without_arena_capacity),
+            Err("missing reviewed token sequence")
+        );
+        let without_group_capacity = source.replacen(
+            "if self.entries.len() >= usize::from(self.bounds.maximum_groups) {",
+            "if false {",
+            1,
+        );
+        assert_ne!(without_group_capacity, source);
+        assert_eq!(
+            check_group_allocation_architecture(&without_group_capacity),
+            Err("missing reviewed token sequence")
+        );
+        let without_state_capacity =
+            source.replacen("if end > self.retained_key_capacity {", "if false {", 1);
+        assert_ne!(without_state_capacity, source);
+        assert_eq!(
+            check_group_allocation_architecture(&without_state_capacity),
+            Err("missing reviewed token sequence")
+        );
+
+        let swapped_extend = source.replacen(
+            "self.arena.extend_from_slice(key);",
+            "self.entries.extend_from_slice(key);",
+            1,
+        );
+        assert_ne!(swapped_extend, source);
+        assert_eq!(
+            check_group_allocation_architecture(&swapped_extend),
+            Err("unreviewed extend route or site swap")
+        );
+        let swapped_insert = source.replacen("self.entries.insert(", "self.arena.insert(", 1);
+        assert_ne!(swapped_insert, source);
+        assert_eq!(
+            check_group_allocation_architecture(&swapped_insert),
+            Err("unreviewed insert route or site swap")
         );
 
         let swapped = source.replacen(
