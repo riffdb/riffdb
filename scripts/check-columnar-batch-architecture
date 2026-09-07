@@ -28,6 +28,7 @@ MAX_ALIASES = 4_096
 BATCH_ROOT = Path("crates/riffdb-columnar/src/batch")
 EXPECTED_BATCH_FILES = (
     Path("crates/riffdb-columnar/src/batch/aggregate.rs"),
+    Path("crates/riffdb-columnar/src/batch/group.rs"),
     Path("crates/riffdb-columnar/src/batch/mod.rs"),
     Path("crates/riffdb-columnar/src/batch/program.rs"),
     Path("crates/riffdb-columnar/src/batch/top_n.rs"),
@@ -37,10 +38,11 @@ EXPECTED_BATCH_FILES = (
 # literal. It is a review tripwire, not a substitute for the independent
 # structural inventories below.
 EXPECTED_PRODUCTION_HASHES = {
-    "crates/riffdb-columnar/src/batch/aggregate.rs": "5e3a909d61ae4ba1bae3052b7e58468223c8167a82e6be31516b2238b245bc7b",
-    "crates/riffdb-columnar/src/batch/mod.rs": "dcb6d14684a703bf4410e179cbb9218147abc4cbd6bfc9bf97b4450a8dec353a",
-    "crates/riffdb-columnar/src/batch/program.rs": "bf3771801c9b525141abec9b11ceff6b387a9f582ae79b9479118290b09af762",
-    "crates/riffdb-columnar/src/batch/top_n.rs": "fe0b6f0f1150d6af02139bb0efa9e7e750361aa471b60304acaafc4c8eef0201",
+    "crates/riffdb-columnar/src/batch/aggregate.rs": "fae92024492b8d1a27191f03c207d1e63f44e595df0a065506eb6c71eaaab8fa",
+    "crates/riffdb-columnar/src/batch/group.rs": "0a4016d1e70ee2b75c51450ce7f4248933ce9ca6852780c307172acdac6021f1",
+    "crates/riffdb-columnar/src/batch/mod.rs": "8be91c713a96199adeebb7e513433d06970ee223ec9bf70487f2ecc1c2c2e7ee",
+    "crates/riffdb-columnar/src/batch/program.rs": "50e88a5f5b2cb82c451a499554e422a093f18d9a816ea7b67c984af1aa74da48",
+    "crates/riffdb-columnar/src/batch/top_n.rs": "6d317a00fd0863430cd79ae0085923554913a114f626269f182a5f5a6fa2db2d",
 }
 
 EXPECTED_STRUCT_FIELDS = {
@@ -48,6 +50,50 @@ EXPECTED_STRUCT_FIELDS = {
         "FinalizedAggregateLeaf": (("identity", "CanonicalPartialIdentity"), ("definition", "ExactAggregateDefinition"), ("value", "ExactAggregatePartialValue")),
         "SealedCanonicalPartialInventory": (("identities", "Box < [ CanonicalPartialIdentity ] >"), ("cursor", "usize")),
         "ExactAggregateMergeAccumulator": (("inventory", "SealedCanonicalPartialInventory"), ("definition", "ExactAggregateDefinition"), ("value", "ExactAggregatePartialValue")),
+    },
+    "crates/riffdb-columnar/src/batch/group.rs": {
+        "GroupWorkBudget": (("remaining", "u32"),),
+        "CanonicalGroupLane": (("facts", "CheckedProgramLaneFacts"),),
+        "CanonicalGroupBounds": (
+            ("maximum_groups", "u16"),
+            ("maximum_key_bytes", "u32"),
+            ("maximum_state_bytes", "u32"),
+        ),
+        "GroupEntry": (
+            ("key_start", "u32"),
+            ("key_len", "u32"),
+            ("row_count", "u64"),
+        ),
+        "BoundedGroupOwner": (
+            ("arena", "Vec < u8 >"),
+            ("entries", "Vec < GroupEntry >"),
+            ("bounds", "CanonicalGroupBounds"),
+            ("retained_key_capacity", "usize"),
+            ("poisoned", "bool"),
+        ),
+        "CountedFailure": (
+            ("error", "GroupStateError"),
+            ("completed_work", "usize"),
+        ),
+        "CanonicalGroupLeafBuilder": (
+            ("identity", "CanonicalPartialIdentity"),
+            ("lanes", "& ' schema [ CanonicalGroupLane ]"),
+            ("owner", "BoundedGroupOwner"),
+            ("next_row_ordinal", "u32"),
+        ),
+        "FinalizedGroupLeaf": (
+            ("identity", "CanonicalPartialIdentity"),
+            ("lanes", "& ' schema [ CanonicalGroupLane ]"),
+            ("owner", "BoundedGroupOwner"),
+        ),
+        "CanonicalGroupMerge": (
+            ("lanes", "& ' schema [ CanonicalGroupLane ]"),
+            ("inventory", "& ' inventory [ CanonicalPartialIdentity ]"),
+            ("cursor", "usize"),
+            ("owner", "Option < BoundedGroupOwner >"),
+            ("poisoned", "bool"),
+        ),
+        "CanonicalGroups": (("owner", "Option < BoundedGroupOwner >"),),
     },
     "crates/riffdb-columnar/src/batch/top_n.rs": {
         "TopNProgramBinding": (("comparison_profile", "TopNComparisonProfile"), ("plan_identity", "QueryPlanHash"), ("generation", "ProjectionGeneration")),
@@ -61,9 +107,115 @@ EXPECTED_STRUCT_FIELDS = {
 
 EXPECTED_STRUCTURAL_SITES = {
     "crates/riffdb-columnar/src/batch/aggregate.rs": (
-        (("ExactAggregateMergeAccumulator::new", ".to_vec"), ("ExactAggregateMergeAccumulator::new", ".into_boxed_slice")),
-        (("ExactAggregatePartialValue::accumulate", "checked_add"),) * 4 + (("ExactAggregatePartialValue::merge", "checked_add"),) * 4 + (("SealedCanonicalPartialInventory::validate", "checked_add"), ("SealedCanonicalPartialInventory::state_bytes", "checked_mul"), ("ExactAggregateMergeAccumulator::new", "checked_add")),
-        (("<item>", "+"), ("<item>", "+"), ("AggregatePartialBudget::commit_operations", "-="), ("AggregatePartialBudget::commit_state", "-="), ("ExactNumericLane::from_logical_type", "*"), ("ExactNumericLane::contribution", "*"), ("ExactNumericLane::contribution", "*"), ("ExactAggregateDefinition::state_bytes", "+"), ("ExactAggregateDefinition::state_bytes", "+"), ("ExactAggregateDefinition::state_bytes", "+"), ("SealedCanonicalPartialInventory::classify_mismatch", "+"), ("ExactAggregateMergeAccumulator::merge_leaf", "*"), ("ExactAggregateMergeAccumulator::merge_leaf", "+=")),
+        (
+            ("ExactAggregateMergeAccumulator::new", ".to_vec"),
+            ("ExactAggregateMergeAccumulator::new", ".into_boxed_slice"),
+            ("ExactBorrowedAggregateMergeAccumulator::new", ".to_vec"),
+            ("ExactBorrowedAggregateMergeAccumulator::new", ".into_boxed_slice"),
+            ("BoundedDistinctSet::new", "Vec::new"),
+            ("BoundedDistinctSet::new", ".try_reserve_exact"),
+            ("BoundedDistinctSet::new", "Vec::new"),
+            ("BoundedDistinctSet::new", ".try_reserve_exact"),
+            ("ExactDistinctAggregateMergeAccumulator::new", ".to_vec"),
+            ("ExactDistinctAggregateMergeAccumulator::new", ".into_boxed_slice"),
+        ),
+        (
+            (("ExactAggregatePartialValue::accumulate", "checked_add"),) * 4
+            + (("ExactAggregatePartialValue::merge", "checked_add"),) * 4
+            + (
+                ("SealedCanonicalPartialInventory::validate", "checked_add"),
+                ("SealedCanonicalPartialInventory::state_bytes", "checked_mul"),
+                ("ExactAggregateMergeAccumulator::new", "checked_add"),
+                ("BorrowedAggregateDefinition::new", "checked_binding"),
+                ("ExactBorrowedAggregateMergeAccumulator::new", "checked_add"),
+                ("BoundedDistinctSet::requested_state_bytes", "checked_mul"),
+                ("BoundedDistinctSet::requested_state_bytes", "checked_mul"),
+                ("BoundedDistinctSet::requested_state_bytes", "checked_add"),
+                ("BoundedDistinctSet::actual_state_bytes", "checked_add"),
+                ("BoundedDistinctSet::actual_state_bytes", "checked_mul"),
+                ("BoundedDistinctSet::actual_state_bytes", "checked_add"),
+                ("ExactDistinctAggregateMergeAccumulator::new", "checked_add"),
+                ("ExactDistinctAggregateMergeAccumulator::new", "checked_add"),
+            )
+        ),
+        (
+            ("<item>", "+"),
+            ("<item>", "+"),
+            ("AggregatePartialBudget::commit_operations", "-="),
+            ("AggregatePartialBudget::commit_state", "-="),
+            ("ExactNumericLane::from_logical_type", "*"),
+            ("ExactNumericLane::contribution", "*"),
+            ("ExactNumericLane::contribution", "*"),
+            ("ExactAggregateDefinition::state_bytes", "+"),
+            ("ExactAggregateDefinition::state_bytes", "+"),
+            ("ExactAggregateDefinition::state_bytes", "+"),
+            ("SealedCanonicalPartialInventory::classify_mismatch", "+"),
+            ("ExactAggregateMergeAccumulator::merge_leaf", "*"),
+            ("ExactAggregateMergeAccumulator::merge_leaf", "+="),
+            ("BorrowedAggregateDefinition::new", "*"),
+            ("BorrowedAggregateDefinition::new", "*"),
+            ("ExactBorrowedAggregateMergeAccumulator::merge_leaf", "*"),
+            ("ExactBorrowedAggregateMergeAccumulator::merge_leaf", "+="),
+            ("required_boolean", "*"),
+            ("BoundedDistinctSet::union_members", "*"),
+            ("ExactDistinctAggregateMergeAccumulator::merge_leaf", "*"),
+            ("ExactDistinctAggregateMergeAccumulator::merge_leaf", "+="),
+        ),
+    ),
+    "crates/riffdb-columnar/src/batch/group.rs": (
+        (
+            ("BoundedGroupOwner::new", "Vec::new"),
+            ("BoundedGroupOwner::new", ".try_reserve_exact"),
+            ("BoundedGroupOwner::new", "Vec::new"),
+            ("BoundedGroupOwner::new", ".try_reserve_exact"),
+        ),
+        (
+            ("GroupWorkBudget::charge", "checked_sub"),
+            ("BoundedGroupOwner::new", "checked_mul"),
+            ("BoundedGroupOwner::new", "checked_mul"),
+            ("BoundedGroupOwner::new", "checked_sub"),
+            ("BoundedGroupOwner::new", "checked_sub"),
+            ("BoundedGroupOwner::new", "checked_add"),
+            *(("BoundedGroupOwner::admit_cells", "checked_add"),) * 5,
+            *(("BoundedGroupOwner::admit_encoded", "checked_add"),) * 3,
+            ("BoundedGroupOwner::commit_appended", "checked_add"),
+            ("lookup_comparison_ceiling", "checked_add"),
+            ("row_work_ceiling", "checked_mul"),
+            ("row_work_ceiling", "checked_add"),
+            ("row_work_ceiling", "checked_add"),
+            ("encoded_key_len", "checked_add"),
+            ("CanonicalGroupLeafBuilder::push_row", "checked_add"),
+            ("CanonicalGroupMerge::new", "checked_add"),
+            ("CanonicalGroupMerge::merge_leaf", "checked_add"),
+            ("CanonicalGroupMerge::merge_leaf", "checked_add"),
+            ("merge_work_ceiling", "checked_add"),
+            ("merge_work_ceiling", "checked_add"),
+            ("merge_work_ceiling", "checked_add"),
+            ("merge_work_ceiling", "checked_mul"),
+            ("merge_work_ceiling", "checked_add"),
+            ("validate_inventory", "checked_add"),
+        ),
+        (
+            ("GroupWorkBudget::commit_actual", "-="),
+            ("BoundedGroupOwner::admit_cells", "+"),
+            ("BoundedGroupOwner::admit_encoded", "+"),
+            ("BoundedGroupOwner::locate_key", "+"),
+            ("BoundedGroupOwner::locate_key", "-"),
+            ("BoundedGroupOwner::locate_key", "/"),
+            ("BoundedGroupOwner::locate_key", "+="),
+            ("BoundedGroupOwner::locate_key", "+"),
+            ("BoundedGroupOwner::commit_appended", "+"),
+            ("BoundedGroupOwner::allocated_state_bytes", "+"),
+            ("BoundedGroupOwner::allocated_state_bytes", "*"),
+            ("insertion_shift_work", "-"),
+            ("entry_key", "+"),
+            ("lookup_comparison_ceiling", "/="),
+            ("encoded_key_len", "+"),
+            ("append_key", "+"),
+            ("CanonicalGroupMerge::merge_leaf", "+="),
+            ("classify_mismatch", "*"),
+            ("classify_mismatch", "*"),
+        ),
     ),
     "crates/riffdb-columnar/src/batch/mod.rs": (
         (("MonotoneSelection::all", "vec!"), ("ColumnarPredicateKernel::apply", "vec!")),
@@ -71,7 +223,7 @@ EXPECTED_STRUCTURAL_SITES = {
         (("ColumnarBatchWidth::choose", "*"), ("MonotoneSelection::retain", "*"), ("MonotoneSelection::retain", "*"), ("MonotoneSelection::retain", "+="), ("MonotoneSelection::retain", "*"), ("<item>", "+"), ("PredicateWorkCharge::commit", "-="), ("ColumnarPredicateKernel::apply", "+=")),
     ),
     "crates/riffdb-columnar/src/batch/program.rs": (
-        (("PreGenerationBatchProgramDraft::check", ".clone"), ("validate_phase_lanes", "vec!")),
+        (("PreGenerationBatchProgramDraft::check", ".clone"), ("validate_phase_lanes", "vec!"), ("CheckedPreGenerationBatchProgram::lane_facts", ".clone")),
         (("PreGenerationBatchProgramDraft::check", "checked_add"), ("PreGenerationBatchProgramDraft::check", "checked_add"), ("checked_charge_product", "checked_mul")),
         (("<item>", "-"), ("<item>", "/"), ("<item>", "*"), ("<item>", "*"), ("PreGenerationBatchProgramDraft::check", "/"), ("validate_phase_lanes", "*"), ("validate_phase_lanes", "*"), ("validate_phase_lanes", "*")),
     ),
@@ -859,7 +1011,9 @@ ALLOCATION_METHODS = {
     "into_boxed_slice", "collect", "clone", "reserve", "reserve_exact",
     "try_reserve", "try_reserve_exact",
 }
-ALLOCATION_OWNERS = {"Vec", "Box", "String", "Bytes", "BinaryHeap", "VecDeque"}
+ALLOCATION_OWNERS = {
+    "Vec", "Box", "String", "Bytes", "BinaryHeap", "VecDeque", "FromIterator",
+}
 
 
 def structural_sites(
@@ -903,6 +1057,142 @@ def structural_sites(
         if token.text in ("+", "-", "*", "/", "%", "+=", "-=", "*=", "/=", "%="):
             raw.append((route, token.text))
     return tuple(allocations), tuple(checked), tuple(raw)
+
+
+def unique_sequence_in_route(
+    tokens: tuple[RustToken, ...],
+    spans: tuple[tuple[str, int, int], ...],
+    route: str,
+    expected: tuple[str, ...],
+) -> tuple[int, int, int]:
+    matching_spans = [(start, end) for name, start, end in spans if name == route]
+    if len(matching_spans) != 1:
+        raise CheckError(f"{route}: expected exactly one function body")
+    start, end = matching_spans[0]
+    positions = [
+        index
+        for index in range(start, end)
+        if texts(tokens[index:index + len(expected)]) == expected
+    ]
+    if len(positions) != 1:
+        raise CheckError(f"{route}: expected one {expected!r} sequence")
+    return start, end, positions[0]
+
+
+def require_dominating_refusal(
+    tokens: tuple[RustToken, ...],
+    route: str,
+    guard: tuple[str, ...],
+    mutation: tuple[str, ...],
+    refusal: str,
+) -> None:
+    spans = function_spans(tokens)
+    start, end, guard_at = unique_sequence_in_route(tokens, spans, route, guard)
+    _, _, mutation_at = unique_sequence_in_route(tokens, spans, route, mutation)
+    if guard_at >= mutation_at:
+        raise CheckError(f"{route}: capacity guard does not precede mutation")
+    guard_if = next(
+        (index for index in range(guard_at, start - 1, -1) if tokens[index].text == "if"),
+        None,
+    )
+    opening = next(
+        (index for index in range(guard_at, mutation_at) if tokens[index].text == "{"),
+        None,
+    )
+    if guard_if is None or opening is None:
+        raise CheckError(f"{route}: capacity guard refusal is not an if block")
+    closing = matching_delimiter(tokens, opening)
+    if closing >= mutation_at or closing > end:
+        raise CheckError(f"{route}: capacity guard does not dominate mutation")
+    refusal_body = tokens[opening + 1:closing]
+    if not any(token.text == "return" for token in refusal_body) or not any(
+        token.text == refusal for token in refusal_body
+    ):
+        raise CheckError(f"{route}: capacity refusal is not fail closed")
+
+
+def validate_group_capacity_guards(tokens: tuple[RustToken, ...]) -> None:
+    arena_capacity = ("self", ".", "arena", ".", "capacity", "(", ")")
+    require_dominating_refusal(
+        tokens,
+        "BoundedGroupOwner::admit_cells",
+        arena_capacity,
+        ("append_key", "(", "&", "mut", "self", ".", "arena", ",", "cells", ")"),
+        "StateBoundExceeded",
+    )
+    require_dominating_refusal(
+        tokens,
+        "BoundedGroupOwner::admit_encoded",
+        arena_capacity,
+        ("self", ".", "arena", ".", "extend_from_slice", "(", "key", ")"),
+        "StateBoundExceeded",
+    )
+    entry_insert = ("self", ".", "entries", ".", "insert", "(")
+    require_dominating_refusal(
+        tokens,
+        "BoundedGroupOwner::commit_appended",
+        (
+            "self", ".", "entries", ".", "len", "(", ")", ">=", "usize",
+            "::", "from", "(", "self", ".", "bounds", ".", "maximum_groups", ")",
+        ),
+        entry_insert,
+        "GroupBoundExceeded",
+    )
+    require_dominating_refusal(
+        tokens,
+        "BoundedGroupOwner::commit_appended",
+        ("end", ">", "self", ".", "retained_key_capacity"),
+        entry_insert,
+        "StateBoundExceeded",
+    )
+
+
+def validate_group_mutation_routes(tokens: tuple[RustToken, ...]) -> None:
+    spans = function_spans(tokens)
+    method_routes = tuple(
+        (route_at(spans, index), tokens[index + 1].text)
+        for index in range(len(tokens) - 1)
+        if tokens[index].text == "."
+        and tokens[index + 1].text in ("extend_from_slice", "insert")
+    )
+    expected_methods = (
+        ("BoundedGroupOwner::admit_encoded", "extend_from_slice"),
+        ("BoundedGroupOwner::commit_appended", "insert"),
+        ("append_key", "extend_from_slice"),
+        ("append_key", "extend_from_slice"),
+    )
+    if method_routes != expected_methods:
+        raise CheckError("group extend/insert routes changed")
+    unique_sequence_in_route(
+        tokens,
+        spans,
+        "append_key",
+        (
+            "arena", ".", "extend_from_slice", "(", "&", "value_len", ".",
+            "to_be_bytes", "(", ")", ")",
+        ),
+    )
+    unique_sequence_in_route(
+        tokens,
+        spans,
+        "append_key",
+        ("arena", ".", "extend_from_slice", "(", "&", "NO_VALUE_BYTES", ")"),
+    )
+
+    helper_routes = tuple(
+        (route_at(spans, index), token.text)
+        for index, token in enumerate(tokens[:-1])
+        if token.text in ("canonical_value_encoded_len", "encode_canonical_value_into")
+        and tokens[index + 1].text == "("
+        and (index == 0 or tokens[index - 1].text != "fn")
+    )
+    expected_helpers = (
+        ("encoded_key_len", "canonical_value_encoded_len"),
+        ("append_key", "canonical_value_encoded_len"),
+        ("append_key", "encode_canonical_value_into"),
+    )
+    if helper_routes != expected_helpers:
+        raise CheckError("group canonical helper routes changed")
 
 
 def has_attribute(tokens: tuple[RustToken, ...], item_name: str, attribute: str) -> bool:
@@ -1086,7 +1376,12 @@ def evaluate(batch: dict[str, str], consumers: dict[str, str]) -> list[str]:
 
     module_path = str(BATCH_ROOT / "mod.rs")
     declarations = top_level_module_declarations(tokenized_production.get(module_path, ()))
-    expected_declarations = (("aggregate", False), ("program", False), ("top_n", False))
+    expected_declarations = (
+        ("aggregate", False),
+        ("group", False),
+        ("program", False),
+        ("top_n", False),
+    )
     if declarations != expected_declarations:
         failures.add(
             "module-order",
@@ -1097,6 +1392,20 @@ def evaluate(batch: dict[str, str], consumers: dict[str, str]) -> list[str]:
     top_n_fields = named_struct_fields(top_n_tokens)
     if set(top_n_fields) != set(EXPECTED_STRUCT_FIELDS[top_n_path]):
         failures.add("owned-row", f"{top_n_path}: Top-N struct inventory changed")
+
+    group_path = str(BATCH_ROOT / "group.rs")
+    group_tokens = tokenized_production.get(group_path, ())
+    group_fields = named_struct_fields(group_tokens)
+    if set(group_fields) != set(EXPECTED_STRUCT_FIELDS[group_path]):
+        failures.add("group-owner", f"{group_path}: group struct inventory changed")
+    try:
+        validate_group_capacity_guards(group_tokens)
+    except CheckError as error:
+        failures.add("group-capacity-guard", f"{group_path}: {error}")
+    try:
+        validate_group_mutation_routes(group_tokens)
+    except CheckError as error:
+        failures.add("group-mutation-route", f"{group_path}: {error}")
 
     aggregate_path = str(BATCH_ROOT / "aggregate.rs")
     aggregate_tokens = tokenized_production.get(aggregate_path, ())
@@ -1287,18 +1596,138 @@ def self_test(root: Path) -> None:
 
     exposed_observer = dict(batch)
     exposed_observer[aggregate] = exposed_observer[aggregate].replace(
-        "    #[cfg(test)]\n    pub(super) const fn value",
-        "    pub(super) const fn value",
+        "    #[cfg(test)]\n    const fn value",
+        "    const fn value",
         1,
     )
     require_failure("test-observer", exposed_observer, no_consumers, "observer-without-cfg")
     fake_observer_attribute = dict(batch)
     fake_observer_attribute[aggregate] = fake_observer_attribute[aggregate].replace(
-        "    #[cfg(test)]\n    pub(super) const fn value",
-        '    const _: &str = "#[cfg(test)]";\n    pub(super) const fn value',
+        "    #[cfg(test)]\n    const fn value",
+        '    const _: &str = "#[cfg(test)]";\n    const fn value',
         1,
     )
     require_failure("test-observer", fake_observer_attribute, no_consumers, "observer-string-cfg")
+
+    group = "crates/riffdb-columnar/src/batch/group.rs"
+    group_literal = dict(batch)
+    group_literal[group] = group_literal[group].replace(
+        "const NO_VALUE_BYTES: [u8; 2] = [1, 0];",
+        "const NO_VALUE_BYTES: [u8; 2] = [0, 1];",
+        1,
+    )
+    require_failure("production-hash", group_literal, no_consumers, "group-literal-semantics")
+
+    group_layout = dict(batch)
+    group_layout[group] = group_layout[group].replace(
+        "    poisoned: bool,\n}",
+        "    poisoned: bool,\n    unreviewed_owner_word: usize,\n}",
+        1,
+    )
+    require_failure("struct-layout", group_layout, no_consumers, "group-owner-layout")
+    extra_group_owner = dict(batch)
+    extra_group_owner[group] = insert_before_tests(
+        extra_group_owner[group], "struct UnreviewedGroupOwner { row: CanonicalValue }"
+    )
+    require_failure("group-owner", extra_group_owner, no_consumers, "extra-group-owner")
+
+    for label, addition in (
+        ("group-box", "fn bypass() { let _ = Box::new(1); }"),
+        ("group-vec-macro", "fn bypass() { let _ = vec![1]; }"),
+        (
+            "group-allocation-alias",
+            "use std::vec::Vec as Buffer; fn bypass() { let _ = Buffer::from([1]); }",
+        ),
+        (
+            "group-commented-allocation",
+            "fn bypass() { let _ = Vec/* comments do not hide paths */::new(); }",
+        ),
+        (
+            "group-from-iterator",
+            "fn bypass<I: IntoIterator>(items: I) { let _ = FromIterator::from_iter(items); }",
+        ),
+    ):
+        changed = dict(batch)
+        changed[group] = insert_before_tests(changed[group], addition)
+        require_failure("unreviewed-allocation", changed, no_consumers, label)
+
+    group_reserve = dict(batch)
+    group_reserve[group] = group_reserve[group].replace("try_reserve_exact", "reserve", 1)
+    require_failure("unreviewed-allocation", group_reserve, no_consumers, "group-reserve")
+    group_helper = dict(batch)
+    group_helper[group] = group_helper[group].replace(
+        "canonical_value_encoded_len(value)", "unreviewed_length_helper(value)", 1
+    )
+    require_failure("group-mutation-route", group_helper, no_consumers, "group-helper-route")
+    group_append_route = dict(batch)
+    group_append_route[group] = group_append_route[group].replace(
+        "arena.extend_from_slice(&value_len.to_be_bytes());",
+        "cells.extend_from_slice(&value_len.to_be_bytes());",
+        1,
+    )
+    require_failure(
+        "group-mutation-route", group_append_route, no_consumers, "group-append-route-swap"
+    )
+    group_extend_route = dict(batch)
+    group_extend_route[group] = group_extend_route[group].replace(
+        "self.arena.extend_from_slice(key);",
+        "self.entries.extend_from_slice(key);",
+        1,
+    )
+    require_failure(
+        "group-capacity-guard", group_extend_route, no_consumers, "group-extend-route-swap"
+    )
+    group_insert_route = dict(batch)
+    group_insert_route[group] = group_insert_route[group].replace(
+        "self.entries.insert(", "self.arena.insert(", 1
+    )
+    require_failure(
+        "group-capacity-guard", group_insert_route, no_consumers, "group-insert-route-swap"
+    )
+
+    for label, old in (
+        (
+            "group-cell-arena-capacity-guard",
+            "if start\n            .checked_add(key_len)\n            .is_none_or(|end| end > self.arena.capacity())",
+        ),
+        (
+            "group-arena-capacity-guard",
+            "if start\n            .checked_add(key.len())\n            .is_none_or(|end| end > self.arena.capacity())",
+        ),
+        (
+            "group-cardinality-guard",
+            "if self.entries.len() >= usize::from(self.bounds.maximum_groups)",
+        ),
+        ("group-state-capacity-guard", "if end > self.retained_key_capacity"),
+    ):
+        changed = dict(batch)
+        changed[group] = changed[group].replace(old, "if false", 1)
+        require_failure("group-capacity-guard", changed, no_consumers, label)
+
+    group_checked = dict(batch)
+    group_checked[group] = group_checked[group].replace(".checked_sub(work)", " - work", 1)
+    require_failure("unreviewed-arithmetic", group_checked, no_consumers, "group-checked-route")
+    group_raw = dict(batch)
+    group_raw[group] = group_raw[group].replace(
+        "self.remaining -= actual_work;", "self.remaining = actual_work;", 1
+    )
+    require_failure("unreviewed-arithmetic", group_raw, no_consumers, "group-raw-route")
+
+    group_suffix = dict(batch)
+    group_suffix[group] += "\nfn production_after_group_tests() { Vec::new(); }\n"
+    require_failure("test-boundary", group_suffix, no_consumers, "group-production-suffix")
+    group_raw_decoy = dict(batch)
+    group_raw_decoy[group] = insert_before_tests(
+        group_raw_decoy[group],
+        'const GROUP_RAW_DECOY: &str = r###"Vec::new(); #[cfg(test)] mod tests {}"###;',
+    )
+    require_failure("production-hash", group_raw_decoy, no_consumers, "group-raw-decoy")
+
+    group_visible_item = dict(batch)
+    group_visible_item[group] = group_visible_item[group].replace(
+        "pub(super) struct CanonicalGroups", "pub struct CanonicalGroups", 1
+    )
+    require_failure("public-surface", group_visible_item, no_consumers, "group-public-item")
 
     module = str(BATCH_ROOT / "mod.rs")
     missing = dict(batch)
@@ -1306,9 +1735,15 @@ def self_test(root: Path) -> None:
     require_failure("module-order", missing, no_consumers, "missing-module")
     reordered = dict(batch)
     reordered[module] = reordered[module].replace(
-        "mod aggregate;\nmod program;", "mod program;\nmod aggregate;", 1
+        "mod aggregate;\nmod group;", "mod group;\nmod aggregate;", 1
     )
     require_failure("module-order", reordered, no_consumers, "reordered-module")
+    missing_group = dict(batch)
+    missing_group[module] = missing_group[module].replace("mod group;", "", 1)
+    require_failure("module-order", missing_group, no_consumers, "missing-group-module")
+    visible_group = dict(batch)
+    visible_group[module] = visible_group[module].replace("mod group;", "pub(super) mod group;", 1)
+    require_failure("module-order", visible_group, no_consumers, "visible-group-module")
 
     suffix = dict(batch)
     suffix[target] += "\nstruct ProductionAfterTests;\n"
@@ -1316,10 +1751,17 @@ def self_test(root: Path) -> None:
     extra = dict(batch)
     extra[str(BATCH_ROOT / "hidden.rs")] = "#[cfg(test)] mod tests {}"
     require_failure("module-inventory", extra, no_consumers, "unlisted-module")
+    missing_group_file = dict(batch)
+    missing_group_file.pop(group)
+    require_failure("module-inventory", missing_group_file, no_consumers, "missing-group-file")
     exposed = {
         "crates/riffdb-columnar/src/query.rs": "use crate::batch::ColumnarBatchWidth;"
     }
     require_failure("production-consumer", batch, exposed, "unlisted-production-consumer")
+    group_consumer = {
+        "crates/riffdb-columnar/src/query.rs": "use crate::batch::group::CanonicalGroups;"
+    }
+    require_failure("production-consumer", batch, group_consumer, "group-production-consumer")
     path_alias = {
         "crates/riffdb-columnar/src/query.rs": '#[path = "batch/mod.rs"] mod vectorized;'
     }

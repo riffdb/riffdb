@@ -951,7 +951,7 @@ mod tests {
         MAX_AGGREGATE_DISTINCT_VALUES_V1, MAX_AGGREGATE_STATE_BYTES_V1,
     };
     use crate::batch::aggregate::CanonicalPartialIdentity;
-    use crate::batch::program::checked_group_lane_facts_for_test;
+    use crate::batch::program::checked_group_lane_fact_for_test;
     use crate::segment_v2::{SegmentV2Cell, SegmentV2LogicalType, SegmentV2SegmentId};
     use riffdb_types::{
         CanonicalValue, CurrencyCode, Date, Decimal, DecimalSpec, EnumTypeId, EnumVariantId,
@@ -970,24 +970,20 @@ mod tests {
         identity_seed: u8,
         lanes: &[(SegmentV2LogicalType, bool)],
     ) -> Vec<CanonicalGroupLane> {
-        checked_group_lane_facts_for_test(
-            identity_seed,
-            lanes
-                .iter()
-                .enumerate()
-                .map(|(index, (logical, optional))| {
-                    (
-                        FieldId::new(u32::try_from(index + 1).expect("small lane index"))
-                            .expect("nonzero field"),
-                        logical.clone(),
-                        *optional,
-                    )
-                })
-                .collect(),
-        )
-        .into_iter()
-        .map(CanonicalGroupLane::from_checked)
-        .collect()
+        lanes
+            .iter()
+            .enumerate()
+            .map(|(index, (logical, optional))| {
+                CanonicalGroupLane::from_checked(checked_group_lane_fact_for_test(
+                    identity_seed,
+                    index,
+                    FieldId::new(u32::try_from(index + 1).expect("small lane index"))
+                        .expect("nonzero field"),
+                    logical.clone(),
+                    *optional,
+                ))
+            })
+            .collect()
     }
     fn work() -> GroupWorkBudget {
         GroupWorkBudget::new(MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1).expect("global work ceiling")
