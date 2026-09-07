@@ -1,6 +1,7 @@
 //! Inert bounded mechanics for compiler-sealed V2 columnar batches.
 
 mod aggregate;
+mod program;
 
 use std::num::NonZeroU16;
 
