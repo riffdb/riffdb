@@ -245,7 +245,7 @@ record with no front matter.
 | [0208](0208-exact-empty-command-authority-avoids-command-audit-index-activation.md) | Exact-Empty Command Authority Avoids Command-Audit Index Activation | Accepted | guarantee |
 | [0209](0209-epoch-two-direct-columnar-v2-control-activation.md) | Epoch-Two Direct Columnar V2 Control Activation | Proposed | guarantee |
 | [0210](0210-passive-transient-index-rebuild-observation-for-production-proof.md) | Passive Transient-Index Rebuild Observation for Production Proof | Proposed | guarantee |
-| [0211](0211-trusted-mcp-descriptor-projection-classification.md) | Trusted MCP Descriptor Projection Classification | Proposed | guarantee |
+| [0211](0211-trusted-mcp-descriptor-projection-classification.md) | Trusted MCP Descriptor Projection Classification | Accepted | guarantee |
 | [0212](0212-independent-correlated-index-model-and-epoch-two-evidence.md) | Independent Correlated-Index Model and Epoch-Two Evidence | Proposed | guarantee |
 <!-- adr-index:end -->
 
