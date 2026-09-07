@@ -1,0 +1,400 @@
+#!/usr/bin/env python3
+"""Freeze the private, inert WP-712 batch-mechanics boundary."""
+
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+MAX_FILES = 4096
+MAX_SOURCE_BYTES = 2 * 1024 * 1024
+MAX_FAILURES = 64
+MECHANICS = {
+    "module": Path("crates/riffdb-columnar/src/batch/mod.rs"),
+    "aggregate": Path("crates/riffdb-columnar/src/batch/aggregate.rs"),
+    "program": Path("crates/riffdb-columnar/src/batch/program.rs"),
+    "top_n": Path("crates/riffdb-columnar/src/batch/top_n.rs"),
+}
+MECHANIC_SYMBOLS = (
+    "ColumnarBatchWidth",
+    "BorrowedLaneBatch",
+    "MonotoneSelection",
+    "ColumnarPredicateKernel",
+    "AggregatePartialBudget",
+    "CanonicalPartialIdentity",
+    "ExactAggregateLeafBuilder",
+    "ExactAggregateMergeAccumulator",
+    "TopNProgramBinding",
+    "TopNSource",
+    "BoundedTopN",
+)
+
+
+def production_part(source: str) -> str:
+    marker = source.find("#[cfg(test)]")
+    return source if marker < 0 else source[:marker]
+
+
+def scrub_rust(source: str) -> str:
+    """Remove comments and literals while preserving token separation/newlines."""
+    out: list[str] = []
+    index = 0
+    block_depth = 0
+    while index < len(source):
+        if block_depth:
+            if source.startswith("/*", index):
+                block_depth += 1
+                out.extend("  ")
+                index += 2
+            elif source.startswith("*/", index):
+                block_depth -= 1
+                out.extend("  ")
+                index += 2
+            else:
+                out.append("\n" if source[index] == "\n" else " ")
+                index += 1
+            continue
+        if source.startswith("//", index):
+            end = source.find("\n", index)
+            if end < 0:
+                out.extend(" " * (len(source) - index))
+                break
+            out.extend(" " * (end - index))
+            out.append("\n")
+            index = end + 1
+            continue
+        if source.startswith("/*", index):
+            block_depth = 1
+            out.extend("  ")
+            index += 2
+            continue
+        raw = re.match(r'r(#{0,16})"', source[index:]) if source[index] == "r" else None
+        if raw:
+            terminator = '"' + raw.group(1)
+            end = source.find(terminator, index + len(raw.group(0)))
+            end = len(source) if end < 0 else end + len(terminator)
+            literal = source[index:end]
+            out.extend("\n" if char == "\n" else " " for char in literal)
+            index = end
+            continue
+        if source[index] == '"':
+            quote = source[index]
+            out.append(" ")
+            index += 1
+            while index < len(source):
+                char = source[index]
+                out.append("\n" if char == "\n" else " ")
+                index += 1
+                if char == "\\" and index < len(source):
+                    out.append("\n" if source[index] == "\n" else " ")
+                    index += 1
+                elif char == quote:
+                    break
+            continue
+        out.append(source[index])
+        index += 1
+    return "".join(out)
+
+
+def normalized(source: str) -> str:
+    return " ".join(scrub_rust(production_part(source)).split())
+
+
+def impl_body(source: str, type_name: str) -> str | None:
+    code = scrub_rust(production_part(source))
+    match = re.search(rf"\bimpl(?:\s*<[^{{>]*>)?\s+{re.escape(type_name)}(?:\s*<[^{{>]*>)?\s*{{", code)
+    if not match:
+        return None
+    opening = code.find("{", match.start())
+    depth = 0
+    for index in range(opening, len(code)):
+        if code[index] == "{":
+            depth += 1
+        elif code[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return code[opening + 1 : index]
+    return None
+
+
+def evaluate(sources: dict[str, str], consumers: dict[str, str]) -> list[str]:
+    failures: list[str] = []
+
+    def fail(code: str, detail: str) -> None:
+        if len(failures) < MAX_FAILURES:
+            failures.append(f"{code}: {detail}")
+
+    code = {name: scrub_rust(production_part(source)) for name, source in sources.items()}
+    flat = {name: " ".join(value.split()) for name, value in code.items()}
+    combined = "\n".join(code.values())
+
+    for module in ("aggregate", "program", "top_n"):
+        if not re.search(rf"(?m)^\s*mod\s+{module}\s*;", code["module"]):
+            fail("module-private", f"missing private mod {module}")
+        if re.search(rf"(?m)^\s*pub(?:\([^)]*\))?\s+mod\s+{module}\s*;", code["module"]):
+            fail("module-private", f"mod {module} is exposed")
+
+    public_item = re.compile(
+        r"(?m)^\s*pub\s+(?:async\s+)?(?:struct|enum|fn|trait|type|mod|use|const|static)\b"
+    )
+    for name, source in code.items():
+        if public_item.search(source):
+            fail("public-surface", f"{name} contains a publicly exported item")
+    if re.search(r"\b(?:serde|Serialize|Deserialize|prost|bincode|rkyv)\b", combined):
+        fail("serialization", "batch mechanics contain serialization or codec vocabulary")
+
+    for path, source in consumers.items():
+        possible_batch_export = re.search(
+            r"(?m)^\s*pub(?:\([^)]*\))?\s+(?:mod\s+batch\b|use\s+[^;]*\bbatch\b)",
+            source,
+        )
+        if not any(symbol in source for symbol in MECHANIC_SYMBOLS) and not possible_batch_export:
+            continue
+        consumer_code = scrub_rust(production_part(source))
+        if re.search(
+            r"(?m)^\s*pub(?:\([^)]*\))?\s+(?:mod\s+batch\b|use\s+[^;]*\bbatch\b)",
+            consumer_code,
+        ):
+            fail("public-surface", f"{path} exposes the private batch module")
+        used = [symbol for symbol in MECHANIC_SYMBOLS if re.search(rf"\b{symbol}\b", consumer_code)]
+        if used:
+            fail("production-consumer", f"{path} consumes {','.join(used)} before selection")
+
+    if re.search(
+        r"\b[A-Za-z_][A-Za-z0-9_]*(?:Request|Configuration|Config|Options|Arguments)\b|"
+        r"\b(?:Request|Configuration|Config|Options|Arguments)\b|"
+        r"\bstd\s*::\s*env\b|\bclap\s*::",
+        combined,
+    ):
+        fail("caller-control", "request/configuration machinery enters physical mechanics")
+
+    top_n = code["top_n"]
+    top_n_flat = flat["top_n"]
+    for required in (
+        "primary_keys: &'view [PrimaryKeyBytes]",
+        "order_lanes: &'view [&'view [SegmentV2Cell]]",
+        "retained: Vec<RowOrdinal>",
+        "rows: Vec<RowOrdinal>",
+    ):
+        if required not in top_n_flat:
+            fail("top-n-borrow", f"missing {required}")
+    if re.search(
+        r"Vec\s*<\s*(?:PrimaryKeyBytes|CanonicalValue|String|u8|Vec\s*<\s*u8\s*>)",
+        top_n,
+    ) or re.search(
+        r"(?m)^\s*[A-Za-z_][A-Za-z0-9_]*\s*:\s*"
+        r"(?:String|PrimaryKeyBytes|CanonicalValue|Vec\s*<\s*u8\s*>|bytes\s*::\s*Bytes)\b",
+        top_n,
+    ):
+        fail("top-n-owned-row", "Top-N owns a row value, string, bytes, or primary key")
+    if "try_reserve_exact(capacity)" not in top_n_flat:
+        fail("top-n-allocation", "Top-N lacks exact bounded reservation")
+
+    aggregate = sources["aggregate"]
+    aggregate_code = code["aggregate"]
+    if re.search(
+        r"#\s*\[\s*derive\s*\([^]]*\b(?:Clone|Copy)\b[^]]*\)\s*\]\s*pub\s*\(\s*super\s*\)\s*struct\s+FinalizedAggregateLeaf",
+        aggregate_code,
+        re.S,
+    ) or re.search(r"\bimpl\s+(?:Clone|Copy)\s+for\s+FinalizedAggregateLeaf\b", aggregate_code):
+        fail("aggregate-copy", "finalized aggregate leaf is copyable")
+    if not re.search(r"\bleaf\s*:\s*FinalizedAggregateLeaf\b", aggregate_code):
+        fail("aggregate-consume", "merge_leaf does not consume FinalizedAggregateLeaf")
+    accumulator = impl_body(aggregate, "ExactAggregateMergeAccumulator")
+    if accumulator is None:
+        fail("aggregate-accumulator", "missing merge accumulator implementation")
+    elif re.search(r"\bfn\s+(?:accumulate|finalize)\b", accumulator):
+        fail("aggregate-nesting", "merge accumulator can accumulate or become a leaf")
+    elif "SegmentV2Cell" in accumulator or "ExactAggregateLeafBuilder" in accumulator:
+        fail("aggregate-nesting", "merge accumulator gained local leaf-contribution authority")
+    for required in (
+        "identities: exact_inventory.to_vec().into_boxed_slice()",
+        "leaf.identity != *expected",
+        "self.inventory.cursor == self.inventory.identities.len()",
+    ):
+        if required not in flat["aggregate"]:
+            fail("aggregate-inventory", f"missing exact inventory guard {required}")
+
+    if re.search(r"\b(?:HashMap|HashSet|BTreeMap|BTreeSet|BinaryHeap|VecDeque)\b", combined):
+        fail("unbounded-collection", "unreviewed growing collection entered batch mechanics")
+    allocation_counts = {
+        "module": ((r"\bvec\s*!\s*\[", 2), (r"\bVec\s*::\s*new\s*\(", 0), (r"\.to_vec\s*\(", 0)),
+        "aggregate": ((r"\bvec\s*!\s*\[", 0), (r"\bVec\s*::\s*new\s*\(", 0), (r"\.to_vec\s*\(", 1)),
+        "program": ((r"\bvec\s*!\s*\[", 1), (r"\bVec\s*::\s*new\s*\(", 0), (r"\.to_vec\s*\(", 0)),
+        "top_n": ((r"\bvec\s*!\s*\[", 0), (r"\bVec\s*::\s*new\s*\(", 1), (r"\.to_vec\s*\(", 0)),
+    }
+    for name, expectations in allocation_counts.items():
+        for pattern, expected in expectations:
+            if len(re.findall(pattern, code[name])) != expected:
+                fail("unbounded-allocation", f"{name} changed its reviewed allocation sites")
+    if re.search(r"\bVec\s*::\s*with_capacity\s*\(|\.collect\s*::\s*<\s*Vec|\bBox\s*::\s*new", combined):
+        fail("unbounded-allocation", "unreviewed owned allocation entered batch mechanics")
+    required_bounds = {
+        "module": ("checked_mul(worst_case_row_bytes)",),
+        "aggregate": (
+            "maximum_arithmetic_operations > MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1",
+            "maximum_state_bytes > MAX_AGGREGATE_STATE_BYTES_V1",
+            "checked_mul(CANONICAL_INVENTORY_IDENTITY_BYTES)",
+        ),
+        "program": (
+            "checked_charge_product(",
+            ".checked_mul(bytes_each)",
+            "MAX_APPLICATION_QUERY_RESULT_BYTES",
+        ),
+        "top_n": (
+            "limit.checked_add(1)",
+            "checked_mul(size_of::<RowOrdinal>())",
+            "try_reserve_exact(capacity)",
+        ),
+    }
+    for name, required_items in required_bounds.items():
+        for required in required_items:
+            if required not in flat[name]:
+                fail("bounded-arithmetic", f"{name} lacks {required}")
+    if re.search(r"\b(?:wrapping|saturating)_(?:add|sub|mul)\b", combined):
+        fail("bounded-arithmetic", "wrapping or saturating resource arithmetic is forbidden")
+
+    authority = re.compile(
+        r"\briffdb_storage[A-Za-z0-9_]*\b|\bredb\s*::|\btokio\s*::|"
+        r"\b[A-Za-z_][A-Za-z0-9_]*(?:Worker|Storage|Checkpoint|Publication|Publish|Rebuild)\b|"
+        r"\b(?:Worker|Storage|checkpoint|publication|publish|rebuild)\b|"
+        r"\bstd\s*::\s*(?:fs|net|thread|process)\b"
+    )
+    if authority.search(combined):
+        fail("forbidden-authority", "storage, worker, publication, or operating-system authority entered")
+    if re.search(
+        r"\b[A-Za-z_][A-Za-z0-9_]*(?:fallback|retry_scalar|execute_scalar|execute_v1|use_v1)"
+        r"[A-Za-z0-9_]*\b|\b(?:fallback|retry_scalar|execute_scalar|execute_v1|use_v1)\b",
+        combined,
+        re.I,
+    ):
+        fail("fallback-hook", "scalar/V1 fallback hook entered batch mechanics")
+
+    return failures
+
+
+def read_sources(root: Path) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for name, relative in MECHANICS.items():
+        path = root / relative
+        data = path.read_bytes()
+        if len(data) > MAX_SOURCE_BYTES:
+            raise ValueError(f"{relative}: source exceeds checker byte bound")
+        result[name] = data.decode("utf-8")
+    return result
+
+
+def read_consumers(root: Path) -> dict[str, str]:
+    excluded = {str(path) for path in MECHANICS.values()}
+    result: dict[str, str] = {}
+    for index, path in enumerate(sorted((root / "crates").glob("*/src/**/*.rs"))):
+        if index >= MAX_FILES:
+            raise ValueError("production source count exceeds checker bound")
+        relative = str(path.relative_to(root))
+        if relative in excluded:
+            continue
+        data = path.read_bytes()
+        if len(data) > MAX_SOURCE_BYTES:
+            raise ValueError(f"{relative}: source exceeds checker byte bound")
+        result[relative] = data.decode("utf-8")
+    return result
+
+
+def inject(source: str, addition: str) -> str:
+    marker = source.find("#[cfg(test)]")
+    position = len(source) if marker < 0 else marker
+    return source[:position] + "\n" + addition + "\n" + source[position:]
+
+
+def self_test(root: Path) -> None:
+    sources = read_sources(root)
+    consumers = read_consumers(root)
+    baseline = evaluate(sources, consumers)
+    if baseline:
+        raise ValueError("self-test baseline failed: " + "; ".join(baseline))
+
+    cases: list[tuple[str, str, str, str]] = [
+        ("public-surface", "program", "pub struct LeakedBatch;", ""),
+        ("serialization", "program", "#[derive(serde::Serialize)] struct EncodedBatch;", ""),
+        ("caller-control", "program", "struct CallerRequest { width: usize }", ""),
+        ("top-n-owned-row", "top_n", "struct OwnedRow { values: Vec<CanonicalValue> }", ""),
+        ("top-n-owned-row", "top_n", "struct OwnedText {\n value: String,\n}", ""),
+        ("top-n-owned-row", "top_n", "struct OwnedBytes {\n value: Vec<u8>,\n}", ""),
+        ("top-n-owned-row", "top_n", "struct OwnedKey {\n value: PrimaryKeyBytes,\n}", ""),
+        ("unbounded-collection", "program", "struct Growing { rows: HashMap<u64, u64> }", ""),
+        ("unbounded-allocation", "program", "fn grow() { let mut rows = Vec::new(); rows.push(1); }", ""),
+        ("forbidden-authority", "program", "fn store(_: riffdb_storage_redb::RedbStore) {}", ""),
+        ("fallback-hook", "program", "fn scalar_fallback() {}", ""),
+    ]
+    for expected, name, addition, _ in cases:
+        changed = dict(sources)
+        changed[name] = inject(changed[name], addition)
+        codes = {failure.split(":", 1)[0] for failure in evaluate(changed, consumers)}
+        if expected not in codes:
+            raise ValueError(f"negative self-test missed {expected}")
+
+    copied = dict(sources)
+    copied["aggregate"] = copied["aggregate"].replace(
+        "pub(super) struct FinalizedAggregateLeaf {",
+        "#[derive(Clone)]\npub(super) struct FinalizedAggregateLeaf {",
+        1,
+    )
+    if not any(error.startswith("aggregate-copy:") for error in evaluate(copied, consumers)):
+        raise ValueError("negative self-test missed copied aggregate provenance")
+    manual_copy = dict(sources)
+    manual_copy["aggregate"] = inject(
+        manual_copy["aggregate"],
+        "impl Clone for FinalizedAggregateLeaf { fn clone(&self) -> Self { unreachable!() } }",
+    )
+    if not any(error.startswith("aggregate-copy:") for error in evaluate(manual_copy, consumers)):
+        raise ValueError("negative self-test missed manual aggregate cloning")
+
+    borrowed = dict(sources)
+    borrowed["aggregate"] = borrowed["aggregate"].replace(
+        "leaf: FinalizedAggregateLeaf,", "leaf: &FinalizedAggregateLeaf,", 1
+    )
+    if not any(error.startswith("aggregate-consume:") for error in evaluate(borrowed, consumers)):
+        raise ValueError("negative self-test missed borrowed aggregate provenance")
+
+    unchecked = dict(sources)
+    unchecked["program"] = unchecked["program"].replace(
+        ".checked_mul(bytes_each)", ".wrapping_mul(bytes_each)", 1
+    )
+    if not any(error.startswith("bounded-arithmetic:") for error in evaluate(unchecked, consumers)):
+        raise ValueError("negative self-test missed unchecked arithmetic")
+
+    exposed = dict(consumers)
+    exposed["crates/example/src/lib.rs"] = "use riffdb_columnar::batch::BoundedTopN;"
+    if not any(error.startswith("production-consumer:") for error in evaluate(sources, exposed)):
+        raise ValueError("negative self-test missed premature production selection")
+    exposed_module = dict(consumers)
+    exposed_module["crates/example/src/lib.rs"] = "pub mod batch;"
+    if not any(error.startswith("public-surface:") for error in evaluate(sources, exposed_module)):
+        raise ValueError("negative self-test missed public batch module exposure")
+
+
+def main() -> int:
+    if len(sys.argv) > 2 or (len(sys.argv) == 2 and sys.argv[1] != "--self-test"):
+        print("usage: check-columnar-batch-architecture [--self-test]", file=sys.stderr)
+        return 2
+    root = Path(__file__).resolve().parent.parent
+    try:
+        if len(sys.argv) == 2:
+            self_test(root)
+            print("columnar batch architecture negative self-test: passed")
+            return 0
+        failures = evaluate(read_sources(root), read_consumers(root))
+    except (OSError, UnicodeError, ValueError) as error:
+        print(f"columnar batch architecture check failed: {error}", file=sys.stderr)
+        return 1
+    if failures:
+        for failure in failures:
+            print(f"columnar batch architecture violation: {failure}", file=sys.stderr)
+        return 1
+    print("columnar batch private mechanics architecture: passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
