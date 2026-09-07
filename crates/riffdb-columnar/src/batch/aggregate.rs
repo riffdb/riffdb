@@ -3,7 +3,8 @@ use std::cmp::Ordering;
 use riffdb_types::{
     AggregateArithmeticV1, AggregateEmptyResultV1, AggregateInputClassV1, AggregateNoValueRuleV1,
     AggregatePartialStateV1, AggregateResultSchemaV1, AggregateSemanticIdentityV1, CanonicalValue,
-    DecimalSpec, MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1, MAX_AGGREGATE_STATE_BYTES_V1,
+    DecimalSpec, MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1, MAX_AGGREGATE_DISTINCT_VALUES_V1,
+    MAX_AGGREGATE_STATE_BYTES_V1,
 };
 
 use crate::segment_v2::compare_values as compare_segment_values;
@@ -20,6 +21,8 @@ pub(super) enum AggregatePartialError {
     ArithmeticBoundExceeded,
     InvalidStateBound,
     StateBoundExceeded,
+    InvalidDistinctBound,
+    DistinctBoundExceeded,
     MissingField,
     NoValue,
     ArithmeticOverflow,
@@ -887,6 +890,330 @@ fn required_boolean(cell: &SegmentV2Cell) -> Result<bool, AggregatePartialError>
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ExactDistinctDefinition<'view> {
+    semantic: AggregateSemanticIdentityV1,
+    logical_type: &'view SegmentV2LogicalType,
+    maximum_distinct: usize,
+}
+
+impl<'view> ExactDistinctDefinition<'view> {
+    fn new(
+        semantic: AggregateSemanticIdentityV1,
+        logical_type: &'view SegmentV2LogicalType,
+        maximum_distinct: u16,
+    ) -> Result<Self, AggregatePartialError> {
+        validate_distinct_registry(semantic)?;
+        if maximum_distinct == 0 || maximum_distinct > MAX_AGGREGATE_DISTINCT_VALUES_V1 {
+            return Err(AggregatePartialError::InvalidDistinctBound);
+        }
+        Ok(Self {
+            semantic,
+            logical_type,
+            maximum_distinct: usize::from(maximum_distinct),
+        })
+    }
+
+    fn member(
+        self,
+        cell: &'view SegmentV2Cell,
+    ) -> Result<Option<BorrowedAggregateScalar<'view>>, AggregatePartialError> {
+        match cell {
+            SegmentV2Cell::Missing | SegmentV2Cell::Null
+                if self.semantic == AggregateSemanticIdentityV1::CountDistinctPresent =>
+            {
+                Ok(None)
+            }
+            SegmentV2Cell::Missing | SegmentV2Cell::Null => {
+                Ok(Some(BorrowedAggregateScalar::NoValue))
+            }
+            SegmentV2Cell::Value(value) if self.logical_type.accepts(value) => {
+                Ok(Some(BorrowedAggregateScalar::Value(value)))
+            }
+            SegmentV2Cell::Value(_) => Err(AggregatePartialError::InputShape),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct BoundedDistinctSet<'view> {
+    members: Vec<BorrowedAggregateScalar<'view>>,
+    scratch: Vec<BorrowedAggregateScalar<'view>>,
+    maximum: usize,
+}
+
+impl<'view> BoundedDistinctSet<'view> {
+    fn requested_state_bytes(maximum: usize) -> Result<u32, AggregatePartialError> {
+        let member_bytes = maximum
+            .checked_mul(std::mem::size_of::<BorrowedAggregateScalar<'view>>())
+            .and_then(|bytes| bytes.checked_mul(2))
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>()))
+            .ok_or(AggregatePartialError::StateBoundExceeded)?;
+        u32::try_from(member_bytes).map_err(|_| AggregatePartialError::StateBoundExceeded)
+    }
+
+    fn new(maximum: usize) -> Result<Self, AggregatePartialError> {
+        let mut members = Vec::new();
+        members
+            .try_reserve_exact(maximum)
+            .map_err(|_| AggregatePartialError::StateBoundExceeded)?;
+        let mut scratch = Vec::new();
+        scratch
+            .try_reserve_exact(maximum)
+            .map_err(|_| AggregatePartialError::StateBoundExceeded)?;
+        Ok(Self {
+            members,
+            scratch,
+            maximum,
+        })
+    }
+
+    fn actual_state_bytes(&self) -> Result<u32, AggregatePartialError> {
+        let member_capacity = self
+            .members
+            .capacity()
+            .checked_add(self.scratch.capacity())
+            .and_then(|capacity| {
+                capacity.checked_mul(std::mem::size_of::<BorrowedAggregateScalar<'view>>())
+            })
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>()))
+            .ok_or(AggregatePartialError::StateBoundExceeded)?;
+        u32::try_from(member_capacity).map_err(|_| AggregatePartialError::StateBoundExceeded)
+    }
+
+    const fn len(&self) -> usize {
+        self.members.len()
+    }
+
+    fn union_cells(
+        &mut self,
+        definition: ExactDistinctDefinition<'view>,
+        cells: &'view [SegmentV2Cell],
+    ) -> Result<(), AggregatePartialError> {
+        self.scratch.clear();
+        self.scratch.extend_from_slice(&self.members);
+        let result = (|| {
+            for cell in cells {
+                if let Some(member) = definition.member(cell)? {
+                    Self::insert_unique(&mut self.scratch, self.maximum, member)?;
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.scratch.clear();
+            return Err(error);
+        }
+        std::mem::swap(&mut self.members, &mut self.scratch);
+        self.scratch.clear();
+        Ok(())
+    }
+
+    fn union_members(
+        &mut self,
+        members: &[BorrowedAggregateScalar<'view>],
+    ) -> Result<(), AggregatePartialError> {
+        self.scratch.clear();
+        self.scratch.extend_from_slice(&self.members);
+        let result = (|| {
+            for member in members {
+                Self::insert_unique(&mut self.scratch, self.maximum, *member)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.scratch.clear();
+            return Err(error);
+        }
+        std::mem::swap(&mut self.members, &mut self.scratch);
+        self.scratch.clear();
+        Ok(())
+    }
+
+    fn insert_unique(
+        members: &mut Vec<BorrowedAggregateScalar<'view>>,
+        maximum: usize,
+        member: BorrowedAggregateScalar<'view>,
+    ) -> Result<(), AggregatePartialError> {
+        if members.contains(&member) {
+            return Ok(());
+        }
+        if members.len() >= maximum {
+            return Err(AggregatePartialError::DistinctBoundExceeded);
+        }
+        members.push(member);
+        Ok(())
+    }
+}
+
+pub(super) struct ExactDistinctAggregateLeafBuilder<'view> {
+    identity: CanonicalPartialIdentity,
+    definition: ExactDistinctDefinition<'view>,
+    state: BoundedDistinctSet<'view>,
+}
+
+impl<'view> ExactDistinctAggregateLeafBuilder<'view> {
+    pub(super) fn new(
+        identity: CanonicalPartialIdentity,
+        semantic: AggregateSemanticIdentityV1,
+        logical_type: &'view SegmentV2LogicalType,
+        maximum_distinct: u16,
+        budget: &mut AggregatePartialBudget,
+    ) -> Result<Self, AggregatePartialError> {
+        let definition = ExactDistinctDefinition::new(semantic, logical_type, maximum_distinct)?;
+        budget.admits_state(BoundedDistinctSet::requested_state_bytes(
+            definition.maximum_distinct,
+        )?)?;
+        let state = BoundedDistinctSet::new(definition.maximum_distinct)?;
+        let state_bytes = state.actual_state_bytes()?;
+        budget.admits_state(state_bytes)?;
+        budget.commit_state(state_bytes);
+        Ok(Self {
+            identity,
+            definition,
+            state,
+        })
+    }
+
+    pub(super) fn accumulate(
+        &mut self,
+        cells: &'view [SegmentV2Cell],
+        budget: &mut AggregatePartialBudget,
+    ) -> Result<(), AggregatePartialError> {
+        let operations = budget.admits_operations(cells.len())?;
+        self.state.union_cells(self.definition, cells)?;
+        budget.commit_operations(operations);
+        Ok(())
+    }
+
+    pub(super) const fn distinct_count(&self) -> usize {
+        self.state.len()
+    }
+
+    pub(super) fn finalize(self) -> FinalizedDistinctAggregateLeaf<'view> {
+        FinalizedDistinctAggregateLeaf {
+            identity: self.identity,
+            definition: self.definition,
+            state: self.state,
+        }
+    }
+}
+
+pub(super) struct FinalizedDistinctAggregateLeaf<'view> {
+    identity: CanonicalPartialIdentity,
+    definition: ExactDistinctDefinition<'view>,
+    state: BoundedDistinctSet<'view>,
+}
+
+pub(super) struct ExactDistinctAggregateMergeAccumulator<'view> {
+    inventory: SealedCanonicalPartialInventory,
+    definition: ExactDistinctDefinition<'view>,
+    state: BoundedDistinctSet<'view>,
+}
+
+impl<'view> ExactDistinctAggregateMergeAccumulator<'view> {
+    pub(super) fn new(
+        semantic: AggregateSemanticIdentityV1,
+        logical_type: &'view SegmentV2LogicalType,
+        maximum_distinct: u16,
+        exact_inventory: &[CanonicalPartialIdentity],
+        budget: &mut AggregatePartialBudget,
+    ) -> Result<Self, AggregatePartialError> {
+        let definition = ExactDistinctDefinition::new(semantic, logical_type, maximum_distinct)?;
+        SealedCanonicalPartialInventory::validate(exact_inventory)?;
+        let requested_state =
+            BoundedDistinctSet::requested_state_bytes(definition.maximum_distinct)?
+                .checked_add(SealedCanonicalPartialInventory::state_bytes(
+                    exact_inventory,
+                )?)
+                .ok_or(AggregatePartialError::StateBoundExceeded)?;
+        budget.admits_state(requested_state)?;
+        let state = BoundedDistinctSet::new(definition.maximum_distinct)?;
+        let actual_state = state
+            .actual_state_bytes()?
+            .checked_add(SealedCanonicalPartialInventory::state_bytes(
+                exact_inventory,
+            )?)
+            .ok_or(AggregatePartialError::StateBoundExceeded)?;
+        budget.admits_state(actual_state)?;
+        let inventory = SealedCanonicalPartialInventory {
+            identities: exact_inventory.to_vec().into_boxed_slice(),
+            cursor: 0,
+        };
+        budget.commit_state(actual_state);
+        Ok(Self {
+            inventory,
+            definition,
+            state,
+        })
+    }
+
+    pub(super) const fn distinct_count(&self) -> usize {
+        self.state.len()
+    }
+
+    pub(super) const fn consumed_leaves(&self) -> usize {
+        self.inventory.cursor
+    }
+
+    pub(super) fn merge_leaf(
+        &mut self,
+        leaf: FinalizedDistinctAggregateLeaf<'view>,
+        budget: &mut AggregatePartialBudget,
+    ) -> Result<(), AggregatePartialError> {
+        let Some(expected) = self.inventory.identities.get(self.inventory.cursor) else {
+            return Err(self.inventory.classify_mismatch(leaf.identity));
+        };
+        if leaf.identity != *expected {
+            return Err(self.inventory.classify_mismatch(leaf.identity));
+        }
+        if leaf.definition != self.definition {
+            return Err(AggregatePartialError::IncompatibleLeaf);
+        }
+        let operations = budget.admits_operations(leaf.state.len().max(1))?;
+        self.state.union_members(&leaf.state.members)?;
+        self.inventory.cursor += 1;
+        budget.commit_operations(operations);
+        Ok(())
+    }
+
+    pub(super) fn finish(self) -> Result<u64, AggregatePartialError> {
+        if self.inventory.cursor != self.inventory.identities.len() {
+            return Err(AggregatePartialError::InventoryOmission);
+        }
+        u64::try_from(self.state.len()).map_err(|_| AggregatePartialError::ArithmeticOverflow)
+    }
+}
+
+fn validate_distinct_registry(
+    semantic: AggregateSemanticIdentityV1,
+) -> Result<(), AggregatePartialError> {
+    if !matches!(
+        semantic,
+        AggregateSemanticIdentityV1::CountDistinct
+            | AggregateSemanticIdentityV1::CountDistinctPresent
+    ) {
+        return Err(AggregatePartialError::UnsupportedSemantic);
+    }
+    let descriptor = semantic.descriptor();
+    let no_value = match semantic {
+        AggregateSemanticIdentityV1::CountDistinct => AggregateNoValueRuleV1::DistinctValue,
+        AggregateSemanticIdentityV1::CountDistinctPresent => AggregateNoValueRuleV1::Excluded,
+        _ => return Err(AggregatePartialError::UnsupportedSemantic),
+    };
+    if descriptor.partial_state() == AggregatePartialStateV1::BoundedCanonicalSet
+        && descriptor.arithmetic() == AggregateArithmeticV1::CanonicalDistinctSet
+        && descriptor.input_class() == AggregateInputClassV1::CanonicalScalarField
+        && descriptor.no_value_rule() == no_value
+        && descriptor.empty_result() == AggregateEmptyResultV1::UnsignedZero
+        && descriptor.result_schema() == AggregateResultSchemaV1::U64
+    {
+        Ok(())
+    } else {
+        Err(AggregatePartialError::RegistryMismatch)
+    }
+}
+
 fn validate_borrowed_registry(
     semantic: AggregateSemanticIdentityV1,
 ) -> Result<(), AggregatePartialError> {
@@ -978,8 +1305,9 @@ mod tests {
     use rand::{Rng, SeedableRng};
     use riffdb_types::{
         CanonicalValue, CurrencyCode, Date, Decimal, DecimalSpec, EnumTypeId, EnumVariantId, Money,
-        Timestamp,
+        Timestamp, encode_canonical_value,
     };
+    use std::collections::BTreeSet;
 
     fn budget(operations: u32, state_bytes: u32) -> AggregatePartialBudget {
         AggregatePartialBudget::new(operations, state_bytes).expect("bounded aggregate budget")
@@ -2343,5 +2671,423 @@ mod tests {
                 BorrowedAggregateScalar::Value(present(&second_cells[0]))
             )))
         );
+    }
+
+    fn distinct_leaf<'view>(
+        id: CanonicalPartialIdentity,
+        semantic: AggregateSemanticIdentityV1,
+        logical_type: &'view SegmentV2LogicalType,
+        maximum_distinct: u16,
+        cells: &'view [SegmentV2Cell],
+    ) -> FinalizedDistinctAggregateLeaf<'view> {
+        let mut charge = budget(
+            u32::try_from(cells.len().max(1)).expect("small fixture"),
+            MAX_AGGREGATE_STATE_BYTES_V1,
+        );
+        let mut builder = ExactDistinctAggregateLeafBuilder::new(
+            id,
+            semantic,
+            logical_type,
+            maximum_distinct,
+            &mut charge,
+        )
+        .expect("distinct leaf");
+        builder
+            .accumulate(cells, &mut charge)
+            .expect("bounded distinct cells");
+        builder.finalize()
+    }
+
+    fn merge_distinct<'view>(
+        semantic: AggregateSemanticIdentityV1,
+        logical_type: &'view SegmentV2LogicalType,
+        maximum_distinct: u16,
+        partitions: &'view [&'view [SegmentV2Cell]],
+    ) -> u64 {
+        let ids = (0..partitions.len())
+            .map(|batch| identity(0, 1, u32::try_from(batch).expect("small fixture")))
+            .collect::<Vec<_>>();
+        let mut charge = budget(
+            MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1,
+            MAX_AGGREGATE_STATE_BYTES_V1,
+        );
+        let mut accumulator = ExactDistinctAggregateMergeAccumulator::new(
+            semantic,
+            logical_type,
+            maximum_distinct,
+            &ids,
+            &mut charge,
+        )
+        .expect("distinct accumulator");
+        for (id, cells) in ids.into_iter().zip(partitions.iter().copied()) {
+            accumulator
+                .merge_leaf(
+                    distinct_leaf(id, semantic, logical_type, maximum_distinct, cells),
+                    &mut charge,
+                )
+                .expect("canonical distinct merge");
+        }
+        accumulator.finish().expect("complete distinct inventory")
+    }
+
+    fn independent_distinct_count(cells: &[SegmentV2Cell], present_only: bool) -> u64 {
+        let mut members = BTreeSet::new();
+        let mut saw_no_value = false;
+        for cell in cells {
+            match cell {
+                SegmentV2Cell::Missing | SegmentV2Cell::Null if present_only => {}
+                SegmentV2Cell::Missing | SegmentV2Cell::Null => saw_no_value = true,
+                SegmentV2Cell::Value(value) => {
+                    members.insert(encode_canonical_value(value).expect("canonical fixture"));
+                }
+            }
+        }
+        u64::try_from(members.len() + usize::from(saw_no_value)).expect("small fixture")
+    }
+
+    #[test]
+    fn bounded_distinct_partials_match_independent_canonical_sets() {
+        let logical_type = SegmentV2LogicalType::U64;
+        let mut cells = vec![
+            SegmentV2Cell::Missing,
+            SegmentV2Cell::Null,
+            SegmentV2Cell::Value(CanonicalValue::U64(1)),
+            SegmentV2Cell::Value(CanonicalValue::U64(2)),
+            SegmentV2Cell::Value(CanonicalValue::U64(1)),
+            SegmentV2Cell::Value(CanonicalValue::U64(u64::MAX)),
+        ];
+        let mut rng = StdRng::seed_from_u64(0xD157_1AC7);
+        for _ in 0..64 {
+            cells.shuffle(&mut rng);
+            let first = rng.gen_range(0..=cells.len());
+            let second = rng.gen_range(first..=cells.len());
+            let partitions = [&cells[..first], &cells[first..second], &cells[second..]];
+            for (semantic, present_only) in [
+                (AggregateSemanticIdentityV1::CountDistinct, false),
+                (AggregateSemanticIdentityV1::CountDistinctPresent, true),
+            ] {
+                assert_eq!(
+                    merge_distinct(semantic, &logical_type, 16, &partitions),
+                    independent_distinct_count(&cells, present_only)
+                );
+            }
+        }
+
+        let decimal = DecimalSpec::new(8, 2).expect("decimal spec");
+        let usd = CurrencyCode::new("USD").expect("currency");
+        for (logical_type, cells) in [
+            (
+                SegmentV2LogicalType::Decimal(decimal),
+                vec![
+                    SegmentV2Cell::Value(CanonicalValue::Decimal(
+                        Decimal::new(decimal, -1).expect("decimal"),
+                    )),
+                    SegmentV2Cell::Value(CanonicalValue::Decimal(
+                        Decimal::new(decimal, -1).expect("decimal"),
+                    )),
+                    SegmentV2Cell::Value(CanonicalValue::Decimal(
+                        Decimal::new(decimal, 1).expect("decimal"),
+                    )),
+                ],
+            ),
+            (
+                SegmentV2LogicalType::Money {
+                    currency: usd,
+                    amount: decimal,
+                },
+                vec![
+                    SegmentV2Cell::Value(CanonicalValue::Money(Money::new(
+                        usd,
+                        Decimal::new(decimal, -1).expect("amount"),
+                    ))),
+                    SegmentV2Cell::Value(CanonicalValue::Money(Money::new(
+                        usd,
+                        Decimal::new(decimal, -1).expect("amount"),
+                    ))),
+                    SegmentV2Cell::Value(CanonicalValue::Money(Money::new(
+                        usd,
+                        Decimal::new(decimal, 1).expect("amount"),
+                    ))),
+                ],
+            ),
+        ] {
+            let partitions = [&cells[..1], &cells[1..]];
+            assert_eq!(
+                merge_distinct(
+                    AggregateSemanticIdentityV1::CountDistinct,
+                    &logical_type,
+                    3,
+                    &partitions,
+                ),
+                2
+            );
+        }
+
+        let enum_type = EnumTypeId::new(9).expect("enum type");
+        for (logical_type, cells) in [
+            (
+                SegmentV2LogicalType::Bool,
+                vec![
+                    SegmentV2Cell::Value(CanonicalValue::Bool(false)),
+                    SegmentV2Cell::Value(CanonicalValue::Bool(false)),
+                    SegmentV2Cell::Value(CanonicalValue::Bool(true)),
+                ],
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                i64_cells(&[i64::MIN, i64::MIN, i64::MAX]),
+            ),
+            (
+                SegmentV2LogicalType::String,
+                vec![
+                    SegmentV2Cell::Value(CanonicalValue::string("a").expect("string")),
+                    SegmentV2Cell::Value(CanonicalValue::string("a").expect("string")),
+                    SegmentV2Cell::Value(CanonicalValue::string("z").expect("string")),
+                ],
+            ),
+            (
+                SegmentV2LogicalType::Bytes,
+                vec![
+                    SegmentV2Cell::Value(CanonicalValue::bytes([0]).expect("bytes")),
+                    SegmentV2Cell::Value(CanonicalValue::bytes([0]).expect("bytes")),
+                    SegmentV2Cell::Value(CanonicalValue::bytes([255]).expect("bytes")),
+                ],
+            ),
+            (
+                SegmentV2LogicalType::Timestamp,
+                vec![
+                    SegmentV2Cell::Value(CanonicalValue::Timestamp(
+                        Timestamp::new(-1, 0).expect("timestamp"),
+                    )),
+                    SegmentV2Cell::Value(CanonicalValue::Timestamp(
+                        Timestamp::new(-1, 0).expect("timestamp"),
+                    )),
+                    SegmentV2Cell::Value(CanonicalValue::Timestamp(
+                        Timestamp::new(1, 0).expect("timestamp"),
+                    )),
+                ],
+            ),
+            (
+                SegmentV2LogicalType::Date,
+                vec![
+                    SegmentV2Cell::Value(CanonicalValue::Date(Date::new(-1))),
+                    SegmentV2Cell::Value(CanonicalValue::Date(Date::new(-1))),
+                    SegmentV2Cell::Value(CanonicalValue::Date(Date::new(1))),
+                ],
+            ),
+            (
+                SegmentV2LogicalType::Uuid,
+                vec![
+                    SegmentV2Cell::Value(CanonicalValue::Uuid([0; 16])),
+                    SegmentV2Cell::Value(CanonicalValue::Uuid([0; 16])),
+                    SegmentV2Cell::Value(CanonicalValue::Uuid([255; 16])),
+                ],
+            ),
+            (
+                SegmentV2LogicalType::Enum(enum_type),
+                vec![
+                    SegmentV2Cell::Value(CanonicalValue::Enum {
+                        type_id: enum_type,
+                        variant_id: EnumVariantId::new(1).expect("variant"),
+                    }),
+                    SegmentV2Cell::Value(CanonicalValue::Enum {
+                        type_id: enum_type,
+                        variant_id: EnumVariantId::new(1).expect("variant"),
+                    }),
+                    SegmentV2Cell::Value(CanonicalValue::Enum {
+                        type_id: enum_type,
+                        variant_id: EnumVariantId::new(2).expect("variant"),
+                    }),
+                ],
+            ),
+        ] {
+            let partitions = [&cells[..1], &cells[1..]];
+            assert_eq!(
+                merge_distinct(
+                    AggregateSemanticIdentityV1::CountDistinct,
+                    &logical_type,
+                    3,
+                    &partitions,
+                ),
+                2
+            );
+        }
+    }
+
+    #[test]
+    fn bounded_distinct_limits_allocation_and_failures_are_atomic() {
+        let logical_type = SegmentV2LogicalType::U64;
+        let id = identity(0, 1, 0);
+        for invalid in [0, MAX_AGGREGATE_DISTINCT_VALUES_V1 + 1] {
+            let mut charge = budget(1, MAX_AGGREGATE_STATE_BYTES_V1);
+            let before = charge;
+            assert_eq!(
+                ExactDistinctAggregateLeafBuilder::new(
+                    id,
+                    AggregateSemanticIdentityV1::CountDistinct,
+                    &logical_type,
+                    invalid,
+                    &mut charge,
+                )
+                .err(),
+                Some(AggregatePartialError::InvalidDistinctBound)
+            );
+            assert_eq!(charge, before);
+        }
+
+        let maximum_cells = (0..MAX_AGGREGATE_DISTINCT_VALUES_V1)
+            .map(|value| SegmentV2Cell::Value(CanonicalValue::U64(u64::from(value))))
+            .collect::<Vec<_>>();
+        let mut charge = budget(
+            MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1,
+            MAX_AGGREGATE_STATE_BYTES_V1,
+        );
+        let mut builder = ExactDistinctAggregateLeafBuilder::new(
+            id,
+            AggregateSemanticIdentityV1::CountDistinct,
+            &logical_type,
+            MAX_AGGREGATE_DISTINCT_VALUES_V1,
+            &mut charge,
+        )
+        .expect("maximum distinct builder");
+        let member_capacity = builder.state.members.capacity();
+        let scratch_capacity = builder.state.scratch.capacity();
+        builder
+            .accumulate(&maximum_cells, &mut charge)
+            .expect("exact maximum distinct values");
+        assert_eq!(
+            builder.distinct_count(),
+            usize::from(MAX_AGGREGATE_DISTINCT_VALUES_V1)
+        );
+        assert_eq!(builder.state.members.capacity(), member_capacity);
+        assert_eq!(builder.state.scratch.capacity(), scratch_capacity);
+
+        let extra = [SegmentV2Cell::Value(CanonicalValue::U64(u64::from(
+            MAX_AGGREGATE_DISTINCT_VALUES_V1,
+        )))];
+        let count_before = builder.distinct_count();
+        let charge_before = charge;
+        assert_eq!(
+            builder.accumulate(&extra, &mut charge),
+            Err(AggregatePartialError::DistinctBoundExceeded)
+        );
+        assert_eq!(builder.distinct_count(), count_before);
+        assert!(builder.state.scratch.is_empty());
+        assert_eq!(builder.state.members.capacity(), member_capacity);
+        assert_eq!(builder.state.scratch.capacity(), scratch_capacity);
+        assert_eq!(charge, charge_before);
+
+        let wrong_type = [SegmentV2Cell::Value(CanonicalValue::I64(1))];
+        assert_eq!(
+            builder.accumulate(&wrong_type, &mut charge),
+            Err(AggregatePartialError::InputShape)
+        );
+        assert_eq!(builder.distinct_count(), count_before);
+        assert!(builder.state.scratch.is_empty());
+        assert_eq!(charge, charge_before);
+
+        let requested = BoundedDistinctSet::requested_state_bytes(usize::from(
+            MAX_AGGREGATE_DISTINCT_VALUES_V1,
+        ))
+        .expect("maximum requested state");
+        let mut short_charge = budget(1, requested - 1);
+        let short_before = short_charge;
+        assert_eq!(
+            ExactDistinctAggregateLeafBuilder::new(
+                id,
+                AggregateSemanticIdentityV1::CountDistinct,
+                &logical_type,
+                MAX_AGGREGATE_DISTINCT_VALUES_V1,
+                &mut short_charge,
+            )
+            .err(),
+            Some(AggregatePartialError::StateBoundExceeded)
+        );
+        assert_eq!(short_charge, short_before);
+    }
+
+    #[test]
+    fn distinct_merge_bound_and_inventory_refusals_release_no_partial_count() {
+        let logical_type = SegmentV2LogicalType::U64;
+        let first_cells = [
+            SegmentV2Cell::Value(CanonicalValue::U64(1)),
+            SegmentV2Cell::Value(CanonicalValue::U64(2)),
+        ];
+        let second_cells = [SegmentV2Cell::Value(CanonicalValue::U64(3))];
+        let ids = [identity(0, 1, 0), identity(0, 1, 1)];
+        let mut charge = budget(8, MAX_AGGREGATE_STATE_BYTES_V1);
+        let mut accumulator = ExactDistinctAggregateMergeAccumulator::new(
+            AggregateSemanticIdentityV1::CountDistinct,
+            &logical_type,
+            2,
+            &ids,
+            &mut charge,
+        )
+        .expect("bounded distinct accumulator");
+        accumulator
+            .merge_leaf(
+                distinct_leaf(
+                    ids[0],
+                    AggregateSemanticIdentityV1::CountDistinct,
+                    &logical_type,
+                    2,
+                    &first_cells,
+                ),
+                &mut charge,
+            )
+            .expect("first bounded leaf");
+        let count_before = accumulator.distinct_count();
+        let cursor_before = accumulator.consumed_leaves();
+        let charge_before = charge;
+        assert_eq!(
+            accumulator.merge_leaf(
+                distinct_leaf(
+                    ids[1],
+                    AggregateSemanticIdentityV1::CountDistinct,
+                    &logical_type,
+                    2,
+                    &second_cells,
+                ),
+                &mut charge,
+            ),
+            Err(AggregatePartialError::DistinctBoundExceeded)
+        );
+        assert_eq!(accumulator.distinct_count(), count_before);
+        assert_eq!(accumulator.consumed_leaves(), cursor_before);
+        assert!(accumulator.state.scratch.is_empty());
+        assert_eq!(charge, charge_before);
+
+        assert_eq!(
+            accumulator.merge_leaf(
+                distinct_leaf(
+                    ids[0],
+                    AggregateSemanticIdentityV1::CountDistinct,
+                    &logical_type,
+                    2,
+                    &first_cells,
+                ),
+                &mut charge,
+            ),
+            Err(AggregatePartialError::DuplicateOrReorderedLeaf)
+        );
+        assert_eq!(accumulator.distinct_count(), count_before);
+        assert_eq!(accumulator.consumed_leaves(), cursor_before);
+        assert_eq!(charge, charge_before);
+
+        for semantic in [
+            AggregateSemanticIdentityV1::CountDistinct,
+            AggregateSemanticIdentityV1::CountDistinctPresent,
+        ] {
+            let mut empty_charge = budget(1, MAX_AGGREGATE_STATE_BYTES_V1);
+            let empty = ExactDistinctAggregateMergeAccumulator::new(
+                semantic,
+                &logical_type,
+                1,
+                &[],
+                &mut empty_charge,
+            )
+            .expect("empty distinct accumulator");
+            assert_eq!(empty.finish(), Ok(0));
+        }
     }
 }
