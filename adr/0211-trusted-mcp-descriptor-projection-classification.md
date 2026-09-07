@@ -1,10 +1,10 @@
 ---
 adr: "0211"
 title: Trusted MCP Descriptor Projection Classification
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-07
-accepted: null
+accepted: "2026-09-07"
 requires: [ADR-0008, ADR-0155, ADR-0198]
 amends:
   - ADR-0198 Decision 5 only by classifying its exact shared descriptor-projection access in guarantee-tier handler.rs; ADR-0198 Decisions 1 through 10 otherwise remain exact
