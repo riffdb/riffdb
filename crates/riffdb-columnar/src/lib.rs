@@ -59,6 +59,10 @@
 //! - No dependency on `riffdb-projection` or `riffdb-storage-redb`.
 
 mod apply;
+// WP-712 mechanics remain inert until ADR-0161's differential and performance
+// gates select them from the production query path.
+#[allow(dead_code)]
+mod batch;
 mod checkpoint;
 mod definition;
 mod engine;

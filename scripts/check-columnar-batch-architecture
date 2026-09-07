@@ -1,0 +1,2397 @@
+#!/usr/bin/env python3
+"""Freeze the reviewed private, inert WP-712 batch mechanics."""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import re
+import sys
+import tempfile
+from collections.abc import Iterable, Iterator
+from functools import lru_cache
+from pathlib import Path
+from typing import NamedTuple
+
+MAX_FILES = 4_096
+MAX_SOURCE_BYTES = 2 * 1024 * 1024
+MAX_TOTAL_SOURCE_BYTES = 64 * 1024 * 1024
+MAX_FAILURES = 64
+MAX_DIRECTORIES = 2_048
+MAX_DIRECTORY_ENTRIES = 4_096
+MAX_TRAVERSAL_ENTRIES = 16_384
+MAX_PATH_BYTES = 1_024
+MAX_PATH_DEPTH = 64
+MAX_TOKENS_PER_FILE = 500_000
+MAX_ALIASES = 4_096
+
+BATCH_ROOT = Path("crates/riffdb-columnar/src/batch")
+EXPECTED_BATCH_FILES = (
+    Path("crates/riffdb-columnar/src/batch/aggregate.rs"),
+    Path("crates/riffdb-columnar/src/batch/group.rs"),
+    Path("crates/riffdb-columnar/src/batch/mod.rs"),
+    Path("crates/riffdb-columnar/src/batch/program.rs"),
+    Path("crates/riffdb-columnar/src/batch/top_n.rs"),
+)
+
+# Each digest covers every production token including the exact bytes of every
+# literal. It is a review tripwire, not a substitute for the independent
+# structural inventories below.
+EXPECTED_PRODUCTION_HASHES = {
+    "crates/riffdb-columnar/src/batch/aggregate.rs": "fae92024492b8d1a27191f03c207d1e63f44e595df0a065506eb6c71eaaab8fa",
+    "crates/riffdb-columnar/src/batch/group.rs": "0a4016d1e70ee2b75c51450ce7f4248933ce9ca6852780c307172acdac6021f1",
+    "crates/riffdb-columnar/src/batch/mod.rs": "18b097b22d4cce3fbc29f840b2f53e9db176db1a8b0e34fb845a0ceec9beb2ea",
+    "crates/riffdb-columnar/src/batch/program.rs": "50e88a5f5b2cb82c451a499554e422a093f18d9a816ea7b67c984af1aa74da48",
+    "crates/riffdb-columnar/src/batch/top_n.rs": "6d317a00fd0863430cd79ae0085923554913a114f626269f182a5f5a6fa2db2d",
+}
+
+EXPECTED_STRUCT_FIELDS = {
+    "crates/riffdb-columnar/src/batch/aggregate.rs": {
+        "FinalizedAggregateLeaf": (("identity", "CanonicalPartialIdentity"), ("definition", "ExactAggregateDefinition"), ("value", "ExactAggregatePartialValue")),
+        "SealedCanonicalPartialInventory": (("identities", "Box < [ CanonicalPartialIdentity ] >"), ("cursor", "usize")),
+        "ExactAggregateMergeAccumulator": (("inventory", "SealedCanonicalPartialInventory"), ("definition", "ExactAggregateDefinition"), ("value", "ExactAggregatePartialValue")),
+    },
+    "crates/riffdb-columnar/src/batch/group.rs": {
+        "GroupWorkBudget": (("remaining", "u32"),),
+        "CanonicalGroupLane": (("facts", "CheckedProgramLaneFacts"),),
+        "CanonicalGroupBounds": (
+            ("maximum_groups", "u16"),
+            ("maximum_key_bytes", "u32"),
+            ("maximum_state_bytes", "u32"),
+        ),
+        "GroupEntry": (
+            ("key_start", "u32"),
+            ("key_len", "u32"),
+            ("row_count", "u64"),
+        ),
+        "BoundedGroupOwner": (
+            ("arena", "Vec < u8 >"),
+            ("entries", "Vec < GroupEntry >"),
+            ("bounds", "CanonicalGroupBounds"),
+            ("retained_key_capacity", "usize"),
+            ("poisoned", "bool"),
+        ),
+        "CountedFailure": (
+            ("error", "GroupStateError"),
+            ("completed_work", "usize"),
+        ),
+        "CanonicalGroupLeafBuilder": (
+            ("identity", "CanonicalPartialIdentity"),
+            ("lanes", "& ' schema [ CanonicalGroupLane ]"),
+            ("owner", "BoundedGroupOwner"),
+            ("next_row_ordinal", "u32"),
+        ),
+        "FinalizedGroupLeaf": (
+            ("identity", "CanonicalPartialIdentity"),
+            ("lanes", "& ' schema [ CanonicalGroupLane ]"),
+            ("owner", "BoundedGroupOwner"),
+        ),
+        "CanonicalGroupMerge": (
+            ("lanes", "& ' schema [ CanonicalGroupLane ]"),
+            ("inventory", "& ' inventory [ CanonicalPartialIdentity ]"),
+            ("cursor", "usize"),
+            ("owner", "Option < BoundedGroupOwner >"),
+            ("poisoned", "bool"),
+        ),
+        "CanonicalGroups": (("owner", "Option < BoundedGroupOwner >"),),
+    },
+    "crates/riffdb-columnar/src/batch/mod.rs": {
+        "ColumnarPredicateKernel": (
+            ("lane", "usize"),
+            ("lane_kind", "IntegerLaneKind"),
+            ("predicate", "SegmentV2Predicate"),
+        ),
+    },
+    "crates/riffdb-columnar/src/batch/top_n.rs": {
+        "TopNProgramBinding": (("comparison_profile", "TopNComparisonProfile"), ("plan_identity", "QueryPlanHash"), ("generation", "ProjectionGeneration")),
+        "TopNOrderTerm": (("logical_type", "SegmentV2LogicalType"), ("direction", "TopNValueDirection"), ("no_value", "TopNNoValuePlacement")),
+        "TopNSource": (("binding", "TopNProgramBinding"), ("order", "& ' view [ TopNOrderTerm ]"), ("primary_keys", "& ' view [ PrimaryKeyBytes ]"), ("order_lanes", "& ' view [ & ' view [ SegmentV2Cell ] ]")),
+        "RowOrdinal": (("$tuple", "( u16 )"),),
+        "BoundedTopN": (("source", "& ' view TopNSource < ' view >"), ("limit", "usize"), ("capacity", "usize"), ("retained_allocation_bytes", "usize"), ("retained", "Vec < RowOrdinal >"), ("last_row", "Option < RowOrdinal >"), ("failure", "Option < TopNError >")),
+        "TopNPage": (("source", "& ' view TopNSource < ' view >"), ("rows", "Vec < RowOrdinal >"), ("cursor", "Option < RowOrdinal >")),
+    },
+}
+
+EXPECTED_STRUCTURAL_SITES = {
+    "crates/riffdb-columnar/src/batch/aggregate.rs": (
+        (
+            ("ExactAggregateMergeAccumulator::new", ".to_vec"),
+            ("ExactAggregateMergeAccumulator::new", ".into_boxed_slice"),
+            ("ExactBorrowedAggregateMergeAccumulator::new", ".to_vec"),
+            ("ExactBorrowedAggregateMergeAccumulator::new", ".into_boxed_slice"),
+            ("BoundedDistinctSet::new", "Vec::new"),
+            ("BoundedDistinctSet::new", ".try_reserve_exact"),
+            ("BoundedDistinctSet::new", "Vec::new"),
+            ("BoundedDistinctSet::new", ".try_reserve_exact"),
+            ("ExactDistinctAggregateMergeAccumulator::new", ".to_vec"),
+            ("ExactDistinctAggregateMergeAccumulator::new", ".into_boxed_slice"),
+        ),
+        (
+            (("ExactAggregatePartialValue::accumulate", "checked_add"),) * 4
+            + (("ExactAggregatePartialValue::merge", "checked_add"),) * 4
+            + (
+                ("SealedCanonicalPartialInventory::validate", "checked_add"),
+                ("SealedCanonicalPartialInventory::state_bytes", "checked_mul"),
+                ("ExactAggregateMergeAccumulator::new", "checked_add"),
+                ("BorrowedAggregateDefinition::new", "checked_binding"),
+                ("ExactBorrowedAggregateMergeAccumulator::new", "checked_add"),
+                ("BoundedDistinctSet::requested_state_bytes", "checked_mul"),
+                ("BoundedDistinctSet::requested_state_bytes", "checked_mul"),
+                ("BoundedDistinctSet::requested_state_bytes", "checked_add"),
+                ("BoundedDistinctSet::actual_state_bytes", "checked_add"),
+                ("BoundedDistinctSet::actual_state_bytes", "checked_mul"),
+                ("BoundedDistinctSet::actual_state_bytes", "checked_add"),
+                ("ExactDistinctAggregateMergeAccumulator::new", "checked_add"),
+                ("ExactDistinctAggregateMergeAccumulator::new", "checked_add"),
+            )
+        ),
+        (
+            ("<item>", "+"),
+            ("<item>", "+"),
+            ("AggregatePartialBudget::commit_operations", "-="),
+            ("AggregatePartialBudget::commit_state", "-="),
+            ("ExactNumericLane::from_logical_type", "*"),
+            ("ExactNumericLane::contribution", "*"),
+            ("ExactNumericLane::contribution", "*"),
+            ("ExactAggregateDefinition::state_bytes", "+"),
+            ("ExactAggregateDefinition::state_bytes", "+"),
+            ("ExactAggregateDefinition::state_bytes", "+"),
+            ("SealedCanonicalPartialInventory::classify_mismatch", "+"),
+            ("ExactAggregateMergeAccumulator::merge_leaf", "*"),
+            ("ExactAggregateMergeAccumulator::merge_leaf", "+="),
+            ("BorrowedAggregateDefinition::new", "*"),
+            ("BorrowedAggregateDefinition::new", "*"),
+            ("ExactBorrowedAggregateMergeAccumulator::merge_leaf", "*"),
+            ("ExactBorrowedAggregateMergeAccumulator::merge_leaf", "+="),
+            ("required_boolean", "*"),
+            ("BoundedDistinctSet::union_members", "*"),
+            ("ExactDistinctAggregateMergeAccumulator::merge_leaf", "*"),
+            ("ExactDistinctAggregateMergeAccumulator::merge_leaf", "+="),
+        ),
+    ),
+    "crates/riffdb-columnar/src/batch/group.rs": (
+        (
+            ("BoundedGroupOwner::new", "Vec::new"),
+            ("BoundedGroupOwner::new", ".try_reserve_exact"),
+            ("BoundedGroupOwner::new", "Vec::new"),
+            ("BoundedGroupOwner::new", ".try_reserve_exact"),
+        ),
+        (
+            ("GroupWorkBudget::charge", "checked_sub"),
+            ("BoundedGroupOwner::new", "checked_mul"),
+            ("BoundedGroupOwner::new", "checked_mul"),
+            ("BoundedGroupOwner::new", "checked_sub"),
+            ("BoundedGroupOwner::new", "checked_sub"),
+            ("BoundedGroupOwner::new", "checked_add"),
+            *(("BoundedGroupOwner::admit_cells", "checked_add"),) * 5,
+            *(("BoundedGroupOwner::admit_encoded", "checked_add"),) * 3,
+            ("BoundedGroupOwner::commit_appended", "checked_add"),
+            ("lookup_comparison_ceiling", "checked_add"),
+            ("row_work_ceiling", "checked_mul"),
+            ("row_work_ceiling", "checked_add"),
+            ("row_work_ceiling", "checked_add"),
+            ("encoded_key_len", "checked_add"),
+            ("CanonicalGroupLeafBuilder::push_row", "checked_add"),
+            ("CanonicalGroupMerge::new", "checked_add"),
+            ("CanonicalGroupMerge::merge_leaf", "checked_add"),
+            ("CanonicalGroupMerge::merge_leaf", "checked_add"),
+            ("merge_work_ceiling", "checked_add"),
+            ("merge_work_ceiling", "checked_add"),
+            ("merge_work_ceiling", "checked_add"),
+            ("merge_work_ceiling", "checked_mul"),
+            ("merge_work_ceiling", "checked_add"),
+            ("validate_inventory", "checked_add"),
+        ),
+        (
+            ("GroupWorkBudget::commit_actual", "-="),
+            ("BoundedGroupOwner::admit_cells", "+"),
+            ("BoundedGroupOwner::admit_encoded", "+"),
+            ("BoundedGroupOwner::locate_key", "+"),
+            ("BoundedGroupOwner::locate_key", "-"),
+            ("BoundedGroupOwner::locate_key", "/"),
+            ("BoundedGroupOwner::locate_key", "+="),
+            ("BoundedGroupOwner::locate_key", "+"),
+            ("BoundedGroupOwner::commit_appended", "+"),
+            ("BoundedGroupOwner::allocated_state_bytes", "+"),
+            ("BoundedGroupOwner::allocated_state_bytes", "*"),
+            ("insertion_shift_work", "-"),
+            ("entry_key", "+"),
+            ("lookup_comparison_ceiling", "/="),
+            ("encoded_key_len", "+"),
+            ("append_key", "+"),
+            ("CanonicalGroupMerge::merge_leaf", "+="),
+            ("classify_mismatch", "*"),
+            ("classify_mismatch", "*"),
+        ),
+    ),
+    "crates/riffdb-columnar/src/batch/mod.rs": (
+        (("MonotoneSelection::all", "vec!"), ("ColumnarPredicateKernel::apply", "vec!")),
+        (("ColumnarBatchWidth::choose", "checked_mul"),),
+        (
+            ("ColumnarBatchWidth::choose", "*"),
+            ("MonotoneSelection::retain", "*"),
+            ("MonotoneSelection::retain", "*"),
+            ("MonotoneSelection::retain", "+="),
+            ("MonotoneSelection::retain", "*"),
+            ("<item>", "+"),
+            ("PredicateWorkCharge::commit", "-="),
+            ("ColumnarPredicateKernel::apply", "+="),
+            ("predicate_matches", "*"),
+            ("predicate_matches", "*"),
+            *(("signed_predicate_matches", "*"),) * 5,
+            *(("unsigned_predicate_matches", "*"),) * 5,
+        ),
+    ),
+    "crates/riffdb-columnar/src/batch/program.rs": (
+        (("PreGenerationBatchProgramDraft::check", ".clone"), ("validate_phase_lanes", "vec!"), ("CheckedPreGenerationBatchProgram::lane_facts", ".clone")),
+        (("PreGenerationBatchProgramDraft::check", "checked_add"), ("PreGenerationBatchProgramDraft::check", "checked_add"), ("checked_charge_product", "checked_mul")),
+        (("<item>", "-"), ("<item>", "/"), ("<item>", "*"), ("<item>", "*"), ("PreGenerationBatchProgramDraft::check", "/"), ("validate_phase_lanes", "*"), ("validate_phase_lanes", "*"), ("validate_phase_lanes", "*")),
+    ),
+    "crates/riffdb-columnar/src/batch/top_n.rs": (
+        (("BoundedTopN::new", "Vec::new"), ("BoundedTopN::new", ".try_reserve_exact")),
+        (("BoundedTopN::new", "checked_add"), ("retained_state_bytes", "checked_mul"), ("retained_state_bytes", "checked_add"), ("sift_down", "checked_mul"), ("sift_down", "checked_add"), ("sift_down", "checked_add")),
+        (("TopNPage::primary_key_slices", "*"), ("validate_present_type", "*"), ("validate_present_type", "*"), ("validate_present_type", "*"), ("push_heap", "-"), ("push_heap", "-"), ("push_heap", "/")),
+    ),
+}
+
+ALLOCATION_PATTERN = re.compile(
+    r"\b(?:Vec|Box|String)\s*::\s*(?:new|with_capacity|from|from_iter)\s*\("
+    r"|\.to_vec\s*\(|\.into_boxed_slice\s*\(|\bvec\s*!"
+    r"|\.collect\s*(?:::\s*<[^>]*Vec[^>]*>)?\s*\("
+)
+CHECKED_ARITHMETIC_PATTERN = re.compile(r"\.checked_(?:add|sub|mul|div)\s*\(")
+RAW_OPERATOR_PATTERN = re.compile(r"(?<!-)\+(?!=)|-(?!>)|\*(?!=)|/(?![/*])|%")
+RESERVATION_PATTERN = re.compile(r"\.try_reserve(?:_exact)?\s*\(")
+REVIEWED_SITE_COUNTS = {
+    # allocation, checked arithmetic, raw operators, fallible reservations
+    "crates/riffdb-columnar/src/batch/aggregate.rs": (2, 11, 12, 0),
+    "crates/riffdb-columnar/src/batch/mod.rs": (2, 1, 18, 0),
+    "crates/riffdb-columnar/src/batch/program.rs": (1, 3, 8, 0),
+    "crates/riffdb-columnar/src/batch/top_n.rs": (1, 6, 7, 1),
+}
+
+FORBIDDEN_PRODUCTION = {
+    "caller-control": re.compile(
+        r"\b(?:Request|Configuration|Config|Settings|Options|Arguments)\b"
+        r"|\b[A-Za-z_][A-Za-z0-9_]+(?:Request|Configuration|Config|Settings|Options|Arguments)\b"
+        r"|\bstd\s*::\s*env\b|\bclap\s*::"
+    ),
+    "serialization": re.compile(
+        r"\b(?:serde|Serialize|Deserialize|prost|bincode|rkyv|WireEncode|WireDecode|codec)\b"
+    ),
+    "growing-collection": re.compile(
+        r"\b(?:HashMap|HashSet|BTreeMap|BTreeSet|BinaryHeap|VecDeque)\b"
+    ),
+    "forbidden-authority": re.compile(
+        r"\briffdb_storage[A-Za-z0-9_]*\b|\bredb\s*::|\btokio\s*::"
+        r"|\b(?:SystemTime|Instant)\b"
+        r"|\b(?:Worker|Storage|Checkpoint|Publication|Publish|Rebuild)\b"
+        r"|\b[A-Za-z_][A-Za-z0-9_]+(?:Worker|Storage|Checkpoint|Publication|Publish|Rebuild)\b"
+        r"|\bstd\s*::\s*(?:fs|net|thread|process|time)\b"
+    ),
+    "scalar-fallback": re.compile(
+        r"\b(?:fallback|retry_scalar|execute_scalar|scalar_executor)\b", re.I
+    ),
+    "v1-fallback": re.compile(r"\b(?:execute_v1|use_v1|retry_v1|v1_fallback)\b", re.I),
+    "unchecked-resource-arithmetic": re.compile(
+        r"\b(?:wrapping|saturating)_(?:add|sub|mul|div)\b"
+    ),
+}
+BATCH_REFERENCE_CANDIDATE = re.compile(
+    r"riffdb_columnar\s*::\s*(?:\{\s*)?batch"
+    r"|(?:crate|self|super)\s*::\s*(?:\{\s*)?batch|\bbatch\s*::"
+    r"|^\s*pub(?:\([^)]*\))?\s+mod\s+batch\s*;",
+    re.M,
+)
+TOKEN_REFERENCE_CANDIDATE = re.compile(
+    r"batch|path|cfg_attr|include|riffdb_columnar"
+)
+DYNAMIC_CODE_INCLUDE_ALLOWLIST = {
+    "crates/riffdb-api-grpc/src/lib.rs": {
+        ("concat", "!", "(", "env", "!", "(", '"OUT_DIR"', ")", ",", '"/riffdb.v1.rs"', ")"),
+        ("concat", "!", "(", "env", "!", "(", '"OUT_DIR"', ")", ",", '"/riffdb.app.v1.rs"', ")"),
+    },
+    "crates/riffdb-proto/src/lib.rs": {
+        ("concat", "!", "(", "env", "!", "(", '"OUT_DIR"', ")", ",", '"/riffdb.v1.rs"', ")"),
+        ("concat", "!", "(", "env", "!", "(", '"OUT_DIR"', ")", ",", '"/riffdb.app.v1.rs"', ")"),
+    },
+}
+
+
+class CheckError(ValueError):
+    """A bounded checker-input failure."""
+
+
+class RustToken(NamedTuple):
+    kind: str
+    text: str
+    start: int
+    end: int
+    spelling: str
+
+
+MULTI_PUNCTUATION = (
+    "<<=", ">>=", "...", "..=", "::", "->", "=>", "==", "!=", "<=", ">=",
+    "&&", "||", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<", ">>", "..",
+)
+MULTI_BY_FIRST = {
+    initial: tuple(item for item in MULTI_PUNCTUATION if item.startswith(initial))
+    for initial in {item[0] for item in MULTI_PUNCTUATION}
+}
+
+
+def tokenize_rust(source: str, maximum: int) -> tuple[RustToken, ...]:
+    """Tokenize bounded Rust without retaining comments; literal bytes stay exact."""
+    tokens: list[RustToken] = []
+    index = 0
+    block_depth = 0
+
+    def emit(kind: str, start: int, end: int) -> None:
+        if len(tokens) >= maximum:
+            raise CheckError(f"Rust token count exceeds {maximum}")
+        spelling = source[start:end]
+        semantic = spelling[2:] if kind == "ident" and spelling.startswith("r#") else spelling
+        tokens.append(RustToken(kind, semantic, start, end, spelling))
+
+    while index < len(source):
+        if block_depth:
+            if source.startswith("/*", index):
+                block_depth += 1
+                index += 2
+            elif source.startswith("*/", index):
+                block_depth -= 1
+                index += 2
+            else:
+                index += 1
+            continue
+        if source[index].isspace():
+            index += 1
+            continue
+        if source.startswith("//", index):
+            end = source.find("\n", index)
+            index = len(source) if end < 0 else end + 1
+            continue
+        if source.startswith("/*", index):
+            block_depth = 1
+            index += 2
+            continue
+
+        start = index
+        raw = (
+            re.match(r"(?:br|cr|r)(#{0,16})\"", source[index:])
+            if source[index] in "bcr"
+            else None
+        )
+        if raw:
+            terminator = '"' + raw.group(1)
+            end = source.find(terminator, index + len(raw.group(0)))
+            if end < 0:
+                raise CheckError("unterminated raw string literal")
+            index = end + len(terminator)
+            emit("literal", start, index)
+            continue
+        if source[index] in "bcr" and (
+            re.match(r"(?:br|cr)#+", source[index:]) or re.match(r"r##+", source[index:])
+        ):
+            raise CheckError("malformed raw string literal opener")
+        quote_start = index + 1 if source[index:index + 2] in ('b"', 'c"') else index
+        if source[quote_start:quote_start + 1] == '"':
+            index = quote_start + 1
+            while index < len(source):
+                if source[index] == "\\":
+                    index += 2
+                    continue
+                if source[index] == '"':
+                    index += 1
+                    emit("literal", start, index)
+                    break
+                index += 1
+            else:
+                raise CheckError("unterminated string literal")
+            continue
+        char_match = (
+            re.match(r"(?:b)?'(?:\\.|[^'\\\n])'", source[index:])
+            if source[index] == "'" or source.startswith("b'", index)
+            else None
+        )
+        if char_match:
+            index += len(char_match.group(0))
+            emit("literal", start, index)
+            continue
+        if source[index].isalpha() or source[index] == "_":
+            index += 1
+            while index < len(source) and (source[index].isalnum() or source[index] == "_"):
+                index += 1
+            # Preserve raw identifiers as one semantic identifier.
+            if source[start:index] == "r" and source.startswith("#", index):
+                tail = index + 1
+                if tail < len(source) and (source[tail].isalpha() or source[tail] == "_"):
+                    index = tail + 1
+                    while index < len(source) and (source[index].isalnum() or source[index] == "_"):
+                        index += 1
+            emit("ident", start, index)
+            continue
+        if source[index].isdigit():
+            index += 1
+            while index < len(source) and (source[index].isalnum() or source[index] in "_."):
+                # Do not absorb a range operator into a numeric literal.
+                if source.startswith("..", index):
+                    break
+                index += 1
+            emit("number", start, index)
+            continue
+        punctuation = next(
+            (candidate for candidate in MULTI_BY_FIRST.get(source[index], ()) if source.startswith(candidate, index)),
+            source[index],
+        )
+        index += len(punctuation)
+        emit("punct", start, index)
+    if block_depth:
+        raise CheckError("unterminated block comment")
+    return tuple(tokens)
+
+
+@lru_cache(maxsize=32)
+def rust_tokens(source: str) -> tuple[RustToken, ...]:
+    return tokenize_rust(source, MAX_TOKENS_PER_FILE)
+
+
+class Failures:
+    def __init__(self, maximum: int = MAX_FAILURES) -> None:
+        self.maximum = maximum
+        self.items: list[str] = []
+        self.truncated = False
+
+    def add(self, code: str, detail: str) -> None:
+        if len(self.items) < self.maximum:
+            self.items.append(f"{code}: {detail}")
+        else:
+            self.truncated = True
+
+    def rendered(self) -> list[str]:
+        result = list(self.items)
+        if self.truncated:
+            result.append("failure-cap: additional violations truncated")
+        return result
+
+
+@lru_cache(maxsize=32)
+def scrub_rust(source: str) -> str:
+    """Scrub comments and string/character literals, preserving length/newlines."""
+    out = list(source)
+    index = 0
+    block_depth = 0
+
+    def blank(start: int, end: int) -> None:
+        for position in range(start, end):
+            if out[position] != "\n":
+                out[position] = " "
+
+    while index < len(source):
+        if block_depth:
+            if source.startswith("/*", index):
+                blank(index, index + 2)
+                block_depth += 1
+                index += 2
+            elif source.startswith("*/", index):
+                blank(index, index + 2)
+                block_depth -= 1
+                index += 2
+            else:
+                blank(index, index + 1)
+                index += 1
+            continue
+        if source.startswith("//", index):
+            end = source.find("\n", index)
+            end = len(source) if end < 0 else end
+            blank(index, end)
+            index = end
+            continue
+        if source.startswith("/*", index):
+            blank(index, index + 2)
+            block_depth = 1
+            index += 2
+            continue
+
+        raw = re.match(r"(?:br|r)(#{0,16})\"", source[index:])
+        if raw:
+            terminator = '"' + raw.group(1)
+            end = source.find(terminator, index + len(raw.group(0)))
+            if end < 0:
+                raise CheckError("unterminated raw string literal")
+            end += len(terminator)
+            blank(index, end)
+            index = end
+            continue
+        quote_start = index + 1 if source.startswith('b"', index) else index
+        if source[quote_start : quote_start + 1] == '"':
+            end = quote_start + 1
+            while end < len(source):
+                if source[end] == "\\":
+                    end += 2
+                    continue
+                if source[end] == '"':
+                    end += 1
+                    break
+                end += 1
+            else:
+                raise CheckError("unterminated string literal")
+            blank(index, end)
+            index = end
+            continue
+        # A Rust character/byte-character has a closing quote; a lifetime does not.
+        char_match = re.match(r"(?:b)?'(?:\\.|[^'\\\n])'", source[index:])
+        if char_match:
+            end = index + len(char_match.group(0))
+            blank(index, end)
+            index = end
+            continue
+        index += 1
+    if block_depth:
+        raise CheckError("unterminated block comment")
+    return "".join(out)
+
+
+TEST_MODULE_TOKENS = ("#", "[", "cfg", "(", "test", ")", "]", "mod", "tests", "{")
+
+
+def matching_delimiter(tokens: tuple[RustToken, ...], opening: int) -> int:
+    pairs = {"{": "}", "[": "]", "(": ")"}
+    expected = pairs.get(tokens[opening].text)
+    if expected is None:
+        raise CheckError("delimiter lookup did not start at an opener")
+    depth = 0
+    for index in range(opening, len(tokens)):
+        if tokens[index].text == tokens[opening].text:
+            depth += 1
+        elif tokens[index].text == expected:
+            depth -= 1
+            if depth == 0:
+                return index
+    raise CheckError("unterminated delimited Rust item")
+
+
+@lru_cache(maxsize=32)
+def production_token_boundary(source: str) -> tuple[tuple[RustToken, ...], int]:
+    """Return production tokens and the byte start of the final test module."""
+    tokens = rust_tokens(source)
+    depth = 0
+    candidates: list[int] = []
+    for index, token in enumerate(tokens):
+        if depth == 0 and tuple(item.text for item in tokens[index:index + 10]) == TEST_MODULE_TOKENS:
+            candidates.append(index)
+        if token.text == "{":
+            depth += 1
+            if depth > MAX_PATH_DEPTH:
+                raise CheckError(f"Rust delimiter depth exceeds {MAX_PATH_DEPTH}")
+        elif token.text == "}":
+            depth -= 1
+            if depth < 0:
+                raise CheckError("unbalanced closing brace")
+    if depth != 0:
+        raise CheckError("unbalanced production/test braces")
+    if len(candidates) != 1:
+        raise CheckError("expected exactly one final top-level cfg(test) module")
+    start = candidates[0]
+    closing = matching_delimiter(tokens, start + 9)
+    if closing + 1 != len(tokens):
+        raise CheckError("cfg(test) module is not the final top-level item")
+    return tokens[:start], tokens[start].start
+
+
+@lru_cache(maxsize=32)
+def production_part(source: str) -> str:
+    """Remove only one verified final, top-level `#[cfg(test)] mod tests`."""
+    _, boundary = production_token_boundary(source)
+    return source[:boundary]
+
+
+def normalized_production(source: str) -> str:
+    tokens, _ = production_token_boundary(source)
+    return " ".join("LITERAL" if token.kind == "literal" else token.text for token in tokens)
+
+
+def token_digest(tokens: tuple[RustToken, ...]) -> str:
+    digest = hashlib.sha256()
+    for token in tokens:
+        kind = token.kind.encode("ascii")
+        value = token.spelling.encode("utf-8")
+        digest.update(len(kind).to_bytes(2, "big"))
+        digest.update(kind)
+        digest.update(len(value).to_bytes(8, "big"))
+        digest.update(value)
+    return digest.hexdigest()
+
+
+@lru_cache(maxsize=32)
+def production_forms(source: str) -> tuple[tuple[RustToken, ...], str, str]:
+    tokens, _ = production_token_boundary(source)
+    structural = " ".join("LITERAL" if token.kind == "literal" else token.text for token in tokens)
+    return tokens, structural, token_digest(tokens)
+
+
+def consumer_production_part(source: str) -> str:
+    """Remove exact top-level cfg(test) modules while preserving later production."""
+    tokens = rust_tokens(source)
+    depth = 0
+    ranges: list[tuple[int, int]] = []
+    for index, token in enumerate(tokens):
+        if depth == 0 and texts(tokens[index:index + 10]) == TEST_MODULE_TOKENS:
+            closing = matching_delimiter(tokens, index + 9)
+            ranges.append((tokens[index].start, tokens[closing].end))
+        if token.text == "{":
+            depth += 1
+        elif token.text == "}":
+            depth -= 1
+    if not ranges:
+        return source
+    pieces: list[str] = []
+    prior = 0
+    for start, end in ranges:
+        pieces.append(source[prior:start])
+        prior = end
+    pieces.append(source[prior:])
+    return "".join(pieces)
+
+
+def texts(tokens: Iterable[RustToken]) -> tuple[str, ...]:
+    return tuple(token.text for token in tokens)
+
+
+def contains_sequence(tokens: tuple[RustToken, ...], expected: tuple[str, ...]) -> bool:
+    if not expected:
+        return True
+    return any(texts(tokens[index:index + len(expected)]) == expected for index in range(len(tokens)))
+
+
+def item_body(tokens: tuple[RustToken, ...], keyword: str, name: str) -> tuple[RustToken, ...] | None:
+    sequence = (keyword, name)
+    for index in range(len(tokens) - 1):
+        if texts(tokens[index:index + 2]) != sequence:
+            continue
+        opening = next(
+            (position for position in range(index + 2, len(tokens)) if tokens[position].text in ("{", ";")),
+            None,
+        )
+        if opening is None or tokens[opening].text == ";":
+            return None
+        closing = matching_delimiter(tokens, opening)
+        return tokens[opening + 1:closing]
+    return None
+
+
+def named_struct_fields(tokens: tuple[RustToken, ...]) -> dict[str, tuple[tuple[str, str], ...]]:
+    result: dict[str, tuple[tuple[str, str], ...]] = {}
+    index = 0
+    while index + 1 < len(tokens):
+        if tokens[index].text != "struct" or tokens[index + 1].kind != "ident":
+            index += 1
+            continue
+        name = tokens[index + 1].text
+        opening = next(
+            (position for position in range(index + 2, len(tokens)) if tokens[position].text in ("{", "(", ";")),
+            None,
+        )
+        if opening is None:
+            raise CheckError(f"struct {name} has no bounded body")
+        if tokens[opening].text == ";":
+            result[name] = ()
+            index = opening + 1
+            continue
+        if tokens[opening].text == "(":
+            result[name] = (("$tuple", " ".join(texts(tokens[opening:matching_delimiter(tokens, opening) + 1]))),)
+            index = matching_delimiter(tokens, opening) + 1
+            continue
+        closing = matching_delimiter(tokens, opening)
+        fields: list[tuple[str, str]] = []
+        field_start = opening + 1
+        depth = 0
+        for position in range(opening + 1, closing + 1):
+            token = tokens[position] if position < closing else RustToken("punct", ",", 0, 0, ",")
+            if token.text in ("{", "[", "(", "<"):
+                depth += 1
+            elif token.text in ("}", "]", ")", ">") and depth:
+                depth -= 1
+            if token.text != "," or depth:
+                continue
+            field = tokens[field_start:position]
+            colon = next((offset for offset, item in enumerate(field) if item.text == ":"), None)
+            if colon is not None:
+                before = [item.text for item in field[:colon] if item.kind == "ident"]
+                if not before:
+                    raise CheckError(f"struct {name} has an unnamed field")
+                fields.append((before[-1], " ".join(texts(field[colon + 1:]))))
+            field_start = position + 1
+        result[name] = tuple(fields)
+        index = closing + 1
+    return result
+
+
+def validate_integer_lane_kind(tokens: tuple[RustToken, ...]) -> None:
+    depth = 0
+    top_level_kernels: list[int] = []
+    top_level_lane_kinds: list[int] = []
+    top_level_kernel_impls: list[int] = []
+    top_level_predicates: list[int] = []
+    for index, token in enumerate(tokens[:-1]):
+        if depth == 0 and texts(tokens[index:index + 2]) == ("struct", "ColumnarPredicateKernel"):
+            top_level_kernels.append(index)
+        if depth == 0 and texts(tokens[index:index + 2]) == ("enum", "IntegerLaneKind"):
+            top_level_lane_kinds.append(index)
+        if depth == 0 and texts(tokens[index:index + 2]) == ("impl", "ColumnarPredicateKernel"):
+            top_level_kernel_impls.append(index)
+        if depth == 0 and texts(tokens[index:index + 2]) == ("fn", "predicate_matches"):
+            top_level_predicates.append(index)
+        if token.text == "{":
+            depth += 1
+        elif token.text == "}":
+            depth -= 1
+    if len(top_level_kernels) != 1 or texts(tokens[top_level_kernels[0] - 4:top_level_kernels[0] + 3]) != (
+        "pub", "(", "crate", ")", "struct", "ColumnarPredicateKernel", "{",
+    ):
+        raise CheckError("predicate kernel visibility changed")
+    kernel_opening = top_level_kernels[0] + 2
+    if tokens[kernel_opening].text != "{":
+        raise CheckError("predicate kernel does not have a named-field body")
+    kernel_closing = matching_delimiter(tokens, kernel_opening)
+    kernel_body = tokens[kernel_opening + 1:kernel_closing]
+    if texts(kernel_body) != (
+        "lane", ":", "usize", ",",
+        "lane_kind", ":", "IntegerLaneKind", ",",
+        "predicate", ":", "SegmentV2Predicate", ",",
+    ):
+        raise CheckError("predicate kernel fields or field visibility changed")
+    if len(top_level_lane_kinds) != 1:
+        raise CheckError("expected exactly one top-level integer lane kind")
+    lane_kind_index = top_level_lane_kinds[0]
+    prior_boundary = max(
+        (index for index in range(lane_kind_index) if tokens[index].text in ("}", ";")),
+        default=-1,
+    )
+    if texts(tokens[prior_boundary + 1:lane_kind_index]) != (
+        "#", "[", "derive", "(", "Clone", ",", "Copy", ")", "]",
+    ):
+        raise CheckError("integer lane kind attributes or visibility changed")
+    enum_opening = lane_kind_index + 2
+    if tokens[enum_opening].text != "{":
+        raise CheckError("integer lane kind does not have a variant body")
+    enum_closing = matching_delimiter(tokens, enum_opening)
+    enum_body = tokens[enum_opening + 1:enum_closing]
+    if texts(enum_body) != ("I64", ",", "U64", ","):
+        raise CheckError("integer lane kind is not the exact fieldless I64/U64 inventory")
+
+    if len(top_level_kernel_impls) != 1:
+        raise CheckError("expected exactly one top-level predicate kernel implementation")
+    impl_opening = top_level_kernel_impls[0] + 2
+    if tokens[impl_opening].text != "{":
+        raise CheckError("predicate kernel implementation body is missing")
+    impl_closing = matching_delimiter(tokens, impl_opening)
+    kernel_impl = tokens[impl_opening + 1:impl_closing]
+    new_header = function_header(kernel_impl, "new")
+    if new_header is None or "IntegerLaneKind" in new_header:
+        raise CheckError("callers may select or supply the sealed integer lane kind")
+    rhs_checks = [
+        index
+        for index in range(len(kernel_impl) - 5)
+        if texts(kernel_impl[index:index + 5]) == ("let", "matches_lane", "=", "matches", "!")
+    ]
+    if len(rhs_checks) != 1 or kernel_impl[rhs_checks[0] + 5].text != "(":
+        raise CheckError("sealed integer RHS check is missing")
+    rhs_opening = rhs_checks[0] + 5
+    rhs_closing = matching_delimiter(kernel_impl, rhs_opening)
+    if texts(kernel_impl[rhs_opening + 1:rhs_closing]) != (
+        "(", "lane_kind", ",", "value", ")", ",",
+        "(", "IntegerLaneKind", "::", "I64", ",", "riffdb_types", "::", "CanonicalValue", "::", "I64", "(", "_", ")", ")",
+        "|",
+        "(", "IntegerLaneKind", "::", "U64", ",", "riffdb_types", "::", "CanonicalValue", "::", "U64", "(", "_", ")", ")",
+    ):
+        raise CheckError("sealed integer RHS pair inventory changed")
+    required_constructor = (
+        (
+            "SegmentV2LogicalType", "::", "I64", "=>",
+            "IntegerLaneKind", "::", "I64",
+        ),
+        (
+            "SegmentV2LogicalType", "::", "U64", "=>",
+            "IntegerLaneKind", "::", "U64",
+        ),
+        (
+            "(", "IntegerLaneKind", "::", "I64", ",", "riffdb_types", "::",
+            "CanonicalValue", "::", "I64", "(", "_", ")", ")",
+        ),
+        (
+            "(", "IntegerLaneKind", "::", "U64", ",", "riffdb_types", "::",
+            "CanonicalValue", "::", "U64", "(", "_", ")", ")",
+        ),
+        ("lane", ",", "lane_kind", ",", "predicate", ","),
+        (
+            "for", "index", "in", "selection", ".", "indices", "(", ")", "{", "if",
+            "predicate_matches", "(", "self", ".", "lane_kind", ",", "&",
+            "self", ".", "predicate", ",", "&", "lane", "[", "index", "]", ")",
+        ),
+    )
+    for sequence in required_constructor:
+        if not contains_sequence(kernel_impl, sequence):
+            raise CheckError(f"sealed constructor/dispatch route changed near {' '.join(sequence)}")
+
+    if len(top_level_predicates) != 1:
+        raise CheckError("expected exactly one top-level predicate dispatch")
+    predicate_opening = next(
+        (
+            index
+            for index in range(top_level_predicates[0] + 2, len(tokens))
+            if tokens[index].text in ("{", ";")
+        ),
+        None,
+    )
+    if predicate_opening is None or tokens[predicate_opening].text != "{":
+        raise CheckError("top-level predicate dispatch body is missing")
+    predicate_closing = matching_delimiter(tokens, predicate_opening)
+    predicate_body = tokens[predicate_opening + 1:predicate_closing]
+    predicate_header = texts(tokens[top_level_predicates[0]:predicate_opening])
+    if (
+        not contains_sequence(
+            tuple(RustToken("", item, 0, 0, item) for item in predicate_header),
+            ("fn", "predicate_matches", "(", "lane_kind", ":", "IntegerLaneKind"),
+        )
+        or not contains_sequence(predicate_body, ("match", "(", "lane_kind", ",", "cell", ")"))
+    ):
+        raise CheckError("predicate dispatch is not based on the sealed lane kind")
+    for sequence in (
+        (
+            "(", "IntegerLaneKind", "::", "I64", ",", "SegmentV2Cell", "::", "Value",
+            "(", "riffdb_types", "::", "CanonicalValue", "::", "I64", "(", "left", ")", ")", ")",
+        ),
+        (
+            "(", "IntegerLaneKind", "::", "U64", ",", "SegmentV2Cell", "::", "Value",
+            "(", "riffdb_types", "::", "CanonicalValue", "::", "U64", "(", "left", ")", ")", ")",
+        ),
+    ):
+        if not contains_sequence(predicate_body, sequence):
+            raise CheckError(f"typed lane dispatch changed near {' '.join(sequence)}")
+
+
+def rust_literal_value(token: RustToken) -> str:
+    value = token.text
+    raw = re.fullmatch(r"(?:br|cr|r)(#{0,16})\"(.*)\"\1", value, re.S)
+    if raw:
+        return raw.group(2)
+    prefix = ""
+    if value.startswith(("b\"", "c\"")):
+        prefix, value = value[:1], value[1:]
+    if not (value.startswith('"') and value.endswith('"')):
+        raise CheckError("path attribute requires one string literal")
+    payload = value[1:-1]
+    output: list[str] = []
+    index = 0
+    while index < len(payload):
+        if payload[index] != "\\":
+            output.append(payload[index])
+            index += 1
+            continue
+        index += 1
+        if index >= len(payload):
+            raise CheckError("unterminated string escape")
+        escaped = payload[index]
+        simple = {"\\": "\\", '"': '"', "n": "\n", "r": "\r", "t": "\t", "0": "\0"}
+        if escaped in simple:
+            output.append(simple[escaped])
+            index += 1
+        elif escaped == "x" and index + 2 < len(payload):
+            output.append(chr(int(payload[index + 1:index + 3], 16)))
+            index += 3
+        elif escaped == "u" and index + 1 < len(payload) and payload[index + 1] == "{":
+            closing = payload.find("}", index + 2)
+            if closing < 0:
+                raise CheckError("unterminated Unicode escape")
+            output.append(chr(int(payload[index + 2:closing].replace("_", ""), 16)))
+            index = closing + 1
+        else:
+            raise CheckError(f"unsupported path escape \\{escaped}")
+    if prefix and "\0" in output:
+        raise CheckError("path literal contains NUL")
+    return "".join(output)
+
+
+def resolved_source_path(root: Path, source_path: str, literal: str) -> Path:
+    if "\0" in literal or len(os.fsencode(literal)) > MAX_PATH_BYTES:
+        raise CheckError("path literal is invalid or over bound")
+    candidate = Path(literal)
+    if candidate.is_absolute() or len(candidate.parts) > MAX_PATH_DEPTH:
+        raise CheckError("absolute or over-depth source path is forbidden")
+    root = Path(os.path.abspath(root))
+    resolved = Path(os.path.abspath((root / source_path).parent / candidate))
+    if resolved != root and root not in resolved.parents:
+        raise CheckError("source-loading path escapes the workspace")
+    return resolved
+
+
+def resolved_literal_path(root: Path, source_path: str, token: RustToken) -> Path:
+    return resolved_source_path(root, source_path, rust_literal_value(token))
+
+
+class CodeTargetBudget:
+    def __init__(self) -> None:
+        self.files = 0
+        self.bytes = 0
+        self.visited: set[Path] = set()
+
+
+def code_target_references_batch(
+    root: Path,
+    target: Path,
+    budget: CodeTargetBudget,
+    depth: int,
+) -> bool:
+    if depth > MAX_PATH_DEPTH:
+        raise CheckError(f"source-loading depth exceeds {MAX_PATH_DEPTH}")
+    root = Path(os.path.abspath(root))
+    relative = target.relative_to(root)
+    cursor = root
+    for component in relative.parts:
+        cursor /= component
+        if cursor.is_symlink():
+            raise CheckError(f"{relative}: symlinked source-loading target is forbidden")
+    if target in budget.visited:
+        return False
+    # Feature-gated/generated targets can legitimately be absent in this
+    # checkout. They cannot activate code until materialized; once present,
+    # every workspace-policy run reads and analyzes them below.
+    if not target.exists():
+        return False
+    if not target.is_file():
+        raise CheckError(f"{relative}: source-loading target is not a regular file")
+    budget.visited.add(target)
+    budget.files += 1
+    if budget.files > MAX_FILES:
+        raise CheckError(f"source-loading target count exceeds {MAX_FILES}")
+    with target.open("rb") as handle:
+        data = handle.read(MAX_SOURCE_BYTES + 1)
+    if len(data) > MAX_SOURCE_BYTES:
+        raise CheckError(f"{relative}: source-loading target exceeds {MAX_SOURCE_BYTES} bytes")
+    budget.bytes += len(data)
+    if budget.bytes > MAX_TOTAL_SOURCE_BYTES:
+        raise CheckError(f"source-loading target bytes exceed {MAX_TOTAL_SOURCE_BYTES}")
+    source = data.decode("utf-8")
+    tokens = rust_tokens(consumer_production_part(source))
+    source_path = str(relative)
+    return token_path_references_batch(source_path, tokens) or references_batch_path(
+        root, source_path, tokens, budget=budget, depth=depth + 1
+    )
+
+
+def references_batch_path(
+    root: Path,
+    source_path: str,
+    tokens: tuple[RustToken, ...],
+    *,
+    budget: CodeTargetBudget | None = None,
+    depth: int = 0,
+) -> bool:
+    budget = budget or CodeTargetBudget()
+    batch_root = (root / BATCH_ROOT).resolve()
+    for index in range(len(tokens)):
+        # Direct and cfg_attr-mediated path attributes are compilation inputs.
+        if texts(tokens[index:index + 2]) == ("#", "["):
+            closing = matching_delimiter(tokens, index + 1)
+            attribute = tokens[index + 2:closing]
+            if attribute and attribute[0].text in ("path", "cfg_attr"):
+                for position, item in enumerate(attribute[:-1]):
+                    if item.text != "path" or attribute[position + 1].text != "=":
+                        continue
+                    if position + 2 >= len(attribute) or attribute[position + 2].kind != "literal":
+                        raise CheckError(f"{source_path}: unresolved path attribute is refused")
+                    resolved = resolved_literal_path(root, source_path, attribute[position + 2])
+                    if resolved == batch_root or batch_root in resolved.parents:
+                        return True
+                    if code_target_references_batch(root, resolved, budget, depth + 1):
+                        return True
+        # include!/include_str! with a simple literal or concat!(literal...).
+        if index + 2 >= len(tokens):
+            continue
+        macro_name = tokens[index].text.removeprefix("r#")
+        if macro_name != "include" or tokens[index + 1].text != "!":
+            continue
+        opening = index + 2
+        if tokens[opening].text not in ("(", "[", "{"):
+            continue
+        closing = matching_delimiter(tokens, opening)
+        arguments = tokens[opening + 1:closing]
+        path_value = None
+        if len(arguments) == 1 and arguments[0].kind == "literal":
+            path_value = rust_literal_value(arguments[0])
+        elif len(arguments) >= 4 and texts(arguments[:2]) == ("concat", "!"):
+            inner_open = opening + 3
+            if tokens[inner_open].text == "(":
+                inner_close = matching_delimiter(tokens, inner_open)
+                parts = [item for item in tokens[inner_open + 1:inner_close] if item.text != ","]
+                if all(item.kind == "literal" for item in parts):
+                    path_value = "".join(rust_literal_value(item) for item in parts)
+        if path_value is not None:
+            resolved = resolved_source_path(root, source_path, path_value)
+            if resolved == batch_root or batch_root in resolved.parents:
+                return True
+            if code_target_references_batch(root, resolved, budget, depth + 1):
+                return True
+        else:
+            literal_parts = [
+                rust_literal_value(item) for item in arguments if item.kind == "literal"
+            ]
+            if any("batch" in part for part in literal_parts) or any(
+                item.kind == "ident" and item.text == "batch" for item in arguments
+            ):
+                raise CheckError(f"{source_path}: unresolved batch-bearing include is refused")
+            if texts(arguments) not in DYNAMIC_CODE_INCLUDE_ALLOWLIST.get(source_path, set()):
+                raise CheckError(f"{source_path}: unreviewed dynamic code include is refused")
+    return False
+
+
+def token_path_references_batch(
+    source_path: str,
+    tokens: tuple[RustToken, ...],
+    *,
+    max_aliases: int = MAX_ALIASES,
+) -> bool:
+    aliases = {"riffdb_columnar"} if not source_path.startswith("crates/riffdb-columnar/") else {"crate", "self"}
+    if len(aliases) > max_aliases:
+        raise CheckError(f"{source_path}: aliases exceed {max_aliases}")
+    changed = True
+    passes = 0
+    while changed:
+        changed = False
+        passes += 1
+        if passes > max_aliases:
+            raise CheckError(f"{source_path}: alias resolution exceeds {max_aliases} passes")
+        for index in range(len(tokens) - 2):
+            if tokens[index + 1].text != "as" or tokens[index + 2].kind != "ident":
+                continue
+            source = tokens[index].text
+            if source in aliases and tokens[index + 2].text not in aliases:
+                if len(aliases) >= max_aliases:
+                    raise CheckError(f"{source_path}: aliases exceed {max_aliases}")
+                aliases.add(tokens[index + 2].text)
+                changed = True
+    for index in range(len(tokens) - 2):
+        if tokens[index].text in aliases and tokens[index + 1].text == "::":
+            position = index + 2
+            if tokens[position].text == "{":
+                position += 1
+            if position < len(tokens) and tokens[position].text == "batch":
+                return True
+    if source_path.startswith("crates/riffdb-columnar/src/"):
+        for index, token in enumerate(tokens):
+            if token.text != "batch":
+                continue
+            prior = tokens[index - 1].text if index else ""
+            following = tokens[index + 1].text if index + 1 < len(tokens) else ""
+            if prior == "::" or following == "::":
+                return True
+    return False
+
+
+def top_level_module_declarations(
+    tokens: tuple[RustToken, ...],
+) -> tuple[tuple[str, bool], ...]:
+    declarations: list[tuple[str, bool]] = []
+    depth = 0
+    for index, token in enumerate(tokens):
+        if token.text == "{":
+            depth += 1
+        elif token.text == "}":
+            depth -= 1
+        elif depth == 0 and token.text == "mod" and index + 2 < len(tokens):
+            if tokens[index + 1].kind != "ident" or tokens[index + 2].text != ";":
+                continue
+            prior = index - 1
+            visible = False
+            if prior >= 0 and tokens[prior].text == ")":
+                depth = 1
+                prior -= 1
+                while prior >= 0 and depth:
+                    depth += tokens[prior].text == ")"
+                    depth -= tokens[prior].text == "("
+                    prior -= 1
+                visible = prior >= 0 and tokens[prior].text == "pub"
+            elif prior >= 0 and tokens[prior].text == "pub":
+                visible = True
+            declarations.append((tokens[index + 1].text, visible))
+    return tuple(declarations)
+
+
+def function_spans(tokens: tuple[RustToken, ...]) -> tuple[tuple[str, int, int], ...]:
+    """Return exact enclosing routes for every function body."""
+    impls: list[tuple[str, int, int]] = []
+    for index, token in enumerate(tokens):
+        if token.text != "impl":
+            continue
+        opening = next(
+            (position for position in range(index + 1, len(tokens)) if tokens[position].text in ("{", ";")),
+            None,
+        )
+        if opening is None or tokens[opening].text != "{":
+            continue
+        header = tokens[index + 1:opening]
+        position = 0
+        if position < len(header) and header[position].text == "<":
+            generic_depth = 0
+            while position < len(header):
+                generic_depth += header[position].text.count("<")
+                generic_depth -= header[position].text.count(">")
+                position += 1
+                if generic_depth == 0:
+                    break
+        for_offset = next((offset for offset, item in enumerate(header) if item.text == "for"), None)
+        if for_offset is not None:
+            position = for_offset + 1
+        target = next(
+            (item.text for item in header[position:] if item.kind == "ident" and item.text != "where"),
+            "<unknown>",
+        )
+        impls.append((target, opening, matching_delimiter(tokens, opening)))
+
+    result: list[tuple[str, int, int]] = []
+    for index, token in enumerate(tokens):
+        if token.text != "fn" or index + 1 >= len(tokens) or tokens[index + 1].kind != "ident":
+            continue
+        opening = next(
+            (position for position in range(index + 2, len(tokens)) if tokens[position].text in ("{", ";")),
+            None,
+        )
+        if opening is None or tokens[opening].text != "{":
+            continue
+        closing = matching_delimiter(tokens, opening)
+        owner = next((name for name, start, end in impls if start < index < end), None)
+        route = f"{owner}::{tokens[index + 1].text}" if owner else tokens[index + 1].text
+        result.append((route, opening + 1, closing))
+    return tuple(result)
+
+
+def route_at(spans: tuple[tuple[str, int, int], ...], index: int) -> str:
+    return next((route for route, start, end in spans if start <= index < end), "<item>")
+
+
+ALLOCATION_METHODS = {
+    "new", "with_capacity", "from", "from_iter", "to_vec", "to_owned",
+    "into_boxed_slice", "collect", "clone", "reserve", "reserve_exact",
+    "try_reserve", "try_reserve_exact",
+}
+ALLOCATION_OWNERS = {
+    "Vec", "Box", "String", "Bytes", "BinaryHeap", "VecDeque", "FromIterator",
+}
+
+
+def structural_sites(
+    tokens: tuple[RustToken, ...],
+) -> tuple[tuple[tuple[str, str], ...], tuple[tuple[str, str], ...], tuple[tuple[str, str], ...]]:
+    """Inventory allocation, checked arithmetic, and raw arithmetic by exact route."""
+    spans = function_spans(tokens)
+    aliases = set(ALLOCATION_OWNERS)
+    for index in range(len(tokens) - 2):
+        if tokens[index + 1].text == "as" and tokens[index + 2].kind == "ident":
+            statement_start = index
+            while statement_start and tokens[statement_start - 1].text not in (";", "{"):
+                statement_start -= 1
+            if any(item.text in aliases for item in tokens[statement_start:index + 1]):
+                aliases.add(tokens[index + 2].text)
+        if tokens[index].text == "type" and tokens[index + 1].kind == "ident":
+            statement_end = next(
+                (position for position in range(index + 2, len(tokens)) if tokens[position].text == ";"),
+                len(tokens),
+            )
+            if any(item.text in aliases for item in tokens[index + 2:statement_end]):
+                aliases.add(tokens[index + 1].text)
+
+    allocations: list[tuple[str, str]] = []
+    checked: list[tuple[str, str]] = []
+    raw: list[tuple[str, str]] = []
+    for index, token in enumerate(tokens):
+        route = route_at(spans, index)
+        if token.text == "vec" and index + 1 < len(tokens) and tokens[index + 1].text == "!":
+            allocations.append((route, "vec!"))
+        if token.text in aliases and index + 2 < len(tokens) and tokens[index + 1].text == "::":
+            method = tokens[index + 2].text
+            if method in ALLOCATION_METHODS:
+                allocations.append((route, f"{token.text}::{method}"))
+        if token.text == "." and index + 1 < len(tokens):
+            method = tokens[index + 1].text
+            if method in ALLOCATION_METHODS:
+                allocations.append((route, f".{method}"))
+            if method.startswith("checked_"):
+                checked.append((route, method))
+        if token.text in ("+", "-", "*", "/", "%", "+=", "-=", "*=", "/=", "%="):
+            raw.append((route, token.text))
+    return tuple(allocations), tuple(checked), tuple(raw)
+
+
+def unique_sequence_in_route(
+    tokens: tuple[RustToken, ...],
+    spans: tuple[tuple[str, int, int], ...],
+    route: str,
+    expected: tuple[str, ...],
+) -> tuple[int, int, int]:
+    matching_spans = [(start, end) for name, start, end in spans if name == route]
+    if len(matching_spans) != 1:
+        raise CheckError(f"{route}: expected exactly one function body")
+    start, end = matching_spans[0]
+    positions = [
+        index
+        for index in range(start, end)
+        if texts(tokens[index:index + len(expected)]) == expected
+    ]
+    if len(positions) != 1:
+        raise CheckError(f"{route}: expected one {expected!r} sequence")
+    return start, end, positions[0]
+
+
+def require_dominating_refusal(
+    tokens: tuple[RustToken, ...],
+    route: str,
+    guard: tuple[str, ...],
+    mutation: tuple[str, ...],
+    refusal: str,
+) -> None:
+    spans = function_spans(tokens)
+    start, end, guard_at = unique_sequence_in_route(tokens, spans, route, guard)
+    _, _, mutation_at = unique_sequence_in_route(tokens, spans, route, mutation)
+    if guard_at >= mutation_at:
+        raise CheckError(f"{route}: capacity guard does not precede mutation")
+    guard_if = next(
+        (index for index in range(guard_at, start - 1, -1) if tokens[index].text == "if"),
+        None,
+    )
+    opening = next(
+        (index for index in range(guard_at, mutation_at) if tokens[index].text == "{"),
+        None,
+    )
+    if guard_if is None or opening is None:
+        raise CheckError(f"{route}: capacity guard refusal is not an if block")
+    closing = matching_delimiter(tokens, opening)
+    if closing >= mutation_at or closing > end:
+        raise CheckError(f"{route}: capacity guard does not dominate mutation")
+    refusal_body = tokens[opening + 1:closing]
+    if not any(token.text == "return" for token in refusal_body) or not any(
+        token.text == refusal for token in refusal_body
+    ):
+        raise CheckError(f"{route}: capacity refusal is not fail closed")
+
+
+def validate_group_capacity_guards(tokens: tuple[RustToken, ...]) -> None:
+    arena_capacity = ("self", ".", "arena", ".", "capacity", "(", ")")
+    require_dominating_refusal(
+        tokens,
+        "BoundedGroupOwner::admit_cells",
+        arena_capacity,
+        ("append_key", "(", "&", "mut", "self", ".", "arena", ",", "cells", ")"),
+        "StateBoundExceeded",
+    )
+    require_dominating_refusal(
+        tokens,
+        "BoundedGroupOwner::admit_encoded",
+        arena_capacity,
+        ("self", ".", "arena", ".", "extend_from_slice", "(", "key", ")"),
+        "StateBoundExceeded",
+    )
+    entry_insert = ("self", ".", "entries", ".", "insert", "(")
+    require_dominating_refusal(
+        tokens,
+        "BoundedGroupOwner::commit_appended",
+        (
+            "self", ".", "entries", ".", "len", "(", ")", ">=", "usize",
+            "::", "from", "(", "self", ".", "bounds", ".", "maximum_groups", ")",
+        ),
+        entry_insert,
+        "GroupBoundExceeded",
+    )
+    require_dominating_refusal(
+        tokens,
+        "BoundedGroupOwner::commit_appended",
+        ("end", ">", "self", ".", "retained_key_capacity"),
+        entry_insert,
+        "StateBoundExceeded",
+    )
+
+
+def validate_group_mutation_routes(tokens: tuple[RustToken, ...]) -> None:
+    spans = function_spans(tokens)
+    method_routes = tuple(
+        (route_at(spans, index), tokens[index + 1].text)
+        for index in range(len(tokens) - 1)
+        if tokens[index].text == "."
+        and tokens[index + 1].text in ("extend_from_slice", "insert")
+    )
+    expected_methods = (
+        ("BoundedGroupOwner::admit_encoded", "extend_from_slice"),
+        ("BoundedGroupOwner::commit_appended", "insert"),
+        ("append_key", "extend_from_slice"),
+        ("append_key", "extend_from_slice"),
+    )
+    if method_routes != expected_methods:
+        raise CheckError("group extend/insert routes changed")
+    unique_sequence_in_route(
+        tokens,
+        spans,
+        "append_key",
+        (
+            "arena", ".", "extend_from_slice", "(", "&", "value_len", ".",
+            "to_be_bytes", "(", ")", ")",
+        ),
+    )
+    unique_sequence_in_route(
+        tokens,
+        spans,
+        "append_key",
+        ("arena", ".", "extend_from_slice", "(", "&", "NO_VALUE_BYTES", ")"),
+    )
+
+    helper_routes = tuple(
+        (route_at(spans, index), token.text)
+        for index, token in enumerate(tokens[:-1])
+        if token.text in ("canonical_value_encoded_len", "encode_canonical_value_into")
+        and tokens[index + 1].text == "("
+        and (index == 0 or tokens[index - 1].text != "fn")
+    )
+    expected_helpers = (
+        ("encoded_key_len", "canonical_value_encoded_len"),
+        ("append_key", "canonical_value_encoded_len"),
+        ("append_key", "encode_canonical_value_into"),
+    )
+    if helper_routes != expected_helpers:
+        raise CheckError("group canonical helper routes changed")
+
+
+def has_attribute(tokens: tuple[RustToken, ...], item_name: str, attribute: str) -> bool:
+    item = next((index for index in range(len(tokens) - 1) if tokens[index + 1].text == item_name), None)
+    if item is None:
+        return False
+    start = item
+    while start and tokens[start - 1].text not in (";", "}", "{"):
+        start -= 1
+    return contains_sequence(tokens[start:item + 1], ("#", "[", attribute))
+
+
+def function_header(tokens: tuple[RustToken, ...], name: str) -> tuple[str, ...] | None:
+    for index in range(len(tokens) - 1):
+        if tokens[index].text != "fn" or tokens[index + 1].text != name:
+            continue
+        end = next(
+            (position for position in range(index + 2, len(tokens)) if tokens[position].text in ("{", ";")),
+            None,
+        )
+        if end is not None:
+            return texts(tokens[index:end])
+    return None
+
+
+def function_has_cfg_test(tokens: tuple[RustToken, ...], name: str) -> bool:
+    for index in range(len(tokens) - 1):
+        if tokens[index].text == "fn" and tokens[index + 1].text == name:
+            return contains_sequence(
+                tokens[max(0, index - 16):index],
+                ("#", "[", "cfg", "(", "test", ")", "]"),
+            )
+    return False
+
+
+def bounded_collect(
+    entries: Iterable[tuple[str, bytes]],
+    *,
+    max_files: int = MAX_FILES,
+    per_file: int = MAX_SOURCE_BYTES,
+    total_limit: int = MAX_TOTAL_SOURCE_BYTES,
+) -> dict[str, str]:
+    result: dict[str, str] = {}
+    total = 0
+    for index, (name, data) in enumerate(entries):
+        if index >= max_files:
+            raise CheckError(f"source file count exceeds {max_files}")
+        if len(data) > per_file:
+            raise CheckError(f"{name}: source exceeds {per_file} byte bound")
+        total += len(data)
+        if total > total_limit:
+            raise CheckError(f"source bytes exceed {total_limit} aggregate bound")
+        result[name] = data.decode("utf-8")
+    return result
+
+
+def path_entries(
+    root: Path,
+    start: Path,
+    *,
+    max_directories: int = MAX_DIRECTORIES,
+    max_directory_entries: int = MAX_DIRECTORY_ENTRIES,
+    max_traversal_entries: int = MAX_TRAVERSAL_ENTRIES,
+    max_path_bytes: int = MAX_PATH_BYTES,
+    max_path_depth: int = MAX_PATH_DEPTH,
+    max_files: int = MAX_FILES,
+    max_source_bytes: int = MAX_SOURCE_BYTES,
+    production_only: bool = False,
+) -> Iterator[tuple[str, bytes]]:
+    pending = [root / start]
+    rust_files: list[Path] = []
+    directories = 0
+    traversal_entries = 0
+    while pending:
+        directory = pending.pop()
+        if directory.is_symlink() or not directory.is_dir():
+            raise CheckError(f"{directory.relative_to(root)}: source root is not a real directory")
+        directories += 1
+        if directories > max_directories:
+            raise CheckError(f"directory count exceeds {max_directories}")
+        relative_directory = directory.relative_to(root)
+        if len(relative_directory.parts) > max_path_depth:
+            raise CheckError(f"path depth exceeds {max_path_depth}")
+        with os.scandir(directory) as scanned:
+            entries = []
+            for entry in scanned:
+                if len(entries) >= max_directory_entries:
+                    raise CheckError(
+                        f"{relative_directory}: directory entries exceed {max_directory_entries}"
+                    )
+                entries.append(entry)
+        child_directories: list[Path] = []
+        for entry in sorted(entries, key=lambda item: os.fsencode(item.name)):
+            traversal_entries += 1
+            if traversal_entries > max_traversal_entries:
+                raise CheckError(f"traversal entries exceed {max_traversal_entries}")
+            path = Path(entry.path)
+            relative = path.relative_to(root)
+            if len(relative.parts) > max_path_depth:
+                raise CheckError(f"path depth exceeds {max_path_depth}")
+            if len(os.fsencode(str(relative))) > max_path_bytes:
+                raise CheckError(f"source path exceeds {max_path_bytes} bytes")
+            if entry.is_symlink():
+                raise CheckError(f"{relative}: symlinked source entry is forbidden")
+            if entry.is_dir(follow_symlinks=False):
+                if production_only and len(relative.parts) == 3 and relative.parts[2] != "src":
+                    continue
+                child_directories.append(path)
+                continue
+            if not entry.is_file(follow_symlinks=False) or not entry.name.endswith(".rs"):
+                continue
+            if production_only and (len(relative.parts) < 4 or relative.parts[2] != "src"):
+                continue
+            rust_files.append(path)
+            if len(rust_files) > max_files:
+                raise CheckError(f"source file count exceeds {max_files}")
+        pending.extend(reversed(child_directories))
+    for path in sorted(rust_files, key=lambda item: os.fsencode(str(item.relative_to(root)))):
+        relative = path.relative_to(root)
+        with path.open("rb") as handle:
+            data = handle.read(max_source_bytes + 1)
+        if len(data) > max_source_bytes:
+            raise CheckError(f"{relative}: source exceeds {max_source_bytes} byte bound")
+        yield str(relative), data
+
+
+def read_batch_sources(root: Path) -> dict[str, str]:
+    return bounded_collect(path_entries(root, BATCH_ROOT))
+
+
+def read_production_sources(root: Path) -> dict[str, str]:
+    return bounded_collect(path_entries(root, Path("crates"), production_only=True))
+
+
+def evaluate(batch: dict[str, str], consumers: dict[str, str]) -> list[str]:
+    failures = Failures()
+    expected_paths = {str(path) for path in EXPECTED_BATCH_FILES}
+    actual_paths = set(batch)
+    for path in sorted(expected_paths - actual_paths):
+        failures.add("module-inventory", f"missing {path}")
+    for path in sorted(actual_paths - expected_paths):
+        failures.add("module-inventory", f"unreviewed batch source {path}")
+
+    production: dict[str, str] = {}
+    tokenized_production: dict[str, tuple[RustToken, ...]] = {}
+    for path in sorted(actual_paths & expected_paths):
+        try:
+            tokenized_production[path], production[path], actual_hash = production_forms(batch[path])
+        except CheckError as error:
+            failures.add("test-boundary", f"{path}: {error}")
+            continue
+        expected_hash = EXPECTED_PRODUCTION_HASHES[path]
+        if actual_hash != expected_hash:
+            failures.add("production-hash", f"{path}: expected {expected_hash}, got {actual_hash}")
+
+        sites = structural_sites(tokenized_production[path])
+        expected_sites = EXPECTED_STRUCTURAL_SITES[path]
+        if sites[0] != expected_sites[0]:
+            failures.add("unreviewed-allocation", f"{path}: allocation routes changed")
+        if sites[1:] != expected_sites[1:]:
+            failures.add("unreviewed-arithmetic", f"{path}: checked/raw arithmetic routes changed")
+        actual_fields = named_struct_fields(tokenized_production[path])
+        for name, expected_fields in EXPECTED_STRUCT_FIELDS.get(path, {}).items():
+            if actual_fields.get(name) != expected_fields:
+                failures.add("struct-layout", f"{path}: {name} fields changed")
+        for code, pattern in FORBIDDEN_PRODUCTION.items():
+            if pattern.search(production[path]):
+                failures.add(code, f"{path}: forbidden production vocabulary")
+
+        # No batch item may escape farther than the reviewed crate/super boundary.
+        tokens = tokenized_production[path]
+        for index, token in enumerate(tokens):
+            if token.text != "pub":
+                continue
+            if index + 1 >= len(tokens) or tokens[index + 1].text != "(":
+                failures.add("public-surface", f"{path}: unrestricted pub item")
+                continue
+            closing = matching_delimiter(tokens, index + 1)
+            if texts(tokens[index + 2:closing]) not in (("crate",), ("super",)):
+                failures.add("public-surface", f"{path}: unreviewed visibility")
+
+    module_path = str(BATCH_ROOT / "mod.rs")
+    try:
+        validate_integer_lane_kind(tokenized_production.get(module_path, ()))
+    except CheckError as error:
+        failures.add("integer-lane-kind", f"{module_path}: {error}")
+    declarations = top_level_module_declarations(tokenized_production.get(module_path, ()))
+    expected_declarations = (
+        ("aggregate", False),
+        ("group", False),
+        ("program", False),
+        ("top_n", False),
+    )
+    if declarations != expected_declarations:
+        failures.add(
+            "module-order",
+            f"batch modules are {declarations!r}, expected {expected_declarations!r}",
+        )
+    top_n_path = str(BATCH_ROOT / "top_n.rs")
+    top_n_tokens = tokenized_production.get(top_n_path, ())
+    top_n_fields = named_struct_fields(top_n_tokens)
+    if set(top_n_fields) != set(EXPECTED_STRUCT_FIELDS[top_n_path]):
+        failures.add("owned-row", f"{top_n_path}: Top-N struct inventory changed")
+
+    group_path = str(BATCH_ROOT / "group.rs")
+    group_tokens = tokenized_production.get(group_path, ())
+    group_fields = named_struct_fields(group_tokens)
+    if set(group_fields) != set(EXPECTED_STRUCT_FIELDS[group_path]):
+        failures.add("group-owner", f"{group_path}: group struct inventory changed")
+    try:
+        validate_group_capacity_guards(group_tokens)
+    except CheckError as error:
+        failures.add("group-capacity-guard", f"{group_path}: {error}")
+    try:
+        validate_group_mutation_routes(group_tokens)
+    except CheckError as error:
+        failures.add("group-mutation-route", f"{group_path}: {error}")
+
+    aggregate_path = str(BATCH_ROOT / "aggregate.rs")
+    aggregate_tokens = tokenized_production.get(aggregate_path, ())
+    merge_header = function_header(aggregate_tokens, "merge_leaf")
+    finish_header = function_header(aggregate_tokens, "finish")
+    if merge_header is None or not contains_sequence(
+        tuple(RustToken("", item, 0, 0, item) for item in merge_header),
+        ("fn", "merge_leaf", "(", "&", "mut", "self", ",", "leaf", ":", "FinalizedAggregateLeaf"),
+    ):
+        failures.add("aggregate-provenance", f"{aggregate_path}: leaf merge is not consuming")
+    if finish_header is None or finish_header[:4] != ("fn", "finish", "(", "self"):
+        failures.add("aggregate-provenance", f"{aggregate_path}: finish is not consuming")
+    if contains_sequence(aggregate_tokens, ("Clone", "for", "FinalizedAggregateLeaf")) or has_attribute(
+        aggregate_tokens, "FinalizedAggregateLeaf", "derive"
+    ) and "Clone" in texts(aggregate_tokens):
+        failures.add("aggregate-provenance", f"{aggregate_path}: leaf provenance is cloneable")
+    for getter in ("value", "consumed_leaves"):
+        if function_header(aggregate_tokens, getter) is None or not function_has_cfg_test(
+            aggregate_tokens, getter
+        ):
+            failures.add("test-observer", f"{aggregate_path}: {getter} is not cfg(test)-only")
+
+    batch_paths = set(batch)
+    target_budget = CodeTargetBudget()
+    for path, source in consumers.items():
+        if path in batch_paths:
+            continue
+        # This lexical prefilter is complete: every admitted Rust route names
+        # `batch`, the path attribute, an include macro, or the crate root.
+        if TOKEN_REFERENCE_CANDIDATE.search(source) is None:
+            continue
+        try:
+            code = consumer_production_part(source)
+            tokens = rust_tokens(code)
+        except CheckError as error:
+            failures.add("consumer-parse", f"{path}: {error}")
+            continue
+        if path == "crates/riffdb-columnar/src/lib.rs":
+            batch_modules = [item for item in top_level_module_declarations(tokens) if item[0] == "batch"]
+            if batch_modules != [("batch", False)]:
+                failures.add("batch-root", "columnar lib must declare exactly one private batch module")
+            if references_batch_path(Path.cwd(), path, tokens, budget=target_budget):
+                failures.add("production-consumer", f"{path}: path-loads batch mechanics")
+            batch_ref_count = sum(1 for index, item in enumerate(tokens) if item.text == "batch" and (
+                (index and tokens[index - 1].text == "::") or
+                (index + 1 < len(tokens) and tokens[index + 1].text == "::")
+            ))
+            if batch_ref_count:
+                failures.add("production-consumer", f"{path}: consumes batch mechanics before selection")
+            continue
+        try:
+            path_reference = references_batch_path(Path.cwd(), path, tokens, budget=target_budget)
+            token_reference = token_path_references_batch(path, tokens)
+        except CheckError as error:
+            failures.add("consumer-parse", f"{path}: {error}")
+            continue
+        if not path_reference and not token_reference:
+            continue
+        if path.startswith("crates/riffdb-columnar/src/"):
+            failures.add("production-consumer", f"{path}: consumes batch mechanics before selection")
+        else:
+            failures.add("public-surface", f"{path}: references private batch module")
+
+    return failures.rendered()
+
+
+def insert_before_tests(source: str, addition: str) -> str:
+    production = production_part(source)
+    return production + "\n" + addition + "\n" + source[len(production) :]
+
+
+def require_failure(
+    expected: str,
+    batch: dict[str, str],
+    consumers: dict[str, str],
+    label: str,
+) -> None:
+    codes = {failure.split(":", 1)[0] for failure in evaluate(batch, consumers)}
+    if expected not in codes:
+        raise CheckError(f"negative self-test {label} missed {expected}; got {sorted(codes)}")
+
+
+def self_test(root: Path) -> None:
+    batch = read_batch_sources(root)
+    consumers = read_production_sources(root)
+    baseline = evaluate(batch, consumers)
+    if baseline:
+        raise CheckError("self-test baseline failed: " + "; ".join(baseline))
+    # Batch mutations do not need to rescan the already-green consumer corpus.
+    no_consumers: dict[str, str] = {}
+
+    target = "crates/riffdb-columnar/src/batch/program.rs"
+    cases = [
+        ("comment-marker", "// #[cfg(test)]\nstruct HiddenSuffix;", "production-hash"),
+        ("string-marker", 'const MARKER: &str = "#[cfg(test)]"; struct HiddenSuffix;', "production-hash"),
+        ("caller-settings", "struct Settings { width: usize }", "caller-control"),
+        ("caller-request", "struct BatchRequest { width: usize }", "caller-control"),
+        ("wire-encode", "struct WireEncode;", "serialization"),
+        ("codec", "mod codec {}", "serialization"),
+        ("serde", "#[derive(serde::Serialize)] struct Encoded;", "serialization"),
+        ("system-time", "fn clock(_: std::time::SystemTime) {}", "forbidden-authority"),
+        ("os", "fn os() { std::process::id(); }", "forbidden-authority"),
+        ("worker", "struct ScanWorker;", "forbidden-authority"),
+        ("publication", "struct Publication;", "forbidden-authority"),
+        ("scalar", "fn execute_scalar() {}", "scalar-fallback"),
+        ("v1", "fn execute_v1() {}", "v1-fallback"),
+        ("vec-from", "fn grow() { let _ = Vec::from([1]); }", "unreviewed-allocation"),
+        ("allocator", "fn grow() { let _ = Vec::with_capacity(1); }", "unreviewed-allocation"),
+        ("raw-multiply", "fn unchecked(a: usize, b: usize) -> usize { a * b }", "unreviewed-arithmetic"),
+    ]
+    for label, addition, expected in cases:
+        changed = dict(batch)
+        changed[target] = insert_before_tests(changed[target], addition)
+        require_failure(expected, changed, no_consumers, label)
+    compound = dict(batch)
+    compound["crates/riffdb-columnar/src/batch/mod.rs"] = compound[
+        "crates/riffdb-columnar/src/batch/mod.rs"
+    ].replace("self.selected += usize::from(*retained);", "self.selected -= usize::from(*retained);", 1)
+    require_failure("unreviewed-arithmetic", compound, no_consumers, "compound-assignment-route")
+    extra_compound = dict(batch)
+    extra_compound[target] = insert_before_tests(
+        extra_compound[target], "fn unchecked_compound(mut value: usize) { value += 1; }"
+    )
+    require_failure("unreviewed-arithmetic", extra_compound, no_consumers, "extra-compound-assignment")
+
+    integer_kernel = "crates/riffdb-columnar/src/batch/mod.rs"
+    for label, old, new, expected in (
+        (
+            "integer-lane-field-removed",
+            "    lane_kind: IntegerLaneKind,\n",
+            "",
+            "struct-layout",
+        ),
+        (
+            "integer-lane-fields-reordered",
+            "    lane: usize,\n    lane_kind: IntegerLaneKind,\n",
+            "    lane_kind: IntegerLaneKind,\n    lane: usize,\n",
+            "struct-layout",
+        ),
+        (
+            "integer-lane-field-retyped",
+            "    lane_kind: IntegerLaneKind,",
+            "    lane_kind: bool,",
+            "struct-layout",
+        ),
+        (
+            "integer-lane-field-visible",
+            "    lane_kind: IntegerLaneKind,",
+            "    pub(crate) lane_kind: IntegerLaneKind,",
+            "integer-lane-kind",
+        ),
+        (
+            "integer-lane-enum-missing",
+            "    I64,\n    U64,",
+            "    I64,",
+            "integer-lane-kind",
+        ),
+        (
+            "integer-lane-enum-extra",
+            "    I64,\n    U64,",
+            "    I64,\n    U64,\n    Other,",
+            "integer-lane-kind",
+        ),
+        (
+            "integer-lane-enum-payload",
+            "    I64,",
+            "    I64(i64),",
+            "integer-lane-kind",
+        ),
+        (
+            "integer-lane-enum-public",
+            "enum IntegerLaneKind {",
+            "pub enum IntegerLaneKind {",
+            "integer-lane-kind",
+        ),
+        (
+            "integer-lane-enum-cfg",
+            "#[derive(Clone, Copy)]\nenum IntegerLaneKind {",
+            "#[cfg(any())]\n#[derive(Clone, Copy)]\nenum IntegerLaneKind {",
+            "integer-lane-kind",
+        ),
+        (
+            "integer-lane-enum-duplicate",
+            "enum IntegerLaneKind {\n    I64,\n    U64,\n}",
+            "enum IntegerLaneKind {\n    I64,\n    U64,\n}\nenum IntegerLaneKind {\n    I64,\n    U64,\n}",
+            "integer-lane-kind",
+        ),
+        (
+            "integer-kernel-public",
+            "pub(crate) struct ColumnarPredicateKernel {",
+            "pub struct ColumnarPredicateKernel {",
+            "integer-lane-kind",
+        ),
+        (
+            "caller-supplied-lane-kind",
+            "        lane: usize,\n        lane_types: &[SegmentV2LogicalType],",
+            "        lane: usize,\n        lane_kind: IntegerLaneKind,\n        lane_types: &[SegmentV2LogicalType],",
+            "integer-lane-kind",
+        ),
+        (
+            "integer-lane-binding-swapped",
+            "SegmentV2LogicalType::I64 => IntegerLaneKind::I64,",
+            "SegmentV2LogicalType::I64 => IntegerLaneKind::U64,",
+            "integer-lane-kind",
+        ),
+        (
+            "integer-rhs-kind-broadened",
+            "(IntegerLaneKind::I64, riffdb_types::CanonicalValue::I64(_))",
+            "(IntegerLaneKind::I64, riffdb_types::CanonicalValue::I64(_))\n                        | (IntegerLaneKind::I64, riffdb_types::CanonicalValue::U64(_))",
+            "integer-lane-kind",
+        ),
+        (
+            "integer-dispatch-from-cell",
+            "match (lane_kind, cell) {",
+            "match (IntegerLaneKind::U64, cell) {",
+            "integer-lane-kind",
+        ),
+        (
+            "integer-dispatch-argument-removed",
+            "predicate_matches(self.lane_kind, &self.predicate, &lane[index])?",
+            "predicate_matches(&self.predicate, &lane[index])?",
+            "integer-lane-kind",
+        ),
+        (
+            "integer-dispatch-argument-substituted",
+            "predicate_matches(self.lane_kind, &self.predicate, &lane[index])?",
+            "predicate_matches(IntegerLaneKind::U64, &self.predicate, &lane[index])?",
+            "integer-lane-kind",
+        ),
+        (
+            "integer-dispatch-dead-decoy",
+            "            if predicate_matches(self.lane_kind, &self.predicate, &lane[index])? {",
+            "            if false { let _ = predicate_matches(self.lane_kind, &self.predicate, &lane[index]); }\n            if predicate_matches(IntegerLaneKind::U64, &self.predicate, &lane[index])? {",
+            "integer-lane-kind",
+        ),
+    ):
+        changed = dict(batch)
+        if old not in changed[integer_kernel]:
+            raise CheckError(f"negative self-test {label} fixture no longer matches")
+        changed[integer_kernel] = changed[integer_kernel].replace(old, new, 1)
+        require_failure(expected, changed, no_consumers, label)
+    nested_enum_decoy = dict(batch)
+    nested_enum_decoy[integer_kernel] = nested_enum_decoy[integer_kernel].replace(
+        "#[derive(Clone, Copy)]\nenum IntegerLaneKind {\n    I64,\n    U64,\n}",
+        "const _: () = { enum IntegerLaneKind { I64, U64 } };\n"
+        "#[derive(Clone, Copy)]\nenum IntegerLaneKind {\n    I64,\n    U64,\n    Other,\n}",
+        1,
+    )
+    require_failure(
+        "integer-lane-kind", nested_enum_decoy, no_consumers, "nested-exact-enum-decoy"
+    )
+    nested_kernel_decoy = dict(batch)
+    nested_kernel_decoy[integer_kernel] = nested_kernel_decoy[integer_kernel].replace(
+        "pub(crate) struct ColumnarPredicateKernel {\n    lane: usize,\n    lane_kind: IntegerLaneKind,\n    predicate: SegmentV2Predicate,\n}",
+        "const _: () = { struct ColumnarPredicateKernel { lane: usize, lane_kind: IntegerLaneKind, predicate: SegmentV2Predicate } };\n"
+        "pub(crate) struct ColumnarPredicateKernel {\n    lane: usize,\n    predicate: SegmentV2Predicate,\n}",
+        1,
+    )
+    require_failure(
+        "integer-lane-kind", nested_kernel_decoy, no_consumers, "nested-exact-kernel-decoy"
+    )
+    nested_predicate_decoy = dict(batch)
+    nested_predicate_decoy[integer_kernel] = nested_predicate_decoy[integer_kernel].replace(
+        "fn predicate_matches(\n    lane_kind: IntegerLaneKind,",
+        "const _: () = {\n"
+        "fn predicate_matches(lane_kind: IntegerLaneKind, predicate: &SegmentV2Predicate, cell: &SegmentV2Cell) {\n"
+        "match (lane_kind, cell) {\n"
+        "(IntegerLaneKind::I64, SegmentV2Cell::Value(riffdb_types::CanonicalValue::I64(left))) => loop {},\n"
+        "(IntegerLaneKind::U64, SegmentV2Cell::Value(riffdb_types::CanonicalValue::U64(left))) => loop {},\n"
+        "_ => loop {},\n"
+        "}\n"
+        "}\n"
+        "};\n"
+        "fn predicate_matches(\n    _lane_kind: IntegerLaneKind,",
+        1,
+    )
+    require_failure(
+        "integer-lane-kind",
+        nested_predicate_decoy,
+        no_consumers,
+        "nested-exact-predicate-decoy",
+    )
+
+    literal = dict(batch)
+    literal[target] = literal[target].replace(
+        '"aggregate-state maximum fits usize"',
+        '"changed aggregate-state meaning"',
+        1,
+    )
+    require_failure("production-hash", literal, no_consumers, "literal-semantics")
+
+    aliased_allocation = dict(batch)
+    aliased_allocation[target] = insert_before_tests(
+        aliased_allocation[target],
+        "use std::vec::Vec as Buffer; fn hidden_alloc() { let _ = Buffer::from([1]); }",
+    )
+    require_failure(
+        "unreviewed-allocation", aliased_allocation, no_consumers, "aliased-allocation"
+    )
+
+    top_n = "crates/riffdb-columnar/src/batch/top_n.rs"
+    for label, addition in [
+        ("owned-primary-key", "struct Owned {\n key: PrimaryKeyBytes,\n}"),
+        ("owned-primary-key-vec", "struct Owned {\n keys: Vec<PrimaryKeyBytes>,\n}"),
+        ("owned-bytes", "struct Owned {\n bytes: Vec<u8>,\n}"),
+        ("owned-nested-bytes", "struct Owned {\n bytes: Vec<Vec<u8>>,\n}"),
+        ("owned-bytes-crate", "struct Owned {\n bytes: bytes::Bytes,\n}"),
+        ("owned-string", "struct Owned {\n text: String,\n}"),
+        ("owned-value", "struct Owned {\n value: CanonicalValue,\n}"),
+    ]:
+        changed = dict(batch)
+        changed[top_n] = insert_before_tests(changed[top_n], addition)
+        require_failure("owned-row", changed, no_consumers, label)
+    changed = dict(batch)
+    changed[top_n] = changed[top_n].replace("try_reserve_exact(capacity)", "reserve(capacity)", 1)
+    require_failure("unreviewed-allocation", changed, no_consumers, "reservation-variant")
+
+    visible = dict(batch)
+    visible[str(BATCH_ROOT / "mod.rs")] = visible[str(BATCH_ROOT / "mod.rs")].replace(
+        "pub(crate) enum ColumnarBatchBoundError", "pub enum ColumnarBatchBoundError", 1
+    )
+    require_failure("production-hash", visible, no_consumers, "public-visibility")
+
+    aggregate = "crates/riffdb-columnar/src/batch/aggregate.rs"
+    for label, old, new in [
+        (
+            "qualified-clone",
+            "pub(super) struct FinalizedAggregateLeaf {",
+            "#[derive(core::clone::Clone)]\npub(super) struct FinalizedAggregateLeaf {",
+        ),
+        (
+            "non-consuming-provenance-with-decoy",
+            "leaf: FinalizedAggregateLeaf,",
+            "leaf: &FinalizedAggregateLeaf,\n    _decoy: Option<FinalizedAggregateLeaf>,",
+        ),
+    ]:
+        changed = dict(batch)
+        changed[aggregate] = changed[aggregate].replace(old, new, 1)
+        require_failure("production-hash", changed, no_consumers, label)
+    changed = dict(batch)
+    changed[aggregate] = insert_before_tests(
+        changed[aggregate],
+        "impl core::clone::Clone for FinalizedAggregateLeaf { fn clone(&self) -> Self { loop {} } }",
+    )
+    require_failure("production-hash", changed, no_consumers, "manual-clone")
+
+    exposed_observer = dict(batch)
+    exposed_observer[aggregate] = exposed_observer[aggregate].replace(
+        "    #[cfg(test)]\n    const fn value",
+        "    const fn value",
+        1,
+    )
+    require_failure("test-observer", exposed_observer, no_consumers, "observer-without-cfg")
+    fake_observer_attribute = dict(batch)
+    fake_observer_attribute[aggregate] = fake_observer_attribute[aggregate].replace(
+        "    #[cfg(test)]\n    const fn value",
+        '    const _: &str = "#[cfg(test)]";\n    const fn value',
+        1,
+    )
+    require_failure("test-observer", fake_observer_attribute, no_consumers, "observer-string-cfg")
+
+    group = "crates/riffdb-columnar/src/batch/group.rs"
+    group_literal = dict(batch)
+    group_literal[group] = group_literal[group].replace(
+        "const NO_VALUE_BYTES: [u8; 2] = [1, 0];",
+        "const NO_VALUE_BYTES: [u8; 2] = [0, 1];",
+        1,
+    )
+    require_failure("production-hash", group_literal, no_consumers, "group-literal-semantics")
+
+    group_layout = dict(batch)
+    group_layout[group] = group_layout[group].replace(
+        "    poisoned: bool,\n}",
+        "    poisoned: bool,\n    unreviewed_owner_word: usize,\n}",
+        1,
+    )
+    require_failure("struct-layout", group_layout, no_consumers, "group-owner-layout")
+    extra_group_owner = dict(batch)
+    extra_group_owner[group] = insert_before_tests(
+        extra_group_owner[group], "struct UnreviewedGroupOwner { row: CanonicalValue }"
+    )
+    require_failure("group-owner", extra_group_owner, no_consumers, "extra-group-owner")
+
+    for label, addition in (
+        ("group-box", "fn bypass() { let _ = Box::new(1); }"),
+        ("group-vec-macro", "fn bypass() { let _ = vec![1]; }"),
+        (
+            "group-allocation-alias",
+            "use std::vec::Vec as Buffer; fn bypass() { let _ = Buffer::from([1]); }",
+        ),
+        (
+            "group-commented-allocation",
+            "fn bypass() { let _ = Vec/* comments do not hide paths */::new(); }",
+        ),
+        (
+            "group-from-iterator",
+            "fn bypass<I: IntoIterator>(items: I) { let _ = FromIterator::from_iter(items); }",
+        ),
+    ):
+        changed = dict(batch)
+        changed[group] = insert_before_tests(changed[group], addition)
+        require_failure("unreviewed-allocation", changed, no_consumers, label)
+
+    group_reserve = dict(batch)
+    group_reserve[group] = group_reserve[group].replace("try_reserve_exact", "reserve", 1)
+    require_failure("unreviewed-allocation", group_reserve, no_consumers, "group-reserve")
+    group_helper = dict(batch)
+    group_helper[group] = group_helper[group].replace(
+        "canonical_value_encoded_len(value)", "unreviewed_length_helper(value)", 1
+    )
+    require_failure("group-mutation-route", group_helper, no_consumers, "group-helper-route")
+    group_append_route = dict(batch)
+    group_append_route[group] = group_append_route[group].replace(
+        "arena.extend_from_slice(&value_len.to_be_bytes());",
+        "cells.extend_from_slice(&value_len.to_be_bytes());",
+        1,
+    )
+    require_failure(
+        "group-mutation-route", group_append_route, no_consumers, "group-append-route-swap"
+    )
+    group_extend_route = dict(batch)
+    group_extend_route[group] = group_extend_route[group].replace(
+        "self.arena.extend_from_slice(key);",
+        "self.entries.extend_from_slice(key);",
+        1,
+    )
+    require_failure(
+        "group-capacity-guard", group_extend_route, no_consumers, "group-extend-route-swap"
+    )
+    group_insert_route = dict(batch)
+    group_insert_route[group] = group_insert_route[group].replace(
+        "self.entries.insert(", "self.arena.insert(", 1
+    )
+    require_failure(
+        "group-capacity-guard", group_insert_route, no_consumers, "group-insert-route-swap"
+    )
+
+    for label, old in (
+        (
+            "group-cell-arena-capacity-guard",
+            "if start\n            .checked_add(key_len)\n            .is_none_or(|end| end > self.arena.capacity())",
+        ),
+        (
+            "group-arena-capacity-guard",
+            "if start\n            .checked_add(key.len())\n            .is_none_or(|end| end > self.arena.capacity())",
+        ),
+        (
+            "group-cardinality-guard",
+            "if self.entries.len() >= usize::from(self.bounds.maximum_groups)",
+        ),
+        ("group-state-capacity-guard", "if end > self.retained_key_capacity"),
+    ):
+        changed = dict(batch)
+        changed[group] = changed[group].replace(old, "if false", 1)
+        require_failure("group-capacity-guard", changed, no_consumers, label)
+
+    group_checked = dict(batch)
+    group_checked[group] = group_checked[group].replace(".checked_sub(work)", " - work", 1)
+    require_failure("unreviewed-arithmetic", group_checked, no_consumers, "group-checked-route")
+    group_raw = dict(batch)
+    group_raw[group] = group_raw[group].replace(
+        "self.remaining -= actual_work;", "self.remaining = actual_work;", 1
+    )
+    require_failure("unreviewed-arithmetic", group_raw, no_consumers, "group-raw-route")
+
+    group_suffix = dict(batch)
+    group_suffix[group] += "\nfn production_after_group_tests() { Vec::new(); }\n"
+    require_failure("test-boundary", group_suffix, no_consumers, "group-production-suffix")
+    group_raw_decoy = dict(batch)
+    group_raw_decoy[group] = insert_before_tests(
+        group_raw_decoy[group],
+        'const GROUP_RAW_DECOY: &str = r###"Vec::new(); #[cfg(test)] mod tests {}"###;',
+    )
+    require_failure("production-hash", group_raw_decoy, no_consumers, "group-raw-decoy")
+
+    group_visible_item = dict(batch)
+    group_visible_item[group] = group_visible_item[group].replace(
+        "pub(super) struct CanonicalGroups", "pub struct CanonicalGroups", 1
+    )
+    require_failure("public-surface", group_visible_item, no_consumers, "group-public-item")
+
+    module = str(BATCH_ROOT / "mod.rs")
+    missing = dict(batch)
+    missing[module] = missing[module].replace("mod aggregate;", "", 1)
+    require_failure("module-order", missing, no_consumers, "missing-module")
+    reordered = dict(batch)
+    reordered[module] = reordered[module].replace(
+        "mod aggregate;\nmod group;", "mod group;\nmod aggregate;", 1
+    )
+    require_failure("module-order", reordered, no_consumers, "reordered-module")
+    missing_group = dict(batch)
+    missing_group[module] = missing_group[module].replace("mod group;", "", 1)
+    require_failure("module-order", missing_group, no_consumers, "missing-group-module")
+    visible_group = dict(batch)
+    visible_group[module] = visible_group[module].replace("mod group;", "pub(super) mod group;", 1)
+    require_failure("module-order", visible_group, no_consumers, "visible-group-module")
+
+    suffix = dict(batch)
+    suffix[target] += "\nstruct ProductionAfterTests;\n"
+    require_failure("test-boundary", suffix, no_consumers, "production-suffix")
+    extra = dict(batch)
+    extra[str(BATCH_ROOT / "hidden.rs")] = "#[cfg(test)] mod tests {}"
+    require_failure("module-inventory", extra, no_consumers, "unlisted-module")
+    missing_group_file = dict(batch)
+    missing_group_file.pop(group)
+    require_failure("module-inventory", missing_group_file, no_consumers, "missing-group-file")
+    exposed = {
+        "crates/riffdb-columnar/src/query.rs": "use crate::batch::ColumnarBatchWidth;"
+    }
+    require_failure("production-consumer", batch, exposed, "unlisted-production-consumer")
+    group_consumer = {
+        "crates/riffdb-columnar/src/query.rs": "use crate::batch::group::CanonicalGroups;"
+    }
+    require_failure("production-consumer", batch, group_consumer, "group-production-consumer")
+    path_alias = {
+        "crates/riffdb-columnar/src/query.rs": '#[path = "batch/mod.rs"] mod vectorized;'
+    }
+    require_failure("production-consumer", batch, path_alias, "path-attribute-consumer")
+    cfg_path_alias = {
+        "crates/riffdb-columnar/src/query.rs":
+            '#[cfg_attr(feature = "vector", path = "batch/mod.rs")] mod vectorized;'
+    }
+    require_failure("production-consumer", batch, cfg_path_alias, "cfg-path-attribute-consumer")
+    raw_path_alias = {
+        "crates/riffdb-columnar/src/query.rs": '#[r#path = "batch/mod.rs"] mod vectorized;'
+    }
+    require_failure("production-consumer", batch, raw_path_alias, "raw-path-attribute-consumer")
+    raw_cfg_path_alias = {
+        "crates/riffdb-columnar/src/query.rs":
+            '#[r#cfg_attr(feature = "vector", r#path = "batch/mod.rs")] mod vectorized;'
+    }
+    require_failure(
+        "production-consumer", batch, raw_cfg_path_alias, "raw-cfg-path-attribute-consumer"
+    )
+    unresolved_path_alias = {
+        "crates/riffdb-columnar/src/query.rs":
+            '#[path = concat!("batch/", "mod.rs")] mod vectorized;'
+    }
+    require_failure("consumer-parse", batch, unresolved_path_alias, "unresolved-path-attribute")
+    unresolved_include = {
+        "crates/riffdb-columnar/src/query.rs":
+            'include!(concat!("batch/", generated_module!()));'
+    }
+    require_failure("consumer-parse", batch, unresolved_include, "unresolved-batch-include")
+    reviewed_dynamic = 'include!(concat!(env!("OUT_DIR"), "/riffdb.v1.rs"));'
+    if references_batch_path(
+        root,
+        "crates/riffdb-proto/src/lib.rs",
+        rust_tokens(reviewed_dynamic),
+    ):
+        raise CheckError("reviewed dynamic include unexpectedly referenced batch")
+    for label, source_path, source in (
+        ("dynamic-include-path", "crates/riffdb-proto/src/other.rs", reviewed_dynamic),
+        ("dynamic-include-target", "crates/riffdb-proto/src/lib.rs", reviewed_dynamic.replace("riffdb.v1", "other")),
+    ):
+        try:
+            references_batch_path(root, source_path, rust_tokens(source))
+            raise CheckError(f"{label} mutation self-test unexpectedly passed")
+        except CheckError as error:
+            if "unreviewed dynamic code include" not in str(error):
+                raise
+    with tempfile.TemporaryDirectory(prefix="riffdb-batch-target-") as temporary:
+        fixture = Path(temporary)
+        owner = fixture / "crates" / "riffdb-columnar" / "src"
+        owner.mkdir(parents=True)
+        hidden = owner / "hidden.inc"
+        hidden.write_text("use crate::r#batch::ColumnarBatchWidth;", encoding="utf-8")
+        for label, source in (
+            ("path-target-content", '#[path = "hidden.inc"] mod hidden;'),
+            (
+                "cfg-path-target-content",
+                '#[cfg_attr(feature = "vector", path = "hidden.inc")] mod hidden;',
+            ),
+            ("raw-path-target-content", '#[r#path = "hidden.inc"] mod hidden;'),
+            (
+                "raw-cfg-path-target-content",
+                '#[r#cfg_attr(feature = "vector", r#path = "hidden.inc")] mod hidden;',
+            ),
+            ("include-parentheses-target-content", 'include!("hidden.inc");'),
+            ("include-braces-target-content", 'include!{"hidden.inc"}'),
+            ("include-brackets-target-content", 'include!["hidden.inc"]'),
+            ("raw-include-target-content", 'r#include!("hidden.inc");'),
+        ):
+            if TOKEN_REFERENCE_CANDIDATE.search(source) is None:
+                raise CheckError(f"{label} self-test was skipped by the lexical prefilter")
+            if not references_batch_path(
+                fixture,
+                "crates/riffdb-columnar/src/lib.rs",
+                rust_tokens(source),
+            ):
+                raise CheckError(f"{label} self-test missed hidden batch consumer")
+        for source in (
+            'include_str!("hidden.inc");',
+            'include_str!{"hidden.inc"}',
+            'include_str!["hidden.inc"]',
+            'r#include_str!("hidden.inc");',
+        ):
+            if references_batch_path(
+                fixture,
+                "crates/riffdb-columnar/src/lib.rs",
+                rust_tokens(source),
+            ):
+                raise CheckError("include_str data was treated as executable Rust")
+        hidden.unlink()
+        hidden.symlink_to(owner / "real.inc")
+        (owner / "real.inc").write_text("use crate::batch::ColumnarBatchWidth;", encoding="utf-8")
+        try:
+            references_batch_path(
+                fixture,
+                "crates/riffdb-columnar/src/lib.rs",
+                rust_tokens('include!("hidden.inc");'),
+            )
+            raise CheckError("symlinked include target self-test unexpectedly passed")
+        except CheckError as error:
+            if "symlinked source-loading target" not in str(error):
+                raise
+    alias_consumer = {
+        "crates/riffdb-columnar/src/query.rs":
+            "use crate as columnar; use columnar::batch as vectorized; fn run() { vectorized::go(); }"
+    }
+    require_failure("production-consumer", batch, alias_consumer, "aliased-consumer")
+    raw_batch_consumer = {
+        "crates/riffdb-columnar/src/query.rs": "use crate::r#batch::ColumnarBatchWidth;"
+    }
+    require_failure("production-consumer", batch, raw_batch_consumer, "raw-batch-consumer")
+    grouped_alias_consumer = {
+        "crates/riffdb-columnar/src/query.rs": "use crate::{batch as vectorized};"
+    }
+    require_failure("production-consumer", batch, grouped_alias_consumer, "grouped-aliased-consumer")
+    for visibility in ("pub", "pub(crate)", "pub(super)", "pub(self)", "pub(in crate)", "pub(in crate::query)"):
+        exposed_root = {"crates/riffdb-columnar/src/lib.rs": f"{visibility} mod batch;"}
+        require_failure("batch-root", batch, exposed_root, f"root-{visibility}-batch")
+
+    valid_literals = rust_tokens('const A: &[u8] = br#"batch"#; const B: &CStr = cr##"batch"##;')
+    if sum(item.kind == "literal" for item in valid_literals) != 2:
+        raise CheckError("valid raw byte/C literal tokenizer self-test failed")
+    for malformed in ('const A: &[u8] = br#oops;', 'const B: &CStr = cr##oops;', 'const C: &CStr = c"oops;'):
+        try:
+            rust_tokens(malformed)
+            raise CheckError("malformed raw byte/C literal self-test unexpectedly passed")
+        except CheckError as error:
+            if "literal" not in str(error):
+                raise
+    if len(tokenize_rust("alpha beta", 2)) != 2:
+        raise CheckError("exact token bound self-test failed")
+    try:
+        tokenize_rust("alpha beta", 1)
+        raise CheckError("token over-bound self-test unexpectedly passed")
+    except CheckError as error:
+        if "token count" not in str(error):
+            raise
+    alias_tokens = rust_tokens("use riffdb_columnar as c; use c::batch::Item;")
+    if not token_path_references_batch("crates/other/src/lib.rs", alias_tokens, max_aliases=2):
+        raise CheckError("exact alias bound self-test failed")
+    try:
+        token_path_references_batch("crates/other/src/lib.rs", alias_tokens, max_aliases=1)
+        raise CheckError("alias over-bound self-test unexpectedly passed")
+    except CheckError as error:
+        if "aliases exceed" not in str(error):
+            raise
+
+    try:
+        bounded_collect(((str(i), b"") for i in range(3)), max_files=2, per_file=4, total_limit=8)
+        raise CheckError("file-count bound self-test unexpectedly passed")
+    except CheckError as error:
+        if "file count" not in str(error):
+            raise
+    try:
+        bounded_collect((("large", b"12345"),), max_files=2, per_file=4, total_limit=8)
+        raise CheckError("per-file bound self-test unexpectedly passed")
+    except CheckError as error:
+        if "source exceeds" not in str(error):
+            raise
+    try:
+        bounded_collect(
+            (("a", b"1234"), ("b", b"5678")), max_files=2, per_file=4, total_limit=7
+        )
+        raise CheckError("aggregate-byte bound self-test unexpectedly passed")
+    except CheckError as error:
+        if "aggregate bound" not in str(error):
+            raise
+    exact = bounded_collect(
+        (("a", b"1234"), ("b", b"5678")), max_files=2, per_file=4, total_limit=8
+    )
+    if tuple(exact) != ("a", "b"):
+        raise CheckError("exact file/per-file/aggregate bounds self-test failed")
+
+    with tempfile.TemporaryDirectory(prefix="riffdb-batch-check-") as temporary:
+        fixture = Path(temporary)
+        source_root = fixture / "src"
+        source_root.mkdir()
+        (source_root / "b.rs").write_bytes(b"b")
+        (source_root / "a.rs").write_bytes(b"a")
+        (source_root / "ignored.txt").write_bytes(b"ignored")
+        outside = fixture / "outside"
+        outside.mkdir()
+        if hasattr(os, "mkfifo"):
+            os.mkfifo(source_root / "named-pipe")
+        entry_names = [entry.name for entry in os.scandir(source_root)]
+        entry_count = len(entry_names)
+        exact_path_bytes = max(len(os.fsencode(f"src/{name}")) for name in entry_names)
+        walked = list(path_entries(
+            fixture,
+            Path("src"),
+            max_directories=1,
+            max_directory_entries=entry_count,
+            max_traversal_entries=entry_count,
+            max_path_bytes=exact_path_bytes,
+            max_path_depth=2,
+            max_files=2,
+            max_source_bytes=1,
+        ))
+        if [name for name, _ in walked] != ["src/a.rs", "src/b.rs"]:
+            raise CheckError("deterministic traversal/non-file self-test failed")
+        for label, overrides, fragment in (
+            ("directory-entry", {"max_directory_entries": entry_count - 1}, "directory entries"),
+            ("traversal-entry", {"max_traversal_entries": entry_count - 1}, "traversal entries"),
+            ("file", {"max_files": 1}, "file count"),
+            ("path-bytes", {"max_path_bytes": exact_path_bytes - 1}, "path exceeds"),
+            ("path-depth", {"max_path_depth": 1}, "path depth"),
+            ("source-bytes", {"max_source_bytes": 0}, "source exceeds"),
+        ):
+            settings = dict(
+                max_directories=1,
+                max_directory_entries=entry_count,
+                max_traversal_entries=entry_count,
+                max_path_bytes=MAX_PATH_BYTES,
+                max_path_depth=2,
+                max_files=2,
+                max_source_bytes=1,
+            )
+            settings.update(overrides)
+            try:
+                list(path_entries(fixture, Path("src"), **settings))
+                raise CheckError(f"{label} over-bound self-test unexpectedly passed")
+            except CheckError as error:
+                if fragment not in str(error):
+                    raise
+        (source_root / "linked.rs").symlink_to(source_root / "a.rs")
+        try:
+            list(path_entries(
+                fixture,
+                Path("src"),
+                max_directories=1,
+                max_directory_entries=entry_count + 1,
+                max_traversal_entries=entry_count + 1,
+            ))
+            raise CheckError("symlinked Rust source self-test unexpectedly passed")
+        except CheckError as error:
+            if "symlinked source entry" not in str(error):
+                raise
+        (source_root / "linked.rs").unlink()
+        (source_root / "linked-dir").symlink_to(outside, target_is_directory=True)
+        try:
+            list(path_entries(
+                fixture,
+                Path("src"),
+                max_directories=1,
+                max_directory_entries=entry_count + 1,
+                max_traversal_entries=entry_count + 1,
+            ))
+            raise CheckError("symlinked source directory self-test unexpectedly passed")
+        except CheckError as error:
+            if "symlinked source entry" not in str(error):
+                raise
+
+    with tempfile.TemporaryDirectory(prefix="riffdb-batch-depth-") as temporary:
+        fixture = Path(temporary)
+        nested = fixture / "src" / "nested"
+        nested.mkdir(parents=True)
+        (nested / "item.rs").write_bytes(b"x")
+        exact_path_bytes = len(os.fsencode("src/nested/item.rs"))
+        if [name for name, _ in path_entries(
+            fixture,
+            Path("src"),
+            max_directories=2,
+            max_directory_entries=1,
+            max_traversal_entries=2,
+            max_path_bytes=exact_path_bytes,
+            max_path_depth=3,
+            max_files=1,
+            max_source_bytes=1,
+        )] != ["src/nested/item.rs"]:
+            raise CheckError("exact directory/depth/path/traversal bounds self-test failed")
+        try:
+            list(path_entries(fixture, Path("src"), max_directories=1))
+            raise CheckError("directory over-bound self-test unexpectedly passed")
+        except CheckError as error:
+            if "directory count" not in str(error):
+                raise
+    capped = Failures(2)
+    for index in range(4):
+        capped.add("test", str(index))
+    if len(capped.rendered()) != 3 or not capped.rendered()[-1].startswith("failure-cap:"):
+        raise CheckError("failure truncation sentinel self-test failed")
+
+
+def main() -> int:
+    if len(sys.argv) > 2 or (len(sys.argv) == 2 and sys.argv[1] != "--self-test"):
+        print("usage: check-columnar-batch-architecture [--self-test]", file=sys.stderr)
+        return 2
+    root = Path(__file__).resolve().parent.parent
+    try:
+        if len(sys.argv) == 2:
+            self_test(root)
+            print("columnar batch architecture negative self-test: passed")
+            return 0
+        failures = evaluate(read_batch_sources(root), read_production_sources(root))
+    except (OSError, UnicodeError, CheckError) as error:
+        print(f"columnar batch architecture check failed: {error}", file=sys.stderr)
+        return 1
+    if failures:
+        for failure in failures:
+            print(f"columnar batch architecture violation: {failure}", file=sys.stderr)
+        return 1
+    print("columnar batch private mechanics architecture: passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
