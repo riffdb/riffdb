@@ -1,10 +1,10 @@
 ---
 adr: "0210"
 title: Passive Transient-Index Rebuild Observation for Production Proof
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-06
-accepted: null
+accepted: "2026-09-07"
 requires: [ADR-0197, ADR-0205, ADR-0206, ADR-0208]
 amends: [ADR-0205, ADR-0206, ADR-0208]
 supersedes: []
