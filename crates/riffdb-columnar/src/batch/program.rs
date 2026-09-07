@@ -27,6 +27,41 @@ struct ProgramLane {
     optional: bool,
 }
 
+/// Owned, immutable lane facts copied only from one checked pre-generation
+/// program. Group mechanics retain this whole value so a field, logical type,
+/// optional-state rule, lane ordinal, or program identity cannot be
+/// substituted independently.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct CheckedProgramLaneFacts {
+    program: CheckedLogicalProgramIdentity,
+    ordinal: usize,
+    field: FieldId,
+    logical: SegmentV2LogicalType,
+    optional: bool,
+}
+
+impl CheckedProgramLaneFacts {
+    pub(super) const fn ordinal(&self) -> usize {
+        self.ordinal
+    }
+
+    pub(super) const fn field(&self) -> FieldId {
+        self.field
+    }
+
+    pub(super) const fn logical(&self) -> &SegmentV2LogicalType {
+        &self.logical
+    }
+
+    pub(super) const fn optional(&self) -> bool {
+        self.optional
+    }
+
+    pub(super) fn same_program(&self, other: &Self) -> bool {
+        self.program == other.program
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct PhaseLaneSets {
     // These are disjoint first-materialization owners. A later phase may use an
@@ -415,11 +450,74 @@ fn validate_phase_lanes(phases: &PhaseLaneSets, lane_count: usize) -> Result<(),
     Ok(())
 }
 
-struct CheckedPreGenerationBatchProgram {
+pub(super) struct CheckedPreGenerationBatchProgram {
     // Active root/generation binding is deliberately deferred to WP-757.
     facts: CheckedLogicalProgramFacts,
     width: ColumnarBatchWidth,
     charges: ProgramCharges,
+}
+
+impl CheckedPreGenerationBatchProgram {
+    pub(super) fn lane_facts(&self, ordinal: usize) -> Option<CheckedProgramLaneFacts> {
+        let lane = self.facts.lanes.get(ordinal)?;
+        Some(CheckedProgramLaneFacts {
+            program: self.facts.identity,
+            ordinal,
+            field: lane.field,
+            logical: lane.logical.clone(),
+            optional: lane.optional,
+        })
+    }
+}
+
+#[cfg(test)]
+pub(super) fn checked_group_lane_facts_for_test(
+    identity_seed: u8,
+    lanes: Vec<(FieldId, SegmentV2LogicalType, bool)>,
+) -> Vec<CheckedProgramLaneFacts> {
+    let identity = CheckedLogicalProgramIdentity {
+        definition: ColumnarDefinitionSemanticsHashV1::from_bytes([identity_seed; 32]),
+        provider: ProjectionProviderDescriptorHash::from_bytes([identity_seed.wrapping_add(1); 32]),
+        plan: QueryPlanHash::from_bytes([identity_seed.wrapping_add(2); 32]),
+    };
+    let lane_count = lanes.len();
+    let optional_lanes = lanes.iter().filter(|(_, _, optional)| *optional).count();
+    let facts = CheckedLogicalProgramFacts {
+        identity,
+        lanes: lanes
+            .into_iter()
+            .map(|(field, logical, optional)| ProgramLane {
+                field,
+                logical,
+                optional,
+            })
+            .collect(),
+        phases: PhaseLaneSets {
+            aggregate: (0..lane_count).collect(),
+            ..PhaseLaneSets::default()
+        },
+    };
+    let draft = PreGenerationBatchProgramDraft {
+        facts: facts.clone(),
+        width: ColumnarBatchWidth::choose(64, 1, 64).expect("closed test width"),
+        resources: ProgramResourcePlan {
+            rows: 1,
+            decoded_lane_bytes: 1,
+            optional_state_bytes: optional_lanes * 2,
+            selection_bytes: 1,
+            partial_count: 0,
+            partial_bytes_each: 0,
+            top_n_kind: TopNPlanKind::Absent,
+            result_maximum: 0,
+            heap_entries: 0,
+            output_rows: 0,
+            output_bytes_per_row: 0,
+        },
+    };
+    let checked = draft.check(&facts).expect("checked group test program");
+    (0..lane_count)
+        .map(|ordinal| checked.lane_facts(ordinal).expect("checked lane"))
+        .collect()
 }
 
 #[cfg(test)]
