@@ -248,6 +248,7 @@ record with no front matter.
 | [0211](0211-trusted-mcp-descriptor-projection-classification.md) | Trusted MCP Descriptor Projection Classification | Accepted | guarantee |
 | [0212](0212-independent-correlated-index-model-and-epoch-two-evidence.md) | Independent Correlated-Index Model and Epoch-Two Evidence | Accepted | guarantee |
 | [0213](0213-pre-arm-preservation-and-linear-queued-fresh-locator-validation.md) | Pre-Arm Preservation and Linear Queued Fresh-Locator Validation | Accepted | guarantee |
+| [0214](0214-fresh-locator-validation-module-and-fixture-authority.md) | Fresh-Locator Validation Module and Fixture Authority | Proposed | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
