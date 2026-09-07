@@ -155,6 +155,7 @@ class RustToken(NamedTuple):
     text: str
     start: int
     end: int
+    spelling: str
 
 
 MULTI_PUNCTUATION = (
@@ -176,7 +177,9 @@ def tokenize_rust(source: str, maximum: int) -> tuple[RustToken, ...]:
     def emit(kind: str, start: int, end: int) -> None:
         if len(tokens) >= maximum:
             raise CheckError(f"Rust token count exceeds {maximum}")
-        tokens.append(RustToken(kind, source[start:end], start, end))
+        spelling = source[start:end]
+        semantic = spelling[2:] if kind == "ident" and spelling.startswith("r#") else spelling
+        tokens.append(RustToken(kind, semantic, start, end, spelling))
 
     while index < len(source):
         if block_depth:
@@ -440,7 +443,7 @@ def token_digest(tokens: tuple[RustToken, ...]) -> str:
     digest = hashlib.sha256()
     for token in tokens:
         kind = token.kind.encode("ascii")
-        value = token.text.encode("utf-8")
+        value = token.spelling.encode("utf-8")
         digest.update(len(kind).to_bytes(2, "big"))
         digest.update(kind)
         digest.update(len(value).to_bytes(8, "big"))
@@ -532,7 +535,7 @@ def named_struct_fields(tokens: tuple[RustToken, ...]) -> dict[str, tuple[tuple[
         field_start = opening + 1
         depth = 0
         for position in range(opening + 1, closing + 1):
-            token = tokens[position] if position < closing else RustToken("punct", ",", 0, 0)
+            token = tokens[position] if position < closing else RustToken("punct", ",", 0, 0, ",")
             if token.text in ("{", "[", "(", "<"):
                 depth += 1
             elif token.text in ("}", "]", ")", ">") and depth:
@@ -1100,7 +1103,7 @@ def evaluate(batch: dict[str, str], consumers: dict[str, str]) -> list[str]:
     merge_header = function_header(aggregate_tokens, "merge_leaf")
     finish_header = function_header(aggregate_tokens, "finish")
     if merge_header is None or not contains_sequence(
-        tuple(RustToken("", item, 0, 0) for item in merge_header),
+        tuple(RustToken("", item, 0, 0, item) for item in merge_header),
         ("fn", "merge_leaf", "(", "&", "mut", "self", ",", "leaf", ":", "FinalizedAggregateLeaf"),
     ):
         failures.add("aggregate-provenance", f"{aggregate_path}: leaf merge is not consuming")
@@ -1326,6 +1329,17 @@ def self_test(root: Path) -> None:
             '#[cfg_attr(feature = "vector", path = "batch/mod.rs")] mod vectorized;'
     }
     require_failure("production-consumer", batch, cfg_path_alias, "cfg-path-attribute-consumer")
+    raw_path_alias = {
+        "crates/riffdb-columnar/src/query.rs": '#[r#path = "batch/mod.rs"] mod vectorized;'
+    }
+    require_failure("production-consumer", batch, raw_path_alias, "raw-path-attribute-consumer")
+    raw_cfg_path_alias = {
+        "crates/riffdb-columnar/src/query.rs":
+            '#[r#cfg_attr(feature = "vector", r#path = "batch/mod.rs")] mod vectorized;'
+    }
+    require_failure(
+        "production-consumer", batch, raw_cfg_path_alias, "raw-cfg-path-attribute-consumer"
+    )
     unresolved_path_alias = {
         "crates/riffdb-columnar/src/query.rs":
             '#[path = concat!("batch/", "mod.rs")] mod vectorized;'
@@ -1402,6 +1416,10 @@ def self_test(root: Path) -> None:
             "use crate as columnar; use columnar::batch as vectorized; fn run() { vectorized::go(); }"
     }
     require_failure("production-consumer", batch, alias_consumer, "aliased-consumer")
+    raw_batch_consumer = {
+        "crates/riffdb-columnar/src/query.rs": "use crate::r#batch::ColumnarBatchWidth;"
+    }
+    require_failure("production-consumer", batch, raw_batch_consumer, "raw-batch-consumer")
     grouped_alias_consumer = {
         "crates/riffdb-columnar/src/query.rs": "use crate::{batch as vectorized};"
     }
