@@ -63,12 +63,12 @@ EXPECTED_STRUCTURAL_SITES = {
     "crates/riffdb-columnar/src/batch/aggregate.rs": (
         (("ExactAggregateMergeAccumulator::new", ".to_vec"), ("ExactAggregateMergeAccumulator::new", ".into_boxed_slice")),
         (("ExactAggregatePartialValue::accumulate", "checked_add"),) * 4 + (("ExactAggregatePartialValue::merge", "checked_add"),) * 4 + (("SealedCanonicalPartialInventory::validate", "checked_add"), ("SealedCanonicalPartialInventory::state_bytes", "checked_mul"), ("ExactAggregateMergeAccumulator::new", "checked_add")),
-        (("<item>", "+"),) * 2 + (("ExactNumericLane::from_logical_type", "*"), ("ExactNumericLane::contribution", "*"), ("ExactNumericLane::contribution", "*"), ("ExactAggregateDefinition::state_bytes", "+"), ("ExactAggregateDefinition::state_bytes", "+"), ("ExactAggregateDefinition::state_bytes", "+"), ("SealedCanonicalPartialInventory::classify_mismatch", "+"), ("ExactAggregateMergeAccumulator::merge_leaf", "*")),
+        (("<item>", "+"), ("<item>", "+"), ("AggregatePartialBudget::commit_operations", "-="), ("AggregatePartialBudget::commit_state", "-="), ("ExactNumericLane::from_logical_type", "*"), ("ExactNumericLane::contribution", "*"), ("ExactNumericLane::contribution", "*"), ("ExactAggregateDefinition::state_bytes", "+"), ("ExactAggregateDefinition::state_bytes", "+"), ("ExactAggregateDefinition::state_bytes", "+"), ("SealedCanonicalPartialInventory::classify_mismatch", "+"), ("ExactAggregateMergeAccumulator::merge_leaf", "*"), ("ExactAggregateMergeAccumulator::merge_leaf", "+=")),
     ),
     "crates/riffdb-columnar/src/batch/mod.rs": (
         (("MonotoneSelection::all", "vec!"), ("ColumnarPredicateKernel::apply", "vec!")),
         (("ColumnarBatchWidth::choose", "checked_mul"),),
-        (("ColumnarBatchWidth::choose", "*"), ("MonotoneSelection::retain", "*"), ("MonotoneSelection::retain", "*"), ("MonotoneSelection::retain", "*"), ("<item>", "+")),
+        (("ColumnarBatchWidth::choose", "*"), ("MonotoneSelection::retain", "*"), ("MonotoneSelection::retain", "*"), ("MonotoneSelection::retain", "+="), ("MonotoneSelection::retain", "*"), ("<item>", "+"), ("PredicateWorkCharge::commit", "-="), ("ColumnarPredicateKernel::apply", "+=")),
     ),
     "crates/riffdb-columnar/src/batch/program.rs": (
         (("PreGenerationBatchProgramDraft::check", ".clone"), ("validate_phase_lanes", "vec!")),
@@ -134,6 +134,16 @@ BATCH_REFERENCE_CANDIDATE = re.compile(
 TOKEN_REFERENCE_CANDIDATE = re.compile(
     r"\bbatch\b|#\s*\[\s*path\b|\binclude(?:_str)?\s*!|\briffdb_columnar\b"
 )
+DYNAMIC_CODE_INCLUDE_ALLOWLIST = {
+    "crates/riffdb-api-grpc/src/lib.rs": {
+        ("concat", "!", "(", "env", "!", "(", '"OUT_DIR"', ")", ",", '"/riffdb.v1.rs"', ")"),
+        ("concat", "!", "(", "env", "!", "(", '"OUT_DIR"', ")", ",", '"/riffdb.app.v1.rs"', ")"),
+    },
+    "crates/riffdb-proto/src/lib.rs": {
+        ("concat", "!", "(", "env", "!", "(", '"OUT_DIR"', ")", ",", '"/riffdb.v1.rs"', ")"),
+        ("concat", "!", "(", "env", "!", "(", '"OUT_DIR"', ")", ",", '"/riffdb.app.v1.rs"', ")"),
+    },
+}
 
 
 class CheckError(ValueError):
@@ -151,6 +161,10 @@ MULTI_PUNCTUATION = (
     "<<=", ">>=", "...", "..=", "::", "->", "=>", "==", "!=", "<=", ">=",
     "&&", "||", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<", ">>", "..",
 )
+MULTI_BY_FIRST = {
+    initial: tuple(item for item in MULTI_PUNCTUATION if item.startswith(initial))
+    for initial in {item[0] for item in MULTI_PUNCTUATION}
+}
 
 
 def tokenize_rust(source: str, maximum: int) -> tuple[RustToken, ...]:
@@ -188,7 +202,11 @@ def tokenize_rust(source: str, maximum: int) -> tuple[RustToken, ...]:
             continue
 
         start = index
-        raw = re.match(r"(?:br|cr|r)(#{0,16})\"", source[index:])
+        raw = (
+            re.match(r"(?:br|cr|r)(#{0,16})\"", source[index:])
+            if source[index] in "bcr"
+            else None
+        )
         if raw:
             terminator = '"' + raw.group(1)
             end = source.find(terminator, index + len(raw.group(0)))
@@ -197,7 +215,9 @@ def tokenize_rust(source: str, maximum: int) -> tuple[RustToken, ...]:
             index = end + len(terminator)
             emit("literal", start, index)
             continue
-        if re.match(r"(?:br|cr)#+", source[index:]) or re.match(r"r##+", source[index:]):
+        if source[index] in "bcr" and (
+            re.match(r"(?:br|cr)#+", source[index:]) or re.match(r"r##+", source[index:])
+        ):
             raise CheckError("malformed raw string literal opener")
         quote_start = index + 1 if source[index:index + 2] in ('b"', 'c"') else index
         if source[quote_start:quote_start + 1] == '"':
@@ -214,7 +234,11 @@ def tokenize_rust(source: str, maximum: int) -> tuple[RustToken, ...]:
             else:
                 raise CheckError("unterminated string literal")
             continue
-        char_match = re.match(r"(?:b)?'(?:\\.|[^'\\\n])'", source[index:])
+        char_match = (
+            re.match(r"(?:b)?'(?:\\.|[^'\\\n])'", source[index:])
+            if source[index] == "'" or source.startswith("b'", index)
+            else None
+        )
         if char_match:
             index += len(char_match.group(0))
             emit("literal", start, index)
@@ -242,7 +266,7 @@ def tokenize_rust(source: str, maximum: int) -> tuple[RustToken, ...]:
             emit("number", start, index)
             continue
         punctuation = next(
-            (candidate for candidate in MULTI_PUNCTUATION if source.startswith(candidate, index)),
+            (candidate for candidate in MULTI_BY_FIRST.get(source[index], ()) if source.startswith(candidate, index)),
             source[index],
         )
         index += len(punctuation)
@@ -576,26 +600,97 @@ def resolved_source_path(root: Path, source_path: str, literal: str) -> Path:
     candidate = Path(literal)
     if candidate.is_absolute() or len(candidate.parts) > MAX_PATH_DEPTH:
         raise CheckError("absolute or over-depth source path is forbidden")
-    return ((root / source_path).parent / candidate).resolve(strict=False)
+    root = Path(os.path.abspath(root))
+    resolved = Path(os.path.abspath((root / source_path).parent / candidate))
+    if resolved != root and root not in resolved.parents:
+        raise CheckError("source-loading path escapes the workspace")
+    return resolved
 
 
 def resolved_literal_path(root: Path, source_path: str, token: RustToken) -> Path:
     return resolved_source_path(root, source_path, rust_literal_value(token))
 
 
-def references_batch_path(root: Path, source_path: str, tokens: tuple[RustToken, ...]) -> bool:
+class CodeTargetBudget:
+    def __init__(self) -> None:
+        self.files = 0
+        self.bytes = 0
+        self.visited: set[Path] = set()
+
+
+def code_target_references_batch(
+    root: Path,
+    target: Path,
+    budget: CodeTargetBudget,
+    depth: int,
+) -> bool:
+    if depth > MAX_PATH_DEPTH:
+        raise CheckError(f"source-loading depth exceeds {MAX_PATH_DEPTH}")
+    root = Path(os.path.abspath(root))
+    relative = target.relative_to(root)
+    cursor = root
+    for component in relative.parts:
+        cursor /= component
+        if cursor.is_symlink():
+            raise CheckError(f"{relative}: symlinked source-loading target is forbidden")
+    if target in budget.visited:
+        return False
+    # Feature-gated/generated targets can legitimately be absent in this
+    # checkout. They cannot activate code until materialized; once present,
+    # every workspace-policy run reads and analyzes them below.
+    if not target.exists():
+        return False
+    if not target.is_file():
+        raise CheckError(f"{relative}: source-loading target is not a regular file")
+    budget.visited.add(target)
+    budget.files += 1
+    if budget.files > MAX_FILES:
+        raise CheckError(f"source-loading target count exceeds {MAX_FILES}")
+    with target.open("rb") as handle:
+        data = handle.read(MAX_SOURCE_BYTES + 1)
+    if len(data) > MAX_SOURCE_BYTES:
+        raise CheckError(f"{relative}: source-loading target exceeds {MAX_SOURCE_BYTES} bytes")
+    budget.bytes += len(data)
+    if budget.bytes > MAX_TOTAL_SOURCE_BYTES:
+        raise CheckError(f"source-loading target bytes exceed {MAX_TOTAL_SOURCE_BYTES}")
+    source = data.decode("utf-8")
+    tokens = rust_tokens(consumer_production_part(source))
+    source_path = str(relative)
+    return token_path_references_batch(source_path, tokens) or references_batch_path(
+        root, source_path, tokens, budget=budget, depth=depth + 1
+    )
+
+
+def references_batch_path(
+    root: Path,
+    source_path: str,
+    tokens: tuple[RustToken, ...],
+    *,
+    budget: CodeTargetBudget | None = None,
+    depth: int = 0,
+) -> bool:
+    budget = budget or CodeTargetBudget()
     batch_root = (root / BATCH_ROOT).resolve()
-    for index in range(len(tokens) - 5):
-        # #[path = "..."] mod alias; -- the path literal is semantic input.
-        if texts(tokens[index:index + 4]) == ("#", "[", "path", "="):
-            literal = tokens[index + 4]
-            if literal.kind != "literal":
-                raise CheckError(f"{source_path}: nonliteral #[path] is refused")
-            resolved = resolved_literal_path(root, source_path, literal)
-            if resolved == batch_root or batch_root in resolved.parents:
-                return True
+    for index in range(len(tokens)):
+        # Direct and cfg_attr-mediated path attributes are compilation inputs.
+        if texts(tokens[index:index + 2]) == ("#", "["):
+            closing = matching_delimiter(tokens, index + 1)
+            attribute = tokens[index + 2:closing]
+            if attribute and attribute[0].text in ("path", "cfg_attr"):
+                for position, item in enumerate(attribute[:-1]):
+                    if item.text != "path" or attribute[position + 1].text != "=":
+                        continue
+                    if position + 2 >= len(attribute) or attribute[position + 2].kind != "literal":
+                        raise CheckError(f"{source_path}: unresolved path attribute is refused")
+                    resolved = resolved_literal_path(root, source_path, attribute[position + 2])
+                    if resolved == batch_root or batch_root in resolved.parents:
+                        return True
+                    if code_target_references_batch(root, resolved, budget, depth + 1):
+                        return True
         # include!/include_str! with a simple literal or concat!(literal...).
-        if tokens[index].text not in ("include", "include_str") or tokens[index + 1].text != "!":
+        if index + 2 >= len(tokens):
+            continue
+        if tokens[index].text != "include" or tokens[index + 1].text != "!":
             continue
         opening = index + 2
         if tokens[opening].text != "(":
@@ -616,6 +711,18 @@ def references_batch_path(root: Path, source_path: str, tokens: tuple[RustToken,
             resolved = resolved_source_path(root, source_path, path_value)
             if resolved == batch_root or batch_root in resolved.parents:
                 return True
+            if code_target_references_batch(root, resolved, budget, depth + 1):
+                return True
+        else:
+            literal_parts = [
+                rust_literal_value(item) for item in arguments if item.kind == "literal"
+            ]
+            if any("batch" in part for part in literal_parts) or any(
+                item.kind == "ident" and item.text == "batch" for item in arguments
+            ):
+                raise CheckError(f"{source_path}: unresolved batch-bearing include is refused")
+            if texts(arguments) not in DYNAMIC_CODE_INCLUDE_ALLOWLIST.get(source_path, set()):
+                raise CheckError(f"{source_path}: unreviewed dynamic code include is refused")
     return False
 
 
@@ -675,8 +782,19 @@ def top_level_module_declarations(
         elif depth == 0 and token.text == "mod" and index + 2 < len(tokens):
             if tokens[index + 1].kind != "ident" or tokens[index + 2].text != ";":
                 continue
-            prior = texts(tokens[max(0, index - 4):index])
-            declarations.append((tokens[index + 1].text, "pub" in prior))
+            prior = index - 1
+            visible = False
+            if prior >= 0 and tokens[prior].text == ")":
+                depth = 1
+                prior -= 1
+                while prior >= 0 and depth:
+                    depth += tokens[prior].text == ")"
+                    depth -= tokens[prior].text == "("
+                    prior -= 1
+                visible = prior >= 0 and tokens[prior].text == "pub"
+            elif prior >= 0 and tokens[prior].text == "pub":
+                visible = True
+            declarations.append((tokens[index + 1].text, visible))
     return tuple(declarations)
 
 
@@ -778,7 +896,7 @@ def structural_sites(
                 allocations.append((route, f".{method}"))
             if method.startswith("checked_"):
                 checked.append((route, method))
-        if token.text in ("+", "-", "*", "/", "%"):
+        if token.text in ("+", "-", "*", "/", "%", "+=", "-=", "*=", "/=", "%="):
             raw.append((route, token.text))
     return tuple(allocations), tuple(checked), tuple(raw)
 
@@ -848,6 +966,7 @@ def path_entries(
     max_path_depth: int = MAX_PATH_DEPTH,
     max_files: int = MAX_FILES,
     max_source_bytes: int = MAX_SOURCE_BYTES,
+    production_only: bool = False,
 ) -> Iterator[tuple[str, bytes]]:
     pending = [root / start]
     rust_files: list[Path] = []
@@ -883,13 +1002,15 @@ def path_entries(
             if len(os.fsencode(str(relative))) > max_path_bytes:
                 raise CheckError(f"source path exceeds {max_path_bytes} bytes")
             if entry.is_symlink():
-                if entry.name.endswith(".rs"):
-                    raise CheckError(f"{relative}: symlinked Rust source is forbidden")
-                continue
+                raise CheckError(f"{relative}: symlinked source entry is forbidden")
             if entry.is_dir(follow_symlinks=False):
+                if production_only and len(relative.parts) == 3 and relative.parts[2] != "src":
+                    continue
                 child_directories.append(path)
                 continue
             if not entry.is_file(follow_symlinks=False) or not entry.name.endswith(".rs"):
+                continue
+            if production_only and (len(relative.parts) < 4 or relative.parts[2] != "src"):
                 continue
             rust_files.append(path)
             if len(rust_files) > max_files:
@@ -909,7 +1030,7 @@ def read_batch_sources(root: Path) -> dict[str, str]:
 
 
 def read_production_sources(root: Path) -> dict[str, str]:
-    return bounded_collect(path_entries(root, Path("crates")))
+    return bounded_collect(path_entries(root, Path("crates"), production_only=True))
 
 
 def evaluate(batch: dict[str, str], consumers: dict[str, str]) -> list[str]:
@@ -995,6 +1116,7 @@ def evaluate(batch: dict[str, str], consumers: dict[str, str]) -> list[str]:
             failures.add("test-observer", f"{aggregate_path}: {getter} is not cfg(test)-only")
 
     batch_paths = set(batch)
+    target_budget = CodeTargetBudget()
     for path, source in consumers.items():
         if path in batch_paths:
             continue
@@ -1012,7 +1134,7 @@ def evaluate(batch: dict[str, str], consumers: dict[str, str]) -> list[str]:
             batch_modules = [item for item in top_level_module_declarations(tokens) if item[0] == "batch"]
             if batch_modules != [("batch", False)]:
                 failures.add("batch-root", "columnar lib must declare exactly one private batch module")
-            if references_batch_path(Path.cwd(), path, tokens):
+            if references_batch_path(Path.cwd(), path, tokens, budget=target_budget):
                 failures.add("production-consumer", f"{path}: path-loads batch mechanics")
             batch_ref_count = sum(1 for index, item in enumerate(tokens) if item.text == "batch" and (
                 (index and tokens[index - 1].text == "::") or
@@ -1022,7 +1144,7 @@ def evaluate(batch: dict[str, str], consumers: dict[str, str]) -> list[str]:
                 failures.add("production-consumer", f"{path}: consumes batch mechanics before selection")
             continue
         try:
-            path_reference = references_batch_path(Path.cwd(), path, tokens)
+            path_reference = references_batch_path(Path.cwd(), path, tokens, budget=target_budget)
             token_reference = token_path_references_batch(path, tokens)
         except CheckError as error:
             failures.add("consumer-parse", f"{path}: {error}")
@@ -1085,6 +1207,16 @@ def self_test(root: Path) -> None:
         changed = dict(batch)
         changed[target] = insert_before_tests(changed[target], addition)
         require_failure(expected, changed, no_consumers, label)
+    compound = dict(batch)
+    compound["crates/riffdb-columnar/src/batch/mod.rs"] = compound[
+        "crates/riffdb-columnar/src/batch/mod.rs"
+    ].replace("self.selected += usize::from(*retained);", "self.selected -= usize::from(*retained);", 1)
+    require_failure("unreviewed-arithmetic", compound, no_consumers, "compound-assignment-route")
+    extra_compound = dict(batch)
+    extra_compound[target] = insert_before_tests(
+        extra_compound[target], "fn unchecked_compound(mut value: usize) { value += 1; }"
+    )
+    require_failure("unreviewed-arithmetic", extra_compound, no_consumers, "extra-compound-assignment")
 
     literal = dict(batch)
     literal[target] = literal[target].replace(
@@ -1188,6 +1320,73 @@ def self_test(root: Path) -> None:
         "crates/riffdb-columnar/src/query.rs": '#[path = "batch/mod.rs"] mod vectorized;'
     }
     require_failure("production-consumer", batch, path_alias, "path-attribute-consumer")
+    cfg_path_alias = {
+        "crates/riffdb-columnar/src/query.rs":
+            '#[cfg_attr(feature = "vector", path = "batch/mod.rs")] mod vectorized;'
+    }
+    require_failure("production-consumer", batch, cfg_path_alias, "cfg-path-attribute-consumer")
+    unresolved_path_alias = {
+        "crates/riffdb-columnar/src/query.rs":
+            '#[path = concat!("batch/", "mod.rs")] mod vectorized;'
+    }
+    require_failure("consumer-parse", batch, unresolved_path_alias, "unresolved-path-attribute")
+    unresolved_include = {
+        "crates/riffdb-columnar/src/query.rs":
+            'include!(concat!("batch/", generated_module!()));'
+    }
+    require_failure("consumer-parse", batch, unresolved_include, "unresolved-batch-include")
+    reviewed_dynamic = 'include!(concat!(env!("OUT_DIR"), "/riffdb.v1.rs"));'
+    if references_batch_path(
+        root,
+        "crates/riffdb-proto/src/lib.rs",
+        rust_tokens(reviewed_dynamic),
+    ):
+        raise CheckError("reviewed dynamic include unexpectedly referenced batch")
+    for label, source_path, source in (
+        ("dynamic-include-path", "crates/riffdb-proto/src/other.rs", reviewed_dynamic),
+        ("dynamic-include-target", "crates/riffdb-proto/src/lib.rs", reviewed_dynamic.replace("riffdb.v1", "other")),
+    ):
+        try:
+            references_batch_path(root, source_path, rust_tokens(source))
+            raise CheckError(f"{label} mutation self-test unexpectedly passed")
+        except CheckError as error:
+            if "unreviewed dynamic code include" not in str(error):
+                raise
+    with tempfile.TemporaryDirectory(prefix="riffdb-batch-target-") as temporary:
+        fixture = Path(temporary)
+        owner = fixture / "crates" / "riffdb-columnar" / "src"
+        owner.mkdir(parents=True)
+        hidden = owner / "hidden.inc"
+        hidden.write_text("use crate::batch::ColumnarBatchWidth;", encoding="utf-8")
+        for label, source in (
+            ("path-target-content", '#[path = "hidden.inc"] mod hidden;'),
+            ("include-target-content", 'include!("hidden.inc");'),
+        ):
+            if not references_batch_path(
+                fixture,
+                "crates/riffdb-columnar/src/lib.rs",
+                rust_tokens(source),
+            ):
+                raise CheckError(f"{label} self-test missed hidden batch consumer")
+        if references_batch_path(
+            fixture,
+            "crates/riffdb-columnar/src/lib.rs",
+            rust_tokens('include_str!("hidden.inc");'),
+        ):
+            raise CheckError("include_str data was treated as executable Rust")
+        hidden.unlink()
+        hidden.symlink_to(owner / "real.inc")
+        (owner / "real.inc").write_text("use crate::batch::ColumnarBatchWidth;", encoding="utf-8")
+        try:
+            references_batch_path(
+                fixture,
+                "crates/riffdb-columnar/src/lib.rs",
+                rust_tokens('include!("hidden.inc");'),
+            )
+            raise CheckError("symlinked include target self-test unexpectedly passed")
+        except CheckError as error:
+            if "symlinked source-loading target" not in str(error):
+                raise
     alias_consumer = {
         "crates/riffdb-columnar/src/query.rs":
             "use crate as columnar; use columnar::batch as vectorized; fn run() { vectorized::go(); }"
@@ -1197,6 +1396,9 @@ def self_test(root: Path) -> None:
         "crates/riffdb-columnar/src/query.rs": "use crate::{batch as vectorized};"
     }
     require_failure("production-consumer", batch, grouped_alias_consumer, "grouped-aliased-consumer")
+    for visibility in ("pub", "pub(crate)", "pub(super)", "pub(self)", "pub(in crate)", "pub(in crate::query)"):
+        exposed_root = {"crates/riffdb-columnar/src/lib.rs": f"{visibility} mod batch;"}
+        require_failure("batch-root", batch, exposed_root, f"root-{visibility}-batch")
 
     valid_literals = rust_tokens('const A: &[u8] = br#"batch"#; const B: &CStr = cr##"batch"##;')
     if sum(item.kind == "literal" for item in valid_literals) != 2:
@@ -1261,7 +1463,6 @@ def self_test(root: Path) -> None:
         (source_root / "ignored.txt").write_bytes(b"ignored")
         outside = fixture / "outside"
         outside.mkdir()
-        (source_root / "linked-dir").symlink_to(outside, target_is_directory=True)
         if hasattr(os, "mkfifo"):
             os.mkfifo(source_root / "named-pipe")
         entry_names = [entry.name for entry in os.scandir(source_root)]
@@ -1279,7 +1480,7 @@ def self_test(root: Path) -> None:
             max_source_bytes=1,
         ))
         if [name for name, _ in walked] != ["src/a.rs", "src/b.rs"]:
-            raise CheckError("deterministic traversal/non-file/symlink-directory self-test failed")
+            raise CheckError("deterministic traversal/non-file self-test failed")
         for label, overrides, fragment in (
             ("directory-entry", {"max_directory_entries": entry_count - 1}, "directory entries"),
             ("traversal-entry", {"max_traversal_entries": entry_count - 1}, "traversal entries"),
@@ -1315,7 +1516,21 @@ def self_test(root: Path) -> None:
             ))
             raise CheckError("symlinked Rust source self-test unexpectedly passed")
         except CheckError as error:
-            if "symlinked Rust source" not in str(error):
+            if "symlinked source entry" not in str(error):
+                raise
+        (source_root / "linked.rs").unlink()
+        (source_root / "linked-dir").symlink_to(outside, target_is_directory=True)
+        try:
+            list(path_entries(
+                fixture,
+                Path("src"),
+                max_directories=1,
+                max_directory_entries=entry_count + 1,
+                max_traversal_entries=entry_count + 1,
+            ))
+            raise CheckError("symlinked source directory self-test unexpectedly passed")
+        except CheckError as error:
+            if "symlinked source entry" not in str(error):
                 raise
 
     with tempfile.TemporaryDirectory(prefix="riffdb-batch-depth-") as temporary:
