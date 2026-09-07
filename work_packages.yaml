@@ -1572,7 +1572,6 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-705
   name: Clean-startup internal scrub compatibility and bounded dirty evidence
-  tier: guarantee
   depends_on: [WP-610, WP-668, WP-704, WP-773, WP-774, WP-778]
   objective: Close ADR-0156 with a sealed internal complete-integrity scrub primitive, backup/
     restore/migration/retention compatibility, operator and handbook guidance, production-scale
