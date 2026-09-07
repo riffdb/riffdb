@@ -30,7 +30,7 @@ pub const MAX_SEGMENT_V2_COLUMNS: usize = 1_024;
 /// Maximum complete encoded segment size.
 pub const MAX_SEGMENT_V2_BYTES: usize = 64 * 1024 * 1024;
 
-const MAX_LANE_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_LANE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SCALAR_BYTES: usize = 1024 * 1024;
 const MAX_ORG_KEY_BYTES: usize = 1024 * 1024;
 const MAGIC: &[u8; 8] = b"RDBCOLV2";
@@ -189,7 +189,7 @@ impl SegmentV2LogicalType {
         }
     }
 
-    fn accepts(&self, value: &CanonicalValue) -> bool {
+    pub(crate) fn accepts(&self, value: &CanonicalValue) -> bool {
         match (self, value) {
             (Self::Bool, CanonicalValue::Bool(_))
             | (Self::I64, CanonicalValue::I64(_))
