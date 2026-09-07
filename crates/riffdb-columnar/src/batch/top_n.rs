@@ -1,25 +1,79 @@
-//! Private bounded Top-N mechanics for a compiler-sealed batch program.
+//! Private profile-bound Top-N mechanics over one validated immutable lane owner.
+
+use std::cmp::Ordering;
+use std::mem::size_of;
 
 use riffdb_types::{
-    CanonicalValue, Date, EnumVariantId, MAX_APPLICATION_QUERY_PAGE_ROWS,
-    MAX_APPLICATION_QUERY_RESULT_BYTES, MAX_KEY_BYTES, Timestamp,
+    CanonicalValue, MAX_APPLICATION_QUERY_PAGE_ROWS, MAX_APPLICATION_QUERY_RESULT_BYTES,
+    MAX_KEY_BYTES, ProjectionGeneration, QueryPlanHash,
 };
-use std::cmp::Ordering;
 
 use crate::PrimaryKeyBytes;
-use crate::segment_v2::{MAX_SEGMENT_V2_COLUMNS, SegmentV2Cell, SegmentV2LogicalType};
+use crate::segment_v2::{
+    MAX_SEGMENT_V2_COLUMNS, MAX_SEGMENT_V2_ROWS, SegmentV2Cell, SegmentV2LogicalType,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TopNError {
+    AmbiguousComparisonProfile,
     InvalidLimit,
     InvalidOrder,
     InvalidPrimaryKey,
-    CellCount,
+    DuplicatePrimaryKey,
+    LaneCount,
+    LaneLength,
+    RowOutOfOrder,
     UnexpectedNoValue,
     TypeMismatch,
     ArithmeticOverflow,
     StateBoundExceeded,
     InvalidHeapState,
+}
+
+/// The only comparison profile this inert primitive implements.
+///
+/// This is deliberately process-private and nonserializable. It names the
+/// existing scalar order frozen by ADR-0145 and retained by ADR-0161; in
+/// particular, Decimal and Money retain canonical-value-byte order rather
+/// than the numeric order of a possible successor profile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TopNComparisonProfile {
+    CanonicalScalarV1,
+}
+
+/// Exact compiler plan and Active generation to which one primitive belongs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TopNProgramBinding {
+    comparison_profile: TopNComparisonProfile,
+    plan_identity: QueryPlanHash,
+    generation: ProjectionGeneration,
+}
+
+impl TopNProgramBinding {
+    pub(crate) fn new(
+        comparison_profile: Option<TopNComparisonProfile>,
+        plan_identity: QueryPlanHash,
+        generation: ProjectionGeneration,
+    ) -> Result<Self, TopNError> {
+        let comparison_profile = comparison_profile.ok_or(TopNError::AmbiguousComparisonProfile)?;
+        Ok(Self {
+            comparison_profile,
+            plan_identity,
+            generation,
+        })
+    }
+
+    pub(crate) const fn comparison_profile(self) -> TopNComparisonProfile {
+        self.comparison_profile
+    }
+
+    pub(crate) const fn plan_identity(self) -> QueryPlanHash {
+        self.plan_identity
+    }
+
+    pub(crate) const fn generation(self) -> ProjectionGeneration {
+        self.generation
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -56,964 +110,1036 @@ impl TopNOrderTerm {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct TopNCandidate {
-    primary_key: PrimaryKeyBytes,
-    order_cells: Vec<SegmentV2Cell>,
+/// Borrowed lanes and primary keys already owned by one validated immutable
+/// segment/Active view. Construction proves aligned lanes and unique canonical
+/// key order once, without allocating a second row population.
+#[derive(Debug)]
+pub(crate) struct TopNSource<'view> {
+    binding: TopNProgramBinding,
+    order: &'view [TopNOrderTerm],
+    primary_keys: &'view [PrimaryKeyBytes],
+    order_lanes: &'view [&'view [SegmentV2Cell]],
 }
 
-impl TopNCandidate {
-    pub(crate) const fn new(primary_key: PrimaryKeyBytes, order_cells: Vec<SegmentV2Cell>) -> Self {
-        Self {
-            primary_key,
-            order_cells,
+impl<'view> TopNSource<'view> {
+    pub(crate) fn new(
+        binding: TopNProgramBinding,
+        order: &'view [TopNOrderTerm],
+        primary_keys: &'view [PrimaryKeyBytes],
+        order_lanes: &'view [&'view [SegmentV2Cell]],
+    ) -> Result<Self, TopNError> {
+        if order.len() > MAX_SEGMENT_V2_COLUMNS {
+            return Err(TopNError::InvalidOrder);
         }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum OrderedScalar {
-    Bool(bool),
-    I64(i64),
-    U64(u64),
-    Decimal(i128),
-    Money(i128),
-    String(String),
-    Bytes(Vec<u8>),
-    Timestamp(Timestamp),
-    Date(Date),
-    Uuid([u8; 16]),
-    Enum(EnumVariantId),
-}
-
-impl OrderedScalar {
-    const fn tag(&self) -> u8 {
-        match self {
-            Self::Bool(_) => 1,
-            Self::I64(_) => 2,
-            Self::U64(_) => 3,
-            Self::Decimal(_) => 4,
-            Self::Money(_) => 5,
-            Self::String(_) => 6,
-            Self::Bytes(_) => 7,
-            Self::Timestamp(_) => 8,
-            Self::Date(_) => 9,
-            Self::Uuid(_) => 10,
-            Self::Enum(_) => 11,
+        if order_lanes.len() != order.len() {
+            return Err(TopNError::LaneCount);
         }
-    }
-}
-
-impl Ord for OrderedScalar {
-    fn cmp(&self, other: &Self) -> Ordering {
-        match (self, other) {
-            (Self::Bool(left), Self::Bool(right)) => left.cmp(right),
-            (Self::I64(left), Self::I64(right)) => left.cmp(right),
-            (Self::U64(left), Self::U64(right)) => left.cmp(right),
-            (Self::Decimal(left), Self::Decimal(right)) => left.cmp(right),
-            (Self::Money(left), Self::Money(right)) => left.cmp(right),
-            (Self::String(left), Self::String(right)) => left.cmp(right),
-            (Self::Bytes(left), Self::Bytes(right)) => left.cmp(right),
-            (Self::Timestamp(left), Self::Timestamp(right)) => left.cmp(right),
-            (Self::Date(left), Self::Date(right)) => left.cmp(right),
-            (Self::Uuid(left), Self::Uuid(right)) => left.cmp(right),
-            (Self::Enum(left), Self::Enum(right)) => left.cmp(right),
-            (left, right) => left.tag().cmp(&right.tag()),
+        if primary_keys.len() > MAX_SEGMENT_V2_ROWS
+            || order_lanes
+                .iter()
+                .any(|lane| lane.len() != primary_keys.len())
+        {
+            return Err(TopNError::LaneLength);
         }
+        for primary_key in primary_keys {
+            if primary_key.as_bytes().is_empty() || primary_key.as_bytes().len() > MAX_KEY_BYTES {
+                return Err(TopNError::InvalidPrimaryKey);
+            }
+        }
+        for pair in primary_keys.windows(2) {
+            match pair[0].as_bytes().cmp(pair[1].as_bytes()) {
+                Ordering::Equal => return Err(TopNError::DuplicatePrimaryKey),
+                Ordering::Greater => return Err(TopNError::InvalidPrimaryKey),
+                Ordering::Less => {}
+            }
+        }
+        Ok(Self {
+            binding,
+            order,
+            primary_keys,
+            order_lanes,
+        })
+    }
+
+    pub(crate) const fn binding(&self) -> TopNProgramBinding {
+        self.binding
+    }
+
+    pub(crate) const fn row_count(&self) -> usize {
+        self.primary_keys.len()
+    }
+
+    fn primary_key(&self, row: RowOrdinal) -> Result<&PrimaryKeyBytes, TopNError> {
+        self.primary_keys
+            .get(row.as_usize())
+            .ok_or(TopNError::LaneLength)
+    }
+
+    fn cell(&self, term: usize, row: RowOrdinal) -> Result<&SegmentV2Cell, TopNError> {
+        self.order_lanes
+            .get(term)
+            .and_then(|lane| lane.get(row.as_usize()))
+            .ok_or(TopNError::LaneLength)
     }
 }
 
-impl PartialOrd for OrderedScalar {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
+/// A fixed non-owning handle into the immutable source lanes.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct RowOrdinal(u16);
+
+impl RowOrdinal {
+    fn new(row: usize, row_count: usize) -> Result<Self, TopNError> {
+        if row >= row_count {
+            return Err(TopNError::LaneLength);
+        }
+        let row = u16::try_from(row).map_err(|_| TopNError::LaneLength)?;
+        Ok(Self(row))
     }
-}
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum RankedCell {
-    NoValue,
-    Value(OrderedScalar),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct TopNPosition {
-    order: Vec<RankedCell>,
-    primary_key: PrimaryKeyBytes,
-    payload_bytes: usize,
-}
-
-impl TopNPosition {
-    pub(crate) const fn primary_key(&self) -> &PrimaryKeyBytes {
-        &self.primary_key
+    const fn as_usize(self) -> usize {
+        self.0 as usize
     }
 }
 
 #[derive(Debug)]
-pub(crate) struct BoundedTopN {
-    order: Vec<TopNOrderTerm>,
+pub(crate) struct BoundedTopN<'view> {
+    source: &'view TopNSource<'view>,
     limit: usize,
     capacity: usize,
-    state_byte_ceiling: usize,
-    retained_payload_bytes: usize,
-    retained: Vec<TopNPosition>,
+    retained_allocation_bytes: usize,
+    retained: Vec<RowOrdinal>,
+    last_row: Option<RowOrdinal>,
     failure: Option<TopNError>,
 }
 
-impl BoundedTopN {
-    pub(crate) fn new(order: Vec<TopNOrderTerm>, limit: usize) -> Result<Self, TopNError> {
+impl<'view> BoundedTopN<'view> {
+    pub(crate) fn new(source: &'view TopNSource<'view>, limit: usize) -> Result<Self, TopNError> {
         let maximum = usize::try_from(MAX_APPLICATION_QUERY_PAGE_ROWS)
             .map_err(|_| TopNError::ArithmeticOverflow)?;
         if limit == 0 || limit > maximum {
             return Err(TopNError::InvalidLimit);
         }
-        if order.len() > MAX_SEGMENT_V2_COLUMNS {
-            return Err(TopNError::InvalidOrder);
-        }
         let capacity = limit.checked_add(1).ok_or(TopNError::ArithmeticOverflow)?;
-        let state_byte_ceiling = usize::try_from(MAX_APPLICATION_QUERY_RESULT_BYTES)
-            .map_err(|_| TopNError::ArithmeticOverflow)?;
+        let requested_bytes = retained_state_bytes(capacity, 0)?;
+        enforce_state_ceiling(requested_bytes)?;
+        let retained = Vec::with_capacity(capacity);
+        let retained_allocation_bytes = retained_state_bytes(retained.capacity(), 0)?;
+        enforce_state_ceiling(retained_allocation_bytes)?;
         Ok(Self {
-            order,
+            source,
             limit,
             capacity,
-            state_byte_ceiling,
-            retained_payload_bytes: 0,
-            retained: Vec::with_capacity(capacity),
+            retained_allocation_bytes,
+            retained,
+            last_row: None,
             failure: None,
         })
     }
 
-    pub(crate) fn push(&mut self, candidate: TopNCandidate) -> Result<(), TopNError> {
+    pub(crate) fn push(&mut self, row: usize) -> Result<(), TopNError> {
         if let Some(error) = self.failure {
             return Err(error);
         }
-        let position = match position(&self.order, candidate) {
-            Ok(position) => position,
+        let row = match RowOrdinal::new(row, self.source.row_count()) {
+            Ok(row) => row,
             Err(error) => return self.poison(error),
         };
+        if self.last_row.is_some_and(|previous| previous >= row) {
+            return self.poison(TopNError::RowOutOfOrder);
+        }
+        if let Err(error) = validate_row(self.source, row) {
+            return self.poison(error);
+        }
+        self.last_row = Some(row);
+
         if self.retained.len() < self.capacity {
-            let next_bytes = match self
-                .retained_payload_bytes
-                .checked_add(position.payload_bytes)
-            {
-                Some(bytes) if bytes <= self.state_byte_ceiling => bytes,
-                Some(_) => return self.poison(TopNError::StateBoundExceeded),
-                None => return self.poison(TopNError::ArithmeticOverflow),
-            };
-            self.push_heap(position);
-            self.retained_payload_bytes = next_bytes;
+            if let Err(error) = push_heap(self.source, &mut self.retained, row) {
+                return self.poison(error);
+            }
             return Ok(());
         }
 
-        let Some(worst) = self.retained.first() else {
+        let Some(worst) = self.retained.first().copied() else {
             return self.poison(TopNError::InvalidHeapState);
         };
-        if compare_positions(&self.order, &position, worst) != Ordering::Less {
+        let compared = match compare_rows(self.source, row, worst) {
+            Ok(compared) => compared,
+            Err(error) => return self.poison(error),
+        };
+        if compared != Ordering::Less {
             return Ok(());
         }
-        let next_bytes = match self
-            .retained_payload_bytes
-            .checked_sub(worst.payload_bytes)
-            .and_then(|bytes| bytes.checked_add(position.payload_bytes))
-        {
-            Some(bytes) if bytes <= self.state_byte_ceiling => bytes,
-            Some(_) => return self.poison(TopNError::StateBoundExceeded),
-            None => return self.poison(TopNError::ArithmeticOverflow),
-        };
-        self.retained[0] = position;
-        if let Err(error) = self.sift_down(0) {
+        self.retained[0] = row;
+        let end = self.retained.len();
+        if let Err(error) = sift_down(self.source, &mut self.retained, 0, end) {
             return self.poison(error);
         }
-        self.retained_payload_bytes = next_bytes;
         Ok(())
     }
 
-    pub(crate) fn retained_len(&self) -> usize {
+    pub(crate) const fn retained_len(&self) -> usize {
         self.retained.len()
     }
 
-    pub(crate) fn finish(self) -> Result<TopNPage, TopNError> {
+    pub(crate) const fn retained_allocation_bytes(&self) -> usize {
+        self.retained_allocation_bytes
+    }
+
+    pub(crate) fn finish(mut self) -> Result<TopNPage<'view>, TopNError> {
         if let Some(error) = self.failure {
             return Err(error);
         }
-        let mut rows = self.retained;
-        rows.sort_unstable_by(|left, right| compare_positions(&self.order, left, right));
-        let has_more = rows.len() > self.limit;
+        heap_sort(self.source, &mut self.retained)?;
+        let has_more = self.retained.len() > self.limit;
         if has_more {
-            rows.truncate(self.limit);
+            self.retained.truncate(self.limit);
         }
-        let cursor = has_more.then(|| rows.last().cloned()).flatten();
+        let cursor = has_more.then(|| self.retained.last().copied()).flatten();
         Ok(TopNPage {
-            order: self.order,
-            rows,
+            source: self.source,
+            rows: self.retained,
             cursor,
         })
     }
 
     fn poison(&mut self, error: TopNError) -> Result<(), TopNError> {
         self.retained.clear();
-        self.retained_payload_bytes = 0;
         self.failure = Some(error);
         Err(error)
     }
-
-    fn push_heap(&mut self, position: TopNPosition) {
-        self.retained.push(position);
-        let mut child = self.retained.len() - 1;
-        while child > 0 {
-            let parent = (child - 1) / 2;
-            if compare_positions(&self.order, &self.retained[child], &self.retained[parent])
-                != Ordering::Greater
-            {
-                break;
-            }
-            self.retained.swap(child, parent);
-            child = parent;
-        }
-    }
-
-    fn sift_down(&mut self, mut parent: usize) -> Result<(), TopNError> {
-        loop {
-            let left = parent
-                .checked_mul(2)
-                .and_then(|value| value.checked_add(1))
-                .ok_or(TopNError::ArithmeticOverflow)?;
-            if left >= self.retained.len() {
-                break;
-            }
-            let right = left.checked_add(1).ok_or(TopNError::ArithmeticOverflow)?;
-            let larger = if right < self.retained.len()
-                && compare_positions(&self.order, &self.retained[right], &self.retained[left])
-                    == Ordering::Greater
-            {
-                right
-            } else {
-                left
-            };
-            if compare_positions(&self.order, &self.retained[larger], &self.retained[parent])
-                != Ordering::Greater
-            {
-                break;
-            }
-            self.retained.swap(parent, larger);
-            parent = larger;
-        }
-        Ok(())
-    }
 }
 
-#[derive(Debug, Eq, PartialEq)]
-pub(crate) struct TopNPage {
-    order: Vec<TopNOrderTerm>,
-    rows: Vec<TopNPosition>,
-    cursor: Option<TopNPosition>,
+#[derive(Debug)]
+pub(crate) struct TopNPage<'view> {
+    source: &'view TopNSource<'view>,
+    rows: Vec<RowOrdinal>,
+    cursor: Option<RowOrdinal>,
 }
 
-impl TopNPage {
+impl TopNPage<'_> {
     pub(crate) const fn has_more(&self) -> bool {
         self.cursor.is_some()
     }
 
-    pub(crate) const fn cursor(&self) -> Option<&TopNPosition> {
-        self.cursor.as_ref()
+    pub(crate) fn cursor_primary_key(&self) -> Option<&PrimaryKeyBytes> {
+        self.source.primary_key(self.cursor?).ok()
     }
 
-    pub(crate) fn primary_key_bytes(&self) -> Vec<Vec<u8>> {
-        self.rows
-            .iter()
-            .map(|row| row.primary_key.as_bytes().to_vec())
-            .collect()
+    pub(crate) fn primary_key_slices(&self) -> impl Iterator<Item = &[u8]> {
+        self.rows.iter().filter_map(|row| {
+            self.source
+                .primary_key(*row)
+                .ok()
+                .map(PrimaryKeyBytes::as_bytes)
+        })
     }
 
     pub(crate) fn compare_row_to_cursor(&self, row: usize) -> Option<Ordering> {
-        Some(compare_positions(
-            &self.order,
-            self.rows.get(row)?,
-            self.cursor.as_ref()?,
-        ))
+        compare_rows(self.source, *self.rows.get(row)?, self.cursor?).ok()
     }
 }
 
-fn compare_positions(
-    order: &[TopNOrderTerm],
-    left: &TopNPosition,
-    right: &TopNPosition,
-) -> Ordering {
-    for ((term, left), right) in order.iter().zip(&left.order).zip(&right.order) {
-        let compared = match (left, right) {
-            (RankedCell::NoValue, RankedCell::NoValue) => Ordering::Equal,
-            (RankedCell::NoValue, RankedCell::Value(_)) => match term.no_value {
-                TopNNoValuePlacement::First => Ordering::Less,
-                TopNNoValuePlacement::Last => Ordering::Greater,
-                TopNNoValuePlacement::PresentOnly => Ordering::Equal,
-            },
-            (RankedCell::Value(_), RankedCell::NoValue) => match term.no_value {
-                TopNNoValuePlacement::First => Ordering::Greater,
-                TopNNoValuePlacement::Last => Ordering::Less,
-                TopNNoValuePlacement::PresentOnly => Ordering::Equal,
-            },
-            (RankedCell::Value(left), RankedCell::Value(right)) => match term.direction {
-                TopNValueDirection::Ascending => left.cmp(right),
-                TopNValueDirection::Descending => left.cmp(right).reverse(),
-            },
-        };
-        if compared != Ordering::Equal {
-            return compared;
-        }
-    }
-    left.primary_key.cmp(&right.primary_key)
+fn retained_state_bytes(heap_capacity: usize, arena_capacity: usize) -> Result<usize, TopNError> {
+    heap_capacity
+        .checked_mul(size_of::<RowOrdinal>())
+        .and_then(|heap| heap.checked_add(arena_capacity))
+        .ok_or(TopNError::ArithmeticOverflow)
 }
 
-fn position(order: &[TopNOrderTerm], candidate: TopNCandidate) -> Result<TopNPosition, TopNError> {
-    if candidate.primary_key.as_bytes().is_empty()
-        || candidate.primary_key.as_bytes().len() > MAX_KEY_BYTES
-    {
-        return Err(TopNError::InvalidPrimaryKey);
+fn enforce_state_ceiling(bytes: usize) -> Result<(), TopNError> {
+    let ceiling = usize::try_from(MAX_APPLICATION_QUERY_RESULT_BYTES)
+        .map_err(|_| TopNError::ArithmeticOverflow)?;
+    if bytes > ceiling {
+        return Err(TopNError::StateBoundExceeded);
     }
-    if candidate.order_cells.len() != order.len() {
-        return Err(TopNError::CellCount);
-    }
-    let mut payload_bytes = candidate.primary_key.as_bytes().len();
-    let mut ranked = Vec::with_capacity(order.len());
-    for (term, cell) in order.iter().zip(candidate.order_cells) {
-        payload_bytes = payload_bytes
-            .checked_add(cell_payload_bytes(&cell)?)
-            .ok_or(TopNError::ArithmeticOverflow)?;
-        ranked.push(rank_cell(term, cell)?);
-    }
-    Ok(TopNPosition {
-        order: ranked,
-        primary_key: candidate.primary_key,
-        payload_bytes,
-    })
+    Ok(())
 }
 
-fn cell_payload_bytes(cell: &SegmentV2Cell) -> Result<usize, TopNError> {
-    match cell {
-        SegmentV2Cell::Missing | SegmentV2Cell::Null => Ok(1),
-        SegmentV2Cell::Value(value) => match value {
-            CanonicalValue::Bool(_) => Ok(2),
-            CanonicalValue::I64(_) | CanonicalValue::U64(_) => Ok(9),
-            CanonicalValue::Decimal(_) => Ok(17),
-            CanonicalValue::Money(_) => Ok(20),
-            CanonicalValue::String(value) => value
-                .len()
-                .checked_add(1)
-                .ok_or(TopNError::ArithmeticOverflow),
-            CanonicalValue::Bytes(value) => value
-                .len()
-                .checked_add(1)
-                .ok_or(TopNError::ArithmeticOverflow),
-            CanonicalValue::Timestamp(_) => Ok(13),
-            CanonicalValue::Date(_) => Ok(5),
-            CanonicalValue::Uuid(_) => Ok(17),
-            CanonicalValue::Enum { .. } => Ok(9),
-            CanonicalValue::Null
-            | CanonicalValue::List(_)
-            | CanonicalValue::Record(_)
-            | CanonicalValue::Vector(_) => Err(TopNError::TypeMismatch),
-        },
+fn validate_row(source: &TopNSource<'_>, row: RowOrdinal) -> Result<(), TopNError> {
+    source.primary_key(row)?;
+    for (index, term) in source.order.iter().enumerate() {
+        validate_cell(term, source.cell(index, row)?)?;
     }
+    Ok(())
 }
 
-fn rank_cell(term: &TopNOrderTerm, cell: SegmentV2Cell) -> Result<RankedCell, TopNError> {
+fn validate_cell(term: &TopNOrderTerm, cell: &SegmentV2Cell) -> Result<(), TopNError> {
     match cell {
         SegmentV2Cell::Missing | SegmentV2Cell::Null => match term.no_value {
             TopNNoValuePlacement::PresentOnly => Err(TopNError::UnexpectedNoValue),
-            TopNNoValuePlacement::First | TopNNoValuePlacement::Last => Ok(RankedCell::NoValue),
+            TopNNoValuePlacement::First | TopNNoValuePlacement::Last => Ok(()),
         },
-        SegmentV2Cell::Value(value) => Ok(RankedCell::Value(ordered_scalar(
-            &term.logical_type,
-            value,
-        )?)),
+        SegmentV2Cell::Value(value) => validate_present_type(&term.logical_type, value)
+            .then_some(())
+            .ok_or(TopNError::TypeMismatch),
     }
 }
 
-fn ordered_scalar(
-    logical_type: &SegmentV2LogicalType,
-    value: CanonicalValue,
-) -> Result<OrderedScalar, TopNError> {
+fn validate_present_type(logical_type: &SegmentV2LogicalType, value: &CanonicalValue) -> bool {
     match (logical_type, value) {
-        (SegmentV2LogicalType::Bool, CanonicalValue::Bool(value)) => Ok(OrderedScalar::Bool(value)),
-        (SegmentV2LogicalType::I64, CanonicalValue::I64(value)) => Ok(OrderedScalar::I64(value)),
-        (SegmentV2LogicalType::U64, CanonicalValue::U64(value)) => Ok(OrderedScalar::U64(value)),
-        (SegmentV2LogicalType::String, CanonicalValue::String(value)) => {
-            Ok(OrderedScalar::String(value.into_string()))
+        (SegmentV2LogicalType::Bool, CanonicalValue::Bool(_))
+        | (SegmentV2LogicalType::I64, CanonicalValue::I64(_))
+        | (SegmentV2LogicalType::U64, CanonicalValue::U64(_))
+        | (SegmentV2LogicalType::String, CanonicalValue::String(_))
+        | (SegmentV2LogicalType::Bytes, CanonicalValue::Bytes(_))
+        | (SegmentV2LogicalType::Timestamp, CanonicalValue::Timestamp(_))
+        | (SegmentV2LogicalType::Date, CanonicalValue::Date(_))
+        | (SegmentV2LogicalType::Uuid, CanonicalValue::Uuid(_)) => true,
+        (SegmentV2LogicalType::Enum(expected), CanonicalValue::Enum { type_id, .. }) => {
+            expected == type_id
         }
-        (SegmentV2LogicalType::Bytes, CanonicalValue::Bytes(value)) => {
-            Ok(OrderedScalar::Bytes(value.into_vec()))
+        (SegmentV2LogicalType::Decimal(expected), CanonicalValue::Decimal(value)) => {
+            *expected == value.spec()
         }
-        (SegmentV2LogicalType::Timestamp, CanonicalValue::Timestamp(value)) => {
-            Ok(OrderedScalar::Timestamp(value))
+        (SegmentV2LogicalType::Money { currency, amount }, CanonicalValue::Money(value)) => {
+            *currency == value.currency() && *amount == value.amount().spec()
         }
-        (SegmentV2LogicalType::Date, CanonicalValue::Date(value)) => Ok(OrderedScalar::Date(value)),
-        (SegmentV2LogicalType::Uuid, CanonicalValue::Uuid(value)) => Ok(OrderedScalar::Uuid(value)),
-        (
-            SegmentV2LogicalType::Enum(expected),
-            CanonicalValue::Enum {
-                type_id,
-                variant_id,
-            },
-        ) if *expected == type_id => Ok(OrderedScalar::Enum(variant_id)),
-        (SegmentV2LogicalType::Decimal(expected), CanonicalValue::Decimal(value))
-            if *expected == value.spec() =>
-        {
-            Ok(OrderedScalar::Decimal(value.coefficient()))
-        }
-        (SegmentV2LogicalType::Money { currency, amount }, CanonicalValue::Money(value))
-            if *currency == value.currency() && *amount == value.amount().spec() =>
-        {
-            Ok(OrderedScalar::Money(value.amount().coefficient()))
-        }
-        _ => Err(TopNError::TypeMismatch),
+        _ => false,
     }
+}
+
+fn compare_rows(
+    source: &TopNSource<'_>,
+    left: RowOrdinal,
+    right: RowOrdinal,
+) -> Result<Ordering, TopNError> {
+    for (index, term) in source.order.iter().enumerate() {
+        let compared = compare_cells(
+            source.binding.comparison_profile,
+            term,
+            source.cell(index, left)?,
+            source.cell(index, right)?,
+        )?;
+        if compared != Ordering::Equal {
+            return Ok(compared);
+        }
+    }
+    Ok(source
+        .primary_key(left)?
+        .as_bytes()
+        .cmp(source.primary_key(right)?.as_bytes()))
+}
+
+fn compare_cells(
+    profile: TopNComparisonProfile,
+    term: &TopNOrderTerm,
+    left: &SegmentV2Cell,
+    right: &SegmentV2Cell,
+) -> Result<Ordering, TopNError> {
+    validate_cell(term, left)?;
+    validate_cell(term, right)?;
+    let compared = match (left, right) {
+        (
+            SegmentV2Cell::Missing | SegmentV2Cell::Null,
+            SegmentV2Cell::Missing | SegmentV2Cell::Null,
+        ) => Ordering::Equal,
+        (SegmentV2Cell::Missing | SegmentV2Cell::Null, SegmentV2Cell::Value(_)) => {
+            match term.no_value {
+                TopNNoValuePlacement::First => Ordering::Less,
+                TopNNoValuePlacement::Last => Ordering::Greater,
+                TopNNoValuePlacement::PresentOnly => return Err(TopNError::UnexpectedNoValue),
+            }
+        }
+        (SegmentV2Cell::Value(_), SegmentV2Cell::Missing | SegmentV2Cell::Null) => {
+            match term.no_value {
+                TopNNoValuePlacement::First => Ordering::Greater,
+                TopNNoValuePlacement::Last => Ordering::Less,
+                TopNNoValuePlacement::PresentOnly => return Err(TopNError::UnexpectedNoValue),
+            }
+        }
+        (SegmentV2Cell::Value(left), SegmentV2Cell::Value(right)) => {
+            let compared = compare_present(profile, &term.logical_type, left, right)?;
+            match term.direction {
+                TopNValueDirection::Ascending => compared,
+                TopNValueDirection::Descending => compared.reverse(),
+            }
+        }
+    };
+    Ok(compared)
+}
+
+fn compare_present(
+    profile: TopNComparisonProfile,
+    logical_type: &SegmentV2LogicalType,
+    left: &CanonicalValue,
+    right: &CanonicalValue,
+) -> Result<Ordering, TopNError> {
+    if !validate_present_type(logical_type, left) || !validate_present_type(logical_type, right) {
+        return Err(TopNError::TypeMismatch);
+    }
+    match profile {
+        TopNComparisonProfile::CanonicalScalarV1 => {}
+    }
+    let compared = match (left, right) {
+        (CanonicalValue::Bool(left), CanonicalValue::Bool(right)) => left.cmp(right),
+        (CanonicalValue::I64(left), CanonicalValue::I64(right)) => left.cmp(right),
+        (CanonicalValue::U64(left), CanonicalValue::U64(right)) => left.cmp(right),
+        (CanonicalValue::String(left), CanonicalValue::String(right)) => {
+            left.as_str().cmp(right.as_str())
+        }
+        (CanonicalValue::Bytes(left), CanonicalValue::Bytes(right)) => {
+            left.as_bytes().cmp(right.as_bytes())
+        }
+        (CanonicalValue::Timestamp(left), CanonicalValue::Timestamp(right)) => left.cmp(right),
+        (CanonicalValue::Date(left), CanonicalValue::Date(right)) => left.cmp(right),
+        (CanonicalValue::Uuid(left), CanonicalValue::Uuid(right)) => left.cmp(right),
+        (
+            CanonicalValue::Enum {
+                variant_id: left, ..
+            },
+            CanonicalValue::Enum {
+                variant_id: right, ..
+            },
+        ) => left.cmp(right),
+        (CanonicalValue::Decimal(left), CanonicalValue::Decimal(right)) => left
+            .coefficient()
+            .to_be_bytes()
+            .cmp(&right.coefficient().to_be_bytes()),
+        (CanonicalValue::Money(left), CanonicalValue::Money(right)) => left
+            .amount()
+            .coefficient()
+            .to_be_bytes()
+            .cmp(&right.amount().coefficient().to_be_bytes()),
+        _ => return Err(TopNError::TypeMismatch),
+    };
+    Ok(compared)
+}
+
+fn push_heap(
+    source: &TopNSource<'_>,
+    retained: &mut Vec<RowOrdinal>,
+    row: RowOrdinal,
+) -> Result<(), TopNError> {
+    retained.push(row);
+    let mut child = retained.len() - 1;
+    while child > 0 {
+        let parent = (child - 1) / 2;
+        if compare_rows(source, retained[child], retained[parent])? != Ordering::Greater {
+            break;
+        }
+        retained.swap(child, parent);
+        child = parent;
+    }
+    Ok(())
+}
+
+fn sift_down(
+    source: &TopNSource<'_>,
+    retained: &mut [RowOrdinal],
+    mut parent: usize,
+    end: usize,
+) -> Result<(), TopNError> {
+    loop {
+        let left = parent
+            .checked_mul(2)
+            .and_then(|value| value.checked_add(1))
+            .ok_or(TopNError::ArithmeticOverflow)?;
+        if left >= end {
+            break;
+        }
+        let right = left.checked_add(1).ok_or(TopNError::ArithmeticOverflow)?;
+        let larger = if right < end
+            && compare_rows(source, retained[right], retained[left])? == Ordering::Greater
+        {
+            right
+        } else {
+            left
+        };
+        if compare_rows(source, retained[larger], retained[parent])? != Ordering::Greater {
+            break;
+        }
+        retained.swap(parent, larger);
+        parent = larger;
+    }
+    Ok(())
+}
+
+fn heap_sort(source: &TopNSource<'_>, retained: &mut [RowOrdinal]) -> Result<(), TopNError> {
+    for end in (1..retained.len()).rev() {
+        retained.swap(0, end);
+        sift_down(source, retained, 0, end)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::PrimaryKeyBytes;
-    use crate::segment_v2::{SegmentV2Cell, SegmentV2LogicalType};
     use riffdb_types::{
-        CanonicalValue, CurrencyCode, Date, Decimal, DecimalSpec, EnumTypeId, EnumVariantId, Money,
-        Timestamp,
+        CurrencyCode, Date, Decimal, DecimalSpec, EnumTypeId, EnumVariantId, Money, Timestamp,
+        encode_canonical_value,
     };
 
-    fn key(value: u8) -> PrimaryKeyBytes {
-        PrimaryKeyBytes::from_entity_key_bytes(vec![value])
+    fn binding() -> TopNProgramBinding {
+        TopNProgramBinding::new(
+            Some(TopNComparisonProfile::CanonicalScalarV1),
+            QueryPlanHash::from_bytes([0x71; 32]),
+            ProjectionGeneration::new(7).expect("generation"),
+        )
+        .expect("exact binding")
     }
 
-    fn candidate(primary_key: u8, cells: Vec<SegmentV2Cell>) -> TopNCandidate {
-        TopNCandidate::new(key(primary_key), cells)
+    fn key(value: u32) -> PrimaryKeyBytes {
+        PrimaryKeyBytes::from_entity_key_bytes(value.to_be_bytes())
     }
 
-    fn assert_scalar_order(
-        logical_type: SegmentV2LogicalType,
-        left: CanonicalValue,
-        right: CanonicalValue,
-    ) {
-        for (direction, expected) in [
-            (TopNValueDirection::Ascending, vec![vec![2], vec![1]]),
-            (TopNValueDirection::Descending, vec![vec![1], vec![2]]),
-        ] {
-            let mut top = BoundedTopN::new(
-                vec![TopNOrderTerm::new(
-                    logical_type.clone(),
-                    direction,
-                    TopNNoValuePlacement::PresentOnly,
-                )],
-                2,
+    fn key_bytes(page: &TopNPage<'_>) -> Vec<Vec<u8>> {
+        page.primary_key_slices().map(<[u8]>::to_vec).collect()
+    }
+
+    fn source<'a>(
+        order: &'a [TopNOrderTerm],
+        keys: &'a [PrimaryKeyBytes],
+        lanes: &'a [&'a [SegmentV2Cell]],
+    ) -> TopNSource<'a> {
+        TopNSource::new(binding(), order, keys, lanes).expect("validated source")
+    }
+
+    fn oracle_present(
+        logical_type: &SegmentV2LogicalType,
+        left: &CanonicalValue,
+        right: &CanonicalValue,
+    ) -> Ordering {
+        match (logical_type, left, right) {
+            (
+                SegmentV2LogicalType::Bool,
+                CanonicalValue::Bool(left),
+                CanonicalValue::Bool(right),
+            ) => left.cmp(right),
+            (SegmentV2LogicalType::I64, CanonicalValue::I64(left), CanonicalValue::I64(right)) => {
+                left.cmp(right)
+            }
+            (SegmentV2LogicalType::U64, CanonicalValue::U64(left), CanonicalValue::U64(right)) => {
+                left.cmp(right)
+            }
+            (
+                SegmentV2LogicalType::String,
+                CanonicalValue::String(left),
+                CanonicalValue::String(right),
+            ) => left.as_str().cmp(right.as_str()),
+            (
+                SegmentV2LogicalType::Bytes,
+                CanonicalValue::Bytes(left),
+                CanonicalValue::Bytes(right),
+            ) => left.as_bytes().cmp(right.as_bytes()),
+            (
+                SegmentV2LogicalType::Timestamp,
+                CanonicalValue::Timestamp(left),
+                CanonicalValue::Timestamp(right),
+            ) => left.cmp(right),
+            (
+                SegmentV2LogicalType::Date,
+                CanonicalValue::Date(left),
+                CanonicalValue::Date(right),
+            ) => left.cmp(right),
+            (
+                SegmentV2LogicalType::Uuid,
+                CanonicalValue::Uuid(left),
+                CanonicalValue::Uuid(right),
+            ) => left.cmp(right),
+            (
+                SegmentV2LogicalType::Enum(_),
+                CanonicalValue::Enum { .. },
+                CanonicalValue::Enum { .. },
             )
-            .expect("bounded scalar order");
-            top.push(candidate(2, vec![SegmentV2Cell::Value(left.clone())]))
-                .expect("left scalar");
-            top.push(candidate(1, vec![SegmentV2Cell::Value(right.clone())]))
-                .expect("right scalar");
-            assert_eq!(top.finish().expect("page").primary_key_bytes(), expected);
+            | (
+                SegmentV2LogicalType::Decimal(_),
+                CanonicalValue::Decimal(_),
+                CanonicalValue::Decimal(_),
+            )
+            | (
+                SegmentV2LogicalType::Money { .. },
+                CanonicalValue::Money(_),
+                CanonicalValue::Money(_),
+            ) => encode_canonical_value(left)
+                .expect("left oracle bytes")
+                .cmp(&encode_canonical_value(right).expect("right oracle bytes")),
+            _ => panic!("test oracle received mismatched values"),
+        }
+    }
+
+    fn assert_profile_differential(
+        logical_type: SegmentV2LogicalType,
+        values: Vec<CanonicalValue>,
+    ) {
+        let keys = (1..=values.len() as u32).map(key).collect::<Vec<_>>();
+        let lane = values
+            .into_iter()
+            .map(SegmentV2Cell::Value)
+            .collect::<Vec<_>>();
+        let lanes = [lane.as_slice()];
+        for direction in [
+            TopNValueDirection::Ascending,
+            TopNValueDirection::Descending,
+        ] {
+            let order = [TopNOrderTerm::new(
+                logical_type.clone(),
+                direction,
+                TopNNoValuePlacement::PresentOnly,
+            )];
+            let source = source(&order, &keys, &lanes);
+            let mut expected = (0..source.row_count()).collect::<Vec<_>>();
+            expected.sort_unstable_by(|left, right| {
+                let left_value = match &lane[*left] {
+                    SegmentV2Cell::Value(value) => value,
+                    _ => unreachable!(),
+                };
+                let right_value = match &lane[*right] {
+                    SegmentV2Cell::Value(value) => value,
+                    _ => unreachable!(),
+                };
+                let compared = oracle_present(&logical_type, left_value, right_value);
+                match direction {
+                    TopNValueDirection::Ascending => compared,
+                    TopNValueDirection::Descending => compared.reverse(),
+                }
+                .then_with(|| keys[*left].cmp(&keys[*right]))
+            });
+            let mut top = BoundedTopN::new(&source, source.row_count()).expect("bounded top-n");
+            for row in 0..source.row_count() {
+                top.push(row).expect("valid row");
+            }
+            let actual = key_bytes(&top.finish().expect("page"));
+            let expected = expected
+                .into_iter()
+                .map(|row| keys[row].as_bytes().to_vec())
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected);
         }
     }
 
     // Inert mechanics checkpoint only. This deliberately does not claim an
     // ADR-0161 obligation or select the batch path for production execution.
     #[test]
-    fn bounded_top_n_orders_no_value_terms_and_uses_the_unique_key_tie_break() {
-        let order = vec![
-            TopNOrderTerm::new(
-                SegmentV2LogicalType::U64,
-                TopNValueDirection::Descending,
-                TopNNoValuePlacement::Last,
+    fn profile_binding_is_exact_and_ambiguous_construction_is_refused() {
+        assert_eq!(
+            TopNProgramBinding::new(
+                None,
+                QueryPlanHash::from_bytes([1; 32]),
+                ProjectionGeneration::first()
             ),
-            TopNOrderTerm::new(
-                SegmentV2LogicalType::U64,
+            Err(TopNError::AmbiguousComparisonProfile)
+        );
+        let binding = binding();
+        assert_eq!(
+            binding.comparison_profile(),
+            TopNComparisonProfile::CanonicalScalarV1
+        );
+        assert_eq!(
+            binding.plan_identity(),
+            QueryPlanHash::from_bytes([0x71; 32])
+        );
+        assert_eq!(
+            binding.generation(),
+            ProjectionGeneration::new(7).expect("generation")
+        );
+    }
+
+    #[test]
+    fn all_direction_and_no_value_placement_combinations_are_exact() {
+        let keys = vec![key(1), key(2), key(3), key(4)];
+        let lane = vec![
+            SegmentV2Cell::Missing,
+            SegmentV2Cell::Null,
+            SegmentV2Cell::Value(CanonicalValue::U64(3)),
+            SegmentV2Cell::Value(CanonicalValue::U64(7)),
+        ];
+        let lanes = [lane.as_slice()];
+        for (direction, placement, expected) in [
+            (
                 TopNValueDirection::Ascending,
                 TopNNoValuePlacement::First,
+                vec![1, 2, 3, 4],
             ),
-        ];
-        let mut top = BoundedTopN::new(order, 5).expect("bounded program");
-        for row in [
-            candidate(
-                8,
-                vec![
-                    SegmentV2Cell::Null,
-                    SegmentV2Cell::Value(CanonicalValue::U64(1)),
-                ],
+            (
+                TopNValueDirection::Descending,
+                TopNNoValuePlacement::First,
+                vec![1, 2, 4, 3],
             ),
-            candidate(
-                5,
-                vec![
-                    SegmentV2Cell::Value(CanonicalValue::U64(9)),
-                    SegmentV2Cell::Value(CanonicalValue::U64(2)),
-                ],
+            (
+                TopNValueDirection::Ascending,
+                TopNNoValuePlacement::Last,
+                vec![3, 4, 1, 2],
             ),
-            candidate(
-                2,
-                vec![
-                    SegmentV2Cell::Value(CanonicalValue::U64(9)),
-                    SegmentV2Cell::Value(CanonicalValue::U64(1)),
-                ],
-            ),
-            candidate(
-                1,
-                vec![
-                    SegmentV2Cell::Value(CanonicalValue::U64(9)),
-                    SegmentV2Cell::Value(CanonicalValue::U64(1)),
-                ],
-            ),
-            candidate(
-                7,
-                vec![
-                    SegmentV2Cell::Missing,
-                    SegmentV2Cell::Value(CanonicalValue::U64(0)),
-                ],
-            ),
-            candidate(
-                4,
-                vec![
-                    SegmentV2Cell::Value(CanonicalValue::U64(8)),
-                    SegmentV2Cell::Null,
-                ],
-            ),
-            candidate(
-                3,
-                vec![
-                    SegmentV2Cell::Value(CanonicalValue::U64(8)),
-                    SegmentV2Cell::Missing,
-                ],
+            (
+                TopNValueDirection::Descending,
+                TopNNoValuePlacement::Last,
+                vec![4, 3, 1, 2],
             ),
         ] {
-            top.push(row).expect("valid row");
-        }
-        let page = top.finish().expect("complete page");
-        assert_eq!(
-            page.primary_key_bytes(),
-            vec![vec![1], vec![2], vec![5], vec![3], vec![4]]
-        );
-        assert!(page.has_more());
-        assert_eq!(
-            page.cursor()
-                .expect("continuation")
-                .primary_key()
-                .as_bytes(),
-            &[4]
-        );
-
-        for (direction, placement) in [
-            (TopNValueDirection::Ascending, TopNNoValuePlacement::First),
-            (TopNValueDirection::Descending, TopNNoValuePlacement::Last),
-        ] {
-            let mut top = BoundedTopN::new(
-                vec![TopNOrderTerm::new(
-                    SegmentV2LogicalType::U64,
-                    direction,
-                    placement,
-                )],
-                3,
-            )
-            .expect("state-aware order");
-            top.push(candidate(2, vec![SegmentV2Cell::Missing]))
-                .expect("missing is NoValue");
-            top.push(candidate(1, vec![SegmentV2Cell::Null]))
-                .expect("null is NoValue");
-            top.push(candidate(
-                3,
-                vec![SegmentV2Cell::Value(CanonicalValue::U64(7))],
-            ))
-            .expect("present value");
-            let expected = match placement {
-                TopNNoValuePlacement::First => vec![vec![1], vec![2], vec![3]],
-                TopNNoValuePlacement::Last => vec![vec![3], vec![1], vec![2]],
-                TopNNoValuePlacement::PresentOnly => unreachable!(),
-            };
-            assert_eq!(top.finish().expect("page").primary_key_bytes(), expected);
+            let order = [TopNOrderTerm::new(
+                SegmentV2LogicalType::U64,
+                direction,
+                placement,
+            )];
+            let source = source(&order, &keys, &lanes);
+            let mut top = BoundedTopN::new(&source, 4).expect("bounded top-n");
+            for row in 0..4 {
+                top.push(row).expect("valid row");
+            }
+            assert_eq!(
+                key_bytes(&top.finish().expect("page")),
+                expected
+                    .into_iter()
+                    .map(|value| key(value).as_bytes().to_vec())
+                    .collect::<Vec<_>>()
+            );
         }
     }
 
     #[test]
-    fn bounded_top_n_covers_the_complete_v2_scalar_total_order() {
-        assert_scalar_order(
+    fn profile_matches_an_independent_full_sort_for_every_admitted_scalar_type() {
+        assert_profile_differential(
             SegmentV2LogicalType::Bool,
-            CanonicalValue::Bool(false),
-            CanonicalValue::Bool(true),
+            vec![CanonicalValue::Bool(true), CanonicalValue::Bool(false)],
         );
-        assert_scalar_order(
+        assert_profile_differential(
             SegmentV2LogicalType::I64,
-            CanonicalValue::I64(-1),
-            CanonicalValue::I64(1),
+            vec![
+                CanonicalValue::I64(1),
+                CanonicalValue::I64(-1),
+                CanonicalValue::I64(0),
+            ],
         );
-        assert_scalar_order(
+        assert_profile_differential(
             SegmentV2LogicalType::U64,
-            CanonicalValue::U64(1),
-            CanonicalValue::U64(2),
+            vec![
+                CanonicalValue::U64(9),
+                CanonicalValue::U64(1),
+                CanonicalValue::U64(5),
+            ],
         );
-        assert_scalar_order(
+        assert_profile_differential(
             SegmentV2LogicalType::String,
-            CanonicalValue::string("alpha").expect("string"),
-            CanonicalValue::string("beta").expect("string"),
+            vec![
+                CanonicalValue::string("beta").expect("string"),
+                CanonicalValue::string("alpha").expect("string"),
+            ],
         );
-        assert_scalar_order(
+        assert_profile_differential(
             SegmentV2LogicalType::Bytes,
-            CanonicalValue::bytes([0x01]).expect("bytes"),
-            CanonicalValue::bytes([0x02]).expect("bytes"),
+            vec![
+                CanonicalValue::bytes([2]).expect("bytes"),
+                CanonicalValue::bytes([1]).expect("bytes"),
+            ],
         );
-        assert_scalar_order(
+        assert_profile_differential(
             SegmentV2LogicalType::Timestamp,
-            CanonicalValue::Timestamp(Timestamp::new(-1, 999_999_999).expect("timestamp")),
-            CanonicalValue::Timestamp(Timestamp::new(0, 0).expect("timestamp")),
+            vec![
+                CanonicalValue::Timestamp(Timestamp::new(1, 0).expect("timestamp")),
+                CanonicalValue::Timestamp(Timestamp::new(-1, 0).expect("timestamp")),
+            ],
         );
-        assert_scalar_order(
+        assert_profile_differential(
             SegmentV2LogicalType::Date,
-            CanonicalValue::Date(Date::new(-1)),
-            CanonicalValue::Date(Date::new(1)),
+            vec![
+                CanonicalValue::Date(Date::new(1)),
+                CanonicalValue::Date(Date::new(-1)),
+            ],
         );
-        assert_scalar_order(
+        assert_profile_differential(
             SegmentV2LogicalType::Uuid,
-            CanonicalValue::Uuid([0x01; 16]),
-            CanonicalValue::Uuid([0x02; 16]),
+            vec![CanonicalValue::Uuid([2; 16]), CanonicalValue::Uuid([1; 16])],
         );
         let enum_type = EnumTypeId::new(7).expect("enum type");
-        assert_scalar_order(
+        assert_profile_differential(
             SegmentV2LogicalType::Enum(enum_type),
-            CanonicalValue::Enum {
-                type_id: enum_type,
-                variant_id: EnumVariantId::new(1).expect("variant"),
-            },
-            CanonicalValue::Enum {
-                type_id: enum_type,
-                variant_id: EnumVariantId::new(2).expect("variant"),
-            },
+            vec![
+                CanonicalValue::Enum {
+                    type_id: enum_type,
+                    variant_id: EnumVariantId::new(2).expect("variant"),
+                },
+                CanonicalValue::Enum {
+                    type_id: enum_type,
+                    variant_id: EnumVariantId::new(1).expect("variant"),
+                },
+            ],
         );
-        let decimal = DecimalSpec::new(8, 2).expect("decimal type");
-        assert_scalar_order(
+        let decimal = DecimalSpec::new(8, 2).expect("decimal spec");
+        assert_profile_differential(
             SegmentV2LogicalType::Decimal(decimal),
-            CanonicalValue::Decimal(Decimal::new(decimal, -1).expect("decimal")),
-            CanonicalValue::Decimal(Decimal::new(decimal, 1).expect("decimal")),
+            vec![
+                CanonicalValue::Decimal(Decimal::new(decimal, -1).expect("decimal")),
+                CanonicalValue::Decimal(Decimal::new(decimal, 1).expect("decimal")),
+                CanonicalValue::Decimal(Decimal::new(decimal, 0).expect("decimal")),
+            ],
         );
-        let currency = CurrencyCode::new("USD").expect("currency");
-        assert_scalar_order(
+        let usd = CurrencyCode::new("USD").expect("currency");
+        assert_profile_differential(
             SegmentV2LogicalType::Money {
-                currency,
+                currency: usd,
                 amount: decimal,
             },
-            CanonicalValue::Money(Money::new(
-                currency,
-                Decimal::new(decimal, -1).expect("amount"),
-            )),
-            CanonicalValue::Money(Money::new(
-                currency,
-                Decimal::new(decimal, 1).expect("amount"),
-            )),
+            vec![
+                CanonicalValue::Money(Money::new(usd, Decimal::new(decimal, -1).expect("amount"))),
+                CanonicalValue::Money(Money::new(usd, Decimal::new(decimal, 1).expect("amount"))),
+                CanonicalValue::Money(Money::new(usd, Decimal::new(decimal, 0).expect("amount"))),
+            ],
         );
     }
 
     #[test]
-    fn bounded_top_n_refuses_bounds_states_and_types_without_partial_output() {
-        assert_eq!(
-            BoundedTopN::new(Vec::new(), 0).unwrap_err(),
-            TopNError::InvalidLimit
-        );
-        assert_eq!(
-            BoundedTopN::new(
-                Vec::new(),
-                riffdb_types::MAX_APPLICATION_QUERY_PAGE_ROWS as usize + 1
-            )
-            .unwrap_err(),
-            TopNError::InvalidLimit
-        );
-        let order = vec![TopNOrderTerm::new(
+    fn source_refuses_duplicate_and_out_of_bound_keys_and_lane_shapes() {
+        let order = [TopNOrderTerm::new(
             SegmentV2LogicalType::U64,
             TopNValueDirection::Ascending,
             TopNNoValuePlacement::PresentOnly,
         )];
-        let mut top = BoundedTopN::new(order, 1).expect("bounded program");
+        let lane = vec![
+            SegmentV2Cell::Value(CanonicalValue::U64(1)),
+            SegmentV2Cell::Value(CanonicalValue::U64(2)),
+        ];
+        let lanes = [lane.as_slice()];
+        let duplicate = vec![key(1), key(1)];
         assert_eq!(
-            top.push(candidate(
-                1,
-                vec![SegmentV2Cell::Value(CanonicalValue::U64(1))]
-            )),
-            Ok(())
+            TopNSource::new(binding(), &order, &duplicate, &lanes).unwrap_err(),
+            TopNError::DuplicatePrimaryKey
         );
+        let reversed = vec![key(2), key(1)];
         assert_eq!(
-            top.push(candidate(2, vec![SegmentV2Cell::Null])),
-            Err(TopNError::UnexpectedNoValue)
+            TopNSource::new(binding(), &order, &reversed, &lanes).unwrap_err(),
+            TopNError::InvalidPrimaryKey
         );
-        assert_eq!(top.finish(), Err(TopNError::UnexpectedNoValue));
 
-        let order = vec![TopNOrderTerm::new(
-            SegmentV2LogicalType::U64,
-            TopNValueDirection::Ascending,
-            TopNNoValuePlacement::Last,
-        )];
-        let mut top = BoundedTopN::new(order, 1).expect("bounded program");
+        let empty = vec![PrimaryKeyBytes::from_entity_key_bytes(Vec::new())];
+        let one_lane = vec![SegmentV2Cell::Value(CanonicalValue::U64(1))];
+        let one_lanes = [one_lane.as_slice()];
         assert_eq!(
-            top.push(candidate(
-                1,
-                vec![SegmentV2Cell::Value(CanonicalValue::I64(1))]
-            )),
-            Err(TopNError::TypeMismatch)
+            TopNSource::new(binding(), &order, &empty, &one_lanes).unwrap_err(),
+            TopNError::InvalidPrimaryKey
         );
-        assert_eq!(top.finish(), Err(TopNError::TypeMismatch));
+        let maximum = vec![PrimaryKeyBytes::from_entity_key_bytes(vec![
+            1;
+            MAX_KEY_BYTES
+        ])];
+        assert!(TopNSource::new(binding(), &order, &maximum, &one_lanes).is_ok());
+        let oversized = vec![PrimaryKeyBytes::from_entity_key_bytes(vec![
+            1;
+            MAX_KEY_BYTES
+                + 1
+        ])];
+        assert_eq!(
+            TopNSource::new(binding(), &order, &oversized, &one_lanes).unwrap_err(),
+            TopNError::InvalidPrimaryKey
+        );
+        assert_eq!(
+            TopNSource::new(binding(), &order, &maximum, &[]).unwrap_err(),
+            TopNError::LaneCount
+        );
+        assert_eq!(
+            TopNSource::new(binding(), &order, &maximum, &lanes).unwrap_err(),
+            TopNError::LaneLength
+        );
+    }
 
-        let term = TopNOrderTerm::new(
-            SegmentV2LogicalType::U64,
-            TopNValueDirection::Ascending,
-            TopNNoValuePlacement::Last,
+    #[test]
+    fn exact_order_limit_and_retained_allocation_bounds_are_closed() {
+        let maximum_terms = vec![
+            TopNOrderTerm::new(
+                SegmentV2LogicalType::U64,
+                TopNValueDirection::Ascending,
+                TopNNoValuePlacement::PresentOnly,
+            );
+            MAX_SEGMENT_V2_COLUMNS
+        ];
+        let key_rows = vec![key(1)];
+        let lane_storage = (0..MAX_SEGMENT_V2_COLUMNS)
+            .map(|_| vec![SegmentV2Cell::Value(CanonicalValue::U64(1))])
+            .collect::<Vec<_>>();
+        let lane_refs = lane_storage.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let maximum_source = source(&maximum_terms, &key_rows, &lane_refs);
+        let maximum_limit = usize::try_from(MAX_APPLICATION_QUERY_PAGE_ROWS).expect("page maximum");
+        let top = BoundedTopN::new(&maximum_source, maximum_limit).expect("maximum limit");
+        assert_eq!(top.capacity, 65_535);
+        assert_eq!(
+            top.retained_allocation_bytes(),
+            top.retained.capacity() * size_of::<RowOrdinal>()
         );
         assert_eq!(
-            BoundedTopN::new(vec![term.clone(); MAX_SEGMENT_V2_COLUMNS + 1], 1).unwrap_err(),
+            top.retained_allocation_bytes(),
+            65_535 * size_of::<RowOrdinal>()
+        );
+        assert_eq!(
+            BoundedTopN::new(&maximum_source, 0).unwrap_err(),
+            TopNError::InvalidLimit
+        );
+        assert_eq!(
+            BoundedTopN::new(&maximum_source, maximum_limit + 1).unwrap_err(),
+            TopNError::InvalidLimit
+        );
+
+        let too_many_terms = vec![maximum_terms[0].clone(); MAX_SEGMENT_V2_COLUMNS + 1];
+        let too_many_storage = (0..=MAX_SEGMENT_V2_COLUMNS)
+            .map(|_| vec![SegmentV2Cell::Value(CanonicalValue::U64(1))])
+            .collect::<Vec<_>>();
+        let too_many_refs = too_many_storage
+            .iter()
+            .map(Vec::as_slice)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            TopNSource::new(binding(), &too_many_terms, &key_rows, &too_many_refs).unwrap_err(),
             TopNError::InvalidOrder
         );
-        let maximum = BoundedTopN::new(
-            Vec::new(),
-            usize::try_from(MAX_APPLICATION_QUERY_PAGE_ROWS).expect("page bound"),
-        )
-        .expect("accepted maximum");
-        assert_eq!(maximum.capacity, 65_535);
 
-        let mut wrong_count = BoundedTopN::new(vec![term.clone()], 1).expect("bounded program");
+        let ceiling = usize::try_from(MAX_APPLICATION_QUERY_RESULT_BYTES).expect("state ceiling");
+        assert_eq!(enforce_state_ceiling(ceiling), Ok(()));
         assert_eq!(
-            wrong_count.push(candidate(1, Vec::new())),
-            Err(TopNError::CellCount)
+            enforce_state_ceiling(ceiling + 1),
+            Err(TopNError::StateBoundExceeded)
         );
-        assert_eq!(wrong_count.finish(), Err(TopNError::CellCount));
-
-        let mut bad_key = BoundedTopN::new(vec![term.clone()], 1).expect("bounded program");
         assert_eq!(
-            bad_key.push(TopNCandidate::new(
-                PrimaryKeyBytes::from_entity_key_bytes(Vec::new()),
-                vec![SegmentV2Cell::Value(CanonicalValue::U64(1))],
-            )),
-            Err(TopNError::InvalidPrimaryKey)
+            retained_state_bytes(usize::MAX, usize::MAX),
+            Err(TopNError::ArithmeticOverflow)
         );
-        assert_eq!(bad_key.finish(), Err(TopNError::InvalidPrimaryKey));
-
-        let mut oversized_key = BoundedTopN::new(vec![term.clone()], 1).expect("bounded program");
         assert_eq!(
-            oversized_key.push(TopNCandidate::new(
-                PrimaryKeyBytes::from_entity_key_bytes(vec![0; MAX_KEY_BYTES + 1]),
-                vec![SegmentV2Cell::Value(CanonicalValue::U64(1))],
-            )),
-            Err(TopNError::InvalidPrimaryKey)
+            RowOrdinal::new(usize::from(u16::MAX), MAX_SEGMENT_V2_ROWS),
+            Ok(RowOrdinal(u16::MAX))
         );
-        assert_eq!(oversized_key.finish(), Err(TopNError::InvalidPrimaryKey));
-
-        let mut wrapped_null = BoundedTopN::new(vec![term], 1).expect("bounded program");
         assert_eq!(
-            wrapped_null.push(candidate(
-                1,
-                vec![SegmentV2Cell::Value(CanonicalValue::Null)]
-            )),
-            Err(TopNError::TypeMismatch)
+            RowOrdinal::new(MAX_SEGMENT_V2_ROWS, MAX_SEGMENT_V2_ROWS),
+            Err(TopNError::LaneLength)
         );
-        assert_eq!(wrapped_null.finish(), Err(TopNError::TypeMismatch));
+    }
 
-        let enum_type = EnumTypeId::new(1).expect("enum type");
-        let other_enum_type = EnumTypeId::new(2).expect("other enum type");
-        let decimal = DecimalSpec::new(8, 2).expect("decimal type");
-        let other_decimal = DecimalSpec::new(8, 3).expect("other decimal type");
-        let usd = CurrencyCode::new("USD").expect("USD");
-        let eur = CurrencyCode::new("EUR").expect("EUR");
-        for (logical_type, value) in [
+    fn expected_cell_error(cell: &SegmentV2Cell) -> TopNError {
+        if matches!(cell, SegmentV2Cell::Null | SegmentV2Cell::Missing) {
+            TopNError::UnexpectedNoValue
+        } else {
+            TopNError::TypeMismatch
+        }
+    }
+
+    #[test]
+    fn type_state_money_spec_and_row_order_failures_are_atomic() {
+        let decimal = DecimalSpec::new(8, 2).expect("decimal spec");
+        let other_decimal = DecimalSpec::new(9, 2).expect("other decimal spec");
+        let usd = CurrencyCode::new("USD").expect("currency");
+        let eur = CurrencyCode::new("EUR").expect("currency");
+        for (logical_type, invalid) in [
+            (SegmentV2LogicalType::U64, SegmentV2Cell::Null),
             (
-                SegmentV2LogicalType::Enum(enum_type),
-                CanonicalValue::Enum {
-                    type_id: other_enum_type,
-                    variant_id: EnumVariantId::first(),
-                },
+                SegmentV2LogicalType::U64,
+                SegmentV2Cell::Value(CanonicalValue::I64(1)),
             ),
             (
                 SegmentV2LogicalType::Decimal(decimal),
-                CanonicalValue::Decimal(Decimal::new(other_decimal, 1).expect("decimal")),
+                SegmentV2Cell::Value(CanonicalValue::Decimal(
+                    Decimal::new(other_decimal, 1).expect("decimal"),
+                )),
             ),
             (
                 SegmentV2LogicalType::Money {
                     currency: usd,
                     amount: decimal,
                 },
-                CanonicalValue::Money(Money::new(eur, Decimal::new(decimal, 1).expect("amount"))),
+                SegmentV2Cell::Value(CanonicalValue::Money(Money::new(
+                    eur,
+                    Decimal::new(decimal, 1).expect("amount"),
+                ))),
+            ),
+            (
+                SegmentV2LogicalType::Money {
+                    currency: usd,
+                    amount: decimal,
+                },
+                SegmentV2Cell::Value(CanonicalValue::Money(Money::new(
+                    usd,
+                    Decimal::new(other_decimal, 1).expect("amount"),
+                ))),
             ),
         ] {
-            let mut exact_identity = BoundedTopN::new(
-                vec![TopNOrderTerm::new(
-                    logical_type,
-                    TopNValueDirection::Ascending,
-                    TopNNoValuePlacement::PresentOnly,
-                )],
-                1,
-            )
-            .expect("bounded program");
-            assert_eq!(
-                exact_identity.push(candidate(1, vec![SegmentV2Cell::Value(value)])),
-                Err(TopNError::TypeMismatch)
-            );
-            assert_eq!(exact_identity.finish(), Err(TopNError::TypeMismatch));
-        }
-    }
-
-    #[test]
-    fn bounded_top_n_enforces_its_independent_retained_state_byte_ceiling() {
-        let mut top = BoundedTopN::new(
-            vec![TopNOrderTerm::new(
-                SegmentV2LogicalType::String,
+            let order = [TopNOrderTerm::new(
+                logical_type.clone(),
                 TopNValueDirection::Ascending,
                 TopNNoValuePlacement::PresentOnly,
-            )],
-            5,
-        )
-        .expect("bounded program");
-        let bounded_text = "x".repeat(riffdb_types::MAX_STRING_BYTES - 64);
-        for primary_key in 1..=4 {
-            top.push(candidate(
-                primary_key,
-                vec![SegmentV2Cell::Value(
-                    CanonicalValue::string(bounded_text.clone()).expect("bounded string"),
-                )],
-            ))
-            .expect("within retained byte ceiling");
+            )];
+            let valid = match logical_type {
+                SegmentV2LogicalType::U64 => SegmentV2Cell::Value(CanonicalValue::U64(1)),
+                SegmentV2LogicalType::Decimal(spec) => SegmentV2Cell::Value(
+                    CanonicalValue::Decimal(Decimal::new(spec, 1).expect("decimal")),
+                ),
+                SegmentV2LogicalType::Money { currency, amount } => {
+                    SegmentV2Cell::Value(CanonicalValue::Money(Money::new(
+                        currency,
+                        Decimal::new(amount, 1).expect("amount"),
+                    )))
+                }
+                _ => unreachable!(),
+            };
+            let keys = vec![key(1), key(2)];
+            let lane = vec![valid, invalid];
+            let lanes = [lane.as_slice()];
+            let source = source(&order, &keys, &lanes);
+            let expected = expected_cell_error(&lane[1]);
+            let mut top = BoundedTopN::new(&source, 1).expect("bounded top-n");
+            top.push(0).expect("valid first row");
+            assert_eq!(top.push(1), Err(expected));
+            assert_eq!(top.retained_len(), 0);
+            assert_eq!(top.finish().unwrap_err(), expected);
         }
-        assert_eq!(
-            top.push(candidate(
-                5,
-                vec![SegmentV2Cell::Value(
-                    CanonicalValue::string(bounded_text).expect("bounded string"),
-                )],
-            )),
-            Err(TopNError::StateBoundExceeded)
-        );
+
+        let keys = vec![key(1), key(2)];
+        let source = source(&[], &keys, &[]);
+        let mut top = BoundedTopN::new(&source, 1).expect("bounded top-n");
+        top.push(1).expect("later row");
+        assert_eq!(top.push(0), Err(TopNError::RowOutOfOrder));
         assert_eq!(top.retained_len(), 0);
-        assert_eq!(top.finish(), Err(TopNError::StateBoundExceeded));
+        assert_eq!(top.finish().unwrap_err(), TopNError::RowOutOfOrder);
     }
 
     #[test]
-    fn bounded_top_n_retains_only_limit_plus_probe_and_cursor_uses_final_order() {
-        let order = vec![TopNOrderTerm::new(
+    fn heap_holds_only_limit_plus_probe_and_cursor_uses_final_order() {
+        let keys = (1..=32).map(key).collect::<Vec<_>>();
+        let lane = (0_u64..32)
+            .rev()
+            .map(|value| SegmentV2Cell::Value(CanonicalValue::U64(value)))
+            .collect::<Vec<_>>();
+        let lanes = [lane.as_slice()];
+        let order = [TopNOrderTerm::new(
             SegmentV2LogicalType::U64,
             TopNValueDirection::Ascending,
-            TopNNoValuePlacement::Last,
+            TopNNoValuePlacement::PresentOnly,
         )];
-        let mut top = BoundedTopN::new(order, 2).expect("bounded program");
-        for value in (0_u8..32).rev() {
-            top.push(candidate(
-                value + 1,
-                vec![SegmentV2Cell::Value(CanonicalValue::U64(u64::from(value)))],
-            ))
-            .expect("valid row");
+        let source = source(&order, &keys, &lanes);
+        let mut top = BoundedTopN::new(&source, 2).expect("bounded top-n");
+        for row in 0..32 {
+            top.push(row).expect("valid row");
             assert!(top.retained_len() <= 3);
         }
-        let page = top.finish().expect("complete page");
-        assert_eq!(page.primary_key_bytes(), vec![vec![1], vec![2]]);
-        let cursor = page.cursor().expect("continuation");
-        assert_eq!(cursor.primary_key().as_bytes(), &[2]);
+        let page = top.finish().expect("page");
         assert_eq!(
-            page.compare_row_to_cursor(1),
-            Some(std::cmp::Ordering::Equal)
+            key_bytes(&page),
+            vec![key(32).as_bytes().to_vec(), key(31).as_bytes().to_vec()]
         );
+        assert!(page.has_more());
         assert_eq!(
-            page.compare_row_to_cursor(0),
-            Some(std::cmp::Ordering::Less)
+            page.cursor_primary_key().expect("cursor").as_bytes(),
+            key(31).as_bytes()
         );
+        assert_eq!(page.compare_row_to_cursor(0), Some(Ordering::Less));
+        assert_eq!(page.compare_row_to_cursor(1), Some(Ordering::Equal));
         assert_eq!(page.compare_row_to_cursor(2), None);
-
-        let empty = BoundedTopN::new(Vec::new(), 1)
-            .expect("primary-key-only order")
-            .finish()
-            .expect("empty page");
-        assert_eq!(empty.primary_key_bytes(), Vec::<Vec<u8>>::new());
-        assert!(!empty.has_more());
-
-        let mut exact = BoundedTopN::new(Vec::new(), 2).expect("primary-key-only order");
-        exact.push(candidate(2, Vec::new())).expect("second key");
-        exact.push(candidate(1, Vec::new())).expect("first key");
-        let exact = exact.finish().expect("exact page");
-        assert_eq!(exact.primary_key_bytes(), vec![vec![1], vec![2]]);
-        assert!(!exact.has_more());
     }
 
     #[test]
-    fn bounded_top_n_heap_matches_an_independent_full_sort_for_every_input_order() {
-        let rows = (0_u16..257)
-            .map(|key| (((u32::from(key) * 37) % 101) as u64, key))
-            .collect::<Vec<_>>();
-        let mut expected = rows.clone();
-        expected.sort_unstable_by(|(left_value, left_key), (right_value, right_key)| {
-            left_value
-                .cmp(right_value)
-                .then_with(|| left_key.cmp(right_key))
-        });
-        let expected = expected
-            .iter()
-            .take(17)
-            .map(|(_, key)| key.to_be_bytes().to_vec())
-            .collect::<Vec<_>>();
-
-        for input in [rows.clone(), rows.into_iter().rev().collect()] {
-            let mut top = BoundedTopN::new(
-                vec![TopNOrderTerm::new(
-                    SegmentV2LogicalType::U64,
-                    TopNValueDirection::Ascending,
-                    TopNNoValuePlacement::PresentOnly,
-                )],
-                17,
-            )
-            .expect("bounded program");
-            for (value, key) in input {
-                top.push(TopNCandidate::new(
-                    PrimaryKeyBytes::from_entity_key_bytes(key.to_be_bytes()),
-                    vec![SegmentV2Cell::Value(CanonicalValue::U64(value))],
-                ))
-                .expect("valid candidate");
-                assert!(top.retained_len() <= 18);
-            }
-            let page = top.finish().expect("complete page");
-            assert_eq!(page.primary_key_bytes(), expected);
-            assert!(page.has_more());
-            assert_eq!(
-                page.compare_row_to_cursor(16),
-                Some(std::cmp::Ordering::Equal)
+    fn heap_entries_are_only_fixed_borrowed_row_handles() {
+        let production = include_str!("top_n.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source");
+        for forbidden in [
+            concat!("TopN", "Candidate"),
+            concat!("Ordered", "Scalar"),
+            concat!("Ranked", "Cell"),
+            concat!("payload_", "bytes"),
+            concat!("order_cells: ", "Vec"),
+        ] {
+            assert!(
+                !production.contains(forbidden),
+                "production retained owned row state: {forbidden}"
             );
         }
-    }
-
-    #[test]
-    fn bounded_top_n_refuses_a_duplicate_primary_key() {
-        let mut top = BoundedTopN::new(Vec::new(), 2).expect("bounded program");
-        top.push(candidate(1, Vec::new())).expect("first key");
-        assert_eq!(
-            top.push(candidate(1, Vec::new())),
-            Err(TopNError::InvalidPrimaryKey)
-        );
-        assert_eq!(top.finish(), Err(TopNError::InvalidPrimaryKey));
-    }
-
-    #[test]
-    fn bounded_top_n_decimal_order_remains_the_scalar_canonical_byte_order() {
-        let decimal = DecimalSpec::new(8, 2).expect("decimal type");
-        let mut top = BoundedTopN::new(
-            vec![TopNOrderTerm::new(
-                SegmentV2LogicalType::Decimal(decimal),
-                TopNValueDirection::Ascending,
-                TopNNoValuePlacement::PresentOnly,
-            )],
-            2,
-        )
-        .expect("bounded program");
-        top.push(candidate(
-            1,
-            vec![SegmentV2Cell::Value(CanonicalValue::Decimal(
-                Decimal::new(decimal, -1).expect("negative decimal"),
-            ))],
-        ))
-        .expect("negative decimal");
-        top.push(candidate(
-            2,
-            vec![SegmentV2Cell::Value(CanonicalValue::Decimal(
-                Decimal::new(decimal, 1).expect("positive decimal"),
-            ))],
-        ))
-        .expect("positive decimal");
-
-        assert_eq!(
-            top.finish().expect("page").primary_key_bytes(),
-            vec![vec![2], vec![1]]
-        );
+        assert!(production.contains("struct RowOrdinal(u16)"));
+        assert!(production.contains("retained: Vec<RowOrdinal>"));
     }
 }
