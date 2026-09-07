@@ -83,6 +83,7 @@ struct BoundedGroupOwner {
     arena: Vec<u8>,
     entries: Vec<GroupEntry>,
     bounds: CanonicalGroupBounds,
+    retained_key_capacity: usize,
     poisoned: bool,
 }
 
@@ -109,6 +110,11 @@ impl BoundedGroupOwner {
         let arena_capacity = state_ceiling
             .checked_sub(actual_entry_bytes)
             .ok_or(GroupStateError::InvalidStateBound)?;
+        let maximum_key_bytes = usize::try_from(bounds.maximum_key_bytes)
+            .map_err(|_| GroupStateError::InvalidKeyBound)?;
+        let retained_key_capacity = arena_capacity
+            .checked_sub(maximum_key_bytes)
+            .ok_or(GroupStateError::InvalidStateBound)?;
         let mut arena = Vec::new();
         arena
             .try_reserve_exact(arena_capacity)
@@ -123,6 +129,7 @@ impl BoundedGroupOwner {
             arena,
             entries,
             bounds,
+            retained_key_capacity,
             poisoned: false,
         })
     }
@@ -212,6 +219,10 @@ impl BoundedGroupOwner {
         if self.entries.len() >= usize::from(self.bounds.maximum_groups) {
             self.arena.truncate(start);
             return Err(self.poison(GroupStateError::GroupBoundExceeded));
+        }
+        if end > self.retained_key_capacity {
+            self.arena.truncate(start);
+            return Err(self.poison(GroupStateError::StateBoundExceeded));
         }
         let key_start = match u32::try_from(start) {
             Ok(value) => value,
@@ -613,10 +624,18 @@ mod tests {
     #[test]
     fn independent_group_count_and_state_bounds_are_exact_and_plus_one_refuses() {
         let schema = [SegmentV2LogicalType::U64];
-        let mut owner =
-            CanonicalGroupLeafBuilder::new(identity(0, 1, 0), &schema, bounds(2, 64, 80))
-                .expect("owner");
-        assert_eq!(owner.owner.allocated_state_bytes(), 80);
+        let encoded_key_bytes = oracle_key(&[SegmentV2Cell::Value(CanonicalValue::U64(1))]);
+        let key_bound = u32::try_from(encoded_key_bytes.len()).expect("small key");
+        let group_state =
+            u32::try_from(2 * size_of::<super::GroupEntry>() + 3 * encoded_key_bytes.len())
+                .expect("small state");
+        let mut owner = CanonicalGroupLeafBuilder::new(
+            identity(0, 1, 0),
+            &schema,
+            bounds(2, key_bound, group_state),
+        )
+        .expect("owner");
+        assert_eq!(owner.owner.allocated_state_bytes(), group_state as usize);
         owner
             .push_row(0, &[SegmentV2Cell::Value(CanonicalValue::U64(1))])
             .expect("one");
@@ -630,18 +649,31 @@ mod tests {
         assert!(owner.owner.entries.is_empty() && owner.owner.arena.is_empty());
 
         let exact_key_bytes = oracle_key(&[SegmentV2Cell::Value(CanonicalValue::U64(9))]);
-        let exact_state = u32::try_from(size_of::<super::GroupEntry>() + exact_key_bytes.len())
+        let exact_state = u32::try_from(size_of::<super::GroupEntry>() + 2 * exact_key_bytes.len())
             .expect("small state");
-        let mut exact_state_owner =
-            CanonicalGroupLeafBuilder::new(identity(0, 1, 0), &schema, bounds(1, 64, exact_state))
-                .expect("exact state owner");
+        let mut exact_state_owner = CanonicalGroupLeafBuilder::new(
+            identity(0, 1, 0),
+            &schema,
+            bounds(1, exact_key_bytes.len() as u32, exact_state),
+        )
+        .expect("exact state owner");
         exact_state_owner
             .push_row(0, &[SegmentV2Cell::Value(CanonicalValue::U64(9))])
             .expect("exact retained state");
+        exact_state_owner
+            .push_row(1, &[SegmentV2Cell::Value(CanonicalValue::U64(9))])
+            .expect("duplicate uses the reserved scratch key");
+        assert_eq!(
+            exact_state_owner
+                .finish()
+                .expect("leaf")
+                .row_count_for_test(0),
+            Some(2)
+        );
         let mut plus_one_state = CanonicalGroupLeafBuilder::new(
             identity(0, 1, 0),
             &schema,
-            bounds(1, 64, exact_state - 1),
+            bounds(1, exact_key_bytes.len() as u32, exact_state - 1),
         )
         .expect("one-byte-short owner");
         assert_eq!(
