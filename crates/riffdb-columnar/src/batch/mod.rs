@@ -191,7 +191,14 @@ impl PredicateWorkCharge {
 
 pub(crate) struct ColumnarPredicateKernel {
     lane: usize,
+    lane_kind: IntegerLaneKind,
     predicate: SegmentV2Predicate,
+}
+
+#[derive(Clone, Copy)]
+enum IntegerLaneKind {
+    I64,
+    U64,
 }
 
 impl ColumnarPredicateKernel {
@@ -206,9 +213,11 @@ impl ColumnarPredicateKernel {
         {
             return Err(ColumnarPredicateKernelError::InvalidLane);
         }
-        if !matches!(lane_types[lane], SegmentV2LogicalType::U64) {
-            return Err(ColumnarPredicateKernelError::UnsupportedLane);
-        }
+        let lane_kind = match lane_types[lane] {
+            SegmentV2LogicalType::I64 => IntegerLaneKind::I64,
+            SegmentV2LogicalType::U64 => IntegerLaneKind::U64,
+            _ => return Err(ColumnarPredicateKernelError::UnsupportedLane),
+        };
         match &predicate {
             SegmentV2Predicate::IsMissing => {
                 return Err(ColumnarPredicateKernelError::UnsupportedOperator);
@@ -219,12 +228,21 @@ impl ColumnarPredicateKernel {
             | SegmentV2Predicate::LessThanOrEqual(value)
             | SegmentV2Predicate::GreaterThan(value)
             | SegmentV2Predicate::GreaterThanOrEqual(value) => {
-                if !matches!(value, riffdb_types::CanonicalValue::U64(_)) {
+                let matches_lane = matches!(
+                    (lane_kind, value),
+                    (IntegerLaneKind::I64, riffdb_types::CanonicalValue::I64(_))
+                        | (IntegerLaneKind::U64, riffdb_types::CanonicalValue::U64(_))
+                );
+                if !matches_lane {
                     return Err(ColumnarPredicateKernelError::RightHandTypeMismatch);
                 }
             }
         }
-        Ok(Self { lane, predicate })
+        Ok(Self {
+            lane,
+            lane_kind,
+            predicate,
+        })
     }
 
     pub(crate) fn apply(
@@ -245,7 +263,7 @@ impl ColumnarPredicateKernel {
         let mut next = vec![false; batch.row_count()];
         let mut next_selected = 0_usize;
         for index in selection.indices() {
-            if predicate_matches(&self.predicate, &lane[index])? {
+            if predicate_matches(self.lane_kind, &self.predicate, &lane[index])? {
                 next[index] = true;
                 next_selected += 1;
             }
@@ -258,36 +276,19 @@ impl ColumnarPredicateKernel {
 }
 
 fn predicate_matches(
+    lane_kind: IntegerLaneKind,
     predicate: &SegmentV2Predicate,
     cell: &SegmentV2Cell,
 ) -> Result<bool, ColumnarPredicateKernelError> {
-    match cell {
-        SegmentV2Cell::Value(riffdb_types::CanonicalValue::U64(left)) => Ok(match predicate {
-            SegmentV2Predicate::Equal(riffdb_types::CanonicalValue::U64(right)) => left == right,
-            SegmentV2Predicate::LessThan(riffdb_types::CanonicalValue::U64(right)) => left < right,
-            SegmentV2Predicate::LessThanOrEqual(riffdb_types::CanonicalValue::U64(right)) => {
-                left <= right
-            }
-            SegmentV2Predicate::GreaterThan(riffdb_types::CanonicalValue::U64(right)) => {
-                left > right
-            }
-            SegmentV2Predicate::GreaterThanOrEqual(riffdb_types::CanonicalValue::U64(right)) => {
-                left >= right
-            }
-            SegmentV2Predicate::IsNull => false,
-            // This is the sealed mapping to the scalar `IsNotNull` operator.
-            SegmentV2Predicate::IsPresent => true,
-            SegmentV2Predicate::Equal(_)
-            | SegmentV2Predicate::LessThan(_)
-            | SegmentV2Predicate::LessThanOrEqual(_)
-            | SegmentV2Predicate::GreaterThan(_)
-            | SegmentV2Predicate::GreaterThanOrEqual(_)
-            | SegmentV2Predicate::IsMissing => {
-                return Err(ColumnarPredicateKernelError::UnsupportedPredicate);
-            }
-        }),
-        SegmentV2Cell::Value(_) => Err(ColumnarPredicateKernelError::LaneIntegrity),
-        SegmentV2Cell::Missing => match predicate {
+    match (lane_kind, cell) {
+        (IntegerLaneKind::I64, SegmentV2Cell::Value(riffdb_types::CanonicalValue::I64(left))) => {
+            signed_predicate_matches(*left, predicate)
+        }
+        (IntegerLaneKind::U64, SegmentV2Cell::Value(riffdb_types::CanonicalValue::U64(left))) => {
+            unsigned_predicate_matches(*left, predicate)
+        }
+        (_, SegmentV2Cell::Value(_)) => Err(ColumnarPredicateKernelError::LaneIntegrity),
+        (_, SegmentV2Cell::Missing) => match predicate {
             SegmentV2Predicate::Equal(_)
             | SegmentV2Predicate::LessThan(_)
             | SegmentV2Predicate::LessThanOrEqual(_)
@@ -300,7 +301,7 @@ fn predicate_matches(
                 Err(ColumnarPredicateKernelError::UnsupportedPredicate)
             }
         },
-        SegmentV2Cell::Null => match predicate {
+        (_, SegmentV2Cell::Null) => match predicate {
             SegmentV2Predicate::Equal(_) => Ok(false),
             SegmentV2Predicate::LessThan(_)
             | SegmentV2Predicate::LessThanOrEqual(_)
@@ -315,6 +316,62 @@ fn predicate_matches(
             }
         },
     }
+}
+
+fn signed_predicate_matches(
+    left: i64,
+    predicate: &SegmentV2Predicate,
+) -> Result<bool, ColumnarPredicateKernelError> {
+    Ok(match predicate {
+        SegmentV2Predicate::Equal(riffdb_types::CanonicalValue::I64(right)) => left == *right,
+        SegmentV2Predicate::LessThan(riffdb_types::CanonicalValue::I64(right)) => left < *right,
+        SegmentV2Predicate::LessThanOrEqual(riffdb_types::CanonicalValue::I64(right)) => {
+            left <= *right
+        }
+        SegmentV2Predicate::GreaterThan(riffdb_types::CanonicalValue::I64(right)) => left > *right,
+        SegmentV2Predicate::GreaterThanOrEqual(riffdb_types::CanonicalValue::I64(right)) => {
+            left >= *right
+        }
+        SegmentV2Predicate::IsNull => false,
+        // This is the sealed mapping to the scalar `IsNotNull` operator.
+        SegmentV2Predicate::IsPresent => true,
+        SegmentV2Predicate::Equal(_)
+        | SegmentV2Predicate::LessThan(_)
+        | SegmentV2Predicate::LessThanOrEqual(_)
+        | SegmentV2Predicate::GreaterThan(_)
+        | SegmentV2Predicate::GreaterThanOrEqual(_)
+        | SegmentV2Predicate::IsMissing => {
+            return Err(ColumnarPredicateKernelError::UnsupportedPredicate);
+        }
+    })
+}
+
+fn unsigned_predicate_matches(
+    left: u64,
+    predicate: &SegmentV2Predicate,
+) -> Result<bool, ColumnarPredicateKernelError> {
+    Ok(match predicate {
+        SegmentV2Predicate::Equal(riffdb_types::CanonicalValue::U64(right)) => left == *right,
+        SegmentV2Predicate::LessThan(riffdb_types::CanonicalValue::U64(right)) => left < *right,
+        SegmentV2Predicate::LessThanOrEqual(riffdb_types::CanonicalValue::U64(right)) => {
+            left <= *right
+        }
+        SegmentV2Predicate::GreaterThan(riffdb_types::CanonicalValue::U64(right)) => left > *right,
+        SegmentV2Predicate::GreaterThanOrEqual(riffdb_types::CanonicalValue::U64(right)) => {
+            left >= *right
+        }
+        SegmentV2Predicate::IsNull => false,
+        // This is the sealed mapping to the scalar `IsNotNull` operator.
+        SegmentV2Predicate::IsPresent => true,
+        SegmentV2Predicate::Equal(_)
+        | SegmentV2Predicate::LessThan(_)
+        | SegmentV2Predicate::LessThanOrEqual(_)
+        | SegmentV2Predicate::GreaterThan(_)
+        | SegmentV2Predicate::GreaterThanOrEqual(_)
+        | SegmentV2Predicate::IsMissing => {
+            return Err(ColumnarPredicateKernelError::UnsupportedPredicate);
+        }
+    })
 }
 
 #[cfg(test)]
@@ -762,7 +819,6 @@ mod tests {
         let currency = CurrencyCode::new(b"USD").expect("currency type");
         for unsupported_lane in [
             SegmentV2LogicalType::Bool,
-            SegmentV2LogicalType::I64,
             SegmentV2LogicalType::String,
             SegmentV2LogicalType::Bytes,
             SegmentV2LogicalType::Timestamp,
@@ -940,5 +996,563 @@ mod tests {
             cumulative_before
         );
         assert_eq!(cumulative_charge.remaining(), 0);
+    }
+
+    fn assert_integer_case(
+        width: ColumnarBatchWidth,
+        logical_type: SegmentV2LogicalType,
+        cell: SegmentV2Cell,
+        predicate: SegmentV2Predicate,
+        expected: Result<bool, ColumnarPredicateKernelError>,
+    ) {
+        let one_cell = [cell];
+        let lanes = [one_cell.as_slice()];
+        let batch = BorrowedLaneBatch::new(width, &lanes).expect("one-row integer batch");
+        let kernel = ColumnarPredicateKernel::new(0, &[logical_type], predicate.clone())
+            .expect("sealed integer predicate");
+        let mut selection = MonotoneSelection::all(&batch);
+        let before = selection.indices().collect::<Vec<_>>();
+        let mut charge = PredicateWorkCharge::new(1).expect("one evaluation");
+        let actual = kernel.apply(&batch, &mut selection, &mut charge);
+        match expected {
+            Ok(retained) => {
+                assert_eq!(actual, Ok(()), "predicate={predicate:?}");
+                assert_eq!(selection.selected(), usize::from(retained));
+                assert_eq!(charge.remaining(), 0);
+            }
+            Err(error) => {
+                assert_eq!(actual, Err(error), "predicate={predicate:?}");
+                assert_eq!(selection.indices().collect::<Vec<_>>(), before);
+                assert_eq!(charge.remaining(), 1);
+            }
+        }
+    }
+
+    // Inert integer predicate checkpoint only. Literal expected results keep
+    // this proof independent of the implementation-shaped match tree. The
+    // cross-crate differential obligation remains pending.
+    #[test]
+    fn columnar_integer_predicate_kernel_matches_literal_ordering_table() {
+        let width = ColumnarBatchWidth::choose(64, 1, 64).expect("closed width");
+        let cases = vec![
+            // Signed equality and strict/inclusive order at negative, zero,
+            // and both representable edges.
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Value(CanonicalValue::I64(i64::MIN)),
+                SegmentV2Predicate::Equal(CanonicalValue::I64(i64::MIN)),
+                Ok(true),
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Value(CanonicalValue::I64(i64::MAX)),
+                SegmentV2Predicate::Equal(CanonicalValue::I64(i64::MIN)),
+                Ok(false),
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Value(CanonicalValue::I64(0)),
+                SegmentV2Predicate::Equal(CanonicalValue::I64(0)),
+                Ok(true),
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Value(CanonicalValue::I64(-1)),
+                SegmentV2Predicate::LessThan(CanonicalValue::I64(0)),
+                Ok(true),
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Value(CanonicalValue::I64(0)),
+                SegmentV2Predicate::LessThan(CanonicalValue::I64(0)),
+                Ok(false),
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Value(CanonicalValue::I64(i64::MIN)),
+                SegmentV2Predicate::LessThan(CanonicalValue::I64(i64::MIN)),
+                Ok(false),
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Value(CanonicalValue::I64(i64::MIN)),
+                SegmentV2Predicate::LessThanOrEqual(CanonicalValue::I64(i64::MIN)),
+                Ok(true),
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Value(CanonicalValue::I64(0)),
+                SegmentV2Predicate::LessThanOrEqual(CanonicalValue::I64(0)),
+                Ok(true),
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Value(CanonicalValue::I64(1)),
+                SegmentV2Predicate::LessThanOrEqual(CanonicalValue::I64(0)),
+                Ok(false),
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Value(CanonicalValue::I64(1)),
+                SegmentV2Predicate::GreaterThan(CanonicalValue::I64(0)),
+                Ok(true),
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Value(CanonicalValue::I64(0)),
+                SegmentV2Predicate::GreaterThan(CanonicalValue::I64(0)),
+                Ok(false),
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Value(CanonicalValue::I64(i64::MAX)),
+                SegmentV2Predicate::GreaterThan(CanonicalValue::I64(i64::MAX)),
+                Ok(false),
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Value(CanonicalValue::I64(i64::MAX)),
+                SegmentV2Predicate::GreaterThanOrEqual(CanonicalValue::I64(i64::MAX)),
+                Ok(true),
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Value(CanonicalValue::I64(0)),
+                SegmentV2Predicate::GreaterThanOrEqual(CanonicalValue::I64(0)),
+                Ok(true),
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Value(CanonicalValue::I64(-1)),
+                SegmentV2Predicate::GreaterThanOrEqual(CanonicalValue::I64(0)),
+                Ok(false),
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Value(CanonicalValue::I64(i64::MIN)),
+                SegmentV2Predicate::LessThan(CanonicalValue::I64(i64::MAX)),
+                Ok(true),
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Value(CanonicalValue::I64(i64::MAX)),
+                SegmentV2Predicate::GreaterThan(CanonicalValue::I64(i64::MIN)),
+                Ok(true),
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Value(CanonicalValue::I64(i64::MAX)),
+                SegmentV2Predicate::Equal(CanonicalValue::I64(i64::MAX)),
+                Ok(true),
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Value(CanonicalValue::I64(i64::MIN)),
+                SegmentV2Predicate::LessThanOrEqual(CanonicalValue::I64(i64::MAX)),
+                Ok(true),
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Value(CanonicalValue::I64(i64::MAX)),
+                SegmentV2Predicate::GreaterThanOrEqual(CanonicalValue::I64(i64::MIN)),
+                Ok(true),
+            ),
+            // Symmetric unsigned edge witnesses ensure lane-kind dispatch does
+            // not regress the existing U64 behavior.
+            (
+                SegmentV2LogicalType::U64,
+                SegmentV2Cell::Value(CanonicalValue::U64(u64::MIN)),
+                SegmentV2Predicate::Equal(CanonicalValue::U64(u64::MIN)),
+                Ok(true),
+            ),
+            (
+                SegmentV2LogicalType::U64,
+                SegmentV2Cell::Value(CanonicalValue::U64(u64::MAX)),
+                SegmentV2Predicate::Equal(CanonicalValue::U64(u64::MIN)),
+                Ok(false),
+            ),
+            (
+                SegmentV2LogicalType::U64,
+                SegmentV2Cell::Value(CanonicalValue::U64(u64::MIN)),
+                SegmentV2Predicate::LessThan(CanonicalValue::U64(u64::MIN)),
+                Ok(false),
+            ),
+            (
+                SegmentV2LogicalType::U64,
+                SegmentV2Cell::Value(CanonicalValue::U64(u64::MIN)),
+                SegmentV2Predicate::LessThanOrEqual(CanonicalValue::U64(u64::MIN)),
+                Ok(true),
+            ),
+            (
+                SegmentV2LogicalType::U64,
+                SegmentV2Cell::Value(CanonicalValue::U64(1)),
+                SegmentV2Predicate::GreaterThan(CanonicalValue::U64(0)),
+                Ok(true),
+            ),
+            (
+                SegmentV2LogicalType::U64,
+                SegmentV2Cell::Value(CanonicalValue::U64(u64::MAX)),
+                SegmentV2Predicate::GreaterThan(CanonicalValue::U64(u64::MAX)),
+                Ok(false),
+            ),
+            (
+                SegmentV2LogicalType::U64,
+                SegmentV2Cell::Value(CanonicalValue::U64(u64::MAX)),
+                SegmentV2Predicate::GreaterThanOrEqual(CanonicalValue::U64(u64::MAX)),
+                Ok(true),
+            ),
+            (
+                SegmentV2LogicalType::U64,
+                SegmentV2Cell::Value(CanonicalValue::U64(u64::MIN)),
+                SegmentV2Predicate::LessThan(CanonicalValue::U64(u64::MAX)),
+                Ok(true),
+            ),
+            (
+                SegmentV2LogicalType::U64,
+                SegmentV2Cell::Value(CanonicalValue::U64(u64::MAX)),
+                SegmentV2Predicate::GreaterThan(CanonicalValue::U64(u64::MIN)),
+                Ok(true),
+            ),
+            (
+                SegmentV2LogicalType::U64,
+                SegmentV2Cell::Value(CanonicalValue::U64(u64::MAX)),
+                SegmentV2Predicate::Equal(CanonicalValue::U64(u64::MAX)),
+                Ok(true),
+            ),
+            (
+                SegmentV2LogicalType::U64,
+                SegmentV2Cell::Value(CanonicalValue::U64(u64::MIN)),
+                SegmentV2Predicate::LessThanOrEqual(CanonicalValue::U64(u64::MAX)),
+                Ok(true),
+            ),
+            (
+                SegmentV2LogicalType::U64,
+                SegmentV2Cell::Value(CanonicalValue::U64(u64::MAX)),
+                SegmentV2Predicate::GreaterThanOrEqual(CanonicalValue::U64(u64::MIN)),
+                Ok(true),
+            ),
+        ];
+        for (logical_type, cell, predicate, expected) in cases {
+            assert_integer_case(width, logical_type, cell, predicate, expected);
+        }
+    }
+
+    #[test]
+    fn columnar_integer_predicate_states_types_and_constructor_precedence_are_exact() {
+        let width = ColumnarBatchWidth::choose(64, 1, 64).expect("closed width");
+        let cases = vec![
+            // Optional-state results are identical for both admitted kinds.
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Missing,
+                SegmentV2Predicate::Equal(CanonicalValue::I64(0)),
+                Err(ColumnarPredicateKernelError::MissingField),
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Null,
+                SegmentV2Predicate::Equal(CanonicalValue::I64(0)),
+                Ok(false),
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Missing,
+                SegmentV2Predicate::LessThan(CanonicalValue::I64(0)),
+                Err(ColumnarPredicateKernelError::MissingField),
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Null,
+                SegmentV2Predicate::LessThan(CanonicalValue::I64(0)),
+                Err(ColumnarPredicateKernelError::UnsupportedPredicate),
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Missing,
+                SegmentV2Predicate::IsNull,
+                Ok(false),
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Null,
+                SegmentV2Predicate::IsNull,
+                Ok(true),
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Value(CanonicalValue::I64(-1)),
+                SegmentV2Predicate::IsNull,
+                Ok(false),
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Missing,
+                SegmentV2Predicate::IsPresent,
+                Ok(false),
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Null,
+                SegmentV2Predicate::IsPresent,
+                Ok(false),
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                SegmentV2Cell::Value(CanonicalValue::I64(-1)),
+                SegmentV2Predicate::IsPresent,
+                Ok(true),
+            ),
+            (
+                SegmentV2LogicalType::U64,
+                SegmentV2Cell::Missing,
+                SegmentV2Predicate::Equal(CanonicalValue::U64(0)),
+                Err(ColumnarPredicateKernelError::MissingField),
+            ),
+            (
+                SegmentV2LogicalType::U64,
+                SegmentV2Cell::Null,
+                SegmentV2Predicate::Equal(CanonicalValue::U64(0)),
+                Ok(false),
+            ),
+            (
+                SegmentV2LogicalType::U64,
+                SegmentV2Cell::Missing,
+                SegmentV2Predicate::LessThan(CanonicalValue::U64(0)),
+                Err(ColumnarPredicateKernelError::MissingField),
+            ),
+            (
+                SegmentV2LogicalType::U64,
+                SegmentV2Cell::Null,
+                SegmentV2Predicate::LessThan(CanonicalValue::U64(0)),
+                Err(ColumnarPredicateKernelError::UnsupportedPredicate),
+            ),
+            (
+                SegmentV2LogicalType::U64,
+                SegmentV2Cell::Missing,
+                SegmentV2Predicate::IsNull,
+                Ok(false),
+            ),
+            (
+                SegmentV2LogicalType::U64,
+                SegmentV2Cell::Null,
+                SegmentV2Predicate::IsNull,
+                Ok(true),
+            ),
+            (
+                SegmentV2LogicalType::U64,
+                SegmentV2Cell::Value(CanonicalValue::U64(1)),
+                SegmentV2Predicate::IsPresent,
+                Ok(true),
+            ),
+        ];
+        for (logical_type, cell, predicate, expected) in cases {
+            assert_integer_case(width, logical_type, cell, predicate, expected);
+        }
+
+        for (logical_type, wrong_rhs) in [
+            (SegmentV2LogicalType::I64, CanonicalValue::U64(0)),
+            (SegmentV2LogicalType::U64, CanonicalValue::I64(0)),
+        ] {
+            for predicate in [
+                SegmentV2Predicate::Equal(wrong_rhs.clone()),
+                SegmentV2Predicate::LessThan(wrong_rhs.clone()),
+                SegmentV2Predicate::LessThanOrEqual(wrong_rhs.clone()),
+                SegmentV2Predicate::GreaterThan(wrong_rhs.clone()),
+                SegmentV2Predicate::GreaterThanOrEqual(wrong_rhs.clone()),
+            ] {
+                assert_eq!(
+                    ColumnarPredicateKernel::new(
+                        0,
+                        std::slice::from_ref(&logical_type),
+                        predicate,
+                    )
+                    .err(),
+                    Some(ColumnarPredicateKernelError::RightHandTypeMismatch)
+                );
+            }
+            assert_eq!(
+                ColumnarPredicateKernel::new(
+                    1,
+                    &[logical_type],
+                    SegmentV2Predicate::Equal(wrong_rhs)
+                )
+                .err(),
+                Some(ColumnarPredicateKernelError::InvalidLane),
+                "invalid lane identity precedes RHS validation"
+            );
+        }
+        assert_eq!(
+            ColumnarPredicateKernel::new(
+                0,
+                &[SegmentV2LogicalType::Bool],
+                SegmentV2Predicate::Equal(CanonicalValue::I64(0)),
+            )
+            .err(),
+            Some(ColumnarPredicateKernelError::UnsupportedLane),
+            "unsupported lane precedes RHS validation"
+        );
+        assert_eq!(
+            ColumnarPredicateKernel::new(
+                0,
+                &[],
+                SegmentV2Predicate::Equal(CanonicalValue::I64(0)),
+            )
+            .err(),
+            Some(ColumnarPredicateKernelError::InvalidLane),
+            "empty lane shape precedes RHS validation"
+        );
+        let excessive = vec![SegmentV2LogicalType::I64; MAX_SEGMENT_V2_COLUMNS + 1];
+        assert_eq!(
+            ColumnarPredicateKernel::new(
+                0,
+                &excessive,
+                SegmentV2Predicate::Equal(CanonicalValue::U64(0)),
+            )
+            .err(),
+            Some(ColumnarPredicateKernelError::InvalidLane),
+            "over-bound lane shape precedes RHS validation"
+        );
+        for logical_type in [SegmentV2LogicalType::I64, SegmentV2LogicalType::U64] {
+            assert_eq!(
+                ColumnarPredicateKernel::new(0, &[logical_type], SegmentV2Predicate::IsMissing)
+                    .err(),
+                Some(ColumnarPredicateKernelError::UnsupportedOperator)
+            );
+        }
+    }
+
+    #[test]
+    fn columnar_integer_predicate_failures_are_atomic_and_mixed_lanes_are_monotone() {
+        let width = ColumnarBatchWidth::choose(64, 1, 64).expect("closed width");
+        for (logical_type, good, poison, binary) in [
+            (
+                SegmentV2LogicalType::I64,
+                CanonicalValue::I64(0),
+                CanonicalValue::U64(0),
+                SegmentV2Predicate::Equal(CanonicalValue::I64(0)),
+            ),
+            (
+                SegmentV2LogicalType::U64,
+                CanonicalValue::U64(0),
+                CanonicalValue::I64(0),
+                SegmentV2Predicate::Equal(CanonicalValue::U64(0)),
+            ),
+        ] {
+            for (predicate, retained) in [
+                (binary, true),
+                (SegmentV2Predicate::LessThan(good.clone()), false),
+                (SegmentV2Predicate::IsNull, false),
+                (SegmentV2Predicate::IsPresent, true),
+            ] {
+                let cells = [
+                    SegmentV2Cell::Value(good.clone()),
+                    SegmentV2Cell::Value(poison.clone()),
+                ];
+                let lanes = [cells.as_slice()];
+                let batch = BorrowedLaneBatch::new(width, &lanes).expect("poisoned integer lane");
+                let kernel =
+                    ColumnarPredicateKernel::new(0, std::slice::from_ref(&logical_type), predicate)
+                        .expect("sealed integer predicate");
+                let mut selection = MonotoneSelection::all(&batch);
+                let before = selection.indices().collect::<Vec<_>>();
+                let mut charge = PredicateWorkCharge::new(2).expect("exact work");
+                assert_eq!(
+                    kernel.apply(&batch, &mut selection, &mut charge),
+                    Err(ColumnarPredicateKernelError::LaneIntegrity)
+                );
+                assert_eq!(selection.indices().collect::<Vec<_>>(), before);
+                assert_eq!(charge.remaining(), 2);
+
+                let mut skipped = MonotoneSelection::all(&batch);
+                skipped.retain(&[true, false]).expect("policy mask");
+                let mut skipped_charge = PredicateWorkCharge::new(1).expect("one admitted row");
+                kernel
+                    .apply(&batch, &mut skipped, &mut skipped_charge)
+                    .expect("deselected poison is not evaluated");
+                assert_eq!(
+                    skipped.indices().collect::<Vec<_>>(),
+                    if retained { vec![0] } else { vec![] }
+                );
+                assert_eq!(skipped_charge.remaining(), 0);
+            }
+        }
+
+        for (logical_type, rhs, poison) in [
+            (
+                SegmentV2LogicalType::I64,
+                CanonicalValue::I64(0),
+                CanonicalValue::U64(0),
+            ),
+            (
+                SegmentV2LogicalType::U64,
+                CanonicalValue::U64(0),
+                CanonicalValue::I64(0),
+            ),
+        ] {
+            let equality =
+                ColumnarPredicateKernel::new(0, &[logical_type], SegmentV2Predicate::Equal(rhs))
+                    .expect("sealed integer equality");
+            for (cells, expected) in [
+                (
+                    vec![SegmentV2Cell::Missing, SegmentV2Cell::Value(poison.clone())],
+                    ColumnarPredicateKernelError::MissingField,
+                ),
+                (
+                    vec![SegmentV2Cell::Value(poison.clone()), SegmentV2Cell::Missing],
+                    ColumnarPredicateKernelError::LaneIntegrity,
+                ),
+            ] {
+                let lanes = [cells.as_slice()];
+                let batch = BorrowedLaneBatch::new(width, &lanes).expect("ordered error batch");
+                let mut selection = MonotoneSelection::all(&batch);
+                let before = selection.indices().collect::<Vec<_>>();
+                let mut charge = PredicateWorkCharge::new(2).expect("exact work");
+                assert_eq!(
+                    equality.apply(&batch, &mut selection, &mut charge),
+                    Err(expected)
+                );
+                assert_eq!(selection.indices().collect::<Vec<_>>(), before);
+                assert_eq!(charge.remaining(), 2);
+            }
+        }
+
+        let signed = [
+            SegmentV2Cell::Value(CanonicalValue::I64(-1)),
+            SegmentV2Cell::Value(CanonicalValue::I64(0)),
+            SegmentV2Cell::Value(CanonicalValue::I64(1)),
+            SegmentV2Cell::Value(CanonicalValue::I64(2)),
+        ];
+        let unsigned = [
+            SegmentV2Cell::Value(CanonicalValue::U64(9)),
+            SegmentV2Cell::Value(CanonicalValue::U64(6)),
+            SegmentV2Cell::Value(CanonicalValue::U64(5)),
+            SegmentV2Cell::Value(CanonicalValue::U64(7)),
+        ];
+        let lanes = [signed.as_slice(), unsigned.as_slice()];
+        let batch = BorrowedLaneBatch::new(width, &lanes).expect("two integer lanes");
+        let signed_lower = ColumnarPredicateKernel::new(
+            0,
+            &[SegmentV2LogicalType::I64, SegmentV2LogicalType::U64],
+            SegmentV2Predicate::GreaterThanOrEqual(CanonicalValue::I64(0)),
+        )
+        .expect("signed lower bound");
+        let unsigned_upper = ColumnarPredicateKernel::new(
+            1,
+            &[SegmentV2LogicalType::I64, SegmentV2LogicalType::U64],
+            SegmentV2Predicate::LessThanOrEqual(CanonicalValue::U64(6)),
+        )
+        .expect("unsigned upper bound");
+        let mut selection = MonotoneSelection::all(&batch);
+        let mut charge = PredicateWorkCharge::new(7).expect("exact sequential work");
+        signed_lower
+            .apply(&batch, &mut selection, &mut charge)
+            .expect("signed phase");
+        assert_eq!(selection.indices().collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_eq!(charge.remaining(), 3);
+        unsigned_upper
+            .apply(&batch, &mut selection, &mut charge)
+            .expect("unsigned phase");
+        assert_eq!(selection.indices().collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(charge.remaining(), 0);
     }
 }
