@@ -240,7 +240,7 @@ record with no front matter.
 | [0203](0203-selector-free-offline-storage-scrub-operation.md) | Selector-Free Offline Storage Scrub Operation | Accepted | guarantee |
 | [0204](0204-epoch-two-storage-reader-retirement-and-package-retiering.md) | Epoch-Two Storage Reader Retirement and Package Retiering | Accepted | guarantee |
 | [0205](0205-live-command-fresh-locator-arming-and-audit-cause-preservation.md) | Live Command Fresh-Locator Arming and Audit Cause Preservation | Accepted | guarantee |
-| [0206](0206-composite-fresh-locator-arming-and-observable-production-proof.md) | Composite Fresh-Locator Arming and Observable Production Proof | Proposed | guarantee |
+| [0206](0206-composite-fresh-locator-arming-and-observable-production-proof.md) | Composite Fresh-Locator Arming and Observable Production Proof | Accepted | guarantee |
 | [0207](0207-frozen-changelog-compatibility-exception-during-the-pre-external-window.md) | Frozen Changelog Compatibility Exception During the Pre-External Window | Proposed | guarantee |
 <!-- adr-index:end -->
 
