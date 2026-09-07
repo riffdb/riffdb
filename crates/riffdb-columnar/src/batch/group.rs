@@ -1892,66 +1892,484 @@ mod tests {
         );
     }
 
+    // This is deliberately a bounded, group.rs-local structural proof. The
+    // repository-wide allocation checker remains a separate integration seam.
+    const MAX_GROUP_SOURCE_BYTES: usize = 256 * 1024;
+    const MAX_GROUP_SOURCE_TOKENS: usize = 32 * 1024;
+    const REVIEWED_GROUP_ITEM_TOKEN_HASHES: [u64; 4] = [
+        361_605_024_910_353_321,
+        18_325_372_949_028_513_203,
+        5_304_916_325_019_661_598,
+        14_332_923_306_409_527_796,
+    ];
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct RustToken<'source> {
+        text: &'source str,
+        start: usize,
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct ItemSpan {
+        start: usize,
+        end: usize,
+        label: String,
+    }
+
+    fn lex_group_source(source: &str) -> Result<Vec<RustToken<'_>>, &'static str> {
+        if source.len() > MAX_GROUP_SOURCE_BYTES {
+            return Err("group source byte ceiling exceeded");
+        }
+        let bytes = source.as_bytes();
+        let mut tokens = Vec::new();
+        let mut cursor = 0;
+        while cursor < bytes.len() {
+            if bytes[cursor].is_ascii_whitespace() {
+                cursor += 1;
+                continue;
+            }
+            if bytes[cursor..].starts_with(b"//") {
+                cursor += 2;
+                while cursor < bytes.len() && bytes[cursor] != b'\n' {
+                    cursor += 1;
+                }
+                continue;
+            }
+            if bytes[cursor..].starts_with(b"/*") {
+                cursor += 2;
+                let mut depth = 1_u16;
+                while cursor < bytes.len() && depth != 0 {
+                    if bytes[cursor..].starts_with(b"/*") {
+                        depth = depth.checked_add(1).ok_or("comment nesting overflow")?;
+                        cursor += 2;
+                    } else if bytes[cursor..].starts_with(b"*/") {
+                        depth -= 1;
+                        cursor += 2;
+                    } else {
+                        cursor += 1;
+                    }
+                }
+                if depth != 0 {
+                    return Err("unterminated block comment");
+                }
+                continue;
+            }
+            let start = cursor;
+            if bytes[cursor] == b'"' {
+                cursor += 1;
+                let mut escaped = false;
+                while cursor < bytes.len() {
+                    let byte = bytes[cursor];
+                    cursor += 1;
+                    if escaped {
+                        escaped = false;
+                    } else if byte == b'\\' {
+                        escaped = true;
+                    } else if byte == b'"' {
+                        break;
+                    }
+                }
+                if bytes.get(cursor.wrapping_sub(1)) != Some(&b'"') {
+                    return Err("unterminated string literal");
+                }
+            } else if bytes[cursor] == b'\''
+                && ((bytes.get(cursor + 2) == Some(&b'\''))
+                    || (bytes.get(cursor + 1) == Some(&b'\\')
+                        && bytes.get(cursor + 3) == Some(&b'\'')))
+            {
+                cursor += if bytes.get(cursor + 1) == Some(&b'\\') {
+                    4
+                } else {
+                    3
+                };
+            } else if bytes[cursor].is_ascii_alphanumeric() || bytes[cursor] == b'_' {
+                cursor += 1;
+                while cursor < bytes.len()
+                    && (bytes[cursor].is_ascii_alphanumeric() || bytes[cursor] == b'_')
+                {
+                    cursor += 1;
+                }
+            } else {
+                cursor += source[cursor..]
+                    .chars()
+                    .next()
+                    .ok_or("invalid UTF-8 cursor")?
+                    .len_utf8();
+            }
+            tokens.push(RustToken {
+                text: &source[start..cursor],
+                start,
+            });
+            if tokens.len() > MAX_GROUP_SOURCE_TOKENS {
+                return Err("group source token ceiling exceeded");
+            }
+        }
+        Ok(tokens)
+    }
+
+    fn matching_brace(tokens: &[RustToken<'_>], opening: usize) -> Option<usize> {
+        let mut depth = 0_usize;
+        for (index, token) in tokens.iter().enumerate().skip(opening) {
+            match token.text {
+                "{" => depth = depth.checked_add(1)?,
+                "}" => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        return Some(index);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn production_layout(source: &str) -> Result<(Vec<RustToken<'_>>, usize), &'static str> {
+        let tokens = lex_group_source(source)?;
+        let marker = ["#", "[", "cfg", "(", "test", ")", "]", "mod", "tests", "{"];
+        let test_attribute = ["#", "[", "cfg", "(", "test", ")", "]"];
+        let mut brace_depth = 0_usize;
+        let mut test_item = None;
+        for index in 0..tokens.len() {
+            if brace_depth == 0
+                && tokens[index..]
+                    .iter()
+                    .take(test_attribute.len())
+                    .map(|token| token.text)
+                    .eq(test_attribute)
+            {
+                if test_item.is_some() {
+                    return Err("multiple top-level cfg(test) items");
+                }
+                if !tokens[index..]
+                    .iter()
+                    .take(marker.len())
+                    .map(|token| token.text)
+                    .eq(marker)
+                {
+                    return Err("top-level cfg(test) item is not the final tests module");
+                }
+                let opening = index + marker.len() - 1;
+                let closing = matching_brace(&tokens, opening).ok_or("unclosed test module")?;
+                test_item = Some((index, closing));
+            }
+            match tokens[index].text {
+                "{" => brace_depth = brace_depth.checked_add(1).ok_or("brace depth overflow")?,
+                "}" => {
+                    brace_depth = brace_depth
+                        .checked_sub(1)
+                        .ok_or("unmatched closing brace")?
+                }
+                _ => {}
+            }
+        }
+        if brace_depth != 0 {
+            return Err("unclosed source brace");
+        }
+        let (module_start, module_end) = test_item.ok_or("missing final top-level test module")?;
+        if module_end + 1 != tokens.len() {
+            return Err("test module must be the final source item");
+        }
+        Ok((tokens[..module_start].to_vec(), tokens[module_start].start))
+    }
+
+    fn brace_depths(tokens: &[RustToken<'_>]) -> Result<Vec<usize>, &'static str> {
+        let mut depths = Vec::with_capacity(tokens.len());
+        let mut depth = 0_usize;
+        for token in tokens {
+            depths.push(depth);
+            match token.text {
+                "{" => depth = depth.checked_add(1).ok_or("brace depth overflow")?,
+                "}" => depth = depth.checked_sub(1).ok_or("unmatched closing brace")?,
+                _ => {}
+            }
+        }
+        if depth != 0 {
+            return Err("unclosed production brace");
+        }
+        Ok(depths)
+    }
+
+    fn function_span(
+        tokens: &[RustToken<'_>],
+        depths: &[usize],
+        start: usize,
+    ) -> Result<usize, &'static str> {
+        let declaration_depth = depths[start];
+        for index in start + 1..tokens.len() {
+            if depths[index] == declaration_depth && tokens[index].text == ";" {
+                return Ok(index);
+            }
+            if depths[index] == declaration_depth && tokens[index].text == "{" {
+                return matching_brace(tokens, index).ok_or("unclosed function item");
+            }
+        }
+        Err("unterminated function item")
+    }
+
+    fn production_items(tokens: &[RustToken<'_>]) -> Result<Vec<ItemSpan>, &'static str> {
+        let depths = brace_depths(tokens)?;
+        let mut items = Vec::new();
+        for index in 0..tokens.len() {
+            if depths[index] != 0 {
+                continue;
+            }
+            match tokens[index].text {
+                "use" => {
+                    let end = (index + 1..tokens.len())
+                        .find(|candidate| depths[*candidate] == 0 && tokens[*candidate].text == ";")
+                        .ok_or("unterminated use item")?;
+                    items.push(ItemSpan {
+                        start: index,
+                        end,
+                        label: "use".to_owned(),
+                    });
+                }
+                "struct" => {
+                    let name = tokens.get(index + 1).ok_or("missing struct name")?.text;
+                    let opening = (index + 1..tokens.len())
+                        .find(|candidate| depths[*candidate] == 0 && tokens[*candidate].text == "{")
+                        .ok_or("missing struct body")?;
+                    let end = matching_brace(tokens, opening).ok_or("unclosed struct body")?;
+                    items.push(ItemSpan {
+                        start: index,
+                        end,
+                        label: format!("struct {name}"),
+                    });
+                }
+                "fn" => {
+                    let name = tokens.get(index + 1).ok_or("missing function name")?.text;
+                    items.push(ItemSpan {
+                        start: index,
+                        end: function_span(tokens, &depths, index)?,
+                        label: name.to_owned(),
+                    });
+                }
+                "impl" => {
+                    let opening = (index + 1..tokens.len())
+                        .find(|candidate| depths[*candidate] == 0 && tokens[*candidate].text == "{")
+                        .ok_or("missing impl body")?;
+                    let mut type_index = index + 1;
+                    if tokens
+                        .get(type_index)
+                        .is_some_and(|token| token.text == "<")
+                    {
+                        let mut angle_depth = 0_usize;
+                        loop {
+                            match tokens.get(type_index).ok_or("unclosed impl generics")?.text {
+                                "<" => angle_depth += 1,
+                                ">" => {
+                                    angle_depth -= 1;
+                                    if angle_depth == 0 {
+                                        type_index += 1;
+                                        break;
+                                    }
+                                }
+                                _ => {}
+                            }
+                            type_index += 1;
+                        }
+                    }
+                    let impl_type = tokens.get(type_index).ok_or("missing impl type")?.text;
+                    let closing = matching_brace(tokens, opening).ok_or("unclosed impl body")?;
+                    items.push(ItemSpan {
+                        start: index,
+                        end: closing,
+                        label: format!("impl {impl_type}"),
+                    });
+                    for method in opening + 1..closing {
+                        if depths[method] == 1 && tokens[method].text == "fn" {
+                            let name = tokens.get(method + 1).ok_or("missing method name")?.text;
+                            items.push(ItemSpan {
+                                start: method,
+                                end: function_span(tokens, &depths, method)?,
+                                label: format!("{impl_type}::{name}"),
+                            });
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(items)
+    }
+
+    fn item_span_for_token(items: &[ItemSpan], index: usize) -> Option<&ItemSpan> {
+        items
+            .iter()
+            .filter(|item| item.start <= index && index <= item.end)
+            .min_by_key(|item| item.end - item.start)
+    }
+
+    fn token_hash(tokens: &[RustToken<'_>], item: &ItemSpan) -> u64 {
+        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+        for token in &tokens[item.start..=item.end] {
+            for byte in token.text.bytes().chain([0xff]) {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        hash
+    }
+
+    fn reviewed_item_hashes(
+        tokens: &[RustToken<'_>],
+        items: &[ItemSpan],
+    ) -> Result<[u64; 4], &'static str> {
+        let labels = [
+            "struct BoundedGroupOwner",
+            "BoundedGroupOwner::new",
+            "encoded_key_len",
+            "append_key",
+        ];
+        let mut hashes = [0_u64; 4];
+        for (index, label) in labels.iter().enumerate() {
+            let mut matches = items.iter().filter(|item| item.label == *label);
+            let item = matches.next().ok_or("missing reviewed production item")?;
+            if matches.next().is_some() {
+                return Err("duplicate reviewed production item");
+            }
+            hashes[index] = token_hash(tokens, item);
+        }
+        Ok(hashes)
+    }
+
+    fn token_sequence(tokens: &[RustToken<'_>], index: usize, expected: &[&str]) -> bool {
+        tokens[index..]
+            .iter()
+            .take(expected.len())
+            .map(|token| token.text)
+            .eq(expected.iter().copied())
+    }
+
     fn check_group_allocation_architecture(source: &str) -> Result<(), &'static str> {
-        let production = source
-            .split("\n#[cfg(test)]\nmod tests {")
-            .next()
-            .ok_or("missing production source")?;
-        let compact = production
-            .chars()
-            .filter(|character| !character.is_whitespace())
-            .collect::<String>();
-        if !compact.contains("fnallocated_state_bytes")
-            || !compact.contains("structCanonicalGroupLeafBuilder")
-            || !compact.contains("structCanonicalGroupMerge")
-        {
-            return Err("production scan truncated at an internal cfg(test) item");
-        }
-        for (needle, error) in [
-            ("Box", "Box allocation"),
-            ("String", "String allocation"),
-            ("vec![", "vec macro allocation"),
-            (".collect", "collect allocation"),
-            (".to_owned", "owned clone allocation"),
-            (".to_vec", "vector clone allocation"),
-            ("Vec::with_capacity", "unsealed vector allocation"),
-            (".reserve(", "unsealed reserve"),
-            ("encode_canonical_value(", "allocating canonical encoder"),
-        ] {
-            if compact.contains(needle) {
-                return Err(error);
+        let (tokens, _) = production_layout(source)?;
+        let items = production_items(&tokens)?;
+        let mut owner_vec_fields = 0_usize;
+        let mut owner_vec_news = 0_usize;
+        let mut encoder_vec_parameter = 0_usize;
+        let mut reserve_sites = 0_usize;
+        let mut length_helper_imports = 0_usize;
+        let mut length_helper_calls = 0_usize;
+        let mut encoder_helper_imports = 0_usize;
+        let mut encoder_helper_calls = 0_usize;
+
+        for (index, token) in tokens.iter().enumerate() {
+            let item_span = item_span_for_token(&items, index);
+            let item = item_span.map_or("<unparsed top-level item>", |item| item.label.as_str());
+            if matches!(token.text, "Box" | "String")
+                || token.text.starts_with("Vec") && token.text != "Vec"
+            {
+                return Err("unreviewed owned allocation type");
+            }
+            if matches!(token.text, "boxed" | "string")
+                || token.text == "vec"
+                    && !tokens.get(index + 1).is_some_and(|next| next.text == "!")
+            {
+                return Err("unreviewed allocation module or alias");
+            }
+            if token.text == "Vec" {
+                if item == "struct BoundedGroupOwner"
+                    && token_sequence(&tokens, index, &["Vec", "<"])
+                {
+                    owner_vec_fields += 1;
+                } else if item == "BoundedGroupOwner::new"
+                    && token_sequence(&tokens, index, &["Vec", ":", ":", "new", "("])
+                {
+                    owner_vec_news += 1;
+                } else if item == "append_key" && token_sequence(&tokens, index, &["Vec", "<"]) {
+                    encoder_vec_parameter += 1;
+                } else {
+                    return Err("unreviewed Vec site or alias");
+                }
+            }
+            if matches!(token.text, "vec" | "format" | "box")
+                && tokens.get(index + 1).is_some_and(|next| next.text == "!")
+            {
+                return Err("unreviewed allocating macro");
+            }
+            if ["collect", "to_vec", "to_owned", "clone", "from_raw_parts"]
+                .iter()
+                .any(|needle| token.text.contains(needle))
+                || token.text.contains("reserve") && token.text != "try_reserve_exact"
+            {
+                return Err("unreviewed allocating call");
+            }
+            if item == "use" && token.text.contains("alloc") {
+                return Err("aliased allocation module import");
+            }
+            if (token.text.contains("alloc") || token.text == "encode_canonical_value")
+                && tokens
+                    .get(index.wrapping_sub(1))
+                    .is_none_or(|previous| previous.text != "fn")
+                && tokens.get(index + 1).is_some_and(|next| next.text == "(")
+            {
+                return Err("unreviewed allocation helper");
+            }
+            if token.text == "try_reserve_exact" {
+                if item != "BoundedGroupOwner::new"
+                    || !tokens.get(index + 1).is_some_and(|next| next.text == "(")
+                {
+                    return Err("unreviewed reserve site or alias");
+                }
+                reserve_sites += 1;
+            }
+            for (helper, import_count, call_count, expected_item) in [
+                (
+                    "canonical_value_encoded_len",
+                    &mut length_helper_imports,
+                    &mut length_helper_calls,
+                    ["encoded_key_len", "append_key"].as_slice(),
+                ),
+                (
+                    "encode_canonical_value_into",
+                    &mut encoder_helper_imports,
+                    &mut encoder_helper_calls,
+                    ["append_key"].as_slice(),
+                ),
+            ] {
+                if token.text != helper {
+                    continue;
+                }
+                if item == "use" {
+                    let item_span = item_span.ok_or("missing helper import item")?;
+                    if tokens[item_span.start..=item_span.end]
+                        .iter()
+                        .any(|candidate| candidate.text == "as")
+                    {
+                        return Err("aliased allocation helper import");
+                    }
+                    *import_count += 1;
+                } else if expected_item.contains(&item)
+                    && tokens.get(index + 1).is_some_and(|next| next.text == "(")
+                {
+                    *call_count += 1;
+                } else {
+                    return Err("unreviewed allocation helper site or alias");
+                }
+            }
+            if matches!(token.text, "sort" | "sort_by" | "sort_unstable")
+                && tokens.get(index + 1).is_some_and(|next| next.text == "(")
+            {
+                return Err("uncharged final sort");
             }
         }
-        let mut residual = compact.clone();
-        for allowed in ["letmutentries=Vec::new();", "letmutarena=Vec::new();"] {
-            if !residual.contains(allowed) {
-                return Err("missing sole preallocated owner construction");
-            }
-            residual = residual.replacen(allowed, "", 1);
-        }
-        if residual.contains("Vec::new()") {
-            return Err("additional Vec allocation");
-        }
-        if compact.matches("arena:Vec<u8>").count() != 1
-            || compact.matches("entries:Vec<GroupEntry>").count() != 1
-            || compact.matches("arena:&mutVec<u8>").count() != 1
+        if (
+            owner_vec_fields,
+            owner_vec_news,
+            encoder_vec_parameter,
+            reserve_sites,
+        ) != (2, 2, 1, 2)
         {
-            return Err("owned vector allowlist changed");
+            return Err("owned allocation site allowlist changed");
         }
-        if compact.matches("canonical_value_encoded_len").count() != 3
-            || compact.matches("encode_canonical_value_into").count() != 2
+        if (length_helper_imports, length_helper_calls) != (1, 2)
+            || (encoder_helper_imports, encoder_helper_calls) != (1, 1)
         {
             return Err("canonical encoder helper allowlist changed");
         }
-        if compact.contains("sort_unstable") || compact.contains("sort_by") {
-            return Err("uncharged final sort");
-        }
-        if !compact.contains("CheckedProgramLaneFacts")
-            || !compact.contains("MAX_SEGMENT_V2_COLUMNS")
-            || !compact.contains("work.preflight(maximum_work)")
-            || !compact.contains("fnlookup_comparison_ceiling")
-        {
-            return Err("sealed lane or work proof missing");
+        if reviewed_item_hashes(&tokens, &items)? != REVIEWED_GROUP_ITEM_TOKEN_HASHES {
+            return Err("reviewed production item token hash changed");
         }
         Ok(())
     }
@@ -1959,36 +2377,83 @@ mod tests {
     #[test]
     fn production_group_owner_has_no_per_row_owned_key_or_map() {
         let source = include_str!("group.rs");
+        let (tokens, _) = production_layout(source).expect("bounded structural source");
+        let items = production_items(&tokens).expect("production items");
+        assert_eq!(
+            reviewed_item_hashes(&tokens, &items),
+            Ok(REVIEWED_GROUP_ITEM_TOKEN_HASHES)
+        );
         assert_eq!(check_group_allocation_architecture(source), Ok(()));
 
         for (mutation, expected) in [
-            ("fn bypass(){let _=Box::new(1);}", "Box allocation"),
-            ("fn bypass(){let _=String::new();}", "String allocation"),
-            ("fn bypass(){let _=vec![1];}", "vec macro allocation"),
+            (
+                "fn bypass(){let _=Box/* hidden */::new(1);}",
+                "unreviewed owned allocation type",
+            ),
+            (
+                "use std::vec::Vec as HiddenVec; fn bypass(){let _:HiddenVec<u8>=HiddenVec::new();}",
+                "unreviewed allocation module or alias",
+            ),
+            (
+                "fn bypass(){let _=vec/* hidden */![1];}",
+                "unreviewed allocating macro",
+            ),
             (
                 "fn bypass(){let _:Vec<u8>=Vec::new();}",
-                "additional Vec allocation",
+                "unreviewed Vec site or alias",
             ),
             (
                 "fn bypass(v:&[u8]){let _=v.to_owned();}",
-                "owned clone allocation",
+                "unreviewed allocating call",
             ),
             (
                 "fn bypass(v:&[u8]){let _=v.iter().collect::<Vec<_>>();}",
-                "collect allocation",
+                "unreviewed allocating call",
             ),
             (
                 "fn bypass(v:&CanonicalValue){let _=encode_canonical_value(v);}",
-                "allocating canonical encoder",
+                "unreviewed allocation helper",
+            ),
+            (
+                "fn bypass(){allocation_helper();}",
+                "unreviewed allocation helper",
             ),
         ] {
-            let production = source
-                .split("\n#[cfg(test)]\nmod tests {")
-                .next()
-                .expect("production source");
-            let mutated = format!("{production}\n{mutation}\n#[cfg(test)]\nmod tests {{");
+            let (_, module_start) = production_layout(source).expect("source layout");
+            let mutated = format!(
+                "{}\n{mutation}\n{}",
+                &source[..module_start],
+                &source[module_start..]
+            );
             assert_eq!(check_group_allocation_architecture(&mutated), Err(expected));
         }
+
+        let suffix = format!("{source}\nfn hidden_suffix() {{ Vec::new(); }}");
+        assert_eq!(
+            check_group_allocation_architecture(&suffix),
+            Err("test module must be the final source item")
+        );
+
+        let (_, module_start) = production_layout(source).expect("source layout");
+        let extra_test_item = format!(
+            "{}\n#[cfg(test)] fn hidden_test_item() {{}}\n{}",
+            &source[..module_start],
+            &source[module_start..]
+        );
+        assert_eq!(
+            check_group_allocation_architecture(&extra_test_item),
+            Err("top-level cfg(test) item is not the final tests module")
+        );
+
+        let swapped = source.replacen(
+            "let mut entries = Vec::new();",
+            "let mut arena = Vec::new();",
+            1,
+        );
+        assert_eq!(
+            check_group_allocation_architecture(&swapped),
+            Err("reviewed production item token hash changed")
+        );
     }
 
     #[test]
