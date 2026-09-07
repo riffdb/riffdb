@@ -614,6 +614,7 @@ fn validate_registry(semantic: AggregateSemanticIdentityV1) -> Result<(), Aggreg
 mod tests {
     use super::*;
     use rand::rngs::StdRng;
+    use rand::seq::SliceRandom;
     use rand::{Rng, SeedableRng};
     use riffdb_types::{CanonicalValue, Decimal, DecimalSpec};
 
@@ -652,19 +653,72 @@ mod tests {
         builder.finalize()
     }
 
+    fn numeric_leaf(
+        id: CanonicalPartialIdentity,
+        semantic: AggregateSemanticIdentityV1,
+        logical_type: &SegmentV2LogicalType,
+        cells: &[SegmentV2Cell],
+    ) -> FinalizedAggregateLeaf {
+        let mut charge = budget(
+            u32::try_from(cells.len().max(1)).expect("small fixture"),
+            256,
+        );
+        let mut builder =
+            ExactAggregateLeafBuilder::new(id, semantic, Some(logical_type), &mut charge)
+                .expect("supported numeric leaf");
+        builder
+            .accumulate(cells, &mut charge)
+            .expect("bounded numeric leaf values");
+        builder.finalize()
+    }
+
+    fn leaf_with_value(
+        id: CanonicalPartialIdentity,
+        semantic: AggregateSemanticIdentityV1,
+        value: ExactAggregatePartialValue,
+    ) -> FinalizedAggregateLeaf {
+        let logical_type =
+            (semantic != AggregateSemanticIdentityV1::Count).then_some(&SegmentV2LogicalType::I64);
+        let mut charge = budget(1, 256);
+        let mut builder = ExactAggregateLeafBuilder::new(id, semantic, logical_type, &mut charge)
+            .expect("supported boundary leaf");
+        builder.value = value;
+        builder.finalize()
+    }
+
     // Inert aggregate-partial checkpoint only. This does not discharge a
     // complete ADR-0161 obligation or select batch execution in production.
     #[test]
     fn aggregate_leaf_states_match_independent_scalar_oracles() {
-        let mut empty_charge = budget(1, 64);
-        let empty = ExactAggregateMergeAccumulator::new(
-            AggregateSemanticIdentityV1::Count,
-            None,
-            &[],
-            &mut empty_charge,
-        )
-        .expect("direct empty count");
-        assert_eq!(empty.finish(), Ok(ExactAggregatePartialValue::Count(0)));
+        for (semantic, expected) in [
+            (
+                AggregateSemanticIdentityV1::Count,
+                ExactAggregatePartialValue::Count(0),
+            ),
+            (
+                AggregateSemanticIdentityV1::Sum,
+                ExactAggregatePartialValue::Sum {
+                    coefficient: 0,
+                    scale: 0,
+                },
+            ),
+            (
+                AggregateSemanticIdentityV1::Mean,
+                ExactAggregatePartialValue::Mean {
+                    coefficient: 0,
+                    scale: 0,
+                    count: 0,
+                },
+            ),
+        ] {
+            let logical_type = (semantic != AggregateSemanticIdentityV1::Count)
+                .then_some(&SegmentV2LogicalType::I64);
+            let mut empty_charge = budget(1, 64);
+            let empty =
+                ExactAggregateMergeAccumulator::new(semantic, logical_type, &[], &mut empty_charge)
+                    .expect("direct empty aggregate");
+            assert_eq!(empty.finish(), Ok(expected));
+        }
 
         let count_id = identity(0, 1, 0);
         let mut count_charge = budget(3, 64);
@@ -696,6 +750,26 @@ mod tests {
         merged
             .merge_leaf(count.finalize(), &mut merge_charge)
             .expect("count merge");
+        assert_eq!(merged.finish(), Ok(ExactAggregatePartialValue::Count(3)));
+
+        let count_ids = [identity(0, 1, 0), identity(0, 1, 1), identity(0, 2, 0)];
+        let count_partitions: [&[i64]; 3] = [&[], &[1, 2], &[3]];
+        let mut merge_charge = budget(3, 256);
+        let mut merged = ExactAggregateMergeAccumulator::new(
+            AggregateSemanticIdentityV1::Count,
+            None,
+            &count_ids,
+            &mut merge_charge,
+        )
+        .expect("partitioned count accumulator");
+        for (id, partition) in count_ids.into_iter().zip(count_partitions) {
+            merged
+                .merge_leaf(
+                    i64_leaf(id, AggregateSemanticIdentityV1::Count, partition),
+                    &mut merge_charge,
+                )
+                .expect("partitioned count merge");
+        }
         assert_eq!(merged.finish(), Ok(ExactAggregatePartialValue::Count(3)));
 
         let mut rng = StdRng::seed_from_u64(0xA661_5EED);
@@ -764,6 +838,19 @@ mod tests {
                 )
                 .expect("exact next leaf");
         }
+        let value_before = accumulator.value();
+        let cursor_before = accumulator.consumed_leaves();
+        let charge_before = charge;
+        assert_eq!(
+            accumulator.merge_leaf(
+                i64_leaf(identity(1, 0, 1), AggregateSemanticIdentityV1::Sum, &[1],),
+                &mut charge,
+            ),
+            Err(AggregatePartialError::ExcessLeaf)
+        );
+        assert_eq!(accumulator.value(), value_before);
+        assert_eq!(accumulator.consumed_leaves(), cursor_before);
+        assert_eq!(charge, charge_before);
         assert_eq!(
             accumulator.finish(),
             Ok(ExactAggregatePartialValue::Sum {
@@ -875,48 +962,58 @@ mod tests {
     #[test]
     fn leaf_and_merge_failures_are_atomic() {
         let id = identity(0, 1, 0);
-        let mut charge = budget(2, 128);
-        let mut mean = ExactAggregateLeafBuilder::new(
-            id,
+        for semantic in [
+            AggregateSemanticIdentityV1::Sum,
             AggregateSemanticIdentityV1::Mean,
-            Some(&SegmentV2LogicalType::I64),
-            &mut charge,
-        )
-        .expect("mean leaf");
-        for (cell, error) in [
-            (SegmentV2Cell::Missing, AggregatePartialError::MissingField),
-            (SegmentV2Cell::Null, AggregatePartialError::NoValue),
         ] {
-            let value_before = mean.value;
-            let charge_before = charge;
-            assert_eq!(mean.accumulate(&[cell], &mut charge), Err(error));
-            assert_eq!(mean.value, value_before);
-            assert_eq!(charge, charge_before);
+            let mut charge = budget(2, 128);
+            let mut builder = ExactAggregateLeafBuilder::new(
+                id,
+                semantic,
+                Some(&SegmentV2LogicalType::I64),
+                &mut charge,
+            )
+            .expect("required numeric leaf");
+            for (cell, error) in [
+                (SegmentV2Cell::Missing, AggregatePartialError::MissingField),
+                (SegmentV2Cell::Null, AggregatePartialError::NoValue),
+            ] {
+                let value_before = builder.value;
+                let charge_before = charge;
+                assert_eq!(builder.accumulate(&[cell], &mut charge), Err(error));
+                assert_eq!(builder.value, value_before);
+                assert_eq!(charge, charge_before);
+            }
         }
 
         let expected = DecimalSpec::new(12, 2).expect("expected decimal");
         let actual = DecimalSpec::new(11, 2).expect("different decimal");
-        let mut decimal_charge = budget(1, 128);
-        let mut decimal = ExactAggregateLeafBuilder::new(
-            id,
+        for semantic in [
             AggregateSemanticIdentityV1::Sum,
-            Some(&SegmentV2LogicalType::Decimal(expected)),
-            &mut decimal_charge,
-        )
-        .expect("decimal leaf");
-        let value_before = decimal.value;
-        let charge_before = decimal_charge;
-        assert_eq!(
-            decimal.accumulate(
-                &[SegmentV2Cell::Value(CanonicalValue::Decimal(
-                    Decimal::new(actual, 7).expect("different decimal value"),
-                ))],
+            AggregateSemanticIdentityV1::Mean,
+        ] {
+            let mut decimal_charge = budget(1, 128);
+            let mut decimal = ExactAggregateLeafBuilder::new(
+                id,
+                semantic,
+                Some(&SegmentV2LogicalType::Decimal(expected)),
                 &mut decimal_charge,
-            ),
-            Err(AggregatePartialError::InputShape)
-        );
-        assert_eq!(decimal.value, value_before);
-        assert_eq!(decimal_charge, charge_before);
+            )
+            .expect("decimal leaf");
+            let value_before = decimal.value;
+            let charge_before = decimal_charge;
+            assert_eq!(
+                decimal.accumulate(
+                    &[SegmentV2Cell::Value(CanonicalValue::Decimal(
+                        Decimal::new(actual, 7).expect("different decimal value"),
+                    ))],
+                    &mut decimal_charge,
+                ),
+                Err(AggregatePartialError::InputShape)
+            );
+            assert_eq!(decimal.value, value_before);
+            assert_eq!(decimal_charge, charge_before);
+        }
 
         let mut merge_charge = budget(1, 128);
         let mut accumulator = ExactAggregateMergeAccumulator::new(
@@ -939,5 +1036,423 @@ mod tests {
         assert_eq!(accumulator.value(), value_before);
         assert_eq!(accumulator.consumed_leaves(), cursor_before);
         assert_eq!(merge_charge, charge_before);
+    }
+
+    fn assert_randomized_partition_merges(
+        logical_type: &SegmentV2LogicalType,
+        cells: &[SegmentV2Cell],
+        expected_sum: i128,
+        rng: &mut StdRng,
+    ) {
+        for _ in 0..32 {
+            let mut ranges = Vec::new();
+            ranges.push(0..0);
+            let mut start = 0;
+            while start < cells.len() {
+                let width = rng.gen_range(1..=usize::min(11, cells.len() - start));
+                let end = start + width;
+                ranges.push(start..end);
+                start = end;
+            }
+            let ids = (0..ranges.len())
+                .map(|batch| identity(0, 1, u32::try_from(batch).expect("small fixture")))
+                .collect::<Vec<_>>();
+
+            for semantic in [
+                AggregateSemanticIdentityV1::Sum,
+                AggregateSemanticIdentityV1::Mean,
+            ] {
+                let mut merge_charge = budget(
+                    u32::try_from(ids.len()).expect("small fixture"),
+                    MAX_AGGREGATE_STATE_BYTES_V1,
+                );
+                let mut accumulator = ExactAggregateMergeAccumulator::new(
+                    semantic,
+                    Some(logical_type),
+                    &ids,
+                    &mut merge_charge,
+                )
+                .expect("partition accumulator");
+                for (id, range) in ids.iter().copied().zip(ranges.iter()) {
+                    accumulator
+                        .merge_leaf(
+                            numeric_leaf(id, semantic, logical_type, &cells[range.clone()]),
+                            &mut merge_charge,
+                        )
+                        .expect("canonical partition merge");
+                }
+                let expected = if semantic == AggregateSemanticIdentityV1::Sum {
+                    ExactAggregatePartialValue::Sum {
+                        coefficient: expected_sum,
+                        scale: match logical_type {
+                            SegmentV2LogicalType::Decimal(spec) => spec.scale(),
+                            _ => 0,
+                        },
+                    }
+                } else {
+                    ExactAggregatePartialValue::Mean {
+                        coefficient: expected_sum,
+                        scale: match logical_type {
+                            SegmentV2LogicalType::Decimal(spec) => spec.scale(),
+                            _ => 0,
+                        },
+                        count: u64::try_from(cells.len()).expect("small fixture"),
+                    }
+                };
+                assert_eq!(accumulator.finish(), Ok(expected));
+
+                if ids.len() > 1 {
+                    let mut permutation = (0..ids.len()).collect::<Vec<_>>();
+                    permutation.shuffle(rng);
+                    if permutation.iter().copied().eq(0..ids.len()) {
+                        permutation.rotate_left(1);
+                    }
+                    let mut merge_charge = budget(
+                        u32::try_from(ids.len()).expect("small fixture"),
+                        MAX_AGGREGATE_STATE_BYTES_V1,
+                    );
+                    let mut rejected = ExactAggregateMergeAccumulator::new(
+                        semantic,
+                        Some(logical_type),
+                        &ids,
+                        &mut merge_charge,
+                    )
+                    .expect("permutation accumulator");
+                    let mut refusal = None;
+                    for index in permutation {
+                        if let Err(error) = rejected.merge_leaf(
+                            numeric_leaf(
+                                ids[index],
+                                semantic,
+                                logical_type,
+                                &cells[ranges[index].clone()],
+                            ),
+                            &mut merge_charge,
+                        ) {
+                            refusal = Some(error);
+                            break;
+                        }
+                    }
+                    assert!(matches!(
+                        refusal,
+                        Some(
+                            AggregatePartialError::InventoryGap
+                                | AggregatePartialError::DuplicateOrReorderedLeaf
+                        )
+                    ));
+                    assert!(rejected.consumed_leaves() < ids.len());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn randomized_exact_numeric_partitions_match_independent_merge_oracles() {
+        let mut rng = StdRng::seed_from_u64(0xA661_C0DE);
+
+        let i64_values = std::iter::once(i64::MIN)
+            .chain(std::iter::once(i64::MAX))
+            .chain((0..95).map(|_| rng.gen_range(-1_000_000_i64..=1_000_000)))
+            .collect::<Vec<_>>();
+        let i64_sum = i64_values
+            .iter()
+            .fold(0_i128, |total, value| total + i128::from(*value));
+        assert_randomized_partition_merges(
+            &SegmentV2LogicalType::I64,
+            &i64_cells(&i64_values),
+            i64_sum,
+            &mut rng,
+        );
+
+        let u64_values = std::iter::once(u64::MAX)
+            .chain((0..96).map(|_| rng.gen_range(0_u64..=1_000_000)))
+            .collect::<Vec<_>>();
+        let u64_sum = u64_values
+            .iter()
+            .fold(0_i128, |total, value| total + i128::from(*value));
+        let u64_cells = u64_values
+            .iter()
+            .copied()
+            .map(|value| SegmentV2Cell::Value(CanonicalValue::U64(value)))
+            .collect::<Vec<_>>();
+        assert_randomized_partition_merges(
+            &SegmentV2LogicalType::U64,
+            &u64_cells,
+            u64_sum,
+            &mut rng,
+        );
+
+        let decimal_spec = DecimalSpec::new(18, 4).expect("decimal corpus type");
+        let decimal_coefficients = (0..97)
+            .map(|_| rng.gen_range(-1_000_000_i128..=1_000_000))
+            .collect::<Vec<_>>();
+        let decimal_sum = decimal_coefficients.iter().copied().sum::<i128>();
+        let decimal_cells = decimal_coefficients
+            .iter()
+            .copied()
+            .map(|coefficient| {
+                SegmentV2Cell::Value(CanonicalValue::Decimal(
+                    Decimal::new(decimal_spec, coefficient).expect("decimal corpus value"),
+                ))
+            })
+            .collect::<Vec<_>>();
+        assert_randomized_partition_merges(
+            &SegmentV2LogicalType::Decimal(decimal_spec),
+            &decimal_cells,
+            decimal_sum,
+            &mut rng,
+        );
+    }
+
+    #[test]
+    fn checked_merge_extrema_refuse_i128_and_u64_overflow_atomically() {
+        let ids = [identity(0, 1, 0), identity(0, 1, 1)];
+        for (semantic, left, right, expected) in [
+            (
+                AggregateSemanticIdentityV1::Count,
+                ExactAggregatePartialValue::Count(u64::MAX - 1),
+                ExactAggregatePartialValue::Count(1),
+                ExactAggregatePartialValue::Count(u64::MAX),
+            ),
+            (
+                AggregateSemanticIdentityV1::Sum,
+                ExactAggregatePartialValue::Sum {
+                    coefficient: i128::MAX - 1,
+                    scale: 0,
+                },
+                ExactAggregatePartialValue::Sum {
+                    coefficient: 1,
+                    scale: 0,
+                },
+                ExactAggregatePartialValue::Sum {
+                    coefficient: i128::MAX,
+                    scale: 0,
+                },
+            ),
+            (
+                AggregateSemanticIdentityV1::Sum,
+                ExactAggregatePartialValue::Sum {
+                    coefficient: i128::MIN,
+                    scale: 0,
+                },
+                ExactAggregatePartialValue::Sum {
+                    coefficient: 0,
+                    scale: 0,
+                },
+                ExactAggregatePartialValue::Sum {
+                    coefficient: i128::MIN,
+                    scale: 0,
+                },
+            ),
+            (
+                AggregateSemanticIdentityV1::Mean,
+                ExactAggregatePartialValue::Mean {
+                    coefficient: i128::MAX - 1,
+                    scale: 0,
+                    count: 0,
+                },
+                ExactAggregatePartialValue::Mean {
+                    coefficient: 1,
+                    scale: 0,
+                    count: 1,
+                },
+                ExactAggregatePartialValue::Mean {
+                    coefficient: i128::MAX,
+                    scale: 0,
+                    count: 1,
+                },
+            ),
+            (
+                AggregateSemanticIdentityV1::Mean,
+                ExactAggregatePartialValue::Mean {
+                    coefficient: i128::MIN,
+                    scale: 0,
+                    count: 0,
+                },
+                ExactAggregatePartialValue::Mean {
+                    coefficient: 0,
+                    scale: 0,
+                    count: 1,
+                },
+                ExactAggregatePartialValue::Mean {
+                    coefficient: i128::MIN,
+                    scale: 0,
+                    count: 1,
+                },
+            ),
+        ] {
+            let logical_type = (semantic != AggregateSemanticIdentityV1::Count)
+                .then_some(&SegmentV2LogicalType::I64);
+            let mut charge = budget(2, 256);
+            let mut accumulator =
+                ExactAggregateMergeAccumulator::new(semantic, logical_type, &ids, &mut charge)
+                    .expect("boundary accumulator");
+            accumulator
+                .merge_leaf(leaf_with_value(ids[0], semantic, left), &mut charge)
+                .expect("boundary left");
+            accumulator
+                .merge_leaf(leaf_with_value(ids[1], semantic, right), &mut charge)
+                .expect("exact boundary merge");
+            assert_eq!(accumulator.finish(), Ok(expected));
+        }
+
+        for (semantic, left, right) in [
+            (
+                AggregateSemanticIdentityV1::Count,
+                ExactAggregatePartialValue::Count(u64::MAX),
+                ExactAggregatePartialValue::Count(1),
+            ),
+            (
+                AggregateSemanticIdentityV1::Sum,
+                ExactAggregatePartialValue::Sum {
+                    coefficient: i128::MAX,
+                    scale: 0,
+                },
+                ExactAggregatePartialValue::Sum {
+                    coefficient: 1,
+                    scale: 0,
+                },
+            ),
+            (
+                AggregateSemanticIdentityV1::Sum,
+                ExactAggregatePartialValue::Sum {
+                    coefficient: i128::MIN,
+                    scale: 0,
+                },
+                ExactAggregatePartialValue::Sum {
+                    coefficient: -1,
+                    scale: 0,
+                },
+            ),
+            (
+                AggregateSemanticIdentityV1::Mean,
+                ExactAggregatePartialValue::Mean {
+                    coefficient: i128::MAX,
+                    scale: 0,
+                    count: 0,
+                },
+                ExactAggregatePartialValue::Mean {
+                    coefficient: 1,
+                    scale: 0,
+                    count: 1,
+                },
+            ),
+            (
+                AggregateSemanticIdentityV1::Mean,
+                ExactAggregatePartialValue::Mean {
+                    coefficient: i128::MIN,
+                    scale: 0,
+                    count: 0,
+                },
+                ExactAggregatePartialValue::Mean {
+                    coefficient: -1,
+                    scale: 0,
+                    count: 1,
+                },
+            ),
+            (
+                AggregateSemanticIdentityV1::Mean,
+                ExactAggregatePartialValue::Mean {
+                    coefficient: 0,
+                    scale: 0,
+                    count: u64::MAX,
+                },
+                ExactAggregatePartialValue::Mean {
+                    coefficient: 0,
+                    scale: 0,
+                    count: 1,
+                },
+            ),
+        ] {
+            let logical_type = (semantic != AggregateSemanticIdentityV1::Count)
+                .then_some(&SegmentV2LogicalType::I64);
+            let mut charge = budget(2, 256);
+            let mut accumulator =
+                ExactAggregateMergeAccumulator::new(semantic, logical_type, &ids, &mut charge)
+                    .expect("overflow accumulator");
+            accumulator
+                .merge_leaf(leaf_with_value(ids[0], semantic, left), &mut charge)
+                .expect("overflow left");
+            let value_before = accumulator.value();
+            let cursor_before = accumulator.consumed_leaves();
+            let charge_before = charge;
+            assert_eq!(
+                accumulator.merge_leaf(leaf_with_value(ids[1], semantic, right), &mut charge,),
+                Err(AggregatePartialError::ArithmeticOverflow)
+            );
+            assert_eq!(accumulator.value(), value_before);
+            assert_eq!(accumulator.consumed_leaves(), cursor_before);
+            assert_eq!(charge, charge_before);
+        }
+    }
+
+    #[test]
+    fn exact_global_operation_and_state_bounds_are_enforced() {
+        assert_eq!(
+            AggregatePartialBudget::new(MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1 + 1, 1),
+            Err(AggregatePartialError::InvalidArithmeticBound)
+        );
+        assert_eq!(
+            AggregatePartialBudget::new(1, MAX_AGGREGATE_STATE_BYTES_V1 + 1),
+            Err(AggregatePartialError::InvalidStateBound)
+        );
+
+        let mut operation_charge = budget(
+            MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1,
+            MAX_AGGREGATE_STATE_BYTES_V1,
+        );
+        let mut count = ExactAggregateLeafBuilder::new(
+            identity(0, 1, 0),
+            AggregateSemanticIdentityV1::Count,
+            None,
+            &mut operation_charge,
+        )
+        .expect("maximum-operation leaf");
+        let maximum_cells =
+            vec![SegmentV2Cell::Null; MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1 as usize];
+        count
+            .accumulate(&maximum_cells, &mut operation_charge)
+            .expect("exact maximum operations");
+        assert_eq!(operation_charge.remaining_arithmetic_operations(), 0);
+        let value_before = count.value;
+        let charge_before = operation_charge;
+        assert_eq!(
+            count.accumulate(&[SegmentV2Cell::Null], &mut operation_charge),
+            Err(AggregatePartialError::ArithmeticBoundExceeded)
+        );
+        assert_eq!(count.value, value_before);
+        assert_eq!(operation_charge, charge_before);
+
+        let definition = ExactAggregateDefinition::new(AggregateSemanticIdentityV1::Count, None)
+            .expect("count definition");
+        let exact_state = definition
+            .state_bytes()
+            .expect("count state")
+            .checked_add(CANONICAL_INVENTORY_IDENTITY_BYTES)
+            .expect("small exact state");
+        let id = identity(0, 1, 0);
+        let mut exact_charge = budget(1, exact_state);
+        ExactAggregateMergeAccumulator::new(
+            AggregateSemanticIdentityV1::Count,
+            None,
+            &[id],
+            &mut exact_charge,
+        )
+        .expect("exact state budget");
+        assert_eq!(exact_charge.remaining_state_bytes(), 0);
+
+        let mut short_charge = budget(1, exact_state - 1);
+        let short_before = short_charge;
+        assert_eq!(
+            ExactAggregateMergeAccumulator::new(
+                AggregateSemanticIdentityV1::Count,
+                None,
+                &[id],
+                &mut short_charge,
+            )
+            .err(),
+            Some(AggregatePartialError::StateBoundExceeded)
+        );
+        assert_eq!(short_charge, short_before);
     }
 }
