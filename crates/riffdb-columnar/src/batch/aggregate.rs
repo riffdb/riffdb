@@ -526,10 +526,12 @@ impl ExactAggregateMergeAccumulator {
         })
     }
 
+    #[cfg(test)]
     pub(super) const fn value(&self) -> ExactAggregatePartialValue {
         self.value
     }
 
+    #[cfg(test)]
     pub(super) const fn consumed_leaves(&self) -> usize {
         self.inventory.cursor
     }
