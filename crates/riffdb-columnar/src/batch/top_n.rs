@@ -972,4 +972,48 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn bounded_top_n_refuses_a_duplicate_primary_key() {
+        let mut top = BoundedTopN::new(Vec::new(), 2).expect("bounded program");
+        top.push(candidate(1, Vec::new())).expect("first key");
+        assert_eq!(
+            top.push(candidate(1, Vec::new())),
+            Err(TopNError::InvalidPrimaryKey)
+        );
+        assert_eq!(top.finish(), Err(TopNError::InvalidPrimaryKey));
+    }
+
+    #[test]
+    fn bounded_top_n_decimal_order_remains_the_scalar_canonical_byte_order() {
+        let decimal = DecimalSpec::new(8, 2).expect("decimal type");
+        let mut top = BoundedTopN::new(
+            vec![TopNOrderTerm::new(
+                SegmentV2LogicalType::Decimal(decimal),
+                TopNValueDirection::Ascending,
+                TopNNoValuePlacement::PresentOnly,
+            )],
+            2,
+        )
+        .expect("bounded program");
+        top.push(candidate(
+            1,
+            vec![SegmentV2Cell::Value(CanonicalValue::Decimal(
+                Decimal::new(decimal, -1).expect("negative decimal"),
+            ))],
+        ))
+        .expect("negative decimal");
+        top.push(candidate(
+            2,
+            vec![SegmentV2Cell::Value(CanonicalValue::Decimal(
+                Decimal::new(decimal, 1).expect("positive decimal"),
+            ))],
+        ))
+        .expect("positive decimal");
+
+        assert_eq!(
+            top.finish().expect("page").primary_key_bytes(),
+            vec![vec![2], vec![1]]
+        );
+    }
 }
