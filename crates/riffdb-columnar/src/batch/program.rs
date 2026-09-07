@@ -57,6 +57,10 @@ struct ProgramResourcePlan {
     // All values originate in the checked compiler/provider lowering. This
     // module has no request or configuration constructor.
     rows: usize,
+    // At this pre-generation stage MAX_LANE_BYTES bounds only the encoded-lane
+    // declaration. Post-WP-757 Active integration must independently bind the
+    // actual decoded/borrowed footprint before this name can become runtime
+    // evidence.
     decoded_lane_bytes: usize,
     optional_state_bytes: usize,
     selection_bytes: usize,
@@ -276,6 +280,11 @@ impl PreGenerationBatchProgramDraft {
             ProgramResource::Output,
         )?;
         if (self.resources.output_rows == 0) != (self.resources.output_bytes_per_row == 0) {
+            return Err(ProgramSealError::ChargeMismatch(ProgramResource::Output));
+        }
+        if self.resources.top_n_kind == TopNPlanKind::OrderedRows
+            && self.resources.output_rows > self.resources.result_maximum
+        {
             return Err(ProgramSealError::ChargeMismatch(ProgramResource::Output));
         }
         let output_bytes = checked_charge_product(
@@ -647,6 +656,14 @@ mod tests {
                 ProgramResource::DecodedLanes
             ))
         );
+        decoded.resources.decoded_lane_bytes = 0;
+        assert_eq!(
+            decoded.check(&decoded.facts.clone()).err(),
+            Some(ProgramSealError::BoundExceeded(
+                ProgramResource::DecodedLanes
+            )),
+            "zero is not decoded-footprint evidence; this draft only checks the encoded declaration"
+        );
 
         let mut partial = valid_draft();
         partial.resources.partial_count = 1;
@@ -700,6 +717,8 @@ mod tests {
         );
 
         let mut output_rows = valid_draft();
+        output_rows.resources.result_maximum = max_rows;
+        output_rows.resources.heap_entries = max_rows + 1;
         output_rows.resources.output_rows = max_rows;
         output_rows.resources.output_bytes_per_row = 1;
         assert_eq!(
@@ -714,6 +733,48 @@ mod tests {
         assert_eq!(
             output_rows.check(&output_rows.facts.clone()).err(),
             Some(ProgramSealError::BoundExceeded(ProgramResource::Output))
+        );
+    }
+
+    #[test]
+    fn total_byte_ceilings_are_enforced_after_legal_operands() {
+        let max_partial = usize::try_from(MAX_AGGREGATE_STATE_BYTES_V1).expect("usize");
+        let max_output = usize::try_from(MAX_APPLICATION_QUERY_RESULT_BYTES).expect("usize");
+
+        let mut partial = valid_draft();
+        partial.resources.partial_count = 2;
+        partial.resources.partial_bytes_each = max_partial / 2;
+        assert_eq!(
+            partial
+                .check(&partial.facts.clone())
+                .expect("exact aggregate-state product")
+                .charges
+                .partial_bytes,
+            max_partial
+        );
+        partial.resources.partial_bytes_each += 1;
+        assert_eq!(
+            partial.check(&partial.facts.clone()).err(),
+            Some(ProgramSealError::BoundExceeded(ProgramResource::Partial)),
+            "both operands are legal, so only the total-product ceiling refuses"
+        );
+
+        let mut output = valid_draft();
+        output.resources.output_rows = 2;
+        output.resources.output_bytes_per_row = max_output / 2;
+        assert_eq!(
+            output
+                .check(&output.facts.clone())
+                .expect("exact result-byte product")
+                .charges
+                .output_bytes,
+            max_output
+        );
+        output.resources.output_bytes_per_row += 1;
+        assert_eq!(
+            output.check(&output.facts.clone()).err(),
+            Some(ProgramSealError::BoundExceeded(ProgramResource::Output)),
+            "both operands are legal, so only the total-product ceiling refuses"
         );
     }
 
@@ -836,8 +897,26 @@ mod tests {
             draft.resources.top_n_kind = kind;
             draft.resources.result_maximum = result_maximum;
             draft.resources.heap_entries = heap_entries;
+            draft.resources.output_rows = usize::from(result_maximum != 0);
+            draft.resources.output_bytes_per_row = usize::from(result_maximum != 0);
             assert_eq!(draft.check(&draft.facts.clone()).is_ok(), accepted);
         }
+
+        let mut exact_output = valid_draft();
+        exact_output.resources.result_maximum = 16;
+        exact_output.resources.heap_entries = 17;
+        exact_output.resources.output_rows = 16;
+        assert!(exact_output.check(&exact_output.facts.clone()).is_ok());
+
+        let mut excessive_output = exact_output;
+        excessive_output.resources.output_rows = 17;
+        assert_eq!(
+            excessive_output
+                .check(&excessive_output.facts.clone())
+                .err(),
+            Some(ProgramSealError::ChargeMismatch(ProgramResource::Output)),
+            "an OrderedRows result cannot emit past its sealed result maximum"
+        );
     }
 
     #[test]
