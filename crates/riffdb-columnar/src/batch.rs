@@ -530,6 +530,11 @@ mod tests {
             ),
             (
                 SegmentV2Cell::Value(CanonicalValue::U64(3)),
+                SegmentV2Predicate::LessThan(CanonicalValue::U64(3)),
+                Ok(false),
+            ),
+            (
+                SegmentV2Cell::Value(CanonicalValue::U64(3)),
                 SegmentV2Predicate::LessThanOrEqual(CanonicalValue::U64(3)),
                 Ok(true),
             ),
@@ -540,7 +545,42 @@ mod tests {
             ),
             (
                 SegmentV2Cell::Value(CanonicalValue::U64(3)),
+                SegmentV2Predicate::GreaterThan(CanonicalValue::U64(3)),
+                Ok(false),
+            ),
+            (
+                SegmentV2Cell::Value(CanonicalValue::U64(3)),
                 SegmentV2Predicate::GreaterThanOrEqual(CanonicalValue::U64(3)),
+                Ok(true),
+            ),
+            (
+                SegmentV2Cell::Value(CanonicalValue::U64(u64::MIN)),
+                SegmentV2Predicate::LessThan(CanonicalValue::U64(u64::MAX)),
+                Ok(true),
+            ),
+            (
+                SegmentV2Cell::Value(CanonicalValue::U64(u64::MAX)),
+                SegmentV2Predicate::LessThan(CanonicalValue::U64(u64::MIN)),
+                Ok(false),
+            ),
+            (
+                SegmentV2Cell::Value(CanonicalValue::U64(u64::MAX)),
+                SegmentV2Predicate::GreaterThan(CanonicalValue::U64(u64::MIN)),
+                Ok(true),
+            ),
+            (
+                SegmentV2Cell::Value(CanonicalValue::U64(u64::MIN)),
+                SegmentV2Predicate::GreaterThan(CanonicalValue::U64(u64::MAX)),
+                Ok(false),
+            ),
+            (
+                SegmentV2Cell::Value(CanonicalValue::U64(u64::MIN)),
+                SegmentV2Predicate::LessThanOrEqual(CanonicalValue::U64(u64::MIN)),
+                Ok(true),
+            ),
+            (
+                SegmentV2Cell::Value(CanonicalValue::U64(u64::MAX)),
+                SegmentV2Predicate::GreaterThanOrEqual(CanonicalValue::U64(u64::MAX)),
                 Ok(true),
             ),
             (
