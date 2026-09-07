@@ -7,8 +7,11 @@ use riffdb_types::{
     MAX_AGGREGATE_STATE_BYTES_V1,
 };
 
-use crate::segment_v2::compare_values as compare_segment_values;
 use crate::segment_v2::{SegmentV2Cell, SegmentV2LogicalType, SegmentV2SegmentId};
+
+use super::top_n::{
+    TopNComparisonProfile, TopNProgramBinding, compare_present, validate_present_type,
+};
 
 const CANONICAL_INVENTORY_IDENTITY_BYTES: u32 = 2 + 16 + 4;
 
@@ -23,6 +26,9 @@ pub(super) enum AggregatePartialError {
     StateBoundExceeded,
     InvalidDistinctBound,
     DistinctBoundExceeded,
+    AmbiguousComparisonProfile,
+    ProgramBindingSubstitution,
+    OptionalBooleanField,
     MissingField,
     NoValue,
     ArithmeticOverflow,
@@ -580,17 +586,56 @@ pub(super) enum BorrowedAggregateScalar<'view> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum AggregateFieldOptionality {
+    Required,
+    Optional,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct SealedAggregateInputFacts {
+    binding: Option<TopNProgramBinding>,
+    checked_binding: TopNProgramBinding,
+    optionality: AggregateFieldOptionality,
+}
+
+impl SealedAggregateInputFacts {
+    pub(super) const fn new(
+        binding: Option<TopNProgramBinding>,
+        checked_binding: TopNProgramBinding,
+        optionality: AggregateFieldOptionality,
+    ) -> Self {
+        Self {
+            binding,
+            checked_binding,
+            optionality,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct BorrowedAggregateDefinition<'view> {
+    binding: TopNProgramBinding,
     semantic: AggregateSemanticIdentityV1,
     logical_type: &'view SegmentV2LogicalType,
+    optionality: AggregateFieldOptionality,
 }
 
 impl<'view> BorrowedAggregateDefinition<'view> {
     fn new(
+        facts: SealedAggregateInputFacts,
         semantic: AggregateSemanticIdentityV1,
         logical_type: &'view SegmentV2LogicalType,
         distinct_limit: Option<u16>,
     ) -> Result<Self, AggregatePartialError> {
+        let binding = facts
+            .binding
+            .ok_or(AggregatePartialError::AmbiguousComparisonProfile)?;
+        if binding != facts.checked_binding {
+            return Err(AggregatePartialError::ProgramBindingSubstitution);
+        }
+        match binding.comparison_profile() {
+            TopNComparisonProfile::CanonicalScalarV1 => {}
+        }
         if distinct_limit.is_some() {
             return Err(AggregatePartialError::UnsupportedSemantic);
         }
@@ -598,13 +643,20 @@ impl<'view> BorrowedAggregateDefinition<'view> {
         if matches!(
             semantic,
             AggregateSemanticIdentityV1::Any | AggregateSemanticIdentityV1::All
-        ) && *logical_type != SegmentV2LogicalType::Bool
+        ) && (*logical_type != SegmentV2LogicalType::Bool
+            || facts.optionality != AggregateFieldOptionality::Required)
         {
-            return Err(AggregatePartialError::InputShape);
+            return Err(if *logical_type != SegmentV2LogicalType::Bool {
+                AggregatePartialError::InputShape
+            } else {
+                AggregatePartialError::OptionalBooleanField
+            });
         }
         Ok(Self {
+            binding,
             semantic,
             logical_type,
+            optionality: facts.optionality,
         })
     }
 
@@ -656,6 +708,7 @@ impl<'view> BorrowedAggregatePartialValue<'view> {
                         None => candidate,
                         Some(current) => {
                             let compared = compare_borrowed_scalars(
+                                definition.binding.comparison_profile(),
                                 definition.logical_type,
                                 candidate,
                                 current,
@@ -700,7 +753,12 @@ impl<'view> BorrowedAggregatePartialValue<'view> {
             ) => match (left, right) {
                 (None, other) | (other, None) => Ok(Self::Extreme(other)),
                 (Some(left), Some(right)) => {
-                    let compared = compare_borrowed_scalars(definition.logical_type, right, left)?;
+                    let compared = compare_borrowed_scalars(
+                        definition.binding.comparison_profile(),
+                        definition.logical_type,
+                        right,
+                        left,
+                    )?;
                     let replace = match semantic {
                         AggregateSemanticIdentityV1::Min => compared == Ordering::Less,
                         AggregateSemanticIdentityV1::Max => compared == Ordering::Greater,
@@ -729,12 +787,14 @@ pub(super) struct ExactBorrowedAggregateLeafBuilder<'view> {
 impl<'view> ExactBorrowedAggregateLeafBuilder<'view> {
     pub(super) fn new(
         identity: CanonicalPartialIdentity,
+        facts: SealedAggregateInputFacts,
         semantic: AggregateSemanticIdentityV1,
         logical_type: &'view SegmentV2LogicalType,
         distinct_limit: Option<u16>,
         budget: &mut AggregatePartialBudget,
     ) -> Result<Self, AggregatePartialError> {
-        let definition = BorrowedAggregateDefinition::new(semantic, logical_type, distinct_limit)?;
+        let definition =
+            BorrowedAggregateDefinition::new(facts, semantic, logical_type, distinct_limit)?;
         let state_bytes = definition.state_bytes()?;
         budget.admits_state(state_bytes)?;
         let value = definition.empty_value()?;
@@ -781,13 +841,15 @@ pub(super) struct ExactBorrowedAggregateMergeAccumulator<'view> {
 
 impl<'view> ExactBorrowedAggregateMergeAccumulator<'view> {
     pub(super) fn new(
+        facts: SealedAggregateInputFacts,
         semantic: AggregateSemanticIdentityV1,
         logical_type: &'view SegmentV2LogicalType,
         distinct_limit: Option<u16>,
         exact_inventory: &[CanonicalPartialIdentity],
         budget: &mut AggregatePartialBudget,
     ) -> Result<Self, AggregatePartialError> {
-        let definition = BorrowedAggregateDefinition::new(semantic, logical_type, distinct_limit)?;
+        let definition =
+            BorrowedAggregateDefinition::new(facts, semantic, logical_type, distinct_limit)?;
         SealedCanonicalPartialInventory::validate(exact_inventory)?;
         let state_bytes = definition
             .state_bytes()?
@@ -856,7 +918,7 @@ fn borrowed_extreme_input<'view>(
 ) -> Result<BorrowedAggregateScalar<'view>, AggregatePartialError> {
     match cell {
         SegmentV2Cell::Missing | SegmentV2Cell::Null => Ok(BorrowedAggregateScalar::NoValue),
-        SegmentV2Cell::Value(value) if logical_type.accepts(value) => {
+        SegmentV2Cell::Value(value) if validate_present_type(logical_type, value) => {
             Ok(BorrowedAggregateScalar::Value(value))
         }
         SegmentV2Cell::Value(_) => Err(AggregatePartialError::InputShape),
@@ -864,6 +926,7 @@ fn borrowed_extreme_input<'view>(
 }
 
 fn compare_borrowed_scalars(
+    profile: TopNComparisonProfile,
     logical_type: &SegmentV2LogicalType,
     left: BorrowedAggregateScalar<'_>,
     right: BorrowedAggregateScalar<'_>,
@@ -875,7 +938,7 @@ fn compare_borrowed_scalars(
             Ok(Ordering::Greater)
         }
         (BorrowedAggregateScalar::Value(left), BorrowedAggregateScalar::Value(right)) => {
-            compare_segment_values(logical_type, left, right)
+            compare_present(profile, logical_type, left, right)
                 .map_err(|_| AggregatePartialError::InputShape)
         }
     }
@@ -927,7 +990,7 @@ impl<'view> ExactDistinctDefinition<'view> {
             SegmentV2Cell::Missing | SegmentV2Cell::Null => {
                 Ok(Some(BorrowedAggregateScalar::NoValue))
             }
-            SegmentV2Cell::Value(value) if self.logical_type.accepts(value) => {
+            SegmentV2Cell::Value(value) if validate_present_type(self.logical_type, value) => {
                 Ok(Some(BorrowedAggregateScalar::Value(value)))
             }
             SegmentV2Cell::Value(_) => Err(AggregatePartialError::InputShape),
@@ -1305,7 +1368,7 @@ mod tests {
     use rand::{Rng, SeedableRng};
     use riffdb_types::{
         CanonicalValue, CurrencyCode, Date, Decimal, DecimalSpec, EnumTypeId, EnumVariantId, Money,
-        Timestamp, encode_canonical_value,
+        ProjectionGeneration, QueryPlanHash, Timestamp, encode_canonical_value,
     };
     use std::collections::BTreeSet;
 
@@ -1315,6 +1378,34 @@ mod tests {
 
     fn identity(root: u16, segment: u8, batch: u32) -> CanonicalPartialIdentity {
         CanonicalPartialIdentity::new(root, SegmentV2SegmentId::from_bytes([segment; 16]), batch)
+    }
+
+    fn aggregate_binding(seed: u8) -> TopNProgramBinding {
+        TopNProgramBinding::new(
+            Some(TopNComparisonProfile::CanonicalScalarV1),
+            QueryPlanHash::from_bytes([seed; 32]),
+            ProjectionGeneration::new(7).expect("generation"),
+        )
+        .expect("canonical scalar V1 binding")
+    }
+
+    fn optionality(semantic: AggregateSemanticIdentityV1) -> AggregateFieldOptionality {
+        if matches!(
+            semantic,
+            AggregateSemanticIdentityV1::Any | AggregateSemanticIdentityV1::All
+        ) {
+            AggregateFieldOptionality::Required
+        } else {
+            AggregateFieldOptionality::Optional
+        }
+    }
+
+    fn aggregate_facts(
+        seed: u8,
+        optionality: AggregateFieldOptionality,
+    ) -> SealedAggregateInputFacts {
+        let binding = aggregate_binding(seed);
+        SealedAggregateInputFacts::new(Some(binding), binding, optionality)
     }
 
     fn i64_cells(values: &[i64]) -> Vec<SegmentV2Cell> {
@@ -2160,13 +2251,29 @@ mod tests {
         logical_type: &'view SegmentV2LogicalType,
         cells: &'view [SegmentV2Cell],
     ) -> FinalizedBorrowedAggregateLeaf<'view> {
+        borrowed_leaf_with_binding(id, aggregate_binding(1), semantic, logical_type, cells)
+    }
+
+    fn borrowed_leaf_with_binding<'view>(
+        id: CanonicalPartialIdentity,
+        binding: TopNProgramBinding,
+        semantic: AggregateSemanticIdentityV1,
+        logical_type: &'view SegmentV2LogicalType,
+        cells: &'view [SegmentV2Cell],
+    ) -> FinalizedBorrowedAggregateLeaf<'view> {
         let mut charge = budget(
             u32::try_from(cells.len().max(1)).expect("small fixture"),
             256,
         );
-        let mut builder =
-            ExactBorrowedAggregateLeafBuilder::new(id, semantic, logical_type, None, &mut charge)
-                .expect("supported borrowed leaf");
+        let mut builder = ExactBorrowedAggregateLeafBuilder::new(
+            id,
+            SealedAggregateInputFacts::new(Some(binding), binding, optionality(semantic)),
+            semantic,
+            logical_type,
+            None,
+            &mut charge,
+        )
+        .expect("supported borrowed leaf");
         builder
             .accumulate(cells, &mut charge)
             .expect("valid borrowed contributions");
@@ -2189,6 +2296,7 @@ mod tests {
             4_096,
         );
         let mut accumulator = ExactBorrowedAggregateMergeAccumulator::new(
+            aggregate_facts(1, optionality(semantic)),
             semantic,
             logical_type,
             None,
@@ -2207,24 +2315,66 @@ mod tests {
         accumulator.finish().expect("complete borrowed inventory")
     }
 
-    fn assert_extreme_pair(
-        logical_type: &SegmentV2LogicalType,
-        cells: &[SegmentV2Cell],
-        minimum: usize,
-        maximum: usize,
-    ) {
+    fn independent_canonical_scalar_v1_order(
+        left: &CanonicalValue,
+        right: &CanonicalValue,
+    ) -> Ordering {
+        let left_bytes = encode_canonical_value(left).expect("canonical left value");
+        let right_bytes = encode_canonical_value(right).expect("canonical right value");
+        match (left, right) {
+            (CanonicalValue::Bool(left), CanonicalValue::Bool(right)) => left.cmp(right),
+            (CanonicalValue::I64(left), CanonicalValue::I64(right)) => left.cmp(right),
+            (CanonicalValue::U64(left), CanonicalValue::U64(right)) => left.cmp(right),
+            (CanonicalValue::String(left), CanonicalValue::String(right)) => {
+                left.as_str().cmp(right.as_str())
+            }
+            (CanonicalValue::Bytes(left), CanonicalValue::Bytes(right)) => {
+                left.as_bytes().cmp(right.as_bytes())
+            }
+            (CanonicalValue::Timestamp(left), CanonicalValue::Timestamp(right)) => left.cmp(right),
+            (CanonicalValue::Date(left), CanonicalValue::Date(right)) => left.cmp(right),
+            (CanonicalValue::Uuid(left), CanonicalValue::Uuid(right)) => left.cmp(right),
+            (
+                CanonicalValue::Enum {
+                    type_id: left_type,
+                    variant_id: left,
+                },
+                CanonicalValue::Enum {
+                    type_id: right_type,
+                    variant_id: right,
+                },
+            ) if left_type == right_type => left.cmp(right),
+            (CanonicalValue::Decimal(_), CanonicalValue::Decimal(_))
+            | (CanonicalValue::Money(_), CanonicalValue::Money(_)) => left_bytes.cmp(&right_bytes),
+            _ => panic!("fixture values must share one admitted scalar type"),
+        }
+    }
+
+    fn assert_extreme_pair(logical_type: &SegmentV2LogicalType, cells: &[SegmentV2Cell]) {
+        let minimum = cells
+            .iter()
+            .min_by(|left, right| {
+                independent_canonical_scalar_v1_order(present(left), present(right))
+            })
+            .expect("nonempty extrema fixture");
+        let maximum = cells
+            .iter()
+            .max_by(|left, right| {
+                independent_canonical_scalar_v1_order(present(left), present(right))
+            })
+            .expect("nonempty extrema fixture");
         let split = cells.len() / 2;
         let partitions = [&cells[..split], &cells[split..]];
         assert_eq!(
             merge_borrowed(AggregateSemanticIdentityV1::Min, logical_type, &partitions,),
             BorrowedAggregatePartialValue::Extreme(Some(BorrowedAggregateScalar::Value(present(
-                &cells[minimum]
+                minimum
             ))))
         );
         assert_eq!(
             merge_borrowed(AggregateSemanticIdentityV1::Max, logical_type, &partitions,),
             BorrowedAggregatePartialValue::Extreme(Some(BorrowedAggregateScalar::Value(present(
-                &cells[maximum]
+                maximum
             ))))
         );
     }
@@ -2232,18 +2382,22 @@ mod tests {
     #[test]
     fn borrowed_extrema_and_boolean_partials_match_independent_identities() {
         let i64_type = SegmentV2LogicalType::I64;
-        let i64_cells = i64_cells(&[5, -7, 9, 9]);
-        let partitions = [&i64_cells[..1], &i64_cells[1..3], &i64_cells[3..]];
+        let i64_value_cells = i64_cells(&[5, -7, 9, 9]);
+        let partitions = [
+            &i64_value_cells[..1],
+            &i64_value_cells[1..3],
+            &i64_value_cells[3..],
+        ];
         assert_eq!(
             merge_borrowed(AggregateSemanticIdentityV1::Min, &i64_type, &partitions),
             BorrowedAggregatePartialValue::Extreme(Some(BorrowedAggregateScalar::Value(present(
-                &i64_cells[1]
+                &i64_value_cells[1]
             ))))
         );
         assert_eq!(
             merge_borrowed(AggregateSemanticIdentityV1::Max, &i64_type, &partitions),
             BorrowedAggregatePartialValue::Extreme(Some(BorrowedAggregateScalar::Value(present(
-                &i64_cells[2]
+                &i64_value_cells[2]
             ))))
         );
 
@@ -2265,7 +2419,7 @@ mod tests {
                 &decimal_partitions,
             ),
             BorrowedAggregatePartialValue::Extreme(Some(BorrowedAggregateScalar::Value(present(
-                &decimal_cells[0]
+                &decimal_cells[1]
             ))))
         );
         assert_eq!(
@@ -2275,7 +2429,7 @@ mod tests {
                 &decimal_partitions,
             ),
             BorrowedAggregatePartialValue::Extreme(Some(BorrowedAggregateScalar::Value(present(
-                &decimal_cells[2]
+                &decimal_cells[0]
             ))))
         );
 
@@ -2301,7 +2455,7 @@ mod tests {
                 &money_partitions,
             ),
             BorrowedAggregatePartialValue::Extreme(Some(BorrowedAggregateScalar::Value(present(
-                &money_cells[0]
+                &money_cells[2]
             ))))
         );
 
@@ -2330,15 +2484,13 @@ mod tests {
         );
 
         let enum_type = EnumTypeId::new(7).expect("enum type");
-        for (logical_type, cells, minimum, maximum) in [
+        for (logical_type, cells) in [
             (
                 SegmentV2LogicalType::Bool,
                 vec![
                     SegmentV2Cell::Value(CanonicalValue::Bool(true)),
                     SegmentV2Cell::Value(CanonicalValue::Bool(false)),
                 ],
-                1,
-                0,
             ),
             (
                 SegmentV2LogicalType::U64,
@@ -2346,8 +2498,36 @@ mod tests {
                     SegmentV2Cell::Value(CanonicalValue::U64(u64::MAX)),
                     SegmentV2Cell::Value(CanonicalValue::U64(0)),
                 ],
-                1,
-                0,
+            ),
+            (
+                SegmentV2LogicalType::I64,
+                i64_cells(&[i64::MIN, -1, 0, i64::MAX]),
+            ),
+            (
+                SegmentV2LogicalType::Decimal(decimal),
+                [-1, 0, 1]
+                    .into_iter()
+                    .map(|coefficient| {
+                        SegmentV2Cell::Value(CanonicalValue::Decimal(
+                            Decimal::new(decimal, coefficient).expect("decimal"),
+                        ))
+                    })
+                    .collect(),
+            ),
+            (
+                SegmentV2LogicalType::Money {
+                    currency: usd,
+                    amount: decimal,
+                },
+                [-1, 0, 1]
+                    .into_iter()
+                    .map(|coefficient| {
+                        SegmentV2Cell::Value(CanonicalValue::Money(Money::new(
+                            usd,
+                            Decimal::new(decimal, coefficient).expect("money"),
+                        )))
+                    })
+                    .collect(),
             ),
             (
                 SegmentV2LogicalType::String,
@@ -2355,8 +2535,6 @@ mod tests {
                     SegmentV2Cell::Value(CanonicalValue::string("z").expect("string")),
                     SegmentV2Cell::Value(CanonicalValue::string("a").expect("string")),
                 ],
-                1,
-                0,
             ),
             (
                 SegmentV2LogicalType::Bytes,
@@ -2364,8 +2542,6 @@ mod tests {
                     SegmentV2Cell::Value(CanonicalValue::bytes([2]).expect("bytes")),
                     SegmentV2Cell::Value(CanonicalValue::bytes([1]).expect("bytes")),
                 ],
-                1,
-                0,
             ),
             (
                 SegmentV2LogicalType::Timestamp,
@@ -2377,8 +2553,6 @@ mod tests {
                         Timestamp::new(-1, 0).expect("timestamp"),
                     )),
                 ],
-                1,
-                0,
             ),
             (
                 SegmentV2LogicalType::Date,
@@ -2386,8 +2560,6 @@ mod tests {
                     SegmentV2Cell::Value(CanonicalValue::Date(Date::new(1))),
                     SegmentV2Cell::Value(CanonicalValue::Date(Date::new(-1))),
                 ],
-                1,
-                0,
             ),
             (
                 SegmentV2LogicalType::Uuid,
@@ -2395,8 +2567,6 @@ mod tests {
                     SegmentV2Cell::Value(CanonicalValue::Uuid([2; 16])),
                     SegmentV2Cell::Value(CanonicalValue::Uuid([1; 16])),
                 ],
-                1,
-                0,
             ),
             (
                 SegmentV2LogicalType::Enum(enum_type),
@@ -2410,11 +2580,65 @@ mod tests {
                         variant_id: EnumVariantId::new(1).expect("variant"),
                     }),
                 ],
-                1,
-                0,
             ),
         ] {
-            assert_extreme_pair(&logical_type, &cells, minimum, maximum);
+            assert_extreme_pair(&logical_type, &cells);
+        }
+    }
+
+    #[test]
+    fn borrowed_extrema_bind_canonical_scalar_v1_encoded_decimal_and_money_order() {
+        let decimal = DecimalSpec::new(8, 2).expect("decimal spec");
+        let usd = CurrencyCode::new("USD").expect("currency");
+        for (logical_type, cells) in [
+            (
+                SegmentV2LogicalType::Decimal(decimal),
+                [-1, 0, 1]
+                    .into_iter()
+                    .map(|coefficient| {
+                        SegmentV2Cell::Value(CanonicalValue::Decimal(
+                            Decimal::new(decimal, coefficient).expect("decimal"),
+                        ))
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                SegmentV2LogicalType::Money {
+                    currency: usd,
+                    amount: decimal,
+                },
+                [-2, 7, 1]
+                    .into_iter()
+                    .map(|coefficient| {
+                        SegmentV2Cell::Value(CanonicalValue::Money(Money::new(
+                            usd,
+                            Decimal::new(decimal, coefficient).expect("amount"),
+                        )))
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+        ] {
+            let expected_minimum = cells
+                .iter()
+                .min_by_key(|cell| encode_canonical_value(present(cell)).expect("canonical value"))
+                .expect("nonempty fixture");
+            let expected_maximum = cells
+                .iter()
+                .max_by_key(|cell| encode_canonical_value(present(cell)).expect("canonical value"))
+                .expect("nonempty fixture");
+            let partitions = [&cells[..1], &cells[1..]];
+            assert_eq!(
+                merge_borrowed(AggregateSemanticIdentityV1::Min, &logical_type, &partitions),
+                BorrowedAggregatePartialValue::Extreme(Some(BorrowedAggregateScalar::Value(
+                    present(expected_minimum)
+                )))
+            );
+            assert_eq!(
+                merge_borrowed(AggregateSemanticIdentityV1::Max, &logical_type, &partitions),
+                BorrowedAggregatePartialValue::Extreme(Some(BorrowedAggregateScalar::Value(
+                    present(expected_maximum)
+                )))
+            );
         }
     }
 
@@ -2422,6 +2646,10 @@ mod tests {
     fn borrowed_extrema_boolean_empty_no_value_bounds_and_failures_are_closed() {
         let i64_type = SegmentV2LogicalType::I64;
         let bool_type = SegmentV2LogicalType::Bool;
+        assert_eq!(
+            aggregate_binding(1).comparison_profile(),
+            TopNComparisonProfile::CanonicalScalarV1
+        );
         for (semantic, logical_type, expected) in [
             (
                 AggregateSemanticIdentityV1::Min,
@@ -2446,6 +2674,7 @@ mod tests {
         ] {
             let mut charge = budget(1, 64);
             let accumulator = ExactBorrowedAggregateMergeAccumulator::new(
+                aggregate_facts(1, optionality(semantic)),
                 semantic,
                 logical_type,
                 None,
@@ -2482,6 +2711,78 @@ mod tests {
         );
 
         let id = identity(0, 1, 0);
+        let mut ambiguous_charge = budget(1, 64);
+        let ambiguous_before = ambiguous_charge;
+        assert_eq!(
+            ExactBorrowedAggregateLeafBuilder::new(
+                id,
+                SealedAggregateInputFacts::new(
+                    None,
+                    aggregate_binding(1),
+                    AggregateFieldOptionality::Required,
+                ),
+                AggregateSemanticIdentityV1::Min,
+                &i64_type,
+                None,
+                &mut ambiguous_charge,
+            )
+            .err(),
+            Some(AggregatePartialError::AmbiguousComparisonProfile)
+        );
+        assert_eq!(ambiguous_charge, ambiguous_before);
+
+        let mut substituted_charge = budget(1, 64);
+        let substituted_before = substituted_charge;
+        assert_eq!(
+            ExactBorrowedAggregateLeafBuilder::new(
+                id,
+                SealedAggregateInputFacts::new(
+                    Some(aggregate_binding(2)),
+                    aggregate_binding(1),
+                    AggregateFieldOptionality::Required,
+                ),
+                AggregateSemanticIdentityV1::Min,
+                &i64_type,
+                None,
+                &mut substituted_charge,
+            )
+            .err(),
+            Some(AggregatePartialError::ProgramBindingSubstitution)
+        );
+        assert_eq!(substituted_charge, substituted_before);
+
+        let mut optional_boolean_charge = budget(1, 64);
+        let optional_boolean_before = optional_boolean_charge;
+        assert_eq!(
+            ExactBorrowedAggregateLeafBuilder::new(
+                id,
+                aggregate_facts(1, AggregateFieldOptionality::Optional),
+                AggregateSemanticIdentityV1::Any,
+                &bool_type,
+                None,
+                &mut optional_boolean_charge,
+            )
+            .err(),
+            Some(AggregatePartialError::OptionalBooleanField)
+        );
+        assert_eq!(optional_boolean_charge, optional_boolean_before);
+
+        let mut non_boolean_charge = budget(1, 64);
+        let non_boolean_before = non_boolean_charge;
+        assert_eq!(
+            ExactBorrowedAggregateLeafBuilder::new(
+                id,
+                aggregate_facts(1, AggregateFieldOptionality::Required),
+                AggregateSemanticIdentityV1::All,
+                &i64_type,
+                None,
+                &mut non_boolean_charge,
+            )
+            .err(),
+            Some(AggregatePartialError::InputShape)
+        );
+        assert_eq!(non_boolean_charge, non_boolean_before);
+
         for (invalid, expected) in [
             (SegmentV2Cell::Missing, AggregatePartialError::MissingField),
             (SegmentV2Cell::Null, AggregatePartialError::NoValue),
@@ -2495,6 +2796,7 @@ mod tests {
             let mut charge = budget(3, 64);
             let mut builder = ExactBorrowedAggregateLeafBuilder::new(
                 id,
+                aggregate_facts(1, AggregateFieldOptionality::Required),
                 AggregateSemanticIdentityV1::Any,
                 &bool_type,
                 None,
@@ -2511,9 +2813,13 @@ mod tests {
             assert_eq!(charge, charge_before);
         }
 
-        let definition =
-            BorrowedAggregateDefinition::new(AggregateSemanticIdentityV1::Min, &i64_type, None)
-                .expect("minimum definition");
+        let definition = BorrowedAggregateDefinition::new(
+            aggregate_facts(1, AggregateFieldOptionality::Optional),
+            AggregateSemanticIdentityV1::Min,
+            &i64_type,
+            None,
+        )
+        .expect("minimum definition");
         let exact_state = definition
             .state_bytes()
             .expect("minimum state")
@@ -2521,6 +2827,7 @@ mod tests {
             .expect("small exact state");
         let mut exact_charge = budget(1, exact_state);
         ExactBorrowedAggregateMergeAccumulator::new(
+            aggregate_facts(1, AggregateFieldOptionality::Optional),
             AggregateSemanticIdentityV1::Min,
             &i64_type,
             None,
@@ -2533,6 +2840,7 @@ mod tests {
         let before = short_charge;
         assert_eq!(
             ExactBorrowedAggregateMergeAccumulator::new(
+                aggregate_facts(1, AggregateFieldOptionality::Optional),
                 AggregateSemanticIdentityV1::Min,
                 &i64_type,
                 None,
@@ -2583,6 +2891,7 @@ mod tests {
         let ids = [identity(0, 1, 0), identity(0, 1, 1)];
         let mut charge = budget(4, 256);
         let mut accumulator = ExactBorrowedAggregateMergeAccumulator::new(
+            aggregate_facts(1, AggregateFieldOptionality::Optional),
             AggregateSemanticIdentityV1::Min,
             &logical_type,
             None,
@@ -2605,6 +2914,23 @@ mod tests {
                 &mut charge,
             ),
             Err(AggregatePartialError::InventoryGap)
+        );
+        assert_eq!(accumulator.value(), value_before);
+        assert_eq!(accumulator.consumed_leaves(), cursor_before);
+        assert_eq!(charge, charge_before);
+
+        assert_eq!(
+            accumulator.merge_leaf(
+                borrowed_leaf_with_binding(
+                    ids[0],
+                    aggregate_binding(2),
+                    AggregateSemanticIdentityV1::Min,
+                    &logical_type,
+                    &first_cells,
+                ),
+                &mut charge,
+            ),
+            Err(AggregatePartialError::IncompatibleLeaf)
         );
         assert_eq!(accumulator.value(), value_before);
         assert_eq!(accumulator.consumed_leaves(), cursor_before);
