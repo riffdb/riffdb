@@ -7,6 +7,15 @@ require "pathname"
 require "set"
 
 ROOT = Pathname.new(File.expand_path("..", __dir__)).realpath
+BATCH_ARCHITECTURE_CHECKER = ROOT.join("scripts", "check-columnar-batch-architecture")
+[
+  [],
+  ["--self-test"]
+].each do |arguments|
+  unless system(BATCH_ARCHITECTURE_CHECKER.to_s, *arguments, chdir: ROOT.to_s)
+    abort "columnar batch architecture policy is invalid"
+  end
+end
 unless system(ROOT.join("scripts/check-crate-graph").to_s, chdir: ROOT.to_s)
   abort "workspace crate graph is invalid"
 end

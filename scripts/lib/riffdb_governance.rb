@@ -502,6 +502,25 @@ module RiffdbGovernance
        "./scripts/check-panic-allowances"]
     )
     check.call("triggered checks (document)", triggered_checks(["README.md"]), ["./scripts/handbook check"])
+    architecture_checks = [
+      "./scripts/check-columnar-batch-architecture",
+      "./scripts/check-columnar-batch-architecture --self-test"
+    ]
+    check.call(
+      "triggered checks (columnar batch source)",
+      triggered_checks(["crates/riffdb-columnar/src/batch/mod.rs"]),
+      architecture_checks + ["./scripts/check-file-size-guard", "./scripts/check-panic-allowances"]
+    )
+    check.call(
+      "triggered checks (columnar batch checker)",
+      triggered_checks(["scripts/check-columnar-batch-architecture"]),
+      architecture_checks
+    )
+    check.call(
+      "triggered checks (workspace policy)",
+      triggered_checks(["scripts/check-workspace-policy"]),
+      architecture_checks
+    )
     check.call("triggered checks (none)", triggered_checks(["LICENSE-MIT"]), [])
     check.call("tier rank order", TIER_ORDER.map { |tier| tier_rank(tier) }, [0, 1, 2])
 
