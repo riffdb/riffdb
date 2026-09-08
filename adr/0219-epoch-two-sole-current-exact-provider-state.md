@@ -1,10 +1,10 @@
 ---
 adr: "0219"
 title: Epoch-Two Sole-Current Exact-Provider State
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-07
-accepted: null
+accepted: "2026-09-08"
 requires: [ADR-0124, ADR-0131, ADR-0134, ADR-0145, ADR-0181, ADR-0185,
   ADR-0204, ADR-0216]
 amends: [ADR-0131, ADR-0134, ADR-0145, ADR-0216]
