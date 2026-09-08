@@ -1649,10 +1649,13 @@ from the provider freeze.
 - `OQ-115`: Row and field policy MUST apply to every expansion target before
   it can influence membership, count, order, or nesting, and a denied target
   MUST be indistinguishable from an absent one.
-- `OQ-116`: A query using an expansion or existence operator MUST select
-  additive RiffQL V14, query IR V18, and module V18 under the least-sufficient
-  rule; every query without one MUST keep its exact bytes, plan hash, and
-  cursors. The operators MUST NOT add a provider descriptor, epoch, provider
+- `OQ-116`: In epoch one, a query using an expansion or existence operator
+  MUST select additive RiffQL V14, query IR V18, and module V18 under the
+  least-sufficient rule, while every query without one keeps its exact bytes,
+  plan hash, and cursors. In epoch two, every successfully compiled query MUST
+  use sole-current RiffQL V14, query IR V18, and module V18 regardless of
+  expansion or existence, and operator presence MUST NOT provide a version
+  fallback. The operators MUST NOT add a provider descriptor, epoch, provider
   state, service port, or durable format.
 - `OQ-117`: `exists` and `not exists` MUST lower to the explicit candidates
   binding, intersection for existence and authorized root-universe difference

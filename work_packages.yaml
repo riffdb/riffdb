@@ -22790,11 +22790,13 @@ work_packages:
   objective: Declare alpha format epoch 2 through the ADR-0112 ceremony, delete every superseded
     decoder, fixture, generated artifact, and topology row while the pre-external window is open
     except the exact ADR-0207 authoritative-changelog V1/V2 read-only compatibility evidence, and
-    make scripts/check-version-topology refuse a second readable identity for every other domain
-    until the first external database is registered.
-  requirements: [GOV-001, GOV-002, GOV-003, AFC-005, AFC-006, PRJ-007, VER-005]
+    make RiffQL V14, query IR V18, query module V18, and generated application operations V5 the
+    sole current epoch-two identities while scripts/check-version-topology refuses a second
+    readable identity for every other domain until the first external database is registered.
+  requirements: [GOV-001, GOV-002, GOV-003, AFC-005, AFC-006, PRJ-007, OQ-116,
+    DX-044, DX-047, DX-049, VER-001, VER-002, VER-003, VER-004, VER-005, VER-008]
   required_adrs: [ADR-0006, ADR-0112, ADR-0124, ADR-0181, ADR-0190, ADR-0192, ADR-0204,
-    ADR-0207, ADR-0215, ADR-0217, ADR-0218]
+    ADR-0207, ADR-0215, ADR-0216, ADR-0217, ADR-0218]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0181-pre-alpha-format-epoch-reset-and-governance-load.md,
     adr/0185-relational-operators-in-the-candidate-algebra.md,
@@ -22816,6 +22818,16 @@ work_packages:
     domains except ADR-0207's exact read-only ChangelogFrameV1/V2 decoders and compatibility
     evidence for `durable.authoritative_changelog`, with deleted Protobuf field numbers and enum
     values retained as reserved
+  - Sole-current epoch-two RiffQL V14, query IR V18, and query module V18 for every successfully
+    compiled query, with every older reader, writer, fixture, artifact, topology entry, source
+    locator, alias, and dispatch deleted and refused before lowering while expansion and existence
+    semantics remain exact, proved by epoch_two_query_identity_topology_is_sole_current
+  - Sole-current generated application operations V5 for every pagination, SDK-only, and vector
+    registry combination, including their absence, with V2 through V4 readers, writers, fixtures,
+    artifacts, topology entries, source locators, aliases, and dispatch deleted and old locks
+    refused or explicitly regenerated without changing descriptor, pagination, cursor, SDK-only,
+    vector, authorization, or redaction semantics, proved by
+    epoch_two_generated_application_operations_v5_is_sole_current
   - Mandatory removal of the ADR-0192 tag-65 migration bridge, including source, decoder, table,
     generated message, fixture, durable-manifest row, and topology exception, proved by
     epoch_two_removes_legacy_vector_control_bridge
@@ -22840,8 +22852,15 @@ work_packages:
   - Handbook compatibility, upgrade, and known-limitations updates naming the epoch-2 posture
   acceptance_commands:
   - ./scripts/acceptance --wp WP-757
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
   - ./scripts/ci-all
-  exit_gate: While external_databases is empty, every topology domain except exact
+  exit_gate: Every successfully compiled epoch-two query uses only RiffQL V14, query IR V18, and
+    query module V18, and every epoch-two generated application-operations artifact uses only V5
+    for every pagination, SDK-only, and vector registry combination; every predecessor reader,
+    writer, artifact, locator, alias, and dispatch is absent and refused without changing operator,
+    descriptor, cursor, SDK-only, vector, authorization, or redaction semantics. While
+    external_databases is empty, every topology domain except exact
     `durable.authoritative_changelog` lists one equal readable, writable, and current identity as
     its sole active identity, and that exception matches ADR-0207's exact ordered V1/V2/V3 readable,
     V3-only writable/current, single_current, V1/V2-read_only, V3-active, empty-candidate/retired,
@@ -22865,6 +22884,13 @@ work_packages:
   - The external_databases array would be populated without an operator-provided digest, date,
     and release label, or the single-identity rule would be relaxed beyond ADR-0207's exact
     hard-coded authoritative-changelog exception while it is empty.
+  - An epoch-two query would use an identity other than sole-current RiffQL V14, query IR V18, and
+    query module V18, or an old query artifact would be retained, reinterpreted, or used as a
+    compatibility fallback.
+  - Generated application operations V2 through V4 would remain readable, writable, selectable,
+    or dispatchable; V5 selection would depend on pagination, SDK-only, or vector registry
+    population; or existing descriptor, pagination, cursor, SDK-only, vector, authorization, or
+    redaction semantics would change.
   - A ledger entry, ADR section, or public handbook page would be exempted from the new checks
     without a recorded reason.
 
