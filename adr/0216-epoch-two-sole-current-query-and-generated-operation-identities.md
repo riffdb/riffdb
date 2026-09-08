@@ -1,10 +1,10 @@
 ---
 adr: "0216"
 title: Epoch-Two Sole-Current Query and Generated-Operation Identities
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-07
-accepted: null
+accepted: "2026-09-08"
 requires: [ADR-0124, ADR-0181, ADR-0185, ADR-0194, ADR-0198, ADR-0204, ADR-0211]
 amends: [ADR-0185, ADR-0194, ADR-0198]
 supersedes: []
