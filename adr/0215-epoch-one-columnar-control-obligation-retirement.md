@@ -1,10 +1,10 @@
 ---
 adr: "0215"
 title: Epoch-One Columnar Control Obligation Retirement
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-07
-accepted: null
+accepted: "2026-09-08"
 requires: [ADR-0181, ADR-0192, ADR-0204, ADR-0209]
 amends: [ADR-0192]
 supersedes: []
