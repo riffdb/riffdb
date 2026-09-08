@@ -257,6 +257,7 @@ record with no front matter.
 | [0220](0220-columnar-history-reset-fresh-locator-permit.md) | Columnar History Reset Fresh-Locator Permit | Proposed | guarantee |
 | [0221](0221-atomic-no-replace-columnar-candidate-retirement.md) | Atomic No-Replace Columnar Candidate Retirement | Proposed | guarantee |
 | [0222](0222-exact-provider-v2-lowering-path-authority.md) | Exact Provider V2 Lowering Path Authority | Proposed | guarantee |
+| [0223](0223-epoch-two-application-source-and-lock-retirement.md) | Epoch-Two Application Source and Lock Retirement | Proposed | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
