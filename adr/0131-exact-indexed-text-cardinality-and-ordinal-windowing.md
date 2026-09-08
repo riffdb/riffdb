@@ -185,14 +185,20 @@ ADR-0130's real-consumer, bridge, epoch, policy, and cost requirements.
 
 ## Compatibility
 
-This Proposed ADR changes no current bytes or public behavior. If accepted,
-WP-646 introduces new exact-text semantic and provider-state identities,
-compiler IR/module/plan identities as required, generated surface revisions,
-and compatibility fixtures. All are registered under ADR-0124 before merge.
-Existing `text_key` prefix indexes and query modules remain readable and byte-
-identical; they do not silently acquire substring, exact-count, or ordinal
-capability. Migration/rebuild is explicit, receipted, and fail-closed, with old
-decoders retained under the topology window.
+This ADR changed no bytes or public behavior by itself. Its epoch-one
+implementation introduced new exact-text semantic and provider-state
+identities, compiler IR/module/plan identities as required, generated surface
+revisions, and compatibility fixtures registered under ADR-0124. Existing
+`text_key` prefix indexes and query modules remained readable and byte-
+identical; they did not silently acquire substring, exact-count, or ordinal
+capability. Migration/rebuild was explicit, receipted, and fail-closed, with old
+decoders retained under the epoch-one topology window.
+
+In epoch two, ADR-0219 replaces only that provider-state compatibility posture:
+the initial exact-provider state is neither readable nor writable, exact-
+provider state V5 is sole current, and predecessor checkpoints are refused
+before interpretation. The exact text truth profile, application behavior, and
+bounded rebuild semantics remain unchanged under V5.
 
 ## Security
 

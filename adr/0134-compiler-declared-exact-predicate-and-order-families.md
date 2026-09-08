@@ -222,17 +222,19 @@ be selected by the application.
 
 WP-656 must introduce least-sufficient successor identities for every changed
 source-language, query IR, exact-result plan, query module, generated surface,
-and provider-state boundary. Exact provider state carrying independent order
-and predicate algebra is a new rebuildable-state identity; it does not
-reinterpret V1 through V3 checkpoints.
+and provider-state boundary. This requirement governed epoch one. Exact provider
+state carrying independent order and predicate algebra was a new rebuildable-
+state identity; it did not reinterpret V1 through V3 checkpoints.
 
-Existing exact-result sources, modules, hashes, locks, checkpoints, generated
-methods, and canonical bytes remain readable and byte-exact. The compiler
-continues to emit the oldest identity that represents a query without loss.
-Moving an installed query to the richer family requires ordinary compilation,
-deployment, provider rebuild/catch-up, readiness proof, and typed refusal until
-the new state is servable. Decoder retirement follows ADR-0124 and is not part
-of WP-656 through WP-658.
+Those exact-result sources, modules, hashes, locks, checkpoints, generated
+methods, and canonical bytes remain historical epoch-one evidence. In epoch
+two, ADR-0216 governs the sole-current query identities and ADR-0219 makes exact-
+provider state V5 sole current for every exact family: the compiler emits no V1
+through V4 provider-state identity, and no V1 through V4 checkpoint is readable
+or reinterpreted. Ordinary compilation, deployment, bounded V5 rebuild/catch-
+up, readiness proof, and typed refusal until V5 is servable preserve the
+complete predicate/order algebra, query semantics, and deployment readiness
+rules.
 
 ### 8. Keep framework evidence external and correct the acceptance ledger
 
@@ -284,12 +286,18 @@ adapter profile.
 
 ## Compatibility
 
-This Proposed ADR changes no bytes or public behavior. If accepted, WP-656
-through WP-658 add source-language and executable-IR successors, exact-result
+This ADR changed no bytes or public behavior by itself. Its epoch-one
+implementation added source-language and executable-IR successors, exact-result
 plan/module identities, generated-surface fixtures, and an additive exact
-provider-state format registered under ADR-0124. Existing decoders remain
-active, existing narrow plans keep their identities, and no persisted V1--V3
-checkpoint is rewritten in place.
+provider-state format registered under ADR-0124. Existing narrow plans kept
+their identities, and no persisted V1--V3 checkpoint was rewritten in place.
+
+In epoch two, ADR-0216 governs sole-current query identities and ADR-0219
+replaces only the provider-state compatibility posture: exact-provider state V5
+is sole current, no V1 through V4 provider state remains readable or writable,
+and predecessor checkpoints are refused rather than rewritten or reinterpreted.
+The complete predicate/order algebra, query semantics, and deployment readiness
+rules remain exact under V5.
 
 No public Protobuf query AST or generic filter/sort message is added. Any
 generated closed member choice must use the existing typed named-query
