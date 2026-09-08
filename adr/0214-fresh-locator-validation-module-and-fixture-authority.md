@@ -1,10 +1,10 @@
 ---
 adr: "0214"
 title: Fresh-Locator Validation Module and Fixture Authority
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-07
-accepted: null
+accepted: "2026-09-08"
 requires: [ADR-0213]
 amends: [ADR-0213]
 supersedes: []
