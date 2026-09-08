@@ -1,10 +1,10 @@
 ---
 adr: "0217"
 title: Snapshot-Bound Export of Command-Owned Evidence
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-07
-accepted: null
+accepted: "2026-09-08"
 requires: [ADR-0099, ADR-0102, ADR-0104, ADR-0111, ADR-0112, ADR-0156, ADR-0165, ADR-0181, ADR-0204]
 amends: [ADR-0204]
 supersedes: []

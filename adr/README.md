@@ -251,7 +251,7 @@ record with no front matter.
 | [0214](0214-fresh-locator-validation-module-and-fixture-authority.md) | Fresh-Locator Validation Module and Fixture Authority | Accepted | guarantee |
 | [0215](0215-epoch-one-columnar-control-obligation-retirement.md) | Epoch-One Columnar Control Obligation Retirement | Accepted | guarantee |
 | [0216](0216-epoch-two-sole-current-query-and-generated-operation-identities.md) | Epoch-Two Sole-Current Query and Generated-Operation Identities | Proposed | guarantee |
-| [0217](0217-snapshot-bound-export-of-command-owned-evidence.md) | Snapshot-Bound Export of Command-Owned Evidence | Proposed | guarantee |
+| [0217](0217-snapshot-bound-export-of-command-owned-evidence.md) | Snapshot-Bound Export of Command-Owned Evidence | Accepted | guarantee |
 | [0218](0218-retired-catalog-index-migration-scaffolding-authority.md) | Retired Catalog-Index Migration Scaffolding Authority | Proposed | guarantee |
 | [0219](0219-epoch-two-sole-current-exact-provider-state.md) | Epoch-Two Sole-Current Exact-Provider State | Proposed | guarantee |
 <!-- adr-index:end -->
