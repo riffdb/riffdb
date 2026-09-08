@@ -22794,12 +22794,13 @@ work_packages:
     until the first external database is registered.
   requirements: [GOV-001, GOV-002, GOV-003, AFC-005, AFC-006, PRJ-007, VER-005]
   required_adrs: [ADR-0006, ADR-0112, ADR-0124, ADR-0181, ADR-0190, ADR-0192, ADR-0204,
-    ADR-0207, ADR-0215, ADR-0217]
+    ADR-0207, ADR-0215, ADR-0217, ADR-0218]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0181-pre-alpha-format-epoch-reset-and-governance-load.md,
     adr/0192-compiler-bound-columnar-publication-control.md,
     adr/0215-epoch-one-columnar-control-obligation-retirement.md,
-    adr/0217-snapshot-bound-export-of-command-owned-evidence.md, adr/README.md,
+    adr/0217-snapshot-bound-export-of-command-owned-evidence.md,
+    adr/0218-retired-catalog-index-migration-scaffolding-authority.md, adr/README.md,
     release/version-topology-v1.json, release/durable-format-manifest-v1.json,
     release/RELEASE_NOTES.md, release/evidence/**, proto/**, crates/**, clients/**,
     templates/**, examples/**, fixtures/**, tests/**, scripts/**, docs/**]
