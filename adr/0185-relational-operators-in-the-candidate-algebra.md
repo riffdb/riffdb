@@ -11,10 +11,6 @@ supersedes: []
 requirements: [RQL-008, OQ-113, OQ-114, OQ-115, OQ-116, OQ-117, OQ-118]
 packages: [WP-768, WP-769, WP-770, WP-771]
 obligations:
-  - id: OBL-0185-1
-    package: WP-768
-    proof: expansion_plan_is_least_sufficient_and_legacy_bytes_are_unchanged
-    says: A query without an expansion or existence operator keeps its exact RiffQL, IR, module, plan-hash, and cursor bytes; a query with one selects the additive successor identities.
   - id: OBL-0185-2
     package: WP-768
     proof: refused_shapes_are_recorded_as_anonymized_refusal_classes

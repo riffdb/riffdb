@@ -22,10 +22,6 @@ obligations:
     package: WP-701
     proof: generated_mcp_query_cursor_round_trip_preserves_authority_and_redaction
     says: Hosted and stdio MCP resume the same authorized snapshot-bound query from the returned opaque cursor, reject malformed or stale cursors without structured output, and reveal no cursor or physical bytes in diagnostics or telemetry.
-  - id: OBL-0194-3
-    package: WP-701
-    proof: generated_application_operations_v5_topology_and_selection_are_exact
-    says: V5 is a strict V4 structural successor, composes pagination with exact SDK-only and vector registries, selects the least-sufficient V2 through V5 identity, freezes every reader/writer window and reviewed rotation, and preserves every unpaged entry byte-exact.
 review_triggers:
   - The envelope, field names, cursor text, nullability, schema profile marker, or paginated-tool classification would change.
   - A generated MCP catalog, application lock, or checked fixture would rotate without exact human diff and hash review.
