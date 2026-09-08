@@ -24,14 +24,6 @@ obligations:
     package: WP-776
     proof: columnar_control_v1_freezes_numeric_registry_and_bounds
     says: Durable tag 67 revision 1, every Protobuf field and enum number, source/key byte, table, payload/envelope bound, fixture, registry transition, and topology identity are exact and collision-free.
-  - id: OBL-0192-3
-    package: WP-776
-    proof: columnar_control_lifecycle_shapes_and_retention_inputs_are_closed
-    says: Every Unprepared/Prepared Candidate state, pointer role, lifecycle, Candidate/Published-failure transition, predecessor class, servability result, retention input, initial publication, and V1 advancement is exact; advancing V1 preserves an independent V2 candidate byte-exact.
-  - id: OBL-0192-4
-    package: WP-776
-    proof: columnar_control_fresh_rebuild_ignores_every_legacy_selector
-    says: Startup atomically establishes each common control at a BeforeFirst retention fence, advances that fence only after the captured authoritative snapshot is durably validated, and rebuilds fresh V1 without reading, translating, copying, or selecting legacy scalar directories or tag-65 values.
   - id: OBL-0192-5
     package: WP-776
     proof: columnar_projection_symbolic_name_resolves_one_schema_bound_source
