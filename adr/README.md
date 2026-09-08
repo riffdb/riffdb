@@ -248,7 +248,7 @@ record with no front matter.
 | [0211](0211-trusted-mcp-descriptor-projection-classification.md) | Trusted MCP Descriptor Projection Classification | Accepted | guarantee |
 | [0212](0212-independent-correlated-index-model-and-epoch-two-evidence.md) | Independent Correlated-Index Model and Epoch-Two Evidence | Accepted | guarantee |
 | [0213](0213-pre-arm-preservation-and-linear-queued-fresh-locator-validation.md) | Pre-Arm Preservation and Linear Queued Fresh-Locator Validation | Accepted | guarantee |
-| [0214](0214-fresh-locator-validation-module-and-fixture-authority.md) | Fresh-Locator Validation Module and Fixture Authority | Proposed | guarantee |
+| [0214](0214-fresh-locator-validation-module-and-fixture-authority.md) | Fresh-Locator Validation Module and Fixture Authority | Accepted | guarantee |
 | [0215](0215-epoch-one-columnar-control-obligation-retirement.md) | Epoch-One Columnar Control Obligation Retirement | Proposed | guarantee |
 | [0216](0216-epoch-two-sole-current-query-and-generated-operation-identities.md) | Epoch-Two Sole-Current Query and Generated-Operation Identities | Proposed | guarantee |
 | [0217](0217-snapshot-bound-export-of-command-owned-evidence.md) | Snapshot-Bound Export of Command-Owned Evidence | Proposed | guarantee |

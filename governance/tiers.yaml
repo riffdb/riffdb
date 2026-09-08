@@ -29,6 +29,7 @@ rules:            # first match wins per file; a change's tier is the maximum ov
       - crates/riffdb-runtime/src/**
       - crates/riffdb-invariant/src/**
       - crates/riffdb-storage-redb/src/store.rs
+      - crates/riffdb-storage-redb/src/store/fresh_locator_validation.rs
       - crates/riffdb-storage-redb/src/journal.rs
       - crates/riffdb-storage-redb/src/command_authority.rs
       - crates/riffdb-storage-redb/src/validated_prefix.rs
