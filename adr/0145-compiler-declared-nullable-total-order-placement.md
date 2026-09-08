@@ -150,12 +150,14 @@ per provider-plan generation; epoch proof is paid once per opened result set.
 Neither may be reconstructed per row, order term, index probe, skipped ordinal,
 or page item.
 
-V5 is rebuildable derived state. V4 checkpoints remain readable and byte-
-exact, and plans representable without state placement continue to use the
-least-sufficient V4 writer. A nullable-order plan cannot execute against V4 or
-downgrade to it. Deployment rebuilds and catches up V5, then publishes typed
-readiness at a servable epoch; requests fail with the existing safe typed
-lifecycle outcome until that proof exists.
+V5 is rebuildable derived state. Before epoch two, V4 checkpoints remained
+readable and byte-exact, and plans representable without state placement used
+the least-sufficient V4 writer. In epoch two, ADR-0219 makes V5 the only
+readable, writable, current exact-provider state for every exact family; V1
+through V4 are absent and refused before interpretation, and no plan may
+downgrade to them. Deployment rebuilds and catches up genuine V5 state from
+authoritative data, then publishes typed readiness at a servable epoch; requests
+fail with the existing safe typed lifecycle outcome until that proof exists.
 
 ### 5. Preserve exact count, direct offset, policy, and freshness
 
@@ -232,18 +234,24 @@ external migration has passed.
 
 ## Compatibility
 
-This ADR changes no bytes or public behavior by itself. Its implementation adds
-RiffQL V7, query IR V10, query-module V10, generated-surface successors, and
-rebuildable exact-provider state V5 under ADR-0124. V6/V9/V9/V4 sources,
-modules, plans, hashes, locks, generated methods, checkpoints, and canonical
-fixtures remain readable and byte-exact, and least-sufficient writers remain
-active.
+This ADR changed no bytes or public behavior by itself. Its epoch-one
+implementation added RiffQL V7, query IR V10, query-module V10, generated-
+surface successors, and rebuildable exact-provider state V5 under ADR-0124.
+V6/V9/V9/V4 sources, modules, plans, hashes, locks, generated methods,
+checkpoints, and canonical fixtures remained readable and byte-exact, and
+least-sufficient writers remained active during that epoch.
 
-A nullable-order deployment is additive and fails closed until V5 is rebuilt,
-caught up, and servable. It neither rewrites V4 in place nor changes
+In epoch two, ADR-0216 makes RiffQL V14, query IR V18, and query module V18 sole
+current, while ADR-0219 makes exact-provider state V5 sole current. Provider-
+state V1 through V4 are neither readable nor writable and are refused before
+interpretation; V5 checkpoint bytes and nullable total-order semantics remain
+exact.
+
+A nullable-order deployment fails closed until V5 is rebuilt, caught up, and
+servable. It neither rewrites or adopts V1 through V4 in place nor changes
 authoritative entity, commit-log, journal, export, changelog, backup, command,
-Protobuf, or transport formats. Decoder retirement is a later ADR-0124
-ceremony.
+Protobuf, or transport formats. Epoch-two predecessor decoder retirement is the
+closed ADR-0219 breaking-epoch transition.
 
 No public generic sort or null-placement message is added. Generated closed
 member choices continue to use the existing named-query envelopes unless a

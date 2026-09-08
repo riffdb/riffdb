@@ -22790,13 +22790,16 @@ work_packages:
   objective: Declare alpha format epoch 2 through the ADR-0112 ceremony, delete every superseded
     decoder, fixture, generated artifact, and topology row while the pre-external window is open
     except the exact ADR-0207 authoritative-changelog V1/V2 read-only compatibility evidence, and
-    make RiffQL V14, query IR V18, query module V18, and generated application operations V5 the
-    sole current epoch-two identities while scripts/check-version-topology refuses a second
-    readable identity for every other domain until the first external database is registered.
-  requirements: [GOV-001, GOV-002, GOV-003, AFC-005, AFC-006, PRJ-007, OQ-116,
+    make RiffQL V14, query IR V18, query module V18, generated application operations V5, and
+    exact-provider state V5 the sole current epoch-two identities while
+    scripts/check-version-topology refuses a second readable identity for every other domain until
+    the first external database is registered.
+  requirements: [GOV-001, GOV-002, GOV-003, AFC-005, AFC-006, PRJ-007,
+    OQ-005, OQ-006, OQ-015, OQ-017, OQ-019, OQ-020, OQ-021, OQ-022,
+    OQ-024, OQ-025, OQ-026, OQ-027, OQ-028, OQ-029, OQ-030, OQ-116,
     DX-044, DX-047, DX-049, VER-001, VER-002, VER-003, VER-004, VER-005, VER-008]
   required_adrs: [ADR-0006, ADR-0112, ADR-0124, ADR-0181, ADR-0190, ADR-0192, ADR-0204,
-    ADR-0207, ADR-0215, ADR-0216, ADR-0217, ADR-0218]
+    ADR-0207, ADR-0215, ADR-0216, ADR-0217, ADR-0218, ADR-0219]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0131-exact-indexed-text-cardinality-and-ordinal-windowing.md,
     adr/0134-compiler-declared-exact-predicate-and-order-families.md,
@@ -22831,6 +22834,19 @@ work_packages:
     refused or explicitly regenerated without changing descriptor, pagination, cursor, SDK-only,
     vector, authorization, or redaction semantics, proved by
     epoch_two_generated_application_operations_v5_is_sole_current
+  - Sole-current epoch-two exact-provider state V5 for every exact-text, filtered exact-text,
+    exact-predicate, independent-order, and nullable-order family, all canonically lowered to
+    ExactPredicateProgramV2 with provider layout 5 and
+    EXACT_PREDICATE_PROVIDER_STATE_SCHEMA_HASH_V5; V1 through V4 constants, descriptors, readers,
+    writers, fixtures, locators, topology rows, aliases, and dispatch are deleted and refused before
+    decoding, while genuine V5 rebuild, exact V5 bytes and nullable-order semantics, and
+    independently derived final plan, module, lock, cursor, fixture, and hash rotations are proved
+    by epoch_two_exact_provider_state_is_sole_v5_and_plan_rotations_are_exact
+  - Main plan hash b79416ede1e8256cb2d2accabdaedc5afd1a87161fbf073f9249867aff983b1e and
+    pre-provider integration hash e204131728f1714f43e575cc3c8a28eec7b0c320d1a7841d32acb7a4ce7fbf3e
+    remain exact pre-transition evidence with no provider-retirement causality assigned; every final
+    combined plan, module, lock, cursor, fixture, and hash rotation is independently derived and
+    reviewed only after the ADR-0216 reconciliation
   - Mandatory removal of the ADR-0192 tag-65 migration bridge, including source, decoder, table,
     generated message, fixture, durable-manifest row, and topology exception, proved by
     epoch_two_removes_legacy_vector_control_bridge
@@ -22855,14 +22871,18 @@ work_packages:
   - Handbook compatibility, upgrade, and known-limitations updates naming the epoch-2 posture
   acceptance_commands:
   - ./scripts/acceptance --wp WP-757
+  - cargo +1.97.0 test -p riffdb-query-compiler -p riffdb-query-ir -p riffdb-query-module -p riffdb-projection -p riffdb-query-executor -p riffdb-server --all-features
   - ./scripts/check-version-topology
   - ./scripts/check-generated
   - ./scripts/ci-all
   exit_gate: Every successfully compiled epoch-two query uses only RiffQL V14, query IR V18, and
-    query module V18, and every epoch-two generated application-operations artifact uses only V5
-    for every pagination, SDK-only, and vector registry combination; every predecessor reader,
-    writer, artifact, locator, alias, and dispatch is absent and refused without changing operator,
-    descriptor, cursor, SDK-only, vector, authorization, or redaction semantics. While
+    query module V18, every epoch-two generated application-operations artifact uses only V5 for
+    every pagination, SDK-only, and vector registry combination, and every exact-provider family
+    executes through sole-current genuine V5 state with exact bytes and semantics; every predecessor
+    reader, writer, artifact, locator, alias, and dispatch is absent and refused, and the final plan,
+    module, lock, cursor, fixture, and hash rotations are independently derived and reviewed without
+    changing operator, descriptor, cursor, SDK-only, vector, authorization, redaction, comparison,
+    count, ordinal, policy, epoch, readiness, retention, or recovery semantics. While
     external_databases is empty, every topology domain except exact
     `durable.authoritative_changelog` lists one equal readable, writable, and current identity as
     its sole active identity, and that exception matches ADR-0207's exact ordered V1/V2/V3 readable,
@@ -22894,6 +22914,14 @@ work_packages:
     or dispatchable; V5 selection would depend on pagination, SDK-only, or vector registry
     population; or existing descriptor, pagination, cursor, SDK-only, vector, authorization, or
     redaction semantics would change.
+  - An exact-provider state V1 through V4 constant, descriptor, reader, writer, fixture, alias,
+    source locator, topology row, or dispatch would remain, be reinterpreted, or seed V5; a query
+    would execute without genuine current V5 state; or V5 bytes, comparison, null placement, count,
+    ordinal, policy, epoch, readiness, retention, or refusal semantics would change.
+  - The main or pre-provider integration plan hash would differ from ADR-0219 Decision 8's exact
+    pair without explanation, causality would be assigned to that existing difference, or a final
+    combined plan, module, lock, cursor, fixture, or hash rotation would be accepted without
+    independent derivation and review after ADR-0216 reconciliation.
   - A ledger entry, ADR section, or public handbook page would be exempted from the new checks
     without a recorded reason.
 
