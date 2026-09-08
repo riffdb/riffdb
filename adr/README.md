@@ -255,6 +255,7 @@ record with no front matter.
 | [0218](0218-retired-catalog-index-migration-scaffolding-authority.md) | Retired Catalog-Index Migration Scaffolding Authority | Accepted | guarantee |
 | [0219](0219-epoch-two-sole-current-exact-provider-state.md) | Epoch-Two Sole-Current Exact-Provider State | Accepted | guarantee |
 | [0220](0220-columnar-history-reset-fresh-locator-permit.md) | Columnar History Reset Fresh-Locator Permit | Proposed | guarantee |
+| [0221](0221-atomic-no-replace-columnar-candidate-retirement.md) | Atomic No-Replace Columnar Candidate Retirement | Proposed | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
