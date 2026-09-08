@@ -4594,11 +4594,13 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-684
   name: Correlated index-work runtime and durable successor conformance
-  depends_on: [WP-679, WP-683]
+  tier: guarantee
+  depends_on: [WP-679, WP-683, WP-756, WP-757]
   objective: Carry ADR-0149's admitted index-rich commands through one pay-once canonical
-    coordinator derivation, bounded storage transaction, and least-sufficient durable
-    capsule/segment successor, proving atomic 100-element behavior without weakening any byte,
-    durability, recovery, or interface guarantee.
+    coordinator derivation and bounded redb transaction, proving atomic 100-element behavior
+    against an independent riffdb-testkit authoritative model, the coordinator's sealed set, and
+    complete immutable stopped-snapshot redb inspection without weakening any byte, durability,
+    recovery, or interface guarantee.
   requirements: [BLK-006, BLK-007, BLK-008, BLK-009, BLK-013, BLK-014,
     BLK-019, BLK-020, BLK-021, BLK-022, BLK-024, BLK-025, BLK-027, ID-001,
     ID-004, STO-001, STO-002, TXN-001, TXN-002, TXN-030, TXN-031, TXN-040,
@@ -4606,16 +4608,17 @@ work_packages:
     PERF-004, PERF-005]
   required_adrs: [ADR-0003, ADR-0004, ADR-0005, ADR-0006, ADR-0012,
     ADR-0023, ADR-0038, ADR-0055, ADR-0059, ADR-0104, ADR-0107, ADR-0123,
-    ADR-0124, ADR-0129, ADR-0147, ADR-0149]
+    ADR-0124, ADR-0129, ADR-0147, ADR-0149, ADR-0180, ADR-0204, ADR-0212]
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, proto/**,
     release/version-topology-v1.json, release/durable-format-manifest-v1.json,
     crates/riffdb-types/**, crates/riffdb-contract-ir/**,
-    crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
-    crates/riffdb-storage-redb/**, crates/riffdb-commit/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-commit/**,
     crates/riffdb-proto/**, crates/riffdb-runtime/**,
     crates/riffdb-service/**, crates/riffdb-server/**,
     crates/riffdb-observability/**, crates/riffdb-testkit/**,
-    crates/riffdb-sim/**, fixtures/proto/**, fixtures/contracts/**,
+    crates/riffdb-testkit-server/**, crates/riffdb-sim/**,
+    fixtures/proto/**, fixtures/contracts/**,
     fixtures/adapters/bulk-conformance/**, tests/**, fuzz/**, scripts/**,
     docs/SUMMARY.md, docs/contracts/**, docs/reference/**,
     docs/architecture/**, docs/operations/**, docs/performance/**]
@@ -4625,21 +4628,28 @@ work_packages:
     set reused by validation, epoch reads/advances, reservation, and durable construction
   - Storage semantic bounds separating 4,096 index deltas from 65,535 affected targets and
     validation positions while enforcing D+A+V and every existing 16 MiB semantic/encoded cap in
-    memory and redb without scans or partial staging
-  - Least-sufficient successor command-capsule and segment identities for 4,097..=65,535 ordered
-    epoch transitions, with old identities frozen at 4,096, exact old bytes/readers, topology and
-    manifest registration, bounded decoder refusal, backup, checkpoint, and crash recovery
+    redb without scans or partial staging, with the independently derived riffdb-testkit model,
+    coordinator's sealed set, and complete inspected redb post-state agreeing exactly
+  - Epoch-appropriate command-capsule and segment selection retaining least-sufficient pre-epoch-two
+    successors and making only StoredCommandCapsuleV6 and StoredCommandSegmentV5 readable, writable,
+    and current for 0..=65,535 transitions at epoch two, with retired identities and old
+    descriptor-closure hashes reserved and refused, ADR-0204's exact registry-hash rotations, exact
+    V6/V5 message bytes and semantics, bounded decoder refusal, backup, checkpoint, and crash recovery
   - Neutral index-rich 1, 9, 19, and 100 element corpus covering exact/plus-one count, work, byte,
     idempotency, business/unique failure, concurrency, cancellation, rollback, provenance, events,
-    changelog order, complete-or-absent visibility, and remote memory/redb loopback
+    audit and changelog order, complete-or-absent visibility, and real riffdbd-plus-redb remote
+    loopback, comparing the independent model, captured sealed set, and every semantic target in one
+    complete immutable stopped-snapshot redb namespace through strictly ordered canonical pages of
+    at most 256 targets with exact terminal exhaustion and every required divergence negative
   - Stage-attributed benchmark evidence for prefix derivation, canonicalization, epoch read,
     reservation, epoch write, capsule encoding, and commit, with guards against quadratic work,
     per-target plan decode, repeated canonical encoding, framework branches, split writes, coarse
     invalidation, or caller budget control
   acceptance_commands:
-  - cargo +1.97.0 test -p riffdb-storage-api -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-commit -p riffdb-proto -p riffdb-testkit -p riffdb-sim --all-features
+  - cargo +1.97.0 test -p riffdb-storage-api -p riffdb-storage-redb -p riffdb-commit -p riffdb-proto -p riffdb-testkit -p riffdb-testkit-server -p riffdb-sim --all-features
   - cargo +1.97.0 test -p riffdb-testkit --test bulk_command_recovery --all-features
   - cargo +1.97.0 test --test storage_recovery_matrix --all-features
+  - ./scripts/correlated-index-work-qualification
   - ./scripts/adapter-bulk-command-acceptance --all-languages
   - ./scripts/check-durable-format-manifest
   - ./scripts/check-version-topology
@@ -4650,10 +4660,13 @@ work_packages:
   - ./scripts/handbook check
   - cargo +1.97.0 fmt --all -- --check
   - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
-  exit_gate: One real neutral 100-element index-rich command atomically commits through memory and
-    redb under D+A+V and byte ceilings, uses the least-sufficient durable identity when required,
-    survives every scheduled/crash boundary, and exposes no framework branch, split, partial
-    result, coarse invalidation, unbounded allocation, or repeated plan-proof path.
+  exit_gate: One real neutral 100-element index-rich command atomically commits through redb under
+    D+A+V and byte ceilings, uses the epoch-appropriate durable identity, survives every
+    scheduled/crash boundary, and exactly agrees across the independent riffdb-testkit model, the
+    coordinator's sealed target set, and complete immutable stopped-snapshot redb namespace
+    inspection through canonical pages of at most 256 targets with exact terminal enumeration,
+    while exposing no framework branch, split, partial result, coarse invalidation, unbounded
+    allocation, or repeated plan-proof path.
   standing_design_tests:
     interface_safety: The generated invocation and shared service remain the only application
       boundary; callers cannot choose index targets, validation mode, transaction, work budget,

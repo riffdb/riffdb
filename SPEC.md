@@ -8312,11 +8312,13 @@ expressiveness shape. Classification does not substitute for execution.
   evaluation, conflict acquisition, staging, or journaling. The deterministic
   runtime MUST additionally validate the concrete expanded graph against 16
   MiB before the commit coordinator; client preflight is never authority.
-- `BLK-021`: A framework-neutral bounded-context corpus MUST prove one through
-  100 elements, individual and aggregate exact-bound/plus-one cases, nine- and
-  nineteen-element atomic sets, business failure, authorization, cancellation,
-  idempotency, concurrency, crash recovery, provenance, events, and complete-
-  or-absent visibility across memory/redb and every generated surface.
+- `BLK-021`: A framework-neutral bounded-context corpus MUST prove one through 100 elements,
+  individual and aggregate exact-bound/plus-one cases, nine- and nineteen-element atomic sets,
+  business failure, authorization, cancellation, idempotency, concurrency, crash recovery,
+  provenance, events, and complete-or-absent visibility against an independent riffdb-testkit
+  authoritative model and the sole production redb backend across every generated surface. The
+  model MUST derive expected targets and post-state without coordinator output, production layout,
+  or production codecs; required durable and remote evidence MUST execute against real redb.
 - `BLK-022`: Compilation MUST retain the 4,096 physical index-entry-delta
   ceiling and compute affected prefix epochs `A`, complete validation positions
   `V`, and correlated index work `D + A + V`. `A` and `V` are each structurally
@@ -8332,21 +8334,29 @@ expressiveness shape. Classification does not substitute for execution.
   epoch reads and advances, reservation, and durable encoding MUST reuse that
   set without per-target plan decode or re-expansion; every runtime guard remains
   fail-closed defense in depth.
-- `BLK-025`: More than 4,096 durable index-generation transitions MUST use
-  least-sufficient successor command-capsule and segment identities with a
-  65,535-entry structural maximum and unchanged semantic/envelope byte ceilings.
-  Every old identity retains its exact 4,096 maximum and byte-exact decoder;
-  unsupported readers MUST refuse the successor before mutation.
+- `BLK-025`: Before epoch two, more than 4,096 durable index-generation transitions MUST use
+  least-sufficient successor command-capsule and segment identities with a 65,535-entry maximum;
+  every older identity retains its exact bound and byte-exact decoder. At epoch two, only
+  StoredCommandCapsuleV6 and StoredCommandSegmentV5 are readable, writable, and current for
+  0..=65,535 transitions; retired identities and hashes remain reserved and refused. V6/V5
+  message descriptors, tags, revisions, payload bytes, validation, semantics, and
+  semantic/envelope byte ceilings remain unchanged. Their descriptor-closure registry hashes MUST
+  rotate through exactly the two old-to-new pairs in ADR-0204 Decision 5, with both old hashes
+  reserved and refused; unsupported readers MUST refuse before mutation.
 - `BLK-026`: `RDB-C020` ceiling violations MUST report one closed compiler
   resource identity plus checked actual and maximum integers consistently
   through compiler, CLI, MCP, gRPC, and LSP rendering. Diagnostics MUST remain
   bounded and MUST NOT expose application values, keys, prefixes, secrets,
   storage contents, or internal debug strings.
-- `BLK-027`: A framework-neutral index-rich corpus MUST prove 1, 9, 19, and 100
-  element atomic commands; exact and plus-one delta, prefix, validation, work,
-  and byte boundaries; least-sufficient durable selection; memory/redb parity;
-  deterministic schedules; idempotency; rollback; crash recovery; provenance;
-  events; changelog order; remote loopback; and bounded stage-cost evidence.
+- `BLK-027`: A framework-neutral index-rich corpus MUST prove 1, 9, 19, and 100 element atomic
+  commands; exact and plus-one `D`, `A`, `V`, `W`, and byte boundaries; epoch-appropriate durable
+  selection; deterministic schedules; idempotency; rollback; crash recovery; provenance; events;
+  audit and changelog order; real riffdbd-plus-redb remote loopback; and bounded stage-cost
+  evidence. Every admitted target/post-state case MUST compare the coordinator's sealed sequence,
+  an independently derived authoritative model, and one complete immutable stopped-snapshot redb
+  namespace inspection through canonical pages of at most 256 targets, with missing, extra,
+  duplicate, reorder, wrong-target, engine-invented-target, and wrong-state negatives. The model
+  MUST NOT substitute for changelog, audit, durability, recovery, remote, or performance evidence.
 - `BLK-028`: An ordinary idempotent command MAY contain exactly one compiler-
   resolved, complete-primary-key, partition-local delete binding only for an
   entity whose structural policy is `no_inbound`; caller-selected deletion,
