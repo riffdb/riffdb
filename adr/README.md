@@ -254,10 +254,10 @@ record with no front matter.
 | [0217](0217-snapshot-bound-export-of-command-owned-evidence.md) | Snapshot-Bound Export of Command-Owned Evidence | Accepted | guarantee |
 | [0218](0218-retired-catalog-index-migration-scaffolding-authority.md) | Retired Catalog-Index Migration Scaffolding Authority | Accepted | guarantee |
 | [0219](0219-epoch-two-sole-current-exact-provider-state.md) | Epoch-Two Sole-Current Exact-Provider State | Accepted | guarantee |
-| [0220](0220-columnar-history-reset-fresh-locator-permit.md) | Columnar History Reset Fresh-Locator Permit | Proposed | guarantee |
-| [0221](0221-atomic-no-replace-columnar-candidate-retirement.md) | Atomic No-Replace Columnar Candidate Retirement | Proposed | guarantee |
-| [0222](0222-exact-provider-v2-lowering-path-authority.md) | Exact Provider V2 Lowering Path Authority | Proposed | guarantee |
-| [0223](0223-epoch-two-application-source-and-lock-retirement.md) | Epoch-Two Application Source and Lock Retirement | Proposed | guarantee |
+| [0220](0220-columnar-history-reset-fresh-locator-permit.md) | Columnar History Reset Fresh-Locator Permit | Accepted | guarantee |
+| [0221](0221-atomic-no-replace-columnar-candidate-retirement.md) | Atomic No-Replace Columnar Candidate Retirement | Accepted | guarantee |
+| [0222](0222-exact-provider-v2-lowering-path-authority.md) | Exact Provider V2 Lowering Path Authority | Accepted | guarantee |
+| [0223](0223-epoch-two-application-source-and-lock-retirement.md) | Epoch-Two Application Source and Lock Retirement | Accepted | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
