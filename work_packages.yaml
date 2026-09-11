@@ -22802,6 +22802,9 @@ work_packages:
   required_adrs: [ADR-0006, ADR-0112, ADR-0124, ADR-0181, ADR-0190, ADR-0192, ADR-0204,
     ADR-0207, ADR-0215, ADR-0216, ADR-0217, ADR-0218, ADR-0219]
   allowed_paths: [SPEC.md, work_packages.yaml,
+    Cargo.lock,
+    adr/0074-python-application-driver.md,
+    adr/0079-public-contract-migration-administration.md,
     adr/0131-exact-indexed-text-cardinality-and-ordinal-windowing.md,
     adr/0134-compiler-declared-exact-predicate-and-order-families.md,
     adr/0145-compiler-declared-nullable-total-order-placement.md,
