@@ -22800,7 +22800,8 @@ work_packages:
     OQ-024, OQ-025, OQ-026, OQ-027, OQ-028, OQ-029, OQ-030, OQ-116,
     DX-044, DX-047, DX-049, VER-001, VER-002, VER-003, VER-004, VER-005, VER-008]
   required_adrs: [ADR-0006, ADR-0112, ADR-0124, ADR-0181, ADR-0190, ADR-0192, ADR-0204,
-    ADR-0207, ADR-0215, ADR-0216, ADR-0217, ADR-0218, ADR-0219]
+    ADR-0207, ADR-0215, ADR-0216, ADR-0217, ADR-0218, ADR-0219, ADR-0221, ADR-0222,
+    ADR-0223]
   allowed_paths: [SPEC.md, work_packages.yaml,
     Cargo.lock,
     adr/0074-python-application-driver.md,
@@ -22823,6 +22824,16 @@ work_packages:
   - Epoch-2 writer declaration in the durable-format manifest, format marker, and release notes,
     with RDB-FORMAT-0101 refusal of every epoch-1 database and the ceremony named as the sole
     safe action
+  - Sole-current application source V7 and lock V8 under ADR-0223, with every predecessor
+    reader, writer, parser, encoder, locator, alias, fixture, generated artifact, and topology
+    identity deleted; PYD-008/PYD-009 retained only as historical epoch-one requirements;
+    application migrate preview and write removed from CLI, reference, tests, and handbook;
+    and total-byte-bound then schema-only refusal before any other field validation or effect,
+    covered by the existing WP-757 sole-identity, inventory, ceremony, and compatibility proofs
+  - Exact ADR-0221 direct rustix =1.1.4 fs/std-only dependency edge for ADR-0209 atomic
+    no-replace candidate retirement, with no transitive graph rotation or fallback; ADR-0222
+    adds only the exact compiler exact_predicate.rs and module exact_predicate_result_set.rs
+    owners for genuine V2 lowering and sealed carriage, retaining all existing proof obligations
   - Removal of every non-current reader, fixture, generated artifact, and topology identity across
     durable, executable-IR, wire, protocol, application-artifact, generated-surface, and evidence
     domains except ADR-0207's exact read-only ChangelogFrameV1/V2 decoders and compatibility

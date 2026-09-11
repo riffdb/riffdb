@@ -117,6 +117,12 @@ submitted values, or internal sources.
 
 ### Application format V2
 
+This subsection's V1/V2 compatibility and migration requirements are historical
+epoch-one guarantees under accepted ADR-0223. At the epoch-two ceremony, source
+V7 and lock V8 become the sole admitted identities; all predecessor readers,
+writers, fixtures, artifacts, and the local `application migrate` command are
+removed. This does not change the current Python scaffold or facade semantics.
+
 V1 source manifests, locks, canonical bytes, and generated artifacts retain
 their exact meanings. V2 adds one required `python` generation target alongside
 `mcp`, `rust`, and `typescript`; lock V2 adds a closed Python artifact kind and
@@ -137,8 +143,10 @@ eventual registry installation with both pip and uv.
 
 This decision adds no public Protobuf field, RPC, MCP tool, durable record,
 storage key, contract IR, plan hash, authorization operation, or command
-semantic. Application source/lock V2 is an explicit local-format successor;
-V1 is never silently upgraded. The native module is private. The checked
+semantic. In epoch one, application source/lock V2 is an explicit local-format
+successor; V1 is never silently upgraded. ADR-0223 retires that compatibility
+surface in epoch two without reinterpreting its historical bytes or meaning.
+The native module is private. The checked
 Python facade and generated text become public compatibility artifacts.
 
 ## Security
@@ -159,7 +167,9 @@ result values.
 ## Testing and Evidence
 
 - Golden generated Python and public-stub fixtures cover every value and
-  operation shape, keyword collisions, exact identities, and V1/V2 formats.
+  operation shape, keyword collisions, and exact identities. V1/V2 format
+  fixtures prove historical epoch-one releases only and are deleted from live
+  epoch-two tooling under ADR-0223; current fixtures use source V7 and lock V8.
 - Native unit and adversarial tests cover malformed DTOs, malformed peer
   responses, cancellation, GIL release, panic containment, credential
   redaction, retry, replay, and unresolved outcomes.
@@ -178,8 +188,9 @@ result values.
   is heavier because it deliberately compiles the existing Rust client.
 - The supported platform matrix is narrower than pure Python but honest and
   testable for the current Linux product.
-- Application format V2 becomes the first format that requires all three
-  generated programming-language clients.
+- Historically, application format V2 was the first format that required all
+  three generated programming-language clients. It imposes no epoch-two reader,
+  fixture, or migration-command requirement (ADR-0223).
 
 ## Rejected Alternatives
 
@@ -201,7 +212,9 @@ result values.
 ## Work-Package Mapping
 
 - WP-394: exact interface, dependency, and compatibility acceptance.
-- WP-395: source/lock V2, migration, and generated Python clients.
+- WP-395: historical epoch-one source/lock V2 and local migration, plus generated
+  Python clients. ADR-0223 retires the predecessor format and migration surface
+  in WP-757 without changing current generated Python behavior.
 - WP-396: native Rust bridge and Python runtime.
 - WP-397: scaffold, package, release artifacts, and documentation.
 - WP-398: installed cross-language and multi-database proof.
