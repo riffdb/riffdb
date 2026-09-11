@@ -57,8 +57,10 @@ riffdb migration apply --application <path> --operation-id <uuid> \
 riffdb migration operation <uuid>
 ```
 
-This top-level command is distinct from the existing
-`riffdb application migrate --to v2`, which changes only local manifest format.
+This top-level command is distinct from the historical epoch-one
+`riffdb application migrate --to v2`, which changed only local manifest format.
+ADR-0223 removes that local command, including preview and write modes, at the
+epoch-two ceremony; this public contract-migration administration is unchanged.
 TypeScript, Python, generated application clients, hosted MCP, and stdio MCP add
 no migration tool, resource, permission, or hidden call path. MCP authorization
 tests must prove migration remains absent even for a credential that has

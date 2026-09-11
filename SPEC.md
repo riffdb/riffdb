@@ -774,16 +774,27 @@ loader, canonical database alias, bearer metadata, and bounded trace context
 MUST be reused so Python observes the same authorization and multi-database
 routing as Rust, CLI, TypeScript, and MCP.
 
-`PYD-008` `riffdb.application-source/v1` and
+`PYD-008` For historical epoch-one releases, `riffdb.application-source/v1` and
 `riffdb.application-lock/v1` MUST retain their exact accepted bytes and
 meaning. V2 MUST require `mcp`, `rust`, `typescript`, and `python` generation
 targets and lock the Python artifact path, bytes, and digest. Migration MUST be
 explicit, deterministic, local, non-authorizing, and previewed before write.
+Under ADR-0223 these are historical epoch-one guarantees: epoch two MUST delete
+the V1/V2 readers, writers, fixtures, artifacts, and topology identities, and
+admit only source V7 and lock V8 under the same retirement rule for all other
+predecessors. The old identities and bytes MUST NOT be reinterpreted or reused.
 
-`PYD-009` `riffdb application migrate --to v2 --write` MUST change only the
+`PYD-009` For historical epoch-one releases,
+`riffdb application migrate --to v2 --write` MUST change only the
 author-owned source manifest atomically. It MUST NOT rewrite a lock, generate
 artifacts, deploy, bind authority, seed data, or reinterpret V1; the existing
 explicit `application lock --write` operation remains the review boundary.
+At the ADR-0223 epoch-two ceremony, both preview and write modes of this local
+migration command MUST be removed. Source and lock admission MUST enforce the
+total byte ceiling first and refuse a retired or unknown top-level schema after
+only the bounded syntactic decoding needed to extract that schema, before any
+other field decode or validation, semantic lowering, or filesystem/network
+effect. Epoch two MUST offer no predecessor conversion or compatibility path.
 
 `PYD-010` Release artifacts MUST include reproducible CPython limited-API
 manylinux wheels for x86_64 and aarch64 plus a self-contained source
