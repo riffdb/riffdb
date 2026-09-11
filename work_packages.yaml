@@ -12949,6 +12949,22 @@ work_packages:
     and its typed-overload mapping is pinned at both admission stages; the queue-delay shed carries
     a shed-distinguishing observable with a nonzero positive control; gate_a completes on terminal
     migration phase; three consecutive full workspace batteries report zero failures.
+  closure:
+    status: complete
+    completed_at: "2026-09-11"
+    evidence: All seven constructed-saturation service probes, both admission-budget unit tests,
+      all 29 service architecture tests, and the real contract_migration_gate_a process test
+      passed. Gate-A completed all 70 rows and reached terminal Succeeded through its normal
+      offline/reconnect interval. Three consecutive cargo +1.97.0 test --workspace --all-features
+      runs passed on unchanged source; the subsequent successful full ci-all supplied a fourth
+      passing workspace run. Workspace Clippy with all targets/features and warnings denied,
+      documentation, generated Protobuf checks, workspace policy, and scoped acceptance passed.
+      Full ci-all also passed cross-language operational conformance, all 24 generators, Helm
+      render/operator/upgrade rehearsal, public-source authoring acceptance, and installation smoke.
+    decision: The existing state-driven implementation satisfies the saturation and terminal-phase
+      gate without shortening deadlines or weakening overload assertions. Recovery corrected only
+      the stale Gate-A package name in the acceptance command. No runtime, public interface,
+      durability guarantee, benchmark qualification, or publication gate changed.
   human_review_triggers: *id001
 - id: WP-434
   name: Projected-read SDK facade, CLI verb, and packed encode-into (CP4)
