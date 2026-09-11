@@ -1,10 +1,10 @@
 ---
 adr: "0220"
 title: Columnar History Reset Fresh-Locator Permit
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-08
-accepted: null
+accepted: "2026-09-11"
 requires: [ADR-0213, ADR-0214]
 amends: [ADR-0213, ADR-0214]
 supersedes: []

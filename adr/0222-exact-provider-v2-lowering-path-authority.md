@@ -1,10 +1,10 @@
 ---
 adr: "0222"
 title: Exact Provider V2 Lowering Path Authority
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-08
-accepted: null
+accepted: "2026-09-11"
 requires: [ADR-0219]
 amends: [ADR-0219]
 supersedes: []

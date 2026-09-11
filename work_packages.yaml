@@ -1583,7 +1583,8 @@ work_packages:
     PERF-013, PERF-014, PERF-019, END-004, END-006, END-007, END-008]
   required_adrs: [ADR-0019, ADR-0041, ADR-0050, ADR-0056, ADR-0073,
     ADR-0085, ADR-0104, ADR-0112, ADR-0123, ADR-0156, ADR-0157, ADR-0182, ADR-0187,
-    ADR-0188, ADR-0197, ADR-0205, ADR-0206, ADR-0208, ADR-0210, ADR-0213, ADR-0214]
+    ADR-0188, ADR-0197, ADR-0205, ADR-0206, ADR-0208, ADR-0210, ADR-0213, ADR-0214,
+    ADR-0220]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0156-clean-close-certificate-fast-startup.md,
     adr/0157-clean-close-lifecycle-durable-identity.md,

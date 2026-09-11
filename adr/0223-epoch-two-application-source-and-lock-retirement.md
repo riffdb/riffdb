@@ -1,10 +1,10 @@
 ---
 adr: "0223"
 title: Epoch-Two Application Source and Lock Retirement
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-08
-accepted: null
+accepted: "2026-09-11"
 requires: [ADR-0074, ADR-0079, ADR-0181]
 amends: [ADR-0074, ADR-0079]
 supersedes: []

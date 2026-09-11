@@ -1,10 +1,10 @@
 ---
 adr: "0221"
 title: Atomic No-Replace Columnar Candidate Retirement
-status: proposed
+status: accepted
 tier: guarantee
 date: 2026-09-08
-accepted: null
+accepted: "2026-09-11"
 requires: [ADR-0200, ADR-0209]
 amends: [ADR-0209]
 supersedes: []
