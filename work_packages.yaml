@@ -12936,7 +12936,7 @@ work_packages:
       admission_deadline_while_queued_is_overloaded_not_deadline_exceeded
   - cargo +1.97.0 test -p riffdb-service --lib --all-features -- admission_budget
   - cargo +1.97.0 test -p riffdb-service --test architecture --all-features
-  - cargo +1.97.0 test -p riffdb-testkit --test contract_migration_gate_a --all-features
+  - cargo +1.97.0 test -p riffdb-testkit-server --test contract_migration_gate_a --all-features
   - cargo +1.97.0 test --workspace --all-features
   - cargo +1.97.0 fmt --all -- --check
   - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
