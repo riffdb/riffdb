@@ -4,7 +4,9 @@ use sha2::{Digest, Sha256};
 use crate::{AuthoritativeStateCatalogV1, MAX_CHANGELOG_FRAME_BYTES, MAX_STAGED_COMMANDS};
 
 use super::receipt_codec::ReceiptReader;
-use super::{AuthoritativeTransactionV3, ChangelogAttributionV3, ChangelogV3Error};
+use super::{
+    AuthoritativeTransactionV3, ChangelogAttributionV3, ChangelogV3Error, LeadershipEpochV1,
+};
 
 const MAGIC: &[u8; 8] = b"RDBCLF03";
 const FOOTER_MAGIC: &[u8; 8] = b"RDBCLE03";
@@ -12,12 +14,16 @@ const SOURCE_COUNT: usize = ChangelogAttributionV3::ALL.len();
 const HEADER_BYTES: usize = 166 + 4 * SOURCE_COUNT;
 const FOOTER_BYTES: usize = 48;
 
+// Admission must leave space for a complete frame containing this unsplit row.
+pub(super) const MAX_RECEIPT_BYTES: usize =
+    MAX_CHANGELOG_FRAME_BYTES - HEADER_BYTES - FOOTER_BYTES - 4;
+
 /// Exact checked lineage, leadership, catalog, and prior-frame binding.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct ChangelogFrameBindingV3 {
     database_id: DatabaseId,
     history_incarnation: u64,
-    leadership_epoch: u64,
+    leadership_epoch: LeadershipEpochV1,
     catalog_digest: [u8; 32],
     prior_frame_hash: [u8; 32],
 }
@@ -31,10 +37,9 @@ impl ChangelogFrameBindingV3 {
         catalog_digest: [u8; 32],
         prior_frame_hash: [u8; 32],
     ) -> Result<Self, ChangelogV3Error> {
-        if history_incarnation == 0
-            || leadership_epoch == 0
-            || catalog_digest != AuthoritativeStateCatalogV1.digest()
-        {
+        let leadership_epoch =
+            LeadershipEpochV1::new(leadership_epoch).ok_or(ChangelogV3Error::InvalidEncoding)?;
+        if history_incarnation == 0 || catalog_digest != AuthoritativeStateCatalogV1.digest() {
             return Err(ChangelogV3Error::InvalidEncoding);
         }
         Ok(Self {
@@ -59,7 +64,7 @@ impl ChangelogFrameBindingV3 {
     /// Nonzero leadership fence.
     #[must_use]
     pub const fn leadership_epoch(self) -> u64 {
-        self.leadership_epoch
+        self.leadership_epoch.get()
     }
     /// Exact catalog digest; never diagnostic data.
     #[must_use]
@@ -111,7 +116,7 @@ impl ChangelogFrameV3 {
                 return Err(ChangelogV3Error::PredecessorMismatch);
             }
             transitions = transitions
-                .checked_add(transition_count(receipt))
+                .checked_add(receipt.transition_count())
                 .ok_or(ChangelogV3Error::LimitExceeded)?;
             if transitions > MAX_STAGED_COMMANDS as u64 {
                 return Err(ChangelogV3Error::LimitExceeded);
@@ -183,7 +188,7 @@ impl ChangelogFrameV3 {
         bytes.extend_from_slice(&3_u16.to_be_bytes());
         bytes.extend_from_slice(self.binding.database_id.as_bytes());
         bytes.extend_from_slice(&self.binding.history_incarnation.to_be_bytes());
-        bytes.extend_from_slice(&self.binding.leadership_epoch.to_be_bytes());
+        bytes.extend_from_slice(&self.binding.leadership_epoch.get().to_be_bytes());
         bytes.extend_from_slice(&self.binding.catalog_digest);
         bytes.extend_from_slice(&first.predecessor.map_or(0, |p| p.get()).to_be_bytes());
         bytes.extend_from_slice(&last.sequence.get().to_be_bytes());
@@ -309,32 +314,6 @@ impl ChangelogFrameV3 {
             return Err(ChangelogV3Error::InvalidEncoding);
         }
         Ok(frame)
-    }
-}
-
-fn transition_count(receipt: &AuthoritativeTransactionV3) -> u64 {
-    let row = receipt.binding();
-    let app = row.covered_frontier.application().map_or(0, |v| v.get())
-        - row
-            .predecessor_frontier
-            .application()
-            .map_or(0, |v| v.get());
-    let admin = row.covered_frontier.administration().map_or(0, |v| v.get())
-        - row
-            .predecessor_frontier
-            .administration()
-            .map_or(0, |v| v.get());
-    match receipt.attribution() {
-        ChangelogAttributionV3::JournaledApplicationGroup => app,
-        ChangelogAttributionV3::JournaledServiceAudit => admin,
-        ChangelogAttributionV3::DirectApplicationOrServiceAuditGroup => {
-            if app > 0 {
-                app
-            } else {
-                admin
-            }
-        }
-        _ => 1,
     }
 }
 

@@ -4,12 +4,19 @@
 //! coordinator remains the only owner of authoritative mutation and ordering.
 
 mod frame;
+mod history;
+mod leadership;
 mod mutation;
 mod receipt;
 mod receipt_codec;
 mod sequence;
 
 pub use frame::{ChangelogFrameBindingV3, ChangelogFrameV3};
+pub use history::{
+    ChangelogHistoryPointV3, ChangelogHistoryStateV3, ChangelogLineageV3,
+    ReplicationFollowerStateV3,
+};
+pub use leadership::LeadershipEpochV1;
 pub use mutation::{AuthoritativeMutationAccumulatorV3, AuthoritativeMutationV3};
 pub use receipt::{
     AuthoritativeTransactionBindingV3, AuthoritativeTransactionV3, ChangelogAttributionV3,

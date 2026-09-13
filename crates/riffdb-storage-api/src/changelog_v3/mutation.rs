@@ -15,6 +15,19 @@ pub struct AuthoritativeMutationV3 {
 }
 
 impl AuthoritativeMutationV3 {
+    /// Forms an exact replacement from a transaction-owned pre-image. Hashing
+    /// lives with the expected-state codec, not a second adapter implementation.
+    pub fn replace(
+        namespace: AuthoritativeNamespaceV1,
+        key: &[u8],
+        before: &[u8],
+        after: &[u8],
+    ) -> Result<Self, ChangelogV3Error> {
+        Self::validate(namespace, key, before.len())?;
+        Self::validate(namespace, key, after.len())?;
+        Self::put(namespace, key, Some(Sha256::digest(before).into()), after)
+    }
+
     /// Builds an exact insert (absent prior) or replacement (SHA-256 prior).
     /// Input lengths are checked before any payload is copied.
     pub fn put(
@@ -192,7 +205,7 @@ impl AuthoritativeMutationAccumulatorV3 {
             .checked_sub(old_bytes)
             .and_then(|bytes| bytes.checked_add(next_bytes))
             .ok_or(ChangelogV3Error::LimitExceeded)?;
-        if encoded_bytes > MAX_CHANGELOG_FRAME_BYTES
+        if encoded_bytes > super::frame::MAX_RECEIPT_BYTES
             || (previous.is_none() && self.changes.len() >= crate::MAX_CHANGELOG_FRAME_ENTRIES)
         {
             return Err(ChangelogV3Error::LimitExceeded);

@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+// ADR-0186 bounded lineage-shared checkpoint history roots. These positions do
+// not claim durability until their complete transaction is known committed.
+message StoredChangelogHistoryStateV3 {
+  message Position {
+    uint64 transaction_sequence = 1;
+    bytes history_hash = 2;
+    uint64 application_sequence = 3;
+    uint64 administration_sequence = 4;
+  }
+
+  bytes database_id = 1;
+  uint64 history_incarnation = 2;
+  uint64 leadership_epoch = 3;
+  bytes catalog_digest = 4;
+  Position anchor = 5;
+  Position tail = 6;
+  Position minimum_resume = 7;
+}

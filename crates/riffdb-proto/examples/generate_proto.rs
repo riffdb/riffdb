@@ -37,6 +37,10 @@ use riffdb_types::{
 };
 
 const STORAGE_SOURCES: &[&str] = &[
+    "riffdb/storage/v1/authoritative_state_catalog_v1.proto",
+    "riffdb/storage/v1/leadership_epoch_v1.proto",
+    "riffdb/storage/v1/changelog_history_state_v3.proto",
+    "riffdb/storage/v1/replication_follower_state_v3.proto",
     "riffdb/storage/v1/application.proto",
     "riffdb/storage/v1/audit.proto",
     "riffdb/storage/v1/capability.proto",
@@ -87,6 +91,10 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/capability_vector_inspection.proto",
 ];
 const PRODUCTION_SOURCES: &[&str] = &[
+    "riffdb/storage/v1/authoritative_state_catalog_v1.proto",
+    "riffdb/storage/v1/leadership_epoch_v1.proto",
+    "riffdb/storage/v1/changelog_history_state_v3.proto",
+    "riffdb/storage/v1/replication_follower_state_v3.proto",
     "riffdb/app/v1/application.proto",
     "riffdb/storage/v1/application.proto",
     "riffdb/storage/v1/audit.proto",
@@ -674,6 +682,26 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         "StoredChangelogTransactionAllocatorV3",
         PayloadBound::Exact(11),
     ),
+    durable(
+        "authoritative_state_catalog_v1.proto",
+        "StoredAuthoritativeStateCatalogV1",
+        PayloadBound::Exact(34),
+    ),
+    durable(
+        "leadership_epoch_v1.proto",
+        "StoredLeadershipEpochV1",
+        PayloadBound::Exact(11),
+    ),
+    durable(
+        "changelog_history_state_v3.proto",
+        "StoredChangelogHistoryStateV3",
+        PayloadBound::Exact(281),
+    ),
+    durable(
+        "replication_follower_state_v3.proto",
+        "StoredReplicationFollowerStateV3",
+        PayloadBound::Exact(215),
+    ),
 ];
 
 const LEGACY_DURABLE_RECORD_COUNT: usize = 26;
@@ -1177,6 +1205,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     let changelog_allocator_record = durable_registry
         .get(current_v1_record_count + 64)
         .ok_or_else(|| io::Error::other("durable changelog allocator registry is incomplete"))?;
+    let catalog_record = durable_registry
+        .get(current_v1_record_count + 65)
+        .ok_or_else(|| io::Error::other("durable authoritative catalog registry is incomplete"))?;
+    let leadership_record = durable_registry
+        .get(current_v1_record_count + 66)
+        .ok_or_else(|| io::Error::other("durable leadership epoch registry is incomplete"))?;
+    let history_record = durable_registry
+        .get(current_v1_record_count + 67)
+        .ok_or_else(|| io::Error::other("durable changelog history registry is incomplete"))?;
+    let follower_record = durable_registry
+        .get(current_v1_record_count + 68)
+        .ok_or_else(|| io::Error::other("durable follower state registry is incomplete"))?;
     write_artifact(
         &output_root,
         "fixtures/proto/durable-registry.txt",
@@ -1692,17 +1732,25 @@ fn main() -> Result<(), Box<dyn Error>> {
         "crates/riffdb-proto/fixtures/durable-columnar-projection-control-v1-record-bound.bin",
         &durable_record_bounds(std::slice::from_ref(columnar_projection_control_record)),
     )?;
-    for prefix in ["fixtures/proto", "crates/riffdb-proto/fixtures"] {
-        write_artifact(
-            &output_root,
-            &format!("{prefix}/durable-changelog-allocator-v3-schema-hash.bin"),
-            &changelog_allocator_record.schema_hash,
-        )?;
-        write_artifact(
-            &output_root,
-            &format!("{prefix}/durable-changelog-allocator-v3-record-bound.bin"),
-            &durable_record_bounds(std::slice::from_ref(changelog_allocator_record)),
-        )?;
+    for (stem, record) in [
+        ("changelog-allocator-v3", changelog_allocator_record),
+        ("authoritative-state-catalog-v1", catalog_record),
+        ("leadership-epoch-v1", leadership_record),
+        ("changelog-history-state-v3", history_record),
+        ("replication-follower-state-v3", follower_record),
+    ] {
+        for prefix in ["fixtures/proto", "crates/riffdb-proto/fixtures"] {
+            write_artifact(
+                &output_root,
+                &format!("{prefix}/durable-{stem}-schema-hash.bin"),
+                &record.schema_hash,
+            )?;
+            write_artifact(
+                &output_root,
+                &format!("{prefix}/durable-{stem}-record-bound.bin"),
+                &durable_record_bounds(std::slice::from_ref(record)),
+            )?;
+        }
     }
     write_artifact(
         &output_root,
@@ -1981,9 +2029,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 94 {
+    if DURABLE_RECORDS.len() != 98 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 94 records").into(),
+            io::Error::other("readable durable registry must contain exactly 98 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -2007,9 +2055,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 190 || enum_count != 30 {
+    if message_count != 194 || enum_count != 30 {
         return Err(io::Error::other(format!(
-            "storage schema must contain exactly 190 messages and 30 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain exactly 194 messages and 30 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -2345,6 +2393,18 @@ fn durable_writable_registry_fixture(
     let changelog_allocator = records
         .get(current_v1_record_count + 64)
         .ok_or_else(|| io::Error::other("durable registry is missing changelog allocator"))?;
+    let catalog = records
+        .get(current_v1_record_count + 65)
+        .ok_or_else(|| io::Error::other("durable registry is missing authoritative catalog"))?;
+    let leadership = records
+        .get(current_v1_record_count + 66)
+        .ok_or_else(|| io::Error::other("durable registry is missing leadership epoch"))?;
+    let history = records
+        .get(current_v1_record_count + 67)
+        .ok_or_else(|| io::Error::other("durable registry is missing changelog history"))?;
+    let follower = records
+        .get(current_v1_record_count + 68)
+        .ok_or_else(|| io::Error::other("durable registry is missing follower state"))?;
     let writable = legacy[..8]
         .iter()
         .chain(std::iter::once(v2))
@@ -2390,10 +2450,14 @@ fn durable_writable_registry_fixture(
         .chain(correlated_index_work_command_authority.iter())
         .chain(std::iter::once(clean_close_lifecycle))
         .chain(std::iter::once(columnar_projection_control))
-        .chain(std::iter::once(changelog_allocator));
+        .chain(std::iter::once(changelog_allocator))
+        .chain(std::iter::once(catalog))
+        .chain(std::iter::once(leadership))
+        .chain(std::iter::once(history))
+        .chain(std::iter::once(follower));
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {}", current_v1_record_count + 47);
+    let _ = writeln!(output, "records {}", current_v1_record_count + 51);
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {

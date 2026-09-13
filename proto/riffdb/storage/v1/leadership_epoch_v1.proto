@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+// Nonzero lineage-shared leadership fence. Advancement is checked, never wrapping.
+message StoredLeadershipEpochV1 {
+  uint64 epoch = 1;
+}

@@ -1,7 +1,8 @@
 use riffdb_types::{DatabaseId, DualFrontier};
 use sha2::{Digest, Sha256};
 
-use crate::{AuthoritativeStateCatalogV1, MAX_CHANGELOG_FRAME_BYTES, MAX_CHANGELOG_FRAME_ENTRIES};
+use super::frame::MAX_RECEIPT_BYTES;
+use crate::{AuthoritativeStateCatalogV1, MAX_CHANGELOG_FRAME_ENTRIES};
 
 use super::{
     AuthoritativeMutationV3, AuthoritativeTransactionBindingV3, AuthoritativeTransactionV3,
@@ -19,7 +20,7 @@ impl AuthoritativeTransactionV3 {
     /// checkpoint materialization, not reconstructed from current row values.
     pub fn encode(&self) -> Result<Vec<u8>, ChangelogV3Error> {
         let total = self.encoded_len()?;
-        if total > MAX_CHANGELOG_FRAME_BYTES {
+        if total > MAX_RECEIPT_BYTES {
             return Err(ChangelogV3Error::LimitExceeded);
         }
         let binding = self.binding();
@@ -75,7 +76,7 @@ impl AuthoritativeTransactionV3 {
     /// Refuses oversized input before hashing/copying and refuses unknown,
     /// duplicate, reordered, truncated, trailing, or noncanonical content.
     pub fn decode(bytes: &[u8]) -> Result<Self, ChangelogV3Error> {
-        if bytes.len() > MAX_CHANGELOG_FRAME_BYTES {
+        if bytes.len() > MAX_RECEIPT_BYTES {
             return Err(ChangelogV3Error::LimitExceeded);
         }
         if bytes.len() < HEADER_BYTES + CHECKSUM_BYTES {

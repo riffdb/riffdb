@@ -142,6 +142,23 @@
       "manifest_scalar_assertions": {"alpha_epoch":1,"writer":1,"minimum_supported_source_release":"0.1.0-pre-format-manifest","maximum_supported_source_release":"0.1.0"}
     },
     {
+      "id": "durable.authoritative_state_catalog",
+      "title": "Closed authoritative catalog root",
+      "classification": "durable",
+      "owner": "riffdb-storage-api",
+      "source_assertions": [{"kind":"literal","path":"proto/riffdb/storage/v1/authoritative_state_catalog_v1.proto","literal":"message StoredAuthoritativeStateCatalogV1 {"}],
+      "readable_identities": ["tag-69/revision-1"], "writable_identities": ["tag-69/revision-1"], "current_identities": ["tag-69/revision-1"],
+      "writer_policy": "single_current",
+      "compatibility_rule": "The retained root accepts only the digest of the sole storage-owned catalog; unknown catalogs refuse without partial authority or diagnostic disclosure.",
+      "breaking_when": "Tag 69, revision 1, its field, or catalog binding changes meaning.",
+      "supported_release_posture": "Codec registered during WP-772; persistence requires complete receipted V3 activation, not yet enabled.",
+      "lifecycle": {"active":["tag-69/revision-1"],"read_only":[],"retirement_candidate":[],"retired":[]},
+      "reserved_identity_policy": "Tag, revision and field number are never reused.",
+      "evidence": ["fixtures/replication/authoritative-state-catalog-v1.hex", "crates/riffdb-storage-api/tests/changelog_roots_v3.rs"],
+      "checks": ["./scripts/check-version-topology", "./scripts/check-durable-format-manifest"],
+      "last_change": {"classification":"new_domain_identity","decision":"ADR-0186/WP-772 retained catalog root"}
+    },
+    {
       "id": "durable.backup_manifest",
       "title": "Physical backup manifest",
       "classification": "durable",
@@ -157,6 +174,23 @@
       "evidence": ["fixtures/compatibility/physical-formats-v1.json"], "checks": ["./scripts/check-durable-format-manifest"],
       "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"},
       "durable_manifest": {"readable_key":"readable_backup_versions","writable_key":"writable_backup_versions"}
+    },
+    {
+      "id": "durable.changelog_history_state",
+      "title": "Lineage-shared authoritative history roots",
+      "classification": "durable",
+      "owner": "riffdb-storage-api",
+      "source_assertions": [{"kind":"literal","path":"proto/riffdb/storage/v1/changelog_history_state_v3.proto","literal":"message StoredChangelogHistoryStateV3 {"}],
+      "readable_identities": ["tag-71/revision-1"], "writable_identities": ["tag-71/revision-1"], "current_identities": ["tag-71/revision-1"],
+      "writer_policy": "single_current",
+      "compatibility_rule": "Exact lineage, anchor, materialized tail and minimum resume positions bind hashes and dual frontiers. Root decoding never grants publication or reclamation.",
+      "breaking_when": "Tag 71, revision 1, fields, lineage, position, hash, frontier or retention-floor semantics change.",
+      "supported_release_posture": "Codec and installation primitive implemented in WP-772; production startup activation is not enabled.",
+      "lifecycle": {"active":["tag-71/revision-1"],"read_only":[],"retirement_candidate":[],"retired":[]},
+      "reserved_identity_policy": "Tag, revision and field numbers are never reused.",
+      "evidence": ["fixtures/replication/changelog-history-state-v3.hex", "crates/riffdb-storage-api/tests/changelog_history_v3.rs", "crates/riffdb-storage-redb/src/changelog_v3_activation_tests.rs"],
+      "checks": ["./scripts/check-version-topology", "./scripts/check-durable-format-manifest"],
+      "last_change": {"classification":"new_domain_identity","decision":"ADR-0186/WP-772 retained history roots"}
     },
     {
       "id": "durable.changelog_transaction_allocator",
@@ -312,6 +346,23 @@
       "durable_manifest": {"readable_key":"readable_journal_frame_versions","writable_key":"writable_journal_frame_versions"}
     },
     {
+      "id": "durable.leadership_epoch",
+      "title": "Lineage-shared leadership epoch",
+      "classification": "durable",
+      "owner": "riffdb-storage-api",
+      "source_assertions": [{"kind":"literal","path":"proto/riffdb/storage/v1/leadership_epoch_v1.proto","literal":"message StoredLeadershipEpochV1 {"}],
+      "readable_identities": ["tag-70/revision-1"], "writable_identities": ["tag-70/revision-1"], "current_identities": ["tag-70/revision-1"],
+      "writer_policy": "single_current",
+      "compatibility_rule": "Leadership is a distinct nonzero fence with checked advancement; transaction and incarnation counter records cannot substitute for it.",
+      "breaking_when": "Tag 70, revision 1, its field, zero refusal or checked advancement changes meaning.",
+      "supported_release_posture": "Codec registered during WP-772; persistence requires complete receipted V3 activation, not yet enabled.",
+      "lifecycle": {"active":["tag-70/revision-1"],"read_only":[],"retirement_candidate":[],"retired":[]},
+      "reserved_identity_policy": "Tag, revision and field number are never reused.",
+      "evidence": ["fixtures/replication/leadership-epoch-v1-first.hex", "fixtures/replication/leadership-epoch-v1-last.hex", "crates/riffdb-storage-api/tests/changelog_roots_v3.rs"],
+      "checks": ["./scripts/check-version-topology", "./scripts/check-durable-format-manifest"],
+      "last_change": {"classification":"new_domain_identity","decision":"ADR-0186/WP-772 retained leadership root"}
+    },
+    {
       "id": "durable.long_pattern_provider_state",
       "title": "Long-pattern provider checkpoint",
       "classification": "durable",
@@ -395,6 +446,23 @@
       "evidence": ["fixtures/compatibility/physical-formats-v1.json"], "checks": ["./scripts/check-durable-format-manifest"],
       "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"},
       "durable_manifest": {"readable_key":"readable_redb_layout_versions","writable_key":"writable_redb_layout_versions"}
+    },
+    {
+      "id": "durable.replication_follower_state",
+      "title": "Follower-local durable attachment and progress",
+      "classification": "durable",
+      "owner": "riffdb-storage-api",
+      "source_assertions": [{"kind":"literal","path":"proto/riffdb/storage/v1/replication_follower_state_v3.proto","literal":"message StoredReplicationFollowerStateV3 {"}],
+      "readable_identities": ["tag-72/revision-1"], "writable_identities": ["tag-72/revision-1"], "current_identities": ["tag-72/revision-1"],
+      "writer_policy": "single_current",
+      "compatibility_rule": "Explicit detached or lineage-bound applied and optional acknowledged positions; acknowledgement never outruns or substitutes applied state. Missing state is not detached.",
+      "breaking_when": "Tag 72, revision 1, closed state, fields, positions or acknowledgement meaning changes.",
+      "supported_release_posture": "Codec implemented in WP-772; production attachment and follower apply are not yet enabled.",
+      "lifecycle": {"active":["tag-72/revision-1"],"read_only":[],"retirement_candidate":[],"retired":[]},
+      "reserved_identity_policy": "Tag, revision and field numbers are never reused.",
+      "evidence": ["fixtures/replication/replication-follower-state-v3-detached.hex", "fixtures/replication/replication-follower-state-v3-attached.hex", "crates/riffdb-storage-api/tests/changelog_history_v3.rs"],
+      "checks": ["./scripts/check-version-topology", "./scripts/check-durable-format-manifest"],
+      "last_change": {"classification":"new_domain_identity","decision":"ADR-0186/WP-772 follower-local root"}
     },
     {
       "id": "durable.tokenized_text_provider_state",
