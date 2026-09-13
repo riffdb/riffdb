@@ -350,7 +350,7 @@ pub enum RedbCommitProfile {
 }
 
 impl RedbCommitProfile {
-    const fn uses_two_phase(self) -> bool {
+    pub(crate) const fn uses_two_phase(self) -> bool {
         matches!(self, Self::Hardened)
     }
 }
