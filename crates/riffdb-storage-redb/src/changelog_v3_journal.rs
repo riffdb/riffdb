@@ -1,7 +1,7 @@
 //! V3 journal checkpoint/recovery materialization within the existing transaction.
 //! No allocator mutation is admitted through the ordinary metadata apply path.
 
-use redb::{ReadTransaction, TableHandle, WriteTransaction};
+use redb::{ReadTransaction, ReadableTable, TableHandle, WriteTransaction};
 use riffdb_storage_api::{
     AuthoritativeNamespaceV1 as N, AuthoritativeStateCatalogV1, AuthoritativeTransactionBindingV3,
     AuthoritativeTransactionV3, ChangelogHistoryPointV3, ChangelogTransactionSequence,
@@ -27,12 +27,8 @@ pub(crate) fn has_recovery_roots(transaction: &ReadTransaction) -> Result<bool, 
     let meta = transaction
         .open_table(crate::layout::META)
         .map_err(table_error)?;
-    for namespace in N::ALL.into_iter().filter(|n| n.requires_v3_activation()) {
-        if let Some(key) = namespace.metadata_key()
-            && meta.get(key).map_err(precommit_storage_error)?.is_some()
-        {
-            return Ok(true);
-        }
+    if has_metadata_roots(&meta)? {
+        return Ok(true);
     }
     for (count, table) in transaction
         .list_tables()
@@ -45,6 +41,35 @@ pub(crate) fn has_recovery_roots(transaction: &ReadTransaction) -> Result<bool, 
         if N::ALL.into_iter().any(|n| {
             n.requires_v3_activation() && n.metadata_key().is_none() && n.table() == table.name()
         }) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+pub(crate) fn has_write_recovery_roots(
+    transaction: &WriteTransaction,
+) -> Result<bool, StorageError> {
+    let tables = table_inventory(transaction)?;
+    if !tables.contains(crate::layout::META.name()) {
+        return Err(storage_error(StorageErrorKind::CorruptData));
+    }
+    let meta = transaction
+        .open_table(crate::layout::META)
+        .map_err(table_error)?;
+    Ok(has_metadata_roots(&meta)?
+        || N::ALL.into_iter().any(|n| {
+            n.requires_v3_activation() && n.metadata_key().is_none() && tables.contains(n.table())
+        }))
+}
+
+fn has_metadata_roots(
+    meta: &impl ReadableTable<&'static str, &'static [u8]>,
+) -> Result<bool, StorageError> {
+    for namespace in N::ALL.into_iter().filter(|n| n.requires_v3_activation()) {
+        if let Some(key) = namespace.metadata_key()
+            && meta.get(key).map_err(precommit_storage_error)?.is_some()
+        {
             return Ok(true);
         }
     }

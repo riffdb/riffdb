@@ -114,10 +114,6 @@ pub(crate) fn receipt_from_journal(
 /// Same receipt fold for the live checkpoint's retained validated mutations.
 /// It borrows the original source, not latest overlay rows, and does not decode
 /// a journal frame or duplicate its mutation payloads before coalescing.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "WP-772 live checkpoint integration follows")
-)]
 pub(crate) fn receipt_from_validated_mutations(
     binding: AuthoritativeTransactionBindingV3,
     source: ChangelogAttributionV3,

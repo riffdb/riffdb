@@ -169,8 +169,21 @@ Process tests exit after replay staging, commit, and before/after reclamation,
 then reopen and retry twice to prove an original source or identical durable
 receipt remains. These tests use opaque record payloads and prove physical
 recovery, not full command semantics, acknowledgement or the complete package
-crash matrix. Production activation, live admission and checkpoint wiring remain
-pending; ordinary legacy replay checks and journal encodings are unchanged.
+crash matrix. Production activation and live admission remain pending; ordinary
+legacy replay checks and journal encodings are unchanged.
+
+The live checkpoint worker now uses the same receipt fold over its retained
+validated mutations, with no journal-frame decode. It stages the exact receipt
+and checked roots before its existing single durable commit. The drained
+direct-write barrier also materializes each original V3 source in the caller's
+existing transaction; aborting that transaction leaves its predecessor intact.
+The physical tests compare worker output byte-for-byte with independent recovery,
+reject duplicate application and malformed final batch totals, retain old pinned
+views, and exercise process exits before/after the worker's durable commit.
+Neither path permits a missing source counter once V3 controls are present.
+Production journal admission still needs to allocate and bound the source before
+submission; these worker tests construct retained evidence directly and do not
+claim that the normal command path is activated yet.
 
 The complete retained-history validator is separate from bounded clean-root
 eligibility. It streams every retained receipt from the exact minimum-resume
