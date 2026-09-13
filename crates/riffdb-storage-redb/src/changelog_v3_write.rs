@@ -94,7 +94,9 @@ impl PreparedImmediateReceipt {
     }
 }
 
-fn require_direct_attribution(source: ChangelogAttributionV3) -> Result<(), StorageError> {
+pub(crate) fn require_direct_attribution(
+    source: ChangelogAttributionV3,
+) -> Result<(), StorageError> {
     use ChangelogAttributionV3 as A;
     if matches!(
         source,

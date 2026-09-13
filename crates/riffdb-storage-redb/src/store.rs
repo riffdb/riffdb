@@ -1129,9 +1129,15 @@ pub struct RedbOperationalPorts {
     pub(crate) shared: Arc<SharedRedb>,
 }
 
+// One store-owned operational transaction spelling across validation helpers.
+// This mechanical bridge preserves the engine type until the captured owner is
+// installed together with journal, startup and lifecycle receipt integration.
+pub(crate) type OperationalWriteTransaction = WriteTransaction;
+
 pub(crate) struct RedbWriteAccess {
     shared: Arc<SharedRedb>,
-    transaction: Option<WriteTransaction>,
+    transaction: Option<OperationalWriteTransaction>,
+    direct_changelog_attribution: Option<riffdb_storage_api::ChangelogAttributionV3>,
     ownership: Option<RedbWriteOwnership>,
     journal_mutations: Option<RefCell<crate::journal::JournalMutationBuffer>>,
     journal_mutation_start: u32,
@@ -5042,7 +5048,18 @@ impl RedbOperationalPorts {
         self.shared.begin_composite_operational_read()
     }
 
+    #[cfg(any(test, feature = "test-fixtures", feature = "benchmark-support"))]
     pub(crate) fn begin_write(&self) -> Result<RedbWriteAccess, StorageError> {
+        self.begin_attributed_write(
+            riffdb_storage_api::ChangelogAttributionV3::CatalogAdministration,
+        )
+    }
+
+    pub(crate) fn begin_attributed_write(
+        &self,
+        source: riffdb_storage_api::ChangelogAttributionV3,
+    ) -> Result<RedbWriteAccess, StorageError> {
+        crate::changelog_v3_write::require_direct_attribution(source)?;
         let lease = self.shared.mutation_gate.acquire()?;
         if self.shared.write_fenced.load(Ordering::Acquire) {
             return Err(storage_error(StorageErrorKind::Unavailable));
@@ -5078,6 +5095,7 @@ impl RedbOperationalPorts {
         Ok(RedbWriteAccess {
             shared: Arc::clone(&self.shared),
             transaction: Some(transaction),
+            direct_changelog_attribution: Some(source),
             ownership: Some(RedbWriteOwnership::Direct { _lease: lease }),
             journal_mutations: None,
             journal_mutation_start: 0,
@@ -5186,6 +5204,7 @@ impl RedbOperationalPorts {
             shared: Arc::clone(&self.shared),
             transaction: None,
             ownership: Some(RedbWriteOwnership::ServiceAudit { _lease: lease }),
+            direct_changelog_attribution: None,
             journal_mutations: Some(RefCell::new(
                 crate::journal::JournalMutationBuffer::default(),
             )),
@@ -5991,7 +6010,7 @@ impl RedbWriteAccess {
         Ok(())
     }
 
-    pub(crate) fn transaction(&self) -> Result<&WriteTransaction, StorageError> {
+    pub(crate) fn transaction(&self) -> Result<&OperationalWriteTransaction, StorageError> {
         self.transaction
             .as_ref()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
@@ -6256,7 +6275,8 @@ impl RedbWriteAccess {
         if !matches!(
             self.ownership.as_ref(),
             Some(RedbWriteOwnership::Direct { .. })
-        ) {
+        ) || self.direct_changelog_attribution.is_none()
+        {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         if let Some(controller) = &self.shared.test_controller {
@@ -6836,6 +6856,7 @@ impl RedbDurabilityEpoch {
             shared,
             transaction: None,
             ownership: Some(RedbWriteOwnership::Epoch(Box::new(self))),
+            direct_changelog_attribution: None,
             journal_mutations: Some(RefCell::new(journal_mutations)),
             journal_mutation_start,
             journal_checkpoint: None,

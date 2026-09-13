@@ -103,6 +103,11 @@ hands back only a prepared commit. No-op captures do not allocate a position.
 Process tests cover exits after captured mutations, receipt, roots, and commit.
 These owners are not yet wired through all operational, journal, migration, and
 lifecycle paths; they do not by themselves complete WP-772 or activate V3.
+Operational direct-entry call sites now name their closed source attribution
+before writer admission and carry it with the existing write access. Journal
+epochs retain their separate source path. This caller preparation does not yet
+replace the operational raw transaction with the captured owner or persist V3
+receipts from those live paths.
 
 The checkpoint receipt planner reads that same pinned source view. It validates
 the current entity proof, collects only changed checkpoint-head bytes, preserves

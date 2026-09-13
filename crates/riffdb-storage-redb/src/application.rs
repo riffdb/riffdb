@@ -115,7 +115,9 @@ struct DetachedRedbCandidate {
 
 impl BatchCore {
     fn open(ports: &RedbOperationalPorts) -> Result<Self, StorageError> {
-        Self::open_with_access(ports.begin_write()?)
+        Self::open_with_access(ports.begin_attributed_write(
+            riffdb_storage_api::ChangelogAttributionV3::DirectApplicationOrServiceAuditGroup,
+        )?)
     }
 
     fn open_with_access(access: RedbWriteAccess) -> Result<Self, StorageError> {
@@ -1097,7 +1099,9 @@ impl AdmissionRepository for RedbOperationalPorts {
         {
             return Err(storage_error(StorageErrorKind::LimitExceeded));
         }
-        let access = self.begin_write()?;
+        let access = self.begin_attributed_write(
+            riffdb_storage_api::ChangelogAttributionV3::DirectApplicationOrServiceAuditGroup,
+        )?;
         access.arm_fresh_locator_coverage()?;
         let mut created_any = false;
         let staged = stage_admission_group(&access, requests.iter())?;
@@ -1265,7 +1269,9 @@ impl ExecutionFailureTransitionPort for RedbOperationalPorts {
         &self,
         request: ExecutionFailureTransitionRequestV1,
     ) -> Result<ExecutionFailureAdmissionResult<Self::Rechecked>, StorageError> {
-        let access = self.begin_write()?;
+        let access = self.begin_attributed_write(
+            riffdb_storage_api::ChangelogAttributionV3::DirectApplicationOrServiceAuditGroup,
+        )?;
         let state = match request.admission_expectation() {
             CommandAdmissionExpectationV1::ExistingPending => {
                 read_admission(&access, request.expected_pending().identity())?
@@ -2908,7 +2914,7 @@ fn plan_bundle_exists_from_tables(
 }
 
 fn current_state_uncached(
-    transaction: &redb::WriteTransaction,
+    transaction: &crate::store::OperationalWriteTransaction,
     request: &ValidationReadRequest,
 ) -> Result<TransactionCurrentState, StorageError> {
     let mut builder = TransactionCurrentStateBuilder::new(request);

@@ -91,7 +91,7 @@ fn sequence_error(error: SequenceAllocationError) -> StorageError {
 }
 
 fn read_database_id(
-    transaction: &redb::WriteTransaction,
+    transaction: &crate::store::OperationalWriteTransaction,
 ) -> Result<riffdb_types::DatabaseId, StorageError> {
     let table = transaction.open_table(META).map_err(table_error)?;
     let value = table
@@ -113,7 +113,7 @@ fn read_database_id_readonly(
 }
 
 pub(crate) fn read_administration_allocator(
-    transaction: &redb::WriteTransaction,
+    transaction: &crate::store::OperationalWriteTransaction,
 ) -> Result<AdministrationSequenceAllocator, StorageError> {
     let table = transaction.open_table(META).map_err(table_error)?;
     let value = table
@@ -526,7 +526,7 @@ fn allocate_sequences(
 }
 
 pub(crate) fn write_administration_allocator(
-    transaction: &redb::WriteTransaction,
+    transaction: &crate::store::OperationalWriteTransaction,
     expected: AdministrationSequenceAllocator,
     next: AdministrationSequenceAllocator,
 ) -> Result<(), StorageError> {
@@ -586,7 +586,7 @@ fn write_administration_allocator_in_access(
 }
 
 fn write_service_audit_request_index(
-    transaction: &redb::WriteTransaction,
+    transaction: &crate::store::OperationalWriteTransaction,
     request_id: riffdb_types::RequestId,
     sequence: AdministrationSequence,
 ) -> Result<(), StorageError> {
@@ -608,7 +608,7 @@ fn write_service_audit_request_index(
 }
 
 pub(crate) fn append_audit_record(
-    transaction: &redb::WriteTransaction,
+    transaction: &crate::store::OperationalWriteTransaction,
     record: &StoredAdministrationAuditRecordV1,
 ) -> Result<(), StorageError> {
     let key = encode_audit_key(record.administration_sequence());
@@ -782,7 +782,7 @@ where
 }
 
 fn read_active_catalog_write(
-    transaction: &redb::WriteTransaction,
+    transaction: &crate::store::OperationalWriteTransaction,
 ) -> Result<Option<ActiveCatalogPointerV1>, StorageError> {
     let table = transaction
         .open_table(CATALOG_ACTIVE)
@@ -1046,7 +1046,9 @@ impl CatalogAdministrationRepository for RedbOperationalPorts {
         &mut self,
         intent: &CatalogActivationIntentV1,
     ) -> Result<CatalogActivationResult, StorageError> {
-        let access = self.begin_write()?;
+        let access = self.begin_attributed_write(
+            riffdb_storage_api::ChangelogAttributionV3::CatalogAdministration,
+        )?;
         let transaction = access.transaction()?;
         let allocator = validate_administration_tail(&access)?;
         let bundles = transaction
@@ -1340,7 +1342,9 @@ impl QueryModuleAdministrationRepository for RedbOperationalPorts {
         &mut self,
         intent: &QueryModuleActivationIntentV1,
     ) -> Result<QueryModuleActivationResult, StorageError> {
-        let access = self.begin_write()?;
+        let access = self.begin_attributed_write(
+            riffdb_storage_api::ChangelogAttributionV3::QueryModuleAdministration,
+        )?;
         let transaction = access.transaction()?;
         let allocator = validate_administration_tail(&access)?;
 
@@ -1647,7 +1651,9 @@ impl RedbOperationalPorts {
         &mut self,
         intent: &ReactiveModulePublicationIntentV1,
     ) -> Result<ReactiveModulePublicationResult, StorageError> {
-        let access = self.begin_write()?;
+        let access = self.begin_attributed_write(
+            riffdb_storage_api::ChangelogAttributionV3::ReactiveModuleAdministration,
+        )?;
         let transaction = access.transaction()?;
         let allocator = validate_administration_tail(&access)?;
         let candidate = intent.module();
@@ -1844,7 +1850,7 @@ where
 }
 
 fn capability_from_write(
-    transaction: &redb::WriteTransaction,
+    transaction: &crate::store::OperationalWriteTransaction,
     capability_id: CapabilityId,
 ) -> Result<Option<StoredCapabilityRecordV1>, StorageError> {
     let database_id = read_database_id(transaction)?;
@@ -1856,7 +1862,7 @@ fn capability_from_write(
 }
 
 fn capability_observation(
-    transaction: &redb::WriteTransaction,
+    transaction: &crate::store::OperationalWriteTransaction,
     capability_id: CapabilityId,
 ) -> Result<Option<TransactionCurrentCapabilityObservationV1>, StorageError> {
     Ok(capability_from_write(transaction, capability_id)?
@@ -1865,7 +1871,7 @@ fn capability_observation(
 }
 
 fn resolve_capability_digests_write(
-    transaction: &redb::WriteTransaction,
+    transaction: &crate::store::OperationalWriteTransaction,
     candidates: &[CapabilityTokenDigest],
 ) -> Result<CapabilityLookupResult, StorageError> {
     let database_id = read_database_id(transaction)?;
@@ -2278,7 +2284,7 @@ fn service_lifecycle_in_access(
 }
 
 fn service_link_is_valid(
-    transaction: &redb::WriteTransaction,
+    transaction: &crate::store::OperationalWriteTransaction,
     intent: &ServiceAuditAppendIntentV1,
 ) -> Result<bool, StorageError> {
     match intent.link() {
@@ -2560,7 +2566,9 @@ impl ServiceAuditAppendRepository for RedbOperationalPorts {
         started: &ServiceAuditAppendIntentV1,
         terminal: &ServiceAuditAppendIntentV1,
     ) -> Result<(), StorageError> {
-        let access = self.begin_write()?;
+        let access = self.begin_attributed_write(
+            riffdb_storage_api::ChangelogAttributionV3::DirectApplicationOrServiceAuditGroup,
+        )?;
         let _records =
             stage_service_audit_group_in_write(&access, &[started.clone(), terminal.clone()])?;
         access.commit_for(RedbTestOperation::ServiceAudit)?;
@@ -2582,7 +2590,9 @@ impl ServiceAuditAppendRepository for RedbOperationalPorts {
         {
             return Err(storage_error(StorageErrorKind::LimitExceeded));
         }
-        let access = self.begin_write()?;
+        let access = self.begin_attributed_write(
+            riffdb_storage_api::ChangelogAttributionV3::DirectApplicationOrServiceAuditGroup,
+        )?;
         let transaction = access.transaction()?;
         let allocator = validate_administration_tail(&access)?;
         let distinct_requests = intents
@@ -2801,7 +2811,9 @@ impl AuditedAdmissionRepository for RedbOperationalPorts {
             return Err(storage_error(StorageErrorKind::LimitExceeded));
         }
 
-        let access = self.begin_write()?;
+        let access = self.begin_attributed_write(
+            riffdb_storage_api::ChangelogAttributionV3::DirectApplicationOrServiceAuditGroup,
+        )?;
         let transaction = access.transaction()?;
         let allocator = validate_administration_tail(&access)?;
         let sequences_by_request = access.service_audit_sequences_for(&request_ids)?;
@@ -3344,7 +3356,7 @@ fn principal_matches_observation(
 }
 
 fn current_create_state(
-    transaction: &redb::WriteTransaction,
+    transaction: &crate::store::OperationalWriteTransaction,
     candidate: &CapabilityCreateCandidateV1,
 ) -> Result<CapabilityMutationCurrentStateV1, StorageError> {
     CapabilityMutationCurrentStateV1::for_create(
@@ -3356,7 +3368,7 @@ fn current_create_state(
 }
 
 fn current_revoke_state(
-    transaction: &redb::WriteTransaction,
+    transaction: &crate::store::OperationalWriteTransaction,
     candidate: &CapabilityRevokeCandidateV1,
 ) -> Result<CapabilityMutationCurrentStateV1, StorageError> {
     CapabilityMutationCurrentStateV1::for_revoke(
@@ -3402,7 +3414,9 @@ impl CapabilityAdministrationTransactionPort for RedbOperationalPorts {
         candidate: CapabilityCreateCandidateV1,
     ) -> Result<Self::CreateCandidate, StorageError> {
         Ok(RedbCapabilityCreateCandidate {
-            access: self.begin_write()?,
+            access: self.begin_attributed_write(
+                riffdb_storage_api::ChangelogAttributionV3::CapabilityAdministration,
+            )?,
             candidate,
         })
     }
@@ -3412,7 +3426,9 @@ impl CapabilityAdministrationTransactionPort for RedbOperationalPorts {
         candidate: CapabilityRevokeCandidateV1,
     ) -> Result<Self::RevokeCandidate, StorageError> {
         Ok(RedbCapabilityRevokeCandidate {
-            access: self.begin_write()?,
+            access: self.begin_attributed_write(
+                riffdb_storage_api::ChangelogAttributionV3::CapabilityAdministration,
+            )?,
             candidate,
         })
     }
@@ -3699,7 +3715,7 @@ fn commit_capability_revoke(
 }
 
 fn read_bootstrap_marker(
-    transaction: &redb::WriteTransaction,
+    transaction: &crate::store::OperationalWriteTransaction,
 ) -> Result<Option<CapabilityBootstrapMarkerV1>, StorageError> {
     let table = transaction.open_table(META).map_err(table_error)?;
     table
@@ -3794,7 +3810,9 @@ impl CapabilityBootstrapAdministrationRepository for RedbOperationalPorts {
         &mut self,
         intent: &CapabilityBootstrapIntentV1,
     ) -> Result<CapabilityBootstrapResult, StorageError> {
-        let access = self.begin_write()?;
+        let access = self.begin_attributed_write(
+            riffdb_storage_api::ChangelogAttributionV3::CapabilityBootstrap,
+        )?;
         let transaction = access.transaction()?;
         let allocator = validate_administration_tail(&access)?;
         let database_id = read_database_id(transaction)?;

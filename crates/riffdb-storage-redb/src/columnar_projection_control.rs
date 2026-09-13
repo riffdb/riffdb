@@ -1,6 +1,6 @@
 //! Durable redb implementation of schema-bound columnar control.
 
-use redb::{ReadableTable, ReadableTableMetadata, WriteTransaction};
+use redb::{ReadableTable, ReadableTableMetadata};
 use riffdb_columnar::{PreparedColumnarGenerationRepository, PreparedColumnarGenerationV1};
 use riffdb_storage_api::{
     ApplicationSequenceAllocator, ColumnarProjectionControlRepository,
@@ -25,7 +25,7 @@ use crate::keys::{decode_columnar_projection_control_key, encode_columnar_projec
 use crate::layout::{
     COLUMNAR_PROJECTION_CONTROLS, META, META_APPLICATION_SEQUENCE, META_HISTORY_INCARNATION,
 };
-use crate::store::RedbOperationalPorts;
+use crate::store::{OperationalWriteTransaction as WriteTransaction, RedbOperationalPorts};
 
 const MAX_COLUMNAR_PROJECTION_CONTROLS: u64 = 256;
 
@@ -100,7 +100,9 @@ impl RedbOperationalPorts {
     ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
         let key = encode_columnar_projection_control_key(expected.source())
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        let access = self.begin_write()?;
+        let access = self.begin_attributed_write(
+            riffdb_storage_api::ChangelogAttributionV3::ColumnarProjectionControl,
+        )?;
         let head = transaction_current_head(access.transaction()?)?;
         let mut table = access
             .transaction()?
@@ -198,7 +200,9 @@ impl ColumnarProjectionControlRepository for RedbOperationalPorts {
         if encoded.windows(2).any(|pair| pair[0].0 == pair[1].0) {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        let access = self.begin_write()?;
+        let access = self.begin_attributed_write(
+            riffdb_storage_api::ChangelogAttributionV3::ColumnarProjectionControl,
+        )?;
         let mut table = access
             .transaction()?
             .open_table(COLUMNAR_PROJECTION_CONTROLS)
@@ -242,7 +246,9 @@ impl ColumnarProjectionControlRepository for RedbOperationalPorts {
     ) -> Result<ColumnarProjectionControlWriteResultV1, StorageError> {
         let key = encode_columnar_projection_control_key(expected.source())
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        let access = self.begin_write()?;
+        let access = self.begin_attributed_write(
+            riffdb_storage_api::ChangelogAttributionV3::ColumnarProjectionControl,
+        )?;
         let current_history_incarnation =
             transaction_current_history_incarnation(access.transaction()?)?;
         let mut table = access

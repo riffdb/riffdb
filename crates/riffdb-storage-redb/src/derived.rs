@@ -254,7 +254,8 @@ impl RedbOperationalPorts {
         if updated.event_id() != event_id {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        let access = self.begin_write()?;
+        let access = self
+            .begin_attributed_write(riffdb_storage_api::ChangelogAttributionV3::OutboxTransition)?;
         access.ensure_outbox_indexes_available()?;
         let current = {
             let transaction = access.transaction()?;
@@ -643,7 +644,9 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
 
-        let access = self.begin_write()?;
+        let access = self.begin_attributed_write(
+            riffdb_storage_api::ChangelogAttributionV3::ProjectionControl,
+        )?;
         let transaction = access.transaction()?;
         {
             let commits = transaction.open_table(COMMITS).map_err(table_error)?;
@@ -837,7 +840,9 @@ impl ProjectionMutationRepository for RedbOperationalPorts {
         operation: ProjectionControlOperation,
     ) -> Result<ProjectionControlResult, StorageError> {
         let identity = projection_operation_identity(&operation).clone();
-        let access = self.begin_write()?;
+        let access = self.begin_attributed_write(
+            riffdb_storage_api::ChangelogAttributionV3::ProjectionControl,
+        )?;
         let transaction = access.transaction()?;
         let current = {
             let controls = transaction

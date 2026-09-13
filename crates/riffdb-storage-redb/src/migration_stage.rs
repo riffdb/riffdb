@@ -873,7 +873,12 @@ impl MigrationStagePort for RedbContractMigrationStage {
         if batch.migration() != self.context.artifacts.migration() {
             return Err(MigrationStageError::Integrity);
         }
-        let access = self.ports.begin_write().map_err(stage_error)?;
+        let access = self
+            .ports
+            .begin_attributed_write(
+                riffdb_storage_api::ChangelogAttributionV3::ContractMigrationBatch,
+            )
+            .map_err(stage_error)?;
         let transaction = access.transaction().map_err(stage_error)?;
         let prior =
             read_journal_write(transaction, self.context.operation_id).map_err(stage_error)?;
@@ -1018,7 +1023,12 @@ impl MigrationStagePort for RedbContractMigrationStage {
         {
             return Err(MigrationStageError::Integrity);
         }
-        let access = self.ports.begin_write().map_err(stage_error)?;
+        let access = self
+            .ports
+            .begin_attributed_write(
+                riffdb_storage_api::ChangelogAttributionV3::ContractMigrationBatch,
+            )
+            .map_err(stage_error)?;
         let transaction = access.transaction().map_err(stage_error)?;
         let prior = read_journal_write(transaction, self.context.operation_id)
             .map_err(stage_error)?
@@ -1106,7 +1116,12 @@ impl MigrationStagePort for RedbContractMigrationStage {
         {
             return Err(MigrationStageError::Integrity);
         }
-        let access = self.ports.begin_write().map_err(stage_error)?;
+        let access = self
+            .ports
+            .begin_attributed_write(
+                riffdb_storage_api::ChangelogAttributionV3::ContractMigrationCutover,
+            )
+            .map_err(stage_error)?;
         let transaction = access.transaction().map_err(stage_error)?;
         let journal = read_journal_write(transaction, self.context.operation_id)
             .map_err(stage_error)?
@@ -1370,7 +1385,7 @@ fn read_active(
 }
 
 fn read_active_write(
-    transaction: &redb::WriteTransaction,
+    transaction: &crate::store::OperationalWriteTransaction,
 ) -> Result<ActiveCatalogPointerV1, StorageError> {
     let table = transaction
         .open_table(CATALOG_ACTIVE)
@@ -1484,7 +1499,7 @@ fn read_journal_read(
 }
 
 fn read_journal_write(
-    transaction: &redb::WriteTransaction,
+    transaction: &crate::store::OperationalWriteTransaction,
     operation_id: ContractMigrationOperationId,
 ) -> Result<Option<StoredContractMigrationJournalV1>, StorageError> {
     let table = transaction
@@ -1504,7 +1519,7 @@ fn read_journal_write(
 }
 
 fn write_journal(
-    transaction: &redb::WriteTransaction,
+    transaction: &crate::store::OperationalWriteTransaction,
     journal: &StoredContractMigrationJournalV1,
 ) -> Result<(), StorageError> {
     let encoded = riffdb_storage_api::proto_codec::encode_contract_migration_journal_v1(journal)
