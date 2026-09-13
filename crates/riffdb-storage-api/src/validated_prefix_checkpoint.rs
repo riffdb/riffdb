@@ -1,6 +1,8 @@
 //! Proof-carrying validated-prefix startup checkpoint (ADR-0019 Amendment 1 / ADR-0085 A1).
 
-use riffdb_types::{DatabaseId, EntityVersion, HashDomain, SchemaHash, hash};
+use std::borrow::Borrow;
+
+use riffdb_types::{ContentHasher, DatabaseId, EntityVersion, HashDomain, SchemaHash, hash};
 
 use crate::{EntityChainHeadV1, EntityChainStateV1, EntityTarget, StorageValueError};
 
@@ -341,44 +343,101 @@ impl EntityTransitionFingerprint {
     }
 
     /// Digests canonical heads already sorted by exact entity target.
+    /// The cloned iterator must traverse the same immutable heads. Only one
+    /// bounded head preimage and the prior target are retained while hashing.
     pub fn from_sorted_heads<'a, I>(heads: I) -> Result<Self, StorageValueError>
     where
         I: IntoIterator<Item = &'a EntityChainHeadV1>,
+        I::IntoIter: Clone,
     {
-        let mut preimage = Vec::new();
-        preimage.extend_from_slice(ENTITY_TRANSITION_FINGERPRINT_LABEL);
-        let mut previous: Option<&EntityTarget> = None;
-        for head in heads {
-            if previous.is_some_and(|prior| prior >= head.target()) {
-                return Err(StorageValueError::NonCanonicalOrder);
-            }
-            previous = Some(head.target());
-            preimage.extend_from_slice(&head.target().entity_type_id().get().to_be_bytes());
-            let key = head.target().key().as_bytes();
-            let key_len = u32::try_from(key.len()).map_err(|_| StorageValueError::LimitExceeded)?;
-            preimage.extend_from_slice(&key_len.to_be_bytes());
-            preimage.extend_from_slice(key);
-            preimage.extend_from_slice(&head.chain_revision().to_be_bytes());
-            match head.state() {
-                EntityChainStateV1::Live {
-                    version,
-                    value_hash,
-                } => {
-                    preimage.push(1);
-                    preimage.extend_from_slice(&version.get().to_be_bytes());
-                    preimage.extend_from_slice(value_hash.as_bytes());
-                }
-                EntityChainStateV1::Deleted => preimage.push(2),
-                EntityChainStateV1::NeverExisted => {
-                    return Err(StorageValueError::InvalidShape);
-                }
-            }
-            preimage.extend_from_slice(&head.last_command_sequence().get().to_be_bytes());
-            preimage.extend_from_slice(head.last_transition_hash().as_bytes());
-        }
-        let digest = hash(HashDomain::Schema, &preimage);
-        Ok(Self::from_bytes(*digest.as_bytes()))
+        let heads = heads.into_iter();
+        fingerprint_from_passes(|| Ok(heads.clone().map(Ok)), |error| error)
     }
+
+    /// Digests two ordered passes over one immutable storage view, propagating
+    /// read failures without buffering the head population. The reader must
+    /// return the same pinned view on both calls, not fresh/latest snapshots.
+    pub fn from_sorted_head_reader<F, I>(heads: F) -> Result<Self, crate::StorageError>
+    where
+        F: FnMut() -> Result<I, crate::StorageError>,
+        I: Iterator<Item = Result<EntityChainHeadV1, crate::StorageError>>,
+    {
+        fingerprint_from_passes(heads, |_| {
+            crate::StorageError::new(crate::StorageErrorKind::CorruptData, None)
+        })
+    }
+}
+
+fn fingerprint_from_passes<F, I, H, E>(
+    mut heads: F,
+    invalid: impl Fn(StorageValueError) -> E,
+) -> Result<EntityTransitionFingerprint, E>
+where
+    F: FnMut() -> Result<I, E>,
+    I: Iterator<Item = Result<H, E>>,
+    H: Borrow<EntityChainHeadV1>,
+{
+    let mut length = ENTITY_TRANSITION_FINGERPRINT_LABEL.len() as u64;
+    let mut previous: Option<EntityTarget> = None;
+    for head in heads()? {
+        let head = head?;
+        let head = head.borrow();
+        let bytes = head_fingerprint_preimage(head, &mut previous).map_err(&invalid)?;
+        length = length
+            .checked_add(bytes.len() as u64)
+            .ok_or_else(|| invalid(StorageValueError::SizeOverflow))?;
+    }
+    let mut digest = ContentHasher::new(HashDomain::Schema, length);
+    digest
+        .update(ENTITY_TRANSITION_FINGERPRINT_LABEL)
+        .map_err(|_| invalid(StorageValueError::InvalidShape))?;
+    previous = None;
+    for head in heads()? {
+        let head = head?;
+        let bytes = head_fingerprint_preimage(head.borrow(), &mut previous).map_err(&invalid)?;
+        digest
+            .update(&bytes)
+            .map_err(|_| invalid(StorageValueError::InvalidShape))?;
+    }
+    let digest = digest
+        .finish()
+        .map_err(|_| invalid(StorageValueError::InvalidShape))?;
+    Ok(EntityTransitionFingerprint::from_bytes(*digest.as_bytes()))
+}
+
+fn head_fingerprint_preimage(
+    head: &EntityChainHeadV1,
+    previous: &mut Option<EntityTarget>,
+) -> Result<Vec<u8>, StorageValueError> {
+    if previous
+        .as_ref()
+        .is_some_and(|prior| prior >= head.target())
+    {
+        return Err(StorageValueError::NonCanonicalOrder);
+    }
+    *previous = Some(head.target().clone());
+    let key = head.target().key().as_bytes();
+    let key_len = u32::try_from(key.len()).map_err(|_| StorageValueError::LimitExceeded)?;
+    let mut preimage = Vec::with_capacity(key.len() + 97);
+    preimage.extend_from_slice(&head.target().entity_type_id().get().to_be_bytes());
+    preimage.extend_from_slice(&key_len.to_be_bytes());
+    preimage.extend_from_slice(key);
+    preimage.extend_from_slice(&head.chain_revision().to_be_bytes());
+    match head.state() {
+        EntityChainStateV1::Live {
+            version,
+            value_hash,
+        } => {
+            preimage.push(1);
+            preimage.extend_from_slice(&version.get().to_be_bytes());
+            preimage.extend_from_slice(value_hash.as_bytes());
+        }
+        EntityChainStateV1::Deleted => preimage.push(2),
+        EntityChainStateV1::NeverExisted => return Err(StorageValueError::InvalidShape),
+    }
+    preimage.extend_from_slice(&head.last_command_sequence().get().to_be_bytes());
+    preimage.extend_from_slice(head.last_transition_hash().as_bytes());
+    Ok(preimage)
 }
 
 /// Delete-aware cardinality and history counters at one validated prefix.
@@ -500,6 +559,189 @@ impl StoredValidatedPrefixCheckpointV2 {
 mod tests {
     use super::*;
     use riffdb_types::DatabaseId;
+
+    fn fingerprint_head(entity_type: u32, key: &[u8], deleted: bool) -> EntityChainHeadV1 {
+        use riffdb_types::{
+            CommitSequence, EntityKeyBuilder, EntityRecordHash, EntityTransitionHash, EntityTypeId,
+        };
+        let entity_type = EntityTypeId::new(entity_type).expect("nonzero type");
+        let mut builder = EntityKeyBuilder::new(entity_type);
+        builder.push_bytes(key).expect("bounded key");
+        let target =
+            EntityTarget::new(entity_type, builder.finish().expect("key")).expect("target");
+        let state = if deleted {
+            EntityChainStateV1::Deleted
+        } else {
+            EntityChainStateV1::Live {
+                version: EntityVersion::first(),
+                value_hash: EntityRecordHash::from_bytes([0x42; 32]),
+            }
+        };
+        EntityChainHeadV1::from_stored_parts(
+            target,
+            3,
+            state,
+            CommitSequence::new(7).expect("sequence"),
+            EntityTransitionHash::from_bytes([0x53; 32]),
+        )
+        .expect("head")
+    }
+
+    #[test]
+    // req: REP-002
+    fn physical_entity_key_order_matches_checkpoint_fingerprint_target_order() {
+        let mut heads = Vec::new();
+        for entity_type in [u32::MAX, 65536, 65535, 256, 255, 1] {
+            for key in [
+                &b"\xff"[..],
+                &b"\0\xff"[..],
+                &b"a\0b"[..],
+                &b"a"[..],
+                &b""[..],
+            ] {
+                heads.push(fingerprint_head(entity_type, key, false));
+            }
+        }
+        let mut semantic = heads.clone();
+        semantic.sort_by(|left, right| left.target().cmp(right.target()));
+        heads.sort_by(|left, right| {
+            left.target()
+                .key()
+                .as_bytes()
+                .cmp(right.target().key().as_bytes())
+        });
+        assert_eq!(heads, semantic);
+    }
+
+    #[test]
+    // req: REP-002
+    fn streaming_checkpoint_fingerprint_preserves_population_preimage_bytes() {
+        for count in [0, 1, 2, 257] {
+            let heads: Vec<_> = (1..=count)
+                .map(|id| fingerprint_head(id, &[0, 0xff, 0x42], id % 2 == 0))
+                .collect();
+            // Independent frozen predecessor framing, deliberately not the new
+            // per-head streaming encoder. This buffer exists only in the oracle.
+            let mut bytes = b"riffdb.entity-transition-fingerprint/v1\0".to_vec();
+            for head in &heads {
+                bytes.extend(head.target().entity_type_id().get().to_be_bytes());
+                bytes.extend((head.target().key().as_bytes().len() as u32).to_be_bytes());
+                bytes.extend(head.target().key().as_bytes());
+                bytes.extend(head.chain_revision().to_be_bytes());
+                match head.state() {
+                    EntityChainStateV1::Live {
+                        version,
+                        value_hash,
+                    } => {
+                        bytes.push(1);
+                        bytes.extend(version.get().to_be_bytes());
+                        bytes.extend(value_hash.as_bytes());
+                    }
+                    EntityChainStateV1::Deleted => bytes.push(2),
+                    EntityChainStateV1::NeverExisted => panic!("stored head cannot be absent"),
+                }
+                bytes.extend(head.last_command_sequence().get().to_be_bytes());
+                bytes.extend(head.last_transition_hash().as_bytes());
+            }
+            let expected = EntityTransitionFingerprint::from_bytes(
+                *hash(HashDomain::Schema, &bytes).as_bytes(),
+            );
+            assert_eq!(
+                EntityTransitionFingerprint::from_sorted_heads(&heads).expect("borrowed heads"),
+                expected
+            );
+            let mut passes = 0;
+            let actual = EntityTransitionFingerprint::from_sorted_head_reader(|| {
+                passes += 1;
+                Ok(heads.clone().into_iter().map(Ok))
+            })
+            .expect("owned heads");
+            assert_eq!(actual, expected);
+            assert_eq!(passes, 2);
+        }
+    }
+
+    #[test]
+    // req: REP-002
+    fn streaming_checkpoint_fingerprint_retains_only_one_owned_head() {
+        use std::{cell::Cell, rc::Rc};
+        struct TrackedHead(EntityChainHeadV1, Rc<Cell<usize>>);
+        impl Borrow<EntityChainHeadV1> for TrackedHead {
+            fn borrow(&self) -> &EntityChainHeadV1 {
+                &self.0
+            }
+        }
+        impl Drop for TrackedHead {
+            fn drop(&mut self) {
+                self.1.set(self.1.get() - 1);
+            }
+        }
+        let live = Rc::new(Cell::new(0));
+        let result = fingerprint_from_passes(
+            || {
+                let live = live.clone();
+                Ok((1..=4096).map(move |id| {
+                    assert_eq!(
+                        live.get(),
+                        0,
+                        "prior owned row must be released before the next read"
+                    );
+                    live.set(1);
+                    Ok(TrackedHead(
+                        fingerprint_head(id, b"key", id % 2 == 0),
+                        live.clone(),
+                    ))
+                }))
+            },
+            |error: StorageValueError| error,
+        );
+        result.expect("bounded streaming");
+        assert_eq!(live.get(), 0);
+    }
+
+    #[test]
+    // req: REP-002
+    fn streaming_checkpoint_fingerprint_refuses_read_failure_reordering_and_changed_length() {
+        use crate::{StorageError, StorageErrorKind};
+        for failing_pass in [1, 2] {
+            let mut pass = 0;
+            let error = EntityTransitionFingerprint::from_sorted_head_reader(|| {
+                pass += 1;
+                Ok(std::iter::once(if pass == failing_pass {
+                    Err(StorageError::new(StorageErrorKind::Unavailable, None))
+                } else {
+                    Ok(fingerprint_head(1, b"key", false))
+                }))
+            })
+            .expect_err("read failure preserved");
+            assert_eq!(error.kind(), StorageErrorKind::Unavailable);
+        }
+        let heads = [
+            fingerprint_head(2, b"key", false),
+            fingerprint_head(1, b"key", true),
+        ];
+        assert_eq!(
+            EntityTransitionFingerprint::from_sorted_heads(&heads),
+            Err(StorageValueError::NonCanonicalOrder)
+        );
+        assert_eq!(
+            EntityTransitionFingerprint::from_sorted_heads([&heads[0], &heads[0]]),
+            Err(StorageValueError::NonCanonicalOrder)
+        );
+        for first_deleted in [false, true] {
+            let mut pass = 0;
+            let error = EntityTransitionFingerprint::from_sorted_head_reader(|| {
+                pass += 1;
+                Ok(std::iter::once(Ok(fingerprint_head(
+                    1,
+                    b"key",
+                    (pass == 1) == first_deleted,
+                ))))
+            })
+            .expect_err("different pass lengths");
+            assert_eq!(error.kind(), StorageErrorKind::CorruptData);
+        }
+    }
 
     fn sample_counts() -> ValidatedPrefixSequenceCounts {
         ValidatedPrefixSequenceCounts {

@@ -72,6 +72,15 @@ or substituted bindings is corruption, never an initialization or repair hint.
 This consistency check is not yet wired into clean eligibility and does not
 grant readiness or replace complete startup validation.
 
+The existing delete-aware entity checkpoint fingerprint now uses exact-length
+streaming SHA-256 v1 framing. Measurement and hashing traverse the same pinned
+head table in canonical key order; they retain one bounded head preimage and
+prior target, not the population. The domain, length framing, field order and
+digest bytes are unchanged. Checkpoint-head copying preserves byte-identical
+rows, replaces changed rows and removes stale rows in the existing transaction.
+These current-state scans still scale with the entity population; this is a
+bounded-memory change, not a constant-time checkpoint or a V3 receipt proof.
+
 Registering this additive codec changes the registry digest but is **not** a
 completed database upgrade. The pre-V3 registry digest remains frozen in a
 compatibility test; its validated, atomic activation migration remains a release
@@ -120,8 +129,10 @@ catalog and format vectors with `./scripts/generate-changelog-fixtures`; its
 WP-772 remains open until journal sourcing, atomic direct/control receipts,
 published snapshot cursors, checkpoint materialization, migration/rotation,
 clean-close integration, retention fences, and the required process-crash
-matrix are implemented and proven. The catalog/format fixture review, topology
-and durable-format registration, package acceptance and full CI gates also
-remain required. No receipt, replication, recovery or performance obligation
+matrix are implemented and proven. Human review of the current authority catalog
+and accompanying V1/V2/V3 substrate codec vectors has been received; subsequent
+fixture changes still require review. Topology and durable-format registration,
+package acceptance and full CI gates remain required. No receipt, replication,
+recovery or performance obligation
 is discharged by this initial codec work. WP-746 and later activation packages
 remain downstream of the completed substrate.

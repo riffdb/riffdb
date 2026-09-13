@@ -380,6 +380,74 @@ pub fn hash(domain: HashDomain, payload: &[u8]) -> ContentDigest {
     ContentDigest::new(domain, hasher.finalize().into())
 }
 
+/// A streamed payload did not match its declared v1 frame length.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HashLengthMismatch;
+
+impl fmt::Display for HashLengthMismatch {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("content hash payload length mismatch")
+    }
+}
+
+impl std::error::Error for HashLengthMismatch {}
+
+/// Constant-space v1 content hashing with an exact, checked payload length.
+///
+/// The length precedes the payload in the immutable v1 framing. Callers must
+/// measure and stream the same immutable input. Excess input poisons the
+/// hasher; neither incomplete nor poisoned input can produce a digest.
+pub struct ContentHasher {
+    hasher: Sha256,
+    domain: HashDomain,
+    remaining: Option<u64>,
+}
+
+impl fmt::Debug for ContentHasher {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ContentHasher([REDACTED])")
+    }
+}
+
+impl ContentHasher {
+    /// Starts an exact-length, domain-separated SHA-256 v1 frame.
+    #[must_use]
+    pub fn new(domain: HashDomain, payload_length: u64) -> Self {
+        let mut hasher = Sha256::new();
+        write_frame_header(&mut hasher, HASH_PREFIX, domain.label(), payload_length);
+        Self {
+            hasher,
+            domain,
+            remaining: Some(payload_length),
+        }
+    }
+
+    /// Adds bytes without buffering them, refusing and poisoning excess input.
+    pub fn update(&mut self, payload: &[u8]) -> Result<(), HashLengthMismatch> {
+        self.remaining = self.remaining.and_then(|remaining| {
+            u64::try_from(payload.len())
+                .ok()
+                .and_then(|length| remaining.checked_sub(length))
+        });
+        if self.remaining.is_none() {
+            return Err(HashLengthMismatch);
+        }
+        Digest::update(&mut self.hasher, payload);
+        Ok(())
+    }
+
+    /// Finishes only after exactly the declared number of bytes was supplied.
+    pub fn finish(self) -> Result<ContentDigest, HashLengthMismatch> {
+        if self.remaining != Some(0) {
+            return Err(HashLengthMismatch);
+        }
+        Ok(ContentDigest::new(
+            self.domain,
+            self.hasher.finalize().into(),
+        ))
+    }
+}
+
 /// Hashes one bounded command-batch source, item, or checkpoint document.
 #[must_use]
 pub fn hash_command_batch_document(payload: &[u8]) -> ContentDigest {
@@ -747,16 +815,24 @@ fn write_frame<T: sha2::digest::Update>(
     domain: &str,
     payload: &[u8],
 ) {
+    write_frame_header(target, prefix, domain, payload.len() as u64);
+    target.update(payload);
+}
+
+fn write_frame_header<T: sha2::digest::Update>(
+    target: &mut T,
+    prefix: &[u8],
+    domain: &str,
+    payload_length: u64,
+) {
     let domain = domain.as_bytes();
     debug_assert!(u16::try_from(domain.len()).is_ok());
     let domain_length = domain.len() as u16;
-    let payload_length = payload.len() as u64;
     target.update(prefix);
     target.update(&[DIGEST_SCHEME_V1]);
     target.update(&domain_length.to_be_bytes());
     target.update(domain);
     target.update(&payload_length.to_be_bytes());
-    target.update(payload);
 }
 
 struct HexDigest<'a>(&'a [u8; 32]);
@@ -775,6 +851,46 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+
+    #[test]
+    // req: REP-002
+    fn streaming_hash_preserves_v1_framing_across_chunk_boundaries() {
+        let payload: Vec<u8> = (0..=255).cycle().take(1025).collect();
+        for domain in HashDomain::ALL {
+            for length in [0, 1, 55, 56, 63, 64, 65, 1025] {
+                for chunk_size in [1, 7, 64, 129] {
+                    let mut streamed = ContentHasher::new(domain, length as u64);
+                    for chunk in payload[..length].chunks(chunk_size) {
+                        streamed.update(chunk).expect("within declared length");
+                    }
+                    assert_eq!(
+                        streamed.finish().expect("complete"),
+                        hash(domain, &payload[..length])
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    // req: REP-002
+    fn streaming_hash_refuses_short_extra_and_poisoned_input() {
+        let mut short = ContentHasher::new(HashDomain::Schema, 2);
+        short.update(b"a").expect("prefix");
+        assert_eq!(short.finish(), Err(HashLengthMismatch));
+        let mut extra = ContentHasher::new(HashDomain::Schema, 1);
+        assert_eq!(extra.update(b"secret"), Err(HashLengthMismatch));
+        assert_eq!(extra.update(b"a"), Err(HashLengthMismatch));
+        assert_eq!(extra.finish(), Err(HashLengthMismatch));
+        let mut complete = ContentHasher::new(HashDomain::Schema, 1);
+        complete.update(b"a").expect("complete");
+        assert_eq!(complete.update(b"b"), Err(HashLengthMismatch));
+        assert_eq!(complete.finish(), Err(HashLengthMismatch));
+        assert_eq!(
+            ContentHasher::new(HashDomain::Schema, u64::MAX).finish(),
+            Err(HashLengthMismatch)
+        );
+    }
 
     #[test]
     fn domain_registry_has_no_duplicate_labels() {
