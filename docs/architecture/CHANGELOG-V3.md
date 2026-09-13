@@ -129,6 +129,28 @@ premature exhaustion. This adds no journal field or table tag. Replay into an
 inactive or partial V3 database still refuses before changing the counter; a
 valid source shape is not an activation permit.
 
+The recovered-source materialization primitive now applies each original ordered
+mutation inside its caller's existing checkpoint transaction and stages the
+checked allocator, exact receipt and history tail through the same root writer
+as Immediate receipts. It adds no commit. Cancelled net mutations still require
+their original before-images. Its overlap checker reads the original receipt
+and predecessor from one pinned checkpoint and compares complete source-derived
+bytes; later entity overwrite or deletion cannot substitute for that evidence.
+The live retained-mutation converter and independently decoded journal converter
+share the same bounded fold and produce identical receipt bytes without a live
+frame re-decode. Tests currently prove these physical primitives with opaque
+record fixtures, not real command semantics, complete history ancestry, production
+recovery selection, or the required crash matrix. Writer admission and recovery
+integration remain pending.
+
+The complete retained-history validator is separate from bounded clean-root
+eligibility. It streams every retained receipt from the exact minimum-resume
+point through the terminal root using one pinned view and constant-size chain
+state. Missing rows and rechecksummed interior substitutions fail even when the
+terminal root still validates. This is receipt-chain evidence only; wiring it
+into complete startup alongside the existing durable-record validators remains
+part of the production activation gate.
+
 Frames carry complete contiguous receipt ranges, exact catalog and leadership
 bindings, source counts, checksums and V3-only framing. The 32 MiB frame ceiling
 and 256-transition ceiling remain independent; one receipt is never split to

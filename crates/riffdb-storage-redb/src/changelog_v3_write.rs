@@ -15,8 +15,8 @@ use std::collections::BTreeSet;
 use redb::{Database, Durability, ReadableTable, TableDefinition, TableHandle, WriteTransaction};
 use riffdb_storage_api::{
     AuthoritativeMutationV3, AuthoritativeNamespaceV1 as N, AuthoritativeTransactionV3,
-    ChangelogAttributionV3, ChangelogV3Error, MAX_CHANGELOG_FRAME_BYTES, StorageError,
-    StorageErrorKind,
+    ChangelogAttributionV3, ChangelogHistoryStateV3, ChangelogV3Error, MAX_CHANGELOG_FRAME_BYTES,
+    StorageError, StorageErrorKind,
     proto_codec::{encode_changelog_history_state_v3, encode_changelog_transaction_allocator_v3},
 };
 
@@ -66,36 +66,13 @@ impl PreparedImmediateReceipt {
         }
         let mut transaction = database.begin_write().map_err(transaction_error)?;
         transaction.set_two_phase_commit(profile.uses_two_phase());
-        let history = read_checkpoint_roots_for_write(&transaction)?
-            .ok_or_else(|| storage_error(StorageErrorKind::IncompatibleFormat))?;
-        let (assigned, allocator) = history
-            .expected_allocator()
-            .allocate_one()
-            .map_err(value_error)?;
-        if assigned != receipt.binding().sequence {
-            return Err(storage_error(StorageErrorKind::CorruptData));
-        }
-        let successor = history.advance(receipt).map_err(value_error)?;
-        let encoded = receipt.encode().map_err(value_error)?;
-        let encoded_history = encode_changelog_history_state_v3(successor).map_err(codec_error)?;
-        let encoded_allocator =
-            encode_changelog_transaction_allocator_v3(allocator).map_err(codec_error)?;
+        let advance = PreparedHistoryAdvance::prepare(&transaction, receipt)?;
         let tables = table_inventory(&transaction)?;
         for mutation in receipt.mutations() {
             if !tables.contains(mutation.namespace().table()) {
                 return Err(storage_error(StorageErrorKind::CorruptData));
             }
             check_predecessor(&transaction, mutation)?;
-        }
-        let position = assigned.get().to_be_bytes();
-        if transaction
-            .open_table(HISTORY)
-            .map_err(table_error)?
-            .get(position.as_slice())
-            .map_err(precommit_storage_error)?
-            .is_some()
-        {
-            return Err(storage_error(StorageErrorKind::CorruptData));
         }
         // Preserve the caller's existing commit profile. No extra commit,
         // journal flush, or acknowledgement dependency is introduced.
@@ -107,34 +84,7 @@ impl PreparedImmediateReceipt {
         }
         #[cfg(test)]
         crash_edge("mutations");
-        transaction
-            .open_table(HISTORY)
-            .map_err(table_error)?
-            .insert(position.as_slice(), encoded.as_slice())
-            .map_err(precommit_storage_error)?;
-        #[cfg(test)]
-        crash_edge("receipt");
-        {
-            let mut meta = transaction.open_table(META).map_err(table_error)?;
-            meta.insert(
-                metadata_key(N::NextChangelogTransaction)?,
-                encoded_allocator.as_bytes(),
-            )
-            .map_err(precommit_storage_error)?;
-            meta.insert(
-                metadata_key(N::ChangelogHistoryState)?,
-                encoded_history.as_bytes(),
-            )
-            .map_err(precommit_storage_error)?;
-        }
-        #[cfg(test)]
-        crash_edge("roots");
-        // Recheck complete transaction-current roots, including actual retained
-        // application/admin allocators, lineage and the exact staged tail row.
-        // A declared frontier cannot diverge from these physical post-images.
-        if read_checkpoint_roots_for_write(&transaction)? != Some(successor) {
-            return Err(storage_error(StorageErrorKind::CorruptData));
-        }
+        advance.stage(&transaction)?;
         Ok(Self { transaction })
     }
 
@@ -157,6 +107,94 @@ impl PreparedImmediateReceipt {
     }
 }
 
+/// Shared non-recursive history writes within an existing Immediate transaction.
+/// This is not an operation permit and never commits: its caller must validate
+/// and apply the exact source first, and abort the transaction on any failure.
+pub(crate) struct PreparedHistoryAdvance {
+    successor: ChangelogHistoryStateV3,
+    encoded: Vec<u8>,
+    encoded_history: Vec<u8>,
+    encoded_allocator: Vec<u8>,
+}
+
+impl PreparedHistoryAdvance {
+    pub(crate) fn prepare(
+        transaction: &WriteTransaction,
+        receipt: &AuthoritativeTransactionV3,
+    ) -> Result<Self, StorageError> {
+        let history = read_checkpoint_roots_for_write(transaction)?
+            .ok_or_else(|| storage_error(StorageErrorKind::IncompatibleFormat))?;
+        let (assigned, allocator) = history
+            .expected_allocator()
+            .allocate_one()
+            .map_err(value_error)?;
+        if assigned != receipt.binding().sequence {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        let successor = history.advance(receipt).map_err(value_error)?;
+        let encoded = receipt.encode().map_err(value_error)?;
+        let encoded_history = encode_changelog_history_state_v3(successor)
+            .map_err(codec_error)?
+            .into_bytes();
+        let encoded_allocator = encode_changelog_transaction_allocator_v3(allocator)
+            .map_err(codec_error)?
+            .into_bytes();
+        if transaction
+            .open_table(HISTORY)
+            .map_err(table_error)?
+            .get(assigned.get().to_be_bytes().as_slice())
+            .map_err(precommit_storage_error)?
+            .is_some()
+        {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        Ok(Self {
+            successor,
+            encoded,
+            encoded_history,
+            encoded_allocator,
+        })
+    }
+
+    pub(crate) fn stage(self, transaction: &WriteTransaction) -> Result<(), StorageError> {
+        transaction
+            .open_table(HISTORY)
+            .map_err(table_error)?
+            .insert(
+                self.successor
+                    .tail()
+                    .sequence()
+                    .get()
+                    .to_be_bytes()
+                    .as_slice(),
+                self.encoded.as_slice(),
+            )
+            .map_err(precommit_storage_error)?;
+        #[cfg(test)]
+        crash_edge("receipt");
+        {
+            let mut meta = transaction.open_table(META).map_err(table_error)?;
+            meta.insert(
+                metadata_key(N::NextChangelogTransaction)?,
+                self.encoded_allocator.as_slice(),
+            )
+            .map_err(precommit_storage_error)?;
+            meta.insert(
+                metadata_key(N::ChangelogHistoryState)?,
+                self.encoded_history.as_slice(),
+            )
+            .map_err(precommit_storage_error)?;
+        }
+        #[cfg(test)]
+        crash_edge("roots");
+        // Bind the actual physical post-images, not just the declared frontier.
+        if read_checkpoint_roots_for_write(transaction)? != Some(self.successor) {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 fn crash_edge(edge: &str) {
     if std::env::var("RIFFDB_V3_DIRECT_EDGE").ok().as_deref() == Some(edge) {
@@ -170,7 +208,7 @@ fn metadata_key(namespace: N) -> Result<&'static str, StorageError> {
         .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
 }
 
-fn value_error(error: ChangelogV3Error) -> StorageError {
+pub(crate) fn value_error(error: ChangelogV3Error) -> StorageError {
     storage_error(match error {
         ChangelogV3Error::LimitExceeded => StorageErrorKind::LimitExceeded,
         ChangelogV3Error::SequenceExhausted => StorageErrorKind::SequenceExhausted,
@@ -178,7 +216,9 @@ fn value_error(error: ChangelogV3Error) -> StorageError {
     })
 }
 
-fn table_inventory(transaction: &WriteTransaction) -> Result<BTreeSet<&'static str>, StorageError> {
+pub(crate) fn table_inventory(
+    transaction: &WriteTransaction,
+) -> Result<BTreeSet<&'static str>, StorageError> {
     if transaction
         .list_multimap_tables()
         .map_err(precommit_storage_error)?
