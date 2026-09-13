@@ -81,6 +81,18 @@ rows, replaces changed rows and removes stale rows in the existing transaction.
 These current-state scans still scale with the entity population; this is a
 bounded-memory change, not a constant-time checkpoint or a V3 receipt proof.
 
+An isolated Immediate receipt owner now opens a fresh write transaction, checks
+the current roots and every exact prior value before applying any mutation,
+and stages the receipt, allocator and tail together. The transaction cannot be
+handed back for additional writes. It preserves the existing Standard/Hardened
+commit profile. Missing tables, stale predecessors and mismatched physical
+frontiers refuse; the write-root reader never creates absent control tables.
+Tests cover pinned readers, complete original put values retained after later
+deletion, and process exits after mutations, receipt, roots and commit. These
+are physical transaction tests, not operation authorization/source-validation or
+production activation evidence. Journal, lifecycle and lineage ceremonies are
+explicitly refused by this owner pending their separate integration.
+
 Registering this additive codec changes the registry digest but is **not** a
 completed database upgrade. The pre-V3 registry digest remains frozen in a
 compatibility test; its validated, atomic activation migration remains a release

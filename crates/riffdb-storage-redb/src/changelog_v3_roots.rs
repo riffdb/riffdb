@@ -10,7 +10,7 @@
     )
 )]
 
-use redb::{ReadTransaction, TableError};
+use redb::{ReadTransaction, ReadableTable, TableError, TableHandle, WriteTransaction};
 use riffdb_storage_api::{
     AdministrationSequenceAllocator, ApplicationSequenceAllocator, AuthoritativeNamespaceV1 as N,
     AuthoritativeTransactionV3, ChangelogHistoryStateV3, StorageError, StorageErrorKind,
@@ -35,6 +35,60 @@ pub(crate) fn read_checkpoint_roots(
     transaction: &ReadTransaction,
 ) -> Result<Option<ChangelogHistoryStateV3>, StorageError> {
     let meta = transaction.open_table(META).map_err(table_error)?;
+    let history = match transaction.open_table(HISTORY) {
+        Ok(table) => Some(table),
+        Err(TableError::TableDoesNotExist(_)) => None,
+        Err(error) => return Err(table_error(error)),
+    };
+    let source_holds = match transaction.open_table(SOURCE_HOLDS) {
+        Ok(table) => Some(table),
+        Err(TableError::TableDoesNotExist(_)) => None,
+        Err(error) => return Err(table_error(error)),
+    };
+    validate_roots(&meta, history.as_ref(), source_holds.is_some())
+}
+
+/// Transaction-current form for receipt-producing Immediate writes. Opening a
+/// redb write table creates it when absent, so check the bounded table-name
+/// inventory first. This function never initializes missing roots or tables.
+pub(crate) fn read_checkpoint_roots_for_write(
+    transaction: &WriteTransaction,
+) -> Result<Option<ChangelogHistoryStateV3>, StorageError> {
+    let mut meta_present = false;
+    let mut history_present = false;
+    let mut holds_present = false;
+    for (count, table) in transaction
+        .list_tables()
+        .map_err(precommit_storage_error)?
+        .enumerate()
+    {
+        if count >= N::ALL.len() {
+            return Err(storage_error(StorageErrorKind::LimitExceeded));
+        }
+        meta_present |= table.name() == META.name();
+        history_present |= table.name() == HISTORY.name();
+        holds_present |= table.name() == SOURCE_HOLDS.name();
+    }
+    if !meta_present {
+        return Err(storage_error(StorageErrorKind::CorruptData));
+    }
+    let meta = transaction.open_table(META).map_err(table_error)?;
+    let history = history_present
+        .then(|| transaction.open_table(HISTORY))
+        .transpose()
+        .map_err(table_error)?;
+    let source_holds = holds_present
+        .then(|| transaction.open_table(SOURCE_HOLDS))
+        .transpose()
+        .map_err(table_error)?;
+    validate_roots(&meta, history.as_ref(), source_holds.is_some())
+}
+
+fn validate_roots(
+    meta: &impl ReadableTable<&'static str, &'static [u8]>,
+    history_table: Option<&impl ReadableTable<&'static [u8], &'static [u8]>>,
+    source_holds_present: bool,
+) -> Result<Option<ChangelogHistoryStateV3>, StorageError> {
     let read = |key: &str| -> Result<Vec<u8>, StorageError> {
         let value = meta
             .get(key)
@@ -68,24 +122,14 @@ pub(crate) fn read_checkpoint_roots(
             present += usize::from(meta.get(key).map_err(precommit_storage_error)?.is_some());
         }
     }
-    let history_table = match transaction.open_table(HISTORY) {
-        Ok(table) => Some(table),
-        Err(TableError::TableDoesNotExist(_)) => None,
-        Err(error) => return Err(table_error(error)),
-    };
-    let source_holds = match transaction.open_table(SOURCE_HOLDS) {
-        Ok(table) => Some(table),
-        Err(TableError::TableDoesNotExist(_)) => None,
-        Err(error) => return Err(table_error(error)),
-    };
     if registry == PRE_V3_REGISTRY
         && present == 0
         && history_table.is_none()
-        && source_holds.is_none()
+        && !source_holds_present
     {
         return Ok(None);
     }
-    if registry != current_record_registry_digest() || present != required || source_holds.is_none()
+    if registry != current_record_registry_digest() || present != required || !source_holds_present
     {
         return Err(storage_error(StorageErrorKind::CorruptData));
     }

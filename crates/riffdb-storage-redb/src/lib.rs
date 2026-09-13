@@ -30,6 +30,7 @@ mod changelog;
 mod changelog_v3;
 mod changelog_v3_activation;
 mod changelog_v3_roots;
+mod changelog_v3_write;
 mod checkpoint_root;
 mod clean_close;
 mod codec;
