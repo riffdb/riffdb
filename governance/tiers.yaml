@@ -98,7 +98,8 @@ checks:           # path-triggered checks; `run` entries are executed in order; 
     run: [./scripts/check-workspace-policy, cargo deny check, cargo machete]
   - when: [adr/**, SPEC.md, work_packages.yaml, governance/**]
     run: [./scripts/check-requirement-coverage, ./scripts/check-adr-obligations,
-      ./scripts/adr-new --self-test, ./scripts/adr-index --check]
+      ./scripts/adr-new --self-test, ./scripts/adr-index --check,
+      ./scripts/check-acceptance-commits]
   - when: [crates/**]
     run: [./scripts/check-file-size-guard, ./scripts/check-panic-allowances]
   - when: [release/container/**, release/kubernetes/**, release/helm/**]
@@ -112,3 +113,19 @@ governance_paths:   # used by governance-cost
   - AGENTS.md
   - docs/CONTRIBUTING.md
   - governance/**
+acceptance:         # accepting a record is a human act and must be visible as one
+  # A v2 record accepted on or after this date must carry a non-empty
+  # `acceptance:` front-matter reference naming who accepted it and how.
+  reference_required_since: "2026-09-12"
+  # A commit that sets a record to accepted may touch only these paths.
+  own_commit_paths: [adr/**, work_packages.yaml, SPEC.md]
+directives:         # standing maintainer directives; ./scripts/brief prints them first
+  - id: D-001
+    since: "2026-09-12"
+    text: "While WP-757, WP-760, and WP-772 are open, no new decision record is opened
+      unless a failing test names the blocker. Those packages are executed, not re-decided."
+  - id: D-002
+    since: "2026-09-12"
+    text: "An agent never sets `status: accepted`. Propose; the maintainer accepts in a
+      separate commit that carries an `acceptance:` reference. `./scripts/check-acceptance-commits`
+      enforces both."

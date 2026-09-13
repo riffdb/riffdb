@@ -237,6 +237,8 @@ jobs:
         run: ./scripts/adr-new --self-test
       - name: Check the ADR index
         run: ./scripts/adr-index --check
+      - name: Check that acceptance commits stand alone
+        run: ./scripts/check-acceptance-commits
       - name: Check the three hand-written operation places
         if: github.event_name == 'pull_request'
         run: ./scripts/check-three-places --base "${{ github.event.pull_request.base.sha }}"
