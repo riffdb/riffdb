@@ -131,6 +131,22 @@ artifacts=(
     fixtures/proto/durable-changelog-allocator-v3-schema-hash.bin
     crates/riffdb-proto/fixtures/durable-changelog-allocator-v3-record-bound.bin
     crates/riffdb-proto/fixtures/durable-changelog-allocator-v3-schema-hash.bin
+    fixtures/proto/durable-authoritative-state-catalog-v1-record-bound.bin
+    fixtures/proto/durable-authoritative-state-catalog-v1-schema-hash.bin
+    crates/riffdb-proto/fixtures/durable-authoritative-state-catalog-v1-record-bound.bin
+    crates/riffdb-proto/fixtures/durable-authoritative-state-catalog-v1-schema-hash.bin
+    fixtures/proto/durable-leadership-epoch-v1-record-bound.bin
+    fixtures/proto/durable-leadership-epoch-v1-schema-hash.bin
+    crates/riffdb-proto/fixtures/durable-leadership-epoch-v1-record-bound.bin
+    crates/riffdb-proto/fixtures/durable-leadership-epoch-v1-schema-hash.bin
+    fixtures/proto/durable-changelog-history-state-v3-record-bound.bin
+    fixtures/proto/durable-changelog-history-state-v3-schema-hash.bin
+    crates/riffdb-proto/fixtures/durable-changelog-history-state-v3-record-bound.bin
+    crates/riffdb-proto/fixtures/durable-changelog-history-state-v3-schema-hash.bin
+    fixtures/proto/durable-replication-follower-state-v3-record-bound.bin
+    fixtures/proto/durable-replication-follower-state-v3-schema-hash.bin
+    crates/riffdb-proto/fixtures/durable-replication-follower-state-v3-record-bound.bin
+    crates/riffdb-proto/fixtures/durable-replication-follower-state-v3-schema-hash.bin
     crates/riffdb-proto/fixtures/durable-clean-close-lifecycle-v1-record-bound.bin
     crates/riffdb-proto/fixtures/durable-clean-close-lifecycle-v1-schema-hash.bin
     fixtures/proto/durable-registry-v2-record-bound.bin

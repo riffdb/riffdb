@@ -23,6 +23,74 @@ fn binding() -> riffdb_storage_api::AuthoritativeTransactionBindingV3 {
 }
 
 #[test]
+fn every_admitted_receipt_fits_one_complete_frame_before_storage_mutation() {
+    use riffdb_storage_api::{
+        AuthoritativeMutationAccumulatorV3, AuthoritativeStateCatalogV1,
+        AuthoritativeTransactionV3 as Receipt, ChangelogAttributionV3 as Source,
+        ChangelogFrameBindingV3, ChangelogFrameV3, MAX_CHANGELOG_FRAME_BYTES,
+    };
+    // Independent format arithmetic: frame header 290, footer 48, row length 4;
+    // receipt header/checksum 160, mutation header 44 and one key byte.
+    let maximum_value = MAX_CHANGELOG_FRAME_BYTES - 290 - 48 - 4 - 160 - 44 - 1;
+    let frame_binding = ChangelogFrameBindingV3::new(
+        binding().database_id,
+        1,
+        1,
+        AuthoritativeStateCatalogV1.digest(),
+        [0; 32],
+    )
+    .unwrap();
+    for extra in [0, 1, 342] {
+        let value = vec![0x71; maximum_value + extra];
+        let mutation = AuthoritativeMutationV3::put(N::Entities, b"a", None, &value).unwrap();
+        let mut accumulated = AuthoritativeMutationAccumulatorV3::default();
+        let accumulated_result = accumulated.record(mutation.clone());
+        let receipt = Receipt::new(binding(), Source::JournaledApplicationGroup, vec![mutation]);
+        if extra == 0 {
+            accumulated_result.unwrap();
+            let receipt = receipt.unwrap();
+            let frame = ChangelogFrameV3::new(frame_binding, vec![receipt]).unwrap();
+            assert_eq!(frame.encoded_len().unwrap(), MAX_CHANGELOG_FRAME_BYTES);
+            let encoded = frame.encode().unwrap();
+            assert_eq!(ChangelogFrameV3::decode(&encoded).unwrap(), frame);
+            assert_eq!(accumulated.finish().unwrap().len(), 1);
+        } else {
+            assert_eq!(receipt, Err(ChangelogV3Error::LimitExceeded));
+            assert_eq!(accumulated_result, Err(ChangelogV3Error::LimitExceeded));
+            assert_eq!(accumulated.finish(), Err(ChangelogV3Error::LimitExceeded));
+        }
+    }
+}
+
+#[test]
+fn direct_receipt_admission_checks_the_unsplit_transition_ceiling() {
+    use riffdb_storage_api::{
+        AuthoritativeTransactionV3 as Receipt, ChangelogAttributionV3 as Source,
+    };
+    use riffdb_types::{AdministrationSequence, CommitSequence, DualFrontier};
+    for application in [false, true] {
+        for transitions in [256, 257] {
+            let mut row = binding();
+            row.covered_frontier = if application {
+                DualFrontier::new(CommitSequence::new(transitions), None)
+            } else {
+                DualFrontier::new(None, AdministrationSequence::new(transitions))
+            };
+            let receipt = Receipt::new(
+                row,
+                Source::DirectApplicationOrServiceAuditGroup,
+                vec![AuthoritativeMutationV3::put(N::Entities, b"a", None, b"value").unwrap()],
+            );
+            if transitions == 256 {
+                assert!(receipt.is_ok());
+            } else {
+                assert_eq!(receipt, Err(ChangelogV3Error::LimitExceeded));
+            }
+        }
+    }
+}
+
+#[test]
 fn v3_receipt_roundtrips_overwrites_deletes_and_rejects_every_truncation() {
     use riffdb_storage_api::{
         AuthoritativeTransactionV3 as Receipt, ChangelogAttributionV3 as Source,

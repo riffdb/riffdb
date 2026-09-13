@@ -1,6 +1,6 @@
 use riffdb_types::{DatabaseId, DualFrontier};
 
-use crate::{MAX_CHANGELOG_FRAME_BYTES, MAX_CHANGELOG_FRAME_ENTRIES, MAX_STAGED_COMMANDS};
+use crate::{MAX_CHANGELOG_FRAME_ENTRIES, MAX_STAGED_COMMANDS};
 
 use super::{AuthoritativeMutationV3, ChangelogTransactionSequence, ChangelogV3Error};
 
@@ -218,7 +218,9 @@ impl AuthoritativeTransactionV3 {
             attribution,
             mutations,
         };
-        if receipt.encoded_len()? > MAX_CHANGELOG_FRAME_BYTES {
+        if receipt.encoded_len()? > super::frame::MAX_RECEIPT_BYTES
+            || receipt.transition_count() > MAX_STAGED_COMMANDS as u64
+        {
             return Err(ChangelogV3Error::LimitExceeded);
         }
         Ok(receipt)
@@ -240,6 +242,34 @@ impl AuthoritativeTransactionV3 {
     #[must_use]
     pub fn mutations(&self) -> &[AuthoritativeMutationV3] {
         &self.mutations
+    }
+
+    /// Logical transitions charged to the independent unsplit frame ceiling.
+    #[must_use]
+    pub fn transition_count(&self) -> u64 {
+        let row = self.binding;
+        let app = row.covered_frontier.application().map_or(0, |v| v.get())
+            - row
+                .predecessor_frontier
+                .application()
+                .map_or(0, |v| v.get());
+        let admin = row.covered_frontier.administration().map_or(0, |v| v.get())
+            - row
+                .predecessor_frontier
+                .administration()
+                .map_or(0, |v| v.get());
+        match self.attribution {
+            ChangelogAttributionV3::JournaledApplicationGroup => app,
+            ChangelogAttributionV3::JournaledServiceAudit => admin,
+            ChangelogAttributionV3::DirectApplicationOrServiceAuditGroup => {
+                if app > 0 {
+                    app
+                } else {
+                    admin
+                }
+            }
+            _ => 1,
+        }
     }
 
     /// Complete receipt size, including its fixed header and checksum.

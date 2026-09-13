@@ -8,8 +8,14 @@ use riffdb_storage_api::{
     AuthoritativeTransactionBindingV3, AuthoritativeTransactionV3, ChangelogAttributionV3,
     ChangelogEntryClassV1, ChangelogEntryClassV2, ChangelogEntryV1, ChangelogEntryV2,
     ChangelogFrameBindingV1, ChangelogFrameBindingV2, ChangelogFrameBindingV3, ChangelogFrameV1,
-    ChangelogFrameV2, ChangelogFrameV3, ChangelogTransactionAllocator,
-    ChangelogTransactionSequence, proto_codec::encode_changelog_transaction_allocator_v3,
+    ChangelogFrameV2, ChangelogFrameV3, ChangelogHistoryPointV3, ChangelogHistoryStateV3,
+    ChangelogLineageV3, ChangelogTransactionAllocator, ChangelogTransactionSequence,
+    LeadershipEpochV1, ReplicationFollowerStateV3,
+    proto_codec::{
+        encode_authoritative_state_catalog_v1, encode_changelog_history_state_v3,
+        encode_changelog_transaction_allocator_v3, encode_leadership_epoch_v1,
+        encode_replication_follower_state_v3,
+    },
 };
 use riffdb_types::{CommitSequence, DatabaseId, DualFrontier};
 
@@ -94,6 +100,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?
     .encode()?;
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/replication");
+    let catalog = encode_authoritative_state_catalog_v1(AuthoritativeStateCatalogV1)?;
+    let epoch_first = encode_leadership_epoch_v1(LeadershipEpochV1::initial())?;
+    let epoch_last =
+        encode_leadership_epoch_v1(LeadershipEpochV1::new(u64::MAX).ok_or("invalid epoch")?)?;
     let allocator_first =
         encode_changelog_transaction_allocator_v3(ChangelogTransactionAllocator::initial())?;
     let allocator_last =
@@ -102,10 +112,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ))?;
     let allocator_exhausted =
         encode_changelog_transaction_allocator_v3(ChangelogTransactionAllocator::Exhausted)?;
+    let lineage = ChangelogLineageV3::new(database_id, 1, LeadershipEpochV1::initial())?;
+    let point = ChangelogHistoryPointV3::new(binding.sequence, [0x77; 32], covered);
+    let history = encode_changelog_history_state_v3(ChangelogHistoryStateV3::new(
+        lineage, point, point, point,
+    )?)?;
+    let detached = encode_replication_follower_state_v3(ReplicationFollowerStateV3::detached())?;
+    let attached = encode_replication_follower_state_v3(ReplicationFollowerStateV3::attached(
+        lineage,
+        point,
+        Some(point),
+    )?)?;
     for (name, bytes) in [
         ("changelog-frame-v1.hex", v1.as_bytes()),
         ("changelog-frame-v2.hex", v2.as_bytes()),
         ("changelog-frame-v3.hex", v3.as_slice()),
+        ("authoritative-state-catalog-v1.hex", catalog.as_bytes()),
+        ("leadership-epoch-v1-first.hex", epoch_first.as_bytes()),
+        ("leadership-epoch-v1-last.hex", epoch_last.as_bytes()),
+        ("changelog-history-state-v3.hex", history.as_bytes()),
+        (
+            "replication-follower-state-v3-detached.hex",
+            detached.as_bytes(),
+        ),
+        (
+            "replication-follower-state-v3-attached.hex",
+            attached.as_bytes(),
+        ),
         (
             "changelog-allocator-v3-first.hex",
             allocator_first.as_bytes(),

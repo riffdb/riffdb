@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/changelog_history_state_v3.proto";
+
+// ADR-0186 follower-local state. Detached is explicit, never a missing root;
+// applied and acknowledged are independent durable positions, not network IO.
+message StoredReplicationFollowerStateV3 {
+  message Detached {}
+  message Attached {
+    bytes database_id = 1;
+    uint64 history_incarnation = 2;
+    uint64 leadership_epoch = 3;
+    bytes catalog_digest = 4;
+    StoredChangelogHistoryStateV3.Position applied = 5;
+    StoredChangelogHistoryStateV3.Position acknowledged = 6;
+  }
+
+  oneof state {
+    Detached detached = 1;
+    Attached attached = 2;
+  }
+}

@@ -762,6 +762,11 @@ impl ServiceIngressKindV1 {
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredAuthoritativeStateCatalogV1 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub catalog_digest: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CapabilityTokenDigestV1 {
     #[prost(uint32, tag = "1")]
     pub digest_scheme: u32,
@@ -1670,6 +1675,39 @@ pub struct StoredQueryModuleAdministrationV1 {
     pub activated: ::core::option::Option<ActiveQueryModulePointerV1>,
     #[prost(string, optional, tag = "7")]
     pub approval_id: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredChangelogHistoryStateV3 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub database_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "2")]
+    pub history_incarnation: u64,
+    #[prost(uint64, tag = "3")]
+    pub leadership_epoch: u64,
+    #[prost(bytes = "vec", tag = "4")]
+    pub catalog_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "5")]
+    pub anchor: ::core::option::Option<stored_changelog_history_state_v3::Position>,
+    #[prost(message, optional, tag = "6")]
+    pub tail: ::core::option::Option<stored_changelog_history_state_v3::Position>,
+    #[prost(message, optional, tag = "7")]
+    pub minimum_resume: ::core::option::Option<
+        stored_changelog_history_state_v3::Position,
+    >,
+}
+/// Nested message and enum types in `StoredChangelogHistoryStateV3`.
+pub mod stored_changelog_history_state_v3 {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct Position {
+        #[prost(uint64, tag = "1")]
+        pub transaction_sequence: u64,
+        #[prost(bytes = "vec", tag = "2")]
+        pub history_hash: ::prost::alloc::vec::Vec<u8>,
+        #[prost(uint64, tag = "3")]
+        pub application_sequence: u64,
+        #[prost(uint64, tag = "4")]
+        pub administration_sequence: u64,
+    }
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredChangelogTransactionAllocatorV3 {
@@ -3074,6 +3112,11 @@ pub struct StoredApplicationInstallationCampaignV1 {
     pub canonical_state: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredLeadershipEpochV1 {
+    #[prost(uint64, tag = "1")]
+    pub epoch: u64,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredStorageFormatVersionV1 {
     #[prost(uint32, tag = "1")]
     pub storage_format_version: u32,
@@ -3627,6 +3670,42 @@ pub struct StoredReactiveModuleAdministrationV1 {
 pub struct StoredRecordRegistryV2 {
     #[prost(bytes = "vec", tag = "1")]
     pub registry_digest: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredReplicationFollowerStateV3 {
+    #[prost(oneof = "stored_replication_follower_state_v3::State", tags = "1, 2")]
+    pub state: ::core::option::Option<stored_replication_follower_state_v3::State>,
+}
+/// Nested message and enum types in `StoredReplicationFollowerStateV3`.
+pub mod stored_replication_follower_state_v3 {
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct Detached {}
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct Attached {
+        #[prost(bytes = "vec", tag = "1")]
+        pub database_id: ::prost::alloc::vec::Vec<u8>,
+        #[prost(uint64, tag = "2")]
+        pub history_incarnation: u64,
+        #[prost(uint64, tag = "3")]
+        pub leadership_epoch: u64,
+        #[prost(bytes = "vec", tag = "4")]
+        pub catalog_digest: ::prost::alloc::vec::Vec<u8>,
+        #[prost(message, optional, tag = "5")]
+        pub applied: ::core::option::Option<
+            super::stored_changelog_history_state_v3::Position,
+        >,
+        #[prost(message, optional, tag = "6")]
+        pub acknowledged: ::core::option::Option<
+            super::stored_changelog_history_state_v3::Position,
+        >,
+    }
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum State {
+        #[prost(message, tag = "1")]
+        Detached(Detached),
+        #[prost(message, tag = "2")]
+        Attached(Attached),
+    }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredRetentionWatermarkV1 {

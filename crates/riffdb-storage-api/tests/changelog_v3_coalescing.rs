@@ -127,7 +127,8 @@ fn all_five_step_put_delete_histories_match_an_independent_net_state_oracle() {
 #[test]
 fn receipt_total_budget_is_checked_across_distinct_keys_and_poisoned_on_overflow() {
     let mut changes = AuthoritativeMutationAccumulatorV3::default();
-    let bytes = vec![0; riffdb_storage_api::MAX_CHANGELOG_FRAME_BYTES - 256];
+    // Reserve the complete frame wrapper as well as the receipt itself.
+    let bytes = vec![0; riffdb_storage_api::MAX_CHANGELOG_FRAME_BYTES - 342 - 256];
     changes
         .record(M::put(N::Entities, b"a", None, &bytes).unwrap())
         .unwrap();

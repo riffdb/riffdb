@@ -12,9 +12,9 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 99;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 103;
 /// Number of durable semantic roles accepted for current writes.
-pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 76;
+pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 80;
 /// Number of durable semantic roles accepted for current writes.
 pub const CURRENT_RECORD_SCHEMA_COUNT: usize = WRITABLE_RECORD_SCHEMA_COUNT;
 
@@ -1704,6 +1704,73 @@ const CHANGELOG_ALLOCATOR_V3_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema
 )
 .with_compact_identity(68, 1);
 
+const AUTHORITATIVE_STATE_CATALOG_V1_RECORD_SCHEMA: RecordSchema<'static> =
+    RecordSchema::new_current(
+        "riffdb.storage.v1.StoredAuthoritativeStateCatalogV1",
+        SchemaHash::from_bytes(*include_bytes!(
+            "../fixtures/durable-authoritative-state-catalog-v1-schema-hash.bin"
+        )),
+        34,
+        u32::from_be_bytes({
+            let bounds = *include_bytes!(
+                "../fixtures/durable-authoritative-state-catalog-v1-record-bound.bin"
+            );
+            [bounds[4], bounds[5], bounds[6], bounds[7]]
+        }) as usize,
+        preflight_payload::<94>,
+        validate_payload::<94, v1::StoredAuthoritativeStateCatalogV1>,
+    )
+    .with_compact_identity(69, 1);
+
+const LEADERSHIP_EPOCH_V1_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
+    "riffdb.storage.v1.StoredLeadershipEpochV1",
+    SchemaHash::from_bytes(*include_bytes!(
+        "../fixtures/durable-leadership-epoch-v1-schema-hash.bin"
+    )),
+    11,
+    u32::from_be_bytes({
+        let bounds = *include_bytes!("../fixtures/durable-leadership-epoch-v1-record-bound.bin");
+        [bounds[4], bounds[5], bounds[6], bounds[7]]
+    }) as usize,
+    preflight_payload::<95>,
+    validate_payload::<95, v1::StoredLeadershipEpochV1>,
+)
+.with_compact_identity(70, 1);
+
+const CHANGELOG_HISTORY_STATE_V3_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
+    "riffdb.storage.v1.StoredChangelogHistoryStateV3",
+    SchemaHash::from_bytes(*include_bytes!(
+        "../fixtures/durable-changelog-history-state-v3-schema-hash.bin"
+    )),
+    281,
+    u32::from_be_bytes({
+        let bounds =
+            *include_bytes!("../fixtures/durable-changelog-history-state-v3-record-bound.bin");
+        [bounds[4], bounds[5], bounds[6], bounds[7]]
+    }) as usize,
+    preflight_payload::<96>,
+    validate_payload::<96, v1::StoredChangelogHistoryStateV3>,
+)
+.with_compact_identity(71, 1);
+
+const REPLICATION_FOLLOWER_STATE_V3_RECORD_SCHEMA: RecordSchema<'static> =
+    RecordSchema::new_current(
+        "riffdb.storage.v1.StoredReplicationFollowerStateV3",
+        SchemaHash::from_bytes(*include_bytes!(
+            "../fixtures/durable-replication-follower-state-v3-schema-hash.bin"
+        )),
+        215,
+        u32::from_be_bytes({
+            let bounds = *include_bytes!(
+                "../fixtures/durable-replication-follower-state-v3-record-bound.bin"
+            );
+            [bounds[4], bounds[5], bounds[6], bounds[7]]
+        }) as usize,
+        preflight_payload::<97>,
+        validate_payload::<97, v1::StoredReplicationFollowerStateV3>,
+    )
+    .with_compact_identity(72, 1);
+
 mod sealed {
     pub trait ReadableRecordMessage {}
     pub trait WritableRecordMessage: ReadableRecordMessage {}
@@ -1907,6 +1974,22 @@ readable_message!(
     CHANGELOG_ALLOCATOR_V3_RECORD_SCHEMA
 );
 readable_message!(
+    v1::StoredAuthoritativeStateCatalogV1,
+    AUTHORITATIVE_STATE_CATALOG_V1_RECORD_SCHEMA
+);
+readable_message!(
+    v1::StoredLeadershipEpochV1,
+    LEADERSHIP_EPOCH_V1_RECORD_SCHEMA
+);
+readable_message!(
+    v1::StoredChangelogHistoryStateV3,
+    CHANGELOG_HISTORY_STATE_V3_RECORD_SCHEMA
+);
+readable_message!(
+    v1::StoredReplicationFollowerStateV3,
+    REPLICATION_FOLLOWER_STATE_V3_RECORD_SCHEMA
+);
+readable_message!(
     v1::StoredValidatedPrefixCheckpointV1,
     VALIDATED_PREFIX_CHECKPOINT_V1_RECORD_SCHEMA
 );
@@ -2057,6 +2140,10 @@ writable_message!(v1::StoredCommandSegmentV5);
 writable_message!(v1::StoredCleanCloseLifecycleV1);
 writable_message!(v1::StoredColumnarProjectionControlV1);
 writable_message!(v1::StoredChangelogTransactionAllocatorV3);
+writable_message!(v1::StoredAuthoritativeStateCatalogV1);
+writable_message!(v1::StoredLeadershipEpochV1);
+writable_message!(v1::StoredChangelogHistoryStateV3);
+writable_message!(v1::StoredReplicationFollowerStateV3);
 writable_message!(v1::StoredEntityChainHeadV1);
 writable_message!(v1::StoredChangelogV2RotationReceiptV1);
 writable_message!(v1::StoredCommandCapsuleV4);
@@ -2253,6 +2340,10 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     CLEAN_CLOSE_LIFECYCLE_V1_RECORD_SCHEMA,
     COLUMNAR_PROJECTION_CONTROL_V1_RECORD_SCHEMA,
     CHANGELOG_ALLOCATOR_V3_RECORD_SCHEMA,
+    AUTHORITATIVE_STATE_CATALOG_V1_RECORD_SCHEMA,
+    LEADERSHIP_EPOCH_V1_RECORD_SCHEMA,
+    CHANGELOG_HISTORY_STATE_V3_RECORD_SCHEMA,
+    REPLICATION_FOLLOWER_STATE_V3_RECORD_SCHEMA,
     PRE_WP280_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_TOKEN_LOOKUP_RECORD_SCHEMA,
@@ -2338,6 +2429,10 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     CLEAN_CLOSE_LIFECYCLE_V1_RECORD_SCHEMA,
     COLUMNAR_PROJECTION_CONTROL_V1_RECORD_SCHEMA,
     CHANGELOG_ALLOCATOR_V3_RECORD_SCHEMA,
+    AUTHORITATIVE_STATE_CATALOG_V1_RECORD_SCHEMA,
+    LEADERSHIP_EPOCH_V1_RECORD_SCHEMA,
+    CHANGELOG_HISTORY_STATE_V3_RECORD_SCHEMA,
+    REPLICATION_FOLLOWER_STATE_V3_RECORD_SCHEMA,
 ];
 
 /// Current durable schemas. `current` is exactly synonymous with writable roles.

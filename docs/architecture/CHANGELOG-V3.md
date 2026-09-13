@@ -38,6 +38,31 @@ The journal precondition hashes the complete canonical envelope. Bare counters,
 application/admin allocator identities, missing states and zero `Next` refuse.
 First, maximum and exhausted envelope vectors are frozen separately.
 
+The catalog and leadership codecs have distinct retained identities (tags 69
+and 70, revision 1), rather than reusing a registry digest or incarnation record.
+The catalog accepts only the single owned inventory's exact digest; a foreign
+catalog returns a value-free incompatible-format error. `LeadershipEpochV1` is
+nonzero and has checked advancement, with no successor after its maximum.
+Frame bindings use that checked type without changing any V3 frame bytes.
+Neither codec grants activation or leadership. The history and follower root
+codecs use tags 71 and 72, revision 1, with maximum Protobuf payloads of 281 and
+215 bytes. History binds lineage, anchor, materialized tail and minimum resume
+points, each with an exact receipt hash and dual frontier. Equal positions
+cannot substitute another hash or frontier. Follower state is explicitly
+detached or attached, with applied and optional acknowledged positions;
+acknowledgement cannot outrun applied state. Decoding roots grants no
+publication, ancestry, startup-readiness or reclamation permission.
+
+An isolated hardened installation primitive now atomically installs all five
+roots, the two empty/new control tables, and the sequence-one activation receipt.
+Its only authoritative mutation is the exact registry replacement, when needed;
+it preserves application/admin allocators and never synthesizes older receipts.
+Process-exit tests cover preflight, uncommitted roots, uncommitted receipt and
+completed commit, plus retry/reopen and partial-state refusal. This primitive
+is **not called by production startup**: full-validation integration and every
+post-activation writer/recovery lane must be completed first. These isolated
+transaction tests do not discharge WP-772's end-to-end crash obligations.
+
 Registering this additive codec changes the registry digest but is **not** a
 completed database upgrade. The pre-V3 registry digest remains frozen in a
 compatibility test; its validated, atomic activation migration remains a release
@@ -68,7 +93,10 @@ valid source shape is not an activation permit.
 Frames carry complete contiguous receipt ranges, exact catalog and leadership
 bindings, source counts, checksums and V3-only framing. The 32 MiB frame ceiling
 and 256-transition ceiling remain independent; one receipt is never split to
-make it fit. Decoders reject unknown versions, malformed absence, reordering,
+make it fit. Receipt admission reserves the entire frame wrapper, and direct
+groups over 256 logical transitions refuse before storage mutation. The
+accumulator poisons the whole result when this budget is exceeded. Decoders
+reject unknown versions, malformed absence, reordering,
 duplicates, wrong counts, truncation, trailing bytes and broken history edges.
 Debug and error text omit keys, values and payload-derived hashes.
 

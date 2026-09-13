@@ -1017,7 +1017,21 @@ shape!(COLUMNAR_CONTROL [
     message(9, &COLUMNAR_FAILURE),
 ]);
 
-const ROOTS: [&Shape; 94] = [
+shape!(CHANGELOG_POSITION_V3[fixed_bytes(2, 32)]);
+shape!(CHANGELOG_HISTORY_STATE_V3 [
+    fixed_bytes(1, 16), fixed_bytes(4, 32),
+    message(5, &CHANGELOG_POSITION_V3), message(6, &CHANGELOG_POSITION_V3),
+    message(7, &CHANGELOG_POSITION_V3),
+]);
+shape!(REPLICATION_FOLLOWER_ATTACHED_V3 [
+    fixed_bytes(1, 16), fixed_bytes(4, 32),
+    message(5, &CHANGELOG_POSITION_V3), message(6, &CHANGELOG_POSITION_V3),
+]);
+shape!(REPLICATION_FOLLOWER_STATE_V3 [
+    message(1, &UNIT), message(2, &REPLICATION_FOLLOWER_ATTACHED_V3),
+]);
+
+const ROOTS: [&Shape; 98] = [
     &ROOT_EMPTY,
     &ROOT_DATABASE_ID,
     &ROOT_OPTIONAL_UNIT_FIELD_TWO,
@@ -1123,6 +1137,10 @@ const ROOTS: [&Shape; 94] = [
     &CLEAN_CLOSE_LIFECYCLE,
     &COLUMNAR_CONTROL,
     &ROOT_OPTIONAL_UNIT_FIELD_TWO,
+    &RECORD_REGISTRY_V2, // Catalog digest has the same fixed 32-byte wire shape, not the same role.
+    &ROOT_EMPTY,         // Nonzero leadership is checked by the semantic codec.
+    &CHANGELOG_HISTORY_STATE_V3,
+    &REPLICATION_FOLLOWER_STATE_V3,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {
