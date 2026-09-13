@@ -93,6 +93,15 @@ are physical transaction tests, not operation authorization/source-validation or
 production activation evidence. Journal, lifecycle and lineage ceremonies are
 explicitly refused by this owner pending their separate integration.
 
+The checkpoint receipt planner reads that same pinned source view. It validates
+the current entity proof, collects only changed checkpoint-head bytes, preserves
+exact delete/replacement preconditions, and includes the chained checkpoint
+metadata in the complete bounded receipt. Identical stored proofs are no-ops;
+wrong parents and malformed old rows refuse. A delta larger than one receipt
+refuses without publishing a partial snapshot. The planner is not yet selected
+by the production checkpoint writer; its caller still owns complete prefix
+validation, the drained write gate and publication/coverage effects.
+
 Registering this additive codec changes the registry digest but is **not** a
 completed database upgrade. The pre-V3 registry digest remains frozen in a
 compatibility test; its validated, atomic activation migration remains a release
