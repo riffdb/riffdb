@@ -2,13 +2,6 @@
 //! and no independent latest-root lookup; every byte belongs to the supplied pin.
 //! This is one input to clean eligibility, not a replacement for complete startup
 //! validation or proof that an application/journal suffix has been published.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "WP-772 clean/startup and published cursor wiring is still in progress"
-    )
-)]
 
 use redb::{ReadTransaction, ReadableTable, TableError, TableHandle, WriteTransaction};
 use riffdb_storage_api::{

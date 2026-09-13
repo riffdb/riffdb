@@ -2655,6 +2655,48 @@ pub(crate) fn recover_journal_path_with_media(
         header.checkpoint_administration_sequence(),
     );
     let tail_frontier = (tail.last_sequence, tail.last_administration_sequence);
+    let snapshot = database.begin_read().map_err(|_| JournalIoError::Io)?;
+    let v3 = crate::changelog_v3_journal::has_recovery_roots(&snapshot)
+        .map_err(|_| JournalIoError::Corrupt)?
+        || frames
+            .iter()
+            .any(crate::changelog_v3_journal::has_receipt_source);
+    if v3 {
+        let plan = crate::changelog_v3_journal::plan_recovery(
+            &snapshot,
+            &frames,
+            riffdb_types::DualFrontier::new(redb_frontier.0, redb_frontier.1),
+        )
+        .map_err(|_| JournalIoError::Corrupt)?;
+        drop(snapshot);
+        if frames.is_empty() && !tail.incomplete_tail && redb_frontier == checkpoint_frontier {
+            return Ok(());
+        }
+        if frames.is_empty()
+            && (checkpoint_frontier.0 > redb_frontier.0 || checkpoint_frontier.1 > redb_frontier.1)
+        {
+            return Err(JournalIoError::Corrupt);
+        }
+        if plan.replay_from < frames.len() {
+            replay_frames(database, &frames[plan.replay_from..])?;
+        }
+        #[cfg(test)]
+        crate::changelog_v3_journal::recovery_crash_edge("before-reclaim");
+        reset_journal_with_media(
+            media,
+            path,
+            &JournalFileHeader::with_frontiers(
+                database_id,
+                plan.covered.application(),
+                plan.covered.administration(),
+                tail.last_hash,
+            ),
+        )?;
+        #[cfg(test)]
+        crate::changelog_v3_journal::recovery_crash_edge("reclaimed");
+        return Ok(());
+    }
+    drop(snapshot);
     // An exact empty recovered extent needs no mutation. Preserving its
     // selected canonical header is required by ADR-0157 clean-close binding;
     // recycling an already-empty exact extent would manufacture a new header
@@ -2876,11 +2918,21 @@ fn replay_frames(database: &Database, frames: &[JournalFrame]) -> Result<(), Jou
         .set_durability(Durability::Immediate)
         .map_err(|_| JournalIoError::Io)?;
     for frame in frames {
-        for mutation in frame.mutations() {
-            apply_mutation(&transaction, mutation)?;
+        if crate::changelog_v3_journal::has_receipt_source(frame) {
+            crate::changelog_v3_journal::materialize_recovered_frame(&transaction, frame)
+                .map_err(|_| JournalIoError::Corrupt)?;
+        } else {
+            for mutation in frame.mutations() {
+                apply_mutation(&transaction, mutation)?;
+            }
         }
     }
-    transaction.commit().map_err(|_| JournalIoError::Io)
+    #[cfg(test)]
+    crate::changelog_v3_journal::recovery_crash_edge("staged");
+    transaction.commit().map_err(|_| JournalIoError::Io)?;
+    #[cfg(test)]
+    crate::changelog_v3_journal::recovery_crash_edge("committed");
+    Ok(())
 }
 
 fn verify_replayed_tail(

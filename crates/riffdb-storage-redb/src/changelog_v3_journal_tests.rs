@@ -29,7 +29,7 @@ fn audit_source(history: ChangelogHistoryStateV3) -> JournalFrame {
         vec![
             JournalMutation::put(
                 JournalTable::Audit,
-                assigned.get().to_be_bytes(),
+                crate::keys::encode_audit_key(assigned),
                 b"opaque-audit".to_vec(),
             )
             .unwrap(),
@@ -60,6 +60,435 @@ fn audit_source(history: ChangelogHistoryStateV3) -> JournalFrame {
         ],
     )
     .unwrap()
+}
+
+fn publish_recovery_source(path: &Path, source: &JournalFrame) {
+    publish_recovery_sources(path, &[source]);
+}
+
+fn publish_recovery_sources(path: &Path, sources: &[&JournalFrame]) {
+    let source = sources[0];
+    let header = crate::journal::JournalFileHeader::with_frontiers(
+        source.database_id(),
+        source.predecessor_sequence(),
+        source.predecessor_administration_sequence(),
+        source.previous_hash(),
+    );
+    let lane = crate::journal::JournalLane::open(path, &header).unwrap();
+    for source in sources {
+        lane.submit(source.encode().unwrap())
+            .unwrap()
+            .wait()
+            .unwrap();
+    }
+}
+
+#[test]
+fn journal_recovery_preserves_a_materialized_prefix_and_replays_only_its_exact_successor() {
+    let scope = crate::test_path::ScopedDirectory::new("v3-recovery-partial-overlap");
+    let database = fixture(&scope.join("db.redb"), PRE_V3_REGISTRY);
+    let history = activate_validated(
+        database.begin_write().unwrap(),
+        lineage(),
+        DualFrontier::INITIAL,
+    )
+    .unwrap();
+    let first = audit_source(history);
+    let transaction = database.begin_write().unwrap();
+    let original =
+        crate::changelog_v3_journal::materialize_recovered_frame(&transaction, &first).unwrap();
+    transaction.commit().unwrap();
+    let successor = history.advance(&original).unwrap();
+    let second = audit_source(successor);
+    let second = JournalFrame::service_audit(
+        second.database_id(),
+        second.predecessor_sequence(),
+        second.predecessor_administration_sequence(),
+        second.covered_administration_sequence(),
+        1,
+        first.encode().unwrap().frame_hash(),
+        second.mutations().to_vec(),
+    )
+    .unwrap();
+    let path = scope.join("source.journal");
+    publish_recovery_sources(&path, &[&first, &second]);
+    let old_pin = database.begin_read().unwrap();
+    crate::journal::recover_journal_path(&database, &path, lineage().database_id()).unwrap();
+    let pin = database.begin_read().unwrap();
+    assert_eq!(
+        crate::changelog_v3_journal::verify_materialized_frame(&pin, &first).unwrap(),
+        original
+    );
+    let appended = crate::changelog_v3_journal::verify_materialized_frame(&pin, &second).unwrap();
+    assert_eq!(
+        crate::changelog_v3_roots::validate_retained_history(&pin).unwrap(),
+        Some(successor.advance(&appended).unwrap())
+    );
+    assert_eq!(
+        crate::changelog_v3_roots::validate_retained_history(&old_pin).unwrap(),
+        Some(successor)
+    );
+    assert_eq!(
+        pin.open_table(crate::layout::AUDIT).unwrap().len().unwrap(),
+        2
+    );
+}
+
+#[test]
+fn journal_recovery_refuses_skipped_or_duplicate_v3_positions_before_replay() {
+    use riffdb_storage_api::{ChangelogTransactionAllocator, ChangelogTransactionSequence};
+    for assigned in [2, 4] {
+        let scope = crate::test_path::ScopedDirectory::new("v3-recovery-position-refusal");
+        let database = fixture(&scope.join("db.redb"), PRE_V3_REGISTRY);
+        let history = activate_validated(
+            database.begin_write().unwrap(),
+            lineage(),
+            DualFrontier::INITIAL,
+        )
+        .unwrap();
+        let first = audit_source(history);
+        let transaction = database.begin_write().unwrap();
+        let receipt =
+            crate::changelog_v3_journal::materialize_recovered_frame(&transaction, &first).unwrap();
+        transaction.abort().unwrap();
+        let second = audit_source(history.advance(&receipt).unwrap());
+        let allocator = ChangelogTransactionAllocator::Next(
+            ChangelogTransactionSequence::new(assigned).unwrap(),
+        );
+        let mut mutations = second.mutations().to_vec();
+        *mutations
+            .iter_mut()
+            .find(|m| m.key() == key(N::NextChangelogTransaction).unwrap().as_bytes())
+            .unwrap() = JournalMutation::replace(
+            JournalTable::Meta,
+            key(N::NextChangelogTransaction).unwrap().as_bytes(),
+            encode_changelog_transaction_allocator_v3(allocator)
+                .unwrap()
+                .as_bytes(),
+            encode_changelog_transaction_allocator_v3(allocator.allocate_one().unwrap().1)
+                .unwrap()
+                .into_bytes(),
+        )
+        .unwrap();
+        let second = JournalFrame::service_audit(
+            second.database_id(),
+            second.predecessor_sequence(),
+            second.predecessor_administration_sequence(),
+            second.covered_administration_sequence(),
+            1,
+            first.encode().unwrap().frame_hash(),
+            mutations,
+        )
+        .unwrap();
+        let path = scope.join("source.journal");
+        publish_recovery_sources(&path, &[&first, &second]);
+        let before = std::fs::read(&path).unwrap();
+        assert_eq!(
+            crate::journal::recover_journal_path(&database, &path, lineage().database_id()),
+            Err(crate::journal::JournalIoError::Corrupt)
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(
+            crate::changelog_v3_roots::validate_retained_history(&database.begin_read().unwrap())
+                .unwrap(),
+            Some(history)
+        );
+        assert_eq!(
+            database
+                .begin_read()
+                .unwrap()
+                .open_table(crate::layout::AUDIT)
+                .unwrap()
+                .len()
+                .unwrap(),
+            0
+        );
+    }
+}
+
+#[test]
+fn journal_recovery_materializes_v3_before_reclaim_and_retries_without_another_receipt() {
+    let scope = crate::test_path::ScopedDirectory::new("v3-actual-journal-recovery");
+    let database = fixture(&scope.join("db.redb"), PRE_V3_REGISTRY);
+    let history = activate_validated(
+        database.begin_write().unwrap(),
+        lineage(),
+        DualFrontier::INITIAL,
+    )
+    .unwrap();
+    let source = audit_source(history);
+    let path = scope.join("source.journal");
+    publish_recovery_source(&path, &source);
+    let before = std::fs::read(&path).unwrap();
+    crate::journal::recover_journal_path(&database, &path, lineage().database_id()).unwrap();
+    let pin = database.begin_read().unwrap();
+    let receipt = crate::changelog_v3_journal::verify_materialized_frame(&pin, &source).unwrap();
+    let successor = history.advance(&receipt).unwrap();
+    assert_eq!(
+        crate::changelog_v3_roots::validate_retained_history(&pin).unwrap(),
+        Some(successor)
+    );
+    let (_, tail) = crate::journal::scan_journal(&path, lineage().database_id(), |_| Ok(()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(tail.transition_count, 0);
+    assert_ne!(std::fs::read(&path).unwrap(), before);
+    let reclaimed = std::fs::read(&path).unwrap();
+    crate::journal::recover_journal_path(&database, &path, lineage().database_id()).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), reclaimed);
+    assert_eq!(
+        crate::changelog_v3_roots::validate_retained_history(&database.begin_read().unwrap())
+            .unwrap(),
+        Some(successor)
+    );
+}
+
+#[test]
+fn journal_recovery_verifies_original_v3_overlap_after_a_later_direct_overwrite() {
+    let scope = crate::test_path::ScopedDirectory::new("v3-actual-journal-overlap");
+    let database = fixture(&scope.join("db.redb"), PRE_V3_REGISTRY);
+    let history = activate_validated(
+        database.begin_write().unwrap(),
+        lineage(),
+        DualFrontier::INITIAL,
+    )
+    .unwrap();
+    let source = command_source(history, None, Some(b"original"));
+    let path = scope.join("source.journal");
+    publish_recovery_source(&path, &source);
+    let transaction = database.begin_write().unwrap();
+    let original =
+        crate::changelog_v3_journal::materialize_recovered_frame(&transaction, &source).unwrap();
+    transaction.commit().unwrap();
+    let direct = crate::changelog_v3_write::CapturedImmediateWrite::begin(
+        &database,
+        RedbCommitProfile::Standard,
+        riffdb_storage_api::ChangelogAttributionV3::DirectApplicationOrServiceAuditGroup,
+    )
+    .unwrap();
+    direct
+        .open_table(crate::layout::ENTITIES)
+        .unwrap()
+        .insert(b"key".as_slice(), b"later".as_slice())
+        .unwrap();
+    direct
+        .open_table(crate::layout::COMMITS)
+        .unwrap()
+        .insert(
+            2_u64.to_be_bytes().as_slice(),
+            b"later-opaque-commit".as_slice(),
+        )
+        .unwrap();
+    direct
+        .open_table(META)
+        .unwrap()
+        .insert(
+            META_APPLICATION_SEQUENCE,
+            encode_application_sequence_allocator_v1(ApplicationSequenceAllocator::Next(
+                riffdb_types::CommitSequence::new(3).unwrap(),
+            ))
+            .unwrap()
+            .as_bytes(),
+        )
+        .unwrap();
+    direct.finish().unwrap().commit_for_test().unwrap();
+    let history =
+        crate::changelog_v3_roots::validate_retained_history(&database.begin_read().unwrap())
+            .unwrap();
+    crate::journal::recover_journal_path(&database, &path, lineage().database_id()).unwrap();
+    let pin = database.begin_read().unwrap();
+    assert_eq!(
+        crate::changelog_v3_journal::verify_materialized_frame(&pin, &source).unwrap(),
+        original
+    );
+    assert_eq!(
+        crate::changelog_v3_roots::validate_retained_history(&pin).unwrap(),
+        history
+    );
+    assert_eq!(
+        pin.open_table(crate::layout::ENTITIES)
+            .unwrap()
+            .get(b"key".as_slice())
+            .unwrap()
+            .unwrap()
+            .value(),
+        b"later"
+    );
+}
+
+#[test]
+fn journal_recovery_refuses_v3_gaps_and_partial_evidence_without_reclaiming_source() {
+    for fault in [
+        "missing-counter",
+        "partial-roots",
+        "missing-overlap",
+        "wrong-before-image",
+    ] {
+        let scope = crate::test_path::ScopedDirectory::new("v3-recovery-refusal");
+        let database = fixture(&scope.join("db.redb"), PRE_V3_REGISTRY);
+        let history = activate_validated(
+            database.begin_write().unwrap(),
+            lineage(),
+            DualFrontier::INITIAL,
+        )
+        .unwrap();
+        let mut source = command_source(history, None, Some(b"original"));
+        if fault == "missing-counter" {
+            source = JournalFrame::command(
+                source.database_id(),
+                source.predecessor_sequence(),
+                source.covered_sequence(),
+                source.predecessor_administration_sequence(),
+                source.covered_administration_sequence(),
+                1,
+                source.previous_hash(),
+                source
+                    .mutations()
+                    .iter()
+                    .filter(|m| m.key() != key(N::NextChangelogTransaction).unwrap().as_bytes())
+                    .cloned()
+                    .collect(),
+            )
+            .unwrap();
+        }
+        let transaction = database.begin_write().unwrap();
+        match fault {
+            "partial-roots" => {
+                transaction
+                    .open_table(META)
+                    .unwrap()
+                    .remove(key(N::LeadershipEpoch).unwrap())
+                    .unwrap();
+            }
+            "missing-overlap" => {
+                crate::changelog_v3_journal::materialize_recovered_frame(&transaction, &source)
+                    .unwrap();
+                transaction
+                    .open_table(HISTORY)
+                    .unwrap()
+                    .remove(2_u64.to_be_bytes().as_slice())
+                    .unwrap();
+            }
+            "wrong-before-image" => {
+                transaction
+                    .open_table(crate::layout::ENTITIES)
+                    .unwrap()
+                    .insert(b"key".as_slice(), b"unexpected".as_slice())
+                    .unwrap();
+            }
+            _ => {}
+        }
+        transaction.commit().unwrap();
+        let path = scope.join("source.journal");
+        publish_recovery_source(&path, &source);
+        let journal_before = std::fs::read(&path).unwrap();
+        let roots_before = metadata(&database);
+        let commits_before = database
+            .begin_read()
+            .unwrap()
+            .open_table(crate::layout::COMMITS)
+            .unwrap()
+            .len()
+            .unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                crate::journal::recover_journal_path(&database, &path, lineage().database_id()),
+                Err(crate::journal::JournalIoError::Corrupt),
+                "{fault}"
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), journal_before, "{fault}");
+            assert_eq!(metadata(&database), roots_before, "{fault}");
+            assert_eq!(
+                database
+                    .begin_read()
+                    .unwrap()
+                    .open_table(crate::layout::COMMITS)
+                    .unwrap()
+                    .len()
+                    .unwrap(),
+                commits_before,
+                "{fault}"
+            );
+        }
+    }
+}
+
+#[test]
+fn v3_journal_recovery_process_child() {
+    let Some(path) = std::env::var_os("RIFFDB_V3_RECOVERY_DATABASE") else {
+        return;
+    };
+    let database = Database::open(&path).unwrap();
+    let journal = crate::journal::journal_path(Path::new(&path));
+    crate::journal::recover_journal_path(&database, &journal, lineage().database_id()).unwrap();
+    panic!("the requested recovery crash edge was not reached");
+}
+
+#[test]
+fn v3_journal_recovery_process_crashes_preserve_at_least_one_exact_receipt_source() {
+    for edge in ["staged", "committed", "before-reclaim", "reclaimed"] {
+        let scope = crate::test_path::ScopedDirectory::new("v3-recovery-process");
+        let path = scope.join("db.redb");
+        let database = fixture(&path, PRE_V3_REGISTRY);
+        let history = activate_validated(
+            database.begin_write().unwrap(),
+            lineage(),
+            DualFrontier::INITIAL,
+        )
+        .unwrap();
+        let source = command_source(history, None, Some(b"original"));
+        let journal = crate::journal::journal_path(&path);
+        publish_recovery_source(&journal, &source);
+        drop(database);
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("changelog_v3_activation::tests::journal_materialization::v3_journal_recovery_process_child")
+            .arg("--nocapture")
+            .env("RIFFDB_V3_RECOVERY_DATABASE", &path)
+            .env("RIFFDB_V3_RECOVERY_EDGE", edge)
+            .status().unwrap();
+        assert_eq!(status.code(), Some(93), "{edge}");
+        let database = Database::open(&path).unwrap();
+        let pin = database.begin_read().unwrap();
+        let actual = crate::changelog_v3_roots::validate_retained_history(&pin)
+            .unwrap()
+            .unwrap();
+        let (_, tail) = crate::journal::scan_journal(&journal, lineage().database_id(), |frame| {
+            assert_eq!(
+                frame.encode().unwrap().as_bytes(),
+                source.encode().unwrap().as_bytes()
+            );
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(tail.transition_count, usize::from(edge != "reclaimed"));
+        if edge == "staged" {
+            assert_eq!(actual, history);
+            assert!(
+                pin.open_table(crate::layout::ENTITIES)
+                    .unwrap()
+                    .get(b"key".as_slice())
+                    .unwrap()
+                    .is_none()
+            );
+        } else {
+            assert_eq!(actual.tail().sequence().get(), 2);
+            crate::changelog_v3_journal::verify_materialized_frame(&pin, &source).unwrap();
+        }
+        drop(pin);
+        for _ in 0..2 {
+            crate::journal::recover_journal_path(&database, &journal, lineage().database_id())
+                .unwrap();
+            let pin = database.begin_read().unwrap();
+            let receipt =
+                crate::changelog_v3_journal::verify_materialized_frame(&pin, &source).unwrap();
+            assert_eq!(
+                crate::changelog_v3_roots::validate_retained_history(&pin).unwrap(),
+                Some(history.advance(&receipt).unwrap())
+            );
+        }
+    }
 }
 
 #[test]
@@ -327,6 +756,10 @@ fn complete_changelog_history_validation_rejects_rechecksummed_broken_interiors(
         DualFrontier::INITIAL,
     )
     .unwrap();
+    let original_source = audit_source(history);
+    let path = scope.join("source.journal");
+    publish_recovery_source(&path, &original_source);
+    let journal_before = std::fs::read(&path).unwrap();
     let mut receipts = Vec::new();
     for _ in 0..3 {
         let source = audit_source(history);
@@ -379,6 +812,11 @@ fn complete_changelog_history_validation_rejects_rechecksummed_broken_interiors(
             Some(history)
         );
         assert!(crate::changelog_v3_roots::validate_retained_history(&fresh).is_err());
+        assert_eq!(
+            crate::journal::recover_journal_path(&database, &path, lineage().database_id()),
+            Err(crate::journal::JournalIoError::Corrupt)
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), journal_before);
         assert_eq!(
             crate::changelog_v3_roots::validate_retained_history(&pinned).unwrap(),
             Some(history)

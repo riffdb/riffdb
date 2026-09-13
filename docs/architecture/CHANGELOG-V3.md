@@ -154,10 +154,23 @@ and predecessor from one pinned checkpoint and compares complete source-derived
 bytes; later entity overwrite or deletion cannot substitute for that evidence.
 The live retained-mutation converter and independently decoded journal converter
 share the same bounded fold and produce identical receipt bytes without a live
-frame re-decode. Tests currently prove these physical primitives with opaque
-record fixtures, not real command semantics, complete history ancestry, production
-recovery selection, or the required crash matrix. Writer admission and recovery
-integration remain pending.
+frame re-decode.
+
+The existing journal recovery entry now selects strict V3 recovery whenever a
+V3 source counter or any retained V3 control domain is present. Before replay or
+suffix reclamation it validates the complete retained chain and every original
+overlap from one pin; it replays only the exact missing successor suffix in its
+existing hardened transaction. A later direct overwrite or dual-frontier advance
+does not invalidate an exact original receipt. Missing counters, skipped or
+duplicate positions, partial roots, missing overlap rows and broken ancestry
+refuse without reclaiming the source. An already-empty extent keeps its bounded
+root check and exact-header no-op behavior; it does not scan retained history.
+Process tests exit after replay staging, commit, and before/after reclamation,
+then reopen and retry twice to prove an original source or identical durable
+receipt remains. These tests use opaque record payloads and prove physical
+recovery, not full command semantics, acknowledgement or the complete package
+crash matrix. Production activation, live admission and checkpoint wiring remain
+pending; ordinary legacy replay checks and journal encodings are unchanged.
 
 The complete retained-history validator is separate from bounded clean-root
 eligibility. It streams every retained receipt from the exact minimum-resume
