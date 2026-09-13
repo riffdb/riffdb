@@ -59,6 +59,7 @@ trap - EXIT INT TERM
 ./scripts/check-adr-obligations
 ./scripts/adr-new --self-test
 ./scripts/adr-index --check
+./scripts/check-acceptance-commits
 ./scripts/check-generated
 ./scripts/check-helm-render
 ./scripts/check-helm-operator-package

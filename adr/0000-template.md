@@ -5,6 +5,7 @@ status: proposed             # proposed | accepted | rejected | superseded
 tier: surface                # surface | guarantee; internal changes need no record
 date: YYYY-MM-DD             # the day the record was written
 accepted: null               # the date a human accepted it; acceptance is a human act
+acceptance: null             # who accepted it and how (e.g. "maintainer, in session"); required once accepted
 requires: []                 # [ADR-0093, ...] records this one depends on
 amends: []                   # [ADR-0093, ...] records this one refines
 supersedes: []               # [ADR-0093, ...] records this one replaces

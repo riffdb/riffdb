@@ -1,6 +1,7 @@
 /target/
 /xtask/target/
 /examples/app-baseline/target/
+/examples/**/target/
 
 # Rebuildable local exact-query provider checkpoints
 /projections/

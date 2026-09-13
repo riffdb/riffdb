@@ -195,6 +195,20 @@ out << "- **Commit discipline:** commit this package's changes on their own. `ac
        "commit, so mixing packages in one range or widening your own `allowed_paths` fails the " \
        "check. Widen paths in a separate reviewed commit."
 out << ""
+directives = begin
+  Array((RiffdbGovernance.tiers_config || {})["directives"]).select { |entry| entry.is_a?(Hash) }
+rescue StandardError
+  []
+end
+unless directives.empty?
+  out << "## Standing directives"
+  out << ""
+  directives.each do |directive|
+    since = directive["since"].to_s.strip
+    out << "- **#{directive['id']}**#{since.empty? ? '' : " (since #{since})"}: #{paragraph(directive['text'])}"
+  end
+  out << ""
+end
 out << "## Objective"
 out << ""
 out << paragraph(package["objective"])

@@ -1,0 +1,280 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Acceptance of a decision record is a human act, and it must be visible as
+# one. Two rules, both configured under `acceptance:` in governance/tiers.yaml:
+#
+#   1. A commit that sets an ADR's status to accepted (or adds a record that is
+#      already accepted) may touch only records, the manifest, and SPEC.md
+#      (`own_commit_paths`). Acceptance never rides along with code.
+#   2. A v2 record accepted on or after `reference_required_since` carries a
+#      non-empty `acceptance:` front-matter value naming the human act (who,
+#      where, and how the exact text was accepted).
+#
+# The working tree is checked the same way, so `./scripts/acceptance` catches a
+# violation before it is committed.
+
+require "json"
+require "open3"
+require "yaml"
+require_relative "lib/riffdb_governance"
+
+USAGE = <<~HELP
+  Usage: check-acceptance-commits [options]
+
+  Checks every commit in the range, and the working tree, for an ADR whose
+  status becomes accepted. Such a change may touch only the paths listed under
+  acceptance.own_commit_paths in governance/tiers.yaml, and a v2 record accepted
+  on or after acceptance.reference_required_since must carry a non-empty
+  `acceptance:` front-matter reference.
+
+  Options:
+        --base <ref>        check merge-base(HEAD, <ref>)..HEAD
+        --range <a>..<b>    check this commit range
+        --no-worktree       skip the uncommitted working-tree check
+        --json              emit {range, violations}
+        --self-test         prove the rules against a fabricated repository
+    -h, --help              show this message
+
+  Exit status: 0 when no violation was found, 1 when any was, 2 on a usage error.
+HELP
+
+ADR_FILE = %r{\Aadr/\d{4}-[^/]+\.md\z}
+FRONT = /\A---\r?\n(.*?)\r?\n---[ \t]*\r?\n/m
+LEGACY_STATUS = /^-[ \t]+\*\*Status:\*\*[ \t]*(\w+)/
+
+def root
+  ENV["RIFFDB_GOVERNANCE_ROOT"] || RiffdbGovernance.root
+end
+
+def git(*args)
+  stdout, _stderr, status = Open3.capture3("git", "-C", root, *args)
+  status.success? ? stdout : nil
+end
+
+def config
+  @config ||= begin
+    path = File.join(root, "governance", "tiers.yaml")
+    File.file?(path) ? (YAML.safe_load(File.read(path, encoding: "UTF-8")) || {}) : {}
+  end
+end
+
+def acceptance_config
+  config.fetch("acceptance", {}) || {}
+end
+
+def own_commit_paths
+  Array(acceptance_config["own_commit_paths"]).map(&:to_s).then do |paths|
+    paths.empty? ? %w[adr/** work_packages.yaml SPEC.md] : paths
+  end
+end
+
+def reference_required_since
+  value = acceptance_config["reference_required_since"]
+  value.nil? ? nil : Date.parse(value.to_s)
+rescue ArgumentError
+  nil
+end
+
+# [status, accepted_on (Date or nil), acceptance (String or nil), v2?]
+def record_facts(text)
+  return ["", nil, nil, false] if text.nil? || text.empty?
+
+  front = text[FRONT, 1]
+  if front
+    data = begin
+      YAML.safe_load(front, permitted_classes: [Date]) || {}
+    rescue StandardError
+      {}
+    end
+    accepted_on = begin
+      value = data["accepted"]
+      value.nil? ? nil : Date.parse(value.to_s)
+    rescue ArgumentError
+      nil
+    end
+    return [data["status"].to_s.strip.downcase, accepted_on, data["acceptance"].to_s.strip, true]
+  end
+  [text[LEGACY_STATUS, 1].to_s.downcase, nil, nil, false]
+end
+
+def accepted?(text)
+  record_facts(text)[0] == "accepted"
+end
+
+# One change = a label, its file list, and a way to read each file before and after.
+def check_change(label, files, before, after)
+  violations = []
+  flips = files.select do |path|
+    path.match?(ADR_FILE) && accepted?(after.call(path)) && !accepted?(before.call(path))
+  end
+  return violations if flips.empty?
+
+  offenders = files.reject { |path| RiffdbGovernance::Glob.match_any?(own_commit_paths, path) }
+  unless offenders.empty?
+    violations << "#{label}: accepts #{flips.join(', ')} but also changes #{offenders.first(8).join(', ')}" \
+                  "#{offenders.length > 8 ? ', ...' : ''}; acceptance is its own commit " \
+                  "(allowed: #{own_commit_paths.join(', ')})."
+  end
+
+  since = reference_required_since
+  flips.each do |path|
+    _status, accepted_on, acceptance, v2 = record_facts(after.call(path))
+    next unless v2 && since
+    next if accepted_on && accepted_on < since
+    next unless acceptance.to_s.empty?
+
+    violations << "#{label}: #{path} is accepted#{accepted_on ? " on #{accepted_on}" : ''} without an " \
+                  "`acceptance:` reference naming the human act (required since #{since})."
+  end
+  violations
+end
+
+def check_commits(range)
+  revs = (git("rev-list", "--reverse", range) || "").split("\n").map(&:strip).reject(&:empty?)
+  revs.flat_map do |rev|
+    files = (git("diff-tree", "--no-commit-id", "--name-only", "-r", rev) || "").split("\n").reject(&:empty?)
+    short = rev[0, 8]
+    subject = (git("log", "-1", "--format=%s", rev) || "").strip
+    check_change(
+      "commit #{short} (#{subject})", files,
+      ->(path) { git("show", "#{rev}^:#{path}") || "" },
+      ->(path) { git("show", "#{rev}:#{path}") || "" }
+    )
+  end
+end
+
+def check_worktree
+  return [] unless git("rev-parse", "--verify", "--quiet", "HEAD")
+
+  files = ((git("diff", "--name-only", "HEAD") || "") + (git("ls-files", "--others", "--exclude-standard") || ""))
+          .split("\n").map(&:strip).reject(&:empty?).uniq.sort
+  check_change(
+    "working tree", files,
+    ->(path) { git("show", "HEAD:#{path}") || "" },
+    ->(path) { (file = File.join(root, path)) && File.file?(file) ? File.read(file, encoding: "UTF-8") : "" }
+  )
+end
+
+def default_range
+  head = git("rev-parse", "--abbrev-ref", "HEAD").to_s.strip
+  if head != "main" && git("rev-parse", "--verify", "--quiet", "main")
+    base = git("merge-base", "HEAD", "main").to_s.strip
+    return "#{base}..HEAD" unless base.empty?
+  end
+  git("rev-parse", "--verify", "--quiet", "HEAD~1") ? "HEAD~1..HEAD" : nil
+end
+
+def self_test(script)
+  require "tmpdir"
+  failures = []
+  Dir.mktmpdir("riffdb-acceptance-") do |dir|
+    run = lambda do |*args|
+      Open3.capture3({ "RIFFDB_GOVERNANCE_ROOT" => dir }, "ruby", script, *args)
+    end
+    sh = lambda do |*args|
+      _out, err, status = Open3.capture3("git", "-C", dir, *args)
+      raise "git #{args.join(' ')} failed: #{err}" unless status.success?
+    end
+    write = lambda do |path, text|
+      full = File.join(dir, path)
+      Dir.mkdir(File.dirname(full)) unless File.directory?(File.dirname(full))
+      File.write(full, text)
+    end
+    commit = lambda do |message|
+      sh.call("add", "-A")
+      sh.call("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", message)
+      (Open3.capture3("git", "-C", dir, "rev-parse", "HEAD").first || "").strip
+    end
+    record = lambda do |number, status, acceptance|
+      acc = acceptance.nil? ? "" : "acceptance: #{acceptance}\n"
+      "---\nadr: #{number}\ntitle: T\nstatus: #{status}\ntier: surface\ndate: \"2030-01-01\"\n" \
+        "accepted: #{status == 'accepted' ? '"2030-01-02"' : 'null'}\n#{acc}requirements: []\npackages: []\n" \
+        "obligations: []\n---\n# ADR-#{number}: T\n"
+    end
+
+    sh.call("init", "-q", "-b", "main")
+    write.call("governance/tiers.yaml", "acceptance:\n  reference_required_since: \"2030-01-01\"\n" \
+                                        "  own_commit_paths: [adr/**, work_packages.yaml, SPEC.md]\n")
+    write.call("adr/0001-a.md", record.call("0001", "proposed", nil))
+    write.call("adr/0002-b.md", record.call("0002", "proposed", nil))
+    write.call("adr/0003-c.md", record.call("0003", "proposed", nil))
+    write.call("src/lib.rs", "pub fn a() {}\n")
+    base = commit.call("base")
+
+    write.call("adr/0001-a.md", record.call("0001", "accepted", "maintainer, in session 2030-01-02"))
+    commit.call("accept 0001 cleanly")
+    out, err, status = run.call("--range", "#{base}..HEAD", "--no-worktree")
+    failures << "a clean acceptance commit must pass: #{out}#{err}" unless status.success?
+
+    write.call("adr/0002-b.md", record.call("0002", "accepted", "maintainer, in session 2030-01-02"))
+    write.call("src/lib.rs", "pub fn a() {}\npub fn b() {}\n")
+    commit.call("accept 0002 with code")
+    out, err, status = run.call("--range", "#{base}..HEAD", "--no-worktree")
+    failures << "acceptance beside code must fail" if status.success?
+    failures << "the code-beside-acceptance error must name src/lib.rs: #{out}#{err}" unless (out + err).include?("src/lib.rs")
+
+    write.call("adr/0003-c.md", record.call("0003", "accepted", nil))
+    commit.call("accept 0003 without a reference")
+    out, err, status = run.call("--range", "HEAD~1..HEAD", "--no-worktree")
+    failures << "acceptance without a reference must fail" if status.success?
+    failures << "the missing-reference error must name `acceptance:`: #{out}#{err}" unless (out + err).include?("`acceptance:`")
+
+    # Working tree: flipping a record while code is dirty fails before commit.
+    write.call("adr/0001-a.md", record.call("0001", "proposed", nil))
+    commit.call("reopen 0001")
+    write.call("adr/0001-a.md", record.call("0001", "accepted", "maintainer"))
+    write.call("src/lib.rs", "pub fn a() {}\npub fn c() {}\n")
+    _out, _err, status = run.call("--range", "HEAD..HEAD")
+    failures << "a dirty working tree that accepts beside code must fail" if status.success?
+  end
+  if failures.empty?
+    puts "Acceptance-commit self-test passed."
+    true
+  else
+    failures.each { |failure| warn failure }
+    false
+  end
+end
+
+options = { base: nil, range: nil, json: false, worktree: true }
+argv = ARGV.dup
+take = lambda do |flag|
+  value = argv.shift
+  next value unless value.nil? || value.empty?
+
+  warn "missing value for #{flag}"
+  exit 2
+end
+until argv.empty?
+  argument = argv.shift
+  case argument
+  when "--help", "-h" then (puts USAGE) || exit(0)
+  when "--json" then options[:json] = true
+  when "--no-worktree" then options[:worktree] = false
+  when "--self-test" then exit(self_test(File.expand_path(__FILE__)) ? 0 : 1)
+  when "--base" then options[:base] = take.call("--base")
+  when "--range" then options[:range] = take.call("--range")
+  when /\A--base=(.+)\z/ then options[:base] = Regexp.last_match(1)
+  when /\A--range=(.+)\z/ then options[:range] = Regexp.last_match(1)
+  else warn("unknown option #{argument}\n\n#{USAGE}") || exit(2)
+  end
+end
+
+require "date"
+range = options[:range]
+range ||= "#{git('merge-base', 'HEAD', options[:base]).to_s.strip}..HEAD" if options[:base]
+range ||= default_range
+
+violations = []
+violations.concat(check_commits(range)) if range
+violations.concat(check_worktree) if options[:worktree]
+
+if options[:json]
+  puts JSON.pretty_generate("range" => range, "violations" => violations)
+elsif violations.empty?
+  puts "Acceptance commits are clean#{range ? " in #{range}" : ''}#{options[:worktree] ? ' and in the working tree' : ''}."
+else
+  violations.each { |violation| warn violation }
+end
+exit(violations.empty? ? 0 : 1)

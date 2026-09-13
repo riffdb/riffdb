@@ -269,8 +269,43 @@ def check(root)
   result
 end
 
+# Accepting a record is a human act. A v2 record accepted on or after the date
+# configured under acceptance.reference_required_since in governance/tiers.yaml
+# must name that act in a non-empty `acceptance:` front-matter value.
+def acceptance_reference_since(root)
+  @acceptance_reference_since ||= {}
+  return @acceptance_reference_since[root] if @acceptance_reference_since.key?(root)
+
+  @acceptance_reference_since[root] = begin
+    path = File.join(root, "governance", "tiers.yaml")
+    value = File.file?(path) ? (YAML.safe_load(File.read(path, encoding: "UTF-8")) || {}).dig("acceptance", "reference_required_since") : nil
+    value.nil? ? nil : Date.parse(value.to_s)
+  rescue StandardError
+    nil
+  end
+end
+
+def check_acceptance_reference(root, record, result)
+  since = acceptance_reference_since(root)
+  return unless since
+
+  accepted_on = begin
+    value = record.front["accepted"]
+    value.nil? ? nil : Date.parse(value.to_s)
+  rescue StandardError
+    nil
+  end
+  return if accepted_on && accepted_on < since
+  return unless record.front["acceptance"].to_s.strip.empty?
+
+  result["errors"] << "#{record.basename}: accepted#{accepted_on ? " on #{accepted_on}" : ''} without an " \
+                      "`acceptance:` reference naming the human act (required since #{since})."
+end
+
 def check_v2(root, record, packages, result)
   return unless record.accepted?
+
+  check_acceptance_reference(root, record, result)
 
   record.obligations.each_with_index do |obligation, position|
     id = obligation["id"].to_s.strip
