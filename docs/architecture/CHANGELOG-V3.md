@@ -63,6 +63,15 @@ is **not called by production startup**: full-validation integration and every
 post-activation writer/recovery lane must be completed first. These isolated
 transaction tests do not discharge WP-772's end-to-end crash obligations.
 
+The bounded checkpoint-root reader uses one pinned redb read transaction. It
+checks all five roots, both control-table presences, the exact terminal receipt,
+core lineage and dual frontiers, and allocator agreement without scanning
+history or entity rows. Only the exact predecessor registry with every V3
+root/table absent is inactive. A V3 registry with erased roots, partial state,
+or substituted bindings is corruption, never an initialization or repair hint.
+This consistency check is not yet wired into clean eligibility and does not
+grant readiness or replace complete startup validation.
+
 Registering this additive codec changes the registry digest but is **not** a
 completed database upgrade. The pre-V3 registry digest remains frozen in a
 compatibility test; its validated, atomic activation migration remains a release

@@ -29,6 +29,7 @@ pub mod benchmark_support;
 mod changelog;
 mod changelog_v3;
 mod changelog_v3_activation;
+mod changelog_v3_roots;
 mod checkpoint_root;
 mod clean_close;
 mod codec;
