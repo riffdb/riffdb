@@ -8463,13 +8463,19 @@ impl SharedRedb {
         transaction: &WriteTransaction,
         runtime: &JournalRuntime,
     ) -> Result<(), StorageError> {
+        let v3 = crate::changelog_v3_journal::has_write_recovery_roots(transaction)?;
         let scanned = crate::journal::scan_journal_with_media(
             self.journal_media.as_ref(),
             &crate::journal::journal_path(&self.path),
             runtime.database_id,
             |frame| {
-                for mutation in frame.mutations() {
-                    crate::journal::apply_mutation(transaction, mutation)?;
+                if v3 || crate::changelog_v3_journal::has_receipt_source(frame) {
+                    crate::changelog_v3_journal::materialize_recovered_frame(transaction, frame)
+                        .map_err(|_| crate::journal::JournalIoError::Corrupt)?;
+                } else {
+                    for mutation in frame.mutations() {
+                        crate::journal::apply_mutation(transaction, mutation)?;
+                    }
                 }
                 Ok(())
             },
