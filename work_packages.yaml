@@ -23718,13 +23718,20 @@ work_packages:
 - id: WP-772
   name: Complete authoritative changelog V3 durable substrate
   tier: guarantee
-  depends_on: [WP-155, WP-417, WP-486, WP-705]
+  # Maintainer-directed replication-first sequencing: consume the merged WP-704
+  # lifecycle substrate, not WP-705's unfinished scrub/compatibility/scale closure.
+  # WP-705 remains open with all of its obligations and evidence gates unchanged.
+  depends_on: [WP-155, WP-417, WP-486, WP-704]
   objective: Implement ADR-0186 sections 1 and 2 and the storage-substrate portions of sections 3
     and 5 through 7 as a prerequisite to replication activation. Freeze the authority inventory
     and V3 receipt format, make every same-lineage authoritative transaction durably resumable
     through the existing checkpoint-plus-journal-suffix authority, and prove rotation,
     reclamation, and crash behavior before any production emitter, RPC, bootstrap, or follower is
-    activated.
+    activated. Build on WP-704's merged lifecycle substrate without waiting for WP-705's
+    independent evidence closure or treating its unmerged recovery work as a prerequisite.
+    WP-772 still proves every ADR-0186 clean-close, dirty-activation, bounded-root,
+    complete-validation fallback, maintenance, migration, retention, and crash obligation in its own gate;
+    this sequencing change neither closes WP-705 nor waives or transfers any of its obligations.
   requirements: [REP-003, REC-001, PERF-007, STO-012]
   required_adrs: [ADR-0019, ADR-0061, ADR-0072, ADR-0082, ADR-0083, ADR-0085, ADR-0093,
     ADR-0100, ADR-0101, ADR-0104, ADR-0112, ADR-0124, ADR-0156, ADR-0157, ADR-0178,
