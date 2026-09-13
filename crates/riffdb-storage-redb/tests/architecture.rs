@@ -943,6 +943,55 @@ fn captured_immediate_owner_keeps_one_transaction_and_no_raw_mutation_escape() {
 }
 
 #[test]
+fn operational_transaction_helpers_use_the_store_owned_transaction_type() {
+    for module in [
+        "application.rs",
+        "administration.rs",
+        "consumer.rs",
+        "columnar_projection_control.rs",
+        "migration_stage.rs",
+    ] {
+        let source = production_source(crate_root().join("src").join(module));
+        assert!(
+            source.contains("OperationalWriteTransaction"),
+            "{module} must use the single store-owned transaction type"
+        );
+        assert!(
+            !source.contains("redb::WriteTransaction"),
+            "{module} must not pin operational helpers to the raw engine transaction"
+        );
+    }
+}
+
+#[test]
+// req: REP-003, STO-012
+fn direct_operation_owners_name_closed_changelog_attributions_before_admission() {
+    for (module, expected) in [
+        ("application.rs", "DirectApplicationOrServiceAuditGroup"),
+        ("administration.rs", "CapabilityAdministration"),
+        ("consumer.rs", "EventConsumerTransition"),
+        ("derived.rs", "OutboxTransition"),
+        (
+            "columnar_projection_control.rs",
+            "ColumnarProjectionControl",
+        ),
+        (
+            "application_installation.rs",
+            "ApplicationInstallationCampaign",
+        ),
+        ("application_export.rs", "ApplicationExportOperation"),
+        ("migration_stage.rs", "ContractMigrationCutover"),
+    ] {
+        let source = production_source(crate_root().join("src").join(module));
+        assert!(
+            source.contains("begin_attributed_write("),
+            "{module} must name its operation before writer admission"
+        );
+        assert!(source.contains(&format!("ChangelogAttributionV3::{expected}")));
+    }
+}
+
+#[test]
 fn deferred_epoch_proves_one_private_frontier_before_durability() {
     let store = without_whitespace(&production_source(crate_root().join("src/store.rs")));
     let record = store
@@ -1741,7 +1790,7 @@ fn fresh_locator_roles_are_private_affine_and_bound_to_existing_publication_edge
         .expect("grouped admission end")
         .0;
     let begin = admission
-        .find("self.begin_write()?")
+        .find("self.begin_attributed_write(")
         .expect("mutation gate");
     let arm = admission
         .find("access.arm_fresh_locator_coverage()?")
@@ -1750,6 +1799,10 @@ fn fresh_locator_roles_are_private_affine_and_bound_to_existing_publication_edge
         .find("stage_admission_group(&access")
         .expect("admission staging");
     assert!(begin < arm && arm < stage);
+    assert!(
+        admission[begin..arm]
+            .contains("ChangelogAttributionV3::DirectApplicationOrServiceAuditGroup")
+    );
 
     let operational = application
         .split_once("fncommand_outcome_from_operational_indexes(")

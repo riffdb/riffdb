@@ -58,7 +58,9 @@ impl ApplicationInstallationCampaignRepository for RedbOperationalPorts {
         }) {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        let access = self.begin_write()?;
+        let access = self.begin_attributed_write(
+            riffdb_storage_api::ChangelogAttributionV3::ApplicationInstallationCampaign,
+        )?;
         let mut table = access
             .transaction()?
             .open_table(APPLICATION_INSTALLATION_CAMPAIGNS)

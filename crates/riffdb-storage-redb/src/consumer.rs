@@ -215,7 +215,9 @@ impl RedbOperationalPorts {
         {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        let access = self.begin_write()?;
+        let access = self.begin_attributed_write(
+            riffdb_storage_api::ChangelogAttributionV3::EventConsumerTransition,
+        )?;
         let transaction = access.transaction()?;
         let database_id = read_database_id_from_write(transaction)?;
         if request.admission.observed_at() != request.observed_at
@@ -304,7 +306,9 @@ impl RedbOperationalPorts {
         if request.history_incarnation == 0 {
             return Err(corrupt());
         }
-        let access = self.begin_write()?;
+        let access = self.begin_attributed_write(
+            riffdb_storage_api::ChangelogAttributionV3::EventConsumerTransition,
+        )?;
         let transaction = access.transaction()?;
         let database_id = read_database_id_from_write(transaction)?;
         if request.identity.database_id() != database_id {
@@ -355,7 +359,9 @@ impl RedbOperationalPorts {
         request: ProtectedEventConsumerLeaseV1,
     ) -> Result<CoordinateConsumerLeaseResultV1, StorageError> {
         validate_protected_request(&request)?;
-        let access = self.begin_write()?;
+        let access = self.begin_attributed_write(
+            riffdb_storage_api::ChangelogAttributionV3::EventConsumerTransition,
+        )?;
         let transaction = access.transaction()?;
         let database_id = read_database_id_from_write(transaction)?;
         if request.identity.database_id() != database_id {
@@ -586,7 +592,9 @@ impl RedbOperationalPorts {
         &mut self,
         request: ProtectedEventConsumerResolutionV1,
     ) -> Result<EventConsumerTransitionResultV1, StorageError> {
-        let access = self.begin_write()?;
+        let access = self.begin_attributed_write(
+            riffdb_storage_api::ChangelogAttributionV3::EventConsumerTransition,
+        )?;
         let transaction = access.transaction()?;
         let database_id = read_database_id_from_write(transaction)?;
         if request.acknowledgement.identity.database_id() != database_id {
@@ -659,7 +667,7 @@ fn validate_protected_request(request: &ProtectedEventConsumerLeaseV1) -> Result
 }
 
 struct ProtectedEventReplayReader<'a> {
-    transaction: &'a redb::WriteTransaction,
+    transaction: &'a crate::store::OperationalWriteTransaction,
 }
 
 impl PartitionEventRouteReader for ProtectedEventReplayReader<'_> {
@@ -873,7 +881,7 @@ fn admission_decision(admission: &EventPolicyAdmissionFenceV1, event_id: EventId
 }
 
 fn revalidate_event_policy_admission(
-    transaction: &redb::WriteTransaction,
+    transaction: &crate::store::OperationalWriteTransaction,
     database_id: DatabaseId,
     admission: &EventPolicyAdmissionFenceV1,
 ) -> Result<bool, StorageError> {
@@ -956,7 +964,7 @@ fn revalidate_event_policy_admission(
 }
 
 fn indexed_relationship_exists_write(
-    transaction: &redb::WriteTransaction,
+    transaction: &crate::store::OperationalWriteTransaction,
     index_prefix: &[u8],
     partition: &riffdb_types::PartitionKey,
 ) -> Result<bool, StorageError> {
@@ -1021,7 +1029,9 @@ impl EventConsumerRepository for RedbOperationalPorts {
         &mut self,
         transition: EventConsumerTransitionV1,
     ) -> Result<EventConsumerTransitionResultV1, StorageError> {
-        let access = self.begin_write()?;
+        let access = self.begin_attributed_write(
+            riffdb_storage_api::ChangelogAttributionV3::EventConsumerTransition,
+        )?;
         let transaction = access.transaction()?;
         let database_id = read_database_id_from_write(transaction)?;
         let identity = transition.consumer_identity_hash();
@@ -1103,7 +1113,7 @@ fn read_database_id_from_read(
 }
 
 fn read_database_id_from_write(
-    transaction: &redb::WriteTransaction,
+    transaction: &crate::store::OperationalWriteTransaction,
 ) -> Result<DatabaseId, StorageError> {
     let meta = transaction.open_table(META).map_err(table_error)?;
     let row = meta
