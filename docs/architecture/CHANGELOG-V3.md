@@ -58,6 +58,12 @@ new predecessor. Any precondition or size failure poisons the entire result.
 The journal conversion helper uses only the admitted frame and its exact
 allocator mutation, never latest-row reads. Its current tests are synthetic
 conversion evidence, not checkpoint durability or real command attribution.
+Standalone service-audit framing now recognizes only a checked one-step physical
+allocator update, alongside its existing audit metadata. It rejects activation
+position one, skipped or reversed counters, missing preconditions, deletion and
+premature exhaustion. This adds no journal field or table tag. Replay into an
+inactive or partial V3 database still refuses before changing the counter; a
+valid source shape is not an activation permit.
 
 Frames carry complete contiguous receipt ranges, exact catalog and leadership
 bindings, source counts, checksums and V3-only framing. The 32 MiB frame ceiling
