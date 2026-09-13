@@ -74,13 +74,6 @@ fn allocator_assignment(
 /// binds its predecessor to the known-durable activation/checkpoint or prior
 /// validated suffix receipt, and owns the durable-record semantic validation.
 /// No source may be synthesized for a pre-activation frame without its allocator.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "WP-772 cursor/writer wiring follows the independently tested source conversion"
-    )
-)]
 pub(crate) fn receipt_from_journal(
     frame: &JournalFrame,
     binding: AuthoritativeTransactionBindingV3,
