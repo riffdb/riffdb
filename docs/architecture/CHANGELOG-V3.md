@@ -93,6 +93,17 @@ are physical transaction tests, not operation authorization/source-validation or
 production activation evidence. Journal, lifecycle and lineage ceremonies are
 explicitly refused by this owner pending their separate integration.
 
+The same private owner also supports mutation-time capture within one owned
+Immediate transaction. Its tables retain exact original preconditions and net
+post-images through the shared accumulator; they expose no mutable raw-table
+escape. Unknown or missing tables, replication-control writes, and whole-receipt
+overflow refuse and poison the operation. Finishing seals that same transaction,
+checks the unchanged control predecessor and actual allocator post-images, and
+hands back only a prepared commit. No-op captures do not allocate a position.
+Process tests cover exits after captured mutations, receipt, roots, and commit.
+These owners are not yet wired through all operational, journal, migration, and
+lifecycle paths; they do not by themselves complete WP-772 or activate V3.
+
 The checkpoint receipt planner reads that same pinned source view. It validates
 the current entity proof, collects only changed checkpoint-head bytes, preserves
 exact delete/replacement preconditions, and includes the chained checkpoint
