@@ -185,6 +185,226 @@ fn activation_installs_all_roots_and_exact_registry_receipt_in_one_transaction()
 }
 
 #[test]
+fn retained_v3_root_validation_is_pinned_and_rejects_complete_root_erasure() {
+    let root = crate::test_path::ScopedDirectory::new("v3-root-pin");
+    let database = fixture(&root.join("database.redb"), PRE_V3_REGISTRY);
+    let pinned_inactive = database.begin_read().unwrap();
+    assert!(
+        crate::changelog_v3_roots::read_checkpoint_roots(&pinned_inactive)
+            .unwrap()
+            .is_none()
+    );
+    let history = activate_validated(
+        database.begin_write().unwrap(),
+        lineage(),
+        DualFrontier::INITIAL,
+    )
+    .unwrap();
+    assert!(
+        crate::changelog_v3_roots::read_checkpoint_roots(&pinned_inactive)
+            .unwrap()
+            .is_none()
+    );
+    let pinned_active = database.begin_read().unwrap();
+    assert_eq!(
+        crate::changelog_v3_roots::read_checkpoint_roots(&pinned_active).unwrap(),
+        Some(history)
+    );
+    let transaction = database.begin_write().unwrap();
+    for namespace in N::ALL
+        .into_iter()
+        .filter(|n| n.requires_v3_activation() && n.metadata_key().is_some())
+    {
+        transaction
+            .open_table(META)
+            .unwrap()
+            .remove(key(namespace).unwrap())
+            .unwrap();
+    }
+    transaction.delete_table(HISTORY).unwrap();
+    transaction.delete_table(SOURCE_HOLDS).unwrap();
+    transaction.commit().unwrap();
+    assert_eq!(
+        crate::changelog_v3_roots::read_checkpoint_roots(&pinned_active).unwrap(),
+        Some(history)
+    );
+    // A current registry with every V3 root erased is corrupt, not old inactive.
+    assert!(
+        crate::changelog_v3_roots::read_checkpoint_roots(&database.begin_read().unwrap()).is_err()
+    );
+}
+
+#[test]
+fn retained_v3_roots_refuse_missing_malformed_or_cross_bound_state_read_only() {
+    for arm in 0..18 {
+        let root = crate::test_path::ScopedDirectory::new("v3-roots-refusal");
+        let database = fixture(&root.join("database.redb"), PRE_V3_REGISTRY);
+        let history = activate_validated(
+            database.begin_write().unwrap(),
+            lineage(),
+            DualFrontier::INITIAL,
+        )
+        .unwrap();
+        let transaction = database.begin_write().unwrap();
+        {
+            let mut meta = transaction.open_table(META).unwrap();
+            let namespaces = [
+                N::AuthoritativeStateCatalog,
+                N::LeadershipEpoch,
+                N::ChangelogHistoryState,
+                N::NextChangelogTransaction,
+                N::ReplicationFollowerState,
+            ];
+            match arm {
+                0..=4 => {
+                    meta.remove(key(namespaces[arm]).unwrap()).unwrap();
+                }
+                5 => {
+                    meta.insert(
+                        key(N::AuthoritativeStateCatalog).unwrap(),
+                        b"bad".as_slice(),
+                    )
+                    .unwrap();
+                }
+                6 => {
+                    meta.insert(
+                        key(N::LeadershipEpoch).unwrap(),
+                        encode_leadership_epoch_v1(LeadershipEpochV1::new(2).unwrap())
+                            .unwrap()
+                            .as_bytes(),
+                    )
+                    .unwrap();
+                }
+                7 => {
+                    meta.insert(
+                        key(N::NextChangelogTransaction).unwrap(),
+                        encode_changelog_transaction_allocator_v3(
+                            ChangelogTransactionAllocator::initial(),
+                        )
+                        .unwrap()
+                        .as_bytes(),
+                    )
+                    .unwrap();
+                }
+                8 => {
+                    meta.insert(
+                        META_HISTORY_INCARNATION,
+                        encode_history_incarnation_v1(2).unwrap().as_bytes(),
+                    )
+                    .unwrap();
+                }
+                9 => {
+                    meta.insert(
+                        META_APPLICATION_SEQUENCE,
+                        encode_application_sequence_allocator_v1(
+                            ApplicationSequenceAllocator::Next(CommitSequence::new(2).unwrap()),
+                        )
+                        .unwrap()
+                        .as_bytes(),
+                    )
+                    .unwrap();
+                }
+                10 => {
+                    meta.insert(
+                        META_ADMINISTRATION_SEQUENCE,
+                        encode_administration_sequence_allocator_v1(
+                            AdministrationSequenceAllocator::Next(
+                                AdministrationSequence::new(2).unwrap(),
+                            ),
+                        )
+                        .unwrap()
+                        .as_bytes(),
+                    )
+                    .unwrap();
+                }
+                11 => {
+                    meta.insert(
+                        key(N::ChangelogHistoryState).unwrap(),
+                        [0xff; 513].as_slice(),
+                    )
+                    .unwrap();
+                }
+                12 => {
+                    meta.insert(
+                        META_RECORD_REGISTRY,
+                        encode_record_registry_v2(PRE_V3_REGISTRY)
+                            .unwrap()
+                            .as_bytes(),
+                    )
+                    .unwrap();
+                }
+                13 => {
+                    let foreign = ChangelogLineageV3::new(
+                        lineage().database_id(),
+                        2,
+                        LeadershipEpochV1::initial(),
+                    )
+                    .unwrap();
+                    let follower =
+                        ReplicationFollowerStateV3::attached(foreign, history.tail(), None)
+                            .unwrap();
+                    meta.insert(
+                        key(N::ReplicationFollowerState).unwrap(),
+                        encode_replication_follower_state_v3(follower)
+                            .unwrap()
+                            .as_bytes(),
+                    )
+                    .unwrap();
+                }
+                _ => (),
+            }
+        }
+        match arm {
+            14 => {
+                transaction.delete_table(SOURCE_HOLDS).unwrap();
+            }
+            15 => {
+                transaction.delete_table(HISTORY).unwrap();
+            }
+            16 => {
+                transaction
+                    .open_table(HISTORY)
+                    .unwrap()
+                    .remove(1_u64.to_be_bytes().as_slice())
+                    .unwrap();
+            }
+            17 => {
+                let receipt = AuthoritativeTransactionV3::new(
+                    AuthoritativeTransactionBindingV3 {
+                        database_id: lineage().database_id(),
+                        history_incarnation: 1,
+                        predecessor: None,
+                        sequence: history.tail().sequence(),
+                        predecessor_frontier: DualFrontier::INITIAL,
+                        covered_frontier: DualFrontier::INITIAL,
+                        prior_history_hash: [0; 32],
+                    },
+                    ChangelogAttributionV3::CleanClose,
+                    vec![],
+                )
+                .unwrap()
+                .encode()
+                .unwrap();
+                transaction
+                    .open_table(HISTORY)
+                    .unwrap()
+                    .insert(1_u64.to_be_bytes().as_slice(), receipt.as_slice())
+                    .unwrap();
+            }
+            _ => (),
+        }
+        transaction.commit().unwrap();
+        let before = metadata(&database);
+        assert!(
+            crate::changelog_v3_roots::read_checkpoint_roots(&database.begin_read().unwrap())
+                .is_err(),
+            "accepted arm {arm}"
+        );
+        assert_eq!(metadata(&database), before);
+    }
+}
+
+#[test]
 fn partial_or_foreign_activation_refuses_without_overwriting_any_existing_bytes() {
     // Each partial metadata root and either empty control table is corruption,
     // not an initialization hint. Failed attempts leave the exact bytes intact.
