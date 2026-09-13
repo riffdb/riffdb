@@ -824,6 +824,9 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
                     // Extracted store-owned graceful-close boundary; its sole
                     // final write commits through `SharedRedb::commit_durable`.
                     || name == "store_graceful_close.rs"
+                    // The extracted store-owned checkpoint is checked below:
+                    // one begin, one commit_durable, no native commit bypass.
+                    || name == "store_journal_checkpoint.rs"
                     || name == "startup.rs"
                     || name == "fixtures.rs"
                     || name == "benchmark_support.rs"
@@ -847,6 +850,18 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
     assert!(store.contains("fncommit_durable("));
     assert!(store.contains("self.shared.commit_durable(transaction)?"));
     assert!(store.contains("self.shared.commit_durable(transaction)"));
+    let checkpoint = without_whitespace(&production_source(
+        source_dir.join("store_journal_checkpoint.rs"),
+    ));
+    assert_eq!(checkpoint.matches("self.database.begin_write()").count(), 1);
+    assert_eq!(
+        checkpoint
+            .matches("self.commit_durable(transaction)")
+            .count(),
+        1
+    );
+    assert_eq!(checkpoint.matches("transaction.commit()").count(), 0);
+    assert!(checkpoint.contains("set_durability(Durability::Immediate)"));
     let deferred = store
         .split_once("fnapply_unpublished(")
         .expect("closed deferred commit path")
@@ -1430,22 +1445,20 @@ fn proof_skipping_is_confined_to_typed_redb_command_staging() {
 fn checkpoint_pay_once_apply_is_confined_to_live_same_process_materialization() {
     let journal = production_source(crate_root().join("src/journal.rs"));
     let store = production_source(crate_root().join("src/store.rs"));
+    let checkpoint = production_source(crate_root().join("src/store_journal_checkpoint.rs"));
     assert!(journal.contains("fn apply_validated_composite_mutation("));
     assert_eq!(
-        store
+        format!("{store}\n{checkpoint}")
             .matches("apply_validated_composite_mutation(&transaction, mutation)")
             .count(),
         1,
         "only the live checkpoint materializer may consume retained mutation proofs"
     );
 
-    let materializer = store
+    let materializer = checkpoint
         .split_once("fn materialize_checkpoint_batch(")
         .expect("checkpoint materializer")
-        .1
-        .split_once("fn poll_async_checkpoint_locked(")
-        .expect("checkpoint materializer end")
-        .0;
+        .1;
     assert!(materializer.contains("apply_validated_composite_mutation"));
     assert!(materializer.contains("encoded.frame_hash()"));
     assert!(

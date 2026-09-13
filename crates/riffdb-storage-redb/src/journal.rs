@@ -475,7 +475,7 @@ impl JournalMutation {
         }
     }
 
-    fn expected_hash(&self) -> Option<[u8; HASH_BYTES]> {
+    pub(crate) fn expected_hash(&self) -> Option<[u8; HASH_BYTES]> {
         match self {
             Self::Put { expected_hash, .. } => *expected_hash,
             Self::Delete { expected_hash, .. } => Some(*expected_hash),

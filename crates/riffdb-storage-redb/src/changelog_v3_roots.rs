@@ -48,6 +48,50 @@ pub(crate) fn read_checkpoint_roots(
     validate_roots(&meta, history.as_ref(), source_holds.is_some())
 }
 
+/// Complete retained receipt-chain validation for the full startup path. This
+/// streams the exact retained interval from one pin, retaining only one decoded
+/// bounded row and a constant-size running root. It is deliberately separate
+/// from clean eligibility's bounded terminal-root check. Durable-record semantics
+/// and the other authoritative namespaces still require their existing validators.
+pub(crate) fn validate_retained_history(
+    transaction: &ReadTransaction,
+) -> Result<Option<ChangelogHistoryStateV3>, StorageError> {
+    let Some(history) = read_checkpoint_roots(transaction)? else {
+        return Ok(None);
+    };
+    let corrupt = || storage_error(StorageErrorKind::CorruptData);
+    let mut covered = ChangelogHistoryStateV3::new(
+        history.lineage(),
+        history.anchor(),
+        history.minimum_resume(),
+        history.minimum_resume(),
+    )
+    .map_err(|_| corrupt())?;
+    let table = transaction.open_table(HISTORY).map_err(table_error)?;
+    let mut first = true;
+    for entry in table.iter().map_err(precommit_storage_error)? {
+        let (key, value) = entry.map_err(precommit_storage_error)?;
+        let receipt = AuthoritativeTransactionV3::decode(value.value()).map_err(|_| corrupt())?;
+        if key.value() != receipt.binding().sequence.get().to_be_bytes()
+            || receipt.binding().sequence > history.tail().sequence()
+        {
+            return Err(corrupt());
+        }
+        if first {
+            covered
+                .validate_terminal_receipt(&receipt)
+                .map_err(|_| corrupt())?;
+            first = false;
+        } else {
+            covered = covered.advance(&receipt).map_err(|_| corrupt())?;
+        }
+    }
+    if first || covered != history {
+        return Err(corrupt());
+    }
+    Ok(Some(history))
+}
+
 /// Transaction-current form for receipt-producing Immediate writes. Opening a
 /// redb write table creates it when absent, so check the bounded table-name
 /// inventory first. This function never initializes missing roots or tables.

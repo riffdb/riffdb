@@ -7,7 +7,7 @@ use riffdb_storage_api::{
     AuthoritativeMutationAccumulatorV3, AuthoritativeMutationV3, AuthoritativeNamespaceV1,
     AuthoritativeStateCatalogV1, AuthoritativeTransactionBindingV3, AuthoritativeTransactionV3,
     ChangelogAttributionV3, ChangelogTransactionAllocator, ChangelogTransactionSequence,
-    ChangelogV3Error, ReplicationAuthorityClassV1,
+    ChangelogV3Error, CompositeMutationV1, ReplicationAuthorityClassV1,
 };
 use riffdb_types::DualFrontier;
 use sha2::{Digest, Sha256};
@@ -21,16 +21,24 @@ use crate::journal::{JournalFrame, JournalFrameKind, JournalMutation, JournalTab
 pub(crate) fn journal_allocator_assignment(
     mutation: &JournalMutation,
 ) -> Result<ChangelogTransactionSequence, ChangelogV3Error> {
-    let JournalMutation::Put {
-        table,
-        key,
-        expected_hash: Some(expected),
-        value,
-    } = mutation
-    else {
+    allocator_assignment(
+        mutation.table(),
+        mutation.key(),
+        mutation.expected_hash(),
+        mutation.value(),
+    )
+}
+
+fn allocator_assignment(
+    table: JournalTable,
+    key: &[u8],
+    expected: Option<[u8; 32]>,
+    value: Option<&[u8]>,
+) -> Result<ChangelogTransactionSequence, ChangelogV3Error> {
+    let (Some(expected), Some(value)) = (expected, value) else {
         return Err(ChangelogV3Error::InvalidEncoding);
     };
-    if *table != JournalTable::Meta
+    if table != JournalTable::Meta
         || AuthoritativeStateCatalogV1.lookup(table.label(), key)
             != Some(AuthoritativeNamespaceV1::NextChangelogTransaction)
     {
@@ -56,7 +64,7 @@ pub(crate) fn journal_allocator_assignment(
     let before = encode_changelog_transaction_allocator_v3(before)
         .map_err(|_| ChangelogV3Error::InvalidEncoding)?;
     let expected_hash: [u8; 32] = Sha256::digest(before.as_bytes()).into();
-    if *expected != expected_hash || value.as_ref() != after.as_bytes() {
+    if expected != expected_hash || value != after.as_bytes() {
         return Err(ChangelogV3Error::PredecessorMismatch);
     }
     Ok(assigned)
@@ -92,18 +100,85 @@ pub(crate) fn receipt_from_journal(
     {
         return Err(ChangelogV3Error::PredecessorMismatch);
     }
+    let source = match frame.kind() {
+        JournalFrameKind::Command => ChangelogAttributionV3::JournaledApplicationGroup,
+        JournalFrameKind::ServiceAudit => ChangelogAttributionV3::JournaledServiceAudit,
+    };
+    receipt_from_sources(
+        binding,
+        source,
+        frame.mutations().iter().map(|mutation| {
+            Ok((
+                mutation.table(),
+                mutation.key(),
+                mutation.expected_hash(),
+                mutation.value(),
+            ))
+        }),
+    )
+}
+
+/// Same receipt fold for the live checkpoint's retained validated mutations.
+/// It borrows the original source, not latest overlay rows, and does not decode
+/// a journal frame or duplicate its mutation payloads before coalescing.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "WP-772 live checkpoint integration follows")
+)]
+pub(crate) fn receipt_from_validated_mutations(
+    binding: AuthoritativeTransactionBindingV3,
+    source: ChangelogAttributionV3,
+    mutations: &[CompositeMutationV1],
+) -> Result<AuthoritativeTransactionV3, ChangelogV3Error> {
+    receipt_from_sources(
+        binding,
+        source,
+        mutations.iter().map(|mutation| {
+            // Invert the existing exhaustive journal-to-composite mapping instead
+            // of maintaining a second physical table inventory.
+            let table = JournalTable::ALL
+                .into_iter()
+                .find(|table| table.composite() == mutation.table())
+                .ok_or(ChangelogV3Error::InvalidNamespace)?;
+            Ok((
+                table,
+                mutation.key(),
+                mutation.expected_hash(),
+                mutation.value(),
+            ))
+        }),
+    )
+}
+
+type MutationSource<'a> = (JournalTable, &'a [u8], Option<[u8; 32]>, Option<&'a [u8]>);
+
+fn receipt_from_sources<'a>(
+    binding: AuthoritativeTransactionBindingV3,
+    source: ChangelogAttributionV3,
+    mutations: impl IntoIterator<Item = Result<MutationSource<'a>, ChangelogV3Error>>,
+) -> Result<AuthoritativeTransactionV3, ChangelogV3Error> {
+    if binding.predecessor.is_none()
+        || !matches!(
+            source,
+            ChangelogAttributionV3::JournaledApplicationGroup
+                | ChangelogAttributionV3::JournaledServiceAudit
+        )
+    {
+        return Err(ChangelogV3Error::PredecessorMismatch);
+    }
     let mut allocator_seen = false;
     let mut changes = AuthoritativeMutationAccumulatorV3::default();
-    for mutation in frame.mutations() {
+    for mutation in mutations {
+        let (table, key, expected_hash, value) = mutation?;
         let namespace = AuthoritativeStateCatalogV1
-            .lookup(mutation.table().label(), mutation.key())
+            .lookup(table.label(), key)
             .ok_or(ChangelogV3Error::InvalidNamespace)?;
         if namespace == AuthoritativeNamespaceV1::NextChangelogTransaction {
             if allocator_seen {
                 return Err(ChangelogV3Error::InvalidEncoding);
             }
             allocator_seen = true;
-            if journal_allocator_assignment(mutation)? != binding.sequence {
+            if allocator_assignment(table, key, expected_hash, value)? != binding.sequence {
                 return Err(ChangelogV3Error::PredecessorMismatch);
             }
             continue;
@@ -113,25 +188,18 @@ pub(crate) fn receipt_from_journal(
             // Its only V3 control mutation is the checked allocator above.
             return Err(ChangelogV3Error::InvalidNamespace);
         }
-        changes.record(match mutation {
-            JournalMutation::Put {
+        changes.record(match value {
+            Some(value) => AuthoritativeMutationV3::put(namespace, key, expected_hash, value)?,
+            None => AuthoritativeMutationV3::delete(
+                namespace,
                 key,
-                expected_hash,
-                value,
-                ..
-            } => AuthoritativeMutationV3::put(namespace, key, *expected_hash, value)?,
-            JournalMutation::Delete {
-                key, expected_hash, ..
-            } => AuthoritativeMutationV3::delete(namespace, key, *expected_hash)?,
+                expected_hash.ok_or(ChangelogV3Error::InvalidEncoding)?,
+            )?,
         })?;
     }
     if !allocator_seen {
         return Err(ChangelogV3Error::InvalidEncoding);
     }
-    let source = match frame.kind() {
-        JournalFrameKind::Command => ChangelogAttributionV3::JournaledApplicationGroup,
-        JournalFrameKind::ServiceAudit => ChangelogAttributionV3::JournaledServiceAudit,
-    };
     AuthoritativeTransactionV3::new(binding, source, changes.finish()?)
 }
 
@@ -239,6 +307,62 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(source.encode().unwrap().as_bytes(), encoded.as_bytes());
+    }
+
+    #[test]
+    // req: REP-003, REC-001, STO-012
+    fn retained_checkpoint_mutations_form_the_exact_recovered_receipt() {
+        let source = frame(vec![allocator_mutation()]);
+        let encoded = source.encode().unwrap();
+        let (decoded, _) = JournalFrame::decode(encoded.as_bytes()).unwrap();
+        let retained: Vec<_> = source
+            .mutations()
+            .iter()
+            .map(|mutation| mutation.composite().unwrap())
+            .collect();
+        let receipt = super::receipt_from_validated_mutations(
+            binding(),
+            riffdb_storage_api::ChangelogAttributionV3::JournaledApplicationGroup,
+            &retained,
+        )
+        .unwrap();
+        assert_eq!(
+            receipt.encode().unwrap(),
+            super::receipt_from_journal(&decoded, binding())
+                .unwrap()
+                .encode()
+                .unwrap()
+        );
+        assert!(receipt.mutations()[0].matches_prior(Some(b"original")));
+        assert_eq!(receipt.mutations()[0].value(), None);
+        for attribution in [
+            riffdb_storage_api::ChangelogAttributionV3::DirectApplicationOrServiceAuditGroup,
+            riffdb_storage_api::ChangelogAttributionV3::V3Activation,
+        ] {
+            assert!(
+                super::receipt_from_validated_mutations(binding(), attribution, &retained).is_err()
+            );
+        }
+        let mut missing = retained.clone();
+        missing.pop();
+        assert!(
+            super::receipt_from_validated_mutations(
+                binding(),
+                riffdb_storage_api::ChangelogAttributionV3::JournaledApplicationGroup,
+                &missing,
+            )
+            .is_err()
+        );
+        let mut duplicate = retained.clone();
+        duplicate.push(allocator_mutation().composite().unwrap());
+        assert!(
+            super::receipt_from_validated_mutations(
+                binding(),
+                riffdb_storage_api::ChangelogAttributionV3::JournaledApplicationGroup,
+                &duplicate,
+            )
+            .is_err()
+        );
     }
 
     #[test]
