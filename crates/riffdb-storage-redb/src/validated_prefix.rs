@@ -48,6 +48,10 @@ use crate::layout::{
 };
 use crate::store::SharedRedb;
 
+#[cfg(test)]
+#[path = "validated_prefix_streaming_tests.rs"]
+mod streaming_tests;
+
 /// Number of deterministic sample windows derived from the checkpoint self-hash.
 pub(crate) const SAMPLE_WINDOW_COUNT: usize = 8;
 /// Rows inspected per sample window (clipped to ≤ S).
@@ -640,11 +644,6 @@ fn replace_checkpoint_entity_heads(
         .open_table(VALIDATED_PREFIX_ENTITY_HEADS)
         .map_err(table_error)?;
 
-    snapshot
-        .retain(|_, _| false)
-        .map_err(precommit_storage_error)?;
-
-    let mut heads = Vec::new();
     let mut live_entity_count = 0_u64;
     let mut deleted_entity_count = 0_u64;
     let mut entity_transition_count = 0_u64;
@@ -674,25 +673,67 @@ fn replace_checkpoint_entity_heads(
                 return Err(storage_error(StorageErrorKind::CorruptData));
             }
         }
-        heads.push(decoded.into_parts().0);
-        snapshot
-            .insert(key.value(), value.value())
-            .map_err(precommit_storage_error)?;
+        let unchanged = snapshot
+            .get(key.value())
+            .map_err(precommit_storage_error)?
+            .is_some_and(|prior| prior.value() == value.value());
+        if !unchanged {
+            snapshot
+                .insert(key.value(), value.value())
+                .map_err(precommit_storage_error)?;
+        }
     }
     let counts = ValidatedPrefixEntityTransitionCounts {
         live_entity_count,
         deleted_entity_count,
         entity_transition_count,
     };
-    heads.sort_by(|left, right| left.target().cmp(right.target()));
-    let fingerprint = EntityTransitionFingerprint::from_sorted_heads(heads.iter())
-        .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+    let fingerprint = fingerprint_from_head_table(&source)?;
     if counts != checkpoint.entity_counts()
         || fingerprint != checkpoint.entity_transition_fingerprint()
     {
         return Err(storage_error(StorageErrorKind::InvariantViolation));
     }
+    let mut failure = None;
+    snapshot
+        .retain(|key, _| {
+            if failure.is_some() {
+                return true;
+            }
+            match source.get(key) {
+                Ok(row) => row.is_some(),
+                Err(error) => {
+                    failure = Some(precommit_storage_error(error));
+                    true
+                }
+            }
+        })
+        .map_err(precommit_storage_error)?;
+    if let Some(error) = failure {
+        return Err(error);
+    }
     Ok(())
+}
+
+/// Physical key order equals `(entity type, entity key)` order: canonical keys
+/// begin with the fixed version/purpose prefix and big-endian entity type.
+/// Both passes borrow this exact transaction-bound table, never a latest view.
+fn fingerprint_from_head_table(
+    table: &impl ReadableTable<&'static [u8], &'static [u8]>,
+) -> Result<EntityTransitionFingerprint, StorageError> {
+    EntityTransitionFingerprint::from_sorted_head_reader(|| {
+        Ok(table.iter().map_err(precommit_storage_error)?.map(|row| {
+            let (key, value) = row.map_err(precommit_storage_error)?;
+            let head = riffdb_storage_api::decode_entity_chain_head_v1(value.value())
+                .map_err(crate::error::codec_error)?
+                .into_parts()
+                .0;
+            if head.target().key().as_bytes() != key.value() {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+            Ok(head)
+        }))
+    })
 }
 
 /// Builds one checkpoint from an immutable snapshot.
@@ -779,7 +820,6 @@ fn entity_transition_proof(
         .open_table(ENTITY_CHAIN_HEADS)
         .map_err(table_error)?;
     let entities = transaction.open_table(ENTITIES).map_err(table_error)?;
-    let mut heads = Vec::new();
     let mut live_entity_count = 0_u64;
     let mut deleted_entity_count = 0_u64;
     let mut entity_transition_count = 0_u64;
@@ -824,14 +864,11 @@ fn entity_transition_proof(
                 return Err(storage_error(StorageErrorKind::CorruptData));
             }
         }
-        heads.push(head);
     }
     if entities.len().map_err(precommit_storage_error)? != live_entity_count {
         return Err(storage_error(StorageErrorKind::CorruptData));
     }
-    heads.sort_by(|left, right| left.target().cmp(right.target()));
-    let fingerprint = EntityTransitionFingerprint::from_sorted_heads(heads.iter())
-        .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+    let fingerprint = fingerprint_from_head_table(&table)?;
     Ok((
         ValidatedPrefixEntityTransitionCounts {
             live_entity_count,
