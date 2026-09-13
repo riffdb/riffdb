@@ -284,6 +284,27 @@ mod tests {
     use super::*;
 
     #[test]
+    // req: REP-003, STO-012
+    fn changelog_catalog_matches_current_redb_namespaces() {
+        use riffdb_storage_api::AuthoritativeNamespaceV1;
+        let namespaces = AuthoritativeNamespaceV1::ALL
+            .into_iter()
+            .filter(|namespace| !namespace.requires_v3_activation())
+            .collect::<Vec<_>>();
+        let tables = namespaces
+            .iter()
+            .map(|namespace| namespace.table())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(tables, TABLE_NAMES.into_iter().collect());
+        let keys = namespaces
+            .iter()
+            .filter_map(|namespace| namespace.metadata_key())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(keys, META_KEYS.into_iter().collect());
+        assert_eq!(namespaces.len(), TABLE_NAMES.len() - 1 + META_KEYS.len());
+    }
+
+    #[test]
     fn table_definition_inventory_is_exact_and_unique() {
         let definition_names = [
             META.name(),

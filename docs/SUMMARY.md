@@ -104,6 +104,7 @@
 - [System Overview](architecture/OVERVIEW.md)
 - [Command Execution Path](architecture/COMMAND-PATH.md)
 - [Composite Read Views](architecture/COMPOSITE-READ-VIEWS.md)
+- [Authoritative Changelog V3 Substrate](architecture/CHANGELOG-V3.md)
 - [Schema-Bound Columnar Control](architecture/COLUMNAR-CONTROL.md)
 - [Aggregate Semantic Registry](architecture/aggregate-semantic-registry-v1.md)
 - [Exact Aggregate Closure](architecture/WP-696-AGGREGATE-CLOSURE.md)
