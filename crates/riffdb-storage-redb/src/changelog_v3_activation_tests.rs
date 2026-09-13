@@ -356,6 +356,160 @@ fn direct_receipt(
 }
 
 #[test]
+fn checkpoint_receipt_plan_binds_one_pinned_prefix_and_exact_metadata_before_image() {
+    use riffdb_storage_api::{
+        EntityChainFingerprint, EntityTransitionFingerprint, StoredValidatedPrefixCheckpointV1,
+        StoredValidatedPrefixCheckpointV2, ValidatedPrefixEntityTransitionCounts,
+        ValidatedPrefixRetainedSnapshot, ValidatedPrefixSequenceCounts,
+    };
+    let root = crate::test_path::ScopedDirectory::new("v3-checkpoint-plan");
+    let database = fixture(&root.join("database.redb"), PRE_V3_REGISTRY);
+    let history = activate_validated(
+        database.begin_write().unwrap(),
+        lineage(),
+        DualFrontier::INITIAL,
+    )
+    .unwrap();
+    let checkpoint_with_parent = |parent| {
+        let base = StoredValidatedPrefixCheckpointV1::new(
+            lineage().database_id(),
+            1,
+            current_record_registry_digest(),
+            0,
+            0,
+            ValidatedPrefixSequenceCounts {
+                commits_count: 0,
+                events_count: 0,
+                event_routes_count: 0,
+                outbox_count: 0,
+                outbox_status_count: 0,
+                idempotency_count: 0,
+                audit_count: 0,
+                audit_by_request_count: 0,
+            },
+            EntityChainFingerprint::from_sorted_pairs(std::iter::empty()),
+            ValidatedPrefixRetainedSnapshot {
+                next_application_sequence: 1,
+                application_sequence_exhausted: false,
+                next_administration_sequence: 1,
+                administration_sequence_exhausted: false,
+            },
+            parent,
+            0,
+        )
+        .unwrap();
+        let checkpoint = StoredValidatedPrefixCheckpointV2::new(
+            base,
+            ValidatedPrefixEntityTransitionCounts {
+                live_entity_count: 0,
+                deleted_entity_count: 0,
+                entity_transition_count: 0,
+            },
+            EntityTransitionFingerprint::from_sorted_heads(std::iter::empty()).unwrap(),
+        );
+        checkpoint.unwrap()
+    };
+    let checkpoint = checkpoint_with_parent(None);
+    let pin = database.begin_read().unwrap();
+    let receipt = crate::validated_prefix::plan_checkpoint_receipt(&pin, &checkpoint)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        receipt.attribution(),
+        ChangelogAttributionV3::ValidatedPrefixCheckpoint
+    );
+    assert_eq!(receipt.mutations().len(), 1);
+    assert_eq!(
+        receipt.mutations()[0].namespace(),
+        N::ValidatedPrefixCheckpoint
+    );
+    assert!(receipt.mutations()[0].matches_prior(None));
+    assert_eq!(
+        receipt.mutations()[0].value(),
+        Some(
+            encode_validated_prefix_checkpoint_v2(&checkpoint)
+                .unwrap()
+                .as_bytes()
+        )
+    );
+    crate::changelog_v3_write::PreparedImmediateReceipt::apply(
+        &database,
+        RedbCommitProfile::Hardened,
+        &receipt,
+    )
+    .unwrap()
+    .commit_for_test()
+    .unwrap();
+    assert_eq!(
+        crate::validated_prefix::plan_checkpoint_receipt(&pin, &checkpoint)
+            .unwrap()
+            .unwrap(),
+        receipt
+    );
+    assert!(
+        crate::changelog_v3_write::PreparedImmediateReceipt::apply(
+            &database,
+            RedbCommitProfile::Hardened,
+            &receipt
+        )
+        .is_err()
+    );
+    assert!(
+        crate::validated_prefix::plan_checkpoint_receipt(
+            &database.begin_read().unwrap(),
+            &checkpoint
+        )
+        .unwrap()
+        .is_none()
+    );
+    assert_eq!(
+        crate::changelog_v3_roots::read_checkpoint_roots(&database.begin_read().unwrap()).unwrap(),
+        Some(history.advance(&receipt).unwrap())
+    );
+    let incorrect_parent = checkpoint_with_parent(Some(
+        riffdb_storage_api::ValidatedPrefixCheckpointHash::from_bytes([0xff; 32]),
+    ));
+    assert!(
+        crate::validated_prefix::plan_checkpoint_receipt(
+            &database.begin_read().unwrap(),
+            &incorrect_parent
+        )
+        .is_err()
+    );
+    let successor = checkpoint_with_parent(Some(checkpoint.base().checkpoint_hash()));
+    let next_receipt = crate::validated_prefix::plan_checkpoint_receipt(
+        &database.begin_read().unwrap(),
+        &successor,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(next_receipt.mutations().len(), 1);
+    assert!(
+        next_receipt.mutations()[0].matches_prior(Some(
+            encode_validated_prefix_checkpoint_v2(&checkpoint)
+                .unwrap()
+                .as_bytes()
+        ))
+    );
+    crate::changelog_v3_write::PreparedImmediateReceipt::apply(
+        &database,
+        RedbCommitProfile::Hardened,
+        &next_receipt,
+    )
+    .unwrap()
+    .commit_for_test()
+    .unwrap();
+    assert!(
+        crate::validated_prefix::plan_checkpoint_receipt(
+            &database.begin_read().unwrap(),
+            &successor
+        )
+        .unwrap()
+        .is_none()
+    );
+}
+
+#[test]
 fn immediate_receipt_history_retains_original_put_after_later_delete() {
     use crate::changelog_v3_write::PreparedImmediateReceipt;
     for profile in [RedbCommitProfile::Standard, RedbCommitProfile::Hardened] {

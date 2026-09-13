@@ -715,6 +715,207 @@ fn replace_checkpoint_entity_heads(
     Ok(())
 }
 
+/// Plans only the exact net checkpoint-head changes from one immutable read
+/// view. No-op population rows never enter the bounded receipt accumulator.
+/// The future writer must still validate its V3 predecessor and all physical
+/// preconditions in the fresh transaction; this read-only plan is not a permit.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "WP-772 checkpoint receipt integration follows source planning"
+    )
+)]
+pub(crate) fn plan_checkpoint_head_changes(
+    transaction: &ReadTransaction,
+    checkpoint: &StoredValidatedPrefixCheckpointV2,
+) -> Result<Vec<riffdb_storage_api::AuthoritativeMutationV3>, StorageError> {
+    use riffdb_storage_api::{
+        AuthoritativeMutationAccumulatorV3, AuthoritativeMutationV3, AuthoritativeNamespaceV1 as N,
+        ChangelogV3Error,
+    };
+    let (counts, fingerprint) = entity_transition_proof(transaction)?;
+    if counts != checkpoint.entity_counts()
+        || fingerprint != checkpoint.entity_transition_fingerprint()
+    {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    }
+    let source = transaction
+        .open_table(ENTITY_CHAIN_HEADS)
+        .map_err(table_error)?;
+    let snapshot = transaction
+        .open_table(VALIDATED_PREFIX_ENTITY_HEADS)
+        .map_err(table_error)?;
+    let invalid = |error| {
+        storage_error(match error {
+            ChangelogV3Error::LimitExceeded => StorageErrorKind::LimitExceeded,
+            _ => StorageErrorKind::CorruptData,
+        })
+    };
+    let mut changes = AuthoritativeMutationAccumulatorV3::default();
+    for row in source.iter().map_err(precommit_storage_error)? {
+        let (key, value) = row.map_err(precommit_storage_error)?;
+        let prior = snapshot.get(key.value()).map_err(precommit_storage_error)?;
+        let change = match prior {
+            Some(prior) if prior.value() == value.value() => continue,
+            Some(prior) => AuthoritativeMutationV3::replace(
+                N::ValidatedPrefixEntityHeads,
+                key.value(),
+                prior.value(),
+                value.value(),
+            ),
+            None => AuthoritativeMutationV3::put(
+                N::ValidatedPrefixEntityHeads,
+                key.value(),
+                None,
+                value.value(),
+            ),
+        }
+        .map_err(invalid)?;
+        changes.record(change).map_err(invalid)?;
+    }
+    for row in snapshot.iter().map_err(precommit_storage_error)? {
+        let (key, value) = row.map_err(precommit_storage_error)?;
+        // Never turn a malformed old snapshot row into a deletion/repair hint.
+        let head = riffdb_storage_api::decode_entity_chain_head_v1(value.value())
+            .map_err(crate::error::codec_error)?;
+        if head.value().target().key().as_bytes() != key.value() {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        if source
+            .get(key.value())
+            .map_err(precommit_storage_error)?
+            .is_none()
+        {
+            let change = AuthoritativeMutationV3::delete_matching(
+                N::ValidatedPrefixEntityHeads,
+                key.value(),
+                value.value(),
+            )
+            .map_err(invalid)?;
+            changes.record(change).map_err(invalid)?;
+        }
+    }
+    changes.finish().map_err(invalid)
+}
+
+/// Forms the complete checkpoint operation's receipt from the same pin used by
+/// the existing validated checkpoint builder. Prefix/history count evidence and
+/// the exclusive drained checkpoint gate remain the existing caller's duties.
+/// An exact existing checkpoint is a no-op, not an empty physical transaction.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "WP-772 checkpoint writer activation is not complete"
+    )
+)]
+pub(crate) fn plan_checkpoint_receipt(
+    transaction: &ReadTransaction,
+    checkpoint: &StoredValidatedPrefixCheckpointV2,
+) -> Result<Option<riffdb_storage_api::AuthoritativeTransactionV3>, StorageError> {
+    use riffdb_storage_api::{
+        AuthoritativeMutationV3, AuthoritativeNamespaceV1 as N, AuthoritativeTransactionBindingV3,
+        AuthoritativeTransactionV3, ChangelogAttributionV3, ChangelogV3Error,
+    };
+    let history = crate::changelog_v3_roots::read_checkpoint_roots(transaction)?
+        .ok_or_else(|| storage_error(StorageErrorKind::IncompatibleFormat))?;
+    let base = checkpoint.base();
+    let frontier = history.tail().frontier();
+    if base.database_id() != history.lineage().database_id()
+        || base.history_incarnation() != history.lineage().history_incarnation()
+        || base.registry_digest() != current_record_registry_digest()
+        || base.checkpoint_commit_sequence()
+            != frontier.application().map_or(0, |sequence| sequence.get())
+        || base.audit_sequence_bound()
+            != frontier
+                .administration()
+                .map_or(0, |sequence| sequence.get())
+    {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    }
+    let mut changes = plan_checkpoint_head_changes(transaction, checkpoint)?;
+    let encoded =
+        encode_validated_prefix_checkpoint_v2(checkpoint).map_err(crate::error::codec_error)?;
+    let meta = transaction.open_table(META).map_err(table_error)?;
+    let prior = meta
+        .get(META_VALIDATED_PREFIX_CHECKPOINT)
+        .map_err(precommit_storage_error)?;
+    let invalid = |error| {
+        storage_error(match error {
+            ChangelogV3Error::LimitExceeded => StorageErrorKind::LimitExceeded,
+            ChangelogV3Error::SequenceExhausted => StorageErrorKind::SequenceExhausted,
+            _ => StorageErrorKind::CorruptData,
+        })
+    };
+    let mutation = if let Some(prior) = prior {
+        let previous = decode_validated_prefix_checkpoint_v2(prior.value())
+            .map_err(crate::error::codec_error)?;
+        if prior.value() == encoded.as_bytes() {
+            if changes.is_empty() {
+                return Ok(None);
+            }
+            // Reusing the identical proof cannot authorize repairing its rows.
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        let previous = previous.value().base();
+        if base.previous_checkpoint_hash() != Some(previous.checkpoint_hash())
+            || previous.database_id() != base.database_id()
+            || previous.history_incarnation() != base.history_incarnation()
+            || previous.checkpoint_commit_sequence() > base.checkpoint_commit_sequence()
+            || previous.audit_sequence_bound() > base.audit_sequence_bound()
+        {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        AuthoritativeMutationV3::replace(
+            N::ValidatedPrefixCheckpoint,
+            META_VALIDATED_PREFIX_CHECKPOINT.as_bytes(),
+            prior.value(),
+            encoded.as_bytes(),
+        )
+    } else {
+        if base.previous_checkpoint_hash().is_some()
+            || transaction
+                .open_table(VALIDATED_PREFIX_ENTITY_HEADS)
+                .map_err(table_error)?
+                .len()
+                .map_err(precommit_storage_error)?
+                != 0
+        {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        AuthoritativeMutationV3::put(
+            N::ValidatedPrefixCheckpoint,
+            META_VALIDATED_PREFIX_CHECKPOINT.as_bytes(),
+            None,
+            encoded.as_bytes(),
+        )
+    }
+    .map_err(invalid)?;
+    // Head namespace34 precedes the singleton checkpoint namespace109. The
+    // shared constructor checks the whole receipt's frame-adjusted byte limit.
+    changes.push(mutation);
+    let (sequence, _) = history
+        .expected_allocator()
+        .allocate_one()
+        .map_err(invalid)?;
+    let receipt = AuthoritativeTransactionV3::new(
+        AuthoritativeTransactionBindingV3 {
+            database_id: history.lineage().database_id(),
+            history_incarnation: history.lineage().history_incarnation(),
+            predecessor: Some(history.tail().sequence()),
+            sequence,
+            predecessor_frontier: frontier,
+            covered_frontier: frontier,
+            prior_history_hash: history.tail().history_hash(),
+        },
+        ChangelogAttributionV3::ValidatedPrefixCheckpoint,
+        changes,
+    )
+    .map_err(invalid)?;
+    Ok(Some(receipt))
+}
+
 /// Physical key order equals `(entity type, entity key)` order: canonical keys
 /// begin with the fixed version/purpose prefix and big-endian entity type.
 /// Both passes borrow this exact transaction-bound table, never a latest view.

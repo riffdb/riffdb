@@ -6,9 +6,13 @@ use riffdb_storage_api::{EntityChainHeadV1, EntityChainStateV1, encode_entity_ch
 use riffdb_types::{EntityKeyBuilder, EntityTransitionHash, EntityTypeId, SchemaHash};
 
 fn head(id: u32) -> EntityChainHeadV1 {
+    head_with_key(id, b"\0key\xff")
+}
+
+fn head_with_key(id: u32, payload: &[u8]) -> EntityChainHeadV1 {
     let entity_type = EntityTypeId::new(id).unwrap();
     let mut key = EntityKeyBuilder::new(entity_type);
-    key.push_bytes(b"\0key\xff").unwrap();
+    key.push_bytes(payload).unwrap();
     EntityChainHeadV1::from_stored_parts(
         EntityTarget::new(entity_type, key.finish().unwrap()).unwrap(),
         2,
@@ -17,6 +21,120 @@ fn head(id: u32) -> EntityChainHeadV1 {
         EntityTransitionHash::from_bytes([0x51; 32]),
     )
     .unwrap()
+}
+
+#[test]
+fn checkpoint_head_plan_keeps_only_changed_bytes_and_refuses_malformed_old_rows() {
+    use riffdb_types::{EntityRecordHash, EntityVersion};
+    let directory = crate::test_path::ScopedDirectory::new("checkpoint-plan-replace");
+    let database = redb::Database::create(directory.join("data.redb")).unwrap();
+    let heads: Vec<_> = (1..=1024).map(head).collect();
+    let proof = checkpoint(&heads);
+    let prior = EntityChainHeadV1::from_stored_parts(
+        heads[511].target().clone(),
+        1,
+        EntityChainStateV1::Live {
+            version: EntityVersion::first(),
+            value_hash: EntityRecordHash::from_bytes([0x31; 32]),
+        },
+        CommitSequence::first(),
+        EntityTransitionHash::from_bytes([0x41; 32]),
+    )
+    .unwrap();
+    let write = database.begin_write().unwrap();
+    {
+        write.open_table(ENTITIES).unwrap();
+        let mut source = write.open_table(ENTITY_CHAIN_HEADS).unwrap();
+        let mut snapshot = write.open_table(VALIDATED_PREFIX_ENTITY_HEADS).unwrap();
+        for head in &heads {
+            put_head(&mut source, head);
+            put_head(&mut snapshot, head);
+        }
+        put_head(&mut snapshot, &prior);
+    }
+    write.commit().unwrap();
+    let pin = database.begin_read().unwrap();
+    let changes = super::plan_checkpoint_head_changes(&pin, &proof).unwrap();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].key(), prior.target().key().as_bytes());
+    assert!(changes[0].matches_prior(Some(
+        encode_entity_chain_head_v1(&prior).unwrap().as_bytes()
+    )));
+    assert_eq!(
+        changes[0].value(),
+        Some(encode_entity_chain_head_v1(&heads[511]).unwrap().as_bytes())
+    );
+    let write = database.begin_write().unwrap();
+    {
+        let mut snapshot = write.open_table(VALIDATED_PREFIX_ENTITY_HEADS).unwrap();
+        snapshot
+            .insert(
+                b"malformed-old-key".as_slice(),
+                b"malformed-old-value".as_slice(),
+            )
+            .unwrap();
+    }
+    write.commit().unwrap();
+    assert_eq!(
+        super::plan_checkpoint_head_changes(&pin, &proof).unwrap(),
+        changes
+    );
+    let read = database.begin_read().unwrap();
+    assert_eq!(
+        super::plan_checkpoint_head_changes(&read, &proof)
+            .unwrap_err()
+            .kind(),
+        StorageErrorKind::CorruptData
+    );
+    assert_eq!(
+        read.open_table(VALIDATED_PREFIX_ENTITY_HEADS)
+            .unwrap()
+            .get(b"malformed-old-key".as_slice())
+            .unwrap()
+            .unwrap()
+            .value(),
+        b"malformed-old-value"
+    );
+}
+
+#[test]
+fn checkpoint_head_plan_refuses_oversized_delta_without_publishing_a_partial_snapshot() {
+    let directory = crate::test_path::ScopedDirectory::new("checkpoint-plan-bound");
+    let database = redb::Database::create(directory.join("data.redb")).unwrap();
+    // Each valid head repeats its bounded key in the encoded value and in the
+    // physical mutation key. Their complete delta exceeds one 32MiB receipt.
+    let heads: Vec<_> = (1..=4200)
+        .map(|id| head_with_key(id, &[0x42; 4000]))
+        .collect();
+    let proof = checkpoint(&heads);
+    let write = database.begin_write().unwrap();
+    {
+        write.open_table(ENTITIES).unwrap();
+        write.open_table(VALIDATED_PREFIX_ENTITY_HEADS).unwrap();
+        let mut source = write.open_table(ENTITY_CHAIN_HEADS).unwrap();
+        for head in &heads {
+            put_head(&mut source, head);
+        }
+    }
+    write.commit().unwrap();
+    let read = database.begin_read().unwrap();
+    assert_eq!(
+        super::plan_checkpoint_head_changes(&read, &proof)
+            .unwrap_err()
+            .kind(),
+        StorageErrorKind::LimitExceeded
+    );
+    assert_eq!(
+        read.open_table(VALIDATED_PREFIX_ENTITY_HEADS)
+            .unwrap()
+            .len()
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        read.open_table(ENTITY_CHAIN_HEADS).unwrap().len().unwrap(),
+        heads.len() as u64
+    );
 }
 
 fn put_head(table: &mut redb::Table<&[u8], &[u8]>, head: &EntityChainHeadV1) {
@@ -108,6 +226,7 @@ fn checkpoint_head_sync_preserves_exact_rows_removes_stale_rows_and_aborts_bad_p
     let heads = [head(1), head(256)];
     let proof = checkpoint(&heads);
     let write = database.begin_write().unwrap();
+    write.open_table(ENTITIES).unwrap();
     {
         let mut source = write.open_table(ENTITY_CHAIN_HEADS).unwrap();
         for head in &heads {
@@ -119,6 +238,23 @@ fn checkpoint_head_sync_preserves_exact_rows_removes_stale_rows_and_aborts_bad_p
     }
     write.commit().unwrap();
     let old = database.begin_read().unwrap();
+    let changes = super::plan_checkpoint_head_changes(&old, &proof).unwrap();
+    assert_eq!(
+        changes.len(),
+        2,
+        "unchanged heads do not occupy receipt entries"
+    );
+    assert_eq!(changes[0].key(), head(7).target().key().as_bytes());
+    assert_eq!(changes[0].value(), None);
+    assert!(changes[0].matches_prior(Some(
+        encode_entity_chain_head_v1(&head(7)).unwrap().as_bytes()
+    )));
+    assert_eq!(changes[1].key(), heads[1].target().key().as_bytes());
+    assert!(changes[1].matches_prior(None));
+    assert_eq!(
+        changes[1].value(),
+        Some(encode_entity_chain_head_v1(&heads[1]).unwrap().as_bytes())
+    );
     let write = database.begin_write().unwrap();
     replace_checkpoint_entity_heads(&write, &proof).unwrap();
     write.commit().unwrap();

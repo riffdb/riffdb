@@ -15,6 +15,18 @@ pub struct AuthoritativeMutationV3 {
 }
 
 impl AuthoritativeMutationV3 {
+    /// Forms an exact delete from the immutable transaction/snapshot pre-image,
+    /// using the same expected-state hash owner as replacements. Bounds and
+    /// authority class are checked before hashing; absence is not a wildcard.
+    pub fn delete_matching(
+        namespace: AuthoritativeNamespaceV1,
+        key: &[u8],
+        before: &[u8],
+    ) -> Result<Self, ChangelogV3Error> {
+        Self::validate(namespace, key, before.len())?;
+        Self::delete(namespace, key, Sha256::digest(before).into())
+    }
+
     /// Forms an exact replacement from a transaction-owned pre-image. Hashing
     /// lives with the expected-state codec, not a second adapter implementation.
     pub fn replace(

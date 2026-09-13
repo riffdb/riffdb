@@ -8,6 +8,28 @@ use riffdb_storage_api::{
 };
 use sha2::{Digest, Sha256};
 
+#[test]
+fn delete_from_exact_before_image_keeps_hashing_in_the_mutation_owner() {
+    let deletion = AuthoritativeMutationV3::delete_matching(
+        N::ValidatedPrefixEntityHeads,
+        b"key",
+        b"original",
+    )
+    .unwrap();
+    assert_eq!(deletion.value(), None);
+    assert!(deletion.matches_prior(Some(b"original")));
+    assert!(!deletion.matches_prior(None));
+    assert!(!deletion.matches_prior(Some(b"replacement")));
+    assert_eq!(
+        deletion.expected_hash(),
+        Some(Sha256::digest(b"original").into())
+    );
+    assert_eq!(
+        AuthoritativeMutationV3::delete_matching(N::NextChangelogTransaction, b"key", b"original"),
+        Err(ChangelogV3Error::InvalidNamespace)
+    );
+}
+
 fn binding() -> riffdb_storage_api::AuthoritativeTransactionBindingV3 {
     use riffdb_types::{CommitSequence, DatabaseId, DualFrontier};
     riffdb_storage_api::AuthoritativeTransactionBindingV3 {
