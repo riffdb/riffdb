@@ -201,29 +201,15 @@ fn validate_roots(
     let incarnation = *decode_history_incarnation_v1(&read(META_HISTORY_INCARNATION)?)
         .map_err(codec_error)?
         .value();
-    let application =
-        match *decode_application_sequence_allocator_v1(&read(META_APPLICATION_SEQUENCE)?)
-            .map_err(codec_error)?
-            .value()
-        {
-            ApplicationSequenceAllocator::Next(next) => CommitSequence::new(next.get() - 1),
-            ApplicationSequenceAllocator::Exhausted => CommitSequence::new(u64::MAX),
-        };
-    let administration =
-        match *decode_administration_sequence_allocator_v1(&read(META_ADMINISTRATION_SEQUENCE)?)
-            .map_err(codec_error)?
-            .value()
-        {
-            AdministrationSequenceAllocator::Next(next) => {
-                AdministrationSequence::new(next.get() - 1)
-            }
-            AdministrationSequenceAllocator::Exhausted => AdministrationSequence::new(u64::MAX),
-        };
+    let frontier = decode_physical_frontier(
+        &read(META_APPLICATION_SEQUENCE)?,
+        &read(META_ADMINISTRATION_SEQUENCE)?,
+    )?;
     let lineage = history.lineage();
     if lineage.database_id() != database
         || lineage.history_incarnation() != incarnation
         || lineage.leadership_epoch() != epoch
-        || history.tail().frontier() != DualFrontier::new(application, administration)
+        || history.tail().frontier() != frontier
         || follower
             .attached_state()
             .is_some_and(|(attached, _, _)| attached != lineage)
@@ -244,4 +230,27 @@ fn validate_roots(
         .validate_terminal_receipt(&receipt)
         .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
     Ok(Some(history))
+}
+
+/// Physical dual frontier from the two bounded current allocator envelopes.
+/// This projection is not independently a validated root or operation permit.
+pub(crate) fn decode_physical_frontier(
+    application: &[u8],
+    administration: &[u8],
+) -> Result<DualFrontier, StorageError> {
+    let application = match *decode_application_sequence_allocator_v1(application)
+        .map_err(codec_error)?
+        .value()
+    {
+        ApplicationSequenceAllocator::Next(next) => CommitSequence::new(next.get() - 1),
+        ApplicationSequenceAllocator::Exhausted => CommitSequence::new(u64::MAX),
+    };
+    let administration = match *decode_administration_sequence_allocator_v1(administration)
+        .map_err(codec_error)?
+        .value()
+    {
+        AdministrationSequenceAllocator::Next(next) => AdministrationSequence::new(next.get() - 1),
+        AdministrationSequenceAllocator::Exhausted => AdministrationSequence::new(u64::MAX),
+    };
+    Ok(DualFrontier::new(application, administration))
 }

@@ -915,6 +915,34 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
 }
 
 #[test]
+// req: REP-003, REC-001, STO-012
+fn captured_immediate_owner_keeps_one_transaction_and_no_raw_mutation_escape() {
+    let source = without_whitespace(&production_source(
+        crate_root().join("src/changelog_v3_write.rs"),
+    ));
+    let captured = source
+        .split_once("implCapturedImmediateWrite{")
+        .unwrap()
+        .1
+        .split_once("pub(crate)structPreparedHistoryAdvance")
+        .unwrap()
+        .0;
+    assert_eq!(captured.matches("database.begin_write()").count(), 1);
+    let finish = captured.split_once("pub(crate)fnfinish(").unwrap().1;
+    assert!(!finish.contains("begin_write("));
+    assert!(!finish.contains(".commit("));
+    assert!(finish.contains("PreparedImmediateReceipt{transaction:self.transaction,}"));
+    assert!(!captured.contains("->&WriteTransaction"));
+    assert!(!captured.contains("Result<WriteTransaction"));
+    let capture = without_whitespace(&production_source(
+        crate_root().join("src/changelog_v3_capture.rs"),
+    ));
+    assert!(!capture.contains("DerefMutfor"));
+    assert!(!capture.contains("pub(crate)fntable_mut("));
+    assert!(capture.contains("self.capture.record("));
+}
+
+#[test]
 fn deferred_epoch_proves_one_private_frontier_before_durability() {
     let store = without_whitespace(&production_source(crate_root().join("src/store.rs")));
     let record = store

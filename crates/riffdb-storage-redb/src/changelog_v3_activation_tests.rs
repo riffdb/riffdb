@@ -11,6 +11,9 @@ use std::{collections::BTreeMap, path::Path};
 #[path = "changelog_v3_journal_tests.rs"]
 mod journal_materialization;
 
+#[path = "changelog_v3_capture_tests.rs"]
+mod direct_capture;
+
 fn lineage() -> ChangelogLineageV3 {
     ChangelogLineageV3::new(
         DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x71; 10]).unwrap(),
