@@ -1,16 +1,66 @@
 //! V3 receipt formation from validated journal mutations, never latest-row reads.
 
-use riffdb_storage_api::proto_codec::encode_changelog_transaction_allocator_v3;
+use riffdb_storage_api::proto_codec::{
+    decode_changelog_transaction_allocator_v3, encode_changelog_transaction_allocator_v3,
+};
 use riffdb_storage_api::{
     AuthoritativeMutationAccumulatorV3, AuthoritativeMutationV3, AuthoritativeNamespaceV1,
     AuthoritativeStateCatalogV1, AuthoritativeTransactionBindingV3, AuthoritativeTransactionV3,
-    ChangelogAttributionV3, ChangelogTransactionAllocator, ChangelogV3Error,
-    ReplicationAuthorityClassV1,
+    ChangelogAttributionV3, ChangelogTransactionAllocator, ChangelogTransactionSequence,
+    ChangelogV3Error, ReplicationAuthorityClassV1,
 };
 use riffdb_types::DualFrontier;
 use sha2::{Digest, Sha256};
 
-use crate::journal::{JournalFrame, JournalFrameKind, JournalMutation};
+use crate::journal::{JournalFrame, JournalFrameKind, JournalMutation, JournalTable};
+
+/// Checks the one-step physical allocation carried by a journal mutation.
+/// This is shape/source validation, not permission to apply it: replay still
+/// requires the retained, fully validated V3 activation roots and predecessor.
+/// Position one is reserved for Immediate activation and cannot be journaled.
+pub(crate) fn journal_allocator_assignment(
+    mutation: &JournalMutation,
+) -> Result<ChangelogTransactionSequence, ChangelogV3Error> {
+    let JournalMutation::Put {
+        table,
+        key,
+        expected_hash: Some(expected),
+        value,
+    } = mutation
+    else {
+        return Err(ChangelogV3Error::InvalidEncoding);
+    };
+    if *table != JournalTable::Meta
+        || AuthoritativeStateCatalogV1.lookup(table.label(), key)
+            != Some(AuthoritativeNamespaceV1::NextChangelogTransaction)
+    {
+        return Err(ChangelogV3Error::InvalidNamespace);
+    }
+    let decoded = decode_changelog_transaction_allocator_v3(value)
+        .map_err(|_| ChangelogV3Error::InvalidEncoding)?;
+    let assigned = match *decoded.value() {
+        ChangelogTransactionAllocator::Next(next) => next
+            .get()
+            .checked_sub(1)
+            .and_then(ChangelogTransactionSequence::new)
+            .ok_or(ChangelogV3Error::PredecessorMismatch)?,
+        ChangelogTransactionAllocator::Exhausted => ChangelogTransactionSequence::new(u64::MAX)
+            .ok_or(ChangelogV3Error::SequenceExhausted)?,
+    };
+    if assigned.get() == 1 {
+        return Err(ChangelogV3Error::PredecessorMismatch);
+    }
+    let before = ChangelogTransactionAllocator::Next(assigned);
+    let after = encode_changelog_transaction_allocator_v3(before.allocate_one()?.1)
+        .map_err(|_| ChangelogV3Error::InvalidEncoding)?;
+    let before = encode_changelog_transaction_allocator_v3(before)
+        .map_err(|_| ChangelogV3Error::InvalidEncoding)?;
+    let expected_hash: [u8; 32] = Sha256::digest(before.as_bytes()).into();
+    if *expected != expected_hash || value.as_ref() != after.as_bytes() {
+        return Err(ChangelogV3Error::PredecessorMismatch);
+    }
+    Ok(assigned)
+}
 
 /// Forms one net receipt from the exact admitted/recovered frame. The caller
 /// binds its predecessor to the known-durable activation/checkpoint or prior
@@ -42,13 +92,6 @@ pub(crate) fn receipt_from_journal(
     {
         return Err(ChangelogV3Error::PredecessorMismatch);
     }
-    let before = ChangelogTransactionAllocator::Next(binding.sequence);
-    let after = before.allocate_one()?.1;
-    let before = encode_changelog_transaction_allocator_v3(before)
-        .map_err(|_| ChangelogV3Error::InvalidEncoding)?;
-    let after = encode_changelog_transaction_allocator_v3(after)
-        .map_err(|_| ChangelogV3Error::InvalidEncoding)?;
-    let expected_allocator_hash: [u8; 32] = Sha256::digest(before.as_bytes()).into();
     let mut allocator_seen = false;
     let mut changes = AuthoritativeMutationAccumulatorV3::default();
     for mutation in frame.mutations() {
@@ -60,14 +103,8 @@ pub(crate) fn receipt_from_journal(
                 return Err(ChangelogV3Error::InvalidEncoding);
             }
             allocator_seen = true;
-            match mutation {
-                JournalMutation::Put {
-                    expected_hash: Some(expected),
-                    value,
-                    ..
-                } if *expected == expected_allocator_hash && value.as_ref() == after.as_bytes() => {
-                }
-                _ => return Err(ChangelogV3Error::PredecessorMismatch),
+            if journal_allocator_assignment(mutation)? != binding.sequence {
+                return Err(ChangelogV3Error::PredecessorMismatch);
             }
             continue;
         }
@@ -202,6 +239,174 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(source.encode().unwrap().as_bytes(), encoded.as_bytes());
+    }
+
+    #[test]
+    // req: REP-003, REC-001, STO-012
+    fn standalone_audit_receipt_carries_the_checked_physical_allocator_without_application_advance()
+    {
+        let mut audit_binding = binding();
+        audit_binding.covered_frontier =
+            riffdb_types::DualFrontier::new(None, riffdb_types::AdministrationSequence::new(1));
+        let frame = JournalFrame::service_audit(
+            audit_binding.database_id,
+            None,
+            None,
+            riffdb_types::AdministrationSequence::new(1),
+            1,
+            [0x44; 32],
+            vec![
+                JournalMutation::put(
+                    JournalTable::Audit,
+                    vec![1],
+                    b"opaque-audit-codec-vector".to_vec(),
+                )
+                .unwrap(),
+                allocator_mutation(),
+            ],
+        )
+        .expect("an attributed standalone audit must carry its V3 allocator source");
+        let encoded = frame.encode().unwrap();
+        let (decoded, _) = JournalFrame::decode(encoded.as_bytes()).unwrap();
+        let receipt = super::receipt_from_journal(&decoded, audit_binding).unwrap();
+        assert_eq!(receipt.binding(), audit_binding);
+        assert_eq!(
+            receipt.attribution(),
+            riffdb_storage_api::ChangelogAttributionV3::JournaledServiceAudit
+        );
+        assert_eq!(receipt.mutations().len(), 1);
+        assert_eq!(receipt.mutations()[0].namespace(), N::Audit);
+        assert_eq!(decoded.encode().unwrap().as_bytes(), encoded.as_bytes());
+    }
+
+    #[test]
+    // req: REP-003, REC-001, STO-012
+    fn journal_allocator_requires_exact_current_envelopes_and_one_non_activation_step() {
+        fn advance(before: u64, after: ChangelogTransactionAllocator) -> JournalMutation {
+            JournalMutation::replace(
+                JournalTable::Meta,
+                N::NextChangelogTransaction
+                    .metadata_key()
+                    .unwrap()
+                    .as_bytes(),
+                encode_changelog_transaction_allocator_v3(ChangelogTransactionAllocator::Next(
+                    ChangelogTransactionSequence::new(before).unwrap(),
+                ))
+                .unwrap()
+                .as_bytes(),
+                encode_changelog_transaction_allocator_v3(after)
+                    .unwrap()
+                    .into_bytes(),
+            )
+            .unwrap()
+        }
+        for assigned in [2, 42, u64::MAX] {
+            let before = ChangelogTransactionAllocator::Next(
+                ChangelogTransactionSequence::new(assigned).unwrap(),
+            );
+            let mutation = advance(assigned, before.allocate_one().unwrap().1);
+            assert_eq!(
+                super::journal_allocator_assignment(&mutation)
+                    .unwrap()
+                    .get(),
+                assigned
+            );
+        }
+        let next = |value| {
+            ChangelogTransactionAllocator::Next(ChangelogTransactionSequence::new(value).unwrap())
+        };
+        for mutation in [
+            advance(1, next(2)), // Activation is Immediate, never a journal source.
+            advance(2, next(4)), // Skipped assignment.
+            advance(2, next(2)), // No advance.
+            advance(2, next(1)), // Rollback.
+            advance(2, ChangelogTransactionAllocator::Exhausted),
+            JournalMutation::put(
+                JournalTable::Meta,
+                N::NextChangelogTransaction
+                    .metadata_key()
+                    .unwrap()
+                    .as_bytes(),
+                encode_changelog_transaction_allocator_v3(next(3))
+                    .unwrap()
+                    .into_bytes(),
+            )
+            .unwrap(),
+            JournalMutation::replace(
+                JournalTable::Meta,
+                N::NextChangelogTransaction
+                    .metadata_key()
+                    .unwrap()
+                    .as_bytes(),
+                b"wrong-preimage",
+                encode_changelog_transaction_allocator_v3(next(3))
+                    .unwrap()
+                    .into_bytes(),
+            )
+            .unwrap(),
+            JournalMutation::delete_matching(
+                JournalTable::Meta,
+                N::NextChangelogTransaction
+                    .metadata_key()
+                    .unwrap()
+                    .as_bytes(),
+                b"old",
+            )
+            .unwrap(),
+        ] {
+            assert!(super::journal_allocator_assignment(&mutation).is_err());
+            assert!(
+                JournalFrame::service_audit(
+                    binding().database_id,
+                    None,
+                    None,
+                    riffdb_types::AdministrationSequence::new(1),
+                    1,
+                    [0; 32],
+                    vec![
+                        JournalMutation::put(JournalTable::Audit, vec![1], vec![1]).unwrap(),
+                        mutation
+                    ],
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    // req: REP-003, REC-001, STO-012
+    fn journal_allocator_shape_does_not_authorize_replay_into_inactive_or_partial_v3_state() {
+        use redb::ReadableDatabase;
+        let scope = crate::test_path::ScopedDirectory::new("v3-inactive-refusal");
+        let database = redb::Database::create(scope.join("db.redb")).unwrap();
+        let key = N::NextChangelogTransaction.metadata_key().unwrap();
+        let before = encode_changelog_transaction_allocator_v3(
+            ChangelogTransactionAllocator::Next(binding().sequence),
+        )
+        .unwrap();
+        for installed in [false, true] {
+            let transaction = database.begin_write().unwrap();
+            {
+                let mut meta = transaction.open_table(crate::layout::META).unwrap();
+                if installed {
+                    meta.insert(key, before.as_bytes()).unwrap();
+                }
+            }
+            transaction.commit().unwrap();
+            let transaction = database.begin_write().unwrap();
+            assert!(super::journal_allocator_assignment(&allocator_mutation()).is_ok());
+            assert!(crate::journal::apply_mutation(&transaction, &allocator_mutation()).is_err());
+            // Even if the private caller ignores the refusal and commits, the
+            // allocator itself must neither appear nor advance without roots.
+            transaction.commit().unwrap();
+            let snapshot = database.begin_read().unwrap();
+            let meta = snapshot.open_table(crate::layout::META).unwrap();
+            let observed = meta.get(key).unwrap();
+            assert_eq!(
+                observed.as_ref().map(|value| value.value()),
+                installed.then_some(before.as_bytes())
+            );
+        }
     }
 
     #[test]

@@ -872,8 +872,13 @@ fn service_audit_mutation_is_closed(mutation: &JournalMutation) -> bool {
     match mutation.table() {
         JournalTable::Audit | JournalTable::AuditByRequest => mutation.value().is_some(),
         JournalTable::Meta => {
-            mutation.value().is_some()
-                && mutation.key() == crate::layout::META_ADMINISTRATION_SEQUENCE.as_bytes()
+            (mutation.value().is_some()
+                && mutation.key() == crate::layout::META_ADMINISTRATION_SEQUENCE.as_bytes())
+                // ADR-0186 adds exactly this checked physical allocator domain.
+                // No journal field, table tag, or existing metadata meaning changes.
+                // Successful shape validation does not authorize replay into an
+                // inactive database: the checkpoint owner must validate V3 roots.
+                || crate::changelog_v3::journal_allocator_assignment(mutation).is_ok()
         }
         JournalTable::Entities
         | JournalTable::SecondaryIndexes
