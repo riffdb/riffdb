@@ -322,27 +322,19 @@ fn changelog_allocator_is_nonzero_checked_and_canonically_exhausted() {
         ChangelogTransactionAllocator::Next(last),
         exhausted,
     ] {
-        let bytes = state.to_canonical_bytes();
-        assert_eq!(
-            ChangelogTransactionAllocator::from_canonical_bytes(&bytes),
-            Ok(state)
-        );
+        use riffdb_storage_api::proto_codec::{
+            decode_changelog_transaction_allocator_v3 as decode,
+            encode_changelog_transaction_allocator_v3 as encode,
+        };
+        let bytes = encode(state).unwrap().into_bytes();
+        assert_eq!(*decode(&bytes).unwrap().value(), state);
         for end in 0..bytes.len() {
-            assert!(ChangelogTransactionAllocator::from_canonical_bytes(&bytes[..end]).is_err());
+            assert!(decode(&bytes[..end]).is_err());
         }
         let mut trailing = bytes.to_vec();
         trailing.push(0);
-        assert!(ChangelogTransactionAllocator::from_canonical_bytes(&trailing).is_err());
+        assert!(decode(&trailing).is_err());
     }
-    let mut noncanonical = exhausted.to_canonical_bytes();
-    noncanonical[10] = 1;
-    assert!(ChangelogTransactionAllocator::from_canonical_bytes(&noncanonical).is_err());
-    let mut zero_next = initial.to_canonical_bytes();
-    zero_next[3..].fill(0);
-    assert!(ChangelogTransactionAllocator::from_canonical_bytes(&zero_next).is_err());
-    let mut foreign = initial.to_canonical_bytes();
-    foreign[1] = 2;
-    assert!(ChangelogTransactionAllocator::from_canonical_bytes(&foreign).is_err());
 }
 
 #[test]

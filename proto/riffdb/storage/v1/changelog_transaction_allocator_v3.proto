@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+// ADR-0186 physical transaction allocation, never an application/admin sequence.
+// Own-file closure preserves every previously registered payload identity.
+message StoredChangelogTransactionAllocatorV3 {
+  message Exhausted {}
+
+  oneof state {
+    uint64 next_transaction_sequence = 1;
+    Exhausted exhausted = 2;
+  }
+}

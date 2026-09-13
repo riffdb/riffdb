@@ -8,7 +8,8 @@ use riffdb_storage_api::{
     AuthoritativeTransactionBindingV3, AuthoritativeTransactionV3, ChangelogAttributionV3,
     ChangelogEntryClassV1, ChangelogEntryClassV2, ChangelogEntryV1, ChangelogEntryV2,
     ChangelogFrameBindingV1, ChangelogFrameBindingV2, ChangelogFrameBindingV3, ChangelogFrameV1,
-    ChangelogFrameV2, ChangelogFrameV3, ChangelogTransactionSequence,
+    ChangelogFrameV2, ChangelogFrameV3, ChangelogTransactionAllocator,
+    ChangelogTransactionSequence, proto_codec::encode_changelog_transaction_allocator_v3,
 };
 use riffdb_types::{CommitSequence, DatabaseId, DualFrontier};
 
@@ -93,10 +94,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?
     .encode()?;
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/replication");
+    let allocator_first =
+        encode_changelog_transaction_allocator_v3(ChangelogTransactionAllocator::initial())?;
+    let allocator_last =
+        encode_changelog_transaction_allocator_v3(ChangelogTransactionAllocator::Next(
+            ChangelogTransactionSequence::new(u64::MAX).ok_or("invalid maximum")?,
+        ))?;
+    let allocator_exhausted =
+        encode_changelog_transaction_allocator_v3(ChangelogTransactionAllocator::Exhausted)?;
     for (name, bytes) in [
         ("changelog-frame-v1.hex", v1.as_bytes()),
         ("changelog-frame-v2.hex", v2.as_bytes()),
         ("changelog-frame-v3.hex", v3.as_slice()),
+        (
+            "changelog-allocator-v3-first.hex",
+            allocator_first.as_bytes(),
+        ),
+        ("changelog-allocator-v3-last.hex", allocator_last.as_bytes()),
+        (
+            "changelog-allocator-v3-exhausted.hex",
+            allocator_exhausted.as_bytes(),
+        ),
     ] {
         let hex = bytes
             .iter()

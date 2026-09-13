@@ -42,6 +42,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/capability.proto",
     "riffdb/storage/v1/capability_migration.proto",
     "riffdb/storage/v1/catalog.proto",
+    "riffdb/storage/v1/changelog_transaction_allocator_v3.proto",
     "riffdb/storage/v1/clean_close_lifecycle_v1.proto",
     "riffdb/storage/v1/columnar_projection_control_v1.proto",
     "riffdb/storage/v1/command_capsule_v1.proto",
@@ -92,6 +93,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/capability.proto",
     "riffdb/storage/v1/capability_migration.proto",
     "riffdb/storage/v1/catalog.proto",
+    "riffdb/storage/v1/changelog_transaction_allocator_v3.proto",
     "riffdb/storage/v1/clean_close_lifecycle_v1.proto",
     "riffdb/storage/v1/columnar_projection_control_v1.proto",
     "riffdb/storage/v1/command_capsule_v1.proto",
@@ -667,6 +669,11 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         "StoredColumnarProjectionControlV1",
         PayloadBound::Tiny,
     ),
+    durable(
+        "changelog_transaction_allocator_v3.proto",
+        "StoredChangelogTransactionAllocatorV3",
+        PayloadBound::Exact(11),
+    ),
 ];
 
 const LEGACY_DURABLE_RECORD_COUNT: usize = 26;
@@ -1167,6 +1174,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         .ok_or_else(|| {
             io::Error::other("durable columnar-projection-control-v1 registry is incomplete")
         })?;
+    let changelog_allocator_record = durable_registry
+        .get(current_v1_record_count + 64)
+        .ok_or_else(|| io::Error::other("durable changelog allocator registry is incomplete"))?;
     write_artifact(
         &output_root,
         "fixtures/proto/durable-registry.txt",
@@ -1682,6 +1692,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         "crates/riffdb-proto/fixtures/durable-columnar-projection-control-v1-record-bound.bin",
         &durable_record_bounds(std::slice::from_ref(columnar_projection_control_record)),
     )?;
+    for prefix in ["fixtures/proto", "crates/riffdb-proto/fixtures"] {
+        write_artifact(
+            &output_root,
+            &format!("{prefix}/durable-changelog-allocator-v3-schema-hash.bin"),
+            &changelog_allocator_record.schema_hash,
+        )?;
+        write_artifact(
+            &output_root,
+            &format!("{prefix}/durable-changelog-allocator-v3-record-bound.bin"),
+            &durable_record_bounds(std::slice::from_ref(changelog_allocator_record)),
+        )?;
+    }
     write_artifact(
         &output_root,
         "fixtures/proto/durable-entity-transitions-v4-schema-hashes.bin",
@@ -1959,9 +1981,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 93 {
+    if DURABLE_RECORDS.len() != 94 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 93 records").into(),
+            io::Error::other("readable durable registry must contain exactly 94 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -1985,9 +2007,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 189 || enum_count != 30 {
+    if message_count != 190 || enum_count != 30 {
         return Err(io::Error::other(format!(
-            "storage schema must contain exactly 189 messages and 30 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain exactly 190 messages and 30 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -2320,6 +2342,9 @@ fn durable_writable_registry_fixture(
     let columnar_projection_control = records
         .get(current_v1_record_count + 63)
         .ok_or_else(|| io::Error::other("durable registry is missing columnar control"))?;
+    let changelog_allocator = records
+        .get(current_v1_record_count + 64)
+        .ok_or_else(|| io::Error::other("durable registry is missing changelog allocator"))?;
     let writable = legacy[..8]
         .iter()
         .chain(std::iter::once(v2))
@@ -2364,10 +2389,11 @@ fn durable_writable_registry_fixture(
         .chain(std::iter::once(vector_projection_control))
         .chain(correlated_index_work_command_authority.iter())
         .chain(std::iter::once(clean_close_lifecycle))
-        .chain(std::iter::once(columnar_projection_control));
+        .chain(std::iter::once(columnar_projection_control))
+        .chain(std::iter::once(changelog_allocator));
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {}", current_v1_record_count + 46);
+    let _ = writeln!(output, "records {}", current_v1_record_count + 47);
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {

@@ -1017,7 +1017,7 @@ shape!(COLUMNAR_CONTROL [
     message(9, &COLUMNAR_FAILURE),
 ]);
 
-const ROOTS: [&Shape; 93] = [
+const ROOTS: [&Shape; 94] = [
     &ROOT_EMPTY,
     &ROOT_DATABASE_ID,
     &ROOT_OPTIONAL_UNIT_FIELD_TWO,
@@ -1122,6 +1122,7 @@ const ROOTS: [&Shape; 93] = [
     &COMMAND_SEGMENT_V5,
     &CLEAN_CLOSE_LIFECYCLE,
     &COLUMNAR_CONTROL,
+    &ROOT_OPTIONAL_UNIT_FIELD_TWO,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {
