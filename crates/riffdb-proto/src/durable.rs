@@ -12,9 +12,9 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 98;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 99;
 /// Number of durable semantic roles accepted for current writes.
-pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 75;
+pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 76;
 /// Number of durable semantic roles accepted for current writes.
 pub const CURRENT_RECORD_SCHEMA_COUNT: usize = WRITABLE_RECORD_SCHEMA_COUNT;
 
@@ -1689,6 +1689,21 @@ const COLUMNAR_PROJECTION_CONTROL_V1_RECORD_SCHEMA: RecordSchema<'static> =
     )
     .with_compact_identity(67, 1);
 
+const CHANGELOG_ALLOCATOR_V3_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
+    "riffdb.storage.v1.StoredChangelogTransactionAllocatorV3",
+    SchemaHash::from_bytes(*include_bytes!(
+        "../fixtures/durable-changelog-allocator-v3-schema-hash.bin"
+    )),
+    11,
+    u32::from_be_bytes({
+        let bounds = *include_bytes!("../fixtures/durable-changelog-allocator-v3-record-bound.bin");
+        [bounds[4], bounds[5], bounds[6], bounds[7]]
+    }) as usize,
+    preflight_payload::<93>,
+    validate_payload::<93, v1::StoredChangelogTransactionAllocatorV3>,
+)
+.with_compact_identity(68, 1);
+
 mod sealed {
     pub trait ReadableRecordMessage {}
     pub trait WritableRecordMessage: ReadableRecordMessage {}
@@ -1888,6 +1903,10 @@ readable_message!(
     COLUMNAR_PROJECTION_CONTROL_V1_RECORD_SCHEMA
 );
 readable_message!(
+    v1::StoredChangelogTransactionAllocatorV3,
+    CHANGELOG_ALLOCATOR_V3_RECORD_SCHEMA
+);
+readable_message!(
     v1::StoredValidatedPrefixCheckpointV1,
     VALIDATED_PREFIX_CHECKPOINT_V1_RECORD_SCHEMA
 );
@@ -2037,6 +2056,7 @@ writable_message!(v1::StoredCommandCapsuleV6);
 writable_message!(v1::StoredCommandSegmentV5);
 writable_message!(v1::StoredCleanCloseLifecycleV1);
 writable_message!(v1::StoredColumnarProjectionControlV1);
+writable_message!(v1::StoredChangelogTransactionAllocatorV3);
 writable_message!(v1::StoredEntityChainHeadV1);
 writable_message!(v1::StoredChangelogV2RotationReceiptV1);
 writable_message!(v1::StoredCommandCapsuleV4);
@@ -2232,6 +2252,7 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     COMMAND_SEGMENT_V5_RECORD_SCHEMA,
     CLEAN_CLOSE_LIFECYCLE_V1_RECORD_SCHEMA,
     COLUMNAR_PROJECTION_CONTROL_V1_RECORD_SCHEMA,
+    CHANGELOG_ALLOCATOR_V3_RECORD_SCHEMA,
     PRE_WP280_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_TOKEN_LOOKUP_RECORD_SCHEMA,
@@ -2316,6 +2337,7 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     COMMAND_SEGMENT_V5_RECORD_SCHEMA,
     CLEAN_CLOSE_LIFECYCLE_V1_RECORD_SCHEMA,
     COLUMNAR_PROJECTION_CONTROL_V1_RECORD_SCHEMA,
+    CHANGELOG_ALLOCATOR_V3_RECORD_SCHEMA,
 ];
 
 /// Current durable schemas. `current` is exactly synonymous with writable roles.

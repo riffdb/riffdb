@@ -127,6 +127,10 @@ artifacts=(
     crates/riffdb-proto/fixtures/durable-correlated-index-work-command-authority-v6-schema-hashes.bin
     fixtures/proto/durable-clean-close-lifecycle-v1-record-bound.bin
     fixtures/proto/durable-clean-close-lifecycle-v1-schema-hash.bin
+    fixtures/proto/durable-changelog-allocator-v3-record-bound.bin
+    fixtures/proto/durable-changelog-allocator-v3-schema-hash.bin
+    crates/riffdb-proto/fixtures/durable-changelog-allocator-v3-record-bound.bin
+    crates/riffdb-proto/fixtures/durable-changelog-allocator-v3-schema-hash.bin
     crates/riffdb-proto/fixtures/durable-clean-close-lifecycle-v1-record-bound.bin
     crates/riffdb-proto/fixtures/durable-clean-close-lifecycle-v1-schema-hash.bin
     fixtures/proto/durable-registry-v2-record-bound.bin
@@ -173,9 +177,12 @@ check_generated_inventory() {
 }
 
 check_generated_inventory "$repo_root" "$expected_repo_generated"
-check_generated_inventory "$output_root" "$expected_proto_generated"
 
 if [[ "$mode" == "--check" ]]; then
+    # Only the isolated check output belongs solely to this generator. In
+    # write mode output_root is the repository and also contains the separately
+    # generated public_validation.rs, already checked in the inventory above.
+    check_generated_inventory "$output_root" "$expected_proto_generated"
     failed=0
     for artifact in "${artifacts[@]}"; do
         if ! cmp --silent -- "$artifact" "$output_root/$artifact"; then

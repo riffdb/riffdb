@@ -347,6 +347,7 @@ fn sha256_dependency_is_confined_to_reviewed_integrity_boundaries() {
                 Some(
                     "backup.rs"
                         | "benchmark_support.rs"
+                        | "changelog_v3.rs" // ADR-0186 exact allocator precondition, no new primitive.
                         | "fresh_locator_coverage.rs"
                         | "format_upgrade.rs"
                         | "journal.rs"

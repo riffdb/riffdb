@@ -1671,6 +1671,23 @@ pub struct StoredQueryModuleAdministrationV1 {
     #[prost(string, optional, tag = "7")]
     pub approval_id: ::core::option::Option<::prost::alloc::string::String>,
 }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredChangelogTransactionAllocatorV3 {
+    #[prost(oneof = "stored_changelog_transaction_allocator_v3::State", tags = "1, 2")]
+    pub state: ::core::option::Option<stored_changelog_transaction_allocator_v3::State>,
+}
+/// Nested message and enum types in `StoredChangelogTransactionAllocatorV3`.
+pub mod stored_changelog_transaction_allocator_v3 {
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct Exhausted {}
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum State {
+        #[prost(uint64, tag = "1")]
+        NextTransactionSequence(u64),
+        #[prost(message, tag = "2")]
+        Exhausted(Exhausted),
+    }
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredCleanCloseLifecycleV1 {
     #[prost(bytes = "vec", tag = "1")]

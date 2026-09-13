@@ -16,6 +16,44 @@ pub(super) const APPLICATION: &str = "riffdb.storage.v1.StoredApplicationSequenc
 const ADMINISTRATION: &str = "riffdb.storage.v1.StoredAdministrationSequenceAllocatorV1";
 const RECORD_REGISTRY: &str = "riffdb.storage.v1.StoredRecordRegistryV2";
 const HISTORY_INCARNATION: &str = "riffdb.storage.v1.StoredHistoryIncarnationV1";
+const CHANGELOG_ALLOCATOR: &str = "riffdb.storage.v1.StoredChangelogTransactionAllocatorV3";
+
+/// Encodes physical transaction allocation with its own closed durable identity.
+/// The returned complete envelope, not a bare counter, is the journal mutation value.
+pub fn encode_changelog_transaction_allocator_v3(
+    value: crate::ChangelogTransactionAllocator,
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    use wire::stored_changelog_transaction_allocator_v3::{Exhausted, State};
+    let state = match value {
+        crate::ChangelogTransactionAllocator::Next(sequence) => {
+            State::NextTransactionSequence(sequence.get())
+        }
+        crate::ChangelogTransactionAllocator::Exhausted => State::Exhausted(Exhausted {}),
+    };
+    encode_message(
+        CHANGELOG_ALLOCATOR,
+        &wire::StoredChangelogTransactionAllocatorV3 { state: Some(state) },
+    )
+}
+
+/// Decodes nonzero Next or explicit Exhausted, refusing missing/foreign states.
+pub fn decode_changelog_transaction_allocator_v3(
+    encoded: &[u8],
+) -> Result<EncodedPageItem<crate::ChangelogTransactionAllocator>, DurableCodecError> {
+    use wire::stored_changelog_transaction_allocator_v3::State;
+    decode_message::<wire::StoredChangelogTransactionAllocatorV3, _, _>(
+        CHANGELOG_ALLOCATOR,
+        encoded,
+        |value| match require(value.state)? {
+            State::NextTransactionSequence(value) => {
+                crate::ChangelogTransactionSequence::new(value)
+                    .map(crate::ChangelogTransactionAllocator::Next)
+                    .ok_or_else(DurableCodecError::corrupt)
+            }
+            State::Exhausted(_) => Ok(crate::ChangelogTransactionAllocator::Exhausted),
+        },
+    )
+}
 
 /// Returns the exact registry digest required by current storage-format V2.
 #[must_use]

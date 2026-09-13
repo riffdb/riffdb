@@ -309,6 +309,10 @@ fn storage_source_import_and_type_inventory_is_exact() {
                 vec!["riffdb/storage/v1/common.proto"],
             ),
             (
+                "riffdb/storage/v1/changelog_transaction_allocator_v3.proto".to_owned(),
+                vec![],
+            ),
+            (
                 "riffdb/storage/v1/clean_close_lifecycle_v1.proto".to_owned(),
                 vec![],
             ),
@@ -507,8 +511,8 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.message_type.len())
             .sum::<usize>(),
-        189,
-        "185 semantic messages plus the unchanged StoredEnvelope and registry support"
+        190,
+        "186 semantic messages plus the unchanged StoredEnvelope and registry support"
     );
     assert_eq!(
         descriptors
@@ -536,9 +540,9 @@ fn storage_source_import_and_type_inventory_is_exact() {
 
 #[test]
 fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
-    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 75);
-    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 98);
-    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 75);
+    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 76);
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 99);
+    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 76);
     assert_eq!(
         CURRENT_RECORD_SCHEMAS
             .iter()
@@ -625,6 +629,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     readable_names.push("riffdb.storage.v1.StoredCommandSegmentV5".to_owned());
     readable_names.push("riffdb.storage.v1.StoredCleanCloseLifecycleV1".to_owned());
     readable_names.push("riffdb.storage.v1.StoredColumnarProjectionControlV1".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredChangelogTransactionAllocatorV3".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityTokenLookupV1".to_owned());
@@ -692,6 +697,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     writable_names.push("riffdb.storage.v1.StoredCommandSegmentV5".to_owned());
     writable_names.push("riffdb.storage.v1.StoredCleanCloseLifecycleV1".to_owned());
     writable_names.push("riffdb.storage.v1.StoredColumnarProjectionControlV1".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredChangelogTransactionAllocatorV3".to_owned());
     assert_eq!(
         READABLE_RECORD_SCHEMAS
             .iter()
@@ -774,8 +780,8 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
             .map(|schema| schema.max_payload_bytes())
             .collect::<BTreeSet<_>>()
             .len(),
-        12,
-        "five semantic classes plus seven FQN-specific absolute maxima"
+        13,
+        "five semantic classes plus eight FQN-specific absolute maxima"
     );
 
     let v1 = "riffdb.storage.v1.StoredIndexEntryV1";
@@ -1055,8 +1061,8 @@ fn columnar_control_v1_freezes_numeric_registry_and_bounds() {
 #[test]
 fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
     let legacy = registry_fixture_entries(LEGACY_REGISTRY_FIXTURE, 26);
-    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 98);
-    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 75);
+    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 99);
+    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 76);
 
     assert_eq!(legacy, readable[..legacy.len()]);
     assert_eq!(
@@ -1278,7 +1284,30 @@ fn schema_hash_hex(schema: &riffdb_proto::envelope::RecordSchema<'_>) -> String 
 #[test]
 // req: STO-012
 fn tag_67_successor_registry_digest_is_frozen() {
-    let actual = record_registry_digest()
+    // The accepted predecessor remains frozen, even as WP-772 registers its
+    // own additive identities. Never replace this assertion with a new digest.
+    let mut schemas = READABLE_RECORD_SCHEMAS
+        .iter()
+        .filter(|schema| schema.compact_tag() <= 67)
+        .collect::<Vec<_>>();
+    schemas.sort_by_key(|schema| (schema.compact_tag(), schema.schema_revision()));
+    assert_eq!(schemas.len(), 98);
+    let mut canonical = b"riffdb-compact-record-registry-v2\0".to_vec();
+    canonical.extend_from_slice(&98_u16.to_be_bytes());
+    for schema in schemas {
+        canonical.push(schema.compact_tag());
+        canonical.extend_from_slice(&schema.schema_revision().to_be_bytes());
+        canonical.extend_from_slice(
+            &u16::try_from(schema.record_type().len())
+                .unwrap()
+                .to_be_bytes(),
+        );
+        canonical.extend_from_slice(schema.record_type().as_bytes());
+        canonical.extend_from_slice(schema.schema_hash().as_bytes());
+    }
+    let predecessor = hash_schema(&canonical);
+    assert_ne!(predecessor, record_registry_digest());
+    let actual = predecessor
         .as_bytes()
         .iter()
         .map(|byte| format!("{byte:02x}"))
@@ -1464,6 +1493,10 @@ fn closed_oneof_and_enum_registries_are_exact() {
     assert_eq!(
         oneofs,
         BTreeMap::from([
+            (
+                "riffdb.storage.v1.StoredChangelogTransactionAllocatorV3.state".to_owned(),
+                vec![("next_transaction_sequence", 1), ("exhausted", 2)],
+            ),
             (
                 "riffdb.storage.v1.CapabilityLifecycleV1.state".to_owned(),
                 vec![("active", 1), ("revoked", 2)],

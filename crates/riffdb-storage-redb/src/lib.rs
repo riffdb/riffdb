@@ -27,6 +27,7 @@ mod backup;
 #[doc(hidden)]
 pub mod benchmark_support;
 mod changelog;
+mod changelog_v3;
 mod checkpoint_root;
 mod clean_close;
 mod codec;

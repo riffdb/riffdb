@@ -47,6 +47,7 @@ files
     import riffdb/storage/v1/capability_secret.proto
   riffdb/storage/v1/catalog.proto
     import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/changelog_transaction_allocator_v3.proto
   riffdb/storage/v1/clean_close_lifecycle_v1.proto
   riffdb/storage/v1/columnar_projection_control_v1.proto
   riffdb/storage/v1/command_capsule_v1.proto
@@ -919,6 +920,10 @@ messages
     5 previous_active optional .riffdb.storage.v1.ActiveCatalogPointerV1
     6 activated optional .riffdb.storage.v1.ActiveCatalogPointerV1
     7 approval_id optional string proto3-optional oneof=_approval_id
+  riffdb.storage.v1.StoredChangelogTransactionAllocatorV3 fields=2
+    1 next_transaction_sequence optional uint64 oneof=state
+    2 exhausted optional .riffdb.storage.v1.StoredChangelogTransactionAllocatorV3.Exhausted oneof=state
+  riffdb.storage.v1.StoredChangelogTransactionAllocatorV3.Exhausted fields=0
   riffdb.storage.v1.StoredChangelogV2RotationReceiptV1 fields=7
     1 database_id optional bytes
     2 history_incarnation optional uint64

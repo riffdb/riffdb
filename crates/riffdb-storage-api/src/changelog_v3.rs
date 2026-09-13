@@ -10,7 +10,7 @@ mod receipt_codec;
 mod sequence;
 
 pub use frame::{ChangelogFrameBindingV3, ChangelogFrameV3};
-pub use mutation::AuthoritativeMutationV3;
+pub use mutation::{AuthoritativeMutationAccumulatorV3, AuthoritativeMutationV3};
 pub use receipt::{
     AuthoritativeTransactionBindingV3, AuthoritativeTransactionV3, ChangelogAttributionV3,
 };

@@ -32,6 +32,17 @@ infer rebuildability from their names.
 administration sequences. Its allocator is `Next(nonzero) | Exhausted` and
 uses checked arithmetic. Allocation only returns the state that a future
 storage transaction must persist atomically; it performs no mutation itself.
+Its durable codec is the distinct `StoredChangelogTransactionAllocatorV3`
+envelope (compact tag 68, revision 1), with an 11-byte maximum Protobuf payload.
+The journal precondition hashes the complete canonical envelope. Bare counters,
+application/admin allocator identities, missing states and zero `Next` refuse.
+First, maximum and exhausted envelope vectors are frozen separately.
+
+Registering this additive codec changes the registry digest but is **not** a
+completed database upgrade. The pre-V3 registry digest remains frozen in a
+compatibility test; its validated, atomic activation migration remains a release
+blocker within WP-772. Do not deploy this intermediate implementation against an
+existing database or treat fresh-store codec registration as V3 activation.
 
 Receipts retain complete put values, expected absent/prior-hash states, exact
 delete preconditions, strictly ordered unique namespace/key transitions,
@@ -39,6 +50,14 @@ lineage, physical positions, dual frontiers and a closed source attribution.
 Control rows cannot enter their own mutation list. Storage integration must
 still prove that attribution and declared sequences match actual durable rows;
 structural decoding alone does not establish that fact.
+
+The bounded mutation accumulator retains the original precondition and final
+value across repeated writes. Exact cancellation drops the redundant post-image
+but retains a bounded observed-state marker so a later write cannot invent a
+new predecessor. Any precondition or size failure poisons the entire result.
+The journal conversion helper uses only the admitted frame and its exact
+allocator mutation, never latest-row reads. Its current tests are synthetic
+conversion evidence, not checkpoint durability or real command attribution.
 
 Frames carry complete contiguous receipt ranges, exact catalog and leadership
 bindings, source counts, checksums and V3-only framing. The 32 MiB frame ceiling
