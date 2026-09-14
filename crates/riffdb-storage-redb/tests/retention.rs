@@ -281,6 +281,7 @@ fn pre_retention_registry_migrates_on_open() {
 fn pre_wp417_registry_installs_reactive_consumer_tables_on_open() {
     let root = TestRoot::new("pre-wp417-reactive-consumer-migrate");
     initialize(&root.db());
+    let inactive_registry;
     {
         let database = Database::open(root.db()).expect("open redb");
         let write = database.begin_write().expect("write");
@@ -288,6 +289,12 @@ fn pre_wp417_registry_installs_reactive_consumer_tables_on_open() {
             let mut meta = write
                 .open_table(TableDefinition::<&str, &[u8]>::new("meta"))
                 .expect("meta");
+            inactive_registry = meta
+                .get("record_registry/v2")
+                .unwrap()
+                .unwrap()
+                .value()
+                .to_vec();
             let pre = [
                 0x39, 0x5a, 0x7f, 0x77, 0xcf, 0x3a, 0x95, 0x52, 0x12, 0x95, 0x76, 0x8d, 0x57, 0xbd,
                 0x82, 0x27, 0xa1, 0x5a, 0x9d, 0xd8, 0x99, 0x28, 0xcc, 0xf9, 0x81, 0x9e, 0x79, 0x41,
@@ -325,6 +332,11 @@ fn pre_wp417_registry_installs_reactive_consumer_tables_on_open() {
     let observed = riffdb_storage_api::proto_codec::decode_record_registry_v2(encoded.value())
         .expect("registry decodes");
     assert_eq!(
+        encoded.value(),
+        inactive_registry,
+        "dormant migration ends at the same inactive registry as initialization"
+    );
+    assert_ne!(
         observed.value(),
         &riffdb_storage_api::proto_codec::current_record_registry_digest()
     );

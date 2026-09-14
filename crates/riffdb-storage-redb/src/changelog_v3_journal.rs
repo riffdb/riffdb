@@ -20,8 +20,9 @@ use crate::{
     journal::{JournalFrame, apply_mutation},
 };
 
-/// Routing only, never an inactivity/activation proof. Any surviving V3 control
-/// domain requires strict V3 recovery; partial roots cannot select legacy replay.
+/// Routing only, never an inactivity/activation proof. The V3 registry claim or
+/// any surviving V3 control domain requires strict V3 recovery; erased or partial
+/// roots cannot select legacy replay.
 /// Complete startup still owns the exact registry/inactivity decision.
 pub(crate) fn has_recovery_roots(transaction: &ReadTransaction) -> Result<bool, StorageError> {
     let meta = transaction
@@ -66,6 +67,21 @@ pub(crate) fn has_write_recovery_roots(
 fn has_metadata_roots(
     meta: &impl ReadableTable<&'static str, &'static [u8]>,
 ) -> Result<bool, StorageError> {
+    if let Some(registry) = meta
+        .get(crate::layout::META_RECORD_REGISTRY)
+        .map_err(precommit_storage_error)?
+    {
+        if registry.value().len() > 512 {
+            return Err(storage_error(StorageErrorKind::LimitExceeded));
+        }
+        if *riffdb_storage_api::proto_codec::decode_record_registry_v2(registry.value())
+            .map_err(crate::error::codec_error)?
+            .value()
+            == riffdb_storage_api::proto_codec::current_record_registry_digest()
+        {
+            return Ok(true);
+        }
+    }
     for namespace in N::ALL.into_iter().filter(|n| n.requires_v3_activation()) {
         if let Some(key) = namespace.metadata_key()
             && meta.get(key).map_err(precommit_storage_error)?.is_some()

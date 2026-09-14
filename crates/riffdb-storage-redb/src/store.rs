@@ -1158,6 +1158,7 @@ impl RedbOfflineRetentionPreparation<'_> {
 /// is not an operational-readiness proof.
 pub struct RedbDormantPorts {
     pub(crate) shared: Arc<SharedRedb>,
+    pub(crate) pending_v3_activation: Option<crate::startup::PendingV3Activation>,
 }
 
 /// Activated redb-backed semantic storage ports.
@@ -1728,6 +1729,7 @@ enum LayoutState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RegistryMigration {
     Current,
+    V3Activation,
     EventRoute,
     EventReferencesThenGenerations,
     Generations,
@@ -2363,6 +2365,8 @@ impl RedbStore {
                     == &riffdb_storage_api::proto_codec::current_record_registry_digest()
                 {
                     RegistryMigration::Current
+                } else if observed.value() == &crate::changelog_v3_activation::PRE_V3_REGISTRY {
+                    RegistryMigration::V3Activation
                 } else if observed.value()
                     == &SchemaHash::from_bytes(PRE_EVENT_ROUTE_REGISTRY_DIGEST)
                 {
@@ -2727,7 +2731,7 @@ impl RedbStore {
             publish_record_registry(
                 &self.shared,
                 SchemaHash::from_bytes(PRE_COLUMNAR_PROJECTION_CONTROL_REGISTRY_DIGEST),
-                riffdb_storage_api::proto_codec::current_record_registry_digest(),
+                crate::changelog_v3_activation::PRE_V3_REGISTRY,
             )?;
         }
 
@@ -2888,7 +2892,7 @@ impl RedbStore {
             publish_record_registry(
                 &self.shared,
                 SchemaHash::from_bytes(PRE_APPLICATION_EXPORT_REGISTRY_DIGEST),
-                riffdb_storage_api::proto_codec::current_record_registry_digest(),
+                crate::changelog_v3_activation::PRE_V3_REGISTRY,
             )?;
         }
         Ok(())
@@ -2933,7 +2937,7 @@ impl RedbStore {
         // durable one-shot repair marker is O(1) and conservatively correct.
         // INDEX_EPOCHS remains written by current paths, so emptiness alone is
         // insufficient once any generation rows exist.
-        if observed == current {
+        if observed == current || observed == crate::changelog_v3_activation::PRE_V3_REGISTRY {
             if index_epoch_rows_may_need_legacy_repair(&self.shared)? {
                 migrate_partition_index_generations(&self.shared)?;
             }
@@ -3005,7 +3009,7 @@ impl RedbStore {
         publish_record_registry(
             &self.shared,
             SchemaHash::from_bytes(PRE_RETENTION_WATERMARK_REGISTRY_DIGEST),
-            current,
+            crate::changelog_v3_activation::PRE_V3_REGISTRY,
         )
     }
 
@@ -4729,11 +4733,16 @@ impl RedbDormantPorts {
     /// Consumes dormant ports after the caller has matched the separate
     /// catalog-owned startup proof.
     ///
-    /// The redb adapter cannot depend on contract IR or the catalog proof type;
-    /// WP-130 is the sole production caller and owns that proof composition.
+    /// Server composition owns the catalog proof join. A pending V3 migration
+    /// retains the structural session's lease across that join and through the
+    /// atomic activation, DIRTY transition, and operational handoff.
     pub fn into_operational_after_catalog_validation(
         self,
     ) -> Result<RedbOperationalPorts, StorageError> {
+        let _lease = self
+            .pending_v3_activation
+            .map(|pending| pending.activate(&self.shared))
+            .transpose()?;
         activate_operational_ports(self.shared)
     }
 }
@@ -9578,10 +9587,10 @@ fn write_initial_metadata(
 ) -> Result<(), StorageError> {
     let format = encode_storage_format_version_v1(StorageFormatVersion::V2)
         .map_err(crate::error::codec_error)?;
-    let registry = encode_record_registry_v2(
-        riffdb_storage_api::proto_codec::current_record_registry_digest(),
-    )
-    .map_err(crate::error::codec_error)?;
+    // Fresh layout is inactive until complete structural AND catalog validation.
+    // Only the atomic V3 activation transaction may publish the current digest.
+    let registry = encode_record_registry_v2(crate::changelog_v3_activation::PRE_V3_REGISTRY)
+        .map_err(crate::error::codec_error)?;
     let identity = encode_database_identity_v1(database_id).map_err(crate::error::codec_error)?;
     let application =
         encode_application_sequence_allocator_v1(ApplicationSequenceAllocator::initial())
@@ -9689,6 +9698,7 @@ where
                     decode_record_registry_v2(value.value()).map_err(crate::error::codec_error)?;
                 if observed.value()
                     != &riffdb_storage_api::proto_codec::current_record_registry_digest()
+                    && observed.value() != &crate::changelog_v3_activation::PRE_V3_REGISTRY
                 {
                     return Err(storage_error(StorageErrorKind::IncompatibleFormat));
                 }

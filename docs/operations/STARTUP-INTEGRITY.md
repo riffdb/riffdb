@@ -4,6 +4,16 @@ RiffDB chooses its startup-validation mode automatically. There is no flag,
 configuration setting, API, or maintenance shortcut that can force the faster
 mode or suppress complete validation.
 
+WP-772's in-progress V3 substrate adds an internal first-activation transition.
+An inactive database must complete structural and catalog validation before one
+hardened transaction publishes the V3 registry and all required roots together.
+The exclusive startup lease remains held through that proof join and the DIRTY
+transition. A database already claiming the current V3 registry refuses missing
+roots; deleting them cannot request legacy startup or a fresh activation. No
+operator switch or application API controls this transition. The package's full
+operational and recovery acceptance gates remain open; this is not availability
+of production replication, bootstrap, or follower mode.
+
 After a graceful shutdown, RiffDB writes a private clean-close lifecycle record
 as the final authoritative database mutation. The record binds the database
 identity and history incarnation, durable-format registry, exact application

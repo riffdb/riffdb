@@ -152,6 +152,7 @@ fn initialized_store(path: &TestDatabasePath, id: DatabaseId) -> RedbStore {
 fn deployed_migration_store(path: &TestDatabasePath, id: DatabaseId) -> RedbStore {
     let store = initialized_store(path, id);
     let dormant = RedbDormantPorts {
+        pending_v3_activation: None,
         shared: Arc::clone(&store.shared),
     };
     drop(store);
@@ -4220,6 +4221,7 @@ fn published_reactive_module_store(
 ) -> RedbStore {
     let store = deployed_migration_store(path, id);
     let dormant = RedbDormantPorts {
+        pending_v3_activation: None,
         shared: Arc::clone(&store.shared),
     };
     drop(store);

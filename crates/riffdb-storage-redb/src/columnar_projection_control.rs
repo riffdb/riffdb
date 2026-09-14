@@ -504,6 +504,7 @@ mod tests {
             DatabaseInitializationResult::Installed(_)
         ));
         let ports = RedbDormantPorts {
+            pending_v3_activation: None,
             shared: store.shared,
         }
         .into_operational_after_catalog_validation()
@@ -644,6 +645,7 @@ mod tests {
         drop(ports);
         let store = RedbStore::open(&path.0).expect("reopen after uncertain reset");
         let reopened = RedbDormantPorts {
+            pending_v3_activation: None,
             shared: store.shared,
         }
         .into_operational_after_catalog_validation()

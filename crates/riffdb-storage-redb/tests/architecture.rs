@@ -1026,6 +1026,8 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
                     // one begin, one commit_durable, no native commit bypass.
                     || name == "store_journal_checkpoint.rs"
                     || name == "startup.rs"
+                    // Owned dormant activation is checked explicitly below.
+                    || name == "startup_v3_activation.rs"
                     || name == "fixtures.rs"
                     || name == "benchmark_support.rs"
                     // Checkpoint write uses SharedRedb::commit_durable (same epoch
@@ -1048,6 +1050,21 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
     assert!(store.contains("fncommit_durable("));
     assert!(store.contains("self.shared.commit_durable(transaction)?"));
     assert!(store.contains("self.shared.commit_durable(transaction)"));
+    let activation = without_whitespace(&production_source(
+        source_dir.join("startup_v3_activation.rs"),
+    ));
+    assert_eq!(
+        activation.matches("shared.database.begin_write()").count(),
+        1
+    );
+    assert_eq!(
+        activation
+            .matches("shared.commit_durable(transaction)")
+            .count(),
+        1
+    );
+    assert_eq!(activation.matches("transaction.commit()").count(), 0);
+    assert!(activation.contains("changelog_v3_activation::stage_validated("));
     let checkpoint = without_whitespace(&production_source(
         source_dir.join("store_journal_checkpoint.rs"),
     ));

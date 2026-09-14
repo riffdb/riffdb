@@ -1,6 +1,9 @@
 //! Exclusive read-only startup evidence over one immutable redb snapshot.
 
 mod index_migration_backend;
+#[path = "startup_v3_activation.rs"]
+mod v3_activation;
+pub(crate) use v3_activation::PendingV3Activation;
 
 pub use index_migration_backend::RedbStartupIndexMigrationPort;
 
@@ -213,6 +216,7 @@ const STARTUP_TABLE_COUNT: usize = STRUCTURAL_TABLE_COUNT + ADDITIVE_STRUCTURAL_
 
 fn startup_registry_is_supported(digest: riffdb_types::SchemaHash) -> bool {
     digest == riffdb_storage_api::proto_codec::current_record_registry_digest()
+        || digest == crate::changelog_v3_activation::PRE_V3_REGISTRY
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_VECTOR_EVIDENCE_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_VECTOR_OBSERVATION_REGISTRY_DIGEST)
         || digest
@@ -479,6 +483,8 @@ pub struct RedbStructuralEvidenceSession {
     open_session_id: OpenSessionId,
     retained_metadata: RetainedMetadataV1,
     inputs: StartupValidationInputs,
+    /// Exact inactive predecessor; complete validation must precede migration.
+    v3_activation_required: bool,
     /// True only for an ADR-0157 verified clean-close bounded startup.
     clean_close_fast: bool,
     /// Exact clean lifecycle consumed to DIRTY immediately before activation.
@@ -641,6 +647,7 @@ impl RedbStore {
             .begin_read()
             .map_err(transaction_error)?;
         let snapshot = collect_startup_snapshot(&transaction)?;
+        let v3_active = crate::changelog_v3_roots::read_checkpoint_roots(&transaction)?.is_some();
         if self.shared.durable_commit_epoch() != durable_commit_epoch {
             return Err(corrupt());
         }
@@ -657,6 +664,7 @@ impl RedbStore {
         )?;
         let clean_close_declined_reason = verified_clean_lifecycle.declined();
         if purpose == EvidenceOpenPurpose::Startup
+            && v3_active
             && let Some(lifecycle) = verified_clean_lifecycle.verified()
         {
             // The binding verifier already checked every fixed meta/catalog
@@ -681,6 +689,7 @@ impl RedbStore {
                 open_session_id,
                 retained_metadata: snapshot.retained_metadata,
                 inputs,
+                v3_activation_required: false,
                 clean_close_fast: true,
                 verified_clean_lifecycle: Some(lifecycle),
                 clean_close_declined_reason: None,
@@ -722,8 +731,7 @@ impl RedbStore {
         // The CLEAN branch above checks bounded terminal roots only. A full
         // session instead validates every retained receipt from THIS pin before
         // any prefix checkpoint or DIRTY write can follow successful evidence.
-        // Inactive routing remains transitional until fresh activation lands.
-        if crate::changelog_v3_journal::has_recovery_roots(&transaction)? {
+        if v3_active {
             crate::changelog_v3_roots::validate_retained_history(&transaction)?
                 .ok_or_else(corrupt)?;
         }
@@ -777,7 +785,7 @@ impl RedbStore {
         let mut checkpoint_ignored_reason = None;
         let mut sampled_window_rows_inspected = 0_u64;
         let mut sample_finding_seen = false;
-        let active_checkpoint = if purpose == EvidenceOpenPurpose::Startup {
+        let active_checkpoint = if purpose == EvidenceOpenPurpose::Startup && v3_active {
             crate::validated_prefix::load_active_checkpoint(
                 &transaction,
                 database_id,
@@ -844,6 +852,7 @@ impl RedbStore {
             open_session_id,
             retained_metadata: snapshot.retained_metadata,
             inputs,
+            v3_activation_required: !v3_active,
             clean_close_fast: false,
             verified_clean_lifecycle: None,
             clean_close_declined_reason,
@@ -1190,6 +1199,29 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
                 ),
             ))
         } else {
+            if self.v3_activation_required {
+                if self.clean_close_fast || self.checkpoint_verified || self.any_finding_seen {
+                    return Err(corrupt());
+                }
+                let pending = PendingV3Activation::from_finished_session(
+                    lease,
+                    self.durable_commit_epoch,
+                    self.retained_metadata.clone(),
+                    self.terminal_execution_failure_rows,
+                );
+                return Ok(StructuralOpenOutcome::Clean(
+                    StructurallyOpened::from_finished_session(
+                        self.database_id,
+                        self.open_session_id,
+                        self.retained_metadata,
+                        RedbDormantPorts {
+                            shared: Arc::clone(&self.shared),
+                            pending_v3_activation: Some(pending),
+                        },
+                        RedbCompletionAuthority { _private: () },
+                    ),
+                ));
+            }
             // ADR-0019 A1 write gate: the checkpoint is written ONLY when this
             // validation session produced ZERO findings of ANY scope. A finding
             // of any severity (authoritative, outbox, projection, sampled)
@@ -1234,6 +1266,7 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
                     self.retained_metadata,
                     RedbDormantPorts {
                         shared: Arc::clone(&self.shared),
+                        pending_v3_activation: None,
                     },
                     RedbCompletionAuthority { _private: () },
                 ),

@@ -161,7 +161,15 @@ fn lifecycle_process_crashes_preserve_atomic_control_and_history_roots() {
                 .value()
                 .to_vec();
             let receipt = AuthoritativeTransactionV3::decode(&encoded).unwrap();
-            assert!(receipt.mutations().is_empty());
+            if sequence == 1 {
+                assert_eq!(receipt.mutations().len(), 1);
+                assert_eq!(
+                    receipt.mutations()[0].namespace(),
+                    riffdb_storage_api::AuthoritativeNamespaceV1::RecordRegistry
+                );
+            } else {
+                assert!(receipt.mutations().is_empty());
+            }
             assert_eq!(
                 receipt.attribution(),
                 match sequence {
