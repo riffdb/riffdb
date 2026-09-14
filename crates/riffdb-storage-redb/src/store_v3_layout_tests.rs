@@ -153,6 +153,75 @@ fn partial_or_downgraded_v3_layout_refuses_before_legacy_repair_or_journal_creat
 
 type FixtureRows = std::collections::BTreeMap<String, Vec<(Vec<u8>, Vec<u8>)>>;
 
+#[test]
+fn current_registry_initialization_never_advertises_missing_v3_roots() {
+    let scope = crate::test_path::ScopedDirectory::new("v3-initialization-registry");
+    let path = scope.join("db.redb");
+    let mut store = RedbStore::open(&path).unwrap();
+    let id = DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x75; 10]).unwrap();
+    store.initialize_database(id).unwrap();
+    let read = store.shared.database.begin_read().unwrap();
+    let roots = crate::changelog_v3_roots::read_checkpoint_roots(&read).expect(
+        "fresh initialization must publish either exact inactive registry or complete V3 roots",
+    );
+    let meta = read.open_table(META).unwrap();
+    let registry = meta.get(META_RECORD_REGISTRY).unwrap().unwrap();
+    let registry = *riffdb_storage_api::proto_codec::decode_record_registry_v2(registry.value())
+        .unwrap()
+        .value();
+    if let Some(history) = roots {
+        assert_eq!(
+            registry,
+            riffdb_storage_api::proto_codec::current_record_registry_digest()
+        );
+        assert_eq!(history.lineage().database_id(), id);
+        assert_eq!(history.tail().frontier(), DualFrontier::INITIAL);
+        assert_eq!(history.tail().sequence().get(), 1);
+    } else {
+        assert_eq!(registry, crate::changelog_v3_activation::PRE_V3_REGISTRY);
+    }
+}
+
+#[test]
+fn current_registry_root_erasure_is_not_legacy_inactivity() {
+    use riffdb_storage_api::AuthoritativeNamespaceV1 as N;
+    let scope = crate::test_path::ScopedDirectory::new("v3-erased-roots");
+    let path = scope.join("db.redb");
+    let (store, _) = initialized(&path);
+    let write = store.shared.database.begin_write().unwrap();
+    {
+        let mut meta = write.open_table(META).unwrap();
+        for namespace in N::ALL.into_iter().filter(|n| n.requires_v3_activation()) {
+            if let Some(key) = namespace.metadata_key() {
+                meta.remove(key).unwrap();
+            }
+        }
+    }
+    assert!(
+        write
+            .delete_table(crate::changelog_v3_activation::HISTORY)
+            .unwrap()
+    );
+    assert!(
+        write
+            .delete_table(crate::changelog_v3_activation::SOURCE_HOLDS)
+            .unwrap()
+    );
+    write.commit().unwrap();
+    let before = physical_fixture_rows(&store.shared.database);
+    assert!(!crate::journal::journal_path(&path).exists());
+    drop(store);
+    for _ in 0..2 {
+        assert!(
+            RedbStore::open(&path).is_err(),
+            "current registry with erased roots must refuse, not reopen as inactive legacy"
+        );
+        let database = Database::open(&path).unwrap();
+        assert_eq!(physical_fixture_rows(&database), before);
+        assert!(!crate::journal::journal_path(&path).exists());
+    }
+}
+
 fn physical_fixture_rows(database: &Database) -> FixtureRows {
     let read = database.begin_read().unwrap();
     let mut output = std::collections::BTreeMap::new();
