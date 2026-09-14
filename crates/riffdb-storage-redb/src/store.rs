@@ -13,6 +13,13 @@ use std::time::{Duration, Instant};
 #[path = "store_graceful_close.rs"]
 mod graceful_close;
 
+#[path = "store_changelog_lifecycle.rs"]
+mod changelog_lifecycle;
+
+#[cfg(test)]
+#[path = "store_changelog_lifecycle_tests.rs"]
+mod changelog_lifecycle_tests;
+
 #[path = "store_journal_checkpoint.rs"]
 mod journal_checkpoint;
 
@@ -659,6 +666,11 @@ impl SharedRedb {
         }
         drop(encoded);
         drop(meta);
+        if !changelog_lifecycle::clean_roots_available(transaction)? {
+            return Ok(CleanCloseVerdict::Declined(
+                CleanCloseDeclineReason::BoundedRootsUnavailable,
+            ));
+        }
         let application_frontier = read_commit_tail(transaction)?;
         let administration_frontier = read_administration_tail(transaction)?;
         let header_digest = match crate::journal::verify_clean_close_header_digest_with_media(
@@ -780,6 +792,12 @@ impl SharedRedb {
         transaction
             .set_durability(Durability::Immediate)
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let receipt = changelog_lifecycle::prepare(
+            &transaction,
+            changelog_lifecycle::LifecycleSource::Dirty,
+            database_id,
+            history_incarnation,
+        )?;
         let mut meta = transaction.open_table(META).map_err(table_error)?;
         let current = meta
             .get(META_CLEAN_CLOSE_LIFECYCLE)
@@ -817,7 +835,15 @@ impl SharedRedb {
         meta.insert(META_CLEAN_CLOSE_LIFECYCLE, encoded.as_slice())
             .map_err(precommit_storage_error)?;
         drop(meta);
-        self.commit_durable(transaction)
+        if let Some(receipt) = receipt {
+            receipt.stage(&transaction)?;
+        }
+        #[cfg(test)]
+        changelog_lifecycle::crash_edge("dirty-staged");
+        self.commit_durable(transaction)?;
+        #[cfg(test)]
+        changelog_lifecycle::crash_edge("dirty-committed");
+        Ok(())
     }
 
     pub(crate) fn commit_durable(&self, transaction: WriteTransaction) -> Result<(), StorageError> {
