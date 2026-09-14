@@ -1,5 +1,15 @@
 # Authoritative changelog V3 substrate
 
+The dormant storage opener recognizes complete, already-activated V3 layouts
+using the catalog's exact physical table set and bounded current-format roots
+before selecting any legacy migration or additive-table repair. Real reopen
+tests preserve the original history and perform no durable write. Nine malformed
+layout arms (missing history, holds, entity or locator tables; missing epoch;
+old registry or format; unknown table or metadata) refuse on repeated open and
+leave physical rows unchanged without creating a journal. This is not fresh
+activation or complete startup validation: those owners and the all-roots-erased
+current-registry refusal still require integration before WP-772 can close.
+
 WP-772 is in progress. The storage API now has a closed namespace catalog,
 checked physical transaction allocator, expected-state mutation values, and
 V3 receipt/frame codecs. These internal values do not activate a production

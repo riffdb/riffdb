@@ -16,9 +16,16 @@ mod graceful_close;
 #[path = "store_changelog_lifecycle.rs"]
 mod changelog_lifecycle;
 
+#[path = "store_v3_layout.rs"]
+mod v3_layout;
+
 #[cfg(test)]
 #[path = "store_changelog_lifecycle_tests.rs"]
 mod changelog_lifecycle_tests;
+
+#[cfg(test)]
+#[path = "store_v3_layout_tests.rs"]
+mod v3_layout_tests;
 
 #[path = "store_journal_checkpoint.rs"]
 mod journal_checkpoint;
@@ -9407,6 +9414,9 @@ fn classify_read_layout(transaction: &redb::ReadTransaction) -> Result<LayoutSta
         .map_err(precommit_storage_error)?
         .map(|table| table.name().to_owned())
         .collect::<BTreeSet<_>>();
+    if let Some(layout) = v3_layout::classify_read(transaction, &tables, &multimaps)? {
+        return Ok(layout);
+    }
     classify_table_names(tables, multimaps)
 }
 
@@ -9423,6 +9433,9 @@ fn classify_write_layout(
         .map_err(precommit_storage_error)?
         .map(|table| table.name().to_owned())
         .collect::<BTreeSet<_>>();
+    if let Some(layout) = v3_layout::classify_write(transaction, &tables, &multimaps)? {
+        return Ok(layout);
+    }
     classify_table_names(tables, multimaps)
 }
 
