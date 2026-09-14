@@ -70,11 +70,15 @@ pub enum ChangelogAttributionV3 {
     RestoreAnchor = 30,
     /// Mixed projection lifecycle/generation/retention control transition.
     ProjectionControl = 31,
+    /// Pending command admission without an application or audit allocation.
+    CommandAdmission = 32,
+    /// Terminal execution failure, optionally accompanied by service audit.
+    CommandExecutionFailure = 33,
 }
 
 impl ChangelogAttributionV3 {
     /// All source tags in canonical tag order.
-    pub const ALL: [Self; 31] = [
+    pub const ALL: [Self; 33] = [
         Self::JournaledApplicationGroup,
         Self::JournaledServiceAudit,
         Self::DirectApplicationOrServiceAuditGroup,
@@ -106,6 +110,8 @@ impl ChangelogAttributionV3 {
         Self::Promotion,
         Self::RestoreAnchor,
         Self::ProjectionControl,
+        Self::CommandAdmission,
+        Self::CommandExecutionFailure,
     ];
 
     /// Decodes only the closed source catalog.
@@ -136,6 +142,10 @@ impl ChangelogAttributionV3 {
                 app == 0 && admin > 0 && admin <= MAX_STAGED_COMMANDS as u64 && !empty
             }
             Self::DirectApplicationOrServiceAuditGroup => (app > 0 || admin > 0) && !empty,
+            Self::CommandAdmission => app == 0 && admin == 0 && !empty,
+            Self::CommandExecutionFailure => {
+                app == 0 && admin <= MAX_STAGED_COMMANDS as u64 && !empty
+            }
             Self::CleanClose
             | Self::DirtyActivation
             | Self::V3Rotation

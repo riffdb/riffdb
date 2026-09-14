@@ -18,7 +18,7 @@ use riffdb_storage_api::{
         encode_replication_follower_state_v3, encode_replication_source_hold_v1,
     },
 };
-use riffdb_types::{CommitSequence, DatabaseId, DualFrontier};
+use riffdb_types::{AdministrationSequence, CommitSequence, DatabaseId, DualFrontier};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
@@ -101,6 +101,79 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?
     .encode()?;
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/replication");
+    // Synthetic physical values prove codec custody, not application validation.
+    // Complete the closed source set under ADR-0186 Amendment 1 before first use.
+    let admission = AuthoritativeTransactionV3::new(
+        AuthoritativeTransactionBindingV3 {
+            covered_frontier: initial,
+            prior_history_hash: [0; 32],
+            ..binding
+        },
+        ChangelogAttributionV3::CommandAdmission,
+        vec![AuthoritativeMutationV3::put(
+            AuthoritativeNamespaceV1::IdempotencyPending,
+            b"command-key",
+            None,
+            b"pending-admission",
+        )?],
+    )?;
+    let failure_binding = AuthoritativeTransactionBindingV3 {
+        predecessor: Some(binding.sequence),
+        sequence: binding
+            .sequence
+            .checked_next()
+            .ok_or("fixture sequence exhausted")?,
+        covered_frontier: initial,
+        prior_history_hash: admission.history_hash()?,
+        ..binding
+    };
+    let failure_mutations = vec![
+        AuthoritativeMutationV3::put(
+            AuthoritativeNamespaceV1::Idempotency,
+            b"command-key",
+            None,
+            b"execution-failed",
+        )?,
+        AuthoritativeMutationV3::delete_matching(
+            AuthoritativeNamespaceV1::IdempotencyPending,
+            b"command-key",
+            b"pending-admission",
+        )?,
+    ];
+    let failure = AuthoritativeTransactionV3::new(
+        failure_binding,
+        ChangelogAttributionV3::CommandExecutionFailure,
+        failure_mutations.clone(),
+    )?;
+    let mut audited_mutations = failure_mutations;
+    audited_mutations.push(AuthoritativeMutationV3::put(
+        AuthoritativeNamespaceV1::Audit,
+        b"audit-key",
+        None,
+        b"terminal-service-audit",
+    )?);
+    let audited_failure = AuthoritativeTransactionV3::new(
+        AuthoritativeTransactionBindingV3 {
+            covered_frontier: DualFrontier::new(None, Some(AdministrationSequence::first())),
+            ..failure_binding
+        },
+        ChangelogAttributionV3::CommandExecutionFailure,
+        audited_mutations,
+    )?;
+    let lifecycle_frame = ChangelogFrameV3::new(
+        ChangelogFrameBindingV3::new(
+            database_id,
+            1,
+            1,
+            AuthoritativeStateCatalogV1.digest(),
+            [0; 32],
+        )?,
+        vec![admission.clone(), failure.clone()],
+    )?
+    .encode()?;
+    let admission = admission.encode()?;
+    let failure = failure.encode()?;
+    let audited_failure = audited_failure.encode()?;
     let catalog = encode_authoritative_state_catalog_v1(AuthoritativeStateCatalogV1)?;
     let epoch_first = encode_leadership_epoch_v1(LeadershipEpochV1::initial())?;
     let epoch_last =
@@ -152,6 +225,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
         ("changelog-frame-v2.hex", v2.as_bytes()),
         ("changelog-frame-v3.hex", v3.as_slice()),
+        (
+            "changelog-receipt-v3-command-admission.hex",
+            admission.as_slice(),
+        ),
+        (
+            "changelog-receipt-v3-command-execution-failure.hex",
+            failure.as_slice(),
+        ),
+        (
+            "changelog-receipt-v3-command-execution-failure-audited.hex",
+            audited_failure.as_slice(),
+        ),
+        (
+            "changelog-frame-v3-command-lifecycle.hex",
+            lifecycle_frame.as_slice(),
+        ),
         ("authoritative-state-catalog-v1.hex", catalog.as_bytes()),
         ("leadership-epoch-v1-first.hex", epoch_first.as_bytes()),
         ("leadership-epoch-v1-last.hex", epoch_last.as_bytes()),

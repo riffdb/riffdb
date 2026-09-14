@@ -51,9 +51,9 @@ fn every_admitted_receipt_fits_one_complete_frame_before_storage_mutation() {
         AuthoritativeTransactionV3 as Receipt, ChangelogAttributionV3 as Source,
         ChangelogFrameBindingV3, ChangelogFrameV3, MAX_CHANGELOG_FRAME_BYTES,
     };
-    // Independent format arithmetic: frame header 290, footer 48, row length 4;
+    // Amendment 1: 33 source counts, frame header 298, footer 48, row length 4;
     // receipt header/checksum 160, mutation header 44 and one key byte.
-    let maximum_value = MAX_CHANGELOG_FRAME_BYTES - 290 - 48 - 4 - 160 - 44 - 1;
+    let maximum_value = MAX_CHANGELOG_FRAME_BYTES - 298 - 48 - 4 - 160 - 44 - 1;
     let frame_binding = ChangelogFrameBindingV3::new(
         binding().database_id,
         1,
@@ -62,7 +62,7 @@ fn every_admitted_receipt_fits_one_complete_frame_before_storage_mutation() {
         [0; 32],
     )
     .unwrap();
-    for extra in [0, 1, 342] {
+    for extra in [0, 1, 350] {
         let value = vec![0x71; maximum_value + extra];
         let mutation = AuthoritativeMutationV3::put(N::Entities, b"a", None, &value).unwrap();
         let mut accumulated = AuthoritativeMutationAccumulatorV3::default();

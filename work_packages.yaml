@@ -23807,6 +23807,11 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - ADR-0186 Amendment 1 uses CommandAdmission tag 32 and CommandExecutionFailure tag 33
+      for the existing admission-only and terminal-failure transactions. Neither assigns an
+      application sequence; only same-transaction service audit advances administration.
+      The V3 frame has 33 source-count slots; its updated 298-byte header is included in
+      unsplit receipt admission bounds. V1/V2 encodings and acknowledgement remain unchanged.
     - Fresh initialization and legacy registry normalization remain exactly pre-V3 until complete
       structural and catalog validation; current-registry root erasure refuses rather than repairs.
     - The dormant handoff owns the exclusive startup lease across the catalog proof join. Dropping
