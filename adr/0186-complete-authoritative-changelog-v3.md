@@ -101,8 +101,13 @@ It neither replaces nor assigns application `CommitSequence` or `AdministrationS
 Each receipt binds database ID, history incarnation, predecessor and covered changelog transaction
 sequence, predecessor and covered dual frontier, a closed attribution tag, canonical mutations,
 the prior history hash, and its checksum. Attribution is exactly one of journaled application group,
-journaled standalone service audit, direct application or service-audit group, or a closed named
-control-plane/lifecycle operation. Application and administration sequences are repeated where
+journaled standalone service audit, direct application or service-audit group, `CommandAdmission`,
+`CommandExecutionFailure`, or a closed named control-plane/lifecycle operation. `CommandAdmission`
+records pending admission without advancing either frontier. `CommandExecutionFailure` records
+terminal execution failure without advancing the application frontier; its administration frontier
+advances only when the same transaction includes service audit. Both classes carry nonempty exact
+authoritative mutations and retain the existing transaction boundaries and acknowledgement semantics.
+Application and administration sequences are repeated where
 they exist; an unchanged dual frontier is explicit. An unknown source tag or a transaction whose
 declared sequences do not match its durable records is corruption.
 
@@ -245,3 +250,5 @@ only production emitter, RPC, follower/applier, and bootstrap activation over th
 
 - The four obligation proofs plus `follower_applies_exact_prefix_byte_faithfully` and `replication_stream_resumes_gap_free_after_repeated_kills` cover inventory, exact apply, bootstrap, repeated crashes, retention, refusal, and unchanged authority.
 - `./scripts/check-version-topology`, `./scripts/check-durable-format-manifest`, generated V3 vectors, storage conformance, and the process recovery matrix freeze identity and crash behavior.
+
+Amendment 1 (accepted 2026-09-14, maintainer, in session): completed the closed attribution set before first durable use.
