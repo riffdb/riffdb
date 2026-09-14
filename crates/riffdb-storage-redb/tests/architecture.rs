@@ -55,6 +55,27 @@ fn without_whitespace(source: &str) -> String {
 
 #[test]
 // req: REP-003, REC-001, STO-012
+fn v3_checkpoint_receipt_rechecks_physical_audit_bound_from_its_own_pin() {
+    let source = without_whitespace(&production_source(
+        crate_root().join("src/validated_prefix.rs"),
+    ));
+    let planner = source
+        .split_once("fnplan_checkpoint_receipt(")
+        .unwrap()
+        .1
+        .split_once("fnfingerprint_from_head_table(")
+        .unwrap()
+        .0;
+    assert!(planner.contains("base.audit_sequence_bound()!=last_audit_sequence(transaction)?.map_or(0,AdministrationSequence::get)"));
+    assert!(planner.contains(
+        "base.audit_sequence_bound()>frontier.administration().map_or(0,|sequence|sequence.get())"
+    ));
+    assert!(!planner.contains("begin_read("));
+    assert!(!planner.contains("begin_write("));
+}
+
+#[test]
+// req: REP-003, REC-001, STO-012
 fn v3_index_migration_owners_capture_without_new_transaction_or_profile() {
     let backend = without_whitespace(&production_source(
         crate_root().join("src/startup/index_migration_backend.rs"),
