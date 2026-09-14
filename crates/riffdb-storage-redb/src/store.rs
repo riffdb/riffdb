@@ -16,6 +16,9 @@ mod graceful_close;
 #[path = "store_changelog_lifecycle.rs"]
 mod changelog_lifecycle;
 
+#[path = "store_changelog_source_control.rs"]
+mod changelog_source_control;
+
 #[path = "store_v3_layout.rs"]
 pub(crate) mod v3_layout;
 

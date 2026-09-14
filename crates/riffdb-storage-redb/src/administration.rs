@@ -1,5 +1,9 @@
 //! Redb catalog, audit, and capability administration ports.
 
+#[cfg(test)]
+#[path = "administration_v3_retention_tests.rs"]
+mod v3_retention_tests;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
 
@@ -4058,7 +4062,7 @@ mod tests {
         bytes
     }
 
-    fn database_id() -> DatabaseId {
+    pub(super) fn database_id() -> DatabaseId {
         DatabaseId::from_bytes(uuid_bytes(1)).expect("database ID")
     }
 
@@ -4310,7 +4314,7 @@ mod tests {
         records.len()
     }
 
-    fn denied_audit(request: u8) -> ServiceAuditAppendIntentV1 {
+    pub(super) fn denied_audit(request: u8) -> ServiceAuditAppendIntentV1 {
         ServiceAuditAppendIntentV1::new(
             request_id(request),
             Timestamp::new(i64::from(request), 0).expect("timestamp"),
