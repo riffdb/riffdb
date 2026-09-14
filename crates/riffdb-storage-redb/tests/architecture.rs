@@ -326,7 +326,7 @@ fn dedicated_storage_threads_apply_the_fixed_stack_budget() {
         "command_segment_preparation.rs",
         "changelog.rs",
         "journal.rs",
-        "store.rs",
+        "store_journal_runtime.rs",
     ] {
         let source = std::fs::read_to_string(root.join(owner)).expect("read thread owner");
         assert!(
@@ -1561,6 +1561,21 @@ fn checkpoint_pay_once_apply_is_confined_to_live_same_process_materialization() 
             );
         }
     }
+}
+
+#[test]
+// req: PERF-007, REC-001
+fn journal_runtime_rotation_stays_with_the_shared_store_owner() {
+    let store = production_source(crate_root().join("src/store.rs"));
+    assert!(store.contains("mod journal_runtime;"));
+    let runtime = production_source(crate_root().join("src/store_journal_runtime.rs"));
+    assert!(runtime.contains("impl SharedRedb"));
+    assert!(runtime.contains("fn journal_runtime("));
+    assert!(runtime.contains("fn maybe_start_async_checkpoint("));
+    assert!(runtime.contains("worker_shared.materialize_checkpoint_batch(&worker_batch)"));
+    assert!(!runtime.contains("database.begin_write("));
+    assert!(!runtime.contains("transaction.commit("));
+    assert!(!runtime.contains("JournalFrame::decode"));
 }
 
 /// Publication moves a command segment out of the unpublished index and into the

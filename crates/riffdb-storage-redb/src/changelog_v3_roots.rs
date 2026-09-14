@@ -20,6 +20,38 @@ use crate::{
     },
 };
 
+/// Closed V3 metadata shape validation for shared identity probes. This neither
+/// grants activation nor replaces the complete, cross-bound root check below.
+pub(crate) fn validate_metadata_entry(key: &str, value: &[u8]) -> Result<bool, StorageError> {
+    let Some(namespace) = N::ALL.into_iter().find(|namespace| {
+        namespace.requires_v3_activation() && namespace.metadata_key() == Some(key)
+    }) else {
+        return Ok(false);
+    };
+    if value.len() > 512 {
+        return Err(storage_error(StorageErrorKind::LimitExceeded));
+    }
+    match namespace {
+        N::AuthoritativeStateCatalog => {
+            decode_authoritative_state_catalog_v1(value).map_err(codec_error)?;
+        }
+        N::LeadershipEpoch => {
+            decode_leadership_epoch_v1(value).map_err(codec_error)?;
+        }
+        N::ChangelogHistoryState => {
+            decode_changelog_history_state_v3(value).map_err(codec_error)?;
+        }
+        N::NextChangelogTransaction => {
+            decode_changelog_transaction_allocator_v3(value).map_err(codec_error)?;
+        }
+        N::ReplicationFollowerState => {
+            decode_replication_follower_state_v3(value).map_err(codec_error)?;
+        }
+        _ => return Err(storage_error(StorageErrorKind::InvariantViolation)),
+    }
+    Ok(true)
+}
+
 /// Returns inactive only for the exact pre-V3 registry and complete absence of
 /// every V3 root/table. Current-registry root erasure never becomes inactivity.
 /// The caller must treat any failure as ineligible for a clean shortcut, retain

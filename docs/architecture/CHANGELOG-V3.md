@@ -169,7 +169,7 @@ Process tests exit after replay staging, commit, and before/after reclamation,
 then reopen and retry twice to prove an original source or identical durable
 receipt remains. These tests use opaque record payloads and prove physical
 recovery, not full command semantics, acknowledgement or the complete package
-crash matrix. Production activation and live admission remain pending; ordinary
+crash matrix. Production activation remains pending; ordinary
 legacy replay checks and journal encodings are unchanged.
 
 The live checkpoint worker now uses the same receipt fold over its retained
@@ -181,9 +181,22 @@ The physical tests compare worker output byte-for-byte with independent recovery
 reject duplicate application and malformed final batch totals, retain old pinned
 views, and exercise process exits before/after the worker's durable commit.
 Neither path permits a missing source counter once V3 controls are present.
-Production journal admission still needs to allocate and bound the source before
-submission; these worker tests construct retained evidence directly and do not
-claim that the normal command path is activated yet.
+The journal admission paths now stage one checked V3 source allocation and prove
+the complete bounded receipt before submitting an application or service-audit
+frame. They advance only the private history after successful submission and
+retain its constant-size binding beside the existing original mutations. The
+worker requires that binding to match its materialized receipt; missing or
+foreign bindings refuse without committing. No new flush or acknowledgement
+dependency is added. The identity probe validates exactly the catalog-declared
+V3 metadata envelopes; it does not replace strict cross-root validation.
+
+The real service-adapter regression
+`submitted_service_audit_allocates_one_v3_source_before_publication` covers
+consecutive source allocations, duplicate-request refusal without allocation,
+published audit visibility and byte-identical materialization through repeated
+recovery. The metadata-refusal regression covers partial, malformed and unknown
+controls before source submission. These tests use isolated fixture activation;
+production startup activation and complete command/lifecycle proofs remain open.
 
 The complete retained-history validator is separate from bounded clean-root
 eligibility. It streams every retained receipt from the exact minimum-resume

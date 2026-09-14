@@ -80,13 +80,20 @@ impl SharedRedb {
                     ChangelogAttributionV3::JournaledApplicationGroup
                 };
                 let receipt = crate::changelog_v3::receipt_from_validated_mutations(
+                    // The same binding was proven before admission to the lane.
                     binding,
                     source,
                     &frame.mutations,
                 )
                 .map_err(value_error)?;
+                if frame.changelog_binding != Some(binding) {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
                 Some(PreparedHistoryAdvance::prepare(&transaction, &receipt)?)
             } else {
+                if frame.changelog_binding.is_some() {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
                 None
             };
             for mutation in frame.mutations.iter() {
