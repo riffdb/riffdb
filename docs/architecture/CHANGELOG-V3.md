@@ -225,6 +225,27 @@ not a new baseline inferred from a partially transformed stage. This is an
 in-memory validation witness, not a new durable identity or a weaker migration
 publication permit. Isolated semantic migration fixtures now activate V3 too.
 
+Source-hold and materialized-history maintenance is now a crate-private storage
+owner, not an application API or an activated background task. Registration
+checks the exact retained lineage, epoch, checksum and dual frontier; equal
+retries write nothing. Follower/archive acknowledgements may advance only
+monotonically. Bootstrap fences stay fixed, and this owner has no generic remove
+or release operation: WP-746 owns durable tail attachment and audited abort.
+
+Reclamation requires a later known-durable checkpoint than the handle's previous
+observation, verified by both publication identity and successful-commit epoch.
+Only positions below the earlier checkpoint tail and every registered fence can
+be removed. One existing drained writer barrier encloses a bounded transaction
+of at most 256 deletions, the exact new resume floor, allocator and empty
+`HistoryReclamation` receipt. Surviving receipts and authoritative rows are never
+rewritten. Losing observations postpones pruning; the post-commit observation
+prevents a prune from stimulating another prune. No command-path hook, flush or
+acknowledgement dependency is added. Invalid holds, exhausted allocation, CLEAN
+or a fenced writer refuse; cancellation aborts staged state and releases its
+lease. The proof includes real journaled service audits, byte-identical
+checkpoint materialization, all fence kinds, unchanged complete authority,
+old/new snapshot behavior, seven process-crash edges and repeated recovery.
+
 WP-772 is in progress. The storage API now has a closed namespace catalog,
 checked physical transaction allocator, expected-state mutation values, and
 V3 receipt/frame codecs. Constructing these internal values does not activate a

@@ -1037,6 +1037,8 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
                     // The extracted store-owned checkpoint is checked below:
                     // one begin, one commit_durable, no native commit bypass.
                     || name == "store_journal_checkpoint.rs"
+                    // Closed private store-child control owner, checked below.
+                    || name == "changelog_source_control_transaction.rs"
                     || name == "startup.rs"
                     // Owned dormant activation is checked explicitly below.
                     || name == "startup_v3_activation.rs"
@@ -1089,6 +1091,20 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
     );
     assert_eq!(checkpoint.matches("transaction.commit()").count(), 0);
     assert!(checkpoint.contains("set_durability(Durability::Immediate)"));
+    let control = without_whitespace(&production_source(
+        source_dir.join("changelog_source_control_transaction.rs"),
+    ));
+    assert_eq!(
+        control
+            .matches("self.shared.database.begin_write()")
+            .count(),
+        1
+    );
+    assert_eq!(control.matches("shared.commit_durable(raw)").count(), 1);
+    assert_eq!(control.matches(".commit()").count(), 0);
+    assert!(control.contains("set_durability(Durability::Immediate)"));
+    assert!(control.contains("shared.mutation_gate.acquire()?"));
+    assert!(control.contains("shared.disable_and_fence_fresh_locator_coverage()"));
     let deferred = store
         .split_once("fnapply_unpublished(")
         .expect("closed deferred commit path")
@@ -1738,6 +1754,52 @@ fn legacy_changelog_emitters_have_no_production_exports() {
         );
     }
     assert!(production.contains("changelog_receipts_v3"));
+}
+
+#[test]
+// req: REP-003, REC-001, PERF-007, STO-012
+fn source_controls_are_crate_private_closed_barrier_owners_without_application_exports() {
+    let source = production_source(crate_root().join("src/store_changelog_source_control.rs"));
+    let transaction =
+        production_source(crate_root().join("src/changelog_source_control_transaction.rs"));
+    let pruning = production_source(crate_root().join("src/changelog_source_control_retention.rs"));
+    let exports = production_source(crate_root().join("src/lib.rs"));
+    assert!(source.contains("pub(crate) struct ReplicationSourceControl"));
+    assert!(!exports.contains("ReplicationSourceControl"));
+    for name in [
+        "replication_source_control",
+        "register",
+        "advance_acknowledgement",
+        "reclaim_history",
+    ] {
+        assert!(source.contains(&format!("pub(crate) fn {name}(")));
+        assert!(!source.contains(&format!("pub fn {name}(")));
+    }
+    for check in [
+        "previous.durable_epoch >= current.durable_epoch",
+        "previous.publication == current.publication",
+        "Kind::Bootstrap",
+        "self.observed = Some(write.commit()?)",
+    ] {
+        assert!(source.contains(check));
+    }
+    for owner in [
+        "mutation_gate.acquire()",
+        "checkpoint_published_journal_suffix_for_barrier()",
+        "shared.commit_durable(raw)",
+        "refresh_durable_read_frontier()",
+        "abort_fresh_locator_rebase",
+        "finish_fresh_locator_rebase",
+        "validate_retained_history_for_write",
+        "CleanCloseState::Clean(_)",
+    ] {
+        assert!(transaction.contains(owner));
+    }
+    assert!(pruning.contains("MAX_RECLAIMED_RECEIPTS: u64 = 256"));
+    assert!(pruning.contains("maximum.min(hold.fence().sequence().get())"));
+    assert!(!pruning.contains("CapturedImmediateWrite"));
+    assert!(!pruning.contains("open_table(ENTITIES)"));
+    assert!(!source.contains("fn remove"));
 }
 
 #[test]

@@ -30,6 +30,8 @@ mod changelog;
 mod changelog_v3;
 mod changelog_v3_activation;
 mod changelog_v3_capture;
+#[cfg(test)]
+mod changelog_v3_control_tests;
 mod changelog_v3_cursor;
 mod changelog_v3_journal;
 mod changelog_v3_roots;

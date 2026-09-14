@@ -23807,6 +23807,15 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Source-hold registration, monotonic follower/archive acknowledgement and materialized
+      reclamation remain crate-private, with no application exports or active scheduler.
+      The existing drained lease, coverage rebase and durable publication owner enclose
+      each closed non-recursive control receipt. Bootstrap fences cannot move or release here.
+    - Reclamation observes two known-durable checkpoints using both publication identity and
+      successful-commit epoch; the floor cannot pass the earlier tail or any registered hold.
+      Each transaction deletes at most 256 receipts and records its post-commit observation,
+      so restarting delays pruning safely and a reclamation cannot stimulate itself.
+      Original surviving receipt bytes and all authoritative state remain unchanged.
     - Private contract-migration witnesses bind the exact original V3 prefix and validate
       its complete retained successor chain. Only the V3 tail and allocator may advance;
       lineage, anchor, minimum resume and all other immutable metadata/history remain checked.
