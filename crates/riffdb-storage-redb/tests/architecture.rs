@@ -516,7 +516,6 @@ fn dedicated_storage_threads_apply_the_fixed_stack_budget() {
     assert!(library.contains("PRODUCTION_THREAD_STACK_BYTES: usize = 384 * 1024;"));
     for owner in [
         "command_segment_preparation.rs",
-        "changelog.rs",
         "journal.rs",
         "store_journal_runtime.rs",
     ] {
@@ -526,6 +525,13 @@ fn dedicated_storage_threads_apply_the_fixed_stack_budget() {
             "{owner} must apply the fixed production stack budget"
         );
     }
+    let adapter = read(root.join("changelog.rs"));
+    assert!(!adapter.contains("std::thread"));
+    assert!(!adapter.contains(".spawn("));
+    let compatibility =
+        read(root.join("../../../tests/storage_recovery/changelog_compatibility.rs"));
+    assert!(compatibility.contains("#![cfg(test)]"));
+    assert_eq!(compatibility.matches(".stack_size(384 * 1024)").count(), 2);
 }
 
 #[test]
@@ -1706,15 +1712,25 @@ fn legacy_changelog_emitters_have_no_production_exports() {
 }
 
 #[test]
+// req: REP-003, REC-001
 fn the_changelog_emitter_can_only_read_published_durable_snapshots() {
     // ADR-0100 §2 made structural. The emitter derives frames from published
     // durable state only; this pin proves the module has no other way to read.
     // The `RedbPublishedSnapshot` adapter at the top of the file is the single
     // bridge, and it is constructed only at a publication site.
     let emitter = production_source(crate_root().join("src/changelog.rs"));
-    let derivation = emitter
+    let adapter = emitter
         .split_once("impl PublishedDurableSnapshot for RedbPublishedSnapshot")
         .expect("the published-snapshot adapter opens the module")
+        .1;
+    let compatibility = std::fs::read_to_string(
+        crate_root().join("../../tests/storage_recovery/changelog_compatibility.rs"),
+    )
+    .expect("the retained legacy compatibility emitter");
+    assert!(compatibility.contains("#![cfg(test)]"));
+    let derivation = compatibility
+        .split_once("enum EmitterMessage")
+        .expect("legacy derivation begins after the canonical test codec imports")
         .1;
 
     for forbidden in [
@@ -1743,6 +1759,10 @@ fn the_changelog_emitter_can_only_read_published_durable_snapshots() {
         "RedbCompositeReadView",
         "overlay(",
     ] {
+        assert!(
+            !adapter.contains(forbidden),
+            "the production snapshot adapter must not reach `{forbidden}`"
+        );
         assert!(
             !derivation.contains(forbidden),
             "the changelog derivation must not reach `{forbidden}`"

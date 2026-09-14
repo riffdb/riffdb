@@ -87,6 +87,7 @@ use riffdb_types::{
 };
 
 const CHILD_MODE: &str = "RIFFDB_STORAGE_RECOVERY_CHILD_MODE";
+mod changelog_compatibility;
 #[path = "v3_command_receipts.rs"]
 mod v3_command_receipts;
 
@@ -6744,14 +6745,21 @@ fn start_recording_emitter(
     capacity: usize,
 ) -> (
     std::sync::Arc<RecordingChangelogConsumer>,
-    riffdb_storage_redb::RedbChangelogEmitterHandle,
+    changelog_compatibility::RedbChangelogEmitterHandle,
 ) {
     let consumer = std::sync::Arc::new(RecordingChangelogConsumer::default());
-    let handle = riffdb_storage_redb::start_changelog_emitter(
+    let handle = changelog_compatibility::start_changelog_emitter(
         std::sync::Arc::clone(&consumer) as std::sync::Arc<dyn ChangelogFrameConsumer>,
         capacity,
     )
     .expect("start changelog emitter");
+    assert_eq!(handle.emitter().emitted_frames(), 0);
+    assert_eq!(handle.emitter().processed_advancements(), 0);
+    assert_eq!(
+        handle.emitter().emitted_frontier(),
+        riffdb_types::DualFrontier::INITIAL
+    );
+    assert_eq!(handle.emitter().emitted_chain_hash(), [0; 32]);
     (consumer, handle)
 }
 
@@ -6813,7 +6821,8 @@ fn changelog_frames_reconstruct_the_published_snapshot_exactly() {
     // while no handle owns the database, then tail the emitted frames onto it.
     let anchor = read_claimed_rows(&path.0);
 
-    let (consumer, emitter) = start_recording_emitter(64);
+    let (consumer, emitter) =
+        start_recording_emitter(changelog_compatibility::DEFAULT_CHANGELOG_BUFFER_ADVANCEMENTS);
     {
         let mut ports = open_with_emitter(&path.0, emitter.port());
         fence_deferred_epoch(&ports, &[command_fixture_at(1), command_fixture_at(2)]);
@@ -6957,7 +6966,7 @@ fn v2_emitter_and_follower_resume_from_bootstrap_with_exact_entity_heads() {
     let receipt = ChangelogV2RotationReceipt::new(database_id(), 1, predecessor, [0x52; 32])
         .expect("V2 bootstrap boundary");
     let consumer = std::sync::Arc::new(RecordingChangelogConsumerV2::default());
-    let emitter = riffdb_storage_redb::start_changelog_emitter_v2(
+    let emitter = changelog_compatibility::start_changelog_emitter_v2(
         std::sync::Arc::clone(&consumer) as std::sync::Arc<dyn ChangelogFrameConsumerV2>,
         receipt,
         64,
@@ -7054,7 +7063,7 @@ fn delete_removes_current_index_state_and_emits_reciprocal_v2_tombstone() {
     let receipt = ChangelogV2RotationReceipt::new(database_id(), 1, predecessor, [0x53; 32])
         .expect("delete V2 bootstrap boundary");
     let consumer = std::sync::Arc::new(RecordingChangelogConsumerV2::default());
-    let emitter = riffdb_storage_redb::start_changelog_emitter_v2(
+    let emitter = changelog_compatibility::start_changelog_emitter_v2(
         std::sync::Arc::clone(&consumer) as std::sync::Arc<dyn ChangelogFrameConsumerV2>,
         receipt,
         64,
@@ -7363,7 +7372,7 @@ fn a_stalled_consumer_never_delays_publication_and_overflow_is_typed_lagging() {
     let path = TestDatabasePath::new("changelog-nonblocking");
     prepare_command_database(&path.0);
     let consumer = std::sync::Arc::new(RecordingChangelogConsumer::stalled());
-    let emitter = riffdb_storage_redb::start_changelog_emitter(
+    let emitter = changelog_compatibility::start_changelog_emitter(
         std::sync::Arc::clone(&consumer) as std::sync::Arc<dyn ChangelogFrameConsumer>,
         1,
     )

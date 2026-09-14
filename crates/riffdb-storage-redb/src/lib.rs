@@ -213,10 +213,6 @@ mod vector_projection_control;
 pub use backup::{
     RedbOfflineBackup, RedbOfflineRestore, read_history_incarnation, stamp_history_incarnation,
 };
-pub use changelog::{
-    DEFAULT_CHANGELOG_BUFFER_ADVANCEMENTS, RedbChangelogEmitter, RedbChangelogEmitterHandle,
-    start_changelog_emitter, start_changelog_emitter_v2,
-};
 #[doc(hidden)]
 pub use consumer::{
     MAX_PROTECTED_EVENT_REPLAY_CANDIDATES, ProtectedEventConsumerLeaseV1,

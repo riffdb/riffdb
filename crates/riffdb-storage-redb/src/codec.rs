@@ -5,8 +5,8 @@ use std::fmt;
 use redb::ReadableTable;
 use riffdb_storage_api as storage;
 
-use crate::error::{codec_error, precommit_storage_error, storage_error};
-use crate::keys::encode_event_key;
+use super::error::{codec_error, precommit_storage_error, storage_error};
+use super::keys::encode_event_key;
 
 macro_rules! copied_codec {
     ($encode:ident, $decode:ident, $value:ty, $wire_encode:ident, $wire_decode:ident) => {
@@ -740,7 +740,7 @@ where
 {
     if let Ok(locator) = storage::decode_command_audit_locator_v1(encoded) {
         let (locator, charge) = locator.into_parts();
-        let key = crate::keys::encode_application_sequence_key(locator.commit_sequence());
+        let key = super::keys::encode_application_sequence_key(locator.commit_sequence());
         let mut range = commits
             .range::<&[u8]>((
                 std::ops::Bound::Unbounded,
@@ -751,7 +751,7 @@ where
             .next_back()
             .ok_or_else(|| storage_error(storage::StorageErrorKind::CorruptData))?
             .map_err(precommit_storage_error)?;
-        let physical_sequence = crate::keys::decode_application_sequence_key(physical_key.value())
+        let physical_sequence = super::keys::decode_application_sequence_key(physical_key.value())
             .map_err(|_| storage_error(storage::StorageErrorKind::CorruptData))?;
         let capsule = match storage::decode_command_segment_v1(row.value()) {
             Ok(segment) => {
