@@ -88,6 +88,17 @@ impl RedbPublishedSnapshot {
 }
 
 impl PublishedDurableSnapshot for RedbPublishedSnapshot {
+    fn changelog_receipts_v3(
+        &self,
+        lineage: riffdb_storage_api::ChangelogLineageV3,
+        after: riffdb_storage_api::ChangelogHistoryPointV3,
+    ) -> Result<
+        Box<dyn riffdb_storage_api::ChangelogReceiptCursorV3>,
+        riffdb_storage_api::ChangelogCursorErrorV3,
+    > {
+        crate::changelog_v3_cursor::open(&self.access, lineage, after)
+    }
+
     fn read_value(
         &self,
         table: CompositeTableV1,

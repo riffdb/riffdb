@@ -43,6 +43,7 @@ use crate::store::{RedbOperationalPorts, read_administration_tail, read_commit_t
 
 /// Unpublished builder that proves one overlay against one frozen redb root.
 pub(crate) struct RedbCompositeViewBuilder {
+    changelog: crate::changelog_v3_cursor::ChangelogSuffix,
     root: Arc<CheckpointRoot>,
     overlay: CompositeOverlayBuilder,
 }
@@ -63,6 +64,7 @@ impl RedbCompositeViewBuilder {
     ) -> Result<Self, StorageError> {
         let checkpoint = checkpoint_identity(&root, checkpoint_frame_hash)?;
         Ok(Self {
+            changelog: crate::changelog_v3_cursor::ChangelogSuffix::from_checkpoint(&root)?,
             root,
             overlay: CompositeOverlayBuilder::new(checkpoint),
         })
@@ -79,6 +81,7 @@ impl RedbCompositeViewBuilder {
     /// copying its complete suffix map.
     pub(crate) fn from_published(published: &Arc<RedbCompositeReadView>) -> Self {
         Self {
+            changelog: published.changelog.clone(),
             root: Arc::clone(&published.root),
             overlay: CompositeOverlayBuilder::from_published(&published.overlay),
         }
@@ -93,6 +96,7 @@ impl RedbCompositeViewBuilder {
     /// Freezes one checkpoint-plus-suffix identity without publishing it.
     pub(crate) fn freeze(self) -> RedbCompositeReadView {
         RedbCompositeReadView {
+            changelog: self.changelog,
             root: self.root,
             overlay: self.overlay.freeze(),
             snapshot_head: OnceLock::new(),
@@ -102,6 +106,7 @@ impl RedbCompositeViewBuilder {
 
 /// One immutable redb checkpoint and exact validated overlay.
 pub(crate) struct RedbCompositeReadView {
+    changelog: crate::changelog_v3_cursor::ChangelogSuffix,
     root: Arc<CheckpointRoot>,
     overlay: FrozenCompositeOverlay,
     /// The snapshot-visible application frontier of THIS view, derived once.
@@ -113,6 +118,7 @@ pub(crate) struct RedbCompositeReadView {
 
 /// Redb-rooted private mutation stage for one command subgroup.
 pub(crate) struct RedbCompositeMutationStage {
+    changelog: crate::changelog_v3_cursor::ChangelogSuffix,
     root: Arc<CheckpointRoot>,
     stage: CompositeMutationStage,
 }
@@ -120,6 +126,7 @@ pub(crate) struct RedbCompositeMutationStage {
 impl RedbCompositeMutationStage {
     pub(crate) fn from_published(published: &Arc<RedbCompositeReadView>) -> Self {
         Self {
+            changelog: published.changelog.clone(),
             root: Arc::clone(&published.root),
             stage: CompositeMutationStage::new(&published.overlay),
         }
@@ -204,6 +211,7 @@ impl RedbCompositeMutationStage {
         let frame = frame.composite().map_err(corrupt_value)?;
         let overlay = self.stage.seal_frame(&frame).map_err(corrupt_value)?;
         Ok(RedbCompositeReadView {
+            changelog: self.changelog,
             root: self.root,
             overlay,
             snapshot_head: OnceLock::new(),
@@ -240,6 +248,7 @@ impl RedbCompositeMutationStage {
             )
             .map_err(corrupt_value)?;
         Ok(RedbCompositeReadView {
+            changelog: self.changelog,
             root: self.root,
             overlay,
             snapshot_head: OnceLock::new(),
@@ -283,6 +292,7 @@ impl RedbCompositeMutationStage {
             .map_err(corrupt_value)?;
         Ok((
             RedbCompositeReadView {
+                changelog: self.changelog,
                 root: self.root,
                 overlay,
                 snapshot_head: OnceLock::new(),
@@ -458,6 +468,24 @@ impl RedbCompositePublication {
 }
 
 impl RedbCompositeReadView {
+    pub(crate) fn changelog_suffix(&self) -> &crate::changelog_v3_cursor::ChangelogSuffix {
+        &self.changelog
+    }
+
+    pub(crate) fn append_changelog_source(
+        &mut self,
+        successor: Option<(
+            riffdb_storage_api::AuthoritativeTransactionBindingV3,
+            riffdb_storage_api::ChangelogHistoryStateV3,
+        )>,
+        attribution: riffdb_storage_api::ChangelogAttributionV3,
+        mutations: Arc<[riffdb_storage_api::CompositeMutationV1]>,
+        encoded_bytes: usize,
+    ) -> Result<(), StorageError> {
+        self.changelog
+            .append(successor, attribution, mutations, encoded_bytes)
+    }
+
     pub(crate) fn checkpoint_root(&self) -> &CheckpointRoot {
         &self.root
     }
@@ -504,6 +532,7 @@ impl RedbCompositeReadView {
             .rebase_after(&covered.overlay, checkpoint)
             .map_err(corrupt_value)?;
         Ok(Self {
+            changelog: self.changelog.rebase_after(&covered.changelog, &root)?,
             root,
             overlay,
             snapshot_head: OnceLock::new(),

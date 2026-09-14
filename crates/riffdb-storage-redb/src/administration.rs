@@ -4530,6 +4530,197 @@ mod tests {
         }
     }
 
+    #[test]
+    // req: REP-003, REC-001, PERF-007
+    fn published_v3_cursor_keeps_its_exact_service_audit_prefix_after_later_publication() {
+        #[derive(Debug)]
+        struct Observer(
+            std::sync::mpsc::SyncSender<riffdb_storage_api::PublishedFrontierAdvancement>,
+        );
+        impl riffdb_storage_api::ChangelogPublicationPort for Observer {
+            fn observe_published_advancement(
+                &self,
+                advancement: riffdb_storage_api::PublishedFrontierAdvancement,
+            ) {
+                let _ = self.0.try_send(advancement);
+            }
+        }
+        let path = TestPath::new("v3-published-cursor");
+        let (sender, receiver) = std::sync::mpsc::sync_channel(4);
+        let mut store = RedbStore::open_with_changelog_publication_port(
+            &path.0,
+            crate::store::RedbCommitProfile::Standard,
+            std::sync::Arc::new(Observer(sender)),
+        )
+        .unwrap();
+        store.initialize_database(database_id()).unwrap();
+        let lineage = riffdb_storage_api::ChangelogLineageV3::new(
+            database_id(),
+            1,
+            riffdb_storage_api::LeadershipEpochV1::initial(),
+        )
+        .unwrap();
+        let anchor = crate::changelog_v3_activation::activate_validated(
+            store.shared.database.begin_write().unwrap(),
+            lineage,
+            riffdb_types::DualFrontier::INITIAL,
+        )
+        .unwrap();
+        let mut ports = crate::store::RedbDormantPorts {
+            shared: store.shared,
+        }
+        .into_operational_after_catalog_validation()
+        .unwrap();
+        let mut pins = Vec::new();
+        for request in 90..92 {
+            let riffdb_storage_api::ServiceAuditGroupAppend::Submitted(fence) = ports
+                .submit_service_audit_group(&[denied_audit(request)])
+                .unwrap()
+            else {
+                panic!("expected journal admission");
+            };
+            fence.wait().unwrap();
+            pins.push(receiver.try_recv().unwrap());
+        }
+        let mut old = pins[0]
+            .snapshot()
+            .changelog_receipts_v3(lineage, anchor.tail())
+            .unwrap();
+        assert_eq!(old.history().tail().sequence().get(), 2);
+        let first = old.next_receipt().unwrap().unwrap();
+        assert_eq!(first.binding().sequence.get(), 2);
+        assert_eq!(
+            first.attribution(),
+            riffdb_storage_api::ChangelogAttributionV3::JournaledServiceAudit
+        );
+        assert!(old.next_receipt().unwrap().is_none());
+        assert!(old.next_receipt().unwrap().is_none());
+        let mut latest = pins[1]
+            .snapshot()
+            .changelog_receipts_v3(lineage, anchor.tail())
+            .unwrap();
+        assert_eq!(latest.history().tail().sequence().get(), 3);
+        assert_eq!(
+            latest.next_receipt().unwrap().unwrap().encode().unwrap(),
+            first.encode().unwrap()
+        );
+        assert_eq!(
+            latest
+                .next_receipt()
+                .unwrap()
+                .unwrap()
+                .binding()
+                .sequence
+                .get(),
+            3
+        );
+        assert!(latest.next_receipt().unwrap().is_none());
+        use riffdb_storage_api::{
+            ChangelogCursorErrorV3 as CursorError, ChangelogHistoryPointV3, ChangelogLineageV3,
+            LeadershipEpochV1,
+        };
+        let foreign =
+            ChangelogLineageV3::new(database_id(), 2, LeadershipEpochV1::initial()).unwrap();
+        assert!(matches!(
+            pins[0]
+                .snapshot()
+                .changelog_receipts_v3(foreign, anchor.tail()),
+            Err(CursorError::ForeignLineage)
+        ));
+        let stale =
+            ChangelogLineageV3::new(database_id(), 1, LeadershipEpochV1::new(2).unwrap()).unwrap();
+        assert!(matches!(
+            pins[0]
+                .snapshot()
+                .changelog_receipts_v3(stale, anchor.tail()),
+            Err(CursorError::StaleEpoch)
+        ));
+        let substitute = ChangelogHistoryPointV3::new(
+            anchor.tail().sequence(),
+            [0x97; 32],
+            anchor.tail().frontier(),
+        );
+        assert!(matches!(
+            pins[0]
+                .snapshot()
+                .changelog_receipts_v3(lineage, substitute),
+            Err(CursorError::InvalidPosition)
+        ));
+        assert!(matches!(
+            pins[0]
+                .snapshot()
+                .changelog_receipts_v3(lineage, latest.history().tail()),
+            Err(CursorError::InvalidPosition)
+        ));
+        // Drain using the existing direct-write barrier, then publish a newer
+        // source. The new pin reads a materialized prefix plus its own suffix.
+        ports
+            .begin_attributed_write(
+                riffdb_storage_api::ChangelogAttributionV3::CatalogAdministration,
+            )
+            .unwrap()
+            .commit()
+            .unwrap();
+        let riffdb_storage_api::ServiceAuditGroupAppend::Submitted(fence) = ports
+            .submit_service_audit_group(&[denied_audit(92)])
+            .unwrap()
+        else {
+            panic!("expected journal admission after checkpoint");
+        };
+        fence.wait().unwrap();
+        let after_checkpoint = receiver.try_recv().unwrap();
+        let mut combined = after_checkpoint
+            .snapshot()
+            .changelog_receipts_v3(lineage, anchor.tail())
+            .unwrap();
+        assert_eq!(combined.history().tail().sequence().get(), 4);
+        assert_eq!(
+            combined.next_receipt().unwrap().unwrap().encode().unwrap(),
+            first.encode().unwrap()
+        );
+        assert_eq!(
+            combined
+                .next_receipt()
+                .unwrap()
+                .unwrap()
+                .binding()
+                .sequence
+                .get(),
+            3
+        );
+        assert_eq!(
+            combined
+                .next_receipt()
+                .unwrap()
+                .unwrap()
+                .binding()
+                .sequence
+                .get(),
+            4
+        );
+        assert!(combined.next_receipt().unwrap().is_none());
+        // A held writer lease cannot block an already published cursor.
+        let _write = ports
+            .begin_attributed_write(
+                riffdb_storage_api::ChangelogAttributionV3::CatalogAdministration,
+            )
+            .unwrap();
+        let mut independent = pins[0]
+            .snapshot()
+            .changelog_receipts_v3(lineage, anchor.tail())
+            .unwrap();
+        assert_eq!(
+            independent
+                .next_receipt()
+                .unwrap()
+                .unwrap()
+                .binding()
+                .sequence
+                .get(),
+            2
+        );
+    }
+
     fn command_audit(
         request: u16,
         phase: ServiceAuditPhaseV1,

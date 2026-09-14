@@ -6658,7 +6658,7 @@ impl RedbWriteAccess {
             }
             let frame_hash = frame.frame_hash();
             let previous_hash = runtime.last_hash;
-            let (composite_successor, checkpoint_mutations) = composite_stage
+            let (mut composite_successor, checkpoint_mutations) = composite_stage
                 .seal_encoded_frame_with_mutations(
                     riffdb_storage_api::CompositeFrameKindV1::ServiceAudit,
                     runtime.database_id,
@@ -6671,6 +6671,20 @@ impl RedbWriteAccess {
                     previous_hash,
                     frame_hash,
                 )?;
+            let checkpoint_mutations: Arc<[riffdb_storage_api::CompositeMutationV1]> =
+                Arc::from(checkpoint_mutations);
+            let changelog_successor = runtime.prepare_changelog_successor(
+                changelog_predecessor,
+                riffdb_storage_api::ChangelogAttributionV3::JournaledServiceAudit,
+                DualFrontier::new(covered_sequence, covered_administration_sequence),
+                &checkpoint_mutations,
+            )?;
+            composite_successor.append_changelog_source(
+                changelog_successor,
+                riffdb_storage_api::ChangelogAttributionV3::JournaledServiceAudit,
+                Arc::clone(&checkpoint_mutations),
+                encoded_bytes,
+            )?;
             let composite_successor = Arc::new(composite_successor);
             let successor_stamp = self
                 .shared
@@ -6682,12 +6696,6 @@ impl RedbWriteAccess {
                 .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
                 .seal_preserve(successor_stamp);
             let retained_frame = frame.clone();
-            let changelog_successor = runtime.prepare_changelog_successor(
-                changelog_predecessor,
-                riffdb_storage_api::ChangelogAttributionV3::JournaledServiceAudit,
-                DualFrontier::new(covered_sequence, covered_administration_sequence),
-                &checkpoint_mutations,
-            )?;
             let receipt = runtime.lane.submit(frame).map_err(journal_io_error)?;
             runtime.changelog_history = changelog_successor.map(|(_, history)| history);
             runtime.last_administration_sequence = covered_administration_sequence;
@@ -6708,7 +6716,7 @@ impl RedbWriteAccess {
                 command_count: 0,
                 audit_count,
                 encoded: retained_frame,
-                mutations: Arc::from(checkpoint_mutations),
+                mutations: checkpoint_mutations,
                 changelog_binding: changelog_successor.map(|(binding, _)| binding),
             });
             runtime.unpublished_transitions = next_unpublished_transitions;
@@ -7038,7 +7046,7 @@ impl RedbDurabilityEpoch {
                 let predecessor_sequence = runtime.last_sequence;
                 let predecessor_administration_sequence = runtime.last_administration_sequence;
                 let previous_hash = runtime.last_hash;
-                let (composite_successor, checkpoint_mutations) = composite_stage
+                let (mut composite_successor, checkpoint_mutations) = composite_stage
                     .seal_encoded_frame_with_mutations(
                         riffdb_storage_api::CompositeFrameKindV1::Command,
                         runtime.database_id,
@@ -7051,6 +7059,20 @@ impl RedbDurabilityEpoch {
                         previous_hash,
                         frame_hash,
                     )?;
+                let checkpoint_mutations: Arc<[riffdb_storage_api::CompositeMutationV1]> =
+                    Arc::from(checkpoint_mutations);
+                let changelog_successor = runtime.prepare_changelog_successor(
+                    changelog_predecessor,
+                    riffdb_storage_api::ChangelogAttributionV3::JournaledApplicationGroup,
+                    DualFrontier::new(Some(last_sequence), last_administration_sequence),
+                    &checkpoint_mutations,
+                )?;
+                composite_successor.append_changelog_source(
+                    changelog_successor,
+                    riffdb_storage_api::ChangelogAttributionV3::JournaledApplicationGroup,
+                    Arc::clone(&checkpoint_mutations),
+                    encoded_bytes,
+                )?;
                 let composite_successor = Arc::new(composite_successor);
                 let successor_stamp = self
                     .shared
@@ -7078,12 +7100,6 @@ impl RedbDurabilityEpoch {
                     }
                 };
                 let retained_frame = frame.clone();
-                let changelog_successor = runtime.prepare_changelog_successor(
-                    changelog_predecessor,
-                    riffdb_storage_api::ChangelogAttributionV3::JournaledApplicationGroup,
-                    DualFrontier::new(Some(last_sequence), last_administration_sequence),
-                    &checkpoint_mutations,
-                )?;
                 let receipt = runtime.lane.submit(frame).map_err(journal_io_error)?;
                 runtime.changelog_history = changelog_successor.map(|(_, history)| history);
                 runtime.last_sequence = Some(last_sequence);
@@ -7107,7 +7123,7 @@ impl RedbDurabilityEpoch {
                     audit_count: u16::try_from(audit_count)
                         .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?,
                     encoded: retained_frame,
-                    mutations: Arc::from(checkpoint_mutations),
+                    mutations: checkpoint_mutations,
                     changelog_binding: changelog_successor.map(|(binding, _)| binding),
                 });
                 runtime.unpublished_transitions = next_unpublished_transitions;
