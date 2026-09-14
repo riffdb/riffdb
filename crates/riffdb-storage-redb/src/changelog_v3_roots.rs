@@ -3,10 +3,7 @@
 //! This is one input to clean eligibility, not a replacement for complete startup
 //! validation or proof that an application/journal suffix has been published.
 
-use redb::{
-    ReadTransaction, ReadableTable, ReadableTableMetadata, TableError, TableHandle,
-    WriteTransaction,
-};
+use redb::{ReadTransaction, ReadableTable, TableError, TableHandle, WriteTransaction};
 use riffdb_storage_api::{
     AdministrationSequenceAllocator, ApplicationSequenceAllocator, AuthoritativeNamespaceV1 as N,
     AuthoritativeTransactionV3, ChangelogHistoryStateV3, StorageError, StorageErrorKind,
@@ -87,6 +84,31 @@ pub(crate) fn validate_retained_history(
     let Some(history) = read_checkpoint_roots(transaction)? else {
         return Ok(None);
     };
+    let table = transaction.open_table(HISTORY).map_err(table_error)?;
+    let holds = transaction.open_table(SOURCE_HOLDS).map_err(table_error)?;
+    validate_retained_rows(history, &table, &holds)?;
+    Ok(Some(history))
+}
+
+/// Full preflight on the original exclusive restore transaction. The bounded
+/// inventory check precedes opening write tables, so no missing table is created.
+pub(crate) fn validate_retained_history_for_write(
+    transaction: &WriteTransaction,
+) -> Result<Option<ChangelogHistoryStateV3>, StorageError> {
+    let Some(history) = read_checkpoint_roots_for_write(transaction)? else {
+        return Ok(None);
+    };
+    let table = transaction.open_table(HISTORY).map_err(table_error)?;
+    let holds = transaction.open_table(SOURCE_HOLDS).map_err(table_error)?;
+    validate_retained_rows(history, &table, &holds)?;
+    Ok(Some(history))
+}
+
+fn validate_retained_rows(
+    history: ChangelogHistoryStateV3,
+    table: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    holds: &impl ReadableTable<&'static [u8], &'static [u8]>,
+) -> Result<(), StorageError> {
     let corrupt = || storage_error(StorageErrorKind::CorruptData);
     let mut covered = ChangelogHistoryStateV3::new(
         history.lineage(),
@@ -95,7 +117,6 @@ pub(crate) fn validate_retained_history(
         history.minimum_resume(),
     )
     .map_err(|_| corrupt())?;
-    let table = transaction.open_table(HISTORY).map_err(table_error)?;
     let mut first = true;
     for entry in table.iter().map_err(precommit_storage_error)? {
         let (key, value) = entry.map_err(precommit_storage_error)?;
@@ -117,21 +138,19 @@ pub(crate) fn validate_retained_history(
     if first || covered != history {
         return Err(corrupt());
     }
-    validate_source_holds(transaction, history, &table)?;
-    Ok(Some(history))
+    validate_source_holds(holds, history, table)
 }
 
 /// Full-validation-only, bounded source population from the SAME read pin as
 /// the validated retained chain. Never upgrades a decoded value into permission
 /// to prune or silently discards an unrecognized fence.
 fn validate_source_holds(
-    transaction: &ReadTransaction,
+    holds: &impl ReadableTable<&'static [u8], &'static [u8]>,
     history: ChangelogHistoryStateV3,
     receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
 ) -> Result<(), StorageError> {
     use riffdb_storage_api::{ChangelogHistoryPointV3, MAX_REPLICATION_SOURCE_HOLDS_V1};
     let corrupt = || storage_error(StorageErrorKind::CorruptData);
-    let holds = transaction.open_table(SOURCE_HOLDS).map_err(table_error)?;
     if holds.len().map_err(precommit_storage_error)? > MAX_REPLICATION_SOURCE_HOLDS_V1 {
         return Err(storage_error(StorageErrorKind::LimitExceeded));
     }

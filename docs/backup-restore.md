@@ -7,6 +7,15 @@ or resolves a server filesystem path.
 
 ## Configuration
 
+WP-772 implementation note: for an already-active changelog V3 database, the
+offline incarnation stamp now validates retained receipts and source fences
+before atomically installing a new lineage anchor and clearing replication-local
+progress. A destructive restore cannot continue the old replication tail; a
+receiver needs a new bootstrap. This internal substrate is still under
+integration and does not announce production replication availability. The
+public maintenance operation ID and retry protocol below are unchanged. See the
+[V3 substrate notes](architecture/CHANGELOG-V3.md) for the remaining limits.
+
 `riffdbd` requires an absolute `--backup-root` path. The path must be lexically
 disjoint from the database file, capability digest keys, and idempotency digest
 keys. Only the server joins a checked backup name beneath this root.
