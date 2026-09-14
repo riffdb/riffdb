@@ -87,6 +87,9 @@ use riffdb_types::{
 };
 
 const CHILD_MODE: &str = "RIFFDB_STORAGE_RECOVERY_CHILD_MODE";
+#[path = "v3_command_receipts.rs"]
+mod v3_command_receipts;
+
 const CHILD_PATH: &str = "RIFFDB_STORAGE_RECOVERY_CHILD_PATH";
 const CHILD_COMMIT_PROFILE: &str = "RIFFDB_STORAGE_RECOVERY_CHILD_COMMIT_PROFILE";
 const CHILD_PRUNE_TARGET: &str = "RIFFDB_STORAGE_RECOVERY_CHILD_PRUNE_TARGET";
@@ -729,8 +732,8 @@ fn build_command_fixture(
     // under test could not distinguish the two post-images.
     let payload = if prior.is_some() { 2 } else { 1 };
     let prior_entity = prior.map(|fixture| fixture.records.entities()[0].post_image().clone());
-    let prior_epoch = prior.map_or(IndexEpochPosition::BeforeFirst, |_| {
-        IndexEpochPosition::Value(riffdb_types::IndexEpoch::first())
+    let prior_epoch = prior.map_or(IndexEpochPosition::BeforeFirst, |fixture| {
+        IndexEpochPosition::Value(fixture.write_plan.index_epochs()[0].next())
     });
     let tenant_scope = TenantScope::Tenant(TenantId::new("tenant-a").expect("tenant"));
     let principal = ActorId::new("principal-a").expect("principal");

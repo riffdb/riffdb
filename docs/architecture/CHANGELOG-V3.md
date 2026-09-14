@@ -1,5 +1,23 @@
 # Authoritative changelog V3 substrate
 
+Real command-owner tests now cover one direct multi-command group followed by
+separately published journal overwrite and delete transactions. Original entity
+bytes remain available through pinned receipt cursors after the live row is
+gone, checkpointing preserves those exact receipts, and repeated full reopen
+retains command outcomes, provenance, events and idempotency identities. Two
+logical subgroups in one journal epoch produce one physical net receipt while
+both complete command identities survive. Five actual process-crash arms cover
+direct pre/post-commit, private journal staging and published journal-tail
+completion, with two full recovery passes each. These are isolated-activation
+fixtures, not fresh activation or the complete rotation/reclamation crash matrix.
+
+The V3 checkpoint receipt checks the V2 certificate's exact physical `AUDIT`
+bound against the same read snapshot. That bound can be below the V3 logical
+administration frontier because command-owned audits reside inside command
+segments. The latter remains the receipt's full dual frontier; neither existing
+certificate bytes nor audit placement changes. A substituted physical bound
+still refuses, and no additional read transaction or commit is introduced.
+
 The dormant storage opener recognizes complete, already-activated V3 layouts
 using the catalog's exact physical table set and bounded current-format roots
 before selecting any legacy migration or additive-table repair. Real reopen

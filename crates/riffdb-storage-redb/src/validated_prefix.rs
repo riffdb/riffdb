@@ -847,8 +847,15 @@ pub(crate) fn plan_checkpoint_receipt(
         || base.registry_digest() != current_record_registry_digest()
         || base.checkpoint_commit_sequence()
             != frontier.application().map_or(0, |sequence| sequence.get())
+        // The retained V2 certificate bounds the physical AUDIT namespace.
+        // Command-owned audit rows live inside COMMITS and can advance V3's
+        // administration frontier beyond that physical bound (ADR-0102).
+        // Recheck the exact bound from this SAME pin; a mere <= comparison
+        // would wrongly accept a substituted lower certificate bound.
         || base.audit_sequence_bound()
-            != frontier
+            != last_audit_sequence(transaction)?.map_or(0, AdministrationSequence::get)
+        || base.audit_sequence_bound()
+            > frontier
                 .administration()
                 .map_or(0, |sequence| sequence.get())
     {
