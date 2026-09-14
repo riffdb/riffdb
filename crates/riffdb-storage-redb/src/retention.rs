@@ -1,5 +1,9 @@
 //! Offline retention watermark, fencing, prune, and tombstone verification (ADR-0085 A2).
 
+#[cfg(test)]
+#[path = "retention_v3_tests.rs"]
+mod v3_tests;
+
 use std::collections::BTreeSet;
 use std::ops::Bound::Included;
 use std::path::{Path, PathBuf};
@@ -135,7 +139,10 @@ impl RedbOfflineRetention {
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
         let store = RedbStore::open(&self.database_path)?;
         let preparation = store.prepare_offline_retention()?;
-        let write = begin_durable_write(preparation.database())?;
+        let write = crate::store::OperationalWriteTransaction::from_drained(
+            begin_durable_write(preparation.database())?,
+            riffdb_storage_api::ChangelogAttributionV3::RetentionHold,
+        )?;
         {
             let mut meta = write.open_table(META).map_err(table_error)?;
             let existing = read_holds_meta(&meta)?;
@@ -156,7 +163,7 @@ impl RedbOfflineRetention {
                 .map_err(precommit_storage_error)?;
         }
         self.before_commit(RedbTestOperation::RetentionHold)?;
-        commit_durable(write)?;
+        write.finish()?.commit(&store.shared)?;
         self.after_commit(RedbTestOperation::RetentionHold)
     }
 
@@ -165,7 +172,10 @@ impl RedbOfflineRetention {
     pub fn remove_hold(&self, hold_id: &str) -> Result<(), StorageError> {
         let store = RedbStore::open(&self.database_path)?;
         let preparation = store.prepare_offline_retention()?;
-        let write = begin_durable_write(preparation.database())?;
+        let write = crate::store::OperationalWriteTransaction::from_drained(
+            begin_durable_write(preparation.database())?,
+            riffdb_storage_api::ChangelogAttributionV3::RetentionHold,
+        )?;
         {
             let mut meta = write.open_table(META).map_err(table_error)?;
             let existing = read_holds_meta(&meta)?;
@@ -189,7 +199,7 @@ impl RedbOfflineRetention {
                 .map_err(precommit_storage_error)?;
         }
         self.before_commit(RedbTestOperation::RetentionHold)?;
-        commit_durable(write)?;
+        write.finish()?.commit(&store.shared)?;
         self.after_commit(RedbTestOperation::RetentionHold)
     }
 

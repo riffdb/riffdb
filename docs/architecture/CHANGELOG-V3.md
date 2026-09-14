@@ -24,10 +24,20 @@ fixtures start from isolated activation with empty entity and source-hold
 populations. They do not prove fresh activation, source-hold row semantics,
 every authoritative population, or the remaining retention/rotation obligations.
 
+Offline operator hold additions, replacements and removals now use the same
+sealed receipt capture as audited projection hold changes, inside their existing
+single hardened transaction and before/after hooks. Offline preparation validates
+retained V3 history before granting the first write; no operational startup proof
+is assumed. Tests preserve exact prior values and receipts across replacement,
+removal, no-op retry, projection audit/allocator updates, commit uncertainty,
+interior corruption refusal and four actual offline process-crash edges. This
+does not yet integrate authoritative prune transactions or implement replication
+source holds and history reclamation.
+
 WP-772 is in progress. The storage API now has a closed namespace catalog,
 checked physical transaction allocator, expected-state mutation values, and
-V3 receipt/frame codecs. These internal values do not activate a production
-replication stream or alter current writers. Do not treat codec tests or the
+V3 receipt/frame codecs. Constructing these internal values does not activate a
+production replication stream or a writer. Do not treat codec tests or the
 synthetic format vectors as evidence of durable receipt publication.
 
 ## Authority inventory

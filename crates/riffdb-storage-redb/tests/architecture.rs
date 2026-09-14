@@ -1726,6 +1726,58 @@ fn offline_retention_mutations_require_the_journal_rebase_witness() {
 }
 
 #[test]
+// req: REP-003, REC-001, STO-012
+fn offline_hold_receipts_seal_the_original_prepared_transaction_once() {
+    let retention = without_whitespace(&production_source(crate_root().join("src/retention.rs")));
+    for (start, end) in [
+        ("pubfnadd_hold(", "pubfnremove_hold("),
+        ("pubfnremove_hold(", "pubfndetach_projection("),
+        ("fnadminister_projection_hold(", "pubfnprune_to("),
+    ] {
+        let body = retention
+            .split_once(start)
+            .unwrap()
+            .1
+            .split_once(end)
+            .unwrap()
+            .0;
+        let prepare = body.find("prepare_offline_retention()?").unwrap();
+        let begin = body
+            .find("OperationalWriteTransaction::from_drained(")
+            .unwrap();
+        let mutation = body.find("write.open_table(META)").unwrap();
+        let before = body
+            .find("self.before_commit(RedbTestOperation::RetentionHold)?")
+            .unwrap();
+        let commit = body.find("write.finish()?.commit(&store.shared)?").unwrap();
+        let after = body
+            .find("self.after_commit(RedbTestOperation::RetentionHold)")
+            .unwrap();
+        assert!(
+            prepare < begin
+                && begin < mutation
+                && mutation < before
+                && before < commit
+                && commit < after
+        );
+        assert_eq!(body.matches("begin_durable_write(").count(), 1);
+        assert_eq!(body.matches(".commit(").count(), 1);
+        assert!(!body.contains("commit_durable(write)"));
+        assert!(body.contains("ChangelogAttributionV3::RetentionHold"));
+    }
+    let store = without_whitespace(&production_source(crate_root().join("src/store.rs")));
+    let prepare = store
+        .split_once("pub(crate)fnprepare_offline_retention(")
+        .unwrap()
+        .1
+        .split_once("pub(crate)fninto_contract_migration_ports(")
+        .unwrap()
+        .0;
+    assert!(prepare.contains("validate_retained_history(&transaction)"));
+    assert!(!prepare.contains("begin_write("));
+}
+
+#[test]
 fn entity_cache_preserves_exact_observed_bytes_for_journal_before_images() {
     let source = production_source(crate_root().join("src/application.rs"));
     assert!(source.contains("entity_observation_bytes: BTreeMap<EntityTarget, Option<Vec<u8>>>"));
