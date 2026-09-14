@@ -136,10 +136,11 @@ if options[:json]
 else
   warn base_note if base_note
   if self_edit
-    warn "#{options[:wp]} edits its own allowed_paths in this change (human review trigger):"
+    warn "#{options[:wp]} edits its own allowed_paths in this change:"
     added.each { |pattern| warn "  + #{pattern}" }
     removed.each { |pattern| warn "  - #{pattern}" }
-    warn "Widen a package's paths in a separate reviewed commit; this check uses the paths at #{base_ref}."
+    warn "Widen a package's paths in a separate commit that precedes the package change; no approval " \
+         "is needed, only that commit. This check uses the paths at #{base_ref}."
   end
   if offenders.empty?
     puts "#{options[:wp]}: #{files.length} touched file(s) inside #{allowed.length} allowed path(s) at #{where}." unless self_edit
