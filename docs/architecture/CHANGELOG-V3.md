@@ -51,6 +51,15 @@ authoritative validation, and receipt bounds remain strict. Replacement and its
 receipt use the existing single hardened transaction; stale pre-images refuse,
 and crash/retry tests preserve the old proof or the complete new proof exactly.
 
+Command integration tests now take their baseline from the real validated
+activation tail. They preserve receipt bytes through grouped writes, journal
+overwrite/delete, checkpoint and repeated crash recovery. Migration fixtures
+derive expected tail and allocator changes from the exact index-rewrite and
+startup receipts instead of expecting all control metadata to remain static.
+The SIGKILL oracle compares predeclared twins with matching lifecycle histories;
+it still compares full authority and allocator state, without excluding V3 roots.
+These are focused integration proofs, not closure of the full substrate obligations.
+
 The offline retention-watermark stamp now validates retained V3 history and
 source holds on its original hardened write pin before an equal-value retry can
 return. A changed watermark prepares its exact expected-state `RetentionPrune`

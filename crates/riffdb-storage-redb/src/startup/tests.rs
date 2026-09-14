@@ -891,7 +891,11 @@ fn complete_copy_preserves_clean_eligibility_but_registry_migration_invalidates_
     );
     drop(copied_session);
 
-    let raw = redb::Database::open(&source.0).expect("open registry migration source");
+    // A predecessor fixture must actually be inactive. Downgrading only the
+    // registry of the already active V3 source leaves incompatible V3 roots.
+    let predecessor = TestDatabasePath::new("clean-lifecycle-inactive-predecessor");
+    drop(initialized_store(&predecessor, database_id(0x7c)));
+    let raw = redb::Database::open(&predecessor.0).expect("open registry migration source");
     let write = raw.begin_write().expect("begin registry migration fixture");
     {
         let mut meta = write.open_table(META).expect("open migration meta");
@@ -906,7 +910,7 @@ fn complete_copy_preserves_clean_eligibility_but_registry_migration_invalidates_
     }
     write.commit().expect("commit registry migration fixture");
     drop(raw);
-    let migrated = RedbStore::open(&source.0).expect("migrate predecessor registry");
+    let migrated = RedbStore::open(&predecessor.0).expect("migrate predecessor registry");
     let migrated_session = migrated
         .begin_structural_evidence(inputs())
         .expect("select post-migration lifecycle mode");
@@ -3440,10 +3444,15 @@ fn duplicate_standalone_service_lifecycle_is_authoritative_corruption() {
     assert_eq!(repeated_error.kind(), StorageErrorKind::CorruptData);
 }
 
+// req: REP-003, REC-001
 #[test]
 fn projection_frontier_and_marker_prefix_defects_are_derived_only() {
     let path = TestDatabasePath::new("before-first-marker");
     let store = initialized_store(&path, database_id(0x75));
+    // Existing active V3 keeps derived-finding semantics. Initial activation
+    // separately requires zero findings and cannot certify this damaged state.
+    drop(open_cleanly(store));
+    let store = RedbStore::open(&path.0).expect("open activated projection fixture");
     let identity = projection_identity();
     let control = StoredProjectionControlV1::initial(identity.clone());
     let marker_key = ProjectionApplyKey::new(
@@ -4355,6 +4364,7 @@ fn a_reactive_module_without_a_publication_record_reports_missing_cross_link() {
 /// path's audit-suffix range: reactive-module rows are an additive structural
 /// count, so every retained row is judged at every open. This is the property
 /// `read_reactive_module`'s ruling note depends on.
+// req: REP-003, REC-001
 #[test]
 fn the_publication_proof_survives_the_validated_prefix_fast_path() {
     let path = TestDatabasePath::new("reactive-publication-checkpointed");
@@ -4369,9 +4379,19 @@ fn the_publication_proof_survives_the_validated_prefix_fast_path() {
         "the first open must validate clean so the checkpoint is written; got {findings:?}"
     );
     let (historical_end, _, _) = collect_historical(&mut session, 8);
-    session
+    let outcome = session
         .finish(structural_end, historical_end)
         .expect("a clean structural pass must release the ports");
+
+    let StructuralOpenOutcome::Clean(opened) = outcome else {
+        panic!("intact publication fixture must validate cleanly");
+    };
+    let (_, _, _, dormant) = opened.into_parts();
+    drop(
+        dormant
+            .into_operational_after_catalog_validation()
+            .expect("complete fixture activation before checkpointed reopen"),
+    );
 
     let store = RedbStore::open(&path.0).expect("reopen checkpointed store");
     install_orphan_reactive_module(&store);
