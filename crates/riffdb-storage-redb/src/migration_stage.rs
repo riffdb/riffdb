@@ -48,6 +48,14 @@ use crate::layout::{
 };
 use crate::store::{RedbOperationalPorts, RedbStore};
 
+#[path = "migration_stage_history.rs"]
+mod history;
+use history::{capture_v3_history, hash_v3_prefix};
+
+#[cfg(test)]
+#[path = "migration_stage_v3_tests.rs"]
+mod v3_tests;
+
 /// Projection-only mutation authority split from a private migration stage.
 pub struct RedbMigrationProjectionPorts {
     shared: Arc<crate::store::SharedRedb>,
@@ -163,6 +171,7 @@ pub struct RedbContractMigrationImmutableWitness {
     database_id: riffdb_types::DatabaseId,
     parent: riffdb_types::ContractBundleHash,
     digest: [u8; 32],
+    v3_history: Option<riffdb_storage_api::ChangelogHistoryStateV3>,
 }
 
 impl RedbContractMigrationPreflight {
@@ -200,12 +209,14 @@ impl RedbContractMigrationPreflight {
     pub fn immutable_witness(&self) -> Result<RedbContractMigrationImmutableWitness, StorageError> {
         let transaction = self.ports.begin_read()?;
         let database_id = read_database_id(&transaction)?;
-        let digest = immutable_history_digest(&transaction)?;
+        let v3_history = capture_v3_history(&transaction)?;
+        let digest = immutable_history_digest(&transaction, v3_history)?;
         drop(transaction);
         Ok(RedbContractMigrationImmutableWitness {
             database_id,
             parent: self.active_bundle,
             digest,
+            v3_history,
         })
     }
 }
@@ -308,6 +319,7 @@ pub struct RedbContractMigrationStage {
     ports: RedbOperationalPorts,
     context: RedbContractMigrationContext,
     immutable_history_digest: [u8; 32],
+    immutable_v3_history: Option<riffdb_storage_api::ChangelogHistoryStateV3>,
 }
 
 impl RedbContractMigrationStage {
@@ -323,12 +335,15 @@ impl RedbContractMigrationStage {
         {
             return Err(corrupt());
         }
-        let immutable_history_digest = immutable_history_digest(&transaction)?;
+        let immutable_v3_history = capture_v3_history(&transaction)?;
+        let immutable_history_digest =
+            immutable_history_digest(&transaction, immutable_v3_history)?;
         drop(transaction);
         Ok(Self {
             ports,
             context,
             immutable_history_digest,
+            immutable_v3_history,
         })
     }
 
@@ -349,10 +364,14 @@ impl RedbContractMigrationStage {
             return Err(corrupt());
         }
         let ports = store.into_contract_migration_ports()?;
-        let stage = Self::new(ports, context)?;
-        if stage.immutable_history_digest != witness.digest {
+        let mut stage = Self::new(ports, context)?;
+        let transaction = stage.ports.begin_read()?;
+        if immutable_history_digest(&transaction, witness.v3_history)? != witness.digest {
             return Err(corrupt());
         }
+        drop(transaction);
+        stage.immutable_history_digest = witness.digest;
+        stage.immutable_v3_history = witness.v3_history;
         validate_entity_index_structure(&stage.ports)?;
         Ok(stage)
     }
@@ -1097,7 +1116,7 @@ impl MigrationStagePort for RedbContractMigrationStage {
             return Err(MigrationStageError::Integrity);
         }
         let transaction = self.ports.begin_read().map_err(stage_error)?;
-        if immutable_history_digest(&transaction).map_err(stage_error)?
+        if immutable_history_digest(&transaction, self.immutable_v3_history).map_err(stage_error)?
             != self.immutable_history_digest
         {
             return Err(MigrationStageError::Integrity);
@@ -1410,12 +1429,27 @@ fn read_database_id(
     crate::codec::decode_database_identity_v1(value.value()).map(|item| *item.value())
 }
 
-fn immutable_history_digest(transaction: &redb::ReadTransaction) -> Result<[u8; 32], StorageError> {
+fn immutable_history_digest(
+    transaction: &redb::ReadTransaction,
+    v3_history: Option<riffdb_storage_api::ChangelogHistoryStateV3>,
+) -> Result<[u8; 32], StorageError> {
     let mut digest = Sha256::new();
+    hash_v3_prefix(transaction, v3_history, &mut digest)?;
     let meta = transaction.open_table(META).map_err(table_error)?;
     hash_component(&mut digest, META.name().as_bytes())?;
     for row in meta.iter().map_err(precommit_storage_error)? {
         let (key, value) = row.map_err(precommit_storage_error)?;
+        // These two roots must advance with each batch. The exact original
+        // prefix is checked above; every other metadata byte remains immutable.
+        if [
+            riffdb_storage_api::AuthoritativeNamespaceV1::ChangelogHistoryState,
+            riffdb_storage_api::AuthoritativeNamespaceV1::NextChangelogTransaction,
+        ]
+        .into_iter()
+        .any(|namespace| namespace.metadata_key() == Some(key.value()))
+        {
+            continue;
+        }
         hash_component(&mut digest, key.value().as_bytes())?;
         hash_component(&mut digest, value.value())?;
     }

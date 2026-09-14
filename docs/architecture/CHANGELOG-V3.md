@@ -216,6 +216,15 @@ fixtures use isolated activation with legacy index rows to exercise the owners;
 they do not replace the required full validation before production activation
 or prove every same-lineage contract migration and lineage-reset path.
 
+Private contract-migration witnesses retain an exact V3 predecessor fence. They
+validate the complete retained chain and require that original receipt, lineage,
+anchor and minimum resume to survive unchanged while migration batches advance
+the tail and allocator. All other immutable metadata and historical bytes remain
+in the witness digest. Resume checks against the drained predecessor's witness,
+not a new baseline inferred from a partially transformed stage. This is an
+in-memory validation witness, not a new durable identity or a weaker migration
+publication permit. Isolated semantic migration fixtures now activate V3 too.
+
 WP-772 is in progress. The storage API now has a closed namespace catalog,
 checked physical transaction allocator, expected-state mutation values, and
 V3 receipt/frame codecs. Constructing these internal values does not activate a

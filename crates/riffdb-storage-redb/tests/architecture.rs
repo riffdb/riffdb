@@ -958,7 +958,19 @@ fn partial_contract_migration_reopen_is_confined_to_the_witness_gate() {
     assert!(migration.contains("pub fn resume("));
     assert!(migration.contains("RedbContractMigrationImmutableWitness"));
     assert!(migration.contains("store.into_contract_migration_ports()?"));
-    assert!(migration.contains("stage.immutable_history_digest != witness.digest"));
+    assert!(
+        migration.contains(
+            "immutable_history_digest(&transaction, witness.v3_history)? != witness.digest"
+        )
+    );
+    assert!(migration.contains("stage.immutable_history_digest = witness.digest"));
+    assert!(migration.contains("stage.immutable_v3_history = witness.v3_history"));
+    let prefix = production_source(crate_root().join("src/migration_stage_history.rs"));
+    assert!(prefix.contains("validate_retained_history(transaction)"));
+    assert!(prefix.contains(".validate_terminal_receipt(&receipt)"));
+    for root in ["lineage", "anchor", "minimum_resume"] {
+        assert!(prefix.contains(&format!("current.{root}() != expected.{root}()")));
+    }
     assert!(migration.contains("validate_entity_index_structure(&stage.ports)?"));
 }
 
@@ -2300,7 +2312,6 @@ fn only_commit_durable_advances_a_root_an_operational_reader_can_select() {
         ("backup.rs", "stamp_history_incarnation"),
         ("backup.rs", "stamp_retention_watermark"),
         // Test-only downgrade fixture, likewise on a stopped database.
-        ("fixtures.rs", "contract_migration_stage_ports_fixture"),
         ("fixtures.rs", "downgrade_all_index_rows_to_v1_fixture"),
         // Journal recovery, which runs before operational readiness is claimed.
         ("journal.rs", "replay_frames"),
