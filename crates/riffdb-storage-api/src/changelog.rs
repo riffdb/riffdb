@@ -840,6 +840,14 @@ impl std::error::Error for ChangelogFrameError {}
 /// later publication, which is what lets an emitter derive asynchronously
 /// without ever reading state past its covered frontier.
 pub trait PublishedDurableSnapshot: Send + Sync {
+    /// Opens the complete catalog-owned authoritative inventory at this pin.
+    /// A legacy backend refuses instead of offering a partial bootstrap.
+    fn authoritative_state_v3(
+        &self,
+    ) -> Result<Box<dyn crate::AuthoritativeStateCursorV3>, crate::ChangelogCursorErrorV3> {
+        Err(crate::StorageError::new(crate::StorageErrorKind::IncompatibleFormat, None).into())
+    }
+
     /// Opens an exact V3 successor cursor, fenced to this immutable snapshot.
     /// Legacy-only implementations refuse; this default never selects a fallback.
     fn changelog_receipts_v3(

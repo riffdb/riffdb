@@ -12,6 +12,7 @@ mod receipt;
 mod receipt_codec;
 mod sequence;
 mod source_hold;
+mod state_cursor;
 
 pub use cursor::{ChangelogCursorErrorV3, ChangelogReceiptCursorV3};
 pub use frame::{ChangelogFrameBindingV3, ChangelogFrameV3};
@@ -28,6 +29,9 @@ pub use sequence::{ChangelogTransactionAllocator, ChangelogTransactionSequence};
 pub use source_hold::{
     MAX_REPLICATION_SOURCE_HOLDS_V1, ReplicationSourceHoldIdV1, ReplicationSourceHoldKindV1,
     ReplicationSourceHoldV1,
+};
+pub use state_cursor::{
+    AuthoritativeStateCursorV3, AuthoritativeStateRowV3, AuthoritativeStateStepV3,
 };
 
 /// A bounded, value-free V3 refusal. Never includes keys, values or hashes.

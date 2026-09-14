@@ -1,6 +1,9 @@
 //! Immutable original receipt sources paired with the exact published redb pin.
 //! No database handle, mutation lease, journal I/O or durability decision lives here.
 
+#[path = "changelog_v3_state.rs"]
+pub(crate) mod state;
+
 use riffdb_storage_api::{
     AuthoritativeTransactionBindingV3, AuthoritativeTransactionV3, ChangelogAttributionV3,
     ChangelogCursorErrorV3, ChangelogHistoryPointV3, ChangelogHistoryStateV3, ChangelogLineageV3,
