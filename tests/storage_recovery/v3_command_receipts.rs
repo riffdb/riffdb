@@ -1,104 +1,41 @@
-//! Production command owners over an isolated V3 activation fixture. This does
-//! not claim production activation or the complete WP-772 crash obligation.
+//! Production command owners after the real validated V3 activation handoff.
+//! Focused receipt durability evidence, not the complete WP-772 obligation.
 // req: REP-003, REC-001, STO-012, PERF-007
 use super::*;
 use riffdb_storage_api::{
-    AuthoritativeNamespaceV1 as N, AuthoritativeStateCatalogV1, AuthoritativeTransactionBindingV3,
-    AuthoritativeTransactionV3, ChangelogAttributionV3 as A, ChangelogHistoryPointV3,
-    ChangelogHistoryStateV3, ChangelogLineageV3, ChangelogTransactionAllocator, LeadershipEpochV1,
-    PublishedFrontierAdvancement, ReplicationFollowerStateV3, proto_codec::*,
+    AuthoritativeNamespaceV1 as N, AuthoritativeTransactionV3, ChangelogAttributionV3 as A,
+    ChangelogHistoryStateV3, PublishedFrontierAdvancement, proto_codec::*,
 };
-use riffdb_types::DualFrontier;
 use std::collections::BTreeMap;
 use std::sync::{Arc, mpsc};
 
 const HISTORY: TableDefinition<&[u8], &[u8]> = TableDefinition::new(N::ChangelogHistory.table());
 
-// Fixture construction only: the registry already names current V3 but the
-// normal activation handoff is still pending. No production activation permit
-// is exposed or bypassed by application code.
+// Use the ordinary structural/catalog activation and catalog publication. The
+// baseline is its actual retained tail, never a second manually injected root.
 fn install_fixture(path: &Path) -> ChangelogHistoryStateV3 {
     prepare_command_database(path);
     let database = Database::open(path).unwrap();
-    let mut write = database.begin_write().unwrap();
-    write.set_two_phase_commit(true);
-    let mut meta = write.open_table(META).unwrap();
-    let administration = *decode_administration_sequence_allocator_v1(
-        meta.get(META_ADMINISTRATION_SEQUENCE)
+    let read = database.begin_read().unwrap();
+    let meta = read.open_table(META).unwrap();
+    let history = *decode_changelog_history_state_v3(
+        meta.get(N::ChangelogHistoryState.metadata_key().unwrap())
             .unwrap()
             .unwrap()
             .value(),
     )
     .unwrap()
     .value();
-    let administration = match administration {
-        AdministrationSequenceAllocator::Next(next) => AdministrationSequence::new(next.get() - 1),
-        AdministrationSequenceAllocator::Exhausted => panic!("empty command fixture allocator"),
-    };
-    let frontier = DualFrontier::new(None, administration);
-    let lineage = ChangelogLineageV3::new(database_id(), 1, LeadershipEpochV1::initial()).unwrap();
-    let (sequence, allocator) = ChangelogTransactionAllocator::initial()
-        .allocate_one()
-        .unwrap();
-    let receipt = AuthoritativeTransactionV3::new(
-        AuthoritativeTransactionBindingV3 {
-            database_id: database_id(),
-            history_incarnation: 1,
-            predecessor: None,
-            sequence,
-            predecessor_frontier: frontier,
-            covered_frontier: frontier,
-            prior_history_hash: [0; 32],
-        },
-        A::V3Activation,
-        vec![],
+    let receipt = AuthoritativeTransactionV3::decode(
+        read.open_table(HISTORY)
+            .unwrap()
+            .get(history.tail().sequence().get().to_be_bytes().as_slice())
+            .unwrap()
+            .unwrap()
+            .value(),
     )
     .unwrap();
-    let point = ChangelogHistoryPointV3::from_receipt(&receipt).unwrap();
-    let history = ChangelogHistoryStateV3::new(lineage, point, point, point).unwrap();
-    for (namespace, value) in [
-        (
-            N::AuthoritativeStateCatalog,
-            encode_authoritative_state_catalog_v1(AuthoritativeStateCatalogV1),
-        ),
-        (
-            N::LeadershipEpoch,
-            encode_leadership_epoch_v1(lineage.leadership_epoch()),
-        ),
-        (
-            N::ChangelogHistoryState,
-            encode_changelog_history_state_v3(history),
-        ),
-        (
-            N::NextChangelogTransaction,
-            encode_changelog_transaction_allocator_v3(allocator),
-        ),
-        (
-            N::ReplicationFollowerState,
-            encode_replication_follower_state_v3(ReplicationFollowerStateV3::detached()),
-        ),
-    ] {
-        assert!(
-            meta.insert(namespace.metadata_key().unwrap(), value.unwrap().as_bytes())
-                .unwrap()
-                .is_none()
-        );
-    }
-    drop(meta);
-    write
-        .open_table(TableDefinition::<&[u8], &[u8]>::new(
-            N::ReplicationSourceHolds.table(),
-        ))
-        .unwrap();
-    write
-        .open_table(HISTORY)
-        .unwrap()
-        .insert(
-            sequence.get().to_be_bytes().as_slice(),
-            receipt.encode().unwrap().as_slice(),
-        )
-        .unwrap();
-    write.commit().unwrap();
+    history.validate_terminal_receipt(&receipt).unwrap();
     history
 }
 

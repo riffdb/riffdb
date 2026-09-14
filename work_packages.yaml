@@ -23807,6 +23807,11 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Command receipt tests use the real validated activation tail rather than injecting
+      replacement roots. Migration oracles derive exact tail and allocator advancement from
+      the expected receipts; SIGKILL twins model the same lifecycle history before comparing
+      complete authority. Optional-proof corruption and authoritative-root corruption remain
+      separate fallback and early-refusal cases. Production behavior is unchanged by these fixtures.
     - The V3 checkpoint writer preserves ADR-0019/0085 optional-proof fallback using
       exact invalid pre-image replacement or absent-key insertion after validation.
       Retention need not erase the old head snapshot; its bounded validated net changes

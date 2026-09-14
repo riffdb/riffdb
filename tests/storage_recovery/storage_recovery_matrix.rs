@@ -92,6 +92,7 @@ mod changelog_compatibility;
 mod v3_command_attribution;
 #[path = "v3_command_receipts.rs"]
 mod v3_command_receipts;
+mod v3_migration_receipts;
 
 const CHILD_PATH: &str = "RIFFDB_STORAGE_RECOVERY_CHILD_PATH";
 const CHILD_COMMIT_PROFILE: &str = "RIFFDB_STORAGE_RECOVERY_CHILD_COMMIT_PROFILE";
@@ -1611,6 +1612,7 @@ fn read_raw_index_entries(path: &Path) -> Vec<(Vec<u8>, Vec<u8>)> {
 struct MigrationControlState {
     tables: Vec<String>,
     metadata: Vec<(String, Vec<u8>)>,
+    receipts: Vec<riffdb_storage_api::AuthoritativeTransactionV3>,
 }
 
 fn read_migration_control_state(path: &Path) -> MigrationControlState {
@@ -1639,7 +1641,31 @@ fn read_migration_control_state(path: &Path) -> MigrationControlState {
             Some((key, value.value().to_vec()))
         })
         .collect();
-    MigrationControlState { tables, metadata }
+    let history = transaction
+        .open_table(TableDefinition::<&[u8], &[u8]>::new(
+            riffdb_storage_api::AuthoritativeNamespaceV1::ChangelogHistory.table(),
+        ))
+        .expect("read retained fixture receipts");
+    assert!(
+        history.len().unwrap() < 128,
+        "bounded fixture receipt history"
+    );
+    let receipts = history
+        .iter()
+        .unwrap()
+        .map(|row| {
+            let (key, value) = row.unwrap();
+            let receipt =
+                riffdb_storage_api::AuthoritativeTransactionV3::decode(value.value()).unwrap();
+            assert_eq!(key.value(), receipt.binding().sequence.get().to_be_bytes());
+            receipt
+        })
+        .collect();
+    MigrationControlState {
+        tables,
+        metadata,
+        receipts,
+    }
 }
 
 #[derive(Debug, Default, Eq, PartialEq)]
@@ -2152,6 +2178,10 @@ fn external_sigkill_at_real_command_precommit_invokes_engine_repair() {
     let absent_started = std::time::Instant::now();
     let absent = open_operational(RedbStore::open(&absent_twin.0).expect("reopen absent twin"));
     let absent_open_us = absent_started.elapsed().as_micros().max(1);
+    // Model the killed writer's completed activation without a CLEAN close.
+    // V3 receipts retain this lifecycle transition even when no command commits.
+    drop(absent);
+    let absent = open_operational(RedbStore::open(&absent_twin.0).expect("recover absent twin"));
     absent
         .write_clean_close_lifecycle()
         .expect("recertify absent twin");
@@ -2162,7 +2192,6 @@ fn external_sigkill_at_real_command_precommit_invokes_engine_repair() {
     prepare_command_database(&committed_twin.0);
     let committed =
         open_operational(RedbStore::open(&committed_twin.0).expect("open committed twin"));
-    commit_command_fixture(&committed, &fixture);
     committed
         .write_clean_close_lifecycle()
         .expect("certify committed twin");
@@ -2171,7 +2200,13 @@ fn external_sigkill_at_real_command_precommit_invokes_engine_repair() {
     let committed =
         open_operational(RedbStore::open(&committed_twin.0).expect("reopen committed twin"));
     let committed_open_us = committed_started.elapsed().as_micros().max(1);
+    // The committed oracle places the command at the same lifecycle position
+    // as the child, not before its initial CLEAN certificate.
+    commit_command_fixture(&committed, &fixture);
     assert_postcommit_command_state(&committed, &fixture);
+    drop(committed);
+    let committed =
+        open_operational(RedbStore::open(&committed_twin.0).expect("recover committed twin"));
     committed
         .write_clean_close_lifecycle()
         .expect("recertify committed twin");
@@ -2225,8 +2260,8 @@ fn external_sigkill_at_real_command_precommit_invokes_engine_repair() {
         "repaired state must match the corresponding predeclared clean twin, including allocators and control metadata"
     );
     assert!(
-        matching_snapshot.clean_generation_advance_matches(&recovered_snapshot, 1),
-        "repair adds exactly the one lifecycle generation consumed by the killed writer"
+        matching_snapshot.clean_generation_advance_matches(&recovered_snapshot, 0),
+        "the predeclared twin includes exactly the activation consumed by the killed writer"
     );
     let ratio_millis = repair_open_us.saturating_mul(1_000) / matching_clean_us;
     eprintln!(
@@ -3557,6 +3592,7 @@ fn redb_driver_rejects_a_port_from_another_migration_session() {
     }
 }
 
+// req: REP-003, REC-001, STO-012
 #[test]
 fn crash_before_index_migration_batch_restarts_from_v1_without_a_marker() {
     let path = TestDatabasePath::new("before-index-migration-batch");
@@ -3583,11 +3619,7 @@ fn crash_before_index_migration_batch_restarts_from_v1_without_a_marker() {
         legacy_envelope.as_bytes(),
         "a precommit crash must leave the exact V1 envelope"
     );
-    assert_eq!(
-        read_migration_control_state(&path.0),
-        control_state,
-        "a migration crash must not create a table or metadata marker"
-    );
+    v3_migration_receipts::assert_progress(&path.0, &control_state, None);
 
     let controller = RedbTestController::observe_index_migration();
     let (migration_session, catalog_outcome, outcome) = complete_startup_pass(
@@ -3621,7 +3653,11 @@ fn crash_before_index_migration_batch_restarts_from_v1_without_a_marker() {
             current_envelope.as_bytes().to_vec(),
         )]
     );
-    assert_eq!(read_migration_control_state(&path.0), control_state);
+    v3_migration_receipts::assert_progress(
+        &path.0,
+        &control_state,
+        Some((&current, legacy_envelope.as_bytes())),
+    );
 
     let (repeat_session, catalog_outcome, outcome) = complete_startup_pass(
         RedbStore::open(&path.0).expect("repeat clean post-migration reopen"),
@@ -3631,6 +3667,7 @@ fn crash_before_index_migration_batch_restarts_from_v1_without_a_marker() {
     assert!(matches!(outcome, StructuralOpenOutcome::Clean(_)));
 }
 
+// req: REP-003, REC-001, STO-012
 #[test]
 fn crash_after_index_migration_batch_restarts_from_step_one_and_observes_exact_v2() {
     let path = TestDatabasePath::new("after-index-migration-batch");
@@ -3657,10 +3694,10 @@ fn crash_after_index_migration_batch_restarts_from_step_one_and_observes_exact_v
         )],
         "the after-commit crash must expose the complete exact V2 replacement"
     );
-    assert_eq!(
-        read_migration_control_state(&path.0),
-        control_state,
-        "the committed batch must not create a table or metadata marker"
+    v3_migration_receipts::assert_progress(
+        &path.0,
+        &control_state,
+        Some((&current, legacy_envelope.as_bytes())),
     );
 
     let (first_session, catalog_outcome, outcome) = complete_startup_pass(
@@ -3681,7 +3718,11 @@ fn crash_after_index_migration_batch_restarts_from_step_one_and_observes_exact_v
         panic!("the repeat post-migration session must remain clean");
     };
     drop(opened);
-    assert_eq!(read_migration_control_state(&path.0), control_state);
+    v3_migration_receipts::assert_progress(
+        &path.0,
+        &control_state,
+        Some((&current, legacy_envelope.as_bytes())),
+    );
 }
 
 #[test]
@@ -4625,22 +4666,61 @@ fn delete_aware_checkpoint_rejects_each_substituted_head_summary() {
     }
 }
 
+// req: REC-001, STO-012, REP-003
 #[test]
 fn validated_prefix_checkpoint_incarnation_mismatch_falls_back() {
+    use riffdb_storage_api::{
+        StoredValidatedPrefixCheckpointV1, StoredValidatedPrefixCheckpointV2,
+        proto_codec::{
+            decode_validated_prefix_checkpoint_v2, encode_validated_prefix_checkpoint_v2,
+        },
+    };
     let path = TestDatabasePath::new("validated-prefix-incarnation");
     let _ = prepare_committed_command_database(&path.0);
     let _ = complete_startup_pass(RedbStore::open(&path.0).expect("write checkpoint"));
 
-    // Rewrite history_incarnation without rewriting the checkpoint binding.
+    // Substitute only the optional proof binding, not the authoritative lineage.
+    // Stamping live incarnation metadata alone would correctly fail the V3
+    // retained-root check before optional-checkpoint validation can even run.
     {
         let database = Database::create(&path.0).expect("open");
         let txn = database.begin_write().expect("write");
         {
             let mut meta = txn.open_table(META).expect("meta");
-            let encoded = riffdb_storage_api::proto_codec::encode_history_incarnation_v1(2)
-                .expect("encode incarnation 2");
-            meta.insert("history_incarnation/v1", encoded.as_bytes())
-                .expect("stamp incarnation");
+            let key = "validated_prefix_checkpoint/v1";
+            let original =
+                decode_validated_prefix_checkpoint_v2(meta.get(key).unwrap().unwrap().value())
+                    .unwrap()
+                    .into_parts()
+                    .0;
+            let base = original.base();
+            assert_eq!(base.history_incarnation(), 1);
+            let substituted = StoredValidatedPrefixCheckpointV1::new(
+                base.database_id(),
+                2,
+                base.registry_digest(),
+                base.checkpoint_commit_sequence(),
+                base.audit_sequence_bound(),
+                base.counts(),
+                base.entity_chain_fingerprint(),
+                base.retained(),
+                base.previous_checkpoint_hash(),
+                base.retention_watermark_sequence(),
+            )
+            .unwrap();
+            let substituted = StoredValidatedPrefixCheckpointV2::new(
+                substituted,
+                original.entity_counts(),
+                original.entity_transition_fingerprint(),
+            )
+            .unwrap();
+            meta.insert(
+                key,
+                encode_validated_prefix_checkpoint_v2(&substituted)
+                    .unwrap()
+                    .as_bytes(),
+            )
+            .expect("substitute optional checkpoint incarnation");
         }
         txn.commit().expect("commit");
     }
@@ -4653,7 +4733,7 @@ fn validated_prefix_checkpoint_incarnation_mismatch_falls_back() {
     );
     assert!(
         matches!(outcome, StructuralOpenOutcome::Clean(_)),
-        "full validation on incarnation-stamped-but-otherwise-valid DB must open clean"
+        "full validation of unchanged authoritative lineage must open clean"
     );
 }
 
@@ -7801,6 +7881,7 @@ fn conflicting_physical_and_derived_audit_records_refuse_open() {
 
 /// The matcher's other half: an allocator that runs ahead of the audit stream it
 /// allocates from is still a discontinuity, overlap or no overlap.
+// req: REC-001, STO-012, REP-003
 #[test]
 fn administration_allocator_ahead_of_the_audit_stream_refuses_open() {
     let path = TestDatabasePath::new("audit-allocator-gap");
@@ -7814,17 +7895,22 @@ fn administration_allocator_ahead_of_the_audit_stream_refuses_open() {
         .expect("one sequence beyond the stream's exact frontier");
     overwrite_raw_administration_allocator(&path.0, AdministrationSequenceAllocator::next(gap));
 
-    let findings = collect_structural_findings(
-        RedbStore::open(&path.0).expect("reopen after the allocator gap"),
-    );
-    assert!(
-        findings.iter().any(|finding| {
-            finding.scope() == StructuralFindingScope::Authoritative
-                && finding.code() == StructuralFindingCode::SequenceDiscontinuity
-        }),
-        "an allocator ahead of the complete physical-plus-derived audit coverage \
-         must be refused: {findings:?}"
-    );
+    let before = read_migration_control_state(&path.0);
+    for _ in 0..2 {
+        let error = match RedbStore::open(&path.0) {
+            Ok(_) => panic!("the V3 root check must refuse an allocator ahead of durable coverage"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.kind(),
+            riffdb_storage_api::StorageErrorKind::CorruptData
+        );
+        assert_eq!(
+            read_migration_control_state(&path.0),
+            before,
+            "early refusal must not normalize the allocator or retained control roots"
+        );
+    }
 }
 
 /// First coverage for the audited-admission port: the durable `Pending` row and
