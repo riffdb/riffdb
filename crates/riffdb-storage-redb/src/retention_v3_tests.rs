@@ -7,6 +7,57 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{DatabaseId, DualFrontier};
 
+#[test]
+fn prune_retained_plans_and_tombstone_length_refuse_bounds_before_buffer_growth() {
+    let mut budget = RetainedPrunePlanBudget::default();
+    budget
+        .charge(riffdb_storage_api::MAX_CHANGELOG_FRAME_BYTES)
+        .unwrap();
+    assert_eq!(
+        budget.charge(1).unwrap_err().kind(),
+        StorageErrorKind::LimitExceeded
+    );
+    assert_eq!(budget.bytes, riffdb_storage_api::MAX_CHANGELOG_FRAME_BYTES);
+    let mut budget = RetainedPrunePlanBudget::default();
+    for _ in 0..riffdb_storage_api::MAX_CHANGELOG_FRAME_ENTRIES {
+        budget.charge(0).unwrap();
+    }
+    assert_eq!(
+        budget.charge(0).unwrap_err().kind(),
+        StorageErrorKind::LimitExceeded
+    );
+    assert_eq!(
+        budget.entries,
+        riffdb_storage_api::MAX_CHANGELOG_FRAME_ENTRIES
+    );
+    let mut budget = RetainedPrunePlanBudget {
+        entries: 0,
+        bytes: usize::MAX,
+    };
+    assert_eq!(
+        budget.charge(1).unwrap_err().kind(),
+        StorageErrorKind::LimitExceeded
+    );
+    let mut length = u64::MAX;
+    assert_eq!(
+        TombstoneSink::Measure(&mut length)
+            .append(&[0])
+            .unwrap_err()
+            .kind(),
+        StorageErrorKind::LimitExceeded
+    );
+    assert_eq!(length, u64::MAX);
+    let mut hash = ContentHasher::new(HashDomain::Schema, 1);
+    assert_eq!(
+        TombstoneSink::Hash(&mut hash)
+            .append(&[0, 1])
+            .unwrap_err()
+            .kind(),
+        StorageErrorKind::CorruptData
+    );
+    assert!(hash.finish().is_err());
+}
+
 fn initialized(path: &Path) {
     let mut store = RedbStore::open(path).unwrap();
     let id = DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0xd4; 10]).unwrap();

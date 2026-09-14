@@ -1727,6 +1727,59 @@ fn offline_retention_mutations_require_the_journal_rebase_witness() {
 
 #[test]
 // req: REP-003, REC-001, STO-012
+fn v3_prune_captures_both_original_transactions_and_streams_the_same_tombstone_pin() {
+    let retention = without_whitespace(&production_source(crate_root().join("src/retention.rs")));
+    let prune = retention
+        .split_once("pubfnprune_to(")
+        .unwrap()
+        .1
+        .split_once("fnbefore_commit(")
+        .unwrap()
+        .0;
+    assert_eq!(prune.matches("begin_durable_write(database)?").count(), 2);
+    assert_eq!(prune.matches("WriteTransaction::from_drained(").count(), 2);
+    assert_eq!(
+        prune
+            .matches("ChangelogAttributionV3::RetentionPrune")
+            .count(),
+        2
+    );
+    assert_eq!(prune.matches("letwrite=write.finish()?").count(), 2);
+    assert_eq!(prune.matches("write.commit(&store.shared)?").count(), 2);
+    assert!(!prune.contains("commit_durable("));
+    let digest = retention
+        .split_once("fndigest_and_count_range(")
+        .unwrap()
+        .1
+        .split_once("enumTombstoneSink")
+        .unwrap()
+        .0;
+    assert_eq!(
+        digest
+            .matches("walk_tombstone_preimage(write,first,last,")
+            .count(),
+        2
+    );
+    assert!(digest.contains("ContentHasher::new(HashDomain::Schema,length)"));
+    assert!(!digest.contains("Vec::new()"));
+    assert!(!digest.contains("begin_read("));
+    assert!(!digest.contains("begin_write("));
+    let plans = retention
+        .split_once("fnrewrite_pruned_command_segments(")
+        .unwrap()
+        .1
+        .split_once("pub(crate)fnverify_tombstone_chain(")
+        .unwrap()
+        .0;
+    assert_eq!(
+        plans.matches("RetainedPrunePlanBudget::default()").count(),
+        2
+    );
+    assert_eq!(plans.matches("budget.charge(").count(), 5);
+}
+
+#[test]
+// req: REP-003, REC-001, STO-012
 fn offline_hold_receipts_seal_the_original_prepared_transaction_once() {
     let retention = without_whitespace(&production_source(crate_root().join("src/retention.rs")));
     for (start, end) in [
