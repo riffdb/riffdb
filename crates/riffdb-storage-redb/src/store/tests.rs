@@ -17,6 +17,9 @@ use crate::keys::{
 
 use super::*;
 
+// These legacy migration fixtures stop at dormant open. Their terminal registry
+// is PRE_V3_REGISTRY; only a separate complete startup/catalog join activates V3.
+
 fn pin_predecessor_registry(
     transaction: &redb::WriteTransaction,
     predecessor: &riffdb_storage_api::CanonicalStoredEnvelopeV1,
@@ -218,7 +221,7 @@ fn pre_export_registry_installs_operation_table_before_publication() {
         *decode_record_registry_v2(encoded.value())
             .expect("decode registry")
             .value(),
-        riffdb_storage_api::proto_codec::current_record_registry_digest()
+        crate::changelog_v3_activation::PRE_V3_REGISTRY
     );
 }
 
@@ -287,7 +290,7 @@ fn pre_vector_registry_installs_evidence_table_before_publication() {
         *decode_record_registry_v2(encoded.value())
             .expect("decode registry")
             .value(),
-        riffdb_storage_api::proto_codec::current_record_registry_digest()
+        crate::changelog_v3_activation::PRE_V3_REGISTRY
     );
 }
 
@@ -361,7 +364,7 @@ fn pre_vector_observation_registry_installs_table_before_publication() {
         *decode_record_registry_v2(encoded.value())
             .expect("decode registry")
             .value(),
-        riffdb_storage_api::proto_codec::current_record_registry_digest()
+        crate::changelog_v3_activation::PRE_V3_REGISTRY
     );
 }
 
@@ -422,7 +425,7 @@ fn pre_vector_health_registry_publishes_only_after_health_backfill() {
         *decode_record_registry_v2(encoded.value())
             .expect("decode registry")
             .value(),
-        riffdb_storage_api::proto_codec::current_record_registry_digest()
+        crate::changelog_v3_activation::PRE_V3_REGISTRY
     );
 }
 
@@ -486,7 +489,7 @@ fn pre_vector_projection_control_registry_installs_table_before_publication() {
         *decode_record_registry_v2(encoded.value())
             .expect("decode registry")
             .value(),
-        riffdb_storage_api::proto_codec::current_record_registry_digest()
+        crate::changelog_v3_activation::PRE_V3_REGISTRY
     );
 }
 
@@ -551,7 +554,7 @@ fn pre_columnar_control_registry_installs_table_before_publication() {
         *decode_record_registry_v2(encoded.value())
             .expect("decode registry")
             .value(),
-        riffdb_storage_api::proto_codec::current_record_registry_digest()
+        crate::changelog_v3_activation::PRE_V3_REGISTRY
     );
 }
 
@@ -652,6 +655,7 @@ fn dropping_pristine_durability_epoch_is_a_proven_safe_cancellation() {
         .initialize_database(database_id(0x31))
         .expect("initialize store");
     let ports = RedbDormantPorts {
+        pending_v3_activation: None,
         shared: store.shared,
     }
     .into_operational_after_catalog_validation()
@@ -683,6 +687,7 @@ fn dropping_nonempty_durability_epoch_remains_fail_closed() {
         .initialize_database(database_id(0x32))
         .expect("initialize store");
     let ports = RedbDormantPorts {
+        pending_v3_activation: None,
         shared: store.shared,
     }
     .into_operational_after_catalog_validation()
@@ -866,7 +871,7 @@ fn assert_generation_fixture_migrated(store: &RedbStore) {
         *decode_record_registry_v2(registry.value())
             .expect("decode registry")
             .value(),
-        riffdb_storage_api::proto_codec::current_record_registry_digest()
+        crate::changelog_v3_activation::PRE_V3_REGISTRY
     );
     drop(registry);
     drop(metadata);
@@ -1023,7 +1028,7 @@ fn mixed_v1_v2_framing_resumes_and_publishes_registry_last() {
         *decode_record_registry_v2(registry.value())
             .expect("decode registry")
             .value(),
-        riffdb_storage_api::proto_codec::current_record_registry_digest()
+        crate::changelog_v3_activation::PRE_V3_REGISTRY
     );
 }
 
@@ -1136,7 +1141,7 @@ fn wp373_event_copies_migrate_to_exact_references_before_registry_publication() 
         *decode_record_registry_v2(registry.value())
             .expect("decode registry")
             .value(),
-        riffdb_storage_api::proto_codec::current_record_registry_digest()
+        crate::changelog_v3_activation::PRE_V3_REGISTRY
     );
 }
 
@@ -1237,7 +1242,7 @@ fn entity_reference_migration_transcodes_v2_commits_and_is_idempotent() {
         *decode_record_registry_v2(registry.value())
             .expect("decode registry")
             .value(),
-        riffdb_storage_api::proto_codec::current_record_registry_digest()
+        crate::changelog_v3_activation::PRE_V3_REGISTRY
     );
     drop(metadata);
     drop(commits);
@@ -1262,7 +1267,7 @@ fn entity_reference_migration_transcodes_v2_commits_and_is_idempotent() {
         *decode_record_registry_v2(registry.value())
             .expect("decode")
             .value(),
-        riffdb_storage_api::proto_codec::current_record_registry_digest()
+        crate::changelog_v3_activation::PRE_V3_REGISTRY
     );
 }
 
@@ -1309,7 +1314,7 @@ fn entity_reference_migration_from_pre_audit_request_index_converges() {
         *decode_record_registry_v2(registry.value())
             .expect("decode")
             .value(),
-        riffdb_storage_api::proto_codec::current_record_registry_digest()
+        crate::changelog_v3_activation::PRE_V3_REGISTRY
     );
     let commits = read.open_table(COMMITS).expect("commits");
     let commit = commits
@@ -1357,7 +1362,7 @@ fn entity_reference_migration_survives_damaged_events_row() {
         *decode_record_registry_v2(registry.value())
             .expect("decode")
             .value(),
-        riffdb_storage_api::proto_codec::current_record_registry_digest()
+        crate::changelog_v3_activation::PRE_V3_REGISTRY
     );
     let commit = read
         .open_table(COMMITS)
@@ -1423,7 +1428,7 @@ fn entity_reference_migration_splits_501_rows_and_crash_restarts() {
         *decode_record_registry_v2(registry.value())
             .expect("decode")
             .value(),
-        riffdb_storage_api::proto_codec::current_record_registry_digest()
+        crate::changelog_v3_activation::PRE_V3_REGISTRY
     );
     let commits = read.open_table(COMMITS).expect("commits");
     let mut v3_count = 0usize;
@@ -1470,7 +1475,7 @@ fn entity_reference_migration_empty_database_path_converges() {
         *decode_record_registry_v2(registry.value())
             .expect("decode")
             .value(),
-        riffdb_storage_api::proto_codec::current_record_registry_digest()
+        crate::changelog_v3_activation::PRE_V3_REGISTRY
     );
 }
 
@@ -1558,7 +1563,7 @@ fn event_routes_rebuild_idempotently_before_registry_publication() {
         *decode_record_registry_v2(registry.value())
             .expect("decode registry")
             .value(),
-        riffdb_storage_api::proto_codec::current_record_registry_digest()
+        crate::changelog_v3_activation::PRE_V3_REGISTRY
     );
 }
 
@@ -1672,6 +1677,7 @@ fn postcommit_accelerator_failure_preserves_known_success_and_does_not_fence_cor
         .initialize_database(database_id(0x77))
         .expect("initialize store");
     let dormant = RedbDormantPorts {
+        pending_v3_activation: None,
         shared: store.shared,
     };
     let ports = dormant
@@ -1773,7 +1779,7 @@ fn history_incarnation_migration_inserts_initial_and_is_idempotent() {
         *decode_record_registry_v2(registry.value())
             .expect("decode registry")
             .value(),
-        riffdb_storage_api::proto_codec::current_record_registry_digest()
+        crate::changelog_v3_activation::PRE_V3_REGISTRY
     );
     drop(registry);
     drop(encoded);
@@ -1886,7 +1892,7 @@ fn current_digest_still_runs_index_generation_row_repair() {
             *decode_record_registry_v2(registry.value())
                 .expect("decode")
                 .value(),
-            riffdb_storage_api::proto_codec::current_record_registry_digest()
+            crate::changelog_v3_activation::PRE_V3_REGISTRY
         );
     }
 
@@ -2279,6 +2285,7 @@ fn preserving_expectations_close_before_the_first_actual_mutation() {
         .initialize_database(database_id(0x39))
         .expect("initialize store");
     let ports = RedbDormantPorts {
+        pending_v3_activation: None,
         shared: store.shared,
     }
     .into_operational_after_catalog_validation()
@@ -2312,6 +2319,7 @@ fn ordinary_command_bookkeeping_does_not_inherit_the_preserving_mutation_ceiling
         .initialize_database(database_id(0x3a))
         .expect("initialize store");
     let ports = RedbDormantPorts {
+        pending_v3_activation: None,
         shared: store.shared,
     }
     .into_operational_after_catalog_validation()
@@ -2350,6 +2358,7 @@ fn preserving_bookkeeping_refuses_omitted_or_late_expectations_when_armed() {
         drop(store);
         let store = RedbStore::open(&path.0).expect("reopen fresh process");
         let ports = RedbDormantPorts {
+            pending_v3_activation: None,
             shared: store.shared,
         }
         .into_operational_after_catalog_validation()
@@ -2408,6 +2417,7 @@ fn empty_armed_ports(
         None => RedbStore::open(&path.0).expect("reopen fresh process"),
     };
     let ports = RedbDormantPorts {
+        pending_v3_activation: None,
         shared: store.shared,
     }
     .into_operational_after_catalog_validation()
@@ -2435,6 +2445,7 @@ fn fresh_locator_raw_zero_allocator_is_corruption_and_disables_the_only_arm_oppo
         .initialize_database(database_id(0x41))
         .expect("initialize store");
     let ports = RedbDormantPorts {
+        pending_v3_activation: None,
         shared: store.shared,
     }
     .into_operational_after_catalog_validation()

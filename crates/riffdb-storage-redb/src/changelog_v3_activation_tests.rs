@@ -161,33 +161,55 @@ fn assert_complete(
 
 #[test]
 fn activation_installs_all_roots_and_exact_registry_receipt_in_one_transaction() {
-    for registry in [PRE_V3_REGISTRY, current_record_registry_digest()] {
-        let root = crate::test_path::ScopedDirectory::new("v3-activation");
-        let path = root.join("database.redb");
-        let database = fixture(&path, registry);
-        let before = metadata(&database);
-        let history = activate_validated(
+    let root = crate::test_path::ScopedDirectory::new("v3-activation");
+    let path = root.join("database.redb");
+    let database = fixture(&path, PRE_V3_REGISTRY);
+    let before = metadata(&database);
+    let history = activate_validated(
+        database.begin_write().unwrap(),
+        lineage(),
+        DualFrontier::INITIAL,
+    )
+    .unwrap();
+    assert_eq!(history, assert_complete(&database, &before));
+    let complete = metadata(&database);
+    assert!(
+        activate_validated(
             database.begin_write().unwrap(),
             lineage(),
-            DualFrontier::INITIAL,
+            DualFrontier::INITIAL
         )
-        .unwrap();
-        assert_eq!(history, assert_complete(&database, &before));
-        let complete = metadata(&database);
+        .is_err()
+    );
+    assert_eq!(metadata(&database), complete);
+    drop(database);
+    assert_eq!(
+        assert_complete(&Database::open(&path).unwrap(), &before),
+        history
+    );
+}
+
+#[test]
+fn activation_refuses_a_current_registry_even_when_all_roots_are_absent() {
+    let root = crate::test_path::ScopedDirectory::new("v3-erased-activation");
+    let database = fixture(
+        &root.join("database.redb"),
+        current_record_registry_digest(),
+    );
+    let before = metadata(&database);
+    for _ in 0..2 {
         assert!(
             activate_validated(
                 database.begin_write().unwrap(),
                 lineage(),
-                DualFrontier::INITIAL
+                DualFrontier::INITIAL,
             )
             .is_err()
         );
-        assert_eq!(metadata(&database), complete);
-        drop(database);
-        assert_eq!(
-            assert_complete(&Database::open(&path).unwrap(), &before),
-            history
-        );
+        assert_eq!(metadata(&database), before);
+        let read = database.begin_read().unwrap();
+        assert!(read.open_table(HISTORY).is_err());
+        assert!(read.open_table(SOURCE_HOLDS).is_err());
     }
 }
 

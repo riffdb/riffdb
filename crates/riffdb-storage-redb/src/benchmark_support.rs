@@ -1644,6 +1644,7 @@ impl ServiceAuditGrowthHarness {
             _ => return Err(EngineBenchmarkError::Engine),
         }
         let dormant = RedbDormantPorts {
+            pending_v3_activation: None,
             shared: store.shared,
         };
         let ports = dormant
@@ -1659,6 +1660,7 @@ impl ServiceAuditGrowthHarness {
     pub fn reopen(path: &Path) -> Result<Self, EngineBenchmarkError> {
         let store = RedbStore::open(path).map_err(|_| EngineBenchmarkError::Engine)?;
         let dormant = RedbDormantPorts {
+            pending_v3_activation: None,
             shared: store.shared,
         };
         let ports = dormant

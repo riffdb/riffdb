@@ -23804,6 +23804,24 @@ work_packages:
     scale: Receipts are bounded by existing transaction ceilings, suffix materialization is folded
       into the existing checkpoint, and reclamation follows retained changed bytes and consumer
       fences rather than database population or process memory.
+  closure:
+    status: open
+    decisions_taken:
+    - Fresh initialization and legacy registry normalization remain exactly pre-V3 until complete
+      structural and catalog validation; current-registry root erasure refuses rather than repairs.
+    - The dormant handoff owns the exclusive startup lease across the catalog proof join. Dropping
+      it releases exclusivity without writes even if a diagnostic reader retains SharedRedb.
+    - One hardened transaction installs the current registry and all V3 roots through the existing
+      durable publication owner, followed by the existing receipted prefix and DIRTY transactions.
+      Inactive activation never uses CLEAN or validated-prefix shortcuts or synthesizes older receipts.
+    - ADR-0207 legacy emitters are test-only compatibility evidence; V3 substrate and supported
+      application export remain intact and frozen V1/V2 bytes retain their original interpretation.
+    - Destructive restore reanchors active V3 in the original incarnation-stamp transaction, clearing
+      source-local history and holds and detaching follower state while preserving lineage-shared
+      leadership, database identity and the dual frontier under the new incarnation.
+    - Offline retention-watermark stamping validates the original write pin before equal-value retry
+      and stages exact expected-state receipts in its original hardened transaction without another
+      commit or flush; it preserves the recorded tombstone chain-root digest.
   human_review_triggers: &id0186
   - Any authoritative namespace would be omitted, reclassified as rebuildable, or represented by
     a lossy transition.

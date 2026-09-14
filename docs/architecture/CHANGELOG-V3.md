@@ -1,5 +1,25 @@
 # Authoritative changelog V3 substrate
 
+The WP-772 startup implementation now retains the exclusive structural-session
+lease in a dormant handoff until the separate catalog-owned proof is joined.
+Fresh initialization and legacy format normalization publish the exact pre-V3
+registry, not a claim of active V3 with missing roots. Inactive startup takes the
+complete validation path, without CLEAN or validated-prefix shortcuts. After
+both validations succeed, one hardened transaction installs the current registry,
+all V3 roots, empty source holds, and the sequence-one activation receipt through
+the existing durable-publication owner. The existing prefix-checkpoint and DIRTY
+transactions follow while the lease is still held, each with its V3 receipt.
+Dropping the dormant handoff before the catalog join makes no durable change and
+releases its lease even when diagnostic readers retain the database handle.
+
+A current-registry claim now unconditionally requires complete V3 roots; erasing
+every root and both control tables cannot turn an active database into inactive
+legacy state. Process tests exercise the actual startup owner at activation
+preflight, root staging, receipt staging and completed commit, with repeated
+reopen and retry. These focused proofs do not close WP-772: wider operational
+receipt attribution, checkpoint-repair and recovery tests still need integration,
+and the complete retention, source-fence and inventory obligations remain open.
+
 The offline retention-watermark stamp now validates retained V3 history and
 source holds on its original hardened write pin before an equal-value retry can
 return. A changed watermark prepares its exact expected-state `RetentionPrune`
@@ -9,8 +29,8 @@ watermark normalization and recorded chain-root digest behavior; a nonzero
 watermark cannot fabricate a missing rooting digest. Same-lineage history and
 source/follower state are not reset. Crash tests cover preflight, watermark
 mutation, receipt staging and completed commit with repeated recovery/retry.
-The shared transitional activation routing and higher-level restore owners
-remain open integration work, not guarantees proved by this stamp.
+Higher-level restore owners remain open integration work, not guarantees proved
+by this stamp. Shared routing now treats the current registry itself as a V3 claim.
 
 Under ADR-0207, V1/V2 emitter construction and derivation now live only in
 `tests/storage_recovery/changelog_compatibility.rs`. Their original decoder,
@@ -33,9 +53,8 @@ incarnation retries validate and do not write; backwards incarnations refuse.
 Actual process tests cover preflight, incarnation, local reset, anchor staging
 and committed edges, with repeated recovery/retry and unchanged unrelated
 authoritative rows. These prove the stamp, not every higher-level restore
-publication/staging owner. Fresh activation and unconditional refusal of a
-current-registry database with every V3 root erased remain open integration
-work; the stamp retains the same transitional presence routing as other owners.
+publication/staging owner. Current-registry root erasure now selects strict
+refusal through the shared routing used by this stamp and other owners.
 
 The source-only hold table now has a distinct bounded V1 codec (compact tag 73,
 revision 1): a closed follower acknowledgement, archive acknowledgement or
@@ -76,9 +95,9 @@ before selecting any legacy migration or additive-table repair. Real reopen
 tests preserve the original history and perform no durable write. Nine malformed
 layout arms (missing history, holds, entity or locator tables; missing epoch;
 old registry or format; unknown table or metadata) refuse on repeated open and
-leave physical rows unchanged without creating a journal. This is not fresh
-activation or complete startup validation: those owners and the all-roots-erased
-current-registry refusal still require integration before WP-772 can close.
+leave physical rows unchanged without creating a journal. Separate tests now
+cover all-roots-erased current-registry refusal and the fresh activation handoff;
+neither bounded layout recognition nor those tests close the package alone.
 
 For an already-activated database, the actual structural startup session now
 uses that same catalog-derived table inventory and the closed V3 metadata
@@ -182,15 +201,15 @@ detached or attached, with applied and optional acknowledged positions;
 acknowledgement cannot outrun applied state. Decoding roots grants no
 publication, ancestry, startup-readiness or reclamation permission.
 
-An isolated hardened installation primitive now atomically installs all five
+The hardened installation primitive atomically installs all five
 roots, the two empty/new control tables, and the sequence-one activation receipt.
-Its only authoritative mutation is the exact registry replacement, when needed;
+Its only authoritative mutation is the exact inactive-registry replacement;
 it preserves application/admin allocators and never synthesizes older receipts.
 Process-exit tests cover preflight, uncommitted roots, uncommitted receipt and
-completed commit, plus retry/reopen and partial-state refusal. This primitive
-is **not called by production startup**: full-validation integration and every
-post-activation writer/recovery lane must be completed first. These isolated
-transaction tests do not discharge WP-772's end-to-end crash obligations.
+completed commit, plus retry/reopen and partial-state refusal. Production startup
+now stages through this primitive after the catalog join and commits through
+SharedRedb; only isolated test fixtures use the raw-commit wrapper. The package's
+wider post-activation writer/recovery gates must still pass before merge.
 
 The bounded checkpoint-root reader uses one pinned redb read transaction. It
 checks all five roots, both control-table presences, the exact terminal receipt,
@@ -343,8 +362,8 @@ Process tests exit after replay staging, commit, and before/after reclamation,
 then reopen and retry twice to prove an original source or identical durable
 receipt remains. These tests use opaque record payloads and prove physical
 recovery, not full command semantics, acknowledgement or the complete package
-crash matrix. Production activation remains pending; ordinary
-legacy replay checks and journal encodings are unchanged.
+crash matrix. The production activation handoff is now wired, but wider gates
+remain open; legacy replay checks and journal encodings are unchanged.
 
 The live checkpoint worker now uses the same receipt fold over its retained
 validated mutations, with no journal-frame decode. It stages the exact receipt
@@ -370,7 +389,7 @@ consecutive source allocations, duplicate-request refusal without allocation,
 published audit visibility and byte-identical materialization through repeated
 recovery. The metadata-refusal regression covers partial, malformed and unknown
 controls before source submission. These tests use isolated fixture activation;
-production startup activation and complete command/lifecycle proofs remain open.
+complete command/lifecycle proofs remain open beyond the new startup handoff.
 
 `PublishedDurableSnapshot::changelog_receipts_v3` now opens a read-only successor
 cursor bound to one exact lineage and resume point. Each call returns at most

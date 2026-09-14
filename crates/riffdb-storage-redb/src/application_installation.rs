@@ -152,6 +152,7 @@ mod tests {
             .initialize_database(DatabaseId::from_bytes(uuid(1)).expect("database"))
             .expect("initialize");
         let dormant = RedbDormantPorts {
+            pending_v3_activation: None,
             shared: store.shared,
         };
         let mut ports = dormant
@@ -207,6 +208,7 @@ mod tests {
             .initialize_database(DatabaseId::from_bytes(uuid(1)).expect("database"))
             .expect("observe initialized database");
         let reopened = RedbDormantPorts {
+            pending_v3_activation: None,
             shared: reopened.shared,
         }
         .into_operational_after_catalog_validation()

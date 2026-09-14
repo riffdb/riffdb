@@ -1362,6 +1362,7 @@ mod tests {
         drop(store);
         let store = RedbStore::open(&path.0).expect("reopen fresh process");
         let ports = RedbDormantPorts {
+            pending_v3_activation: None,
             shared: store.shared,
         }
         .into_operational_after_catalog_validation()

@@ -2332,6 +2332,7 @@ query ProjectMembersInRange(
 
         let reopened = RedbStore::open(&path.0).expect("reopen store");
         let ports = crate::store::RedbDormantPorts {
+            pending_v3_activation: None,
             shared: reopened.shared,
         }
         .into_operational_after_catalog_validation()

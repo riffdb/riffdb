@@ -142,6 +142,7 @@ mod tests {
             DatabaseInitializationResult::Installed(_)
         ));
         let ports = RedbDormantPorts {
+            pending_v3_activation: None,
             shared: store.shared,
         }
         .into_operational_after_catalog_validation()

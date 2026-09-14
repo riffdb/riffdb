@@ -4125,6 +4125,7 @@ mod tests {
             DatabaseInitializationResult::Installed(database_id())
         );
         let dormant = crate::store::RedbDormantPorts {
+            pending_v3_activation: None,
             shared: store.shared,
         };
         let ports = dormant
@@ -4344,6 +4345,7 @@ mod tests {
         )
         .unwrap();
         let mut ports = crate::store::RedbDormantPorts {
+            pending_v3_activation: None,
             shared: store.shared,
         }
         .into_operational_after_catalog_validation()
@@ -4453,6 +4455,7 @@ mod tests {
         )
         .unwrap();
         let mut ports = crate::store::RedbDormantPorts {
+            pending_v3_activation: None,
             shared: store.shared,
         }
         .into_operational_after_catalog_validation()
@@ -4592,6 +4595,7 @@ mod tests {
         )
         .unwrap();
         let mut ports = crate::store::RedbDormantPorts {
+            pending_v3_activation: None,
             shared: store.shared,
         }
         .into_operational_after_catalog_validation()
@@ -4683,6 +4687,7 @@ mod tests {
         )
         .unwrap();
         let mut ports = crate::store::RedbDormantPorts {
+            pending_v3_activation: None,
             shared: store.shared,
         }
         .into_operational_after_catalog_validation()
@@ -4834,6 +4839,7 @@ mod tests {
             }
             transaction.commit().unwrap();
             let mut ports = crate::store::RedbDormantPorts {
+                pending_v3_activation: None,
                 shared: store.shared,
             }
             .into_operational_after_catalog_validation()
@@ -4908,6 +4914,7 @@ mod tests {
         )
         .unwrap();
         let mut ports = crate::store::RedbDormantPorts {
+            pending_v3_activation: None,
             shared: store.shared,
         }
         .into_operational_after_catalog_validation()
@@ -5131,6 +5138,7 @@ mod tests {
 
         let store = RedbStore::open(&path.0).expect("recover journal suffix");
         let dormant = crate::store::RedbDormantPorts {
+            pending_v3_activation: None,
             shared: store.shared,
         };
         let reopened = dormant
@@ -5179,6 +5187,7 @@ mod tests {
             .initialize_database(database_id())
             .expect("initialize");
         let dormant = crate::store::RedbDormantPorts {
+            pending_v3_activation: None,
             shared: store.shared,
         };
         let ports = dormant
@@ -5217,6 +5226,7 @@ mod tests {
             .initialize_database(database_id())
             .expect("initialize");
         let dormant = crate::store::RedbDormantPorts {
+            pending_v3_activation: None,
             shared: store.shared,
         };
         let mut ports = dormant
@@ -5531,6 +5541,7 @@ mod tests {
         drop(ports);
         let store = RedbStore::open(&path.0).expect("reopen database");
         let dormant = crate::store::RedbDormantPorts {
+            pending_v3_activation: None,
             shared: store.shared,
         };
         let reopened = dormant
@@ -5777,6 +5788,7 @@ mod tests {
             .initialize_database(database_id())
             .expect("initialize controlled database");
         let dormant = crate::store::RedbDormantPorts {
+            pending_v3_activation: None,
             shared: store.shared,
         };
         let mut ports = dormant

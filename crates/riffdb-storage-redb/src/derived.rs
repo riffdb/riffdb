@@ -1801,6 +1801,7 @@ mod tests {
             .initialize_database(database_id())
             .expect("initialize store");
         let dormant = crate::store::RedbDormantPorts {
+            pending_v3_activation: None,
             shared: store.shared,
         };
         let ports = dormant
@@ -2039,6 +2040,7 @@ contract Recovery version 1 {
             .expect("insert pre-activation control");
         transaction.commit().expect("commit pre-activation setup");
         let dormant = crate::store::RedbDormantPorts {
+            pending_v3_activation: None,
             shared: store.shared,
         };
         let mut ports = dormant
@@ -2229,6 +2231,7 @@ contract Recovery version 1 {
 
         let store = RedbStore::open(&path.0).expect("reopen store");
         let dormant = crate::store::RedbDormantPorts {
+            pending_v3_activation: None,
             shared: store.shared,
         };
         let reopened = dormant
@@ -2285,6 +2288,7 @@ contract Recovery version 1 {
 
         let store = RedbStore::open(&path.0).expect("reopen store");
         let dormant = crate::store::RedbDormantPorts {
+            pending_v3_activation: None,
             shared: store.shared,
         };
         let reopened = dormant
@@ -2495,6 +2499,7 @@ contract Recovery version 1 {
 
         let store = RedbStore::open(&path.0).expect("reopen store");
         let dormant = crate::store::RedbDormantPorts {
+            pending_v3_activation: None,
             shared: store.shared,
         };
         let reopened = dormant

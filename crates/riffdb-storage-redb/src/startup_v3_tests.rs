@@ -1,4 +1,4 @@
-//! Actual structural session over isolated activation, not fresh activation.
+//! Actual structural/catalog activation, cancellation, and V3 lifecycle evidence.
 // req: REP-003, REC-001, STO-012, PERF-007
 use super::*;
 use riffdb_storage_api::{
@@ -31,17 +31,151 @@ fn receipts(shared: &crate::store::SharedRedb) -> Vec<AuthoritativeTransactionV3
 
 fn finish_v3(mut session: RedbStructuralEvidenceSession) -> crate::RedbOperationalPorts {
     let structural_end = finish_structural(&mut session);
-    let historical_end = finish_historical(&mut session);
+    let (catalog, historical_end) = validate_catalog_history(&mut session).unwrap().into_parts();
+    let CatalogHistoryOutcome::Ready(catalog) = catalog else {
+        panic!("V3 fixture catalog must validate");
+    };
     let StructuralOpenOutcome::Clean(opened) =
         session.finish(structural_end, historical_end).unwrap()
     else {
         panic!("complete V3 must not require a legacy migration");
     };
-    opened
-        .into_parts()
-        .3
-        .into_operational_after_catalog_validation()
-        .unwrap()
+    let (database_id, session_id, _, dormant) = opened.into_parts();
+    assert!(catalog.matches(database_id, session_id));
+    dormant.into_operational_after_catalog_validation().unwrap()
+}
+
+#[test]
+fn fresh_v3_activation_waits_for_catalog_join_and_cancelled_handoff_is_read_only() {
+    let metadata = |shared: &crate::store::SharedRedb| {
+        shared
+            .database
+            .begin_read()
+            .unwrap()
+            .open_table(META)
+            .unwrap()
+            .iter()
+            .unwrap()
+            .map(|row| {
+                let (key, value) = row.unwrap();
+                (key.value().to_owned(), value.value().to_vec())
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+    let path = TestDatabasePath::new("v3-startup-catalog-handoff");
+    let store = initialized_store(&path, database_id(0xd2));
+    let shared = Arc::clone(&store.shared);
+    let before = metadata(&shared);
+    let epoch = shared.durable_commit_epoch();
+    let mut session = store.begin_structural_evidence(inputs()).unwrap();
+    assert!(!session.clean_close_fast);
+    assert!(!session.checkpoint_verified);
+    let structural_end = finish_structural(&mut session);
+    let historical_end = finish_historical(&mut session);
+    let StructuralOpenOutcome::Clean(opened) =
+        session.finish(structural_end, historical_end).unwrap()
+    else {
+        panic!("fresh database must not require an index migration");
+    };
+    assert_eq!(shared.durable_commit_epoch(), epoch);
+    assert_eq!(metadata(&shared), before);
+    assert!(opened.into_parts().3.pending_v3_activation.is_some());
+    // A cancelled catalog join must release its lease even while a diagnostic
+    // reader retains SharedRedb. Re-entering the session is the deterministic
+    // cancellation check; no sleeps or timing assumptions.
+    let store = RedbStore {
+        shared: Arc::clone(&shared),
+    };
+    let ports = finish_v3(store.begin_structural_evidence(inputs()).unwrap());
+    let after = receipts(&shared);
+    assert_eq!(after.len(), 3);
+    assert_eq!(after[0].attribution(), A::V3Activation);
+    assert_eq!(after[0].binding().sequence.get(), 1);
+    assert_eq!(after.last().unwrap().attribution(), A::DirtyActivation);
+    assert_eq!(shared.durable_commit_epoch(), epoch + 3);
+    drop(ports);
+}
+
+#[test]
+fn actual_fresh_activation_crashes_leave_exact_inactive_or_complete_v3_and_retry_once() {
+    use riffdb_storage_api::proto_codec::{
+        current_record_registry_digest, decode_record_registry_v2,
+    };
+    for edge in ["preflight", "roots", "receipt", "committed"] {
+        let path = TestDatabasePath::new("v3-fresh-activation-crash");
+        let store = initialized_store(&path, database_id(0xd4));
+        let before_registry = {
+            let read = store.shared.database.begin_read().unwrap();
+            let meta = read.open_table(META).unwrap();
+            meta.get(META_RECORD_REGISTRY)
+                .unwrap()
+                .unwrap()
+                .value()
+                .to_vec()
+        };
+        drop(store);
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "startup::tests::v3::v3_actual_startup_process_child",
+                "--nocapture",
+            ])
+            .env("RIFFDB_V3_STARTUP_PATH", &path.0)
+            .env("RIFFDB_WP772_ACTIVATION_CRASH", edge)
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(91), "edge {edge}");
+        let mut original = None;
+        for _ in 0..2 {
+            let store = RedbStore::open(&path.0).unwrap();
+            let read = store.shared.database.begin_read().unwrap();
+            let history = crate::changelog_v3_roots::validate_retained_history(&read).unwrap();
+            let meta = read.open_table(META).unwrap();
+            let registry = meta.get(META_RECORD_REGISTRY).unwrap().unwrap();
+            if edge == "committed" {
+                assert_eq!(history.unwrap().tail().sequence().get(), 1);
+                assert_eq!(
+                    *decode_record_registry_v2(registry.value()).unwrap().value(),
+                    current_record_registry_digest()
+                );
+                let receipt = receipts(&store.shared).remove(0);
+                assert_eq!(receipt.attribution(), A::V3Activation);
+                assert_eq!(receipt.mutations().len(), 1);
+                assert!(receipt.mutations()[0].matches_prior(Some(&before_registry)));
+                let encoded = receipt.encode().unwrap();
+                if let Some(previous) = &original {
+                    assert_eq!(previous, &encoded);
+                }
+                original = Some(encoded);
+            } else {
+                assert!(history.is_none());
+                assert_eq!(registry.value(), before_registry);
+                assert!(
+                    read.open_table(crate::changelog_v3_activation::HISTORY)
+                        .is_err()
+                );
+                assert!(
+                    read.open_table(crate::changelog_v3_activation::SOURCE_HOLDS)
+                        .is_err()
+                );
+            }
+        }
+        let store = RedbStore::open(&path.0).unwrap();
+        let ports = finish_v3(store.begin_structural_evidence(inputs()).unwrap());
+        let after = receipts(&ports.shared);
+        assert_eq!(
+            after
+                .iter()
+                .filter(|r| r.attribution() == A::V3Activation)
+                .count(),
+            1
+        );
+        assert_eq!(after.len(), 3);
+        if let Some(original) = original {
+            assert_eq!(after[0].encode().unwrap(), original);
+        }
+        assert_eq!(after.last().unwrap().attribution(), A::DirtyActivation);
+    }
 }
 
 #[test]

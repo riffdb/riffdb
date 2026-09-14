@@ -1,14 +1,6 @@
 //! Atomic installation primitive for ADR-0186. Production startup must supply
 //! complete structural/catalog validation under its exclusive session before
-//! calling this primitive. It is intentionally not wired to readiness yet:
-//! every post-activation writer and recovery lane must first carry V3 receipts.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "WP-772 production activation awaits complete writer and recovery integration"
-    )
-)]
+//! staging this transition in the live store's hardened commit owner.
 
 use redb::{Durability, ReadableTable, TableDefinition, TableHandle, WriteTransaction};
 use riffdb_storage_api::{
@@ -21,7 +13,7 @@ use riffdb_storage_api::{
 use riffdb_types::{AdministrationSequence, CommitSequence, DualFrontier, SchemaHash};
 
 use crate::{
-    error::{codec_error, commit_error, precommit_storage_error, storage_error, table_error},
+    error::{codec_error, precommit_storage_error, storage_error, table_error},
     layout::*,
 };
 
@@ -42,13 +34,12 @@ fn key(namespace: N) -> Result<&'static str, StorageError> {
         .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
 }
 
-/// Consumes exactly one existing transaction and makes the complete activation
-/// durable with one hardened commit. Every refusal before commit drops/aborts it;
-/// a commit error remains unknown, never reported as rollback. No older receipt
-/// is synthesized. The supplied fence is rechecked against transaction-current
-/// retained metadata, not the latest independently opened read view.
-pub(crate) fn activate_validated(
-    mut transaction: WriteTransaction,
+/// Stages complete activation in the caller's one hardened transaction. The
+/// live owner commits through SharedRedb and drops/aborts on any staging error.
+/// No older receipt is synthesized. The supplied fence is rechecked against
+/// transaction-current retained metadata, never an independent latest view.
+pub(crate) fn stage_validated(
+    transaction: &mut WriteTransaction,
     lineage: ChangelogLineageV3,
     frontier: DualFrontier,
 ) -> Result<ChangelogHistoryStateV3, StorageError> {
@@ -56,15 +47,19 @@ pub(crate) fn activate_validated(
     transaction
         .set_durability(Durability::Immediate)
         .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-    if transaction
+    for (count, table) in transaction
         .list_tables()
         .map_err(precommit_storage_error)?
-        .any(|table| {
-            table.name() == N::ChangelogHistory.table()
-                || table.name() == N::ReplicationSourceHolds.table()
-        })
+        .enumerate()
     {
-        return Err(storage_error(StorageErrorKind::CorruptData));
+        if count >= N::ALL.len() {
+            return Err(storage_error(StorageErrorKind::LimitExceeded));
+        }
+        if table.name() == N::ChangelogHistory.table()
+            || table.name() == N::ReplicationSourceHolds.table()
+        {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
     }
     let mut meta = transaction.open_table(META).map_err(table_error)?;
     for namespace in N::ALL
@@ -125,26 +120,22 @@ pub(crate) fn activate_validated(
         .map_err(codec_error)?
         .into_parts()
         .0;
-    if before_digest != PRE_V3_REGISTRY && before_digest != current_record_registry_digest() {
+    if before_digest != PRE_V3_REGISTRY {
         return Err(storage_error(StorageErrorKind::IncompatibleFormat));
     }
     let registry =
         encode_record_registry_v2(current_record_registry_digest()).map_err(codec_error)?;
-    let mutations = if before_registry == registry.as_bytes() {
-        vec![]
-    } else {
-        // The codec's expected-state helper owns SHA-256. No inventory or
-        // metadata row is inferred from a caller-provided mutation list.
-        vec![
-            AuthoritativeMutationV3::replace(
-                N::RecordRegistry,
-                META_RECORD_REGISTRY.as_bytes(),
-                &before_registry,
-                registry.as_bytes(),
-            )
-            .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?,
-        ]
-    };
+    // Exact inactive registry replacement, never a current-registry repair.
+    // The canonical expected-state helper owns SHA-256.
+    let mutations = vec![
+        AuthoritativeMutationV3::replace(
+            N::RecordRegistry,
+            META_RECORD_REGISTRY.as_bytes(),
+            &before_registry,
+            registry.as_bytes(),
+        )
+        .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?,
+    ];
     let (sequence, allocator) = ChangelogTransactionAllocator::initial()
         .allocate_one()
         .map_err(|_| storage_error(StorageErrorKind::SequenceExhausted))?;
@@ -210,12 +201,24 @@ pub(crate) fn activate_validated(
         .insert(sequence.get().to_be_bytes().as_slice(), receipt.as_slice())
         .map_err(precommit_storage_error)?;
     activation_edge("receipt");
-    transaction.commit().map_err(commit_error)?;
+    Ok(history)
+}
+
+/// Isolated format/crash fixtures have no live publication owner. Production
+/// always stages through `stage_validated` and commits through SharedRedb.
+#[cfg(test)]
+pub(crate) fn activate_validated(
+    mut transaction: WriteTransaction,
+    lineage: ChangelogLineageV3,
+    frontier: DualFrontier,
+) -> Result<ChangelogHistoryStateV3, StorageError> {
+    let history = stage_validated(&mut transaction, lineage, frontier)?;
+    transaction.commit().map_err(crate::error::commit_error)?;
     activation_edge("committed");
     Ok(history)
 }
 
-fn activation_edge(_edge: &str) {
+pub(crate) fn activation_edge(_edge: &str) {
     #[cfg(test)]
     if std::env::var("RIFFDB_WP772_ACTIVATION_CRASH").as_deref() == Ok(_edge) {
         std::process::exit(91);
