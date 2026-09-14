@@ -1331,15 +1331,85 @@ fn an_exact_current_checkpoint_returns_before_opening_a_write_transaction() {
         .find("returnOk(())")
         .map(|offset| exact + offset)
         .expect("exact-current early return");
-    let begin_write = write
-        .find("shared.database.begin_write()")
-        .expect("checkpoint write transaction");
-    let commit_hook = write
-        .find("shared.before_test_commit(RedbTestOperation::ValidatedPrefixCheckpoint)")
-        .expect("checkpoint commit hook");
     assert!(exact < early_return);
-    assert!(early_return < begin_write);
-    assert!(begin_write < commit_hook);
+    // Both mutually exclusive owners must remain after the exact no-op: the
+    // V3 sealed owner opens its one transaction, or the inactive raw lane does.
+    for begin in [
+        "PreparedImmediateReceipt::apply(",
+        "shared.database.begin_write()",
+    ] {
+        let begin_write = write.find(begin).expect("checkpoint write transaction");
+        let commit_hook = write[begin_write..]
+            .find("shared.before_test_commit(RedbTestOperation::ValidatedPrefixCheckpoint)")
+            .map(|offset| begin_write + offset)
+            .expect("this lane's checkpoint commit hook");
+        assert!(early_return < begin_write);
+        assert!(begin_write < commit_hook);
+    }
+}
+
+#[test]
+// req: REP-003, REC-001, STO-012
+fn v3_prefix_checkpoint_plans_from_its_builder_pin_and_uses_one_sealed_commit() {
+    let source = without_whitespace(&production_source(
+        crate_root().join("src/validated_prefix.rs"),
+    ));
+    let writer = source
+        .split_once("pub(crate)fnwrite_validated_prefix_checkpoint(")
+        .unwrap()
+        .1
+        .split_once("fnexact_current_checkpoint_exists(")
+        .unwrap()
+        .0;
+    assert!(
+        writer
+            .find("build_checkpoint_from_snapshot(&transaction")
+            .unwrap()
+            < writer
+                .find("plan_checkpoint_receipt(&transaction,&checkpoint)")
+                .unwrap()
+    );
+    assert!(
+        writer
+            .find("plan_checkpoint_receipt(&transaction,&checkpoint)")
+            .unwrap()
+            < writer.find("drop(transaction)").unwrap()
+    );
+    let active = writer
+        .split_once("ifv3{ifletSome(receipt)=receipt{")
+        .unwrap()
+        .1
+        .split_once("letencoded=")
+        .unwrap()
+        .0;
+    assert_eq!(
+        active.matches("PreparedImmediateReceipt::apply(").count(),
+        1
+    );
+    assert!(active.contains("RedbCommitProfile::Hardened"));
+    assert_eq!(active.matches("prepared.commit(shared)").count(), 1);
+    assert!(!active.contains("begin_write("));
+    assert!(active.contains("before_test_commit(RedbTestOperation::ValidatedPrefixCheckpoint)"));
+    assert!(active.contains("after_test_commit(RedbTestOperation::ValidatedPrefixCheckpoint)"));
+    assert!(active.contains("returnOk(())"));
+    let owner = without_whitespace(&production_source(
+        crate_root().join("src/changelog_v3_write.rs"),
+    ));
+    let apply = owner
+        .split_once("implPreparedImmediateReceipt{")
+        .unwrap()
+        .1
+        .split_once("pub(crate)fncommit(")
+        .unwrap()
+        .0;
+    assert_eq!(apply.matches("database.begin_write()").count(), 1);
+    assert!(
+        apply
+            .find("check_predecessor(&transaction,mutation)")
+            .unwrap()
+            < apply.find("apply_mutation(&transaction,mutation)").unwrap()
+    );
+    assert!(!apply.contains(".commit("));
 }
 
 #[test]

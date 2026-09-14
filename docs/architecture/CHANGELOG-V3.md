@@ -148,9 +148,20 @@ the current entity proof, collects only changed checkpoint-head bytes, preserves
 exact delete/replacement preconditions, and includes the chained checkpoint
 metadata in the complete bounded receipt. Identical stored proofs are no-ops;
 wrong parents and malformed old rows refuse. A delta larger than one receipt
-refuses without publishing a partial snapshot. The planner is not yet selected
-by the production checkpoint writer; its caller still owns complete prefix
-validation, the drained write gate and publication/coverage effects.
+refuses without publishing a partial snapshot. With V3 controls present, the
+actual checkpoint writer now selects that plan from its builder's same pin.
+The sealed writer opens one hardened transaction, rechecks exact history and
+every expected prior value before mutation, and writes the planned checkpoint
+rows and receipt together. This replaces the raw legacy writer for that attempt;
+it adds no transaction or flush and preserves the existing before/after commit
+hooks. Even the exact-checkpoint fixture no-op refuses malformed V3 roots.
+Actual-writer tests prove one epoch per checkpoint, original receipt bytes after
+a later checkpoint overwrites the singleton, no-op behavior, precommit rollback,
+postcommit uncertainty and four process-crash edges with repeated raw reopen.
+These fixtures use an empty authoritative entity population and isolated V3
+activation; existing physical head-delta tests prove changed/deleted head bytes
+and bounds, not full startup validation. The caller still owns complete prefix
+validation, the drained gate and activation. WP-772 remains open.
 
 Registering this additive codec changes the registry digest but is **not** a
 completed database upgrade. The pre-V3 registry digest remains frozen in a

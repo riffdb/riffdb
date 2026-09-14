@@ -52,6 +52,10 @@ use crate::store::SharedRedb;
 #[path = "validated_prefix_streaming_tests.rs"]
 mod streaming_tests;
 
+#[cfg(test)]
+#[path = "validated_prefix_receipt_tests.rs"]
+mod receipt_tests;
+
 /// Number of deterministic sample windows derived from the checkpoint self-hash.
 pub(crate) const SAMPLE_WINDOW_COUNT: usize = 8;
 /// Rows inspected per sample window (clipped to ≤ S).
@@ -525,6 +529,13 @@ pub(crate) fn write_validated_prefix_checkpoint(
     purpose: CheckpointPurpose,
 ) -> Result<(), StorageError> {
     let transaction = shared.database.begin_read().map_err(transaction_error)?;
+    // Transitional routing, not an activation permit. Any V3 control requires
+    // strict roots even when the test-only exact-checkpoint path is a no-op.
+    let v3 = crate::changelog_v3_journal::has_recovery_roots(&transaction)?;
+    if v3 {
+        crate::changelog_v3_roots::read_checkpoint_roots(&transaction)?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+    }
     let mut rows_walked = 0_u64;
     // Counts come from table metadata, never from a history pass: at graceful
     // shutdown this is the whole difference between O(1) and O(history), and
@@ -544,8 +555,31 @@ pub(crate) fn write_validated_prefix_checkpoint(
     }
     let checkpoint =
         build_checkpoint_from_snapshot(&transaction, retained, source, &mut rows_walked)?;
+    let receipt = if v3 {
+        plan_checkpoint_receipt(&transaction, &checkpoint)?
+    } else {
+        None
+    };
     drop(transaction);
     shared.note_checkpoint_count_rows_walked(rows_walked);
+
+    if v3 {
+        if let Some(receipt) = receipt {
+            // This sealed owner opens the one existing hardened transaction,
+            // checks every expected value and history predecessor before any
+            // mutation, then stages the planned rows and exact receipt together.
+            // It replaces the raw writer below, never runs alongside it.
+            let prepared = crate::changelog_v3_write::PreparedImmediateReceipt::apply(
+                &shared.database,
+                crate::store::RedbCommitProfile::Hardened,
+                &receipt,
+            )?;
+            shared.before_test_commit(RedbTestOperation::ValidatedPrefixCheckpoint)?;
+            prepared.commit(shared)?;
+            shared.after_test_commit(RedbTestOperation::ValidatedPrefixCheckpoint)?;
+        }
+        return Ok(());
+    }
 
     let encoded =
         encode_validated_prefix_checkpoint_v2(&checkpoint).map_err(crate::error::codec_error)?;
@@ -717,15 +751,8 @@ fn replace_checkpoint_entity_heads(
 
 /// Plans only the exact net checkpoint-head changes from one immutable read
 /// view. No-op population rows never enter the bounded receipt accumulator.
-/// The future writer must still validate its V3 predecessor and all physical
-/// preconditions in the fresh transaction; this read-only plan is not a permit.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "WP-772 checkpoint receipt integration follows source planning"
-    )
-)]
+/// The sealed writer rechecks its V3 predecessor and all physical preconditions
+/// in its fresh transaction; this read-only plan is not a permit.
 pub(crate) fn plan_checkpoint_head_changes(
     transaction: &ReadTransaction,
     checkpoint: &StoredValidatedPrefixCheckpointV2,
@@ -803,13 +830,6 @@ pub(crate) fn plan_checkpoint_head_changes(
 /// the existing validated checkpoint builder. Prefix/history count evidence and
 /// the exclusive drained checkpoint gate remain the existing caller's duties.
 /// An exact existing checkpoint is a no-op, not an empty physical transaction.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "WP-772 checkpoint writer activation is not complete"
-    )
-)]
 pub(crate) fn plan_checkpoint_receipt(
     transaction: &ReadTransaction,
     checkpoint: &StoredValidatedPrefixCheckpointV2,
