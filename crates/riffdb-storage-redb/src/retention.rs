@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use redb::{
     Database, Durability, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition,
-    WriteTransaction,
+    WriteTransaction as RawWriteTransaction,
 };
 use riffdb_storage_api::{
     HISTORY_INCARNATION_INITIAL, HistoryTombstoneContentDigest, HistoryTombstoneHash,
@@ -27,9 +27,11 @@ use riffdb_storage_api::{
     },
 };
 use riffdb_types::{
-    CommitSequence, FrontierPosition, HashDomain, ProjectionId, SchemaHash, Timestamp, hash,
+    CommitSequence, ContentHasher, FrontierPosition, HashDomain, ProjectionId, SchemaHash,
+    Timestamp,
 };
 
+use crate::changelog_v3_capture::CapturedTable;
 use crate::codec;
 use crate::consumer::retention_low_water_from_table;
 use crate::error::{
@@ -47,7 +49,17 @@ use crate::layout::{
     META_HISTORY_INCARNATION, META_RETENTION_HOLDS, META_RETENTION_WATERMARK,
     META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, OUTBOX_STATUS, PROJECTION_FRONTIER, PROVENANCE,
 };
+use crate::store::OperationalWriteTransaction as WriteTransaction;
 use crate::store::RedbStore;
+
+type RetentionWriteTable<'txn, 'capture> = CapturedTable<'txn, 'capture, &'static [u8]>;
+
+#[cfg(test)]
+fn prune_crash_edge(edge: &str) {
+    if std::env::var("RIFFDB_V3_PRUNE_EDGE").ok().as_deref() == Some(edge) {
+        std::process::exit(93);
+    }
+}
 
 /// Inclusive commit sequences pruned per offline sub-range transaction.
 pub(crate) const RETENTION_PRUNE_SUBRANGE_SEQUENCES: u64 = 1_024;
@@ -364,7 +376,10 @@ impl RedbOfflineRetention {
 
         // First exclusive transaction: delete validated-prefix checkpoint.
         {
-            let write = begin_durable_write(database)?;
+            let write = WriteTransaction::from_drained(
+                begin_durable_write(database)?,
+                riffdb_storage_api::ChangelogAttributionV3::RetentionPrune,
+            )?;
             {
                 let mut meta = write.open_table(META).map_err(table_error)?;
                 let _ = meta
@@ -372,7 +387,12 @@ impl RedbOfflineRetention {
                     .map_err(precommit_storage_error)?;
             }
             self.before_commit(RedbTestOperation::RetentionPruneCheckpointDelete)?;
-            commit_durable(write)?;
+            let write = write.finish()?;
+            #[cfg(test)]
+            prune_crash_edge("checkpoint-staged");
+            write.commit(&store.shared)?;
+            #[cfg(test)]
+            prune_crash_edge("checkpoint-committed");
             self.after_commit(RedbTestOperation::RetentionPruneCheckpointDelete)?;
         }
 
@@ -408,7 +428,10 @@ impl RedbOfflineRetention {
             let previous_hash = load_last_tombstone_hash(&transaction)?;
             drop(transaction);
 
-            let mut write = begin_durable_write(database)?;
+            let mut write = WriteTransaction::from_drained(
+                begin_durable_write(database)?,
+                riffdb_storage_api::ChangelogAttributionV3::RetentionPrune,
+            )?;
             let (content_digest, counts) = digest_and_count_range(&write, first, last)?;
             // Pre-delete verification: the fencing head guarantees every
             // sequence in [first, last] committed, so exactly one commit row
@@ -468,7 +491,12 @@ impl RedbOfflineRetention {
                     .map_err(precommit_storage_error)?;
             }
             self.before_commit(RedbTestOperation::RetentionPruneSubrange)?;
-            commit_durable(write)?;
+            let write = write.finish()?;
+            #[cfg(test)]
+            prune_crash_edge("subrange-staged");
+            write.commit(&store.shared)?;
+            #[cfg(test)]
+            prune_crash_edge("subrange-committed");
             self.after_commit(RedbTestOperation::RetentionPruneSubrange)?;
         }
         // The RedbStore remains the sole owner for the entire prune. Its
@@ -600,11 +628,11 @@ fn materialize_retained_command_views(
 }
 
 fn materialize_retained_capsule_views(
-    idempotency: &mut redb::Table<'_, &'static [u8], &'static [u8]>,
-    provenance: &mut redb::Table<'_, &'static [u8], &'static [u8]>,
-    audit: &mut redb::Table<'_, &'static [u8], &'static [u8]>,
-    audit_by_request: &mut redb::Table<'_, &'static [u8], &'static [u8]>,
-    event_routes: &mut redb::Table<'_, &'static [u8], &'static [u8]>,
+    idempotency: &mut RetentionWriteTable<'_, '_>,
+    provenance: &mut RetentionWriteTable<'_, '_>,
+    audit: &mut RetentionWriteTable<'_, '_>,
+    audit_by_request: &mut RetentionWriteTable<'_, '_>,
+    event_routes: &mut RetentionWriteTable<'_, '_>,
     capsule: &riffdb_storage_api::StoredCommandCapsuleV1,
     events: &[riffdb_storage_api::StoredDurableEventV1],
 ) -> Result<(), StorageError> {
@@ -737,7 +765,7 @@ fn materialize_retained_capsule_views(
     Ok(())
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct RangeCounts {
     commits: u64,
     events: u64,
@@ -745,19 +773,13 @@ struct RangeCounts {
     outbox_status: u64,
 }
 
-fn begin_durable_write(database: &Database) -> Result<WriteTransaction, StorageError> {
+fn begin_durable_write(database: &Database) -> Result<RawWriteTransaction, StorageError> {
     let mut write = database.begin_write().map_err(transaction_error)?;
     write.set_two_phase_commit(true);
     write
         .set_durability(Durability::Immediate)
         .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
     Ok(write)
-}
-
-fn commit_durable(write: WriteTransaction) -> Result<(), StorageError> {
-    write
-        .commit()
-        .map_err(|_| storage_error(StorageErrorKind::CommitStatusUnknown))
 }
 
 pub(crate) fn load_watermark(
@@ -1052,10 +1074,58 @@ fn digest_and_count_range(
     first: u64,
     last: u64,
 ) -> Result<(HistoryTombstoneContentDigest, RangeCounts), StorageError> {
-    let mut preimage = Vec::new();
-    preimage.extend_from_slice(b"riffdb.history-tombstone-content/v1\0");
-    preimage.extend_from_slice(&first.to_be_bytes());
-    preimage.extend_from_slice(&last.to_be_bytes());
+    // The immutable v1 hash frame puts length before payload. Measure and hash
+    // the same transaction-current rows without retaining the preimage.
+    let mut length = 0;
+    let counts = walk_tombstone_preimage(write, first, last, TombstoneSink::Measure(&mut length))?;
+    let mut hasher = ContentHasher::new(HashDomain::Schema, length);
+    let hashed_counts =
+        walk_tombstone_preimage(write, first, last, TombstoneSink::Hash(&mut hasher))?;
+    if counts != hashed_counts {
+        return Err(storage_error(StorageErrorKind::CorruptData));
+    }
+    let digest = hasher
+        .finish()
+        .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+    Ok((
+        HistoryTombstoneContentDigest::from_bytes(*digest.as_bytes()),
+        counts,
+    ))
+}
+
+enum TombstoneSink<'a> {
+    Measure(&'a mut u64),
+    Hash(&'a mut ContentHasher),
+}
+
+impl TombstoneSink<'_> {
+    fn append(&mut self, bytes: &[u8]) -> Result<(), StorageError> {
+        match self {
+            Self::Measure(length) => {
+                **length = length
+                    .checked_add(
+                        u64::try_from(bytes.len())
+                            .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?,
+                    )
+                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                Ok(())
+            }
+            Self::Hash(hasher) => hasher
+                .update(bytes)
+                .map_err(|_| storage_error(StorageErrorKind::CorruptData)),
+        }
+    }
+}
+
+fn walk_tombstone_preimage(
+    write: &WriteTransaction,
+    first: u64,
+    last: u64,
+    mut preimage: TombstoneSink<'_>,
+) -> Result<RangeCounts, StorageError> {
+    preimage.append(b"riffdb.history-tombstone-content/v1\0")?;
+    preimage.append(&first.to_be_bytes())?;
+    preimage.append(&last.to_be_bytes())?;
     let mut counts = RangeCounts::default();
     let mut segment_event_ids = BTreeSet::new();
 
@@ -1089,6 +1159,11 @@ fn digest_and_count_range(
                             .checked_add(1)
                             .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
                         for event in command.events() {
+                            if segment_event_ids.len()
+                                >= riffdb_storage_api::MAX_CHANGELOG_FRAME_ENTRIES
+                            {
+                                return Err(storage_error(StorageErrorKind::LimitExceeded));
+                            }
                             if !segment_event_ids.insert(event.event_id()) {
                                 return Err(storage_error(StorageErrorKind::CorruptData));
                             }
@@ -1164,29 +1239,51 @@ fn digest_and_count_range(
         }
     }
 
-    let digest = hash(HashDomain::Schema, &preimage);
-    Ok((
-        HistoryTombstoneContentDigest::from_bytes(*digest.as_bytes()),
-        counts,
-    ))
+    Ok(counts)
 }
 
 fn append_tombstone_member(
-    preimage: &mut Vec<u8>,
+    preimage: &mut TombstoneSink<'_>,
     label: &[u8],
     key: &[u8],
     value: &[u8],
 ) -> Result<(), StorageError> {
-    preimage.extend_from_slice(label);
-    preimage.extend_from_slice(b"\0");
-    preimage.extend_from_slice(key);
-    preimage.extend_from_slice(
+    preimage.append(label)?;
+    preimage.append(b"\0")?;
+    preimage.append(key)?;
+    preimage.append(
         &u64::try_from(value.len())
             .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?
             .to_be_bytes(),
-    );
-    preimage.extend_from_slice(value);
-    Ok(())
+    )?;
+    preimage.append(value)
+}
+
+#[derive(Default)]
+struct RetainedPrunePlanBudget {
+    entries: usize,
+    bytes: usize,
+}
+
+impl RetainedPrunePlanBudget {
+    fn charge(&mut self, bytes: usize) -> Result<(), StorageError> {
+        let entries = self
+            .entries
+            .checked_add(1)
+            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+        let bytes = self
+            .bytes
+            .checked_add(bytes)
+            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+        if entries > riffdb_storage_api::MAX_CHANGELOG_FRAME_ENTRIES
+            || bytes > riffdb_storage_api::MAX_CHANGELOG_FRAME_BYTES
+        {
+            return Err(storage_error(StorageErrorKind::LimitExceeded));
+        }
+        self.entries = entries;
+        self.bytes = bytes;
+        Ok(())
+    }
 }
 
 fn rewrite_pruned_command_segments(
@@ -1197,6 +1294,7 @@ fn rewrite_pruned_command_segments(
     let mut table = write.open_table(COMMITS).map_err(table_error)?;
     let mut deletes = Vec::new();
     let mut replacements = Vec::new();
+    let mut budget = RetainedPrunePlanBudget::default();
     let mut rewritten_predecessor = None;
     for entry in table.iter().map_err(precommit_storage_error)? {
         let (key, value) = entry.map_err(precommit_storage_error)?;
@@ -1212,6 +1310,7 @@ fn rewrite_pruned_command_segments(
                     continue;
                 }
                 if segment.last_commit_sequence().get() <= last {
+                    budget.charge(key.value().len())?;
                     deletes.push(key.value().to_vec());
                     continue;
                 }
@@ -1256,6 +1355,12 @@ fn rewrite_pruned_command_segments(
                 .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
                 let encoded = riffdb_storage_api::encode_command_segment_v1(&rewritten)
                     .map_err(crate::error::codec_error)?;
+                budget.charge(key.value().len())?;
+                budget.charge(
+                    8usize
+                        .checked_add(encoded.as_bytes().len())
+                        .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?,
+                )?;
                 deletes.push(key.value().to_vec());
                 replacements.push((
                     encode_application_sequence_key(first_retained).to_vec(),
@@ -1268,6 +1373,7 @@ fn rewrite_pruned_command_segments(
                     == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
             {
                 if physical_sequence.get() >= first && physical_sequence.get() <= last {
+                    budget.charge(key.value().len())?;
                     deletes.push(key.value().to_vec());
                 }
             }
@@ -1305,18 +1411,20 @@ fn event_keyed_range_bounds(first: u64, last: u64) -> ([u8; 12], [u8; 12]) {
 
 fn delete_event_keyed_range(
     write: &mut WriteTransaction,
-    definition: TableDefinition<'_, &[u8], &[u8]>,
+    definition: TableDefinition<'_, &'static [u8], &'static [u8]>,
     first: u64,
     last: u64,
 ) -> Result<(), StorageError> {
     let mut table = write.open_table(definition).map_err(table_error)?;
     let (lower, upper) = event_keyed_range_bounds(first, last);
     let mut keys = Vec::new();
+    let mut budget = RetainedPrunePlanBudget::default();
     for entry in table
         .range::<&[u8]>((Included(lower.as_slice()), Included(upper.as_slice())))
         .map_err(precommit_storage_error)?
     {
         let (key, _) = entry.map_err(precommit_storage_error)?;
+        budget.charge(key.value().len())?;
         keys.push(key.value().to_vec());
     }
     for key in keys {

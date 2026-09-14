@@ -31,8 +31,21 @@ retained V3 history before granting the first write; no operational startup proo
 is assumed. Tests preserve exact prior values and receipts across replacement,
 removal, no-op retry, projection audit/allocator updates, commit uncertainty,
 interior corruption refusal and four actual offline process-crash edges. This
-does not yet integrate authoritative prune transactions or implement replication
-source holds and history reclamation.
+does not implement replication source holds and history reclamation.
+
+Authoritative offline pruning also captures receipts in each original transaction:
+checkpoint invalidation and each bounded delete/tombstone/watermark subrange.
+Retained idempotency, provenance and audit view replacements use captured tables
+too. Tombstone digesting measures and hashes the same transaction-current rows
+in two streaming passes, preserving v1 framing without buffering the preimage.
+Retained delete/rewrite plans and segment-event deduplication have checked limits;
+oversized plans refuse rather than split an authoritative transaction. These
+scans still follow retained history; this is a memory bound, not constant-time
+pruning. A populated semantic fixture proves exact deletion preconditions,
+watermark/tombstone atomicity, original receipt retention, independent v1 digest
+equality, no-op retry, full-prune startup, uncertainty, and four actual process
+crash edges. It is not the production command-group/segment crash matrix or
+permission to reclaim V3 receipt history; those proofs remain open.
 
 WP-772 is in progress. The storage API now has a closed namespace catalog,
 checked physical transaction allocator, expected-state mutation values, and
