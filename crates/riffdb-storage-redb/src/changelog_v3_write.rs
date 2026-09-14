@@ -76,12 +76,11 @@ impl PreparedImmediateReceipt {
     }
 
     /// Commits through the existing durable-root publication/fault owner.
-    #[expect(
-        dead_code,
-        reason = "WP-772 production direct callers are not activated yet"
-    )]
     pub(crate) fn commit(self, shared: &SharedRedb) -> Result<(), StorageError> {
-        shared.commit_durable(self.transaction)
+        shared.commit_durable(self.transaction)?;
+        #[cfg(test)]
+        crash_edge("committed");
+        Ok(())
     }
 
     #[cfg(test)]
@@ -123,7 +122,7 @@ pub(crate) fn require_direct_attribution(
 /// exclusive/drained gate remain the caller's responsibility.
 pub(crate) struct CapturedImmediateWrite {
     transaction: WriteTransaction,
-    history: ChangelogHistoryStateV3,
+    history: Option<ChangelogHistoryStateV3>,
     capture: MutationCapture,
     tables: BTreeSet<&'static str>,
     source: ChangelogAttributionV3,
@@ -141,17 +140,48 @@ impl CapturedImmediateWrite {
         transaction
             .set_durability(Durability::Immediate)
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        let history = read_checkpoint_roots_for_write(&transaction)?
-            .ok_or_else(|| storage_error(StorageErrorKind::IncompatibleFormat))?;
-        history
-            .expected_allocator()
-            .allocate_one()
-            .map_err(value_error)?;
+        let captured = Self::from_drained(transaction, source)?;
+        if captured.history.is_none() {
+            return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+        }
+        Ok(captured)
+    }
+
+    /// Takes the caller's existing Immediate transaction AFTER its published
+    /// journal suffix has been materialized in that same transaction. Capture
+    /// begins at that exact predecessor; draining cannot become a second direct
+    /// receipt. No transaction, profile change or commit is introduced here.
+    pub(crate) fn from_drained(
+        transaction: WriteTransaction,
+        source: ChangelogAttributionV3,
+    ) -> Result<Self, StorageError> {
+        require_direct_attribution(source)?;
+        // Transitional routing matches the existing journal owner. Any V3
+        // control requires strict roots; final startup activation must make
+        // current-registry root erasure unconditionally fatal before this lane.
+        let history = if crate::changelog_v3_journal::has_write_recovery_roots(&transaction)? {
+            Some(
+                read_checkpoint_roots_for_write(&transaction)?
+                    .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?,
+            )
+        } else {
+            None
+        };
+        if let Some(history) = history {
+            history
+                .expected_allocator()
+                .allocate_one()
+                .map_err(value_error)?;
+        }
         let tables = table_inventory(&transaction)?;
         Ok(Self {
             transaction,
             history,
-            capture: MutationCapture::default(),
+            capture: if history.is_some() {
+                MutationCapture::default()
+            } else {
+                MutationCapture::for_inactive_legacy()
+            },
             tables,
             source,
         })
@@ -175,6 +205,9 @@ impl CapturedImmediateWrite {
     pub(crate) fn finish(self) -> Result<PreparedImmediateReceipt, StorageError> {
         let mutations = self.capture.finish()?;
         if !mutations.is_empty() {
+            let history = self
+                .history
+                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
             let frontier = {
                 let meta = self.transaction.open_table(META).map_err(table_error)?;
                 let application = meta
@@ -188,18 +221,17 @@ impl CapturedImmediateWrite {
                 decode_physical_frontier(application.value(), administration.value())?
             };
             let binding = AuthoritativeTransactionBindingV3 {
-                database_id: self.history.lineage().database_id(),
-                history_incarnation: self.history.lineage().history_incarnation(),
-                predecessor: Some(self.history.tail().sequence()),
-                sequence: self
-                    .history
+                database_id: history.lineage().database_id(),
+                history_incarnation: history.lineage().history_incarnation(),
+                predecessor: Some(history.tail().sequence()),
+                sequence: history
                     .expected_allocator()
                     .allocate_one()
                     .map_err(value_error)?
                     .0,
-                predecessor_frontier: self.history.tail().frontier(),
+                predecessor_frontier: history.tail().frontier(),
                 covered_frontier: frontier,
-                prior_history_hash: self.history.tail().history_hash(),
+                prior_history_hash: history.tail().history_hash(),
             };
             let receipt = AuthoritativeTransactionV3::new(binding, self.source, mutations)
                 .map_err(value_error)?;
@@ -207,7 +239,7 @@ impl CapturedImmediateWrite {
             crash_edge("mutations");
             PreparedHistoryAdvance::from_captured_predecessor(
                 &self.transaction,
-                self.history,
+                history,
                 &receipt,
             )?
             .stage(&self.transaction)?;
@@ -215,6 +247,67 @@ impl CapturedImmediateWrite {
         Ok(PreparedImmediateReceipt {
             transaction: self.transaction,
         })
+    }
+
+    pub(crate) fn abort(self) -> Result<(), redb::StorageError> {
+        self.transaction.abort()
+    }
+
+    pub(crate) fn read_command_value(
+        &self,
+        table: crate::journal::JournalTable,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>, crate::journal::JournalIoError> {
+        crate::journal::read_write_value(&self.transaction, table, key)
+    }
+
+    /// Reuses the existing journal mutation validator for direct command
+    /// operations, recording its exact transaction-current before image first.
+    /// A failure poisons capture so an ignored error cannot commit a prefix.
+    pub(crate) fn apply_journal_mutation(
+        &self,
+        mutation: &crate::journal::JournalMutation,
+    ) -> Result<(), StorageError> {
+        // Borrow before-images from the engine; capture checks bounds before
+        // retaining any bytes. Do not allocate a copy of an untrusted row.
+        let capture = || -> Result<(), StorageError> {
+            if mutation.table() == crate::journal::JournalTable::Meta {
+                let key = std::str::from_utf8(mutation.key())
+                    .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+                let table = self.transaction.open_table(META).map_err(table_error)?;
+                let before = table.get(key).map_err(precommit_storage_error)?;
+                self.capture
+                    .record(
+                        mutation.table().label(),
+                        mutation.key(),
+                        before.as_ref().map(|row| row.value()),
+                        mutation.value(),
+                    )
+                    .map_err(precommit_storage_error)
+            } else {
+                let definition = crate::journal::byte_table_definition(mutation.table())
+                    .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+                if !self.tables.contains(definition.name()) {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                let table = self
+                    .transaction
+                    .open_table(definition)
+                    .map_err(table_error)?;
+                let before = table.get(mutation.key()).map_err(precommit_storage_error)?;
+                self.capture
+                    .record(
+                        mutation.table().label(),
+                        mutation.key(),
+                        before.as_ref().map(|row| row.value()),
+                        mutation.value(),
+                    )
+                    .map_err(precommit_storage_error)
+            }
+        };
+        capture().map_err(|error| self.capture.refuse(error.kind()))?;
+        crate::journal::apply_mutation(&self.transaction, mutation)
+            .map_err(|_| self.capture.refuse(StorageErrorKind::CorruptData))
     }
 }
 

@@ -240,7 +240,10 @@ impl RedbOfflineRetention {
     ) -> Result<(), StorageError> {
         let store = RedbStore::open(&self.database_path)?;
         let preparation = store.prepare_offline_retention()?;
-        let write = begin_durable_write(preparation.database())?;
+        let write = crate::store::OperationalWriteTransaction::from_drained(
+            begin_durable_write(preparation.database())?,
+            riffdb_storage_api::ChangelogAttributionV3::RetentionHold,
+        )?;
         let already_detached = {
             let mut meta = write.open_table(META).map_err(table_error)?;
             let existing = read_holds_meta(&meta)?;
@@ -310,7 +313,7 @@ impl RedbOfflineRetention {
             crate::administration::write_administration_allocator(&write, allocator, next.next())?;
         }
         self.before_commit(RedbTestOperation::RetentionHold)?;
-        commit_durable(write)?;
+        write.finish()?.commit(&store.shared)?;
         self.after_commit(RedbTestOperation::RetentionHold)
     }
 

@@ -1135,10 +1135,9 @@ pub struct RedbOperationalPorts {
     pub(crate) shared: Arc<SharedRedb>,
 }
 
-// One store-owned operational transaction spelling across validation helpers.
-// This mechanical bridge preserves the engine type until the captured owner is
-// installed together with journal, startup and lifecycle receipt integration.
-pub(crate) type OperationalWriteTransaction = WriteTransaction;
+// All operational helpers receive the sealed captured owner, never a raw
+// writable transaction. Journal epochs retain their separate mutation source.
+pub(crate) type OperationalWriteTransaction = crate::changelog_v3_write::CapturedImmediateWrite;
 
 pub(crate) struct RedbWriteAccess {
     shared: Arc<SharedRedb>,
@@ -5100,6 +5099,16 @@ impl RedbOperationalPorts {
             self.shared.fence_writes();
             return Err(error);
         }
+        let transaction = match OperationalWriteTransaction::from_drained(transaction, source) {
+            Ok(transaction) => transaction,
+            Err(error) => {
+                if let Some(runtime) = journal_checkpoint {
+                    self.shared.restore_journal_runtime(runtime)?;
+                }
+                self.shared.fence_writes();
+                return Err(error);
+            }
+        };
         Ok(RedbWriteAccess {
             shared: Arc::clone(&self.shared),
             transaction: Some(transaction),
@@ -5605,7 +5614,9 @@ impl RedbWriteAccess {
         let Some(segment) = delta.command_segment() else {
             return Ok(None);
         };
-        let database_id = read_identity_from_write_transaction(self.transaction()?)?;
+        let database_id = validate_and_read_identity(
+            &self.transaction()?.open_table(META).map_err(table_error)?,
+        )?;
         exact_fresh_locator_segment(
             database_id,
             segment,
@@ -5971,7 +5982,7 @@ impl RedbWriteAccess {
         .map_err(journal_storage_error)?;
         self.record_actual_fresh_locator_journal_mutation(&mutation)?;
         if let Some(transaction) = self.transaction.as_ref() {
-            crate::journal::apply_mutation(transaction, &mutation).map_err(journal_io_error)?;
+            transaction.apply_journal_mutation(&mutation)?;
         }
         if let Some(stage) = self.composite_stage.as_ref() {
             stage
@@ -6000,7 +6011,7 @@ impl RedbWriteAccess {
                 .map_err(journal_storage_error)?;
         self.record_actual_fresh_locator_journal_mutation(&mutation)?;
         if let Some(transaction) = self.transaction.as_ref() {
-            crate::journal::apply_mutation(transaction, &mutation).map_err(journal_io_error)?;
+            transaction.apply_journal_mutation(&mutation)?;
         }
         if let Some(stage) = self.composite_stage.as_ref() {
             stage
@@ -6035,7 +6046,9 @@ impl RedbWriteAccess {
                 .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
                 .resolve_point(table.composite(), key);
         }
-        crate::journal::read_write_value(self.transaction()?, table, key).map_err(journal_io_error)
+        self.transaction()?
+            .read_command_value(table, key)
+            .map_err(journal_io_error)
     }
 
     pub(crate) fn read_command_capability_bytes(
@@ -6073,7 +6086,7 @@ impl RedbWriteAccess {
         .map_err(journal_storage_error)?;
         self.record_actual_fresh_locator_journal_mutation(&mutation)?;
         if let Some(transaction) = self.transaction.as_ref() {
-            crate::journal::apply_mutation(transaction, &mutation).map_err(journal_io_error)?;
+            transaction.apply_journal_mutation(&mutation)?;
         }
         self.record_observed_journal_mutation(mutation, prior.as_deref())?;
         Ok(prior)
@@ -6101,7 +6114,7 @@ impl RedbWriteAccess {
             .map_err(journal_storage_error)?;
         self.record_actual_fresh_locator_journal_mutation(&mutation)?;
         if let Some(transaction) = self.transaction.as_ref() {
-            crate::journal::apply_mutation(transaction, &mutation).map_err(journal_io_error)?;
+            transaction.apply_journal_mutation(&mutation)?;
         }
         self.record_observed_journal_mutation(mutation, None)
     }
@@ -6118,7 +6131,7 @@ impl RedbWriteAccess {
             .map_err(journal_storage_error)?;
         self.record_actual_fresh_locator_journal_mutation(&mutation)?;
         if let Some(transaction) = self.transaction.as_ref() {
-            crate::journal::apply_mutation(transaction, &mutation).map_err(journal_io_error)?;
+            transaction.apply_journal_mutation(&mutation)?;
         }
         self.record_observed_journal_mutation(mutation, Some(&prior))?;
         Ok(Some(prior))
@@ -6146,7 +6159,7 @@ impl RedbWriteAccess {
         .map_err(journal_storage_error)?;
         self.record_actual_fresh_locator_journal_mutation(&mutation)?;
         if let Some(transaction) = self.transaction.as_ref() {
-            crate::journal::apply_mutation(transaction, &mutation).map_err(journal_io_error)?;
+            transaction.apply_journal_mutation(&mutation)?;
         }
         if let Some(stage) = self.composite_stage.as_ref() {
             stage
@@ -6266,14 +6279,10 @@ impl RedbWriteAccess {
 
     /// The redb-`Immediate` control-plane commit lane.
     ///
-    /// This publishes a durable frontier (`refresh_durable_read_frontier`
-    /// below) **without** notifying the ADR-0100 changelog publication port, so
-    /// no changelog frame covers anything committed here. That is deliberate
-    /// for RE1 and documented in full on
-    /// `riffdb_storage_api::ChangelogPublicationPort`; a follower closes the
-    /// gap through the RE3 bootstrap, never by assuming the frame chain is a
-    /// complete history. If this lane ever gains an observer, it needs
-    /// dual-frontier attribution it does not currently keep.
+    /// With V3 roots this seals an exact captured receipt before the existing
+    /// commit and durable-frontier refresh. It does not notify the legacy
+    /// ADR-0100 frame observer; WP-746's V3-only publication integration must
+    /// consume these durable receipts rather than treating V1/V2 as complete.
     fn commit_with_observations(
         mut self,
         operation: RedbTestOperation,
@@ -6336,7 +6345,14 @@ impl RedbWriteAccess {
             .transaction
             .take()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-        if let Err(error) = self.shared.commit_durable(transaction) {
+        let prepared = transaction.finish().inspect_err(|_| {
+            // Receipt refusal drops/aborts this transaction before any commit.
+            // No transient delta has been applied; keep the valid published
+            // indexes and let Drop restore the original journal source. The
+            // speculative coverage witness cannot be reused after refusal.
+            self.disable_fresh_locator_coverage();
+        })?;
+        if let Err(error) = prepared.commit(&self.shared) {
             if let Ok(mut coverage) = self.shared.fresh_locator_coverage.lock() {
                 coverage.disable();
             }

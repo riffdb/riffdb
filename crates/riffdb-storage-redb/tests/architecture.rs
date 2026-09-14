@@ -934,6 +934,38 @@ fn captured_immediate_owner_keeps_one_transaction_and_no_raw_mutation_escape() {
     assert!(finish.contains("PreparedImmediateReceipt{transaction:self.transaction,}"));
     assert!(!captured.contains("->&WriteTransaction"));
     assert!(!captured.contains("Result<WriteTransaction"));
+    let store = without_whitespace(&production_source(crate_root().join("src/store.rs")));
+    assert!(store.contains(
+        "typeOperationalWriteTransaction=crate::changelog_v3_write::CapturedImmediateWrite;"
+    ));
+    let direct = store
+        .split_once("pub(crate)fnbegin_attributed_write(")
+        .unwrap()
+        .1
+        .split_once("pub(crate)fnarm_exact_empty_fresh_locator_coverage_for_test(")
+        .unwrap()
+        .0;
+    assert_eq!(direct.matches("database.begin_write()").count(), 1);
+    assert!(
+        direct.find("apply_published_journal_suffix(").unwrap()
+            < direct
+                .find("OperationalWriteTransaction::from_drained(")
+                .unwrap()
+    );
+    let commit = store
+        .split_once("fncommit_with_observations(")
+        .unwrap()
+        .1
+        .split_once("pub(crate)fnapply_unpublished(")
+        .unwrap()
+        .0;
+    assert!(
+        commit.find("transaction.finish()").unwrap()
+            < commit.find("prepared.commit(&self.shared)").unwrap()
+    );
+    assert!(commit.contains("refresh_durable_read_frontier()"));
+    assert!(commit.contains("finish_journal_checkpoint(runtime)"));
+    assert!(commit.contains("state.apply_delta(delta)"));
     let capture = without_whitespace(&production_source(
         crate_root().join("src/changelog_v3_capture.rs"),
     ));

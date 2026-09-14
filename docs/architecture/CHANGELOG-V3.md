@@ -105,9 +105,28 @@ These owners are not yet wired through all operational, journal, migration, and
 lifecycle paths; they do not by themselves complete WP-772 or activate V3.
 Operational direct-entry call sites now name their closed source attribution
 before writer admission and carry it with the existing write access. Journal
-epochs retain their separate source path. This caller preparation does not yet
-replace the operational raw transaction with the captured owner or persist V3
-receipts from those live paths.
+epochs retain their separate source path. The operational transaction is now
+the captured owner: it takes the caller's existing Immediate transaction after
+draining the published journal suffix into that same transaction. Capture starts
+at the resulting exact history predecessor, so the drained suffix is not counted
+as another direct operation. The existing commit path seals the direct receipt
+before its one durable commit and preserves frontier publication, checkpoint
+completion, coverage bookkeeping and transient-index effects. Receipt refusal
+before commit aborts the candidate and restores the original journal source;
+actual commit failures retain their existing uncertainty fencing.
+
+The hardened service-adapter regression proves one durable epoch advance for a
+complete audit group, exact stored receipt post-images and no allocation on a
+phase conflict. Process exits after mutations, receipt and roots leave neither
+the audit group nor its receipt committed; exit after commit retains both on
+repeated raw reopen. A mixed journal/direct test proves a poisoned candidate
+aborts the drained suffix too, then a retry materializes the byte-identical
+journal receipt and the direct successor in one commit. Its deliberately invalid
+candidate row tests physical rollback, not application semantics. Audited offline
+projection-hold changes also use capture around their original transaction.
+Other offline retention, migration, startup, lifecycle and rotation owners still
+need integration and their own proofs. All these tests use isolated V3 activation;
+they do not establish a deployable startup path or close WP-772.
 
 The checkpoint receipt planner reads that same pinned source view. It validates
 the current entity proof, collects only changed checkpoint-head bytes, preserves
