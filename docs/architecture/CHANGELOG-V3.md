@@ -1,5 +1,15 @@
 # Authoritative changelog V3 substrate
 
+Under ADR-0207, V1/V2 emitter construction and derivation now live only in
+`tests/storage_recovery/changelog_compatibility.rs`. Their original decoder,
+unit and process-recovery evidence remains, using the canonical storage codecs
+and frozen bytes. Production retains the published-snapshot adapter and bounded
+V3 receipt cursor; there is no production legacy-emitter factory or format
+selection. The separate supported application-export implementation and public
+export behavior are unchanged. This move alone does not complete production V3
+replication: the remaining WP-772 substrate obligations and later emitter/RPC
+packages still gate activation.
+
 The existing offline incarnation stamp now reanchors an already-active V3
 database in its original hardened transaction. It streams retained history and
 source holds and checks follower/lifecycle bindings before mutation, preserves
