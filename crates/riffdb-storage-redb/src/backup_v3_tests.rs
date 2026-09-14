@@ -415,3 +415,81 @@ fn actual_v3_restore_rebinds_unpruned_watermark_without_inventing_a_chain_root()
     );
     assert_eq!(read_history(&database).tail().sequence().get(), 1);
 }
+
+#[test]
+fn actual_watermark_stamp_receipts_the_exact_transition_and_retry_is_read_only() {
+    let scope = crate::test_path::ScopedDirectory::new("v3-watermark-receipt");
+    let path = scope.join("db.redb");
+    fixture(&path);
+    let database = Database::open(&path).unwrap();
+    let old_history = read_history(&database);
+    let before = image(&database);
+    assert!(!before.metadata.contains_key(META_RETENTION_WATERMARK));
+    drop(database);
+
+    stamp_retention_watermark(&path, 0).unwrap();
+    let database = Database::open(&path).unwrap();
+    let history = read_history(&database);
+    assert_eq!(
+        history.tail().sequence().get(),
+        old_history.tail().sequence().get() + 1
+    );
+    assert_eq!(history.lineage(), old_history.lineage());
+    assert_eq!(history.tail().frontier(), old_history.tail().frontier());
+    let after = image(&database);
+    assert_eq!(after.authority, before.authority);
+    assert_eq!(after.holds, before.holds);
+    for (key, value) in &before.history {
+        assert_eq!(after.history.get(key), Some(value));
+    }
+    let receipt = AuthoritativeTransactionV3::decode(
+        &after.history[history.tail().sequence().get().to_be_bytes().as_slice()],
+    )
+    .unwrap();
+    assert_eq!(
+        receipt.attribution(),
+        ChangelogAttributionV3::RetentionPrune
+    );
+    assert_eq!(
+        receipt.binding().predecessor,
+        Some(old_history.tail().sequence())
+    );
+    assert_eq!(
+        receipt.mutations(),
+        &[riffdb_storage_api::AuthoritativeMutationV3::put(
+            N::RetentionWatermark,
+            META_RETENTION_WATERMARK.as_bytes(),
+            None,
+            &after.metadata[META_RETENTION_WATERMARK],
+        )
+        .unwrap(),]
+    );
+    drop(database);
+    for _ in 0..2 {
+        stamp_retention_watermark(&path, 0).unwrap();
+        assert_eq!(image(&Database::open(&path).unwrap()), after);
+    }
+}
+
+#[test]
+fn actual_watermark_stamp_refuses_corrupt_v3_even_on_equal_watermark_retry() {
+    let scope = crate::test_path::ScopedDirectory::new("v3-watermark-corruption");
+    let path = scope.join("db.redb");
+    fixture(&path);
+    stamp_retention_watermark(&path, 0).unwrap();
+    let database = Database::open(&path).unwrap();
+    let write = database.begin_write().unwrap();
+    write
+        .open_table(HISTORY)
+        .unwrap()
+        .remove(1u64.to_be_bytes().as_slice())
+        .unwrap();
+    write.commit().unwrap();
+    let before = image(&database);
+    drop(database);
+    assert_eq!(
+        stamp_retention_watermark(&path, 0).unwrap_err().kind(),
+        StorageErrorKind::CorruptData
+    );
+    assert_eq!(image(&Database::open(&path).unwrap()), before);
+}
