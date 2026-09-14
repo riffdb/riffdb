@@ -1,5 +1,17 @@
 # Authoritative changelog V3 substrate
 
+The offline retention-watermark stamp now validates retained V3 history and
+source holds on its original hardened write pin before an equal-value retry can
+return. A changed watermark prepares its exact expected-state `RetentionPrune`
+receipt before mutation, then stages the receipt, allocator and tail in that
+same transaction. No commit or flush is added. It preserves the existing
+watermark normalization and recorded chain-root digest behavior; a nonzero
+watermark cannot fabricate a missing rooting digest. Same-lineage history and
+source/follower state are not reset. Crash tests cover preflight, watermark
+mutation, receipt staging and completed commit with repeated recovery/retry.
+The shared transitional activation routing and higher-level restore owners
+remain open integration work, not guarantees proved by this stamp.
+
 Under ADR-0207, V1/V2 emitter construction and derivation now live only in
 `tests/storage_recovery/changelog_compatibility.rs`. Their original decoder,
 unit and process-recovery evidence remains, using the canonical storage codecs
@@ -36,8 +48,9 @@ read pin before lifecycle writes, refusing unknown, substituted, foreign,
 out-of-range or excessive holds. CLEAN eligibility retains its bounded-root
 check rather than scanning the hold population. Construction or decoding alone
 grants no acknowledgement, registration or reclamation authority. Production
-hold registration and history reclamation remain unimplemented; the three new
-codec vectors require human fixture review before package merge.
+hold registration and history reclamation remain unimplemented. The maintainer
+reviewed and approved the three source-hold codec vectors and these format notes
+on 2026-09-14; that fixture review does not close WP-772 or accept another ADR.
 
 Real command-owner tests now cover one direct multi-command group followed by
 separately published journal overwrite and delete transactions. Original entity

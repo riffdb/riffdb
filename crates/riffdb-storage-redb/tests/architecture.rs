@@ -1879,6 +1879,55 @@ fn v3_receipt_cursor_has_no_writer_or_journal_io_capability() {
 }
 
 #[test]
+// req: REP-003, REC-001, STO-012
+fn watermark_receipt_validates_before_noop_and_seals_the_original_hardened_transaction() {
+    let backup = production_source(crate_root().join("src/backup.rs"));
+    let stamp = backup
+        .split_once("pub(crate) fn stamp_retention_watermark(")
+        .unwrap()
+        .1
+        .split_once("pub(crate) fn apply_restored_retention_watermark(")
+        .unwrap()
+        .0;
+    assert_eq!(stamp.matches("begin_write(").count(), 1);
+    assert_eq!(stamp.matches("transaction.commit()").count(), 1);
+    assert!(!stamp.contains("begin_read("));
+    assert!(stamp.contains("set_two_phase_commit(true)"));
+    assert!(stamp.contains("Durability::Immediate"));
+    assert!(
+        stamp.find("watermark_history(&transaction)").unwrap()
+            < stamp.find("transaction.abort()").unwrap()
+    );
+    assert!(
+        stamp
+            .find("prepare_watermark_receipt(&transaction")
+            .unwrap()
+            < stamp.find("meta.insert(").unwrap()
+    );
+    assert!(
+        stamp.find("receipt.stage(&transaction)").unwrap()
+            < stamp.find("transaction.commit()").unwrap()
+    );
+    let helper = production_source(crate_root().join("src/backup_v3.rs"));
+    let watermark = helper
+        .split_once("pub(super) fn watermark_history(")
+        .unwrap()
+        .1;
+    for forbidden in [
+        "begin_read(",
+        "begin_write(",
+        ".commit(",
+        "Database::open",
+        "delete_table(",
+    ] {
+        assert!(!watermark.contains(forbidden));
+    }
+    assert!(watermark.contains("validate_retained_history_for_write(transaction)"));
+    assert!(watermark.contains("AuthoritativeMutationV3::replace("));
+    assert!(watermark.contains("ChangelogAttributionV3::RetentionPrune"));
+}
+
+#[test]
 fn offline_retention_mutations_require_the_journal_rebase_witness() {
     let retention = without_whitespace(&production_source(crate_root().join("src/retention.rs")));
     assert_eq!(

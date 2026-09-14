@@ -16,6 +16,12 @@ integration and does not announce production replication availability. The
 public maintenance operation ID and retry protocol below are unchanged. See the
 [V3 substrate notes](architecture/CHANGELOG-V3.md) for the remaining limits.
 
+The offline retention-watermark stamp also validates retained V3 history before
+returning from an equal-value retry. A changed watermark and its exact V3 receipt
+commit together in the existing hardened transaction. This adds no commit or
+flush and changes neither watermark normalization nor the recorded tombstone
+chain-root binding.
+
 `riffdbd` requires an absolute `--backup-root` path. The path must be lexically
 disjoint from the database file, capability digest keys, and idempotency digest
 keys. Only the server joins a checked backup name beneath this root.

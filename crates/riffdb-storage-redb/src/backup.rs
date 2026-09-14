@@ -186,6 +186,7 @@ pub(crate) fn stamp_retention_watermark(
     transaction
         .set_durability(Durability::Immediate)
         .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    let history = v3_restore::watermark_history(&transaction)?;
     let (incarnation, current) = {
         let meta = transaction.open_table(META).map_err(table_error)?;
         let incarnation = match meta
@@ -215,6 +216,13 @@ pub(crate) fn stamp_retention_watermark(
         };
         (incarnation, current)
     };
+    if history.is_some()
+        && current
+            .as_ref()
+            .is_some_and(|watermark| watermark.history_incarnation() != incarnation)
+    {
+        return Err(storage_error(StorageErrorKind::CorruptData));
+    }
     if current.as_ref().map(|w| w.watermark_sequence()) == Some(watermark_sequence) {
         return transaction.abort().map_err(precommit_storage_error);
     }
@@ -237,14 +245,22 @@ pub(crate) fn stamp_retention_watermark(
         chain_root,
     )
     .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    let encoded = riffdb_storage_api::proto_codec::encode_retention_watermark_v1(&watermark)
+        .map_err(crate::error::codec_error)?;
+    let receipt = v3_restore::prepare_watermark_receipt(&transaction, history, &encoded)?;
+    v3_restore::edge("watermark-preflight");
     {
         let mut meta = transaction.open_table(META).map_err(table_error)?;
-        let encoded = riffdb_storage_api::proto_codec::encode_retention_watermark_v1(&watermark)
-            .map_err(crate::error::codec_error)?;
         meta.insert(META_RETENTION_WATERMARK, encoded.as_bytes())
             .map_err(precommit_storage_error)?;
     }
+    v3_restore::edge("watermark-mutation");
+    if let Some(receipt) = receipt {
+        receipt.stage(&transaction)?;
+    }
+    v3_restore::edge("watermark-receipt");
     transaction.commit().map_err(commit_error)?;
+    v3_restore::edge("watermark-committed");
     Ok(())
 }
 
