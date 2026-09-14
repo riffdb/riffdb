@@ -323,7 +323,22 @@ else
 end
 out << ""
 
-out << "## Stop and request human review when (AGENTS.md)"
+out << "## Decision authority"
+out << ""
+out << "Inside an accepted record's decisions, you decide. Test: would the change alter the text " \
+       "of an accepted record's Decision section or a SPEC MUST, or add a durable identity, public " \
+       "surface, or guarantee that no accepted record names? If no, it is an implementation " \
+       "choice: make it, do not ask, and record it under `Decisions:` in the commit message and " \
+       "`decisions_taken:` in the closure block. The maintainer reviews that list once, at closure."
+out << ""
+out << "## When to stop"
+out << ""
+out << "- The change would contradict an accepted decision or a SPEC MUST."
+out << "- A SPEC 19.6 review trigger fires and no accepted record covers the change."
+out << "- Two readings of an acceptance criterion would produce materially different work."
+out << ""
+out << "Every other question goes into the closure report, not a mid-package approval request. " \
+       "AGENTS.md's fuller list applies only where no accepted record already decides the matter:"
 out << ""
 review = agents_review_list(AGENTS_PATH)
 out.concat(review.empty? ? ["_AGENTS.md has no review list_"] : bullets(review))

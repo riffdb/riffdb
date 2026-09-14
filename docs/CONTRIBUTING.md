@@ -115,8 +115,39 @@ pass. New packages take this shape:
 
 `allowed_paths` is enforced by `./scripts/check-allowed-paths --wp WP-NNN`:
 `SPEC.md`, `work_packages.yaml`, and the package's own ADR files are permitted
-only when they are listed. `./scripts/wp-new ADR-NNNN` prints one skeleton per
+only when they are listed. Paths are read at the base commit, so widening them
+is a separate commit that precedes the package change; it needs no approval,
+only that separate commit. `./scripts/wp-new ADR-NNNN` prints one skeleton per
 entry in the record's `packages:` list, with the tier taken from the record.
+
+### Decision authority
+
+An accepted record delegates every choice inside its Decision section to the
+package that implements it. The implementer decides those choices and does not
+ask. The test is: would the change alter the text of an accepted record's
+Decision section or a SPEC MUST, or add a durable identity, public surface, or
+guarantee that no accepted record names? If no, it is an implementation choice.
+If yes, it is an architectural change: propose a record and stop.
+
+Implementation choices are recorded, not approved. A commit that makes a
+non-obvious choice lists it under `Decisions:` in the commit message, and the
+closure block carries them all:
+
+```yaml
+  closure:
+    status: complete
+    completed_at: "2026-09-14"
+    decisions_taken:
+    - Activation installs the registry and V3 roots in one Immediate
+      transaction; an erased root reopens fail-closed rather than as legacy.
+```
+
+The maintainer reviews `decisions_taken` once, when the package closes, which
+is the only planned conversation per package. Only three conditions stop work
+before then: the change would contradict an accepted decision or a SPEC MUST;
+a SPEC 19.6 review trigger fires and no accepted record covers the change; or
+two readings of an acceptance criterion would produce materially different
+work. Every other question is batched into the closure report.
 
 ## Obligations and requirement tags
 

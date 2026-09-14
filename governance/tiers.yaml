@@ -122,10 +122,20 @@ acceptance:         # accepting a record is a human act and must be visible as o
 directives:         # standing maintainer directives; ./scripts/brief prints them first
   - id: D-001
     since: "2026-09-12"
-    text: "While WP-757, WP-760, and WP-772 are open, no new decision record is opened
-      unless a failing test names the blocker. Those packages are executed, not re-decided."
+    text: "While WP-757, WP-760, and WP-772 are open, no new decision record is opened.
+      Those packages are executed, not re-decided. A failing test is a reason for a record
+      only when making it pass would require changing an accepted decision or a SPEC MUST."
   - id: D-002
     since: "2026-09-12"
     text: "An agent never sets `status: accepted`. Propose; the maintainer accepts in a
       separate commit that carries an `acceptance:` reference. `./scripts/check-acceptance-commits`
       enforces both."
+  - id: D-003
+    since: "2026-09-14"
+    text: "Inside an accepted record's decisions, the implementer decides. Apply this test:
+      would the change alter the text of an accepted record's Decision section or a SPEC MUST,
+      or add a durable identity, public surface, or guarantee that no accepted record names?
+      If no, it is an implementation choice: make it, do not ask, and record it under
+      `Decisions:` in the commit message and `decisions_taken:` in the closure block. If yes,
+      propose a record and stop. Questions that are not stop conditions are batched into the
+      closure report, not raised mid-package."
