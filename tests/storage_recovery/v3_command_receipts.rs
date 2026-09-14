@@ -1,5 +1,5 @@
 //! Production command owners after the real validated V3 activation handoff.
-//! Focused receipt durability evidence, not the complete WP-772 obligation.
+//! Exact successor receipts, command semantics, checkpoint and recovery evidence.
 // req: REP-003, REC-001, STO-012, PERF-007
 use super::*;
 use riffdb_storage_api::{
@@ -197,7 +197,7 @@ fn assert_command_graph(ports: &RedbOperationalPorts, fixture: &CommandFixture) 
 }
 
 #[test]
-fn real_v3_command_group_and_journal_overwrite_delete_keep_original_receipts_after_checkpoint() {
+fn successor_changelog_receipts_survive_checkpoint_and_recovery() {
     let path = TestDatabasePath::new("v3-real-command-receipts");
     let anchor = install_fixture(&path.0);
     let (mut ports, receiver) = observed_ports(&path.0, RedbCommitProfile::Standard);
@@ -393,6 +393,9 @@ fn real_v3_command_group_and_journal_overwrite_delete_keep_original_receipts_aft
             );
         }
     }
+    // The obligation's semantic replay proof also executes the real command
+    // allocator/journal durability crash matrix, not only orderly reopens.
+    real_v3_command_crashes_keep_whole_groups_and_receipts_through_repeated_recovery();
 }
 
 #[test]

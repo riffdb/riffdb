@@ -1,550 +1,219 @@
 # Authoritative changelog V3 substrate
 
-ADR-0186 Amendment 1 completes the closed source vocabulary before first durable
-use: `CommandAdmission` is tag 32 and records nonempty pending admissions with
-neither frontier advanced; `CommandExecutionFailure` is tag 33 and records
-nonempty terminal failures without an application advance, with an administration
-advance only for service audit in that same transaction. The original advancing
-direct-group checks remain strict. Admission-only and terminal-failure owners
-use these classes in their existing transactions; no sequence lane, commit,
-flush, or acknowledgement dependency is added.
+WP-772 implements ADR-0186's storage substrate and ADR-0207's frozen
+compatibility boundary. Closure is pending final acceptance and fixture review.
+Production emitter, RPC, follower apply and bootstrap activation remain WP-746;
+archives remain WP-749. Internal values grant no application mutation, format
+selection, bootstrap installation or pruning authority. Application export is
+supported and unchanged.
 
-The synthetic `changelog-receipt-v3-command-admission.hex`,
-`changelog-receipt-v3-command-execution-failure.hex`, and
-`changelog-receipt-v3-command-execution-failure-audited.hex` freeze receipt
-encodings; `changelog-frame-v3-command-lifecycle.hex` joins admission and its
-failure with exact predecessor and expected-state hashes. They prove codec
-custody, not application-record validation. The frame source-count array now
-has 33 slots and a 298-byte header, so the unfinished `changelog-frame-v3.hex`
-fixture is regenerated and receipt-size admission reserves eight more bytes.
-The total frame ceiling stays 32 MiB; no receipt can be split to fit. V1/V2
-fixtures and every unrelated catalog, allocator, root, and source-hold vector
-remain byte-identical.
+## Authority inventory and published readers
 
-The WP-772 startup implementation now retains the exclusive structural-session
-lease in a dormant handoff until the separate catalog-owned proof is joined.
-Fresh initialization and legacy format normalization publish the exact pre-V3
-registry, not a claim of active V3 with missing roots. Inactive startup takes the
-complete validation path, without CLEAN or validated-prefix shortcuts. After
-both validations succeed, one hardened transaction installs the current registry,
-all V3 roots, empty source holds, and the sequence-one activation receipt through
-the existing durable-publication owner. The existing prefix-checkpoint and DIRTY
-transactions follow while the lease is still held, each with its V3 receipt.
-Dropping the dormant handoff before the catalog join makes no durable change and
-releases its lease even when diagnostic readers retain the database handle.
+`riffdb-storage-api::AuthoritativeStateCatalogV1` owns all 62 table/metadata
+domains, including 52 replicated-authoritative domains. The generated
+`fixtures/replication/authoritative-state-catalog-v1.txt` is a reviewed artifact,
+not configuration. Seven V3 control domains are installed by validated activation,
+not by constructing codecs. Unknown tables, namespace tags and metadata keys
+refuse; metadata classification uses exact keys, never a table-wide default.
 
-A current-registry claim now unconditionally requires complete V3 roots; erasing
-every root and both control tables cannot turn an active database into inactive
-legacy state. Process tests exercise the actual startup owner at activation
-preflight, root staging, receipt staging and completed commit, with repeated
-reopen and retry. These focused proofs do not close WP-772: wider operational
-recovery tests still need integration, and the complete retention, source-fence
-and inventory obligations remain open.
+Only projection rows and apply markers are rebuildable under ADR-0017's complete
+historical-plan/contiguous-log owner. Missing rebuild inputs cannot authorize
+readiness. Mixed projection-frontier state, delivery state, locators,
+validated-prefix evidence and vector/columnar controls remain authoritative.
 
-The receipted checkpoint writer preserves ADR-0019/0085's optional-proof fallback.
-An undecodable prior proof is not trusted: the existing validated builder starts
-a new proof chain, and the replacement receipt requires the exact old bytes.
-An absent singleton after retention may coexist with the old head snapshot; the
-bounded head planner validates and receipts every net change before publishing
-the rebuilt proof. Valid-prior identity, parent and monotonicity checks, V3 roots,
-authoritative validation, and receipt bounds remain strict. Replacement and its
-receipt use the existing single hardened transaction; stale pre-images refuse,
-and crash/retry tests preserve the old proof or the complete new proof exactly.
+`PublishedDurableSnapshot::authoritative_state_v3` returns one bounded row or
+exact namespace end per call, including empty namespaces, at one V3 fence.
+Callers cannot select partial inventory. Journaled tables and metadata use the
+original immutable overlay's overwrite/tombstone semantics; other rows use the
+same checkpoint. Borrowed bounds precede copying; errors are redacted and fused.
 
-Command integration tests now take their baseline from the real validated
-activation tail. They preserve receipt bytes through grouped writes, journal
-overwrite/delete, checkpoint and repeated crash recovery. Migration fixtures
-derive expected tail and allocator changes from the exact index-rewrite and
-startup receipts instead of expecting all control metadata to remain static.
-The SIGKILL oracle compares predeclared twins with matching lifecycle histories;
-it still compares full authority and allocator state, without excluding V3 roots.
-These are focused integration proofs, not closure of the full substrate obligations.
+`PublishedDurableSnapshot::changelog_receipts_v3` reads exact successors through
+that pin's tail. Lineage, epoch, position, hash and frontier are checked; pruned
+positions return typed `history_pruned`. Missing rows cannot be skipped, and
+inactive/legacy snapshots refuse without fallback. Old pins retain original
+bytes through overwrite, deletion, checkpoint and reclamation. Neither cursor
+owns a writer, gate, journal-I/O lane or durability decision.
 
-The seeded simulation corpus retains its complete historical coordinates and
-coverage predicates. Before/after replays isolate two physical-schedule changes:
-streaming checkpoint-head updates (`630e1a42`) restore the older heavy-torn
-`0x51C2C307` witness; real V3 activation (`a29312ff`) moves six other windows.
-The appended `0x51C2C30A`, `0x51C2C404`, and `0x51C2C500` witnesses each reproduce
-identical reports through twelve reruns of the existing scout and preserve the
-heavy-torn, interrupted-commit/admission, and crash-during-recovery predicates.
-Old rotation, restoration, and commit-PRESENT retirement records remain checked;
-neither the oracle nor the workload generator, bounds, or acceptance states change.
+## Frozen formats and bounds
 
-`PublishedDurableSnapshot::authoritative_state_v3` now exposes a read-only,
-catalog-owned state cursor at one exact V3 history fence. It returns one bounded
-row at a time and an explicit end for every authoritative namespace, including
-empty namespaces. The caller cannot select a partial inventory. Local derived
-and replication-control rows are excluded according to the reviewed catalog;
-unknown tables or metadata keys, missing tables and inactive V3 state refuse.
-Checkpoint row bounds are checked before copying. Journaled namespaces and
-metadata use the original immutable overlay's overwrite/tombstone semantics;
-other namespaces use that same captured checkpoint. Errors remain fused and
-redacted, and the cursor owns no writer, I/O lane or durability decision.
+The independent nonzero `ChangelogTransactionSequence` orders physical
+transactions, not application commands. Its checked `Next(nonzero) | Exhausted`
+allocator never wraps. `StoredChangelogTransactionAllocatorV3` is compact tag
+68, revision 1, with an 11-byte maximum Protobuf payload. Journal preconditions
+hash its complete canonical envelope; bare counters, zero, missing state and
+another allocator identity refuse.
 
-The populated inventory proof covers each authoritative table/key domain and
-the reviewed fixture. Real published command tests compare the entire inventory
-against exact receipt replay through journal overwrite/delete and checkpoint;
-direct-receipt tests preserve old pinned state through later mutation. These
-are internal substrate readers, not an activated bootstrap protocol, permission
-to install a database, or closure of the remaining reclamation obligations.
+Catalog and leadership roots use tags 69/70, revision 1. Catalog accepts only
+the owned inventory digest; leadership is nonzero with checked advancement.
+History/follower roots use tags 71/72, revision 1, with 281/215-byte maximum
+payloads. History binds lineage, anchor, tail and minimum resume with exact
+receipt hashes/frontiers. Follower state is detached or attached; acknowledgement
+cannot outrun applied state. Decoding grants no ancestry or readiness proof.
 
-The offline retention-watermark stamp now validates retained V3 history and
-source holds on its original hardened write pin before an equal-value retry can
-return. A changed watermark prepares its exact expected-state `RetentionPrune`
-receipt before mutation, then stages the receipt, allocator and tail in that
-same transaction. No commit or flush is added. It preserves the existing
-watermark normalization and recorded chain-root digest behavior; a nonzero
-watermark cannot fabricate a missing rooting digest. Same-lineage history and
-source/follower state are not reset. Crash tests cover preflight, watermark
-mutation, receipt staging and completed commit with repeated recovery/retry.
-Higher-level restore owners remain open integration work, not guarantees proved
-by this stamp. Shared routing now treats the current registry itself as a V3 claim.
+Source holds use tag 73, revision 1: follower acknowledgement, archive
+acknowledgement or bootstrap; a nonzero opaque 16-byte ID; and exact lineage,
+position, hash and dual frontier. The canonical 17-byte key repeats kind/ID.
+Payloads are at most 163 bytes and the combined count is at most 4,096.
+IDs are neither NodeIds nor capabilities. Full validation checks every hold
+against the same retained chain; constructing one grants no authority.
 
-Under ADR-0207, V1/V2 emitter construction and derivation now live only in
-`tests/storage_recovery/changelog_compatibility.rs`. Their original decoder,
-unit and process-recovery evidence remains, using the canonical storage codecs
-and frozen bytes. Production retains the published-snapshot adapter and bounded
-V3 receipt cursor; there is no production legacy-emitter factory or format
-selection. The separate supported application-export implementation and public
-export behavior are unchanged. This move alone does not complete production V3
-replication: the remaining WP-772 substrate obligations and later emitter/RPC
-packages still gate activation.
+Receipts carry strictly ordered namespace/key mutations, complete put values
+and exact absent/prior-hash preconditions. Deletes retain the prior-value hash.
+Repeated writes fold to the original precondition/final value; cancellation
+retains bounded observed-state evidence. A precondition or bounds failure
+poisons the candidate. Control rows never describe themselves recursively;
+control-only receipts have empty mutations and exact attribution.
 
-The existing offline incarnation stamp now reanchors an already-active V3
-database in its original hardened transaction. It streams retained history and
-source holds and checks follower/lifecycle bindings before mutation, preserves
-database identity, leadership epoch and the dual frontier, clears source holds
-and old-lineage history, detaches follower progress, removes the old lifecycle
-record, and installs one empty `RestoreAnchor` at sequence 1. A present retention
-watermark is rebound without changing its original chain-root digest. Equal
-incarnation retries validate and do not write; backwards incarnations refuse.
-Actual process tests cover preflight, incarnation, local reset, anchor staging
-and committed edges, with repeated recovery/retry and unchanged unrelated
-authoritative rows. These prove the stamp, not every higher-level restore
-publication/staging owner. Current-registry root erasure now selects strict
-refusal through the shared routing used by this stamp and other owners.
+ADR-0186 Amendment 1 adds `CommandAdmission` tag 32 and
+`CommandExecutionFailure` tag 33 before first durable use. Both carry nonempty
+exact authoritative mutations. Admission advances neither frontier; failure
+never advances application and advances administration only for audit in that
+same transaction. Existing advancing-group checks remain strict.
 
-The source-only hold table now has a distinct bounded V1 codec (compact tag 73,
-revision 1): a closed follower acknowledgement, archive acknowledgement or
-bootstrap kind, a nonzero 16-byte opaque hold ID, and an exact lineage-bound
-history position/hash/dual frontier. The canonical 17-byte key repeats kind and
-ID. The payload ceiling is 163 bytes; the combined hard count ceiling is 4096,
-which also bounds each consumer kind. These IDs are not NodeIds or capabilities.
-Complete startup validates every hold against the retained chain from the same
-read pin before lifecycle writes, refusing unknown, substituted, foreign,
-out-of-range or excessive holds. CLEAN eligibility retains its bounded-root
-check rather than scanning the hold population. Construction or decoding alone
-grants no acknowledgement, registration or reclamation authority. Production
-hold registration and history reclamation remain unimplemented. The maintainer
-reviewed and approved the three source-hold codec vectors and these format notes
-on 2026-09-14; that fixture review does not close WP-772 or accept another ADR.
+V3 is exactly `riffdb.changelog-frame/v3`, numeric 3, `RDBCLF03`/`RDBCLE03`.
+Its 33 source-count slots yield a 298-byte header; its footer is 48 bytes.
+Admission reserves the whole wrapper and length prefix. The 32 MiB and
+256-transition ceilings are independent hard limits; receipts never split.
+Unknown tags/versions, wrong counts/frontiers, noncanonical order, broken
+ancestry, truncation and trailing bytes refuse. Diagnostics omit keys, values,
+payload-derived hashes and population counts.
 
-Real command-owner tests now cover one direct multi-command group followed by
-separately published journal overwrite and delete transactions. Original entity
-bytes remain available through pinned receipt cursors after the live row is
-gone, checkpointing preserves those exact receipts, and repeated full reopen
-retains command outcomes, provenance, events and idempotency identities. Two
-logical subgroups in one journal epoch produce one physical net receipt while
-both complete command identities survive. Five actual process-crash arms cover
-direct pre/post-commit, private journal staging and published journal-tail
-completion, with two full recovery passes each. These are isolated-activation
-fixtures, not fresh activation or the complete rotation/reclamation crash matrix.
+V1/V2 decoders and original encodings remain compatibility-only. Legacy emitter
+construction/derivation lives in `tests/storage_recovery/changelog_compatibility.rs`,
+not production exports. Topology has exactly ordered V1/V2/V3 readers, only V3
+writable/current/active, V1/V2 read-only, empty candidates/retired, and
+`single_current`. Readability never grants production selection, fallback,
+translation or partial-authority replication.
 
-The V3 checkpoint receipt checks the V2 certificate's exact physical `AUDIT`
-bound against the same read snapshot. That bound can be below the V3 logical
-administration frontier because command-owned audits reside inside command
-segments. The latter remains the receipt's full dual frontier; neither existing
-certificate bytes nor audit placement changes. A substituted physical bound
-still refuses, and no additional read transaction or commit is introduced.
+## Transaction and checkpoint durability
 
-The dormant storage opener recognizes complete, already-activated V3 layouts
-using the catalog's exact physical table set and bounded current-format roots
-before selecting any legacy migration or additive-table repair. Real reopen
-tests preserve the original history and perform no durable write. Nine malformed
-layout arms (missing history, holds, entity or locator tables; missing epoch;
-old registry or format; unknown table or metadata) refuse on repeated open and
-leave physical rows unchanged without creating a journal. Separate tests now
-cover all-roots-erased current-registry refusal and the fresh activation handoff;
-neither bounded layout recognition nor those tests close the package alone.
+Same-lineage authoritative transactions retain one exact receipt in their
+existing durability boundary. Direct commands, admission/failure, audited
+controls, offline holds, pruning and migration use mutation-time capture in the
+original Immediate transaction. Sealing checks actual allocator/frontier
+postimages and stages receipt, allocator and tail atomically. Stale inputs,
+unknown tables and overflow refuse; no-op captures allocate nothing. Commit
+uncertainty retains existing writer fencing.
 
-For an already-activated database, the actual structural startup session now
-uses that same catalog-derived table inventory and the closed V3 metadata
-decoders. When CLEAN is unavailable, it streams the entire retained receipt
-interval from the session's pinned view before any successful validation can
-write a prefix checkpoint or DIRTY transition. Valid CLEAN still takes the
-bounded-root branch without that history walk. Tests run full validation and
-two bounded clean reopen/consumption cycles with exact retained receipt bytes;
-missing or corrupt interior history refuses before writes. Eight process exits
-in the real startup/close orchestration prove old-or-complete checkpoint and
-lifecycle receipts, repeated dormant reopen, and actual validation retry. These
-fixtures start from isolated activation with empty entity and source-hold
-populations. Separate full-startup source-hold tests cover all three valid kinds,
-substitutions and the exact count boundary. They do not prove fresh activation,
-every authoritative population, or the remaining retention/rotation obligations.
+Standard journal admission proves a bounded receipt and stages its checked
+allocation before submitting the original Journal V1 frame. Immutable source
+bindings retain original mutations, not latest-row reads or another frame
+decode. Logical subgroups in one physical epoch produce one net receipt while
+preserving each command's outcome, events, provenance and idempotency identity.
+Journal V1 bytes/tags and command acknowledgement/flush dependencies are unchanged.
+Writer-private changes cannot publish a receipt cursor.
 
-Offline operator hold additions, replacements and removals now use the same
-sealed receipt capture as audited projection hold changes, inside their existing
-single hardened transaction and before/after hooks. Offline preparation validates
-retained V3 history before granting the first write; no operational startup proof
-is assumed. Tests preserve exact prior values and receipts across replacement,
-removal, no-op retry, projection audit/allocator updates, commit uncertainty,
-interior corruption refusal and four actual offline process-crash edges. This
-does not implement replication source holds and history reclamation.
+Checkpoint workers materialize identical source receipts in the existing
+durable transaction before source reclamation. Direct barriers drain the suffix
+into the caller's same transaction before capturing its successor; abort leaves
+the source intact. Recovery validates retained history and exact original
+overlaps before replaying missing successors. Gaps, duplicates, partial roots
+and disagreement refuse without reclaiming the source. Empty extents retain
+their bounded-root/header no-op check. Composite rebase drops only the covered
+source prefix, preserving newer sources and old pins; destruction is iterative
+on the production stack.
 
-Authoritative offline pruning also captures receipts in each original transaction:
-checkpoint invalidation and each bounded delete/tombstone/watermark subrange.
-Retained idempotency, provenance and audit view replacements use captured tables
-too. Tombstone digesting measures and hashes the same transaction-current rows
-in two streaming passes, preserving v1 framing without buffering the preimage.
-Retained delete/rewrite plans and segment-event deduplication have checked limits;
-oversized plans refuse rather than split an authoritative transaction. These
-scans still follow retained history; this is a memory bound, not constant-time
-pruning. A populated semantic fixture proves exact deletion preconditions,
-watermark/tombstone atomicity, original receipt retention, independent v1 digest
-equality, no-op retry, full-prune startup, uncertainty, and four actual process
-crash edges. It is not the production command-group/segment crash matrix or
-permission to reclaim V3 receipt history; those proofs remain open.
+Validated-prefix certificates check physical AUDIT bounds from the same pin.
+Command-segment audits can make the V3 logical frontier larger without changing
+certificate bytes or audit placement. Optional-proof fallback remains: after
+full validation, invalid proof replacement requires its exact preimage; an
+absent singleton can be inserted with bounded net head changes. Valid-prior
+parent/monotonicity checks and authoritative corruption refusal remain strict.
+Head hashing streams unchanged SHA-256 v1 framing with bounded memory; it is
+not a constant-time population scan.
 
-Catalog-owned index migration batches and current-registry epoch repair now
-capture receipts in their original hardened transactions. Generation insertion,
-legacy epoch removal and the one-shot marker remain separate existing commits;
-unchanged confirmations do not allocate receipts. Tests cover exact original
-preimages and postimages, original commit counts, stale-compare whole-batch
-rollback, precommit and uncertain outcomes, and four actual catalog-driver
-process exits followed by repeated open, retry and startup validation. These
-fixtures use isolated activation with legacy index rows to exercise the owners;
-they do not replace the required full validation before production activation
-or prove every same-lineage contract migration and lineage-reset path.
+## Activation, lifecycle, migration and restore
 
-Private contract-migration witnesses retain an exact V3 predecessor fence. They
-validate the complete retained chain and require that original receipt, lineage,
-anchor and minimum resume to survive unchanged while migration batches advance
-the tail and allocator. All other immutable metadata and historical bytes remain
-in the witness digest. Resume checks against the drained predecessor's witness,
-not a new baseline inferred from a partially transformed stage. This is an
-in-memory validation witness, not a new durable identity or a weaker migration
-publication permit. Isolated semantic migration fixtures now activate V3 too.
+Fresh initialization/legacy normalization retain the exact pre-V3 registry.
+Inactive startup completes structural and catalog validation without CLEAN or
+prefix shortcuts. The dormant handoff owns the exclusive lease across their
+join; cancellation releases it without writing even if readers retain the
+database handle. One hardened transaction installs current registry, complete
+V3 roots/control tables and the sequence-one activation receipt through the
+existing durable publication owner. Application/admin allocators are preserved;
+older receipts are never synthesized.
 
-Source-hold and materialized-history maintenance is now a crate-private storage
-owner, not an application API or an activated background task. Registration
-checks the exact retained lineage, epoch, checksum and dual frontier; equal
-retries write nothing. Follower/archive acknowledgements may advance only
-monotonically. Bootstrap fences stay fixed, and this owner has no generic remove
-or release operation: WP-746 owns durable tail attachment and audited abort.
+Current-registry claims require complete V3 roots; erasure cannot authorize
+legacy repair or make an active database inactive. Dormant reopen validates
+the catalogued layout without writing. Full startup streams retained history
+and every hold before lifecycle writes. Valid CLEAN takes bounded root checks;
+missing, malformed or exhausted evidence selects full validation or refusal.
+Each DIRTY activation/clean consumption and final CLEAN close includes its
+empty, nonrecursive receipt in the existing Immediate transaction. Lifecycle,
+allocator, tail and receipt are atomic; no write follows CLEAN. Lifecycle V1
+bytes and binding streams remain unchanged.
 
-Reclamation requires a later known-durable checkpoint than the handle's previous
-observation, verified by both publication identity and successful-commit epoch.
-Only positions below the earlier checkpoint tail and every registered fence can
-be removed. One existing drained writer barrier encloses a bounded transaction
-of at most 256 deletions, the exact new resume floor, allocator and empty
-`HistoryReclamation` receipt. Surviving receipts and authoritative rows are never
-rewritten. Losing observations postpones pruning; the post-commit observation
-prevents a prune from stimulating another prune. No command-path hook, flush or
-acknowledgement dependency is added. Invalid holds, exhausted allocation, CLEAN
-or a fenced writer refuse; cancellation aborts staged state and releases its
-lease. The proof includes real journaled service audits, byte-identical
-checkpoint materialization, all fence kinds, unchanged complete authority,
-old/new snapshot behavior, seven process-crash edges and repeated recovery.
+Index rewrites, generation repair, marker insertion and same-lineage contract
+migration keep their transaction boundaries. Private migration witnesses bind
+the original V3 prefix and validate its complete successor chain. Only tail
+and allocator may advance; original receipt, lineage, anchor, minimum resume
+and all other immutable bytes remain checked. Resume reuses the predecessor
+witness rather than adopting a newer stage baseline.
 
-WP-772 is in progress. The storage API now has a closed namespace catalog,
-checked physical transaction allocator, expected-state mutation values, and
-V3 receipt/frame codecs. Constructing these internal values does not activate a
-production replication stream or a writer. Do not treat codec tests or the
-synthetic format vectors as evidence of durable receipt publication.
+Offline authoritative pruning receipts each original checkpoint-invalidation
+and bounded delete/tombstone/watermark transaction. Tombstone hashing uses the
+same current rows in streaming passes; oversized plans refuse. Watermark
+stamps validate before equal retries and preserve the chain-root digest.
+Same-lineage pruning does not reset lineage.
 
-## Authority inventory
+Destructive restore reanchors active V3 in its existing incarnation-stamp
+transaction: preserve database identity, leadership and dual frontier; advance
+incarnation; clear source history/holds; detach follower state; remove lifecycle;
+install one empty sequence-one RestoreAnchor. Watermarks are rebound without
+inventing a digest. Equal retries validate without writes; backwards incarnation
+refuses. Old-lineage resume fails and receivers must bootstrap after the anchor.
 
-`riffdb-storage-api::AuthoritativeStateCatalogV1` owns the classification.
-The generated `fixtures/replication/authoritative-state-catalog-v1.txt` is its
-review artifact, not an alternate configuration. A redb layout test compares
-the existing inventory with every current table and exact metadata key. Seven
-additional namespaces are reserved in that declaration for ADR-0186's receipted
-V3 activation; they are not created by the codecs or made eligible at startup.
+## Source holds and history retention
 
-Unknown table names, namespace tags and metadata keys are refused. Metadata
-classification uses complete key equality, not a prefix or table-wide default.
-Only projection rows and apply markers are classified as rebuildable under
-ADR-0017's exact historical-plan and contiguous-log owner. Missing rebuild
-inputs never authorize fabricated rows or readiness. The mixed
-`projection_frontier` namespace remains authoritative: it stores lifecycle,
-highest-generation and retention-fence state, not merely derived observations.
-Outbox delivery, consumer delivery, locators, validated-prefix evidence and
-vector/columnar controls likewise remain authoritative; the catalog does not
-infer rebuildability from their names.
+Controls are crate-private, with no application exports or active scheduler.
+Registration checks exact retained fences; equal retries allocate nothing.
+Follower/archive acknowledgements advance monotonically; bootstrap fences
+cannot move or release here. WP-746 owns authorized remote durability evidence,
+durable tail attachment and audited abort.
 
-## Bounded canonical values
+Reclamation needs two observed known-durable checkpoints, using both publication
+identity and successful-commit epoch. The floor cannot pass the earlier tail or
+any registered follower/archive/bootstrap fence. An existing drained exclusive
+barrier encloses at most 256 receipt deletions, exact minimum resume, allocator
+and an empty HistoryReclamation receipt. Surviving receipts and authoritative
+rows are unchanged. Post-commit observation prevents self-stimulation; lost
+observations delay pruning safely. No command-path hook/flush is added. CLEAN,
+writer fencing, invalid holds and exhaustion refuse; cancellation aborts and
+releases the lease.
 
-`ChangelogTransactionSequence` is nonzero and independent of application and
-administration sequences. Its allocator is `Next(nonzero) | Exhausted` and
-uses checked arithmetic. Allocation only returns the state that a future
-storage transaction must persist atomically; it performs no mutation itself.
-Its durable codec is the distinct `StoredChangelogTransactionAllocatorV3`
-envelope (compact tag 68, revision 1), with an 11-byte maximum Protobuf payload.
-The journal precondition hashes the complete canonical envelope. Bare counters,
-application/admin allocator identities, missing states and zero `Next` refuse.
-First, maximum and exhausted envelope vectors are frozen separately.
+## Proofs and fixture review
 
-The catalog and leadership codecs have distinct retained identities (tags 69
-and 70, revision 1), rather than reusing a registry digest or incarnation record.
-The catalog accepts only the single owned inventory's exact digest; a foreign
-catalog returns a value-free incompatible-format error. `LeadershipEpochV1` is
-nonzero and has checked advancement, with no successor after its maximum.
-Frame bindings use that checked type without changing any V3 frame bytes.
-Neither codec grants activation or leadership. The history and follower root
-codecs use tags 71 and 72, revision 1, with maximum Protobuf payloads of 281 and
-215 bytes. History binds lineage, anchor, materialized tail and minimum resume
-points, each with an exact receipt hash and dual frontier. Equal positions
-cannot substitute another hash or frontier. Follower state is explicitly
-detached or attached, with applied and optional acknowledged positions;
-acknowledgement cannot outrun applied state. Decoding roots grants no
-publication, ancestry, startup-readiness or reclamation permission.
+- `replication_inventory_classifies_every_storage_namespace`: populated physical
+  catalog, exact ends and reviewed classification.
+- `successor_changelog_receipts_survive_checkpoint_and_recovery`: real direct
+  groups, journal overwrite/delete, complete-authority replay, unchanged command
+  graphs, identical checkpoint bytes and repeated recovery; also executes the
+  real command allocator/journal process-crash matrix.
+- `changelog_history_reclamation_respects_checkpoint_and_fences`: real journaled
+  audits, exact materialization, every hold kind, unchanged full authority,
+  old/new pins and seven hold/reclamation crash edges with repeated reopen.
+- `changelog_v3_is_only_production_replication_identity`: fixed format digests,
+  round trips, resealed downgrade refusal and no legacy production consumers.
 
-The hardened installation primitive atomically installs all five
-roots, the two empty/new control tables, and the sequence-one activation receipt.
-Its only authoritative mutation is the exact inactive-registry replacement;
-it preserves application/admin allocators and never synthesizes older receipts.
-Process-exit tests cover preflight, uncommitted roots, uncommitted receipt and
-completed commit, plus retry/reopen and partial-state refusal. Production startup
-now stages through this primitive after the catalog join and commits through
-SharedRedb; only isolated test fixtures use the raw-commit wrapper. The package's
-wider post-activation writer/recovery gates must still pass before merge.
+Additional process tests cover actual activation, lifecycle, checkpoint workers,
+journal recovery, captured controls, optional-proof fallback, migration, restore
+and watermarks. Refusal tests cover interior corruption, missing roots,
+substituted holds, exhaustion, the 4,096-hold ceiling, concurrent registration
+and cancellation. Integrated recovery and full CI remain required alongside
+scoped acceptance. Isolated codec fixtures do not prove application semantics
+or an activated replication protocol.
 
-The bounded checkpoint-root reader uses one pinned redb read transaction. It
-checks all five roots, both control-table presences, the exact terminal receipt,
-core lineage and dual frontiers, and allocator agreement without scanning
-history or entity rows. Only the exact predecessor registry with every V3
-root/table absent is inactive. A V3 registry with erased roots, partial state,
-or substituted bindings is corruption, never an initialization or repair hint.
-This consistency check is not yet wired into clean eligibility and does not
-grant readiness or replace complete startup validation.
+Simulation keeps all historical coordinates and predicates. Before/after replay
+attributes one restored window to `630e1a42` and six moved windows to `a29312ff`.
+Appended witnesses `0x51C2C30A`, `0x51C2C404` and `0x51C2C500` each reproduced
+identical reports through twelve reruns. No oracle, generator, bound, accepted
+outcome or retirement history was weakened.
 
-The existing delete-aware entity checkpoint fingerprint now uses exact-length
-streaming SHA-256 v1 framing. Measurement and hashing traverse the same pinned
-head table in canonical key order; they retain one bounded head preimage and
-prior target, not the population. The domain, length framing, field order and
-digest bytes are unchanged. Checkpoint-head copying preserves byte-identical
-rows, replaces changed rows and removes stale rows in the existing transaction.
-These current-state scans still scale with the entity population; this is a
-bounded-memory change, not a constant-time checkpoint or a V3 receipt proof.
-
-An isolated Immediate receipt owner now opens a fresh write transaction, checks
-the current roots and every exact prior value before applying any mutation,
-and stages the receipt, allocator and tail together. The transaction cannot be
-handed back for additional writes. It preserves the existing Standard/Hardened
-commit profile. Missing tables, stale predecessors and mismatched physical
-frontiers refuse; the write-root reader never creates absent control tables.
-Tests cover pinned readers, complete original put values retained after later
-deletion, and process exits after mutations, receipt, roots and commit. These
-are physical transaction tests, not operation authorization/source-validation or
-production activation evidence. Journal, lifecycle and lineage ceremonies are
-explicitly refused by this owner pending their separate integration.
-
-The same private owner also supports mutation-time capture within one owned
-Immediate transaction. Its tables retain exact original preconditions and net
-post-images through the shared accumulator; they expose no mutable raw-table
-escape. Unknown or missing tables, replication-control writes, and whole-receipt
-overflow refuse and poison the operation. Finishing seals that same transaction,
-checks the unchanged control predecessor and actual allocator post-images, and
-hands back only a prepared commit. No-op captures do not allocate a position.
-Process tests cover exits after captured mutations, receipt, roots, and commit.
-These owners are not yet wired through all operational, journal, migration, and
-lifecycle paths; they do not by themselves complete WP-772 or activate V3.
-Operational direct-entry call sites now name their closed source attribution
-before writer admission and carry it with the existing write access. Journal
-epochs retain their separate source path. The operational transaction is now
-the captured owner: it takes the caller's existing Immediate transaction after
-draining the published journal suffix into that same transaction. Capture starts
-at the resulting exact history predecessor, so the drained suffix is not counted
-as another direct operation. The existing commit path seals the direct receipt
-before its one durable commit and preserves frontier publication, checkpoint
-completion, coverage bookkeeping and transient-index effects. Receipt refusal
-before commit aborts the candidate and restores the original journal source;
-actual commit failures retain their existing uncertainty fencing.
-
-The hardened service-adapter regression proves one durable epoch advance for a
-complete audit group, exact stored receipt post-images and no allocation on a
-phase conflict. Process exits after mutations, receipt and roots leave neither
-the audit group nor its receipt committed; exit after commit retains both on
-repeated raw reopen. A mixed journal/direct test proves a poisoned candidate
-aborts the drained suffix too, then a retry materializes the byte-identical
-journal receipt and the direct successor in one commit. Its deliberately invalid
-candidate row tests physical rollback, not application semantics. Audited offline
-projection-hold changes also use capture around their original transaction.
-Other offline retention, migration, startup, lifecycle and rotation owners still
-need integration and their own proofs. All these tests use isolated V3 activation;
-they do not establish a deployable startup path or close WP-772.
-
-The existing DIRTY activation/clean-consumption writer and final CLEAN writer
-now preflight one checked V3 allocation before changing the lifecycle row, then
-stage its empty, exactly attributed control receipt in that same Immediate
-transaction. Lifecycle, allocator, tail and receipt remain atomic; no write
-follows final CLEAN. The lifecycle V1 bytes and binding stream are unchanged.
-With V3 controls present, clean eligibility additionally checks the bounded
-catalog/lineage/allocator/tail/terminal roots and room for the next allocation;
-malformed roots decline the shortcut without authorizing repair or activation.
-Actual-writer tests cover DIRTY, CLEAN, exact clean consumption, stale repeated
-consumption refusal, old pinned roots and missing-terminal refusal. Process
-tests exit before/after each original commit and verify old or complete control
-state through repeated raw reopens. Complete startup fallback and production
-activation remain open; no-V3 routing is still transitional, not permission to
-treat erased current-registry roots as an inactive database.
-
-The checkpoint receipt planner reads that same pinned source view. It validates
-the current entity proof, collects only changed checkpoint-head bytes, preserves
-exact delete/replacement preconditions, and includes the chained checkpoint
-metadata in the complete bounded receipt. Identical stored proofs are no-ops;
-wrong parents and malformed old rows refuse. A delta larger than one receipt
-refuses without publishing a partial snapshot. With V3 controls present, the
-actual checkpoint writer now selects that plan from its builder's same pin.
-The sealed writer opens one hardened transaction, rechecks exact history and
-every expected prior value before mutation, and writes the planned checkpoint
-rows and receipt together. This replaces the raw legacy writer for that attempt;
-it adds no transaction or flush and preserves the existing before/after commit
-hooks. Even the exact-checkpoint fixture no-op refuses malformed V3 roots.
-Actual-writer tests prove one epoch per checkpoint, original receipt bytes after
-a later checkpoint overwrites the singleton, no-op behavior, precommit rollback,
-postcommit uncertainty and four process-crash edges with repeated raw reopen.
-These fixtures use an empty authoritative entity population and isolated V3
-activation; existing physical head-delta tests prove changed/deleted head bytes
-and bounds, not full startup validation. The caller still owns complete prefix
-validation, the drained gate and activation. WP-772 remains open.
-
-Registering this additive codec changes the registry digest but is **not** a
-completed database upgrade. The pre-V3 registry digest remains frozen in a
-compatibility test; its validated, atomic activation migration remains a release
-blocker within WP-772. Do not deploy this intermediate implementation against an
-existing database or treat fresh-store codec registration as V3 activation.
-
-Receipts retain complete put values, expected absent/prior-hash states, exact
-delete preconditions, strictly ordered unique namespace/key transitions,
-lineage, physical positions, dual frontiers and a closed source attribution.
-Control rows cannot enter their own mutation list. Storage integration must
-still prove that attribution and declared sequences match actual durable rows;
-structural decoding alone does not establish that fact.
-
-The bounded mutation accumulator retains the original precondition and final
-value across repeated writes. Exact cancellation drops the redundant post-image
-but retains a bounded observed-state marker so a later write cannot invent a
-new predecessor. Any precondition or size failure poisons the entire result.
-The journal conversion helper uses only the admitted frame and its exact
-allocator mutation, never latest-row reads. Its current tests are synthetic
-conversion evidence, not checkpoint durability or real command attribution.
-Standalone service-audit framing now recognizes only a checked one-step physical
-allocator update, alongside its existing audit metadata. It rejects activation
-position one, skipped or reversed counters, missing preconditions, deletion and
-premature exhaustion. This adds no journal field or table tag. Replay into an
-inactive or partial V3 database still refuses before changing the counter; a
-valid source shape is not an activation permit.
-
-The recovered-source materialization primitive now applies each original ordered
-mutation inside its caller's existing checkpoint transaction and stages the
-checked allocator, exact receipt and history tail through the same root writer
-as Immediate receipts. It adds no commit. Cancelled net mutations still require
-their original before-images. Its overlap checker reads the original receipt
-and predecessor from one pinned checkpoint and compares complete source-derived
-bytes; later entity overwrite or deletion cannot substitute for that evidence.
-The live retained-mutation converter and independently decoded journal converter
-share the same bounded fold and produce identical receipt bytes without a live
-frame re-decode.
-
-The existing journal recovery entry now selects strict V3 recovery whenever a
-V3 source counter or any retained V3 control domain is present. Before replay or
-suffix reclamation it validates the complete retained chain and every original
-overlap from one pin; it replays only the exact missing successor suffix in its
-existing hardened transaction. A later direct overwrite or dual-frontier advance
-does not invalidate an exact original receipt. Missing counters, skipped or
-duplicate positions, partial roots, missing overlap rows and broken ancestry
-refuse without reclaiming the source. An already-empty extent keeps its bounded
-root check and exact-header no-op behavior; it does not scan retained history.
-Process tests exit after replay staging, commit, and before/after reclamation,
-then reopen and retry twice to prove an original source or identical durable
-receipt remains. These tests use opaque record payloads and prove physical
-recovery, not full command semantics, acknowledgement or the complete package
-crash matrix. The production activation handoff is now wired, but wider gates
-remain open; legacy replay checks and journal encodings are unchanged.
-
-The live checkpoint worker now uses the same receipt fold over its retained
-validated mutations, with no journal-frame decode. It stages the exact receipt
-and checked roots before its existing single durable commit. The drained
-direct-write barrier also materializes each original V3 source in the caller's
-existing transaction; aborting that transaction leaves its predecessor intact.
-The physical tests compare worker output byte-for-byte with independent recovery,
-reject duplicate application and malformed final batch totals, retain old pinned
-views, and exercise process exits before/after the worker's durable commit.
-Neither path permits a missing source counter once V3 controls are present.
-The journal admission paths now stage one checked V3 source allocation and prove
-the complete bounded receipt before submitting an application or service-audit
-frame. They advance only the private history after successful submission and
-retain its constant-size binding beside the existing original mutations. The
-worker requires that binding to match its materialized receipt; missing or
-foreign bindings refuse without committing. No new flush or acknowledgement
-dependency is added. The identity probe validates exactly the catalog-declared
-V3 metadata envelopes; it does not replace strict cross-root validation.
-
-The real service-adapter regression
-`submitted_service_audit_allocates_one_v3_source_before_publication` covers
-consecutive source allocations, duplicate-request refusal without allocation,
-published audit visibility and byte-identical materialization through repeated
-recovery. The metadata-refusal regression covers partial, malformed and unknown
-controls before source submission. These tests use isolated fixture activation;
-complete command/lifecycle proofs remain open beyond the new startup handoff.
-
-`PublishedDurableSnapshot::changelog_receipts_v3` now opens a read-only successor
-cursor bound to one exact lineage and resume point. Each call returns at most
-one complete bounded receipt; it validates continuity and stops at the pin's
-tail. Foreign lineage, stale epoch, substituted positions and pruned history
-have closed refusals. A read failure is sticky, never permission to skip a row.
-Legacy-only snapshots refuse this method without selecting a legacy format.
-
-Journal admission attaches immutable source references to the same composite
-snapshot it later publishes. These share the original retained mutation bytes
-with checkpoint batches, not reconstructed latest values. Appending a source
-is constant-time; opening a cursor collects only bounded source references,
-and receipt decoding follows changed bytes rather than database population.
-Checkpoint rebase drops only the exactly covered source prefix while preserving
-newer sources and old pins. Source-chain destruction is iterative on the fixed
-production stack. The cursor has no writer handle, lease acquisition, journal
-I/O, or durability decision. The real service-adapter test covers old pins,
-an existing direct-write checkpoint barrier plus a newer suffix, resume
-refusals and reading while the writer lease is held. Separate physical tests
-prove original overwrite/delete bytes, prefix-source release, materialized
-history, pruning-floor pinning and sticky missing-row refusal. Those physical
-tests use opaque record payloads; they do not complete the command, startup,
-lifecycle, retention-authorization or full crash obligations.
-
-The complete retained-history validator is separate from bounded clean-root
-eligibility. It streams every retained receipt from the exact minimum-resume
-point through the terminal root using one pinned view and constant-size chain
-state. Missing rows and rechecksummed interior substitutions fail even when the
-terminal root still validates. This is receipt-chain evidence only; wiring it
-into complete startup alongside the existing durable-record validators remains
-part of the production activation gate.
-
-Frames carry complete contiguous receipt ranges, exact catalog and leadership
-bindings, source counts, checksums and V3-only framing. The 32 MiB frame ceiling
-and 256-transition ceiling remain independent; one receipt is never split to
-make it fit. Receipt admission reserves the entire frame wrapper, and direct
-groups over 256 logical transitions refuse before storage mutation. The
-accumulator poisons the whole result when this budget is exceeded. Decoders
-reject unknown versions, malformed absence, reordering,
-duplicates, wrong counts, truncation, trailing bytes and broken history edges.
-Debug and error text omit keys, values and payload-derived hashes.
-
-The V1 and V2 decoders remain byte-unchanged compatibility evidence under
-ADR-0207, not a fallback for production V3 replication. Standalone vectors for
-all three formats are checked against fixed byte digests. Regenerate the
-catalog and format vectors with `./scripts/generate-changelog-fixtures`; its
-`--check` mode also runs through the generated-artifact check.
-
-## Remaining gates
-
-WP-772 remains open until journal sourcing, atomic direct/control receipts,
-published snapshot cursors, checkpoint materialization, migration/rotation,
-clean-close integration, retention fences, and the required process-crash
-matrix are implemented and proven. Human review of the current authority catalog
-and accompanying V1/V2/V3 substrate codec vectors has been received; subsequent
-fixture changes still require review. Topology and durable-format registration,
-package acceptance and full CI gates remain required. No receipt, replication,
-recovery or performance obligation
-is discharged by this initial codec work. WP-746 and later activation packages
-remain downstream of the completed substrate.
+The maintainer approved the catalog and initial V1/V2/V3 vectors, then the three
+source-hold vectors on 2026-09-14. Amendment 1 subsequently added admission,
+execution-failure, audited-failure and command-lifecycle vectors and regenerated
+`changelog-frame-v3.hex` for 33 source slots. These synthetic vectors freeze
+encoding, not application-record validity; final fixture review is batched at
+closure. V1/V2 and unrelated vectors remain byte-identical. Regenerate with
+`./scripts/generate-changelog-fixtures`; its `--check` runs in generated-artifact
+acceptance. Fixture review does not accept a new ADR.
