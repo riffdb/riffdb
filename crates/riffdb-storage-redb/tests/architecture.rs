@@ -2416,10 +2416,7 @@ fn fresh_locator_roles_are_private_affine_and_bound_to_existing_publication_edge
         .find("stage_admission_group(&access")
         .expect("admission staging");
     assert!(begin < arm && arm < stage);
-    assert!(
-        admission[begin..arm]
-            .contains("ChangelogAttributionV3::DirectApplicationOrServiceAuditGroup")
-    );
+    assert!(admission[begin..arm].contains("ChangelogAttributionV3::CommandAdmission"));
 
     let operational = application
         .split_once("fncommand_outcome_from_operational_indexes(")

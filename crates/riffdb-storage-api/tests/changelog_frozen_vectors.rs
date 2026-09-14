@@ -45,8 +45,8 @@ fn changelog_frozen_vectors_preserve_exact_v1_v2_and_refuse_v3_downgrade() {
         ),
         (
             &v3,
-            737,
-            "2f9ca9ae53f1e45c87e6940113b76b35d8e1b3d6359cc4d3c3cff5c27cefa6bf",
+            745,
+            "ca6a0c9d68321bb7919c3ce2e95257e6227dfa2f7c692f4ce1637e2ec3a4b655",
         ),
     ] {
         assert_eq!(bytes.len(), length);
@@ -89,4 +89,114 @@ fn changelog_frozen_vectors_preserve_exact_v1_v2_and_refuse_v3_downgrade() {
         downgraded[checksum_offset..].copy_from_slice(&checksum);
         assert!(ChangelogFrameV3::decode(&downgraded).is_err());
     }
+}
+
+#[test]
+fn amendment_one_command_vectors_preserve_exact_mutations_frontiers_and_source_counts() {
+    use riffdb_storage_api::{
+        AuthoritativeNamespaceV1 as N, AuthoritativeTransactionV3 as Receipt,
+        ChangelogAttributionV3 as Source,
+    };
+    let admission = decode_hex(include_str!(
+        "../../../fixtures/replication/changelog-receipt-v3-command-admission.hex"
+    ));
+    let failure = decode_hex(include_str!(
+        "../../../fixtures/replication/changelog-receipt-v3-command-execution-failure.hex"
+    ));
+    let audited = decode_hex(include_str!(
+        "../../../fixtures/replication/changelog-receipt-v3-command-execution-failure-audited.hex"
+    ));
+    let frame = decode_hex(include_str!(
+        "../../../fixtures/replication/changelog-frame-v3-command-lifecycle.hex"
+    ));
+    for (bytes, length, digest) in [
+        (
+            &admission,
+            232,
+            "118f28d7e451c594071b3f296969b51bfdfe655cb1f90c17b8702997cdbf76b8",
+        ),
+        (
+            &failure,
+            286,
+            "1f9ce3092ec2f04d2370a76ecf3613693732ec54874786389704ee585915545b",
+        ),
+        (
+            &audited,
+            361,
+            "c1844556deba6d90cdaff7eb55eaa20a5ef4a6e201e128a2c217452945d9b83f",
+        ),
+        (
+            &frame,
+            872,
+            "b4e3e27f4f888358d0eee42337e8a1910649097ed6d86de875e4318f1fd99ceb",
+        ),
+    ] {
+        assert_eq!(bytes.len(), length);
+        assert_eq!(
+            Sha256::digest(bytes)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>(),
+            digest
+        );
+    }
+    for bytes in [&admission, &failure, &audited] {
+        assert_eq!(Receipt::decode(bytes).unwrap().encode().unwrap(), *bytes);
+    }
+    let admission = Receipt::decode(&admission).unwrap();
+    let failure = Receipt::decode(&failure).unwrap();
+    let audited = Receipt::decode(&audited).unwrap();
+    assert_eq!(admission.attribution(), Source::CommandAdmission);
+    assert_eq!(failure.attribution(), Source::CommandExecutionFailure);
+    assert_eq!(audited.attribution(), Source::CommandExecutionFailure);
+    for receipt in [&admission, &failure] {
+        assert_eq!(
+            receipt.binding().predecessor_frontier,
+            receipt.binding().covered_frontier
+        );
+    }
+    assert_eq!(audited.binding().covered_frontier.application(), None);
+    assert_eq!(
+        audited
+            .binding()
+            .covered_frontier
+            .administration()
+            .unwrap()
+            .get(),
+        1
+    );
+    assert_eq!(
+        failure.binding().predecessor,
+        Some(admission.binding().sequence)
+    );
+    assert_eq!(
+        failure.binding().prior_history_hash,
+        admission.history_hash().unwrap()
+    );
+    assert_eq!(admission.mutations()[0].namespace(), N::IdempotencyPending);
+    assert!(admission.mutations()[0].matches_prior(None));
+    assert_eq!(failure.mutations()[0].namespace(), N::Idempotency);
+    assert_eq!(failure.mutations()[1].namespace(), N::IdempotencyPending);
+    assert!(failure.mutations()[1].matches_prior(admission.mutations()[0].value()));
+    assert!(failure.mutations()[1].value().is_none());
+    assert_eq!(audited.mutations()[2].namespace(), N::Audit);
+    let decoded = ChangelogFrameV3::decode(&frame).unwrap();
+    assert_eq!(decoded.receipts(), &[admission.clone(), failure]);
+    assert_eq!(decoded.encode().unwrap(), frame);
+    // Counts for both newly closed sources are checked even after resealing.
+    for offset in [290, 294] {
+        let mut forged = frame.clone();
+        forged[offset] ^= 1;
+        let footer = forged.len() - 48;
+        let checksum = Sha256::digest(&forged[..footer]);
+        let end = forged.len() - 32;
+        forged[end..].copy_from_slice(&checksum);
+        assert!(ChangelogFrameV3::decode(&forged).is_err());
+    }
+    let mut unknown = admission.encode().unwrap();
+    unknown[86..88].copy_from_slice(&34_u16.to_be_bytes());
+    let end = unknown.len() - 32;
+    let checksum = Sha256::digest(&unknown[..end]);
+    unknown[end..].copy_from_slice(&checksum);
+    assert!(Receipt::decode(&unknown).is_err());
 }

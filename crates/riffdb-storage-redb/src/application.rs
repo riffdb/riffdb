@@ -1099,9 +1099,8 @@ impl AdmissionRepository for RedbOperationalPorts {
         {
             return Err(storage_error(StorageErrorKind::LimitExceeded));
         }
-        let access = self.begin_attributed_write(
-            riffdb_storage_api::ChangelogAttributionV3::DirectApplicationOrServiceAuditGroup,
-        )?;
+        let access = self
+            .begin_attributed_write(riffdb_storage_api::ChangelogAttributionV3::CommandAdmission)?;
         access.arm_fresh_locator_coverage()?;
         let mut created_any = false;
         let staged = stage_admission_group(&access, requests.iter())?;
@@ -1270,7 +1269,7 @@ impl ExecutionFailureTransitionPort for RedbOperationalPorts {
         request: ExecutionFailureTransitionRequestV1,
     ) -> Result<ExecutionFailureAdmissionResult<Self::Rechecked>, StorageError> {
         let access = self.begin_attributed_write(
-            riffdb_storage_api::ChangelogAttributionV3::DirectApplicationOrServiceAuditGroup,
+            riffdb_storage_api::ChangelogAttributionV3::CommandExecutionFailure,
         )?;
         let state = match request.admission_expectation() {
             CommandAdmissionExpectationV1::ExistingPending => {

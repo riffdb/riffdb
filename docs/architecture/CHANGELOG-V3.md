@@ -1,5 +1,26 @@
 # Authoritative changelog V3 substrate
 
+ADR-0186 Amendment 1 completes the closed source vocabulary before first durable
+use: `CommandAdmission` is tag 32 and records nonempty pending admissions with
+neither frontier advanced; `CommandExecutionFailure` is tag 33 and records
+nonempty terminal failures without an application advance, with an administration
+advance only for service audit in that same transaction. The original advancing
+direct-group checks remain strict. Admission-only and terminal-failure owners
+use these classes in their existing transactions; no sequence lane, commit,
+flush, or acknowledgement dependency is added.
+
+The synthetic `changelog-receipt-v3-command-admission.hex`,
+`changelog-receipt-v3-command-execution-failure.hex`, and
+`changelog-receipt-v3-command-execution-failure-audited.hex` freeze receipt
+encodings; `changelog-frame-v3-command-lifecycle.hex` joins admission and its
+failure with exact predecessor and expected-state hashes. They prove codec
+custody, not application-record validation. The frame source-count array now
+has 33 slots and a 298-byte header, so the unfinished `changelog-frame-v3.hex`
+fixture is regenerated and receipt-size admission reserves eight more bytes.
+The total frame ceiling stays 32 MiB; no receipt can be split to fit. V1/V2
+fixtures and every unrelated catalog, allocator, root, and source-hold vector
+remain byte-identical.
+
 The WP-772 startup implementation now retains the exclusive structural-session
 lease in a dormant handoff until the separate catalog-owned proof is joined.
 Fresh initialization and legacy format normalization publish the exact pre-V3
