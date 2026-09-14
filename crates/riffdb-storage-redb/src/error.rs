@@ -54,7 +54,29 @@ pub(crate) fn transaction_error(error: redb::TransactionError) -> StorageError {
 
 /// Redacts and classifies a table-open failure that occurred before commit.
 #[must_use]
-pub(crate) fn table_error(error: redb::TableError) -> StorageError {
+pub(crate) fn table_error(error: impl TableFailure) -> StorageError {
+    error.into_storage_error()
+}
+
+/// Both raw engine tables and the sealed operational table owner use the same
+/// redaction boundary. Already classified capture refusals retain their kind.
+pub(crate) trait TableFailure {
+    fn into_storage_error(self) -> StorageError;
+}
+
+impl TableFailure for StorageError {
+    fn into_storage_error(self) -> StorageError {
+        self
+    }
+}
+
+impl TableFailure for redb::TableError {
+    fn into_storage_error(self) -> StorageError {
+        classify_table_error(self)
+    }
+}
+
+fn classify_table_error(error: redb::TableError) -> StorageError {
     let kind = match error {
         redb::TableError::TableTypeMismatch { .. }
         | redb::TableError::TableIsMultimap(_)

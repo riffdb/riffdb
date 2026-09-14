@@ -1,12 +1,5 @@
 //! Bounded exact physical mutation capture for the private direct-write owner.
 //! No population diff, raw writable-table escape, or independent commit.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "WP-772 direct write-owner integration in progress"
-    )
-)]
 
 use crate::{changelog_v3_write::value_error, error::storage_error};
 use redb::{AccessGuard, Key, ReadableTable, Table, TableHandle};
@@ -21,13 +14,32 @@ use std::{
     ops::Deref,
 };
 
-#[derive(Default)]
 pub(crate) struct MutationCapture {
     changes: RefCell<AuthoritativeMutationAccumulatorV3>,
     failure: Cell<Option<StorageErrorKind>>,
+    inactive_legacy: bool,
+}
+
+impl Default for MutationCapture {
+    fn default() -> Self {
+        Self {
+            changes: RefCell::default(),
+            failure: Cell::new(None),
+            inactive_legacy: false,
+        }
+    }
 }
 
 impl MutationCapture {
+    // Only the transaction owner may select this after proving no V3 roots.
+    // Startup's final activation gate must remove this transitional routing.
+    pub(crate) fn for_inactive_legacy() -> Self {
+        Self {
+            inactive_legacy: true,
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn refuse(&self, kind: StorageErrorKind) -> StorageError {
         if self.failure.get().is_none() {
             self.failure.set(Some(kind));
@@ -81,7 +93,7 @@ impl MutationCapture {
         error
     }
 
-    fn record(
+    pub(crate) fn record(
         &self,
         table: &str,
         key: &[u8],
@@ -89,6 +101,9 @@ impl MutationCapture {
         after: Option<&[u8]>,
     ) -> Result<(), redb::StorageError> {
         self.healthy()?;
+        if self.inactive_legacy {
+            return Ok(());
+        }
         let result = (|| {
             let namespace = AuthoritativeStateCatalogV1
                 .lookup(table, key)

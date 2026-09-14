@@ -3263,13 +3263,11 @@ query list_members_exact(
         };
         // Drop the entities table after init so first touch fails.
         {
-            let access = ports.begin_write().expect("write");
-            access
-                .transaction()
-                .expect("txn")
-                .delete_table(ENTITIES)
-                .expect("delete entities");
-            access.commit().expect("commit");
+            // Corrupt the engine directly: the operational transaction owner
+            // deliberately exposes no unreceipted table deletion capability.
+            let transaction = store.shared.database.begin_write().expect("write");
+            transaction.delete_table(ENTITIES).expect("delete entities");
+            store.shared.commit_durable(transaction).expect("commit");
         }
         let parameters = QueryParameters::checked(BTreeMap::from([
             ("organization_id".to_owned(), organization),

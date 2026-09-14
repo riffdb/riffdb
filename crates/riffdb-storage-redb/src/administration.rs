@@ -4326,6 +4326,347 @@ mod tests {
 
     #[test]
     // req: REP-003, REC-001, STO-012
+    fn hardened_service_audit_materializes_one_receipt_in_its_existing_transaction() {
+        let path = TestPath::new("v3-hardened-service-audit-receipt");
+        let mut store =
+            RedbStore::open_with_commit_profile(&path.0, crate::store::RedbCommitProfile::Hardened)
+                .unwrap();
+        store.initialize_database(database_id()).unwrap();
+        let anchor = crate::changelog_v3_activation::activate_validated(
+            store.shared.database.begin_write().unwrap(),
+            riffdb_storage_api::ChangelogLineageV3::new(
+                database_id(),
+                1,
+                riffdb_storage_api::LeadershipEpochV1::initial(),
+            )
+            .unwrap(),
+            riffdb_types::DualFrontier::INITIAL,
+        )
+        .unwrap();
+        let mut ports = crate::store::RedbDormantPorts {
+            shared: store.shared,
+        }
+        .into_operational_after_catalog_validation()
+        .unwrap();
+        let epoch = ports.shared.durable_commit_epoch();
+        let result = ports
+            .submit_service_audit_group(&[denied_audit(80), denied_audit(81)])
+            .unwrap();
+        assert_eq!(ports.shared.durable_commit_epoch(), epoch + 1);
+        let riffdb_storage_api::ServiceAuditGroupAppend::Complete(results) = result else {
+            panic!("hardened submission must complete in its direct transaction");
+        };
+        assert_eq!(results.len(), 2);
+        assert_eq!(audit_count(&ports), 2);
+        let root = ports.shared.database.begin_read().unwrap();
+        let history = root
+            .open_table(crate::changelog_v3_activation::HISTORY)
+            .unwrap();
+        let row = history.get(2u64.to_be_bytes().as_slice()).unwrap();
+        assert!(
+            row.is_some(),
+            "the existing direct commit must materialize its V3 receipt"
+        );
+        let receipt =
+            riffdb_storage_api::AuthoritativeTransactionV3::decode(row.unwrap().value()).unwrap();
+        assert_eq!(
+            receipt.attribution(),
+            riffdb_storage_api::ChangelogAttributionV3::DirectApplicationOrServiceAuditGroup
+        );
+        assert_eq!(
+            receipt.binding().predecessor,
+            Some(anchor.tail().sequence())
+        );
+        assert_eq!(
+            receipt
+                .binding()
+                .covered_frontier
+                .administration()
+                .unwrap()
+                .get(),
+            2
+        );
+        assert!(!receipt.mutations().is_empty());
+        let exact = receipt.encode().unwrap();
+        for mutation in receipt.mutations() {
+            let actual = if let Some(key) = mutation.namespace().metadata_key() {
+                root.open_table(META)
+                    .unwrap()
+                    .get(key)
+                    .unwrap()
+                    .unwrap()
+                    .value()
+                    .to_vec()
+            } else {
+                let definition: redb::TableDefinition<&[u8], &[u8]> =
+                    redb::TableDefinition::new(mutation.namespace().table());
+                root.open_table(definition)
+                    .unwrap()
+                    .get(mutation.key())
+                    .unwrap()
+                    .unwrap()
+                    .value()
+                    .to_vec()
+            };
+            assert_eq!(mutation.value(), Some(actual.as_slice()));
+        }
+        let duplicate = ports
+            .append_service_audit_group(&[denied_audit(80)])
+            .unwrap();
+        assert!(matches!(
+            duplicate.as_slice(),
+            [ServiceAuditAppendResult::PhaseConflict]
+        ));
+        assert_eq!(ports.shared.durable_commit_epoch(), epoch + 1);
+        let latest = ports.shared.database.begin_read().unwrap();
+        let latest_history = crate::changelog_v3_roots::validate_retained_history(&latest)
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest_history.tail().sequence().get(), 2);
+        assert_eq!(
+            latest
+                .open_table(crate::changelog_v3_activation::HISTORY)
+                .unwrap()
+                .get(2u64.to_be_bytes().as_slice())
+                .unwrap()
+                .unwrap()
+                .value(),
+            exact
+        );
+    }
+
+    #[test]
+    // req: REP-003, REC-001, STO-012
+    fn direct_capture_abort_restores_drained_journal_source_before_exact_retry() {
+        let path = TestPath::new("v3-direct-abort-drained-source");
+        let mut store = RedbStore::open(&path.0).unwrap();
+        store.initialize_database(database_id()).unwrap();
+        let anchor = crate::changelog_v3_activation::activate_validated(
+            store.shared.database.begin_write().unwrap(),
+            riffdb_storage_api::ChangelogLineageV3::new(
+                database_id(),
+                1,
+                riffdb_storage_api::LeadershipEpochV1::initial(),
+            )
+            .unwrap(),
+            riffdb_types::DualFrontier::INITIAL,
+        )
+        .unwrap();
+        let mut ports = crate::store::RedbDormantPorts {
+            shared: store.shared,
+        }
+        .into_operational_after_catalog_validation()
+        .unwrap();
+        let riffdb_storage_api::ServiceAuditGroupAppend::Submitted(fence) = ports
+            .submit_service_audit_group(&[denied_audit(80)])
+            .unwrap()
+        else {
+            panic!("standard submission must remain journal sourced");
+        };
+        fence.wait().unwrap();
+        let pinned = ports.begin_composite_read().unwrap();
+        let mut cursor =
+            crate::changelog_v3_cursor::open(&pinned, anchor.lineage(), anchor.tail()).unwrap();
+        let original = cursor.next_receipt().unwrap().unwrap().encode().unwrap();
+        let epoch = ports.shared.durable_commit_epoch();
+        let access = ports
+            .begin_attributed_write(
+                riffdb_storage_api::ChangelogAttributionV3::CatalogAdministration,
+            )
+            .unwrap();
+        {
+            // Physical capture refusal, not a valid application command: stage
+            // one candidate row, then poison capture with an unknown namespace.
+            access
+                .transaction()
+                .unwrap()
+                .open_table(crate::layout::ENTITIES)
+                .unwrap()
+                .insert(b"abort-candidate".as_slice(), b"must-not-commit".as_slice())
+                .unwrap();
+            assert!(
+                access
+                    .transaction()
+                    .unwrap()
+                    .open_table(META)
+                    .unwrap()
+                    .insert("unknown-v3-control", b"refuse".as_slice())
+                    .is_err()
+            );
+        }
+        assert_eq!(
+            access.commit().unwrap_err().kind(),
+            StorageErrorKind::CorruptData
+        );
+        assert_eq!(ports.shared.durable_commit_epoch(), epoch);
+        {
+            let root = ports.shared.database.begin_read().unwrap();
+            assert_eq!(
+                root.open_table(crate::changelog_v3_activation::HISTORY)
+                    .unwrap()
+                    .len()
+                    .unwrap(),
+                1
+            );
+            assert_eq!(root.open_table(AUDIT).unwrap().len().unwrap(), 0);
+            assert!(
+                root.open_table(crate::layout::ENTITIES)
+                    .unwrap()
+                    .get(b"abort-candidate".as_slice())
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        assert_eq!(audit_count(&ports), 1);
+        ports
+            .append_service_audit_group(&[denied_audit(81)])
+            .unwrap();
+        assert_eq!(ports.shared.durable_commit_epoch(), epoch + 1);
+        assert_eq!(audit_count(&ports), 2);
+        let root = ports.shared.database.begin_read().unwrap();
+        let history = crate::changelog_v3_roots::validate_retained_history(&root)
+            .unwrap()
+            .unwrap();
+        assert_eq!(history.tail().sequence().get(), 3);
+        let rows = root
+            .open_table(crate::changelog_v3_activation::HISTORY)
+            .unwrap();
+        assert_eq!(
+            rows.get(2u64.to_be_bytes().as_slice())
+                .unwrap()
+                .unwrap()
+                .value(),
+            original
+        );
+        let direct = riffdb_storage_api::AuthoritativeTransactionV3::decode(
+            rows.get(3u64.to_be_bytes().as_slice())
+                .unwrap()
+                .unwrap()
+                .value(),
+        )
+        .unwrap();
+        assert_eq!(
+            direct.attribution(),
+            riffdb_storage_api::ChangelogAttributionV3::DirectApplicationOrServiceAuditGroup
+        );
+        assert_eq!(
+            direct
+                .binding()
+                .predecessor_frontier
+                .administration()
+                .unwrap()
+                .get(),
+            1
+        );
+        assert_eq!(
+            direct
+                .binding()
+                .covered_frontier
+                .administration()
+                .unwrap()
+                .get(),
+            2
+        );
+        assert!(cursor.next_receipt().unwrap().is_none());
+    }
+
+    #[test]
+    // req: REP-003, REC-001, STO-012
+    fn real_direct_service_audit_process_child() {
+        let Some(path) = std::env::var_os("RIFFDB_V3_REAL_DIRECT_PATH") else {
+            return;
+        };
+        let mut store =
+            RedbStore::open_with_commit_profile(path, crate::store::RedbCommitProfile::Hardened)
+                .unwrap();
+        store.initialize_database(database_id()).unwrap();
+        crate::changelog_v3_activation::activate_validated(
+            store.shared.database.begin_write().unwrap(),
+            riffdb_storage_api::ChangelogLineageV3::new(
+                database_id(),
+                1,
+                riffdb_storage_api::LeadershipEpochV1::initial(),
+            )
+            .unwrap(),
+            riffdb_types::DualFrontier::INITIAL,
+        )
+        .unwrap();
+        let mut ports = crate::store::RedbDormantPorts {
+            shared: store.shared,
+        }
+        .into_operational_after_catalog_validation()
+        .unwrap();
+        ports
+            .append_service_audit_group(&[denied_audit(80), denied_audit(81)])
+            .unwrap();
+        panic!("the requested direct commit crash edge was not reached");
+    }
+
+    #[test]
+    // req: REP-003, REC-001, STO-012
+    fn real_direct_service_audit_process_crashes_preserve_atomic_rows_and_receipt() {
+        for edge in ["mutations", "receipt", "roots", "committed"] {
+            let scope = crate::test_path::ScopedDirectory::new("v3-real-direct-crash");
+            let path = scope.join("db.redb");
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "administration::tests::real_direct_service_audit_process_child",
+                    "--nocapture",
+                ])
+                .env("RIFFDB_V3_REAL_DIRECT_PATH", &path)
+                .env("RIFFDB_V3_DIRECT_EDGE", edge)
+                .status()
+                .unwrap();
+            assert_eq!(status.code(), Some(93), "edge {edge}");
+            let mut prior = None;
+            for _ in 0..2 {
+                let database = redb::Database::open(&path).unwrap();
+                let root = database.begin_read().unwrap();
+                let history = crate::changelog_v3_roots::validate_retained_history(&root)
+                    .unwrap()
+                    .unwrap();
+                let committed = edge == "committed";
+                assert_eq!(
+                    history.tail().sequence().get(),
+                    if committed { 2 } else { 1 }
+                );
+                assert_eq!(
+                    root.open_table(AUDIT).unwrap().len().unwrap(),
+                    if committed { 2 } else { 0 }
+                );
+                let receipts = root
+                    .open_table(crate::changelog_v3_activation::HISTORY)
+                    .unwrap();
+                let observed = receipts
+                    .get(2u64.to_be_bytes().as_slice())
+                    .unwrap()
+                    .map(|row| row.value().to_vec());
+                assert_eq!(observed.is_some(), committed);
+                if let Some(bytes) = &observed {
+                    let receipt =
+                        riffdb_storage_api::AuthoritativeTransactionV3::decode(bytes).unwrap();
+                    assert_eq!(receipt.attribution(), riffdb_storage_api::ChangelogAttributionV3::DirectApplicationOrServiceAuditGroup);
+                    assert_eq!(
+                        receipt
+                            .binding()
+                            .covered_frontier
+                            .administration()
+                            .unwrap()
+                            .get(),
+                        2
+                    );
+                }
+                if let Some(prior) = &prior {
+                    assert_eq!(&observed, prior);
+                }
+                prior = Some(observed);
+            }
+        }
+    }
+
+    #[test]
+    // req: REP-003, REC-001, STO-012
     fn submitted_service_audit_allocates_one_v3_source_before_publication() {
         let path = TestPath::new("v3-real-service-audit-source");
         let mut store = RedbStore::open(&path.0).unwrap();
