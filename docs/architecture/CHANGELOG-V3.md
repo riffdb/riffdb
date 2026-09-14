@@ -198,6 +198,29 @@ recovery. The metadata-refusal regression covers partial, malformed and unknown
 controls before source submission. These tests use isolated fixture activation;
 production startup activation and complete command/lifecycle proofs remain open.
 
+`PublishedDurableSnapshot::changelog_receipts_v3` now opens a read-only successor
+cursor bound to one exact lineage and resume point. Each call returns at most
+one complete bounded receipt; it validates continuity and stops at the pin's
+tail. Foreign lineage, stale epoch, substituted positions and pruned history
+have closed refusals. A read failure is sticky, never permission to skip a row.
+Legacy-only snapshots refuse this method without selecting a legacy format.
+
+Journal admission attaches immutable source references to the same composite
+snapshot it later publishes. These share the original retained mutation bytes
+with checkpoint batches, not reconstructed latest values. Appending a source
+is constant-time; opening a cursor collects only bounded source references,
+and receipt decoding follows changed bytes rather than database population.
+Checkpoint rebase drops only the exactly covered source prefix while preserving
+newer sources and old pins. Source-chain destruction is iterative on the fixed
+production stack. The cursor has no writer handle, lease acquisition, journal
+I/O, or durability decision. The real service-adapter test covers old pins,
+an existing direct-write checkpoint barrier plus a newer suffix, resume
+refusals and reading while the writer lease is held. Separate physical tests
+prove original overwrite/delete bytes, prefix-source release, materialized
+history, pruning-floor pinning and sticky missing-row refusal. Those physical
+tests use opaque record payloads; they do not complete the command, startup,
+lifecycle, retention-authorization or full crash obligations.
+
 The complete retained-history validator is separate from bounded clean-root
 eligibility. It streams every retained receipt from the exact minimum-resume
 point through the terminal root using one pinned view and constant-size chain

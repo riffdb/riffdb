@@ -3,6 +3,7 @@
 //! These are internal storage contracts, not application command inputs. The
 //! coordinator remains the only owner of authoritative mutation and ordering.
 
+mod cursor;
 mod frame;
 mod history;
 mod leadership;
@@ -11,6 +12,7 @@ mod receipt;
 mod receipt_codec;
 mod sequence;
 
+pub use cursor::{ChangelogCursorErrorV3, ChangelogReceiptCursorV3};
 pub use frame::{ChangelogFrameBindingV3, ChangelogFrameV3};
 pub use history::{
     ChangelogHistoryPointV3, ChangelogHistoryStateV3, ChangelogLineageV3,

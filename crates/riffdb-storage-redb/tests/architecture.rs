@@ -1448,6 +1448,41 @@ fn the_changelog_emitter_can_only_read_published_durable_snapshots() {
 }
 
 #[test]
+// req: REP-003, PERF-007, REC-001
+fn v3_receipt_cursor_has_no_writer_or_journal_io_capability() {
+    let source = production_source(crate_root().join("src/changelog_v3_cursor.rs"));
+    for forbidden in [
+        "SharedRedb",
+        "begin_read(",
+        "begin_write(",
+        "mutation_gate",
+        "journal_runtime",
+        "JournalLane",
+        "std::fs",
+        "std::net",
+        "commit_durable(",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "published receipt cursor reaches {forbidden}"
+        );
+    }
+    assert!(source.contains("root: Arc<CheckpointRoot>"));
+    assert!(source.contains("mutations: Arc<[CompositeMutationV1]>"));
+    assert!(source.contains("MAX_JOURNAL_SUFFIX_TRANSITIONS"));
+    assert!(source.contains("MAX_JOURNAL_SUFFIX_BYTES"));
+    assert!(source.contains("Arc::try_unwrap"));
+    let store = production_source(crate_root().join("src/store.rs"));
+    assert_eq!(store.matches("append_changelog_source(").count(), 2);
+    assert_eq!(
+        store
+            .matches("let checkpoint_mutations: Arc<[riffdb_storage_api::CompositeMutationV1]>")
+            .count(),
+        2
+    );
+}
+
+#[test]
 fn offline_retention_mutations_require_the_journal_rebase_witness() {
     let retention = without_whitespace(&production_source(crate_root().join("src/retention.rs")));
     assert_eq!(

@@ -840,6 +840,16 @@ impl std::error::Error for ChangelogFrameError {}
 /// later publication, which is what lets an emitter derive asynchronously
 /// without ever reading state past its covered frontier.
 pub trait PublishedDurableSnapshot: Send + Sync {
+    /// Opens an exact V3 successor cursor, fenced to this immutable snapshot.
+    /// Legacy-only implementations refuse; this default never selects a fallback.
+    fn changelog_receipts_v3(
+        &self,
+        _lineage: crate::ChangelogLineageV3,
+        _after: crate::ChangelogHistoryPointV3,
+    ) -> Result<Box<dyn crate::ChangelogReceiptCursorV3>, crate::ChangelogCursorErrorV3> {
+        Err(crate::StorageError::new(crate::StorageErrorKind::IncompatibleFormat, None).into())
+    }
+
     /// Reads one exact row from the pinned published snapshot.
     fn read_value(
         &self,
