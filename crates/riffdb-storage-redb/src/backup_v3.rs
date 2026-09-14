@@ -180,6 +180,74 @@ fn key(namespace: N) -> Result<&'static str, StorageError> {
         .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))
 }
 
+/// The offline watermark owner has no operational validation permit. Validate
+/// the original write pin completely, including on a no-op retry. Final fresh
+/// activation still owns removal of the shared transitional presence routing.
+pub(super) fn watermark_history(
+    transaction: &WriteTransaction,
+) -> Result<Option<ChangelogHistoryStateV3>, StorageError> {
+    if !crate::changelog_v3_journal::has_write_recovery_roots(transaction)? {
+        return Ok(None);
+    }
+    let history = validate_retained_history_for_write(transaction)?
+        .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+    Ok(Some(history))
+}
+
+/// Prepare the exact watermark before/after transition before its original
+/// mutation. A retention normalization stays in the same lineage and therefore
+/// cannot use RestoreAnchor or discard the old receipt chain.
+pub(super) fn prepare_watermark_receipt(
+    transaction: &WriteTransaction,
+    history: Option<ChangelogHistoryStateV3>,
+    encoded: &CanonicalStoredEnvelopeV1,
+) -> Result<Option<crate::changelog_v3_write::PreparedHistoryAdvance>, StorageError> {
+    use crate::changelog_v3_write::{PreparedHistoryAdvance, value_error};
+    use riffdb_storage_api::AuthoritativeMutationV3;
+    let Some(history) = history else {
+        return Ok(None);
+    };
+    let key = key(N::RetentionWatermark)?;
+    let mutation = {
+        let meta = transaction.open_table(META).map_err(table_error)?;
+        let before = meta.get(key).map_err(precommit_storage_error)?;
+        match before {
+            Some(before) => AuthoritativeMutationV3::replace(
+                N::RetentionWatermark,
+                key.as_bytes(),
+                before.value(),
+                encoded.as_bytes(),
+            ),
+            None => AuthoritativeMutationV3::put(
+                N::RetentionWatermark,
+                key.as_bytes(),
+                None,
+                encoded.as_bytes(),
+            ),
+        }
+        .map_err(value_error)?
+    };
+    let receipt = AuthoritativeTransactionV3::new(
+        AuthoritativeTransactionBindingV3 {
+            database_id: history.lineage().database_id(),
+            history_incarnation: history.lineage().history_incarnation(),
+            predecessor: Some(history.tail().sequence()),
+            sequence: history
+                .expected_allocator()
+                .allocate_one()
+                .map_err(value_error)?
+                .0,
+            predecessor_frontier: history.tail().frontier(),
+            covered_frontier: history.tail().frontier(),
+            prior_history_hash: history.tail().history_hash(),
+        },
+        ChangelogAttributionV3::RetentionPrune,
+        vec![mutation],
+    )
+    .map_err(value_error)?;
+    PreparedHistoryAdvance::prepare(transaction, &receipt).map(Some)
+}
+
 pub(super) fn edge(_name: &str) {
     #[cfg(test)]
     if std::env::var("RIFFDB_WP772_RESTORE_CRASH").as_deref() == Ok(_name) {

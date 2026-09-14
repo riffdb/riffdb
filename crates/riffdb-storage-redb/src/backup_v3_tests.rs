@@ -493,3 +493,146 @@ fn actual_watermark_stamp_refuses_corrupt_v3_even_on_equal_watermark_retry() {
     );
     assert_eq!(image(&Database::open(&path).unwrap()), before);
 }
+
+#[test]
+fn actual_watermark_stamp_refuses_missing_root_binding_and_unrooted_nonzero_stamp() {
+    for arm in 0..4 {
+        let scope = crate::test_path::ScopedDirectory::new("v3-watermark-refusal");
+        let path = scope.join("db.redb");
+        fixture(&path);
+        if arm != 0 {
+            stamp_retention_watermark(&path, 0).unwrap();
+        }
+        let database = Database::open(&path).unwrap();
+        let write = database.begin_write().unwrap();
+        match arm {
+            0 => {}
+            1 => {
+                write
+                    .open_table(META)
+                    .unwrap()
+                    .remove(N::LeadershipEpoch.metadata_key().unwrap())
+                    .unwrap();
+            }
+            2 => {
+                write
+                    .open_table(SOURCE_HOLDS)
+                    .unwrap()
+                    .insert(b"unknown".as_slice(), b"unknown".as_slice())
+                    .unwrap();
+            }
+            _ => {
+                let stale =
+                    riffdb_storage_api::StoredRetentionWatermarkV1::new(0, 2, None).unwrap();
+                write
+                    .open_table(META)
+                    .unwrap()
+                    .insert(
+                        META_RETENTION_WATERMARK,
+                        encode_retention_watermark_v1(&stale).unwrap().as_bytes(),
+                    )
+                    .unwrap();
+            }
+        }
+        write.commit().unwrap();
+        let before = image(&database);
+        drop(database);
+        let target = u64::from(arm == 0);
+        assert_eq!(
+            stamp_retention_watermark(&path, target).unwrap_err().kind(),
+            StorageErrorKind::CorruptData
+        );
+        assert_eq!(image(&Database::open(&path).unwrap()), before);
+    }
+}
+
+#[test]
+fn watermark_stamp_process_child() {
+    let Some(path) = std::env::var_os("RIFFDB_WP772_WATERMARK_DATABASE") else {
+        return;
+    };
+    stamp_retention_watermark(path, 0).unwrap();
+    panic!("requested watermark crash edge did not fire");
+}
+
+#[test]
+fn actual_watermark_process_crashes_preserve_whole_receipts_and_idempotent_retries() {
+    for edge in [
+        "watermark-preflight",
+        "watermark-mutation",
+        "watermark-receipt",
+        "watermark-committed",
+    ] {
+        let scope = crate::test_path::ScopedDirectory::new("v3-watermark-crash");
+        let path = scope.join("db.redb");
+        fixture(&path);
+        let database = Database::open(&path).unwrap();
+        let old_history = read_history(&database);
+        let before = image(&database);
+        drop(database);
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "backup::v3_tests::watermark_stamp_process_child",
+                "--nocapture",
+            ])
+            .env("RIFFDB_WP772_WATERMARK_DATABASE", &path)
+            .env("RIFFDB_WP772_RESTORE_CRASH", edge)
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(93), "edge {edge}");
+        for _ in 0..2 {
+            let database = Database::open(&path).unwrap();
+            let recovered = read_history(&database);
+            let after = image(&database);
+            assert_eq!(after.authority, before.authority);
+            assert_eq!(after.holds, before.holds);
+            if edge == "watermark-committed" {
+                assert_eq!(
+                    recovered.tail().sequence().get(),
+                    old_history.tail().sequence().get() + 1
+                );
+                assert!(after.metadata.contains_key(META_RETENTION_WATERMARK));
+                assert_eq!(after.history.len(), before.history.len() + 1);
+            } else {
+                assert_eq!(after, before);
+            }
+        }
+        stamp_retention_watermark(&path, 0).unwrap();
+        let database = Database::open(&path).unwrap();
+        let final_history = read_history(&database);
+        assert_eq!(
+            final_history.tail().sequence().get(),
+            old_history.tail().sequence().get() + 1
+        );
+        let after = image(&database);
+        let receipt = AuthoritativeTransactionV3::decode(
+            &after.history[final_history
+                .tail()
+                .sequence()
+                .get()
+                .to_be_bytes()
+                .as_slice()],
+        )
+        .unwrap();
+        assert_eq!(
+            receipt.attribution(),
+            ChangelogAttributionV3::RetentionPrune
+        );
+        assert_eq!(receipt.mutations().len(), 1);
+        assert!(receipt.mutations()[0].matches_prior(None));
+        assert_eq!(
+            receipt.mutations()[0].value(),
+            Some(after.metadata[META_RETENTION_WATERMARK].as_slice())
+        );
+        for (key, value) in &before.history {
+            assert_eq!(after.history.get(key), Some(value));
+        }
+        drop(database);
+        for _ in 0..2 {
+            stamp_retention_watermark(&path, 0).unwrap();
+            assert_eq!(image(&Database::open(&path).unwrap()), after);
+            drop(crate::RedbStore::open(&path).unwrap());
+        }
+    }
+}
