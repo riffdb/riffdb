@@ -133,6 +133,68 @@ fn graceful_close_drops_immutable_classification_before_one_final_write_transact
 }
 
 #[test]
+// req: REP-003, REC-001, STO-012
+fn v3_lifecycle_receipts_use_the_existing_final_transaction_without_recursive_rows() {
+    let helper = without_whitespace(&production_source(
+        crate_root().join("src/store_changelog_lifecycle.rs"),
+    ));
+    assert!(!helper.contains("begin_write("));
+    assert!(!helper.contains(".commit("));
+    assert!(!helper.contains(".insert("));
+    assert!(helper.contains("ChangelogAttributionV3::CleanClose"));
+    assert!(helper.contains("ChangelogAttributionV3::DirtyActivation"));
+    assert!(helper.contains("Vec::new()"));
+    assert!(helper.contains("read_checkpoint_roots(transaction)"));
+    assert!(helper.contains("expected_allocator().allocate_one()"));
+    let store = without_whitespace(&production_source(crate_root().join("src/store.rs")));
+    let dirty = store
+        .split_once("pub(crate)fnadvance_dirty_lifecycle_before_activation(")
+        .unwrap()
+        .1
+        .split_once("pub(crate)fncommit_durable(")
+        .unwrap()
+        .0;
+    assert_eq!(dirty.matches("begin_write()").count(), 1);
+    assert_eq!(dirty.matches("self.commit_durable(transaction)").count(), 1);
+    assert!(
+        dirty.find("changelog_lifecycle::prepare(").unwrap()
+            < dirty
+                .find("meta.insert(META_CLEAN_CLOSE_LIFECYCLE")
+                .unwrap()
+    );
+    assert!(
+        dirty.find("receipt.stage(&transaction)").unwrap()
+            < dirty.find("self.commit_durable(transaction)").unwrap()
+    );
+    let close = without_whitespace(&production_source(
+        crate_root().join("src/store_graceful_close.rs"),
+    ));
+    let clean = close
+        .split_once("fnwrite_final_clean_close_lifecycle_after_barrier(")
+        .unwrap()
+        .1
+        .split_once("fnread_commit_tail_from_write(")
+        .unwrap()
+        .0;
+    assert!(!clean.contains("begin_write("));
+    assert_eq!(clean.matches("self.commit_durable(write)").count(), 1);
+    assert!(
+        clean.find("changelog_lifecycle::prepare(").unwrap()
+            < clean
+                .find("meta.insert(META_CLEAN_CLOSE_LIFECYCLE")
+                .unwrap()
+    );
+    assert!(
+        clean.find("receipt.stage(&write)").unwrap()
+            < clean.find("self.commit_durable(write)").unwrap()
+    );
+    let after = clean.split_once("self.commit_durable(write)").unwrap().1;
+    assert!(!after.contains("open_table("));
+    assert!(!after.contains(".stage("));
+    assert!(!after.contains(".insert("));
+}
+
+#[test]
 fn production_sized_storage_tests_never_allocate_under_the_ambient_temp_directory() {
     let mut paths = Vec::new();
     for relative in [

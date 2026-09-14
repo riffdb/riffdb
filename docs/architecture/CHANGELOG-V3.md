@@ -128,6 +128,21 @@ Other offline retention, migration, startup, lifecycle and rotation owners still
 need integration and their own proofs. All these tests use isolated V3 activation;
 they do not establish a deployable startup path or close WP-772.
 
+The existing DIRTY activation/clean-consumption writer and final CLEAN writer
+now preflight one checked V3 allocation before changing the lifecycle row, then
+stage its empty, exactly attributed control receipt in that same Immediate
+transaction. Lifecycle, allocator, tail and receipt remain atomic; no write
+follows final CLEAN. The lifecycle V1 bytes and binding stream are unchanged.
+With V3 controls present, clean eligibility additionally checks the bounded
+catalog/lineage/allocator/tail/terminal roots and room for the next allocation;
+malformed roots decline the shortcut without authorizing repair or activation.
+Actual-writer tests cover DIRTY, CLEAN, exact clean consumption, stale repeated
+consumption refusal, old pinned roots and missing-terminal refusal. Process
+tests exit before/after each original commit and verify old or complete control
+state through repeated raw reopens. Complete startup fallback and production
+activation remain open; no-V3 routing is still transitional, not permission to
+treat erased current-registry roots as an inactive database.
+
 The checkpoint receipt planner reads that same pinned source view. It validates
 the current entity proof, collects only changed checkpoint-head bytes, preserves
 exact delete/replacement preconditions, and includes the chained checkpoint

@@ -156,6 +156,12 @@ impl SharedRedb {
         drop(lifecycle_bytes);
         drop(history);
         drop(meta);
+        let receipt = changelog_lifecycle::prepare(
+            &write,
+            changelog_lifecycle::LifecycleSource::Clean,
+            database_id,
+            history_incarnation,
+        )?;
         let application_frontier = read_commit_tail_from_write(&write)?;
         let administration_frontier = read_administration_tail_from_write(&write)?;
         let journal_header_digest = crate::journal::verify_clean_close_header_digest_with_media(
@@ -197,8 +203,15 @@ impl SharedRedb {
         meta.insert(META_CLEAN_CLOSE_LIFECYCLE, encoded.as_slice())
             .map_err(precommit_storage_error)?;
         drop(meta);
+        if let Some(receipt) = receipt {
+            receipt.stage(&write)?;
+        }
+        #[cfg(test)]
+        changelog_lifecycle::crash_edge("clean-staged");
         self.before_test_commit(RedbTestOperation::CleanCloseLifecycle)?;
         self.commit_durable(write)?;
+        #[cfg(test)]
+        changelog_lifecycle::crash_edge("clean-committed");
         self.after_test_commit(RedbTestOperation::CleanCloseLifecycle)
     }
 }
