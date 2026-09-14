@@ -38,8 +38,18 @@ every root and both control tables cannot turn an active database into inactive
 legacy state. Process tests exercise the actual startup owner at activation
 preflight, root staging, receipt staging and completed commit, with repeated
 reopen and retry. These focused proofs do not close WP-772: wider operational
-receipt attribution, checkpoint-repair and recovery tests still need integration,
-and the complete retention, source-fence and inventory obligations remain open.
+recovery tests still need integration, and the complete retention, source-fence
+and inventory obligations remain open.
+
+The receipted checkpoint writer preserves ADR-0019/0085's optional-proof fallback.
+An undecodable prior proof is not trusted: the existing validated builder starts
+a new proof chain, and the replacement receipt requires the exact old bytes.
+An absent singleton after retention may coexist with the old head snapshot; the
+bounded head planner validates and receipts every net change before publishing
+the rebuilt proof. Valid-prior identity, parent and monotonicity checks, V3 roots,
+authoritative validation, and receipt bounds remain strict. Replacement and its
+receipt use the existing single hardened transaction; stale pre-images refuse,
+and crash/retry tests preserve the old proof or the complete new proof exactly.
 
 The offline retention-watermark stamp now validates retained V3 history and
 source holds on its original hardened write pin before an equal-value retry can
