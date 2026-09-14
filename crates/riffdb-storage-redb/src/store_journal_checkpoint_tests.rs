@@ -97,6 +97,7 @@ fn live_checkpoint_materializes_the_original_v3_receipt_with_one_existing_commit
     lane.submit(encoded.clone()).unwrap().wait().unwrap();
     drop(lane);
     let frame = ValidatedCheckpointFrame {
+        changelog_binding: Some(expected.binding()),
         database_id,
         predecessor_sequence: None,
         covered_sequence: None,
@@ -132,6 +133,7 @@ fn live_checkpoint_materializes_the_original_v3_receipt_with_one_existing_commit
     };
     let old_pin = store.shared.database.begin_read().unwrap();
     let runtime = crate::store::JournalRuntime {
+        changelog_history: Some(history.advance(&expected).unwrap()),
         lane: Arc::new(
             crate::journal::JournalLane::open(
                 &crate::journal::journal_path(&path),
@@ -183,6 +185,25 @@ fn live_checkpoint_materializes_the_original_v3_receipt_with_one_existing_commit
     transaction.abort().unwrap();
     drop(runtime);
     let epoch = store.shared.durable_commit_epoch.load(Ordering::Acquire);
+    // The retained admission binding is mandatory and must match exactly.
+    let mut foreign_binding = expected.binding();
+    foreign_binding.prior_history_hash[0] ^= 1;
+    for binding in [None, Some(foreign_binding)] {
+        let mut invalid = batch.clone();
+        invalid.frames[0].changelog_binding = binding;
+        assert!(store.shared.materialize_checkpoint_batch(&invalid).is_err());
+        assert_eq!(
+            store.shared.durable_commit_epoch.load(Ordering::Acquire),
+            epoch
+        );
+        assert_eq!(
+            crate::changelog_v3_roots::validate_retained_history(
+                &store.shared.database.begin_read().unwrap()
+            )
+            .unwrap(),
+            Some(history)
+        );
+    }
     // A malformed final batch total must abort even after staging all frames.
     let mut invalid = batch.clone();
     invalid.encoded_bytes += 1;

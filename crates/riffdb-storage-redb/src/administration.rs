@@ -4324,6 +4324,212 @@ mod tests {
         .expect("audit intent")
     }
 
+    #[test]
+    // req: REP-003, REC-001, STO-012
+    fn submitted_service_audit_allocates_one_v3_source_before_publication() {
+        let path = TestPath::new("v3-real-service-audit-source");
+        let mut store = RedbStore::open(&path.0).unwrap();
+        store.initialize_database(database_id()).unwrap();
+        let history = crate::changelog_v3_activation::activate_validated(
+            store.shared.database.begin_write().unwrap(),
+            riffdb_storage_api::ChangelogLineageV3::new(
+                database_id(),
+                1,
+                riffdb_storage_api::LeadershipEpochV1::initial(),
+            )
+            .unwrap(),
+            riffdb_types::DualFrontier::INITIAL,
+        )
+        .unwrap();
+        let mut ports = crate::store::RedbDormantPorts {
+            shared: store.shared,
+        }
+        .into_operational_after_catalog_validation()
+        .unwrap();
+        for request in 30..33 {
+            let result = ports
+                .submit_service_audit_group(&[denied_audit(request)])
+                .unwrap();
+            let riffdb_storage_api::ServiceAuditGroupAppend::Submitted(fence) = result else {
+                panic!("standard audit must use the journal fence");
+            };
+            assert_eq!(fence.wait().unwrap().len(), 1);
+        }
+        let duplicate = ports
+            .submit_service_audit_group(&[denied_audit(30)])
+            .unwrap();
+        let riffdb_storage_api::ServiceAuditGroupAppend::Complete(duplicate) = duplicate else {
+            panic!("a phase conflict must not allocate another source");
+        };
+        assert!(matches!(
+            duplicate.as_slice(),
+            [ServiceAuditAppendResult::PhaseConflict]
+        ));
+        let mut sources = Vec::new();
+        crate::journal::scan_journal(
+            &crate::journal::journal_path(&path.0),
+            database_id(),
+            |frame| {
+                assert!(crate::changelog_v3_journal::has_receipt_source(frame));
+                sources.push(frame.clone());
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(sources.len(), 3);
+        let mut expected_history = history;
+        let mut expected_receipts = Vec::new();
+        for source in &sources {
+            let allocations: Vec<_> = source
+                .mutations()
+                .iter()
+                .filter(|m| {
+                    m.key()
+                        == riffdb_storage_api::AuthoritativeNamespaceV1::NextChangelogTransaction
+                            .metadata_key()
+                            .unwrap()
+                            .as_bytes()
+                })
+                .collect();
+            assert_eq!(allocations.len(), 1);
+            let sequence =
+                crate::changelog_v3::journal_allocator_assignment(allocations[0]).unwrap();
+            assert_eq!(
+                sequence,
+                expected_history
+                    .expected_allocator()
+                    .allocate_one()
+                    .unwrap()
+                    .0
+            );
+            let receipt = crate::changelog_v3::receipt_from_journal(
+                source,
+                riffdb_storage_api::AuthoritativeTransactionBindingV3 {
+                    database_id: database_id(),
+                    history_incarnation: 1,
+                    predecessor: Some(expected_history.tail().sequence()),
+                    sequence,
+                    predecessor_frontier: expected_history.tail().frontier(),
+                    covered_frontier: riffdb_types::DualFrontier::new(
+                        source.covered_sequence(),
+                        source.covered_administration_sequence(),
+                    ),
+                    prior_history_hash: expected_history.tail().history_hash(),
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                receipt.attribution(),
+                riffdb_storage_api::ChangelogAttributionV3::JournaledServiceAudit
+            );
+            expected_history = expected_history.advance(&receipt).unwrap();
+            expected_receipts.push(receipt);
+        }
+        // The source is durable, while its redb checkpoint is still the anchor.
+        assert_eq!(
+            crate::changelog_v3_roots::read_checkpoint_roots(
+                &ports.shared.database.begin_read().unwrap()
+            )
+            .unwrap(),
+            Some(history)
+        );
+        assert_eq!(audit_count(&ports), 3);
+        drop(ports);
+        let database = redb::Database::open(&path.0).unwrap();
+        for _ in 0..2 {
+            crate::journal::recover_journal(&database, &path.0, database_id()).unwrap();
+            let pin = database.begin_read().unwrap();
+            assert_eq!(
+                crate::changelog_v3_roots::validate_retained_history(&pin).unwrap(),
+                Some(expected_history)
+            );
+            for (source, expected) in sources.iter().zip(&expected_receipts) {
+                let materialized =
+                    crate::changelog_v3_journal::verify_materialized_frame(&pin, source).unwrap();
+                assert_eq!(materialized.encode().unwrap(), expected.encode().unwrap());
+            }
+        }
+    }
+
+    #[test]
+    // req: REP-003, REC-001, STO-012
+    fn submitted_service_audit_refuses_partial_malformed_and_unknown_v3_metadata() {
+        use riffdb_storage_api::AuthoritativeNamespaceV1 as N;
+        for fault in 0..3 {
+            let path = TestPath::new("v3-service-audit-metadata-refusal");
+            let mut store = RedbStore::open(&path.0).unwrap();
+            store.initialize_database(database_id()).unwrap();
+            crate::changelog_v3_activation::activate_validated(
+                store.shared.database.begin_write().unwrap(),
+                riffdb_storage_api::ChangelogLineageV3::new(
+                    database_id(),
+                    1,
+                    riffdb_storage_api::LeadershipEpochV1::initial(),
+                )
+                .unwrap(),
+                riffdb_types::DualFrontier::INITIAL,
+            )
+            .unwrap();
+            let transaction = store.shared.database.begin_write().unwrap();
+            {
+                let mut meta = transaction.open_table(crate::layout::META).unwrap();
+                match fault {
+                    0 => {
+                        meta.remove(N::LeadershipEpoch.metadata_key().unwrap())
+                            .unwrap();
+                    }
+                    1 => {
+                        meta.insert(
+                            N::NextChangelogTransaction.metadata_key().unwrap(),
+                            b"malformed".as_slice(),
+                        )
+                        .unwrap();
+                    }
+                    _ => {
+                        meta.insert("unknown_v3_control", b"unknown".as_slice())
+                            .unwrap();
+                    }
+                }
+            }
+            transaction.commit().unwrap();
+            let mut ports = crate::store::RedbDormantPorts {
+                shared: store.shared,
+            }
+            .into_operational_after_catalog_validation()
+            .unwrap();
+            assert!(
+                ports
+                    .submit_service_audit_group(&[denied_audit(30)])
+                    .is_err()
+            );
+            assert!(
+                crate::journal::scan_journal(
+                    &crate::journal::journal_path(&path.0),
+                    database_id(),
+                    |_| {
+                        panic!("refused metadata cannot publish a source");
+                    }
+                )
+                .unwrap()
+                .is_none()
+            );
+            let pin = ports.shared.database.begin_read().unwrap();
+            assert!(
+                pin.open_table(crate::layout::AUDIT)
+                    .unwrap()
+                    .is_empty()
+                    .unwrap()
+            );
+            assert_eq!(
+                pin.open_table(crate::changelog_v3_activation::HISTORY)
+                    .unwrap()
+                    .len()
+                    .unwrap(),
+                1
+            );
+        }
+    }
+
     fn command_audit(
         request: u16,
         phase: ServiceAuditPhaseV1,

@@ -682,6 +682,15 @@ fn validate_canonical_entry(
                 crate::layout::META_ADMINISTRATION_SEQUENCE => {
                     decode_administration_sequence_allocator_v1(value).map_err(invalid_shape)?;
                 }
+                key if Some(key)
+                    == riffdb_storage_api::AuthoritativeNamespaceV1::NextChangelogTransaction
+                        .metadata_key() =>
+                {
+                    riffdb_storage_api::proto_codec::decode_changelog_transaction_allocator_v3(
+                        value,
+                    )
+                    .map_err(invalid_shape)?;
+                }
                 _ => return Err(StorageValueError::InvalidShape),
             }
         }
