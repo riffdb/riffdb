@@ -139,3 +139,12 @@ directives:         # standing maintainer directives; ./scripts/brief prints the
       `Decisions:` in the commit message and `decisions_taken:` in the closure block. If yes,
       propose a record and stop. Questions that are not stop conditions are batched into the
       closure report, not raised mid-package."
+  - id: D-004
+    since: "2026-09-14"
+    text: "A closed set fixed by an accepted record (attribution tags, enum variants, namespace
+      classes, error codes) may be completed by its implementing package, without asking, until
+      the format's first durable write outside the test tree. The completion is recorded as an
+      amendment in the record's own commit, touching only adr/**, in the form
+      `Amendment N (completed by WP-NNN on <date>): <what was added and why>`, and is listed in
+      `decisions_taken:`. Removing or reinterpreting a member of a closed set, or completing a
+      set after its first durable write, remains a record change that stops."

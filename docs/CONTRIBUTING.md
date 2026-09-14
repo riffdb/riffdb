@@ -149,6 +149,16 @@ a SPEC 19.6 review trigger fires and no accepted record covers the change; or
 two readings of an acceptance criterion would produce materially different
 work. Every other question is batched into the closure report.
 
+A closed set fixed by a record (attribution tags, enum variants, namespace
+classes, error codes) is almost always incomplete on first contact with the
+code. Until the format's first durable write outside the test tree, the
+implementing package may complete such a set without asking: it records the
+completion as an amendment in the record's own commit, touching only `adr/**`,
+in the form `Amendment N (completed by WP-NNN on <date>): <what was added and
+why>`, and lists it in `decisions_taken`. Removing or reinterpreting a member,
+or completing a set after its first durable write, is a record change and
+stops.
+
 ## Obligations and requirement tags
 
 An obligation is a promise a record makes that its own change does not yet
