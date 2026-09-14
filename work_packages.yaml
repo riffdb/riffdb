@@ -23807,6 +23807,10 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Simulation witness rotation preserves every historical seed, predicate and retirement.
+      Before/after replays attribute the restored heavy-torn window to 630e1a42 and six
+      moved windows to a29312ff. Three appended successors reproduce identical reports
+      through twelve reruns; no oracle, generator, bound or acceptance state changes.
     - Command receipt tests use the real validated activation tail rather than injecting
       replacement roots. Migration oracles derive exact tail and allocator advancement from
       the expected receipts; SIGKILL twins model the same lifecycle history before comparing

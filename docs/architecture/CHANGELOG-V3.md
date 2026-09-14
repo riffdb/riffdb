@@ -60,6 +60,16 @@ The SIGKILL oracle compares predeclared twins with matching lifecycle histories;
 it still compares full authority and allocator state, without excluding V3 roots.
 These are focused integration proofs, not closure of the full substrate obligations.
 
+The seeded simulation corpus retains its complete historical coordinates and
+coverage predicates. Before/after replays isolate two physical-schedule changes:
+streaming checkpoint-head updates (`630e1a42`) restore the older heavy-torn
+`0x51C2C307` witness; real V3 activation (`a29312ff`) moves six other windows.
+The appended `0x51C2C30A`, `0x51C2C404`, and `0x51C2C500` witnesses each reproduce
+identical reports through twelve reruns of the existing scout and preserve the
+heavy-torn, interrupted-commit/admission, and crash-during-recovery predicates.
+Old rotation, restoration, and commit-PRESENT retirement records remain checked;
+neither the oracle nor the workload generator, bounds, or acceptance states change.
+
 The offline retention-watermark stamp now validates retained V3 history and
 source holds on its original hardened write pin before an equal-value retry can
 return. A changed watermark prepares its exact expected-state `RetentionPrune`
