@@ -4740,6 +4740,12 @@ impl RedbStore {
         let database_id = read_identity_from_read_transaction(&transaction)?;
         let application_frontier = read_commit_tail(&transaction)?;
         let administration_frontier = read_administration_tail(&transaction)?;
+        // Offline maintenance has no preceding operational startup session.
+        // Validate the retained V3 source chain before granting its first write.
+        if crate::changelog_v3_journal::has_recovery_roots(&transaction)? {
+            crate::changelog_v3_roots::validate_retained_history(&transaction)?
+                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        }
         drop(transaction);
         let journal = crate::journal::verify_retention_journal_rebase_with_media(
             self.shared.journal_media.as_ref(),
