@@ -251,7 +251,25 @@ pub(crate) fn contract_migration_stage_ports_fixture(
             .map_err(precommit_storage_error)?;
     }
     drop(entities);
-    transaction.commit().map_err(commit_error)?;
+    store.shared.commit_durable(transaction)?;
+    // Isolated migration fixtures exercise the current receipt substrate, not
+    // a pre-activation path that can conceal allocator/tail integration bugs.
+    let mut activation = store
+        .shared
+        .database
+        .begin_write()
+        .map_err(transaction_error)?;
+    crate::changelog_v3_activation::stage_validated(
+        &mut activation,
+        riffdb_storage_api::ChangelogLineageV3::new(
+            database_id,
+            1,
+            riffdb_storage_api::LeadershipEpochV1::initial(),
+        )
+        .map_err(crate::changelog_v3_write::value_error)?,
+        riffdb_types::DualFrontier::INITIAL,
+    )?;
+    store.shared.commit_durable(activation)?;
     Ok(crate::store::RedbOperationalPorts {
         shared: store.shared,
     })

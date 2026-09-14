@@ -23807,6 +23807,11 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Private contract-migration witnesses bind the exact original V3 prefix and validate
+      its complete retained successor chain. Only the V3 tail and allocator may advance;
+      lineage, anchor, minimum resume and all other immutable metadata/history remain checked.
+      Resume reuses the predecessor witness rather than accepting the stage's newer tail
+      as its baseline. Existing isolated migration fixtures now activate V3 before batching.
     - The catalog-owned published authority cursor returns one V3-bounded row or exact
       namespace end per call, including empty namespaces, without a caller-selected subset.
       It validates the same published tail as the receipt cursor and merges journaled
