@@ -98,6 +98,9 @@ mod v3;
 #[path = "../startup_v3_retention_tests.rs"]
 mod v3_retention;
 
+#[path = "../startup_v3_migration_tests.rs"]
+mod v3_migration;
+
 fn database_id(seed: u8) -> DatabaseId {
     DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [seed; 10])
         .expect("valid deterministic UUIDv7")
