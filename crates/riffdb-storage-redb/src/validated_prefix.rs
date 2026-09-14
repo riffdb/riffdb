@@ -876,8 +876,6 @@ pub(crate) fn plan_checkpoint_receipt(
         })
     };
     let mutation = if let Some(prior) = prior {
-        let previous = decode_validated_prefix_checkpoint_v2(prior.value())
-            .map_err(crate::error::codec_error)?;
         if prior.value() == encoded.as_bytes() {
             if changes.is_empty() {
                 return Ok(None);
@@ -885,14 +883,26 @@ pub(crate) fn plan_checkpoint_receipt(
             // Reusing the identical proof cannot authorize repairing its rows.
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
-        let previous = previous.value().base();
-        if base.previous_checkpoint_hash() != Some(previous.checkpoint_hash())
-            || previous.database_id() != base.database_id()
-            || previous.history_incarnation() != base.history_incarnation()
-            || previous.checkpoint_commit_sequence() > base.checkpoint_commit_sequence()
-            || previous.audit_sequence_bound() > base.audit_sequence_bound()
-        {
-            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        match decode_validated_prefix_checkpoint_v2(prior.value()) {
+            Ok(previous) => {
+                let previous = previous.value().base();
+                if base.previous_checkpoint_hash() != Some(previous.checkpoint_hash())
+                    || previous.database_id() != base.database_id()
+                    || previous.history_incarnation() != base.history_incarnation()
+                    || previous.checkpoint_commit_sequence() > base.checkpoint_commit_sequence()
+                    || previous.audit_sequence_bound() > base.audit_sequence_bound()
+                {
+                    return Err(storage_error(StorageErrorKind::InvariantViolation));
+                }
+            }
+            Err(_) => {
+                // ADR-0019 A1: an invalid optional proof is ignored, not trusted.
+                // The existing validated builder starts a new proof chain, but
+                // these exact invalid bytes remain the replacement precondition.
+                if base.previous_checkpoint_hash().is_some() {
+                    return Err(storage_error(StorageErrorKind::InvariantViolation));
+                }
+            }
         }
         AuthoritativeMutationV3::replace(
             N::ValidatedPrefixCheckpoint,
@@ -901,14 +911,10 @@ pub(crate) fn plan_checkpoint_receipt(
             encoded.as_bytes(),
         )
     } else {
-        if base.previous_checkpoint_hash().is_some()
-            || transaction
-                .open_table(VALIDATED_PREFIX_ENTITY_HEADS)
-                .map_err(table_error)?
-                .len()
-                .map_err(precommit_storage_error)?
-                != 0
-        {
+        // ADR-0085 retention deletes the singleton first, retaining its old
+        // snapshot until complete validation rebuilds the optional proof. The
+        // bounded head planner above validates and receipts every net change.
+        if base.previous_checkpoint_hash().is_some() {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
         AuthoritativeMutationV3::put(

@@ -23807,6 +23807,11 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - The V3 checkpoint writer preserves ADR-0019/0085 optional-proof fallback using
+      exact invalid pre-image replacement or absent-key insertion after validation.
+      Retention need not erase the old head snapshot; its bounded validated net changes
+      share the original hardened receipt transaction. Valid-prior identity, parent and
+      monotonicity checks and authoritative corruption refusal remain unchanged.
     - ADR-0186 Amendment 1 uses CommandAdmission tag 32 and CommandExecutionFailure tag 33
       for the existing admission-only and terminal-failure transactions. Neither assigns an
       application sequence; only same-transaction service audit advances administration.

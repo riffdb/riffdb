@@ -134,6 +134,95 @@ fn actual_prefix_checkpoint_materializes_its_exact_receipt_with_one_commit() {
 }
 
 #[test]
+fn invalid_optional_checkpoint_replacement_keeps_exact_preimage_and_single_commit() {
+    let scope = crate::test_path::ScopedDirectory::new("v3-prefix-invalid-proof");
+    let store = initialized(&scope.join("db.redb"));
+    let read = store.shared.database.begin_read().unwrap();
+    let retained = crate::startup::read_retained_metadata_pub(&read).unwrap();
+    drop(read);
+    let damage = |bytes: &[u8]| {
+        let write = store.shared.database.begin_write().unwrap();
+        write
+            .open_table(META)
+            .unwrap()
+            .insert(META_VALIDATED_PREFIX_CHECKPOINT, bytes)
+            .unwrap();
+        write.commit().unwrap();
+    };
+    damage(b"invalid-optional-proof");
+    let pin = store.shared.database.begin_read().unwrap();
+    let mut walked = 0;
+    let checkpoint = build_checkpoint_from_snapshot(
+        &pin,
+        &retained,
+        CheckpointCountSource::DurableLengths {
+            execution_failed_rows: 0,
+        },
+        &mut walked,
+    )
+    .unwrap();
+    assert_eq!(checkpoint.base().previous_checkpoint_hash(), None);
+    let receipt = plan_checkpoint_receipt(&pin, &checkpoint).unwrap().unwrap();
+    assert_eq!(receipt.mutations().len(), 1);
+    assert!(receipt.mutations()[0].matches_prior(Some(b"invalid-optional-proof")));
+    assert!(!receipt.mutations()[0].matches_prior(None));
+    let epoch = store.shared.durable_commit_epoch();
+    damage(b"different-invalid-proof");
+    assert!(
+        crate::changelog_v3_write::PreparedImmediateReceipt::apply(
+            &store.shared.database,
+            crate::RedbCommitProfile::Hardened,
+            &receipt,
+        )
+        .is_err(),
+        "a changed invalid preimage must not be overwritten by a stale plan"
+    );
+    assert_eq!(store.shared.durable_commit_epoch(), epoch);
+    write_validated_prefix_checkpoint(
+        &store.shared,
+        &retained,
+        CheckpointPurpose::StartupValidation,
+    )
+    .unwrap();
+    assert_eq!(store.shared.durable_commit_epoch(), epoch + 1);
+    let latest = store.shared.database.begin_read().unwrap();
+    let history = crate::changelog_v3_roots::validate_retained_history(&latest)
+        .unwrap()
+        .unwrap();
+    assert_eq!(history.tail().sequence().get(), 2);
+    let rows = latest
+        .open_table(crate::changelog_v3_activation::HISTORY)
+        .unwrap();
+    let bytes = rows.get(2u64.to_be_bytes().as_slice()).unwrap().unwrap();
+    let actual = AuthoritativeTransactionV3::decode(bytes.value()).unwrap();
+    assert_eq!(
+        actual.attribution(),
+        ChangelogAttributionV3::ValidatedPrefixCheckpoint
+    );
+    assert_eq!(
+        actual.binding().predecessor_frontier,
+        actual.binding().covered_frontier
+    );
+    assert!(actual.mutations()[0].matches_prior(Some(b"different-invalid-proof")));
+    let meta = latest.open_table(META).unwrap();
+    let proof = meta.get(META_VALIDATED_PREFIX_CHECKPOINT).unwrap().unwrap();
+    assert_eq!(actual.mutations()[0].value(), Some(proof.value()));
+    assert_eq!(
+        decode_validated_prefix_checkpoint_v2(proof.value())
+            .unwrap()
+            .value(),
+        &checkpoint
+    );
+    write_validated_prefix_checkpoint(&store.shared, &retained, CheckpointPurpose::TestFixture)
+        .unwrap();
+    assert_eq!(
+        store.shared.durable_commit_epoch(),
+        epoch + 1,
+        "exact retry is read-only"
+    );
+}
+
+#[test]
 fn prefix_checkpoint_receipt_preserves_existing_precommit_and_unknown_hooks() {
     for committed in [false, true] {
         let scope = crate::test_path::ScopedDirectory::new("v3-prefix-fault");
@@ -248,6 +337,18 @@ fn prefix_checkpoint_receipt_process_child() {
         return;
     };
     let store = initialized(std::path::Path::new(&path));
+    if std::env::var("RIFFDB_V3_PREFIX_INVALID").as_deref() == Ok("true") {
+        let write = store.shared.database.begin_write().unwrap();
+        write
+            .open_table(META)
+            .unwrap()
+            .insert(
+                META_VALIDATED_PREFIX_CHECKPOINT,
+                b"invalid-optional-proof".as_slice(),
+            )
+            .unwrap();
+        write.commit().unwrap();
+    }
     let read = store.shared.database.begin_read().unwrap();
     let retained = crate::startup::read_retained_metadata_pub(&read).unwrap();
     drop(read);
@@ -262,6 +363,15 @@ fn prefix_checkpoint_receipt_process_child() {
 
 #[test]
 fn actual_prefix_checkpoint_crashes_preserve_original_or_complete_receipted_proof() {
+    checkpoint_crashes(false);
+}
+
+#[test]
+fn invalid_optional_checkpoint_crashes_preserve_exact_preimage_or_atomic_replacement() {
+    checkpoint_crashes(true);
+}
+
+fn checkpoint_crashes(invalid: bool) {
     for edge in ["mutations", "receipt", "roots", "committed"] {
         let scope = crate::test_path::ScopedDirectory::new("v3-prefix-crash");
         let path = scope.join("db.redb");
@@ -272,6 +382,7 @@ fn actual_prefix_checkpoint_crashes_preserve_original_or_complete_receipted_proo
                 "--nocapture",
             ])
             .env("RIFFDB_V3_PREFIX_PATH", &path)
+            .env("RIFFDB_V3_PREFIX_INVALID", invalid.to_string())
             .env("RIFFDB_V3_DIRECT_EDGE", edge)
             .status()
             .unwrap();
@@ -290,7 +401,10 @@ fn actual_prefix_checkpoint_crashes_preserve_original_or_complete_receipted_proo
             );
             let meta = read.open_table(META).unwrap();
             let proof = meta.get(META_VALIDATED_PREFIX_CHECKPOINT).unwrap();
-            assert_eq!(proof.is_some(), committed);
+            assert_eq!(proof.is_some(), committed || invalid);
+            if !committed && invalid {
+                assert_eq!(proof.as_ref().unwrap().value(), b"invalid-optional-proof");
+            }
             let rows = read
                 .open_table(crate::changelog_v3_activation::HISTORY)
                 .unwrap();
@@ -306,6 +420,10 @@ fn actual_prefix_checkpoint_crashes_preserve_original_or_complete_receipted_proo
                     ChangelogAttributionV3::ValidatedPrefixCheckpoint
                 );
                 assert_eq!(receipt.mutations().len(), 1);
+                assert!(
+                    receipt.mutations()[0]
+                        .matches_prior(invalid.then_some(b"invalid-optional-proof".as_slice()))
+                );
                 assert_eq!(
                     receipt.mutations()[0].value(),
                     Some(proof.as_ref().unwrap().value())
@@ -315,6 +433,39 @@ fn actual_prefix_checkpoint_crashes_preserve_original_or_complete_receipted_proo
                 assert_eq!(&observed, previous);
             }
             previous = Some(observed);
+        }
+        let store = crate::RedbStore::open(&path).unwrap();
+        let read = store.shared.database.begin_read().unwrap();
+        let retained = crate::startup::read_retained_metadata_pub(&read).unwrap();
+        drop(read);
+        for _ in 0..2 {
+            write_validated_prefix_checkpoint(
+                &store.shared,
+                &retained,
+                CheckpointPurpose::TestFixture,
+            )
+            .unwrap();
+            let read = store.shared.database.begin_read().unwrap();
+            let history = crate::changelog_v3_roots::validate_retained_history(&read)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                history.tail().sequence().get(),
+                2,
+                "retry allocates exactly once"
+            );
+            let bytes = read
+                .open_table(crate::changelog_v3_activation::HISTORY)
+                .unwrap()
+                .get(2u64.to_be_bytes().as_slice())
+                .unwrap()
+                .unwrap()
+                .value()
+                .to_vec();
+            if let Some(Some(prior)) = &previous {
+                assert_eq!(&bytes, prior, "retry preserves the original receipt bytes");
+            }
+            previous = Some(Some(bytes));
         }
     }
 }
