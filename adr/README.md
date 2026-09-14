@@ -258,6 +258,7 @@ record with no front matter.
 | [0221](0221-atomic-no-replace-columnar-candidate-retirement.md) | Atomic No-Replace Columnar Candidate Retirement | Accepted | guarantee |
 | [0222](0222-exact-provider-v2-lowering-path-authority.md) | Exact Provider V2 Lowering Path Authority | Accepted | guarantee |
 | [0223](0223-epoch-two-application-source-and-lock-retirement.md) | Epoch-Two Application Source and Lock Retirement | Accepted | guarantee |
+| [0226](0226-rustls-security-patch-within-the-reviewed-tls-boundary.md) | Rustls Security Patch Within The Reviewed TLS Boundary | Proposed | guarantee |
 <!-- adr-index:end -->
 
 The human architecture review on 2026-07-12 approved the direction represented
