@@ -22,7 +22,7 @@ fn decode_hex(text: &str) -> Vec<u8> {
 }
 
 #[test]
-fn changelog_frozen_vectors_preserve_exact_v1_v2_and_refuse_v3_downgrade() {
+fn changelog_v3_is_only_production_replication_identity() {
     let v1 = decode_hex(include_str!(
         "../../../fixtures/replication/changelog-frame-v1.hex"
     ));
@@ -89,6 +89,79 @@ fn changelog_frozen_vectors_preserve_exact_v1_v2_and_refuse_v3_downgrade() {
         downgraded[checksum_offset..].copy_from_slice(&checksum);
         assert!(ChangelogFrameV3::decode(&downgraded).is_err());
     }
+    assert_no_legacy_production_consumers();
+}
+
+fn assert_no_legacy_production_consumers() {
+    use std::{fs, path::Path};
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    // Codecs retain their original reader/round-trip machinery. No other
+    // production crate may consume the legacy frame or stream types, even if
+    // it would otherwise be hidden behind an unexported module or feature.
+    let mut pending = Vec::new();
+    for entry in fs::read_dir(root.join("crates")).unwrap() {
+        let source = entry.unwrap().path().join("src");
+        if source.is_dir() {
+            pending.push(source);
+        }
+    }
+    let mut checked = 0;
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                if path.file_name().unwrap() != "tests" {
+                    pending.push(path);
+                }
+                continue;
+            }
+            if path.extension().is_none_or(|extension| extension != "rs")
+                || path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .ends_with("_tests.rs")
+                || path == root.join("crates/riffdb-storage-api/src/changelog.rs")
+                || path == root.join("crates/riffdb-storage-api/src/changelog_v2.rs")
+            {
+                continue;
+            }
+            let source = fs::read_to_string(&path).unwrap();
+            let production = source.split("\n#[cfg(test)]\nmod tests").next().unwrap();
+            for forbidden in [
+                "ChangelogFrameV1",
+                "ChangelogFrameV2",
+                "ChangelogStreamValidatorV1",
+                "ChangelogStreamValidatorV2",
+                "ChangelogFrameConsumer",
+                "EntityReplicaBootstrapManifestV2",
+                "EntityReplicaBootstrapRowV2",
+                "DeleteAwareEntityFollowerV2",
+                "start_changelog_emitter",
+            ] {
+                assert!(
+                    !production.contains(forbidden),
+                    "{} consumes {forbidden}",
+                    path.display()
+                );
+            }
+            checked += 1;
+        }
+    }
+    assert!(
+        checked > 100,
+        "the workspace production scan must not be empty"
+    );
+    let adapter =
+        fs::read_to_string(root.join("crates/riffdb-storage-redb/src/changelog.rs")).unwrap();
+    assert!(adapter.contains("fn changelog_receipts_v3("));
+    assert!(adapter.contains("fn authoritative_state_v3("));
+    let compatibility =
+        fs::read_to_string(root.join("tests/storage_recovery/changelog_compatibility.rs")).unwrap();
+    assert!(compatibility.contains("fn start_changelog_emitter("));
+    assert!(compatibility.contains("fn start_changelog_emitter_v2("));
+    // WP-746/749 own future activation. This proves the present production
+    // boundary plus exact codec custody; it does not claim an RPC is active.
 }
 
 #[test]

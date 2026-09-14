@@ -23807,6 +23807,10 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - Obligation names identify the actual semantic command/checkpoint/recovery and frozen
+      codec tests. The command proof also runs its process-crash matrix; the compatibility
+      proof scans production source for legacy frame consumers while retaining the original
+      codecs and test-only emitters. This does not claim activation of WP-746 or WP-749.
     - Source-hold registration, monotonic follower/archive acknowledgement and materialized
       reclamation remain crate-private, with no application exports or active scheduler.
       The existing drained lease, coverage rebase and durable publication owner enclose
