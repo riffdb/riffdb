@@ -38,7 +38,7 @@ pub(super) fn classify_write(
     Ok(Some(LayoutState::Initialized))
 }
 
-fn exact_current_tables(
+pub(crate) fn exact_current_tables(
     tables: &BTreeSet<String>,
     multimaps: &BTreeSet<String>,
 ) -> Result<(), StorageError> {

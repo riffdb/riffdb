@@ -17,7 +17,7 @@ mod graceful_close;
 mod changelog_lifecycle;
 
 #[path = "store_v3_layout.rs"]
-mod v3_layout;
+pub(crate) mod v3_layout;
 
 #[cfg(test)]
 #[path = "store_changelog_lifecycle_tests.rs"]

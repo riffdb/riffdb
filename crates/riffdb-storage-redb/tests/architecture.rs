@@ -54,6 +54,54 @@ fn without_whitespace(source: &str) -> String {
 }
 
 #[test]
+// req: REP-003, REC-001, PERF-007
+fn v3_startup_streams_retained_history_only_after_the_bounded_clean_return() {
+    let startup = production_source(crate_root().join("src/startup.rs"));
+    let begin = startup
+        .split_once("fn begin_structural_evidence_for(")
+        .unwrap()
+        .1
+        .split_once("impl StructuralEvidenceSession")
+        .unwrap()
+        .0;
+    let clean = begin
+        .find("return Ok(RedbStructuralEvidenceSession")
+        .unwrap();
+    let full = begin
+        .find("validate_retained_history(&transaction)")
+        .unwrap();
+    let retention = begin
+        .find("crate::retention::load_watermark(&transaction)")
+        .unwrap();
+    assert!(clean < full && full < retention);
+    assert_eq!(begin.matches("validate_retained_history(").count(), 1);
+    assert!(!begin.contains("begin_write("));
+    assert!(!begin.contains(".commit("));
+    let inventory = startup
+        .split_once("fn validate_table_inventory(")
+        .unwrap()
+        .1
+        .split_once("fn table_len(")
+        .unwrap()
+        .0;
+    assert!(inventory.contains("crate::store::v3_layout::exact_current_tables"));
+    assert!(inventory.contains("read_checkpoint_roots(transaction)"));
+    assert!(!inventory.contains("validate_retained_history"));
+    let roots = production_source(crate_root().join("src/changelog_v3_roots.rs"));
+    let full = roots
+        .split_once("pub(crate) fn validate_retained_history(")
+        .unwrap()
+        .1
+        .split_once("pub(crate) fn read_checkpoint_roots_for_write(")
+        .unwrap()
+        .0;
+    assert!(full.contains("table.iter()"));
+    assert!(!full.contains(".collect"));
+    assert!(!full.contains(".to_vec()"));
+    assert!(!full.contains("begin_read("));
+}
+
+#[test]
 // req: STO-023, REC-001, REC-002, REC-004, PERF-019
 fn graceful_close_drops_immutable_classification_before_one_final_write_transaction() {
     let store_owner = production_source(crate_root().join("src/store.rs"));
