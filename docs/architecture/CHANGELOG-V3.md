@@ -70,6 +70,24 @@ heavy-torn, interrupted-commit/admission, and crash-during-recovery predicates.
 Old rotation, restoration, and commit-PRESENT retirement records remain checked;
 neither the oracle nor the workload generator, bounds, or acceptance states change.
 
+`PublishedDurableSnapshot::authoritative_state_v3` now exposes a read-only,
+catalog-owned state cursor at one exact V3 history fence. It returns one bounded
+row at a time and an explicit end for every authoritative namespace, including
+empty namespaces. The caller cannot select a partial inventory. Local derived
+and replication-control rows are excluded according to the reviewed catalog;
+unknown tables or metadata keys, missing tables and inactive V3 state refuse.
+Checkpoint row bounds are checked before copying. Journaled namespaces and
+metadata use the original immutable overlay's overwrite/tombstone semantics;
+other namespaces use that same captured checkpoint. Errors remain fused and
+redacted, and the cursor owns no writer, I/O lane or durability decision.
+
+The populated inventory proof covers each authoritative table/key domain and
+the reviewed fixture. Real published command tests compare the entire inventory
+against exact receipt replay through journal overwrite/delete and checkpoint;
+direct-receipt tests preserve old pinned state through later mutation. These
+are internal substrate readers, not an activated bootstrap protocol, permission
+to install a database, or closure of the remaining reclamation obligations.
+
 The offline retention-watermark stamp now validates retained V3 history and
 source holds on its original hardened write pin before an equal-value retry can
 return. A changed watermark prepares its exact expected-state `RetentionPrune`

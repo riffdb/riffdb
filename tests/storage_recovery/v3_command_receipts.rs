@@ -88,6 +88,67 @@ fn latest(receiver: &mpsc::Receiver<PublishedFrontierAdvancement>) -> PublishedF
         .expect("known-durable publication is synchronous with completion")
 }
 
+type AuthorityRows = BTreeMap<(N, Vec<u8>), Vec<u8>>;
+
+fn authority_state(pin: &PublishedFrontierAdvancement) -> (ChangelogHistoryStateV3, AuthorityRows) {
+    use riffdb_storage_api::{AuthoritativeStateStepV3, ReplicationAuthorityClassV1};
+    let mut cursor = pin.snapshot().authoritative_state_v3().unwrap();
+    let history = cursor.history();
+    let mut namespaces = N::ALL.into_iter().filter(|namespace| {
+        namespace.class() == ReplicationAuthorityClassV1::ReplicatedAuthoritative
+    });
+    let mut namespace = namespaces.next();
+    let mut rows = AuthorityRows::new();
+    let mut previous = None;
+    while let Some(step) = cursor.next_item().unwrap() {
+        match step {
+            AuthoritativeStateStepV3::Row(row) => {
+                assert_eq!(Some(row.namespace()), namespace);
+                let key = (row.namespace(), row.key().to_vec());
+                assert!(previous.as_ref().is_none_or(|prior| prior < &key));
+                assert!(rows.len() < 512, "bounded command fixture authority");
+                assert!(rows.insert(key.clone(), row.value().to_vec()).is_none());
+                previous = Some(key);
+            }
+            AuthoritativeStateStepV3::EndNamespace(ended) => {
+                assert_eq!(Some(ended), namespace);
+                namespace = namespaces.next();
+            }
+        }
+    }
+    assert!(
+        namespace.is_none(),
+        "every authority namespace has an exact end"
+    );
+    assert!(cursor.next_item().unwrap().is_none());
+    (history, rows)
+}
+
+fn assert_exact_authority_tail(
+    before: &PublishedFrontierAdvancement,
+    after: &PublishedFrontierAdvancement,
+) {
+    let (mut history, mut replayed) = authority_state(before);
+    let (covered, expected) = authority_state(after);
+    for receipt in receipts(after, history) {
+        for mutation in receipt.mutations() {
+            let key = (mutation.namespace(), mutation.key().to_vec());
+            assert!(mutation.matches_prior(replayed.get(&key).map(Vec::as_slice)));
+            if let Some(value) = mutation.value() {
+                replayed.insert(key, value.to_vec());
+            } else {
+                assert!(replayed.remove(&key).is_some());
+            }
+        }
+        history = history.advance(&receipt).unwrap();
+    }
+    assert_eq!(history.tail(), covered.tail());
+    assert_eq!(
+        replayed, expected,
+        "exact comparison includes every authoritative namespace"
+    );
+}
+
 fn entity_change<'a>(
     receipt: &'a AuthoritativeTransactionV3,
     key: &[u8],
@@ -224,6 +285,12 @@ fn real_v3_command_group_and_journal_overwrite_delete_keep_original_receipts_aft
     );
     assert_eq!(DeferredCommandEpoch::fence(epoch).unwrap().len(), 1);
     let journal_pin = latest(&receiver);
+    // Full catalog state, including journal-overlaid allocator metadata, must
+    // equal exact receipt replay. A latest-checkpoint-only scan loses these
+    // overwritten values and tombstones even though its receipt cursor works.
+    assert_exact_authority_tail(&group_pin, &overwrite_pin);
+    assert_exact_authority_tail(&overwrite_pin, &journal_pin);
+    assert_exact_authority_tail(&group_pin, &journal_pin);
     let rows = receipts(&journal_pin, anchor);
     assert_eq!(rows.len(), group_rows.len() + 2);
     let overwrite = &rows[rows.len() - 2];
@@ -261,6 +328,7 @@ fn real_v3_command_group_and_journal_overwrite_delete_keep_original_receipts_aft
         .map(|r| (r.binding().sequence.get(), r.encode().unwrap()))
         .collect();
     assert!(ports.write_validated_prefix_checkpoint().unwrap());
+    assert_exact_authority_tail(&group_pin, &journal_pin);
     assert_eq!(
         receipts(&journal_pin, anchor),
         rows,

@@ -1896,6 +1896,35 @@ fn v3_receipt_cursor_has_no_writer_or_journal_io_capability() {
 }
 
 #[test]
+// req: REP-003, PERF-007
+fn v3_authority_state_cursor_keeps_only_the_catalog_and_immutable_publication_pin() {
+    let source = production_source(crate_root().join("src/changelog_v3_state.rs"));
+    for forbidden in [
+        "SharedRedb",
+        "begin_read(",
+        "begin_write(",
+        "mutation_gate",
+        "journal_runtime",
+        "JournalLane",
+        "std::fs",
+        "std::net",
+        "commit_durable(",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "authority state cursor reaches {forbidden}"
+        );
+    }
+    assert!(source.contains("N::ALL"));
+    assert!(source.contains("root: Arc<CheckpointRoot>"));
+    assert!(source.contains("view: Option<Arc<RedbCompositeReadView>>"));
+    assert!(source.contains("MAX_COMPOSITE_OVERLAY_TRANSITIONS"));
+    assert!(source.contains("Class::ReplicatedAuthoritative"));
+    assert!(source.contains("EndNamespace"));
+    assert!(source.contains("failure: Option<ChangelogCursorErrorV3>"));
+}
+
+#[test]
 // req: REP-003, REC-001, STO-012
 fn watermark_receipt_validates_before_noop_and_seals_the_original_hardened_transaction() {
     let backup = production_source(crate_root().join("src/backup.rs"));

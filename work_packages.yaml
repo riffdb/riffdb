@@ -23807,6 +23807,12 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - The catalog-owned published authority cursor returns one V3-bounded row or exact
+      namespace end per call, including empty namespaces, without a caller-selected subset.
+      It validates the same published tail as the receipt cursor and merges journaled
+      namespaces through the existing immutable overlay; other rows use the same checkpoint.
+      Unknown/missing domains refuse, errors fuse, and borrowed row bounds precede copying.
+      The reader grants no hold, bootstrap installation, durability or mutation authority.
     - Simulation witness rotation preserves every historical seed, predicate and retirement.
       Before/after replays attribute the restored heavy-torn window to 630e1a42 and six
       moved windows to a29312ff. Three appended successors reproduce identical reports

@@ -3,6 +3,10 @@
 //! ADR-0207 keeps legacy framing in compatibility tests only. Application
 //! export remains a separate supported surface, unchanged by this adapter.
 
+#[cfg(test)]
+#[path = "changelog_v3_state_tests.rs"]
+mod state_tests;
+
 use riffdb_storage_api::{CompositeTableV1, PublishedDurableSnapshot, StorageError};
 use riffdb_types::{AdministrationSequence, CommitSequence};
 
@@ -21,6 +25,15 @@ impl RedbPublishedSnapshot {
 }
 
 impl PublishedDurableSnapshot for RedbPublishedSnapshot {
+    fn authoritative_state_v3(
+        &self,
+    ) -> Result<
+        Box<dyn riffdb_storage_api::AuthoritativeStateCursorV3>,
+        riffdb_storage_api::ChangelogCursorErrorV3,
+    > {
+        crate::changelog_v3_cursor::state::open(&self.access)
+    }
+
     fn changelog_receipts_v3(
         &self,
         lineage: riffdb_storage_api::ChangelogLineageV3,

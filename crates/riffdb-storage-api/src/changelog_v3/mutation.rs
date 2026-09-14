@@ -72,7 +72,7 @@ impl AuthoritativeMutationV3 {
         })
     }
 
-    fn validate(
+    pub(super) fn validate(
         namespace: AuthoritativeNamespaceV1,
         key: &[u8],
         value_len: usize,
