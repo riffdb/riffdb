@@ -10,6 +10,20 @@ leave physical rows unchanged without creating a journal. This is not fresh
 activation or complete startup validation: those owners and the all-roots-erased
 current-registry refusal still require integration before WP-772 can close.
 
+For an already-activated database, the actual structural startup session now
+uses that same catalog-derived table inventory and the closed V3 metadata
+decoders. When CLEAN is unavailable, it streams the entire retained receipt
+interval from the session's pinned view before any successful validation can
+write a prefix checkpoint or DIRTY transition. Valid CLEAN still takes the
+bounded-root branch without that history walk. Tests run full validation and
+two bounded clean reopen/consumption cycles with exact retained receipt bytes;
+missing or corrupt interior history refuses before writes. Eight process exits
+in the real startup/close orchestration prove old-or-complete checkpoint and
+lifecycle receipts, repeated dormant reopen, and actual validation retry. These
+fixtures start from isolated activation with empty entity and source-hold
+populations. They do not prove fresh activation, source-hold row semantics,
+every authoritative population, or the remaining retention/rotation obligations.
+
 WP-772 is in progress. The storage API now has a closed namespace catalog,
 checked physical transaction allocator, expected-state mutation values, and
 V3 receipt/frame codecs. These internal values do not activate a production

@@ -719,6 +719,14 @@ impl RedbStore {
                 terminal_execution_failure_rows: 0,
             });
         }
+        // The CLEAN branch above checks bounded terminal roots only. A full
+        // session instead validates every retained receipt from THIS pin before
+        // any prefix checkpoint or DIRTY write can follow successful evidence.
+        // Inactive routing remains transitional until fresh activation lands.
+        if crate::changelog_v3_journal::has_recovery_roots(&transaction)? {
+            crate::changelog_v3_roots::validate_retained_history(&transaction)?
+                .ok_or_else(corrupt)?;
+        }
         // Re-validate retention watermark bindings (never advance). Verify the
         // tombstone chain covers [1, watermark] when pruned history exists —
         // against the rooting registry digest RECORDED in the watermark
@@ -3268,6 +3276,11 @@ fn validate_table_inventory(transaction: &ReadTransaction) -> Result<(), Storage
         .map_err(precommit_storage_error)?
         .map(|table| table.name().to_owned())
         .collect::<BTreeSet<_>>();
+    if crate::changelog_v3_journal::has_recovery_roots(transaction)? {
+        crate::store::v3_layout::exact_current_tables(&tables, &multimaps)?;
+        crate::changelog_v3_roots::read_checkpoint_roots(transaction)?.ok_or_else(corrupt)?;
+        return Ok(());
+    }
     if !multimaps.is_empty() {
         return Err(storage_error(StorageErrorKind::IncompatibleFormat));
     }
@@ -3308,8 +3321,10 @@ fn inspect_header(
     let meta = transaction.open_table(META).map_err(table_error)?;
     let mut seen = BTreeSet::new();
     for entry in meta.iter().map_err(precommit_storage_error)? {
-        let (key, _) = entry.map_err(precommit_storage_error)?;
-        if !META_KEYS.contains(&key.value()) || !seen.insert(key.value().to_owned()) {
+        let (key, value) = entry.map_err(precommit_storage_error)?;
+        let known = META_KEYS.contains(&key.value())
+            || crate::changelog_v3_roots::validate_metadata_entry(key.value(), value.value())?;
+        if !known || !seen.insert(key.value().to_owned()) {
             return Ok(Some(authoritative(StructuralFindingCode::MalformedRecord)));
         }
     }
@@ -3433,7 +3448,7 @@ fn inspect_meta_row(key: &str, value: &[u8], database_id: DatabaseId) -> Option<
         // bytes merely disqualify the fast path and are reset after complete
         // validation (ADR-0157 section 4).
         META_CLEAN_CLOSE_LIFECYCLE => true,
-        _ => false,
+        _ => crate::changelog_v3_roots::validate_metadata_entry(key, value).unwrap_or(false),
     };
     (!valid).then(|| authoritative(StructuralFindingCode::MalformedRecord))
 }
