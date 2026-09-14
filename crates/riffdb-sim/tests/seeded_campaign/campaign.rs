@@ -916,6 +916,7 @@ fn wp725_commit_present_window_sweep() {
 }
 
 #[test]
+// req: SIM-004, REC-001
 fn per_merge_sweep_holds_the_oracle_and_reaches_the_swept_territory() {
     let mut total = CampaignReport::default();
     let mut completed = 0_u64;
@@ -957,12 +958,13 @@ fn per_merge_sweep_holds_the_oracle_and_reaches_the_swept_territory() {
             .max(report.max_torn_in_one_recovery);
     }
     // The targeted interrupted-commit witness, rotated to 0x51C2_C406 when
-    // fa5d906c moved the operation stream off 0x51C2_C147. It is no longer a
+    // fa5d906c moved the stream and to 0x51C2_C404 when a29312ff activated V3.
+    // Both retain the exact interrupted-commit/admission territory. It is not a
     // commit-PRESENT witness: that territory was retired rather than rotated,
     // because it is unreachable at every crash placement rather than merely
     // moved. See `corpus::REGRESSION_CORPUS` for both receipts.
     let interrupted_commit =
-        match run_campaign_outcome(0x51C2_C406, crate::subsumption::COMMIT_PRESENT_ARMS_CONFIG) {
+        match run_campaign_outcome(0x51C2_C404, crate::subsumption::COMMIT_PRESENT_ARMS_CONFIG) {
             CampaignOutcome::Completed(report) => report,
             CampaignOutcome::WedgedByRedb410FileGrowth { .. } => {
                 panic!("targeted interrupted-commit witness wedged instead of completing")
@@ -984,6 +986,10 @@ fn per_merge_sweep_holds_the_oracle_and_reaches_the_swept_territory() {
     assert!(
         interrupted_commit.in_flight_admit_present + interrupted_commit.in_flight_admit_absent > 0,
         "targeted recovery did not resolve an interrupted phase-one admission"
+    );
+    assert_eq!(
+        interrupted_commit.in_flight_commit_present, 0,
+        "the rotated witness must not reopen retired commit-PRESENT territory"
     );
     assert!(
         completed + wedged_excluded == SWEEP_SEEDS,

@@ -127,6 +127,36 @@ pub(crate) struct CorpusWitnessRotation {
     /// so the corpus records the whole history rather than dropping the
     /// rotation that was true in between.
     pub restored_by: Option<&'static str>,
+    /// A later layout change moved a restored window away again. Keep the
+    /// original rotation AND restoration receipts; the successor chain still
+    /// has to end in a live witness for exactly the same territory.
+    pub restoration_moved_by: Option<&'static str>,
+}
+
+impl CorpusWitnessRotation {
+    fn currently_restored(self) -> bool {
+        self.restored_by.is_some() && self.restoration_moved_by.is_none()
+    }
+}
+
+#[test]
+fn moved_restoration_preserves_both_historical_receipts() {
+    let original = CorpusWitnessRotation {
+        successor_seed: 0x51C2_C000,
+        invalidated_by_commit: "c2bba5ce043d9b8933e432c6d2a49e5adf618985",
+        rotated: "2026-08-11",
+        restored_by: Some("fa5d906c3abc47af15590810676f27615233aef5"),
+        restoration_moved_by: None,
+    };
+    assert!(original.currently_restored());
+    let moved = CorpusWitnessRotation {
+        restoration_moved_by: Some("a29312ffbfd3cd464f4803b1a32ce8e294279d83"),
+        ..original
+    };
+    assert!(!moved.currently_restored());
+    assert_eq!(moved.restored_by, original.restored_by);
+    assert_eq!(moved.invalidated_by_commit, original.invalidated_by_commit);
+    assert_eq!(moved.successor_seed, original.successor_seed);
 }
 
 /// Receipted retirement of one expectation whose territory an intentional
@@ -176,6 +206,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             invalidated_by_commit: "c2bba5ce043d9b8933e432c6d2a49e5adf618985",
             rotated: "2026-08-11",
             restored_by: Some("c7ec046edb68fd489a7ca00f7c356f6265f979c7"),
+            restoration_moved_by: None,
         }),
         retirement: None,
     },
@@ -208,6 +239,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             // entry did not reach its territory there. The 2026-08-11 rotation
             // receipt is retained because it was true in between.
             restored_by: Some("fa5d906c3abc47af15590810676f27615233aef5"),
+            restoration_moved_by: Some("a29312ffbfd3cd464f4803b1a32ce8e294279d83"),
         }),
         retirement: None,
     },
@@ -233,6 +265,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             invalidated_by_commit: "a725142385f26326e4af014414511b71e485033e",
             rotated: "2026-08-14",
             restored_by: None,
+            restoration_moved_by: None,
         }),
         retirement: None,
     },
@@ -262,6 +295,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             // rotation receipt is retained because it was true under the
             // 4.1.0 pin; the successor witness stays in the corpus.
             restored_by: Some("c7ec046edb68fd489a7ca00f7c356f6265f979c7"),
+            restoration_moved_by: None,
         }),
         retirement: None,
     },
@@ -283,6 +317,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             invalidated_by_commit: "a725142385f26326e4af014414511b71e485033e",
             rotated: "2026-08-14",
             restored_by: Some("c7ec046edb68fd489a7ca00f7c356f6265f979c7"),
+            restoration_moved_by: None,
         }),
         retirement: None,
     },
@@ -313,6 +348,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             // truthful 2026-08-30 rotation receipt and its active successor
             // witness.
             restored_by: Some("5a136021db21a4a84b781d5cdc77d7f9d022c013"),
+            restoration_moved_by: Some("a29312ffbfd3cd464f4803b1a32ce8e294279d83"),
         }),
         retirement: None,
     },
@@ -338,6 +374,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             invalidated_by_commit: "c7ec046edb68fd489a7ca00f7c356f6265f979c7",
             rotated: "2026-08-18",
             restored_by: None,
+            restoration_moved_by: None,
         }),
         retirement: None,
     },
@@ -368,6 +405,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             // this entry did not reach its territory there. Both receipts are
             // retained; the successor stays in the corpus.
             restored_by: Some("fa5d906c3abc47af15590810676f27615233aef5"),
+            restoration_moved_by: Some("a29312ffbfd3cd464f4803b1a32ce8e294279d83"),
         }),
         retirement: None,
     },
@@ -410,6 +448,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             invalidated_by_commit: "fa5d906c3abc47af15590810676f27615233aef5",
             rotated: "2026-08-30",
             restored_by: None,
+            restoration_moved_by: None,
         }),
         retirement: None,
     },
@@ -434,6 +473,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             invalidated_by_commit: "fa5d906c3abc47af15590810676f27615233aef5",
             rotated: "2026-08-30",
             restored_by: None,
+            restoration_moved_by: None,
         }),
         retirement: None,
     },
@@ -471,7 +511,12 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             successor_seed: 0x51C2_C301,
             invalidated_by_commit: "5a136021db21a4a84b781d5cdc77d7f9d022c013",
             rotated: "2026-09-06",
-            restored_by: None,
+            // Streaming checkpoint-head updates restored this window before
+            // V3 activation: f595885a gives 23 torn decisions, its immediate
+            // successor 630e1a42 gives 34 with all four predicates holding.
+            // Activation subsequently gives 31 and keeps the same territory.
+            restored_by: Some("630e1a42bf005c7e7c52b2585d822f0f3ea3b88a"),
+            restoration_moved_by: None,
         }),
         retirement: None,
     },
@@ -493,13 +538,16 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             CorpusExpectation::InFlightCommitAbsent,
             CorpusExpectation::InFlightAdmitResolved,
         ]),
-        rotation: None,
-        // The chain ends here. Rotating again would demand a witness for a
-        // state the engine can no longer enter: a batch's engine commit is now
-        // the last fault-eligible operation of its step, so a caller-visible
-        // commit failure implies non-durability. Confirmed benign rather than
-        // silent loss -- the oracle checks every family in both directions and
-        // diverged on none of the 823 ABSENT resolutions the walk produced.
+        rotation: Some(CorpusWitnessRotation {
+            successor_seed: 0x51C2_C404,
+            invalidated_by_commit: "a29312ffbfd3cd464f4803b1a32ce8e294279d83",
+            rotated: "2026-09-14",
+            restored_by: None,
+            restoration_moved_by: None,
+        }),
+        // Only the live admission/absent territory moves. The original
+        // commit-PRESENT retirement remains asserted even on this rotated
+        // entry: V3 does not reopen the durable-but-unacknowledged interval.
         retirement: Some(CorpusTerritoryRetirement {
             closed_by_commit: "fa5d906c3abc47af15590810676f27615233aef5",
             retired: "2026-08-30",
@@ -523,7 +571,13 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             CorpusExpectation::TornDecisionsAtLeast(10),
             CorpusExpectation::InFlightAdmitResolved,
         ]),
-        rotation: None,
+        rotation: Some(CorpusWitnessRotation {
+            successor_seed: 0x51C2_C500,
+            invalidated_by_commit: "a29312ffbfd3cd464f4803b1a32ce8e294279d83",
+            rotated: "2026-09-14",
+            restored_by: None,
+            restoration_moved_by: None,
+        }),
         retirement: None,
     },
     // ---- successor appended for affine fresh-locator coverage ------------
@@ -551,6 +605,66 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             CorpusExpectation::InFlightCommitAbsent,
             CorpusExpectation::RecoveryWindowCrash,
             CorpusExpectation::InitializationBoundary,
+        ]),
+        rotation: Some(CorpusWitnessRotation {
+            successor_seed: 0x51C2_C30A,
+            invalidated_by_commit: "a29312ffbfd3cd464f4803b1a32ce8e294279d83",
+            rotated: "2026-09-14",
+            restored_by: None,
+            restoration_moved_by: None,
+        }),
+        retirement: None,
+    },
+    // V3 activation changes physical storage work, not the acceptance states.
+    // Each successor below retained identical reports through twelve reruns
+    // of the existing scout. All old coordinates and predicates remain.
+    CorpusEntry {
+        seed: 0x51C2_C30A,
+        generator_version: 1,
+        config: COMMIT_ARMS_CONFIG,
+        caught: "V3 successor for heavy torn recovery: 76 torn decisions, three \
+                 interrupted commits absent, five recovery-window crashes and \
+                 thirteen initialization survivals; oracle holds throughout, \
+                 identical counters in 12/12 reruns.",
+        pinned: "2026-09-14",
+        outcome: CorpusOutcome::Completes(&[
+            CorpusExpectation::TornDecisionsAtLeast(30),
+            CorpusExpectation::InFlightCommitAbsent,
+            CorpusExpectation::RecoveryWindowCrash,
+            CorpusExpectation::InitializationBoundary,
+        ]),
+        rotation: None,
+        retirement: None,
+    },
+    CorpusEntry {
+        seed: 0x51C2_C404,
+        generator_version: 1,
+        config: COMMIT_PRESENT_ARMS_CONFIG,
+        caught: "V3 successor for interrupted commit and admission: two commits \
+                 resolve absent, one interrupted admission resolves, 89 torn \
+                 decisions, twelve recovery-window crashes and 24 initialization \
+                 survivals; oracle holds throughout, identical in 12/12 reruns.",
+        pinned: "2026-09-14",
+        outcome: CorpusOutcome::Completes(&[
+            CorpusExpectation::InFlightCommitAbsent,
+            CorpusExpectation::InFlightAdmitResolved,
+        ]),
+        rotation: None,
+        retirement: None,
+    },
+    CorpusEntry {
+        seed: 0x51C2_C500,
+        generator_version: 1,
+        config: COMMIT_ARMS_CONFIG,
+        caught: "V3 successor for crash-during-recovery and admission: five \
+                 recovery-window crashes, 23 torn decisions, two interrupted \
+                 admissions and twelve initialization survivals; oracle holds \
+                 throughout, identical counters in 12/12 reruns.",
+        pinned: "2026-09-14",
+        outcome: CorpusOutcome::Completes(&[
+            CorpusExpectation::RecoveryWindowCrash,
+            CorpusExpectation::TornDecisionsAtLeast(10),
+            CorpusExpectation::InFlightAdmitResolved,
         ]),
         rotation: None,
         retirement: None,
@@ -687,7 +801,41 @@ fn regression_corpus_replays_and_reproduces_its_territory() {
                 "corpus seed {:#x} rotation date is required",
                 entry.seed
             );
-            if rotation.restored_by.is_some() {
+            if let Some(commit) = rotation.restoration_moved_by {
+                assert!(
+                    rotation.restored_by.is_some()
+                        && commit.len() == 40
+                        && commit.bytes().all(|byte| byte.is_ascii_hexdigit()),
+                    "a moved restoration retains its restoring and causal layout commits"
+                );
+            }
+            // Retirement still applies if the surviving territory moves.
+            // Rotating an admission witness must never reopen commit-PRESENT.
+            if let Some(retirement) = entry.retirement {
+                let CampaignOutcome::Completed(report) = &outcome else {
+                    panic!("a partly retired witness must still complete");
+                };
+                assert!(!retirement.retired_expectations.is_empty());
+                assert!(
+                    retirement.closed_by_commit.len() == 40
+                        && retirement
+                            .closed_by_commit
+                            .bytes()
+                            .all(|byte| byte.is_ascii_hexdigit())
+                );
+                assert!(!retirement.retired.is_empty() && !retirement.proof.is_empty());
+                let CorpusOutcome::Completes(expectations) = entry.outcome else {
+                    panic!("only completing territory can be partly retired");
+                };
+                for retired in retirement.retired_expectations {
+                    assert!(!expectations.contains(retired));
+                    assert!(
+                        !retired.holds(report),
+                        "retired territory reopened: {report:?}"
+                    );
+                }
+            }
+            if rotation.currently_restored() {
                 assert!(
                     outcome_holds(entry, &outcome),
                     "corpus seed {:#x} records a restoring change, so it must reach its \
@@ -858,7 +1006,7 @@ fn wp725_corpus_territory_audit() {
             entry.seed,
             entry
                 .rotation
-                .map_or("none", |rotation| if rotation.restored_by.is_some() {
+                .map_or("none", |rotation| if rotation.currently_restored() {
                     "restored"
                 } else {
                     "rotated"
