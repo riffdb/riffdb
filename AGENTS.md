@@ -36,6 +36,9 @@ The specification and accepted architecture decision records are authoritative. 
     machinery. Pillars are independently adoptable, and the changelog/export
     path out of any pillar is a supported surface, never removed to retain
     data.
+    For ADR-0207's changelog transition, V1/V2 emitters may become test-only
+    compatibility evidence. The V3 changelog substrate and supported application
+    export remain intact; application export behavior is unchanged.
 
 ## Authoritative files
 
