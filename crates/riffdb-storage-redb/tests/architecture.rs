@@ -1785,6 +1785,45 @@ fn the_changelog_emitter_can_only_read_published_durable_snapshots() {
 }
 
 #[test]
+// req: REP-003, REC-001, STO-012
+fn v3_restore_reset_uses_original_hardened_transaction_and_catalogued_local_state() {
+    let backup = production_source(crate_root().join("src/backup.rs"));
+    let stamp = backup
+        .split_once("pub fn stamp_history_incarnation(")
+        .unwrap()
+        .1
+        .split_once("pub(crate) fn stamp_retention_watermark(")
+        .unwrap()
+        .0;
+    assert_eq!(stamp.matches("begin_write(").count(), 1);
+    assert_eq!(stamp.matches("transaction.commit()").count(), 1);
+    assert!(!stamp.contains("begin_read("));
+    assert!(stamp.contains("set_two_phase_commit(true)"));
+    assert!(stamp.contains("Durability::Immediate"));
+    assert!(
+        stamp.find("PreparedRestoreAnchor::prepare").unwrap()
+            < stamp.find("if current == Some(incarnation)").unwrap()
+    );
+    assert!(
+        stamp.find("PreparedRestoreAnchor::prepare").unwrap() < stamp.find("meta.insert(").unwrap()
+    );
+    assert!(
+        stamp.find("anchor.stage(&transaction)").unwrap()
+            < stamp.find("transaction.commit()").unwrap()
+    );
+    let reset = production_source(crate_root().join("src/backup_v3.rs"));
+    for forbidden in ["begin_read(", "begin_write(", ".commit(", "Database::open"] {
+        assert!(!reset.contains(forbidden));
+    }
+    assert!(reset.contains("validate_retained_history_for_write(transaction)"));
+    assert!(reset.contains("delete_table(HISTORY)"));
+    assert!(reset.contains("delete_table(SOURCE_HOLDS)"));
+    assert_eq!(reset.matches("delete_table(").count(), 2);
+    assert!(reset.contains("ReplicationTransferV1::SourceOnly"));
+    assert!(reset.contains("ChangelogAttributionV3::RestoreAnchor"));
+}
+
+#[test]
 // req: REP-003, PERF-007, REC-001
 fn v3_receipt_cursor_has_no_writer_or_journal_io_capability() {
     let source = production_source(crate_root().join("src/changelog_v3_cursor.rs"));

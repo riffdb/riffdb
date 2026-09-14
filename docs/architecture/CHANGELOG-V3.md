@@ -1,5 +1,20 @@
 # Authoritative changelog V3 substrate
 
+The existing offline incarnation stamp now reanchors an already-active V3
+database in its original hardened transaction. It streams retained history and
+source holds and checks follower/lifecycle bindings before mutation, preserves
+database identity, leadership epoch and the dual frontier, clears source holds
+and old-lineage history, detaches follower progress, removes the old lifecycle
+record, and installs one empty `RestoreAnchor` at sequence 1. A present retention
+watermark is rebound without changing its original chain-root digest. Equal
+incarnation retries validate and do not write; backwards incarnations refuse.
+Actual process tests cover preflight, incarnation, local reset, anchor staging
+and committed edges, with repeated recovery/retry and unchanged unrelated
+authoritative rows. These prove the stamp, not every higher-level restore
+publication/staging owner. Fresh activation and unconditional refusal of a
+current-registry database with every V3 root erased remain open integration
+work; the stamp retains the same transitional presence routing as other owners.
+
 The source-only hold table now has a distinct bounded V1 codec (compact tag 73,
 revision 1): a closed follower acknowledgement, archive acknowledgement or
 bootstrap kind, a nonzero 16-byte opaque hold ID, and an exact lineage-bound

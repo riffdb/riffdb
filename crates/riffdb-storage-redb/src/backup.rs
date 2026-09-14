@@ -52,6 +52,8 @@ const MANIFEST_MAX_BYTES: usize = 32 * 1024 * 1024;
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_STAGING_ATTEMPTS: u16 = 256;
 const SHA256_BYTES: usize = 32;
+#[path = "backup_v3.rs"]
+mod v3_restore;
 const STORAGE_ENGINE_DATA_TAG: u8 = 1;
 
 /// Reads the durable history incarnation from a closed database file.
@@ -76,8 +78,9 @@ pub fn read_history_incarnation(path: impl AsRef<Path>) -> Result<Option<u64>, S
 
 /// Idempotently stamps `history_incarnation/v1` on a closed database file.
 ///
-/// Offline-only path used after restore publication. Writes only when the
-/// stored value differs from `incarnation`.
+/// Offline-only path used by restore publication. An active V3 lineage is fully
+/// validated, then reanchored with replication-local state reset in this same
+/// transaction. Equal-incarnation retries validate and perform no durable write.
 pub fn stamp_history_incarnation(
     path: impl AsRef<Path>,
     incarnation: u64,
@@ -101,9 +104,14 @@ pub fn stamp_history_incarnation(
             Some(encoded) => Some(*codec::decode_history_incarnation_v1(encoded.value())?.value()),
         }
     };
+    if current.is_some_and(|current| current > incarnation) {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    }
+    let anchor = v3_restore::PreparedRestoreAnchor::prepare(&transaction, incarnation)?;
     if current == Some(incarnation) {
         return transaction.abort().map_err(precommit_storage_error);
     }
+    v3_restore::edge("preflight");
     {
         let mut meta = transaction.open_table(META).map_err(table_error)?;
         let encoded = codec::encode_history_incarnation_v1(incarnation)?;
@@ -148,7 +156,12 @@ pub fn stamp_history_incarnation(
                 .map_err(precommit_storage_error)?;
         }
     }
+    v3_restore::edge("incarnation");
+    if let Some(anchor) = anchor {
+        anchor.stage(&transaction)?;
+    }
     transaction.commit().map_err(commit_error)?;
+    v3_restore::edge("committed");
     Ok(())
 }
 
