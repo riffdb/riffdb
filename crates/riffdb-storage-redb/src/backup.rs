@@ -1959,6 +1959,10 @@ fn unknown() -> StorageError {
 }
 
 #[cfg(test)]
+#[path = "backup_v3_tests.rs"]
+mod v3_tests;
+
+#[cfg(test)]
 mod tests {
     use std::io::{Seek, SeekFrom};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -2405,8 +2409,8 @@ mod tests {
         assert_eq!(
             golden_digest,
             [
-                219, 131, 55, 98, 63, 151, 67, 96, 219, 234, 27, 226, 16, 19, 208, 80, 140, 173,
-                132, 230, 243, 56, 14, 249, 84, 15, 88, 67, 158, 222, 111, 195,
+                148, 175, 59, 244, 43, 183, 178, 87, 8, 154, 90, 103, 236, 56, 41, 240, 200, 136,
+                208, 4, 126, 221, 80, 83, 99, 217, 228, 63, 74, 249, 74, 172,
             ],
             "manifest v1 encoding is a durable compatibility boundary"
         );

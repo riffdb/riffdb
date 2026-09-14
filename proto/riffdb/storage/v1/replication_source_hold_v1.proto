@@ -1,0 +1,21 @@
+syntax = "proto3";
+package riffdb.storage.v1;
+import "riffdb/storage/v1/changelog_history_state_v3.proto";
+
+// ADR-0186 source-only retention fence, not a NodeId or authority token.
+// Exactly one row per (kind, hold_id); the key repeats that closed identity.
+message StoredReplicationSourceHoldV1 {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_FOLLOWER_ACKNOWLEDGEMENT = 1;
+    KIND_ARCHIVE_ACKNOWLEDGEMENT = 2;
+    KIND_BOOTSTRAP = 3;
+  }
+  Kind kind = 1;
+  bytes hold_id = 2;
+  bytes database_id = 3;
+  uint64 history_incarnation = 4;
+  uint64 leadership_epoch = 5;
+  bytes catalog_digest = 6;
+  StoredChangelogHistoryStateV3.Position fence = 7;
+}

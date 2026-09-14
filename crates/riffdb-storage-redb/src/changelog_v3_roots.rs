@@ -3,7 +3,10 @@
 //! This is one input to clean eligibility, not a replacement for complete startup
 //! validation or proof that an application/journal suffix has been published.
 
-use redb::{ReadTransaction, ReadableTable, TableError, TableHandle, WriteTransaction};
+use redb::{
+    ReadTransaction, ReadableTable, ReadableTableMetadata, TableError, TableHandle,
+    WriteTransaction,
+};
 use riffdb_storage_api::{
     AdministrationSequenceAllocator, ApplicationSequenceAllocator, AuthoritativeNamespaceV1 as N,
     AuthoritativeTransactionV3, ChangelogHistoryStateV3, StorageError, StorageErrorKind,
@@ -114,7 +117,49 @@ pub(crate) fn validate_retained_history(
     if first || covered != history {
         return Err(corrupt());
     }
+    validate_source_holds(transaction, history, &table)?;
     Ok(Some(history))
+}
+
+/// Full-validation-only, bounded source population from the SAME read pin as
+/// the validated retained chain. Never upgrades a decoded value into permission
+/// to prune or silently discards an unrecognized fence.
+fn validate_source_holds(
+    transaction: &ReadTransaction,
+    history: ChangelogHistoryStateV3,
+    receipts: &impl ReadableTable<&'static [u8], &'static [u8]>,
+) -> Result<(), StorageError> {
+    use riffdb_storage_api::{ChangelogHistoryPointV3, MAX_REPLICATION_SOURCE_HOLDS_V1};
+    let corrupt = || storage_error(StorageErrorKind::CorruptData);
+    let holds = transaction.open_table(SOURCE_HOLDS).map_err(table_error)?;
+    if holds.len().map_err(precommit_storage_error)? > MAX_REPLICATION_SOURCE_HOLDS_V1 {
+        return Err(storage_error(StorageErrorKind::LimitExceeded));
+    }
+    for row in holds.iter().map_err(precommit_storage_error)? {
+        let (key, value) = row.map_err(precommit_storage_error)?;
+        let hold = *decode_replication_source_hold_v1(value.value())
+            .map_err(codec_error)?
+            .value();
+        if key.value() != hold.storage_key() || hold.lineage() != history.lineage() {
+            return Err(corrupt());
+        }
+        ChangelogHistoryStateV3::new(
+            history.lineage(),
+            history.minimum_resume(),
+            history.tail(),
+            hold.fence(),
+        )
+        .map_err(|_| corrupt())?;
+        let receipt = receipts
+            .get(hold.fence().sequence().get().to_be_bytes().as_slice())
+            .map_err(precommit_storage_error)?
+            .ok_or_else(corrupt)?;
+        let receipt = AuthoritativeTransactionV3::decode(receipt.value()).map_err(|_| corrupt())?;
+        if ChangelogHistoryPointV3::from_receipt(&receipt).map_err(|_| corrupt())? != hold.fence() {
+            return Err(corrupt());
+        }
+    }
+    Ok(())
 }
 
 /// Transaction-current form for receipt-producing Immediate writes. Opening a

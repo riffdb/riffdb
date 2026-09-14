@@ -465,6 +465,23 @@
       "last_change": {"classification":"new_domain_identity","decision":"ADR-0186/WP-772 follower-local root"}
     },
     {
+      "id": "durable.replication_source_hold",
+      "title": "Source-local replication retention fence",
+      "classification": "durable",
+      "owner": "riffdb-storage-api",
+      "source_assertions": [{"kind":"literal","path":"proto/riffdb/storage/v1/replication_source_hold_v1.proto","literal":"message StoredReplicationSourceHoldV1 {"}],
+      "readable_identities": ["tag-73/revision-1"], "writable_identities": ["tag-73/revision-1"], "current_identities": ["tag-73/revision-1"],
+      "writer_policy": "single_current",
+      "compatibility_rule": "Closed follower/archive acknowledgement or bootstrap fence with nonzero opaque hold ID and exact lineage, catalog, position, hash and dual frontier. Key and value identities agree; no unknown hold is ignored.",
+      "breaking_when": "Tag 73, revision 1, key tags, field numbers, source kinds or fence meaning changes.",
+      "supported_release_posture": "Bounded codec and complete-startup validation implemented in WP-772; registration and history reclamation are not yet enabled.",
+      "lifecycle": {"active":["tag-73/revision-1"],"read_only":[],"retirement_candidate":[],"retired":[]},
+      "reserved_identity_policy": "Tag, revision, key tags and field numbers are never reused.",
+      "evidence": ["fixtures/replication/replication-source-hold-v1-follower.hex", "fixtures/replication/replication-source-hold-v1-archive.hex", "fixtures/replication/replication-source-hold-v1-bootstrap.hex", "crates/riffdb-storage-api/tests/replication_source_hold_v1.rs"],
+      "checks": ["./scripts/check-version-topology", "./scripts/check-durable-format-manifest"],
+      "last_change": {"classification":"new_domain_identity","decision":"ADR-0186/WP-772 source-only retention fences"}
+    },
+    {
       "id": "durable.tokenized_text_provider_state",
       "title": "Tokenized-text provider checkpoint",
       "classification": "durable",

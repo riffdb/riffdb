@@ -1031,7 +1031,12 @@ shape!(REPLICATION_FOLLOWER_STATE_V3 [
     message(1, &UNIT), message(2, &REPLICATION_FOLLOWER_ATTACHED_V3),
 ]);
 
-const ROOTS: [&Shape; 98] = [
+shape!(REPLICATION_SOURCE_HOLD_V1 [
+    fixed_bytes(2, 16), fixed_bytes(3, 16), fixed_bytes(6, 32),
+    message(7, &CHANGELOG_POSITION_V3),
+]);
+
+const ROOTS: [&Shape; 99] = [
     &ROOT_EMPTY,
     &ROOT_DATABASE_ID,
     &ROOT_OPTIONAL_UNIT_FIELD_TWO,
@@ -1141,6 +1146,7 @@ const ROOTS: [&Shape; 98] = [
     &ROOT_EMPTY,         // Nonzero leadership is checked by the semantic codec.
     &CHANGELOG_HISTORY_STATE_V3,
     &REPLICATION_FOLLOWER_STATE_V3,
+    &REPLICATION_SOURCE_HOLD_V1,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {
