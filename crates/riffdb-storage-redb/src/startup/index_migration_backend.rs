@@ -196,6 +196,10 @@ impl CatalogIndexMigrationBackend for RedbStartupIndexMigrationPort {
         transaction
             .set_durability(Durability::Immediate)
             .map_err(|_| invariant())?;
+        let transaction = crate::store::OperationalWriteTransaction::from_drained(
+            transaction,
+            riffdb_storage_api::ChangelogAttributionV3::IndexMigrationBatch,
+        )?;
         {
             let mut table = transaction
                 .open_table(SECONDARY_INDEXES)
@@ -206,7 +210,7 @@ impl CatalogIndexMigrationBackend for RedbStartupIndexMigrationPort {
         }
         self.shared
             .before_test_commit(RedbTestOperation::IndexMigrationBatch)?;
-        self.shared.commit_durable(transaction)?;
+        transaction.finish()?.commit(&self.shared)?;
         self.shared
             .after_test_commit(RedbTestOperation::IndexMigrationBatch)?;
         self.shared
@@ -261,7 +265,7 @@ fn apply_index_migration_substitution_fixture(
 }
 
 fn apply_index_migration_instruction(
-    table: &mut redb::Table<'_, &'static [u8], &'static [u8]>,
+    table: &mut crate::changelog_v3_capture::CapturedTable<'_, '_, &'static [u8]>,
     instruction: &CatalogIndexMigrationInstruction,
 ) -> Result<(), StorageError> {
     let expected = instruction.expected();

@@ -54,6 +54,67 @@ fn without_whitespace(source: &str) -> String {
 }
 
 #[test]
+// req: REP-003, REC-001, STO-012
+fn v3_index_migration_owners_capture_without_new_transaction_or_profile() {
+    let backend = without_whitespace(&production_source(
+        crate_root().join("src/startup/index_migration_backend.rs"),
+    ));
+    let batch = backend
+        .split_once("fnapply_index_migration_batch(")
+        .unwrap()
+        .1
+        .split_once("fnfinish_index_migration(")
+        .unwrap()
+        .0;
+    assert_eq!(batch.matches(".begin_write()").count(), 1);
+    assert_eq!(
+        batch
+            .matches("transaction.finish()?.commit(&self.shared)?")
+            .count(),
+        1
+    );
+    assert!(batch.contains("ChangelogAttributionV3::IndexMigrationBatch"));
+    let capture = batch
+        .find("OperationalWriteTransaction::from_drained(")
+        .unwrap();
+    assert!(batch.find("set_durability(Durability::Immediate)").unwrap() < capture);
+    assert!(capture < batch.find(".open_table(SECONDARY_INDEXES)").unwrap());
+    let store = without_whitespace(&production_source(crate_root().join("src/store.rs")));
+    for (start, end) in [
+        (
+            "fnmark_index_epoch_rows_repaired(",
+            "fnread_legacy_index_epoch_maxima(",
+        ),
+        (
+            "fnmigrate_partition_index_generation_rows(",
+            "fnremove_legacy_index_epoch_rows(",
+        ),
+        (
+            "fnremove_legacy_index_epoch_rows(",
+            "fnvalidate_partition_index_generation_rows(",
+        ),
+    ] {
+        let body = store
+            .split_once(start)
+            .unwrap()
+            .1
+            .split_once(end)
+            .unwrap()
+            .0;
+        assert_eq!(body.matches(".begin_write()").count(), 1);
+        assert_eq!(
+            body.matches("transaction.finish()?.commit(shared)?")
+                .count(),
+            1
+        );
+        assert!(body.contains("ChangelogAttributionV3::StorageFormatMigration"));
+        assert!(!body.contains("shared.commit_durable(transaction)"));
+        assert!(body.contains("set_two_phase_commit(true)"));
+        assert!(body.contains("set_durability(Durability::Immediate)"));
+    }
+}
+
+#[test]
 // req: REP-003, REC-001, PERF-007
 fn v3_startup_streams_retained_history_only_after_the_bounded_clean_return() {
     let startup = production_source(crate_root().join("src/startup.rs"));
@@ -1021,7 +1082,28 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
         production_source(source_dir.join("startup/index_migration_backend.rs")),
     ));
     assert!(!startup.contains("transaction.commit()"));
-    assert_eq!(startup.matches("commit_durable(transaction)?").count(), 1);
+    assert_eq!(startup.matches("commit_durable(transaction)?").count(), 0);
+    assert_eq!(
+        startup
+            .matches("transaction.finish()?.commit(&self.shared)?")
+            .count(),
+        1
+    );
+    let receipt = without_whitespace(&production_source(source_dir.join("changelog_v3_write.rs")));
+    let sealed_commit = receipt
+        .split_once("pub(crate)fncommit(self,shared:&SharedRedb)")
+        .expect("sealed receipt commit owner")
+        .1
+        .split_once("pub(crate)fncommit_for_test")
+        .expect("test-only direct commit boundary")
+        .0;
+    assert_eq!(
+        sealed_commit
+            .matches("shared.commit_durable(self.transaction)?")
+            .count(),
+        1
+    );
+    assert!(!sealed_commit.contains("transaction.commit()"));
 }
 
 #[test]

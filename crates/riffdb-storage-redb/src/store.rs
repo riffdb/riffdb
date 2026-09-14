@@ -3397,6 +3397,10 @@ fn mark_index_epoch_rows_repaired(shared: &SharedRedb) -> Result<(), StorageErro
     transaction
         .set_durability(Durability::Immediate)
         .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    let transaction = OperationalWriteTransaction::from_drained(
+        transaction,
+        riffdb_storage_api::ChangelogAttributionV3::StorageFormatMigration,
+    )?;
     {
         let mut meta = transaction.open_table(META).map_err(table_error)?;
         if meta
@@ -3411,7 +3415,7 @@ fn mark_index_epoch_rows_repaired(shared: &SharedRedb) -> Result<(), StorageErro
         meta.insert(META_INDEX_EPOCH_ROWS_REPAIRED, [1u8].as_slice())
             .map_err(precommit_storage_error)?;
     }
-    shared.commit_durable(transaction)?;
+    transaction.finish()?.commit(shared)?;
     Ok(())
 }
 
@@ -3489,6 +3493,10 @@ fn migrate_partition_index_generation_rows(
         transaction
             .set_durability(Durability::Immediate)
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let transaction = OperationalWriteTransaction::from_drained(
+            transaction,
+            riffdb_storage_api::ChangelogAttributionV3::StorageFormatMigration,
+        )?;
         let indexes = transaction
             .open_table(SECONDARY_INDEXES)
             .map_err(table_error)?;
@@ -3561,7 +3569,7 @@ fn migrate_partition_index_generation_rows(
         drop(epochs);
         if changed {
             shared.before_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
-            shared.commit_durable(transaction)?;
+            transaction.finish()?.commit(shared)?;
             shared.after_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
         } else {
             transaction.abort().map_err(precommit_storage_error)?;
@@ -3580,6 +3588,10 @@ fn remove_legacy_index_epoch_rows(shared: &SharedRedb) -> Result<(), StorageErro
         transaction
             .set_durability(Durability::Immediate)
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let transaction = OperationalWriteTransaction::from_drained(
+            transaction,
+            riffdb_storage_api::ChangelogAttributionV3::StorageFormatMigration,
+        )?;
         let mut epochs = transaction.open_table(INDEX_EPOCHS).map_err(table_error)?;
         let mut removals = Vec::new();
         let mut scanned_bytes = 0usize;
@@ -3621,7 +3633,7 @@ fn remove_legacy_index_epoch_rows(shared: &SharedRedb) -> Result<(), StorageErro
         }
         drop(epochs);
         shared.before_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
-        shared.commit_durable(transaction)?;
+        transaction.finish()?.commit(shared)?;
         shared.after_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
     }
 }

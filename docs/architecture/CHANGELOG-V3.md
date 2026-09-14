@@ -47,6 +47,17 @@ equality, no-op retry, full-prune startup, uncertainty, and four actual process
 crash edges. It is not the production command-group/segment crash matrix or
 permission to reclaim V3 receipt history; those proofs remain open.
 
+Catalog-owned index migration batches and current-registry epoch repair now
+capture receipts in their original hardened transactions. Generation insertion,
+legacy epoch removal and the one-shot marker remain separate existing commits;
+unchanged confirmations do not allocate receipts. Tests cover exact original
+preimages and postimages, original commit counts, stale-compare whole-batch
+rollback, precommit and uncertain outcomes, and four actual catalog-driver
+process exits followed by repeated open, retry and startup validation. These
+fixtures use isolated activation with legacy index rows to exercise the owners;
+they do not replace the required full validation before production activation
+or prove every same-lineage contract migration and lineage-reset path.
+
 WP-772 is in progress. The storage API now has a closed namespace catalog,
 checked physical transaction allocator, expected-state mutation values, and
 V3 receipt/frame codecs. Constructing these internal values does not activate a
