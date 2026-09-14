@@ -3708,6 +3708,68 @@ pub mod stored_replication_follower_state_v3 {
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredReplicationSourceHoldV1 {
+    #[prost(enumeration = "stored_replication_source_hold_v1::Kind", tag = "1")]
+    pub kind: i32,
+    #[prost(bytes = "vec", tag = "2")]
+    pub hold_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub database_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "4")]
+    pub history_incarnation: u64,
+    #[prost(uint64, tag = "5")]
+    pub leadership_epoch: u64,
+    #[prost(bytes = "vec", tag = "6")]
+    pub catalog_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "7")]
+    pub fence: ::core::option::Option<stored_changelog_history_state_v3::Position>,
+}
+/// Nested message and enum types in `StoredReplicationSourceHoldV1`.
+pub mod stored_replication_source_hold_v1 {
+    #[derive(
+        Clone,
+        Copy,
+        Debug,
+        PartialEq,
+        Eq,
+        Hash,
+        PartialOrd,
+        Ord,
+        ::prost::Enumeration
+    )]
+    #[repr(i32)]
+    pub enum Kind {
+        Unspecified = 0,
+        FollowerAcknowledgement = 1,
+        ArchiveAcknowledgement = 2,
+        Bootstrap = 3,
+    }
+    impl Kind {
+        /// String value of the enum field names used in the ProtoBuf definition.
+        ///
+        /// The values are not transformed in any way and thus are considered stable
+        /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+        pub fn as_str_name(&self) -> &'static str {
+            match self {
+                Self::Unspecified => "KIND_UNSPECIFIED",
+                Self::FollowerAcknowledgement => "KIND_FOLLOWER_ACKNOWLEDGEMENT",
+                Self::ArchiveAcknowledgement => "KIND_ARCHIVE_ACKNOWLEDGEMENT",
+                Self::Bootstrap => "KIND_BOOTSTRAP",
+            }
+        }
+        /// Creates an enum from field names used in the ProtoBuf definition.
+        pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+            match value {
+                "KIND_UNSPECIFIED" => Some(Self::Unspecified),
+                "KIND_FOLLOWER_ACKNOWLEDGEMENT" => Some(Self::FollowerAcknowledgement),
+                "KIND_ARCHIVE_ACKNOWLEDGEMENT" => Some(Self::ArchiveAcknowledgement),
+                "KIND_BOOTSTRAP" => Some(Self::Bootstrap),
+                _ => None,
+            }
+        }
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredRetentionWatermarkV1 {
     #[prost(uint64, tag = "1")]
     pub watermark_sequence: u64,

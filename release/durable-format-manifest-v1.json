@@ -27,7 +27,7 @@
   "writable_format_upgrade_receipt_versions": [1],
   "readable_format_marker_versions": [1],
   "writable_format_marker_versions": [1],
-  "record_registry_digest": "91bb2e001fa868f2a697cd756c04fedf31e4f0d28b00ce60a8498eab59ab924e",
+  "record_registry_digest": "78e13c0324885b312f282cbb7516788b70b11387b93852c4d69b4d2069fddcaf",
   "readable_records": [
     {"record_type":"riffdb.storage.v1.StoredStorageFormatVersionV1","tag":1,"revision":1,"schema_hash":"07371c0b9eba9bfcad3118b345064b3d33a20a13641c6bde017e5c99dc6020ab"},
     {"record_type":"riffdb.storage.v1.StoredDatabaseIdentityV1","tag":2,"revision":1,"schema_hash":"de6f4f35fa52ca7664a85d9ffaa0041c506f3c5eb22632ba0ecd757dc6df1dea"},
@@ -127,6 +127,7 @@
     {"record_type":"riffdb.storage.v1.StoredLeadershipEpochV1","tag":70,"revision":1,"schema_hash":"74e92be090e6f1c80800b8822784c96a8f8b3dcdc766b4930b4a8f759c3966f4"},
     {"record_type":"riffdb.storage.v1.StoredChangelogHistoryStateV3","tag":71,"revision":1,"schema_hash":"11c4472baec1ada4897291ee4ebc86dd8ae8f4b3c878cd71d9bafb0c3b208098"},
     {"record_type":"riffdb.storage.v1.StoredReplicationFollowerStateV3","tag":72,"revision":1,"schema_hash":"7527914d75424cc5e9f137a9e33ef67fb77666301ca23b3273ab22bb17b3b087"},
+    {"record_type":"riffdb.storage.v1.StoredReplicationSourceHoldV1","tag":73,"revision":1,"schema_hash":"742a2966ddf730bc5ac371c3881a321d362000c1d8ff1c11162bc6dc65ac61cc"},
     {"record_type":"riffdb.storage.v1.CapabilityRecordV1","tag":18,"revision":1,"schema_hash":"cb42c4ebbce8280123f8b34d4dcde74ca9483406847531f34d5fb3f18d40b342"},
     {"record_type":"riffdb.storage.v1.CapabilityRecordV1","tag":18,"revision":2,"schema_hash":"dee2398ebbc71824471fe5a5f96fcbebdde09e511fe6c11531c2b30210f9e6bf"},
     {"record_type":"riffdb.storage.v1.CapabilityTokenLookupV1","tag":19,"revision":1,"schema_hash":"e00696f3d2c110c5b2b99685e7987f7204d2f9576f8b41c5fcd5a894c746bc86"},
@@ -213,9 +214,10 @@
     {"record_type":"riffdb.storage.v1.StoredAuthoritativeStateCatalogV1","tag":69,"revision":1,"schema_hash":"9685c359ca5148eb123ba584682fa542e1a959f56378dfc13dc0719efc5cbe59"},
     {"record_type":"riffdb.storage.v1.StoredLeadershipEpochV1","tag":70,"revision":1,"schema_hash":"74e92be090e6f1c80800b8822784c96a8f8b3dcdc766b4930b4a8f759c3966f4"},
     {"record_type":"riffdb.storage.v1.StoredChangelogHistoryStateV3","tag":71,"revision":1,"schema_hash":"11c4472baec1ada4897291ee4ebc86dd8ae8f4b3c878cd71d9bafb0c3b208098"},
-    {"record_type":"riffdb.storage.v1.StoredReplicationFollowerStateV3","tag":72,"revision":1,"schema_hash":"7527914d75424cc5e9f137a9e33ef67fb77666301ca23b3273ab22bb17b3b087"}
+    {"record_type":"riffdb.storage.v1.StoredReplicationFollowerStateV3","tag":72,"revision":1,"schema_hash":"7527914d75424cc5e9f137a9e33ef67fb77666301ca23b3273ab22bb17b3b087"},
+    {"record_type":"riffdb.storage.v1.StoredReplicationSourceHoldV1","tag":73,"revision":1,"schema_hash":"742a2966ddf730bc5ac371c3881a321d362000c1d8ff1c11162bc6dc65ac61cc"}
   ],
-  "compatibility_fixture_digest": "f936c39e94c95e8807c84e27b54739b77a24e37446d0516503cb0f5a2f29b7d9",
+  "compatibility_fixture_digest": "ff60b5f8ad2a031df0f500fa95751723dc2279f812a819bc088f9457cb669629",
   "upgrade_table": "compatibility/release-pairs-v1.json",
   "physical_format_inventory": "compatibility/physical-formats-v1.json",
   "backup_required_before_upgrade": true,

@@ -1,5 +1,19 @@
 # Authoritative changelog V3 substrate
 
+The source-only hold table now has a distinct bounded V1 codec (compact tag 73,
+revision 1): a closed follower acknowledgement, archive acknowledgement or
+bootstrap kind, a nonzero 16-byte opaque hold ID, and an exact lineage-bound
+history position/hash/dual frontier. The canonical 17-byte key repeats kind and
+ID. The payload ceiling is 163 bytes; the combined hard count ceiling is 4096,
+which also bounds each consumer kind. These IDs are not NodeIds or capabilities.
+Complete startup validates every hold against the retained chain from the same
+read pin before lifecycle writes, refusing unknown, substituted, foreign,
+out-of-range or excessive holds. CLEAN eligibility retains its bounded-root
+check rather than scanning the hold population. Construction or decoding alone
+grants no acknowledgement, registration or reclamation authority. Production
+hold registration and history reclamation remain unimplemented; the three new
+codec vectors require human fixture review before package merge.
+
 Real command-owner tests now cover one direct multi-command group followed by
 separately published journal overwrite and delete transactions. Original entity
 bytes remain available through pinned receipt cursors after the live row is
@@ -39,7 +53,8 @@ missing or corrupt interior history refuses before writes. Eight process exits
 in the real startup/close orchestration prove old-or-complete checkpoint and
 lifecycle receipts, repeated dormant reopen, and actual validation retry. These
 fixtures start from isolated activation with empty entity and source-hold
-populations. They do not prove fresh activation, source-hold row semantics,
+populations. Separate full-startup source-hold tests cover all three valid kinds,
+substitutions and the exact count boundary. They do not prove fresh activation,
 every authoritative population, or the remaining retention/rotation obligations.
 
 Offline operator hold additions, replacements and removals now use the same

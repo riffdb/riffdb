@@ -1684,6 +1684,28 @@ fn live_migration_preflight_reads_the_published_overlay_not_the_checkpoint_alone
 }
 
 #[test]
+// req: REP-003, REC-001
+fn legacy_changelog_emitters_have_no_production_exports() {
+    let exports = production_source(crate_root().join("src/lib.rs"));
+    let production = production_source(crate_root().join("src/changelog.rs"));
+    for name in [
+        "start_changelog_emitter",
+        "RedbChangelogEmitter",
+        "derive_frame",
+    ] {
+        assert!(
+            !exports.contains(name),
+            "legacy emitter must not be a production export: {name}"
+        );
+        assert!(
+            !production.contains(name),
+            "legacy framing belongs only to compatibility tests: {name}"
+        );
+    }
+    assert!(production.contains("changelog_receipts_v3"));
+}
+
+#[test]
 fn the_changelog_emitter_can_only_read_published_durable_snapshots() {
     // ADR-0100 §2 made structural. The emitter derives frames from published
     // durable state only; this pin proves the module has no other way to read.

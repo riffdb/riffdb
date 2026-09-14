@@ -10,11 +10,12 @@ use riffdb_storage_api::{
     ChangelogFrameBindingV1, ChangelogFrameBindingV2, ChangelogFrameBindingV3, ChangelogFrameV1,
     ChangelogFrameV2, ChangelogFrameV3, ChangelogHistoryPointV3, ChangelogHistoryStateV3,
     ChangelogLineageV3, ChangelogTransactionAllocator, ChangelogTransactionSequence,
-    LeadershipEpochV1, ReplicationFollowerStateV3,
+    LeadershipEpochV1, ReplicationFollowerStateV3, ReplicationSourceHoldIdV1,
+    ReplicationSourceHoldKindV1 as HoldKind, ReplicationSourceHoldV1,
     proto_codec::{
         encode_authoritative_state_catalog_v1, encode_changelog_history_state_v3,
         encode_changelog_transaction_allocator_v3, encode_leadership_epoch_v1,
-        encode_replication_follower_state_v3,
+        encode_replication_follower_state_v3, encode_replication_source_hold_v1,
     },
 };
 use riffdb_types::{CommitSequence, DatabaseId, DualFrontier};
@@ -118,6 +119,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         lineage, point, point, point,
     )?)?;
     let detached = encode_replication_follower_state_v3(ReplicationFollowerStateV3::detached())?;
+    let hold = |kind| {
+        encode_replication_source_hold_v1(ReplicationSourceHoldV1::new(
+            ReplicationSourceHoldIdV1::new([0x81; 16]).ok_or("invalid hold ID")?,
+            kind,
+            lineage,
+            point,
+        ))
+        .map_err(Into::<Box<dyn std::error::Error>>::into)
+    };
+    let follower_hold = hold(HoldKind::FollowerAcknowledgement)?;
+    let archive_hold = hold(HoldKind::ArchiveAcknowledgement)?;
+    let bootstrap_hold = hold(HoldKind::Bootstrap)?;
     let attached = encode_replication_follower_state_v3(ReplicationFollowerStateV3::attached(
         lineage,
         point,
@@ -125,6 +138,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?)?;
     for (name, bytes) in [
         ("changelog-frame-v1.hex", v1.as_bytes()),
+        (
+            "replication-source-hold-v1-follower.hex",
+            follower_hold.as_bytes(),
+        ),
+        (
+            "replication-source-hold-v1-archive.hex",
+            archive_hold.as_bytes(),
+        ),
+        (
+            "replication-source-hold-v1-bootstrap.hex",
+            bootstrap_hold.as_bytes(),
+        ),
         ("changelog-frame-v2.hex", v2.as_bytes()),
         ("changelog-frame-v3.hex", v3.as_slice()),
         ("authoritative-state-catalog-v1.hex", catalog.as_bytes()),

@@ -100,6 +100,211 @@ fn actual_v3_startup_full_validation_and_bounded_clean_consumption_keep_exact_re
 }
 
 #[test]
+fn actual_v3_full_startup_refuses_unknown_source_holds_before_lifecycle_writes() {
+    let path = TestDatabasePath::new("v3-startup-source-hold-refusal");
+    let store = v3_store(&path, database_id(0xe1));
+    let write = store.shared.database.begin_write().unwrap();
+    write
+        .open_table(crate::changelog_v3_activation::SOURCE_HOLDS)
+        .unwrap()
+        .insert(
+            b"unknown hold".as_slice(),
+            b"unknown hold encoding".as_slice(),
+        )
+        .unwrap();
+    write.commit().unwrap();
+    let before = control_bytes(&store.shared);
+    let shared = Arc::clone(&store.shared);
+    let epoch = shared.durable_commit_epoch();
+    match store.begin_structural_evidence(inputs()) {
+        Err(error) => assert_eq!(error.kind(), StorageErrorKind::CorruptData),
+        Ok(_) => panic!("full validation accepted an unknown source-hold record"),
+    }
+    assert_eq!(shared.durable_commit_epoch(), epoch);
+    assert_eq!(control_bytes(&shared), before);
+}
+
+fn source_hold(shared: &crate::store::SharedRedb) -> riffdb_storage_api::ReplicationSourceHoldV1 {
+    use riffdb_storage_api::{
+        ReplicationSourceHoldIdV1, ReplicationSourceHoldKindV1, ReplicationSourceHoldV1,
+    };
+    let history = crate::changelog_v3_roots::validate_retained_history(
+        &shared.database.begin_read().unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    ReplicationSourceHoldV1::new(
+        ReplicationSourceHoldIdV1::new([0x91; 16]).unwrap(),
+        ReplicationSourceHoldKindV1::Bootstrap,
+        history.lineage(),
+        history.tail(),
+    )
+}
+
+#[test]
+fn actual_v3_full_startup_preserves_all_three_exact_source_fences() {
+    use riffdb_storage_api::{
+        ReplicationSourceHoldKindV1 as Kind, ReplicationSourceHoldV1 as Hold, proto_codec::*,
+    };
+    let path = TestDatabasePath::new("v3-startup-valid-source-holds");
+    let store = v3_store(&path, database_id(0xe2));
+    let h = source_hold(&store.shared);
+    let expected = [
+        Kind::FollowerAcknowledgement,
+        Kind::ArchiveAcknowledgement,
+        Kind::Bootstrap,
+    ]
+    .map(|kind| Hold::new(h.id(), kind, h.lineage(), h.fence()));
+    let write = store.shared.database.begin_write().unwrap();
+    for hold in expected {
+        write
+            .open_table(crate::changelog_v3_activation::SOURCE_HOLDS)
+            .unwrap()
+            .insert(
+                hold.storage_key().as_slice(),
+                encode_replication_source_hold_v1(hold).unwrap().as_bytes(),
+            )
+            .unwrap();
+    }
+    write.commit().unwrap();
+    let ports = finish_v3(store.begin_structural_evidence(inputs()).unwrap());
+    receipts(&ports.shared);
+    let read = ports.shared.database.begin_read().unwrap();
+    let table = read
+        .open_table(crate::changelog_v3_activation::SOURCE_HOLDS)
+        .unwrap();
+    assert_eq!(table.len().unwrap(), 3);
+    for hold in expected {
+        assert_eq!(
+            table
+                .get(hold.storage_key().as_slice())
+                .unwrap()
+                .unwrap()
+                .value(),
+            encode_replication_source_hold_v1(hold).unwrap().as_bytes()
+        );
+    }
+}
+
+#[test]
+fn actual_v3_full_startup_refuses_substituted_source_fences_without_writes() {
+    use riffdb_storage_api::{
+        ChangelogHistoryPointV3 as Point, ChangelogTransactionSequence as Seq,
+        ReplicationSourceHoldV1 as Hold, proto_codec::*,
+    };
+    for arm in 0..7 {
+        let path = TestDatabasePath::new("v3-startup-substituted-source-holds");
+        let store = v3_store(&path, database_id(0xe3));
+        let ports = finish_v3(store.begin_structural_evidence(inputs()).unwrap());
+        let interior = Point::from_receipt(&receipts(&ports.shared)[1]).unwrap();
+        drop(ports);
+        let store = RedbStore::open(&path.0).unwrap();
+        let root_hold = source_hold(&store.shared);
+        let h = Hold::new(
+            root_hold.id(),
+            root_hold.kind(),
+            root_hold.lineage(),
+            interior,
+        );
+        let mut lineage = h.lineage();
+        let mut fence = h.fence();
+        let mut key = h.storage_key();
+        match arm {
+            0 => key[0] = 2,
+            1 => key[1] ^= 1,
+            2 => {
+                lineage =
+                    ChangelogLineageV3::new(database_id(0xe4), 1, LeadershipEpochV1::initial())
+                        .unwrap()
+            }
+            3 => {
+                lineage =
+                    ChangelogLineageV3::new(lineage.database_id(), 2, LeadershipEpochV1::initial())
+                        .unwrap()
+            }
+            4 => {
+                lineage = ChangelogLineageV3::new(
+                    lineage.database_id(),
+                    1,
+                    LeadershipEpochV1::new(2).unwrap(),
+                )
+                .unwrap()
+            }
+            5 => fence = Point::new(fence.sequence(), [0xff; 32], fence.frontier()),
+            _ => fence = Point::new(Seq::new(4).unwrap(), fence.history_hash(), fence.frontier()),
+        }
+        let bad = Hold::new(h.id(), h.kind(), lineage, fence);
+        let write = store.shared.database.begin_write().unwrap();
+        write
+            .open_table(crate::changelog_v3_activation::SOURCE_HOLDS)
+            .unwrap()
+            .insert(
+                key.as_slice(),
+                encode_replication_source_hold_v1(bad).unwrap().as_bytes(),
+            )
+            .unwrap();
+        write.commit().unwrap();
+        let shared = Arc::clone(&store.shared);
+        let before = control_bytes(&shared);
+        let epoch = shared.durable_commit_epoch();
+        match store.begin_structural_evidence(inputs()) {
+            Err(error) => assert_eq!(error.kind(), StorageErrorKind::CorruptData, "arm {arm}"),
+            Ok(_) => panic!("startup accepted substituted source fence arm {arm}"),
+        }
+        assert_eq!(shared.durable_commit_epoch(), epoch);
+        assert_eq!(control_bytes(&shared), before);
+    }
+}
+
+#[test]
+fn actual_v3_full_startup_bounds_combined_source_hold_population() {
+    use riffdb_storage_api::{
+        MAX_REPLICATION_SOURCE_HOLDS_V1 as MAX, ReplicationSourceHoldIdV1 as Id,
+        ReplicationSourceHoldV1 as Hold, proto_codec::*,
+    };
+    for count in [MAX, MAX + 1] {
+        let path = TestDatabasePath::new("v3-startup-source-hold-count");
+        let store = v3_store(&path, database_id(0xe5));
+        let h = source_hold(&store.shared);
+        let write = store.shared.database.begin_write().unwrap();
+        {
+            let mut table = write
+                .open_table(crate::changelog_v3_activation::SOURCE_HOLDS)
+                .unwrap();
+            for index in 1..=count {
+                let hold = Hold::new(
+                    Id::new(u128::from(index).to_be_bytes()).unwrap(),
+                    h.kind(),
+                    h.lineage(),
+                    h.fence(),
+                );
+                table
+                    .insert(
+                        hold.storage_key().as_slice(),
+                        encode_replication_source_hold_v1(hold).unwrap().as_bytes(),
+                    )
+                    .unwrap();
+            }
+        }
+        write.commit().unwrap();
+        let shared = Arc::clone(&store.shared);
+        let before = control_bytes(&shared);
+        let epoch = shared.durable_commit_epoch();
+        match (count, store.begin_structural_evidence(inputs())) {
+            (MAX, Ok(session)) => {
+                finish_v3(session);
+            }
+            (_, Err(error)) if count > MAX => {
+                assert_eq!(error.kind(), StorageErrorKind::LimitExceeded);
+                assert_eq!(shared.durable_commit_epoch(), epoch);
+                assert_eq!(control_bytes(&shared), before);
+            }
+            _ => panic!("source-hold bound did not match exact population"),
+        }
+    }
+}
+
+#[test]
 fn actual_v3_full_startup_refuses_missing_or_corrupt_interior_history_before_writes() {
     for arm in 0..3 {
         let path = TestDatabasePath::new("v3-startup-interior-refusal");
