@@ -22281,8 +22281,14 @@ work_packages:
   - Follower read path using the applied frontier in the local-frontier role, with Causal waits
     inside the existing bounded register-before-read discipline and AdmissionHead reads fenced at
     the applied head
-  - Fail-closed refusal of tokens, cursors, and fences from another lineage or a pre-promotion
-    incarnation, mapped to the existing `RDB-HISTORY-0101` class
+  - Fail-closed refusal of tokens, cursors and fences from another lineage or a
+    pre-promotion incarnation. Detectable database/history mismatches in scoped
+    tokens and history-bearing fences use the existing `RDB-HISTORY-0101` class.
+    Opaque process-local continuation handles that cannot resolve in the current
+    registry retain `RDB-CURSOR-0101`, including foreign-process and obsolete
+    pre-promotion handles, as required by ADR-0070. No refusal releases rows or
+    internally retries from the first page. This changes no cursor bytes,
+    authorization, retention, freshness guarantee, SPEC requirement or ADR.
   - One `replication` health component and additive statistics fields reporting applied and
     acknowledged frontiers and lag in sequences, present on primary and follower, never in
     wall-clock units
@@ -22315,6 +22321,14 @@ work_packages:
       select a node, or observe state beyond the applied frontier.
     scale: The read path assumes shared contract vocabulary and incarnation-bound tokens, not
       co-located storage or a shared clock.
+  closure:
+    status: open
+    decisions_taken:
+    - 'Maintainer, in session, 2026-09-15: "Approve exact text", referring to
+      docs/architecture/WP-747-CURSOR-ERROR-REVIEW.md. Preserve ADR-0070 CursorInvalid
+      for unresolved process-local handles; detectable scoped-token/history-fence
+      mismatches use HistoryIncarnationMismatch. The exact accepted replacement
+      appears in the deliverables above; no SPEC, ADR or cursor encoding changes.'
   human_review_triggers: *id0178
 
 - id: WP-748
