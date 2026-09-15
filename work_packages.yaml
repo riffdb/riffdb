@@ -23222,7 +23222,7 @@ work_packages:
 
 - id: WP-762
   name: Dual-profile baseline bank under ADR-0171 and performance-package freeze
-  tier: internal
+  tier: surface
   depends_on: [WP-674, WP-745, WP-780]
   objective: Bank one qualified interactive c32, write-only, and unary baseline receipt set on
     both N1 and E2 under ADR-0171's gated-backend stability rule, then record the ADR-0183
