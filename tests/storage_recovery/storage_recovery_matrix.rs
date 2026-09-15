@@ -2531,6 +2531,101 @@ fn cold_fresh_database_publications_complete_without_history_scans() {
     assert_eq!(controller.fresh_locator_history_fallback_scans(), 0);
 }
 
+// req: OUT-001, OUT-002, TXN-042, REC-004, PERF-018
+#[test]
+fn grouped_fresh_locator_seal_resolves_the_durable_segment_once() {
+    const GROUP: u64 = 64;
+
+    let path = TestDatabasePath::new("fresh-locator-linear-group-seal");
+    prepare_command_database(&path.0);
+    let prepared = open_operational(RedbStore::open(&path.0).expect("validate fresh database"));
+    let _clean = prepared.complete_graceful_close();
+    drop(prepared);
+    let controller = RedbTestController::observe_index_migration();
+    let ports = open_operational(
+        RedbStore::open_with_test_controller(&path.0, controller.clone())
+            .expect("reopen fresh database"),
+    );
+
+    let mut fixtures = Vec::with_capacity(usize::try_from(GROUP).expect("bounded group"));
+    for ordinal in 1..=GROUP {
+        let fixture = two_phase_command_fixture_at(ordinal);
+        let request = AdmissionRequestV1::new(fixture.candidates.clone(), &fixture.context)
+            .expect("bounded admission request");
+        assert_eq!(
+            ports
+                .admit_or_resolve(request)
+                .unwrap_or_else(|error| panic!("admit novel identity {ordinal}: {error:?}")),
+            AdmissionResultV1::Created(fixture.pending.clone())
+        );
+        fixtures.push(fixture);
+    }
+    assert_eq!(controller.fresh_locator_durable_segment_resolutions(), 0);
+
+    // One direct group seals all GROUP commands as one segment. The witness
+    // must prove every member against the durable row by decoding that row
+    // exactly once; decoding it once per member made sealing quadratic.
+    commit_command_group(&ports, &fixtures);
+    assert_eq!(
+        controller.fresh_locator_durable_segment_resolutions(),
+        1,
+        "sealing a {GROUP}-command segment resolves its durable row exactly once"
+    );
+
+    for fixture in [
+        &fixtures[0],
+        &fixtures[fixtures.len() / 2],
+        &fixtures[fixtures.len() - 1],
+    ] {
+        let AdmissionLookupResultV1::Found(admission) = ports
+            .lookup_admission(fixture.candidates.clone())
+            .expect("read grouped identity")
+        else {
+            panic!("each grouped identity must be terminal");
+        };
+        assert_eq!(
+            *admission,
+            StoredAdmissionStateV1::StoredOutcome(fixture.records.stored_outcome().clone())
+        );
+    }
+    let novel = two_phase_command_fixture_at(GROUP + 1);
+    assert_eq!(
+        ports
+            .lookup_admission(novel.candidates.clone())
+            .expect("direct-inspection novel identity after a grouped seal"),
+        AdmissionLookupResultV1::NotFound
+    );
+    assert_eq!(
+        controller.fresh_locator_history_fallback_scans(),
+        0,
+        "coverage stays exact across the grouped seal, so novel absence needs no history scan"
+    );
+
+    // The queued path pays the same single resolution per sealed segment.
+    let request = AdmissionRequestV1::new(novel.candidates.clone(), &novel.context)
+        .expect("bounded admission request");
+    assert_eq!(
+        ports
+            .admit_or_resolve(request)
+            .expect("admit novel identity"),
+        AdmissionResultV1::Created(novel.pending.clone())
+    );
+    let epoch = ports
+        .begin_deferred_command_epoch()
+        .expect("begin queued epoch");
+    let fence = DeferredCommandEpoch::seal(apply_unpublished_command_fixture(epoch, &novel))
+        .expect("seal queued epoch");
+    let committed = fence.wait().expect("publish queued member");
+    assert_eq!(committed.len(), 1);
+    assert_eq!(
+        controller.fresh_locator_durable_segment_resolutions(),
+        2,
+        "a queued single-command seal resolves its durable row exactly once"
+    );
+    assert_eq!(controller.fresh_locator_history_fallback_scans(), 0);
+    assert_eq!(ports.transient_index_rebuilds(), 0);
+}
+
 // req: OUT-001, OUT-002, TXN-042, REC-004, PERF-019
 #[test]
 fn armed_execution_failure_and_outbox_lanes_preserve_public_and_private_coverage() {

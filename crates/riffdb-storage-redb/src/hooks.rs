@@ -114,6 +114,7 @@ struct TestControllerInner {
     index_migration: Mutex<IndexMigrationObservation>,
     audit_sequence_begin_reads: AtomicU64,
     fresh_locator_history_fallback_scans: AtomicU64,
+    fresh_locator_durable_segment_resolutions: AtomicU64,
     corrupt_fresh_locator_successor_stamp: AtomicBool,
     #[cfg(test)]
     root_publication_schedule: Option<Arc<RootPublicationScheduleInner>>,
@@ -178,6 +179,7 @@ impl RedbTestController {
                 index_migration: Mutex::new(IndexMigrationObservation::default()),
                 audit_sequence_begin_reads: AtomicU64::new(0),
                 fresh_locator_history_fallback_scans: AtomicU64::new(0),
+                fresh_locator_durable_segment_resolutions: AtomicU64::new(0),
                 corrupt_fresh_locator_successor_stamp: AtomicBool::new(false),
                 #[cfg(test)]
                 root_publication_schedule: None,
@@ -226,6 +228,25 @@ impl RedbTestController {
             });
     }
 
+    /// Returns how many times a fresh-locator witness resolved and decoded a
+    /// durable command segment row. Sealing an n-command segment costs exactly
+    /// one resolution, never n.
+    #[must_use]
+    pub fn fresh_locator_durable_segment_resolutions(&self) -> u64 {
+        self.inner
+            .fresh_locator_durable_segment_resolutions
+            .load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn observe_fresh_locator_durable_segment_resolution(&self) {
+        let _ = self
+            .inner
+            .fresh_locator_durable_segment_resolutions
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_add(1))
+            });
+    }
+
     /// Corrupts the successor allocator after coverage proof construction.
     #[must_use]
     pub fn corrupt_fresh_locator_successor_stamp_once() -> Self {
@@ -253,6 +274,7 @@ impl RedbTestController {
                 index_migration: Mutex::new(IndexMigrationObservation::default()),
                 audit_sequence_begin_reads: AtomicU64::new(0),
                 fresh_locator_history_fallback_scans: AtomicU64::new(0),
+                fresh_locator_durable_segment_resolutions: AtomicU64::new(0),
                 corrupt_fresh_locator_successor_stamp: AtomicBool::new(false),
                 root_publication_schedule: Some(Arc::clone(&inner)),
                 #[cfg(feature = "test-fixtures")]
@@ -356,6 +378,7 @@ impl RedbTestController {
                 index_migration: Mutex::new(IndexMigrationObservation::default()),
                 audit_sequence_begin_reads: AtomicU64::new(0),
                 fresh_locator_history_fallback_scans: AtomicU64::new(0),
+                fresh_locator_durable_segment_resolutions: AtomicU64::new(0),
                 corrupt_fresh_locator_successor_stamp: AtomicBool::new(false),
                 #[cfg(test)]
                 root_publication_schedule: None,
@@ -389,6 +412,7 @@ impl RedbTestController {
                 index_migration: Mutex::new(IndexMigrationObservation::default()),
                 audit_sequence_begin_reads: AtomicU64::new(0),
                 fresh_locator_history_fallback_scans: AtomicU64::new(0),
+                fresh_locator_durable_segment_resolutions: AtomicU64::new(0),
                 corrupt_fresh_locator_successor_stamp: AtomicBool::new(false),
                 #[cfg(test)]
                 root_publication_schedule: None,
@@ -471,6 +495,7 @@ impl RedbTestController {
                 index_migration: Mutex::new(IndexMigrationObservation::default()),
                 audit_sequence_begin_reads: AtomicU64::new(0),
                 fresh_locator_history_fallback_scans: AtomicU64::new(0),
+                fresh_locator_durable_segment_resolutions: AtomicU64::new(0),
                 corrupt_fresh_locator_successor_stamp: AtomicBool::new(false),
                 #[cfg(test)]
                 root_publication_schedule: None,

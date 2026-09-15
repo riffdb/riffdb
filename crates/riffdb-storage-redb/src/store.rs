@@ -573,6 +573,12 @@ impl SharedRedb {
         );
     }
 
+    fn note_fresh_locator_durable_segment_resolution(&self) {
+        if let Some(controller) = &self.test_controller {
+            controller.observe_fresh_locator_durable_segment_resolution();
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn fresh_locator_history_fallback_scans(&self) -> u64 {
         self.fresh_locator_history_fallback_scans
@@ -5791,10 +5797,13 @@ impl RedbWriteAccess {
             database_id,
             segment,
             |key| self.read_command_value(JournalTable::IdempotencyLocators, key),
-            |sequence| {
-                crate::command_authority::command_member_at_write_access(self, sequence).map(
-                    |member| member.map(|member| member.into_base().outcome().identity().clone()),
-                )
+            |first| {
+                let durable =
+                    crate::command_authority::command_segment_at_write_access(self, first)?;
+                if durable.is_some() {
+                    self.shared.note_fresh_locator_durable_segment_resolution();
+                }
+                Ok(durable)
             },
         )
     }
@@ -7485,12 +7494,13 @@ impl SharedRedb {
                 database_id,
                 segment,
                 |key| view.resolve_point(JournalTable::IdempotencyLocators.composite(), key),
-                |sequence| {
-                    crate::command_authority::command_member_at_access(&access, sequence).map(
-                        |member| {
-                            member.map(|member| member.into_base().outcome().identity().clone())
-                        },
-                    )
+                |first| {
+                    let durable =
+                        crate::command_authority::command_segment_at_access(&access, first)?;
+                    if durable.is_some() {
+                        self.note_fresh_locator_durable_segment_resolution();
+                    }
+                    Ok(durable)
                 },
             )?
             .is_none()
@@ -8768,10 +8778,10 @@ fn exact_fresh_locator_segment(
     database_id: DatabaseId,
     segment: &riffdb_storage_api::StoredCommandSegmentV1,
     mut read_locator: impl FnMut(&[u8]) -> Result<Option<Vec<u8>>, StorageError>,
-    mut resolved_identity: impl FnMut(
+    durable_segment: impl FnOnce(
         CommitSequence,
     ) -> Result<
-        Option<riffdb_storage_api::IdempotencyIdentity>,
+        Option<riffdb_storage_api::StoredCommandSegmentV1>,
         StorageError,
     >,
 ) -> Result<Option<crate::fresh_locator_coverage::DirectCommandSpanEvidence>, StorageError> {
@@ -8780,6 +8790,31 @@ fn exact_fresh_locator_segment(
         || segment.commands().len() > riffdb_storage_api::MAX_STAGED_COMMANDS
     {
         return Ok(None);
+    }
+    // The durable row is resolved and decoded exactly once per segment; every
+    // member is then checked by ordinal against those bytes. Resolving the
+    // member per command re-decoded the whole n-command row n times, which
+    // made each group commit quadratic in its size.
+    let Some(durable) = durable_segment(segment.first_commit_sequence())? else {
+        return Ok(None);
+    };
+    if durable.commands().len() != segment.commands().len() {
+        return Ok(None);
+    }
+    let mut idempotency_entries = std::collections::HashMap::<
+        &[u8],
+        (
+            usize,
+            &riffdb_storage_api::CommandDerivedIndexManifestEntryV1,
+        ),
+    >::new();
+    for entry in segment.manifest().entries() {
+        if entry.kind() == riffdb_storage_api::CommandDerivedIndexKindV1::Idempotency {
+            idempotency_entries
+                .entry(entry.exact_key())
+                .or_insert((0, entry))
+                .0 += 1;
+        }
     }
     for (ordinal, command) in segment.commands().iter().enumerate() {
         let sequence = command.commit_sequence();
@@ -8796,14 +8831,10 @@ fn exact_fresh_locator_segment(
             .storage_key()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
         let exact_key = encode_idempotency_key(&identity_key);
-        let mut entries = segment.manifest().entries().iter().filter(|entry| {
-            entry.kind() == riffdb_storage_api::CommandDerivedIndexKindV1::Idempotency
-                && entry.exact_key() == exact_key
-        });
-        let Some(entry) = entries.next() else {
+        let Some(&(occurrences, entry)) = idempotency_entries.get(exact_key) else {
             return Ok(None);
         };
-        if entries.next().is_some()
+        if occurrences != 1
             || expected != Some(sequence)
             || entry.segment_first_commit_sequence() != segment.first_commit_sequence()
             || usize::from(entry.command_ordinal()) != ordinal
@@ -8818,8 +8849,15 @@ fn exact_fresh_locator_segment(
         let locator = crate::codec::decode_command_locator_v1(&encoded_locator)?
             .into_parts()
             .0;
+        let durable_command = durable
+            .commands()
+            .get(ordinal)
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        if durable_command.commit_sequence() != sequence {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
         if locator.commit_sequence() != sequence
-            || resolved_identity(sequence)?.as_ref() != Some(identity)
+            || durable_command.base().outcome().identity() != identity
         {
             return Ok(None);
         }

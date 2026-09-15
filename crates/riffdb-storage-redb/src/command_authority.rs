@@ -472,6 +472,75 @@ pub(crate) fn command_member_at_write_access(
     Ok(None)
 }
 
+/// Resolves the durable segment row whose physical key is exactly `first`,
+/// decoding it once. The fresh-locator witnesses use this to check every
+/// member of a just-published segment against its durable bytes without
+/// re-reading and re-decoding the whole row once per command.
+///
+/// Returns `Ok(None)` when no row is keyed at `first` or the row is not a V1
+/// segment; a segment row keyed at `first` that does not start at `first` is
+/// corruption.
+pub(crate) fn command_segment_at_access(
+    access: &RedbReadAccess,
+    first: CommitSequence,
+) -> Result<Option<StoredCommandSegmentV1>, StorageError> {
+    let start = encode_application_sequence_key(first);
+    let mut end = start.to_vec();
+    end.push(0);
+    let Some((physical_key, encoded)) = access
+        .read_range_reverse(JournalTable::Commits, &start, &end, 1)?
+        .into_iter()
+        .next()
+    else {
+        return Ok(None);
+    };
+    durable_segment_at(&physical_key, &encoded, first)
+}
+
+/// Write-transaction twin of [`command_segment_at_access`].
+pub(crate) fn command_segment_at_write_access(
+    access: &crate::store::RedbWriteAccess,
+    first: CommitSequence,
+) -> Result<Option<StoredCommandSegmentV1>, StorageError> {
+    let start = encode_application_sequence_key(first);
+    let mut end = start.to_vec();
+    end.push(0);
+    let Some((physical_key, encoded)) = access
+        .read_command_range(JournalTable::Commits, &start, &end, 1)?
+        .into_iter()
+        .next()
+    else {
+        return Ok(None);
+    };
+    durable_segment_at(&physical_key, &encoded, first)
+}
+
+fn durable_segment_at(
+    physical_key: &[u8],
+    encoded: &[u8],
+    first: CommitSequence,
+) -> Result<Option<StoredCommandSegmentV1>, StorageError> {
+    let physical_sequence = decode_application_sequence_key(physical_key).map_err(|_| corrupt())?;
+    if physical_sequence != first {
+        return Err(corrupt());
+    }
+    match riffdb_storage_api::decode_command_segment_v1(encoded) {
+        Ok(segment) => {
+            let segment = segment.into_parts().0;
+            if segment.first_commit_sequence() != first {
+                return Err(corrupt());
+            }
+            Ok(Some(segment))
+        }
+        Err(error)
+            if error.kind() == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(crate::error::codec_error(error)),
+    }
+}
+
 fn segment_member(
     segment: StoredCommandSegmentV1,
     physical_sequence: CommitSequence,

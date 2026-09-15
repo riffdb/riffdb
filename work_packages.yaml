@@ -24807,3 +24807,73 @@ work_packages:
     weaken, or truthful common runbook/durable-manifest digests would be forced to differ.
   - A local render, draft/mutable artifact, URL, hand-authored receipt, operator assertion, loopback,
     host network, secret/value-bearing evidence, or unsafe rollback/downgrade could close the package.
+- id: WP-784
+  name: Fresh-locator segment witness in linear time
+  tier: guarantee
+  depends_on: [WP-778]
+  objective: Keep every ADR-0197 fresh-locator witness check exactly as accepted while making the
+    per-seal cost linear in the number of commands in the sealed segment, so group commit amortizes
+    again and the ADR-0183 baseline bank can start from an unregressed write path.
+  requirements: [OUT-001, OUT-002, TXN-042, REC-004, PERF-018]
+  required_adrs: [ADR-0165, ADR-0183, ADR-0197]
+  allowed_paths: [work_packages.yaml, crates/riffdb-storage-redb/src/store.rs,
+    crates/riffdb-storage-redb/src/command_authority.rs, crates/riffdb-storage-redb/src/hooks.rs,
+    tests/storage_recovery/storage_recovery_matrix.rs, docs/performance/**]
+  deliverables:
+  - The queued and direct fresh-locator segment witnesses resolve the durable segment row keyed at
+    the segment's first commit sequence exactly once per sealed segment, through one bounded exact-key
+    read and one decode, and check every member by ordinal against that row. The manifest's
+    idempotency entries are indexed once per segment. Every check the witness made before (database
+    binding, count, contiguity, one canonical idempotency entry per member, exact durable locator,
+    resolved capsule identity, span, and administration sequence pairing) is retained; a row keyed
+    at the first sequence that does not start there, or a durable member whose sequence disagrees
+    with its ordinal, remains CorruptData
+  - The test controller counts durable segment resolutions; the recovery-matrix proof
+    `grouped_fresh_locator_seal_resolves_the_durable_segment_once` seals one 64-command direct group
+    and one queued single-command epoch on a fresh database and proves exactly one resolution per
+    seal, terminal identities, novel absence without a history fallback scan, and zero transient
+    rebuilds; `cold_fresh_database_publications_complete_without_history_scans` is unchanged
+  - A performance note under docs/performance recording the before/after group-commit cost measured
+    on E2 with the app-baseline write-only smoke at 32 and 128 clients, and naming a493f162 as the
+    revision that introduced the quadratic seal
+  acceptance_commands:
+  - ./scripts/acceptance --wp WP-784
+  - cargo test -p riffdb-storage-redb --test storage_recovery_matrix -- grouped_fresh_locator_seal_resolves_the_durable_segment_once cold_fresh_database_publications_complete_without_history_scans
+  - cargo test -p riffdb-storage-redb --lib -- fresh_locator
+  - ./scripts/ci-all
+  exit_gate: Sealing an n-command segment performs one durable segment resolution and O(n) member
+    checks with every ADR-0197 refusal retained; the named proofs pass; the E2 probe shows the
+    64-command group commit back within a small multiple of its pre-a493f162 cost; no durable byte,
+    key, identity, ordering, or public surface changes.
+  standing_design_tests:
+    interface_safety: No application, agent, SDK, transport, operator, or configuration surface
+      changes; the witness remains storage-private and automatic, and a weaker or skipped check
+      cannot be selected.
+    scale: Per-seal work is one bounded exact-key read, one decode of a segment already bounded by
+      the 256-transition/16-MiB frame limits, one manifest index, and one locator point read per
+      member; no retained history, locator-table, or checkpoint population scan is introduced.
+  human_review_triggers:
+  - Any witness check listed in the first deliverable would be dropped or weakened, or a mismatch
+    that was CorruptData would become a silent coverage disable.
+  - The resolver would read a row other than the one keyed at the segment's first commit sequence,
+    or would accept a segment whose durable member count or sequences differ from the sealed one.
+  - Transaction ordering, batching, acknowledgement, publication, or any durable byte would change.
+  closure:
+    status: complete
+    completed_at: '2026-09-15'
+    evidence: docs/performance/wp-784-fresh-locator-linear-seal.md
+    decision: The queued and direct fresh-locator witnesses resolve the durable segment once per seal
+      and check members by ordinal, with every ADR-0197 refusal retained. The named recovery-matrix
+      proof, the fresh-locator unit tests, the full riffdb-storage-redb battery, and ci-all pass. On E2
+      the 64-command group commit fell from 370 ms to 21.5 ms and the 16-command group from 25 ms to
+      7.8 ms; the first bad revision a493f162 and the pre-regression parent were measured in the same
+      probe.
+    decisions_taken:
+    - The durable row is resolved with the same range primitives the per-member resolver used, bounded
+      to the single key at the segment's first commit sequence, so the queued composite view and the
+      direct write transaction see exactly the rows they saw before.
+    - The resolution count lives on the existing RedbTestController next to the fallback-scan counter
+      rather than on a test-only static, so the integration proof can observe it through the public
+      controller and production code carries no cfg(test) state.
+    - The remaining linear per-command cost since 2026-09-05 is recorded in the performance note and
+      left to the WP-762 rerun to quantify; it is not folded into this package.
