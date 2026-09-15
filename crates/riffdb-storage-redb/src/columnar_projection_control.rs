@@ -47,6 +47,25 @@ fn decode_checked(
     Ok(control)
 }
 
+/// Complete bounded read-only admission inventory from one immutable root.
+pub(crate) fn read_controls_at(
+    access: &crate::store::RedbReadAccess,
+) -> Result<Vec<StoredColumnarProjectionControlV1>, StorageError> {
+    let table = access
+        .open_table(COLUMNAR_PROJECTION_CONTROLS)
+        .map_err(table_error)?;
+    let count = table.len().map_err(precommit_storage_error)?;
+    if count > MAX_COLUMNAR_PROJECTION_CONTROLS {
+        return Err(storage_error(StorageErrorKind::LimitExceeded));
+    }
+    let mut controls = Vec::with_capacity(count as usize);
+    for row in table.iter().map_err(precommit_storage_error)? {
+        let (key, value) = row.map_err(precommit_storage_error)?;
+        controls.push(decode_checked(key.value(), value.value())?);
+    }
+    Ok(controls)
+}
+
 fn transaction_current_head(
     transaction: &WriteTransaction,
 ) -> Result<FrontierPosition, StorageError> {
@@ -510,6 +529,130 @@ mod tests {
         .into_operational_after_catalog_validation()
         .expect("operational");
         (path, ports)
+    }
+
+    // req: REP-004, PRJ-005, PRJ-006, PRJ-007, PRJ-008, PRJ-009
+    #[test]
+    fn follower_columnar_controls_are_complete_and_pinned_without_writer_admission() {
+        use riffdb_storage_api::OwnedSnapshotReader;
+        let (_path, ports) = ports(
+            "columnar-read-pin",
+            RedbTestController::observe_index_migration(),
+        );
+        let (source, definition) = source();
+        let fresh = FreshColumnarProjectionControlV1::new(
+            source,
+            definition,
+            ColumnarProjectionSpecHashV1::from_bytes([0x71; 32]),
+            ColumnarProjectionReplayLimitsV1::new(60, 1024, 10).unwrap(),
+            1,
+        )
+        .unwrap();
+        ports
+            .initialize_fresh_v1(std::slice::from_ref(&fresh))
+            .unwrap();
+        let old = ports.open_owned_snapshot().unwrap();
+        let expected = ports
+            .recover_expected_control(fresh.control().source())
+            .unwrap()
+            .unwrap();
+        let tickets = ports.mutation_gate_tickets();
+        assert_eq!(
+            old.read_columnar_projection_controls().unwrap(),
+            vec![expected.clone()]
+        );
+        assert_eq!(ports.mutation_gate_tickets(), tickets);
+        stamp_current_history(&ports, 2);
+        ports
+            .reset_for_current_history_incarnation(&expected)
+            .unwrap();
+        let current = ports.open_owned_snapshot().unwrap();
+        assert_eq!(
+            old.read_columnar_projection_controls().unwrap(),
+            vec![expected.clone()]
+        );
+        let changed = current.read_columnar_projection_controls().unwrap();
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed[0].candidate().unwrap().history_incarnation(), 2);
+        assert_ne!(changed[0], expected);
+    }
+
+    // req: REP-004, PRJ-005, PRJ-009
+    #[test]
+    fn follower_columnar_control_inventory_refuses_corruption_and_257th_row() {
+        use riffdb_storage_api::OwnedSnapshotReader;
+        let (_path, ports) = ports(
+            "columnar-read-bounds",
+            RedbTestController::observe_index_migration(),
+        );
+        let control = |id: u16| {
+            let mut fingerprint = [0x44; 32];
+            fingerprint[..2].copy_from_slice(&id.to_be_bytes());
+            let definition = DefinitionFingerprint::from_bytes(fingerprint);
+            FreshColumnarProjectionControlV1::new(
+                ColumnarProjectionSourceV1::scalar(
+                    ContractLineage::new("inventory").unwrap(),
+                    definition,
+                ),
+                definition,
+                ColumnarProjectionSpecHashV1::from_bytes([0x72; 32]),
+                ColumnarProjectionReplayLimitsV1::new(60, 1024, 10).unwrap(),
+                1,
+            )
+            .unwrap()
+        };
+        let values = (0..256).map(control).collect::<Vec<_>>();
+        ports.initialize_fresh_v1(&values).unwrap();
+        let old = ports.open_owned_snapshot().unwrap();
+        let tickets = ports.mutation_gate_tickets();
+        assert_eq!(old.read_columnar_projection_controls().unwrap().len(), 256);
+        assert_eq!(ports.mutation_gate_tickets(), tickets);
+        let corrupt_key =
+            encode_columnar_projection_control_key(values[0].control().source()).unwrap();
+        let access = ports.begin_write().unwrap();
+        let mut table = access
+            .transaction()
+            .unwrap()
+            .open_table(COLUMNAR_PROJECTION_CONTROLS)
+            .unwrap();
+        table
+            .insert(corrupt_key.as_slice(), b"corrupt".as_slice())
+            .unwrap();
+        drop(table);
+        access
+            .commit_for(RedbTestOperation::Initialization)
+            .unwrap();
+        assert!(
+            ports
+                .open_owned_snapshot()
+                .unwrap()
+                .read_columnar_projection_controls()
+                .is_err()
+        );
+        assert_eq!(old.read_columnar_projection_controls().unwrap().len(), 256);
+        let extra = control(256);
+        let key = encode_columnar_projection_control_key(extra.control().source()).unwrap();
+        let value = encode_columnar_projection_control_v1(extra.control()).unwrap();
+        let access = ports.begin_write().unwrap();
+        let mut table = access
+            .transaction()
+            .unwrap()
+            .open_table(COLUMNAR_PROJECTION_CONTROLS)
+            .unwrap();
+        table.insert(key.as_slice(), value.as_bytes()).unwrap();
+        drop(table);
+        access
+            .commit_for(RedbTestOperation::Initialization)
+            .unwrap();
+        assert_eq!(
+            ports
+                .open_owned_snapshot()
+                .unwrap()
+                .read_columnar_projection_controls()
+                .unwrap_err()
+                .kind(),
+            StorageErrorKind::LimitExceeded
+        );
     }
 
     fn stamp_current_history(ports: &RedbOperationalPorts, incarnation: u64) {

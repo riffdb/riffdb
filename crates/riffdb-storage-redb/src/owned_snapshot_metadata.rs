@@ -203,3 +203,31 @@ impl riffdb_storage_api::ReactiveModuleRepository for RedbOwnedSnapshot {
         )
     }
 }
+
+impl riffdb_storage_api::AuthoritativeEntitySnapshotReader for RedbOwnedSnapshot {
+    fn read_entity_type_page(
+        &self,
+        entity: riffdb_types::EntityTypeId,
+        after: Option<&[u8]>,
+        limit: riffdb_storage_api::StorageScanLimit,
+    ) -> Result<riffdb_storage_api::ApplicationExportSourcePageV1, StorageError> {
+        let catalog = riffdb_storage_api::CatalogRepository::read_active_catalog(self)?
+            .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
+        crate::application_export::read_entity_type_page_at(
+            &self.access,
+            catalog.lineage(),
+            entity,
+            after,
+            limit,
+        )
+    }
+}
+impl RedbOwnedSnapshot {
+    /// Reads the complete at-most-256 columnar control set from this exact pin.
+    /// Structural validity grants no permission to mutate or select an artifact.
+    pub fn read_columnar_projection_controls(
+        &self,
+    ) -> Result<Vec<riffdb_storage_api::StoredColumnarProjectionControlV1>, StorageError> {
+        crate::columnar_projection_control::read_controls_at(&self.access)
+    }
+}

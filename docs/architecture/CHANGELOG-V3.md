@@ -512,6 +512,17 @@ from completed follower authority. It permits no local authoritative control
 write or reuse of a source checksum for different local bytes. This design is
 accepted; follower columnar serving is not yet implemented.
 
+The shared V2 builder now consumes a narrow immutable entity-page reader. A
+follower can supply its completed `RedbOwnedSnapshot` directly, without an
+application-export owner or primary writer ports. The existing primary export
+snapshot adapts to that same reader; entity-type selection, continuation, row
+and byte limits, and independent V2 logical validation are shared. Pinned
+columnar-control inventory reads decode the complete at-most-256 set and refuse
+corruption or excess rows. Tests retain old pins across writes, compare pages
+with the primary export snapshot, check byte-bound continuation and prove that
+these reads acquire no writer admission. Follower demand, materialization, view
+installation and shutdown composition remain unfinished.
+
 `follower_exact_providers_match_primary_after_tail_and_restart` deploys all four
 compiled provider families over TLS, checks matching results and application
 heads after bootstrap, a replicated write and follower restart, and excludes a
