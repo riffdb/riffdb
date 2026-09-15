@@ -113,6 +113,30 @@ governance_paths:   # used by governance-cost
   - AGENTS.md
   - docs/CONTRIBUTING.md
   - governance/**
+scope:              # what check-allowed-paths permits beyond a package's own allowed_paths
+  # Consequence paths: where a change's effects land, not where its scope is.
+  # Every package may touch these without listing them. A package's own records
+  # (the ADRs it names in required_adrs) are always allowed as well.
+  always_allowed_paths:
+    - adr/README.md
+    - work_packages.yaml
+    - SPEC.md
+    - Cargo.lock
+    - "**/generated/**"
+    - fixtures/**
+    - tests/**
+    - docs/**
+    - release/evidence/**
+    - release/version-topology-v1.json
+    - templates/**
+    - clients/**
+    - examples/**
+    - evaluations/**
+    - scripts/**
+    - .config/**
+  # A touched file outside scope fails the check only when it sits on one of
+  # these tiers' paths. An internal-tier file outside scope is a warning.
+  block_tiers: [surface, guarantee]
 acceptance:         # accepting a record is a human act and must be visible as one
   # A v2 record accepted on or after this date must carry a non-empty
   # `acceptance:` front-matter reference naming who accepted it and how.
