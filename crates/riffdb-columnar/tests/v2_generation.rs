@@ -1519,3 +1519,74 @@ fn columnar_v2_enospc_candidate_failure_leaves_prior_generation_exactly_readable
     .expect("prior selected generation remains exact");
     assert_eq!(reopened.root(), predecessor.root());
 }
+
+// req: REP-004, PRJ-008, PRJ-009, REC-002
+#[test]
+fn validated_streaming_v2_snapshot_queries_survive_disposal_of_all_build_files() {
+    let bundle = compile_bundle();
+    let definition = register_ticket_board(&bundle);
+    let organization = common::uuid(0x31);
+    let foreign = common::uuid(0x32);
+    let entity = definition.entity_type_id();
+    let target = HistorySource::ticket_target(entity, organization, 1);
+    let record = moved_ticket(&bundle, target.clone(), 1, organization);
+    let snapshot = EntityOnlySnapshot(CapturedEntitySnapshot::new(1, vec![record.clone()]));
+    let mut source = HistorySource::default();
+    source.append_commit(
+        riffdb_types::CommitSequence::first(),
+        vec![CommittedEntityReferenceV2::from_post_image(&record).unwrap()],
+        vec![(target, ExpectedEntityState::Absent)],
+    );
+    source.put_entity(record);
+    let directory = temp_dir("follower-detached-v2");
+    let generation = ValidatedColumnarV2Generation::prepare_streaming(
+        &directory,
+        definition.clone(),
+        1,
+        ProjectionGeneration::first(),
+        FrontierPosition::AppliedThrough(riffdb_types::CommitSequence::first()),
+        &snapshot,
+        &source,
+        ColumnarSpecReplayLimitsV1::new(60, 1024, 10).unwrap(),
+        replay_sample,
+        || false,
+    )
+    .unwrap();
+    assert_eq!(
+        snapshot.0.passes(),
+        3,
+        "full bounded construction and logical equality ran"
+    );
+    let requests = corpus_requests(&bundle, &CanonicalValue::Uuid(organization));
+    let expected = requests
+        .iter()
+        .map(|request| query_snapshot(&definition, generation.snapshot(), request).unwrap())
+        .collect::<Vec<_>>();
+    let detached = std::sync::Arc::clone(generation.snapshot());
+    let generated_path = generation.directory().to_path_buf();
+    assert!(!detached.segments.is_empty());
+    drop(generation);
+    std::fs::remove_dir_all(&directory).unwrap();
+    assert!(!generated_path.exists());
+    let actual = requests
+        .iter()
+        .map(|request| query_snapshot(&definition, &detached, request).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+    assert!(!common::rows_of(actual[0].clone()).is_empty());
+    assert!(
+        common::rows_of(
+            query_snapshot(
+                &definition,
+                &detached,
+                &common::board_query(CanonicalValue::Uuid(foreign))
+            )
+            .unwrap()
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        detached.visible_frontier,
+        FrontierPosition::AppliedThrough(riffdb_types::CommitSequence::first())
+    );
+}

@@ -4125,11 +4125,16 @@ fn retention_splits_a_segment_and_rechains_the_retained_suffix() {
         .collect::<Vec<_>>();
     commit_command_group(&ports, &fixtures);
     drop(ports);
-    for ordinal in 1..=riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS {
-        retention_deliver_outbox_status_raw(
-            &path.0,
-            u64::try_from(ordinal).expect("bounded ordinal"),
-        );
+    {
+        // Setup retains one separate durable status transaction per event.
+        // Close the shared setup handle before exercising offline retention.
+        let database = Database::open(&path.0).expect("open delivery fixture");
+        for ordinal in 1..=riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS {
+            retention_deliver_outbox_status_at(
+                &database,
+                u64::try_from(ordinal).expect("bounded ordinal"),
+            );
+        }
     }
     let maintenance = riffdb_storage_redb::RedbOfflineRetention::bind(&path.0);
     maintenance
@@ -5735,6 +5740,10 @@ fn audit_shaped_history_gets_nonzero_below_bound_sampling() {
 /// initial state (absent status row) is UNDELIVERED and fences prune.
 fn retention_deliver_outbox_status_raw(path: &Path, sequence: u64) {
     let database = Database::open(path).expect("open raw for delivered status");
+    retention_deliver_outbox_status_at(&database, sequence);
+}
+
+fn retention_deliver_outbox_status_at(database: &Database, sequence: u64) {
     let write = database.begin_write().expect("write");
     {
         let mut statuses = write

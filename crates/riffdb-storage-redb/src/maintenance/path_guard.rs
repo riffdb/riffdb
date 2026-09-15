@@ -202,6 +202,31 @@ impl PinnedDirectory {
         Ok(entries)
     }
 
+    /// Streams a bounded direct inventory through the retained capability.
+    /// Large disposable generations need no population-sized metadata vector.
+    pub(super) fn visit_entries_bounded(
+        &self,
+        maximum: usize,
+        mut visit: impl FnMut(&OsStr, bool) -> Result<(), StorageError>,
+    ) -> Result<(), StorageError> {
+        self.verify()?;
+        for (index, entry) in self
+            .directory
+            .entries()
+            .map_err(io_unavailable)?
+            .take(maximum.saturating_add(1))
+            .enumerate()
+        {
+            let entry = entry.map_err(io_unavailable)?;
+            let kind = entry.file_type().map_err(io_unavailable)?;
+            if index == maximum || !(kind.is_file() || kind.is_dir()) {
+                return Err(corrupt());
+            }
+            visit(&entry.file_name(), kind.is_dir())?;
+        }
+        self.verify()
+    }
+
     pub(super) fn child_directory(&self, name: &OsStr) -> Result<Option<Self>, StorageError> {
         self.verify()?;
         let relative = checked_child_name(name)?;

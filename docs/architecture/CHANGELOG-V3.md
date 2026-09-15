@@ -533,6 +533,22 @@ validated follower artifact. Admission performs no control write and opens no
 columnar artifact. Follower demand, materialization, view installation and
 shutdown composition remain unfinished.
 
+A storage-owned disposable build helper now provides an exclusively locked
+`follower-columnar/build` area, separate from primary selection paths. A mutable
+build lease allows one builder at a time. Cleanup checks cumulative file/byte
+ceilings and the fixed directory depth before deleting through retained directory
+handles. Restart discards abandoned material on the next build; it never adopts
+that material as a view. Process-exit, path-substitution, symlink and excess-size
+checks cover this helper. It is not yet wired into the follower worker.
+
+The existing V2 validation result owns its decoded query snapshot in memory.
+A new full-streaming-build test confirms that scalar query results, partition
+isolation and the exact frontier survive removal of all build files. This allows
+the future follower worker to finish validation, release file handles and discard
+its one build area before installing the immutable snapshot. It still must bind
+process-local view identity, recheck live authority and implement demand/stop
+ownership before columnar serving is available.
+
 `follower_exact_providers_match_primary_after_tail_and_restart` deploys all four
 compiled provider families over TLS, checks matching results and application
 heads after bootstrap, a replicated write and follower restart, and excludes a

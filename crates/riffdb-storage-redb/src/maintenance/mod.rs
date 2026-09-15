@@ -22,6 +22,10 @@ pub use bootstrap_stage::{
 #[cfg(test)]
 mod bootstrap_stage_tests;
 mod failpoint;
+mod follower_columnar_scratch;
+pub use follower_columnar_scratch::{RedbFollowerColumnarBuild, RedbFollowerColumnarScratch};
+#[cfg(test)]
+mod follower_columnar_scratch_tests;
 mod follower_namespace;
 mod path_guard;
 pub(crate) use follower_namespace::FollowerNamespace;
