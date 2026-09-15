@@ -71,6 +71,8 @@ when a selected artifact becomes process-visible or reinterpret the
 
 ## Decision
 
+Follower-only amendment accepted by the maintainer in session 2026-09-15 ("Approve the exact amendment"): decisions 4–6 are qualified by ADR-0178 §4 and the exact "Follower columnar views" text in SPEC §4.10. WP-747 owns the independently validated disposable V2 views; no local authoritative control write or source-artifact checksum claim is permitted. Primary behavior remains unchanged.
+
 1. Production startup resolves the complete at-most-256 schema-bound columnar
    source set against the checked active bundle and performs only the bounded
    control/retention operations already required for those sources. It creates
