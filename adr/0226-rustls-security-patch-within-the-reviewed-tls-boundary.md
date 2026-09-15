@@ -1,11 +1,11 @@
 ---
 adr: "0226"
 title: Rustls Security Patch Within The Reviewed TLS Boundary
-status: proposed
+status: accepted
 tier: guarantee
 date: "2026-09-14"
-accepted: null
-acceptance: null
+accepted: "2026-09-14"
+acceptance: "maintainer, in session, 2026-09-14"
 requires: [ADR-0105]
 amends: [ADR-0105]
 supersedes: []
