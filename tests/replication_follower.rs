@@ -4,6 +4,8 @@
 //! the receiver; this harness checks the independently launched service graphs.
 // req: REP-002, REP-003, REC-001
 
+#[path = "replication_follower/exact_reads.rs"]
+mod exact_reads;
 #[path = "replication_follower/oracle.rs"]
 mod oracle;
 #[path = "replication_follower/proxy.rs"]

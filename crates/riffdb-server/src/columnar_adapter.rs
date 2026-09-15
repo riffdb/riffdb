@@ -2379,7 +2379,7 @@ fn resolve_field_id(
 
 /// Reads the current application head via a bounded empty-or-one-row commit scan.
 pub(crate) fn read_application_head(
-    storage: &SharedRedbOperationalPorts,
+    storage: &(impl AuthoritativeScanReader + ?Sized),
 ) -> Result<FrontierPosition, ColumnarPortError> {
     read_application_head_after(storage, None)
 }
@@ -2392,7 +2392,7 @@ pub(crate) fn read_application_head(
 /// value while letting storage skip the commit range entirely once the probe
 /// starts above the head.
 pub(crate) fn read_application_head_after(
-    storage: &SharedRedbOperationalPorts,
+    storage: &(impl AuthoritativeScanReader + ?Sized),
     observed: Option<CommitSequence>,
 ) -> Result<FrontierPosition, ColumnarPortError> {
     let limit = StorageScanLimit::new(1).ok_or(ColumnarPortError::Integrity)?;

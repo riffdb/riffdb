@@ -14,6 +14,7 @@ pub(crate) struct RunningFollowerService {
     blocking: BlockingPortDriver,
     notifier: ProjectionNotifier,
     hosted: Option<HostedMcpDependencies>,
+    exact_worker: RunningExactTextWorker,
 }
 impl RunningFollowerService {
     #[allow(clippy::too_many_arguments)]
@@ -21,6 +22,7 @@ impl RunningFollowerService {
         startup: FollowerStartupEvidence,
         reads: FollowerReadSnapshots,
         notifier: ProjectionNotifier,
+        projections_root: &std::path::Path,
         activator: RiffDbServiceActivator,
         keys: ProductionDigestKeys,
         audience: Audience,
@@ -50,6 +52,16 @@ impl RunningFollowerService {
         let generation = ProductionServerGenerationSource::new()
             .next_generation()
             .map_err(ProductionGraphBuildError::ServerGeneration)?;
+        let exact_runtime = ExactTextRuntime::open(
+            crate::projection_read_source::ProjectionReadSource::new(reads.clone()),
+            projections_root,
+            retained_metadata.history_incarnation(),
+            exact_generation_from_process(&generation),
+        )
+        .map_err(|source| ProductionGraphBuildError::ExactTextRuntime {
+            source,
+            cleanup: None,
+        })?;
         let runtime = lifecycle.runtime_routing();
         let spawner = SupervisedServiceJobSpawner::from_current_runtime(runtime.clone())
             .map_err(ProductionGraphBuildError::Runtime)?;
@@ -140,6 +152,10 @@ impl RunningFollowerService {
         )))
         .with_query_modules(catalog.clone())
         .with_reactive_modules(catalog)
+        .with_exact_text(exact_runtime.clone())
+        .with_exact_predicate(exact_runtime.clone())
+        .with_long_pattern(exact_runtime.clone())
+        .with_tokenized_text(exact_runtime.clone())
         .with_live_query_clock(Arc::new(clocks.administration()))
         .with_contextual_causation(
             riffdb_service::ContextualCausationTokenCodec::from_provider(capability_keys),
@@ -150,6 +166,18 @@ impl RunningFollowerService {
             AgentSessionAdmissionPolicy::Discard,
             retained_metadata.history_incarnation(),
         );
+        let exact_worker = match RunningExactTextWorker::start(exact_runtime) {
+            Ok(worker) => worker,
+            Err(source) => {
+                let cleanup = blocking.shutdown_and_drain().err().map(|blocking| {
+                    ProductionGraphShutdownError {
+                        blocking: Some(blocking),
+                        ..ProductionGraphShutdownError::checkpoint_close_only()
+                    }
+                });
+                return Err(ProductionGraphBuildError::ExactTextWorker { source, cleanup });
+            }
+        };
         let service = Arc::new(activator.activate(
             identity,
             process,
@@ -173,14 +201,14 @@ impl RunningFollowerService {
         })();
         if let Err(source) = installed {
             lifecycle.stop();
+            let exact = exact_worker.shutdown().err();
+            let blocking = blocking.shutdown_and_drain().err();
             let cleanup =
-                blocking
-                    .shutdown_and_drain()
-                    .err()
-                    .map(|blocking| ProductionGraphShutdownError {
-                        blocking: Some(blocking),
-                        ..ProductionGraphShutdownError::checkpoint_close_only()
-                    });
+                (exact.is_some() || blocking.is_some()).then_some(ProductionGraphShutdownError {
+                    exact,
+                    blocking,
+                    ..ProductionGraphShutdownError::checkpoint_close_only()
+                });
             return Err(ProductionGraphBuildError::Activation { source, cleanup });
         }
         Ok(Self {
@@ -189,6 +217,7 @@ impl RunningFollowerService {
             blocking,
             notifier,
             hosted,
+            exact_worker,
         })
     }
     pub(crate) fn is_available(&self) -> bool {
@@ -217,11 +246,18 @@ impl RunningFollowerService {
                     .map_err(|_| unavailable())
             });
         self.spawner.wait_for_idle().await;
-        tokio::task::spawn_blocking(move || self.blocking.shutdown_and_drain())
-            .await
-            .map_err(|_| unavailable())?
-            .map_err(|_| unavailable())
-            .and(notification)
+        tokio::task::spawn_blocking(move || {
+            let exact = self.exact_worker.shutdown().map_err(|_| unavailable());
+            let blocking = self
+                .blocking
+                .shutdown_and_drain()
+                .map_err(|_| unavailable());
+            exact.and(blocking)
+        })
+        .await
+        .map_err(|_| unavailable())?
+        .map_err(|_| unavailable())
+        .and(notification)
     }
 }
 fn unavailable() -> riffdb_storage_api::StorageError {

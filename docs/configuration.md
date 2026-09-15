@@ -383,4 +383,13 @@ and denied-read telemetry.
 The daemon process tests compare every authoritative namespace under the
 app-baseline workload and resume across repeated source and follower crashes.
 WP-746 passes its full CI gate. WP-747 owns the remaining
-follower freshness modes, lag health and projection-provider coverage.
+follower freshness modes and complete projection-provider coverage.
+
+Follower named queries can use the existing exact-text, exact-predicate,
+tokenized-text and long-pattern providers. Their local checkpoints live under
+the configured `projections_root` and remain rebuildable. Background workers
+read only completed follower snapshots; the applied application frontier is
+their local head for minimum-commit and AdmissionHead checks. A provider that
+has not caught up returns the existing typed freshness or availability refusal.
+Columnar and vector follower providers remain part of the unfinished WP-747
+work.

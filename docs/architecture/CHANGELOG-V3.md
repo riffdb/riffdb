@@ -497,6 +497,23 @@ Projection notifications follow completed publication and touch the frame's
 changed controls; catalog changes refresh the bounded registry. Cancellation and
 close retire registrations so waiting requests can drain.
 
+Follower exact-text, exact-predicate, tokenized-text and long-pattern providers
+reuse the primary query engines through a snapshot-only storage adapter. The
+adapter rechecks live publication on each new pin and cannot issue authoritative
+mutations. Their worker writes only local derived checkpoints and is joined
+during shutdown. Tokenized rebuilds scan one bounded entity partition from one
+immutable snapshot, with the exact catalog identity and application frontier
+checked before scanning. They retain the existing candidate bound and policy
+admission before constructing posting state. Columnar/vector composition and
+the complete follower freshness matrix remain open in WP-747.
+
+`follower_exact_providers_match_primary_after_tail_and_restart` deploys all four
+compiled provider families over TLS, checks matching results and application
+heads after bootstrap, a replicated write and follower restart, and excludes a
+matching row from another partition. Its namespace oracle then verifies that
+the follower still equals a complete source prefix; derived rebuilds create no
+local authoritative records.
+
 A supervised continuous receiver now owns the validated applier through shutdown.
 Transient network failures retry only while that same receiver retains live
 custody. Reconnects and exact EOF use exponential backoff from 250 milliseconds
