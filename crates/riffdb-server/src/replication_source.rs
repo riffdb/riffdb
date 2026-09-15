@@ -151,7 +151,19 @@ impl ReplicationItemSource for PublishedFrames {
                         if let Some(pin) = newer {
                             cursor.advance_snapshot(pin.as_ref())?;
                         }
-                        cursor.next_frame()
+                        let frame = cursor.next_frame()?;
+                        let head = cursor.published_head()?;
+                        let observation = riffdb_service::ReplicationSourceHead::new(
+                            head.sequence().get(),
+                            head.frontier(),
+                        )
+                        .ok_or(riffdb_errors::ReplicationStreamErrorV3::CorruptHistory)?;
+                        Ok(frame.map(|frame| {
+                            riffdb_service::ReplicationFrame::new(
+                                frame.into_bytes(),
+                                Some(observation),
+                            )
+                        }))
                     })();
                     (cursor, result)
                 })
@@ -160,8 +172,7 @@ impl ReplicationItemSource for PublishedFrames {
                 self.cursor = Some(returned);
                 let frame = frame.map_err(ReplicationFailure::Source)?;
                 if frame.is_some() {
-                    return Ok(frame
-                        .map(|frame| riffdb_service::ReplicationItem::Frame(frame.into_bytes())));
+                    return Ok(frame.map(riffdb_service::ReplicationItem::Frame));
                 }
                 let deadline = self.expires.min(tokio::time::Instant::now() + IDLE_LIMIT);
                 let pin = match tokio::time::timeout_at(deadline, self.publications.changed()).await

@@ -25,6 +25,42 @@ requested history hash; later frames bind the preceding frame checksum. Receipt
 history supplies continuity across reconnections. Emission is not a receiver
 acknowledgement and does not release any retention hold.
 
+WP-747 adds an optional `source_head` observation to frame responses. It names
+the physical transaction head and both frontiers in the same immutable source
+publication used for emission. Durable V3 frame bytes are unchanged; bootstrap
+and refusal responses cannot carry this field. Head metadata has a separate
+128-byte ceiling; the existing frame and bootstrap page ceilings stay intact.
+Older responses without it mean
+unknown source progress, never zero lag. The receiver rejects a report behind
+its accompanying frame, an inconsistent frontier at an equal position, or a
+regression from an earlier report. It publishes the observation only with the
+frame's completed local prefix after durability, replay and acknowledgement.
+Source-head telemetry never supplies read freshness or advances local progress.
+The primary's observational reader visits only the bounded source-hold table
+(at most 4,096 entries) in that same publication. It reports the follower count
+and oldest durable follower acknowledgement, excluding archive and bootstrap
+holds; it neither scans application history nor changes any hold. The typed
+statistics calculation uses separate application and administration sequence
+distances. Primary lag is measured from its head to the oldest acknowledgement;
+follower lag is measured from the reported source head to its completed applied
+frontier. Unknown source progress or absent followers has no reported lag.
+Control-only receipts do not add logical lag, and an inconsistent or negative
+frontier distance refuses instead of being clamped to zero.
+Authenticated Health and Statistics expose these observations on both roles,
+including the follower's actual optional durable acknowledgement from the same
+immutable read pin as its applied prefix. Recovery does not infer an
+acknowledgement from application. The additive wire metadata is bounded to 512
+bytes, and MCP/CLI preserve wide counters as decimal strings. See
+[replication health and statistics](../operations/REMOTE-INGRESS.md#replication-health-and-statistics).
+The real TLS stream-kill test parks both delivery and workload at explicit
+barriers, verifies positive primary lag against its oldest acknowledgement, and
+checks follower counters against its completed prefix before each of three
+crashes. Separate schema/presentation tests cover unknown progress, zero lag,
+the full `u64` range, malformed observations and metadata bounds. Operational
+reads use the existing bounded worker-admission wait; a deterministic
+capacity-held test proves that path without sleeps.
+The full follower freshness/provider gate remains WP-747 work in progress.
+
 The service requires an explicit administrative `ReplicateChangelog` grant,
 rechecks current authority before each release, and is exposed only through
 direct TLS or a protected local socket. Cleartext loopback and proxy headers

@@ -332,8 +332,8 @@ async fn continuous_receiver_wrong_phase_or_corrupt_frame_fuses_without_advancin
         .unwrap();
     for (index, item) in [
         ReplicationItem::BootstrapManifest(vec![1]),
-        ReplicationItem::Frame(vec![1]),
-        ReplicationItem::Frame(vec![]),
+        ReplicationItem::Frame(vec![1].into()),
+        ReplicationItem::Frame(vec![].into()),
     ]
     .into_iter()
     .enumerate()

@@ -250,6 +250,7 @@ impl FollowerOperationalStatus {
                 ),
                 ComponentHealth::new(HealthComponentKind::Catalog, catalog),
                 ComponentHealth::new(HealthComponentKind::Projection, catalog),
+                ComponentHealth::replication(follower_replication_statistics(&view)?),
             ])
             .map_err(|_| OperationalStatusError::Integrity)
         });
@@ -266,17 +267,28 @@ impl FollowerOperationalStatus {
                 view.history().tail().frontier().application(),
                 None,
                 count,
-            ))
+            )
+            .with_replication(follower_replication_statistics(&view)?))
         });
         Self { health, statistics }
     }
 }
+fn follower_replication_statistics(
+    view: &crate::replication_bootstrap::FollowerReadView,
+) -> Result<riffdb_service::ReplicationStatistics, OperationalStatusError> {
+    riffdb_service::ReplicationStatistics::follower(
+        view.history().tail().frontier(),
+        view.acknowledged().map(|point| point.frontier()),
+        view.source_head().map(|head| head.frontier()),
+    )
+    .map_err(|_| OperationalStatusError::Integrity)
+}
 impl OperationalStatusPort for FollowerOperationalStatus {
-    fn reserve_health(
-        &self,
-        control: &riffdb_service::RequestControl,
+    fn reserve_health<'a>(
+        &'a self,
+        control: &'a riffdb_service::RequestControl,
     ) -> riffdb_service::PortFuture<
-        '_,
+        'a,
         riffdb_service::BoxPortCapacityPermit<
             (),
             OperationalHealthSnapshot,
@@ -284,14 +296,13 @@ impl OperationalStatusPort for FollowerOperationalStatus {
         >,
         riffdb_service::PortAdmissionError,
     > {
-        let permit = self.health.reserve(control);
-        Box::pin(async move { permit })
+        Box::pin(self.health.reserve_async(control))
     }
-    fn reserve_statistics(
-        &self,
-        control: &riffdb_service::RequestControl,
+    fn reserve_statistics<'a>(
+        &'a self,
+        control: &'a riffdb_service::RequestControl,
     ) -> riffdb_service::PortFuture<
-        '_,
+        'a,
         riffdb_service::BoxPortCapacityPermit<
             (),
             OperationalStatisticsSnapshot,
@@ -299,7 +310,6 @@ impl OperationalStatusPort for FollowerOperationalStatus {
         >,
         riffdb_service::PortAdmissionError,
     > {
-        let permit = self.statistics.reserve(control);
-        Box::pin(async move { permit })
+        Box::pin(self.statistics.reserve_async(control))
     }
 }

@@ -284,6 +284,7 @@ fn follower_process_crashes_preserve_whole_frames_and_exact_retry_positions() {
 }
 
 #[test]
+// req: REP-004, REC-002
 fn follower_acknowledgement_crashes_never_allocate_or_rewrite_source_receipts() {
     use riffdb_storage_api::proto_codec::decode_replication_follower_state_v3;
     for edge in ["acknowledgement", "acknowledgement-committed"] {
@@ -324,11 +325,27 @@ fn follower_acknowledgement_crashes_never_allocate_or_rewrite_source_receipts() 
             assert_eq!(applied, history.tail());
             let committed = edge == "acknowledgement-committed" || attempt > 0;
             assert_eq!(acknowledged, committed.then_some(applied));
+            let (observed_history, observed_state, _snapshot) =
+                applier.capture_read_progress_snapshot().unwrap();
+            assert_eq!(observed_history, history);
+            assert_eq!(observed_state.attached_state().unwrap().1, applied);
+            assert_eq!(observed_state.attached_state().unwrap().2, acknowledged);
+            assert_eq!(applier.shared.durable_commit_epoch(), 0);
             drop(row);
             drop(meta);
             drop(read);
             assert_eq!(applier.acknowledge_durable_position().unwrap(), applied);
             assert_eq!(applier.acknowledge_durable_position().unwrap(), applied);
+            assert_eq!(
+                applier
+                    .capture_read_progress_snapshot()
+                    .unwrap()
+                    .1
+                    .attached_state()
+                    .unwrap()
+                    .2,
+                Some(applied)
+            );
             assert_eq!(applier.shared.durable_commit_epoch(), u64::from(!committed));
             let read = applier.shared.database.begin_read().unwrap();
             assert_eq!(

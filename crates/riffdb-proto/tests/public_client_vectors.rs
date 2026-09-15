@@ -153,7 +153,7 @@ fn every_client_vector_passes_its_strict_public_boundary() {
         }
         count += 1;
     }
-    assert_eq!(count, 142);
+    assert_eq!(count, 145);
     assert_eq!(rpcs.len(), 26);
     assert_eq!(request_rpcs, rpcs);
     assert_eq!(visible_rpcs, rpcs);
@@ -1461,6 +1461,18 @@ fn expected_enum_values() -> BTreeSet<String> {
             "HEALTH_COMPONENT_KIND_VECTOR_STALENESS",
         ),
         (
+            "riffdb.v1.HealthComponentKind",
+            7,
+            "HEALTH_COMPONENT_KIND_REPLICATION",
+        ),
+        (
+            "riffdb.v1.ReplicationRole",
+            0,
+            "REPLICATION_ROLE_UNSPECIFIED",
+        ),
+        ("riffdb.v1.ReplicationRole", 1, "REPLICATION_ROLE_PRIMARY"),
+        ("riffdb.v1.ReplicationRole", 2, "REPLICATION_ROLE_FOLLOWER"),
+        (
             "riffdb.v1.OutboxDeliveryState",
             0,
             "OUTBOX_DELIVERY_STATE_UNSPECIFIED",
@@ -1641,6 +1653,21 @@ fn expected_enum_values() -> BTreeSet<String> {
 
 fn expected_optional_registry() -> BTreeSet<String> {
     [
+        (
+            "riffdb.v1.ReplicationStatistics.registered_followers",
+            "AdminService.Stats:response:replication-unknown",
+            "AdminService.Stats:response:replication-primary",
+        ),
+        (
+            "riffdb.v1.ReplicationStatistics.application_lag_sequences",
+            "AdminService.Stats:response:replication-unknown",
+            "AdminService.Stats:response:replication-primary",
+        ),
+        (
+            "riffdb.v1.ReplicationStatistics.administration_lag_sequences",
+            "AdminService.Stats:response:replication-unknown",
+            "AdminService.Stats:response:replication-primary",
+        ),
         (
             "riffdb.v1.CommandToolDiscoveryPage.next_cursor",
             "ContractService.DiscoverCommandTools:response:full-boundary-empty-exact-end",
@@ -1824,6 +1851,24 @@ fn optional_field_present(field: &str, vector: &FixtureVector<'_>) -> bool {
                     compatibility.parent_contract_version.is_some()
                 }
                 _ => unreachable!("closed compatibility optional registry"),
+            }
+        }
+        field if field.starts_with("riffdb.v1.ReplicationStatistics.") => {
+            let response = strict_decode::<v1::StatsResponse>(vector, "riffdb.v1.StatsResponse");
+            let progress = response
+                .replication
+                .expect("replication observation fixture");
+            match field {
+                "riffdb.v1.ReplicationStatistics.registered_followers" => {
+                    progress.registered_followers.is_some()
+                }
+                "riffdb.v1.ReplicationStatistics.application_lag_sequences" => {
+                    progress.application_lag_sequences.is_some()
+                }
+                "riffdb.v1.ReplicationStatistics.administration_lag_sequences" => {
+                    progress.administration_lag_sequences.is_some()
+                }
+                _ => unreachable!("closed replication optional registry"),
             }
         }
         "riffdb.v1.Decimal.precision" => {
@@ -2077,7 +2122,7 @@ fn assert_unspecified_enum_rejected(enumeration: &str, message_type: &str, bytes
 #[test]
 fn wp137_enum_optional_and_page_registry_is_complete() {
     let (vectors, registry) = fixture_sections();
-    assert_eq!(vectors.len(), 142);
+    assert_eq!(vectors.len(), 145);
 
     let expected_enums = expected_enum_values();
     let expected_optionals = expected_optional_registry();

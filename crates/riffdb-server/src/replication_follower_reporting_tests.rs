@@ -14,10 +14,15 @@ struct ReceiptPeer {
 }
 struct ReceiptStream {
     frames: VecDeque<Vec<u8>>,
+    head: Option<riffdb_service::ReplicationSourceHead>,
 }
 impl ReplicationItemSource for ReceiptStream {
     fn next_item(&mut self) -> ReplicationFuture<'_, Option<ReplicationItem>> {
-        Box::pin(async move { Ok(self.frames.pop_front().map(ReplicationItem::Frame)) })
+        Box::pin(async move {
+            Ok(self.frames.pop_front().map(|bytes| {
+                ReplicationItem::Frame(riffdb_service::ReplicationFrame::new(bytes, self.head))
+            }))
+        })
     }
 }
 impl ReplicationSourcePort for ReceiptPeer {
@@ -51,7 +56,13 @@ impl ReplicationSourcePort for ReceiptPeer {
                     bytes
                 })
                 .collect();
-            Ok(Box::new(ReceiptStream { frames }) as Box<dyn ReplicationItemSource>)
+            let head = self.receipts.last().and_then(|receipt| {
+                riffdb_service::ReplicationSourceHead::new(
+                    receipt.binding().sequence.get(),
+                    receipt.binding().covered_frontier,
+                )
+            });
+            Ok(Box::new(ReceiptStream { frames, head }) as Box<dyn ReplicationItemSource>)
         })
     }
 }
@@ -89,6 +100,7 @@ fn receipts(manifest: Manifest, count: usize) -> ReceiptPeer {
 }
 
 #[tokio::test]
+// req: REP-004
 async fn continuous_receiver_reports_after_bounded_batches_and_flushes_progress_at_eof() {
     let (fixture, build) = fixture().await;
     let peer = receipts(fixture.manifest, 34);
@@ -96,9 +108,22 @@ async fn continuous_receiver_reports_after_bounded_batches_and_flushes_progress_
         .publish_and_follow(fixture.path.clone())
         .await
         .unwrap();
+    let readers = receiver.prepare_readers().await.unwrap();
+    assert!(readers.latest().unwrap().source_head().is_none());
     for receipt in &peer.receipts {
         let applied = receiver.advance(&peer).await.unwrap().unwrap();
         assert_eq!(applied, Point::from_receipt(receipt).unwrap());
+        let view = readers.latest().unwrap();
+        assert_eq!(view.history().tail(), applied);
+        let head = view.source_head().unwrap();
+        assert_eq!(
+            head.transaction_sequence(),
+            peer.receipts.last().unwrap().binding().sequence.get()
+        );
+        assert_eq!(
+            head.frontier(),
+            peer.receipts.last().unwrap().binding().covered_frontier
+        );
     }
     assert_eq!(peer.requests.lock().unwrap().len(), 2);
     assert_eq!(receiver.advance(&peer).await.unwrap(), None); // EOF with pending progress
@@ -128,6 +153,110 @@ async fn continuous_receiver_reports_after_bounded_batches_and_flushes_progress_
 }
 
 struct LostClaim<'a>(&'a ReceiptPeer);
+#[tokio::test]
+// req: REP-004, REC-002
+async fn source_head_mismatch_or_regression_refuses_before_apply_and_withdraws_reads() {
+    for fault in 0..3 {
+        let (fixture, build) = fixture().await;
+        let peer = receipts(fixture.manifest, 2);
+        let mut receiver = build
+            .publish_and_follow(fixture.path.clone())
+            .await
+            .unwrap();
+        let readers = receiver.prepare_readers().await.unwrap();
+        let initial = fixture.manifest.fence().history().tail();
+        let first = Point::from_receipt(&peer.receipts[0]).unwrap();
+        let second = Point::from_receipt(&peer.receipts[1]).unwrap();
+        let item = |receipt: &AuthoritativeTransactionV3, head| {
+            let frame = ChangelogFrameV3::new(
+                ChangelogFrameBindingV3::new(
+                    peer.lineage.database_id(),
+                    peer.lineage.history_incarnation(),
+                    peer.lineage.leadership_epoch().get(),
+                    AuthoritativeStateCatalogV1.digest(),
+                    receipt.binding().prior_history_hash,
+                )
+                .unwrap(),
+                vec![receipt.clone()],
+            )
+            .unwrap()
+            .encode()
+            .unwrap();
+            ItemPeer {
+                item: Mutex::new(Some(ReplicationItem::Frame(
+                    riffdb_service::ReplicationFrame::new(frame, Some(head)),
+                ))),
+            }
+        };
+        let expected = if fault == 2 {
+            let far = riffdb_service::ReplicationSourceHead::new(
+                second.sequence().get() + 10,
+                second.frontier(),
+            )
+            .unwrap();
+            assert_eq!(
+                receiver
+                    .advance(&item(&peer.receipts[0], far))
+                    .await
+                    .unwrap(),
+                Some(first)
+            );
+            // Source progress never substitutes for actual durable apply.
+            assert_eq!(readers.latest().unwrap().history().tail(), first);
+            assert_eq!(readers.latest().unwrap().source_head(), Some(far));
+            assert_eq!(
+                receiver
+                    .advance(&item(&peer.receipts[0], far))
+                    .await
+                    .unwrap(),
+                None
+            );
+            first
+        } else {
+            initial
+        };
+        let (receipt, sequence, frontier) = match fault {
+            0 => (
+                &peer.receipts[0],
+                initial.sequence().get(),
+                first.frontier(),
+            ),
+            1 => (
+                &peer.receipts[0],
+                first.sequence().get(),
+                riffdb_types::DualFrontier::new(
+                    Some(
+                        riffdb_types::CommitSequence::new(
+                            first.frontier().application().map_or(1, |v| v.get() + 1),
+                        )
+                        .unwrap(),
+                    ),
+                    first.frontier().administration(),
+                ),
+            ),
+            _ => (
+                &peer.receipts[1],
+                second.sequence().get(),
+                second.frontier(),
+            ),
+        };
+        let bad = riffdb_service::ReplicationSourceHead::new(sequence, frontier).unwrap();
+        assert_eq!(
+            receiver.advance(&item(receipt, bad)).await,
+            Err(Failure::Source(
+                riffdb_service::ReplicationStreamErrorV3::CorruptHistory,
+            ))
+        );
+        assert_eq!(
+            readers.latest().unwrap_err().kind(),
+            StorageErrorKind::Unavailable
+        );
+        drop(receiver);
+        let opened = crate::startup::open_redb_follower_startup(&fixture.path, inputs()).unwrap();
+        assert_eq!(opened.applier.durable_position().unwrap(), expected);
+    }
+}
+
 struct LostClaimStream(Box<dyn ReplicationItemSource>);
 impl ReplicationSourcePort for LostClaim<'_> {
     fn open(

@@ -11,6 +11,8 @@
 )]
 
 use std::fmt;
+#[path = "replication_operational_status.rs"]
+mod replication;
 
 use riffdb_catalog::ValidatedContractBundle;
 use riffdb_service::{

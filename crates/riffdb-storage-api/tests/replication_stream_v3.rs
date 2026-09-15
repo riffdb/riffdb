@@ -132,6 +132,39 @@ fn handshake(after: ChangelogHistoryPointV3) -> ReplicationHandshakeV3 {
 }
 
 #[test]
+// req: REP-004
+fn published_head_is_independent_of_emission_and_unavailable_after_stream_failure() {
+    let first = snapshot(3);
+    let newer = snapshot(5);
+    let mut stream = ChangelogFrameCursorV3::open(&first, handshake(anchor())).unwrap();
+    assert_eq!(stream.published_head().unwrap(), first.history.tail());
+    assert_eq!(stream.position(), anchor());
+    let emitted = stream.next_frame().unwrap().unwrap().covered();
+    assert_eq!(stream.published_head().unwrap(), first.history.tail());
+    stream.advance_snapshot(&newer).unwrap();
+    assert_eq!(stream.published_head().unwrap(), newer.history.tail());
+    assert_eq!(stream.position(), emitted);
+
+    let mut foreign = snapshot(6);
+    foreign.history = ChangelogHistoryStateV3::new(
+        ChangelogLineageV3::new(lineage().database_id(), 2, LeadershipEpochV1::initial()).unwrap(),
+        foreign.history.anchor(),
+        foreign.history.tail(),
+        foreign.history.minimum_resume(),
+    )
+    .unwrap();
+    assert_eq!(
+        stream.advance_snapshot(&foreign),
+        Err(ReplicationStreamErrorV3::ForeignLineage)
+    );
+    assert_eq!(
+        stream.published_head(),
+        Err(ReplicationStreamErrorV3::ForeignLineage)
+    );
+    assert_eq!(stream.position(), emitted);
+}
+
+#[test]
 fn receipt_stream_resumes_at_the_exact_successor_across_newer_pins() {
     let first = snapshot(2);
     let latest = snapshot(5);

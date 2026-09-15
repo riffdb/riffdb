@@ -189,6 +189,17 @@ impl ChangelogFrameCursorV3 {
         self.position
     }
 
+    /// Source head in the current immutable publication pin, which can be ahead
+    /// of emission. This is an observation for sequence-lag reporting, never a
+    /// receiver acknowledgement or permission to satisfy a freshness wait.
+    /// A failed stream cannot keep advertising its last successful observation.
+    pub fn published_head(&self) -> Result<ChangelogHistoryPointV3, ReplicationStreamErrorV3> {
+        if let Some(error) = self.failure {
+            return Err(error);
+        }
+        Ok(self.cursor.history().tail())
+    }
+
     fn frame_next_receipt(
         &mut self,
     ) -> Result<Option<EmittedChangelogFrameV3>, ReplicationStreamErrorV3> {

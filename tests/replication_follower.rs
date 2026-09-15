@@ -157,6 +157,7 @@ async fn bootstrap_to_tail_fence_is_gap_free_across_crash() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// req: REP-004
 async fn replication_stream_resumes_gap_free_after_repeated_kills() {
     let fixture = Fixture::new();
     let mut initial = fixture.start("primary", None);
@@ -175,13 +176,13 @@ async fn replication_stream_resumes_gap_free_after_repeated_kills() {
     let mut prefixes = Vec::new();
     let workload =
         workload::run_observed(&fixture, &mut client, &metadata, async |count, commit| {
-            if matches!(count, 20 | 140 | 280) {
+            if matches!(count, 20 | 21 | 140 | 141 | 280 | 281) {
                 progress.send(commit).await.unwrap();
                 permits.recv().await.unwrap();
             }
         });
     let crashes = async {
-        for _ in 0..3 {
+        for attempt in 0..3 {
             let commit =
                 tokio::time::timeout(std::time::Duration::from_secs(30), checkpoints.recv())
                     .await
@@ -193,6 +194,16 @@ async fn replication_stream_resumes_gap_free_after_repeated_kills() {
                 .await
                 .unwrap()
                 .unwrap();
+            // Observe after the command which produced the held frame has
+            // completed. The workload remains parked at this explicit barrier.
+            let advanced =
+                tokio::time::timeout(std::time::Duration::from_secs(30), checkpoints.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert!(advanced > commit);
+            assert_replication_lag_while_delivery_is_held(&fixture, &metadata, commit, attempt)
+                .await;
             assert!(
                 !follower
                     .kill(std::time::Duration::from_secs(30))
@@ -220,7 +231,8 @@ async fn replication_stream_resumes_gap_free_after_repeated_kills() {
                     .unwrap(),
                 "reconnect did not name the exact recovered durable prefix"
             );
-            wait_for_commit(&fixture, &metadata, commit + 1).await;
+            wait_for_commit(&fixture, &metadata, advanced).await;
+            permit.send(()).await.unwrap();
         }
     };
     let (last_commit, ()) = tokio::join!(workload, crashes);
@@ -241,6 +253,110 @@ async fn replication_stream_resumes_gap_free_after_repeated_kills() {
     proxy.shutdown().await;
     stop(&mut primary);
     oracle::compare_prefixes(baseline, &fixture.database("primary"), &prefixes);
+}
+
+async fn assert_replication_lag_while_delivery_is_held(
+    fixture: &Fixture,
+    metadata: &CallMetadata,
+    held_after: u64,
+    attempt: u8,
+) {
+    let sequence =
+        |position: Option<v1::FrontierPosition>| match position.unwrap().position.unwrap() {
+            v1::frontier_position::Position::BeforeFirst(_) => 0,
+            v1::frontier_position::Position::AppliedThrough(value) => value,
+        };
+    let mut primary = fixture.client("primary").await;
+    let stats = primary
+        .stats(
+            v1::StatsRequest {
+                request_id: request_id(96 + attempt * 3),
+            },
+            metadata,
+        )
+        .await;
+    let stats = stats
+        .unwrap_or_else(|error| {
+            panic!("primary statistics at held frontier {held_after}: {error:?}")
+        })
+        .replication
+        .unwrap();
+    assert_eq!(stats.role, v1::ReplicationRole::Primary as i32);
+    assert_eq!(stats.registered_followers, Some(1));
+    let source = stats.source_frontier.unwrap();
+    let ack = stats.acknowledged_frontier.unwrap();
+    assert!(sequence(source.application) > held_after);
+    assert!(sequence(ack.application) <= held_after);
+    assert_eq!(
+        stats.application_lag_sequences,
+        Some(sequence(source.application) - sequence(ack.application))
+    );
+    assert!(stats.application_lag_sequences.unwrap() > 0);
+    assert_eq!(
+        stats.administration_lag_sequences,
+        Some(sequence(source.administration) - sequence(ack.administration))
+    );
+    let health = primary
+        .health(
+            v1::HealthRequest {
+                request_id: Some(request_id(97 + attempt * 3)),
+            },
+            metadata,
+        )
+        .await
+        .unwrap();
+    let Some(v1::health_response::Result::Authenticated(health)) = health.result else {
+        panic!("authenticated health")
+    };
+    let replication = health
+        .components
+        .iter()
+        .find(|component| component.component == v1::HealthComponentKind::Replication as i32)
+        .unwrap();
+    assert_eq!(
+        replication.status,
+        v1::HealthComponentStatus::Degraded as i32
+    );
+    assert!(
+        replication
+            .replication
+            .unwrap()
+            .application_lag_sequences
+            .unwrap()
+            > 0
+    );
+
+    let mut follower = fixture.client("follower").await;
+    let stats = follower
+        .stats(
+            v1::StatsRequest {
+                request_id: request_id(98 + attempt * 3),
+            },
+            metadata,
+        )
+        .await
+        .unwrap();
+    let progress = stats.replication.unwrap();
+    let applied = progress.applied_frontier.unwrap();
+    assert!(sequence(applied.application) <= held_after);
+    assert_eq!(
+        stats.last_commit_sequence.unwrap_or(0),
+        sequence(applied.application)
+    );
+    assert!(progress.registered_followers.is_none());
+    if let Some(head) = progress.source_frontier {
+        assert_eq!(
+            progress.application_lag_sequences,
+            Some(sequence(head.application) - sequence(applied.application))
+        );
+        assert_eq!(
+            progress.administration_lag_sequences,
+            Some(sequence(head.administration) - sequence(applied.administration))
+        );
+    } else {
+        assert_eq!(progress.application_lag_sequences, None);
+        assert_eq!(progress.administration_lag_sequences, None);
+    }
 }
 
 async fn wait_for_commit(fixture: &Fixture, metadata: &CallMetadata, expected: u64) {
@@ -359,6 +475,7 @@ async fn follower_applies_exact_prefix_byte_faithfully() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// req: REP-004
 async fn tls_follower_daemon_serves_replicated_catalog_refuses_writes_and_reopens() {
     let fixture = Fixture::new();
     let mut initial = fixture.start("primary", None);
@@ -385,6 +502,49 @@ async fn tls_follower_daemon_serves_replicated_catalog_refuses_writes_and_reopen
     let Some(v1::deploy_contract_response::Result::Activated(expected)) = deployment.result else {
         panic!("TicketDesk contract did not activate: {deployment:?}");
     };
+    let primary_stats = client
+        .stats(
+            v1::StatsRequest {
+                request_id: request_id(21),
+            },
+            &metadata,
+        )
+        .await
+        .unwrap();
+    let primary_progress = primary_stats
+        .replication
+        .expect("primary replication statistics");
+    assert_eq!(primary_progress.role, v1::ReplicationRole::Primary as i32);
+    assert_eq!(primary_progress.registered_followers, Some(0));
+    assert_eq!(primary_progress.acknowledged_frontier, None);
+    assert_eq!(primary_progress.application_lag_sequences, None);
+    assert_eq!(
+        primary_progress.source_frontier,
+        primary_progress.applied_frontier
+    );
+    let primary_health = client
+        .health(
+            v1::HealthRequest {
+                request_id: Some(request_id(22)),
+            },
+            &metadata,
+        )
+        .await
+        .unwrap();
+    let Some(v1::health_response::Result::Authenticated(primary_health)) = primary_health.result
+    else {
+        panic!("authenticated primary health");
+    };
+    let primary_replication: Vec<_> = primary_health
+        .components
+        .iter()
+        .filter(|component| component.component == v1::HealthComponentKind::Replication as i32)
+        .collect();
+    assert_eq!(primary_replication.len(), 1);
+    assert_eq!(
+        primary_replication[0].replication.unwrap().role,
+        v1::ReplicationRole::Primary as i32
+    );
 
     for attempt in 0..3 {
         let mut follower = fixture.start("follower", Some("follower"));
@@ -404,7 +564,7 @@ async fn tls_follower_daemon_serves_replicated_catalog_refuses_writes_and_reopen
                 expected.clone()
             ))
         );
-        reader
+        let health = reader
             .health(
                 v1::HealthRequest {
                     request_id: Some(request_id(40 + attempt)),
@@ -413,6 +573,37 @@ async fn tls_follower_daemon_serves_replicated_catalog_refuses_writes_and_reopen
             )
             .await
             .unwrap();
+        let Some(v1::health_response::Result::Authenticated(health)) = health.result else {
+            panic!("authenticated follower health");
+        };
+        assert_ne!(health.status, v1::HealthStatus::NotReady as i32);
+        assert!(
+            health.components.iter().all(|component| component.component
+                != v1::HealthComponentKind::CommitCoordinator as i32)
+        );
+        let replication: Vec<_> = health
+            .components
+            .iter()
+            .filter(|component| component.component == v1::HealthComponentKind::Replication as i32)
+            .collect();
+        assert_eq!(replication.len(), 1);
+        assert_eq!(
+            replication[0].replication.unwrap().role,
+            v1::ReplicationRole::Follower as i32
+        );
+        let stats = reader
+            .stats(
+                v1::StatsRequest {
+                    request_id: request_id(45 + attempt),
+                },
+                &metadata,
+            )
+            .await
+            .unwrap();
+        let progress = stats.replication.expect("follower replication statistics");
+        assert_eq!(progress.role, v1::ReplicationRole::Follower as i32);
+        assert_eq!(progress.registered_followers, None);
+        assert!(progress.applied_frontier.is_some());
         let refusal = reader
             .revoke_capability(
                 v1::RevokeCapabilityRequest {

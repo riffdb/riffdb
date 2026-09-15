@@ -1,6 +1,8 @@
 //! Immutable original receipt sources paired with the exact published redb pin.
 //! No database handle, mutation lease, journal I/O or durability decision lives here.
 
+#[path = "changelog_v3_progress.rs"]
+pub(crate) mod progress;
 #[path = "changelog_v3_state.rs"]
 pub(crate) mod state;
 

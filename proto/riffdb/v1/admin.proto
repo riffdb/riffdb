@@ -37,6 +37,7 @@ enum HealthComponentKind {
   HEALTH_COMPONENT_KIND_PROJECTION = 4;
   HEALTH_COMPONENT_KIND_OUTBOX = 5;
   HEALTH_COMPONENT_KIND_VECTOR_STALENESS = 6;
+  HEALTH_COMPONENT_KIND_REPLICATION = 7;
 }
 
 enum HealthComponentStatus {
@@ -49,6 +50,35 @@ enum HealthComponentStatus {
 message HealthComponent {
   HealthComponentKind component = 1;
   HealthComponentStatus status = 2;
+  // Present only on the replication component; absent on unavailable observations.
+  ReplicationStatistics replication = 3;
+}
+
+enum ReplicationRole {
+  REPLICATION_ROLE_UNSPECIFIED = 0;
+  REPLICATION_ROLE_PRIMARY = 1;
+  REPLICATION_ROLE_FOLLOWER = 2;
+}
+
+// Both positions are explicit, including before-first. An absent whole frontier
+// in ReplicationStatistics means unknown/not applicable, never a zero position.
+message ReplicationFrontier {
+  FrontierPosition application = 1;
+  FrontierPosition administration = 2;
+}
+
+// Bounded (512 encoded bytes) observational counters, never freshness authority.
+// Primary lag compares its head with the oldest registered follower ack;
+// follower lag compares its applied head with its last reported source head.
+// No field measures time; control-only physical receipts add no logical lag.
+message ReplicationStatistics {
+  ReplicationRole role = 1;
+  ReplicationFrontier source_frontier = 2;
+  ReplicationFrontier applied_frontier = 3;
+  ReplicationFrontier acknowledged_frontier = 4;
+  optional uint32 registered_followers = 5; // primary only, including zero
+  optional uint64 application_lag_sequences = 6;
+  optional uint64 administration_lag_sequences = 7;
 }
 
 message BuildInfo {
@@ -95,6 +125,7 @@ message StatsResponse {
   optional uint32 known_projections = 5;
   // Durable history incarnation fence; ≥ 1 once the database is serving.
   uint64 history_incarnation = 6;
+  ReplicationStatistics replication = 7;
 }
 
 enum CapabilityCreateMode {

@@ -367,6 +367,7 @@ impl ProductionGraphBuilder {
             allocator_capacity,
             operational_ports,
         ) = startup.into_parts();
+        let replication_observations = replication_publications.clone();
         let replication_source = replication_publications
             .map(|publications| {
                 let repository = operational_ports
@@ -748,8 +749,8 @@ impl ProductionGraphBuilder {
             &blocking,
         ));
         let outbox = Arc::new(ServerOutboxStatusPort::new(storage.clone(), &blocking));
-        let operational: Arc<dyn OperationalStatusPort> =
-            Arc::new(ProductionOperationalStatusPort::new_with_vector_storage(
+        let operational: Arc<dyn OperationalStatusPort> = Arc::new(
+            ProductionOperationalStatusPort::new_with_vector_storage(
                 allocator_capacity,
                 runtime.clone(),
                 notifications.clone(),
@@ -757,7 +758,9 @@ impl ProductionGraphBuilder {
                 projection_status,
                 columnar_status,
                 storage.clone(),
-            ));
+            )
+            .with_replication(replication_observations, &blocking),
+        );
         let health: Arc<dyn ServiceHealthHooks> = Arc::new(
             ProductionObservabilityHealthHooks::new(runtime.clone(), observability.clone()),
         );

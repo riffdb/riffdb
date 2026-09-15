@@ -2756,6 +2756,8 @@ impl TryFrom<v1::AuthenticatedHealth> for AuthenticatedHealth {
 struct HealthComponent {
     component: &'static str,
     status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replication: Option<ReplicationStatistics>,
 }
 
 impl TryFrom<v1::HealthComponent> for HealthComponent {
@@ -2764,7 +2766,70 @@ impl TryFrom<v1::HealthComponent> for HealthComponent {
     fn try_from(value: v1::HealthComponent) -> Result<Self, Self::Error> {
         Ok(Self {
             component: health_component(value.component)?,
+            replication: value
+                .replication
+                .map(ReplicationStatistics::try_from)
+                .transpose()?,
             status: health_component_status(value.status)?,
+        })
+    }
+}
+
+#[derive(Serialize)]
+struct ReplicationFrontier {
+    application: Frontier,
+    administration: Frontier,
+}
+impl TryFrom<v1::ReplicationFrontier> for ReplicationFrontier {
+    type Error = ResponseConversionError;
+    fn try_from(value: v1::ReplicationFrontier) -> Result<Self, Self::Error> {
+        Ok(Self {
+            application: frontier(value.application.ok_or(ResponseConversionError)?)?,
+            administration: frontier(value.administration.ok_or(ResponseConversionError)?)?,
+        })
+    }
+}
+#[derive(Serialize)]
+struct ReplicationStatistics {
+    role: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_frontier: Option<ReplicationFrontier>,
+    applied_frontier: ReplicationFrontier,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    acknowledged_frontier: Option<ReplicationFrontier>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    registered_followers: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    application_lag_sequences: Option<McpPresentedU64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    administration_lag_sequences: Option<McpPresentedU64>,
+}
+impl TryFrom<v1::ReplicationStatistics> for ReplicationStatistics {
+    type Error = ResponseConversionError;
+    fn try_from(value: v1::ReplicationStatistics) -> Result<Self, Self::Error> {
+        Ok(Self {
+            role: match v1::ReplicationRole::try_from(value.role).ok() {
+                Some(v1::ReplicationRole::Primary) => "primary",
+                Some(v1::ReplicationRole::Follower) => "follower",
+                _ => return Err(ResponseConversionError),
+            },
+            source_frontier: value
+                .source_frontier
+                .map(ReplicationFrontier::try_from)
+                .transpose()?,
+            applied_frontier: value
+                .applied_frontier
+                .ok_or(ResponseConversionError)?
+                .try_into()?,
+            acknowledged_frontier: value
+                .acknowledged_frontier
+                .map(ReplicationFrontier::try_from)
+                .transpose()?,
+            registered_followers: value.registered_followers,
+            application_lag_sequences: value.application_lag_sequences.map(McpPresentedU64::new),
+            administration_lag_sequences: value
+                .administration_lag_sequences
+                .map(McpPresentedU64::new),
         })
     }
 }
@@ -3067,6 +3132,7 @@ fn health_component(value: i32) -> Result<&'static str, ResponseConversionError>
         Some(v1::HealthComponentKind::Projection) => Ok("projection"),
         Some(v1::HealthComponentKind::Outbox) => Ok("outbox"),
         Some(v1::HealthComponentKind::VectorStaleness) => Ok("vector_staleness"),
+        Some(v1::HealthComponentKind::Replication) => Ok("replication"),
         Some(v1::HealthComponentKind::Unspecified) | None => Err(ResponseConversionError),
     }
 }
@@ -3082,6 +3148,67 @@ fn health_component_status(value: i32) -> Result<&'static str, ResponseConversio
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    // req: REP-004
+    fn replication_health_presentation_preserves_unknown_and_wide_sequence_lag() {
+        let before = v1::FrontierPosition {
+            position: Some(v1::frontier_position::Position::BeforeFirst(v1::Unit {})),
+        };
+        let start = v1::ReplicationFrontier {
+            application: Some(before),
+            administration: Some(before),
+        };
+        let source = v1::ReplicationFrontier {
+            application: Some(v1::FrontierPosition {
+                position: Some(v1::frontier_position::Position::AppliedThrough(u64::MAX)),
+            }),
+            ..start
+        };
+        for known in [false, true] {
+            let component = v1::HealthComponent {
+                component: v1::HealthComponentKind::Replication.into(),
+                status: v1::HealthComponentStatus::Degraded.into(),
+                replication: Some(v1::ReplicationStatistics {
+                    role: v1::ReplicationRole::Follower.into(),
+                    applied_frontier: Some(start),
+                    source_frontier: known.then_some(source),
+                    acknowledged_frontier: known.then_some(start),
+                    application_lag_sequences: known.then_some(u64::MAX),
+                    administration_lag_sequences: known.then_some(0),
+                    registered_followers: None,
+                }),
+            };
+            let output =
+                serde_json::to_value(HealthComponent::try_from(component).unwrap()).unwrap();
+            let progress = &output["replication"];
+            assert_eq!(output["component"], "replication");
+            assert_eq!(progress["role"], "follower");
+            assert_eq!(
+                progress["applied_frontier"]["application"],
+                serde_json::json!({"before_first":{}})
+            );
+            assert!(progress.get("registered_followers").is_none());
+            if known {
+                assert_eq!(
+                    progress["source_frontier"]["application"],
+                    serde_json::json!({"applied_through":u64::MAX.to_string()})
+                );
+                assert_eq!(progress["application_lag_sequences"], u64::MAX.to_string());
+                assert_eq!(progress["administration_lag_sequences"], "0");
+                assert!(progress.get("acknowledged_frontier").is_some());
+            } else {
+                for field in [
+                    "source_frontier",
+                    "acknowledged_frontier",
+                    "application_lag_sequences",
+                    "administration_lag_sequences",
+                ] {
+                    assert!(progress.get(field).is_none(), "{field} remains unknown");
+                }
+            }
+        }
+    }
     use super::*;
 
     #[test]
