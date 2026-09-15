@@ -1,8 +1,8 @@
 # WP-772 verification report
 
 Package: WP-772. Tier: guarantee. Verification date: 2026-09-14.
-Status: automated obligations proven; final five-vector fixture approval pending.
-WP-772 remains open and has not merged.
+Status: complete. Automated obligations are proven, and the maintainer approved
+all five final codec vectors in session on 2026-09-14.
 
 ## Behavior and compatibility
 
@@ -62,6 +62,17 @@ explicitly selected migration recovery cases.
 - Targeted direct-TLS real-process acceptance: PASS.
 - Verification-report acceptance: PASS, 8 steps, base 8c0dd960;
   `/tmp/riffdb-wp772-verification-acceptance.log`.
+- Final closed-package full CI: PASS, `/tmp/riffdb-wp772-ci-all-closure.log`,
+  including the completed-package obligation check and release-install smoke.
+- Closure acceptance: PASS, 8 steps, base af689099;
+  `/tmp/riffdb-wp772-closure-acceptance.log`. The obligation-checker self-test,
+  including all negative script-wiring cases, also passes.
+
+Closing the package exposed a checker-only omission: `scripts/ci-all` was not
+recognized as its own full-battery entry point. The checker now recognizes that
+existing root without requiring self-invocation; missing, unwired and lookalike
+scripts still refuse in `full_battery_root_proof_preserves_script_wiring`.
+Neither the accepted obligation nor the full CI command changes.
 
 Scope expansions and ADR acceptance were committed separately before the affected
 implementation. Earlier substrate proof changes passed their scoped acceptance
@@ -73,8 +84,9 @@ published artifacts. No benchmark or zero-regression performance claim is made.
 
 The maintainer approved the generated inventory and initial V1/V2/V3 vectors,
 then the three source-hold vectors. ADR-0186 Amendment 1 and ADR-0226 have their
-authorized standalone commits. Final fixture review is PENDING for these five
-synthetic format vectors (SHA-256 of the tracked .hex files):
+authorized standalone commits. On 2026-09-14 the maintainer replied, in session,
+"Approve all five fixtures" to the final review batch. Approval covers these
+unchanged synthetic format vectors (SHA-256 of the tracked .hex files):
 
 - `changelog-receipt-v3-command-admission.hex`: `e7928a72aeb36572ccfb000cfa03312f3b0a6d637f808c699f5ae7669736756b`.
 - `changelog-receipt-v3-command-execution-failure.hex`: `e13e1bfbb58557f163f0e338c4dd82797888d779f6907dca81dc0babcda9712e`.
@@ -103,5 +115,5 @@ record validity. The exact implementation choices are recorded in WP-772's
 - Documentation: [Changelog V3 substrate](CHANGELOG-V3.md), reachable from the handbook,
   describes current ownership, formats, compatibility and POC limits;
   [Security](../security.md) identifies the patched source-build baseline.
-- Merge and active-worktree cleanup remain pending; preserved unmerged recovery
-  branch tips must not be removed as completed work.
+- Completed worktrees are removed only after their closure commit is on main;
+  preserved unmerged recovery branch tips must not be removed as completed work.

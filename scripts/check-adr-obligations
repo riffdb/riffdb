@@ -174,6 +174,9 @@ def wired_scripts(root)
       next unless File.file?(file)
 
       present = true
+      # The required full-battery entry point is itself a proof (ADR-0226).
+      # It need not recursively invoke itself to qualify as a wired script.
+      names << "ci-all" if entry == "scripts/ci-all"
       File.read(file, encoding: "UTF-8").scan(%r{(?:\./)?scripts/([A-Za-z0-9_.-]+)}) { |(name)| names << name }
     end
   end
@@ -339,7 +342,7 @@ def check_v2(root, record, packages, result)
     if RiffdbAdr.complete?(package)
       result["errors"] << <<~MESSAGE.strip
         #{record.basename}: obligation #{id} is undischarged but #{package_id} is closed as #{package.dig('closure', 'status').inspect}.
-          proof: #{proof.inspect} (no `fn`/`def`/`test_` definition and no scripts/#{proof.split(/\s+/).first} wired into ci-all, governance/tiers.yaml, or a workflow)
+          proof: #{proof.inspect} (no `fn`/`def`/`test_` definition and no scripts/#{proof.split(/\s+/).first.delete_prefix("scripts/")} wired into ci-all, governance/tiers.yaml, or a workflow)
           says: #{says[0, 140]}
         Either land the proof or reopen #{package_id}.
       MESSAGE
@@ -587,8 +590,32 @@ def build_self_test_tree(directory)
   system("git", "-C", directory, "add", "--all", out: File::NULL, err: File::NULL)
 end
 
+# req: GEN-006
+def full_battery_root_proof_preserves_script_wiring(failures)
+  Dir.mktmpdir("riffdb-adr-script-proofs-") do |directory|
+    FileUtils.mkdir_p(File.join(directory, "scripts"))
+    FileUtils.mkdir_p(File.join(directory, "governance"))
+    File.write(File.join(directory, "governance", "tiers.yaml"), "version: 1\n")
+    root_script = File.join(directory, "scripts", "ci-all")
+    File.write(root_script, "#!/usr/bin/env bash\n./scripts/check-wired\n")
+    %w[check-wired check-unwired ci-all-copy].each do |name|
+      File.write(File.join(directory, "scripts", name), "#!/usr/bin/env bash\nexit 0\n")
+    end
+    %w[ci-all scripts/ci-all].each do |proof|
+      failures << "the existing full-battery root must prove #{proof}" unless script_proof?(directory, proof)
+    end
+    failures << "a directly wired script must remain a proof" unless script_proof?(directory, "scripts/check-wired")
+    %w[scripts/check-unwired scripts/ci-all-copy scripts/missing scripts/scripts/ci-all].each do |proof|
+      failures << "the root exception must not discharge #{proof}" if script_proof?(directory, proof)
+    end
+    File.unlink(root_script)
+    failures << "a missing full-battery root must not discharge its proof" if script_proof?(directory, "scripts/ci-all")
+  end
+end
+
 def self_test(script)
   failures = []
+  full_battery_root_proof_preserves_script_wiring(failures)
   Dir.mktmpdir("riffdb-adr-obligations-") do |directory|
     build_self_test_tree(directory)
 

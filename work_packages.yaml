@@ -23811,9 +23811,18 @@ work_packages:
       into the existing checkpoint, and reclamation follows retained changed bytes and consumer
       fences rather than database population or process memory.
   closure:
-    status: open
+    status: complete
+    completed_at: '2026-09-14'
     evidence: docs/architecture/WP-772-VERIFICATION.md
+    decision: All owned obligations are proven by their exact named tests and full CI;
+      the patched runtime passes all nine integrated recovery cases. The maintainer
+      approved all five final attribution and frame codec vectors in session on
+      2026-09-14. This closes the storage substrate only, not WP-746 activation.
     decisions_taken:
+    - The obligation checker recognizes the existing scripts/ci-all full-battery root
+      itself as a script proof under ADR-0226, without requiring recursive self-invocation.
+      Its regression test retains refusal for missing, unwired and lookalike scripts;
+      the full CI command and accepted obligation text remain unchanged.
     - The existing CLI conformance query binds its opaque cursor using --cursor=value.
       A returned base64url cursor may start with a hyphen; passing it as a separate
       argument made the unchanged parser treat it as an option. A synthetic leading-hyphen
