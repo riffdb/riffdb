@@ -1087,3 +1087,15 @@ It excludes the moving archive head: receipt V3 must freeze verified selection
 separately. Tests pin the hash and prove that changing any request field changes
 identity, including name-boundary ambiguity and the maximum sequence. These
 primitives expose no restore operation and leave V1/V2 receipt bytes unchanged.
+
+`ArchiveRestoreSelectionV3` now checks the receipt's immutable artifact selection:
+the exact full-backup manifest identity, original lineage and complete backup
+fence must match the selected terminal archive manifest. A closed empty suffix
+retains the backup fence itself. The last retained command in the original
+backup manifest may lag that complete fence after pruning; it never replaces
+the replay start. Requested application stops must lie within the selected
+interval. Restored application/administration frontiers are checked separately,
+so an earlier exact application stop cannot be mislabeled with the terminal
+source receipt's hash or frontier. These value checks grant no replay or
+publication authority: the offline owner still must verify the full selected
+archive, persist the receipt and complete the restore ceremony.
