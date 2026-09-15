@@ -1018,6 +1018,9 @@ This primitive does not make `storage restore --archive` available yet.
 
 Publication also needs an exact retry identity for the archive and requested
 stop. Existing restore receipts are frozen V1 and cannot represent those inputs.
-The [archive restore receipt proposal](WP-749-ARCHIVE-RESTORE-RECEIPT-REVIEW.md)
-requires acceptance before adding V3 receipts; it preserves existing receipt
-bytes and the requirement for exact application-sequence stopping.
+The [accepted archive restore receipt amendment](WP-749-ARCHIVE-RESTORE-RECEIPT-REVIEW.md)
+authorizes archive-only V3 receipts and a distinct `RestoreArchivedBackup` RPC.
+It freezes verified selection for retries and preserves existing receipt bytes
+and exact application-sequence stopping. Receipt V3 and the administrative
+operation remain implementation work; ordinary restore cannot substitute for
+the archive operation.

@@ -1,7 +1,9 @@
 # WP-749 — exact archive restore selection in maintenance receipts
 
-Status: proposed; requires maintainer acceptance. No V3 maintenance receipt,
-archive restore admission, or publication is implemented by this proposal.
+Status: accepted 2026-09-15. The maintainer approved the exact text in session:
+"Approve exact text". Standalone acceptance commit `bce0fa59` records it in SPEC
+§4.10 and ADR-0050/0178. Receipt V3, archive restore admission and publication
+remain implementation work; this acceptance does not expose the operation.
 
 ## Conflict demonstrated
 
@@ -27,7 +29,7 @@ history under an already accepted operation. Neither is an acceptable fallback.
 Private full-backup conversion and exact follower-applier replay are implemented
 and tested separately. Their result intentionally has no publication capability.
 
-## Exact proposed amendment
+## Exact accepted amendment
 
 The following qualifies ADR-0050's restore input, RPC inventory and V1-only writer rules and
 completes ADR-0178 §7's archive restore ceremony. It does not change backup
@@ -142,7 +144,7 @@ application-commit recovery granularity.
 
 ## Acceptance mechanics
 
-After exact maintainer acceptance, record their words/date and this amendment in
-ADR-0050 and ADR-0178, updating SPEC/work-package references as needed in the
-standalone acceptance commit. Implement and register V3 afterward. WP-749 remains
-open until all deliverables and the full acceptance/CI gates pass.
+The maintainer's words/date and exact normative text are recorded in standalone
+acceptance commit `bce0fa59`, with SPEC/work-package references updated. All seven
+amendment acceptance checks passed. Implement and register V3 afterward. WP-749
+remains open until all deliverables and the full acceptance/CI gates pass.
