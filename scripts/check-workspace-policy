@@ -87,6 +87,10 @@ EXPECTED_FIXTURE_BINS = {
   "riffdb-mcp-conformance-stdio" => {
     "package" => "riffdb-api-mcp",
     "required_features" => ["stdio"]
+  },
+  "riffdbd-causal-wait-fixture" => {
+    "package" => "riffdb-server",
+    "required_features" => ["test-fixtures"]
   }
 }.freeze
 

@@ -4,6 +4,12 @@
 //! [`riffdb_types::ProjectionIdentity`]. Fixed at process startup for CP2;
 //! no registry synchronization is required.
 
+#[cfg(feature = "test-fixtures")]
+#[path = "columnar_notification_probe.rs"]
+mod probe;
+#[cfg(feature = "test-fixtures")]
+pub use probe::install_columnar_wait_probe;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
@@ -350,6 +356,8 @@ impl ColumnarWaitRegistration {
                 return Ok(ColumnarWake::TimedOut);
             }
             let duration = deadline.saturating_duration_since(now);
+            #[cfg(feature = "test-fixtures")]
+            probe::observe(&self.projection_name);
             #[cfg(test)]
             {
                 state.blocking_wait_cycles =

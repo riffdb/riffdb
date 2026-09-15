@@ -1,5 +1,6 @@
 [package]
 name = "riffdb-server"
+default-run = "riffdbd"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,7 +17,13 @@ default = []
 test-fixtures = [
     "riffdb-commit/test-fixtures",
     "riffdb-storage-redb/test-fixtures",
+    "riffdb-service/test-fixtures",
 ]
+
+[[bin]]
+name = "riffdbd-causal-wait-fixture"
+path = "tests/fixtures/causal_wait_daemon.rs"
+required-features = ["test-fixtures"]
 
 [dependencies]
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio"] }
