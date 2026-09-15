@@ -23732,12 +23732,18 @@ work_packages:
     WP-772 still proves every ADR-0186 clean-close, dirty-activation, bounded-root,
     complete-validation fallback, maintenance, migration, retention, and crash obligation in its own gate;
     this sequencing change neither closes WP-705 nor waives or transfers any of its obligations.
-  requirements: [REP-003, REC-001, PERF-007, STO-012]
+  requirements: [REP-003, REC-001, PERF-007, STO-012, NET-001, NET-002, NET-003, NET-005]
   required_adrs: [ADR-0019, ADR-0061, ADR-0072, ADR-0082, ADR-0083, ADR-0085, ADR-0093,
     ADR-0100, ADR-0101, ADR-0104, ADR-0112, ADR-0124, ADR-0156, ADR-0157, ADR-0178,
-    ADR-0186, ADR-0207]
+    ADR-0186, ADR-0207, ADR-0226]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0186-complete-authoritative-changelog-v3.md, adr/README.md,
+    adr/0226-rustls-security-patch-within-the-reviewed-tls-boundary.md,
+    Cargo.lock, crates/riffdb-server/Cargo.toml, crates/riffdb-client-rust/Cargo.toml,
+    crates/riffdb-server/tests/architecture.rs, crates/riffdb-client-rust/tests/architecture.rs,
+    fuzz/Cargo.lock, examples/app-baseline/Cargo.lock, examples/budget-comparison/Cargo.lock,
+    examples/agent-alpha/domains/rust/Cargo.lock, templates/application/Cargo.lock,
+    crates/riffdb-cli/assets/scaffold/application/Cargo.lock,
     proto/**, crates/riffdb-proto/**, crates/riffdb-types/**, crates/riffdb-storage-api/**,
     crates/riffdb-storage-redb/**, crates/riffdb-commit/**,
     crates/riffdb-catalog/**, crates/riffdb-testkit/**, crates/riffdb-sim/**,
