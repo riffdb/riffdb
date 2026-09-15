@@ -359,6 +359,9 @@ safe_app_attempt_spread_is_valid() {
         .reps == 5
         and ($values | length) == 5
         and ($values | all(type == "number" and . > 0));
+      def central_three_stable:
+        five_positive_generations
+        and ((.values | sort)[3] / (.values | sort)[1]) <= 1.20;
       .comparisons.unary_rep_summaries[$scenario] as $summary |
       ([$summary.postgres.p50_ns, $summary.postgres.p95_ns]
         | all(five_positive_generations))
