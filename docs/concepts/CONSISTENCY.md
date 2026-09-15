@@ -51,6 +51,13 @@ Followers refuse them. Upgrade clients before consuming V2 projected responses;
 V1-only readers reject the new version. No stored database, projection artifact
 or Protobuf field changes as part of this opaque-token version change.
 
+Discovery catalog fences carry the observed history incarnation too. A supplied
+nonzero incarnation that differs from the current database is refused as
+`RDB-HISTORY-0101`. A changed server process at the same incarnation instead
+invalidates the catalog cache hint and forces freshly authorized discovery.
+Opaque continuation cursors belong to their issuing process; foreign or obsolete
+handles return `RDB-CURSOR-0101` and never restart a page internally.
+
 ## Admission-head reads
 
 When a caller needs a stronger read but does not possess a commit sequence, it

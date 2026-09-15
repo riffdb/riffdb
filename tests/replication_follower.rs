@@ -575,6 +575,9 @@ async fn tls_follower_daemon_serves_replicated_catalog_refuses_writes_and_reopen
                 expected.clone()
             ))
         );
+        if attempt == 0 {
+            assert_discovery_history_fence_refused(&mut reader, &metadata).await;
+        }
         let health = reader
             .health(
                 v1::HealthRequest {
@@ -687,4 +690,103 @@ async fn tls_follower_daemon_serves_replicated_catalog_refuses_writes_and_reopen
     }
     drop(client);
     stop(&mut primary);
+}
+
+// req: REP-004
+async fn assert_discovery_history_fence_refused(
+    client: &mut RiffDbClient,
+    metadata: &CallMetadata,
+) {
+    let request = v1::DiscoverCommandToolsRequest {
+        request_id: request_id(80),
+        page: Some(v1::PageRequest {
+            limit: Some(10),
+            cursor: None,
+        }),
+        prior_fence: None,
+        representation: v1::DiscoveryRepresentation::CompactObservation as i32,
+    };
+    let response = client
+        .discover_command_tools(request.clone(), metadata)
+        .await
+        .unwrap();
+    let Some(v1::discover_command_tools_response::Result::CompactPage(page)) = response.result
+    else {
+        panic!("first discovery must return a page")
+    };
+    let prior = page.observed_fence.expect("discovery history fence");
+    assert!(prior.history_incarnation > 0);
+    let unchanged = client
+        .discover_command_tools(
+            v1::DiscoverCommandToolsRequest {
+                request_id: request_id(81),
+                prior_fence: Some(prior.clone()),
+                ..request.clone()
+            },
+            metadata,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        unchanged.result,
+        Some(v1::discover_command_tools_response::Result::CatalogUnchanged(prior.clone()))
+    );
+    for different_process in [false, true] {
+        let mut foreign = prior.clone();
+        foreign.history_incarnation += 1;
+        if different_process {
+            foreign.server_generation[0] ^= 1;
+        }
+        let error = client
+            .discover_command_tools(
+                v1::DiscoverCommandToolsRequest {
+                    request_id: request_id(82),
+                    prior_fence: Some(foreign.clone()),
+                    ..request.clone()
+                },
+                metadata,
+            )
+            .await
+            .expect_err("foreign-incarnation fence must not satisfy discovery");
+        assert_eq!(
+            error.public_error().map(|error| error.kind()),
+            Some(PublicErrorKind::HistoryIncarnationMismatch)
+        );
+        let error = client
+            .discover_resources(
+                v1::DiscoverResourcesRequest {
+                    request_id: request_id(83),
+                    page: request.page.clone(),
+                    prior_fence: Some(foreign),
+                    representation: v1::DiscoveryRepresentation::CompactObservation as i32,
+                    kind: v1::ResourceDiscoveryKind::All as i32,
+                },
+                metadata,
+            )
+            .await
+            .expect_err("resource discovery must apply the same history refusal");
+        assert_eq!(
+            error.public_error().map(|error| error.kind()),
+            Some(PublicErrorKind::HistoryIncarnationMismatch)
+        );
+    }
+    // Process generation remains a cache hint, not a history identity. At the
+    // same incarnation, ADR-0040 requires fresh authorized discovery after it changes.
+    let mut stale_process = prior;
+    stale_process.server_generation[0] ^= 1;
+    let refreshed = client
+        .discover_command_tools(
+            v1::DiscoverCommandToolsRequest {
+                request_id: request_id(84),
+                prior_fence: Some(stale_process),
+                ..request
+            },
+            metadata,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        refreshed.result,
+        Some(v1::discover_command_tools_response::Result::CompactPage(_))
+    ));
 }

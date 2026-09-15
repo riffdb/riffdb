@@ -1674,6 +1674,10 @@ pub fn discover_command_tools_request_from_proto(
     {
         return Err(invalid_request());
     }
+    // Preserve history even when a different presentation generation strips
+    // the semantic cache hint. The shared service owns its authorized refusal.
+    let observed_history_incarnation = request.prior_fence.as_ref()
+        .map(|fence| fence.history_incarnation).filter(|value| *value != 0);
     let prior_fence = request
         .prior_fence
         .map(|fence| semantic_discovery_fence_from_proto(fence, current_generation))
@@ -1681,7 +1685,7 @@ pub fn discover_command_tools_request_from_proto(
         .flatten();
     let request = DiscoverCommandToolsRequest::with_options(page, representation, prior_fence)
         .map_err(|_| invalid_request())?;
-    Ok((request_id, request))
+    Ok((request_id, request.with_observed_history_incarnation(observed_history_incarnation)))
 }
 
 /// Converts resource discovery and strips only a stale presentation generation.
@@ -1705,6 +1709,10 @@ pub fn discover_resources_request_from_proto(
     {
         return Err(invalid_request());
     }
+    // Preserve history even when a different presentation generation strips
+    // the semantic cache hint. The shared service owns its authorized refusal.
+    let observed_history_incarnation = request.prior_fence.as_ref()
+        .map(|fence| fence.history_incarnation).filter(|value| *value != 0);
     let prior_fence = request
         .prior_fence
         .map(|fence| semantic_discovery_fence_from_proto(fence, current_generation))
@@ -1712,7 +1720,7 @@ pub fn discover_resources_request_from_proto(
         .flatten();
     let request = DiscoverResourcesRequest::with_options(page, representation, prior_fence, kind)
         .map_err(|_| invalid_request())?;
-    Ok((request_id, request))
+    Ok((request_id, request.with_observed_history_incarnation(observed_history_incarnation)))
 }
 
 /// Converts one opaque reactive-wakeup request.
