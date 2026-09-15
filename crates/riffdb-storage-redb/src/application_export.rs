@@ -63,14 +63,7 @@ impl RedbApplicationExportSnapshot {
     ) -> Result<ApplicationExportSourceRecordV1, StorageError> {
         match class {
             ApplicationExportClassV1::Entity => {
-                let physical = decode_entity_key(key).map_err(|_| corrupt())?;
-                let record = decode_entity_record_v1(encoded)?.into_parts().0;
-                if record.target().key() != &physical
-                    || record.schema_binding().lineage() != &self.lineage
-                {
-                    return Err(corrupt());
-                }
-                Ok(ApplicationExportSourceRecordV1::Entity(Box::new(record)))
+                decode_entity_source_record(&self.lineage, key, encoded)
             }
             ApplicationExportClassV1::Event => {
                 let physical = decode_event_key(key).map_err(|_| corrupt())?;
@@ -131,51 +124,113 @@ impl RedbApplicationExportSnapshot {
         end_exclusive: Option<&[u8]>,
         limit: StorageScanLimit,
     ) -> Result<ApplicationExportSourcePageV1, StorageError> {
-        let requested = usize::from(limit.get());
-        let inspected = requested
-            .checked_add(1)
-            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
-        let table = match class {
-            ApplicationExportClassV1::Entity => JournalTable::Entities,
-            ApplicationExportClassV1::Event => JournalTable::Events,
-            ApplicationExportClassV1::Provenance => JournalTable::Provenance,
-            ApplicationExportClassV1::PublicAudit => JournalTable::Audit,
-        };
         let access = self
             .access
             .lock()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        let rows = access.read_range_to(table, &start, end_exclusive, inspected)?;
-        let mut records = Vec::with_capacity(requested.min(rows.len()));
-        let mut encoded_bytes = 0usize;
-        let mut continuation = None;
-        let mut stopped_early = false;
-        for (key, encoded) in rows.iter().take(requested) {
-            let next_bytes = encoded_bytes
-                .checked_add(encoded.len())
-                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
-            if next_bytes > MAX_APPLICATION_EXPORT_SOURCE_PAGE_BYTES {
-                stopped_early = true;
-                break;
-            }
-            records.push(self.decode_source_record(&access, class, key, encoded)?);
-            encoded_bytes = next_bytes;
-            continuation = Some(key.clone());
-        }
-        let exact_end = !stopped_early && rows.len() <= records.len();
-        if exact_end {
-            continuation = None;
-        } else if continuation.is_none() {
-            return Err(storage_error(StorageErrorKind::LimitExceeded));
-        }
-        ApplicationExportSourcePageV1::new(class, records, continuation, exact_end, encoded_bytes)
-            .map_err(|error| match error {
-                riffdb_storage_api::StorageValueError::LimitExceeded => {
-                    storage_error(StorageErrorKind::LimitExceeded)
-                }
-                _ => storage_error(StorageErrorKind::InvariantViolation),
-            })
+        read_source_page_range_at(
+            &access,
+            class,
+            start,
+            end_exclusive,
+            limit,
+            |key, encoded| self.decode_source_record(&access, class, key, encoded),
+        )
     }
+}
+
+fn decode_entity_source_record(
+    lineage: &ContractLineage,
+    key: &[u8],
+    encoded: &[u8],
+) -> Result<ApplicationExportSourceRecordV1, StorageError> {
+    let physical = decode_entity_key(key).map_err(|_| corrupt())?;
+    let record = decode_entity_record_v1(encoded)?.into_parts().0;
+    if record.target().key() != &physical || record.schema_binding().lineage() != lineage {
+        return Err(corrupt());
+    }
+    Ok(ApplicationExportSourceRecordV1::Entity(Box::new(record)))
+}
+
+pub(crate) fn read_entity_type_page_at(
+    access: &RedbReadAccess,
+    lineage: &ContractLineage,
+    entity_type: EntityTypeId,
+    after: Option<&[u8]>,
+    limit: StorageScanLimit,
+) -> Result<ApplicationExportSourcePageV1, StorageError> {
+    let prefix = EntityKeyBuilder::new(entity_type).as_bytes().to_vec();
+    if after.is_some_and(|value| {
+        value.is_empty()
+            || value.len() > MAX_APPLICATION_EXPORT_CONTINUATION_BYTES
+            || !value.starts_with(&prefix)
+    }) {
+        return Err(storage_error(StorageErrorKind::LimitExceeded));
+    }
+    let mut start = after.map_or_else(|| prefix.clone(), ToOwned::to_owned);
+    if after.is_some() {
+        start.push(0);
+    }
+    let end = exclusive_prefix_end(&prefix)
+        .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+    read_source_page_range_at(
+        access,
+        ApplicationExportClassV1::Entity,
+        start,
+        Some(&end),
+        limit,
+        |key, encoded| decode_entity_source_record(lineage, key, encoded),
+    )
+}
+
+fn read_source_page_range_at(
+    access: &RedbReadAccess,
+    class: ApplicationExportClassV1,
+    start: Vec<u8>,
+    end_exclusive: Option<&[u8]>,
+    limit: StorageScanLimit,
+    decode: impl Fn(&[u8], &[u8]) -> Result<ApplicationExportSourceRecordV1, StorageError>,
+) -> Result<ApplicationExportSourcePageV1, StorageError> {
+    let requested = usize::from(limit.get());
+    let inspected = requested
+        .checked_add(1)
+        .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+    let table = match class {
+        ApplicationExportClassV1::Entity => JournalTable::Entities,
+        ApplicationExportClassV1::Event => JournalTable::Events,
+        ApplicationExportClassV1::Provenance => JournalTable::Provenance,
+        ApplicationExportClassV1::PublicAudit => JournalTable::Audit,
+    };
+    let rows = access.read_range_to(table, &start, end_exclusive, inspected)?;
+    let mut records = Vec::with_capacity(requested.min(rows.len()));
+    let mut encoded_bytes = 0usize;
+    let mut continuation = None;
+    let mut stopped_early = false;
+    for (key, encoded) in rows.iter().take(requested) {
+        let next_bytes = encoded_bytes
+            .checked_add(encoded.len())
+            .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+        if next_bytes > MAX_APPLICATION_EXPORT_SOURCE_PAGE_BYTES {
+            stopped_early = true;
+            break;
+        }
+        records.push(decode(key, encoded)?);
+        encoded_bytes = next_bytes;
+        continuation = Some(key.clone());
+    }
+    let exact_end = !stopped_early && rows.len() <= records.len();
+    if exact_end {
+        continuation = None;
+    } else if continuation.is_none() {
+        return Err(storage_error(StorageErrorKind::LimitExceeded));
+    }
+    ApplicationExportSourcePageV1::new(class, records, continuation, exact_end, encoded_bytes)
+        .map_err(|error| match error {
+            riffdb_storage_api::StorageValueError::LimitExceeded => {
+                storage_error(StorageErrorKind::LimitExceeded)
+            }
+            _ => storage_error(StorageErrorKind::InvariantViolation),
+        })
 }
 
 impl ApplicationExportSnapshotReader for RedbApplicationExportSnapshot {
@@ -211,21 +266,11 @@ impl ApplicationExportSnapshotReader for RedbApplicationExportSnapshot {
         after: Option<&[u8]>,
         limit: StorageScanLimit,
     ) -> Result<ApplicationExportSourcePageV1, StorageError> {
-        let prefix = EntityKeyBuilder::new(entity_type).as_bytes().to_vec();
-        if after.is_some_and(|value| {
-            value.is_empty()
-                || value.len() > MAX_APPLICATION_EXPORT_CONTINUATION_BYTES
-                || !value.starts_with(&prefix)
-        }) {
-            return Err(storage_error(StorageErrorKind::LimitExceeded));
-        }
-        let mut start = after.map_or_else(|| prefix.clone(), ToOwned::to_owned);
-        if after.is_some() {
-            start.push(0);
-        }
-        let end = exclusive_prefix_end(&prefix)
-            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-        self.read_source_page_range(ApplicationExportClassV1::Entity, start, Some(&end), limit)
+        let access = self
+            .access
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        read_entity_type_page_at(&access, &self.lineage, entity_type, after, limit)
     }
 
     fn application_export_indexed_relationship_exists(
@@ -597,6 +642,165 @@ mod tests {
             .expect("activate");
         assert!(matches!(result, CatalogActivationResult::Activated { .. }));
         bundle
+    }
+
+    // req: REP-004, PRJ-004, PRJ-005, PRJ-009
+    #[test]
+    fn entity_only_snapshot_pages_preserve_exact_root_bounds_and_type() {
+        use crate::hooks::RedbTestOperation;
+        use riffdb_storage_api::{
+            ApplicationExportSourceRecordV1, AuthoritativeEntitySnapshotReader,
+            OwnedSnapshotReader, StorageScanLimit,
+        };
+        use riffdb_types::EntityKeyBuilder;
+        use riffdb_types::{CanonicalRecord, CanonicalValue, EntityTypeId, EntityVersion, FieldId};
+        let path = TestPath::new();
+        let mut store = RedbStore::open(&path.0).unwrap();
+        store
+            .initialize_database(DatabaseId::from_bytes(uuid(1)).unwrap())
+            .unwrap();
+        let mut ports = RedbDormantPorts {
+            pending_v3_activation: None,
+            shared: store.shared,
+        }
+        .into_operational_after_catalog_validation()
+        .unwrap();
+        let bundle = activate_bundle(&mut ports, 1, 5);
+        let entity = EntityTypeId::new(1).unwrap();
+        let other = EntityTypeId::new(2).unwrap();
+        let record = |entity, key, version| {
+            let mut builder = EntityKeyBuilder::new(entity);
+            builder.push_u64(key).unwrap();
+            riffdb_storage_api::StoredEntityRecordV1::new(
+                riffdb_storage_api::EntityTarget::new(entity, builder.finish().unwrap()).unwrap(),
+                EntityVersion::new(version).unwrap(),
+                bundle.contract_version(),
+                riffdb_storage_api::DurableKeySchemaBindingV1::new(
+                    bundle.lineage().clone(),
+                    bundle.contract_version(),
+                    bundle.bundle_hash(),
+                ),
+                CanonicalRecord::new(vec![(
+                    FieldId::new(1).unwrap(),
+                    CanonicalValue::U64(version),
+                )])
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        let write = |records: Vec<riffdb_storage_api::StoredEntityRecordV1>| {
+            let access = ports.begin_write().unwrap();
+            let mut table = access
+                .transaction()
+                .unwrap()
+                .open_table(crate::layout::ENTITIES)
+                .unwrap();
+            for record in records {
+                let bytes = crate::codec::encode_entity_record_v1(&record).unwrap();
+                table
+                    .insert(record.target().key().as_bytes(), bytes.as_bytes())
+                    .unwrap();
+            }
+            drop(table);
+            access
+                .commit_for(RedbTestOperation::Initialization)
+                .unwrap();
+        };
+        write(vec![
+            record(entity, 1, 1),
+            record(entity, 2, 1),
+            record(other, 1, 1),
+        ]);
+        let old = ports.open_owned_snapshot().unwrap();
+        let export = ports
+            .capture_application_export_snapshot(bundle.lineage())
+            .unwrap();
+        write(vec![record(entity, 1, 2), record(entity, 3, 1)]);
+        let limit = StorageScanLimit::new(1).unwrap();
+        let tickets = ports.mutation_gate_tickets();
+        let first = old.read_entity_type_page(entity, None, limit).unwrap();
+        assert!(
+            first
+                == export
+                    .read_application_export_entity_page(entity, None, limit)
+                    .unwrap()
+        );
+        assert!(
+            first.records()
+                == [ApplicationExportSourceRecordV1::Entity(Box::new(record(
+                    entity, 1, 1
+                )))]
+        );
+        assert!(!first.exact_end());
+        let second = old
+            .read_entity_type_page(entity, first.continuation(), limit)
+            .unwrap();
+        assert!(
+            second.records()
+                == [ApplicationExportSourceRecordV1::Entity(Box::new(record(
+                    entity, 2, 1
+                )))]
+        );
+        assert!(second.exact_end());
+        assert!(second.continuation().is_none());
+        assert_eq!(ports.mutation_gate_tickets(), tickets);
+        let current = ports.open_owned_snapshot().unwrap();
+        let current = current
+            .read_entity_type_page(entity, None, StorageScanLimit::new(500).unwrap())
+            .unwrap();
+        assert_eq!(current.records().len(), 3);
+        assert!(
+            current.records()[0]
+                == ApplicationExportSourceRecordV1::Entity(Box::new(record(entity, 1, 2)))
+        );
+        assert!(current.exact_end());
+        let wrong_type = record(other, 1, 1);
+        for after in [
+            b"".as_slice(),
+            wrong_type.target().key().as_bytes(),
+            &[0; 4097],
+        ] {
+            assert!(
+                old.read_entity_type_page(entity, Some(after), limit)
+                    .is_err()
+            );
+        }
+        // A page stops at the existing byte ceiling even when its row limit is 500.
+        let large_entity = EntityTypeId::new(3).unwrap();
+        let payload = "x".repeat(900_000);
+        let large = (1..=6)
+            .map(|key| {
+                let initial = record(large_entity, key, 1);
+                riffdb_storage_api::StoredEntityRecordV1::new(
+                    initial.target().clone(),
+                    EntityVersion::first(),
+                    bundle.contract_version(),
+                    initial.schema_binding().clone(),
+                    CanonicalRecord::new(vec![(
+                        FieldId::new(1).unwrap(),
+                        CanonicalValue::string(&payload).unwrap(),
+                    )])
+                    .unwrap(),
+                )
+                .unwrap()
+            })
+            .collect();
+        write(large);
+        let large_pin = ports.open_owned_snapshot().unwrap();
+        let limit = StorageScanLimit::new(500).unwrap();
+        let page = large_pin
+            .read_entity_type_page(large_entity, None, limit)
+            .unwrap();
+        assert_eq!(page.records().len(), 4);
+        assert!(
+            page.encoded_bytes() <= riffdb_storage_api::MAX_APPLICATION_EXPORT_SOURCE_PAGE_BYTES
+        );
+        assert!(!page.exact_end());
+        let tail = large_pin
+            .read_entity_type_page(large_entity, page.continuation(), limit)
+            .unwrap();
+        assert_eq!(tail.records().len(), 2);
+        assert!(tail.exact_end());
     }
 
     // req: OUT-001, OUT-002, TXN-042

@@ -186,6 +186,20 @@ impl ApplicationExportSnapshotReader for CapturedEntitySnapshot {
     }
 }
 
+// The follower can supply this owner without any export or writer executor.
+struct EntityOnlySnapshot(CapturedEntitySnapshot);
+impl riffdb_storage_api::AuthoritativeEntitySnapshotReader for EntityOnlySnapshot {
+    fn read_entity_type_page(
+        &self,
+        entity: riffdb_types::EntityTypeId,
+        after: Option<&[u8]>,
+        limit: StorageScanLimit,
+    ) -> Result<ApplicationExportSourcePageV1, StorageError> {
+        self.0
+            .read_application_export_entity_page(entity, after, limit)
+    }
+}
+
 fn moved_ticket(
     bundle: &riffdb_contract_ir::ContractBundle,
     target: EntityTarget,
@@ -199,7 +213,7 @@ fn moved_ticket(
     )
 }
 
-// req: PRJ-002, PRJ-004, PRJ-009, PRJ-010, OQ-020, OQ-022
+// req: REP-004, PRJ-002, PRJ-004, PRJ-009, PRJ-010, OQ-020, OQ-022
 #[test]
 fn streaming_v2_rebuild_preserves_org_move_d4_bounds_and_zero_pre_root_scratch() {
     let bundle = compile_bundle();
@@ -212,7 +226,7 @@ fn streaming_v2_rebuild_preserves_org_move_d4_bounds_and_zero_pre_root_scratch()
     let row_a = moved_ticket(&bundle, target.clone(), 1, organization_a);
     let row_b = moved_ticket(&bundle, target.clone(), 2, organization_b);
     let row_c = moved_ticket(&bundle, target.clone(), 3, organization_c);
-    let snapshot = CapturedEntitySnapshot::new(1, vec![row_a]);
+    let snapshot = EntityOnlySnapshot(CapturedEntitySnapshot::new(1, vec![row_a]));
     let mut source = HistorySource::default();
     source.append_commit(
         riffdb_types::CommitSequence::new(2).expect("two"),
@@ -268,7 +282,7 @@ fn streaming_v2_rebuild_preserves_org_move_d4_bounds_and_zero_pre_root_scratch()
         &OrgKey::from_value(&CanonicalValue::Uuid(organization_c)).expect("C org")
     );
     assert_eq!(
-        snapshot.passes(),
+        snapshot.0.passes(),
         3,
         "one early bound pass plus two exact merged passes"
     );

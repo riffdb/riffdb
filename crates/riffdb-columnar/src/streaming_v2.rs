@@ -12,7 +12,7 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
 use riffdb_storage_api::{
-    ApplicationExportSnapshotReader, ApplicationExportSourceRecordV1, AuthoritativePointReader,
+    ApplicationExportSourceRecordV1, AuthoritativeEntitySnapshotReader, AuthoritativePointReader,
     AuthoritativeScanReader, CommitScanPageV1, CommitScanRequest, MAX_ENTITY_MUTATIONS,
     StorageScanLimit,
 };
@@ -325,7 +325,7 @@ pub(crate) fn preflight_snapshot_partition_bound<S>(
     mut stop_before_next_page: impl FnMut() -> bool,
 ) -> Result<(), ColumnarV2StreamingError>
 where
-    S: ApplicationExportSnapshotReader + ?Sized,
+    S: AuthoritativeEntitySnapshotReader + ?Sized,
 {
     let limit = StorageScanLimit::new(500).ok_or(ColumnarV2StreamingError::Invalid)?;
     let mut continuation: Option<Box<[u8]>> = None;
@@ -333,11 +333,7 @@ where
     let mut previous_key: Option<PrimaryKeyBytes> = None;
     loop {
         let page = snapshot
-            .read_application_export_entity_page(
-                definition.entity_type_id(),
-                continuation.as_deref(),
-                limit,
-            )
+            .read_entity_type_page(definition.entity_type_id(), continuation.as_deref(), limit)
             .map_err(|_| ColumnarV2StreamingError::Io)?;
         for source in page.records() {
             let ApplicationExportSourceRecordV1::Entity(record) = source else {
@@ -451,7 +447,7 @@ impl ColumnarV2StreamingRows {
         mut visit: impl FnMut(ProjectedRow) -> Result<(), ColumnarV2StreamingError>,
     ) -> Result<(), ColumnarV2StreamingError>
     where
-        S: ApplicationExportSnapshotReader + ?Sized,
+        S: AuthoritativeEntitySnapshotReader + ?Sized,
     {
         let mut tail = self.reader()?;
         let mut next_tail = tail.next()?;
@@ -460,11 +456,7 @@ impl ColumnarV2StreamingRows {
         let mut previous_snapshot_key: Option<PrimaryKeyBytes> = None;
         loop {
             let page = snapshot
-                .read_application_export_entity_page(
-                    definition.entity_type_id(),
-                    continuation.as_deref(),
-                    limit,
-                )
+                .read_entity_type_page(definition.entity_type_id(), continuation.as_deref(), limit)
                 .map_err(|_| ColumnarV2StreamingError::Io)?;
             for source in page.records() {
                 let ApplicationExportSourceRecordV1::Entity(record) = source else {
@@ -521,7 +513,7 @@ impl ColumnarV2StreamingRows {
         stop_before_next_page: impl FnMut() -> bool,
     ) -> Result<Vec<(OrgKey, PathBuf)>, ColumnarV2StreamingError>
     where
-        S: ApplicationExportSnapshotReader + ?Sized,
+        S: AuthoritativeEntitySnapshotReader + ?Sized,
     {
         let mut lanes = Vec::with_capacity(organizations.len());
         let mut identities = BTreeMap::new();

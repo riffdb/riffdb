@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use riffdb_contract_ir::{ValueType, ValueTypeTag};
 use riffdb_storage_api::{
-    ApplicationExportSnapshotReader, AuthoritativePointReader, AuthoritativeScanReader,
+    AuthoritativeEntitySnapshotReader, AuthoritativePointReader, AuthoritativeScanReader,
     ColumnarControlError, StoredColumnarProjectionGenerationV1,
 };
 use riffdb_types::{
@@ -197,7 +197,7 @@ impl ValidatedColumnarV2Generation {
     ) -> Result<Self, ColumnarV2StreamingError>
     where
         R: AuthoritativePointReader + AuthoritativeScanReader + ?Sized,
-        S: ApplicationExportSnapshotReader + ?Sized,
+        S: AuthoritativeEntitySnapshotReader + ?Sized,
     {
         Self::prepare_streaming_with_optional_controller(
             source_directory,
@@ -232,7 +232,7 @@ impl ValidatedColumnarV2Generation {
     ) -> Result<Self, ColumnarV2StreamingError>
     where
         R: AuthoritativePointReader + AuthoritativeScanReader + ?Sized,
-        S: ApplicationExportSnapshotReader + ?Sized,
+        S: AuthoritativeEntitySnapshotReader + ?Sized,
     {
         Self::prepare_streaming_with_optional_controller(
             source_directory,
@@ -265,7 +265,7 @@ impl ValidatedColumnarV2Generation {
     ) -> Result<Self, ColumnarV2StreamingError>
     where
         R: AuthoritativePointReader + AuthoritativeScanReader + ?Sized,
-        S: ApplicationExportSnapshotReader + ?Sized,
+        S: AuthoritativeEntitySnapshotReader + ?Sized,
     {
         let logical_types = logical_types(&definition).map_err(map_generation_streaming_error)?;
         preflight_snapshot_partition_bound(
