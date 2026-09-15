@@ -22322,13 +22322,41 @@ work_packages:
     scale: The read path assumes shared contract vocabulary and incarnation-bound tokens, not
       co-located storage or a shared clock.
   closure:
-    status: open
+    status: complete
+    completed_at: '2026-09-15'
+    requirements_satisfied: [REP-004, REC-002, PRJ-005, PRJ-006, PRJ-007, PRJ-008, PRJ-009]
+    evidence: docs/architecture/WP-747-VERIFICATION.md
+    decision: The real TLS follower proves bounded causal waiting and exact primary
+      equality, local-head Available and Bounded reads, all existing provider families,
+      current authorization and audit-required refusal, foreign token and fence refusal,
+      process-local cursor semantics, sequence-lag reporting, failure cleanup and restart.
+      Independently validated disposable scalar/vector V2 views preserve every
+      authoritative namespace. Package acceptance and scripts/ci-all pass. Promotion,
+      archive restore and the combined campaign remain WP-748 through WP-750.
     decisions_taken:
     - 'Maintainer, in session, 2026-09-15: "Approve exact text", referring to
       docs/architecture/WP-747-CURSOR-ERROR-REVIEW.md. Preserve ADR-0070 CursorInvalid
       for unresolved process-local handles; detectable scoped-token/history-fence
       mismatches use HistoryIncarnationMismatch. The exact accepted replacement
       appears in the deliverables above; no SPEC, ADR or cursor encoding changes.'
+    - Use completed immutable follower snapshots for reads, capability rechecks and
+      local frontiers; source-head observations remain telemetry and cannot satisfy freshness.
+    - Implement the accepted follower columnar amendment with one cold source slot and
+      one owned demand worker, independently validated disposable V2 artifacts, no local
+      authoritative control publication, no source-checksum claims, and bounded cleanup.
+    - Implement the accepted canonical-vector amendment losslessly in existing Bytes
+      lanes, with complete typed and dimension validation and no byte-order vector pruning.
+    - Add database scope to opaque projected freshness V2 under ADR-0086's named evolution;
+      retain exact V1 codecs and primary input compatibility, refuse unbound follower
+      tokens, and require V2-capable response readers.
+    - Preserve the existing discovery wire history claim separately from process-generation
+      cache hints, then reuse shared authorized history refusal. Equal fences remain
+      CatalogUnchanged; generation-only changes refresh; legacy absent history retains ADR-0072.
+    - Report columnar health degraded while any admitted source is cold, activating or
+      failed. Status cannot activate a source; requests cannot clear a failed source.
+    - Keep deterministic correctness hooks in test-only workers and the dedicated
+      test-fixture executable. Real TLS campaigns and the independent full-namespace
+      oracle prove provider equality, causal ordering, cancellation, failure and restart.
   human_review_triggers: *id0178
 
 - id: WP-748
