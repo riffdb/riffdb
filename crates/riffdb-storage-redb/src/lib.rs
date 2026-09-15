@@ -50,6 +50,7 @@ mod durable_fixtures;
 mod error;
 #[cfg(feature = "test-fixtures")]
 mod fixtures;
+mod follower_lifecycle;
 mod format_preflight;
 mod format_upgrade;
 mod fresh_locator_coverage;
@@ -61,6 +62,7 @@ mod layout;
 mod maintenance;
 mod media;
 mod migration_stage;
+mod projection_replay;
 #[cfg(feature = "test-fixtures")]
 #[doc(hidden)]
 pub use migration_stage::{RedbMigrationStageFixture, RedbMigrationStageSnapshot};
@@ -249,13 +251,18 @@ pub use maintenance::validate_maintenance_receipt_fixture;
 #[cfg(feature = "test-fixtures")]
 #[doc(hidden)]
 pub use maintenance::validate_migration_receipt_fixture;
+pub use maintenance::{
+    RedbBootstrapCandidate, RedbBootstrapCatalogSession, RedbBootstrapMaterializationInput,
+    RedbBootstrapMaterializer, RedbBootstrapReceiverRepository, RedbBootstrapRepository,
+    RedbBootstrapSourceBuild, RedbBootstrapStage, RedbBootstrapVerification,
+    RedbHeldBootstrapSource, RedbMaintenanceOperationEvidence, RedbMaintenanceReconciliation,
+    RedbMaintenanceStorage, RedbMigrationDiskReservation, RedbPublishedBootstrapCandidate,
+    RedbSealedStagedRestore, RedbStagedRestore, RedbValidatedBootstrapCandidate,
+    RedbVerifiedBootstrapTransfer,
+};
 #[doc(hidden)]
 pub use maintenance::{
     RedbMaintenanceFailpoint, RedbMaintenanceTestController, RedbMaintenanceTestEvent,
-};
-pub use maintenance::{
-    RedbMaintenanceOperationEvidence, RedbMaintenanceReconciliation, RedbMaintenanceStorage,
-    RedbMigrationDiskReservation, RedbSealedStagedRestore, RedbStagedRestore,
 };
 #[doc(hidden)]
 pub use media::{
@@ -275,10 +282,13 @@ pub use startup::{
 #[doc(hidden)]
 pub use store::{REPAIR_PROGRESS_SENTINEL, reset_last_repair_progress_for_tests};
 pub use store::{
-    RedbCommitProfile, RedbDormantPorts, RedbDurabilityEpoch, RedbOperationalPorts, RedbStore,
-    last_repair_progress_basis_points,
+    RedbCommitProfile, RedbDormantPorts, RedbDurabilityEpoch, RedbFollowerApplier,
+    RedbFollowerProjectionRecovery, RedbFollowerRecoveryCatalogSession, RedbFollowerStore,
+    RedbOperationalPorts, RedbStore, last_repair_progress_basis_points,
 };
 #[doc(hidden)]
 pub use validated_prefix::{
     GracefulCheckpointCloseReceiptV1, GracefulCheckpointDispositionV1, GracefulLifecycleOutcomeV1,
 };
+
+pub use owned_snapshot::RedbOwnedSnapshot;

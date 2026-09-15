@@ -9530,6 +9530,9 @@ fn application_role_permission_to_proto(
         CapabilityPermissionV1::Unparameterized(CapabilityPermissionKindV1::InspectVectorState) => {
             Permission::InspectVectorState(v1::Unit {})
         }
+        CapabilityPermissionV1::Unparameterized(CapabilityPermissionKindV1::ReplicateChangelog) => {
+            Permission::ReplicateChangelog(v1::Unit {})
+        }
         CapabilityPermissionV1::Unparameterized(_) => {
             unreachable!("application roles infer only contract-description access")
         }
@@ -9856,6 +9859,7 @@ enum CapabilityPermissionInput {
         contract_lineage: String,
     },
     InspectVectorState {},
+    ReplicateChangelog {},
     InvokeCommand {
         contract_lineage: String,
         stable_id: u32,
@@ -9954,6 +9958,7 @@ enum CapabilityPermissionKindInput {
     MigrateContract,
     InstallApplication,
     InspectVectorState,
+    ReplicateChangelog,
     ConsumeEventStream,
     SeekEventStreamConsumer,
     WatchNamedQuery,
@@ -10410,6 +10415,9 @@ fn capability_permission(input: CapabilityPermissionInput) -> Result<v1::Capabil
         CapabilityPermissionInput::InspectVectorState {} => {
             Permission::InspectVectorState(v1::Unit {})
         }
+        CapabilityPermissionInput::ReplicateChangelog {} => {
+            Permission::ReplicateChangelog(v1::Unit {})
+        }
         CapabilityPermissionInput::InvokeCommand {
             contract_lineage,
             stable_id,
@@ -10594,6 +10602,9 @@ const fn permission_kind(input: CapabilityPermissionKindInput) -> i32 {
         }
         CapabilityPermissionKindInput::InspectVectorState => {
             v1::CapabilityPermissionKind::InspectVectorState as i32
+        }
+        CapabilityPermissionKindInput::ReplicateChangelog => {
+            v1::CapabilityPermissionKind::ReplicateChangelog as i32
         }
         CapabilityPermissionKindInput::ConsumeEventStream => {
             v1::CapabilityPermissionKind::ConsumeEventStream as i32

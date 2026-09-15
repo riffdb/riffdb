@@ -1,0 +1,158 @@
+//! Confidential outbound replication, using the existing checked public codec.
+use crate::identifiers::{ProductionIdentifierSources, ServerRequestIdSource};
+use riffdb_api_grpc::ReplicationWireClient;
+use riffdb_auth::RawCapabilityToken;
+use riffdb_config::TlsClientConfig;
+use riffdb_service::{
+    ReplicationFailure as Failure, ReplicationFuture, ReplicationItem as Item,
+    ReplicationItemSource, ReplicationRequest, ReplicationSourcePort,
+};
+use riffdb_types::DatabaseAlias;
+use std::{sync::Arc, time::Duration};
+use tokio::{
+    sync::{OwnedSemaphorePermit, Semaphore},
+    time::Instant,
+};
+use tonic::transport::{Certificate, ClientTlsConfig, Endpoint};
+
+const LIFETIME: Duration = Duration::from_secs(15 * 60);
+
+/// Administrative peer with mandatory explicit-CA and exact-name TLS validation.
+/// No constructor accepts an arbitrary channel, cleartext endpoint or trust
+/// bypass. Debug never exposes the endpoint, credential, alias or peer errors.
+pub struct VerifiedReplicationPeer {
+    client: ReplicationWireClient,
+    credential: RawCapabilityToken,
+    database: DatabaseAlias,
+    identifiers: ServerRequestIdSource,
+    capacity: Arc<Semaphore>,
+}
+impl VerifiedReplicationPeer {
+    /// Connects with the existing checked TLS configuration and protected trust
+    /// file rules. Filesystem loading runs outside the async runtime. The fixed
+    /// peer admits one active stream, including its opening request.
+    pub async fn connect(
+        config: TlsClientConfig,
+        credential: RawCapabilityToken,
+        database: DatabaseAlias,
+    ) -> Result<Self, Failure> {
+        let root = config.trust_root().as_path().to_path_buf();
+        let roots = tokio::task::spawn_blocking(move || {
+            use rustls_pki_types::{CertificateDer, pem::PemObject};
+            let (bytes, _) =
+                super::read_transport_file(&root, 256 * 1024, false).map_err(|_| unavailable())?;
+            let mut count = 0;
+            for certificate in CertificateDer::pem_slice_iter(&bytes).take(65) {
+                certificate.map_err(|_| unavailable())?;
+                count += 1;
+            }
+            if count == 0 || count > 64 {
+                return Err(unavailable());
+            }
+            Ok(bytes)
+        })
+        .await
+        .map_err(|_| unavailable())??;
+        let tls = ClientTlsConfig::new()
+            .ca_certificate(Certificate::from_pem(roots))
+            .domain_name(config.expected_server_identity().as_str());
+        let endpoint = Endpoint::from_shared(config.endpoint().as_str().to_owned())
+            .map_err(|_| unavailable())?
+            .connect_timeout(config.connect_timeout())
+            .timeout(LIFETIME)
+            .concurrency_limit(1)
+            .http2_keep_alive_interval(config.keepalive_interval())
+            .keep_alive_while_idle(true)
+            .tls_config(tls)
+            .map_err(|_| unavailable())?;
+        let channel = tokio::time::timeout(config.connect_timeout(), endpoint.connect())
+            .await
+            .map_err(|_| unavailable())?
+            .map_err(|_| unavailable())?;
+        Ok(Self {
+            client: ReplicationWireClient::new(channel),
+            credential,
+            database,
+            identifiers: ProductionIdentifierSources::new().request_ids(),
+            capacity: Arc::new(Semaphore::new(1)),
+        })
+    }
+}
+impl std::fmt::Debug for VerifiedReplicationPeer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("VerifiedReplicationPeer([redacted])")
+    }
+}
+impl ReplicationSourcePort for VerifiedReplicationPeer {
+    fn open(
+        &self,
+        input: ReplicationRequest,
+    ) -> ReplicationFuture<'_, Box<dyn ReplicationItemSource>> {
+        Box::pin(async move {
+            let permit = Arc::clone(&self.capacity)
+                .try_acquire_owned()
+                .map_err(|_| unavailable())?;
+            let deadline = Instant::now() + LIFETIME;
+            let token = self.credential.encode_text().map_err(|_| unavailable())?;
+            let mut bearer = zeroize::Zeroizing::new(String::from("Bearer "));
+            bearer.push_str(std::str::from_utf8(token.expose_secret()).map_err(|_| unavailable())?);
+            let mut authorization: tonic::metadata::MetadataValue<tonic::metadata::Ascii> =
+                bearer.parse().map_err(|_| unavailable())?;
+            authorization.set_sensitive(true);
+            let stream = tokio::time::timeout_at(
+                deadline,
+                self.client.open(
+                    input,
+                    self.identifiers
+                        .next_request_id()
+                        .map_err(|_| unavailable())?,
+                    authorization,
+                    &self.database,
+                ),
+            )
+            .await
+            .map_err(|_| unavailable())??;
+            Ok(Box::new(PeerItems {
+                owner: Some(PeerStream {
+                    stream,
+                    _permit: permit,
+                }),
+                deadline,
+            }) as Box<dyn ReplicationItemSource>)
+        })
+    }
+}
+struct PeerStream {
+    stream: Box<dyn ReplicationItemSource>,
+    _permit: OwnedSemaphorePermit,
+}
+struct PeerItems {
+    owner: Option<PeerStream>,
+    deadline: Instant,
+}
+impl ReplicationItemSource for PeerItems {
+    fn next_item(&mut self) -> ReplicationFuture<'_, Option<Item>> {
+        Box::pin(async move {
+            let Some(mut owner) = self.owner.take() else {
+                return Ok(None);
+            };
+            if Instant::now() >= self.deadline {
+                return Err(unavailable());
+            }
+            let item = tokio::time::timeout_at(self.deadline, owner.stream.next_item())
+                .await
+                .map_err(|_| unavailable())??;
+            if Instant::now() >= self.deadline {
+                return Err(unavailable());
+            }
+            let Some(item) = item else {
+                return Ok(None);
+            };
+            self.owner = Some(owner);
+            Ok(Some(item))
+        })
+    }
+}
+fn unavailable() -> Failure {
+    Failure::Unavailable
+}

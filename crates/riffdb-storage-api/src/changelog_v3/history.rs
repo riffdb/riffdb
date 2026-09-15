@@ -101,7 +101,10 @@ impl ChangelogHistoryPointV3 {
         self.frontier
     }
 
-    fn precedes_or_equals(self, other: Self) -> bool {
+    /// Checks monotone sequence/frontier shape and exact identity at equality.
+    /// This value comparison does not prove receipt ancestry or durability.
+    #[must_use]
+    pub fn precedes_or_equals(self, other: Self) -> bool {
         if self.sequence == other.sequence {
             return self == other;
         }

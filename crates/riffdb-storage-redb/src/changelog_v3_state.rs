@@ -4,7 +4,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use redb::{ReadableTable, TableDefinition, TableHandle};
+use redb::{ReadableTable, ReadableTableMetadata, TableDefinition, TableHandle};
 use riffdb_storage_api::{
     AuthoritativeNamespaceV1 as N, AuthoritativeStateCatalogV1, AuthoritativeStateCursorV3,
     AuthoritativeStateRowV3, AuthoritativeStateStepV3, ChangelogCursorErrorV3,
@@ -80,6 +80,39 @@ fn validate_inventory(root: &CheckpointRoot) -> Result<(), StorageError> {
         }
     }
     Ok(())
+}
+
+/// Exact attached authority reader for private bootstrap verification. A
+/// follower deliberately has no source receipts; its existing attached root
+/// must prove the tail instead. Source cursor admission above is unchanged.
+pub(crate) fn open_attached(
+    root: Arc<CheckpointRoot>,
+    expected: ChangelogHistoryStateV3,
+) -> Result<Box<dyn AuthoritativeStateCursorV3>, ChangelogCursorErrorV3> {
+    if crate::changelog_v3_roots::validate_retained_history(&root)? != Some(expected)
+        || root
+            .list_multimap_tables()
+            .map_err(precommit_storage_error)?
+            .next()
+            .is_some()
+        || !crate::follower_lifecycle::is_attached(&root)?
+        || !root
+            .open_table(crate::changelog_v3_activation::HISTORY)
+            .map_err(table_error)?
+            .is_empty()
+            .map_err(precommit_storage_error)?
+    {
+        return Err(super::corrupt().into());
+    }
+    validate_inventory(&root)?;
+    Ok(Box::new(StateCursor {
+        root,
+        view: None,
+        history: expected,
+        namespace_index: 0,
+        last_key: None,
+        failure: None,
+    }))
 }
 
 struct StateCursor {

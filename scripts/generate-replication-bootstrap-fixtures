@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+cargo run --quiet -p riffdb-storage-api --example generate_replication_bootstrap_fixtures -- "$@"

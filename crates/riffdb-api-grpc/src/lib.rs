@@ -54,3 +54,8 @@ pub use error::*;
 pub use projected_query_conversion::*;
 #[cfg(feature = "server")]
 pub use server::*;
+
+#[cfg(all(feature = "client", feature = "server"))]
+mod replication_client;
+#[cfg(all(feature = "client", feature = "server"))]
+pub use replication_client::ReplicationWireClient;

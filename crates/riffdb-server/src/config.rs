@@ -2,6 +2,10 @@
 
 #![allow(dead_code)]
 
+#[path = "config_follower.rs"]
+mod follower;
+use follower::FollowerSourceDocument;
+pub(crate) use follower::{FollowerSourceConfig, ServerMode};
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::ffi::{OsStr, OsString};
@@ -55,6 +59,7 @@ const REDB_COMMIT_PROFILE_ENVIRONMENT: &str = "RIFFDB_REDB_COMMIT_PROFILE";
 /// TOML, then a safe local default. Digest-key contents remain in auth-owned
 /// protected-file custody; this configuration carries paths only.
 pub(crate) struct ServerConfig {
+    mode: ServerMode,
     databases: Vec<DatabaseConfig>,
     application_listener: ApplicationListenerConfig,
     audience: Audience,
@@ -68,6 +73,7 @@ pub(crate) struct ServerConfig {
 
 /// One independently hosted database's non-secret process configuration.
 pub(crate) struct DatabaseConfig {
+    follower: Option<FollowerSourceConfig>,
     alias: DatabaseAlias,
     database_path: PathBuf,
     environment: Environment,
@@ -124,12 +130,29 @@ impl ConfiguredProjection {
 }
 
 impl DatabaseConfig {
+    pub(crate) fn follower(&self) -> Option<&FollowerSourceConfig> {
+        self.follower.as_ref()
+    }
     pub(crate) const fn alias(&self) -> &DatabaseAlias {
         &self.alias
     }
 
     pub(crate) fn database_path(&self) -> &Path {
         &self.database_path
+    }
+
+    /// Reserved sibling area for bounded private source artifacts.
+    pub(crate) fn replication_root(&self) -> PathBuf {
+        let mut path = self.database_path.as_os_str().to_os_string();
+        path.push(".riffreplication");
+        PathBuf::from(path)
+    }
+
+    /// Reserved receiver scratch, separate from the source inventory on promotion.
+    pub(crate) fn replication_receiver_root(&self) -> PathBuf {
+        let mut path = self.database_path.as_os_str().to_os_string();
+        path.push(".riffreceiver");
+        PathBuf::from(path)
     }
 
     pub(crate) const fn environment(&self) -> &Environment {
@@ -164,6 +187,9 @@ impl fmt::Debug for DatabaseConfig {
 }
 
 impl ServerConfig {
+    pub(crate) const fn mode(&self) -> ServerMode {
+        self.mode
+    }
     pub(crate) fn from_process_args() -> Result<Self, ServerConfigError> {
         let current_directory =
             std::env::current_dir().map_err(|_| ServerConfigError::InvalidPath)?;
@@ -203,6 +229,12 @@ impl ServerConfig {
             projections: top_level_projections,
         } = document;
         let server = server.unwrap_or_default();
+        let mode = ServerMode::parse(select_os(
+            arguments.mode.as_ref(),
+            environment.value("RIFFDB_MODE"),
+            server.mode.clone().map(OsString::from),
+            OsString::from("primary"),
+        )?)?;
         let maintenance = maintenance.unwrap_or_default();
 
         let database_environment = environment.value(DATABASE_ENVIRONMENT);
@@ -217,6 +249,7 @@ impl ServerConfig {
             || configured_environment_environment.is_some()
             || backup_root_environment.is_some()
             || projections_root_environment.is_some()
+            || server.replication_source.is_some()
             || server.database.is_some()
             || server.environment.is_some()
             || maintenance.backup_root.is_some()
@@ -227,6 +260,10 @@ impl ServerConfig {
         }
         let databases = if named_databases.is_empty() {
             vec![DatabaseConfig {
+                follower: server
+                    .replication_source
+                    .map(FollowerSourceDocument::resolve)
+                    .transpose()?,
                 alias: DatabaseAlias::default_alias(),
                 database_path: bounded_path(select_os(
                     arguments.database.as_ref(),
@@ -257,6 +294,12 @@ impl ServerConfig {
         } else {
             parse_named_databases(named_databases)?
         };
+        if databases
+            .iter()
+            .any(|database| database.follower.is_some() != (mode == ServerMode::Follower))
+        {
+            return Err(ServerConfigError::InvalidFollowerConfiguration);
+        }
         let listen_environment = environment.value(LISTEN_ENVIRONMENT);
         let uses_legacy_listener_configuration = arguments.listen.is_some()
             || listen_environment.is_some()
@@ -325,6 +368,7 @@ impl ServerConfig {
         }
 
         let config = Self {
+            mode,
             databases,
             application_listener,
             audience,
@@ -340,11 +384,22 @@ impl ServerConfig {
     }
 
     fn validate_disjoint_paths(&self, current_directory: &Path) -> Result<(), ServerConfigError> {
-        let mut paths = Vec::with_capacity(self.databases.len() * 3 + 2);
+        let mut paths = Vec::with_capacity(self.databases.len() * 5 + 2);
         for database in &self.databases {
             paths.push((
                 ConfiguredPathRole::Database(database.alias.clone()),
                 lexical_absolute(&database.database_path, current_directory)?,
+            ));
+            let replication_root = bounded_path(database.replication_root().into_os_string())?;
+            paths.push((
+                ConfiguredPathRole::ReplicationRoot(database.alias.clone()),
+                lexical_absolute(&replication_root, current_directory)?,
+            ));
+            let receiver_root =
+                bounded_path(database.replication_receiver_root().into_os_string())?;
+            paths.push((
+                ConfiguredPathRole::ReceiverRoot(database.alias.clone()),
+                lexical_absolute(&receiver_root, current_directory)?,
             ));
             paths.push((
                 ConfiguredPathRole::BackupRoot(database.alias.clone()),
@@ -363,6 +418,22 @@ impl ServerConfig {
             ConfiguredPathRole::IdempotencyKeys,
             lexical_absolute(&self.idempotency_key_path, current_directory)?,
         ));
+        for database in &self.databases {
+            if let Some(source) = &database.follower {
+                for file in [
+                    source.credential.as_path(),
+                    source.tls.trust_root().as_path(),
+                ] {
+                    let file = lexical_absolute(file, current_directory)?;
+                    if paths.iter().any(|(_, owned)| paths_overlap(&file, owned)) {
+                        return Err(ServerConfigError::InvalidFollowerConfiguration);
+                    }
+                }
+                if source.credential.as_path() == source.tls.trust_root().as_path() {
+                    return Err(ServerConfigError::InvalidFollowerConfiguration);
+                }
+            }
+        }
         for (left_index, (left_role, left)) in paths.iter().enumerate() {
             for (right_role, right) in paths.iter().skip(left_index + 1) {
                 if paths_overlap(left, right) {
@@ -374,6 +445,11 @@ impl ServerConfig {
             }
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replication_root(&self) -> PathBuf {
+        self.databases[0].replication_root()
     }
 
     pub(crate) fn database_path(&self) -> &Path {
@@ -424,10 +500,12 @@ impl ServerConfig {
         self.databases[0].backup_root()
     }
 
+    #[cfg(test)]
     pub(crate) fn projections_root(&self) -> &Path {
         self.databases[0].projections_root()
     }
 
+    #[cfg(test)]
     pub(crate) fn projections(&self) -> &[ConfiguredProjection] {
         self.databases[0].projections()
     }
@@ -449,6 +527,7 @@ impl fmt::Debug for ServerConfig {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ServerConfig")
+            .field("mode", &self.mode)
             .field("databases", &self.databases)
             .field("application_listener", &self.application_listener)
             .field("audience", &"[CONFIGURED]")
@@ -464,6 +543,7 @@ impl fmt::Debug for ServerConfig {
 
 #[derive(Default)]
 struct ArgumentValues {
+    mode: Option<OsString>,
     config: Option<OsString>,
     database: Option<OsString>,
     listen: Option<OsString>,
@@ -485,6 +565,7 @@ impl ArgumentValues {
         while let Some(flag) = arguments.next() {
             let value = arguments.next().ok_or(ServerConfigError::MissingValue)?;
             match flag.to_str() {
+                Some("--mode") => set_once(&mut values.mode, value)?,
                 Some("--config") => set_once(&mut values.config, value)?,
                 Some("--database") => set_once(&mut values.database, value)?,
                 Some("--listen") => set_once(&mut values.listen, value)?,
@@ -547,6 +628,8 @@ struct ConfigDocument {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ServerDocument {
+    mode: Option<String>,
+    replication_source: Option<FollowerSourceDocument>,
     database: Option<String>,
     grpc_listen: Option<String>,
     application_listener: Option<ApplicationListenerDocument>,
@@ -622,6 +705,7 @@ struct MaintenanceDocument {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DatabaseDocument {
+    replication_source: Option<FollowerSourceDocument>,
     path: String,
     backup_root: String,
     environment: String,
@@ -705,6 +789,10 @@ fn parse_named_databases(
                 }
             };
             Ok(DatabaseConfig {
+                follower: document
+                    .replication_source
+                    .map(FollowerSourceDocument::resolve)
+                    .transpose()?,
                 alias,
                 database_path: bounded_path(OsString::from(document.path))?,
                 environment: parse_environment(OsString::from(document.environment))?,
@@ -1004,6 +1092,8 @@ pub(crate) enum ConfiguredPathRole {
     Database(DatabaseAlias),
     BackupRoot(DatabaseAlias),
     ProjectionsRoot(DatabaseAlias),
+    ReplicationRoot(DatabaseAlias),
+    ReceiverRoot(DatabaseAlias),
     CapabilityKeys,
     IdempotencyKeys,
 }
@@ -1014,6 +1104,12 @@ impl fmt::Display for ConfiguredPathRole {
             Self::Database(alias) => write!(formatter, "database path for '{alias}'"),
             Self::BackupRoot(alias) => write!(formatter, "backup_root for '{alias}'"),
             Self::ProjectionsRoot(alias) => write!(formatter, "projections_root for '{alias}'"),
+            Self::ReplicationRoot(alias) => {
+                write!(formatter, "replication artifact root for '{alias}'")
+            }
+            Self::ReceiverRoot(alias) => {
+                write!(formatter, "replication receiver root for '{alias}'")
+            }
             Self::CapabilityKeys => formatter.write_str("capability key path"),
             Self::IdempotencyKeys => formatter.write_str("idempotency key path"),
         }
@@ -1022,6 +1118,7 @@ impl fmt::Display for ConfiguredPathRole {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ServerConfigError {
+    InvalidFollowerConfiguration,
     UnknownOption,
     MissingValue,
     DuplicateOption,
@@ -1048,6 +1145,9 @@ pub(crate) enum ServerConfigError {
 impl fmt::Display for ServerConfigError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::InvalidFollowerConfiguration => {
+                "follower source configuration is invalid or incomplete"
+            }
             Self::UnknownOption => "unknown riffdbd option",
             Self::MissingValue => "riffdbd option is missing its value",
             Self::DuplicateOption => "riffdbd option was supplied more than once",
@@ -1453,6 +1553,51 @@ environment = "development"
             error.to_string(),
             "database path for 'alpha' overlaps database path for 'beta'; use sibling database and backup paths"
         );
+    }
+
+    #[test]
+    // req: REP-003, REC-001
+    fn replication_artifact_roots_are_reserved_and_disjoint_from_other_configured_paths() {
+        let root = TestRoot::new();
+        for receiver in [false, true] {
+            for other in ["database", "backup", "keys"] {
+                let mut config =
+                    ServerConfig::resolve(Vec::new(), &EmptyEnvironment, &root.0).unwrap();
+                let reserved = if receiver {
+                    config.databases[0].replication_receiver_root()
+                } else {
+                    config.replication_root()
+                };
+                assert!(
+                    reserved
+                        .as_os_str()
+                        .as_encoded_bytes()
+                        .ends_with(if receiver {
+                            b".riffreceiver"
+                        } else {
+                            b".riffreplication"
+                        })
+                );
+                match other {
+                    "database" => {
+                        let mut second =
+                            ServerConfig::resolve(Vec::new(), &EmptyEnvironment, &root.0)
+                                .unwrap()
+                                .databases
+                                .remove(0);
+                        second.alias = DatabaseAlias::new("second").unwrap();
+                        second.database_path = reserved.join("second.redb");
+                        config.databases.push(second);
+                    }
+                    "backup" => config.databases[0].backup_root = reserved,
+                    _ => config.capability_key_path = reserved.join("secret.keys"),
+                }
+                assert!(matches!(
+                    config.validate_disjoint_paths(&root.0),
+                    Err(ServerConfigError::OverlappingPaths { .. })
+                ));
+            }
+        }
     }
 
     #[test]

@@ -105,7 +105,7 @@ fn read_database_id(
     Ok(*decode_database_identity_v1(value.value())?.value())
 }
 
-fn read_database_id_readonly(
+pub(crate) fn read_database_id_readonly(
     transaction: &redb::ReadTransaction,
 ) -> Result<riffdb_types::DatabaseId, StorageError> {
     let table = transaction.open_table(META).map_err(table_error)?;
@@ -794,7 +794,7 @@ fn read_active_catalog_write(
     active_catalog_from_table(&table)
 }
 
-fn read_contract_bundle_from_table<T>(
+pub(crate) fn read_contract_bundle_from_table<T>(
     table: &T,
     lineage: &ContractLineage,
     version: ContractVersion,
@@ -963,43 +963,47 @@ impl CatalogRepository for RedbOperationalPorts {
     ) -> Result<Option<StoredContractMigrationEdgeV1>, StorageError> {
         let transaction = self.begin_read()?;
         read_database_id_readonly(&transaction)?;
-        let retirements = transaction
-            .open_table(CONTRACT_WRITE_RETIREMENTS)
-            .map_err(table_error)?;
-        let retirement_key = encode_contract_write_retirement_key(predecessor);
-        let Some(retirement) = retirements
-            .get(retirement_key.as_slice())
-            .map_err(precommit_storage_error)?
-        else {
-            return Ok(None);
-        };
-        let retirement = decoded_value(
-            riffdb_storage_api::proto_codec::decode_contract_write_retirement_v1(
-                retirement.value(),
-            )
-            .map_err(|_| corrupt())?,
-        );
-        if retirement.artifacts().parent() != predecessor {
-            return Err(corrupt());
-        }
-        let migrations = transaction
-            .open_table(CONTRACT_MIGRATIONS)
-            .map_err(table_error)?;
-        let operation_key = encode_contract_migration_operation_key(retirement.operation_id());
-        let migration = migrations
-            .get(operation_key.as_slice())
-            .map_err(precommit_storage_error)?
-            .ok_or_else(corrupt)?;
-        let migration = decoded_value(
-            riffdb_storage_api::proto_codec::decode_contract_migration_record_v1(migration.value())
-                .map_err(|_| corrupt())?,
-        );
-        StoredContractMigrationEdgeV1::new(retirement, migration)
-            .map(Some)
-            .map_err(|_| corrupt())
+        read_contract_migration_edge_at(&transaction, predecessor)
     }
 }
 
+pub(crate) fn read_contract_migration_edge_at(
+    transaction: &RedbReadAccess,
+    predecessor: ContractBundleHash,
+) -> Result<Option<StoredContractMigrationEdgeV1>, StorageError> {
+    let retirements = transaction
+        .open_table(CONTRACT_WRITE_RETIREMENTS)
+        .map_err(table_error)?;
+    let retirement_key = encode_contract_write_retirement_key(predecessor);
+    let Some(retirement) = retirements
+        .get(retirement_key.as_slice())
+        .map_err(precommit_storage_error)?
+    else {
+        return Ok(None);
+    };
+    let retirement = decoded_value(
+        riffdb_storage_api::proto_codec::decode_contract_write_retirement_v1(retirement.value())
+            .map_err(|_| corrupt())?,
+    );
+    if retirement.artifacts().parent() != predecessor {
+        return Err(corrupt());
+    }
+    let migrations = transaction
+        .open_table(CONTRACT_MIGRATIONS)
+        .map_err(table_error)?;
+    let operation_key = encode_contract_migration_operation_key(retirement.operation_id());
+    let migration = migrations
+        .get(operation_key.as_slice())
+        .map_err(precommit_storage_error)?
+        .ok_or_else(corrupt)?;
+    let migration = decoded_value(
+        riffdb_storage_api::proto_codec::decode_contract_migration_record_v1(migration.value())
+            .map_err(|_| corrupt())?,
+    );
+    StoredContractMigrationEdgeV1::new(retirement, migration)
+        .map(Some)
+        .map_err(|_| corrupt())
+}
 impl AdministrationAuditReader for RedbOperationalPorts {
     fn scan_administration_audit(
         &self,
@@ -1210,7 +1214,7 @@ pub(crate) fn load_active_query_modules(
     Ok(loaded)
 }
 
-fn query_module_from_table<T>(
+pub(crate) fn query_module_from_table<T>(
     table: &T,
     module_hash: QueryModuleHash,
 ) -> Result<Option<StoredQueryModuleV1>, StorageError>
@@ -1303,42 +1307,57 @@ impl QueryModuleRepository for RedbOperationalPorts {
     ) -> Result<Option<ActiveQueryModulePointerV1>, StorageError> {
         let transaction = self.begin_read()?;
         validate_administration_stream_readonly(self, &transaction)?;
-        let active_table = transaction
-            .open_table(QUERY_MODULE_ACTIVE)
-            .map_err(table_error)?;
-        let active = active_query_module_from_table(
-            &active_table,
+        read_active_query_module_at(
+            &transaction,
             lineage,
             contract_version,
             contract_bundle_hash,
-        )?;
-        let Some(record) = active else {
-            return Ok(None);
-        };
-        let audit = transaction.open_table(AUDIT).map_err(table_error)?;
-        let key = encode_audit_key(record.administration_sequence());
-        let durable = audit
-            .get(key.as_slice())
-            .map_err(precommit_storage_error)?
-            .ok_or_else(corrupt)?;
-        let commits = transaction.open_table(COMMITS).map_err(table_error)?;
-        let events = transaction.open_table(EVENTS).map_err(table_error)?;
-        let durable = decoded_value(decode_administration_audit_with_command_tables(
-            durable.value(),
-            &commits,
-            &events,
-        )?);
-        if durable != StoredAdministrationAuditRecordV1::QueryModule(record.clone()) {
-            return Err(corrupt());
-        }
-        let modules = transaction.open_table(QUERY_MODULES).map_err(table_error)?;
-        let module = query_module_from_table(&modules, record.activated().module_hash())?
-            .ok_or_else(corrupt)?;
-        if !record.activated().matches_module(&module) {
-            return Err(corrupt());
-        }
-        Ok(Some(record.activated().clone()))
+        )
     }
+}
+
+/// Exact bounded pointer, audit, and module cross-links from one pinned root.
+pub(crate) fn read_active_query_module_at(
+    transaction: &crate::store::RedbReadAccess,
+    lineage: &ContractLineage,
+    contract_version: ContractVersion,
+    contract_bundle_hash: ContractBundleHash,
+) -> Result<Option<ActiveQueryModulePointerV1>, StorageError> {
+    let active_table = transaction
+        .open_table(QUERY_MODULE_ACTIVE)
+        .map_err(table_error)?;
+    let active = active_query_module_from_table(
+        &active_table,
+        lineage,
+        contract_version,
+        contract_bundle_hash,
+    )?;
+    let Some(record) = active else {
+        return Ok(None);
+    };
+    let audit = transaction.open_table(AUDIT).map_err(table_error)?;
+    let key = encode_audit_key(record.administration_sequence());
+    let durable = audit
+        .get(key.as_slice())
+        .map_err(precommit_storage_error)?
+        .ok_or_else(corrupt)?;
+    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
+    let durable = decoded_value(decode_administration_audit_with_command_tables(
+        durable.value(),
+        &commits,
+        &events,
+    )?);
+    if durable != StoredAdministrationAuditRecordV1::QueryModule(record.clone()) {
+        return Err(corrupt());
+    }
+    let modules = transaction.open_table(QUERY_MODULES).map_err(table_error)?;
+    let module =
+        query_module_from_table(&modules, record.activated().module_hash())?.ok_or_else(corrupt)?;
+    if !record.activated().matches_module(&module) {
+        return Err(corrupt());
+    }
+    Ok(Some(record.activated().clone()))
 }
 
 impl QueryModuleAdministrationRepository for RedbOperationalPorts {
@@ -1491,7 +1510,7 @@ impl QueryModuleAdministrationRepository for RedbOperationalPorts {
     }
 }
 
-fn reactive_module_from_table<T>(
+pub(crate) fn reactive_module_from_table<T>(
     table: &T,
     module_hash: ReactiveModuleHash,
 ) -> Result<Option<StoredReactiveModuleV1>, StorageError>
@@ -1886,7 +1905,7 @@ fn resolve_capability_digests_write(
     resolve_capability_digests_from_tables(&capabilities, &lookups, database_id, candidates)
 }
 
-fn resolve_capability_digests_from_tables<C, L>(
+pub(crate) fn resolve_capability_digests_from_tables<C, L>(
     capabilities: &C,
     lookups: &L,
     database_id: riffdb_types::DatabaseId,

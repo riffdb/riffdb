@@ -536,6 +536,15 @@ pub(crate) fn write_validated_prefix_checkpoint(
         crate::changelog_v3_roots::read_checkpoint_roots(&transaction)?
             .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
     }
+    // A follower validates replicated evidence but cannot replace its source's
+    // authoritative certificate or head rows with local checkpoint evidence.
+    if crate::follower_lifecycle::preserve_attached_lifecycle(
+        &transaction,
+        retained.database_id(),
+        retained.history_incarnation(),
+    )? {
+        return Ok(());
+    }
     let mut rows_walked = 0_u64;
     // Counts come from table metadata, never from a history pass: at graceful
     // shutdown this is the whole difference between O(1) and O(history), and

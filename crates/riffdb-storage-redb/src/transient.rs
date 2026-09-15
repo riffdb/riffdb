@@ -1,5 +1,8 @@
 //! Rebuildable operational accelerators derived from authoritative tables.
 
+#[path = "transient_follower.rs"]
+pub(crate) mod follower;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound::{Excluded, Unbounded};
 use std::sync::Arc;
@@ -174,10 +177,31 @@ impl TransientIndexes {
         Ok((Self::rebuild(transaction)?, commit_rows))
     }
 
+    pub(crate) fn rebuild_counted_cancellable(
+        transaction: &ReadTransaction,
+        cancellation: &std::sync::atomic::AtomicBool,
+    ) -> Result<(Self, u64), StorageError> {
+        let commit_rows = table_row_count(transaction, COMMITS)?;
+        Ok((
+            Self::rebuild_with_cancellation(transaction, Some(cancellation))?,
+            commit_rows,
+        ))
+    }
+
     pub(crate) fn rebuild(transaction: &ReadTransaction) -> Result<Self, StorageError> {
-        let command_derived = rebuild_command_derived_indexes(transaction)?;
-        let event_routes = rebuild_event_routes(transaction, command_derived.as_ref())?;
-        let rebuilt_outbox = rebuild_outbox_indexes(transaction, command_derived.as_ref())?;
+        Self::rebuild_with_cancellation(transaction, None)
+    }
+
+    fn rebuild_with_cancellation(
+        transaction: &ReadTransaction,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<Self, StorageError> {
+        check_rebuild_cancellation(cancellation)?;
+        let command_derived = rebuild_command_derived_indexes(transaction, cancellation)?;
+        let event_routes =
+            rebuild_event_routes(transaction, command_derived.as_ref(), cancellation)?;
+        let rebuilt_outbox =
+            rebuild_outbox_indexes(transaction, command_derived.as_ref(), cancellation)?;
         Ok(Self {
             event_routes,
             outbox_intents: rebuilt_outbox.intents,
@@ -669,12 +693,16 @@ impl Default for TransientIndexes {
 fn rebuild_event_routes(
     transaction: &ReadTransaction,
     command_derived: Option<&CommandDerivedIndexes>,
+    cancellation: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<Option<BTreeMap<Vec<u8>, StoredEventRouteV1>>, StorageError> {
     let mut routes = BTreeMap::new();
     if let Some(command_derived) = command_derived {
         for segment in command_derived.segments.values() {
+            check_rebuild_cancellation(cancellation)?;
             for command in segment.commands() {
+                check_rebuild_cancellation(cancellation)?;
                 for event in command.events() {
+                    check_rebuild_cancellation(cancellation)?;
                     let key = encode_event_route_key(
                         command.base().commit().partition_hash(),
                         event.event_id(),
@@ -693,6 +721,7 @@ fn rebuild_event_routes(
     }
     let table = transaction.open_table(EVENT_ROUTES).map_err(table_error)?;
     for entry in table.iter().map_err(precommit_storage_error)? {
+        check_rebuild_cancellation(cancellation)?;
         let (key, value) = entry.map_err(precommit_storage_error)?;
         let decoded = decode_event_route_v1(value.value())?.into_parts().0;
         let exact_key = key.value().to_vec();
@@ -774,14 +803,7 @@ impl CommandDerivedIndexes {
                 member_ordinal: entry.member_ordinal(),
                 member: entry.member(),
             };
-            let index = match entry.kind() {
-                CommandDerivedIndexKindV1::Idempotency => &mut self.idempotency,
-                CommandDerivedIndexKindV1::Provenance => &mut self.provenance,
-                CommandDerivedIndexKindV1::AuditSequence => &mut self.audit_sequence,
-                CommandDerivedIndexKindV1::AuditRequest => &mut self.audit_request,
-                CommandDerivedIndexKindV1::EventRoute => &mut self.event_route,
-                CommandDerivedIndexKindV1::PendingOutbox => &mut self.pending_outbox,
-            };
+            let index = self.index_mut(entry.kind());
             if index.insert(entry.exact_key().to_vec(), locator).is_some() {
                 return Err(corrupt());
             }
@@ -866,10 +888,12 @@ fn table_row_count(
 
 fn rebuild_command_derived_indexes(
     transaction: &ReadTransaction,
+    cancellation: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<Option<CommandDerivedIndexes>, StorageError> {
     let commits = transaction.open_table(COMMITS).map_err(table_error)?;
     let mut indexes = CommandDerivedIndexes::default();
     for entry in commits.iter().map_err(precommit_storage_error)? {
+        check_rebuild_cancellation(cancellation)?;
         let (key, value) = entry.map_err(precommit_storage_error)?;
         match riffdb_storage_api::decode_command_segment_v1(value.value()) {
             Ok(segment) => {
@@ -898,6 +922,7 @@ fn rebuild_command_derived_indexes(
 fn rebuild_outbox_indexes(
     transaction: &ReadTransaction,
     command_derived: Option<&CommandDerivedIndexes>,
+    cancellation: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<RebuiltOutboxIndexes, StorageError> {
     // Segment-owned intents are reconstructed from their immutable events.
     // Historical standalone intents are unioned during the pre-alpha format
@@ -907,6 +932,7 @@ fn rebuild_outbox_indexes(
     let mut all_intents = BTreeSet::new();
     if let Some(command_derived) = command_derived {
         for event_id in command_derived.event_ids() {
+            check_rebuild_cancellation(cancellation)?;
             if !all_intents.insert(event_id)
                 || !pending.insert(event_id)
                 || !undelivered.insert(event_id)
@@ -918,6 +944,7 @@ fn rebuild_outbox_indexes(
     let intents = transaction.open_table(OUTBOX).map_err(table_error)?;
     let statuses = transaction.open_table(OUTBOX_STATUS).map_err(table_error)?;
     for entry in intents.iter().map_err(precommit_storage_error)? {
+        check_rebuild_cancellation(cancellation)?;
         let (key, _) = entry.map_err(precommit_storage_error)?;
         let event_id = decode_event_key(key.value()).map_err(|_| corrupt())?;
         // A transitional standalone row may duplicate the segment-owned fact.
@@ -926,6 +953,7 @@ fn rebuild_outbox_indexes(
         undelivered.insert(event_id);
     }
     for entry in statuses.iter().map_err(precommit_storage_error)? {
+        check_rebuild_cancellation(cancellation)?;
         let (key, value) = entry.map_err(precommit_storage_error)?;
         let event_id = decode_event_key(key.value()).map_err(|_| corrupt())?;
         if !all_intents.contains(&event_id) {
@@ -1007,6 +1035,15 @@ fn update_event_membership(
 
 const fn corrupt() -> StorageError {
     StorageError::new(StorageErrorKind::CorruptData, None)
+}
+
+fn check_rebuild_cancellation(
+    flag: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<(), StorageError> {
+    if flag.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
+        return Err(StorageError::new(StorageErrorKind::Unavailable, None));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

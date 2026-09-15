@@ -2181,6 +2181,13 @@ impl FrameworkProfileDatabase {
 
 impl BudgetDatabase {
     pub(crate) fn create(label: &str) -> Self {
+        Self::create_with_setup(label, |_, _| {})
+    }
+
+    pub(crate) fn create_with_setup(
+        label: &str,
+        setup: impl FnOnce(&mut RedbOperationalPorts, DatabaseId),
+    ) -> Self {
         let scratch = ScratchDir::new(&format!("command-semantics-{label}"))
             .expect("create command-semantics scratch directory");
         let path = scratch.join("db.redb");
@@ -2208,6 +2215,7 @@ impl BudgetDatabase {
             .initialize_database(database_id())
             .expect("initialize command database");
         let mut ports = open_operational(store);
+        setup(&mut ports, database_id());
         let stored_bundle = checked_bundle.to_stored().expect("stored checked bundle");
         let activation = ports
             .activate_catalog(&CatalogActivationIntentV1::new(
@@ -2235,6 +2243,43 @@ impl BudgetDatabase {
         }
     }
 
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+    pub(crate) fn bundle(&self) -> &ValidatedContractBundle {
+        &self.checked_bundle
+    }
+
+    pub(crate) fn prepare_allocation(
+        &self,
+        ports: &RedbOperationalPorts,
+        amount: i128,
+        request_seed: u8,
+    ) -> CommandExecutionPreparation {
+        let plan = self
+            .checked_bundle
+            .bundle()
+            .commands()
+            .iter()
+            .find(|plan| plan.name() == "AllocateBudget")
+            .expect("allocation plan");
+        let caller_key = format!("allocate-{request_seed}");
+        let input = input_record(
+            plan.input().record(),
+            [
+                (
+                    "idempotency_key",
+                    CanonicalValue::string(&caller_key).expect("caller key"),
+                ),
+                ("organization_id", CanonicalValue::Uuid(ORGANIZATION_ID)),
+                ("fiscal_year", CanonicalValue::I64(FISCAL_YEAR)),
+                ("matter_id", CanonicalValue::Uuid([0x22; 16])),
+                ("amount", decimal(amount)),
+            ],
+        );
+        self.prepare_plan(ports, plan, input, &caller_key, request_seed, request_seed)
+    }
+
     pub(crate) fn open(&self) -> RedbOperationalPorts {
         open_operational(RedbStore::open(&self.path).expect("reopen command database"))
     }
@@ -2256,6 +2301,25 @@ impl BudgetDatabase {
         request_seed: u8,
     ) -> CommandExecutionPreparation {
         let plan = self.command_plan();
+        self.prepare_plan(
+            ports,
+            plan,
+            normalized_input(plan, approved_amount),
+            CALLER_KEY,
+            0x51,
+            request_seed,
+        )
+    }
+
+    fn prepare_plan(
+        &self,
+        ports: &RedbOperationalPorts,
+        plan: &CommandPlan,
+        input: CanonicalRecord,
+        caller_key_text: &str,
+        digest_seed: u8,
+        request_seed: u8,
+    ) -> CommandExecutionPreparation {
         let reference = ExecutablePlanRef::new(
             self.checked_bundle.lineage().clone(),
             self.checked_bundle.contract_version(),
@@ -2265,10 +2329,9 @@ impl BudgetDatabase {
         );
         let resolved = resolve_executable_plan(ports, &reference)
             .expect("deployed CreateBudget plan resolves");
-        let input = normalized_input(plan, approved_amount);
         let facts = derive_input_command_facts(plan, input.clone())
             .expect("checked CreateBudget input facts");
-        let caller_key = IdempotencyKey::new(CALLER_KEY).expect("bounded caller key");
+        let caller_key = IdempotencyKey::new(caller_key_text).expect("bounded caller key");
         let scope = CommandIdempotencyScopeV1::new(
             database_id(),
             environment(),
@@ -2277,8 +2340,9 @@ impl BudgetDatabase {
             reference.contract_lineage().clone(),
             reference.command_id(),
         );
-        let lookup = prepare_idempotency_lookup(&scope, &caller_key, &FixedDigestProvider(0x51))
-            .expect("prepare caller-key lookup");
+        let lookup =
+            prepare_idempotency_lookup(&scope, &caller_key, &FixedDigestProvider(digest_seed))
+                .expect("prepare caller-key lookup");
         let idempotency = IdempotencyInspectionExecutor::new(ports)
             .inspect(lookup)
             .expect("inspect durable idempotency state")

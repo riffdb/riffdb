@@ -2,6 +2,9 @@
 
 //! Real-redb evidence for the typed control-plane executor and its shared actor queue.
 
+#[path = "control_plane_replication.rs"]
+mod replication;
+
 use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 use std::path::PathBuf;
 use std::sync::Arc;

@@ -175,6 +175,8 @@ files
   riffdb/v1/query.proto
     import riffdb/v1/common.proto
     import riffdb/v1/value.proto
+  riffdb/v1/replication.proto
+    import riffdb/v1/common.proto
   riffdb/v1/services.proto
     import riffdb/v1/admin.proto
     import riffdb/v1/command.proto
@@ -185,6 +187,7 @@ files
     import riffdb/v1/live_query.proto
     import riffdb/v1/projection.proto
     import riffdb/v1/query.proto
+    import riffdb/v1/replication.proto
   riffdb/v1/session.proto
     import riffdb/app/v1/application.proto
     import riffdb/v1/command.proto
@@ -1833,7 +1836,7 @@ messages
   riffdb.v1.CapabilityIdentity fields=2
     1 capability_id optional bytes
     2 revision optional uint64
-  riffdb.v1.CapabilityPermission fields=32
+  riffdb.v1.CapabilityPermission fields=33
     1 validate_contract optional .riffdb.v1.Unit oneof=permission
     2 read_contract optional .riffdb.v1.Unit oneof=permission
     3 explain_command optional .riffdb.v1.LineageScopedStableId oneof=permission
@@ -1866,6 +1869,7 @@ messages
     30 consume_contextual_subscription optional .riffdb.v1.ReactiveOperationPermission oneof=permission
     31 install_application optional string oneof=permission
     32 inspect_vector_state optional .riffdb.v1.Unit oneof=permission
+    33 replicate_changelog optional .riffdb.v1.Unit oneof=permission
   riffdb.v1.CapabilityPrincipalFact fields=2
     1 name optional string
     2 value optional .riffdb.v1.Value
@@ -2700,6 +2704,18 @@ messages
     5 observed_history_incarnation optional uint64
   riffdb.v1.ReplayEventsResponse fields=1
     1 page optional .riffdb.v1.EventPage
+  riffdb.v1.ReplicationBootstrapAttachment fields=2
+    1 manifest optional bytes
+    2 acknowledged optional .riffdb.v1.ReplicationPosition
+  riffdb.v1.ReplicationBootstrapRequest fields=3
+    1 hold_id optional bytes
+    2 resume_manifest optional bytes
+    3 after_page optional uint32
+  riffdb.v1.ReplicationPosition fields=4
+    1 transaction_sequence optional uint64
+    2 history_hash optional bytes
+    3 application_frontier optional .riffdb.v1.FrontierPosition
+    4 administration_frontier optional .riffdb.v1.FrontierPosition
   riffdb.v1.ResourceDescriptor fields=11
     1 active_contract optional .riffdb.v1.Unit oneof=resource
     2 contract_version optional .riffdb.v1.ContractVersionResource oneof=resource
@@ -2819,6 +2835,24 @@ messages
     4 pending_outbox_deliveries optional uint64 proto3-optional oneof=_pending_outbox_deliveries
     5 known_projections optional uint32 proto3-optional oneof=_known_projections
     6 history_incarnation optional uint64
+  riffdb.v1.StreamChangelogRequest fields=12
+    1 request_id optional bytes
+    2 database_id optional bytes
+    3 history_incarnation optional uint64
+    4 leadership_epoch optional uint64
+    5 readable_format optional string
+    6 catalog_digest optional bytes
+    7 after optional .riffdb.v1.ReplicationPosition
+    8 maximum_frame_bytes optional uint64
+    9 maximum_transitions optional uint64
+    10 bootstrap optional .riffdb.v1.ReplicationBootstrapRequest
+    11 attachment optional .riffdb.v1.ReplicationBootstrapAttachment
+    12 follower_hold_id optional bytes
+  riffdb.v1.StreamChangelogResponse fields=4
+    1 frame optional bytes oneof=item
+    2 refusal optional .riffdb.v1.ReplicationRefusal oneof=item
+    3 bootstrap_manifest optional bytes oneof=item
+    4 bootstrap_page optional bytes oneof=item
   riffdb.v1.SubscribeCommitsRequest fields=4
     1 request_id optional bytes
     2 after_sequence optional uint64 proto3-optional oneof=_after_sequence
@@ -2966,7 +3000,7 @@ enums
     13 APPLICATION_ERROR_CATEGORY_CONTROL
     14 APPLICATION_ERROR_CATEGORY_HISTORY
     15 APPLICATION_ERROR_CATEGORY_CAPACITY
-  riffdb.app.v1.ApplicationErrorCode values=26
+  riffdb.app.v1.ApplicationErrorCode values=27
     0 APPLICATION_ERROR_CODE_UNSPECIFIED
     1 APPLICATION_ERROR_CODE_INVALID_REQUEST
     2 APPLICATION_ERROR_CODE_INPUT_INVALID
@@ -2993,6 +3027,7 @@ enums
     23 APPLICATION_ERROR_CODE_SNAPSHOT_RETIRED
     24 APPLICATION_ERROR_CODE_FRESHNESS_UNSATISFIED
     25 APPLICATION_ERROR_CODE_PROJECTED_SOURCE_REQUIRED
+    26 APPLICATION_ERROR_CODE_FOLLOWER_MODE
   riffdb.app.v1.ApplicationFixCode values=11
     0 APPLICATION_FIX_CODE_UNSPECIFIED
     1 APPLICATION_FIX_CODE_CORRECT_INPUT
@@ -3423,7 +3458,7 @@ enums
     0 CAPABILITY_CREATE_MODE_UNSPECIFIED
     1 CAPABILITY_CREATE_MODE_NORMAL
     2 CAPABILITY_CREATE_MODE_BOOTSTRAP
-  riffdb.v1.CapabilityPermissionKind values=33
+  riffdb.v1.CapabilityPermissionKind values=34
     0 CAPABILITY_PERMISSION_KIND_UNSPECIFIED
     1 CAPABILITY_PERMISSION_KIND_VALIDATE_CONTRACT
     2 CAPABILITY_PERMISSION_KIND_READ_CONTRACT
@@ -3457,6 +3492,7 @@ enums
     30 CAPABILITY_PERMISSION_KIND_CONSUME_CONTEXTUAL_SUBSCRIPTION
     31 CAPABILITY_PERMISSION_KIND_INSTALL_APPLICATION
     32 CAPABILITY_PERMISSION_KIND_INSPECT_VECTOR_STATE
+    33 CAPABILITY_PERMISSION_KIND_REPLICATE_CHANGELOG
   riffdb.v1.CapabilityRowPolicyOperation values=5
     0 CAPABILITY_ROW_POLICY_OPERATION_UNSPECIFIED
     1 CAPABILITY_ROW_POLICY_OPERATION_READ
@@ -3694,7 +3730,7 @@ enums
     4 PROJECTION_LIFECYCLE_DEGRADED
     5 PROJECTION_LIFECYCLE_REBUILDING
     6 PROJECTION_LIFECYCLE_INVALID
-  riffdb.v1.PublicErrorKind values=13
+  riffdb.v1.PublicErrorKind values=14
     0 PUBLIC_ERROR_KIND_UNSPECIFIED
     1 PUBLIC_ERROR_KIND_VALIDATION
     2 PUBLIC_ERROR_KIND_IDEMPOTENCY_KEY_REUSE
@@ -3708,6 +3744,7 @@ enums
     10 PUBLIC_ERROR_KIND_HISTORY_INCARNATION_MISMATCH
     12 PUBLIC_ERROR_KIND_HISTORY_PRUNED
     11 PUBLIC_ERROR_KIND_OVERLOADED
+    13 PUBLIC_ERROR_KIND_FOLLOWER_MODE
   riffdb.v1.PublishedApplyMode values=3
     0 PUBLISHED_APPLY_MODE_UNSPECIFIED
     1 PUBLISHED_APPLY_MODE_ENABLED
@@ -3720,6 +3757,18 @@ enums
     4 RECOVERY_ACTION_OBTAIN_PERMISSION
     5 RECOVERY_ACTION_REFRESH_CONTRACT
     6 RECOVERY_ACTION_CONTACT_OPERATOR
+  riffdb.v1.ReplicationRefusal values=11
+    0 REPLICATION_REFUSAL_UNSPECIFIED
+    1 REPLICATION_REFUSAL_FOREIGN_LINEAGE
+    2 REPLICATION_REFUSAL_STALE_EPOCH
+    3 REPLICATION_REFUSAL_HISTORY_PRUNED
+    4 REPLICATION_REFUSAL_UNSUPPORTED_FORMAT
+    5 REPLICATION_REFUSAL_UNSUPPORTED_CATALOG
+    6 REPLICATION_REFUSAL_UNSUPPORTED_BOUNDS
+    7 REPLICATION_REFUSAL_INVALID_POSITION
+    8 REPLICATION_REFUSAL_CORRUPT_HISTORY
+    9 REPLICATION_REFUSAL_UNAVAILABLE
+    10 REPLICATION_REFUSAL_AUTHORIZATION_DENIED
   riffdb.v1.ResourceDiscoveryKind values=4
     0 RESOURCE_DISCOVERY_KIND_UNSPECIFIED
     1 RESOURCE_DISCOVERY_KIND_ALL
@@ -3819,3 +3868,5 @@ services
     QueryProjection .riffdb.v1.QueryProjectionRequest -> .riffdb.v1.QueryProjectionResponse (unary)
     GetProjectionStatus .riffdb.v1.GetProjectionStatusRequest -> .riffdb.v1.GetProjectionStatusResponse (unary)
     WatchNamedQuery .riffdb.v1.WatchNamedQueryRequest -> .riffdb.v1.LiveQueryUpdate (server-streaming)
+  riffdb.v1.ReplicationService
+    StreamChangelog .riffdb.v1.StreamChangelogRequest -> .riffdb.v1.StreamChangelogResponse (server-streaming)

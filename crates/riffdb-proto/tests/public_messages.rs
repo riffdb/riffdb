@@ -27,6 +27,131 @@ fn uuid_v7() -> Vec<u8> {
     ]
 }
 
+#[test]
+// req: REP-003
+fn replication_wire_binds_the_complete_position_and_refuses_malformed_or_oversized_items() {
+    let before = || {
+        Some(v1::FrontierPosition {
+            position: Some(v1::frontier_position::Position::BeforeFirst(v1::Unit {})),
+        })
+    };
+    let request = v1::StreamChangelogRequest {
+        request_id: uuid_v7(),
+        database_id: uuid_v7(),
+        history_incarnation: 1,
+        leadership_epoch: 1,
+        readable_format: "riffdb.changelog-frame/v3".into(),
+        catalog_digest: vec![0x76; 32],
+        after: Some(v1::ReplicationPosition {
+            transaction_sequence: 1,
+            history_hash: vec![0x77; 32],
+            application_frontier: before(),
+            administration_frontier: before(),
+        }),
+        maximum_frame_bytes: 32 * 1024 * 1024,
+        maximum_transitions: 256,
+        bootstrap: None,
+        attachment: None,
+        follower_hold_id: vec![],
+    };
+    assert_eq!(
+        decode_public_message::<v1::StreamChangelogRequest>(&request.encode_to_vec()).unwrap(),
+        request
+    );
+    // The optional ID turns only an exact tail position into a durable follower
+    // claim. Unknown additive fields remain ignored; duplicate known IDs fail.
+    let mut follower = request.clone();
+    follower.follower_hold_id = vec![0; 16];
+    follower.follower_hold_id[15] = 1;
+    assert_eq!(
+        decode_public_message::<v1::StreamChangelogRequest>(&follower.encode_to_vec()).unwrap(),
+        follower
+    );
+    for id in [vec![0; 16], vec![1; 15], vec![1; 17]] {
+        let mut invalid = follower.clone();
+        invalid.follower_hold_id = id;
+        assert_eq!(
+            validate_public_message(&invalid),
+            Err(PublicWireError::InvalidIdentity)
+        );
+    }
+    for attachment in [false, true] {
+        let mut invalid = follower.clone();
+        let acknowledged = invalid.after.take();
+        if attachment {
+            invalid.attachment = Some(v1::ReplicationBootstrapAttachment {
+                manifest: vec![1; 512],
+                acknowledged,
+            });
+        } else {
+            invalid.bootstrap = Some(v1::ReplicationBootstrapRequest {
+                hold_id: vec![1; 16],
+                resume_manifest: vec![],
+                after_page: 0,
+            });
+        }
+        assert_eq!(
+            validate_public_message(&invalid),
+            Err(PublicWireError::InvalidIdentity)
+        );
+    }
+    let mut duplicate = follower.encode_to_vec();
+    duplicate.extend_from_slice(&[0x62, 16]); // field 12, bytes
+    duplicate.extend_from_slice(&[1; 16]);
+    assert_eq!(
+        decode_public_message::<v1::StreamChangelogRequest>(&duplicate),
+        Err(PublicWireError::MalformedEncoding)
+    );
+    let mut unknown = follower.encode_to_vec();
+    unknown.extend_from_slice(&[0x6a, 1, 1]); // field 13, bytes
+    assert_eq!(
+        decode_public_message::<v1::StreamChangelogRequest>(&unknown).unwrap(),
+        follower
+    );
+    for fault in 0..6 {
+        let mut malformed = request.clone();
+        match fault {
+            0 => malformed.leadership_epoch = 0,
+            1 => malformed.catalog_digest.pop().map(|_| ()).unwrap(),
+            2 => malformed.after.as_mut().unwrap().transaction_sequence = 0,
+            3 => malformed.after.as_mut().unwrap().history_hash.clear(),
+            4 => malformed.after.as_mut().unwrap().administration_frontier = None,
+            _ => malformed.readable_format = "x".repeat(129),
+        }
+        assert!(
+            decode_public_message::<v1::StreamChangelogRequest>(&malformed.encode_to_vec())
+                .is_err()
+        );
+    }
+    for code in 1..=10 {
+        let response = v1::StreamChangelogResponse {
+            item: Some(v1::stream_changelog_response::Item::Refusal(code)),
+        };
+        assert_eq!(
+            decode_public_message::<v1::StreamChangelogResponse>(&response.encode_to_vec())
+                .unwrap(),
+            response
+        );
+    }
+    for code in [0, 11, -1] {
+        assert!(
+            validate_public_message(&v1::StreamChangelogResponse {
+                item: Some(v1::stream_changelog_response::Item::Refusal(code)),
+            })
+            .is_err()
+        );
+    }
+    let oversized = v1::StreamChangelogResponse {
+        item: Some(v1::stream_changelog_response::Item::Frame(vec![
+            0;
+            32 * 1024
+                * 1024
+                + 1
+        ])),
+    };
+    assert!(validate_public_message(&oversized).is_err());
+}
+
 fn active_contract() -> v1::ContractSelection {
     v1::ContractSelection {
         selection: Some(v1::contract_selection::Selection::Active(v1::Unit {})),
@@ -106,6 +231,50 @@ fn create_request(mode: v1::CapabilityCreateMode) -> v1::CreateCapabilityRequest
         audiences: vec!["riffdb-cli".to_owned()],
         grant: Some(grant()),
     }
+}
+
+#[test]
+// req: REP-003
+fn replication_grant_refuses_bootstrap_roles_and_partial_database_scope() {
+    use v1::capability_permission::Permission;
+    let mut request = create_request(v1::CapabilityCreateMode::Normal);
+    request.grant.as_mut().expect("grant").permissions = vec![
+        v1::CapabilityPermission {
+            permission: Some(Permission::AdministerCapabilities(v1::Unit {})),
+        },
+        v1::CapabilityPermission {
+            permission: Some(Permission::ReplicateChangelog(v1::Unit {})),
+        },
+    ];
+    let encoded = request.encode_to_vec();
+    assert_eq!(
+        decode_public_message::<v1::CreateCapabilityRequest>(&encoded),
+        Ok(request.clone())
+    );
+    let mut bootstrap = request.clone();
+    bootstrap.mode = v1::CapabilityCreateMode::Bootstrap as i32;
+    assert_eq!(
+        validate_public_message(&bootstrap),
+        Err(PublicWireError::InconsistentFields)
+    );
+    let mut role = request.clone();
+    role.grant.as_mut().expect("grant").permissions.insert(
+        1,
+        v1::CapabilityPermission {
+            permission: Some(Permission::ApplicationRoleIdentity(vec![0x42; 32])),
+        },
+    );
+    assert_eq!(
+        validate_public_message(&role),
+        Err(PublicWireError::InconsistentFields)
+    );
+    request.grant.as_mut().expect("grant").tenant_scope = Some(v1::TenantScope {
+        scope: Some(v1::tenant_scope::Scope::TenantId("one-org".to_owned())),
+    });
+    assert_eq!(
+        validate_public_message(&request),
+        Err(PublicWireError::InconsistentFields)
+    );
 }
 
 #[test]
@@ -1984,4 +2153,132 @@ fn contextual_reaction_requires_one_exact_request_identity() {
         validate_public_message(&request),
         Err(PublicWireError::InconsistentFields)
     );
+}
+
+#[test]
+// req: REP-003
+fn bootstrap_replication_uses_the_same_rpc_with_bounded_manifest_page_and_attachment() {
+    let request = v1::StreamChangelogRequest {
+        request_id: uuid_v7(),
+        database_id: uuid_v7(),
+        history_incarnation: 1,
+        leadership_epoch: 1,
+        readable_format: "riffdb.changelog-frame/v3".into(),
+        catalog_digest: vec![0x76; 32],
+        maximum_frame_bytes: 32 * 1024 * 1024,
+        maximum_transitions: 256,
+        after: None,
+        bootstrap: Some(v1::ReplicationBootstrapRequest {
+            hold_id: vec![1; 16],
+            resume_manifest: vec![],
+            after_page: 0,
+        }),
+        attachment: None,
+        follower_hold_id: vec![],
+    };
+    assert_eq!(
+        decode_public_message::<v1::StreamChangelogRequest>(&request.encode_to_vec()).unwrap(),
+        request
+    );
+    let mut malformed = request.clone();
+    malformed.bootstrap.as_mut().unwrap().after_page = 1;
+    assert!(validate_public_message(&malformed).is_err());
+    for fault in 0..4 {
+        let mut malformed = request.clone();
+        let bootstrap = malformed.bootstrap.as_mut().unwrap();
+        match fault {
+            0 => bootstrap.hold_id = vec![0; 16],
+            1 => bootstrap.hold_id.pop().map(|_| ()).unwrap(),
+            2 => bootstrap.resume_manifest = vec![1; 513],
+            _ => bootstrap.after_page = 1_048_577,
+        }
+        assert!(validate_public_message(&malformed).is_err());
+    }
+    let before = || {
+        Some(v1::FrontierPosition {
+            position: Some(v1::frontier_position::Position::BeforeFirst(v1::Unit {})),
+        })
+    };
+    let acknowledged = v1::ReplicationPosition {
+        transaction_sequence: 9,
+        history_hash: vec![0x52; 32],
+        application_frontier: before(),
+        administration_frontier: before(),
+    };
+    let mut attachment = request.clone();
+    attachment.bootstrap = None;
+    attachment.attachment = Some(v1::ReplicationBootstrapAttachment {
+        manifest: vec![0x71; 512],
+        acknowledged: Some(acknowledged.clone()),
+    });
+    assert_eq!(
+        decode_public_message::<v1::StreamChangelogRequest>(&attachment.encode_to_vec()).unwrap(),
+        attachment
+    );
+    let mut conflict = attachment.clone();
+    conflict.after = Some(acknowledged);
+    assert!(
+        decode_public_message::<v1::StreamChangelogRequest>(&conflict.encode_to_vec()).is_err()
+    );
+    for fault in 0..3 {
+        let mut malformed = attachment.clone();
+        let attachment = malformed.attachment.as_mut().unwrap();
+        match fault {
+            0 => attachment.acknowledged = None,
+            1 => attachment.manifest.clear(),
+            _ => {
+                attachment
+                    .acknowledged
+                    .as_mut()
+                    .unwrap()
+                    .transaction_sequence = 0
+            }
+        }
+        assert!(validate_public_message(&malformed).is_err());
+    }
+    // Prost would accept a repeated singular nested field by taking its last
+    // value. Public preflight must refuse before that information is lost.
+    for unknown in [false, true] {
+        let mut nested = request.bootstrap.as_ref().unwrap().encode_to_vec();
+        if unknown {
+            nested.extend_from_slice(&[0x20, 1]);
+        } else {
+            nested.extend_from_slice(&[0x0a, 16]);
+            nested.extend_from_slice(&[1; 16]);
+        }
+        let mut root = request.clone();
+        root.bootstrap = None;
+        let mut encoded = root.encode_to_vec();
+        encoded.extend_from_slice(&[0x52, u8::try_from(nested.len()).unwrap()]);
+        encoded.extend_from_slice(&nested);
+        if unknown {
+            // ADR-0006: public unknown fields are ignored and never relayed.
+            let decoded = decode_public_message::<v1::StreamChangelogRequest>(&encoded).unwrap();
+            assert_eq!(decoded, request);
+            assert_eq!(decoded.encode_to_vec(), request.encode_to_vec());
+        } else {
+            assert!(decode_public_message::<v1::StreamChangelogRequest>(&encoded).is_err());
+        }
+    }
+    let manifest = v1::StreamChangelogResponse {
+        item: Some(v1::stream_changelog_response::Item::BootstrapManifest(
+            vec![1; 512],
+        )),
+    };
+    assert!(validate_public_message(&manifest).is_ok());
+    let page = v1::StreamChangelogResponse {
+        item: Some(v1::stream_changelog_response::Item::BootstrapPage(
+            vec![1; 32 * 1024 * 1024 + 512],
+        )),
+    };
+    assert!(validate_public_message(&page).is_ok());
+    for item in [
+        v1::stream_changelog_response::Item::BootstrapManifest(vec![1; 513]),
+        v1::stream_changelog_response::Item::BootstrapPage(vec![]),
+        v1::stream_changelog_response::Item::BootstrapPage(vec![1; 32 * 1024 * 1024 + 513]),
+    ] {
+        assert!(
+            validate_public_message(&v1::StreamChangelogResponse { item: Some(item) }).is_err()
+        );
+    }
 }

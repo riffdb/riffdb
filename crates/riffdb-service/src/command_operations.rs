@@ -112,7 +112,11 @@ pub(crate) async fn execute_reimport_record(
     let inspection = wait_with_control(
         context.control(),
         service.providers.deadline_scheduler.as_ref(),
-        service.executors.idempotency.inspect(inspection_request),
+        service
+            .executors
+            .writer()?
+            .idempotency
+            .inspect(inspection_request),
     )
     .await
     .map_err(map_controlled_wait)?
@@ -686,7 +690,11 @@ async fn execute_mutation(
         let inspection = match wait_with_control(
             context.control(),
             service.providers.deadline_scheduler.as_ref(),
-            service.executors.idempotency.inspect(inspection_request),
+            service
+                .executors
+                .writer()?
+                .idempotency
+                .inspect(inspection_request),
         )
         .await
         {
@@ -2724,7 +2732,7 @@ async fn admit_command_capacity(
     let operation = ServiceOperationV1::ExecuteCommand;
     let ingress = context.ingress();
 
-    match service.executors.command.try_reserve_capacity() {
+    match service.executors.writer()?.command.try_reserve_capacity() {
         Ok(permit) => {
             // No queue wait: open the absolute window only if retained bytes wait.
             return attach_retained_bytes(
@@ -2740,7 +2748,11 @@ async fn admit_command_capacity(
     // enqueue→start + service exceeds remaining client budget minus MIN_REMAINING.
     // A stale-zero estimate never sheds (writer has not completed a unit yet).
     // Pre-admission ⇒ zero durable audit (ADR-0071).
-    let estimate_micros = service.executors.command.estimated_queue_delay_micros();
+    let estimate_micros = service
+        .executors
+        .writer()?
+        .command
+        .estimated_queue_delay_micros();
     if estimate_micros > 0 {
         let remaining = context
             .control()
@@ -2776,7 +2788,7 @@ async fn admit_command_capacity(
         context.control(),
         service.providers.deadline_scheduler.as_ref(),
         admission_deadline,
-        service.executors.command.reserve_capacity(),
+        service.executors.writer()?.command.reserve_capacity(),
     )
     .await
     {
@@ -2855,7 +2867,12 @@ async fn attach_retained_bytes(
     ingress: riffdb_types::ServiceIngressKindV1,
     opened_deadline: Option<Instant>,
 ) -> Result<CommandExecutionCapacityPermit, ServiceFailure> {
-    match service.executors.command.try_acquire_retained_bytes(units) {
+    match service
+        .executors
+        .writer()?
+        .command
+        .try_acquire_retained_bytes(units)
+    {
         Ok(byte_permit) => return Ok(permit.with_retained_bytes(byte_permit, units)),
         Err(CommandExecutionAdmissionError::Overloaded)
         | Err(CommandExecutionAdmissionError::RetainedByteCapacityExceeded) => {}
@@ -2899,7 +2916,11 @@ async fn attach_retained_bytes(
         context.control(),
         service.providers.deadline_scheduler.as_ref(),
         admission_deadline,
-        service.executors.command.acquire_retained_bytes(units),
+        service
+            .executors
+            .writer()?
+            .command
+            .acquire_retained_bytes(units),
     )
     .await
     {

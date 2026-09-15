@@ -239,7 +239,7 @@ fn production_transport_features_are_exact_default_disabled_and_confined() {
     let production = production_dependencies();
     assert!(MANIFEST.contains("[features]\ndefault = []"));
     assert!(production.contains(
-        "riffdb-api-grpc = { version = \"0.1.0\", path = \"../riffdb-api-grpc\", default-features = false, features = [\"server\"] }"
+        "riffdb-api-grpc = { version = \"0.1.0\", path = \"../riffdb-api-grpc\", default-features = false, features = [\"server\", \"client\"] }"
     ));
     assert!(production.contains(
         "tokio = { version = \"=1.52.0\", default-features = false, features = [\"macros\", \"net\", \"rt-multi-thread\", \"signal\", \"sync\", \"time\"] }"

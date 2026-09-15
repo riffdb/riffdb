@@ -254,6 +254,7 @@ enum-value riffdb.v1.CapabilityPermissionKind 29 CAPABILITY_PERMISSION_KIND_WATC
 enum-value riffdb.v1.CapabilityPermissionKind 30 CAPABILITY_PERMISSION_KIND_CONSUME_CONTEXTUAL_SUBSCRIPTION
 enum-value riffdb.v1.CapabilityPermissionKind 31 CAPABILITY_PERMISSION_KIND_INSTALL_APPLICATION
 enum-value riffdb.v1.CapabilityPermissionKind 32 CAPABILITY_PERMISSION_KIND_INSPECT_VECTOR_STATE
+enum-value riffdb.v1.CapabilityPermissionKind 33 CAPABILITY_PERMISSION_KIND_REPLICATE_CHANGELOG
 enum-value riffdb.v1.CapabilityRowPolicyOperation 0 CAPABILITY_ROW_POLICY_OPERATION_UNSPECIFIED
 enum-value riffdb.v1.CapabilityRowPolicyOperation 1 CAPABILITY_ROW_POLICY_OPERATION_READ
 enum-value riffdb.v1.CapabilityRowPolicyOperation 2 CAPABILITY_ROW_POLICY_OPERATION_CREATE
@@ -406,6 +407,18 @@ enum-value riffdb.v1.OutboxDeliveryState 4 OUTBOX_DELIVERY_STATE_DEAD_LETTER
 enum-value riffdb.v1.PublicErrorKind 10 PUBLIC_ERROR_KIND_HISTORY_INCARNATION_MISMATCH
 enum-value riffdb.v1.PublicErrorKind 11 PUBLIC_ERROR_KIND_OVERLOADED
 enum-value riffdb.v1.PublicErrorKind 12 PUBLIC_ERROR_KIND_HISTORY_PRUNED
+enum-value riffdb.v1.PublicErrorKind 13 PUBLIC_ERROR_KIND_FOLLOWER_MODE
+enum-value riffdb.v1.ReplicationRefusal 0 REPLICATION_REFUSAL_UNSPECIFIED
+enum-value riffdb.v1.ReplicationRefusal 1 REPLICATION_REFUSAL_FOREIGN_LINEAGE
+enum-value riffdb.v1.ReplicationRefusal 10 REPLICATION_REFUSAL_AUTHORIZATION_DENIED
+enum-value riffdb.v1.ReplicationRefusal 2 REPLICATION_REFUSAL_STALE_EPOCH
+enum-value riffdb.v1.ReplicationRefusal 3 REPLICATION_REFUSAL_HISTORY_PRUNED
+enum-value riffdb.v1.ReplicationRefusal 4 REPLICATION_REFUSAL_UNSUPPORTED_FORMAT
+enum-value riffdb.v1.ReplicationRefusal 5 REPLICATION_REFUSAL_UNSUPPORTED_CATALOG
+enum-value riffdb.v1.ReplicationRefusal 6 REPLICATION_REFUSAL_UNSUPPORTED_BOUNDS
+enum-value riffdb.v1.ReplicationRefusal 7 REPLICATION_REFUSAL_INVALID_POSITION
+enum-value riffdb.v1.ReplicationRefusal 8 REPLICATION_REFUSAL_CORRUPT_HISTORY
+enum-value riffdb.v1.ReplicationRefusal 9 REPLICATION_REFUSAL_UNAVAILABLE
 enum-value riffdb.v1.ResourceDiscoveryKind 0 RESOURCE_DISCOVERY_KIND_UNSPECIFIED
 enum-value riffdb.v1.ResourceDiscoveryKind 1 RESOURCE_DISCOVERY_KIND_ALL
 enum-value riffdb.v1.ResourceDiscoveryKind 2 RESOURCE_DISCOVERY_KIND_CONCRETE

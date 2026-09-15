@@ -241,6 +241,7 @@ fn exact_closed_enum_registries_are_frozen() {
             ("PUBLIC_ERROR_KIND_HISTORY_INCARNATION_MISMATCH", 10),
             ("PUBLIC_ERROR_KIND_HISTORY_PRUNED", 12),
             ("PUBLIC_ERROR_KIND_OVERLOADED", 11),
+            ("PUBLIC_ERROR_KIND_FOLLOWER_MODE", 13),
         ]
     );
     assert_eq!(
@@ -442,6 +443,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             "ContractService",
             "EventService",
             "QueryService",
+            "ReplicationService",
         ])
     );
     assert_eq!(
@@ -450,7 +452,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             .iter()
             .map(|file| file.service.len())
             .sum::<usize>(),
-        8
+        9
     );
     let mut methods = Vec::new();
     for file in &descriptors.file {
@@ -468,7 +470,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         }
     }
     methods.sort();
-    assert_eq!(methods.len(), 68);
+    assert_eq!(methods.len(), 69);
     let descriptor_order = descriptors
         .file
         .iter()
@@ -597,6 +599,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             "ContractService",
             "EventService",
             "QueryService",
+            "ReplicationService",
         ])
     );
     assert_eq!(
@@ -618,11 +621,17 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             ("CommitService", "SubscribeCommits"),
             ("EventService", "StreamEventConsumer"),
             ("QueryService", "WatchNamedQuery"),
+            ("ReplicationService", "StreamChangelog"),
         ]
     );
 
     let messages = message_map(&descriptors);
     let completed = [
+        "ReplicationPosition",
+        "ReplicationBootstrapRequest",
+        "ReplicationBootstrapAttachment",
+        "StreamChangelogRequest",
+        "StreamChangelogResponse",
         "CommitNotification",
         "CreateCapabilityRequest",
         "CreateCapabilityResponse",
@@ -757,7 +766,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             .keys()
             .filter(|name| name.starts_with("riffdb.v1."))
             .count(),
-        283
+        288
     );
     assert_eq!(
         messages

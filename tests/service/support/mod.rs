@@ -178,6 +178,51 @@ pub(crate) struct ServiceHarness {
 }
 
 impl ServiceHarness {
+    /// The real source coordinator remains a canary, but this service receives
+    /// none of its writer capabilities.
+    pub(crate) fn follower_service(&self) -> RiffDbService {
+        let providers = ServiceProviders::new(
+            Arc::clone(&self.ports) as Arc<dyn CatalogReadPort>,
+            Arc::clone(&self.policy) as Arc<dyn riffdb_service::CurrentPolicyPort>,
+            Arc::clone(&self.ports) as Arc<dyn AuthoritativeReadPort>,
+            Arc::clone(&self.ports) as Arc<dyn ProjectionQueryPort>,
+            Some(Arc::clone(&self.ports) as Arc<dyn OutboxStatusPort>),
+            Arc::clone(&self.ports) as Arc<dyn OperationalStatusPort>,
+            Arc::clone(&self.ports) as Arc<dyn CapabilityTokenIssuer>,
+            Arc::new(HarnessIncidentIds::new(false)),
+            Arc::new(HarnessDiagnostics),
+            Arc::clone(&self.telemetry) as Arc<dyn ServiceTelemetry>,
+            Arc::clone(&self.health) as Arc<dyn ServiceHealthHooks>,
+            Arc::new(TokioSpawner),
+            Arc::clone(&self.deadline_scheduler) as Arc<dyn RequestDeadlineScheduler>,
+            Arc::clone(&self.cursor_tokens) as Arc<dyn CursorTokenGenerator>,
+            Arc::new(FixedCursorClock),
+        );
+        RiffDbService::new(
+            ServiceIdentity::new(
+                database_id(),
+                environment(),
+                AgentSessionAdmissionPolicy::Discard,
+                1,
+            ),
+            ServiceProcessMetadata::new(
+                timestamp(BASE_SECONDS),
+                BuildInfo::new(
+                    "0.1.0-test",
+                    "follower-harness",
+                    "rustc-1.97.0",
+                    Vec::new(),
+                    1,
+                    1,
+                    "2025-03-26",
+                )
+                .unwrap(),
+            ),
+            ServiceExecutors::follower(),
+            providers,
+        )
+    }
+
     pub(crate) fn new(read_mode: ReadCommitMode, allow_read_commit: bool) -> Self {
         Self::compose(read_mode, allow_read_commit, false, false, false, false)
     }
@@ -1187,6 +1232,14 @@ impl ServiceHarness {
 
     pub(crate) fn audit_discovery_operations(&self) {
         self.policy.audit_discovery_operations();
+    }
+
+    pub(crate) fn audit_discovery_on_catalog_reservation(&self) {
+        let policy = Arc::clone(&self.policy);
+        self.ports
+            .set_active_catalog_reservation_hook(Arc::new(move || {
+                policy.audit_discovery_operations();
+            }));
     }
 
     pub(crate) fn panic_executable_plan_resolution(&self) {

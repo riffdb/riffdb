@@ -483,7 +483,7 @@ pub(crate) fn table_inventory(
     Ok(tables)
 }
 
-fn check_predecessor(
+pub(crate) fn check_predecessor(
     transaction: &WriteTransaction,
     mutation: &AuthoritativeMutationV3,
 ) -> Result<(), StorageError> {
@@ -509,7 +509,7 @@ fn check_predecessor(
     }
 }
 
-fn apply_mutation(
+pub(crate) fn apply_mutation(
     transaction: &WriteTransaction,
     mutation: &AuthoritativeMutationV3,
 ) -> Result<(), StorageError> {

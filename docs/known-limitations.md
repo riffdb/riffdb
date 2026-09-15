@@ -39,9 +39,10 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   promise. Release verification rejects absent, mismatched, or
   correctness-unqualified redb, budget-comparison, and semantic-workload
   reports.
-- The checked WP-190 inventory contains 38 boundaries. Eighteen require
-  process-matrix execution; the remainder are satisfied by named owner-package
-  evidence. The synchronized report records no production gap, but this is
+- The shared recovery inventory contains 41 boundaries. Eighteen belong to the
+  WP-190 process matrix; three replication cases run in the daemon and native
+  applier tests, and the remainder have named owner-package evidence.
+  The synchronized report records no production gap, but this is
   crash evidence for the POC matrix rather than a general disaster-recovery
   guarantee.
 - Named bounded RiffQL aggregates support exact row/present/distinct counts,
@@ -57,7 +58,10 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   encoded-key byte order, which is not collation order; sort client-side for
   presentation.
 - There is no general SQL surface, arbitrary transaction callback, analytical
-  join engine, distributed transaction, replication, failover, or consensus.
+  join engine, distributed transaction, failover, or consensus. WP-746 implements
+  the administrative V3 stream, staged bootstrap, follower daemon and repeated
+  crash proofs, verified through full CI. Follower freshness and
+  lag reporting are WP-747; promotion is WP-748 and archives are WP-749.
 - Compiler-sealed command decisions support bounded branch-local entity field
   assignments, embeddings, creates, and durable events. Workflow transition
   and lease instructions retain their existing dedicated command forms and are

@@ -10,6 +10,20 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+#[path = "store_follower.rs"]
+mod follower;
+pub(crate) use follower::validate_open as validate_follower_open;
+pub use follower::{
+    RedbFollowerApplier, RedbFollowerProjectionRecovery, RedbFollowerRecoveryCatalogSession,
+    RedbFollowerStore,
+};
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum OpenMode {
+    Source,
+    Follower,
+}
+
 #[path = "store_graceful_close.rs"]
 mod graceful_close;
 
@@ -225,6 +239,8 @@ pub(crate) fn command_publication_stage_census() -> [u64; 9] {
 }
 
 pub(crate) struct SharedRedb {
+    open_mode: OpenMode,
+    follower_namespace: Mutex<Option<crate::maintenance::FollowerNamespace>>,
     pub(crate) database: Database,
     #[allow(dead_code, reason = "WP-070 offline backup consumes the source path")]
     path: PathBuf,
@@ -382,6 +398,10 @@ impl RedbCommitProfile {
 }
 
 impl SharedRedb {
+    pub(crate) fn is_follower_mode(&self) -> bool {
+        self.open_mode == OpenMode::Follower
+    }
+
     pub(crate) fn before_test_commit(
         &self,
         operation: RedbTestOperation,
@@ -448,6 +468,23 @@ impl SharedRedb {
                 Arc::new(crate::changelog::RedbPublishedSnapshot::new(published)),
             ),
         );
+    }
+
+    /// Enqueues an already published pin; receipt reads and framing belong to
+    /// the consumer, after this callback returns and the writer gate releases.
+    fn observe_changelog_snapshot_v3(&self, published: RedbReadAccess) {
+        self.changelog_port.observe_published_snapshot_v3(Arc::new(
+            crate::changelog::RedbPublishedSnapshot::new(published),
+        ));
+    }
+
+    /// A drained direct/lifecycle owner can pin the committed checkpoint. A
+    /// failed pin closes consumers without changing the durable write's result.
+    fn observe_changelog_checkpoint_v3(&self) {
+        match self.capture_checkpoint_root() {
+            Ok(root) => self.observe_changelog_snapshot_v3(RedbReadAccess::Durable(root)),
+            Err(_) => self.changelog_port.observe_source_unavailable_v3(),
+        }
     }
 
     /// Retention watermark sequence verified once at open (0 = unpruned).
@@ -798,6 +835,18 @@ impl SharedRedb {
         history_incarnation: u64,
         verified_clean: Option<crate::clean_close::CleanCloseLifecycle>,
     ) -> Result<(), StorageError> {
+        let read = self.database.begin_read().map_err(transaction_error)?;
+        if crate::follower_lifecycle::preserve_attached_lifecycle(
+            &read,
+            database_id,
+            history_incarnation,
+        )? {
+            if verified_clean.is_some() {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+            return Ok(());
+        }
+        drop(read);
         let mut transaction = self.database.begin_write().map_err(transaction_error)?;
         transaction
             .set_durability(Durability::Immediate)
@@ -853,6 +902,7 @@ impl SharedRedb {
         self.commit_durable(transaction)?;
         #[cfg(test)]
         changelog_lifecycle::crash_edge("dirty-committed");
+        self.observe_changelog_checkpoint_v3();
         Ok(())
     }
 
@@ -1505,6 +1555,7 @@ pub(crate) struct RedbSubmittedServiceAuditFence {
     completed: bool,
 }
 
+#[derive(Clone)]
 pub(crate) enum RedbReadAccess {
     Current(Arc<CheckpointRoot>),
     Durable(Arc<CheckpointRoot>),
@@ -2008,6 +2059,23 @@ impl RedbStore {
         )
     }
 
+    /// Opens with the production V3 observer and the existing process-test hooks.
+    #[doc(hidden)]
+    pub fn open_with_test_controller_and_changelog_publication_port(
+        path: impl AsRef<Path>,
+        application_commit_profile: RedbCommitProfile,
+        controller: RedbTestController,
+        changelog_port: Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
+    ) -> Result<Self, StorageError> {
+        Self::open_inner(
+            path.as_ref(),
+            application_commit_profile,
+            Some(controller),
+            changelog_port,
+            None,
+        )
+    }
+
     /// Opens an existing database over the real redb file backend with the
     /// closed external-kill barrier installed.
     ///
@@ -2041,6 +2109,7 @@ impl RedbStore {
             controller: controller.clone(),
         };
         Self::open_after_format_preflight(
+            OpenMode::Source,
             path,
             application_commit_profile,
             Some(controller),
@@ -2073,6 +2142,7 @@ impl RedbStore {
             return Err(storage_error(StorageErrorKind::IncompatibleFormat));
         }
         Self::open_after_format_preflight(
+            OpenMode::Source,
             &path,
             application_commit_profile,
             test_controller,
@@ -2097,6 +2167,7 @@ impl RedbStore {
             return Err(storage_error(StorageErrorKind::IncompatibleFormat));
         }
         Self::open_after_format_preflight(
+            OpenMode::Source,
             path,
             RedbCommitProfile::Hardened,
             None,
@@ -2109,6 +2180,7 @@ impl RedbStore {
 
     #[allow(clippy::too_many_arguments)]
     fn open_after_format_preflight(
+        open_mode: OpenMode,
         path: &Path,
         application_commit_profile: RedbCommitProfile,
         test_controller: Option<RedbTestController>,
@@ -2140,6 +2212,18 @@ impl RedbStore {
             None => builder.create(path),
         }
         .map_err(database_error)?;
+        // Source-mode construction cannot reinterpret attached follower state
+        // as a writable primary. Refuse before locator installation, journal
+        // recovery, or preparation workers. Promotion owns detachment.
+        let attached = crate::follower_lifecycle::is_attached(
+            &database.begin_read().map_err(transaction_error)?,
+        )?;
+        if attached != (open_mode == OpenMode::Follower) {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        if open_mode == OpenMode::Follower {
+            follower::validate_open(&database, path, journal_media.as_ref())?;
+        }
         let command_segment_preparation =
             crate::command_segment_preparation::CommandSegmentPreparationPool::new(
                 crate::command_segment_preparation::CommandSegmentPreparationPool::production_worker_count(),
@@ -2147,6 +2231,8 @@ impl RedbStore {
             .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
         let store = Self {
             shared: Arc::new(SharedRedb {
+                open_mode,
+                follower_namespace: Mutex::new(None),
                 database,
                 path: path.to_path_buf(),
                 journal_media,
@@ -2191,9 +2277,11 @@ impl RedbStore {
                 changelog_port,
             }),
         };
-        store.ensure_current_storage_format()?;
-        store.install_command_locator_tables()?;
-        store.recover_durability_journal()?;
+        if open_mode == OpenMode::Source {
+            store.ensure_current_storage_format()?;
+            store.install_command_locator_tables()?;
+            store.recover_durability_journal()?;
+        }
         store.cache_verified_retention_watermark()?;
         Ok(store)
     }
@@ -2912,6 +3000,9 @@ impl RedbStore {
     }
 
     pub(crate) fn ensure_writable(&self) -> Result<(), StorageError> {
+        if self.shared.is_follower_mode() {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
         if self.shared.write_fenced.load(Ordering::Acquire) {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
@@ -4742,6 +4833,9 @@ impl RedbDormantPorts {
     pub fn into_operational_after_catalog_validation(
         self,
     ) -> Result<RedbOperationalPorts, StorageError> {
+        if self.shared.open_mode != OpenMode::Source {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
         let _lease = self
             .pending_v3_activation
             .map(|pending| pending.activate(&self.shared))
@@ -4796,6 +4890,9 @@ impl RedbStore {
 fn activate_operational_ports(
     shared: Arc<SharedRedb>,
 ) -> Result<RedbOperationalPorts, StorageError> {
+    if shared.open_mode != OpenMode::Source {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    }
     if shared.bounded_clean_startup.load(Ordering::Acquire) {
         let state = shared
             .transient_indexes
@@ -4824,6 +4921,16 @@ fn activate_operational_ports(
 }
 
 impl RedbOperationalPorts {
+    /// Captures the complete published durable view for authorized replication
+    /// composition. This releases only a read capability, never the writer.
+    pub fn published_changelog_snapshot_v3(
+        &self,
+    ) -> Result<Arc<dyn riffdb_storage_api::PublishedDurableSnapshot>, StorageError> {
+        Ok(Arc::new(crate::changelog::RedbPublishedSnapshot::new(
+            self.shared.begin_composite_operational_read()?,
+        )))
+    }
+
     /// True when this handle reached readiness through verified bounded
     /// clean-close startup and intentionally left population caches cold.
     #[doc(hidden)]
@@ -6485,6 +6592,7 @@ impl RedbWriteAccess {
             self.shared.write_fenced.store(true, Ordering::Release);
             return Err(error);
         }
+        self.shared.observe_changelog_checkpoint_v3();
         Ok(())
     }
 
@@ -9769,3 +9877,7 @@ where
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "store_follower_tests.rs"]
+mod follower_tests;

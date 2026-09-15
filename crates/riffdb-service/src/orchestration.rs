@@ -882,6 +882,14 @@ impl BegunInvocation {
         {
             Ok(Decision::Allow(authorization)) => {
                 let obligations = authorization.obligations();
+                if service.executors.is_follower()
+                    && self.operation != ServiceOperationV1::GetStatistics
+                    && obligations.audit_class().is_some()
+                {
+                    // A new audit obligation at a read safe point cannot be
+                    // satisfied by telemetry or release protected data.
+                    return Err(PublicError::follower_mode().into());
+                }
                 if obligations.audit_class() != self.audit_class
                     || obligations.validated_approval() != self.approval_id.as_ref()
                 {
@@ -1015,7 +1023,7 @@ impl BegunInvocation {
         let result = if self.started {
             self.finish(service, context, phase, ServiceAuditLinkV1::None)
                 .await
-        } else if phase == ServiceAuditPhaseV1::Denied {
+        } else if phase == ServiceAuditPhaseV1::Denied && !service.executors.is_follower() {
             service
                 .append_audit(
                     context,
@@ -1567,7 +1575,19 @@ impl RiffDbServiceInner {
         defer_command_start: bool,
     ) -> ServiceResult<BegunInvocation> {
         let operation = request.operation();
+        // ADR-0178 / SPEC 13.5 explicitly permit follower operational telemetry.
+        // Keep the original policy proof (including its administrative audit
+        // class) for exact reauthorization and result shaping. No local audit
+        // lifecycle is created for this intrinsic diagnostic exception.
+        let follower_statistics =
+            self.executors.is_follower() && operation == ServiceOperationV1::GetStatistics;
+        let scope = if follower_statistics {
+            AuditScope::StandardRead
+        } else {
+            scope
+        };
         if scope == AuditScope::Intrinsic {
+            self.executors.writer()?;
             self.classify_intrinsic_prestart(context, operation, targets.clone())?;
         }
         if context.control().is_cancelled() {
@@ -1611,6 +1631,11 @@ impl RiffDbServiceInner {
         {
             Ok(Decision::Allow(authorization)) => authorization,
             Ok(Decision::Deny(_)) => {
+                if self.executors.is_follower() {
+                    // The operation wrapper records bounded redacted terminal
+                    // telemetry. This is not an audit-subsystem failure.
+                    return Err(PublicError::authorization_denied().into());
+                }
                 if scope == AuditScope::Intrinsic {
                     self.append_prestart_terminal_if_intrinsic(
                         context,
@@ -1661,6 +1686,9 @@ impl RiffDbServiceInner {
         };
 
         let audit_class = authorization.obligations().audit_class();
+        if audit_class.is_some() && !follower_statistics {
+            self.executors.writer()?;
+        }
         let approval_id = authorization.obligations().validated_approval().cloned();
         if scope == AuditScope::Intrinsic && audit_class.is_none() {
             self.append_prestart_terminal_if_intrinsic(
@@ -1673,7 +1701,7 @@ impl RiffDbServiceInner {
             .await?;
             return Err(self.internal_failure(operation, InternalDefect::ProofMismatch));
         }
-        let started = audit_class.is_some();
+        let started = audit_class.is_some() && !follower_statistics;
         let lifecycle = current_operation_audit_lifecycle(operation);
         if started {
             let panic_terminal =
@@ -1786,7 +1814,11 @@ impl RiffDbServiceInner {
         let permit = wait_with_control(
             control,
             self.providers.deadline_scheduler.as_ref(),
-            self.executors.audit.reserve_capacity(),
+            self.executors
+                .writer()
+                .map_err(|_| AuditAppendFailure::subsystem())?
+                .audit
+                .reserve_capacity(),
         )
         .await
         .map_err(|error: ControlledWaitError| match error {
@@ -1811,7 +1843,11 @@ impl RiffDbServiceInner {
         let permit = wait_with_control(
             control,
             self.providers.deadline_scheduler.as_ref(),
-            self.executors.audit.reserve_capacity(),
+            self.executors
+                .writer()
+                .map_err(|_| AuditAppendFailure::subsystem())?
+                .audit
+                .reserve_capacity(),
         )
         .await
         .map_err(|error: ControlledWaitError| match error {
@@ -1837,7 +1873,13 @@ impl RiffDbServiceInner {
             }
             Err(error) => {
                 let fenced = matches!(error, AdministrationAuditExecutionError::CoordinatorFenced)
-                    || self.executors.audit.lifecycle_state() == CoordinatorLifecycleState::Fenced;
+                    || self
+                        .executors
+                        .writer()
+                        .map_err(|_| AuditAppendFailure::subsystem())?
+                        .audit
+                        .lifecycle_state()
+                        == CoordinatorLifecycleState::Fenced;
                 if fenced {
                     self.providers.health.fail_authoritative_readiness(
                         crate::AuthoritativeReadinessFailure::CoordinatorFenced,
@@ -1917,7 +1959,11 @@ impl RiffDbServiceInner {
         let permit = match wait_with_control(
             control,
             self.providers.deadline_scheduler.as_ref(),
-            self.executors.control_plane.reserve_capacity(),
+            self.executors
+                .writer()
+                .map_err(|_| AuditAppendFailure::subsystem())?
+                .control_plane
+                .reserve_capacity(),
         )
         .await
         {

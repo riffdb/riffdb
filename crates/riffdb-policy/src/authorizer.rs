@@ -2,6 +2,10 @@
 
 use std::{error::Error, fmt};
 
+#[path = "authorizer_replication.rs"]
+mod replication;
+pub use replication::{AuthorizedReplicationRelease, ReplicationDecision};
+
 use riffdb_auth::{
     AuthenticatedPrincipal, CurrentCapability, CurrentCapabilityActivity, CurrentCapabilityResolver,
 };
@@ -1221,6 +1225,76 @@ mod tests {
             grant,
         };
         (principal, current, environment)
+    }
+
+    #[test]
+    // req: REP-003
+    fn replication_requires_exact_current_administrative_authority_at_every_release() {
+        let replication = CapabilityPermissionKindV1::ReplicateChangelog;
+        let make_grant = |permissions, approval| {
+            grant(
+                TenantScope::Global,
+                PartitionScopeV1::All,
+                permissions,
+                Vec::new(),
+                20,
+                approval,
+            )
+        };
+        let permission = CapabilityPermissionV1::unparameterized(replication).unwrap();
+        let (principal, current, environment) =
+            facts(make_grant(vec![permission.clone()], Vec::new()));
+        let check = |current: &CurrentFacts, now| {
+            super::replication::evaluate_replication(
+                &principal,
+                current,
+                database_id(),
+                &environment,
+                timestamp(now),
+            )
+        };
+        assert_eq!(check(&current, 15), Ok(()));
+        for now in [9, 20, 21] {
+            assert_eq!(
+                check(&current, now),
+                Err(PolicyCode::InactiveOrStaleCapability)
+            );
+        }
+        let mut revoked = current.clone();
+        revoked.activity = CurrentCapabilityActivity::Revoked;
+        assert_eq!(
+            check(&revoked, 15),
+            Err(PolicyCode::InactiveOrStaleCapability)
+        );
+        let mut changed = current.clone();
+        changed.revision = NonZeroU64::new(2).unwrap();
+        assert_eq!(
+            check(&changed, 15),
+            Err(PolicyCode::InactiveOrStaleCapability)
+        );
+        let mut wrong_audience = current.clone();
+        wrong_audience.audiences = vec![Audience::new("mcp").unwrap()];
+        assert_eq!(
+            check(&wrong_audience, 15),
+            Err(PolicyCode::InactiveOrStaleCapability)
+        );
+        let mut bootstrap_only = current.clone();
+        bootstrap_only.grant = make_grant(
+            vec![
+                CapabilityPermissionV1::unparameterized(
+                    CapabilityPermissionKindV1::AdministerCapabilities,
+                )
+                .unwrap(),
+            ],
+            Vec::new(),
+        );
+        assert_eq!(
+            check(&bootstrap_only, 15),
+            Err(PolicyCode::MissingPermission)
+        );
+        let mut approval = current.clone();
+        approval.grant = make_grant(vec![permission], vec![replication]);
+        assert_eq!(check(&approval, 15), Err(PolicyCode::ApprovalRequired));
     }
 
     #[test]

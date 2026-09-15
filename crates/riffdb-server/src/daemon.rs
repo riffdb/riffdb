@@ -5,6 +5,12 @@
 
 //! Hosted `riffdbd` process lifecycle for the runnable P1 checkpoint.
 
+#[path = "daemon_follower.rs"]
+mod follower;
+
+#[path = "replication_peer.rs"]
+pub(crate) mod replication_peer;
+
 use std::error::Error;
 use std::fmt;
 use std::fs;
@@ -582,6 +588,9 @@ async fn run_server(
     // Internal benchmark synchronization only: the runtime and signal owner
     // now exist, while no database or application population has been opened.
     eprintln!("riffdb-process-memory-baseline-v1");
+    if config.mode() == crate::config::ServerMode::Follower {
+        return follower::run(config, &mut process_signal).await;
+    }
     if config.databases().len() > 1 {
         return run_multi_database_server(config, &mut process_signal, &recovery).await;
     }
@@ -858,7 +867,7 @@ async fn run_server(
         activator,
         digest_keys,
         &config,
-        config.environment().clone(),
+        &config.databases()[0],
         started_at,
         build,
         identifiers,
@@ -1400,7 +1409,7 @@ async fn run_multi_database_server(
             pending.activator,
             digest_keys.clone(),
             &config,
-            database.environment().clone(),
+            database,
             started_at,
             build,
             pending.identifiers,
@@ -2166,7 +2175,7 @@ async fn replace_multi_database_generation(
         activator,
         prepared.digest_keys,
         config,
-        database.environment().clone(),
+        database,
         started_at,
         build,
         prepared.identifiers,
@@ -2957,7 +2966,7 @@ async fn start_generation(
         activator,
         digest_keys,
         config,
-        config.environment().clone(),
+        &config.databases()[0],
         started_at,
         build,
         identifiers,
@@ -3093,13 +3102,16 @@ fn startup_validation_inputs(
 }
 
 fn build_info(startup: &crate::startup::CheckedRedbStartup) -> Result<BuildInfo, DaemonError> {
+    build_info_for_format(startup.retained_metadata().storage_format_version().get())
+}
+fn build_info_for_format(format_version: u32) -> Result<BuildInfo, DaemonError> {
     // Release packaging supplies RIFFDB_GIT_REVISION; the fallback is truthful for local builds.
     BuildInfo::new(
         env!("CARGO_PKG_VERSION"),
         option_env!("RIFFDB_GIT_REVISION").unwrap_or("development-unversioned"),
         "rustc-1.97.0",
         Vec::new(),
-        startup.retained_metadata().storage_format_version().get(),
+        format_version,
         EXECUTABLE_IR_VERSION_V1,
         MCP_PROTOCOL_VERSION,
     )
@@ -3628,7 +3640,11 @@ impl HostedGrpc {
                     identity,
                     bounds,
                 );
-                let router = application_router(Server::builder(), application, Some(bounds));
+                let router = application_router(
+                    Server::builder(),
+                    &application.for_confidential_listener(),
+                    Some(bounds),
+                );
                 let rebind_config = ApplicationListenerConfig::DirectTls(listener);
                 let task = tokio::spawn(
                     router.serve_with_incoming_shutdown(incoming, shutdown_signal(stopped)),
@@ -3648,7 +3664,11 @@ impl HostedGrpc {
                 {
                     let (incoming, guard) = bind_local_socket(&listener)?;
                     let bounds = listener.bounds();
-                    let router = application_router(Server::builder(), application, Some(bounds));
+                    let router = application_router(
+                        Server::builder(),
+                        &application.for_confidential_listener(),
+                        Some(bounds),
+                    );
                     let rebind_config = ApplicationListenerConfig::LocalSocket(listener);
                     let task = tokio::spawn(router.serve_with_incoming_shutdown(
                         BoundedIncoming::new(
@@ -3734,6 +3754,7 @@ fn application_router(
         .add_service(application.commit_server())
         .add_service(application.event_server())
         .add_service(application.admin_server())
+        .add_service(application.replication_server())
 }
 
 async fn shutdown_signal(stopped: oneshot::Receiver<()>) {
@@ -4393,6 +4414,7 @@ enum ShutdownInput {
 }
 
 enum DaemonError {
+    Replication(riffdb_service::ReplicationFailure),
     Config(ServerConfigError),
     Runtime(io::Error),
     ProcessClock(ServerProcessClockError),
@@ -4441,6 +4463,15 @@ impl DaemonError {
     #[must_use]
     const fn kind(&self) -> &'static str {
         match self {
+            Self::Replication(riffdb_service::ReplicationFailure::AuthorizationDenied) => {
+                "replication_authorization"
+            }
+            Self::Replication(riffdb_service::ReplicationFailure::Source(_)) => {
+                "replication_source"
+            }
+            Self::Replication(riffdb_service::ReplicationFailure::Unavailable) => {
+                "replication_unavailable"
+            }
             Self::Config(_) => "config",
             Self::Runtime(_) => "runtime",
             Self::ProcessClock(_) => "process_clock",
@@ -4505,6 +4536,7 @@ impl fmt::Display for DaemonError {
 impl Error for DaemonError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::Replication(_) => None,
             Self::Config(source) => Some(source),
             Self::Runtime(source)
             | Self::Listener(source)
@@ -4549,6 +4581,11 @@ impl Error for DaemonError {
         }
     }
 }
+
+#[cfg(test)]
+#[cfg(unix)]
+#[path = "replication_transport_tests.rs"]
+mod replication_transport_tests;
 
 #[cfg(test)]
 mod tests {

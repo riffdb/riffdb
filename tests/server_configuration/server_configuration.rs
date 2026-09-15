@@ -71,6 +71,7 @@ fn explicitly_selected_toml_can_supply_every_server_field() -> TestResult<()> {
 }
 
 #[test]
+// req: REP-003, REC-001
 fn two_named_databases_start_on_one_listener_and_create_isolated_files() -> TestResult<()> {
     let root = TestRoot::new("named-databases")?;
     let paths = ProcessPaths::new(root.path())?;
@@ -124,6 +125,16 @@ fn two_named_databases_start_on_one_listener_and_create_isolated_files() -> Test
         != 2
     {
         return Err("named databases did not emit one writer evidence line per graph".into());
+    }
+    for database in [&alpha, &beta] {
+        let mut area = database.as_os_str().to_os_string();
+        area.push(".riffreplication");
+        let area = PathBuf::from(area);
+        if !area.join("inventory.lock").is_file() || fs::read_dir(&area)?.count() != 1 {
+            return Err(
+                "named databases did not reserve independent bounded artifact roots".into(),
+            );
+        }
     }
     if !alpha.is_file() || !beta.is_file() {
         return Err("named databases did not create two isolated storage files".into());

@@ -1,0 +1,79 @@
+syntax = "proto3";
+
+package riffdb.v1;
+
+import "riffdb/v1/common.proto";
+
+// An exact durable receipt position, never a bare application commit sequence.
+message ReplicationPosition {
+  uint64 transaction_sequence = 1;
+  bytes history_hash = 2;
+  FrontierPosition application_frontier = 3;
+  FrontierPosition administration_frontier = 4;
+}
+
+// Initial transfer or exact resume of an immutable held source artifact.
+// An empty resume_manifest requires after_page = 0. Resume echoes the exact
+// previously received V1 manifest; after_page is the receiver's durable page.
+message ReplicationBootstrapRequest {
+  bytes hold_id = 1;
+  bytes resume_manifest = 2;
+  uint32 after_page = 3;
+}
+
+// Sent only after receiver publication, complete startup validation, and a
+// durable local acknowledgement at the manifest fence. Opens its exact tail.
+message ReplicationBootstrapAttachment {
+  bytes manifest = 1;
+  ReplicationPosition acknowledged = 2;
+}
+
+// Administrative-only negotiation. No application role or bootstrap credential
+// authorizes this RPC. Source bytes require a confidential transport connection.
+message StreamChangelogRequest {
+  bytes request_id = 1;
+  bytes database_id = 2;
+  uint64 history_incarnation = 3;
+  uint64 leadership_epoch = 4;
+  string readable_format = 5;
+  bytes catalog_digest = 6;
+  ReplicationPosition after = 7;
+  uint64 maximum_frame_bytes = 8;
+  uint64 maximum_transitions = 9;
+  // Exactly one of after, bootstrap, and attachment is required.
+  ReplicationBootstrapRequest bootstrap = 10;
+  ReplicationBootstrapAttachment attachment = 11;
+  // Optional only with after: that position is an already-durable local
+  // acknowledgement for this existing follower hold. Empty means read-only
+  // tail resume. A nonempty value is exactly 16 bytes, not all zero and cannot
+  // register an absent hold, rewind it, or cross a lineage fence.
+  bytes follower_hold_id = 12;
+}
+
+enum ReplicationRefusal {
+  REPLICATION_REFUSAL_UNSPECIFIED = 0;
+  REPLICATION_REFUSAL_FOREIGN_LINEAGE = 1;
+  REPLICATION_REFUSAL_STALE_EPOCH = 2;
+  REPLICATION_REFUSAL_HISTORY_PRUNED = 3;
+  REPLICATION_REFUSAL_UNSUPPORTED_FORMAT = 4;
+  REPLICATION_REFUSAL_UNSUPPORTED_CATALOG = 5;
+  REPLICATION_REFUSAL_UNSUPPORTED_BOUNDS = 6;
+  REPLICATION_REFUSAL_INVALID_POSITION = 7;
+  REPLICATION_REFUSAL_CORRUPT_HISTORY = 8;
+  REPLICATION_REFUSAL_UNAVAILABLE = 9;
+  REPLICATION_REFUSAL_AUTHORIZATION_DENIED = 10;
+}
+
+message StreamChangelogResponse {
+  oneof item {
+    // One complete, checksummed riffdb.changelog-frame/v3, at most 32 MiB.
+    bytes frame = 1;
+    // Terminal: no item follows a refusal on this stream.
+    ReplicationRefusal refusal = 2;
+    // Exact checksummed replication_bootstrap_receipt/v1, at most 512 bytes.
+    bytes bootstrap_manifest = 3;
+    // One complete bootstrap page, at most 32 MiB + 512 bytes. After the
+    // manifest's final page the stream ends; attachment needs a new request.
+    bytes bootstrap_page = 4;
+  }
+}

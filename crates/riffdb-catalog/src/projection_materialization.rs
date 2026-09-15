@@ -101,6 +101,17 @@ impl ResolvedProjectionPlan {
         &self.plan
     }
 
+    /// Returns the checked group schema bound to this exact resolved plan.
+    pub fn checked_group_schema(
+        &self,
+    ) -> Result<riffdb_storage_api::CheckedProjectionSchema, CatalogError> {
+        self.bundle
+            .bundle()
+            .bound_projection_group_schema(self.plan.projection_id())
+            .map(riffdb_storage_api::CheckedProjectionSchema::new)
+            .ok_or_else(|| CatalogError::new(CatalogErrorKind::UnknownExecutablePlan))
+    }
+
     /// Validates one immutable event and exposes only its normalized known fields.
     pub fn materialize_event<'plan, 'event>(
         &'plan self,
@@ -264,33 +275,39 @@ impl ActiveCatalogSnapshot {
         &self,
         identity: &ProjectionIdentity,
     ) -> Result<ResolvedProjectionPlan, CatalogError> {
-        if identity.contract_lineage() != self.pointer().lineage() {
-            return Err(CatalogError::new(CatalogErrorKind::UnknownExecutablePlan));
-        }
-        let (index, bundle, plan) = self
-            .lineage_proof()
-            .bundles()
-            .iter()
-            .enumerate()
-            .rev()
-            .find_map(|(index, bundle)| {
-                bundle
-                    .bundle()
-                    .projection(identity.projection_id())
-                    .filter(|plan| plan.plan_hash() == identity.plan_hash())
-                    .map(|plan| (index, bundle, plan))
-            })
-            .ok_or_else(|| CatalogError::new(CatalogErrorKind::UnknownExecutablePlan))?;
-        let projection_ordinal = u16::try_from(index)
-            .map_err(|_| CatalogError::new(CatalogErrorKind::UnknownExecutablePlan))?;
-        Ok(ResolvedProjectionPlan {
-            identity: identity.clone(),
-            plan: plan.clone(),
-            bundle: bundle.clone(),
-            lineage_proof: Arc::clone(self.lineage_proof()),
-            projection_ordinal,
-        })
+        resolve_projection_from_lineage(self.lineage_proof(), identity)
     }
+}
+
+pub(crate) fn resolve_projection_from_lineage(
+    proof: &Arc<LineageMaterializationProof>,
+    identity: &ProjectionIdentity,
+) -> Result<ResolvedProjectionPlan, CatalogError> {
+    if identity.contract_lineage() != proof.terminal().lineage() {
+        return Err(CatalogError::new(CatalogErrorKind::UnknownExecutablePlan));
+    }
+    let (index, bundle, plan) = proof
+        .bundles()
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, bundle)| {
+            bundle
+                .bundle()
+                .projection(identity.projection_id())
+                .filter(|plan| plan.plan_hash() == identity.plan_hash())
+                .map(|plan| (index, bundle, plan))
+        })
+        .ok_or_else(|| CatalogError::new(CatalogErrorKind::UnknownExecutablePlan))?;
+    let projection_ordinal = u16::try_from(index)
+        .map_err(|_| CatalogError::new(CatalogErrorKind::UnknownExecutablePlan))?;
+    Ok(ResolvedProjectionPlan {
+        identity: identity.clone(),
+        plan: plan.clone(),
+        bundle: bundle.clone(),
+        lineage_proof: Arc::clone(proof),
+        projection_ordinal,
+    })
 }
 
 impl ValidatedMigrationPlan {
@@ -348,4 +365,48 @@ fn validate_complete_payload(
             .map_err(|_| ProjectionEventMaterializationError::integrity())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod bootstrap_replay_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    // req: REP-002, REP-003
+    #[test]
+    fn projection_replay_uses_latest_exact_plan_in_a_validated_lineage() {
+        let source = "contract ReplayVersions version 1 { event Added { group: i64 } projection Totals { source event Added key (group) measure n = count() frontier transactionally_ordered } }";
+        let first = ValidatedContractBundle::from_compiler_bundle(
+            riffdb_contract_compiler::compile_contract_source(source).unwrap(),
+        )
+        .unwrap();
+        let next = source.replace("version 1", "version 2");
+        let second = ValidatedContractBundle::from_compiler_bundle(
+            riffdb_contract_compiler::compile_contract_successor(&next, first.bundle()).unwrap(),
+        )
+        .unwrap();
+        let proof = LineageMaterializationProof::from_historical_bundles(
+            vec![first.clone(), second.clone()],
+            &BTreeSet::new(),
+        )
+        .unwrap();
+        for bundle in [&first, &second] {
+            let plan = &bundle.bundle().projections()[0];
+            let identity = ProjectionIdentity::new(
+                bundle.lineage().clone(),
+                plan.projection_id(),
+                plan.plan_hash(),
+            );
+            let resolved = resolve_projection_from_lineage(&proof, &identity).unwrap();
+            assert_eq!(resolved.projection_plan(), plan);
+            assert_eq!(
+                resolved.bundle.contract_version(),
+                second.contract_version()
+            );
+            assert_eq!(
+                resolved.checked_group_schema().unwrap().identity(),
+                &identity
+            );
+        }
+    }
 }

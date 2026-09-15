@@ -2420,7 +2420,7 @@ async fn deploy_module(
     let permit = match wait_with_control(
         context.control(),
         service.providers.deadline_scheduler.as_ref(),
-        service.executors.control_plane.reserve_capacity(),
+        service.executors.writer()?.control_plane.reserve_capacity(),
     )
     .await
     {
@@ -2587,7 +2587,7 @@ async fn deploy_reactive_module(
     let permit = match wait_with_control(
         context.control(),
         service.providers.deadline_scheduler.as_ref(),
-        service.executors.control_plane.reserve_capacity(),
+        service.executors.writer()?.control_plane.reserve_capacity(),
     )
     .await
     {

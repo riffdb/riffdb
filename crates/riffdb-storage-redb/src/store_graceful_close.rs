@@ -5,6 +5,17 @@ impl SharedRedb {
         self: &Arc<Self>,
     ) -> crate::GracefulCheckpointCloseReceiptV1 {
         let mut elapsed_us = [0_u64; 3];
+        // This is the SOURCE close owner. Follower shutdown belongs to the
+        // sole applier and must never enter its journal/checkpoint/CLEAN path.
+        // Also fail closed if attachment cannot be decoded.
+        let source = self
+            .database
+            .begin_read()
+            .map_err(transaction_error)
+            .and_then(|read| crate::follower_lifecycle::is_attached(&read));
+        if !matches!(source, Ok(false)) {
+            return crate::GracefulCheckpointCloseReceiptV1::classification_failed(elapsed_us);
+        }
         let started = Instant::now();
         if self.complete_graceful_close_barrier().is_err() {
             elapsed_us[0] = saturating_elapsed_microseconds(started);
@@ -212,6 +223,7 @@ impl SharedRedb {
         self.commit_durable(write)?;
         #[cfg(test)]
         changelog_lifecycle::crash_edge("clean-committed");
+        self.observe_changelog_checkpoint_v3();
         self.after_test_commit(RedbTestOperation::CleanCloseLifecycle)
     }
 }

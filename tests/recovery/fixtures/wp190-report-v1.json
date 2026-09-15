@@ -5,7 +5,7 @@
     "cargo test -p riffdb-testkit --test offline_maintenance_matrix -- --ignored"
   ],
   "coverage": {
-    "inventory_cases": 38,
+    "inventory_cases": 41,
     "executed_cases": 18,
     "production_gap_cases": []
   },

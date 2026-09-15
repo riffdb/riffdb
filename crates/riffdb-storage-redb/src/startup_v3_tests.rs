@@ -568,3 +568,203 @@ fn actual_v3_startup_process_crashes_recover_complete_prefix_and_lifecycle_recei
         assert!(after.len() > expected);
     }
 }
+
+#[test]
+// req: REP-002, REP-003, REC-001
+fn follower_uses_existing_structural_and_catalog_validators_without_local_receipts() {
+    use riffdb_storage_api::{
+        AuthoritativeNamespaceV1 as N, ReplicationFollowerStateV3,
+        proto_codec::encode_replication_follower_state_v3,
+    };
+    for prefix in [false, true] {
+        let path = TestDatabasePath::new("follower-unchanged-startup");
+        let store = v3_store(&path, database_id(0xe2));
+        if prefix {
+            let retained =
+                read_retained_metadata_pub(&store.shared.database.begin_read().unwrap()).unwrap();
+            crate::validated_prefix::write_validated_prefix_checkpoint(
+                &store.shared,
+                &retained,
+                crate::validated_prefix::CheckpointPurpose::StartupValidation,
+            )
+            .unwrap();
+        }
+        let read = store.shared.database.begin_read().unwrap();
+        let history = crate::changelog_v3_roots::validate_retained_history(&read)
+            .unwrap()
+            .unwrap();
+        let checkpoint = read
+            .open_table(META)
+            .unwrap()
+            .get(META_VALIDATED_PREFIX_CHECKPOINT)
+            .unwrap()
+            .map(|row| row.value().to_vec());
+        drop(read);
+        let write = store.shared.database.begin_write().unwrap();
+        write
+            .open_table(META)
+            .unwrap()
+            .insert(
+                N::ReplicationFollowerState.metadata_key().unwrap(),
+                encode_replication_follower_state_v3(
+                    ReplicationFollowerStateV3::attached(history.lineage(), history.tail(), None)
+                        .unwrap(),
+                )
+                .unwrap()
+                .as_bytes(),
+            )
+            .unwrap();
+        write
+            .open_table(crate::changelog_v3_activation::HISTORY)
+            .unwrap()
+            .retain(|_, _| false)
+            .unwrap();
+        store.shared.commit_durable(write).unwrap();
+        drop(store);
+        for _ in 0..2 {
+            let follower = crate::RedbFollowerStore::open(&path.0).unwrap();
+            let mut session = follower.begin_structural_evidence(inputs()).unwrap();
+            let shared = Arc::clone(&session.shared);
+            assert!(!session.clean_close_fast);
+            let structural = finish_structural(&mut session);
+            assert_eq!(session.checkpoint_verified, prefix);
+            let (catalog, historical) =
+                validate_catalog_history(&mut session).unwrap().into_parts();
+            let CatalogHistoryOutcome::Ready(catalog) = catalog else {
+                panic!("catalog validation");
+            };
+            let StructuralOpenOutcome::Clean(opened) =
+                session.finish(structural, historical).unwrap()
+            else {
+                panic!("follower requires complete current format");
+            };
+            let (database_id, session_id, _, dormant) = opened.into_parts();
+            assert!(catalog.matches(database_id, session_id));
+            let applier = dormant.into_follower_after_catalog_validation().unwrap();
+            assert_eq!(applier.durable_position().unwrap(), history.tail());
+            assert_eq!(shared.durable_commit_epoch(), 0);
+            let read = shared.database.begin_read().unwrap();
+            assert_eq!(
+                crate::changelog_v3_roots::validate_retained_history(&read).unwrap(),
+                Some(history)
+            );
+            let meta = read.open_table(META).unwrap();
+            assert!(meta.get(META_CLEAN_CLOSE_LIFECYCLE).unwrap().is_none());
+            assert_eq!(
+                meta.get(META_VALIDATED_PREFIX_CHECKPOINT)
+                    .unwrap()
+                    .map(|row| row.value().to_vec()),
+                checkpoint
+            );
+            drop(meta);
+            drop(read);
+            drop(shared);
+            applier.close().unwrap();
+        }
+    }
+}
+
+#[test]
+// req: REP-002, REP-003, REC-001
+fn newly_materialized_follower_preserves_validated_prefix_and_reopens_with_unchanged_validation() {
+    use riffdb_storage_api::AuthoritativeNamespaceV1 as N;
+    for prefix in [false, true] {
+        let path = TestDatabasePath::new("materialized-follower-startup");
+        let scope = crate::test_path::ScopedDirectory::new("materialized-follower-stages");
+        let store = v3_store(&path, database_id(0xe3));
+        if prefix {
+            let retained =
+                read_retained_metadata_pub(&store.shared.database.begin_read().unwrap()).unwrap();
+            crate::validated_prefix::write_validated_prefix_checkpoint(
+                &store.shared,
+                &retained,
+                crate::validated_prefix::CheckpointPurpose::StartupValidation,
+            )
+            .unwrap();
+        }
+        let checkpoint = store
+            .shared
+            .database
+            .begin_read()
+            .unwrap()
+            .open_table(META)
+            .unwrap()
+            .get(META_VALIDATED_PREFIX_CHECKPOINT)
+            .unwrap()
+            .map(|v| v.value().to_vec());
+        let ports = crate::RedbOperationalPorts {
+            shared: store.shared,
+        };
+        let source = ports
+            .prepare_replication_bootstrap_v3(
+                &scope.join("source"),
+                riffdb_storage_api::ReplicationSourceHoldIdV1::new([0x74; 16]).unwrap(),
+            )
+            .unwrap();
+        let manifest = source.manifest();
+        let mut receiver =
+            crate::RedbBootstrapStage::create(&scope.join("receiver"), manifest).unwrap();
+        for ordinal in 1..=manifest.page_count() {
+            receiver
+                .append(&source.read_page(ordinal).unwrap().encode().unwrap())
+                .unwrap();
+        }
+        let candidate_path = scope.join("candidate");
+        let mut materializer = crate::RedbBootstrapMaterializer::create(
+            &candidate_path,
+            receiver.into_materialization_input().unwrap(),
+        )
+        .unwrap();
+        while materializer.copy_next_page().unwrap().is_some() {}
+        let validated = materializer.finish().unwrap().validate(inputs()).unwrap();
+        validated.verify_private_identity().unwrap();
+        drop(validated);
+        let follower =
+            crate::RedbFollowerStore::open(candidate_path.join("follower.redb")).unwrap();
+        let mut session = follower.begin_structural_evidence(inputs()).unwrap();
+        let shared = Arc::clone(&session.shared);
+        let structural = finish_structural(&mut session);
+        assert_eq!(session.checkpoint_verified, prefix);
+        let (catalog, historical) = validate_catalog_history(&mut session).unwrap().into_parts();
+        let CatalogHistoryOutcome::Ready(catalog) = catalog else {
+            panic!("materialized catalog");
+        };
+        let StructuralOpenOutcome::Clean(opened) = session.finish(structural, historical).unwrap()
+        else {
+            panic!("materialized current format");
+        };
+        let (database, session_id, _, dormant) = opened.into_parts();
+        assert!(catalog.matches(database, session_id));
+        let applier = dormant.into_follower_after_catalog_validation().unwrap();
+        assert_eq!(
+            applier.durable_position().unwrap(),
+            manifest.fence().history().tail()
+        );
+        assert_eq!(shared.durable_commit_epoch(), 0);
+        let read = shared.database.begin_read().unwrap();
+        let meta = read.open_table(META).unwrap();
+        assert_eq!(
+            meta.get(META_VALIDATED_PREFIX_CHECKPOINT)
+                .unwrap()
+                .map(|v| v.value().to_vec()),
+            checkpoint
+        );
+        assert!(
+            meta.get(N::CleanCloseLifecycle.metadata_key().unwrap())
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            read.open_table(crate::changelog_v3_activation::HISTORY)
+                .unwrap()
+                .is_empty()
+                .unwrap()
+        );
+        assert!(
+            read.open_table(crate::changelog_v3_activation::SOURCE_HOLDS)
+                .unwrap()
+                .is_empty()
+                .unwrap()
+        );
+    }
+}

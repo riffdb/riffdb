@@ -5,6 +5,10 @@
 
 //! Owning production component graph for the runnable P1 server.
 
+#[path = "follower_service.rs"]
+mod follower;
+pub(crate) use follower::RunningFollowerService;
+
 use std::error::Error;
 use std::fmt;
 use std::num::{NonZeroU16, NonZeroU32};
@@ -277,6 +281,7 @@ pub(crate) struct ProductionGraphBuilder {
     maintenance: MaintenanceController,
     projections: Vec<ConfiguredProjection>,
     projections_root: std::path::PathBuf,
+    replication_root: std::path::PathBuf,
 }
 
 impl ProductionGraphBuilder {
@@ -287,7 +292,7 @@ impl ProductionGraphBuilder {
         activator: RiffDbServiceActivator,
         digest_keys: ProductionDigestKeys,
         config: &ServerConfig,
-        environment: Environment,
+        database: &crate::config::DatabaseConfig,
         started_at: Timestamp,
         build: BuildInfo,
         identifiers: ProductionIdentifierSources,
@@ -303,7 +308,7 @@ impl ProductionGraphBuilder {
             startup,
             activator,
             digest_keys,
-            environment,
+            environment: database.environment().clone(),
             grpc_audience,
             mcp_audience,
             trusted_audiences,
@@ -313,8 +318,9 @@ impl ProductionGraphBuilder {
             server_generation: ProductionServerGenerationSource::new(),
             lifecycle,
             maintenance,
-            projections: config.projections().to_vec(),
-            projections_root: config.projections_root().to_path_buf(),
+            projections: database.projections().to_vec(),
+            projections_root: database.projections_root().to_path_buf(),
+            replication_root: database.replication_root(),
         }
     }
 
@@ -330,7 +336,7 @@ impl ProductionGraphBuilder {
 
     fn build_inner(self) -> Result<RunningProductionGraph, ProductionGraphBuildError> {
         let Self {
-            startup,
+            mut startup,
             activator,
             digest_keys,
             environment,
@@ -345,12 +351,14 @@ impl ProductionGraphBuilder {
             maintenance,
             projections,
             projections_root,
+            replication_root,
         } = self;
 
         let server_generation = server_generation
             .next_generation()
             .map_err(ProductionGraphBuildError::ServerGeneration)?;
 
+        let replication_publications = startup.take_replication_publications();
         let (
             database_id,
             retained_metadata,
@@ -359,6 +367,17 @@ impl ProductionGraphBuilder {
             allocator_capacity,
             operational_ports,
         ) = startup.into_parts();
+        let replication_source = replication_publications
+            .map(|publications| {
+                let repository = operational_ports
+                    .bootstrap_repository(&replication_root)
+                    .map_err(|_| ProductionGraphBuildError::CurrentView)?;
+                Ok(crate::replication_source::PublishedReplicationSource::new(
+                    publications,
+                    crate::replication_bootstrap::BootstrapSourceJobs::from_repository(repository),
+                ))
+            })
+            .transpose()?;
         let (capability_keys, idempotency_keys) = digest_keys.into_parts();
         let readable_idempotency_digests = ReadableIdempotencyDigestInventory::new(
             idempotency_keys
@@ -548,6 +567,12 @@ impl ProductionGraphBuilder {
         let token_issuer: Arc<dyn CapabilityTokenIssuer> = Arc::new(
             ServerCapabilityTokenIssuer::new(Arc::clone(&capability_keys)),
         );
+        let replication_service = replication_source.map(|source| {
+            Arc::new(riffdb_service::ReplicationService::new(
+                Arc::clone(&policy),
+                Arc::new(source),
+            )) as Arc<dyn riffdb_service::ReplicationApplication>
+        });
         let catalog_adapter = Arc::new(ServerCatalogReadPort::new(storage.clone(), &blocking));
         let catalog: Arc<dyn CatalogReadPort> = catalog_adapter.clone();
         let query_modules: Arc<dyn QueryModuleReadPort> = catalog_adapter.clone();
@@ -858,6 +883,20 @@ impl ProductionGraphBuilder {
             return Err(ProductionGraphBuildError::Activation { source, cleanup });
         }
         if let Err(source) = lifecycle.install_application_reimport(reimport_service) {
+            lifecycle.stop();
+            let cleanup = cleanup_unpublished_graph(
+                exact_worker,
+                columnar_worker,
+                projection_worker,
+                coordinator,
+                blocking,
+                &notifications,
+            );
+            return Err(ProductionGraphBuildError::Activation { source, cleanup });
+        }
+        if let Some(replication_service) = replication_service
+            && let Err(source) = lifecycle.install_replication(replication_service)
+        {
             lifecycle.stop();
             let cleanup = cleanup_unpublished_graph(
                 exact_worker,
@@ -1317,6 +1356,7 @@ fn shutdown_prerequisites_succeeded(failed: [bool; 6]) -> bool {
 }
 
 /// Cloned least-authority inputs for the optional loopback MCP transport.
+#[derive(Clone)]
 pub(crate) struct HostedMcpDependencies {
     pub(crate) authenticator: Arc<dyn CredentialAuthenticator>,
     pub(crate) authentication: AuthenticationContext,

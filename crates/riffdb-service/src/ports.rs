@@ -252,6 +252,14 @@ pub type BoxPortCapacityPermit<Request, Response, Failure> =
 
 /// The one non-caching current-policy entry point consumed by service code.
 pub trait CurrentPolicyPort: Send + Sync {
+    /// Reloads current administrative authority for one replication release.
+    fn authorize_replication(
+        &self,
+        _principal: &AuthenticatedPrincipal,
+    ) -> Result<riffdb_policy::ReplicationDecision, AuthorizationError> {
+        Err(AuthorizationError::CurrentCapabilityUnavailable)
+    }
+
     /// Reloads current capability state, samples fresh authorization time, and decides.
     fn authorize(
         &self,
@@ -322,6 +330,13 @@ where
     C: AuthorizationClock + Send + Sync + ?Sized,
     T: AuthorizationTelemetry + Send + Sync + ?Sized,
 {
+    fn authorize_replication(
+        &self,
+        principal: &AuthenticatedPrincipal,
+    ) -> Result<riffdb_policy::ReplicationDecision, AuthorizationError> {
+        CurrentAuthorizer::authorize_replication(self, principal)
+    }
+
     fn authorize(
         &self,
         principal: &AuthenticatedPrincipal,

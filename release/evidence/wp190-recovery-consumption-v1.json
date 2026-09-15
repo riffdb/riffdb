@@ -1,7 +1,7 @@
 {
   "schema": "riffdb.wp190-recovery-consumption/v1",
   "source": "tests/recovery/fixtures/wp190-report-v1.json",
-  "source_sha256": "b27ffecc391a48acd9d89533113dcaa113ad41a34a868c1dda40c74d934cab9d",
+  "source_sha256": "9a92e4b39a4735c91c30dbb5e24c47b3c5532ef0a3f7f5bd4952757665c25f2b",
   "source_schema": "riffdb.wp190.recovery-report.v1",
   "source_checksum": "tests/recovery/fixtures/wp190-report-v1.sha256",
   "required_acceptance_commands": [
@@ -56,7 +56,7 @@
   ],
   "coverage": {
     "inventory_source": "crates/riffdb-testkit/src/failpoint.rs",
-    "inventory_cases": 38,
+    "inventory_cases": 41,
     "executed_cases": 18,
     "complete": true,
     "unresolved_production_gaps": []

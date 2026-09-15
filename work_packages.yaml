@@ -22220,6 +22220,35 @@ work_packages:
     scale: Bootstrap is paged and tail work follows bounded changed bytes retained in V3 history;
       the emitter reads pinned published snapshots, so no writer-private memory or recurring
       full-state rewrite is assumed.
+  closure:
+    status: complete
+    completed_at: '2026-09-15'
+    requirements_satisfied: [REP-001, REP-002, REP-003, PERF-007]
+    evidence: docs/architecture/WP-746-VERIFICATION.md
+    decision: The production TLS stream and follower daemon pass all three exact
+      obligation proofs under the app-baseline workload, the native storage crash
+      matrix, complete startup validation, independent all-namespace comparison,
+      writer-free service admission, and scripts/ci-all. The maintainer's follower
+      lifecycle and audit amendments were accepted before this implementation.
+      This closes activation and recovery only; WP-747 through WP-750 remain separate.
+    decisions_taken:
+    - Keep follower construction, validation and sole-applier activation separate from
+      source lifecycle activation; no follower path obtains a primary coordinator,
+      service audit executor or source-only receipt history.
+    - Reuse the closed authoritative namespace catalog, full structural and catalog
+      validators, projection evaluator and shared read adapters. Publish one immutable
+      reader root only after durable apply, required derived replay and acknowledgement.
+    - Retain bounded source holds and receiver scratch through exact attachment; reclaim
+      only known private scratch under live file exclusion after the durable handoff.
+    - Reconnect transient tail failures with the same retained applier and bounded
+      backoff. Initial connection or bootstrap failure terminates startup without
+      readiness; terminal active failures withdraw admission and drain real owners.
+    - Prove every authoritative namespace with an independent bounded receipt-replay
+      model and the existing generated TicketDesk facade and app-baseline dataset.
+      Keep its nested core package in its existing workspace through a root exclusion.
+    - Register native applier, bootstrap and stream-kill evidence in the shared crash
+      inventory and classify it explicitly outside the primary simulator campaign.
+      Regenerate the linked recovery report while retaining its original 18 executed cases.
   human_review_triggers: &id0178
   - Acknowledgement semantics, the commit hot path, or the single-writer property on either node
     would change.

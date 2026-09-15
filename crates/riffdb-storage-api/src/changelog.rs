@@ -986,43 +986,30 @@ impl fmt::Debug for PublishedFrontierAdvancement {
 /// Storage calls this strictly **after** the frontier swap, at the same release
 /// rank as every other covered effect (ADR-0101 §4).
 ///
-/// # What this port does NOT observe — read this before building a follower
+/// The legacy advancement callback represents command/service-audit frontier
+/// publication. V3 additionally reports pinned direct, source-control, and
+/// lifecycle publications, including receipts that advance neither frontier.
+/// V3 consumers follow the snapshot's retained receipt cursor from an exact
+/// history point; they never derive mutations from current row values or from
+/// the legacy frontier interval. Repeated/coalesced pins are harmless: the
+/// cursor owns continuity and refuses missing or pruned history.
 ///
-/// Only the **journaled** durable-frontier publication edge reports here: one
-/// successful journal flush covering a command epoch or a standalone
-/// service-audit group. RiffDB has a second lane that also publishes a durable
-/// frontier and is deliberately **not** observed in this package — the
-/// redb-`Immediate` control-plane lane (`commit_with_observations` →
-/// `refresh_durable_read_frontier` in `riffdb-storage-redb`). Catalog
-/// activation, capability bootstrap/creation/revocation, query-module and
-/// reactive-module publication, contract migration, retention administration,
-/// and the non-deferred conformance commit path all publish through it, and
-/// none of them produce an advancement.
-///
-/// The consequence is precise and easy to get wrong:
-///
-/// - **No frame is ever emitted for those publications.** They carry the
-///   ADR-0093 §1 entry classes this package defers (registry migrations,
-///   capabilities, contract bundles, query and reactive modules), which have no
-///   mapped per-sequence attribution yet.
-/// - **Some of their rows may still appear in a later frame, incidentally.**
-///   Derivation is a range read over the covered sequence interval of a
-///   published snapshot, so an administration record whose sequence happens to
-///   fall inside a later frame's interval is swept in. That is a side effect of
-///   the interval, not attribution — nothing guarantees it, and it must not be
-///   relied on.
-/// - **Rows written before the first observed advancement, or after the last
-///   one, are never emitted at all.**
-///
-/// A follower therefore cannot be built from the frame chain alone: the chain
-/// is an exact, gap-free tail, not a complete history of a database from empty.
-/// RE3's bootstrap (seed from the backup format, then tail from the verified
-/// head, per ADR-0093 §4) is what closes this, and it is the only correct way
-/// to close it. Wiring the control-plane lane into this port would additionally
-/// require inventing dual-frontier attribution it does not currently keep.
+/// Complete replication still requires an exact-fence bootstrap before tail
+/// attachment. A publication notification is neither a bootstrap manifest nor
+/// a receiver acknowledgement and must never release a retention hold.
 pub trait ChangelogPublicationPort: Send + Sync + fmt::Debug {
     /// Observes one published durable-frontier advancement.
     fn observe_published_advancement(&self, advancement: PublishedFrontierAdvancement);
+
+    /// Observes a V3 publication whose physical receipt position may advance
+    /// without either application or administration frontier advancing. Legacy
+    /// observers ignore this edge; production V3 observers enqueue only the pin
+    /// and read its receipt cursor after leaving the publication callback.
+    fn observe_published_snapshot_v3(&self, _snapshot: Arc<dyn PublishedDurableSnapshot>) {}
+
+    /// Closes V3 consumers when a known-durable publication could not be pinned.
+    /// The observer cannot retroactively refuse or delay the durable write.
+    fn observe_source_unavailable_v3(&self) {}
 }
 
 /// The default port: a publication observer that observes nothing.

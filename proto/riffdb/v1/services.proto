@@ -11,6 +11,12 @@ import "riffdb/v1/event.proto";
 import "riffdb/v1/live_query.proto";
 import "riffdb/v1/projection.proto";
 import "riffdb/v1/query.proto";
+import "riffdb/v1/replication.proto";
+
+service ReplicationService {
+  rpc StreamChangelog(StreamChangelogRequest) returns (stream StreamChangelogResponse);
+}
+
 service ContractService {
   rpc ValidateContract(ValidateContractRequest) returns (ValidateContractResponse);
   rpc ExplainCommand(ExplainCommandRequest) returns (ExplainCommandResponse);

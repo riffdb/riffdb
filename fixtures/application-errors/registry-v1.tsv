@@ -24,3 +24,4 @@ RDB-PROJECTION-0101	query	retry	retry_later	query projections cannot prove one c
 RDB-PROJECTION-0102	query	correct_request	restart_from_first_page	the requested query snapshot has been retired
 RDB-PROJECTION-0103	query	retry	retry_later	no query snapshot satisfies the requested freshness
 RDB-PROJECTION-0104	query	refresh_contract	pin_active_module	nearest query requires a compiler-owned projected source
+RDB-REP-0101	control	correct_request		operation is unavailable in follower mode

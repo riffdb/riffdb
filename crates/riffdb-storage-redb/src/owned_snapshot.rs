@@ -1,5 +1,8 @@
 //! API-neutral readers over one pinned composite read view.
 
+#[path = "owned_snapshot_metadata.rs"]
+mod metadata;
+
 use riffdb_storage_api::{
     AuthoritativeEntityPartitionScanPage, AuthoritativeEntityPartitionScanRequest,
     AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest, AuthoritativePointReader,
@@ -43,9 +46,16 @@ use crate::reads::{
 use crate::shared_ports::RedbSharedPorts;
 use crate::store::{RedbOperationalPorts, RedbReadAccess};
 
-/// One move-only immutable redb view. No redb transaction or iterator escapes.
+/// One immutable redb view. Clones retain the same root; no transaction or iterator escapes.
+#[derive(Clone)]
 pub struct RedbOwnedSnapshot {
     access: RedbReadAccess,
+}
+
+impl RedbOwnedSnapshot {
+    pub(crate) fn from_read_access(access: RedbReadAccess) -> Self {
+        Self { access }
+    }
 }
 
 impl OwnedSnapshotReader for RedbOperationalPorts {

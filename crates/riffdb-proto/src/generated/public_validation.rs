@@ -2893,6 +2893,7 @@ fn permission_key(
             (31, lineage.as_str(), 0, &[], "")
         }
         v1::capability_permission::Permission::InspectVectorState(_) => (32, "", 0, &[], ""),
+        v1::capability_permission::Permission::ReplicateChangelog(_) => (33, "", 0, &[], ""),
     };
     if key.0 >= 3
         && matches!(key.0, 3 | 5 | 6 | 7 | 8 | 9)
@@ -3418,6 +3419,23 @@ fn validate_capability_grant(grant: Option<&v1::CapabilityGrant>) -> Result<(), 
             return Err(PublicWireError::InconsistentFields);
         }
     }
+    let replication = grant.permissions.iter().any(|permission| {
+        matches!(permission.permission.as_ref(),
+            Some(v1::capability_permission::Permission::ReplicateChangelog(_)))
+    });
+    if replication {
+        let global = matches!(grant.tenant_scope.as_ref().and_then(|scope| scope.scope.as_ref()),
+            Some(v1::tenant_scope::Scope::Global(_)));
+        let all = matches!(grant.partition_scope.as_ref().and_then(|scope| scope.scope.as_ref()),
+            Some(v1::partition_scope::Scope::All(_)));
+        let role = grant.permissions.iter().any(|permission| {
+            matches!(permission.permission.as_ref(),
+                Some(v1::capability_permission::Permission::ApplicationRoleIdentity(_)))
+        });
+        if !global || !all || role {
+            return Err(PublicWireError::InconsistentFields);
+        }
+    }
     let mut previous_permission = None;
     for permission in &grant.permissions {
         let key = permission_key(permission)?;
@@ -3583,6 +3601,10 @@ fn validate_create_capability_body(
             .as_ref()
             .ok_or(PublicWireError::MissingRequiredField)?;
         if message.actor_kind != v1::ActorKind::Human as i32
+            || grant.permissions.iter().any(|permission| {
+                matches!(permission.permission.as_ref(),
+                    Some(v1::capability_permission::Permission::ReplicateChangelog(_)))
+            })
             || !grant.permissions.iter().any(|permission| {
                 matches!(
                     permission.permission.as_ref(),
@@ -9740,6 +9762,93 @@ macro_rules! impl_public_message {
         }
     };
 }
+
+
+// ADR-0186 permits a 32-MiB frame; the RPC envelope has a separate fixed allowance.
+const MAX_REPLICATION_FRAME_WIRE_BYTES: usize = 32 * 1024 * 1024;
+
+fn preflight_replication_position(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 4, &[], &[], &[
+        NestedRule { field: 3, preflight: preflight_frontier },
+        NestedRule { field: 4, preflight: preflight_frontier },
+    ], &[])
+}
+fn preflight_replication_bootstrap(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 3, &[], &[], &[], &[])
+}
+fn preflight_replication_attachment(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 2, &[], &[], &[
+        NestedRule { field: 2, preflight: preflight_replication_position },
+    ], &[])
+}
+fn preflight_replication_request(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 12, &[], &[&[7, 10, 11]], &[
+        NestedRule { field: 7, preflight: preflight_replication_position },
+        NestedRule { field: 10, preflight: preflight_replication_bootstrap },
+        NestedRule { field: 11, preflight: preflight_replication_attachment },
+    ], &[])
+}
+
+fn validate_stream_changelog_request(message: &v1::StreamChangelogRequest) -> Result<(), PublicWireError> {
+    request_id(&message.request_id)?;
+    if !valid_uuid(&message.database_id, DatabaseId::from_bytes) {
+        return Err(PublicWireError::InvalidUuidV7);
+    }
+    if message.history_incarnation == 0 || message.leadership_epoch == 0
+        || message.catalog_digest.len() != 32 || message.readable_format.is_empty()
+        || message.readable_format.len() > 128 {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    if !message.follower_hold_id.is_empty()
+        && (message.after.is_none() || message.follower_hold_id.len() != 16
+            || message.follower_hold_id.iter().all(|byte| *byte == 0)) {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    match (&message.after, &message.bootstrap, &message.attachment) {
+        (Some(after), None, None) => validate_replication_position(after)?,
+        (None, Some(bootstrap), None) => {
+            if bootstrap.hold_id.len() != 16 || bootstrap.hold_id.iter().all(|byte| *byte == 0)
+                || bootstrap.resume_manifest.len() > 512 || bootstrap.after_page > 1_048_576
+                || (bootstrap.resume_manifest.is_empty() && bootstrap.after_page != 0) {
+                return Err(PublicWireError::InvalidIdentity);
+            }
+        }
+        (None, None, Some(attachment)) => {
+            if attachment.manifest.is_empty() || attachment.manifest.len() > 512 {
+                return Err(PublicWireError::InvalidIdentity);
+            }
+            validate_replication_position(attachment.acknowledged.as_ref().ok_or(PublicWireError::MissingRequiredField)?)?;
+        }
+        _ => return Err(PublicWireError::MissingRequiredField),
+    }
+    Ok(())
+}
+
+fn validate_replication_position(after: &v1::ReplicationPosition) -> Result<(), PublicWireError> {
+    if after.transaction_sequence == 0 || after.history_hash.len() != 32 {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    validate_frontier(after.application_frontier.as_ref())?;
+    validate_frontier(after.administration_frontier.as_ref())?;
+    Ok(())
+}
+
+fn validate_stream_changelog_response(message: &v1::StreamChangelogResponse) -> Result<(), PublicWireError> {
+    match message.item.as_ref().ok_or(PublicWireError::MissingRequiredField)? {
+        v1::stream_changelog_response::Item::Frame(bytes)
+            if !bytes.is_empty() && bytes.len() <= MAX_REPLICATION_FRAME_WIRE_BYTES => Ok(()),
+        v1::stream_changelog_response::Item::BootstrapManifest(bytes)
+            if !bytes.is_empty() && bytes.len() <= 512 => Ok(()),
+        v1::stream_changelog_response::Item::BootstrapPage(bytes)
+            if !bytes.is_empty() && bytes.len() <= MAX_REPLICATION_FRAME_WIRE_BYTES + 512 => Ok(()),
+        v1::stream_changelog_response::Item::Refusal(code)
+            if v1::ReplicationRefusal::try_from(*code).is_ok_and(|code| code != v1::ReplicationRefusal::Unspecified) => Ok(()),
+        _ => Err(PublicWireError::InvalidIdentity),
+    }
+}
+
+impl_public_message!(v1::StreamChangelogRequest, 1024, 12, &[], &[&[7, 10, 11]], preflight_replication_request, validate_stream_changelog_request);
+impl_public_message!(v1::StreamChangelogResponse, MAX_REPLICATION_FRAME_WIRE_BYTES + 1024, 4, &[], &[&[1, 2, 3, 4]], preflight_noop, validate_stream_changelog_response);
 
 impl_public_message!(
     v1::ValidateContractRequest,

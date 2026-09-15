@@ -12,7 +12,7 @@ use std::fmt;
 use std::ops::Bound::{Excluded, Included, Unbounded};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use redb::{
     MultimapTableHandle, Range, ReadOnlyTable, ReadTransaction, ReadableDatabase, ReadableTable,
@@ -130,6 +130,7 @@ impl OfflineIntegrityScrubReceiptV1 {
 /// evidence streams through exact end, and publishes a receipt only on total
 /// structural and catalog-semantic success.
 pub(crate) struct RedbOfflineIntegrityScrub {
+    cancellation: Option<Arc<AtomicBool>>,
     path: PathBuf,
     inputs: StartupValidationInputs,
 }
@@ -137,6 +138,7 @@ pub(crate) struct RedbOfflineIntegrityScrub {
 impl RedbOfflineIntegrityScrub {
     pub(crate) fn from_inputs(path: &Path, inputs: StartupValidationInputs) -> Self {
         Self {
+            cancellation: None,
             path: path.to_path_buf(),
             inputs,
         }
@@ -174,10 +176,30 @@ impl RedbOfflineIntegrityScrub {
     /// Runs the unchanged complete structural and catalog-semantic path.
     pub(crate) fn run(self) -> Result<OfflineIntegrityScrubReceiptV1, StorageError> {
         let store = RedbStore::open(&self.path)?;
-        let mut session = store.begin_structural_evidence_for(
+        let session = store.begin_structural_evidence_for(
             self.inputs,
             EvidenceOpenPurpose::OfflineIntegrityScrub,
         )?;
+        Self::validate_session(session)
+    }
+
+    pub(crate) fn with_cancellation(mut self, cancellation: Arc<AtomicBool>) -> Self {
+        self.cancellation = Some(cancellation);
+        self
+    }
+
+    pub(crate) fn run_follower(self) -> Result<OfflineIntegrityScrubReceiptV1, StorageError> {
+        let follower = crate::RedbFollowerStore::open(&self.path)?;
+        let mut session = follower.begin_offline_bootstrap_scrub(self.inputs)?;
+        if let Some(cancellation) = self.cancellation {
+            session.set_cancellation(cancellation);
+        }
+        Self::validate_session(session)
+    }
+
+    fn validate_session(
+        mut session: RedbStructuralEvidenceSession,
+    ) -> Result<OfflineIntegrityScrubReceiptV1, StorageError> {
         let database_id = session.database_id();
         let open_session_id = session.open_session_id();
         let limit = EvidencePageLimit::new(64).ok_or_else(limit_exceeded)?;
@@ -207,6 +229,16 @@ impl RedbOfflineIntegrityScrub {
         session.finish_offline_integrity_scrub(structural_end, historical_end)?;
         Ok(OfflineIntegrityScrubReceiptV1 { _private: () })
     }
+}
+
+pub(crate) fn begin_follower_bootstrap_scrub(
+    store: RedbStore,
+    inputs: StartupValidationInputs,
+) -> Result<RedbStructuralEvidenceSession, StorageError> {
+    if !store.shared.is_follower_mode() {
+        return Err(invariant());
+    }
+    store.begin_structural_evidence_for(inputs, EvidenceOpenPurpose::OfflineIntegrityScrub)
 }
 // The V1 validated-prefix checkpoint permanently covers the original table set.
 // Additive tables are validated separately and never inferred from that proof.
@@ -476,6 +508,7 @@ struct PublicationAuditCache {
 
 /// One exclusive startup session bound to a single immutable redb snapshot.
 pub struct RedbStructuralEvidenceSession {
+    cancellation: Option<Arc<AtomicBool>>,
     shared: Arc<SharedRedb>,
     lease: Option<ExclusiveLease>,
     durable_commit_epoch: u64,
@@ -703,6 +736,7 @@ impl RedbStore {
                 structural_finished: false,
                 historical_finished: false,
                 authoritative_finding_seen: false,
+                cancellation: None,
                 any_finding_seen: false,
                 saw_v1_index: false,
                 validation_read: Some(transaction),
@@ -845,6 +879,7 @@ impl RedbStore {
             Err(_) => {}
         }
         Ok(RedbStructuralEvidenceSession {
+            cancellation: None,
             shared: Arc::clone(&self.shared),
             lease: Some(lease),
             durable_commit_epoch,
@@ -912,6 +947,7 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         cursor: StructuralEvidenceCursor,
         limit: EvidencePageLimit,
     ) -> Result<StructuralEvidencePage<Self::StructuralEnd>, StorageError> {
+        self.check_cancellation()?;
         if self.structural_finished || cursor != self.next_structural {
             return Err(invariant());
         }
@@ -1175,6 +1211,7 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         structural_end: Self::StructuralEnd,
         historical_end: Self::HistoricalEnd,
     ) -> Result<StructuralOpenOutcome<Self::DormantPorts, Self::MigrationPort>, StorageError> {
+        self.check_cancellation()?;
         if !self.structural_finished
             || !self.historical_finished
             || structural_end.cursor != self.next_structural
@@ -1190,6 +1227,11 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         drop(self.open_snapshot_read()?);
         let lease = self.lease.take().ok_or_else(invariant)?;
         if self.saw_v1_index {
+            if self.shared.is_follower_mode() {
+                // A follower cannot acquire a local migration writer. Its
+                // staged bootstrap must already contain the current format.
+                return Err(storage_error(StorageErrorKind::IncompatibleFormat));
+            }
             Ok(StructuralOpenOutcome::MigrationRequired(
                 RedbStartupIndexMigrationPort::new(
                     Arc::clone(&self.shared),
@@ -1276,11 +1318,47 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
 }
 
 impl RedbStructuralEvidenceSession {
+    pub(crate) fn set_cancellation(&mut self, cancellation: Arc<AtomicBool>) {
+        self.cancellation = Some(cancellation);
+    }
+
+    fn check_cancellation(&self) -> Result<(), StorageError> {
+        if self
+            .cancellation
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+        {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finish_bootstrap_catalog_preflight(
+        self,
+        historical_end: RedbHistoricalEvidenceEnd,
+    ) -> Result<(), StorageError> {
+        self.check_cancellation()?;
+        if !self.shared.is_follower_mode()
+            || self.clean_close_fast
+            || self.checkpoint_verified
+            || !self.historical_finished
+            || historical_end.cursor != self.next_historical
+            || self.saw_v1_index
+        {
+            return Err(corrupt());
+        }
+        drop(self.open_snapshot_read()?);
+        // Dropping the evidence owner releases its immutable read and lease.
+        // This path never claims structural completion or writes a checkpoint.
+        Ok(())
+    }
+
     fn finish_offline_integrity_scrub(
         mut self,
         structural_end: RedbStructuralEvidenceEnd,
         historical_end: RedbHistoricalEvidenceEnd,
     ) -> Result<(), StorageError> {
+        self.check_cancellation()?;
         if self.clean_close_fast
             || self.checkpoint_verified
             || !self.structural_finished
@@ -1302,6 +1380,7 @@ impl RedbStructuralEvidenceSession {
     }
 
     fn ensure_historical_read(&mut self) -> Result<(), StorageError> {
+        self.check_cancellation()?;
         if self.validation_read.is_none() {
             self.validation_read = Some(self.open_snapshot_read()?);
         }
@@ -7999,3 +8078,5 @@ fn value_error_as_storage(error: StorageValueError) -> StorageError {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) use tests::open_validated_follower_fixture;

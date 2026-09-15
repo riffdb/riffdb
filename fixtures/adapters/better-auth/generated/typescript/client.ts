@@ -30,6 +30,7 @@ export const APPLICATION_ERROR_REGISTRY = {
   "RDB-PROJECTION-0102": ["the requested query snapshot has been retired", "query", "correct_request", ["restart_from_first_page"]],
   "RDB-PROJECTION-0103": ["no query snapshot satisfies the requested freshness", "query", "retry", ["retry_later"]],
   "RDB-PROJECTION-0104": ["nearest query requires a compiler-owned projected source", "query", "refresh_contract", ["pin_active_module"]],
+  "RDB-REP-0101": ["operation is unavailable in follower mode", "control", "correct_request", []],
 } as const;
 
 export type ApplicationErrorCode = keyof typeof APPLICATION_ERROR_REGISTRY;
