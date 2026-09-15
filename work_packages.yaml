@@ -22480,6 +22480,16 @@ work_packages:
       backup identity and fence. A later CURRENT remains unchanged and never
       extends that prefix; a selected empty suffix stays empty. Keep the replay
       result private with its exact selection and no publication capability.
+    - Seal archive replay through a complete follower scrub and exact selection,
+      stop and restored-frontier checks. Require the persisted Offline V3 receipt
+      and incarnation before RestoreAnchor, create a fresh empty source journal at
+      the actual dual frontier, then fully scrub the source and reuse the existing
+      checksum-sealed publication boundaries. Publication reports original backup
+      and actual restored frontier separately; the server still owns staged
+      authorization, the incarnation decision and final success. Rebuild interrupted
+      private stages from the frozen receipt, resolve receipt-parent uncertainty before
+      mutation, clean all three receipt-owned unpublished target artifacts on recovery,
+      and forbid pre-receipt cleanup after V3 admission.
   human_review_triggers: *id0178
 
 - id: WP-750

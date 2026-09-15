@@ -871,7 +871,7 @@ pub(crate) fn validate_backup_journal(
     Ok(())
 }
 
-fn backup_journal_error(error: crate::journal::JournalIoError) -> StorageError {
+pub(crate) fn backup_journal_error(error: crate::journal::JournalIoError) -> StorageError {
     match error {
         crate::journal::JournalIoError::Corrupt
         | crate::journal::JournalIoError::LegacyNonEmpty(_) => corrupt(),

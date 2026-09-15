@@ -167,3 +167,89 @@ pub(super) fn read_archive_receipt_file(
         .map_err(io_unavailable)?;
     decode_archive_receipt(&bytes)
 }
+
+impl RedbMaintenanceStorage {
+    /// Publishes a separately validated/authorized archive stage only through its
+    /// exact durable Offline V3 receipt and previously persisted incarnation decision.
+    /// The server must still perform post-publication startup before reporting success.
+    pub fn publish_sealed_archive_restore(
+        &mut self,
+        sealed: crate::maintenance::RedbSealedArchiveRestore,
+    ) -> Result<riffdb_storage_api::OfflineArchiveRestorePublicationV3, StorageError> {
+        use riffdb_storage_api::OfflineArchiveRestorePublicationV3;
+        self.verify_path_ownership()?;
+        if sealed.configured_database_file() != self.database_file {
+            return Err(invariant());
+        }
+        let receipt = self
+            .read_archive_receipt(sealed.operation_id())?
+            .ok_or_else(corrupt)?;
+        let restored_frontier = sealed.restored_frontier();
+        let published_history_incarnation = receipt
+            .published_history_incarnation()
+            .ok_or_else(invariant)?;
+        let overwrite_policy = match receipt.replacement_confirmation() {
+            OfflineMaintenanceReplacementConfirmation::NotProvided => {
+                OfflineRestoreOverwritePolicyV1::RefuseNonEmpty
+            }
+            OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget => {
+                OfflineRestoreOverwritePolicyV1::ExplicitlyAllowDestructive
+            }
+        };
+        // Resolve any retained rename uncertainty before receipt-authorized mutation.
+        self.sync_archive_receipt_parent()?;
+        let sealed = sealed.stamp_and_seal(&receipt)?;
+        let result = match sealed.publish_to_configured_database(overwrite_policy)? {
+            OfflineRestoreResultV1::TargetNotEmpty => {
+                OfflineArchiveRestorePublicationV3::TargetNotEmpty
+            }
+            OfflineRestoreResultV1::Restored { manifest } => {
+                OfflineArchiveRestorePublicationV3::Published {
+                    backup_manifest: manifest,
+                    restored_frontier,
+                    published_history_incarnation,
+                }
+            }
+        };
+        self.verify_path_ownership()?;
+        Ok(result)
+    }
+}
+
+impl RedbMaintenanceStorage {
+    /// Rebuilds an admitted Offline archive candidate from its exact selected
+    /// backup. Replay must still use the receipt's selected prefix and pass full
+    /// validation and staged authorization before publication. Prior private
+    /// stage bytes do not substitute for receipt authority.
+    pub fn stage_archive_restore(
+        &mut self,
+        operation_id: OfflineMaintenanceOperationId,
+        validation_inputs: StartupValidationInputs,
+    ) -> Result<RedbStagedRestore, StorageError> {
+        self.verify_path_ownership()?;
+        let receipt = self
+            .read_archive_receipt(operation_id)?
+            .ok_or_else(corrupt)?;
+        if receipt.current_phase() != OfflineMaintenanceReceiptPhaseV1::Offline {
+            return Err(invariant());
+        }
+        let selection = receipt.selection().ok_or_else(invariant)?;
+        let directory = self.named_backup_directory(receipt.backup_name());
+        let (_, identity) = validate_immutable_backup(&directory)?;
+        if selection.backup() != &identity {
+            return Err(corrupt());
+        }
+        self.sync_archive_receipt_parent()?;
+        let stage = RedbStagedRestore::materialize(
+            operation_id,
+            receipt.backup_name().clone(),
+            directory,
+            self.staged_directory.join(operation_id.to_string()),
+            self.database_file.clone(),
+            validation_inputs,
+            self.test_controller.clone(),
+        )?;
+        self.verify_path_ownership()?;
+        Ok(stage)
+    }
+}

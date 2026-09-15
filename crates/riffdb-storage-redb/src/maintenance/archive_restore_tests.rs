@@ -400,3 +400,6 @@ fn archive_restore_retries_replay_the_frozen_prefix_after_archive_advances() {
         replayed.discard().unwrap();
     }
 }
+
+#[path = "archive_publication_tests.rs"]
+mod publication;

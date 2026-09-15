@@ -1,5 +1,9 @@
-//! Private verified-backup conversion and exact archived-frame replay. No
-//! authorization, publication, promotion or source-write capability is granted.
+//! Private verified-backup conversion and exact archived-frame replay. Publication
+//! requires a separate complete validation seal and matching durable V3 receipt.
+#[path = "archive_publication.rs"]
+mod publication;
+pub use publication::RedbSealedArchiveRestore;
+
 use super::*;
 use crate::maintenance::{RedbArchiveRepository, archive_backup::read_only_database};
 use redb::ReadableDatabase;

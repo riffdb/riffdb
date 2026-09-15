@@ -45,7 +45,8 @@ pub use failpoint::{
     RedbMaintenanceFailpoint, RedbMaintenanceTestController, RedbMaintenanceTestEvent,
 };
 pub use staged::{
-    RedbArchiveRestoreStage, RedbReplayedArchiveRestore, RedbSealedStagedRestore, RedbStagedRestore,
+    RedbArchiveRestoreStage, RedbReplayedArchiveRestore, RedbSealedArchiveRestore,
+    RedbSealedStagedRestore, RedbStagedRestore,
 };
 pub use store::{
     RedbMaintenanceOperationEvidence, RedbMaintenanceReconciliation, RedbMaintenanceStorage,

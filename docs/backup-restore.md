@@ -232,6 +232,11 @@ suffix remains empty. Ordinary create/restore V1 and retire
 V2 receipt bytes are unchanged. An unfinished V3 receipt currently refuses server
 startup; the archive recovery driver and public restore command are still being
 implemented. Recognizing a receipt does not validate or publish its replay stage.
+The storage owner can publish a separately validated and sealed replay only against
+matching durable Offline V3 evidence and its recorded incarnation. It creates an
+empty source journal at the actual restored application/administration frontier,
+validates the new source completely, and then uses the existing replacement and
+parent-sync boundaries. Pre-receipt cleanup cannot delete an admitted V3 stage.
 
 An SDK or direct API caller supplies the maintenance operation ID. After a lost
 response or process interruption, that caller retries the exact same start

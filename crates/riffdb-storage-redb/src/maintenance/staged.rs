@@ -22,7 +22,7 @@ const COPY_BUFFER_BYTES: usize = 64 * 1024;
 
 #[path = "archive_restore.rs"]
 mod archive;
-pub use archive::{RedbArchiveRestoreStage, RedbReplayedArchiveRestore};
+pub use archive::{RedbArchiveRestoreStage, RedbReplayedArchiveRestore, RedbSealedArchiveRestore};
 
 #[cfg(test)]
 #[path = "archive_restore_tests.rs"]

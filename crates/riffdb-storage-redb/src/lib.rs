@@ -258,9 +258,9 @@ pub use maintenance::{
     RedbBootstrapStage, RedbBootstrapVerification, RedbFollowerColumnarBuild,
     RedbFollowerColumnarScratch, RedbHeldBootstrapSource, RedbMaintenanceOperationEvidence,
     RedbMaintenanceReconciliation, RedbMaintenanceStorage, RedbMigrationDiskReservation,
-    RedbPublishedBootstrapCandidate, RedbReplayedArchiveRestore, RedbSealedStagedRestore,
-    RedbStagedRestore, RedbValidatedBootstrapCandidate, RedbVerifiedArchiveBackup,
-    RedbVerifiedBootstrapTransfer,
+    RedbPublishedBootstrapCandidate, RedbReplayedArchiveRestore, RedbSealedArchiveRestore,
+    RedbSealedStagedRestore, RedbStagedRestore, RedbValidatedBootstrapCandidate,
+    RedbVerifiedArchiveBackup, RedbVerifiedBootstrapTransfer,
 };
 #[doc(hidden)]
 pub use maintenance::{
