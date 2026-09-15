@@ -838,5 +838,46 @@ The consumer has no database writer, source-acknowledgement callback or command
 admission dependency. Tests cover failures before and after sink persistence,
 exact retry, overflow, reconnect, malformed frames, gaps, frontier mismatch and
 redacted diagnostics. This is an internal foundation: the concrete archive sink,
-manifest, operator configuration and offline archive restore remain unfinished.
+operator configuration and offline archive restore remain unfinished. The
+bounded external manifest codec is described below.
 No archive CLI availability or wall-clock recovery promise is implied.
+
+### External archive manifest V1
+
+ADR-0178 admits the additive `archive-manifest/v1` external format. Its linked
+records are each exactly 386 bytes and describe one complete existing V3 frame.
+They contain the database, history incarnation, leadership epoch, current catalog
+digest, original full-backup manifest digest and receipt fence, exact before and
+covered receipt points, full frame byte length and digest, preceding manifest
+digest, and an explicit encryption declaration. Receipt points retain the
+physical transaction sequence, history hash and both application/administration
+frontiers. The first record has no predecessor and begins exactly at the backup
+fence. Every successor preserves that backup binding and links to the complete
+preceding manifest bytes. This permits bounded sequential verification without
+retaining the whole archive in memory.
+
+The canonical encoding is big-endian: `RDBARM01`, version u16 `1`, database UUID
+(16 bytes), incarnation and leadership (u64 each), catalog and backup digests
+(32 bytes each), encryption and predecessor-presence tags (u8 each), predecessor
+digest (32 bytes; all zero when absent), three receipt points (58 bytes each),
+frame length (u64), frame digest (32 bytes), then SHA-256 of all preceding bytes
+(32 bytes). Each receipt point uses the existing canonical 18-byte dual frontier
+following its u64 sequence and 32-byte history hash. The linked manifest and
+frame digests cover their complete stored bytes, including checksum footers.
+Unknown versions, tags, noncanonical absence, invalid ranges, lengths, checksums
+and trailing bytes refuse before use. A frame remains subject to full V3 decoding
+and exact descriptor comparison. No V3 or BackupManifestV1 bytes change.
+
+Encryption tag `0` declares operator-permitted unencrypted storage; tag `1`
+declares operator-managed sink encryption. The descriptor performs no encryption
+and attests no external encryption enforcement. A future concrete sink must
+honor the configured posture before releasing archive bytes. Manifest decoding
+alone neither establishes backup validity nor permits restore: the repository
+must select an exact terminal record and verify the complete suffix before any
+database replacement. Filesystem publication, archive configuration and restore
+are still unfinished; no new recovery-granularity promise is made by this codec.
+
+Regenerate the four deterministic first/successor vectors for both encryption
+postures with `./scripts/generate-archive-manifest-fixtures`; `--check` verifies
+them without writing. The generator participates in `check-generated`. These
+new format vectors require the package's human fixture review before closure.
