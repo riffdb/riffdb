@@ -107,6 +107,7 @@
 - [Authoritative Changelog V3 Substrate](architecture/CHANGELOG-V3.md)
   - [WP-772 Verification Report](architecture/WP-772-VERIFICATION.md)
   - [WP-746 Verification Report](architecture/WP-746-VERIFICATION.md)
+  - [WP-747 Verification Report](architecture/WP-747-VERIFICATION.md)
   - [WP-746 Scope Review](architecture/WP-746-SCOPE-REVIEW.md)
   - [WP-746 Follower Lifecycle Review](architecture/WP-746-FOLLOWER-LIFECYCLE-REVIEW.md)
   - [WP-746 Follower Audit Proposal](architecture/WP-746-FOLLOWER-AUDIT-REVIEW.md)

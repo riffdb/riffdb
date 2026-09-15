@@ -59,7 +59,8 @@ crashes. Separate schema/presentation tests cover unknown progress, zero lag,
 the full `u64` range, malformed observations and metadata bounds. Operational
 reads use the existing bounded worker-admission wait; a deterministic
 capacity-held test proves that path without sleeps.
-The full follower freshness/provider gate remains WP-747 work in progress.
+The [WP-747 verification report](WP-747-VERIFICATION.md) records the completed
+follower freshness, provider, refusal and sequence-lag proofs.
 
 The service requires an explicit administrative `ReplicateChangelog` grant,
 rechecks current authority before each release, and is exposed only through
@@ -504,13 +505,13 @@ mutations. Their worker writes only local derived checkpoints and is joined
 during shutdown. Tokenized rebuilds scan one bounded entity partition from one
 immutable snapshot, with the exact catalog identity and application frontier
 checked before scanning. They retain the existing candidate bound and policy
-admission before constructing posting state. Columnar/vector composition and
-the complete follower freshness matrix remain open in WP-747. The
+admission before constructing posting state. The scalar/vector composition
+and freshness proofs below complete WP-747. The
 [accepted follower columnar amendment](WP-747-FOLLOWER-COLUMNAR-REVIEW.md),
 recorded in `1d910c83`, permits independently validated disposable V2 views
 from completed follower authority. It permits no local authoritative control
-write or reuse of a source checksum for different local bytes. This design is
-accepted; follower columnar serving is not yet implemented.
+write or reuse of a source checksum for different local bytes. The implemented
+worker follows this accepted boundary.
 
 The shared V2 builder now consumes a narrow immutable entity-page reader. A
 follower can supply its completed `RedbOwnedSnapshot` directly, without an
@@ -584,8 +585,8 @@ unbound legacy V1 token, before and after restart. Legacy V1 bytes and primary
 request compatibility remain intact; response readers must support V2. Frozen
 fixtures and malformed-byte tests cover both versions and exact scope checks.
 The waiter observation uses a dedicated executable under `test-fixtures`; the
-normal daemon has no probe installation path and emits no test marker. WP-747
-remains open for the final package verification and merge checks.
+normal daemon has no probe installation path and emits no test marker. The
+[verification report](WP-747-VERIFICATION.md) records package acceptance and full CI.
 
 Follower columnar health remains degraded while any admitted source is cold,
 activating or failed. Health reads do not demand a build. Deterministic worker
@@ -638,8 +639,8 @@ application routes and configured hosted MCP before its process-ready receipt.
 Follower routing accepts source-driven capability/catalog transitions and never
 enters local bootstrap. Runtime failure and read-publication withdrawal close
 admission. Shutdown drains transport, receiver custody and admitted service jobs,
-then joins the bounded read workers. WP-747 freshness/provider coverage and the
-broader WP-750 campaign remain unfinished.
+then joins the bounded read workers. WP-747 freshness/provider coverage is
+verified; the broader WP-750 campaign remains unfinished.
 
 `tests/replication_follower.rs` runs separate primary and follower `riffdbd`
 processes over verified TLS. It creates the replication capability through the

@@ -3,7 +3,8 @@
 Status: accepted 2026-09-15. The maintainer approved the exact text below in
 session: "Approve the exact amendment". Standalone acceptance commit
 `1d910c83` records it in SPEC §4.10 and ADR-0178, with the explicit qualifications
-in ADR-0192, ADR-0195 and ADR-0209. Runtime implementation remains WP-747 work.
+in ADR-0192, ADR-0195 and ADR-0209. Runtime implementation and the required
+proofs are recorded in [WP-747 verification](WP-747-VERIFICATION.md).
 
 ## Conflict established
 
@@ -118,4 +119,4 @@ standalone commit `1d910c83`. WP-747 now names the affected requirements and
 records and owns the required proofs. Its existing crate scope suffices; the
 referenced ADRs are its own records under the scope rule. All seven amendment
 acceptance checks passed, and the installed wording was compared with this exact
-review text. Implementation follows acceptance; the audit exception is unchanged.
+review text. The implementation and full CI now pass; the audit exception is unchanged.

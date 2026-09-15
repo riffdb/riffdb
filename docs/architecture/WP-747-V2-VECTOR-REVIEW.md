@@ -92,5 +92,5 @@ The maintainer's words/date and exact normative text are recorded in standalone
 acceptance commit `1b3a97fc`. The shared V2 generation builder now lowers checked
 vectors into existing Bytes lanes, restores typed cells after complete canonical
 validation, and removes vector columns from installed pruning evidence. Scalar
-bytes remain unchanged. WP-747 remains open for the complete primary/follower
-parity, freshness, restart and authoritative-namespace campaign.
+bytes remain unchanged. The completed primary/follower parity, freshness, restart
+and authoritative-namespace campaign is recorded in [WP-747 verification](WP-747-VERIFICATION.md).

@@ -21,9 +21,12 @@ contain only schema-safe, redacted fields.
 
 `RDB-REP-0101` is the registered follower-mode refusal (`follower_mode` on the
 legacy envelope), with `FAILED_PRECONDITION` transport status and
-`correct_request` recovery. Its registry and generated-client support do not
-mean follower activation is complete; see the
-[WP-746 lifecycle review](../architecture/WP-746-FOLLOWER-LIFECYCLE-REVIEW.md).
+`correct_request` recovery. Follower commands and operations requiring local
+authority return this outcome; policy-required durable read audit also refuses.
+See the [follower verification](../architecture/WP-747-VERIFICATION.md).
+Detectable scoped-token or discovery-fence history mismatches return
+`RDB-HISTORY-0101`. Unresolved opaque process-local continuations, including
+foreign or obsolete handles, return `RDB-CURSOR-0101` without releasing a page.
 
 MCP invalid arguments return a redacted diagnostic with a JSON Pointer `path`,
 a stable `code`, and an `expected` description. It never echoes the rejected

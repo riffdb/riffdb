@@ -60,8 +60,9 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 - There is no general SQL surface, arbitrary transaction callback, analytical
   join engine, distributed transaction, failover, or consensus. WP-746 implements
   the administrative V3 stream, staged bootstrap, follower daemon and repeated
-  crash proofs, verified through full CI. Follower freshness and
-  lag reporting are WP-747; promotion is WP-748 and archives are WP-749.
+  crash proofs, verified through full CI. WP-747 adds verified follower reads,
+  freshness and sequence-lag reporting. Promotion remains WP-748 work and
+  archives remain WP-749 work.
 - Compiler-sealed command decisions support bounded branch-local entity field
   assignments, embeddings, creates, and durable events. Workflow transition
   and lease instructions retain their existing dedicated command forms and are

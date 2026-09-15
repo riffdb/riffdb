@@ -382,8 +382,8 @@ and denied-read telemetry.
 
 The daemon process tests compare every authoritative namespace under the
 app-baseline workload and resume across repeated source and follower crashes.
-WP-746 passes its full CI gate. WP-747 owns the remaining
-follower freshness modes and complete projection-provider coverage.
+WP-746 and [WP-747](architecture/WP-747-VERIFICATION.md) pass their full CI
+gates, including follower freshness, provider equality and sequence-lag reporting.
 
 Follower named queries can use the existing exact-text, exact-predicate,
 tokenized-text and long-pattern providers. Their local checkpoints live under
@@ -391,5 +391,16 @@ the configured `projections_root` and remain rebuildable. Background workers
 read only completed follower snapshots; the applied application frontier is
 their local head for minimum-commit and AdmissionHead checks. A provider that
 has not caught up returns the existing typed freshness or availability refusal.
-Columnar and vector follower providers remain part of the unfinished WP-747
-work.
+Configured scalar and vector columnar sources stay cold until demand. One owned
+worker builds independently validated disposable V2 views under
+`projections_root/follower-columnar`; no source artifact is required and no local
+authoritative control is written. Cold or activating sources return the existing
+typed Building/unavailable outcome and keep columnar health degraded. Failed
+materialization remains closed until owned recovery or restart; a request cannot
+clear failure. Restart rebuilds these disposable views from the completed prefix.
+
+Projected reads retain [Causal, Bounded and Available](concepts/CONSISTENCY.md)
+semantics using the applied local head. Replication source-head observations only
+report lag. Foreign database/history tokens refuse before waiting, and opaque
+cursors are local to one live process. See
+[sequence-lag health and statistics](operations/REMOTE-INGRESS.md) for both-node reporting.
