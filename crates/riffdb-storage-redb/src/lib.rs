@@ -255,10 +255,10 @@ pub use maintenance::{
     RedbBootstrapCandidate, RedbBootstrapCatalogSession, RedbBootstrapMaterializationInput,
     RedbBootstrapMaterializer, RedbBootstrapReceiverRepository, RedbBootstrapRepository,
     RedbBootstrapSourceBuild, RedbBootstrapStage, RedbBootstrapVerification,
-    RedbHeldBootstrapSource, RedbMaintenanceOperationEvidence, RedbMaintenanceReconciliation,
-    RedbMaintenanceStorage, RedbMigrationDiskReservation, RedbPublishedBootstrapCandidate,
-    RedbSealedStagedRestore, RedbStagedRestore, RedbValidatedBootstrapCandidate,
-    RedbVerifiedBootstrapTransfer,
+    RedbFollowerColumnarBuild, RedbFollowerColumnarScratch, RedbHeldBootstrapSource,
+    RedbMaintenanceOperationEvidence, RedbMaintenanceReconciliation, RedbMaintenanceStorage,
+    RedbMigrationDiskReservation, RedbPublishedBootstrapCandidate, RedbSealedStagedRestore,
+    RedbStagedRestore, RedbValidatedBootstrapCandidate, RedbVerifiedBootstrapTransfer,
 };
 #[doc(hidden)]
 pub use maintenance::{
