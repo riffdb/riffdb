@@ -14,6 +14,8 @@ use crate::{
 /// Value-free archive failures. No keys, payloads, paths or checksums are exposed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ArchiveConsumerErrorV1 {
+    /// The external archive descriptor is corrupt, noncanonical or inconsistent.
+    InvalidManifest,
     /// The frame is malformed, corrupt, noncanonical or over its hard bound.
     InvalidFrame,
     /// Database, incarnation or leadership differs from the archive binding.
@@ -28,6 +30,7 @@ pub enum ArchiveConsumerErrorV1 {
 impl fmt::Display for ArchiveConsumerErrorV1 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            Self::InvalidManifest => "invalid archive manifest",
             Self::InvalidFrame => "invalid archive frame",
             Self::ForeignLineage => "archive lineage mismatch",
             Self::InvalidPosition => "archive position mismatch",

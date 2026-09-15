@@ -142,6 +142,61 @@
       "manifest_scalar_assertions": {"alpha_epoch":1,"writer":1,"minimum_supported_source_release":"0.1.0-pre-format-manifest","maximum_supported_source_release":"0.1.0"}
     },
     {
+      "id": "durable.archive_manifest",
+      "title": "External linked archive manifests",
+      "classification": "durable",
+      "owner": "riffdb-storage-api",
+      "source_assertions": [
+        {
+          "kind": "literal",
+          "path": "crates/riffdb-storage-api/src/archive_manifest.rs",
+          "literal": "\"archive-manifest/v1\""
+        },
+        {
+          "kind": "literal",
+          "path": "crates/riffdb-storage-api/src/archive_manifest.rs",
+          "literal": "b\"RDBARM01\""
+        }
+      ],
+      "readable_identities": [
+        "1"
+      ],
+      "writable_identities": [
+        "1"
+      ],
+      "current_identities": [
+        "1"
+      ],
+      "writer_policy": "single_current",
+      "compatibility_rule": "Each fixed-size V1 record binds one complete V3 frame, its exact before/covered receipt points, source lineage/catalog, unchanged original full-backup fence and manifest digest, encryption declaration, and the complete predecessor manifest digest. Unknown or noncanonical bytes fail closed. Repository selection and complete-chain verification are required separately.",
+      "breaking_when": "V1 magic, size, fields, checksums, predecessor binding, policy tags or hard bounds change.",
+      "supported_release_posture": "The bounded linked-record codec is implemented under ADR-0178/WP-749; filesystem or remote publication, operator configuration and archive restore remain unfinished. No archive CLI or encryption implementation is implied.",
+      "lifecycle": {
+        "active": [
+          "1"
+        ],
+        "read_only": [],
+        "retirement_candidate": [],
+        "retired": []
+      },
+      "reserved_identity_policy": "Published archive manifest versions and encryption posture tags are never reused.",
+      "evidence": [
+        "fixtures/replication/archive-manifest-v1-unencrypted-3.hex",
+        "fixtures/replication/archive-manifest-v1-unencrypted-5.hex",
+        "fixtures/replication/archive-manifest-v1-operator-managed-3.hex",
+        "fixtures/replication/archive-manifest-v1-operator-managed-5.hex",
+        "crates/riffdb-storage-api/tests/archive_manifest.rs"
+      ],
+      "checks": [
+        "./scripts/check-version-topology",
+        "./scripts/generate-archive-manifest-fixtures"
+      ],
+      "last_change": {
+        "classification": "new_domain_identity",
+        "decision": "ADR-0178/WP-749 admitted additive archive-manifest/v1"
+      }
+    },
+    {
       "id": "durable.authoritative_state_catalog",
       "title": "Closed authoritative catalog root",
       "classification": "durable",

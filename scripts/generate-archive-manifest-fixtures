@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+cargo run --quiet --locked -p riffdb-storage-api --example generate_archive_manifest_fixtures -- "$@"
