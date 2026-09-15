@@ -389,6 +389,31 @@ fn finish_structural(session: &mut RedbStructuralEvidenceSession) -> RedbStructu
     end
 }
 
+/// Complete startup proof join for physical follower maintenance fixtures.
+/// Catalog-driver ownership remains inside the startup test boundary.
+pub(crate) fn open_validated_follower_fixture(
+    path: &std::path::Path,
+    inputs: StartupValidationInputs,
+) -> crate::RedbFollowerApplier {
+    let mut session = crate::RedbFollowerStore::open(path)
+        .unwrap()
+        .begin_structural_evidence(inputs)
+        .unwrap();
+    let structural_end = finish_structural(&mut session);
+    let (catalog, historical_end) = validate_catalog_history(&mut session).unwrap().into_parts();
+    let CatalogHistoryOutcome::Ready(catalog) = catalog else {
+        panic!("invalid fixture catalog");
+    };
+    let StructuralOpenOutcome::Clean(opened) =
+        session.finish(structural_end, historical_end).unwrap()
+    else {
+        panic!("invalid fixture structure");
+    };
+    let (database, session_id, _, dormant) = opened.into_parts();
+    assert!(catalog.matches(database, session_id));
+    dormant.into_follower_after_catalog_validation().unwrap()
+}
+
 fn finish_historical(session: &mut RedbStructuralEvidenceSession) -> RedbHistoricalEvidenceEnd {
     let (end, evidence, _) = collect_historical(session, 1);
     assert!(

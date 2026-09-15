@@ -120,6 +120,8 @@ pub enum CapabilityPermissionKindV1 {
     InstallApplication,
     /// Inspect one exact compiler-declared vector field.
     InspectVectorState,
+    /// Replicate complete authoritative changelog bytes; administrative only.
+    ReplicateChangelog,
 }
 
 impl CapabilityPermissionKindV1 {
@@ -159,6 +161,7 @@ impl CapabilityPermissionKindV1 {
             Self::ConsumeContextualSubscription => 0x1e,
             Self::InstallApplication => 0x1f,
             Self::InspectVectorState => 0x20,
+            Self::ReplicateChangelog => 0x21,
         }
     }
 
@@ -198,6 +201,7 @@ impl CapabilityPermissionKindV1 {
             0x1e => Some(Self::ConsumeContextualSubscription),
             0x1f => Some(Self::InstallApplication),
             0x20 => Some(Self::InspectVectorState),
+            0x21 => Some(Self::ReplicateChangelog),
             _ => None,
         }
     }
@@ -1259,6 +1263,15 @@ impl CapabilityGrantV1 {
         {
             return Err(CapabilityGrantError::LimitExceeded);
         }
+        // Replication contains the complete unredacted database. A scoped or
+        // role-derived capability cannot carry this administrative authority.
+        if permissions.contains_kind(CapabilityPermissionKindV1::ReplicateChangelog)
+            && (tenant_scope != TenantScope::Global
+                || partition_scope != PartitionScopeV1::All
+                || permissions.contains_kind(CapabilityPermissionKindV1::ApplicationRoleIdentity))
+        {
+            return Err(CapabilityGrantError::InvalidShape);
+        }
         let unchecked_grant_size = capability_grant_semantic_bytes_parts(
             &tenant_scope,
             &partition_scope,
@@ -1760,13 +1773,41 @@ mod tests {
     use super::*;
 
     #[test]
+    // req: REP-003
+    fn replication_permission_cannot_be_bound_to_an_application_role() {
+        let kind = CapabilityPermissionKindV1::from_tag(0x21)
+            .expect("replication has a dedicated administrative permission");
+        let replication = CapabilityPermissionV1::unparameterized(kind).expect("permission");
+        let grant = |permissions| {
+            CapabilityGrantV1::new(
+                TenantScope::Global,
+                PartitionScopeV1::All,
+                CapabilityPermissionsV1::new(permissions).expect("canonical permissions"),
+                Vec::new(),
+                NonZeroU16::new(1).expect("bound"),
+                Vec::new(),
+            )
+        };
+        assert!(grant(vec![replication.clone()]).is_ok());
+        assert_eq!(
+            grant(vec![
+                replication,
+                CapabilityPermissionV1::ApplicationRoleIdentity(ApplicationRoleHash::from_bytes(
+                    [0x42; 32],
+                )),
+            ]),
+            Err(CapabilityGrantError::InvalidShape)
+        );
+    }
+
+    #[test]
     fn permission_tags_are_closed_and_stable() {
-        for tag in 1..=32 {
+        for tag in 1..=33 {
             let kind = CapabilityPermissionKindV1::from_tag(tag).expect("known tag");
             assert_eq!(kind.tag(), tag);
         }
         assert_eq!(CapabilityPermissionKindV1::from_tag(0), None);
-        assert_eq!(CapabilityPermissionKindV1::from_tag(33), None);
+        assert_eq!(CapabilityPermissionKindV1::from_tag(34), None);
     }
 
     #[test]
@@ -1954,7 +1995,7 @@ mod tests {
         let query_name = QueryOperationName::new("TicketPage").expect("query name");
         let reactive_module = ReactiveModuleHash::from_bytes([4; 32]);
         let reactive_name = ReactiveOperationName::new("TicketActivity").expect("reactive name");
-        let mut values = (1..=32)
+        let mut values = (1..=33)
             .filter_map(CapabilityPermissionKindV1::from_tag)
             .filter_map(|kind| CapabilityPermissionV1::unparameterized(kind).ok())
             .collect::<Vec<_>>();

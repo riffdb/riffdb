@@ -7,6 +7,9 @@
 //! outcome algebra without retaining untrusted diagnostic text or internal
 //! error sources.
 
+mod replication;
+pub use replication::ReplicationStreamErrorV3;
+
 use std::error::Error;
 use std::fmt;
 
@@ -127,10 +130,12 @@ pub enum ApplicationErrorCode {
     FreshnessUnsatisfied,
     /// A retained nearest plan predates the required compiler-owned source declaration.
     ProjectedSourceRequired,
+    /// This node is a follower and cannot execute a write operation.
+    FollowerMode,
 }
 
 /// Complete v1 application error code registry in stable wire order.
-pub const APPLICATION_ERROR_CODES: [ApplicationErrorCode; 25] = [
+pub const APPLICATION_ERROR_CODES: [ApplicationErrorCode; 26] = [
     ApplicationErrorCode::InvalidRequest,
     ApplicationErrorCode::InputInvalid,
     ApplicationErrorCode::AuthorizationDenied,
@@ -156,6 +161,7 @@ pub const APPLICATION_ERROR_CODES: [ApplicationErrorCode; 25] = [
     ApplicationErrorCode::SnapshotRetired,
     ApplicationErrorCode::FreshnessUnsatisfied,
     ApplicationErrorCode::ProjectedSourceRequired,
+    ApplicationErrorCode::FollowerMode,
 ];
 
 impl ApplicationErrorCode {
@@ -175,6 +181,7 @@ impl ApplicationErrorCode {
             PublicErrorKind::HistoryIncarnationMismatch => Self::HistoryIncarnationMismatch,
             PublicErrorKind::HistoryPruned => Self::HistoryPruned,
             PublicErrorKind::Overloaded => Self::Overloaded,
+            PublicErrorKind::FollowerMode => Self::FollowerMode,
         }
     }
 
@@ -207,6 +214,7 @@ impl ApplicationErrorCode {
             Self::SnapshotRetired => "RDB-PROJECTION-0102",
             Self::FreshnessUnsatisfied => "RDB-PROJECTION-0103",
             Self::ProjectedSourceRequired => "RDB-PROJECTION-0104",
+            Self::FollowerMode => "RDB-REP-0101",
         }
     }
 
@@ -237,6 +245,7 @@ impl ApplicationErrorCode {
             Self::HistoryIncarnationMismatch => "observed history predates a database restore",
             Self::HistoryPruned => "requested history has been pruned",
             Self::Overloaded => "service is over capacity",
+            Self::FollowerMode => "operation is unavailable in follower mode",
             Self::ProjectionDiverged => "query projections cannot prove one common snapshot",
             Self::SnapshotRetired => "the requested query snapshot has been retired",
             Self::FreshnessUnsatisfied => "no query snapshot satisfies the requested freshness",
@@ -266,7 +275,9 @@ impl ApplicationErrorCode {
             Self::ResponseTooLarge => ApplicationErrorCategory::Resource,
             Self::StorageUnavailable => ApplicationErrorCategory::Storage,
             Self::OutcomeUnknown => ApplicationErrorCategory::Uncertainty,
-            Self::OperationCancelled | Self::DeadlineExceeded => ApplicationErrorCategory::Control,
+            Self::OperationCancelled | Self::DeadlineExceeded | Self::FollowerMode => {
+                ApplicationErrorCategory::Control
+            }
             Self::InternalDefect => ApplicationErrorCategory::Internal,
             Self::IdempotencyKeyReuse | Self::CommandExecutionFailed => {
                 ApplicationErrorCategory::Command
@@ -291,7 +302,8 @@ impl ApplicationErrorCode {
             | Self::IdempotencyKeyReuse
             | Self::HistoryIncarnationMismatch
             | Self::HistoryPruned
-            | Self::SnapshotRetired => ApplicationRecoveryAction::CorrectRequest,
+            | Self::SnapshotRetired
+            | Self::FollowerMode => ApplicationRecoveryAction::CorrectRequest,
             Self::ProjectedSourceRequired => ApplicationRecoveryAction::RefreshContract,
             Self::AuthorizationDenied | Self::CapabilityRevoked => {
                 ApplicationRecoveryAction::ObtainPermission
@@ -341,7 +353,10 @@ impl ApplicationErrorCode {
             | Self::FreshnessUnsatisfied => &[ApplicationFixCode::RetryLater],
             Self::OutcomeUnknown => &[ApplicationFixCode::ResolveWithSameIdempotencyKey],
             Self::InternalDefect => &[ApplicationFixCode::ContactOperatorWithIncident],
-            Self::OperationCancelled | Self::CommandExecutionFailed | Self::ProtocolInvalid => &[],
+            Self::OperationCancelled
+            | Self::CommandExecutionFailed
+            | Self::ProtocolInvalid
+            | Self::FollowerMode => &[],
         }
     }
 }
@@ -905,6 +920,8 @@ pub enum PublicErrorKind {
     HistoryPruned,
     /// The service is over capacity and rejected admission.
     Overloaded,
+    /// This node is a follower and cannot execute a write operation.
+    FollowerMode,
 }
 
 impl PublicErrorKind {
@@ -924,6 +941,7 @@ impl PublicErrorKind {
             Self::HistoryIncarnationMismatch => "history_incarnation_mismatch",
             Self::HistoryPruned => "history_pruned",
             Self::Overloaded => "overloaded",
+            Self::FollowerMode => "follower_mode",
         }
     }
 
@@ -943,6 +961,7 @@ impl PublicErrorKind {
             Self::HistoryIncarnationMismatch => "observed history predates a database restore",
             Self::HistoryPruned => "requested history has been pruned",
             Self::Overloaded => "service is over capacity",
+            Self::FollowerMode => "operation is unavailable in follower mode",
         }
     }
 
@@ -954,9 +973,10 @@ impl PublicErrorKind {
             Self::IdempotencyKeyReuse => ErrorClass::Conflict,
             Self::AuthorizationDenied => ErrorClass::PermissionDenied,
             Self::ConcurrencyDeadlineExceeded => ErrorClass::DeadlineExceeded,
-            Self::ContractMismatch | Self::HistoryIncarnationMismatch | Self::HistoryPruned => {
-                ErrorClass::FailedPrecondition
-            }
+            Self::ContractMismatch
+            | Self::HistoryIncarnationMismatch
+            | Self::HistoryPruned
+            | Self::FollowerMode => ErrorClass::FailedPrecondition,
             Self::StorageUnavailable | Self::Overloaded => ErrorClass::Unavailable,
             Self::OutcomeUnknown => ErrorClass::Uncertain,
             Self::InternalDefect => ErrorClass::Internal,
@@ -983,7 +1003,8 @@ impl PublicErrorKind {
             Self::ContractMismatch
             | Self::CommandExecutionFailed
             | Self::HistoryIncarnationMismatch
-            | Self::HistoryPruned => PublicErrorStatusCode::FailedPrecondition,
+            | Self::HistoryPruned
+            | Self::FollowerMode => PublicErrorStatusCode::FailedPrecondition,
             Self::StorageUnavailable => PublicErrorStatusCode::Unavailable,
             Self::Overloaded => PublicErrorStatusCode::ResourceExhausted,
             Self::OutcomeUnknown => PublicErrorStatusCode::Unknown,
@@ -998,7 +1019,8 @@ impl PublicErrorKind {
             Self::Validation
             | Self::IdempotencyKeyReuse
             | Self::HistoryIncarnationMismatch
-            | Self::HistoryPruned => RecoveryAction::CorrectRequest,
+            | Self::HistoryPruned
+            | Self::FollowerMode => RecoveryAction::CorrectRequest,
             Self::AuthorizationDenied => RecoveryAction::ObtainPermission,
             Self::ConcurrencyDeadlineExceeded | Self::StorageUnavailable | Self::Overloaded => {
                 RecoveryAction::Retry
@@ -1357,6 +1379,12 @@ impl PublicError {
         Self::contextless(PublicErrorKind::HistoryPruned)
     }
 
+    /// Creates the typed follower-mode refusal before any write is admitted.
+    #[must_use]
+    pub const fn follower_mode() -> Self {
+        Self::contextless(PublicErrorKind::FollowerMode)
+    }
+
     /// Creates an overload / capacity rejection failure.
     #[must_use]
     pub const fn overloaded() -> Self {
@@ -1413,6 +1441,7 @@ impl PublicError {
             }
             PublicErrorKind::HistoryPruned => code == ApplicationErrorCode::HistoryPruned,
             PublicErrorKind::Overloaded => code == ApplicationErrorCode::Overloaded,
+            PublicErrorKind::FollowerMode => code == ApplicationErrorCode::FollowerMode,
         };
         if !compatible {
             return Err(ApplicationErrorHintError);
@@ -1566,7 +1595,7 @@ mod tests {
 
     use super::*;
 
-    const KINDS: [PublicErrorKind; 12] = [
+    const KINDS: [PublicErrorKind; 13] = [
         PublicErrorKind::Validation,
         PublicErrorKind::IdempotencyKeyReuse,
         PublicErrorKind::AuthorizationDenied,
@@ -1579,6 +1608,7 @@ mod tests {
         PublicErrorKind::HistoryIncarnationMismatch,
         PublicErrorKind::HistoryPruned,
         PublicErrorKind::Overloaded,
+        PublicErrorKind::FollowerMode,
     ];
 
     const VALIDATION_CODES: [ValidationCode; 8] = [
@@ -1748,13 +1778,19 @@ mod tests {
                 ErrorClass::Unavailable,
                 RecoveryAction::Retry,
             ),
+            (
+                "follower_mode",
+                "operation is unavailable in follower mode",
+                ErrorClass::FailedPrecondition,
+                RecoveryAction::CorrectRequest,
+            ),
         ];
 
-        assert_eq!(KINDS.len(), 12);
+        assert_eq!(KINDS.len(), 13);
         assert_eq!(KINDS[9], PublicErrorKind::HistoryIncarnationMismatch);
         assert_eq!(KINDS[10], PublicErrorKind::HistoryPruned);
         assert_eq!(KINDS[11], PublicErrorKind::Overloaded);
-        assert_eq!(APPLICATION_ERROR_CODES.len(), 25);
+        assert_eq!(APPLICATION_ERROR_CODES.len(), 26);
         assert_eq!(
             APPLICATION_ERROR_CODES[18],
             ApplicationErrorCode::HistoryIncarnationMismatch
@@ -1809,6 +1845,7 @@ mod tests {
             PublicErrorStatusCode::FailedPrecondition,
             PublicErrorStatusCode::FailedPrecondition,
             PublicErrorStatusCode::ResourceExhausted,
+            PublicErrorStatusCode::FailedPrecondition,
         ];
         for (kind, expected_code) in KINDS.into_iter().zip(expected) {
             assert_eq!(kind.status_code(), expected_code);

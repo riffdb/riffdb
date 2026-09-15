@@ -3,7 +3,9 @@
 //! These are internal storage contracts, not application command inputs. The
 //! coordinator remains the only owner of authoritative mutation and ordering.
 
+mod bootstrap;
 mod cursor;
+mod follower;
 mod frame;
 mod history;
 mod leadership;
@@ -13,8 +15,17 @@ mod receipt_codec;
 mod sequence;
 mod source_hold;
 mod state_cursor;
+mod stream;
 
+pub use bootstrap::{
+    MAX_REPLICATION_BOOTSTRAP_BYTES, MAX_REPLICATION_BOOTSTRAP_PAGE_BYTES,
+    MAX_REPLICATION_BOOTSTRAP_PAGE_ROWS, MAX_REPLICATION_BOOTSTRAP_PAGES,
+    MAX_REPLICATION_BOOTSTRAP_PROGRESS_BYTES, ReplicationBootstrapFenceV3,
+    ReplicationBootstrapManifestV1, ReplicationBootstrapPageCursorV3, ReplicationBootstrapPageV3,
+    ReplicationBootstrapProgressV1, ReplicationBootstrapTranscriptV3,
+};
 pub use cursor::{ChangelogCursorErrorV3, ChangelogReceiptCursorV3};
+pub use follower::ChangelogFollowerApplyPortV3;
 pub use frame::{ChangelogFrameBindingV3, ChangelogFrameV3};
 pub use history::{
     ChangelogHistoryPointV3, ChangelogHistoryStateV3, ChangelogLineageV3,
@@ -32,6 +43,10 @@ pub use source_hold::{
 };
 pub use state_cursor::{
     AuthoritativeStateCursorV3, AuthoritativeStateRowV3, AuthoritativeStateStepV3,
+};
+pub use stream::{
+    ChangelogFrameCursorV3, EmittedChangelogFrameV3, ReplicationHandshakeV3,
+    ReplicationStreamErrorV3,
 };
 
 /// A bounded, value-free V3 refusal. Never includes keys, values or hashes.

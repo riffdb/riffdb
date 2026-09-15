@@ -24,7 +24,7 @@ futures-util = { version = "=0.3.33", default-features = false, features = ["asy
 getrandom = { version = "=0.3.4", default-features = false }
 riffdb-auth = { version = "0.1.0", path = "../riffdb-auth", default-features = false }
 riffdb-api-mcp = { version = "0.1.0", path = "../riffdb-api-mcp", default-features = false, features = ["streamable-http"] }
-riffdb-api-grpc = { version = "0.1.0", path = "../riffdb-api-grpc", default-features = false, features = ["server"] }
+riffdb-api-grpc = { version = "0.1.0", path = "../riffdb-api-grpc", default-features = false, features = ["server", "client"] }
 riffdb-application = { version = "0.1.0", path = "../riffdb-application", default-features = false }
 riffdb-catalog = { version = "0.1.0", path = "../riffdb-catalog", default-features = false }
 riffdb-columnar = { version = "0.1.0", path = "../riffdb-columnar", default-features = false }
@@ -58,10 +58,13 @@ tower-service = { version = "=0.3.3", default-features = false }
 zeroize = { version = "=1.8.1", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
+riffdb-app-baseline-core = { version = "0.1.0", path = "../../examples/app-baseline/core", default-features = false }
+riffdb-ticketdesk = { version = "0.1.0", path = "../../examples/ticketdesk", default-features = false }
+riffdb-invariant = { version = "0.1.0", path = "../riffdb-invariant", default-features = false }
+riffdb-proto = { version = "0.1.0", path = "../riffdb-proto", default-features = false }
 riffdb-client-rust = { version = "0.1.0", path = "../riffdb-client-rust", default-features = false }
 riffdb-commit = { version = "0.1.0", path = "../riffdb-commit", default-features = false, features = ["test-fixtures"] }
 riffdb-contract-compiler = { version = "0.1.0", path = "../riffdb-contract-compiler", default-features = false }
-riffdb-proto = { version = "0.1.0", path = "../riffdb-proto", default-features = false }
 riffdb-storage-redb = { version = "0.1.0", path = "../riffdb-storage-redb", default-features = false, features = ["test-fixtures"] }
 riffdb-testkit = { version = "0.1.0", path = "../riffdb-testkit", default-features = false }
 riffdb-testkit-server = { version = "0.1.0", path = "../riffdb-testkit-server", default-features = false }
@@ -91,6 +94,10 @@ path = "../../tests/server_configuration/server_configuration.rs"
 [[test]]
 name = "writer_fail_fast"
 path = "../../tests/writer_fail_fast.rs"
+
+[[test]]
+name = "replication_follower"
+path = "../../tests/replication_follower.rs"
 
 [[bin]]
 name = "riffdbd"

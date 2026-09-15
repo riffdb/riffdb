@@ -1182,6 +1182,10 @@ impl CapabilityBootstrapIntentV1 {
         start: BootstrapServiceAuditStartV1,
     ) -> Result<Self, StorageValueError> {
         if requested.actor_kind != ActorKind::Human
+            || requested
+                .grant
+                .permissions()
+                .contains_kind(CapabilityPermissionKindV1::ReplicateChangelog)
             || !requested
                 .grant
                 .permissions()

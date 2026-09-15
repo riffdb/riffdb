@@ -11,6 +11,7 @@ default = []
 test-fixtures = []
 
 [dependencies]
+riffdb-errors = { version = "0.1.0", path = "../riffdb-errors", default-features = false }
 prost = { version = "0.14.4", default-features = false, features = ["std"] }
 riffdb-contract-ir = { version = "0.1.0", path = "../riffdb-contract-ir" }
 riffdb-proto = { version = "0.1.0", path = "../riffdb-proto" }

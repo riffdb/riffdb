@@ -295,6 +295,27 @@ pub const RECOVERY_SCENARIOS: &[RecoveryScenario] = &[
         "Closed projection hook proves new-generation publication is atomic.",
     ),
     scenario(
+        "replication.applier.crash",
+        RecoveryEvidenceKind::DedicatedCrashChild,
+        "cargo test -p riffdb-storage-redb --lib follower_process_crashes_preserve_whole_frames_and_exact_retry_positions",
+        "REP-002,REP-003,REC-001",
+        "Native process exits at receipt, roots and committed edges; whole-frame rollback or durability and exact read-only retries are checked after reopen.",
+    ),
+    scenario(
+        "replication.bootstrap.crash",
+        RecoveryEvidenceKind::IntegratedRiffdbd,
+        "cargo test -p riffdb-server --test replication_follower bootstrap_to_tail_fence_is_gap_free_across_crash",
+        "REP-002,REP-003,REC-001",
+        "Two source and two receiver crashes preserve the exact bootstrap fence and all authoritative bytes; foreign incarnation refuses before gap-free tail attachment.",
+    ),
+    scenario(
+        "replication.stream.kill-riffdbd",
+        RecoveryEvidenceKind::IntegratedRiffdbd,
+        "cargo test -p riffdb-server --test replication_follower replication_stream_resumes_gap_free_after_repeated_kills",
+        "REP-002,REP-003,REC-001",
+        "Three mid-workload process kills resume at the exact durable position; four completely validated prefixes match the independent all-namespace oracle.",
+    ),
+    scenario(
         "startup.initialization.after-engine-commit",
         RecoveryEvidenceKind::DedicatedCrashChild,
         "cargo test -p riffdb-storage-redb --test storage_recovery_matrix",

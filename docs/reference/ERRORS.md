@@ -19,6 +19,12 @@ input, unauthenticated or unauthorized access, conflict, incompatible contract,
 resource limit, unavailable service, deadline, and unresolved outcome. Details
 contain only schema-safe, redacted fields.
 
+`RDB-REP-0101` is the registered follower-mode refusal (`follower_mode` on the
+legacy envelope), with `FAILED_PRECONDITION` transport status and
+`correct_request` recovery. Its registry and generated-client support do not
+mean follower activation is complete; see the
+[WP-746 lifecycle review](../architecture/WP-746-FOLLOWER-LIFECYCLE-REVIEW.md).
+
 MCP invalid arguments return a redacted diagnostic with a JSON Pointer `path`,
 a stable `code`, and an `expected` description. It never echoes the rejected
 value. See [Application Errors](../getting-started/APPLICATION-ERRORS.md) for

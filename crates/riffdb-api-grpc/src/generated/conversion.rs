@@ -6151,6 +6151,9 @@ fn capability_permission_from_proto(
         Permission::InspectVectorState(_) => {
             unparameterized(CapabilityPermissionKindV1::InspectVectorState)
         }
+        Permission::ReplicateChangelog(_) => {
+            unparameterized(CapabilityPermissionKindV1::ReplicateChangelog)
+        }
         Permission::InvokeCommand(value) => {
             let (lineage, id) = lineage_scoped_id(value)?;
             Ok(CapabilityPermissionV1::InvokeCommand(
@@ -6380,6 +6383,9 @@ fn capability_permission_kind_from_proto(value: i32) -> Result<CapabilityPermiss
         }
         v1::CapabilityPermissionKind::InspectVectorState => {
             Ok(CapabilityPermissionKindV1::InspectVectorState)
+        }
+        v1::CapabilityPermissionKind::ReplicateChangelog => {
+            Ok(CapabilityPermissionKindV1::ReplicateChangelog)
         }
         v1::CapabilityPermissionKind::Unspecified => Err(invalid_request()),
     }

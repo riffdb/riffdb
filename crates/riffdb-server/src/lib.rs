@@ -49,6 +49,9 @@ mod read_adapters;
 #[cfg(test)]
 mod real_storage_support;
 mod recovery_host;
+pub mod replication_bootstrap;
+pub mod replication_publication;
+mod replication_source;
 mod restore_retry_host;
 mod runtime_support;
 mod server_generation;
@@ -75,3 +78,6 @@ pub mod test_fixtures {
         crate::daemon::riffdbd_test_fixture_main(point)
     }
 }
+
+/// Verified administrative source connection used by follower composition.
+pub use daemon::replication_peer::VerifiedReplicationPeer;

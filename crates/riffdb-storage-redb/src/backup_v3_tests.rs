@@ -632,7 +632,14 @@ fn actual_watermark_process_crashes_preserve_whole_receipts_and_idempotent_retri
         for _ in 0..2 {
             stamp_retention_watermark(&path, 0).unwrap();
             assert_eq!(image(&Database::open(&path).unwrap()), after);
-            drop(crate::RedbStore::open(&path).unwrap());
+            // This restore fixture deliberately retains attached follower
+            // metadata. ADR-0186 amendment 2 forbids interpreting it as a
+            // source-mode database; refusal must also preserve the crash image.
+            assert_eq!(
+                crate::RedbStore::open(&path).err().unwrap().kind(),
+                StorageErrorKind::InvariantViolation
+            );
+            assert_eq!(image(&Database::open(&path).unwrap()), after);
         }
     }
 }

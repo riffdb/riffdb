@@ -131,6 +131,7 @@ pub fn public_error_from_proto(
             DomainPublicError::history_incarnation_mismatch()
         }
         (DomainKind::HistoryPruned, None) => DomainPublicError::history_pruned(),
+        (DomainKind::FollowerMode, None) => DomainPublicError::follower_mode(),
         (DomainKind::Overloaded, None) => DomainPublicError::overloaded(),
         _ => return Err(PublicErrorWireError::InconsistentBoundary),
     };
@@ -216,6 +217,7 @@ const fn proto_kind(kind: DomainKind) -> v1::PublicErrorKind {
         DomainKind::CommandExecutionFailed => v1::PublicErrorKind::CommandExecutionFailed,
         DomainKind::HistoryIncarnationMismatch => v1::PublicErrorKind::HistoryIncarnationMismatch,
         DomainKind::HistoryPruned => v1::PublicErrorKind::HistoryPruned,
+        DomainKind::FollowerMode => v1::PublicErrorKind::FollowerMode,
         DomainKind::Overloaded => v1::PublicErrorKind::Overloaded,
     }
 }
@@ -237,6 +239,7 @@ fn domain_kind(value: i32) -> Result<DomainKind, PublicErrorWireError> {
             Ok(DomainKind::HistoryIncarnationMismatch)
         }
         Ok(v1::PublicErrorKind::HistoryPruned) => Ok(DomainKind::HistoryPruned),
+        Ok(v1::PublicErrorKind::FollowerMode) => Ok(DomainKind::FollowerMode),
         Ok(v1::PublicErrorKind::Overloaded) => Ok(DomainKind::Overloaded),
         Ok(v1::PublicErrorKind::Unspecified) | Err(_) => Err(PublicErrorWireError::UnknownKind),
     }

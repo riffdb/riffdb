@@ -91,9 +91,17 @@ impl ReplicationSourceHoldV1 {
     /// Canonical fixed-size key, repeated in the durable value to detect substitution.
     #[must_use]
     pub fn storage_key(self) -> [u8; 17] {
+        Self::storage_key_for(self.id, self.kind)
+    }
+    /// Canonical lookup key without inventing a lineage or fence for a probe.
+    #[must_use]
+    pub fn storage_key_for(
+        id: ReplicationSourceHoldIdV1,
+        kind: ReplicationSourceHoldKindV1,
+    ) -> [u8; 17] {
         let mut key = [0; 17];
-        key[0] = self.kind as u8;
-        key[1..].copy_from_slice(self.id.as_bytes());
+        key[0] = kind as u8;
+        key[1..].copy_from_slice(id.as_bytes());
         key
     }
 }

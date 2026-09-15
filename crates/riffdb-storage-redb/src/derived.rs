@@ -900,7 +900,7 @@ struct PreparedProjectionRow {
     encoded: CanonicalStoredEnvelopeV1,
 }
 
-fn projection_post_image(
+pub(crate) fn projection_post_image(
     request: &ProjectionApplyRequestV1,
     update: &riffdb_storage_api::ProjectionRowUpdateV1,
 ) -> Result<StoredProjectionStateV1, StorageError> {
@@ -918,81 +918,89 @@ impl ProjectionQueryReader for RedbOperationalPorts {
         &self,
         request: &ProjectionQueryRequest,
     ) -> Result<ProjectionQueryResult, StorageError> {
-        let transaction = self.begin_read()?;
-        let controls = transaction
-            .open_table(PROJECTION_FRONTIER)
-            .map_err(table_error)?;
-        let rows = transaction
-            .open_table(PROJECTION_STATE)
-            .map_err(table_error)?;
-        let Some(control) = read_projection_control(&controls, request.selector().identity())?
-        else {
-            return Ok(ProjectionQueryResult::Degraded {
-                generation: None,
-                current: FrontierPosition::BeforeFirst,
-                reason: ProjectionUnavailableReason::Building,
-            });
-        };
-        match control.lifecycle() {
-            ProjectionLifecycleV1::Building | ProjectionLifecycleV1::CatchingUp => {
-                let candidate = control.candidate().ok_or_else(corrupt)?;
-                Ok(ProjectionQueryResult::Degraded {
-                    generation: Some(candidate.generation()),
-                    current: candidate.frontier(),
-                    reason: ProjectionUnavailableReason::Building,
-                })
-            }
-            ProjectionLifecycleV1::Rebuilding => {
-                let published = control.published().ok_or_else(corrupt)?;
-                Ok(ProjectionQueryResult::Degraded {
-                    generation: Some(published.generation()),
-                    current: published.frontier(),
-                    reason: ProjectionUnavailableReason::Rebuilding,
-                })
-            }
-            ProjectionLifecycleV1::Degraded => {
-                let failure = control.failure().ok_or_else(corrupt)?;
-                let current = control
-                    .frontier_for(failure.generation())
-                    .ok_or_else(corrupt)?;
-                Ok(ProjectionQueryResult::Degraded {
-                    generation: Some(failure.generation()),
-                    current,
-                    reason: ProjectionUnavailableReason::Failure(failure.code()),
-                })
-            }
-            ProjectionLifecycleV1::Invalid => {
-                let failure = control.failure().ok_or_else(corrupt)?;
-                let current = control
-                    .frontier_for(failure.generation())
-                    .ok_or_else(corrupt)?;
-                Ok(ProjectionQueryResult::Invalid {
-                    generation: failure.generation(),
-                    current,
-                    reason: failure.code(),
-                })
-            }
-            ProjectionLifecycleV1::Ready => query_ready_projection(&rows, request, &control),
-        }
+        query_projection_at(&self.begin_read()?, request)
     }
-
     fn read_projection_status(
         &self,
         identity: &ProjectionIdentity,
     ) -> Result<ProjectionStatus, StorageError> {
-        let transaction = self.begin_composite_read()?;
-        let controls = transaction
-            .open_table(PROJECTION_FRONTIER)
-            .map_err(table_error)?;
-        let head = transaction.application_frontier()?.map_or(
-            FrontierPosition::BeforeFirst,
-            FrontierPosition::AppliedThrough,
-        );
-        Ok(read_projection_control(&controls, identity)?.map_or_else(
-            || ProjectionStatus::uninitialized(identity.clone(), head),
-            |control| ProjectionStatus::from_control(&control, head),
-        ))
+        read_projection_status_at(&self.begin_composite_read()?, identity)
     }
+}
+pub(crate) fn query_projection_at(
+    transaction: &crate::store::RedbReadAccess,
+    request: &ProjectionQueryRequest,
+) -> Result<ProjectionQueryResult, StorageError> {
+    let controls = transaction
+        .open_table(PROJECTION_FRONTIER)
+        .map_err(table_error)?;
+    let rows = transaction
+        .open_table(PROJECTION_STATE)
+        .map_err(table_error)?;
+    let Some(control) = read_projection_control(&controls, request.selector().identity())? else {
+        return Ok(ProjectionQueryResult::Degraded {
+            generation: None,
+            current: FrontierPosition::BeforeFirst,
+            reason: ProjectionUnavailableReason::Building,
+        });
+    };
+    match control.lifecycle() {
+        ProjectionLifecycleV1::Building | ProjectionLifecycleV1::CatchingUp => {
+            let candidate = control.candidate().ok_or_else(corrupt)?;
+            Ok(ProjectionQueryResult::Degraded {
+                generation: Some(candidate.generation()),
+                current: candidate.frontier(),
+                reason: ProjectionUnavailableReason::Building,
+            })
+        }
+        ProjectionLifecycleV1::Rebuilding => {
+            let published = control.published().ok_or_else(corrupt)?;
+            Ok(ProjectionQueryResult::Degraded {
+                generation: Some(published.generation()),
+                current: published.frontier(),
+                reason: ProjectionUnavailableReason::Rebuilding,
+            })
+        }
+        ProjectionLifecycleV1::Degraded => {
+            let failure = control.failure().ok_or_else(corrupt)?;
+            let current = control
+                .frontier_for(failure.generation())
+                .ok_or_else(corrupt)?;
+            Ok(ProjectionQueryResult::Degraded {
+                generation: Some(failure.generation()),
+                current,
+                reason: ProjectionUnavailableReason::Failure(failure.code()),
+            })
+        }
+        ProjectionLifecycleV1::Invalid => {
+            let failure = control.failure().ok_or_else(corrupt)?;
+            let current = control
+                .frontier_for(failure.generation())
+                .ok_or_else(corrupt)?;
+            Ok(ProjectionQueryResult::Invalid {
+                generation: failure.generation(),
+                current,
+                reason: failure.code(),
+            })
+        }
+        ProjectionLifecycleV1::Ready => query_ready_projection(&rows, request, &control),
+    }
+}
+pub(crate) fn read_projection_status_at(
+    transaction: &crate::store::RedbReadAccess,
+    identity: &ProjectionIdentity,
+) -> Result<ProjectionStatus, StorageError> {
+    let controls = transaction
+        .open_table(PROJECTION_FRONTIER)
+        .map_err(table_error)?;
+    let head = transaction.application_frontier()?.map_or(
+        FrontierPosition::BeforeFirst,
+        FrontierPosition::AppliedThrough,
+    );
+    Ok(read_projection_control(&controls, identity)?.map_or_else(
+        || ProjectionStatus::uninitialized(identity.clone(), head),
+        |control| ProjectionStatus::from_control(&control, head),
+    ))
 }
 
 impl ProjectionRecoveryRepository for RedbOperationalPorts {
@@ -1001,119 +1009,127 @@ impl ProjectionRecoveryRepository for RedbOperationalPorts {
         after: Option<&ProjectionIdentity>,
         limit: ProjectionRecoveryPageLimit,
     ) -> Result<ProjectionControlScanV1, StorageError> {
-        let transaction = self.begin_read()?;
-        let controls = transaction
-            .open_table(PROJECTION_FRONTIER)
-            .map_err(table_error)?;
-        let lower = after.map(|identity| {
-            ProjectionFrontierKey::new(identity.clone())
-                .as_bytes()
-                .to_vec()
-        });
-        let bounds = lower
-            .as_deref()
-            .map_or((Unbounded, Unbounded), |lower| (Excluded(lower), Unbounded));
-        let mut scan = controls
-            .range::<&[u8]>(bounds)
-            .map_err(precommit_storage_error)?;
-        let maximum = usize::from(limit.get().get());
-        let mut result = Vec::with_capacity(maximum);
-        let mut bytes = 0usize;
-        let mut has_more = false;
-        for entry in &mut scan {
-            let (physical_key, encoded) = entry.map_err(precommit_storage_error)?;
-            if result.len() == maximum {
-                has_more = true;
-                break;
-            }
-            let key =
-                decode_projection_frontier_key(physical_key.value()).map_err(|_| corrupt())?;
-            let decoded = decode_projection_control_v1(encoded.value())?;
-            if decoded.value().identity() != key.identity() {
-                return Err(corrupt());
-            }
-            let next = bytes
-                .checked_add(decoded.encoded_content_charge().get())
-                .ok_or_else(corrupt)?;
-            if next > riffdb_storage_api::MAX_SCAN_PAGE_BYTES {
-                if result.is_empty() {
-                    return Err(storage_error(StorageErrorKind::LimitExceeded));
-                }
-                has_more = true;
-                break;
-            }
-            bytes = next;
-            result.push(decoded);
-        }
-        ProjectionControlScanV1::page(result, has_more).map_err(stored_value_error)
+        scan_projection_controls_at(&self.begin_read()?, after, limit)
     }
-
     fn validate_projection_recovery_page(
         &self,
         request: &ProjectionRecoveryValidationRequestV1,
     ) -> Result<ProjectionRecoveryValidationResultV1, StorageError> {
-        let transaction = self.begin_read()?;
-        let controls = transaction
-            .open_table(PROJECTION_FRONTIER)
-            .map_err(table_error)?;
-        let commits = transaction.open_table(COMMITS).map_err(table_error)?;
-        let events = transaction.open_table(EVENTS).map_err(table_error)?;
-        let markers = transaction
-            .open_table(PROJECTION_APPLIED)
-            .map_err(table_error)?;
-        let rows = transaction
-            .open_table(PROJECTION_STATE)
-            .map_err(table_error)?;
-        let control = match read_projection_control(&controls, request.schema().identity()) {
-            Ok(control) => control,
-            Err(error) if error.kind() == StorageErrorKind::CorruptData => {
-                return Ok(redb_projection_recovery_finding(
-                    request,
-                    ProjectionRecoveryFindingCodeV1::MalformedDerivedRecord,
-                ));
-            }
-            Err(error) => return Err(error),
-        };
-        if control.as_ref() != Some(request.expected_control())
-            || authoritative_head(&commits, &events)? != request.expected_authoritative_head()
-        {
-            return Ok(ProjectionRecoveryValidationResultV1::FenceChanged);
+        validate_projection_recovery_page_at(&self.begin_read()?, request)
+    }
+}
+pub(crate) fn scan_projection_controls_at(
+    transaction: &crate::store::RedbReadAccess,
+    after: Option<&ProjectionIdentity>,
+    limit: ProjectionRecoveryPageLimit,
+) -> Result<ProjectionControlScanV1, StorageError> {
+    let controls = transaction
+        .open_table(PROJECTION_FRONTIER)
+        .map_err(table_error)?;
+    let lower = after.map(|identity| {
+        ProjectionFrontierKey::new(identity.clone())
+            .as_bytes()
+            .to_vec()
+    });
+    let bounds = lower
+        .as_deref()
+        .map_or((Unbounded, Unbounded), |lower| (Excluded(lower), Unbounded));
+    let mut scan = controls
+        .range::<&[u8]>(bounds)
+        .map_err(precommit_storage_error)?;
+    let maximum = usize::from(limit.get().get());
+    let mut result = Vec::with_capacity(maximum);
+    let mut bytes = 0usize;
+    let mut has_more = false;
+    for entry in &mut scan {
+        let (physical_key, encoded) = entry.map_err(precommit_storage_error)?;
+        if result.len() == maximum {
+            has_more = true;
+            break;
         }
-
-        if request.expected_position().frontier() == FrontierPosition::BeforeFirst {
-            if projection_marker_namespace_has_any(
-                &markers,
-                request.schema().identity(),
-                request.generation(),
-            )? || projection_state_namespace_has_any(
-                &rows,
-                request.schema().identity(),
-                request.generation(),
-            )? {
-                return Ok(redb_projection_recovery_finding(
-                    request,
-                    ProjectionRecoveryFindingCodeV1::BeforeFirstNotEmpty,
-                ));
+        let key = decode_projection_frontier_key(physical_key.value()).map_err(|_| corrupt())?;
+        let decoded = decode_projection_control_v1(encoded.value())?;
+        if decoded.value().identity() != key.identity() {
+            return Err(corrupt());
+        }
+        let next = bytes
+            .checked_add(decoded.encoded_content_charge().get())
+            .ok_or_else(corrupt)?;
+        if next > riffdb_storage_api::MAX_SCAN_PAGE_BYTES {
+            if result.is_empty() {
+                return Err(storage_error(StorageErrorKind::LimitExceeded));
             }
-            return Ok(ProjectionRecoveryValidationResultV1::ExactEnd(
-                CleanProjectionGenerationV1::new(
-                    request.schema().identity().clone(),
-                    request.expected_position(),
-                    0,
-                ),
+            has_more = true;
+            break;
+        }
+        bytes = next;
+        result.push(decoded);
+    }
+    ProjectionControlScanV1::page(result, has_more).map_err(stored_value_error)
+}
+
+pub(crate) fn validate_projection_recovery_page_at(
+    transaction: &crate::store::RedbReadAccess,
+    request: &ProjectionRecoveryValidationRequestV1,
+) -> Result<ProjectionRecoveryValidationResultV1, StorageError> {
+    let controls = transaction
+        .open_table(PROJECTION_FRONTIER)
+        .map_err(table_error)?;
+    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+    let events = transaction.open_table(EVENTS).map_err(table_error)?;
+    let markers = transaction
+        .open_table(PROJECTION_APPLIED)
+        .map_err(table_error)?;
+    let rows = transaction
+        .open_table(PROJECTION_STATE)
+        .map_err(table_error)?;
+    let control = match read_projection_control(&controls, request.schema().identity()) {
+        Ok(control) => control,
+        Err(error) if error.kind() == StorageErrorKind::CorruptData => {
+            return Ok(redb_projection_recovery_finding(
+                request,
+                ProjectionRecoveryFindingCodeV1::MalformedDerivedRecord,
             ));
         }
+        Err(error) => return Err(error),
+    };
+    if control.as_ref() != Some(request.expected_control())
+        || authoritative_head(&commits, &events)? != request.expected_authoritative_head()
+    {
+        return Ok(ProjectionRecoveryValidationResultV1::FenceChanged);
+    }
 
-        match request.expected_page() {
-            ProjectionRecoveryExpectedPageV1::Markers(expected) => {
-                validate_redb_projection_marker_page(&markers, &commits, &events, request, expected)
-            }
-            ProjectionRecoveryExpectedPageV1::Rows(expected) => {
-                validate_redb_projection_state_page(
-                    &rows, &markers, &commits, &events, request, expected,
-                )
-            }
+    if request.expected_position().frontier() == FrontierPosition::BeforeFirst {
+        if projection_marker_namespace_has_any(
+            &markers,
+            request.schema().identity(),
+            request.generation(),
+        )? || projection_state_namespace_has_any(
+            &rows,
+            request.schema().identity(),
+            request.generation(),
+        )? {
+            return Ok(redb_projection_recovery_finding(
+                request,
+                ProjectionRecoveryFindingCodeV1::BeforeFirstNotEmpty,
+            ));
         }
+        return Ok(ProjectionRecoveryValidationResultV1::ExactEnd(
+            CleanProjectionGenerationV1::new(
+                request.schema().identity().clone(),
+                request.expected_position(),
+                0,
+            ),
+        ));
+    }
+
+    match request.expected_page() {
+        ProjectionRecoveryExpectedPageV1::Markers(expected) => {
+            validate_redb_projection_marker_page(&markers, &commits, &events, request, expected)
+        }
+        ProjectionRecoveryExpectedPageV1::Rows(expected) => validate_redb_projection_state_page(
+            &rows, &markers, &commits, &events, request, expected,
+        ),
     }
 }
 
@@ -1599,7 +1615,7 @@ where
     .map_err(stored_value_error)
 }
 
-fn read_projection_control<T>(
+pub(crate) fn read_projection_control<T>(
     table: &T,
     identity: &ProjectionIdentity,
 ) -> Result<Option<StoredProjectionControlV1>, StorageError>
@@ -1622,7 +1638,7 @@ where
     Ok(Some(control))
 }
 
-fn read_projection_state<T>(
+pub(crate) fn read_projection_state<T>(
     table: &T,
     schema: &riffdb_storage_api::CheckedProjectionSchema,
     key: &ProjectionGroupKey,
@@ -1645,7 +1661,7 @@ where
     Ok(Some(row))
 }
 
-fn read_projection_marker<T>(
+pub(crate) fn read_projection_marker<T>(
     table: &T,
     key: &ProjectionApplyKey,
 ) -> Result<Option<StoredProjectionApplyV1>, StorageError>
@@ -1665,7 +1681,7 @@ where
     Ok(Some(marker))
 }
 
-fn read_commit<T>(
+pub(crate) fn read_commit<T>(
     table: &T,
     events: &impl ReadableTable<&'static [u8], &'static [u8]>,
     sequence: CommitSequence,
@@ -1737,6 +1753,9 @@ const fn corrupt() -> StorageError {
 
 #[cfg(test)]
 mod tests {
+    mod bootstrap_projection;
+    mod follower_indexes;
+    mod follower_projection;
     use std::num::{NonZeroU16, NonZeroU32};
     use std::path::PathBuf;
 
@@ -1928,7 +1947,14 @@ contract Recovery version 1 {
         event_count: u32,
     ) -> Vec<StoredDurableEventV1> {
         let (commit, events) = command_graph_at(sequence, event_count);
-        let encoded_commit = encode_commit_record_v1(&commit).expect("encode commit");
+        seed_commit(ports, &commit);
+        events
+    }
+
+    fn seed_commit(ports: &RedbOperationalPorts, commit: &StoredCommitRecordV1) {
+        let sequence = commit.commit_sequence();
+        let events = commit.events();
+        let encoded_commit = encode_commit_record_v1(commit).expect("encode commit");
         let encoded_events = events
             .iter()
             .map(|event| {
@@ -1990,7 +2016,6 @@ contract Recovery version 1 {
                 )),
             )
             .expect("commit seed transaction");
-        events
     }
 
     fn install_control(

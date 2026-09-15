@@ -69,6 +69,8 @@ const MAX_REACTIVE_EVENT_WINDOW_ROUTE_PAGES: u16 = 256;
 use crate::notifications::FirstCommitNotificationHub;
 use crate::port_driver::{BlockingPortDriver, BlockingPortExecutor};
 use crate::storage::SharedRedbOperationalPorts;
+#[path = "read_adapters_follower.rs"]
+mod follower;
 
 type ContractVersionRequest = (ContractLineage, ContractVersion);
 type DeploymentRequest = (ContractBundle, Option<ContractVersion>);
@@ -343,9 +345,31 @@ fn publish_exact_named_queries(
     Ok(())
 }
 
+/// Repository-only source for the shared catalog semantics and bounded caches.
+pub(crate) trait CatalogReadSource:
+    CatalogRepository + QueryModuleRepository + ReactiveModuleRepository + Clone + Send + Sync + 'static
+{
+    fn cached_active_query_module(
+        &self,
+        lineage: &ContractLineage,
+        version: ContractVersion,
+        hash: riffdb_types::ContractBundleHash,
+    ) -> Option<Option<riffdb_storage_api::ActiveQueryModulePointerV1>>;
+}
+impl CatalogReadSource for SharedRedbOperationalPorts {
+    fn cached_active_query_module(
+        &self,
+        lineage: &ContractLineage,
+        version: ContractVersion,
+        hash: riffdb_types::ContractBundleHash,
+    ) -> Option<Option<riffdb_storage_api::ActiveQueryModulePointerV1>> {
+        SharedRedbOperationalPorts::cached_active_query_module(self, lineage, version, hash)
+    }
+}
+
 /// Catalog-owned semantic reads driven on the retained blocking worker set.
-pub(crate) struct ServerCatalogReadPort {
-    active_storage: SharedRedbOperationalPorts,
+pub(crate) struct ServerCatalogReadPort<S = SharedRedbOperationalPorts> {
+    active_storage: S,
     active_cache: Arc<RwLock<ActiveCatalogView>>,
     /// Exact immutable bundles already proved by the blocking catalog path.
     /// Shared reads let generated clients reuse their pinned contract identity
@@ -368,18 +392,18 @@ pub(crate) struct ServerCatalogReadPort {
         ReactiveModuleReadError,
     >,
     /// Shared with the blocking executor for non-blocking cache-hit inline lookup.
-    module_storage: SharedRedbOperationalPorts,
+    module_storage: S,
     module_cache: Arc<RwLock<QueryModulePlanCache>>,
     exact_named_queries: Arc<RwLock<Arc<ExactNamedQueryView>>>,
 }
 
-impl ServerCatalogReadPort {
+impl<S: CatalogReadSource> ServerCatalogReadPort<S> {
     /// Builds every catalog operation from the same activated repository bridge.
     #[allow(
         dead_code,
         reason = "WP-130 composition constructs this adapter after staged storage activation"
     )]
-    pub(crate) fn new(storage: SharedRedbOperationalPorts, driver: &BlockingPortDriver) -> Self {
+    pub(crate) fn new(storage: S, driver: &BlockingPortDriver) -> Self {
         let active_cache = Arc::new(RwLock::new(ActiveCatalogView::default()));
         let active_storage = storage.clone();
         let reserved_active_storage = storage.clone();
@@ -490,7 +514,7 @@ impl ServerCatalogReadPort {
     }
 }
 
-impl CatalogReadPort for ServerCatalogReadPort {
+impl<S: CatalogReadSource> CatalogReadPort for ServerCatalogReadPort<S> {
     fn prepare_active_catalog(
         &self,
         _control: &RequestControl,
@@ -561,7 +585,7 @@ impl CatalogReadPort for ServerCatalogReadPort {
     }
 }
 
-impl QueryModuleReadPort for ServerCatalogReadPort {
+impl<S: CatalogReadSource> QueryModuleReadPort for ServerCatalogReadPort<S> {
     fn prepare_exact_named_query(
         &self,
         control: &RequestControl,
@@ -626,7 +650,7 @@ impl QueryModuleReadPort for ServerCatalogReadPort {
     }
 }
 
-impl ReactiveModuleReadPort for ServerCatalogReadPort {
+impl<S: CatalogReadSource> ReactiveModuleReadPort for ServerCatalogReadPort<S> {
     fn prepare_reactive_module<'a>(
         &'a self,
         control: &'a RequestControl,
@@ -654,8 +678,8 @@ impl ReactiveModuleReadPort for ServerCatalogReadPort {
 /// cache misses, a lock is contended or poisoned, or any other would-block
 /// condition. The caller then dispatches to the blocking pool, which owns
 /// every cold read, every compile, and therefore the entire error taxonomy.
-fn try_cached_query_module(
-    storage: &SharedRedbOperationalPorts,
+fn try_cached_query_module<S: CatalogReadSource>(
+    storage: &S,
     cache: &RwLock<QueryModulePlanCache>,
     contract: &ValidatedContractBundle,
     selected: Option<QueryModuleHash>,
@@ -676,8 +700,8 @@ fn try_cached_query_module(
 }
 
 /// Full query-module resolution for the blocking pool (unchanged semantics).
-fn resolve_query_module_on_pool(
-    storage: &SharedRedbOperationalPorts,
+fn resolve_query_module_on_pool<S: CatalogReadSource>(
+    storage: &S,
     cache: &RwLock<QueryModulePlanCache>,
     exact_named_queries: &RwLock<Arc<ExactNamedQueryView>>,
     contract: ValidatedContractBundle,
@@ -721,8 +745,8 @@ fn resolve_query_module_on_pool(
     Ok(module)
 }
 
-fn resolve_reactive_module_on_pool(
-    storage: &SharedRedbOperationalPorts,
+fn resolve_reactive_module_on_pool<S: CatalogReadSource>(
+    storage: &S,
     contract: ValidatedContractBundle,
     module_hash: ReactiveModuleHash,
 ) -> Result<Option<ValidatedReactiveModule>, ReactiveModuleReadError> {
@@ -746,7 +770,7 @@ fn resolve_reactive_module_on_pool(
         .map_err(map_reactive_module_catalog)
 }
 
-impl fmt::Debug for ServerCatalogReadPort {
+impl<S: CatalogReadSource> fmt::Debug for ServerCatalogReadPort<S> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ServerCatalogReadPort([REDACTED])")
     }
@@ -830,68 +854,14 @@ impl ServerAuthoritativeReadPort {
         driver: &BlockingPortDriver,
     ) -> Self {
         let vector_observation_storage = storage.clone();
-        let vector_observation = driver.executor(move |target: AuthoritativeVectorTarget| {
-            let lower = VectorObservationTargetV1::new(
-                target.lineage().clone(),
-                target.partition_key().clone(),
-                target.entity_type(),
-                target.vector_field(),
-            );
-            vector_observation_storage
-                .read_vector_observation(&lower)
-                .map_err(map_storage_error)
-                .map(|value| {
-                    value.map(|value| {
-                        AuthoritativeVectorObservation::new(
-                            target,
-                            value.total_entities(),
-                            value.source_stale_entities(),
-                            value
-                                .model_counts()
-                                .map(|(metadata, count)| (metadata.clone(), count))
-                                .collect(),
-                            value.revision(),
-                        )
-                    })
-                })
+        let vector_observation = driver.executor(move |target| {
+            follower::read_vector_observation(&vector_observation_storage, target)
         });
 
         let vector_evidence_storage = storage.clone();
-        let vector_evidence =
-            driver.executor(move |request: AuthoritativeVectorEvidenceRequest| {
-                let target = VectorObservationTargetV1::new(
-                    request.target().lineage().clone(),
-                    request.target().partition_key().clone(),
-                    request.target().entity_type(),
-                    request.target().vector_field(),
-                );
-                let limit = StorageScanLimit::new(request.limit().get().get())
-                    .ok_or(AuthoritativeReadError::Integrity)?;
-                let lower =
-                    VectorEvidenceIndexScanRequestV1::new(target, request.after().cloned(), limit)
-                        .map_err(|_| AuthoritativeReadError::Integrity)?;
-                let page = vector_evidence_storage
-                    .scan_vector_evidence_index(&lower)
-                    .map_err(map_storage_error)?;
-                let rows = page
-                    .entries()
-                    .iter()
-                    .map(|entry| {
-                        AuthoritativeVectorEvidenceRow::new(
-                            entry.entity_key().clone(),
-                            entry.newest_source_write(),
-                            entry
-                                .embedding_write()
-                                .map(|write| (write.sequence(), write.metadata().clone())),
-                        )
-                    })
-                    .collect();
-                Ok(AuthoritativeVectorEvidencePage::new(
-                    rows,
-                    page.continuation().cloned(),
-                    page.exact_end(),
-                ))
-            });
+        let vector_evidence = driver.executor(move |request| {
+            follower::read_vector_evidence(&vector_evidence_storage, request)
+        });
 
         let entity_storage = storage.clone();
         let entity = driver.executor(move |request| read_entity(&entity_storage, request));

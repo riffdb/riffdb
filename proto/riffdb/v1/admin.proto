@@ -137,6 +137,8 @@ enum CapabilityPermissionKind {
   CAPABILITY_PERMISSION_KIND_CONSUME_CONTEXTUAL_SUBSCRIPTION = 30;
   CAPABILITY_PERMISSION_KIND_INSTALL_APPLICATION = 31;
   CAPABILITY_PERMISSION_KIND_INSPECT_VECTOR_STATE = 32;
+  // Administrative only; excluded from application roles and bootstrap grants.
+  CAPABILITY_PERMISSION_KIND_REPLICATE_CHANGELOG = 33;
 }
 
 message LineageScopedStableId {
@@ -190,6 +192,7 @@ message CapabilityPermission {
     ReactiveOperationPermission consume_contextual_subscription = 30;
     string install_application = 31;
     Unit inspect_vector_state = 32;
+    Unit replicate_changelog = 33;
   }
 }
 

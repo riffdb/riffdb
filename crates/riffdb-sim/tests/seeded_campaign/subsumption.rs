@@ -473,6 +473,21 @@ pub(crate) const SCENARIO_CLASSIFICATION: &[(&str, ScenarioClass)] = &[
         },
     ),
     (
+        // The follower's isolated applier test child opens native files and
+        // exits at receipt/root/commit edges. This campaign drives the primary
+        // coordinator; it does not claim to explore follower transactions.
+        "replication.applier.crash",
+        ScenarioClass::OutOfScopeRealFilesystemAdapter,
+    ),
+    (
+        "replication.bootstrap.crash",
+        ScenarioClass::OutOfScopeDaemon,
+    ),
+    (
+        "replication.stream.kill-riffdbd",
+        ScenarioClass::OutOfScopeDaemon,
+    ),
+    (
         // Scouted over 64 seeds; 0x51C2_1025 observes the installed
         // DatabaseId preserved across seven post-crash bring-ups AND one
         // interrupted initialization rolled back, rerun 10/10 with identical

@@ -69,6 +69,8 @@ pub use ports::*;
 pub use projected_query::*;
 pub use reimport::*;
 pub use response::*;
+mod replication;
+pub use replication::*;
 pub use riffdb_query_executor::{QueryParameters, QueryResultValue, QueryRow};
 pub use service::*;
 pub use submitted::*;

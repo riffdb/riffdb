@@ -30,7 +30,9 @@ use crate::startup::{ValidatedAllocatorCapacity, ValidatedStartupLifecycle};
 /// Server-owned lifecycle route shared by every in-process transport adapter.
 pub(crate) struct ProductionLifecycleRoute {
     initializing: InitializingRiffDbService,
+    follower: OnceLock<crate::replication_bootstrap::FollowerReadSnapshots>,
     activated: OnceLock<Arc<dyn ApplicationService>>,
+    replication: OnceLock<Arc<dyn riffdb_service::ReplicationApplication>>,
     migration: OnceLock<Arc<dyn ContractMigrationApplication>>,
     application_export: OnceLock<Arc<dyn ApplicationExportApplication>>,
     application_reimport: OnceLock<Arc<dyn ApplicationReimportApplication>>,
@@ -70,7 +72,9 @@ impl ProductionLifecycleRoute {
     ) -> Self {
         Self {
             initializing,
+            follower: OnceLock::new(),
             activated: OnceLock::new(),
+            replication: OnceLock::new(),
             migration: OnceLock::new(),
             application_export: OnceLock::new(),
             application_reimport: OnceLock::new(),
@@ -88,6 +92,59 @@ impl ProductionLifecycleRoute {
                 issuer: Some(issuer),
             }),
         }
+    }
+
+    /// Configures source-driven follower admission before publishing a service.
+    pub(crate) fn bind_follower_reads(
+        &self,
+        reads: crate::replication_bootstrap::FollowerReadSnapshots,
+    ) -> Result<(), LifecycleInstallError> {
+        let mut state = self.lock_state();
+        if state.model.stage != LifecycleStage::InitializingValidation {
+            return Err(LifecycleInstallError::AlreadyInstalled);
+        }
+        self.follower
+            .set(reads)
+            .map_err(|_| LifecycleInstallError::AlreadyInstalled)?;
+        // Followers have no local bootstrap authority, including the convenience path.
+        close_issuer(&mut state.issuer);
+        Ok(())
+    }
+    fn allows_operation(
+        &self,
+        model: LifecycleModel,
+        operation: ServiceOperationV1,
+        runtime_ready: bool,
+    ) -> bool {
+        if let Some(reads) = self.follower.get() {
+            return runtime_ready
+                && !matches!(
+                    model.stage,
+                    LifecycleStage::InitializingValidation | LifecycleStage::Stopped
+                )
+                && reads.latest().is_ok();
+        }
+        model.allows_authenticated(operation, runtime_ready)
+    }
+    fn allows_maintenance(&self, model: LifecycleModel, runtime_ready: bool) -> bool {
+        if self.follower.get().is_some() {
+            return self.allows_operation(
+                model,
+                ServiceOperationV1::ApplyContractMigration,
+                runtime_ready,
+            );
+        }
+        model.allows_offline_maintenance(runtime_ready)
+    }
+
+    /// Installs administrative replication over the activated published source.
+    pub(crate) fn install_replication(
+        &self,
+        service: Arc<dyn riffdb_service::ReplicationApplication>,
+    ) -> Result<(), LifecycleInstallError> {
+        self.replication
+            .set(service)
+            .map_err(|_| LifecycleInstallError::AlreadyInstalled)
     }
 
     /// Installs the disjoint migration surface owned by the same activated service.
@@ -276,6 +333,17 @@ impl ProductionLifecycleRoute {
 }
 
 impl GrpcLifecycleRoute for ProductionLifecycleRoute {
+    fn admit_replication(&self) -> Option<Arc<dyn riffdb_service::ReplicationApplication>> {
+        if !self.maintenance.ordinary_admission_available() {
+            return None;
+        }
+        self.lock_state()
+            .model
+            .allows_offline_maintenance(self.runtime.is_routing_allowed())
+            .then(|| self.replication.get().cloned())
+            .flatten()
+    }
+
     fn admit_authenticated(
         &self,
         operation: ServiceOperationV1,
@@ -285,9 +353,7 @@ impl GrpcLifecycleRoute for ProductionLifecycleRoute {
         }
         let runtime_ready = self.runtime.is_routing_allowed();
         let state = self.lock_state();
-        state
-            .model
-            .allows_authenticated(operation, runtime_ready)
+        self.allows_operation(state.model, operation, runtime_ready)
             .then(|| self.activated_service())
             .flatten()
     }
@@ -302,9 +368,7 @@ impl GrpcLifecycleRoute for ProductionLifecycleRoute {
         let _operation = operation;
         let runtime_ready = self.runtime.is_routing_allowed();
         let state = self.lock_state();
-        state
-            .model
-            .allows_offline_maintenance(runtime_ready)
+        self.allows_maintenance(state.model, runtime_ready)
             .then(|| self.activated_service())
             .flatten()
     }
@@ -318,9 +382,7 @@ impl GrpcLifecycleRoute for ProductionLifecycleRoute {
         }
         let runtime_ready = self.runtime.is_routing_allowed();
         let state = self.lock_state();
-        state
-            .model
-            .allows_offline_maintenance(runtime_ready)
+        self.allows_maintenance(state.model, runtime_ready)
             .then(|| self.migration.get().cloned())
             .flatten()
     }
@@ -342,9 +404,7 @@ impl GrpcLifecycleRoute for ProductionLifecycleRoute {
         };
         let runtime_ready = self.runtime.is_routing_allowed();
         let state = self.lock_state();
-        state
-            .model
-            .allows_authenticated(operation, runtime_ready)
+        self.allows_operation(state.model, operation, runtime_ready)
             .then(|| self.application_export.get().cloned())
             .flatten()
     }
@@ -370,9 +430,7 @@ impl GrpcLifecycleRoute for ProductionLifecycleRoute {
         };
         let runtime_ready = self.runtime.is_routing_allowed();
         let state = self.lock_state();
-        state
-            .model
-            .allows_authenticated(operation, runtime_ready)
+        self.allows_operation(state.model, operation, runtime_ready)
             .then(|| self.application_reimport.get().cloned())
             .flatten()
     }
@@ -477,13 +535,17 @@ impl GrpcLifecycleRoute for ProductionLifecycleRoute {
     }
 
     fn bootstrap_available(&self) -> bool {
-        self.maintenance.ordinary_admission_available()
+        self.follower.get().is_none()
+            && self.maintenance.ordinary_admission_available()
             && self.runtime.is_routing_allowed()
             && self.lock_state().model.bootstrap_available()
     }
 
     fn begin_bootstrap(&self) -> Option<Arc<dyn ApplicationService>> {
-        if !self.maintenance.ordinary_admission_available() || !self.runtime.is_routing_allowed() {
+        if self.follower.get().is_some()
+            || !self.maintenance.ordinary_admission_available()
+            || !self.runtime.is_routing_allowed()
+        {
             return None;
         }
         let mut state = self.lock_state();

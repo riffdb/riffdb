@@ -22,6 +22,8 @@ use riffdb_storage_api::{
 #[path = "changelog_source_control_transaction.rs"]
 mod transaction;
 use transaction::Barrier;
+#[path = "changelog_bootstrap_attachment.rs"]
+mod bootstrap_attachment;
 #[path = "changelog_source_control_retention.rs"]
 mod retention;
 
@@ -41,6 +43,36 @@ pub(crate) struct ReplicationSourceControl {
 }
 
 impl RedbOperationalPorts {
+    /// Bounded source-only custody probe. Cleanup already owns the artifact's
+    /// actual engine exclusion, so its registration cannot race this read.
+    pub(crate) fn bootstrap_id_is_held(
+        &self,
+        id: riffdb_storage_api::ReplicationSourceHoldIdV1,
+    ) -> Result<bool, StorageError> {
+        if self.shared.write_fenced.load(Ordering::Acquire) || self.shared.is_follower_mode() {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        }
+        let root = self.shared.capture_checkpoint_root()?;
+        let table = root.open_table(SOURCE_HOLDS).map_err(table_error)?;
+        for kind in [
+            Kind::Bootstrap,
+            Kind::FollowerAcknowledgement,
+            Kind::ArchiveAcknowledgement,
+        ] {
+            let key = Hold::storage_key_for(id, kind);
+            if let Some(row) = table.get(key.as_slice()).map_err(precommit_storage_error)? {
+                let hold = *decode_replication_source_hold_v1(row.value())
+                    .map_err(crate::error::codec_error)?
+                    .value();
+                if hold.id() != id || hold.kind() != kind {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// A new handle loses only conservative observations, never durable holds.
     pub(crate) fn replication_source_control(&self) -> ReplicationSourceControl {
         ReplicationSourceControl {
@@ -87,6 +119,23 @@ impl ReplicationSourceControl {
         }
         match (advancing, prior) {
             (false, None) => {
+                if hold.kind() == Kind::Bootstrap {
+                    // This ID has already crossed into follower custody. An
+                    // old artifact must not recreate its completed source job.
+                    let attached = Hold::new(
+                        hold.id(),
+                        Kind::FollowerAcknowledgement,
+                        hold.lineage(),
+                        hold.fence(),
+                    );
+                    if table
+                        .get(attached.storage_key().as_slice())
+                        .map_err(precommit_storage_error)?
+                        .is_some()
+                    {
+                        return Err(Refusal::InvalidPosition);
+                    }
+                }
                 if table.len().map_err(precommit_storage_error)? >= MAX_REPLICATION_SOURCE_HOLDS_V1
                 {
                     return Err(storage_error(StorageErrorKind::LimitExceeded).into());

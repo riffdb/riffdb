@@ -67,6 +67,20 @@ impl ValidatedCatalogHistory {
             .map(|proof| proof.bundles().to_vec())
     }
 
+    /// Resolves one retained projection through this exact validated lineage.
+    /// This is a pure replay plan, not catalog activation or readiness. The
+    /// composition must bind this proof to its matching database/open session.
+    pub fn resolve_projection(
+        &self,
+        identity: &riffdb_types::ProjectionIdentity,
+    ) -> Result<crate::ResolvedProjectionPlan, CatalogError> {
+        let proof = self
+            .lineage_proof
+            .as_ref()
+            .ok_or_else(|| CatalogError::new(CatalogErrorKind::UnknownExecutablePlan))?;
+        crate::projection_materialization::resolve_projection_from_lineage(proof, identity)
+    }
+
     /// Number of bounded evidence items consumed before exact end.
     #[must_use]
     pub const fn evidence_count(&self) -> u64 {

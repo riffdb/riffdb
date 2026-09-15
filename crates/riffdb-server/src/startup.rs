@@ -71,6 +71,7 @@ pub(crate) struct CheckedRedbStartup {
     lifecycle: ValidatedStartupLifecycle,
     allocator_capacity: ValidatedAllocatorCapacity,
     operational_ports: RedbOperationalPorts,
+    replication_publications: Option<crate::replication_publication::ReplicationPublishedSnapshots>,
 }
 
 impl CheckedRedbStartup {
@@ -92,6 +93,12 @@ impl CheckedRedbStartup {
 
     pub(crate) const fn allocator_capacity(&self) -> ValidatedAllocatorCapacity {
         self.allocator_capacity
+    }
+
+    pub(crate) fn take_replication_publications(
+        &mut self,
+    ) -> Option<crate::replication_publication::ReplicationPublishedSnapshots> {
+        self.replication_publications.take()
     }
 
     pub(crate) fn into_parts(
@@ -302,19 +309,31 @@ pub(crate) fn open_redb_startup_with_commit_profile(
     database_ids: &DatabaseIdCandidateSource,
     application_commit_profile: RedbCommitProfile,
 ) -> Result<CheckedRedbStartup, RedbStartupError> {
+    let (publication, reader) = crate::replication_publication::ReplicationPublication::channel();
     let store = timed(StartupStage::StoreOpen, || {
         preflight_redb_startup_format(path)?;
-        open_redb_store(path, application_commit_profile)
+        open_redb_store(path, application_commit_profile, publication.clone())
     })?;
-    complete_redb_startup(store, inputs, || database_ids.next_database_id())
+    let mut checked = complete_redb_startup(store, inputs, || database_ids.next_database_id())?;
+    // Seed after the unchanged startup proof join and V3 activation. Restart
+    // serves retained history immediately even if no new command arrives.
+    riffdb_storage_api::ChangelogPublicationPort::observe_published_snapshot_v3(
+        publication.as_ref(),
+        checked
+            .operational_ports
+            .published_changelog_snapshot_v3()?,
+    );
+    checked.replication_publications = Some(reader);
+    Ok(checked)
 }
 
 #[cfg(not(feature = "test-fixtures"))]
 fn open_redb_store(
     path: &Path,
     application_commit_profile: RedbCommitProfile,
+    publication: std::sync::Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
 ) -> Result<RedbStore, RedbStartupError> {
-    RedbStore::open_with_commit_profile(path, application_commit_profile)
+    RedbStore::open_with_changelog_publication_port(path, application_commit_profile, publication)
         .map_err(RedbStartupError::from)
 }
 
@@ -322,18 +341,24 @@ fn open_redb_store(
 fn open_redb_store(
     path: &Path,
     application_commit_profile: RedbCommitProfile,
+    publication: std::sync::Arc<dyn riffdb_storage_api::ChangelogPublicationPort>,
 ) -> Result<RedbStore, RedbStartupError> {
     let Some(marker) = std::env::var_os(EXTERNAL_KILL_BARRIER_ENV) else {
-        return RedbStore::open_with_commit_profile(path, application_commit_profile)
-            .map_err(RedbStartupError::from);
+        return RedbStore::open_with_changelog_publication_port(
+            path,
+            application_commit_profile,
+            publication,
+        )
+        .map_err(RedbStartupError::from);
     };
-    RedbStore::open_with_test_controller_and_commit_profile(
+    RedbStore::open_with_test_controller_and_changelog_publication_port(
         path,
         application_commit_profile,
         riffdb_storage_redb::RedbTestController::wait_before_commit_for_external_kill(
             riffdb_storage_redb::RedbTestOperation::DeferredCommandBatch,
             marker,
         ),
+        publication,
     )
     .map_err(RedbStartupError::from)
 }
@@ -407,9 +432,16 @@ fn run_redb_startup_pass(
     inputs: StartupValidationInputs,
 ) -> Result<RedbStartupPass, RedbStartupError> {
     let initialized_database_id = initialized.database_id();
-    let mut session = timed(StartupStage::EvidenceBegin, || {
+    let session = timed(StartupStage::EvidenceBegin, || {
         initialized.begin_structural_evidence(inputs)
     })?;
+    run_redb_evidence_session(session, initialized_database_id)
+}
+
+fn run_redb_evidence_session(
+    mut session: riffdb_storage_redb::RedbStructuralEvidenceSession,
+    initialized_database_id: DatabaseId,
+) -> Result<RedbStartupPass, RedbStartupError> {
     report_clean_close_startup_selection(&session);
     if session.database_id() != initialized_database_id {
         return Err(RedbStartupError::Integrity(
@@ -521,18 +553,15 @@ fn complete_ready_redb_startup(
 ) -> Result<CheckedRedbStartup, RedbStartupError> {
     let (database_id, open_session_id, retained_metadata, dormant_ports) =
         structurally_opened.into_parts();
-    if !catalog_history.matches(database_id, open_session_id) {
-        return Err(RedbStartupError::Integrity(
-            StartupIntegrityFailure::CatalogSessionMismatch,
-        ));
-    }
+    let (lifecycle, allocator_capacity) = validate_ready_join(
+        &catalog_history,
+        database_id,
+        open_session_id,
+        &retained_metadata,
+    )?;
 
-    let active = catalog_history.active().map(active_catalog_identity);
-    let (lifecycle, allocator_capacity) =
-        validate_retained_join(database_id, &retained_metadata, active)?;
-
-    // This is the sole activation call. No storage observation is made by this module
-    // after the same-session proof is released.
+    // This is the sole activation call. Later replication seeding uses only the
+    // validated operational reader; it cannot replace or bypass this proof join.
     let operational_ports = timed(StartupStage::PortActivation, || {
         dormant_ports.into_operational_after_catalog_validation()
     })?;
@@ -543,6 +572,115 @@ fn complete_ready_redb_startup(
         lifecycle,
         allocator_capacity,
         operational_ports,
+        replication_publications: None,
+    })
+}
+
+fn validate_ready_join(
+    catalog: &ValidatedCatalogHistory,
+    database_id: DatabaseId,
+    session: riffdb_storage_api::OpenSessionId,
+    retained: &RetainedMetadataV1,
+) -> Result<(ValidatedStartupLifecycle, ValidatedAllocatorCapacity), RedbStartupError> {
+    if !catalog.matches(database_id, session) {
+        return Err(RedbStartupError::Integrity(
+            StartupIntegrityFailure::CatalogSessionMismatch,
+        ));
+    }
+    validate_retained_join(
+        database_id,
+        retained,
+        catalog.active().map(active_catalog_identity),
+    )
+}
+
+/// Complete unchanged structural/catalog/retained proof join, releasing only a
+/// follower applier. There is no initialization, migration, or source activation.
+pub(crate) struct CheckedRedbFollowerStartup {
+    pub(crate) database_id: DatabaseId,
+    pub(crate) retained_metadata: RetainedMetadataV1,
+    pub(crate) catalog_history: ValidatedCatalogHistory,
+    pub(crate) lifecycle: ValidatedStartupLifecycle,
+    pub(crate) allocator_capacity: ValidatedAllocatorCapacity,
+    pub(crate) applier: riffdb_storage_redb::RedbFollowerApplier,
+}
+
+/// Move-only evidence retained from the same unchanged startup that released
+/// the receiver's sole applier. It grants no storage mutation capability.
+pub(crate) struct FollowerStartupEvidence {
+    pub(crate) database_id: DatabaseId,
+    pub(crate) retained_metadata: RetainedMetadataV1,
+    pub(crate) catalog_history: ValidatedCatalogHistory,
+    pub(crate) lifecycle: ValidatedStartupLifecycle,
+    pub(crate) allocator_capacity: ValidatedAllocatorCapacity,
+}
+impl CheckedRedbFollowerStartup {
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        riffdb_storage_redb::RedbFollowerApplier,
+        FollowerStartupEvidence,
+    ) {
+        (
+            self.applier,
+            FollowerStartupEvidence {
+                database_id: self.database_id,
+                retained_metadata: self.retained_metadata,
+                catalog_history: self.catalog_history,
+                lifecycle: self.lifecycle,
+                allocator_capacity: self.allocator_capacity,
+            },
+        )
+    }
+}
+
+pub(crate) fn open_redb_follower_startup(
+    path: &Path,
+    inputs: StartupValidationInputs,
+) -> Result<CheckedRedbFollowerStartup, RedbStartupError> {
+    open_redb_follower_startup_cancellable(
+        path,
+        inputs,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    )
+}
+
+pub(crate) fn open_redb_follower_startup_cancellable(
+    path: &Path,
+    inputs: StartupValidationInputs,
+    cancellation: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<CheckedRedbFollowerStartup, RedbStartupError> {
+    crate::replication_bootstrap::check_cancel(&cancellation)?;
+    let store = crate::replication_bootstrap::recover_follower_projections(
+        riffdb_storage_redb::RedbFollowerStore::open(path)?,
+        inputs.clone(),
+        std::sync::Arc::clone(&cancellation),
+    )?;
+    let session = store
+        .begin_structural_evidence_cancellable(inputs, std::sync::Arc::clone(&cancellation))?;
+    let database_id = session.database_id();
+    let evidence = run_redb_evidence_session(session, database_id);
+    crate::replication_bootstrap::check_cancel(&cancellation)?;
+    let RedbStartupPass::Ready {
+        catalog_history,
+        structurally_opened,
+    } = evidence?
+    else {
+        return Err(RedbStartupError::Integrity(
+            StartupIntegrityFailure::StartupOutcomeMismatch,
+        ));
+    };
+    let (database_id, session, retained_metadata, dormant) = structurally_opened.into_parts();
+    let (lifecycle, allocator_capacity) =
+        validate_ready_join(&catalog_history, database_id, session, &retained_metadata)?;
+    let applier = dormant.into_follower_after_catalog_validation_cancellable(&cancellation)?;
+    Ok(CheckedRedbFollowerStartup {
+        database_id,
+        retained_metadata,
+        catalog_history,
+        lifecycle,
+        allocator_capacity,
+        applier,
     })
 }
 

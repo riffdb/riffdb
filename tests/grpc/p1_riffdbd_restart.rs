@@ -98,6 +98,7 @@ const IDEMPOTENCY_DIGEST_KEY_ID: u32 = 9;
 type TestResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// req: REP-002, REP-003, REC-001
 async fn real_riffdbd_restart_preserves_budget_and_bootstrap_replay() -> TestResult<()> {
     let temporary = TemporaryDirectory::new()?;
     let database_path = temporary.path().join("riffdb.redb");
@@ -404,6 +405,7 @@ async fn real_riffdbd_restart_preserves_budget_and_bootstrap_replay() -> TestRes
     second_process.shutdown_cleanly()?;
     drop(live_subscription);
     drop(second_client);
+    rebuild_bootstrap_from_stopped_budget_daemon(&database_path).await?;
     Ok(())
 }
 
@@ -2719,4 +2721,181 @@ fn drain_reader(reader: &mut impl Read) -> usize {
             Ok(read) => total = total.saturating_add(read),
         }
     }
+}
+
+/// Uses the actual command graph produced over gRPC above, including outcome,
+/// provenance, audit, event and entity links, as the bootstrap source.
+async fn rebuild_bootstrap_from_stopped_budget_daemon(database_path: &Path) -> TestResult<()> {
+    use riffdb_catalog::ActiveCatalogSnapshot;
+    use riffdb_projection::evaluate_and_prepare_projection_commit;
+    use riffdb_server::replication_bootstrap::{BootstrapProjectionRebuild, BootstrapReceiverJobs};
+    use riffdb_storage_api::{
+        AuthoritativeScanReader, CheckedProjectionSchema, CommitScanPageV1, CommitScanRequest,
+        ProjectionApplyResult, ProjectionControlOperation, ProjectionControlResult,
+        ProjectionLifecycleV1, ProjectionMutationRepository, ProjectionRecoveryPageLimit,
+        ProjectionRecoveryRepository, ReplicationSourceHoldIdV1,
+    };
+    use riffdb_storage_redb::{RedbBootstrapMaterializer, RedbBootstrapStage};
+    use riffdb_types::{CommitSequence, FrontierPosition, ProjectionIdentity};
+    let mut ports = open_operational_offline(database_path);
+    let active = ActiveCatalogSnapshot::read(&ports)?.expect("source catalog");
+    let plan = &active.bundle().bundle().projections()[0];
+    let identity = ProjectionIdentity::new(
+        active.pointer().lineage().clone(),
+        plan.projection_id(),
+        plan.plan_hash(),
+    );
+    let resolved = active.resolve_projection(&identity)?;
+    let schema = CheckedProjectionSchema::new(
+        active
+            .bundle()
+            .bundle()
+            .bound_projection_group_schema(plan.projection_id())
+            .expect("source schema"),
+    );
+    let controls = ports.scan_projection_controls(
+        None,
+        ProjectionRecoveryPageLimit::new(NonZeroU16::new(64).expect("page"))?,
+    )?;
+    let mut control = controls
+        .controls()
+        .iter()
+        .map(|item| item.value())
+        .find(|control| control.identity() == &identity)
+        .cloned()
+        .expect("daemon installed projection");
+    if control.lifecycle() == ProjectionLifecycleV1::Building {
+        let ProjectionControlResult::Updated(updated) =
+            ports.transition_projection_control(ProjectionControlOperation::StartInitialScan {
+                expected: control,
+            })?
+        else {
+            panic!("start source replay");
+        };
+        control = updated;
+    }
+    let position = control
+        .candidate()
+        .or(control.published())
+        .expect("retained source generation");
+    let limit = StorageScanLimit::new(1).expect("one commit");
+    let mut request = match position.frontier() {
+        FrontierPosition::BeforeFirst => CommitScanRequest::initial(limit),
+        FrontierPosition::AppliedThrough(sequence) => {
+            CommitScanRequest::initial_after(sequence, limit)
+        }
+    };
+    loop {
+        let page = ports.scan_commits(request)?;
+        for record in page.records() {
+            let apply = evaluate_and_prepare_projection_commit(
+                &resolved,
+                schema.clone(),
+                position.generation(),
+                record.value(),
+                &ports,
+            )?;
+            let ProjectionApplyResult::Applied {
+                control: updated, ..
+            } = ports.apply_projection(&apply)?
+            else {
+                panic!("source apply");
+            };
+            control = updated;
+        }
+        match page {
+            CommitScanPageV1::Page {
+                next_after,
+                inclusive_upper: FrontierPosition::AppliedThrough(upper),
+                ..
+            } => request = CommitScanRequest::continuing(next_after, upper, limit)?,
+            CommitScanPageV1::ExactEnd { .. } => break,
+            _ => panic!("nonempty source page requires a head"),
+        }
+    }
+    assert_eq!(
+        control.frontier_for(position.generation()),
+        Some(FrontierPosition::AppliedThrough(
+            CommitSequence::new(2).expect("two real commands")
+        ))
+    );
+    let root = database_path.parent().expect("test scope");
+    let held = ports.prepare_replication_bootstrap_v3(
+        &root.join("bootstrap-source"),
+        ReplicationSourceHoldIdV1::new([0x5b; 16]).expect("nonzero hold ID"),
+    )?;
+    let manifest = held.manifest();
+    let mut transfer = RedbBootstrapStage::create(&root.join("bootstrap-transfer"), manifest)?;
+    for ordinal in 1..=manifest.page_count() {
+        transfer.append(&held.read_page(ordinal)?.encode()?)?;
+    }
+    let mut materializer = RedbBootstrapMaterializer::create(
+        &root.join("bootstrap-candidate"),
+        transfer.into_materialization_input()?,
+    )?;
+    while materializer.copy_next_page()?.is_some() {}
+    let cancellation = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut rebuild = BootstrapProjectionRebuild::new(
+        materializer.finish()?,
+        daemon_startup_inputs(),
+        cancellation,
+    )?;
+    // Reopen after bounded replay work: the new worker must bind fresh catalog
+    // evidence and continue from locally durable markers without double apply.
+    for _ in 0..3 {
+        assert!(!rebuild.advance()?);
+    }
+    drop(rebuild);
+    let jobs = BootstrapReceiverJobs::new();
+    let transfer = jobs
+        .resume(root.join("bootstrap-transfer"), manifest)
+        .await?;
+    let mut rebuild = transfer
+        .materialize(
+            root.join("bootstrap-candidate"),
+            true,
+            daemon_startup_inputs(),
+        )
+        .await?;
+    let mut steps = 3;
+    while !rebuild.advance().await? {
+        steps += 1;
+        assert!(steps < 100);
+    }
+    assert!(
+        steps >= 5,
+        "nonempty generation replayed before final scrub"
+    );
+    let live = root.join("bootstrap-live.redb");
+    let mut applier = rebuild.publish_and_activate(live.clone()).await?;
+    assert!(riffdb_storage_redb::RedbFollowerStore::open(&live).is_err());
+    assert_eq!(applier.durable_history()?, manifest.fence().history());
+    let acknowledged = applier.acknowledge_durable_position()?;
+    assert_eq!(acknowledged, manifest.fence().history().tail());
+    ports.attach_replication_bootstrap_v3(manifest, acknowledged)?;
+    // The real receiver has now durably published, passed the production proof
+    // join and acknowledged. Its tail begins at the exact manifest successor.
+    let pin = ports.published_changelog_snapshot_v3()?;
+    let handshake = riffdb_storage_api::ReplicationHandshakeV3::new(
+        manifest.fence().history().lineage(),
+        acknowledged,
+        riffdb_storage_api::ChangelogFrameV3::IDENTITY,
+        manifest.fence().history().lineage().catalog_digest(),
+        riffdb_storage_api::MAX_CHANGELOG_FRAME_BYTES as u64,
+        riffdb_storage_api::MAX_STAGED_COMMANDS as u64,
+    )?;
+    let mut tail = riffdb_storage_api::ChangelogFrameCursorV3::open(pin.as_ref(), handshake)?;
+    let mut frames = 0;
+    while let Some(frame) = tail.next_frame()? {
+        applier.apply_frame(frame.as_bytes())?;
+        frames += 1;
+        assert!(frames < 10);
+    }
+    assert!(
+        frames > 0,
+        "source registration and attachment receipts follow the fence"
+    );
+    assert_eq!(applier.acknowledge_durable_position()?, tail.position());
+    applier.close()?;
+    Ok(())
 }

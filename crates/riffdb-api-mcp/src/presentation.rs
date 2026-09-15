@@ -388,7 +388,7 @@ mod tests {
         MCP_OUTBOUND_MESSAGE_MAX_BYTES, SchemaDocument, bounded_json, fixed_tool_registry,
     };
 
-    const PUBLIC_ERROR_KINDS: [PublicErrorKind; 12] = [
+    const PUBLIC_ERROR_KINDS: [PublicErrorKind; 13] = [
         PublicErrorKind::Validation,
         PublicErrorKind::IdempotencyKeyReuse,
         PublicErrorKind::AuthorizationDenied,
@@ -401,6 +401,7 @@ mod tests {
         PublicErrorKind::HistoryIncarnationMismatch,
         PublicErrorKind::HistoryPruned,
         PublicErrorKind::Overloaded,
+        PublicErrorKind::FollowerMode,
     ];
 
     #[test]
@@ -578,6 +579,7 @@ mod tests {
             }
             PublicErrorKind::HistoryPruned => PublicError::history_pruned(),
             PublicErrorKind::Overloaded => PublicError::overloaded(),
+            PublicErrorKind::FollowerMode => PublicError::follower_mode(),
         }
     }
 

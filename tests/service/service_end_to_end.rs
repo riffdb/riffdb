@@ -2,6 +2,7 @@
 
 //! Concrete in-process application-service integration evidence.
 
+mod follower_refusals;
 mod support;
 
 use riffdb_errors::{ApplicationErrorCode, PublicErrorKind};

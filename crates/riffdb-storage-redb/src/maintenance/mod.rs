@@ -1,8 +1,30 @@
 //! Private external receipt and offline staged-publication mechanics.
 
+mod bootstrap_materialize;
+mod bootstrap_receiver_repository;
+mod bootstrap_repository;
+pub use bootstrap_receiver_repository::RedbBootstrapReceiverRepository;
+mod bootstrap_source;
+pub use bootstrap_materialize::{
+    RedbBootstrapCandidate, RedbBootstrapCatalogSession, RedbBootstrapMaterializer,
+    RedbPublishedBootstrapCandidate, RedbValidatedBootstrapCandidate,
+};
+pub use bootstrap_repository::RedbBootstrapRepository;
+#[cfg(test)]
+mod bootstrap_materialize_tests;
+mod bootstrap_stage;
+pub use bootstrap_source::{RedbBootstrapSourceBuild, RedbHeldBootstrapSource};
 mod codec;
+pub use bootstrap_stage::{
+    RedbBootstrapMaterializationInput, RedbBootstrapStage, RedbBootstrapVerification,
+    RedbVerifiedBootstrapTransfer,
+};
+#[cfg(test)]
+mod bootstrap_stage_tests;
 mod failpoint;
+mod follower_namespace;
 mod path_guard;
+pub(crate) use follower_namespace::FollowerNamespace;
 mod staged;
 mod store;
 

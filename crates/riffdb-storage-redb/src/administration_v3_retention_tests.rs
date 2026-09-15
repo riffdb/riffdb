@@ -21,6 +21,81 @@ impl riffdb_storage_api::ChangelogPublicationPort for Observer {
     }
 }
 
+#[derive(Debug)]
+struct V3Observer(mpsc::SyncSender<Arc<dyn PublishedDurableSnapshot>>);
+impl riffdb_storage_api::ChangelogPublicationPort for V3Observer {
+    fn observe_published_advancement(&self, _: PublishedFrontierAdvancement) {}
+
+    fn observe_published_snapshot_v3(&self, pin: Arc<dyn PublishedDurableSnapshot>) {
+        self.0.try_send(pin).unwrap();
+    }
+}
+
+#[test]
+fn control_only_publication_pins_exact_history_without_advancing_application_frontier() {
+    let scope = crate::test_path::ScopedDirectory::new("v3-control-publication");
+    let (sender, receiver) = mpsc::sync_channel(8);
+    let mut store = RedbStore::open_with_changelog_publication_port(
+        scope.join("db.redb"),
+        RedbCommitProfile::Standard,
+        Arc::new(V3Observer(sender)),
+    )
+    .unwrap();
+    store
+        .initialize_database(super::tests::database_id())
+        .unwrap();
+    let lineage =
+        ChangelogLineageV3::new(super::tests::database_id(), 1, LeadershipEpochV1::initial())
+            .unwrap();
+    let mut transaction = store.shared.database.begin_write().unwrap();
+    let anchor = crate::changelog_v3_activation::stage_validated(
+        &mut transaction,
+        lineage,
+        riffdb_types::DualFrontier::INITIAL,
+    )
+    .unwrap();
+    store.shared.commit_durable(transaction).unwrap();
+    let ports = RedbDormantPorts {
+        pending_v3_activation: None,
+        shared: store.shared,
+    }
+    .into_operational_after_catalog_validation()
+    .unwrap();
+    while receiver.try_recv().is_ok() {}
+    let mut control = ports.replication_source_control();
+    let hold = Hold::new(
+        ReplicationSourceHoldIdV1::new([0x76; 16]).unwrap(),
+        Kind::Bootstrap,
+        lineage,
+        anchor.tail(),
+    );
+    assert!(control.register(hold).unwrap());
+    let pin = receiver
+        .try_recv()
+        .expect("control-only receipt must publish a V3 pin");
+    assert!(!control.register(hold).unwrap());
+    assert!(receiver.try_recv().is_err(), "exact retry must not publish");
+
+    // Cursor reads remain independent of the exclusive mutation capability.
+    let _writer = ports
+        .begin_attributed_write(Source::CatalogAdministration)
+        .unwrap();
+    let mut cursor = pin.changelog_receipts_v3(lineage, anchor.tail()).unwrap();
+    let receipt = cursor.next_receipt().unwrap().unwrap();
+    assert_eq!(receipt.attribution(), Source::ReplicationSourceHold);
+    assert!(receipt.mutations().is_empty());
+    assert_eq!(
+        receipt.binding().predecessor_frontier,
+        anchor.tail().frontier()
+    );
+    assert_eq!(receipt.binding().covered_frontier, anchor.tail().frontier());
+    assert_eq!(
+        receipt.binding().sequence,
+        cursor.history().tail().sequence()
+    );
+    assert!(cursor.next_receipt().unwrap().is_none());
+}
+
 fn submit(
     ports: &mut RedbOperationalPorts,
     receiver: &mpsc::Receiver<PublishedFrontierAdvancement>,

@@ -138,6 +138,7 @@ fn finish_publication(
     let root = shared.capture_checkpoint_root()?;
     let history = crate::changelog_v3_roots::read_checkpoint_roots(&root)?
         .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+    shared.observe_changelog_snapshot_v3(RedbReadAccess::Durable(Arc::clone(&root)));
     Ok(Observation {
         publication: root.identity(),
         durable_epoch: shared.durable_commit_epoch(),

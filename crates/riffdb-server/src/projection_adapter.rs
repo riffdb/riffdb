@@ -15,15 +15,14 @@ use riffdb_service::{
     ProjectionStatusSnapshot, ProjectionUnavailableReason, PublishedApplyMode, RequestControl,
 };
 use riffdb_storage_api::{
-    CheckedProjectionSchema, ProjectionFailureCodeV1, ProjectionLifecycleV1,
-    ProjectionLowerContinuation, ProjectionQuerySelector, ProjectionStatus,
+    CatalogRepository, CheckedProjectionSchema, ProjectionFailureCodeV1, ProjectionLifecycleV1,
+    ProjectionLowerContinuation, ProjectionQueryReader, ProjectionQuerySelector, ProjectionStatus,
     ProjectionUnavailableReason as StorageProjectionUnavailableReason, PublishedApplyModeV1,
     StorageErrorKind,
 };
 use riffdb_types::ProjectionIdentity;
 
 use crate::port_driver::{BlockingPortDriver, BlockingPortExecutor};
-use crate::storage::SharedRedbOperationalPorts;
 
 /// Storage-backed projection source driven by the existing bounded port driver.
 pub(crate) struct ServerProjectionQueryPort {
@@ -37,8 +36,10 @@ pub(crate) struct ServerProjectionQueryPort {
 
 impl ServerProjectionQueryPort {
     /// Binds the checked active catalog and exact projection notifier.
-    pub(crate) fn new(
-        storage: SharedRedbOperationalPorts,
+    pub(crate) fn new<
+        S: CatalogRepository + ProjectionQueryReader + Clone + Send + Sync + 'static,
+    >(
+        storage: S,
         notifier: ProjectionNotifier,
         driver: &BlockingPortDriver,
     ) -> Self {
@@ -86,8 +87,8 @@ impl fmt::Debug for ServerProjectionQueryPort {
     }
 }
 
-fn query_projection(
-    storage: &SharedRedbOperationalPorts,
+fn query_projection<S: CatalogRepository + ProjectionQueryReader + Clone>(
+    storage: &S,
     notifier: &ProjectionNotifier,
     request: ProjectionPortRequest,
 ) -> Result<ProjectionPortResult, ProjectionPortError> {
@@ -119,8 +120,8 @@ fn query_projection(
     map_query_outcome(&schema, &request, observed)
 }
 
-fn read_projection_status(
-    storage: &SharedRedbOperationalPorts,
+fn read_projection_status<S: CatalogRepository + ProjectionQueryReader + Clone>(
+    storage: &S,
     notifier: &ProjectionNotifier,
     identity: &ProjectionIdentity,
 ) -> Result<Option<ProjectionStatusSnapshot>, ProjectionPortError> {
@@ -139,8 +140,8 @@ fn read_projection_status(
         .map(Some)
 }
 
-fn active_projection_registry(
-    storage: &SharedRedbOperationalPorts,
+pub(crate) fn active_projection_registry(
+    storage: &impl CatalogRepository,
 ) -> Result<ProjectionSchemaRegistry, ProjectionPortError> {
     let Some(active) = ActiveCatalogSnapshot::read(storage).map_err(map_catalog_error)? else {
         return ProjectionSchemaRegistry::new(Vec::new()).map_err(map_projection_error);

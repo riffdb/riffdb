@@ -1880,3 +1880,75 @@ fn evidence_pages(
     }
     pages
 }
+
+// req: REP-002, REP-003
+#[test]
+fn exact_history_resolves_projection_replay_without_activating_a_catalog() {
+    let source = "contract ReplayHistory version 1 { event Added { group: i64 } projection Totals { source event Added key (group) measure item_count = count() frontier transactionally_ordered } }";
+    let bundle =
+        ValidatedContractBundle::from_compiler_bundle(compile_contract_source(source).unwrap())
+            .unwrap();
+    let stored = stored_bundle(&bundle);
+    let mut session = session(
+        vec![
+            vec![HistoricalSemanticEvidence::Bundle(stored.clone())],
+            vec![active(&bundle)],
+        ],
+        vec![stored],
+        CursorFault::None,
+    );
+    let validation = validate_catalog_history(&mut session).unwrap();
+    let history = ready_history(&validation);
+    let plan = &bundle.bundle().projections()[0];
+    let identity = riffdb_types::ProjectionIdentity::new(
+        bundle.lineage().clone(),
+        plan.projection_id(),
+        plan.plan_hash(),
+    );
+    let resolved = history.resolve_projection(&identity).unwrap();
+    assert_eq!(resolved.identity(), &identity);
+    assert_eq!(resolved.projection_plan(), plan);
+    let foreign = riffdb_types::ProjectionIdentity::new(
+        ContractLineage::new("Foreign").unwrap(),
+        plan.projection_id(),
+        plan.plan_hash(),
+    );
+    assert!(history.resolve_projection(&foreign).is_err());
+    let changed = riffdb_types::ProjectionIdentity::new(
+        bundle.lineage().clone(),
+        plan.projection_id(),
+        riffdb_types::ProjectionPlanHash::from_bytes([0x55; 32]),
+    );
+    assert!(history.resolve_projection(&changed).is_err());
+}
+
+// req: REP-002, REP-003
+#[test]
+fn historical_projection_replay_rejects_unadmitted_projection_changes() {
+    let source = "contract ReplayVersions version 1 { event Added { group: i64 } projection Totals { source event Added key (group) measure n = count() frontier transactionally_ordered } }";
+    let first =
+        ValidatedContractBundle::from_compiler_bundle(compile_contract_source(source).unwrap())
+            .unwrap();
+    let next_source = source
+        .replace("version 1", "version 2")
+        .replace("key (group)", "where group == 10 key (group)");
+    let second = ValidatedContractBundle::from_compiler_bundle(
+        compile_contract_successor(&next_source, first.bundle()).unwrap(),
+    )
+    .unwrap();
+    let first_stored = stored_bundle(&first);
+    let second_stored = stored_bundle(&second);
+    let mut session = session(
+        vec![
+            vec![HistoricalSemanticEvidence::Bundle(first_stored.clone())],
+            vec![HistoricalSemanticEvidence::Bundle(second_stored.clone())],
+            vec![active(&second)],
+        ],
+        vec![first_stored, second_stored],
+        CursorFault::None,
+    );
+    assert_eq!(
+        validate_catalog_history(&mut session).err().unwrap().kind(),
+        CatalogErrorKind::InvalidHistoricalEvidence
+    );
+}

@@ -137,8 +137,8 @@ environment = "local"
 ```
 
 Aliases match `[a-z][a-z0-9_-]{0,63}`, sort by canonical bytes, and are unique.
-All database, backup, and key paths across the process must be pairwise
-lexically disjoint. The process opens every database and builds every graph
+All database, backup, projection, source/receiver artifact, and key paths across
+the process must be pairwise lexically disjoint. The process opens every database and builds every graph
 before publishing readiness. One structural startup failure stops the process.
 
 Backup roots must be siblings. This is valid:
@@ -178,9 +178,31 @@ empty selected values reject. Paths are nonempty, at most 4,096 platform bytes,
 and lexically normalized. The database and key paths may be relative to the
 server working directory; the backup root must be absolute.
 
-The database path, backup root, capability key path, and idempotency key path
-must be lexically disjoint. A file is not accepted when another configured path
-is equal to it, contains it, or is contained by it.
+The database path, backup root, projection root, source and receiver artifact
+roots, capability key path, and idempotency key path must be lexically disjoint. A file
+is not accepted when another configured path is equal to it, contains it, or is
+contained by it.
+
+Each database reserves a private replication artifact root by appending
+`.riffreplication` to its path (for example, `data/main.redb.riffreplication`).
+The derived path also has the 4,096-byte ceiling. This directory holds at most
+four source bootstrap artifacts and an exclusion lock; it cannot overlap any
+other configured database or root. Source composition creates it with private
+permissions and refuses symlink or identity substitution. See
+[bounded bootstrap transfer](architecture/CHANGELOG-V3.md#bounded-bootstrap-transfer-wp-746)
+for hold retention and cleanup behavior.
+
+Each database also reserves `.riffreceiver` beside its database path, with the
+same path-length and disjointness checks. Its fixed receiver inventory is
+separate from source artifacts so promotion cannot mix the two layouts. The
+managed receiver holds an exclusive inventory lock and creates private transfer
+and candidate directories. Initial creation uses temporary names until the first
+durable progress checkpoint exists; crash recovery discards only those known
+unpublished files and resumes published progress. After authenticated attachment
+succeeds, the receiver removes candidate scratch links and then transfer evidence,
+while retaining the live follower's engine lock. Interrupted cleanup resumes
+against the validated live follower. See [follower mode](#follower-mode) for daemon
+configuration and lifecycle behavior.
 
 The packaged systemd unit fixes the authoritative state root at
 `/var/lib/riffdb/data`, the backup root at `/var/lib/riffdb/backups`, and the
@@ -308,3 +330,57 @@ no flag or environment override.
 The bridge accepts a database alias, not a path. It does not accept a storage
 option, environment, audience authority override, policy, or server-side
 authority.
+
+## Follower mode
+
+`--mode follower` (or `RIFFDB_MODE=follower`, or `[server] mode = "follower"`)
+selects the separate follower startup path before primary initialization or
+maintenance. The default remains `primary`. Each configured database must have
+one complete `replication_source` block; primary mode rejects such blocks.
+The mode follows the usual CLI, environment, then file precedence. Source
+identity and trust settings are file-only and cannot be overridden individually.
+
+For the legacy single-database form, use `[server.replication_source]`. For a
+named database, use `[databases.<alias>.replication_source]`. Required fields are:
+
+| Field | Meaning |
+| --- | --- |
+| `endpoint` | Canonical HTTPS primary endpoint |
+| `trust_root` | Absolute path to the primary's CA certificate file |
+| `server_name` | Exact verified server identity matching the endpoint |
+| `credential_file` | Absolute path to a protected replication capability token file |
+| `database` | Database alias at the source |
+| `database_id` | Expected UUIDv7 database identity, with hyphens |
+| `history_incarnation` | Expected nonzero history incarnation |
+| `leadership_epoch` | Expected nonzero leadership epoch |
+| `hold_id` | Stable nonzero 16-byte source hold ID, as 32 lowercase hex digits |
+
+Credential files use the existing protected-file loader. TLS always verifies the
+configured CA and server name. Trust and credential paths cannot overlap database,
+backup, projection, replication scratch or digest-key paths. All source peers are
+checked before local construction starts. Receiver scratch is the reserved
+`<database-path>.riffreceiver` sibling directory.
+
+Startup bootstraps an absent follower or fully validates and reopens an existing
+one. A retained complete transfer permits the existing candidate-publication
+recovery path to check its exact fence and destination before replacement.
+Tail reception uses the supervised worker's bounded retry and shutdown rules.
+
+After validation, the daemon activates a writer-free application service for each
+configured alias, binds configured hosted MCP routes, and emits the ordinary
+application-ready receipt. Standard input accepts `shutdown`; process signals
+also stop the daemon. Shutdown closes transport admission, stops replication and
+drains accepted service reads before releasing the remaining snapshot pins.
+
+Authentication and current policy observe the latest completed follower prefix.
+A capability or contract installed later on the source becomes visible through
+replication; followers expose no local capability-bootstrap convenience path.
+Commands, administration, migration, maintenance and export return the typed
+follower-mode refusal. Policy-required durable read audit also refuses. See
+[the follower audit boundary](architecture/CHANGELOG-V3.md) for Health, Statistics
+and denied-read telemetry.
+
+The daemon process tests compare every authoritative namespace under the
+app-baseline workload and resume across repeated source and follower crashes.
+WP-746 passes its full CI gate. WP-747 owns the remaining
+follower freshness modes, lag health and projection-provider coverage.

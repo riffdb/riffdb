@@ -109,6 +109,7 @@ pub const fn application_grpc_code(code: ApplicationErrorCode) -> Code {
         | ApplicationErrorCode::ModuleUnavailable
         | ApplicationErrorCode::CommandExecutionFailed
         | ApplicationErrorCode::HistoryIncarnationMismatch
+        | ApplicationErrorCode::FollowerMode
         | ApplicationErrorCode::HistoryPruned
         | ApplicationErrorCode::ProjectionDiverged
         | ApplicationErrorCode::SnapshotRetired
@@ -218,6 +219,25 @@ mod tests {
     }
 
     #[test]
+    // req: REP-002
+    fn follower_mode_refusal_is_a_typed_application_error() {
+        let code = riffdb_errors::APPLICATION_ERROR_CODES
+            .into_iter()
+            .find(|code| code.as_str() == "RDB-REP-0101")
+            .expect("REP-002 requires a registry-owned follower-mode refusal");
+        let error = ApplicationError::new(
+            code,
+            ApplicationOperation::ExecuteCommand,
+            ApplicationErrorContext::empty(),
+            None,
+        );
+        let status = status_from_application_error(&error);
+        assert_eq!(status.code(), Code::FailedPrecondition);
+        assert_eq!(status.message(), error.safe_message());
+        assert_eq!(decode_application_error(status.details()), Ok(error));
+    }
+
+    #[test]
     fn application_boundary_preserves_the_revoked_authentication_class() {
         let context =
             ApplicationErrorContextBuilder::without_trace(ApplicationOperation::ExecuteQuery);
@@ -280,6 +300,7 @@ mod tests {
             PublicErrorKind::HistoryIncarnationMismatch,
             PublicErrorKind::HistoryPruned,
             PublicErrorKind::Overloaded,
+            PublicErrorKind::FollowerMode,
         ];
         for kind in kinds {
             let error = match kind {
@@ -311,6 +332,7 @@ mod tests {
                 }
                 PublicErrorKind::HistoryPruned => PublicError::history_pruned(),
                 PublicErrorKind::Overloaded => PublicError::overloaded(),
+                PublicErrorKind::FollowerMode => PublicError::follower_mode(),
             };
             assert_eq!(error.kind(), kind);
             let status = status_from_public_error(&error);

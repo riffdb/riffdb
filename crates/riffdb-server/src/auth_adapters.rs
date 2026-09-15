@@ -27,20 +27,20 @@ use crate::clocks::{ServerAuthenticationClock, ServerAuthorizationClock};
 use crate::storage::SharedRedbOperationalPorts;
 
 /// Owns the production dependencies borrowed by one fresh capability authenticator.
-pub(crate) struct ServerCredentialAuthenticator {
-    storage: SharedRedbOperationalPorts,
+pub(crate) struct ServerCredentialAuthenticator<S = SharedRedbOperationalPorts> {
+    storage: S,
     keys: Arc<CapabilityDigestKeyProvider>,
     clock: ServerAuthenticationClock,
     telemetry: Arc<dyn AuthenticationTelemetry>,
 }
 
-impl ServerCredentialAuthenticator {
+impl<S> ServerCredentialAuthenticator<S> {
     #[allow(
         dead_code,
         reason = "WP-130 composition constructs this adapter after staged storage activation"
     )]
     pub(crate) fn new(
-        storage: SharedRedbOperationalPorts,
+        storage: S,
         keys: Arc<CapabilityDigestKeyProvider>,
         clock: ServerAuthenticationClock,
         telemetry: Arc<dyn AuthenticationTelemetry>,
@@ -54,7 +54,9 @@ impl ServerCredentialAuthenticator {
     }
 }
 
-impl CredentialAuthenticator for ServerCredentialAuthenticator {
+impl<S: CapabilityReader + Send + Sync> CredentialAuthenticator
+    for ServerCredentialAuthenticator<S>
+{
     fn authenticate(
         &self,
         credential: OpaqueCredential<'_>,
@@ -70,15 +72,15 @@ impl CredentialAuthenticator for ServerCredentialAuthenticator {
     }
 }
 
-impl fmt::Debug for ServerCredentialAuthenticator {
+impl<S> fmt::Debug for ServerCredentialAuthenticator<S> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ServerCredentialAuthenticator([REDACTED])")
     }
 }
 
 /// Owns the trusted boundary needed to rebuild current authorization on every call.
-pub(crate) struct ServerCurrentPolicyPort {
-    storage: SharedRedbOperationalPorts,
+pub(crate) struct ServerCurrentPolicyPort<S = SharedRedbOperationalPorts> {
+    storage: S,
     clock: ServerAuthorizationClock,
     database_id: DatabaseId,
     environment: Environment,
@@ -86,13 +88,13 @@ pub(crate) struct ServerCurrentPolicyPort {
     telemetry: Arc<dyn AuthorizationTelemetry>,
 }
 
-impl ServerCurrentPolicyPort {
+impl<S> ServerCurrentPolicyPort<S> {
     #[allow(
         dead_code,
         reason = "WP-130 composition constructs this adapter after staged storage activation"
     )]
     pub(crate) fn new(
-        storage: SharedRedbOperationalPorts,
+        storage: S,
         clock: ServerAuthorizationClock,
         database_id: DatabaseId,
         environment: Environment,
@@ -110,7 +112,22 @@ impl ServerCurrentPolicyPort {
     }
 }
 
-impl CurrentPolicyPort for ServerCurrentPolicyPort {
+impl<S: CapabilityReader + Send + Sync> CurrentPolicyPort for ServerCurrentPolicyPort<S> {
+    fn authorize_replication(
+        &self,
+        principal: &AuthenticatedPrincipal,
+    ) -> Result<riffdb_policy::ReplicationDecision, AuthorizationError> {
+        let resolver = CapabilityReaderCurrentResolver::new(&self.storage);
+        CurrentAuthorizer::new(
+            &resolver,
+            &self.clock,
+            self.telemetry.as_ref(),
+            self.database_id,
+            self.environment.clone(),
+        )
+        .authorize_replication(principal)
+    }
+
     fn authorize(
         &self,
         principal: &AuthenticatedPrincipal,
@@ -212,7 +229,7 @@ impl CurrentPolicyPort for ServerCurrentPolicyPort {
     }
 }
 
-impl fmt::Debug for ServerCurrentPolicyPort {
+impl<S> fmt::Debug for ServerCurrentPolicyPort<S> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ServerCurrentPolicyPort([REDACTED])")
     }

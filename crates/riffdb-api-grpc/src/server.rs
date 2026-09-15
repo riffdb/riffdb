@@ -72,6 +72,9 @@ use crate::projected_query_conversion::{
 use crate::{DATABASE_METADATA_KEY, EMERGENCY_INTERNAL_MESSAGE};
 
 const GRPC_TIMEOUT_METADATA_KEY: &str = "grpc-timeout";
+#[path = "replication.rs"]
+mod replication;
+pub use replication::ReplicationResponseStream;
 const APPLICATION_SESSION_PROTOCOL_V1: u32 = 1;
 const MAX_APPLICATION_SESSION_IN_FLIGHT: usize = 128;
 const MAX_APPLICATION_SESSION_WORK: u64 = 1_048_576;
@@ -81,6 +84,11 @@ const MAX_APPLICATION_SESSION_ERROR_DETAILS_BYTES: usize = 64 * 1024;
 
 /// Server-owned atomic route across initializing and activated service stages.
 pub trait GrpcLifecycleRoute: Send + Sync {
+    /// Admits the administrative replication service only in the ready stage.
+    fn admit_replication(&self) -> Option<Arc<dyn riffdb_service::ReplicationApplication>> {
+        None
+    }
+
     /// Atomically admits one authenticated operation in the current lifecycle.
     ///
     /// Implementations must reject before authentication when the operation is
@@ -487,9 +495,20 @@ pub struct GrpcApplication {
     routes: Arc<GrpcDatabaseRoutes>,
     limits: GrpcRequestLimits,
     authentication_audience: Option<Audience>,
+    replication_confidential: bool,
 }
 
 impl GrpcApplication {
+    /// Selects replication exposure for a server-owned confidential listener.
+    /// The daemon calls this only after constructing TLS or a protected local
+    /// socket. Request headers and peer-provided claims never select this mode.
+    #[must_use]
+    pub fn for_confidential_listener(&self) -> Self {
+        let mut application = self.clone();
+        application.replication_confidential = true;
+        application
+    }
+
     /// Wires transport-only dependencies around the shared application service.
     #[must_use]
     pub fn new(lifecycle: Arc<dyn GrpcLifecycleRoute>, limits: GrpcRequestLimits) -> Self {
@@ -497,6 +516,7 @@ impl GrpcApplication {
             routes: Arc::new(GrpcDatabaseRoutes::single(lifecycle)),
             limits,
             authentication_audience: None,
+            replication_confidential: false,
         }
     }
 
@@ -511,6 +531,7 @@ impl GrpcApplication {
             routes: Arc::new(GrpcDatabaseRoutes::single(lifecycle)),
             limits,
             authentication_audience: Some(authentication_audience),
+            replication_confidential: false,
         }
     }
 
@@ -524,6 +545,7 @@ impl GrpcApplication {
             routes,
             limits,
             authentication_audience: None,
+            replication_confidential: false,
         }
     }
 
@@ -538,6 +560,7 @@ impl GrpcApplication {
             routes,
             limits,
             authentication_audience: Some(authentication_audience),
+            replication_confidential: false,
         }
     }
 
@@ -4119,6 +4142,24 @@ mod tests {
             riffdb_proto::decode_public_error(status.details()),
             Ok(PublicError::storage_unavailable())
         );
+        assert_eq!(route.security_fetches.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    // req: REP-003
+    async fn replication_confidentiality_refusal_precedes_credentials_and_ignores_proxy_claims() {
+        use crate::generated::replication_service_server::ReplicationService;
+        let route = Arc::new(InitializingRoute::without_security());
+        let application = GrpcApplication::new(
+            route.clone(),
+            GrpcRequestLimits::new(Duration::from_secs(30)).unwrap(),
+        );
+        let mut request = Request::new(v1::StreamChangelogRequest::default());
+        request
+            .metadata_mut()
+            .insert("x-forwarded-proto", "https".parse().unwrap());
+        let result = application.stream_changelog(request).await;
+        assert_eq!(result.err().unwrap().code(), tonic::Code::PermissionDenied);
         assert_eq!(route.security_fetches.load(Ordering::SeqCst), 0);
     }
 

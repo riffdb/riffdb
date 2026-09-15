@@ -1,5 +1,8 @@
 [workspace]
 resolver = "3"
+# The replication tests reuse this fixture crate from the separate app-baseline
+# workspace. Keep that workspace's member from being implicitly adopted here.
+exclude = ["examples/app-baseline/core"]
 members = [
     "crates/riffdb-api-grpc",
     "crates/riffdb-api-mcp",

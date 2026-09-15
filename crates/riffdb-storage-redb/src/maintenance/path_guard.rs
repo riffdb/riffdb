@@ -1,5 +1,6 @@
 use std::ffi::OsStr;
 use std::fs::{self, File};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 
 use cap_std::ambient_authority;
@@ -24,6 +25,69 @@ pub(super) struct PinnedDirectory {
 }
 
 impl PinnedDirectory {
+    pub(super) fn same_directory(&self, other: &Self) -> Result<bool, StorageError> {
+        self.verify()?;
+        other.verify()?;
+        #[cfg(unix)]
+        return Ok(self.identity == other.identity);
+        #[cfg(not(unix))]
+        Ok(self.canonical_path == other.canonical_path)
+    }
+
+    /// Creates a private direct child before any unredacted bootstrap bytes
+    /// exist. The parent capability and both path identities remain checked.
+    #[cfg(unix)]
+    pub(super) fn create_private_child(&self, name: &OsStr) -> Result<Self, StorageError> {
+        self.verify()?;
+        let relative = checked_child_name(name)?;
+        let mut builder = cap_std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use cap_std::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        self.directory
+            .create_dir_with(relative, &builder)
+            .map_err(io_unavailable)?;
+        self.sync()?;
+        self.verify()?;
+        let child = Self::open(&self.path.join(relative))?;
+        child.verify_private()?;
+        Ok(child)
+    }
+
+    #[cfg(not(unix))]
+    pub(super) fn create_private_child(&self, _name: &OsStr) -> Result<Self, StorageError> {
+        // No unredacted stage may be created without an enforced private ACL.
+        Err(storage_error(StorageErrorKind::IncompatibleFormat))
+    }
+
+    #[cfg(not(unix))]
+    pub(super) fn verify_private(&self) -> Result<(), StorageError> {
+        Err(storage_error(StorageErrorKind::IncompatibleFormat))
+    }
+
+    #[cfg(unix)]
+    pub(super) fn verify_private(&self) -> Result<(), StorageError> {
+        self.verify()?;
+        #[cfg(unix)]
+        {
+            use cap_std::fs::PermissionsExt;
+            if self
+                .directory
+                .dir_metadata()
+                .map_err(io_unavailable)?
+                .permissions()
+                .mode()
+                & 0o077
+                != 0
+            {
+                return Err(corrupt());
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn open(path: &Path) -> Result<Self, StorageError> {
         reject_symlink_components(path)?;
         let path_metadata = fs::symlink_metadata(path).map_err(io_unavailable)?;
@@ -113,6 +177,55 @@ impl PinnedDirectory {
         Ok(())
     }
 
+    /// Reads at most maximum + 1 direct entries and refuses every other file
+    /// kind. No recursive inventory walk or population-sized allocation occurs.
+    pub(super) fn bounded_entries(
+        &self,
+        maximum: usize,
+    ) -> Result<Vec<(std::ffi::OsString, bool)>, StorageError> {
+        self.verify()?;
+        let mut entries = Vec::new();
+        for entry in self
+            .directory
+            .entries()
+            .map_err(io_unavailable)?
+            .take(maximum.saturating_add(1))
+        {
+            let entry = entry.map_err(io_unavailable)?;
+            let kind = entry.file_type().map_err(io_unavailable)?;
+            if entries.len() == maximum || !(kind.is_file() || kind.is_dir()) {
+                return Err(corrupt());
+            }
+            entries.push((entry.file_name(), kind.is_dir()));
+        }
+        self.verify()?;
+        Ok(entries)
+    }
+
+    pub(super) fn child_directory(&self, name: &OsStr) -> Result<Option<Self>, StorageError> {
+        self.verify()?;
+        let relative = checked_child_name(name)?;
+        match self.directory.symlink_metadata(relative) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(io_unavailable(error)),
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => return Err(corrupt()),
+        }
+        let child = Self::open(&self.path.join(relative))?;
+        self.verify()?;
+        child.verify()?;
+        Ok(Some(child))
+    }
+
+    /// Removes only this empty retained directory, never recursively.
+    pub(super) fn remove_self_empty(&self) -> Result<(), StorageError> {
+        self.verify()?;
+        self.directory
+            .try_clone()
+            .and_then(Dir::remove_open_dir)
+            .map_err(io_unavailable)
+    }
+
     /// Returns the length of one direct regular-file child.
     ///
     /// `None` means that no directory entry exists. Symlinks and every other
@@ -185,6 +298,25 @@ impl PinnedDirectory {
         let to = checked_child_name(to)?;
         self.directory
             .rename(from, &self.directory, to)
+            .map_err(io_unavailable)
+    }
+
+    /// Links one direct child into another retained directory. The caller owns
+    /// file identity checks and publication sync; cross-filesystem links refuse.
+    pub(super) fn hard_link_to(
+        &self,
+        from: &OsStr,
+        target: &Self,
+        to: &OsStr,
+    ) -> Result<(), StorageError> {
+        self.verify()?;
+        target.verify()?;
+        self.directory
+            .hard_link(
+                checked_child_name(from)?,
+                &target.directory,
+                checked_child_name(to)?,
+            )
             .map_err(io_unavailable)
     }
 
@@ -275,6 +407,24 @@ pub(super) fn verify_regular_file_path(file: &File, path: &Path) -> Result<(), S
     if UnixFileIdentity::from_std_metadata(&path_metadata)
         != UnixFileIdentity::from_std_metadata(&handle_metadata)
     {
+        return Err(corrupt());
+    }
+    Ok(())
+}
+
+/// Checks the exact current marker through the retained descriptor with a fixed
+/// read ceiling. Repeated checks never depend on a shared prior file offset.
+pub(super) fn check_current_marker(file: &mut File) -> Result<(), StorageError> {
+    let expected = riffdb_storage_api::encode_durable_format_marker(
+        riffdb_storage_api::current_durable_format_marker(),
+    );
+    if file.metadata().map_err(io_unavailable)?.len() != expected.len() as u64 {
+        return Err(corrupt());
+    }
+    let mut actual = [0; riffdb_storage_api::DURABLE_FORMAT_MARKER_BYTES];
+    file.seek(SeekFrom::Start(0)).map_err(io_unavailable)?;
+    file.read_exact(&mut actual).map_err(io_unavailable)?;
+    if actual != expected {
         return Err(corrupt());
     }
     Ok(())

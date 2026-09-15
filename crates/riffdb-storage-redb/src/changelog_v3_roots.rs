@@ -3,7 +3,10 @@
 //! This is one input to clean eligibility, not a replacement for complete startup
 //! validation or proof that an application/journal suffix has been published.
 
-use redb::{ReadTransaction, ReadableTable, TableError, TableHandle, WriteTransaction};
+use redb::{
+    ReadTransaction, ReadableTable, ReadableTableMetadata, TableError, TableHandle,
+    WriteTransaction,
+};
 use riffdb_storage_api::{
     AdministrationSequenceAllocator, ApplicationSequenceAllocator, AuthoritativeNamespaceV1 as N,
     AuthoritativeTransactionV3, ChangelogHistoryStateV3, StorageError, StorageErrorKind,
@@ -70,7 +73,7 @@ pub(crate) fn read_checkpoint_roots(
         Err(TableError::TableDoesNotExist(_)) => None,
         Err(error) => return Err(table_error(error)),
     };
-    validate_roots(&meta, history.as_ref(), source_holds.is_some())
+    validate_roots(&meta, history.as_ref(), source_holds.as_ref())
 }
 
 /// Complete retained receipt-chain validation for the full startup path. This
@@ -86,7 +89,12 @@ pub(crate) fn validate_retained_history(
     };
     let table = transaction.open_table(HISTORY).map_err(table_error)?;
     let holds = transaction.open_table(SOURCE_HOLDS).map_err(table_error)?;
-    validate_retained_rows(history, &table, &holds)?;
+    // An empty history was admitted above only with the exact attached
+    // follower progress and empty source holds. It has no source ancestry to
+    // scan; all authoritative/catalog validators still run unchanged.
+    if !table.is_empty().map_err(precommit_storage_error)? {
+        validate_retained_rows(history, &table, &holds)?;
+    }
     Ok(Some(history))
 }
 
@@ -100,7 +108,12 @@ pub(crate) fn validate_retained_history_for_write(
     };
     let table = transaction.open_table(HISTORY).map_err(table_error)?;
     let holds = transaction.open_table(SOURCE_HOLDS).map_err(table_error)?;
-    validate_retained_rows(history, &table, &holds)?;
+    // An empty history was admitted above only with the exact attached
+    // follower progress and empty source holds. It has no source ancestry to
+    // scan; all authoritative/catalog validators still run unchanged.
+    if !table.is_empty().map_err(precommit_storage_error)? {
+        validate_retained_rows(history, &table, &holds)?;
+    }
     Ok(Some(history))
 }
 
@@ -214,13 +227,13 @@ pub(crate) fn read_checkpoint_roots_for_write(
         .then(|| transaction.open_table(SOURCE_HOLDS))
         .transpose()
         .map_err(table_error)?;
-    validate_roots(&meta, history.as_ref(), source_holds.is_some())
+    validate_roots(&meta, history.as_ref(), source_holds.as_ref())
 }
 
 fn validate_roots(
     meta: &impl ReadableTable<&'static str, &'static [u8]>,
     history_table: Option<&impl ReadableTable<&'static [u8], &'static [u8]>>,
-    source_holds_present: bool,
+    source_holds: Option<&impl ReadableTable<&'static [u8], &'static [u8]>>,
 ) -> Result<Option<ChangelogHistoryStateV3>, StorageError> {
     let read = |key: &str| -> Result<Vec<u8>, StorageError> {
         let value = meta
@@ -258,11 +271,11 @@ fn validate_roots(
     if registry == PRE_V3_REGISTRY
         && present == 0
         && history_table.is_none()
-        && !source_holds_present
+        && source_holds.is_none()
     {
         return Ok(None);
     }
-    if registry != current_record_registry_digest() || present != required || !source_holds_present
+    if registry != current_record_registry_digest() || present != required || source_holds.is_none()
     {
         return Err(storage_error(StorageErrorKind::CorruptData));
     }
@@ -308,6 +321,28 @@ fn validate_roots(
     history
         .validate_allocator(allocator)
         .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+    // SourceOnly tables exist in the shared engine layout, but follower
+    // bootstrap transfers no rows into them. Its existing durable applied
+    // receipt hash binds the exact prefix; source receipt ancestry validation
+    // remains mandatory for every source and physical source-history image.
+    if history_table.is_empty().map_err(precommit_storage_error)?
+        && let Some((attached, applied, _)) = follower.attached_state()
+    {
+        if attached != lineage
+            || applied != history.tail()
+            || !source_holds
+                .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?
+                .is_empty()
+                .map_err(precommit_storage_error)?
+            || meta
+                .get(crate::layout::META_CLEAN_CLOSE_LIFECYCLE)
+                .map_err(precommit_storage_error)?
+                .is_some()
+        {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        return Ok(Some(history));
+    }
     let receipt = history_table
         .get(history.tail().sequence().get().to_be_bytes().as_slice())
         .map_err(precommit_storage_error)?

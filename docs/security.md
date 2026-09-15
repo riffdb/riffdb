@@ -20,6 +20,17 @@ there is no insecure fallback or application-selectable provider.
   may open redb or construct a privileged service.
 - MCP tool discovery and invocation are policy filtered. Maintenance is not an
   MCP operation.
+- Administrative V3 replication requires the explicit `ReplicateChangelog`
+  permission, global tenant scope and all partitions. Application-role grants
+  and bootstrap convenience capabilities cannot carry it. Each release uses
+  current policy, and the RPC requires direct TLS or a protected local socket.
+  The outbound replication peer requires an explicit protected CA file and
+  exact server-name TLS verification before any credential is sent. It exposes
+  no arbitrary-channel or cleartext constructor. Receiver connections verify
+  the configured source lineage and complete durable transfer before allowing
+  offline materialization; receiving bytes alone never grants readiness.
+  The [source stream and follower lifecycle](architecture/CHANGELOG-V3.md)
+  are tracked in WP-746.
 - Projection and outbox workers consume committed authoritative state. Their
   failure may degrade service but cannot roll back a commit.
 - The deterministic runtime receives checked inputs and reserved logical time;
@@ -125,3 +136,19 @@ hash must identify the canonical adapter-owned portability manifest. Changing
 either identity, using the capability against another database, dropping the
 row-policy grant, or widening a principal-filtered grant fails closed. This
 authority is not advertised through application command discovery or MCP.
+
+## Follower read audit boundary
+
+The accepted [follower service audit boundary](architecture/WP-746-FOLLOWER-AUDIT-REVIEW.md)
+keeps the follower applier as the sole writer. The follower service component
+retains current authorization and redaction for reads. Authorized Health/Statistics
+and authenticated read denials produce bounded redacted operational telemetry,
+with no durable local service audit guarantee. Denials release no protected data.
+Telemetry cannot satisfy a policy-required durable audit obligation; standard reads
+with that obligation return the typed follower-mode refusal before releasing data.
+Applications requiring durable audit of reads or denials must use the primary.
+Primary audit behavior and replicated audit records are unchanged.
+
+The daemon and process crash tests exercise this boundary under WP-746. See the
+[follower implementation and remaining gates](architecture/CHANGELOG-V3.md)
+before planning deployment.

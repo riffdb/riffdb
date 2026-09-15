@@ -309,6 +309,7 @@ const fn code_for_application(code: ApplicationErrorCode) -> Code {
         | ApplicationErrorCode::ModuleUnavailable
         | ApplicationErrorCode::CommandExecutionFailed
         | ApplicationErrorCode::HistoryIncarnationMismatch
+        | ApplicationErrorCode::FollowerMode
         | ApplicationErrorCode::HistoryPruned
         | ApplicationErrorCode::ProjectionDiverged
         | ApplicationErrorCode::SnapshotRetired

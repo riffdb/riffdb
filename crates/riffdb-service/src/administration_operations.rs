@@ -528,7 +528,7 @@ async fn create_capability_normal(
     let permit = match wait_with_control(
         context.control(),
         service.providers.deadline_scheduler.as_ref(),
-        service.executors.control_plane.reserve_capacity(),
+        service.executors.writer()?.control_plane.reserve_capacity(),
     )
     .await
     {
@@ -600,6 +600,11 @@ async fn create_capability_bootstrap(
 ) -> ServiceResult<CreateCapabilityResult> {
     const OPERATION: ServiceOperationV1 = ServiceOperationV1::CreateCapability;
     if request.requested().database_id() != service.identity.database_id()
+        || request
+            .requested()
+            .grant()
+            .permissions()
+            .contains_kind(riffdb_types::CapabilityPermissionKindV1::ReplicateChangelog)
         || request.requested().environment() != service.identity.environment()
         || matches!(
             request.requested().grant().partition_scope(),
@@ -639,7 +644,7 @@ async fn create_capability_bootstrap(
     let permit = match wait_with_control(
         context.control(),
         service.providers.deadline_scheduler.as_ref(),
-        service.executors.control_plane.reserve_capacity(),
+        service.executors.writer()?.control_plane.reserve_capacity(),
     )
     .await
     {
@@ -783,7 +788,7 @@ async fn revoke_capability(
         let permit = match wait_with_control(
             context.control(),
             service.providers.deadline_scheduler.as_ref(),
-            service.executors.control_plane.reserve_capacity(),
+            service.executors.writer()?.control_plane.reserve_capacity(),
         )
         .await
         {

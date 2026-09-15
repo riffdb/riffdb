@@ -301,14 +301,14 @@ fn operator_campaigns_maintenance_and_migration_are_additive_and_never_an_mcp_su
             .lines()
             .filter(|line| line.starts_with("service "))
             .count(),
-        6
+        7
     );
     assert_eq!(
         services
             .lines()
             .filter(|line| line.trim_start().starts_with("rpc "))
             .count(),
-        57
+        58
     );
     assert_eq!(services.matches("rpc ExecuteBatch(").count(), 1);
     for rpc in [

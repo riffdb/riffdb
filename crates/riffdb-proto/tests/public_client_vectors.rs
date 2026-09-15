@@ -420,6 +420,61 @@ fn descriptor_delta() -> (BTreeSet<String>, BTreeSet<String>) {
 fn expected_enum_values() -> BTreeSet<String> {
     let mut values = [
         (
+            "riffdb.v1.ReplicationRefusal",
+            0,
+            "REPLICATION_REFUSAL_UNSPECIFIED",
+        ),
+        (
+            "riffdb.v1.ReplicationRefusal",
+            1,
+            "REPLICATION_REFUSAL_FOREIGN_LINEAGE",
+        ),
+        (
+            "riffdb.v1.ReplicationRefusal",
+            2,
+            "REPLICATION_REFUSAL_STALE_EPOCH",
+        ),
+        (
+            "riffdb.v1.ReplicationRefusal",
+            3,
+            "REPLICATION_REFUSAL_HISTORY_PRUNED",
+        ),
+        (
+            "riffdb.v1.ReplicationRefusal",
+            4,
+            "REPLICATION_REFUSAL_UNSUPPORTED_FORMAT",
+        ),
+        (
+            "riffdb.v1.ReplicationRefusal",
+            5,
+            "REPLICATION_REFUSAL_UNSUPPORTED_CATALOG",
+        ),
+        (
+            "riffdb.v1.ReplicationRefusal",
+            6,
+            "REPLICATION_REFUSAL_UNSUPPORTED_BOUNDS",
+        ),
+        (
+            "riffdb.v1.ReplicationRefusal",
+            7,
+            "REPLICATION_REFUSAL_INVALID_POSITION",
+        ),
+        (
+            "riffdb.v1.ReplicationRefusal",
+            8,
+            "REPLICATION_REFUSAL_CORRUPT_HISTORY",
+        ),
+        (
+            "riffdb.v1.ReplicationRefusal",
+            9,
+            "REPLICATION_REFUSAL_UNAVAILABLE",
+        ),
+        (
+            "riffdb.v1.ReplicationRefusal",
+            10,
+            "REPLICATION_REFUSAL_AUTHORIZATION_DENIED",
+        ),
+        (
             "riffdb.v1.CapabilityApplicationExportScope",
             0,
             "CAPABILITY_APPLICATION_EXPORT_SCOPE_UNSPECIFIED",
@@ -723,6 +778,11 @@ fn expected_enum_values() -> BTreeSet<String> {
             "riffdb.v1.CapabilityPermissionKind",
             32,
             "CAPABILITY_PERMISSION_KIND_INSPECT_VECTOR_STATE",
+        ),
+        (
+            "riffdb.v1.CapabilityPermissionKind",
+            33,
+            "CAPABILITY_PERMISSION_KIND_REPLICATE_CHANGELOG",
         ),
         // Inherited-base completeness repair, not a WP-596 enum addition:
         // bac8c0db added this enum and its generated fixture rows before the
@@ -1439,6 +1499,11 @@ fn expected_enum_values() -> BTreeSet<String> {
             "riffdb.v1.PublicErrorKind",
             12,
             "PUBLIC_ERROR_KIND_HISTORY_PRUNED",
+        ),
+        (
+            "riffdb.v1.PublicErrorKind",
+            13,
+            "PUBLIC_ERROR_KIND_FOLLOWER_MODE",
         ),
         (
             "riffdb.v1.ResourceDiscoveryKind",

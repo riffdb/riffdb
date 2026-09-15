@@ -12,6 +12,8 @@ use riffdb_types::{DatabaseId, DualFrontier};
 
 use crate::{RedbOperationalPorts, RedbStore};
 
+#[path = "changelog_bootstrap_attachment_tests.rs"]
+mod bootstrap_attachment_tests;
 #[path = "changelog_source_control_refusal_tests.rs"]
 mod refusal_tests;
 

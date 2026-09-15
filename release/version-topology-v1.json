@@ -448,6 +448,70 @@
       "durable_manifest": {"readable_key":"readable_redb_layout_versions","writable_key":"writable_redb_layout_versions"}
     },
     {
+      "id": "durable.replication_bootstrap_receipt",
+      "title": "External V3 bootstrap pages, snapshot manifest, and progress",
+      "classification": "durable",
+      "owner": "riffdb-storage-api",
+      "source_assertions": [
+        {
+          "kind": "literal",
+          "path": "crates/riffdb-storage-api/src/changelog_v3/bootstrap.rs",
+          "literal": "\"replication_bootstrap_receipt/v1\""
+        },
+        {
+          "kind": "literal",
+          "path": "crates/riffdb-storage-api/src/changelog_v3/bootstrap_codec.rs",
+          "literal": "b\"RDBRBR01\""
+        },
+        {
+          "kind": "literal",
+          "path": "crates/riffdb-storage-api/src/changelog_v3/bootstrap_codec.rs",
+          "literal": "b\"RDBRBP01\""
+        },
+        {
+          "kind": "literal",
+          "path": "crates/riffdb-storage-api/src/changelog_v3/bootstrap_progress.rs",
+          "literal": "b\"RDBRBS01\""
+        }
+      ],
+      "readable_identities": [
+        "1"
+      ],
+      "writable_identities": [
+        "1"
+      ],
+      "current_identities": [
+        "1"
+      ],
+      "writer_policy": "single_current",
+      "compatibility_rule": "External receipt V1 embeds the existing V3 history envelope and binds a nonzero source hold, exact page/row/byte counts and page hash chain. Progress embeds that manifest and binds one exact page boundary; offline redb staging commits page and progress atomically. Pages transfer only canonically ordered replicated-authoritative rows and every exact namespace end under that fence; SourceOnly populations are excluded.",
+      "breaking_when": "Receipt/page/progress V1 magic, fields, checksums, hash binding, namespace order, exact-end meaning or hard bounds change.",
+      "supported_release_posture": "Bounded codecs, complete-inventory transcript, atomic offline page/progress staging, and held source artifacts implemented by WP-746; exact follower authority construction is implemented; derived-state rebuild, publication, and daemon bootstrap activation remain in progress.",
+      "lifecycle": {
+        "active": [
+          "1"
+        ],
+        "read_only": [],
+        "retirement_candidate": [],
+        "retired": []
+      },
+      "reserved_identity_policy": "The external receipt version and page/manifest framing identities are never reused.",
+      "evidence": [
+        "fixtures/replication/bootstrap-pages-v1.hex",
+        "fixtures/replication/bootstrap-manifest-v1.hex",
+        "fixtures/replication/bootstrap-progress-v1.hex",
+        "crates/riffdb-storage-api/tests/replication_bootstrap_v3.rs"
+      ],
+      "checks": [
+        "./scripts/check-version-topology",
+        "./scripts/check-generated"
+      ],
+      "last_change": {
+        "classification": "new_domain_identity",
+        "decision": "ADR-0186/WP-746 admitted external replication_bootstrap_receipt/v1"
+      }
+    },
+    {
       "id": "durable.replication_follower_state",
       "title": "Follower-local durable attachment and progress",
       "classification": "durable",

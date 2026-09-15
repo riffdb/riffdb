@@ -122,7 +122,7 @@ pub struct ReactiveOperationPermission {
 pub struct CapabilityPermission {
     #[prost(
         oneof = "capability_permission::Permission",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33"
     )]
     pub permission: ::core::option::Option<capability_permission::Permission>,
 }
@@ -194,6 +194,8 @@ pub mod capability_permission {
         InstallApplication(::prost::alloc::string::String),
         #[prost(message, tag = "32")]
         InspectVectorState(super::Unit),
+        #[prost(message, tag = "33")]
+        ReplicateChangelog(super::Unit),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1257,6 +1259,7 @@ pub enum CapabilityPermissionKind {
     ConsumeContextualSubscription = 30,
     InstallApplication = 31,
     InspectVectorState = 32,
+    ReplicateChangelog = 33,
 }
 impl CapabilityPermissionKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1308,6 +1311,7 @@ impl CapabilityPermissionKind {
             }
             Self::InstallApplication => "CAPABILITY_PERMISSION_KIND_INSTALL_APPLICATION",
             Self::InspectVectorState => "CAPABILITY_PERMISSION_KIND_INSPECT_VECTOR_STATE",
+            Self::ReplicateChangelog => "CAPABILITY_PERMISSION_KIND_REPLICATE_CHANGELOG",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1379,6 +1383,9 @@ impl CapabilityPermissionKind {
             }
             "CAPABILITY_PERMISSION_KIND_INSPECT_VECTOR_STATE" => {
                 Some(Self::InspectVectorState)
+            }
+            "CAPABILITY_PERMISSION_KIND_REPLICATE_CHANGELOG" => {
+                Some(Self::ReplicateChangelog)
             }
             _ => None,
         }
@@ -4284,6 +4291,7 @@ pub enum PublicErrorKind {
     HistoryIncarnationMismatch = 10,
     HistoryPruned = 12,
     Overloaded = 11,
+    FollowerMode = 13,
 }
 impl PublicErrorKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -4309,6 +4317,7 @@ impl PublicErrorKind {
             }
             Self::HistoryPruned => "PUBLIC_ERROR_KIND_HISTORY_PRUNED",
             Self::Overloaded => "PUBLIC_ERROR_KIND_OVERLOADED",
+            Self::FollowerMode => "PUBLIC_ERROR_KIND_FOLLOWER_MODE",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -4333,6 +4342,7 @@ impl PublicErrorKind {
             }
             "PUBLIC_ERROR_KIND_HISTORY_PRUNED" => Some(Self::HistoryPruned),
             "PUBLIC_ERROR_KIND_OVERLOADED" => Some(Self::Overloaded),
+            "PUBLIC_ERROR_KIND_FOLLOWER_MODE" => Some(Self::FollowerMode),
             _ => None,
         }
     }
@@ -5736,6 +5746,132 @@ pub struct IndexPage {
 pub struct ScanIndexResponse {
     #[prost(message, optional, tag = "1")]
     pub page: ::core::option::Option<IndexPage>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReplicationPosition {
+    #[prost(uint64, tag = "1")]
+    pub transaction_sequence: u64,
+    #[prost(bytes = "vec", tag = "2")]
+    pub history_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "3")]
+    pub application_frontier: ::core::option::Option<FrontierPosition>,
+    #[prost(message, optional, tag = "4")]
+    pub administration_frontier: ::core::option::Option<FrontierPosition>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReplicationBootstrapRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub hold_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub resume_manifest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint32, tag = "3")]
+    pub after_page: u32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReplicationBootstrapAttachment {
+    #[prost(bytes = "vec", tag = "1")]
+    pub manifest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub acknowledged: ::core::option::Option<ReplicationPosition>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StreamChangelogRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub database_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "3")]
+    pub history_incarnation: u64,
+    #[prost(uint64, tag = "4")]
+    pub leadership_epoch: u64,
+    #[prost(string, tag = "5")]
+    pub readable_format: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "6")]
+    pub catalog_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "7")]
+    pub after: ::core::option::Option<ReplicationPosition>,
+    #[prost(uint64, tag = "8")]
+    pub maximum_frame_bytes: u64,
+    #[prost(uint64, tag = "9")]
+    pub maximum_transitions: u64,
+    #[prost(message, optional, tag = "10")]
+    pub bootstrap: ::core::option::Option<ReplicationBootstrapRequest>,
+    #[prost(message, optional, tag = "11")]
+    pub attachment: ::core::option::Option<ReplicationBootstrapAttachment>,
+    #[prost(bytes = "vec", tag = "12")]
+    pub follower_hold_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StreamChangelogResponse {
+    #[prost(oneof = "stream_changelog_response::Item", tags = "1, 2, 3, 4")]
+    pub item: ::core::option::Option<stream_changelog_response::Item>,
+}
+/// Nested message and enum types in `StreamChangelogResponse`.
+pub mod stream_changelog_response {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Item {
+        #[prost(bytes, tag = "1")]
+        Frame(::prost::alloc::vec::Vec<u8>),
+        #[prost(enumeration = "super::ReplicationRefusal", tag = "2")]
+        Refusal(i32),
+        #[prost(bytes, tag = "3")]
+        BootstrapManifest(::prost::alloc::vec::Vec<u8>),
+        #[prost(bytes, tag = "4")]
+        BootstrapPage(::prost::alloc::vec::Vec<u8>),
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ReplicationRefusal {
+    Unspecified = 0,
+    ForeignLineage = 1,
+    StaleEpoch = 2,
+    HistoryPruned = 3,
+    UnsupportedFormat = 4,
+    UnsupportedCatalog = 5,
+    UnsupportedBounds = 6,
+    InvalidPosition = 7,
+    CorruptHistory = 8,
+    Unavailable = 9,
+    AuthorizationDenied = 10,
+}
+impl ReplicationRefusal {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "REPLICATION_REFUSAL_UNSPECIFIED",
+            Self::ForeignLineage => "REPLICATION_REFUSAL_FOREIGN_LINEAGE",
+            Self::StaleEpoch => "REPLICATION_REFUSAL_STALE_EPOCH",
+            Self::HistoryPruned => "REPLICATION_REFUSAL_HISTORY_PRUNED",
+            Self::UnsupportedFormat => "REPLICATION_REFUSAL_UNSUPPORTED_FORMAT",
+            Self::UnsupportedCatalog => "REPLICATION_REFUSAL_UNSUPPORTED_CATALOG",
+            Self::UnsupportedBounds => "REPLICATION_REFUSAL_UNSUPPORTED_BOUNDS",
+            Self::InvalidPosition => "REPLICATION_REFUSAL_INVALID_POSITION",
+            Self::CorruptHistory => "REPLICATION_REFUSAL_CORRUPT_HISTORY",
+            Self::Unavailable => "REPLICATION_REFUSAL_UNAVAILABLE",
+            Self::AuthorizationDenied => "REPLICATION_REFUSAL_AUTHORIZATION_DENIED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "REPLICATION_REFUSAL_UNSPECIFIED" => Some(Self::Unspecified),
+            "REPLICATION_REFUSAL_FOREIGN_LINEAGE" => Some(Self::ForeignLineage),
+            "REPLICATION_REFUSAL_STALE_EPOCH" => Some(Self::StaleEpoch),
+            "REPLICATION_REFUSAL_HISTORY_PRUNED" => Some(Self::HistoryPruned),
+            "REPLICATION_REFUSAL_UNSUPPORTED_FORMAT" => Some(Self::UnsupportedFormat),
+            "REPLICATION_REFUSAL_UNSUPPORTED_CATALOG" => Some(Self::UnsupportedCatalog),
+            "REPLICATION_REFUSAL_UNSUPPORTED_BOUNDS" => Some(Self::UnsupportedBounds),
+            "REPLICATION_REFUSAL_INVALID_POSITION" => Some(Self::InvalidPosition),
+            "REPLICATION_REFUSAL_CORRUPT_HISTORY" => Some(Self::CorruptHistory),
+            "REPLICATION_REFUSAL_UNAVAILABLE" => Some(Self::Unavailable),
+            "REPLICATION_REFUSAL_AUTHORIZATION_DENIED" => Some(Self::AuthorizationDenied),
+            _ => None,
+        }
+    }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ApplicationSessionOpen {

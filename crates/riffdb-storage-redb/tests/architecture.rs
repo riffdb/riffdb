@@ -211,7 +211,17 @@ fn graceful_close_drops_immutable_classification_before_one_final_write_transact
         .expect("same write enters CLEAN");
     assert!(read < classify && classify < drop_read && drop_read < begin && begin < clean);
     assert_eq!(close.matches("begin_write()").count(), 1);
-    assert_eq!(close.matches("begin_read()").count(), 1);
+    assert_eq!(close.matches("begin_read()").count(), 2);
+    let probe = close
+        .find("follower_lifecycle::is_attached(&read)")
+        .unwrap();
+    let refusal = close.find("if !matches!(source, Ok(false))").unwrap();
+    let barrier = close
+        .find("self.complete_graceful_close_barrier()")
+        .unwrap();
+    // The probe's owned read is dropped by and_then before either the barrier
+    // or its separate immutable checkpoint classification view is opened.
+    assert!(probe < refusal && refusal < barrier && barrier < read);
 
     let final_clean = store
         .split_once("fn write_final_clean_close_lifecycle_after_barrier")
@@ -1034,6 +1044,10 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
                     // Extracted store-owned graceful-close boundary; its sole
                     // final write commits through `SharedRedb::commit_durable`.
                     || name == "store_graceful_close.rs"
+                    // Sole follower frame/ack owner, checked explicitly below.
+                    || name == "store_follower.rs"
+                    // Derived persistence under that same move-only owner.
+                    || name == "store_follower_projection.rs"
                     // The extracted store-owned checkpoint is checked below:
                     // one begin, one commit_durable, no native commit bypass.
                     || name == "store_journal_checkpoint.rs"
@@ -1064,6 +1078,83 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
     assert!(store.contains("fncommit_durable("));
     assert!(store.contains("self.shared.commit_durable(transaction)?"));
     assert!(store.contains("self.shared.commit_durable(transaction)"));
+    let follower = without_whitespace(&production_source(source_dir.join("store_follower.rs")));
+    assert_eq!(
+        follower
+            .matches("self.shared.database.begin_write()")
+            .count(),
+        2
+    );
+    assert_eq!(
+        follower
+            .matches("self.shared.commit_durable(write)?")
+            .count(),
+        2
+    );
+    assert_eq!(follower.matches(".commit()").count(), 0);
+    assert_eq!(
+        follower
+            .matches("set_durability(Durability::Immediate)")
+            .count(),
+        2
+    );
+    assert_eq!(
+        follower.matches("shared.mutation_gate.acquire()?").count(),
+        2
+    );
+    assert!(!follower.contains("RedbOperationalPorts"));
+    assert!(!follower.contains("complete_graceful_close("));
+    assert!(!follower.contains("allocate_one("));
+    let projection = without_whitespace(&production_source(
+        source_dir.join("store_follower_projection.rs"),
+    ));
+    assert!(projection.contains("implRedbFollowerApplier{"));
+    assert_eq!(
+        projection
+            .matches("self.shared.database.begin_write()")
+            .count(),
+        1
+    );
+    assert_eq!(
+        projection
+            .matches("self.shared.commit_durable(write)?")
+            .count(),
+        1
+    );
+    assert_eq!(
+        projection
+            .matches("shared.mutation_gate.acquire()?")
+            .count(),
+        1
+    );
+    assert_eq!(
+        projection
+            .matches("set_durability(Durability::Immediate)")
+            .count(),
+        1
+    );
+    assert_eq!(projection.matches(".commit()").count(), 0);
+    assert!(!projection.contains("RedbOperationalPorts"));
+    assert!(!projection.contains("allocate_one("));
+    let replay = without_whitespace(&production_source(source_dir.join("projection_replay.rs")));
+    assert!(!replay.contains("begin_write("));
+    assert!(!replay.contains(".commit("));
+    assert!(!replay.contains("commit_durable("));
+    assert_eq!(replay.matches(".insert(").count(), 2);
+    assert!(replay.contains("letmutrows=write.open_table(PROJECTION_STATE)"));
+    assert!(replay.contains("write.open_table(PROJECTION_APPLIED).map_err(invalid)?.insert("));
+    let recovery = without_whitespace(&production_source(
+        source_dir.join("store_follower_recovery.rs"),
+    ));
+    assert!(!recovery.contains("pubapplier:"));
+    assert!(!recovery.contains("Deref"));
+    assert!(!recovery.contains("ChangelogFollowerApplyPortV3"));
+    assert!(!recovery.contains("begin_write("));
+    assert!(!recovery.contains("commit_durable("));
+    assert!(!recovery.contains("RedbOperationalPorts"));
+    assert!(recovery.contains("letshared=Arc::clone(&self.0.shared)"));
+    assert!(recovery.contains("self.session.finish_bootstrap_catalog_preflight(end)?"));
+    assert!(recovery.contains("RedbFollowerStore(RedbStore{shared:self.applier.shared"));
     let activation = without_whitespace(&production_source(
         source_dir.join("startup_v3_activation.rs"),
     ));
@@ -1763,6 +1854,7 @@ fn source_controls_are_crate_private_closed_barrier_owners_without_application_e
     let transaction =
         production_source(crate_root().join("src/changelog_source_control_transaction.rs"));
     let pruning = production_source(crate_root().join("src/changelog_source_control_retention.rs"));
+    let attachment = production_source(crate_root().join("src/changelog_bootstrap_attachment.rs"));
     let exports = production_source(crate_root().join("src/lib.rs"));
     assert!(source.contains("pub(crate) struct ReplicationSourceControl"));
     assert!(!exports.contains("ReplicationSourceControl"));
@@ -1800,6 +1892,11 @@ fn source_controls_are_crate_private_closed_barrier_owners_without_application_e
     assert!(!pruning.contains("CapturedImmediateWrite"));
     assert!(!pruning.contains("open_table(ENTITIES)"));
     assert!(!source.contains("fn remove"));
+    assert!(attachment.contains("pub(crate) fn attach_bootstrap("));
+    assert!(!attachment.contains("pub fn attach_bootstrap("));
+    assert!(!attachment.contains("fn remove"));
+    assert!(!attachment.contains("CapturedImmediateWrite"));
+    assert!(!attachment.contains("open_table(ENTITIES)"));
 }
 
 #[test]

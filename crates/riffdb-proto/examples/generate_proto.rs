@@ -159,6 +159,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/v1/query.proto",
     "riffdb/v1/session.proto",
     "riffdb/v1/services.proto",
+    "riffdb/v1/replication.proto",
     "riffdb/v1/value.proto",
 ];
 
@@ -731,6 +732,7 @@ const PROBE_PAYLOAD: &[u8] = &[0x08, 0x2a];
 const CRC_32C: Crc<u32> = Crc::<u32>::new(&CRC_32_ISCSI);
 const EXPECTED_METHODS: &[(&str, &str, bool)] = &[
     ("ApplicationSessionService", "Open", true),
+    ("ReplicationService", "StreamChangelog", true),
     ("ApplicationQueryService", "CheckQuery", false),
     ("ApplicationQueryService", "DeployQueryModule", false),
     ("ApplicationQueryService", "DeployReactiveModule", false),
@@ -2721,7 +2723,7 @@ fn validate_service_inventory(descriptor_set: &FileDescriptorSet) -> Result<(), 
         .sum::<usize>();
     if actual_services != expected_services || service_count != expected_services.len() {
         return Err(io::Error::other(
-            "service descriptors differ from the ADR-0127 eight-service baseline",
+            "service descriptors differ from the accepted service registry (including ADR-0178 replication)",
         )
         .into());
     }
@@ -2797,7 +2799,7 @@ fn validate_service_inventory(descriptor_set: &FileDescriptorSet) -> Result<(), 
 
     if actual != expected {
         return Err(io::Error::other(format!(
-            "service inventory differs from the ADR-0127/ADR-0136 eight-service, sixty-eight-RPC baseline: expected {expected:?}, found {actual:?}"
+            "service inventory differs from the accepted RPC registry (including ADR-0178 replication): expected {expected:?}, found {actual:?}"
         ))
         .into());
     }

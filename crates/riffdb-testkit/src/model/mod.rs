@@ -3,6 +3,7 @@
 mod authoritative;
 mod comparison;
 mod fixtures;
+mod namespaces;
 
 pub use authoritative::{AuthoritativeCommandModel, ModelApplyError};
 pub use comparison::{
@@ -10,3 +11,4 @@ pub use comparison::{
     StoreDivergenceCause, verify_model_against_inspection,
 };
 pub use fixtures::budget_projection_schema;
+pub use namespaces::{AuthoritativeNamespaceModel, NamespaceModelError};

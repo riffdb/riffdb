@@ -6,6 +6,122 @@ use riffdb_storage_api::{
 };
 
 #[test]
+// req: REP-002, REP-003
+fn follower_restart_lifecycle_must_preserve_the_exact_upstream_successor() {
+    use riffdb_storage_api::{
+        AuthoritativeNamespaceV1 as N, ReplicationFollowerStateV3,
+        proto_codec::encode_replication_follower_state_v3,
+    };
+    let scope = crate::test_path::ScopedDirectory::new("v3-follower-lifecycle-conflict");
+    let mut store = RedbStore::open(scope.join("db.redb")).unwrap();
+    let database_id =
+        DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x74; 10]).unwrap();
+    store.initialize_database(database_id).unwrap();
+    let lineage = ChangelogLineageV3::new(database_id, 1, LeadershipEpochV1::initial()).unwrap();
+    let original = crate::changelog_v3_activation::activate_validated(
+        store.shared.database.begin_write().unwrap(),
+        lineage,
+        DualFrontier::INITIAL,
+    )
+    .unwrap();
+    // Isolated attached-root fixture: this is not a bootstrap implementation or
+    // an alternative production attachment authority.
+    let attached = ReplicationFollowerStateV3::attached(lineage, original.tail(), None).unwrap();
+    let write = store.shared.database.begin_write().unwrap();
+    write
+        .open_table(META)
+        .unwrap()
+        .insert(
+            N::ReplicationFollowerState.metadata_key().unwrap(),
+            encode_replication_follower_state_v3(attached)
+                .unwrap()
+                .as_bytes(),
+        )
+        .unwrap();
+    store.shared.commit_durable(write).unwrap();
+    let epoch = store.shared.durable_commit_epoch();
+    store
+        .shared
+        .advance_dirty_lifecycle_before_activation(database_id, 1, None)
+        .unwrap();
+    let observed = crate::changelog_v3_roots::validate_retained_history(
+        &store.shared.database.begin_read().unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        observed.tail().sequence(),
+        original.tail().sequence(),
+        "local follower activation must not allocate the upstream's next V3 sequence",
+    );
+    assert_eq!(
+        observed, original,
+        "restart must preserve the upstream position and hash"
+    );
+    assert_eq!(store.shared.durable_commit_epoch(), epoch);
+    let retained =
+        crate::startup::read_retained_metadata_pub(&store.shared.database.begin_read().unwrap())
+            .unwrap();
+    crate::validated_prefix::write_validated_prefix_checkpoint(
+        &store.shared,
+        &retained,
+        crate::validated_prefix::CheckpointPurpose::StartupValidation,
+    )
+    .unwrap();
+    assert_eq!(
+        store.shared.durable_commit_epoch(),
+        epoch,
+        "follower checkpointing must not allocate or rewrite source evidence"
+    );
+    assert!(
+        store
+            .shared
+            .database
+            .begin_read()
+            .unwrap()
+            .open_table(META)
+            .unwrap()
+            .get(META_CLEAN_CLOSE_LIFECYCLE)
+            .unwrap()
+            .is_none()
+    );
+    let close = store.shared.complete_graceful_close();
+    assert_eq!(
+        close.disposition(),
+        crate::GracefulCheckpointDispositionV1::ClassificationFailed,
+        "attached state cannot enter the source-only graceful close owner"
+    );
+    assert_eq!(store.shared.durable_commit_epoch(), epoch);
+    let write = store.shared.database.begin_write().unwrap();
+    write
+        .open_table(META)
+        .unwrap()
+        .insert(
+            META_CLEAN_CLOSE_LIFECYCLE,
+            b"conflicting-source-certificate".as_slice(),
+        )
+        .unwrap();
+    store.shared.commit_durable(write).unwrap();
+    let epoch = store.shared.durable_commit_epoch();
+    assert_eq!(
+        store
+            .shared
+            .advance_dirty_lifecycle_before_activation(database_id, 1, None)
+            .unwrap_err()
+            .kind(),
+        StorageErrorKind::CorruptData,
+        "follower activation must not consume or repair a source certificate"
+    );
+    assert_eq!(store.shared.durable_commit_epoch(), epoch);
+    drop(store);
+    assert_eq!(
+        RedbStore::open(scope.join("db.redb")).err().unwrap().kind(),
+        StorageErrorKind::InvariantViolation,
+        "source-mode reopen cannot implicitly promote the attached follower"
+    );
+}
+
+#[test]
 fn dirty_clean_and_consumption_each_commit_one_non_recursive_v3_receipt() {
     let scope = crate::test_path::ScopedDirectory::new("v3-real-lifecycle");
     let mut store = RedbStore::open(scope.join("db.redb")).unwrap();

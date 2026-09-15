@@ -121,9 +121,14 @@ impl ServiceIdentity {
     }
 }
 
-/// Cloneable least-authority handles to the sole-writer coordinator actor.
+/// Primary writer capabilities, or their explicit absence on a follower.
 #[derive(Clone)]
 pub struct ServiceExecutors {
+    primary: Option<PrimaryServiceExecutors>,
+}
+
+#[derive(Clone)]
+pub(crate) struct PrimaryServiceExecutors {
     pub(crate) audit: AdministrationAuditExecutor,
     pub(crate) control_plane: ControlPlaneExecutor,
     pub(crate) command: CommandExecutor,
@@ -140,11 +145,31 @@ impl ServiceExecutors {
         idempotency: CommandIdempotencyInspector,
     ) -> Self {
         Self {
-            audit,
-            control_plane,
-            command,
-            idempotency,
+            primary: Some(PrimaryServiceExecutors {
+                audit,
+                control_plane,
+                command,
+                idempotency,
+            }),
         }
+    }
+
+    /// Constructs follower service admission without any primary writer handle.
+    /// This grants no startup or derived-state readiness; server composition
+    /// must still join those proofs before exposing the service.
+    #[must_use]
+    pub const fn follower() -> Self {
+        Self { primary: None }
+    }
+
+    pub(crate) const fn is_follower(&self) -> bool {
+        self.primary.is_none()
+    }
+
+    pub(crate) fn writer(&self) -> ServiceResult<&PrimaryServiceExecutors> {
+        self.primary
+            .as_ref()
+            .ok_or_else(|| PublicError::follower_mode().into())
     }
 }
 
@@ -575,6 +600,9 @@ impl RiffDbService {
         T: ServiceResponseCharge + Send + 'static,
         F: Future<Output = ServiceResult<T>> + Send + 'static,
     {
+        if let Err(failure) = self.inner.executors.admit_operation(operation) {
+            return Box::pin(async move { Err(failure) });
+        }
         let (sender, receipt) = port_completion_channel();
         let job_inner = Arc::clone(&self.inner);
         let lifecycle = Arc::new(OperationAuditLifecycle::new(operation));
@@ -617,6 +645,9 @@ impl RiffDbService {
         T: ServiceResponseCharge + Send + 'static,
         F: Future<Output = ServiceResult<T>> + Send + 'static,
     {
+        if let Err(failure) = self.inner.executors.writer() {
+            return Box::pin(async move { Err(failure) });
+        }
         let (sender, receipt) = port_completion_channel();
         let job_inner = Arc::clone(&self.inner);
         let job = Box::pin(async move {
@@ -646,6 +677,7 @@ pub(crate) async fn observe_inline_operation<T, F>(
 where
     F: Future<Output = ServiceResult<T>>,
 {
+    service.executors.admit_operation(operation)?;
     observe_operation(
         service,
         operation,
@@ -656,6 +688,9 @@ where
     )
     .await
 }
+
+#[path = "follower_admission.rs"]
+mod follower_admission;
 
 async fn observe_operation<T, F>(
     service: &RiffDbServiceInner,
@@ -780,6 +815,9 @@ const fn service_terminal_class<T>(result: &ServiceResult<T>) -> crate::ServiceT
             }
             PublicErrorKind::HistoryPruned => crate::ServiceTerminalClass::HistoryPruned,
             PublicErrorKind::Overloaded => crate::ServiceTerminalClass::Overloaded,
+            // A follower has no authoritative writer; retain the existing coarse
+            // dependency-unavailable telemetry class without changing the public refusal.
+            PublicErrorKind::FollowerMode => crate::ServiceTerminalClass::StorageUnavailable,
         },
         Err(ServiceFailure::Cancelled) => crate::ServiceTerminalClass::Cancelled,
         Err(ServiceFailure::DeadlineExceeded) => crate::ServiceTerminalClass::DeadlineExceeded,

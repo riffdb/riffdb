@@ -274,6 +274,7 @@ const fn proto_code(value: DomainCode) -> app_v1::ApplicationErrorCode {
         }
         DomainCode::HistoryPruned => app_v1::ApplicationErrorCode::HistoryPruned,
         DomainCode::Overloaded => app_v1::ApplicationErrorCode::Overloaded,
+        DomainCode::FollowerMode => app_v1::ApplicationErrorCode::FollowerMode,
         DomainCode::ProjectionDiverged => app_v1::ApplicationErrorCode::ProjectionDiverged,
         DomainCode::SnapshotRetired => app_v1::ApplicationErrorCode::SnapshotRetired,
         DomainCode::FreshnessUnsatisfied => app_v1::ApplicationErrorCode::FreshnessUnsatisfied,
@@ -307,6 +308,7 @@ fn domain_code(value: i32) -> Result<DomainCode, ApplicationErrorWireError> {
         Ok(Wire::HistoryIncarnationMismatch) => Ok(DomainCode::HistoryIncarnationMismatch),
         Ok(Wire::HistoryPruned) => Ok(DomainCode::HistoryPruned),
         Ok(Wire::Overloaded) => Ok(DomainCode::Overloaded),
+        Ok(Wire::FollowerMode) => Ok(DomainCode::FollowerMode),
         Ok(Wire::ProjectionDiverged) => Ok(DomainCode::ProjectionDiverged),
         Ok(Wire::SnapshotRetired) => Ok(DomainCode::SnapshotRetired),
         Ok(Wire::FreshnessUnsatisfied) => Ok(DomainCode::FreshnessUnsatisfied),

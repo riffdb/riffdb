@@ -790,7 +790,7 @@ async fn deploy_contract(
     let permit = match wait_with_control(
         context.control(),
         service.providers.deadline_scheduler.as_ref(),
-        service.executors.control_plane.reserve_capacity(),
+        service.executors.writer()?.control_plane.reserve_capacity(),
     )
     .await
     {
