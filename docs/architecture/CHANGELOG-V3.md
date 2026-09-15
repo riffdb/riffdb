@@ -1,7 +1,8 @@
 # Authoritative changelog V3 substrate
 
 WP-772 implements ADR-0186's storage substrate and ADR-0207's frozen
-compatibility boundary. Closure is pending final acceptance and fixture review.
+compatibility boundary. Its [automated verification](WP-772-VERIFICATION.md)
+passes; closure awaits the final five-vector fixture review.
 Production emitter, RPC, follower apply and bootstrap activation remain WP-746;
 archives remain WP-749. Internal values grant no application mutation, format
 selection, bootstrap installation or pruning authority. Application export is

@@ -23812,6 +23812,7 @@ work_packages:
       fences rather than database population or process memory.
   closure:
     status: open
+    evidence: docs/architecture/WP-772-VERIFICATION.md
     decisions_taken:
     - The existing CLI conformance query binds its opaque cursor using --cursor=value.
       A returned base64url cursor may start with a hyphen; passing it as a separate
