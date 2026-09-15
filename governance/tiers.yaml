@@ -127,9 +127,13 @@ directives:         # standing maintainer directives; ./scripts/brief prints the
       only when making it pass would require changing an accepted decision or a SPEC MUST."
   - id: D-002
     since: "2026-09-12"
-    text: "An agent never sets `status: accepted`. Propose; the maintainer accepts in a
-      separate commit that carries an `acceptance:` reference. `./scripts/check-acceptance-commits`
-      enforces both."
+    text: "Acceptance is the maintainer's decision, never the agent's. An agent never sets
+      `status: accepted` on its own initiative. Once the maintainer has said a record is accepted,
+      the agent makes the acceptance commit itself: set `status: accepted`, `accepted:`, and an
+      `acceptance:` value quoting where and when the maintainer said so (for example
+      `maintainer, in session, 2026-09-14`), regenerate the index, and commit only adr/**,
+      work_packages.yaml, and SPEC.md. Do not ask the maintainer to perform the mechanics.
+      `./scripts/check-acceptance-commits` enforces the standalone commit and the reference."
   - id: D-003
     since: "2026-09-14"
     text: "Inside an accepted record's decisions, the implementer decides. Apply this test:
