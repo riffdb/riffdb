@@ -1,5 +1,9 @@
 //! Private external receipt and offline staged-publication mechanics.
 
+mod archive_repository;
+#[cfg(test)]
+mod archive_repository_tests;
+pub use archive_repository::RedbArchiveRepository;
 mod bootstrap_materialize;
 mod bootstrap_receiver_repository;
 mod bootstrap_repository;
