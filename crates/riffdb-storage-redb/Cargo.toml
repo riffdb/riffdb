@@ -50,3 +50,7 @@ workspace = true
 [[example]]
 name = "generate_migration_durable_fixtures"
 required-features = ["test-fixtures"]
+
+[[example]]
+name = "generate_archive_receipt_fixtures"
+required-features = ["test-fixtures"]

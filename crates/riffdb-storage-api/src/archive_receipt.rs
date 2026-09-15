@@ -331,3 +331,67 @@ impl std::fmt::Debug for OfflineMaintenanceReceiptV3 {
             .finish()
     }
 }
+
+/// Bounded canonical inventory of archive-only external receipts.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OfflineMaintenanceReceiptInventoryV3(Vec<OfflineMaintenanceReceiptV3>);
+impl OfflineMaintenanceReceiptInventoryV3 {
+    /// Sorts exact operation identities and rejects duplicates or excess receipts.
+    pub fn new(mut receipts: Vec<OfflineMaintenanceReceiptV3>) -> Result<Self, StorageValueError> {
+        if receipts.len() > MAX_OFFLINE_MAINTENANCE_RECEIPTS_V1 {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        receipts.sort_by_key(OfflineMaintenanceReceiptV3::operation_id);
+        if receipts
+            .windows(2)
+            .any(|pair| pair[0].operation_id() == pair[1].operation_id())
+        {
+            return Err(StorageValueError::Duplicate);
+        }
+        Ok(Self(receipts))
+    }
+    /// Canonical operation order, including terminal evidence.
+    #[must_use]
+    pub fn receipts(&self) -> &[OfflineMaintenanceReceiptV3] {
+        &self.0
+    }
+}
+/// Outcome of durable archive receipt admission.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OfflineMaintenanceReceiptCreateResultV3 {
+    /// The accepted candidate became durable.
+    Created,
+    /// The original receipt is returned unchanged; admission must compare its input identity.
+    Existing(Box<OfflineMaintenanceReceiptV3>),
+}
+/// Outcome of a durable monotonic receipt replacement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OfflineMaintenanceReceiptReplaceResultV3 {
+    /// The exact candidate is durable, including resolved parent synchronization.
+    AlreadyCurrent,
+    /// The checked extension replaced its predecessor durably.
+    Replaced,
+}
+/// Archive receipt access under the same exclusive maintenance owner and inventory
+/// as V1/V2 receipts and migrations. This port grants no database mutation authority.
+pub trait OfflineArchiveReceiptPersistencePort {
+    /// Creates an Accepted receipt or returns the exact original for retry checks.
+    fn create_or_read_archive_receipt(
+        &mut self,
+        receipt: &OfflineMaintenanceReceiptV3,
+    ) -> Result<OfflineMaintenanceReceiptCreateResultV3, StorageError>;
+    /// Atomically persists a checked monotonic extension, retaining selection exactly.
+    fn replace_archive_receipt(
+        &mut self,
+        receipt: &OfflineMaintenanceReceiptV3,
+    ) -> Result<OfflineMaintenanceReceiptReplaceResultV3, StorageError>;
+    /// Reads one checksummed receipt without resolving an archive again.
+    fn read_archive_receipt(
+        &mut self,
+        id: OfflineMaintenanceOperationId,
+    ) -> Result<Option<OfflineMaintenanceReceiptV3>, StorageError>;
+    /// Validates the complete bounded shared ledger before returning its V3 members.
+    fn validate_archive_receipt_inventory(
+        &mut self,
+    ) -> Result<OfflineMaintenanceReceiptInventoryV3, StorageError>;
+}

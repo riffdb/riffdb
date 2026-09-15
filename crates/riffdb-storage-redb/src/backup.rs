@@ -2429,9 +2429,24 @@ mod tests {
             history_incarnation: Some(1),
             retention_watermark_sequence: None,
         }
-        .into_manifest(
+        .into_manifest_with_format_compatibility(
             vec![BackupArtifactChecksumV1::new(NonZeroU32::MIN, checksum)],
             build_metadata(),
+            BackupFormatCompatibilityV1::new(
+                riffdb_storage_api::DurableFormatIdentity::new(
+                    riffdb_storage_api::AlphaFormatEpoch::new(1).unwrap(),
+                    riffdb_storage_api::DurableFormatWriter::new(1),
+                ),
+                riffdb_storage_api::DurableFormatIdentity::new(
+                    riffdb_storage_api::AlphaFormatEpoch::new(1).unwrap(),
+                    riffdb_storage_api::DurableFormatWriter::new(1),
+                ),
+                riffdb_storage_api::CompatibilityFixtureDigest::from_bytes([
+                    255, 96, 181, 248, 173, 42, 3, 29, 240, 245, 0, 250, 149, 117, 23, 35, 220, 34,
+                    121, 248, 18, 168, 25, 188, 8, 143, 148, 87, 203, 102, 150, 41,
+                ]),
+            )
+            .unwrap(),
         )
         .expect("manifest");
         let encoded = encode_manifest(&manifest).expect("encode manifest");
@@ -2440,12 +2455,9 @@ mod tests {
             manifest
         );
         let golden_digest: [u8; SHA256_BYTES] = Sha256::digest(&encoded).into();
-        // Encoding includes presence-tagged history, retention watermark, and
-        // exact physical-restore-range fields and this release's compatibility
-        // fixture digest. The latter intentionally rotates when the writable
-        // registry gains a durable record, including command-authority successors;
-        // recompute whenever the durable layout of this fixture changes intentionally.
-        // Printed on failure so the new golden can be pasted deliberately.
+        // Freeze all input metadata, including the pre-V3 receipt corpus digest.
+        // Adding a release fixture must not rotate this V1 encoding proof. This
+        // tests byte compatibility, not permission to restore an older release.
         assert_eq!(
             golden_digest,
             [

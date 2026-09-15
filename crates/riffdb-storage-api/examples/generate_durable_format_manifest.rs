@@ -222,6 +222,15 @@ fn render_fixture_inventory(
         RETIRE_RECEIPT_V2_FIXTURE_PATH.to_owned(),
         Sha256::digest(fs::read(root.join(RETIRE_RECEIPT_V2_FIXTURE_PATH))?).into(),
     ));
+    for path in [
+        "fixtures/compatibility/offline-maintenance-archive-accepted-receipt-v3.hex",
+        "fixtures/compatibility/offline-maintenance-archive-selected-receipt-v3.hex",
+    ] {
+        entries.push((
+            path.to_owned(),
+            Sha256::digest(fs::read(root.join(path))?).into(),
+        ));
+    }
     collect_files(root, &root.join("fixtures/proto"), &mut entries, |path| {
         path.file_name()
             .and_then(|name| name.to_str())
