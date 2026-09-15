@@ -4,6 +4,9 @@
 - **Direction approved:** Yes, 2026-09-03 (maintainer, in session)
 - **Exact text accepted:** Yes, 2026-09-03 (maintainer, as written)
 - **Accepted date:** 2026-09-03
+- **Canonical-vector amendment accepted:** 2026-09-15, maintainer in session,
+  "Approve exact text", explicitly approving
+  `docs/architecture/WP-747-V2-VECTOR-REVIEW.md`
 - **Decision deadline:** Before WP-710 adds a columnar layout identity, segment
   statistic, physical encoding, or V2 checkpoint artifact
 - **Requires:** ADR-0010, ADR-0017, ADR-0072, ADR-0085, ADR-0086, ADR-0111,
@@ -105,6 +108,16 @@ Run-length encoding or another encoding may be added only through a successor
 registry identity and its own canonical fixtures. General-purpose compression,
 native-endian values, floating point, lossy encoding, CPU-feature-dependent
 bytes, and application-supplied codecs are excluded.
+
+The exact "Canonical vector lowering in V2" amendment in SPEC §4.10 is
+incorporated here in full. The maintainer accepted it in session on 2026-09-15:
+"Approve exact text", referring to `docs/architecture/WP-747-V2-VECTOR-REVIEW.md`.
+It qualifies this floating-point exclusion only for lossless checked canonical
+vectors in existing Bytes lanes, with complete typed validation and independent
+logical equality. Byte-order statistics provide no vector pruning evidence.
+WP-747 owns the amendment's implementation and proof; scalar artifacts and
+primary/follower publication authority remain unchanged.
+
 
 Encoding selection is deterministic derived-state construction. It uses only
 the field type and the bounded candidate segment's measured byte sizes across

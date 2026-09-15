@@ -39,6 +39,10 @@ review_triggers:
   - ADR-0200 collision cleanup would scan a parent, touch another path, adopt bytes, weaken reference proof or bounds, or omit a rename/remove/sync crash edge.
   - ADR-0195 cold registration, immediate rowless first-demand result, single worker, page-boundary cancellation, or no-demand evidence would change.
   - Implementation would touch a production path outside Decision 10 or alter ADR-0204's 32/26/5/27 facts.
+acceptance: >-
+  Original exact text accepted by the maintainer on the accepted date above;
+  canonical-vector amendment accepted by the maintainer in session 2026-09-15,
+  "Approve exact text", referring to docs/architecture/WP-747-V2-VECTOR-REVIEW.md.
 ---
 # ADR-0209: Epoch-Two Direct Columnar V2 Control Activation
 
@@ -55,6 +59,8 @@ refuses every epoch-1 database before its control table can open, so epoch 2 can
 validation without changing or translating the retained wire record.
 
 ## Decision
+
+Canonical-vector amendment accepted by the maintainer in session 2026-09-15 ("Approve exact text"): the exact "Canonical vector lowering in V2" text in SPEC §4.10 is incorporated here in full and qualifies this record's V2 construction and validation requirements. WP-747 owns checked canonical vectors in existing Bytes lanes, complete typed validation and equality, and no byte-order vector pruning; publication authority and scalar artifacts remain unchanged.
 
 Follower-only amendment accepted by the maintainer in session 2026-09-15 ("Approve the exact amendment"): decision 7 is qualified by ADR-0178 §4 and the exact "Follower columnar views" text in SPEC §4.10. WP-747 owns the independently validated disposable V2 views; no local authoritative control write or source-artifact checksum claim is permitted. Primary behavior remains unchanged.
 
