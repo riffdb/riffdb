@@ -1013,3 +1013,9 @@ WP-749 still requires post-replay validation and staged authorization integratio
 the existing incarnation/publication ceremony, earlier application-sequence
 stopping, operator configuration and CLI wiring, and the full restore campaign.
 This primitive does not make `storage restore --archive` available yet.
+
+Publication also needs an exact retry identity for the archive and requested
+stop. Existing restore receipts are frozen V1 and cannot represent those inputs.
+The [archive restore receipt proposal](WP-749-ARCHIVE-RESTORE-RECEIPT-REVIEW.md)
+requires acceptance before adding V3 receipts; it preserves existing receipt
+bytes and the requirement for exact application-sequence stopping.
