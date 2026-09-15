@@ -156,7 +156,8 @@ def verify_bank(bank: Path, unary_manifest: Path, unary_baseline: Path) -> dict[
                 result["errors"].append(str(exc))
                 continue
             identities[label] = values.pop("identity")
-            result["profiles"][profile][kind] = values
+            # The write-only receipt reduces to its per-client table.
+            result["profiles"][profile][kind] = values["write_only"] if kind == "write_only" else values
     try:
         manifest = load(unary_manifest)
         if manifest.get("schema") != UNARY_MANIFEST_SCHEMA:
