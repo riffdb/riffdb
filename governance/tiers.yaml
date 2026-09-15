@@ -152,3 +152,12 @@ directives:         # standing maintainer directives; ./scripts/brief prints the
       `Amendment N (completed by WP-NNN on <date>): <what was added and why>`, and is listed in
       `decisions_taken:`. Removing or reinterpreting a member of a closed set, or completing a
       set after its first durable write, remains a record change that stops."
+  - id: D-005
+    since: "2026-09-14"
+    text: "A patch-level or security-advisory bump of a dependency that an accepted record already
+      admits is an implementation choice, not a record change: make it, keep the exact pin, run
+      `cargo deny check` and `cargo audit`, and record the version, the advisory or reason, and
+      both results in `Decisions:` and `decisions_taken:`. If the pinning record names the exact
+      version, update that one token in the record's own commit with the same line. A new
+      dependency, a minor or major change to a pinned critical dependency, a feature-set change,
+      or any bump that alters a public or durable behavior still stops under AGENTS.md."
