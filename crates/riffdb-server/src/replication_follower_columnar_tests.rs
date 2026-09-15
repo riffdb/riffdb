@@ -151,6 +151,10 @@ async fn follower_columnar_demand_builds_disposable_views_and_refuses_withdrawal
     )
     .unwrap();
     assert_eq!(runtime.lifecycle_observation().unwrap(), (2, 0, 0));
+    assert!(
+        !runtime.is_healthy(),
+        "cold sources must degrade columnar health"
+    );
     assert!(!root.join("follower-columnar").exists());
     std::thread::scope(|scope| {
         let barrier = Arc::new(std::sync::Barrier::new(9));
@@ -167,6 +171,10 @@ async fn follower_columnar_demand_builds_disposable_views_and_refuses_withdrawal
         barrier.wait();
     });
     assert_eq!(runtime.lifecycle_observation().unwrap(), (1, 1, 0));
+    assert!(
+        !runtime.is_healthy(),
+        "activating sources must degrade columnar health"
+    );
     assert!(!root.join("follower-columnar").exists());
     let mut worker = runtime.worker_for_test().unwrap();
     assert!(runtime.worker_for_test().is_err());
@@ -178,6 +186,10 @@ async fn follower_columnar_demand_builds_disposable_views_and_refuses_withdrawal
         FrontierPosition::BeforeFirst
     );
     assert_eq!(runtime.lifecycle_observation().unwrap(), (1, 1, 1));
+    assert!(
+        !runtime.is_healthy(),
+        "the remaining cold vector source is not ready"
+    );
     assert!(!root.join("follower-columnar/build").exists());
     assert_eq!(
         readers
@@ -304,5 +316,147 @@ async fn follower_columnar_owned_worker_wakes_registered_demand_and_rebuilds_aft
         assert!(runtime.observe("document_board").is_err());
         assert!(active.has_published());
     }
+    receiver.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn follower_columnar_cancelled_build_drains_scratch_without_publishing() {
+    let (fixture, build) = fixture_with_setup(setup).await;
+    let mut receiver = build
+        .publish_and_follow(fixture.path.clone())
+        .await
+        .unwrap();
+    let (_, readers, _) = receiver.prepare_service().await.unwrap();
+    let controls = readers
+        .latest()
+        .unwrap()
+        .snapshot()
+        .read_columnar_projection_controls()
+        .unwrap();
+    let root = fixture.path.with_extension("cancelled-columnar");
+    std::fs::create_dir(&root).unwrap();
+    let configured = [ConfiguredProjection::for_test(
+        "document_board",
+        "Document",
+        &["title"],
+        "organization_id",
+    )];
+    let runtime = FollowerColumnarRuntime::open(
+        readers.clone(),
+        &configured,
+        &root,
+        [0x74; 16],
+        ProductionWallClocks::new().columnar_replay(),
+    )
+    .unwrap();
+    assert!(!runtime.observe("document_board").unwrap().has_published());
+    let mut worker = runtime.worker_for_test().unwrap();
+    let (reached, ready) = std::sync::mpsc::sync_channel(0);
+    let (release, resume) = std::sync::mpsc::sync_channel(0);
+    worker.pause_before_build(reached, resume);
+    let running = std::thread::spawn(move || {
+        assert!(worker.advance().is_err());
+        worker
+    });
+    ready
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .unwrap();
+    assert!(root.join("follower-columnar/build").is_dir());
+    runtime.stop();
+    release.send(()).unwrap();
+    let worker = running.join().unwrap();
+    assert!(!root.join("follower-columnar/build").exists());
+    assert!(runtime.observe("document_board").is_err());
+    assert!(!runtime.is_healthy());
+    assert_eq!(
+        readers
+            .latest()
+            .unwrap()
+            .snapshot()
+            .read_columnar_projection_controls()
+            .unwrap(),
+        controls
+    );
+    drop(worker);
+    receiver.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn follower_columnar_failed_source_stays_closed_until_owned_restart() {
+    let (fixture, build) = fixture_with_setup(setup).await;
+    let mut receiver = build
+        .publish_and_follow(fixture.path.clone())
+        .await
+        .unwrap();
+    let (_, readers, _) = receiver.prepare_service().await.unwrap();
+    let controls = readers
+        .latest()
+        .unwrap()
+        .snapshot()
+        .read_columnar_projection_controls()
+        .unwrap();
+    let root = fixture.path.with_extension("failed-columnar");
+    std::fs::create_dir(&root).unwrap();
+    let area = root.join("follower-columnar");
+    std::fs::write(&area, b"not a private build directory").unwrap();
+    let configured = [ConfiguredProjection::for_test(
+        "document_board",
+        "Document",
+        &["title"],
+        "organization_id",
+    )];
+    let runtime = FollowerColumnarRuntime::open(
+        readers.clone(),
+        &configured,
+        &root,
+        [0x75; 16],
+        ProductionWallClocks::new().columnar_replay(),
+    )
+    .unwrap();
+    // Cold admission/status do not inspect or repair the bad optional material.
+    assert!(!runtime.is_healthy());
+    assert_eq!(
+        std::fs::read(&area).unwrap(),
+        b"not a private build directory"
+    );
+    assert!(!runtime.observe("document_board").unwrap().has_published());
+    let mut worker = runtime.worker_for_test().unwrap();
+    assert!(worker.advance().unwrap());
+    assert!(runtime.observe("document_board").is_err());
+    assert!(!runtime.is_healthy());
+    std::fs::remove_file(&area).unwrap();
+    for _ in 0..3 {
+        assert!(runtime.observe("document_board").is_err());
+        assert!(
+            !worker.advance().unwrap(),
+            "requests must not retry failed materialization"
+        );
+    }
+    assert!(!area.exists());
+    assert_eq!(runtime.lifecycle_observation().unwrap(), (1, 1, 0));
+    drop(worker);
+    let restarted = FollowerColumnarRuntime::open(
+        readers.clone(),
+        &configured,
+        &root,
+        [0x76; 16],
+        ProductionWallClocks::new().columnar_replay(),
+    )
+    .unwrap();
+    assert!(!restarted.observe("document_board").unwrap().has_published());
+    let mut worker = restarted.worker_for_test().unwrap();
+    assert!(worker.advance().unwrap());
+    assert!(restarted.observe("document_board").unwrap().has_published());
+    assert!(!root.join("follower-columnar/build").exists());
+    assert_eq!(
+        readers
+            .latest()
+            .unwrap()
+            .snapshot()
+            .read_columnar_projection_controls()
+            .unwrap(),
+        controls
+    );
+    drop(worker);
     receiver.close().await.unwrap();
 }

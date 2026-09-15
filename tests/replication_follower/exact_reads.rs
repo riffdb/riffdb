@@ -1,5 +1,5 @@
 //! The same compiled plans and provider engines on independently launched nodes.
-// req: REP-002, REP-003
+// req: REP-002, REP-003, REP-004
 use super::support::*;
 use riffdb_client_rust::app_v1;
 use riffdb_client_rust::{
@@ -392,6 +392,7 @@ async fn follower_exact_providers_match_primary_after_tail_and_restart() {
     super::wait_for_commit(&fixture, &admin, head).await;
     let mut primary_queries = fixture.application_client().await;
     let mut follower_queries = fixture.application_client_for("follower").await;
+    let mut obsolete_cursor = None;
     for phase in 0..3 {
         if phase == 1 {
             head = write(&mut client, &reader, 33, 0x11, "alpha newer document").await;
@@ -401,6 +402,16 @@ async fn follower_exact_providers_match_primary_after_tail_and_restart() {
             stop(&mut follower);
             follower = fixture.start("follower", Some("follower"));
             follower_queries = fixture.application_client_for("follower").await;
+            assert_cursor_refused(
+                &mut follower_queries,
+                &reader,
+                module,
+                head,
+                obsolete_cursor
+                    .take()
+                    .expect("cursor from the earlier process"),
+            )
+            .await;
         }
         for (name, _) in QUERIES {
             let expected = query(&mut primary_queries, &reader, name, module, head).await;
@@ -419,6 +430,55 @@ async fn follower_exact_providers_match_primary_after_tail_and_restart() {
                 ApplicationValue::String("alpha document".into())
             );
         }
+        if phase == 1 {
+            let request = pattern_page(module, head, None);
+            let primary_page = primary_queries
+                .execute_named_query(request.clone(), &reader)
+                .await
+                .unwrap();
+            let follower_page = follower_queries
+                .execute_named_query(request.clone(), &reader)
+                .await
+                .unwrap();
+            assert_eq!(primary_page.fields, follower_page.fields);
+            assert_eq!(follower_page.fields["documents"].records.len(), 1);
+            let primary_cursor = primary_page.next_cursor.expect("primary has a second row");
+            let follower_cursor = follower_page
+                .next_cursor
+                .expect("follower has a second row");
+            // The same-lineage source handle is still foreign to this process.
+            assert_cursor_refused(
+                &mut follower_queries,
+                &reader,
+                module,
+                head,
+                primary_cursor.clone(),
+            )
+            .await;
+            let primary_tail = primary_queries
+                .execute_named_query(pattern_page(module, head, Some(primary_cursor)), &reader)
+                .await
+                .unwrap();
+            let follower_tail = follower_queries
+                .execute_named_query(pattern_page(module, head, Some(follower_cursor)), &reader)
+                .await
+                .unwrap();
+            assert_eq!(primary_tail.fields, follower_tail.fields);
+            assert_eq!(follower_tail.fields["documents"].records.len(), 1);
+            assert_eq!(
+                follower_tail.fields["documents"].records[0].fields["title"],
+                ApplicationValue::String("alpha newer document".into())
+            );
+            assert!(primary_tail.next_cursor.is_none());
+            assert!(follower_tail.next_cursor.is_none());
+            // Retain an actually published, still-live continuation across restart.
+            obsolete_cursor = follower_queries
+                .execute_named_query(request, &reader)
+                .await
+                .unwrap()
+                .next_cursor;
+            assert!(obsolete_cursor.is_some());
+        }
     }
     stop(&mut follower);
     stop(&mut primary);
@@ -427,5 +487,48 @@ async fn follower_exact_providers_match_primary_after_tail_and_restart() {
         &fixture.database("primary"),
         &fixture.database("follower"),
         head,
+    );
+}
+
+fn pattern_page(module: [u8; 32], head: u64, cursor: Option<String>) -> NamedQuery {
+    let mut options = QueryOptions::new()
+        .read_after_commit(head)
+        .at_least_admission_head();
+    if let Some(cursor) = cursor {
+        options = options.after(cursor);
+    }
+    NamedQuery::new(
+        ApplicationContract::Active,
+        "PatternDocuments",
+        Some(module),
+        BTreeMap::from([
+            (
+                "org_id".into(),
+                ApplicationValue::Uuid(ApplicationUuid::from_bytes([0x11; 16])),
+            ),
+            ("needle".into(), ApplicationValue::String("alpha".into())),
+            ("limit".into(), ApplicationValue::U64(1)),
+        ]),
+        None,
+    )
+    .unwrap()
+    .with_options(options)
+    .unwrap()
+}
+
+async fn assert_cursor_refused(
+    client: &mut StableApplicationClient,
+    metadata: &CallMetadata,
+    module: [u8; 32],
+    head: u64,
+    cursor: String,
+) {
+    let error = client
+        .execute_named_query(pattern_page(module, head, Some(cursor)), metadata)
+        .await
+        .expect_err("foreign or obsolete process cursor must release no page");
+    assert_eq!(
+        error.semantic_error().map(|error| error.code()),
+        Some(riffdb_errors::ApplicationErrorCode::CursorInvalid)
     );
 }

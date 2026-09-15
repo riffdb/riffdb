@@ -487,8 +487,92 @@ pub(super) async fn run_scenario(observe_wait: bool) {
         }
         if phase == 2 {
             stop(&mut follower);
+            let poison = fixture
+                .projections("follower")
+                .join("follower-columnar/unexpected");
+            std::fs::write(&poison, b"invalid local inventory").unwrap();
             follower = fixture.start("follower", Some("follower"));
             follower_queries = fixture.application_client_for("follower").await;
+            // Cold startup must not inspect/adopt/repair optional derived files.
+            assert_eq!(std::fs::read(&poison).unwrap(), b"invalid local inventory");
+            let health = fixture
+                .client("follower")
+                .await
+                .health(
+                    v1::HealthRequest {
+                        request_id: Some(request_id(96)),
+                    },
+                    &admin,
+                )
+                .await
+                .unwrap();
+            let Some(v1::health_response::Result::Authenticated(health)) = health.result else {
+                panic!("authenticated health must remain available")
+            };
+            assert_eq!(
+                health
+                    .components
+                    .iter()
+                    .find(|component| component.component
+                        == v1::HealthComponentKind::Projection as i32)
+                    .unwrap()
+                    .status,
+                v1::HealthComponentStatus::Degraded as i32
+            );
+            assert_eq!(std::fs::read(&poison).unwrap(), b"invalid local inventory");
+            tokio::time::timeout(Duration::from_secs(20), async {
+                loop {
+                    match follower_queries
+                        .execute_projected_query(
+                            scalar_request(FreshnessPolicy::Available),
+                            &caller,
+                        )
+                        .await
+                    {
+                        Ok(ProjectedQueryOutcome::Building { .. }) => {
+                            tokio::task::yield_now().await
+                        }
+                        Err(error) => {
+                            assert_eq!(
+                                error.semantic_error().map(|error| error.code()),
+                                Some(riffdb_errors::ApplicationErrorCode::StorageUnavailable)
+                            );
+                            break;
+                        }
+                        other => panic!("invalid local files must never produce a view: {other:?}"),
+                    }
+                }
+            })
+            .await
+            .expect("failed materialization must terminate as unavailable");
+            std::fs::remove_file(&poison).unwrap();
+            // Repairing the path alone never clears a failed process-owned slot.
+            let failed = follower_queries
+                .execute_projected_query(scalar_request(FreshnessPolicy::Available), &caller)
+                .await
+                .expect_err("failed view must remain closed until restart");
+            assert_eq!(
+                failed.semantic_error().map(|error| error.code()),
+                Some(riffdb_errors::ApplicationErrorCode::StorageUnavailable)
+            );
+            stop(&mut follower);
+            // An abandoned, corrupt generation is disposable input to cleanup,
+            // never an artifact that startup may adopt as a published view.
+            let area = poison.parent().unwrap();
+            let build = area.join("build");
+            let generation = build.join("generation-0000000000000001.tmp");
+            for directory in [&build, &generation] {
+                std::fs::create_dir(directory).unwrap();
+                std::fs::set_permissions(directory, std::fs::metadata(area).unwrap().permissions())
+                    .unwrap();
+            }
+            std::fs::write(generation.join("ROOT-V2"), b"corrupt abandoned material").unwrap();
+            follower = fixture.start("follower", Some("follower"));
+            follower_queries = fixture.application_client_for("follower").await;
+            assert_eq!(
+                std::fs::read(generation.join("ROOT-V2")).unwrap(),
+                b"corrupt abandoned material"
+            );
         }
         let expected = scalar(&mut primary_queries, &caller, token(head)).await;
         let actual = scalar(&mut follower_queries, &caller, token(head)).await;
@@ -557,6 +641,14 @@ pub(super) async fn run_scenario(observe_wait: bool) {
         );
         assert!(rows.iter().all(|row| row.fields["organization_id"]
             == ApplicationValue::Uuid(ApplicationUuid::from_bytes([0x11; 16]))));
+        // Both demanded sources have now installed this fixed frontier. A
+        // scalar result alone need not mean the vector worker has drained.
+        assert!(
+            !fixture
+                .projections("follower")
+                .join("follower-columnar/build")
+                .exists()
+        );
     }
     stop(&mut follower);
     stop(&mut primary);

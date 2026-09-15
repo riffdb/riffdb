@@ -179,8 +179,9 @@ impl FollowerColumnarRuntime {
                 inventory
                     .states
                     .iter()
-                    .all(|state| !matches!(state, State::Failed | State::Stopped))
+                    .all(|state| matches!(state, State::Active(_)))
             })
+            && self.current().is_ok()
     }
 
     #[cfg(test)]
@@ -308,6 +309,11 @@ pub(crate) struct FollowerColumnarWorker {
     next_view: u64,
     cleanup_failed: bool,
     #[cfg(test)]
+    before_build: Option<(
+        std::sync::mpsc::SyncSender<()>,
+        std::sync::mpsc::Receiver<()>,
+    )>,
+    #[cfg(test)]
     before_install: Option<(
         std::sync::mpsc::SyncSender<()>,
         std::sync::mpsc::Receiver<()>,
@@ -326,8 +332,19 @@ impl FollowerColumnarWorker {
             next_view: 1,
             cleanup_failed: false,
             #[cfg(test)]
+            before_build: None,
+            #[cfg(test)]
             before_install: None,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_before_build(
+        &mut self,
+        reached: std::sync::mpsc::SyncSender<()>,
+        resume: std::sync::mpsc::Receiver<()>,
+    ) {
+        self.before_build = Some((reached, resume));
     }
 
     #[cfg(test)]
@@ -424,6 +441,13 @@ impl FollowerColumnarWorker {
                 ColumnarPortError::Unavailable
             })?;
         let binding = &self.runtime.bindings[index];
+        #[cfg(test)]
+        if let Some((reached, resume)) = self.before_build.take() {
+            reached
+                .send(())
+                .map_err(|_| ColumnarPortError::Unavailable)?;
+            resume.recv().map_err(|_| ColumnarPortError::Unavailable)?;
+        }
         // Identical immutable input and exact snapshot frontier imply no tail.
         // Temporary format generation one is never a source-control identity.
         let built = ValidatedColumnarV2Generation::prepare_streaming(
