@@ -1,6 +1,10 @@
 //! Private external receipt and offline staged-publication mechanics.
 
+mod archive_backup;
 mod archive_repository;
+pub use archive_backup::RedbVerifiedArchiveBackup;
+#[cfg(test)]
+mod archive_backup_tests;
 #[cfg(test)]
 mod archive_repository_tests;
 pub use archive_repository::{RedbArchiveFrames, RedbArchiveRepository};

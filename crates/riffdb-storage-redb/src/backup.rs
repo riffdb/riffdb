@@ -1051,15 +1051,26 @@ pub(crate) fn validate_database_semantics(
     artifact: &Path,
     manifest: &OfflineBackupManifestV1,
 ) -> Result<Database, StorageError> {
+    // Preserve manifest refusal before the potentially writable engine open.
+    let _ = manifest_checksum(manifest)?;
+    let database = Database::open(artifact).map_err(database_error)?;
+    validate_readable_database_semantics(&database, manifest)?;
+    Ok(database)
+}
+
+pub(crate) fn validate_readable_database_semantics(
+    database: &impl ReadableDatabase,
+    manifest: &OfflineBackupManifestV1,
+) -> Result<(), StorageError> {
     let expected_checksum = manifest_checksum(manifest)?;
-    let (database, facts) = open_database_with_facts(artifact)?;
+    let facts = read_database_facts(database)?;
     // Startup-owned migrations may insert history_incarnation/v1 on pre-fence
     // artifacts. Compare non-history facts exactly, and require
     // manifest.history_incarnation ≤ staged when both are present.
     if !facts.semantically_match_manifest(manifest, &expected_checksum)? {
         return Err(corrupt());
     }
-    Ok(database)
+    Ok(())
 }
 
 impl DatabaseFacts {

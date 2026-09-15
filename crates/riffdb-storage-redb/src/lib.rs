@@ -259,7 +259,7 @@ pub use maintenance::{
     RedbHeldBootstrapSource, RedbMaintenanceOperationEvidence, RedbMaintenanceReconciliation,
     RedbMaintenanceStorage, RedbMigrationDiskReservation, RedbPublishedBootstrapCandidate,
     RedbSealedStagedRestore, RedbStagedRestore, RedbValidatedBootstrapCandidate,
-    RedbVerifiedBootstrapTransfer,
+    RedbVerifiedArchiveBackup, RedbVerifiedBootstrapTransfer,
 };
 #[doc(hidden)]
 pub use maintenance::{
