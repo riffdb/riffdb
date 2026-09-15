@@ -37,6 +37,65 @@ pub struct RedbArchiveRepository {
     fail_at: std::cell::Cell<Option<&'static str>>,
 }
 
+struct ReadPair {
+    manifest: ArchiveManifestV1,
+    bytes: Vec<u8>,
+    frame_file: File,
+    manifest_file: File,
+    frame_name: String,
+    manifest_name: String,
+}
+
+/// A read-only borrow of the exclusively owned archive. Each step validates one
+/// complete bounded frame and its descriptor; the first failure fuses the reader.
+/// The caller owns cancellation between steps and must drain each returned frame.
+pub struct RedbArchiveFrames<'a> {
+    repository: &'a RedbArchiveRepository,
+    previous: Option<ArchiveManifestV1>,
+    finished: bool,
+}
+
+impl Iterator for RedbArchiveFrames<'_> {
+    type Item = Result<(ArchiveManifestV1, Vec<u8>), Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+        let result = (|| {
+            self.repository.verify()?;
+            if self
+                .repository
+                .read_current()?
+                .map(|(manifest, _)| manifest)
+                != self.repository.head
+            {
+                return Err(Error::ResyncRequired);
+            }
+            let Some(head) = self.repository.head else {
+                return Ok(None);
+            };
+            let pair = self.repository.read_pair(self.previous.as_ref(), head)?;
+            self.repository.verify()?;
+            self.previous = Some(pair.manifest);
+            self.finished = pair.manifest == head;
+            Ok(Some((pair.manifest, pair.bytes)))
+        })();
+        match result {
+            Ok(Some(frame)) => Some(Ok(frame)),
+            Ok(None) => {
+                self.finished = true;
+                None
+            }
+            Err(error) => {
+                self.finished = true;
+                Some(Err(error))
+            }
+        }
+    }
+}
+impl std::iter::FusedIterator for RedbArchiveFrames<'_> {}
+
 impl RedbArchiveRepository {
     /// Validates the entire selected prefix with one frame in memory before
     /// returning progress. Creates only a missing direct child of an existing
@@ -129,6 +188,16 @@ impl RedbArchiveRepository {
         self.head
     }
 
+    /// Streams the selected prefix in order without granting mutation or source
+    /// acknowledgement authority. Construction performs no population read.
+    pub fn frames(&self) -> RedbArchiveFrames<'_> {
+        RedbArchiveFrames {
+            repository: self,
+            previous: None,
+            finished: false,
+        }
+    }
+
     fn verify(&self) -> Result<(), Error> {
         self.directory.verify_private().map_err(storage)?;
         if self.lock.metadata().map_err(io)?.len() != 0
@@ -163,30 +232,13 @@ impl RedbArchiveRepository {
             loop {
                 cancelled(cancellation)?;
                 self.verify()?;
-                let before = previous.map_or(self.backup_fence, |m: ArchiveManifestV1| m.covered());
-                let (frame_name, manifest_name) = names(before)?;
-                let (manifest_bytes, manifest_file) =
-                    self.read_required(&manifest_name, ARCHIVE_MANIFEST_V1_BYTES)?;
-                let manifest = ArchiveManifestV1::decode(&manifest_bytes)?;
-                self.check_binding(&manifest)?;
-                manifest.verify_predecessor(previous.as_ref())?;
-                if manifest.before() != before
-                    || manifest.covered().sequence() > head.covered().sequence()
-                {
-                    return Err(Error::InvalidPosition);
-                }
-                let (frame_bytes, frame_file) =
-                    self.read_required(&frame_name, MAX_CHANGELOG_FRAME_BYTES)?;
-                manifest.verify_frame(&frame_bytes)?;
-                self.sync_retained(&frame_name, &frame_file)?;
-                self.sync_retained(&manifest_name, &manifest_file)?;
-                if manifest.covered().sequence() == head.covered().sequence() {
-                    if manifest != head {
-                        return Err(Error::InvalidManifest);
-                    }
+                let pair = self.read_pair(previous.as_ref(), head)?;
+                self.sync_retained(&pair.frame_name, &pair.frame_file)?;
+                self.sync_retained(&pair.manifest_name, &pair.manifest_file)?;
+                if pair.manifest == head {
                     break;
                 }
-                previous = Some(manifest);
+                previous = Some(pair.manifest);
             }
             cancelled(cancellation)?;
             self.sync_retained(CURRENT, &current_file)?;
@@ -199,6 +251,37 @@ impl RedbArchiveRepository {
         // exist under this owner; arbitrary files are neither adopted nor deleted.
         self.discard_unselected()?;
         self.verify()
+    }
+
+    fn read_pair(
+        &self,
+        previous: Option<&ArchiveManifestV1>,
+        head: ArchiveManifestV1,
+    ) -> Result<ReadPair, Error> {
+        let before = previous.map_or(self.backup_fence, ArchiveManifestV1::covered);
+        let (frame_name, manifest_name) = names(before)?;
+        let (manifest_bytes, manifest_file) =
+            self.read_required(&manifest_name, ARCHIVE_MANIFEST_V1_BYTES)?;
+        let manifest = ArchiveManifestV1::decode(&manifest_bytes)?;
+        self.check_binding(&manifest)?;
+        manifest.verify_predecessor(previous)?;
+        if manifest.before() != before || manifest.covered().sequence() > head.covered().sequence()
+        {
+            return Err(Error::InvalidPosition);
+        }
+        if manifest.covered().sequence() == head.covered().sequence() && manifest != head {
+            return Err(Error::InvalidManifest);
+        }
+        let (bytes, frame_file) = self.read_required(&frame_name, MAX_CHANGELOG_FRAME_BYTES)?;
+        manifest.verify_frame(&bytes)?;
+        Ok(ReadPair {
+            manifest,
+            bytes,
+            frame_file,
+            manifest_file,
+            frame_name,
+            manifest_name,
+        })
     }
 
     fn read_current(&self) -> Result<Option<(ArchiveManifestV1, File)>, Error> {

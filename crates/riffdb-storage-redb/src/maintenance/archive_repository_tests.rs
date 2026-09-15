@@ -308,3 +308,66 @@ fn archive_repository_uncertain_io_retries_exact_pending_bytes_at_every_boundary
         );
     }
 }
+
+#[test]
+fn archive_repository_reader_streams_exact_selected_frames_and_fuses_on_corruption() {
+    let scope = crate::test_path::ScopedDirectory::new("archive-reader");
+    let path = scope.join("archive");
+    let (lineage, fence) = fixture::fixture();
+    let mut consumer = ArchiveConsumerV1::new(open(&path).unwrap(), lineage, fence);
+    let first_bytes = fixture::frame(lineage, fence, 1);
+    let first = consumer.append(first_bytes.clone()).unwrap();
+    consumer.begin_stream().unwrap();
+    let second_bytes = fixture::frame(lineage, first, 2);
+    let last = consumer.append(second_bytes.clone()).unwrap();
+    let repository = consumer.into_sink();
+    let mut reader = repository.frames();
+    let (manifest, bytes) = reader.next().unwrap().unwrap();
+    assert_eq!(manifest.before(), fence);
+    assert_eq!(manifest.covered(), first);
+    assert_eq!(bytes, first_bytes);
+    let (manifest, bytes) = reader.next().unwrap().unwrap();
+    assert_eq!(manifest.before(), first);
+    assert_eq!(manifest.covered(), last);
+    assert_eq!(bytes, second_bytes);
+    assert!(reader.next().is_none());
+    assert!(reader.next().is_none());
+    fs::write(
+        path.join("frame-0000000000000002.v3"),
+        b"changed after open",
+    )
+    .unwrap();
+    let mut reader = repository.frames();
+    assert!(reader.next().unwrap().is_err());
+    assert!(reader.next().is_none());
+    assert!(reader.next().is_none());
+}
+
+#[test]
+fn archive_repository_reader_refuses_selector_withdrawal_between_frames() {
+    let scope = crate::test_path::ScopedDirectory::new("archive-reader-selector");
+    let path = scope.join("archive");
+    let (lineage, fence) = fixture::fixture();
+    let repository = open(&path).unwrap();
+    let mut empty = repository.frames();
+    assert!(empty.next().is_none());
+    assert!(empty.next().is_none());
+    let mut consumer = ArchiveConsumerV1::new(repository, lineage, fence);
+    let first = consumer.append(fixture::frame(lineage, fence, 1)).unwrap();
+    consumer.begin_stream().unwrap();
+    consumer.append(fixture::frame(lineage, first, 2)).unwrap();
+    let repository = consumer.into_sink();
+    let mut reader = repository.frames();
+    assert_eq!(reader.next().unwrap().unwrap().0.covered(), first);
+    let selected = fs::read(path.join("CURRENT")).unwrap();
+    fs::remove_file(path.join("CURRENT")).unwrap();
+    assert_eq!(
+        reader.next(),
+        Some(Err(ArchiveConsumerErrorV1::ResyncRequired))
+    );
+    fs::write(path.join("CURRENT"), selected).unwrap();
+    assert!(
+        reader.next().is_none(),
+        "restoration cannot revive a failed reader"
+    );
+}
