@@ -43,6 +43,10 @@ review_triggers:
   - An application, operator, query, policy, or transport could select layout, encoding, pruning, fallback, validation, compaction, generation, or a resource bound.
   - V1 would be removed outside WP-757 and ADR-0181, or after the external-database window closes without ADR-0124 retirement review.
   - The existing DefinitionFingerprint algorithm or its leading LAYOUT_VERSION value would change, Segment V2 or Manifest V2 would reinterpret their definition_fingerprint field, or the accepted WP-710 fixture would be regenerated.
+acceptance: >-
+  Original exact text accepted by the maintainer on the accepted date above;
+  canonical-vector amendment accepted by the maintainer in session 2026-09-15,
+  "Approve exact text", referring to docs/architecture/WP-747-V2-VECTOR-REVIEW.md.
 ---
 # ADR-0190: Atomic Columnar V2 Generation-Root Publication
 
@@ -53,6 +57,8 @@ ADR-0160 freezes partition-scoped Segment V2 and Manifest V2 bytes, but one colu
 The existing projection control transition already owns the required authority boundary. ProjectionControlOperation::PublishCandidate compares the complete expected control and requires the candidate frontier to equal the transaction-current authoritative head. WP-711 needs one immutable filesystem root prepared before that CAS; it does not need a new authoritative storage key or another sequence owner.
 
 ## Decision
+
+Canonical-vector amendment accepted by the maintainer in session 2026-09-15 ("Approve exact text"): the exact "Canonical vector lowering in V2" text in SPEC §4.10 is incorporated here in full and qualifies this record's V2 construction and validation requirements. WP-747 owns checked canonical vectors in existing Bytes lanes, complete typed validation and equality, and no byte-order vector pruning; publication authority and scalar artifacts remain unchanged.
 
 1. Add COLUMNAR_GENERATION_ROOT_FORMAT_VERSION_V1 with identity 1 and magic RDBCGRT followed by one zero byte. Its canonical filename is ROOT-V1 inside generation- followed by the generation as sixteen lowercase hexadecimal digits; the temporary directory adds the suffix .tmp. Every integer is unsigned big-endian, every variable field is length-prefixed, reserved bits and fields are zero, and the existing checksum_bytes domain-separated SHA-256 covers every preceding byte. Unknown version, flags, trailing bytes, noncanonical order, overflow, or checksum mismatch is unusable derived state.
 

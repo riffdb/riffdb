@@ -55,6 +55,10 @@ review_triggers:
   - Publication could omit transaction-current head comparison, accept an unvalidated artifact, reopen its capture gate or acknowledge before exact view installation, or infer success from uncertainty.
   - A selected V2 failure could serve V1, another generation, a partial partition set, or mixed layout.
   - An application, operator, SDK, query, MCP request, or transport could supply a durable identity, semantic hash, layout, generation, root, fingerprint, fallback, validation mode, or bound.
+acceptance: >-
+  Original exact text accepted by the maintainer on the accepted date above;
+  canonical-vector amendment accepted by the maintainer in session 2026-09-15,
+  "Approve exact text", referring to docs/architecture/WP-747-V2-VECTOR-REVIEW.md.
 ---
 # ADR-0192: Schema-Bound Columnar Publication Control
 
@@ -67,6 +71,8 @@ Production vectors have exact compiler-owned `VectorProjectionSourceV1` and tag-
 ADR-0181 forbids a second readable identity before WP-757, while accepted ADR-0190 already requires a bounded V1/V2 overlap until WP-711 proves activation and WP-757 removes V1. The same ordering requires one narrower structural bridge for databases that already contain tag 65. That record is never semantic migration input: the new control rebuilds from authoritative state. Its decoder remains only so the current database can be structurally opened and validated before WP-757 deletes the record/table. ADR-0181 does not already permit this exception; this record amends it for this one named identity.
 
 ## Decision
+
+Canonical-vector amendment accepted by the maintainer in session 2026-09-15 ("Approve exact text"): the exact "Canonical vector lowering in V2" text in SPEC §4.10 is incorporated here in full and qualifies this record's V2 construction and validation requirements. WP-747 owns checked canonical vectors in existing Bytes lanes, complete typed validation and equality, and no byte-order vector pruning; publication authority and scalar artifacts remain unchanged.
 
 Follower-only amendment accepted by the maintainer in session 2026-09-15 ("Approve the exact amendment"): decisions 14–16 are qualified by ADR-0178 §4 and the exact "Follower columnar views" text in SPEC §4.10. WP-747 owns the independently validated disposable V2 views; no local authoritative control write or source-artifact checksum claim is permitted. Primary behavior remains unchanged.
 

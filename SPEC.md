@@ -1355,6 +1355,52 @@ local view remains alive. Local artifact failure stays rowless and typed;
 recovery may discard and rebuild local material without changing source
 control or claiming that an attempted rebuild succeeded.
 
+### Canonical vectors in V2 (ADR-0160 amendment accepted 2026-09-15)
+
+The maintainer accepted the exact text of
+`docs/architecture/WP-747-V2-VECTOR-REVIEW.md` in session on 2026-09-15:
+"Approve exact text". The following qualifies ADR-0160 Decision §3 and the V2
+construction and validation requirements of ADR-0190, ADR-0192 and ADR-0209.
+WP-747 owns implementation and the required primary/follower validation proofs.
+
+**Canonical vector lowering in V2.** The floating-point exclusion does not
+exclude lossless storage of an already checked `CanonicalValue::Vector` through
+the existing canonical-value codec. Only a field whose checked registered
+definition is `Vector` or `Optional<Vector>` may use this lowering. Its schema,
+source identity, definition fingerprint, dimension and columnar specification
+remain vector identities. A non-null vector cell is encoded as the exact
+existing canonical-value bytes, including the Vector discriminant and
+dimension, within an existing Segment V2 Bytes lane. Null retains the existing
+validity representation. Ordinary Bytes fields retain their existing meaning.
+
+This adds no logical-type tag, physical-encoding tag, registry version, segment
+version, manifest/root version, source identity, durable control or public
+selector. The existing deterministic Bytes encoding selection and all lane,
+segment, row, partition, work and output bounds apply. There is no raw native
+float lane, alternate vector codec, lossy conversion, new scalar floating-point
+type or unbounded population path.
+
+Before any V2 view is installed, the generation owner checks the exact
+schema-derived physical lane type, decodes the entire bounded canonical vector
+payload, checks its discriminant and declared dimension, requires canonical
+re-encoding equality, and restores the typed vector cell. Trailing bytes,
+non-finite components, noncanonical negative zero, wrong types or dimensions,
+malformed validity, bounds failures and logical mismatches refuse the whole
+generation. Full root/member validation and independent equality compare the
+restored typed rows against the authoritative input, including vector values.
+
+Byte-lane ordering, dictionaries and statistics never prove vector ordering,
+distance, similarity, eligibility or pruning. Vector columns supply no scalar
+zone-map or dictionary pruning claim; existing nearest-query and scalar-filter
+semantics operate on the restored typed view. Current model, evidence,
+authorization, partition isolation and freshness checks remain mandatory.
+
+Previously valid V2 scalar artifacts remain byte-exact. Older code encountering
+a vector definition continues to refuse it; it cannot interpret the new view as
+a scalar fallback. Primary views still require exact durable-control selection.
+Follower views remain independently validated disposable material and never
+claim the source artifact checksum or originate authoritative control writes.
+
 ### Archive restore receipt V3 (ADR-0050/0178 amendment accepted 2026-09-15)
 
 The maintainer accepted the exact text of
