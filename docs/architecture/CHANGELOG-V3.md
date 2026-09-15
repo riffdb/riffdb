@@ -942,6 +942,20 @@ new format vectors require the package's human fixture review before closure.
 
 ### Filesystem archive custody
 
+The read-only backup binding derives the original receipt fence and exact
+manifest digest from an existing full backup. It verifies all three artifact
+checksums, physical compatibility, the catalog inventory and the complete
+retained V3 receipt chain. The archive fence comes from those validated V3 roots
+even when retention has removed every command row named by the backup manifest.
+The backup's manifest, database, journal and format
+marker remain pinned, and a read-only engine lock excludes database writers.
+Opening an archive through this binding rechecks the retained files and their
+checksums before creating or opening the archive directory. Verification neither
+repairs the backup nor starts a source lifecycle. This is an archive binding,
+not the complete catalog-semantic validation required before restore publication.
+The retained-descriptor engine open currently requires Linux, as does follower
+bootstrap target classification; other platforms refuse it.
+
 The storage backend now provides an exclusively locked private filesystem
 repository. It receives only already validated frames and independently verified
 backup binding inputs; it has no database writer or source-acknowledgement port.
