@@ -22168,7 +22168,18 @@ work_packages:
     crates/riffdb-service/**, crates/riffdb-api-grpc/**,
     crates/riffdb-server/**, crates/riffdb-config/**, crates/riffdb-cli/**,
     crates/riffdb-testkit/**, crates/riffdb-sim/**, release/version-topology-v1.json,
-    fixtures/**, tests/**, scripts/**, docs/**]
+    fixtures/**, tests/**, scripts/**, docs/**,
+    crates/riffdb-errors/**,
+    crates/riffdb-client-rust/src/status.rs,
+    crates/riffdb-api-mcp/src/presentation.rs,
+    crates/riffdb-query-module/src/generation.rs,
+    templates/generators/typescript/client.ts.j2,
+    clients/typescript/ticketdesk/client.ts,
+    examples/ticketdesk/web/src/generated/client.ts,
+    examples/app-baseline/typescript/src/ticketdesk-client.ts,
+    examples/agent-alpha/domains/agent-blog/generated/typescript/client.ts,
+    examples/agent-alpha/domains/agent-orders/generated/typescript/client.ts,
+    examples/agent-alpha/web/src/generated/client.ts]
   deliverables:
   - One `ReplicateChangelog` capability permission kind that no application role or bootstrap
     convenience capability can carry, with create/revoke audit and generated schema updates
