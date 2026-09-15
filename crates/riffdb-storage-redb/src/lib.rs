@@ -252,7 +252,7 @@ pub use maintenance::validate_maintenance_receipt_fixture;
 #[doc(hidden)]
 pub use maintenance::validate_migration_receipt_fixture;
 pub use maintenance::{
-    RedbArchiveRepository, RedbBootstrapCandidate, RedbBootstrapCatalogSession,
+    RedbArchiveFrames, RedbArchiveRepository, RedbBootstrapCandidate, RedbBootstrapCatalogSession,
     RedbBootstrapMaterializationInput, RedbBootstrapMaterializer, RedbBootstrapReceiverRepository,
     RedbBootstrapRepository, RedbBootstrapSourceBuild, RedbBootstrapStage,
     RedbBootstrapVerification, RedbFollowerColumnarBuild, RedbFollowerColumnarScratch,

@@ -3,7 +3,7 @@
 mod archive_repository;
 #[cfg(test)]
 mod archive_repository_tests;
-pub use archive_repository::RedbArchiveRepository;
+pub use archive_repository::{RedbArchiveFrames, RedbArchiveRepository};
 mod bootstrap_materialize;
 mod bootstrap_receiver_repository;
 mod bootstrap_repository;

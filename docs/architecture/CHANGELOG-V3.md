@@ -958,6 +958,14 @@ descriptor and complete frame with one frame in memory. Missing, corrupt,
 reordered or foreign records refuse; directory ordering never selects a head.
 Cancellation is checked between frames and grants no recovered progress.
 
+An exclusively owned repository also exposes a bounded reader of that selected
+prefix. Each step checks the pinned selector, validates the next linked manifest
+and complete frame, and returns that one frame. A changed selector, lost custody
+or corrupt pair terminates the reader with a typed error; subsequent steps yield
+nothing. Reading grants no source acknowledgement or database mutation authority.
+The caller checks cancellation between frames and releases each frame before
+requesting the next.
+
 Only after successful prefix validation may recovery remove the three fixed
 staging names and the exact next unconfirmed frame/manifest pair. All five names
 are size-checked before cleanup; unrelated entries remain untouched. Symlinks,
