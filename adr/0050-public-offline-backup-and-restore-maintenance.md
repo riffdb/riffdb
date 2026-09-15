@@ -10,6 +10,9 @@
   current Codex session
 - **Backup-retirement amendment accepted:** 2026-08-14, human maintainer
   confirmation in the current Codex session
+- **Archive-restore amendment accepted:** 2026-09-15, maintainer in session,
+  "Approve exact text", explicitly approving
+  `docs/architecture/WP-749-ARCHIVE-RESTORE-RECEIPT-REVIEW.md`
 - **Requires:** ADR-0004, ADR-0005, ADR-0006, ADR-0007, ADR-0009,
   ADR-0018, ADR-0019, ADR-0021, ADR-0025, ADR-0026, ADR-0027,
   ADR-0028, ADR-0032, ADR-0034, ADR-0037, ADR-0040, ADR-0041, and
@@ -52,6 +55,18 @@ sequence values. That limitation must be explicit rather than hidden behind a
 claim that old locators remain globally unique.
 
 ## Decision
+
+### Accepted amendment: archive restore receipt V3 and distinct RPC
+
+The exact "Archive restore receipt V3" amendment in SPEC §4.10 is incorporated
+here in full. The maintainer accepted it in session on 2026-09-15: "Approve exact
+text", referring to `docs/architecture/WP-749-ARCHIVE-RESTORE-RECEIPT-REVIEW.md`.
+It qualifies this record's restore input, RPC inventory and V1-only writer rules,
+including the retirement amendment below. Archive restore alone writes V3 and
+uses the distinct `RestoreArchivedBackup` RPC; ordinary create/restore V1 and
+retirement V2 remain frozen. WP-749 owns exact retry selection, application-stop
+granularity, staged authorization, publication and compatibility proofs. The
+existing authorization, bounded receipt and destructive ceremony rules apply.
 
 ### Add exactly three public operations
 

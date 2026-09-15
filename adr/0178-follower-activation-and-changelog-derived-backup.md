@@ -10,7 +10,10 @@ acceptance: >-
   2026-09-01; follower audit amendment accepted in session 2026-09-15, "I approve
   of these changes"; exact follower columnar amendment accepted in session
   2026-09-15, "Approve the exact amendment", referring to
-  docs/architecture/WP-747-FOLLOWER-COLUMNAR-REVIEW.md.
+  docs/architecture/WP-747-FOLLOWER-COLUMNAR-REVIEW.md; exact archive restore
+  receipt amendment accepted by the maintainer in session 2026-09-15,
+  "Approve exact text", referring to
+  docs/architecture/WP-749-ARCHIVE-RESTORE-RECEIPT-REVIEW.md.
 requires: [ADR-0019, ADR-0050, ADR-0061, ADR-0072, ADR-0082, ADR-0083, ADR-0085,
   ADR-0086, ADR-0093, ADR-0100, ADR-0101, ADR-0104, ADR-0112, ADR-0124]
 # ADR-0085 is required at Amendments 2 and 3; ADR-0100 at Amendments 1 and 2.
@@ -21,6 +24,7 @@ amends:
   - SPEC 13.5 (follower service and audit exceptions accepted 2026-09-15)
   - SPEC PRJ-005 through PRJ-009, ADR-0192 decisions 14–16, ADR-0195 decisions 4–6,
     and ADR-0209 decision 7 (exact follower columnar exception accepted 2026-09-15)
+  - ADR-0050 restore input, RPC inventory and V1-only writer rules (exact archive restore receipt amendment accepted 2026-09-15)
   - REP-001 is unchanged
 requirements: [REP-002, REP-003, REP-004, REP-005, REP-006, REP-007, REP-008, REP-009]
 packages: [WP-746, WP-747, WP-748, WP-749, WP-750]
@@ -164,6 +168,10 @@ offline prune never passes it. Each registration carries a hold budget in sequen
 mirroring the existing retention-hold ceremony.
 
 ### 7. Changelog-derived incremental and remote backup
+
+The exact "Archive restore receipt V3" amendment in SPEC §4.10 is incorporated here in full. Accepted by the maintainer in session
+2026-09-15 ("Approve exact text"), it qualifies ADR-0050 through archive-only receipt V3 and the distinct RestoreArchivedBackup RPC;
+it preserves V1/V2 bytes and exact application-sequence stopping. WP-749 owns its selection, authorization, publication and compatibility proofs.
 
 A first-party archive consumer persists every validated frame, with its checksum and sequence range, to a configured archive sink
 beside periodic offline full backups. Restore is the existing verified full backup followed by exact replay of the archived suffix
