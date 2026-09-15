@@ -44,6 +44,7 @@ fn main() -> ExitCode {
     }
 }
 
+// req: NET-001, NET-002, NET-003
 fn direct_tls_real_process_acceptance() -> TestResult<()> {
     eprintln!("remote-ingress phase=fixture");
     let root = TestRoot::new()?;

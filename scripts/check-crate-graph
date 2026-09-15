@@ -129,11 +129,67 @@ def validate_storage_api_consumers(root)
   end
   source = consumer_files.map { |path| File.read(path, encoding: "UTF-8") }.join("\n")
   traits.filter_map do |trait_name|
+    next if legacy_changelog_reader_fake?(root, trait_name)
     "storage-api trait #{trait_name} has no production, simulator, or reader-fake consumer" unless source.match?(/\b#{Regexp.escape(trait_name)}\b/)
   end
 end
 
+# ADR-0207 retains these original reader fakes as compatibility evidence. Their
+# relocation from production source to redb's root recovery test does not make
+# them unused. This is not a general exemption for arbitrary test mentions.
+def legacy_changelog_reader_fake?(root, trait_name)
+  implementation = {
+    "ChangelogFrameConsumer" => "RecordingChangelogConsumer",
+    "ChangelogFrameConsumerV2" => "RecordingChangelogConsumerV2"
+  }[trait_name]
+  return false unless implementation
+
+  path = root.join("tests/storage_recovery/storage_recovery_matrix.rs")
+  return false unless path.file?
+
+  File.read(path, encoding: "UTF-8").match?(
+    /^impl #{Regexp.escape(trait_name)} for #{Regexp.escape(implementation)} \{/
+  )
+end
+
+def compatibility_consumer_self_test
+  Dir.mktmpdir("riffdb-compatibility-consumer-self-test") do |directory|
+    root = Pathname.new(directory)
+    api = root.join("crates/riffdb-storage-api/src")
+    api.mkpath
+    File.write(api.join("lib.rs"), <<~RUST)
+      pub trait ChangelogFrameConsumer {}
+      pub trait ChangelogFrameConsumerV2 {}
+      pub trait UnusedReader {}
+    RUST
+    abort "missing compatibility evidence was accepted" unless validate_storage_api_consumers(root).length == 3
+    recovery = root.join("tests/storage_recovery")
+    recovery.mkpath
+    path = recovery.join("storage_recovery_matrix.rs")
+    File.write(path, "// ChangelogFrameConsumer ChangelogFrameConsumerV2 UnusedReader\n")
+    abort "mere compatibility mentions were accepted" unless validate_storage_api_consumers(root).length == 3
+    File.write(path, <<~RUST)
+      impl ChangelogFrameConsumer for RecordingChangelogConsumer {
+      }
+      impl ChangelogFrameConsumerV2 for RecordingChangelogConsumerV2 {
+      }
+      impl UnusedReader for ArbitraryTestOnlyReader {
+      }
+    RUST
+    errors = validate_storage_api_consumers(root)
+    unless errors.length == 1 && errors.first.include?("UnusedReader")
+      abort "compatibility evidence did not remain limited to the two exact legacy consumers"
+    end
+    File.write(path, File.read(path).sub("impl ChangelogFrameConsumerV2", "// removed ChangelogFrameConsumerV2"))
+    errors = validate_storage_api_consumers(root)
+    unless errors.length == 2 && errors.any? { |error| error.include?("ChangelogFrameConsumerV2") }
+      abort "missing legacy V2 implementation did not fail closed"
+    end
+  end
+end
+
 def self_test
+  compatibility_consumer_self_test
   Dir.mktmpdir("riffdb-crate-graph-self-test") do |directory|
     root = Pathname.new(directory)
     File.write(root.join("Cargo.toml"), <<~TOML)
