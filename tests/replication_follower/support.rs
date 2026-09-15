@@ -71,6 +71,18 @@ impl Fixture {
     pub(super) fn database(&self, name: &str) -> PathBuf {
         self.root.path().join(format!("{name}.redb"))
     }
+
+    pub(super) fn configure_document_projection(&self, name: &str) {
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(self.config(name))
+            .unwrap();
+        file.write_all(b"\n[[projections]]\nname = \"document_board\"\nentity = \"Document\"\nprojected_fields = [\"title\"]\norg_scope_field = \"organization_id\"\n").unwrap();
+    }
+
+    pub(super) fn projections(&self, name: &str) -> PathBuf {
+        self.root.path().join(format!("{name}-projections"))
+    }
     fn config(&self, name: &str) -> PathBuf {
         self.root.path().join(format!("{name}.toml"))
     }
@@ -160,6 +172,30 @@ hold_id = "01010101010101010101010101010101"
             .wait_for_readiness("riffdbd-ready-v1\t", TIMEOUT)
             .unwrap();
         process
+    }
+
+    pub(super) fn start_wait_observed_follower(&self) -> ChildProcessController {
+        #[cfg(feature = "test-fixtures")]
+        {
+            let spec = ChildProcessSpec::new(env!("CARGO_BIN_EXE_riffdbd-causal-wait-fixture"))
+                .unwrap()
+                .clear_environment()
+                .arg("--config")
+                .unwrap()
+                .arg(self.config("follower"))
+                .unwrap()
+                .arg("--mode")
+                .unwrap()
+                .arg("follower")
+                .unwrap();
+            let process = ChildProcessController::spawn(&spec).unwrap();
+            process
+                .wait_for_readiness("riffdbd-ready-v1\t", TIMEOUT)
+                .unwrap();
+            process
+        }
+        #[cfg(not(feature = "test-fixtures"))]
+        panic!("the causal-wait test requires test-fixtures");
     }
 
     pub(super) fn spawn(&self, name: &str, mode: Option<&str>) -> ChildProcessController {

@@ -738,6 +738,11 @@ async fn serve_causal(
     token: &CommitToken,
     max_wait: Duration,
 ) -> ServiceResult<ExecuteProjectedQueryResult> {
+    if service.executors.is_follower()
+        && token.history_incarnation() != service.identity.history_incarnation()
+    {
+        return Err(PublicError::history_incarnation_mismatch().into());
+    }
     let wait_deadline = {
         let policy_deadline = Instant::now() + max_wait;
         let request_deadline = context.control().deadline();

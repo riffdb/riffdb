@@ -4,6 +4,8 @@
 //! the receiver; this harness checks the independently launched service graphs.
 // req: REP-002, REP-003, REC-001
 
+#[path = "replication_follower/columnar_reads.rs"]
+mod columnar_reads;
 #[path = "replication_follower/exact_reads.rs"]
 mod exact_reads;
 #[path = "replication_follower/oracle.rs"]
@@ -18,6 +20,13 @@ mod workload;
 use riffdb_client_rust::{BearerCredential, CallMetadata, RiffDbClient, v1};
 use riffdb_errors::PublicErrorKind;
 use support::*;
+
+// req: REP-004, PRJ-008, PRJ-009
+#[cfg(feature = "test-fixtures")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn follower_causal_read_waits_for_token_then_matches_primary() {
+    columnar_reads::run_scenario(true).await;
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bootstrap_to_tail_fence_is_gap_free_across_crash() {

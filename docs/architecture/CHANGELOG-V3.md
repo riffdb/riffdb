@@ -564,8 +564,22 @@ Bytes fields and scalar artifact bytes retain their meanings. Failed sources
 remain rowless and degrade projection health. Shutdown closes demand and wakes waiters before
 draining the worker; publication withdrawal refuses new observations even while
 an older snapshot remains alive. Restart begins cold and rebuilds on demand.
-WP-747 remains open for full dataful scalar/vector TLS parity, freshness,
-namespace and failure-campaign coverage.
+The dataful TLS test
+`follower_scalar_and_vector_views_match_primary_after_advance_and_restart`
+now compares scalar rows and production-vector nearest results at the same
+application frontier after bootstrap, a replicated embedding command and a
+follower restart. It excludes another tenant and compares the complete
+authoritative namespace against the source receipt history.
+
+`follower_causal_read_waits_for_token_then_matches_primary` holds replication
+below a newly issued primary token, observes an actual registered waiter, then
+releases the frame and compares that same read's result with the primary. While
+delivery is held, Available and Bounded reads report the older local frontier
+and writes return the typed follower-mode refusal. Follower projected reads
+refuse a different-incarnation token with `RDB-HISTORY-0101` before waiting.
+The waiter observation uses a dedicated executable under `test-fixtures`; the
+normal daemon has no probe installation path and emits no test marker. WP-747
+remains open for the remaining token/cursor, policy and failure-campaign gates.
 
 `follower_exact_providers_match_primary_after_tail_and_restart` deploys all four
 compiled provider families over TLS, checks matching results and application
