@@ -988,3 +988,28 @@ each staged-file, immutable-pair and selector boundary; independent uncertain-I/
 tests require exact retry at those same nine boundaries. This repository does
 not implement encryption, retention policy, object-store access or the offline
 restore ceremony; WP-749 remains open for that composition and its full proof.
+
+### Private restore replay
+
+A completely validated private full-backup stage can now be bound to an archive
+with the same original lineage, receipt fence and full-backup manifest digest.
+The stage rechecks the entire selected archive before conversion. Conversion
+removes only source-local history, source holds, source lifecycle metadata and
+the validated empty source journal; replicated authoritative rows and the
+original V3 fence remain exact. Ordinary source open then refuses this attached
+private follower.
+
+Replay consumes an applier obtained through ordinary complete follower startup
+and checks that it owns the exact staged file, as well as the expected history.
+It passes each original archived frame to the existing follower transaction
+owner, including exact reconnect boundaries. It checks cancellation between
+frames, advances no source acknowledgement, and returns only the last archived
+position after every apply succeeds. A failed replay discards its private stage.
+Crash tests rebuild interrupted conversion and replay from the original backup;
+they leave the configured database untouched.
+
+The replay result remains private and cannot publish or grant serving readiness.
+WP-749 still requires post-replay validation and staged authorization integration,
+the existing incarnation/publication ceremony, earlier application-sequence
+stopping, operator configuration and CLI wiring, and the full restore campaign.
+This primitive does not make `storage restore --archive` available yet.

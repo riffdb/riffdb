@@ -144,7 +144,9 @@ impl RedbVerifiedArchiveBackup {
 }
 
 #[cfg(target_os = "linux")]
-fn read_only_database(file: &File) -> Result<redb::ReadOnlyDatabase, StorageError> {
+pub(in crate::maintenance) fn read_only_database(
+    file: &File,
+) -> Result<redb::ReadOnlyDatabase, StorageError> {
     use std::os::fd::AsRawFd;
     // Same retained-inode read-only open used by bootstrap publication.
     redb::Database::builder()
@@ -154,7 +156,9 @@ fn read_only_database(file: &File) -> Result<redb::ReadOnlyDatabase, StorageErro
 }
 
 #[cfg(not(target_os = "linux"))]
-fn read_only_database(_: &File) -> Result<redb::ReadOnlyDatabase, StorageError> {
+pub(in crate::maintenance) fn read_only_database(
+    _: &File,
+) -> Result<redb::ReadOnlyDatabase, StorageError> {
     Err(storage_error(StorageErrorKind::IncompatibleFormat))
 }
 

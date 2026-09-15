@@ -66,6 +66,14 @@ impl FollowerNamespace {
         self.verify()
     }
 
+    pub(crate) fn verify_database_file(&mut self, file: &File) -> Result<(), StorageError> {
+        self.verify()?;
+        if !self.parent.regular_file_matches(&self.name, file)? {
+            return Err(corrupt());
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn fail_directory_sync(&mut self) {
         self.fail_directory_sync = true;
