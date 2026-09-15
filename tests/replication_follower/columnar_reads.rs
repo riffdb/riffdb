@@ -356,13 +356,22 @@ pub(super) async fn run_scenario(observe_wait: bool) {
     client = fixture.client("primary").await;
     let mut primary_queries = fixture.application_client().await;
     let token = |head| {
-        CommitToken::new(
+        CommitToken::new_scoped(
+            lineage.database_id(),
             lineage.history_incarnation(),
             CommitSequence::new(head).unwrap(),
         )
     };
     scalar(&mut primary_queries, &caller, token(head)).await;
     nearest(&mut primary_queries, &caller, module, head).await;
+    let (foreign_database, foreign_token) = independently_issued_token(head).await;
+    assert_ne!(foreign_database, lineage.database_id());
+    assert_eq!(foreign_token.database_id(), Some(foreign_database));
+    assert_eq!(
+        foreign_token.history_incarnation(),
+        lineage.history_incarnation()
+    );
+    assert_eq!(foreign_token.commit_sequence().get(), head);
     let proxy = super::proxy::Proxy::start(fixture.channel("primary").await).await;
     fixture.configure_follower_via(lineage, &replication, proxy.endpoint());
     fixture.configure_document_projection("follower");
@@ -484,10 +493,35 @@ pub(super) async fn run_scenario(observe_wait: bool) {
         let expected = scalar(&mut primary_queries, &caller, token(head)).await;
         let actual = scalar(&mut follower_queries, &caller, token(head)).await;
         assert_eq!(actual, expected);
+        for invalid_token in [
+            foreign_token.clone(),
+            CommitToken::new(
+                lineage.history_incarnation(),
+                CommitSequence::new(head).unwrap(),
+            ),
+        ] {
+            let foreign_database_error = follower_queries
+                .execute_projected_query(
+                    scalar_request(FreshnessPolicy::Causal {
+                        token: invalid_token,
+                        max_wait: Duration::ZERO,
+                    }),
+                    &caller,
+                )
+                .await
+                .expect_err("foreign and unbound tokens must be refused");
+            assert_eq!(
+                foreign_database_error
+                    .semantic_error()
+                    .map(|error| error.code()),
+                Some(riffdb_errors::ApplicationErrorCode::HistoryIncarnationMismatch)
+            );
+        }
         let foreign = follower_queries
             .execute_projected_query(
                 scalar_request(FreshnessPolicy::Causal {
-                    token: CommitToken::new(
+                    token: CommitToken::new_scoped(
+                        lineage.database_id(),
                         lineage.history_incarnation() + 1,
                         CommitSequence::new(head).unwrap(),
                     ),
@@ -533,4 +567,50 @@ pub(super) async fn run_scenario(observe_wait: bool) {
         &fixture.database("follower"),
         head,
     );
+}
+
+async fn independently_issued_token(head: u64) -> (riffdb_types::DatabaseId, CommitToken) {
+    let fixture = Fixture::new();
+    let mut initial = fixture.start("primary", None);
+    stop(&mut initial);
+    let (lineage, admin, _) = seed_primary(&fixture.database("primary"));
+    let mut primary = fixture.start("primary", None);
+    let mut client = fixture.client("primary").await;
+    let module = deploy(&mut client, &admin).await;
+    let caller = authority(&mut client, &admin, module).await;
+    // Both independent databases have exactly three application commits. Control
+    // records do not contribute to this sequence, and incarnation starts at one.
+    for id in 70..73 {
+        write(
+            &mut client,
+            &caller,
+            id,
+            0x11,
+            "foreign",
+            [1.0, 0.0, 0.0, 0.0],
+        )
+        .await;
+    }
+    stop(&mut primary);
+    fixture.configure_document_projection("primary");
+    primary = fixture.start("primary", None);
+    let mut queries = fixture.application_client().await;
+    let result = scalar(
+        &mut queries,
+        &caller,
+        CommitToken::new(
+            lineage.history_incarnation(),
+            CommitSequence::new(head).unwrap(),
+        ),
+    )
+    .await;
+    let ProjectedQueryOutcome::Ready {
+        commit_token: Some(token),
+        ..
+    } = result
+    else {
+        panic!("independent primary must issue a token")
+    };
+    stop(&mut primary);
+    (lineage.database_id(), token)
 }

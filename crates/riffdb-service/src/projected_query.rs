@@ -38,9 +38,8 @@ use riffdb_policy::{
     resolve_authorized_query_row_policy_context,
 };
 use riffdb_types::{
-    CanonicalValue, CommitToken, EntityKey, FieldId, FreshnessPolicy, FrontierPosition,
-    ProjectionFrontier, QueryCostVectorV1, QueryPlanHash, RequestId, ServiceOperationV1,
-    hash_query_plan,
+    CanonicalValue, CommitToken, EntityKey, FieldId, FreshnessPolicy, ProjectionFrontier,
+    QueryCostVectorV1, QueryPlanHash, RequestId, ServiceOperationV1, hash_query_plan,
 };
 
 use crate::columnar_notification::ColumnarWake;
@@ -659,7 +658,7 @@ async fn serve_available(
     engine_request: &ColumnarQueryRequest,
     row_policy: Option<&AuthorizedQueryRowPolicyContextV1>,
 ) -> ServiceResult<ExecuteProjectedQueryResult> {
-    let observation = observe_projection(columnar, projection_name)?;
+    let observation = observe_projection(service, columnar, projection_name)?;
     if let Some(result) = lifecycle_outcome(&observation) {
         return Ok(result);
     }
@@ -684,7 +683,7 @@ async fn serve_bounded(
     row_policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     max_lag_sequences: u64,
 ) -> ServiceResult<ExecuteProjectedQueryResult> {
-    let observation = observe_projection(columnar, projection_name)?;
+    let observation = observe_projection(service, columnar, projection_name)?;
     if let Some(result) = lifecycle_outcome(&observation) {
         return Ok(result);
     }
@@ -695,10 +694,7 @@ async fn serve_bounded(
         Some(distance) if distance <= max_lag_sequences => {}
         _ => {
             // Bounded lagging reports the application head as the required fence.
-            let required = ProjectionFrontier::new(
-                observation.head().history_incarnation(),
-                observation.head().position(),
-            );
+            let required = observation.head().clone();
             return Ok(ExecuteProjectedQueryResult::Lagging {
                 required,
                 current: observation.published_frontier().clone(),
@@ -738,11 +734,29 @@ async fn serve_causal(
     token: &CommitToken,
     max_wait: Duration,
 ) -> ServiceResult<ExecuteProjectedQueryResult> {
-    if service.executors.is_follower()
-        && token.history_incarnation() != service.identity.history_incarnation()
+    let database_id = service.identity.database_id();
+    if token
+        .database_id()
+        .is_some_and(|database| database != database_id)
+        || (service.executors.is_follower()
+            && (token.database_id().is_none()
+                || token.history_incarnation() != service.identity.history_incarnation()))
     {
         return Err(PublicError::history_incarnation_mismatch().into());
     }
+    // V1 cannot prove database scope. Only the existing primary compatibility
+    // path admits it; follower reads always require an explicitly bound token.
+    let legacy_scoped;
+    let token = if token.database_id().is_none() {
+        legacy_scoped = CommitToken::new_scoped(
+            database_id,
+            token.history_incarnation(),
+            token.commit_sequence(),
+        );
+        &legacy_scoped
+    } else {
+        token
+    };
     let wait_deadline = {
         let policy_deadline = Instant::now() + max_wait;
         let request_deadline = context.control().deadline();
@@ -775,7 +789,7 @@ async fn serve_causal(
                 }
             })?;
 
-        let observation = observe_projection(columnar, projection_name)?;
+        let observation = observe_projection(service, columnar, projection_name)?;
         observation_count = observation_count.saturating_add(1);
         if let Some(result) = lifecycle_outcome(&observation) {
             drop(registration);
@@ -822,7 +836,7 @@ async fn serve_causal(
 
     let observation = match last_observation {
         Some(observation) => observation,
-        None => observe_projection(columnar, projection_name)?,
+        None => observe_projection(service, columnar, projection_name)?,
     };
     if let Some(result) = lifecycle_outcome(&observation) {
         return Ok(result);
@@ -837,10 +851,7 @@ async fn serve_causal(
             &observation,
         );
     }
-    let required = ProjectionFrontier::new(
-        token.history_incarnation(),
-        FrontierPosition::AppliedThrough(token.commit_sequence()),
-    );
+    let required = token.frontier();
     let remaining = wait_deadline.saturating_duration_since(Instant::now());
     Ok(ExecuteProjectedQueryResult::Lagging {
         required,
@@ -854,11 +865,13 @@ async fn serve_causal(
 }
 
 fn observe_projection(
+    service: &RiffDbServiceInner,
     columnar: &dyn crate::ColumnarProjectionPort,
     projection_name: &str,
 ) -> ServiceResult<ColumnarObservation> {
     columnar
         .observe(projection_name)
+        .and_then(|observation| observation.scope_to_database(service.identity.database_id()))
         .map_err(|error| match error {
             ColumnarPortError::Unavailable => PublicError::storage_unavailable().into(),
             ColumnarPortError::Integrity => PublicError::storage_unavailable().into(),
@@ -969,12 +982,7 @@ fn query_ready(
     .map_err(|error| map_query_error(service, error))?;
     let frontier = observation.published_frontier().clone();
     let head = observation.head().clone();
-    let commit_token = match frontier.position() {
-        FrontierPosition::AppliedThrough(sequence) => {
-            Some(CommitToken::new(frontier.history_incarnation(), sequence))
-        }
-        FrontierPosition::BeforeFirst => None,
-    };
+    let commit_token = frontier.commit_token();
     Ok(match result {
         QueryResult::Rows(QueryRows {
             fields,

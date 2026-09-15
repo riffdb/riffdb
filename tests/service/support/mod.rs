@@ -5200,7 +5200,7 @@ fn catalog_principal() -> AuditPrincipalV1 {
     )
 }
 
-fn database_id() -> DatabaseId {
+pub(super) fn database_id() -> DatabaseId {
     DatabaseId::from_bytes(uuid_bytes(0x11)).expect("database UUIDv7")
 }
 

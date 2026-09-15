@@ -1252,6 +1252,23 @@
       "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
+      "id": "wire.freshness",
+      "title": "Opaque commit tokens and projection frontiers",
+      "classification": "wire",
+      "owner": "riffdb-types",
+      "source_assertions": [{"kind":"identity_regex","path":"crates/riffdb-types/src/freshness.rs","pattern":"const FRESHNESS_BYTES_V([0-9]+): u8 = 0x0[0-9]+;","identities":["1","2"]}],
+      "readable_identities": ["1", "2"], "writable_identities": ["1", "2"], "current_identities": ["1", "2"],
+      "writer_policy": "multi_current",
+      "compatibility_rule": "V1 bytes remain exact for engine-local frontiers and legacy primary requests. Public projected responses emit V2 with database UUID, incarnation and position. Followers require V2; every scoped foreign-database token refuses before observation. V1-only clients must upgrade before consuming V2 responses.",
+      "breaking_when": "V1 bytes change, database scope is dropped from V2, a follower admits unbound V1, or an unknown identity is silently reinterpreted.",
+      "supported_release_posture": "V1 decoding and primary request compatibility remain supported. V2 is required for projected response readers and follower causal requests; old response readers fail closed on its version.",
+      "lifecycle": {"active":["1","2"],"read_only":[],"retirement_candidate":[],"retired":[]},
+      "reserved_identity_policy": "Freshness versions 1 and 2 and their position tags are never reused.",
+      "evidence": ["fixtures/freshness/opaque-v1-v2.txt", "crates/riffdb-types/src/freshness.rs", "tests/replication_follower/columnar_reads.rs"],
+      "checks": ["./scripts/check-version-topology", "cargo test -p riffdb-types scoped_freshness", "cargo test -p riffdb-server --test replication_follower --all-features"],
+      "last_change": {"classification":"new_domain_identity","decision":"ADR-0086 scoped-token evolution and ADR-0178/WP-747 foreign-lineage refusal"}
+    },
+    {
       "id": "wire.public_grpc",
       "title": "Public gRPC package",
       "classification": "wire",

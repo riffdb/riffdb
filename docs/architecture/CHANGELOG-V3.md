@@ -577,9 +577,15 @@ releases the frame and compares that same read's result with the primary. While
 delivery is held, Available and Bounded reads report the older local frontier
 and writes return the typed follower-mode refusal. Follower projected reads
 refuse a different-incarnation token with `RDB-HISTORY-0101` before waiting.
+Public projected responses now issue database-bound V2 tokens and frontiers.
+The TLS test obtains a real token from a second independent primary at the same
+incarnation and sequence and proves that the follower refuses it, as well as an
+unbound legacy V1 token, before and after restart. Legacy V1 bytes and primary
+request compatibility remain intact; response readers must support V2. Frozen
+fixtures and malformed-byte tests cover both versions and exact scope checks.
 The waiter observation uses a dedicated executable under `test-fixtures`; the
 normal daemon has no probe installation path and emits no test marker. WP-747
-remains open for the remaining token/cursor, policy and failure-campaign gates.
+remains open for the remaining cursor/fence, policy and failure-campaign gates.
 
 `follower_exact_providers_match_primary_after_tail_and_restart` deploys all four
 compiled provider families over TLS, checks matching results and application

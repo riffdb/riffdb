@@ -38,6 +38,19 @@ to a projection generation. Callers that need read-after-commit behavior pass a
 known commit sequence and wait within a bounded deadline. A projection can be
 rebuilt from authoritative history without changing command truth.
 
+Projected-query responses carry opaque V2 commit tokens and frontiers bound to
+the database identity, history incarnation and applied position. Carry the
+returned token unchanged for a causal projected read. A follower refuses a
+token from another database or incarnation with `RDB-HISTORY-0101`, even when
+the numerical commit sequences match. Available and Bounded reads report the
+follower's local applied frontier.
+
+Legacy V1 tokens remain decodable and accepted by the primary compatibility
+path, but contain no database identity and cannot prove lineage to a follower.
+Followers refuse them. Upgrade clients before consuming V2 projected responses;
+V1-only readers reject the new version. No stored database, projection artifact
+or Protobuf field changes as part of this opaque-token version change.
+
 ## Admission-head reads
 
 When a caller needs a stronger read but does not possess a commit sequence, it
