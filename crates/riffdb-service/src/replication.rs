@@ -8,6 +8,12 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 pub use riffdb_errors::ReplicationStreamErrorV3;
 use riffdb_types::{DatabaseId, DualFrontier};
+#[path = "replication_progress.rs"]
+mod progress;
+pub use progress::{ReplicationFrame, ReplicationSourceHead};
+#[path = "replication_statistics.rs"]
+mod statistics;
+pub use statistics::{ReplicationRole, ReplicationStatistics};
 
 /// API-neutral negotiation input. These caller-supplied values are not a
 /// validated storage handshake, source pin, or authorization proof.
@@ -69,7 +75,7 @@ pub enum ReplicationPhase {
 #[derive(Clone, Eq, PartialEq)]
 pub enum ReplicationItem {
     /// Complete checksummed V3 tail frame.
-    Frame(Vec<u8>),
+    Frame(ReplicationFrame),
     /// Exact checksummed V1 bootstrap manifest.
     BootstrapManifest(Vec<u8>),
     /// Complete bounded bootstrap page.
@@ -83,9 +89,9 @@ impl std::fmt::Debug for ReplicationItem {
 impl ReplicationItem {
     fn bounded(&self) -> bool {
         let (bytes, limit) = match self {
-            Self::Frame(bytes) => (bytes, 32 * 1024 * 1024),
-            Self::BootstrapManifest(bytes) => (bytes, 512),
-            Self::BootstrapPage(bytes) => (bytes, 32 * 1024 * 1024 + 512),
+            Self::Frame(bytes) => (bytes.as_ref(), 32 * 1024 * 1024),
+            Self::BootstrapManifest(bytes) => (bytes.as_slice(), 512),
+            Self::BootstrapPage(bytes) => (bytes.as_slice(), 32 * 1024 * 1024 + 512),
         };
         !bytes.is_empty() && bytes.len() <= limit
     }

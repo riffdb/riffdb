@@ -549,7 +549,9 @@ impl riffdb_service::ReplicationItemSource for SnapshotStream {
             self.0
                 .next_frame()
                 .map(|frame| {
-                    frame.map(|frame| riffdb_service::ReplicationItem::Frame(frame.into_bytes()))
+                    frame.map(|frame| {
+                        riffdb_service::ReplicationItem::Frame(frame.into_bytes().into())
+                    })
                 })
                 .map_err(riffdb_service::ReplicationFailure::Source)
         })

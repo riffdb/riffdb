@@ -1784,6 +1784,11 @@ fn charge_health_report(
             .checked_mul(3)
             .ok_or(ServiceResponseChargeOverflow)?,
     )?;
+    for component in report.components() {
+        if component.replication_statistics().is_some() {
+            charge.fields(24)?;
+        }
+    }
     charge_build(charge, report.build())
 }
 
@@ -1815,7 +1820,7 @@ impl ServiceResponseCharge for StatisticsResult {
     fn service_response_charge_v1(
         &self,
     ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
-        fixed_charge(5)
+        fixed_charge(if self.replication().is_some() { 29 } else { 5 })
     }
 }
 

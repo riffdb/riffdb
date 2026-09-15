@@ -25,6 +25,15 @@ impl RedbPublishedSnapshot {
 }
 
 impl PublishedDurableSnapshot for RedbPublishedSnapshot {
+    fn replication_source_progress_v3(
+        &self,
+    ) -> Result<
+        riffdb_storage_api::ReplicationSourceProgressV3,
+        riffdb_storage_api::ChangelogCursorErrorV3,
+    > {
+        crate::changelog_v3_cursor::progress::observe(&self.access)
+    }
+
     fn authoritative_state_v3(
         &self,
     ) -> Result<

@@ -35,7 +35,7 @@ impl FollowerProjectionTail {
         if self.failed {
             return Err(corrupt());
         }
-        let (history, snapshot) = owner.capture_read_snapshot()?;
+        let (history, state, snapshot) = owner.capture_read_progress_snapshot()?;
         if !self.loaded {
             self.catalog = ActiveCatalogSnapshot::read(&snapshot).map_err(|_| corrupt())?;
             self.loaded = true;
@@ -48,6 +48,8 @@ impl FollowerProjectionTail {
             history,
             snapshot,
             catalog: self.catalog.clone(),
+            source_head: None,
+            acknowledged: state.attached_state().ok_or_else(corrupt)?.2,
         })
     }
 

@@ -146,11 +146,26 @@ async fn production_source_bootstrap_resumes_exact_pages_and_attaches_to_retaine
     wrong.after_hash[0] ^= 1;
     assert!(source.open(wrong).await.is_err());
     assert_eq!(std::fs::read_dir(&root).unwrap().count(), 2);
+    let source_pin = ports.published_changelog_snapshot_v3().unwrap();
+    let source_head = source_pin
+        .authoritative_state_v3()
+        .unwrap()
+        .history()
+        .tail();
+    publisher.observe_published_snapshot_v3(source_pin);
     for _ in 0..2 {
         let mut stream = source.open(attachment.clone()).await.unwrap();
         let Some(ReplicationItem::Frame(bytes)) = stream.next_item().await.unwrap() else {
             panic!("retained successor")
         };
+        let reported = bytes
+            .source_head()
+            .expect("source reports its published head");
+        assert_eq!(
+            reported.transaction_sequence(),
+            source_head.sequence().get()
+        );
+        assert_eq!(reported.frontier(), source_head.frontier());
         let frame = ChangelogFrameV3::decode(&bytes).unwrap();
         assert_eq!(
             frame.receipts()[0].binding().predecessor,

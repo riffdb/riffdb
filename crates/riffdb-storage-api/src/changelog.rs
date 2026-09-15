@@ -840,6 +840,15 @@ impl std::error::Error for ChangelogFrameError {}
 /// later publication, which is what lets an emitter derive asynchronously
 /// without ever reading state past its covered frontier.
 pub trait PublishedDurableSnapshot: Send + Sync {
+    /// Observes bounded source-only follower acknowledgements and the published
+    /// head from this pin. No application rows or receipt population are scanned.
+    /// Legacy backends refuse rather than inventing an empty follower inventory.
+    fn replication_source_progress_v3(
+        &self,
+    ) -> Result<crate::ReplicationSourceProgressV3, crate::ChangelogCursorErrorV3> {
+        Err(crate::StorageError::new(crate::StorageErrorKind::IncompatibleFormat, None).into())
+    }
+
     /// Opens the complete catalog-owned authoritative inventory at this pin.
     /// A legacy backend refuses instead of offering a partial bootstrap.
     fn authoritative_state_v3(

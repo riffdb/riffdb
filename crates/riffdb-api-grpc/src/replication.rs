@@ -79,19 +79,7 @@ impl ReplicationService for GrpcApplication {
                 }
                 match next {
                     Ok(Ok(Some(frame))) => Some((
-                        Ok(v1::StreamChangelogResponse {
-                            item: Some(match frame {
-                                ReplicationItem::Frame(bytes) => {
-                                    v1::stream_changelog_response::Item::Frame(bytes)
-                                }
-                                ReplicationItem::BootstrapManifest(bytes) => {
-                                    v1::stream_changelog_response::Item::BootstrapManifest(bytes)
-                                }
-                                ReplicationItem::BootstrapPage(bytes) => {
-                                    v1::stream_changelog_response::Item::BootstrapPage(bytes)
-                                }
-                            }),
-                        }),
+                        Ok(encode_item(frame)),
                         Some((subscription, lifecycle, service)),
                     )),
                     Ok(Ok(None)) => None,
@@ -214,6 +202,25 @@ fn terminal(error: ReplicationFailure) -> ReplicationResponseStream {
     ))
 }
 
+fn encode_item(item: ReplicationItem) -> v1::StreamChangelogResponse {
+    use v1::stream_changelog_response::Item;
+    let (item, source_head) = match item {
+        ReplicationItem::Frame(frame) => {
+            let (bytes, head) = frame.into_parts();
+            (
+                Item::Frame(bytes),
+                head.map(crate::replication_progress::encode),
+            )
+        }
+        ReplicationItem::BootstrapManifest(bytes) => (Item::BootstrapManifest(bytes), None),
+        ReplicationItem::BootstrapPage(bytes) => (Item::BootstrapPage(bytes), None),
+    };
+    v1::StreamChangelogResponse {
+        item: Some(item),
+        source_head,
+    }
+}
+
 fn refusal(error: ReplicationFailure) -> v1::StreamChangelogResponse {
     use ReplicationStreamErrorV3 as S;
     use v1::ReplicationRefusal as R;
@@ -234,5 +241,6 @@ fn refusal(error: ReplicationFailure) -> v1::StreamChangelogResponse {
     };
     v1::StreamChangelogResponse {
         item: Some(v1::stream_changelog_response::Item::Refusal(code.into())),
+        source_head: None,
     }
 }

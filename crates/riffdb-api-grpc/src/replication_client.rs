@@ -141,8 +141,19 @@ impl ReplicationItemSource for WireItems {
                 return Ok(None);
             };
             use v1::stream_changelog_response::Item as Wire;
+            if message.source_head.is_some() && !matches!(message.item, Some(Wire::Frame(_))) {
+                return Err(Failure::Source(
+                    riffdb_errors::ReplicationStreamErrorV3::CorruptHistory,
+                ));
+            }
+            let head = message
+                .source_head
+                .map(crate::replication_progress::decode)
+                .transpose()?;
             let item = match message.item {
-                Some(Wire::Frame(bytes)) => Item::Frame(bytes),
+                Some(Wire::Frame(bytes)) => {
+                    Item::Frame(riffdb_service::ReplicationFrame::new(bytes, head))
+                }
                 Some(Wire::BootstrapManifest(bytes)) => Item::BootstrapManifest(bytes),
                 Some(Wire::BootstrapPage(bytes)) => Item::BootstrapPage(bytes),
                 Some(Wire::Refusal(code)) => return Err(refusal(code)),

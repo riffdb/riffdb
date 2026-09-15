@@ -817,7 +817,7 @@ const DISCOVERY_PAGE_BOUNDARIES: [(&str, usize, bool, &str); 4] = [
     ("limit-500-exact-end", 500, false, "exact_end"),
 ];
 
-const WP137_OPTIONAL_COVERAGE: [(&str, &str, &str); 19] = [
+const WP137_OPTIONAL_COVERAGE: [(&str, &str, &str); 22] = [
     (
         "riffdb.v1.CompiledContractCandidate.parent_version",
         "ContractService.ValidateContract:response:valid",
@@ -912,6 +912,21 @@ const WP137_OPTIONAL_COVERAGE: [(&str, &str, &str); 19] = [
         "riffdb.v1.WatchNamedQueryRequest.cursor",
         "QueryService.WatchNamedQuery:request:fresh",
         "QueryService.WatchNamedQuery:request:resume",
+    ),
+    (
+        "riffdb.v1.ReplicationStatistics.registered_followers",
+        "AdminService.Stats:response:replication-unknown",
+        "AdminService.Stats:response:replication-primary",
+    ),
+    (
+        "riffdb.v1.ReplicationStatistics.application_lag_sequences",
+        "AdminService.Stats:response:replication-unknown",
+        "AdminService.Stats:response:replication-primary",
+    ),
+    (
+        "riffdb.v1.ReplicationStatistics.administration_lag_sequences",
+        "AdminService.Stats:response:replication-unknown",
+        "AdminService.Stats:response:replication-primary",
     ),
 ];
 
@@ -4025,8 +4040,25 @@ fn public_client_vectors(descriptors: &FileDescriptorSet) -> Result<String, Box<
             pending_outbox_deliveries: Some(0),
             known_projections: Some(1),
             history_incarnation: 1,
+            ..Default::default()
         },
     );
+
+    for (name, replication) in public_replication_statistics() {
+        append_client_vector(
+            &mut output,
+            "AdminService.Stats",
+            "response",
+            name,
+            "riffdb.v1.StatsResponse",
+            &v1::StatsResponse {
+                history_incarnation: 1,
+                last_commit_sequence: Some(10),
+                replication: Some(replication),
+                ..Default::default()
+            },
+        );
+    }
 
     for mode in [
         v1::CapabilityCreateMode::Normal,
@@ -5275,6 +5307,41 @@ fn public_active_selection() -> v1::ContractSelection {
     }
 }
 
+fn public_replication_statistics() -> [(&'static str, v1::ReplicationStatistics); 3] {
+    let pair = |app, admin| v1::ReplicationFrontier {
+        application: Some(public_applied(app)),
+        administration: Some(public_applied(admin)),
+    };
+    let unknown = v1::ReplicationStatistics {
+        role: v1::ReplicationRole::Follower as i32,
+        applied_frontier: Some(pair(10, 3)),
+        ..Default::default()
+    };
+    let primary = v1::ReplicationStatistics {
+        role: v1::ReplicationRole::Primary as i32,
+        source_frontier: Some(pair(10, 3)),
+        applied_frontier: Some(pair(10, 3)),
+        acknowledged_frontier: Some(pair(8, 2)),
+        registered_followers: Some(2),
+        application_lag_sequences: Some(2),
+        administration_lag_sequences: Some(1),
+    };
+    let follower = v1::ReplicationStatistics {
+        role: v1::ReplicationRole::Follower as i32,
+        source_frontier: Some(pair(12, 5)),
+        applied_frontier: Some(pair(10, 3)),
+        acknowledged_frontier: Some(pair(9, 2)),
+        registered_followers: None,
+        application_lag_sequences: Some(2),
+        administration_lag_sequences: Some(2),
+    };
+    [
+        ("replication-unknown", unknown),
+        ("replication-primary", primary),
+        ("replication-follower", follower),
+    ]
+}
+
 fn public_before_first() -> v1::FrontierPosition {
     v1::FrontierPosition {
         position: Some(v1::frontier_position::Position::BeforeFirst(v1::Unit {})),
@@ -5970,6 +6037,7 @@ fn public_authenticated_health() -> v1::HealthResponse {
                 components: vec![v1::HealthComponent {
                     component: v1::HealthComponentKind::AuthoritativeStorage as i32,
                     status: v1::HealthComponentStatus::Healthy as i32,
+                    ..Default::default()
                 }],
                 started_at: Some(v1::Timestamp {
                     seconds: 1,
@@ -7376,7 +7444,8 @@ fn response_charge_candidate(
             pending_outbox_deliveries: Some(11),
             known_projections: Some(2),
             history_incarnation: 1,
-        }
+        ..Default::default()
+}
         .encode_to_vec(),
         "trace_provenance.found" | "trace_provenance.found_max_claims" => {
             v1::TraceProvenanceResponse {
@@ -7579,14 +7648,17 @@ fn response_charge_authenticated_health() -> v1::HealthResponse {
                     v1::HealthComponent {
                         component: v1::HealthComponentKind::AuthoritativeStorage as i32,
                         status: v1::HealthComponentStatus::Healthy as i32,
+                        ..Default::default()
                     },
                     v1::HealthComponent {
                         component: v1::HealthComponentKind::Catalog as i32,
                         status: v1::HealthComponentStatus::Healthy as i32,
+                        ..Default::default()
                     },
                     v1::HealthComponent {
                         component: v1::HealthComponentKind::CommitCoordinator as i32,
                         status: v1::HealthComponentStatus::Healthy as i32,
+                        ..Default::default()
                     },
                 ],
                 started_at: Some(v1::Timestamp {

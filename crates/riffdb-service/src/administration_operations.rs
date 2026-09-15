@@ -298,7 +298,12 @@ async fn authenticated_health(
         operational_health,
         service.process.started_at(),
         service.process.build().clone(),
-    );
+    )
+    .for_role(if service.executors.is_follower() {
+        crate::ReplicationRole::Follower
+    } else {
+        crate::ReplicationRole::Primary
+    });
     let result = HealthResult::Authenticated(report);
     if let Err(failure) = ensure_response_budget(&result) {
         return Err(finish_read_failure(&service, &context, &begun, failure).await);

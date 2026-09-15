@@ -64,6 +64,16 @@ enum ReplicationRefusal {
   REPLICATION_REFUSAL_AUTHORIZATION_DENIED = 10;
 }
 
+// Non-durable source progress in the frame's immutable publication pin.
+// Its lineage is bound by the stream handshake. This never acknowledges the
+// receiver or satisfies freshness; absent progress means the head is unknown.
+// Encoded head metadata is bounded to 128 bytes, including unknown fields.
+message ReplicationSourceHead {
+  uint64 transaction_sequence = 1;
+  FrontierPosition application_frontier = 2;
+  FrontierPosition administration_frontier = 3;
+}
+
 message StreamChangelogResponse {
   oneof item {
     // One complete, checksummed riffdb.changelog-frame/v3, at most 32 MiB.
@@ -76,4 +86,6 @@ message StreamChangelogResponse {
     // manifest's final page the stream ends; attachment needs a new request.
     bytes bootstrap_page = 4;
   }
+  // Optional only on a frame. Durable V3 frame bytes are unchanged.
+  ReplicationSourceHead source_head = 5;
 }

@@ -2789,6 +2789,7 @@ impl Serialize for HealthComponentDto<'_> {
             Ok(v1::HealthComponentKind::Projection) => "projection",
             Ok(v1::HealthComponentKind::Outbox) => "outbox",
             Ok(v1::HealthComponentKind::VectorStaleness) => "vector_staleness",
+            Ok(v1::HealthComponentKind::Replication) => "replication",
             _ => return Err(S::Error::custom("health component")),
         };
         let status = match v1::HealthComponentStatus::try_from(self.0.status) {
@@ -2797,9 +2798,75 @@ impl Serialize for HealthComponentDto<'_> {
             Ok(v1::HealthComponentStatus::Unavailable) => "unavailable",
             _ => return Err(S::Error::custom("health component status")),
         };
-        let mut map = serializer.serialize_map(Some(2))?;
+        let mut map = serializer.serialize_map(None)?;
         map.serialize_entry("component", component)?;
         map.serialize_entry("status", status)?;
+        if let Some(value) = &self.0.replication {
+            map.serialize_entry("replication", &ReplicationStatisticsDto(value))?;
+        }
+        map.end()
+    }
+}
+
+struct ReplicationStatisticsDto<'a>(&'a v1::ReplicationStatistics);
+impl Serialize for ReplicationStatisticsDto<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let v = self.0;
+        let role = match v1::ReplicationRole::try_from(v.role) {
+            Ok(v1::ReplicationRole::Primary) => "primary",
+            Ok(v1::ReplicationRole::Follower) => "follower",
+            _ => return Err(S::Error::custom("replication role")),
+        };
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("role", role)?;
+        if let Some(value) = &v.source_frontier {
+            map.serialize_entry("source_frontier", &ReplicationFrontierDto(value))?;
+        }
+        map.serialize_entry(
+            "applied_frontier",
+            &ReplicationFrontierDto(
+                v.applied_frontier
+                    .as_ref()
+                    .ok_or_else(|| S::Error::custom("replication applied frontier"))?,
+            ),
+        )?;
+        if let Some(value) = &v.acknowledged_frontier {
+            map.serialize_entry("acknowledged_frontier", &ReplicationFrontierDto(value))?;
+        }
+        if let Some(value) = v.registered_followers {
+            map.serialize_entry("registered_followers", &value)?;
+        }
+        if let Some(value) = v.application_lag_sequences {
+            map.serialize_entry("application_lag_sequences", &value.to_string())?;
+        }
+        if let Some(value) = v.administration_lag_sequences {
+            map.serialize_entry("administration_lag_sequences", &value.to_string())?;
+        }
+        map.end()
+    }
+}
+struct ReplicationFrontierDto<'a>(&'a v1::ReplicationFrontier);
+impl Serialize for ReplicationFrontierDto<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(2))?;
+        map.serialize_entry(
+            "application",
+            &Frontier(
+                self.0
+                    .application
+                    .as_ref()
+                    .ok_or_else(|| S::Error::custom("replication application frontier"))?,
+            ),
+        )?;
+        map.serialize_entry(
+            "administration",
+            &Frontier(
+                self.0
+                    .administration
+                    .as_ref()
+                    .ok_or_else(|| S::Error::custom("replication administration frontier"))?,
+            ),
+        )?;
         map.end()
     }
 }
@@ -2908,6 +2975,66 @@ impl Serialize for ExecutionFailureDetails {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    // req: REP-004
+    fn replication_health_presentation_preserves_unknown_and_wide_sequence_lag() {
+        let before = v1::FrontierPosition {
+            position: Some(v1::frontier_position::Position::BeforeFirst(v1::Unit {})),
+        };
+        let start = v1::ReplicationFrontier {
+            application: Some(before),
+            administration: Some(before),
+        };
+        let source = v1::ReplicationFrontier {
+            application: Some(v1::FrontierPosition {
+                position: Some(v1::frontier_position::Position::AppliedThrough(u64::MAX)),
+            }),
+            ..start
+        };
+        for known in [false, true] {
+            let component = v1::HealthComponent {
+                component: v1::HealthComponentKind::Replication.into(),
+                status: v1::HealthComponentStatus::Degraded.into(),
+                replication: Some(v1::ReplicationStatistics {
+                    role: v1::ReplicationRole::Follower.into(),
+                    applied_frontier: Some(start),
+                    source_frontier: known.then_some(source),
+                    acknowledged_frontier: known.then_some(start),
+                    application_lag_sequences: known.then_some(u64::MAX),
+                    administration_lag_sequences: known.then_some(0),
+                    registered_followers: None,
+                }),
+            };
+            let output = serde_json::to_value(HealthComponentDto(&component)).unwrap();
+            let progress = &output["replication"];
+            assert_eq!(output["component"], "replication");
+            assert_eq!(progress["role"], "follower");
+            assert_eq!(
+                progress["applied_frontier"]["application"],
+                serde_json::json!({"type":"before_first"})
+            );
+            assert!(progress.get("registered_followers").is_none());
+            if known {
+                assert_eq!(
+                    progress["source_frontier"]["application"],
+                    serde_json::json!({"type":"applied_through","sequence":u64::MAX.to_string()})
+                );
+                assert_eq!(progress["application_lag_sequences"], u64::MAX.to_string());
+                assert_eq!(progress["administration_lag_sequences"], "0");
+                assert!(progress.get("acknowledged_frontier").is_some());
+            } else {
+                for field in [
+                    "source_frontier",
+                    "acknowledged_frontier",
+                    "application_lag_sequences",
+                    "administration_lag_sequences",
+                ] {
+                    assert!(progress.get(field).is_none(), "{field} remains unknown");
+                }
+            }
+        }
+    }
     use std::collections::BTreeSet;
     use std::fs;
     use std::path::PathBuf;
@@ -4134,6 +4261,7 @@ mod tests {
             "projection" => v1::HealthComponentKind::Projection,
             "outbox" => v1::HealthComponentKind::Outbox,
             "vector_staleness" => v1::HealthComponentKind::VectorStaleness,
+            "replication" => v1::HealthComponentKind::Replication,
             unknown => panic!("unknown health component {unknown}"),
         };
         let status = match value["status"].as_str().expect("component status") {
@@ -4145,6 +4273,7 @@ mod tests {
         v1::HealthComponent {
             component: component as i32,
             status: status as i32,
+            replication: None,
         }
     }
 

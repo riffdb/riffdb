@@ -585,12 +585,33 @@ async fn replication_tls_binds_handshake_and_withholds_bytes_after_revocation_or
             (observed.maximum_frame_bytes, observed.maximum_transitions),
             (32 * 1024 * 1024, 256)
         );
+        let observed_head = riffdb_service::ReplicationSourceHead::new(
+            19,
+            riffdb_types::DualFrontier::new(
+                riffdb_types::CommitSequence::new(8),
+                AdministrationSequence::new(11),
+            ),
+        )
+        .unwrap();
         harness
             .frames
-            .try_send(Ok(Some(ReplicationItem::Frame(vec![1, 2, 3]))))
+            .try_send(Ok(Some(ReplicationItem::Frame(
+                riffdb_service::ReplicationFrame::new(vec![1, 2, 3], Some(observed_head)),
+            ))))
             .unwrap();
+        let reply = bounded(stream.message()).await.unwrap().unwrap();
+        let head = reply.source_head.unwrap();
+        assert_eq!(head.transaction_sequence, 19);
         assert_eq!(
-            bounded(stream.message()).await.unwrap().unwrap().item,
+            head.application_frontier.unwrap().position,
+            Some(v1::frontier_position::Position::AppliedThrough(8))
+        );
+        assert_eq!(
+            head.administration_frontier.unwrap().position,
+            Some(v1::frontier_position::Position::AppliedThrough(11))
+        );
+        assert_eq!(
+            reply.item,
             Some(v1::stream_changelog_response::Item::Frame(vec![1, 2, 3]))
         );
         bounded(harness.entered.recv()).await.unwrap();
@@ -601,7 +622,7 @@ async fn replication_tls_binds_handshake_and_withholds_bytes_after_revocation_or
         }
         harness
             .frames
-            .try_send(Ok(Some(ReplicationItem::Frame(vec![4, 5, 6]))))
+            .try_send(Ok(Some(ReplicationItem::Frame(vec![4, 5, 6].into()))))
             .unwrap();
         let expected = if revoke {
             v1::ReplicationRefusal::AuthorizationDenied
@@ -875,7 +896,7 @@ async fn replication_tls_attachment_keeps_exact_acknowledgement_and_manifest_in_
     );
     harness
         .frames
-        .try_send(Ok(Some(ReplicationItem::Frame(vec![7, 8]))))
+        .try_send(Ok(Some(ReplicationItem::Frame(vec![7, 8].into()))))
         .unwrap();
     assert_eq!(
         bounded(stream.message()).await.unwrap().unwrap().item,

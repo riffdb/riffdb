@@ -2418,9 +2418,10 @@ messages
     1 request_id optional bytes
   riffdb.v1.GetReactiveWakeupResponse fields=1
     1 generation optional bytes
-  riffdb.v1.HealthComponent fields=2
+  riffdb.v1.HealthComponent fields=3
     1 component optional .riffdb.v1.HealthComponentKind
     2 status optional .riffdb.v1.HealthComponentStatus
+    3 replication optional .riffdb.v1.ReplicationStatistics
   riffdb.v1.HealthRequest fields=1
     1 request_id optional bytes proto3-optional oneof=_request_id
   riffdb.v1.HealthResponse fields=4
@@ -2711,11 +2712,26 @@ messages
     1 hold_id optional bytes
     2 resume_manifest optional bytes
     3 after_page optional uint32
+  riffdb.v1.ReplicationFrontier fields=2
+    1 application optional .riffdb.v1.FrontierPosition
+    2 administration optional .riffdb.v1.FrontierPosition
   riffdb.v1.ReplicationPosition fields=4
     1 transaction_sequence optional uint64
     2 history_hash optional bytes
     3 application_frontier optional .riffdb.v1.FrontierPosition
     4 administration_frontier optional .riffdb.v1.FrontierPosition
+  riffdb.v1.ReplicationSourceHead fields=3
+    1 transaction_sequence optional uint64
+    2 application_frontier optional .riffdb.v1.FrontierPosition
+    3 administration_frontier optional .riffdb.v1.FrontierPosition
+  riffdb.v1.ReplicationStatistics fields=7
+    1 role optional .riffdb.v1.ReplicationRole
+    2 source_frontier optional .riffdb.v1.ReplicationFrontier
+    3 applied_frontier optional .riffdb.v1.ReplicationFrontier
+    4 acknowledged_frontier optional .riffdb.v1.ReplicationFrontier
+    5 registered_followers optional uint32 proto3-optional oneof=_registered_followers
+    6 application_lag_sequences optional uint64 proto3-optional oneof=_application_lag_sequences
+    7 administration_lag_sequences optional uint64 proto3-optional oneof=_administration_lag_sequences
   riffdb.v1.ResourceDescriptor fields=11
     1 active_contract optional .riffdb.v1.Unit oneof=resource
     2 contract_version optional .riffdb.v1.ContractVersionResource oneof=resource
@@ -2828,13 +2844,14 @@ messages
     1 operation optional .riffdb.v1.ApplicationReimportOperation
   riffdb.v1.StatsRequest fields=1
     1 request_id optional bytes
-  riffdb.v1.StatsResponse fields=6
+  riffdb.v1.StatsResponse fields=7
     1 active_cursors optional uint32
     2 active_commit_subscribers optional uint32
     3 last_commit_sequence optional uint64 proto3-optional oneof=_last_commit_sequence
     4 pending_outbox_deliveries optional uint64 proto3-optional oneof=_pending_outbox_deliveries
     5 known_projections optional uint32 proto3-optional oneof=_known_projections
     6 history_incarnation optional uint64
+    7 replication optional .riffdb.v1.ReplicationStatistics
   riffdb.v1.StreamChangelogRequest fields=12
     1 request_id optional bytes
     2 database_id optional bytes
@@ -2848,11 +2865,12 @@ messages
     10 bootstrap optional .riffdb.v1.ReplicationBootstrapRequest
     11 attachment optional .riffdb.v1.ReplicationBootstrapAttachment
     12 follower_hold_id optional bytes
-  riffdb.v1.StreamChangelogResponse fields=4
+  riffdb.v1.StreamChangelogResponse fields=5
     1 frame optional bytes oneof=item
     2 refusal optional .riffdb.v1.ReplicationRefusal oneof=item
     3 bootstrap_manifest optional bytes oneof=item
     4 bootstrap_page optional bytes oneof=item
+    5 source_head optional .riffdb.v1.ReplicationSourceHead
   riffdb.v1.SubscribeCommitsRequest fields=4
     1 request_id optional bytes
     2 after_sequence optional uint64 proto3-optional oneof=_after_sequence
@@ -3632,7 +3650,7 @@ enums
     29 FIXED_TOOL_KIND_CONTEXTUAL_STATUS
     30 FIXED_TOOL_KIND_CONTEXTUAL_REACT
     31 FIXED_TOOL_KIND_INSPECT_VECTOR_STATE
-  riffdb.v1.HealthComponentKind values=7
+  riffdb.v1.HealthComponentKind values=8
     0 HEALTH_COMPONENT_KIND_UNSPECIFIED
     1 HEALTH_COMPONENT_KIND_AUTHORITATIVE_STORAGE
     2 HEALTH_COMPONENT_KIND_CATALOG
@@ -3640,6 +3658,7 @@ enums
     4 HEALTH_COMPONENT_KIND_PROJECTION
     5 HEALTH_COMPONENT_KIND_OUTBOX
     6 HEALTH_COMPONENT_KIND_VECTOR_STALENESS
+    7 HEALTH_COMPONENT_KIND_REPLICATION
   riffdb.v1.HealthComponentStatus values=4
     0 HEALTH_COMPONENT_STATUS_UNSPECIFIED
     1 HEALTH_COMPONENT_STATUS_HEALTHY
@@ -3769,6 +3788,10 @@ enums
     8 REPLICATION_REFUSAL_CORRUPT_HISTORY
     9 REPLICATION_REFUSAL_UNAVAILABLE
     10 REPLICATION_REFUSAL_AUTHORIZATION_DENIED
+  riffdb.v1.ReplicationRole values=3
+    0 REPLICATION_ROLE_UNSPECIFIED
+    1 REPLICATION_ROLE_PRIMARY
+    2 REPLICATION_ROLE_FOLLOWER
   riffdb.v1.ResourceDiscoveryKind values=4
     0 RESOURCE_DISCOVERY_KIND_UNSPECIFIED
     1 RESOURCE_DISCOVERY_KIND_ALL

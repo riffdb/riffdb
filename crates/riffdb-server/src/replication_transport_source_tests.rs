@@ -184,7 +184,15 @@ async fn replication_tls_real_source_transfers_complete_bootstrap_and_attaches_e
     let Some(ReplicationItem::Frame(bytes)) = bounded(attached.next_item()).await.unwrap() else {
         panic!("peer successor")
     };
+    let observed_head = bytes
+        .source_head()
+        .expect("verified peer preserves source progress");
     let applied = applier.apply_frame(&bytes).unwrap();
+    assert!(observed_head.transaction_sequence() >= applied.sequence().get());
+    assert!(
+        observed_head.frontier() == applied.frontier()
+            || observed_head.frontier().advances_from(applied.frontier())
+    );
     assert_eq!(
         applied.sequence(),
         acknowledged.sequence().checked_next().unwrap()

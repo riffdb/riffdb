@@ -19,6 +19,32 @@ pub struct HealthComponent {
     pub component: i32,
     #[prost(enumeration = "HealthComponentStatus", tag = "2")]
     pub status: i32,
+    #[prost(message, optional, tag = "3")]
+    pub replication: ::core::option::Option<ReplicationStatistics>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReplicationFrontier {
+    #[prost(message, optional, tag = "1")]
+    pub application: ::core::option::Option<FrontierPosition>,
+    #[prost(message, optional, tag = "2")]
+    pub administration: ::core::option::Option<FrontierPosition>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReplicationStatistics {
+    #[prost(enumeration = "ReplicationRole", tag = "1")]
+    pub role: i32,
+    #[prost(message, optional, tag = "2")]
+    pub source_frontier: ::core::option::Option<ReplicationFrontier>,
+    #[prost(message, optional, tag = "3")]
+    pub applied_frontier: ::core::option::Option<ReplicationFrontier>,
+    #[prost(message, optional, tag = "4")]
+    pub acknowledged_frontier: ::core::option::Option<ReplicationFrontier>,
+    #[prost(uint32, optional, tag = "5")]
+    pub registered_followers: ::core::option::Option<u32>,
+    #[prost(uint64, optional, tag = "6")]
+    pub application_lag_sequences: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "7")]
+    pub administration_lag_sequences: ::core::option::Option<u64>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BuildInfo {
@@ -92,6 +118,8 @@ pub struct StatsResponse {
     pub known_projections: ::core::option::Option<u32>,
     #[prost(uint64, tag = "6")]
     pub history_incarnation: u64,
+    #[prost(message, optional, tag = "7")]
+    pub replication: ::core::option::Option<ReplicationStatistics>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LineageScopedStableId {
@@ -1129,6 +1157,7 @@ pub enum HealthComponentKind {
     Projection = 4,
     Outbox = 5,
     VectorStaleness = 6,
+    Replication = 7,
 }
 impl HealthComponentKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1144,6 +1173,7 @@ impl HealthComponentKind {
             Self::Projection => "HEALTH_COMPONENT_KIND_PROJECTION",
             Self::Outbox => "HEALTH_COMPONENT_KIND_OUTBOX",
             Self::VectorStaleness => "HEALTH_COMPONENT_KIND_VECTOR_STALENESS",
+            Self::Replication => "HEALTH_COMPONENT_KIND_REPLICATION",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1158,6 +1188,7 @@ impl HealthComponentKind {
             "HEALTH_COMPONENT_KIND_PROJECTION" => Some(Self::Projection),
             "HEALTH_COMPONENT_KIND_OUTBOX" => Some(Self::Outbox),
             "HEALTH_COMPONENT_KIND_VECTOR_STALENESS" => Some(Self::VectorStaleness),
+            "HEALTH_COMPONENT_KIND_REPLICATION" => Some(Self::Replication),
             _ => None,
         }
     }
@@ -1190,6 +1221,35 @@ impl HealthComponentStatus {
             "HEALTH_COMPONENT_STATUS_HEALTHY" => Some(Self::Healthy),
             "HEALTH_COMPONENT_STATUS_DEGRADED" => Some(Self::Degraded),
             "HEALTH_COMPONENT_STATUS_UNAVAILABLE" => Some(Self::Unavailable),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ReplicationRole {
+    Unspecified = 0,
+    Primary = 1,
+    Follower = 2,
+}
+impl ReplicationRole {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "REPLICATION_ROLE_UNSPECIFIED",
+            Self::Primary => "REPLICATION_ROLE_PRIMARY",
+            Self::Follower => "REPLICATION_ROLE_FOLLOWER",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "REPLICATION_ROLE_UNSPECIFIED" => Some(Self::Unspecified),
+            "REPLICATION_ROLE_PRIMARY" => Some(Self::Primary),
+            "REPLICATION_ROLE_FOLLOWER" => Some(Self::Follower),
             _ => None,
         }
     }
@@ -5801,8 +5861,19 @@ pub struct StreamChangelogRequest {
     #[prost(bytes = "vec", tag = "12")]
     pub follower_hold_id: ::prost::alloc::vec::Vec<u8>,
 }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReplicationSourceHead {
+    #[prost(uint64, tag = "1")]
+    pub transaction_sequence: u64,
+    #[prost(message, optional, tag = "2")]
+    pub application_frontier: ::core::option::Option<FrontierPosition>,
+    #[prost(message, optional, tag = "3")]
+    pub administration_frontier: ::core::option::Option<FrontierPosition>,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StreamChangelogResponse {
+    #[prost(message, optional, tag = "5")]
+    pub source_head: ::core::option::Option<ReplicationSourceHead>,
     #[prost(oneof = "stream_changelog_response::Item", tags = "1, 2, 3, 4")]
     pub item: ::core::option::Option<stream_changelog_response::Item>,
 }

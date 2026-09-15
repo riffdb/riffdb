@@ -251,7 +251,7 @@ async fn receiver_connection_refuses_wrong_phases_truncation_and_repeated_pages_
         vec![Item::BootstrapManifest(vec![1; 513])],
         vec![first.clone()],
         vec![first.clone(), first.clone()],
-        vec![first.clone(), Item::Frame(vec![1])],
+        vec![first.clone(), Item::Frame(vec![1].into())],
         vec![
             first.clone(),
             Item::BootstrapPage(page.clone()),

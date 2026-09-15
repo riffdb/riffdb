@@ -127,6 +127,7 @@ pub struct FollowerReceiver {
     projection: Option<FollowerProjectionTail>,
     reads: reads::Publication,
     startup: Option<crate::startup::FollowerStartupEvidence>,
+    source_head: Option<riffdb_service::ReplicationSourceHead>,
 }
 struct TailStream {
     source: Box<dyn ReplicationItemSource>,
@@ -159,6 +160,7 @@ impl FollowerReceiver {
         Self {
             owner: Some(owner),
             startup: Some(startup),
+            source_head: None,
             stream: None,
             lineage,
             hold_id,
@@ -340,6 +342,8 @@ impl FollowerReceiver {
         // storage step, without extending that connection's network lifetime.
         owner.deadline = Instant::now() + LIFETIME;
         let mut projection = self.projection.take().ok_or_else(busy)?;
+        let source_head = bytes.source_head();
+        let previous_head = self.source_head;
         let returned = run_step(owner, move |mut applier, cancellation| {
             let frame = ChangelogFrameV3::decode(&bytes).map_err(|_| corrupt())?;
             let covered = Point::from_receipt(frame.receipts().last().ok_or_else(corrupt)?)
@@ -347,6 +351,7 @@ impl FollowerReceiver {
             if covered.sequence() <= applier.durable_position()?.sequence() {
                 return Err(corrupt());
             }
+            validate_source_head(source_head, previous_head, covered)?;
             let meaningful = frame.receipts().iter().any(|receipt| {
                 receipt.attribution() != ChangelogAttributionV3::ReplicationSourceHold
             });
@@ -360,7 +365,8 @@ impl FollowerReceiver {
             if applied != covered || applier.acknowledge_durable_position()? != applied {
                 return Err(corrupt());
             }
-            let view = projection.capture_read_view(&applier)?;
+            let mut view = projection.capture_read_view(&applier)?;
+            view.source_head = source_head;
             Ok((applier, (applied, meaningful, projection, view, changed)))
         })
         .await
@@ -379,6 +385,7 @@ impl FollowerReceiver {
             self.stream = Some(stream);
         }
         self.reads.publish(view, &changed).map_err(storage)?;
+        self.source_head = source_head;
         self.owner = Some(owner);
         publication_attempt.complete();
         Ok(Some(applied))
@@ -395,6 +402,33 @@ impl FollowerReceiver {
         Ok(())
     }
 }
+fn validate_source_head(
+    head: Option<riffdb_service::ReplicationSourceHead>,
+    previous: Option<riffdb_service::ReplicationSourceHead>,
+    covered: Point,
+) -> Result<(), StorageError> {
+    let Some(head) = head else {
+        return Ok(());
+    };
+    let covers = |frontier: riffdb_types::DualFrontier, prior| {
+        frontier == prior || frontier.advances_from(prior)
+    };
+    if head.transaction_sequence() < covered.sequence().get()
+        || !covers(head.frontier(), covered.frontier())
+        || (head.transaction_sequence() == covered.sequence().get()
+            && head.frontier() != covered.frontier())
+        || previous.is_some_and(|prior| {
+            head.transaction_sequence() < prior.transaction_sequence()
+                || !covers(head.frontier(), prior.frontier())
+                || (head.transaction_sequence() == prior.transaction_sequence()
+                    && head.frontier() != prior.frontier())
+        })
+    {
+        return Err(corrupt());
+    }
+    Ok(())
+}
+
 async fn retire_scratch(
     mut owner: Custody<RedbFollowerApplier>,
 ) -> Result<Custody<RedbFollowerApplier>, StorageError> {

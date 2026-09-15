@@ -4934,6 +4934,8 @@ pub enum HealthComponentKind {
     Outbox,
     /// Vector embedding staleness SLO (ADR-0091).
     VectorStaleness,
+    /// Sequence-only replication progress (ADR-0178).
+    Replication,
 }
 
 /// Closed status of one health component.
@@ -4952,13 +4954,30 @@ pub enum HealthComponentStatus {
 pub struct ComponentHealth {
     component: HealthComponentKind,
     status: HealthComponentStatus,
+    replication: Option<crate::ReplicationStatistics>,
 }
 
 impl ComponentHealth {
     /// Creates one closed component signal.
     #[must_use]
     pub const fn new(component: HealthComponentKind, status: HealthComponentStatus) -> Self {
-        Self { component, status }
+        Self { component, status, replication: None }
+    }
+    /// Creates the sole replication component from observed progress.
+    #[must_use]
+    pub fn replication(progress: crate::ReplicationStatistics) -> Self {
+        let healthy = progress.registered_followers() == Some(0)
+            || (progress.is_caught_up() && progress.acknowledged_frontier().is_some());
+        Self {
+            component: HealthComponentKind::Replication,
+            status: if healthy { HealthComponentStatus::Healthy } else { HealthComponentStatus::Degraded },
+            replication: Some(progress),
+        }
+    }
+    /// Replication-only fixed counters; other component identities have none.
+    #[must_use]
+    pub const fn replication_statistics(self) -> Option<crate::ReplicationStatistics> {
+        self.replication
     }
     /// Returns the component identity.
     #[must_use]
@@ -5114,6 +5133,13 @@ impl HealthReport {
             build,
         }
     }
+    /// Classifies against the service's configured role. A follower requires a
+    /// live replication component in place of the absent primary coordinator.
+    #[must_use]
+    pub fn for_role(mut self, role: crate::ReplicationRole) -> Self {
+        self.status = classify_health_for_role(role, self.active_contract_version, &self.components);
+        self
+    }
     /// Returns overall health status.
     #[must_use]
     pub const fn status(&self) -> HealthStatus {
@@ -5211,34 +5237,40 @@ fn classify_health(
     active_contract_version: Option<ContractVersion>,
     components: &[ComponentHealth],
 ) -> HealthStatus {
-    let authoritative_ready = active_contract_version.is_some()
-        && [
-            HealthComponentKind::AuthoritativeStorage,
-            HealthComponentKind::Catalog,
-            HealthComponentKind::CommitCoordinator,
-        ]
-        .into_iter()
-        .all(|required| {
-            components.iter().any(|component| {
-                component.component() == required
-                    && component.status() == HealthComponentStatus::Healthy
-            })
-        });
-    if !authoritative_ready {
+    classify_health_for_role(crate::ReplicationRole::Primary, active_contract_version, components)
+}
+
+fn classify_health_for_role(
+    role: crate::ReplicationRole,
+    active_contract_version: Option<ContractVersion>,
+    components: &[ComponentHealth],
+) -> HealthStatus {
+    let component_ready = |kind| components.iter().any(|component| {
+        component.component() == kind && component.status() == HealthComponentStatus::Healthy
+    });
+    let role_ready = match role {
+        crate::ReplicationRole::Primary => component_ready(HealthComponentKind::CommitCoordinator),
+        crate::ReplicationRole::Follower => components.iter().any(|component| {
+            component.component() == HealthComponentKind::Replication
+                && component.status() != HealthComponentStatus::Unavailable
+                && component.replication_statistics().is_some_and(|progress| progress.role() == role)
+        }),
+    };
+    if active_contract_version.is_none()
+        || !component_ready(HealthComponentKind::AuthoritativeStorage)
+        || !component_ready(HealthComponentKind::Catalog)
+        || !role_ready
+        || components.iter().any(|component| component.replication_statistics()
+            .is_some_and(|progress| progress.role() != role))
+    {
         return HealthStatus::NotReady;
     }
     if components.iter().any(|component| {
-        matches!(
-            component.component(),
-            HealthComponentKind::Projection
-                | HealthComponentKind::Outbox
-                | HealthComponentKind::VectorStaleness
+        matches!(component.component(),
+            HealthComponentKind::Projection | HealthComponentKind::Outbox
+                | HealthComponentKind::VectorStaleness | HealthComponentKind::Replication
         ) && component.status() != HealthComponentStatus::Healthy
-    }) {
-        HealthStatus::Degraded
-    } else {
-        HealthStatus::Ready
-    }
+    }) { HealthStatus::Degraded } else { HealthStatus::Ready }
 }
 
 /// Empty authenticated statistics request.
@@ -5253,6 +5285,7 @@ pub struct StatisticsResult {
     last_commit_sequence: Option<CommitSequence>,
     pending_outbox_deliveries: Option<u64>,
     known_projections: Option<u32>,
+    replication: Option<crate::ReplicationStatistics>,
 }
 
 impl StatisticsResult {
@@ -5275,6 +5308,7 @@ impl StatisticsResult {
             last_commit_sequence: operational.last_commit_sequence,
             pending_outbox_deliveries: operational.pending_outbox_deliveries,
             known_projections: operational.known_projections,
+            replication: operational.replication,
         })
     }
     /// Returns live cursor count.
@@ -5297,6 +5331,9 @@ impl StatisticsResult {
     pub const fn pending_outbox_deliveries(self) -> Option<u64> {
         self.pending_outbox_deliveries
     }
+    /// Fixed replication counters when this node has the replication provider.
+    #[must_use]
+    pub const fn replication(self) -> Option<crate::ReplicationStatistics> { self.replication }
     /// Returns known projection count when the subsystem is installed.
     #[must_use]
     pub const fn known_projections(self) -> Option<u32> {
@@ -5310,6 +5347,7 @@ pub struct OperationalStatisticsSnapshot {
     last_commit_sequence: Option<CommitSequence>,
     pending_outbox_deliveries: Option<u64>,
     known_projections: Option<u32>,
+    replication: Option<crate::ReplicationStatistics>,
 }
 
 impl OperationalStatisticsSnapshot {
@@ -5324,8 +5362,18 @@ impl OperationalStatisticsSnapshot {
             last_commit_sequence,
             pending_outbox_deliveries,
             known_projections,
+            replication: None,
         }
     }
+    /// Adds counters from the node's checked replication observation.
+    #[must_use]
+    pub const fn with_replication(mut self, replication: crate::ReplicationStatistics) -> Self {
+        self.replication = Some(replication);
+        self
+    }
+    /// Fixed replication counters when this node has the replication provider.
+    #[must_use]
+    pub const fn replication(self) -> Option<crate::ReplicationStatistics> { self.replication }
     /// Returns the latest authoritative commit signal.
     #[must_use]
     pub const fn last_commit_sequence(self) -> Option<CommitSequence> {

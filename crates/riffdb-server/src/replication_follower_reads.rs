@@ -18,8 +18,20 @@ pub struct FollowerReadView {
     pub(crate) history: ChangelogHistoryStateV3,
     pub(crate) snapshot: RedbOwnedSnapshot,
     pub(crate) catalog: Option<ActiveCatalogSnapshot>,
+    pub(crate) source_head: Option<riffdb_service::ReplicationSourceHead>,
+    pub(crate) acknowledged: Option<riffdb_storage_api::ChangelogHistoryPointV3>,
 }
 impl FollowerReadView {
+    /// Local acknowledgement recorded at this exact read pin. It may lag the
+    /// applied head after restart and is never inferred from source emission.
+    pub fn acknowledged(&self) -> Option<riffdb_storage_api::ChangelogHistoryPointV3> {
+        self.acknowledged
+    }
+    /// Last source-head report validated against this completed frame. Absence
+    /// means unknown source progress, not zero lag. This never supplies freshness.
+    pub fn source_head(&self) -> Option<riffdb_service::ReplicationSourceHead> {
+        self.source_head
+    }
     /// Exact durable history bound to every read in this view.
     pub fn history(&self) -> ChangelogHistoryStateV3 {
         self.history

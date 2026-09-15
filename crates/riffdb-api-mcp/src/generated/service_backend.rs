@@ -5263,6 +5263,7 @@ fn authenticated_health_payload(
             .components()
             .iter()
             .map(|component| HealthComponentPayload {
+                replication: component.replication_statistics().map(replication_payload),
                 component: match component.component() {
                     riffdb_service::HealthComponentKind::AuthoritativeStorage => {
                         "authoritative_storage"
@@ -5272,6 +5273,7 @@ fn authenticated_health_payload(
                     riffdb_service::HealthComponentKind::Projection => "projection",
                     riffdb_service::HealthComponentKind::Outbox => "outbox",
                     riffdb_service::HealthComponentKind::VectorStaleness => "vector_staleness",
+                    riffdb_service::HealthComponentKind::Replication => "replication",
                 },
                 status: match component.status() {
                     riffdb_service::HealthComponentStatus::Healthy => "healthy",
@@ -6106,6 +6108,49 @@ struct AuthenticatedHealthPayload {
 struct HealthComponentPayload {
     component: &'static str,
     status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replication: Option<ReplicationPayload>,
+}
+
+#[derive(Serialize)]
+struct ReplicationFrontierPayload {
+    application: FrontierPayload,
+    administration: FrontierPayload,
+}
+#[derive(Serialize)]
+struct ReplicationPayload {
+    role: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_frontier: Option<ReplicationFrontierPayload>,
+    applied_frontier: ReplicationFrontierPayload,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    acknowledged_frontier: Option<ReplicationFrontierPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    registered_followers: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    application_lag_sequences: Option<McpPresentedU64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    administration_lag_sequences: Option<McpPresentedU64>,
+}
+fn replication_payload(value: riffdb_service::ReplicationStatistics) -> ReplicationPayload {
+    fn position(value: Option<u64>) -> FrontierPayload {
+        value.map_or(FrontierPayload::BeforeFirst(UnitPayload {}), |v| FrontierPayload::AppliedThrough(McpPresentedU64::new(v)))
+    }
+    fn pair(value: riffdb_types::DualFrontier) -> ReplicationFrontierPayload {
+        ReplicationFrontierPayload {
+            application: position(value.application().map(|v| v.get())),
+            administration: position(value.administration().map(|v| v.get())),
+        }
+    }
+    ReplicationPayload {
+        role: match value.role() { riffdb_service::ReplicationRole::Primary => "primary", riffdb_service::ReplicationRole::Follower => "follower" },
+        source_frontier: value.source_frontier().map(pair),
+        applied_frontier: pair(value.applied_frontier()),
+        acknowledged_frontier: value.acknowledged_frontier().map(pair),
+        registered_followers: value.registered_followers(),
+        application_lag_sequences: value.application_lag_sequences().map(McpPresentedU64::new),
+        administration_lag_sequences: value.administration_lag_sequences().map(McpPresentedU64::new),
+    }
 }
 
 #[derive(Serialize)]
@@ -6540,6 +6585,43 @@ mod tests {
                 {"component":"vector_staleness","status":"unavailable"}
             ])
         );
+    }
+
+    #[test]
+    // req: REP-004
+    fn replication_health_preserves_unknown_and_wide_sequence_lag_in_mcp_schema() {
+        use riffdb_service::{BuildInfo, ComponentHealth, HealthReport, OperationalHealthSnapshot, ReplicationStatistics};
+        use riffdb_types::{CommitSequence, DualFrontier};
+        let applied = DualFrontier::new(None, None);
+        let source = DualFrontier::new(CommitSequence::new(u64::MAX), None);
+        for progress in [
+            ReplicationStatistics::follower(applied, None, None).unwrap(),
+            ReplicationStatistics::follower(applied, Some(applied), Some(source)).unwrap(),
+            ReplicationStatistics::primary(source, 0, None).unwrap(),
+        ] {
+            let report = HealthReport::new(
+                None, None,
+                OperationalHealthSnapshot::new(vec![ComponentHealth::replication(progress)]).unwrap(),
+                riffdb_types::Timestamp::new(1, 0).unwrap(),
+                BuildInfo::new("0.1.0", "test", "test", vec![], 1, 1, "2025-11-25").unwrap(),
+            ).for_role(progress.role());
+            let output = serde_json::json!({"authenticated": serde_json::to_value(AuthenticatedHealthToolPayload {
+                database: "default", audience: "riffdb-grpc-loopback",
+                health: authenticated_health_payload(&report),
+            }).unwrap()});
+            let definition = fixed_tool_registry().unwrap().tools().iter()
+                .find(|item| item.name() == "riffdb_server_health").unwrap();
+            crate::schema::RiffDbSchemaValidator.validate(definition.result_schema(), &output).unwrap();
+            let counter = &output["authenticated"]["components"][0]["replication"];
+            assert_eq!(counter.get("application_lag_sequences").and_then(serde_json::Value::as_str),
+                progress.application_lag_sequences().map(|n| n.to_string()).as_deref());
+            assert_eq!(counter.get("administration_lag_sequences").and_then(serde_json::Value::as_str),
+                progress.administration_lag_sequences().map(|n| n.to_string()).as_deref());
+            assert_eq!(counter.get("source_frontier").is_some(), progress.source_frontier().is_some());
+            assert_eq!(counter.get("acknowledged_frontier").is_some(), progress.acknowledged_frontier().is_some());
+            assert_eq!(counter.get("registered_followers").and_then(serde_json::Value::as_u64),
+                progress.registered_followers().map(u64::from));
+        }
     }
 
     #[test]

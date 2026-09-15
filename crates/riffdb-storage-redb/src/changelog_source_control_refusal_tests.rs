@@ -15,6 +15,7 @@ use riffdb_storage_api::{
 };
 
 #[test]
+// req: REP-004
 fn source_hold_refuses_substitution_foreign_epoch_regression_and_unknown_rows_without_writes() {
     let (_scope, ports, states) = fixture();
     let mut control = ports.replication_source_control();
@@ -78,6 +79,13 @@ fn source_hold_refuses_substitution_foreign_epoch_regression_and_unknown_rows_wi
         .unwrap();
     ports.shared.commit_durable(transaction).unwrap();
     let epoch = ports.shared.durable_commit_epoch();
+    assert!(matches!(
+        ports
+            .published_changelog_snapshot_v3()
+            .unwrap()
+            .replication_source_progress_v3(),
+        Err(Refusal::Storage(_))
+    ));
     assert!(matches!(control.register(fence), Err(Refusal::Storage(_))));
     assert!(matches!(
         control.reclaim_history(),
@@ -98,6 +106,7 @@ fn source_hold_refuses_substitution_foreign_epoch_regression_and_unknown_rows_wi
 }
 
 #[test]
+// req: REP-004
 fn source_hold_population_bound_includes_all_kinds_and_refuses_before_allocation() {
     let (_scope, ports, states) = fixture();
     let transaction = ports.shared.database.begin_write().unwrap();
@@ -126,6 +135,17 @@ fn source_hold_population_bound_includes_all_kinds_and_refuses_before_allocation
     ports.shared.commit_durable(transaction).unwrap();
     let expected = history(&ports);
     let epoch = ports.shared.durable_commit_epoch();
+    let progress = ports
+        .published_changelog_snapshot_v3()
+        .unwrap()
+        .replication_source_progress_v3()
+        .unwrap();
+    assert_eq!(progress.history(), expected);
+    assert_eq!(
+        u64::from(progress.follower_count()),
+        riffdb_storage_api::MAX_REPLICATION_SOURCE_HOLDS_V1 / 3
+    );
+    assert_eq!(progress.oldest_acknowledged(), Some(states[0].tail()));
     let mut control = ports.replication_source_control();
     assert!(!control.register(first.unwrap()).unwrap());
     assert!(
@@ -133,6 +153,22 @@ fn source_hold_population_bound_includes_all_kinds_and_refuses_before_allocation
         Err(Refusal::Storage(error)) if error.kind() == StorageErrorKind::LimitExceeded)
     );
     assert_eq!(history(&ports), expected);
+    assert_eq!(ports.shared.durable_commit_epoch(), epoch);
+
+    let transaction = ports.shared.database.begin_write().unwrap();
+    let extra = hold(Kind::FollowerAcknowledgement, states[0]);
+    let encoded = encode_replication_source_hold_v1(extra).unwrap();
+    transaction
+        .open_table(SOURCE_HOLDS)
+        .unwrap()
+        .insert(extra.storage_key().as_slice(), encoded.as_bytes())
+        .unwrap();
+    ports.shared.commit_durable(transaction).unwrap();
+    let epoch = ports.shared.durable_commit_epoch();
+    assert!(matches!(
+        ports.published_changelog_snapshot_v3().unwrap().replication_source_progress_v3(),
+        Err(Refusal::Storage(error)) if error.kind() == StorageErrorKind::LimitExceeded
+    ));
     assert_eq!(ports.shared.durable_commit_epoch(), epoch);
 }
 

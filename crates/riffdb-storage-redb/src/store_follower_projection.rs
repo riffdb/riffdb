@@ -42,6 +42,23 @@ impl RedbFollowerApplier {
     pub fn capture_read_snapshot(
         &self,
     ) -> Result<(ChangelogHistoryStateV3, crate::RedbOwnedSnapshot), StorageError> {
+        let (history, _, snapshot) = self.capture_read_progress_snapshot()?;
+        Ok((history, snapshot))
+    }
+
+    /// Captures applied history, the separately retained local acknowledgement,
+    /// and semantic reads in one immutable pin. Restart may expose an applied
+    /// prefix whose acknowledgement is absent or older; observation never fills it.
+    pub fn capture_read_progress_snapshot(
+        &self,
+    ) -> Result<
+        (
+            ChangelogHistoryStateV3,
+            ReplicationFollowerStateV3,
+            crate::RedbOwnedSnapshot,
+        ),
+        StorageError,
+    > {
         let access = self.replay_read_access()?;
         let history = crate::changelog_v3_roots::read_checkpoint_roots(&access)?
             .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
@@ -50,8 +67,25 @@ impl RedbFollowerApplier {
             history.lineage().database_id(),
             history.lineage().history_incarnation(),
         )?;
+        let meta = access.open_table(META).map_err(table_error)?;
+        let row = meta
+            .get(key(N::ReplicationFollowerState)?)
+            .map_err(precommit_storage_error)?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        let state = *decode_replication_follower_state_v3(row.value())
+            .map_err(crate::error::codec_error)?
+            .value();
+        let (lineage, applied, _) = state
+            .attached_state()
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        if lineage != history.lineage() || applied != history.tail() {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        drop(row);
+        drop(meta);
         Ok((
             history,
+            state,
             crate::owned_snapshot::RedbOwnedSnapshot::from_read_access(access),
         ))
     }

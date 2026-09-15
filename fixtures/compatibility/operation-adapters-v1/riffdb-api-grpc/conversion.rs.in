@@ -4380,6 +4380,7 @@ pub fn health_result_to_proto(
                         }
                         HealthComponentKind::Projection => v1::HealthComponentKind::Projection,
                         HealthComponentKind::Outbox => v1::HealthComponentKind::Outbox,
+                        HealthComponentKind::Replication => v1::HealthComponentKind::Replication,
                         HealthComponentKind::VectorStaleness => {
                             v1::HealthComponentKind::VectorStaleness
                         }
@@ -4394,6 +4395,7 @@ pub fn health_result_to_proto(
                     v1::HealthComponent {
                         component: kind as i32,
                         status: status as i32,
+                        replication: component.replication_statistics().map(crate::replication_progress::encode_statistics),
                     }
                 })
                 .collect();
@@ -4440,6 +4442,7 @@ pub fn statistics_result_to_proto(
         last_commit_sequence: result.last_commit_sequence().map(CommitSequence::get),
         pending_outbox_deliveries: result.pending_outbox_deliveries(),
         known_projections: result.known_projections(),
+        replication: result.replication().map(crate::replication_progress::encode_statistics),
         history_incarnation,
     }
 }

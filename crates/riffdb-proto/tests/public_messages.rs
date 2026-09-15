@@ -28,6 +28,152 @@ fn uuid_v7() -> Vec<u8> {
 }
 
 #[test]
+// req: REP-004
+fn replication_statistics_wire_preserves_unknown_progress_and_rejects_false_lag() {
+    let position = |value| v1::FrontierPosition {
+        position: Some(if value == 0 {
+            v1::frontier_position::Position::BeforeFirst(v1::Unit {})
+        } else {
+            v1::frontier_position::Position::AppliedThrough(value)
+        }),
+    };
+    let pair = |app, admin| v1::ReplicationFrontier {
+        application: Some(position(app)),
+        administration: Some(position(admin)),
+    };
+    let unknown = v1::ReplicationStatistics {
+        role: v1::ReplicationRole::Follower as i32,
+        applied_frontier: Some(pair(10, 3)),
+        ..Default::default()
+    };
+    let lagged = v1::ReplicationStatistics {
+        source_frontier: Some(pair(12, 4)),
+        acknowledged_frontier: Some(pair(8, 2)),
+        application_lag_sequences: Some(2),
+        administration_lag_sequences: Some(1),
+        ..unknown
+    };
+    let caught_up = v1::ReplicationStatistics {
+        source_frontier: Some(pair(10, 3)),
+        acknowledged_frontier: Some(pair(10, 3)),
+        application_lag_sequences: Some(0),
+        administration_lag_sequences: Some(0),
+        ..unknown
+    };
+    let primary = v1::ReplicationStatistics {
+        role: v1::ReplicationRole::Primary as i32,
+        source_frontier: Some(pair(10, 3)),
+        acknowledged_frontier: Some(pair(8, 2)),
+        registered_followers: Some(1),
+        application_lag_sequences: Some(2),
+        administration_lag_sequences: Some(1),
+        ..unknown
+    };
+    let no_followers = v1::ReplicationStatistics {
+        acknowledged_frontier: None,
+        registered_followers: Some(0),
+        application_lag_sequences: None,
+        administration_lag_sequences: None,
+        ..primary
+    };
+    let before_first = v1::ReplicationStatistics {
+        applied_frontier: Some(pair(0, 0)),
+        source_frontier: Some(pair(u64::MAX, u64::MAX)),
+        application_lag_sequences: Some(u64::MAX),
+        administration_lag_sequences: Some(u64::MAX),
+        ..unknown
+    };
+    let response = |replication| v1::StatsResponse {
+        history_incarnation: 1,
+        replication,
+        ..Default::default()
+    };
+    for progress in [
+        None,
+        Some(unknown),
+        Some(lagged),
+        Some(caught_up),
+        Some(primary),
+        Some(no_followers),
+        Some(before_first),
+    ] {
+        let value = response(progress);
+        assert_eq!(
+            decode_public_message::<v1::StatsResponse>(&value.encode_to_vec()),
+            Ok(value)
+        );
+    }
+    for invalid in [
+        v1::ReplicationStatistics { role: 0, ..unknown },
+        v1::ReplicationStatistics {
+            registered_followers: Some(0),
+            ..unknown
+        },
+        v1::ReplicationStatistics {
+            application_lag_sequences: Some(0),
+            ..unknown
+        },
+        v1::ReplicationStatistics {
+            applied_frontier: None,
+            ..unknown
+        },
+        v1::ReplicationStatistics {
+            applied_frontier: Some(v1::ReplicationFrontier {
+                administration: None,
+                ..pair(10, 3)
+            }),
+            ..unknown
+        },
+        v1::ReplicationStatistics {
+            acknowledged_frontier: Some(pair(11, 2)),
+            ..unknown
+        },
+        v1::ReplicationStatistics {
+            source_frontier: Some(pair(9, 4)),
+            ..lagged
+        },
+        v1::ReplicationStatistics {
+            application_lag_sequences: Some(1),
+            ..lagged
+        },
+        v1::ReplicationStatistics {
+            registered_followers: None,
+            ..primary
+        },
+        v1::ReplicationStatistics {
+            acknowledged_frontier: None,
+            ..primary
+        },
+        v1::ReplicationStatistics {
+            registered_followers: Some(0),
+            ..primary
+        },
+    ] {
+        assert!(
+            decode_public_message::<v1::StatsResponse>(&response(Some(invalid)).encode_to_vec())
+                .is_err()
+        );
+    }
+    let wrap = |nested: &[u8]| {
+        let mut encoded = response(None).encode_to_vec();
+        encoded.push(0x3a); // stats field7
+        prost::encoding::encode_varint(nested.len().try_into().unwrap(), &mut encoded);
+        encoded.extend_from_slice(nested);
+        encoded
+    };
+    let mut duplicate = lagged.encode_to_vec();
+    duplicate.extend_from_slice(&[0x08, 0x02]); // repeated known role
+    assert!(decode_public_message::<v1::StatsResponse>(&wrap(&duplicate)).is_err());
+    let mut oversized = lagged.encode_to_vec();
+    oversized.extend_from_slice(&[0x42, 0x80, 0x04]); // unknown field8,512 bytes
+    oversized.extend_from_slice(&[0; 512]);
+    assert_eq!(
+        decode_public_message::<v1::StatsResponse>(&wrap(&oversized)),
+        Err(PublicWireError::PreflightLimitExceeded)
+    );
+}
+
+#[test]
 // req: REP-003
 fn replication_wire_binds_the_complete_position_and_refuses_malformed_or_oversized_items() {
     let before = || {
@@ -125,6 +271,7 @@ fn replication_wire_binds_the_complete_position_and_refuses_malformed_or_oversiz
     }
     for code in 1..=10 {
         let response = v1::StreamChangelogResponse {
+            source_head: None,
             item: Some(v1::stream_changelog_response::Item::Refusal(code)),
         };
         assert_eq!(
@@ -136,12 +283,14 @@ fn replication_wire_binds_the_complete_position_and_refuses_malformed_or_oversiz
     for code in [0, 11, -1] {
         assert!(
             validate_public_message(&v1::StreamChangelogResponse {
+                source_head: None,
                 item: Some(v1::stream_changelog_response::Item::Refusal(code)),
             })
             .is_err()
         );
     }
     let oversized = v1::StreamChangelogResponse {
+        source_head: None,
         item: Some(v1::stream_changelog_response::Item::Frame(vec![
             0;
             32 * 1024
@@ -150,6 +299,106 @@ fn replication_wire_binds_the_complete_position_and_refuses_malformed_or_oversiz
         ])),
     };
     assert!(validate_public_message(&oversized).is_err());
+}
+
+#[test]
+// req: REP-004
+fn replication_source_head_is_optional_bounded_and_only_valid_with_a_frame() {
+    let position = |value| {
+        Some(v1::FrontierPosition {
+            position: Some(v1::frontier_position::Position::AppliedThrough(value)),
+        })
+    };
+    let head = v1::ReplicationSourceHead {
+        transaction_sequence: 9,
+        application_frontier: position(5),
+        administration_frontier: position(2),
+    };
+    let original = v1::StreamChangelogResponse {
+        item: Some(v1::stream_changelog_response::Item::Frame(vec![1, 2, 3])),
+        source_head: Some(head),
+    };
+    assert_eq!(
+        decode_public_message::<v1::StreamChangelogResponse>(&original.encode_to_vec()).unwrap(),
+        original
+    );
+    let mut absent = original.clone();
+    absent.source_head = None;
+    assert_eq!(
+        decode_public_message::<v1::StreamChangelogResponse>(&absent.encode_to_vec()).unwrap(),
+        absent
+    );
+    for fault in 0..5 {
+        let mut changed = original.clone();
+        match fault {
+            0 => changed.source_head.as_mut().unwrap().transaction_sequence = 0,
+            1 => changed.source_head.as_mut().unwrap().application_frontier = None,
+            2 => {
+                changed
+                    .source_head
+                    .as_mut()
+                    .unwrap()
+                    .administration_frontier = position(0)
+            }
+            3 => {
+                changed.item = Some(v1::stream_changelog_response::Item::Refusal(
+                    v1::ReplicationRefusal::Unavailable as i32,
+                ))
+            }
+            _ => changed.item = Some(v1::stream_changelog_response::Item::BootstrapPage(vec![1])),
+        }
+        assert!(
+            decode_public_message::<v1::StreamChangelogResponse>(&changed.encode_to_vec()).is_err()
+        );
+    }
+    let mut duplicate_head = head.encode_to_vec();
+    duplicate_head.extend_from_slice(&[8, 9]); // repeat nested transaction_sequence
+    let mut encoded = absent.encode_to_vec();
+    encoded.extend_from_slice(&[42, u8::try_from(duplicate_head.len()).unwrap()]);
+    encoded.extend_from_slice(&duplicate_head);
+    assert_eq!(
+        decode_public_message::<v1::StreamChangelogResponse>(&encoded),
+        Err(PublicWireError::MalformedEncoding)
+    );
+    let mut unknown = head.encode_to_vec();
+    unknown.extend_from_slice(&[32, 1]); // unknown nested field 4 is ignored
+    let mut encoded = absent.encode_to_vec();
+    encoded.extend_from_slice(&[42, u8::try_from(unknown.len()).unwrap()]);
+    encoded.extend_from_slice(&unknown);
+    assert_eq!(
+        decode_public_message::<v1::StreamChangelogResponse>(&encoded).unwrap(),
+        original
+    );
+    let mut bounded_head = head.encode_to_vec();
+    let padding = 128 - bounded_head.len() - 2;
+    bounded_head.extend_from_slice(&[34, u8::try_from(padding).unwrap()]);
+    bounded_head.resize(128, 0);
+    let mut encoded = absent.encode_to_vec();
+    encoded.extend_from_slice(&[42, 0x80, 1]); // field 5, length 128
+    encoded.extend_from_slice(&bounded_head);
+    assert_eq!(
+        decode_public_message::<v1::StreamChangelogResponse>(&encoded).unwrap(),
+        original
+    );
+    bounded_head.extend_from_slice(&[40, 0]); // one extra unknown field exceeds the head bound
+    let mut encoded = absent.encode_to_vec();
+    encoded.extend_from_slice(&[42, 0x82, 1]); // length 130
+    encoded.extend_from_slice(&bounded_head);
+    assert!(decode_public_message::<v1::StreamChangelogResponse>(&encoded).is_err());
+
+    let maximum_frame = v1::StreamChangelogResponse {
+        item: Some(v1::stream_changelog_response::Item::Frame(vec![
+            7;
+            32 * 1024
+                * 1024
+        ])),
+        source_head: Some(head),
+    };
+    assert_eq!(
+        decode_public_message::<v1::StreamChangelogResponse>(&maximum_frame.encode_to_vec())
+            .unwrap(),
+        maximum_frame
+    );
 }
 
 fn active_contract() -> v1::ContractSelection {
@@ -1651,6 +1900,7 @@ fn named_query_permissions_require_exact_bounded_module_and_symbol_identity() {
 }
 
 #[test]
+// req: REP-004
 fn health_and_subscription_closed_bounds_are_checked() {
     let pre_bootstrap = v1::HealthResponse {
         result: Some(v1::health_response::Result::PreBootstrap(
@@ -1706,11 +1956,17 @@ fn health_and_subscription_closed_bounds_are_checked() {
                     v1::HealthComponentKind::Projection,
                     v1::HealthComponentKind::Outbox,
                     v1::HealthComponentKind::VectorStaleness,
+                    v1::HealthComponentKind::Replication,
                 ]
                 .into_iter()
                 .map(|kind| v1::HealthComponent {
                     component: kind as i32,
-                    status: if kind == v1::HealthComponentKind::VectorStaleness {
+                    replication: None,
+                    status: if matches!(
+                        kind,
+                        v1::HealthComponentKind::VectorStaleness
+                            | v1::HealthComponentKind::Replication
+                    ) {
                         v1::HealthComponentStatus::Unavailable as i32
                     } else {
                         v1::HealthComponentStatus::Healthy as i32
@@ -1736,12 +1992,70 @@ fn health_and_subscription_closed_bounds_are_checked() {
         database_alias: "default".to_owned(),
         authentication_audience: "riffdb-grpc-loopback".to_owned(),
     };
-    validate_public_message(&authenticated).expect("six canonical health components");
+    validate_public_message(&authenticated).expect("seven canonical health components");
     let encoded = authenticated.encode_to_vec();
     assert_eq!(
         decode_public_message::<v1::HealthResponse>(&encoded),
         Ok(authenticated.clone())
     );
+
+    let before = v1::FrontierPosition {
+        position: Some(v1::frontier_position::Position::BeforeFirst(v1::Unit {})),
+    };
+    let unknown = v1::ReplicationStatistics {
+        role: v1::ReplicationRole::Follower.into(),
+        applied_frontier: Some(v1::ReplicationFrontier {
+            application: Some(before),
+            administration: Some(before),
+        }),
+        ..Default::default()
+    };
+    for (kind, status, progress, valid) in [
+        (
+            v1::HealthComponentKind::Replication,
+            v1::HealthComponentStatus::Degraded,
+            Some(unknown),
+            true,
+        ),
+        (
+            v1::HealthComponentKind::Replication,
+            v1::HealthComponentStatus::Healthy,
+            Some(unknown),
+            false,
+        ),
+        (
+            v1::HealthComponentKind::Replication,
+            v1::HealthComponentStatus::Unavailable,
+            Some(unknown),
+            false,
+        ),
+        (
+            v1::HealthComponentKind::Replication,
+            v1::HealthComponentStatus::Healthy,
+            None,
+            false,
+        ),
+        (
+            v1::HealthComponentKind::Catalog,
+            v1::HealthComponentStatus::Degraded,
+            Some(unknown),
+            false,
+        ),
+    ] {
+        let mut value = authenticated.clone();
+        let Some(v1::health_response::Result::Authenticated(report)) = value.result.as_mut() else {
+            unreachable!()
+        };
+        report.components = vec![v1::HealthComponent {
+            component: kind.into(),
+            status: status.into(),
+            replication: progress,
+        }];
+        assert_eq!(
+            decode_public_message::<v1::HealthResponse>(&value.encode_to_vec()).is_ok(),
+            valid
+        );
+    }
 
     let mut too_many = authenticated;
     let v1::health_response::Result::Authenticated(report) =
@@ -1752,6 +2066,7 @@ fn health_and_subscription_closed_bounds_are_checked() {
     report.components.push(v1::HealthComponent {
         component: v1::HealthComponentKind::VectorStaleness as i32,
         status: v1::HealthComponentStatus::Unavailable as i32,
+        replication: None,
     });
     assert_eq!(
         validate_public_message(&too_many),
@@ -2261,12 +2576,14 @@ fn bootstrap_replication_uses_the_same_rpc_with_bounded_manifest_page_and_attach
         }
     }
     let manifest = v1::StreamChangelogResponse {
+        source_head: None,
         item: Some(v1::stream_changelog_response::Item::BootstrapManifest(
             vec![1; 512],
         )),
     };
     assert!(validate_public_message(&manifest).is_ok());
     let page = v1::StreamChangelogResponse {
+        source_head: None,
         item: Some(v1::stream_changelog_response::Item::BootstrapPage(
             vec![1; 32 * 1024 * 1024 + 512],
         )),
@@ -2278,7 +2595,11 @@ fn bootstrap_replication_uses_the_same_rpc_with_bounded_manifest_page_and_attach
         v1::stream_changelog_response::Item::BootstrapPage(vec![1; 32 * 1024 * 1024 + 513]),
     ] {
         assert!(
-            validate_public_message(&v1::StreamChangelogResponse { item: Some(item) }).is_err()
+            validate_public_message(&v1::StreamChangelogResponse {
+                source_head: None,
+                item: Some(item)
+            })
+            .is_err()
         );
     }
 }

@@ -57,5 +57,7 @@ pub use server::*;
 
 #[cfg(all(feature = "client", feature = "server"))]
 mod replication_client;
+#[cfg(feature = "server")]
+mod replication_progress;
 #[cfg(all(feature = "client", feature = "server"))]
 pub use replication_client::ReplicationWireClient;

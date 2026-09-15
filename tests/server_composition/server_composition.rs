@@ -874,6 +874,7 @@ fn assert_derived_health_shape(response: &v1::HealthResponse) -> TestResult<()> 
         v1::HealthComponentKind::CommitCoordinator,
         v1::HealthComponentKind::Projection,
         v1::HealthComponentKind::Outbox,
+        v1::HealthComponentKind::Replication,
     ];
     let actual_kinds: Vec<_> = report
         .components

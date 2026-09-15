@@ -32,6 +32,51 @@ fn retained(ports: &RedbOperationalPorts, expected: Hold) -> Option<Hold> {
 }
 
 #[test]
+// req: REP-004, REC-002
+fn source_progress_observes_only_durable_follower_holds_in_one_immutable_pin() {
+    let (_scope, ports, states) = fixture();
+    let before = ports.published_changelog_snapshot_v3().unwrap();
+    let empty = before.replication_source_progress_v3().unwrap();
+    assert_eq!(empty.follower_count(), 0);
+    assert_eq!(empty.oldest_acknowledged(), None);
+    let mut control = ports.replication_source_control();
+    control.register(hold(Kind::Bootstrap, states[1])).unwrap();
+    control
+        .register(hold(Kind::ArchiveAcknowledgement, states[2]))
+        .unwrap();
+    let first = hold(Kind::FollowerAcknowledgement, states[3]);
+    control.register(first).unwrap();
+    let second = Hold::new(
+        riffdb_storage_api::ReplicationSourceHoldIdV1::new([0x95; 16]).unwrap(),
+        Kind::FollowerAcknowledgement,
+        first.lineage(),
+        states[4].tail(),
+    );
+    control.register(second).unwrap();
+    let pin = ports.published_changelog_snapshot_v3().unwrap();
+    let observed = pin.replication_source_progress_v3().unwrap();
+    assert_eq!(observed.history(), history(&ports));
+    assert_eq!(observed.follower_count(), 2);
+    assert_eq!(observed.oldest_acknowledged(), Some(first.fence()));
+    assert_eq!(before.replication_source_progress_v3().unwrap(), empty);
+
+    let advanced = Hold::new(first.id(), first.kind(), first.lineage(), states[5].tail());
+    control.advance_acknowledgement(advanced).unwrap();
+    let after = history(&ports);
+    assert_eq!(pin.replication_source_progress_v3().unwrap(), observed);
+    let latest = ports.published_changelog_snapshot_v3().unwrap();
+    let progress = latest.replication_source_progress_v3().unwrap();
+    assert_eq!(progress.history(), after);
+    assert_eq!(progress.follower_count(), 2);
+    assert_eq!(progress.oldest_acknowledged(), Some(second.fence()));
+    assert_eq!(
+        history(&ports),
+        after,
+        "observation must create no transaction"
+    );
+}
+
+#[test]
 fn bootstrap_attachment_replaces_its_hold_at_the_exact_same_fence_and_retries_read_only() {
     let (_scope, ports, states) = fixture();
     let bootstrap = hold(Kind::Bootstrap, states[3]);

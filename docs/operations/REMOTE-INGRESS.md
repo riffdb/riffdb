@@ -107,19 +107,55 @@ Database readiness is a separate authenticated probe. Supply the selected
 database and a protected credential authorized for health; the response may
 then include lifecycle, readiness, database alias, audience, and component
 status. The canonical component names are `authoritative_storage`, `catalog`,
-`commit_coordinator`, `projection`, `outbox`, and `vector_staleness`; each is
+`commit_coordinator`, `projection`, `outbox`, `vector_staleness`, and `replication`; each is
 `healthy`, `degraded`, or `unavailable`. `vector_staleness` reports embedding
 quality state under its own identity and must not be interpreted as projection
 or vector-index readiness.
 
-The POC does not yet have an authoritative staleness observer, so production
-reports `vector_staleness: unavailable` rather than claiming healthy state.
-Once authoritative serving is available, a non-healthy projection, outbox, or
-vector-staleness component makes aggregate authenticated health `degraded`;
-the current unavailable vector-staleness component therefore prevents an
-overall `ready` report. Container routing must use authenticated readiness,
-while process restart may use unauthenticated liveness. Neither probe prints
-bearer material.
+On a primary, vector staleness is observed from the active contract's retained
+vector health summaries. A breached threshold reports `degraded`; unavailable
+or inconsistent observations report `unavailable`. Contracts without vector
+fields omit that component. Once authoritative serving is available, a
+non-healthy projection, outbox, vector-staleness, or replication component makes
+aggregate authenticated health `degraded`. Container routing must use
+authenticated readiness, while process restart may use unauthenticated
+liveness. Neither probe prints bearer material.
+
+### Replication health and statistics
+
+Both node roles publish one `replication` health component. Its typed counters
+also appear in authenticated gRPC Statistics. `role` is `primary` or `follower`.
+Each frontier contains separate application and administration positions,
+including an explicit before-first position. The counters are observations;
+they cannot satisfy a read's freshness policy or authorize promotion.
+
+| Counter | Primary | Follower |
+| --- | --- | --- |
+| `source_frontier` | Published local source head | Last validated source-head observation, when known |
+| `applied_frontier` | Published local source head | Completed local applied prefix |
+| `acknowledged_frontier` | Oldest registered follower's durable acknowledgement | Recorded local durable acknowledgement, when present |
+| `registered_followers` | Retained follower count, including disconnected followers | Omitted |
+| `application_lag_sequences`, `administration_lag_sequences` | Source head minus oldest acknowledgement | Observed source head minus applied prefix |
+
+Lag is measured in logical sequences, never elapsed time. Control-only receipts
+do not increase it. A zero value means the two observed positions match;
+omission means unknown or not applicable. A primary with no registered followers
+reports count zero, omits acknowledgement and lag, and has healthy replication.
+A follower can have an applied prefix without a recorded local acknowledgement
+after recovery. Older sources may omit source-head metadata; the follower then
+omits lag instead of reporting zero. MCP and CLI present 64-bit sequences and
+lag as decimal strings to preserve their full range.
+
+Other replication observations are healthy only when both lag counters are
+zero and acknowledgement is present; otherwise they are degraded. A follower
+requires an available replication component, catalog, and authoritative read
+storage for readiness. It has no primary commit-coordinator component. An
+unavailable replication component makes follower health `not_ready`.
+
+Under the accepted follower audit boundary, authorized Health/Statistics and
+authenticated denied reads emit bounded redacted telemetry. They do not append
+local durable audit. Writes and reads whose policy requires durable audit
+remain refused with the typed follower-mode outcome.
 
 ## Application credential rotation
 

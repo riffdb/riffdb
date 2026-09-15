@@ -19,9 +19,10 @@ use riffdb_policy::{
     NoopAuthorizationTelemetry, OperationRequest, ReplicationDecision,
 };
 use riffdb_service::{
-    CurrentPolicyPort, ReplicationApplication, ReplicationFailure, ReplicationFuture,
-    ReplicationItem, ReplicationItemSource, ReplicationPhase, ReplicationRequest,
-    ReplicationService, ReplicationSourcePort, ReplicationStreamErrorV3,
+    CurrentPolicyPort, ReplicationApplication, ReplicationFailure, ReplicationFrame,
+    ReplicationFuture, ReplicationItem, ReplicationItemSource, ReplicationPhase,
+    ReplicationRequest, ReplicationService, ReplicationSourceHead, ReplicationSourcePort,
+    ReplicationStreamErrorV3,
 };
 use riffdb_testkit::authorization::{
     AuthorizationFixture, AuthorizationFixtureConfig, AuthorizationFixtureTimes,
@@ -265,6 +266,7 @@ fn replication_rechecks_real_authority_after_source_admission_wait() {
 }
 
 #[test]
+// req: REP-004
 fn replication_rechecks_real_authority_after_wait_and_never_releases_the_withheld_frame() {
     for change in Change::ALL {
         let policy = Policy::new(CapabilityPermissionKindV1::ReplicateChangelog);
@@ -273,19 +275,19 @@ fn replication_rechecks_real_authority_after_wait_and_never_releases_the_withhel
         let mut subscription =
             ready(service.stream_changelog(policy.principal(), request())).unwrap();
         // First release proves this principal can receive bytes before the change.
-        sender
-            .try_send(Ok(Some(ReplicationItem::Frame(vec![1, 2, 3]))))
-            .unwrap();
+        let observed_frame = ReplicationItem::Frame(ReplicationFrame::new(
+            vec![1, 2, 3],
+            Some(ReplicationSourceHead::new(9, riffdb_types::DualFrontier::INITIAL).unwrap()),
+        ));
+        sender.try_send(Ok(Some(observed_frame.clone()))).unwrap();
         assert_eq!(
             ready(subscription.next_item()),
-            Ok(Some(ReplicationItem::Frame(vec![1, 2, 3])))
+            Ok(Some(observed_frame.clone()))
         );
         let mut pending = Box::pin(subscription.next_item());
         assert!(poll(pending.as_mut()).is_pending());
         let expected = change.apply(&policy);
-        sender
-            .try_send(Ok(Some(ReplicationItem::Frame(vec![4, 5, 6]))))
-            .unwrap();
+        sender.try_send(Ok(Some(observed_frame))).unwrap();
         assert_eq!(ready(pending), Err(expected), "{change:?}");
         policy.fixture.make_current_available().unwrap();
         policy.now.store(150, Ordering::Release);
@@ -345,11 +347,13 @@ fn replication_source_failure_and_invalid_frame_permanently_end_the_subscription
             ReplicationFailure::Source(ReplicationStreamErrorV3::HistoryPruned),
         ),
         (
-            Ok(Some(ReplicationItem::Frame(vec![]))),
+            Ok(Some(ReplicationItem::Frame(vec![].into()))),
             ReplicationFailure::Source(ReplicationStreamErrorV3::CorruptHistory),
         ),
         (
-            Ok(Some(ReplicationItem::Frame(vec![0; 32 * 1024 * 1024 + 1]))),
+            Ok(Some(ReplicationItem::Frame(
+                vec![0; 32 * 1024 * 1024 + 1].into(),
+            ))),
             ReplicationFailure::Source(ReplicationStreamErrorV3::CorruptHistory),
         ),
     ] {
@@ -423,7 +427,11 @@ fn bootstrap_rejects_wrong_phase_items_duplicate_manifest_and_oversized_pages() 
             None,
             ReplicationItem::BootstrapPage(vec![2]),
         ),
-        (bootstrap_request(), None, ReplicationItem::Frame(vec![2])),
+        (
+            bootstrap_request(),
+            None,
+            ReplicationItem::Frame(vec![2].into()),
+        ),
         (
             bootstrap_request(),
             None,
@@ -437,7 +445,7 @@ fn bootstrap_rejects_wrong_phase_items_duplicate_manifest_and_oversized_pages() 
         (
             bootstrap_request(),
             Some(ReplicationItem::BootstrapManifest(vec![1])),
-            ReplicationItem::Frame(vec![2]),
+            ReplicationItem::Frame(vec![2].into()),
         ),
         (
             bootstrap_request(),

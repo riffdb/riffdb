@@ -2901,24 +2901,24 @@ pub enum OperationalStatusError {
     Integrity,
 }
 
-/// Cached process/lifecycle status, disjoint from authoritative storage access.
+/// Bounded process/lifecycle observations with no authority to mutate storage.
 pub trait OperationalStatusPort: Send + Sync {
     /// Reserves capacity for bounded authenticated health facts.
-    fn reserve_health(
-        &self,
-        control: &RequestControl,
+    fn reserve_health<'a>(
+        &'a self,
+        control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<(), OperationalHealthSnapshot, OperationalStatusError>,
         PortAdmissionError,
     >;
 
     /// Reserves capacity for bounded authenticated operational counters.
-    fn reserve_statistics(
-        &self,
-        control: &RequestControl,
+    fn reserve_statistics<'a>(
+        &'a self,
+        control: &'a RequestControl,
     ) -> PortFuture<
-        '_,
+        'a,
         BoxPortCapacityPermit<(), OperationalStatisticsSnapshot, OperationalStatusError>,
         PortAdmissionError,
     >;
