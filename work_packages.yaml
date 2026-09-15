@@ -22165,7 +22165,7 @@ work_packages:
     adr/0186-complete-authoritative-changelog-v3.md, adr/README.md,
     proto/**, crates/riffdb-proto/**, crates/riffdb-types/**, crates/riffdb-auth/**,
     crates/riffdb-policy/**, crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
-    crates/riffdb-service/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-service/**, crates/riffdb-api-grpc/**, crates/riffdb-catalog/**,
     crates/riffdb-server/**, crates/riffdb-config/**, crates/riffdb-cli/**,
     crates/riffdb-testkit/**, crates/riffdb-sim/**, release/version-topology-v1.json,
     fixtures/**, tests/**, scripts/**, docs/**,
