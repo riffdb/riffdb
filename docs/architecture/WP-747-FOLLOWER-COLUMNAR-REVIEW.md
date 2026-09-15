@@ -1,6 +1,9 @@
-# WP-747 follower columnar materialization — proposed amendment
+# WP-747 follower columnar materialization — accepted amendment
 
-Status: proposed; exact human acceptance is required before implementation.
+Status: accepted 2026-09-15. The maintainer approved the exact text below in
+session: "Approve the exact amendment". Standalone acceptance commit
+`1d910c83` records it in SPEC §4.10 and ADR-0178, with the explicit qualifications
+in ADR-0192, ADR-0195 and ADR-0209. Runtime implementation remains WP-747 work.
 
 ## Conflict established
 
@@ -21,10 +24,11 @@ falling back is forbidden. The existing process test
 `columnar_control_recovery_refuses_corrupt_selected_v2_without_v1_fallback`
 proves that selection remains closed after an invalid root.
 
-The already accepted follower-audit amendment does not authorize an exception
-for columnar materialization. No production behavior is changed by this proposal.
+The follower-audit amendment remains independently accepted. This separately
+accepted columnar amendment governs materialization; the acceptance commit itself
+changes no production runtime behavior.
 
-## Exact proposed amendment
+## Exact accepted amendment
 
 The following text amends ADR-0178 §4 and supplies the explicit follower-only
 exception to SPEC PRJ-005 through PRJ-009, ADR-0192 decisions 14–16, ADR-0195
@@ -109,7 +113,9 @@ history, rather than by possession of the source-selected physical artifact.
 This is an explicit guarantee amendment, not an implementation deviation.
 Restart rebuild cost is accepted; durable reuse of follower views is deferred.
 
-After exact acceptance, record the maintainer's words/date in ADR-0178 and add
-this exception to the cited ADRs and SPEC requirements in a standalone amendment
-commit, with any required record-scope adjustment made separately. Implement
-only after that commit. The accepted audit exception is unchanged.
+The maintainer's words/date and the exact normative text were recorded in
+standalone commit `1d910c83`. WP-747 now names the affected requirements and
+records and owns the required proofs. Its existing crate scope suffices; the
+referenced ADRs are its own records under the scope rule. All seven amendment
+acceptance checks passed, and the installed wording was compared with this exact
+review text. Implementation follows acceptance; the audit exception is unchanged.
