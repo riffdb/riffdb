@@ -6,6 +6,10 @@
 
 use std::num::NonZeroU32;
 
+#[path = "archive_receipt.rs"]
+mod archive_receipt;
+pub use archive_receipt::*;
+
 use riffdb_types::{
     ActorId, ActorKind, ApprovalId, BackupNameV1, CapabilityId, CommitSequence, ContractBundleHash,
     ContractLineage, ContractVersion, DatabaseId, OfflineMaintenanceInputHash,
