@@ -279,6 +279,16 @@ fn initial_database_action(
     reconciliation: &RedbMaintenanceReconciliation,
     target_requires_recovery: bool,
 ) -> Result<InitialDatabaseAction, DaemonError> {
+    // Archive replay candidates need their own validated recovery driver. They
+    // cannot be opened by the ordinary V1 restore or current-database route.
+    if reconciliation
+        .archive_receipts()
+        .receipts()
+        .iter()
+        .any(|receipt| !receipt.current_phase().is_terminal())
+    {
+        return Err(DaemonError::MaintenanceDriver);
+    }
     let mut retirements = reconciliation
         .retire_receipts()
         .receipts()
@@ -4596,6 +4606,54 @@ mod tests {
     use tonic::transport::Endpoint;
 
     use super::*;
+
+    #[test]
+    // req: REP-007, AFC-007
+    fn incomplete_archive_restore_refuses_ordinary_startup() {
+        use riffdb_storage_api::{
+            OfflineArchiveReceiptPersistencePort, OfflineMaintenanceAdmissionV1,
+            OfflineMaintenanceReceiptV3,
+        };
+        use riffdb_types::{
+            ActorId, ActorKind, ArchiveNameV1, ArchiveRestoreStopV1, BackupNameV1, CapabilityId,
+            OfflineMaintenanceOperationId, OfflineMaintenanceReplacementConfirmation,
+            archive_restore_input_hash,
+        };
+        let root = tempfile::TempDir::new().unwrap();
+        let target = root.path().join("db.redb");
+        let backups = root.path().join("backups");
+        let (mut store, _) = RedbMaintenanceStorage::open(&target, &backups).unwrap();
+        let backup = BackupNameV1::new("before").unwrap();
+        let archive = ArchiveNameV1::new("daily").unwrap();
+        let stop = ArchiveRestoreStopV1::LastArchived;
+        let confirmation = OfflineMaintenanceReplacementConfirmation::NotProvided;
+        let receipt = OfflineMaintenanceReceiptV3::accepted_archive_restore(
+            OfflineMaintenanceOperationId::from_unix_milliseconds_and_random(1000, [3; 10])
+                .unwrap(),
+            backup.clone(),
+            archive.clone(),
+            stop,
+            archive_restore_input_hash(&backup, &archive, stop, confirmation),
+            confirmation,
+            OfflineMaintenanceAdmissionV1::new(
+                ActorId::new("operator").unwrap(),
+                ActorKind::Human,
+                CapabilityId::from_unix_milliseconds_and_random(1000, [4; 10]).unwrap(),
+                None,
+            ),
+            None,
+        )
+        .unwrap();
+        store.create_or_read_archive_receipt(&receipt).unwrap();
+        drop(store);
+        let (_store, reconciliation) = RedbMaintenanceStorage::open(&target, &backups).unwrap();
+        for target_requires_recovery in [false, true] {
+            assert!(matches!(
+                initial_database_action(&reconciliation, target_requires_recovery),
+                Err(DaemonError::MaintenanceDriver)
+            ));
+        }
+    }
 
     #[test]
     fn shutdown_command_is_exact_and_bounded() {

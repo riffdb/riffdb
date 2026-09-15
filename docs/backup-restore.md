@@ -223,6 +223,14 @@ versioned, checksummed, bounded, atomically replaced, and parent-directory
 synchronized. It is durable operational state, not database metadata or
 application history, and it is not included in backup artifacts.
 
+WP-749 implementation status: the external ledger also recognizes archive-only
+receipt V3. It preserves the verified archive selection across retries, shares
+the existing maintenance ownership and inventory limit, and retains an admitted
+private replay stage for archive recovery. Ordinary create/restore V1 and retire
+V2 receipt bytes are unchanged. An unfinished V3 receipt currently refuses server
+startup; the archive recovery driver and public restore command are still being
+implemented. Recognizing a receipt does not validate or publish its replay stage.
+
 An SDK or direct API caller supplies the maintenance operation ID. After a lost
 response or process interruption, that caller retries the exact same start
 request with the same operation ID. It must not choose a new ID merely because

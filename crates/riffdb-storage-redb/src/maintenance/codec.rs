@@ -26,10 +26,16 @@ use sha2::{Digest, Sha256};
 
 use crate::error::storage_error;
 
+#[path = "archive_receipt_codec.rs"]
+mod archive_receipt;
+pub(super) use archive_receipt::{decode_archive_receipt, encode_archive_receipt};
+
 pub(super) const RECEIPT_FILE_SUFFIX: &str = ".receipt-v1";
 pub(super) const RECEIPT_TEMP_SUFFIX: &str = ".receipt-v1.tmp";
 pub(super) const RETIRE_RECEIPT_FILE_SUFFIX: &str = ".receipt-v2";
 pub(super) const RETIRE_RECEIPT_TEMP_SUFFIX: &str = ".receipt-v2.tmp";
+pub(super) const ARCHIVE_RECEIPT_FILE_SUFFIX: &str = ".receipt-v3";
+pub(super) const ARCHIVE_RECEIPT_TEMP_SUFFIX: &str = ".receipt-v3.tmp";
 pub(super) const MAX_RECEIPT_BYTES: usize = 4 * 1024;
 
 const RECEIPT_MAGIC: &[u8] = b"RIFFDB-MAINT-RECEIPT\0";

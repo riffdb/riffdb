@@ -7,14 +7,15 @@ use std::path::{Component, Path, PathBuf};
 
 use riffdb_storage_api::{
     ContractMigrationReceiptV1, MAX_OFFLINE_MAINTENANCE_RECEIPTS_V1,
-    OfflineBackupManifestIdentityV1, OfflineBackupManifestV1, OfflineBackupPersistencePort,
-    OfflineMaintenanceReceiptCreateResultV1, OfflineMaintenanceReceiptCreateResultV2,
-    OfflineMaintenanceReceiptInventoryV1, OfflineMaintenanceReceiptInventoryV2,
+    OfflineArchiveReceiptPersistencePort, OfflineBackupManifestIdentityV1, OfflineBackupManifestV1,
+    OfflineBackupPersistencePort, OfflineMaintenanceReceiptCreateResultV1,
+    OfflineMaintenanceReceiptCreateResultV2, OfflineMaintenanceReceiptInventoryV1,
+    OfflineMaintenanceReceiptInventoryV2, OfflineMaintenanceReceiptInventoryV3,
     OfflineMaintenanceReceiptPersistencePort, OfflineMaintenanceReceiptPhaseV1,
     OfflineMaintenanceReceiptReplaceResultV1, OfflineMaintenanceReceiptReplaceResultV2,
-    OfflineMaintenanceReceiptV1, OfflineMaintenanceReceiptV2, OfflineRestoreOverwritePolicyV1,
-    OfflineRestoreResultV1, StartupValidationInputs, StorageError, StorageErrorKind,
-    StorageValueError,
+    OfflineMaintenanceReceiptV1, OfflineMaintenanceReceiptV2, OfflineMaintenanceReceiptV3,
+    OfflineRestoreOverwritePolicyV1, OfflineRestoreResultV1, StartupValidationInputs, StorageError,
+    StorageErrorKind, StorageValueError,
 };
 use riffdb_types::{
     BackupNameV1, ContractMigrationOperationId, OfflineMaintenanceOperationId,
@@ -22,10 +23,10 @@ use riffdb_types::{
 };
 
 use super::codec::{
-    MAX_MIGRATION_RECEIPT_BYTES, MAX_RECEIPT_BYTES, RECEIPT_FILE_SUFFIX, RECEIPT_TEMP_SUFFIX,
-    RETIRE_RECEIPT_FILE_SUFFIX, RETIRE_RECEIPT_TEMP_SUFFIX, decode_migration_receipt,
-    decode_receipt, decode_retire_receipt, encode_migration_receipt, encode_receipt,
-    encode_retire_receipt,
+    ARCHIVE_RECEIPT_FILE_SUFFIX, ARCHIVE_RECEIPT_TEMP_SUFFIX, MAX_MIGRATION_RECEIPT_BYTES,
+    MAX_RECEIPT_BYTES, RECEIPT_FILE_SUFFIX, RECEIPT_TEMP_SUFFIX, RETIRE_RECEIPT_FILE_SUFFIX,
+    RETIRE_RECEIPT_TEMP_SUFFIX, decode_archive_receipt, decode_migration_receipt, decode_receipt,
+    decode_retire_receipt, encode_migration_receipt, encode_receipt, encode_retire_receipt,
 };
 use super::failpoint::{RedbMaintenanceFailpoint, RedbMaintenanceTestController};
 use super::path_guard::{PinnedDirectory, verify_regular_file_path};
@@ -34,6 +35,10 @@ use crate::backup::{
     RedbOfflineBackup, lock_existing_target, validate_database_semantics, validate_immutable_backup,
 };
 use crate::error::storage_error;
+
+#[path = "archive_receipt_store.rs"]
+mod archive_receipts;
+use archive_receipts::{archive_receipt_file_name, read_archive_receipt_file};
 
 const MAINTENANCE_DIRECTORY_NAME: &str = ".maintenance";
 const OWNERSHIP_LOCK_FILE_NAME: &str = "owner.lock";
@@ -130,6 +135,7 @@ impl RedbMaintenanceOperationEvidence {
 pub struct RedbMaintenanceReconciliation {
     receipts: OfflineMaintenanceReceiptInventoryV1,
     retire_receipts: OfflineMaintenanceReceiptInventoryV2,
+    archive_receipts: OfflineMaintenanceReceiptInventoryV3,
     migration_receipts: Vec<ContractMigrationReceiptV1>,
     operations: Vec<RedbMaintenanceOperationEvidence>,
     removed_unpublished_receipt_temps: usize,
@@ -159,10 +165,18 @@ impl RedbMaintenanceReconciliation {
             .iter()
             .filter(|receipt| !receipt.current_phase().is_terminal())
             .count();
+        let archive_incomplete = self
+            .archive_receipts
+            .receipts()
+            .iter()
+            .filter(|receipt| !receipt.current_phase().is_terminal())
+            .count();
         if ordinary_incomplete
             .checked_add(retire_incomplete)
             .ok_or_else(limit_exceeded)?
             .checked_add(migration_incomplete)
+            .ok_or_else(limit_exceeded)?
+            .checked_add(archive_incomplete)
             .ok_or_else(limit_exceeded)?
             > 1
         {
@@ -182,6 +196,13 @@ impl RedbMaintenanceReconciliation {
     #[must_use]
     pub const fn retire_receipts(&self) -> &OfflineMaintenanceReceiptInventoryV2 {
         &self.retire_receipts
+    }
+
+    /// Borrows the exact archive selections and recovery states in canonical order.
+    /// These receipts alone grant no staged validation or serving readiness.
+    #[must_use]
+    pub const fn archive_receipts(&self) -> &OfflineMaintenanceReceiptInventoryV3 {
+        &self.archive_receipts
     }
 
     /// Borrows every checksum-validated migration receipt in operation order.
@@ -404,6 +425,26 @@ impl RedbMaintenanceStorage {
         let directory = self.migration_operation_directory(receipt.operation_id());
         match fs::symlink_metadata(&directory) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let (v1, v2, v3, _) = self.read_complete_inventory(false)?;
+                if v1
+                    .receipts()
+                    .iter()
+                    .any(|r| !r.current_phase().is_terminal())
+                    || v2
+                        .receipts()
+                        .iter()
+                        .any(|r| !r.current_phase().is_terminal())
+                    || v3
+                        .receipts()
+                        .iter()
+                        .any(|r| !r.current_phase().is_terminal())
+                    || self
+                        .validate_migration_inventory()?
+                        .iter()
+                        .any(|r| !r.current_phase().is_terminal())
+                {
+                    return Err(invariant());
+                }
                 create_checked_directory(&directory)?;
                 write_new_synced(
                     &directory.join(MIGRATION_CANDIDATE_FILE_NAME),
@@ -863,7 +904,7 @@ impl RedbMaintenanceStorage {
         StorageError,
     > {
         self.verify_path_ownership()?;
-        let (v1, v2, _) = self.read_complete_inventory(false)?;
+        let (v1, v2, _, _) = self.read_complete_inventory(false)?;
         if v2
             .receipts()
             .iter()
@@ -1119,7 +1160,8 @@ impl RedbMaintenanceStorage {
     /// Revalidates every receipt and associated exact filesystem evidence.
     pub fn reconcile(&mut self) -> Result<RedbMaintenanceReconciliation, StorageError> {
         self.verify_path_ownership()?;
-        let (inventory, retire_inventory, removed_temps) = self.read_complete_inventory(true)?;
+        let (inventory, retire_inventory, archive_inventory, removed_temps) =
+            self.read_complete_inventory(true)?;
         let incomplete_count = inventory
             .receipts()
             .iter()
@@ -1130,8 +1172,15 @@ impl RedbMaintenanceStorage {
             .iter()
             .filter(|receipt| !receipt.current_phase().is_terminal())
             .count();
+        let archive_incomplete_count = archive_inventory
+            .receipts()
+            .iter()
+            .filter(|receipt| !receipt.current_phase().is_terminal())
+            .count();
         if incomplete_count
             .checked_add(retire_incomplete_count)
+            .ok_or_else(limit_exceeded)?
+            .checked_add(archive_incomplete_count)
             .ok_or_else(limit_exceeded)?
             > 1
         {
@@ -1143,8 +1192,15 @@ impl RedbMaintenanceStorage {
             .iter()
             .map(|receipt| (receipt.operation_id().to_string(), receipt))
             .collect::<BTreeMap<_, _>>();
-        let (staged_names, removed_unadmitted_stages) =
-            checked_staged_inventory(&self.staged_directory, &receipt_by_stage_name)?;
+        let (staged_names, removed_unadmitted_stages) = checked_staged_inventory(
+            &self.staged_directory,
+            &receipt_by_stage_name,
+            &archive_inventory
+                .receipts()
+                .iter()
+                .map(|r| r.operation_id().to_string())
+                .collect(),
+        )?;
         validate_retired_directory_inventory(&self.retired_directory, &retire_inventory)?;
         let removed_unpublished_target_temps =
             self.remove_unpublished_target_temps(inventory.receipts())?;
@@ -1358,6 +1414,7 @@ impl RedbMaintenanceStorage {
         let reconciliation = RedbMaintenanceReconciliation {
             receipts: inventory,
             retire_receipts: retire_inventory,
+            archive_receipts: archive_inventory,
             migration_receipts: Vec::new(),
             operations,
             removed_unpublished_receipt_temps: removed_temps,
@@ -1417,79 +1474,88 @@ impl RedbMaintenanceStorage {
         (
             OfflineMaintenanceReceiptInventoryV1,
             OfflineMaintenanceReceiptInventoryV2,
+            OfflineMaintenanceReceiptInventoryV3,
             usize,
         ),
         StorageError,
     > {
         let mut receipts = Vec::new();
         let mut retire_receipts = Vec::new();
-        let mut removed_temps = 0usize;
+        let mut archive_receipts = Vec::new();
+        let mut temporaries = Vec::new();
+        let mut identities = BTreeSet::new();
         for entry in fs::read_dir(&self.receipts_directory).map_err(io_unavailable)? {
-            if receipts
-                .len()
-                .checked_add(retire_receipts.len())
-                .ok_or_else(limit_exceeded)?
-                > MAX_OFFLINE_MAINTENANCE_RECEIPTS_V1
-            {
-                return Err(limit_exceeded());
-            }
             let entry = entry.map_err(io_unavailable)?;
             let file_type = entry.file_type().map_err(io_unavailable)?;
             if !file_type.is_file() || file_type.is_symlink() {
                 return Err(corrupt());
             }
             let name = entry.file_name();
-            let Some(name) = name.to_str() else {
-                return Err(corrupt());
-            };
+            let name = name.to_str().ok_or_else(corrupt)?;
             let temporary_operation = name.strip_prefix('.').and_then(|value| {
                 value
                     .strip_suffix(RECEIPT_TEMP_SUFFIX)
                     .or_else(|| value.strip_suffix(RETIRE_RECEIPT_TEMP_SUFFIX))
+                    .or_else(|| value.strip_suffix(ARCHIVE_RECEIPT_TEMP_SUFFIX))
             });
             if let Some(operation_text) = temporary_operation {
                 if !remove_temps {
                     return Err(corrupt());
                 }
                 parse_operation_id(operation_text).ok_or_else(corrupt)?;
-                if removed_temps == MAX_UNPUBLISHED_RECEIPT_TEMPS {
+                if temporaries.len() == MAX_UNPUBLISHED_RECEIPT_TEMPS {
                     return Err(limit_exceeded());
                 }
-                fs::remove_file(entry.path()).map_err(io_unavailable)?;
-                removed_temps = removed_temps.checked_add(1).ok_or_else(limit_exceeded)?;
+                temporaries.push(entry.path());
                 continue;
             }
-            if name.ends_with(RECEIPT_FILE_SUFFIX) {
+            if identities.len() == MAX_OFFLINE_MAINTENANCE_RECEIPTS_V1 {
+                return Err(limit_exceeded());
+            }
+            let id = if name.ends_with(RECEIPT_FILE_SUFFIX) {
                 let receipt = read_receipt_file(&entry.path())?;
                 if name != receipt_file_name(receipt.operation_id()) {
                     return Err(corrupt());
                 }
+                let id = receipt.operation_id();
                 receipts.push(receipt);
+                id
             } else if name.ends_with(RETIRE_RECEIPT_FILE_SUFFIX) {
                 let receipt = read_retire_receipt_file(&entry.path())?;
                 if name != retire_receipt_file_name(receipt.operation_id()) {
                     return Err(corrupt());
                 }
+                let id = receipt.operation_id();
                 retire_receipts.push(receipt);
+                id
+            } else if name.ends_with(ARCHIVE_RECEIPT_FILE_SUFFIX) {
+                let receipt = read_archive_receipt_file(&entry.path())?;
+                if name != archive_receipt_file_name(receipt.operation_id()) {
+                    return Err(corrupt());
+                }
+                let id = receipt.operation_id();
+                archive_receipts.push(receipt);
+                id
             } else {
+                return Err(corrupt());
+            };
+            if !identities.insert(id) {
                 return Err(corrupt());
             }
         }
-        if removed_temps != 0 {
-            crate::backup::sync_directory(&self.receipts_directory)?;
+        // Validate the entire inventory before removing even unpublished files.
+        // Unknown/corrupt versions must never turn a refused open into cleanup.
+        let v1 = OfflineMaintenanceReceiptInventoryV1::new(receipts).map_err(value_error)?;
+        let v2 = OfflineMaintenanceReceiptInventoryV2::new(retire_receipts).map_err(value_error)?;
+        let v3 =
+            OfflineMaintenanceReceiptInventoryV3::new(archive_receipts).map_err(value_error)?;
+        for path in &temporaries {
+            fs::remove_file(path).map_err(io_unavailable)?;
         }
-        let inventory = OfflineMaintenanceReceiptInventoryV1::new(receipts).map_err(value_error)?;
-        let retire_inventory =
-            OfflineMaintenanceReceiptInventoryV2::new(retire_receipts).map_err(value_error)?;
-        if inventory.receipts().iter().any(|v1| {
-            retire_inventory
-                .receipts()
-                .iter()
-                .any(|v2| v1.operation_id() == v2.operation_id())
-        }) {
-            return Err(corrupt());
+        if !temporaries.is_empty() {
+            self.receipts_directory_guard.sync()?;
         }
-        Ok((inventory, retire_inventory, removed_temps))
+        Ok((v1, v2, v3, temporaries.len()))
     }
 
     fn receipt_path(&self, operation_id: OfflineMaintenanceOperationId) -> PathBuf {
@@ -1692,7 +1758,30 @@ impl OfflineMaintenanceReceiptPersistencePort for RedbMaintenanceStorage {
             }
             Ok(_) => Err(corrupt()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let (inventory, retire_inventory, _) = self.read_complete_inventory(false)?;
+                let (inventory, retire_inventory, archive_inventory, _) =
+                    self.read_complete_inventory(false)?;
+                if inventory.receipts().len()
+                    + retire_inventory.receipts().len()
+                    + archive_inventory.receipts().len()
+                    >= MAX_OFFLINE_MAINTENANCE_RECEIPTS_V1
+                {
+                    return Err(limit_exceeded());
+                }
+                if retire_inventory
+                    .receipts()
+                    .iter()
+                    .any(|r| r.operation_id() == receipt.operation_id())
+                    || archive_inventory.receipts().iter().any(|r| {
+                        r.operation_id() == receipt.operation_id()
+                            || !r.current_phase().is_terminal()
+                    })
+                    || self
+                        .validate_migration_inventory()?
+                        .iter()
+                        .any(|r| !r.current_phase().is_terminal())
+                {
+                    return Err(invariant());
+                }
                 if inventory
                     .receipts()
                     .iter()
@@ -1772,7 +1861,7 @@ impl OfflineMaintenanceReceiptPersistencePort for RedbMaintenanceStorage {
         &mut self,
     ) -> Result<OfflineMaintenanceReceiptInventoryV1, StorageError> {
         self.verify_path_ownership()?;
-        let (inventory, _, _) = self.read_complete_inventory(false)?;
+        let (inventory, _, _, _) = self.read_complete_inventory(false)?;
         self.verify_path_ownership()?;
         Ok(inventory)
     }
@@ -1796,7 +1885,21 @@ impl OfflineMaintenanceReceiptPersistencePort for RedbMaintenanceStorage {
             }
             Ok(_) => Err(corrupt()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let (v1, v2, _) = self.read_complete_inventory(false)?;
+                let (v1, v2, v3, _) = self.read_complete_inventory(false)?;
+                if v1.receipts().len() + v2.receipts().len() + v3.receipts().len()
+                    >= MAX_OFFLINE_MAINTENANCE_RECEIPTS_V1
+                {
+                    return Err(limit_exceeded());
+                }
+                if v3.receipts().iter().any(|r| {
+                    r.operation_id() == receipt.operation_id() || !r.current_phase().is_terminal()
+                }) || self
+                    .validate_migration_inventory()?
+                    .iter()
+                    .any(|r| !r.current_phase().is_terminal())
+                {
+                    return Err(invariant());
+                }
                 if v1
                     .receipts()
                     .iter()
@@ -1889,7 +1992,7 @@ impl OfflineMaintenanceReceiptPersistencePort for RedbMaintenanceStorage {
         &mut self,
     ) -> Result<OfflineMaintenanceReceiptInventoryV2, StorageError> {
         self.verify_path_ownership()?;
-        let (_, inventory, _) = self.read_complete_inventory(false)?;
+        let (_, inventory, _, _) = self.read_complete_inventory(false)?;
         self.verify_path_ownership()?;
         Ok(inventory)
     }
@@ -2082,6 +2185,7 @@ fn validate_reserved_inventory(maintenance_directory: &Path) -> Result<(), Stora
 fn checked_staged_inventory(
     staged_directory: &Path,
     receipts: &BTreeMap<String, &OfflineMaintenanceReceiptV1>,
+    archive_operations: &BTreeSet<String>,
 ) -> Result<(BTreeSet<String>, usize), StorageError> {
     let mut names = BTreeSet::new();
     let mut removed_unadmitted = 0usize;
@@ -2098,6 +2202,11 @@ fn checked_staged_inventory(
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             return Err(corrupt());
         };
+        if archive_operations.contains(&name) {
+            // Replay changes the original backup head. Retain this admitted private
+            // stage for its archive owner; ordinary backup validation cannot adopt it.
+            continue;
+        }
         let Some(receipt) = receipts.get(&name) else {
             parse_operation_id(&name).ok_or_else(corrupt)?;
             fs::remove_dir_all(entry.path()).map_err(io_unavailable)?;

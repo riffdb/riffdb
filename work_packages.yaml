@@ -22470,6 +22470,12 @@ work_packages:
       source-less private candidates may carry fixed selection and validated replay
       before admission. Both routes record a newer incarnation before publication;
       selection, replay evidence and incarnation cannot change under an accepted ID.
+    - Persist archive receipt V3 in the existing exclusive maintenance ledger with
+      the shared 65535-receipt limit, bounded canonical checksum encoding and frozen
+      V1/V2 codecs. Resolve an uncertain identical retry by syncing the receipt parent.
+      Validate the complete inventory before removing recognized temporary files;
+      retain archive-owned private stages and refuse ordinary startup while V3 work
+      is unfinished. The archive recovery driver remains a separate implementation step.
   human_review_triggers: *id0178
 
 - id: WP-750
