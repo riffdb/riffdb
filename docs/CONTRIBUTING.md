@@ -117,11 +117,17 @@ pass. New packages take this shape:
   - ./scripts/ci-all
 ```
 
-`allowed_paths` is enforced by `./scripts/check-allowed-paths --wp WP-NNN`:
-`SPEC.md`, `work_packages.yaml`, and the package's own ADR files are permitted
-only when they are listed. Paths are read at the base commit, so widening them
-is a separate commit that precedes the package change; it needs no approval,
-only that separate commit. `./scripts/wp-new ADR-NNNN` prints one skeleton per
+`allowed_paths` names the crates a package may change; it is scope, not an
+inventory of every file the change will touch. `./scripts/check-allowed-paths
+--wp WP-NNN` always permits the consequence paths listed under
+`scope.always_allowed_paths` in `governance/tiers.yaml` (the manifest, SPEC,
+`Cargo.lock`, generated code, fixtures, tests, docs, release evidence,
+templates, clients, examples, evaluations, scripts) and the package's own
+records, so none of those need listing. A touched file outside scope fails the
+check only when it sits on a surface- or guarantee-tier path; an internal-tier
+file outside scope is reported as a warning. Paths are read at the base commit,
+so entering another crate is a separate widening commit that precedes the
+package change; it needs no approval, only that commit. `./scripts/wp-new ADR-NNNN` prints one skeleton per
 entry in the record's `packages:` list, with the tier taken from the record.
 
 ### Decision authority

@@ -119,8 +119,20 @@ added = self_edit ? working_allowed - base_allowed : []
 removed = self_edit ? base_allowed - working_allowed : []
 where = base_ref.empty? || base_allowed.nil? ? "the working tree" : base_ref
 
+# Consequence paths (governance/tiers.yaml scope.always_allowed_paths) and the
+# package's own records are always permitted. A file outside scope blocks only
+# on a surface- or guarantee-tier path; elsewhere it is a warning.
+scope_config = (RiffdbGovernance.tiers_config || {}).fetch("scope", {}) || {}
+always_allowed = Array(scope_config["always_allowed_paths"]).map(&:to_s)
+block_tiers = Array(scope_config["block_tiers"]).map(&:to_s)
+block_tiers = %w[surface guarantee] if block_tiers.empty?
+own_records = Array(package["required_adrs"]).map { |id| id.to_s[/\d{4}\z/] }.compact.map { |n| "adr/#{n}-*.md" }
+permitted = allowed + always_allowed + own_records
+
 files = RiffdbGovernance.touched_files(range: options[:range], base: options[:base], paths: paths)
-offenders = files.reject { |path| RiffdbGovernance::Glob.match_any?(allowed, path) }
+outside = files.reject { |path| RiffdbGovernance::Glob.match_any?(permitted, path) }
+offenders = outside.select { |path| block_tiers.include?(RiffdbGovernance.tier_for(path).first) }
+warnings = outside - offenders
 ok = offenders.empty? && !self_edit
 
 if options[:json]
@@ -128,9 +140,11 @@ if options[:json]
     "package" => options[:wp],
     "base" => base_ref.empty? ? nil : base_ref,
     "allowed_paths" => allowed,
+    "always_allowed_paths" => always_allowed + own_records,
     "self_edit" => { "added" => added, "removed" => removed },
     "files" => files,
     "offenders" => offenders,
+    "warnings" => warnings,
     "note" => base_note
   )
 else
@@ -142,14 +156,20 @@ else
     warn "Widen a package's paths in a separate commit that precedes the package change; no approval " \
          "is needed, only that commit. This check uses the paths at #{base_ref}."
   end
+  unless warnings.empty?
+    warn "#{options[:wp]}: #{warnings.length} internal-tier file(s) outside its allowed_paths (allowed, noted):"
+    warnings.each { |path| warn "  #{path}" }
+  end
   if offenders.empty?
-    puts "#{options[:wp]}: #{files.length} touched file(s) inside #{allowed.length} allowed path(s) at #{where}." unless self_edit
+    puts "#{options[:wp]}: #{files.length} touched file(s) inside scope at #{where}." unless self_edit
   else
-    warn "#{options[:wp]} touches #{offenders.length} file(s) outside its allowed_paths:"
-    offenders.each { |path| warn "  #{path}" }
+    warn "#{options[:wp]} touches #{offenders.length} surface- or guarantee-tier file(s) outside its allowed_paths:"
+    offenders.each { |path| warn "  #{path}  (#{RiffdbGovernance.tier_for(path).first})" }
     warn "allowed_paths (at #{where}):"
     allowed.each { |pattern| warn "  #{pattern}" }
-    warn "Commit one package per change; files from another package in this range count as offenders."
+    warn "Consequence paths (fixtures, tests, docs, generated code, evidence, the lockfile) are always " \
+         "allowed. Entering another crate is scope: widen allowed_paths in a separate commit first, and " \
+         "commit one package per change."
   end
 end
 

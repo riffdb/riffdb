@@ -191,9 +191,11 @@ out << ""
 out << "- **Tier:** #{tier.empty? ? '_not set in work_packages.yaml_' : tier}"
 out << "- **Closure:** #{closure_of(package)}"
 out << "- **Commit discipline:** commit this package's changes on their own. `acceptance --wp` and " \
-       "`check-allowed-paths --wp` are computed per range, and allowed paths are read at the base " \
-       "commit, so mixing packages in one range or widening your own `allowed_paths` fails the " \
-       "check. Widen paths in a separate reviewed commit."
+       "`check-allowed-paths --wp` are computed per range. Allowed paths are scope (the crates you " \
+       "may change), read at the base commit; consequence paths (fixtures, tests, docs, generated " \
+       "code, evidence, the lockfile, your own records) are always allowed, and only a surface- or " \
+       "guarantee-tier file outside scope fails the check. Entering another crate is a separate " \
+       "widening commit first."
 out << ""
 directives = begin
   Array((RiffdbGovernance.tiers_config || {})["directives"]).select { |entry| entry.is_a?(Hash) }
