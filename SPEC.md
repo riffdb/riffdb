@@ -5345,7 +5345,7 @@ Capability-administration records and service-audit
 records share the one contiguous administration sequence but use disjoint closed
 payload/tag registries.
 
-Offline maintenance is the sole additional POC audit exception. Because the
+Offline maintenance is an additional POC audit exception. Because the
 database is closed or replaced, its versioned checksummed external receipt
 records the admitted principal, operation/input identity, approval disposition,
 phase, and terminal class. WP-155 appends no
@@ -5364,6 +5364,38 @@ generic execute target remain bounded redacted telemetry because no audit
 obligation or mutating classification exists yet. Malformed or unauthenticated
 traffic and rejected principal-less bootstrap attempts likewise remain bounded
 transport telemetry. Audit append never audits itself.
+
+**Follower service and audit boundary.** Follower service composition carries
+no command, control-plane, or service-audit writer executor. The follower
+applier remains the sole database writer. Application commands, including
+read-only command invocation and outcome resolution, capability changes,
+contract/query/reactive-module deployment, consumer lease or cursor mutations,
+installation/reimport operations, migration, maintenance, and every export
+operation return the typed follower-mode refusal before execution or durable
+audit admission. No follower refusal allocates an application or administration
+sequence or creates a locally originated authoritative record.
+
+A follower may serve ordinary compiled, projected, catalog, and discovery reads
+under the existing current authorization, redaction, bounds and freshness rules.
+If a standard read's current policy decision requires durable audit, the
+follower refuses it with the typed follower-mode outcome before releasing data;
+it never removes that obligation or reports audited success. Intrinsically
+audited administrative reads are likewise refused, except read-only Health and
+Statistics, which may disclose only their existing authorized operational
+results, including the follower role, applied frontier and replication lag.
+
+Follower Health/Statistics and explicit authenticated denials of follower reads
+use bounded redacted operational telemetry, without a local durable service
+audit append. An authorization denial remains an authorization denial and
+never releases protected data. These are explicit follower-only exceptions to
+SPEC §13.5; a follower supplies no durable local audit guarantee for them. The
+operator handbook documents this limitation. Applications requiring durable
+audit for reads or denials must use the primary. Primary audit behavior and
+all replicated audit bytes remain unchanged.
+
+A follower's telemetry is non-authoritative, is never replication or recovery
+evidence, and cannot satisfy a policy-required durable audit obligation. No new
+durable format, local audit allocator, NodeId, RPC or privilege bypass is added.
 
 An intrinsically audit-required semantic, target, current-policy-clock, or
 internal failure after classification but before `started` appends exactly one

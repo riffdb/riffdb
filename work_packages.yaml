@@ -22193,6 +22193,8 @@ work_packages:
   - riffdbd --mode follower with startup validation unchanged, one applier as sole writer, one
     V3 frame per storage transaction in sequence order, lineage-shared and node-local retained
     metadata kept distinct, and the typed `RDB-REP` follower-mode refusal on every write surface
+  - Writer-free follower service admission under the accepted ADR-0178 audit boundary, with
+    typed refusals before durable admission and no locally originated authoritative audit
   - Paged staged bootstrap at one durable V3 fence with an unprunable hold through exact tail
     attachment, complete validation before publication, and crash-safe bounded resume
   - V3 follower apply over every WP-772 replicated-authoritative namespace in redb, with the
@@ -22253,6 +22255,9 @@ work_packages:
   - One `replication` health component and additive statistics fields reporting applied and
     acknowledged frontiers and lag in sequences, present on primary and follower, never in
     wall-clock units
+  - Accepted ADR-0178 follower audit boundary where authorized Health/Statistics and denied reads
+    use bounded redacted telemetry; policy-obligated standard reads refuse, and primary audit
+    behavior stays unchanged
   - Handbook pages for follower deployment, read semantics, and health, plus CLI and generated
     client exposure of the typed follower-mode refusal
   - Test `follower_causal_read_waits_for_token_then_matches_primary` under

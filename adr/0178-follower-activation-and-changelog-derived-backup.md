@@ -12,6 +12,7 @@ amends:
   - SPEC 20.6 Stage B (the asynchronous changelog-shipping tier precedes and does
     not require OpenRaft or any consensus protocol)
   - SPEC 18.5 (incremental and remote archive backup move from MVP to alpha)
+  - SPEC 13.5 (follower service and audit exceptions accepted 2026-09-15)
   - REP-001 is unchanged
 requirements: [REP-002, REP-003, REP-004, REP-005, REP-006, REP-007, REP-008, REP-009]
 packages: [WP-746, WP-747, WP-748, WP-749, WP-750]
@@ -69,129 +70,117 @@ review_triggers:
 
 ## Context
 
-ADR-0093 was accepted on 2026-08-04 and states the problem in its own words:
-availability is "the biggest honest gap in the architecture review." A lost
-disk is a restore-from-backup event with data loss up to the last offline
-backup, and a crashed host is an outage for as long as the host is down. The
-product thesis in `docs/VISION.md` is a system of record for multi-tenant
-SaaS. A single node with offline-only backups cannot carry that thesis to a
-design partner, whatever else the engine does well.
+ADR-0093 was accepted on 2026-08-04 and states the problem in its own words: availability is "the biggest honest gap in the
+architecture review." A lost disk is a restore-from-backup event with data loss up to the last offline backup, and a crashed host
+is an outage for as long as the host is down. The product thesis in `docs/VISION.md` is a system of record for multi-tenant SaaS.
+A single node with offline-only backups cannot carry that thesis to a design partner, whatever else the engine does well.
 
-Since that acceptance, ADR-0094 through ADR-0177 landed. They are dominated
-by query providers, result-set algebra, and performance packages. The
-replication surface itself advanced only as far as ADR-0100: the storage API
-carries `ChangelogFrameV1`/`V2`, stream validators, the `PublishedDurableSnapshot`
-read capability, `ChangelogPublicationPort`, and the redb emitter thread that
-derives frames from published snapshots without touching writer-private state.
-The V2 rotation receipt and the `DeleteAwareEntityFollowerV2` conformance
-oracle exist. Production still installs `NoChangelogPublicationPort`
-(`crates/riffdb-storage-redb/src/store.rs`), there is no replication RPC in
-`proto/riffdb/v1/services.proto`, no replication capability kind, no follower
-mode of `riffdbd`, no applier over the authoritative tables, no promotion
-operation, no follower retention fence, and no incremental backup. The
-known-limitations page still says "no replication, failover, or consensus."
+Since that acceptance, ADR-0094 through ADR-0177 landed. They are dominated by query providers, result-set algebra, and
+performance packages. The replication surface itself advanced only as far as ADR-0100: the storage API carries
+`ChangelogFrameV1`/`V2`, stream validators, the `PublishedDurableSnapshot` read capability, `ChangelogPublicationPort`, and the
+redb emitter thread that derives frames from published snapshots without touching writer-private state. The V2 rotation receipt
+and the `DeleteAwareEntityFollowerV2` conformance oracle exist. Production still installs `NoChangelogPublicationPort`
+(`crates/riffdb-storage-redb/src/store.rs`), there is no replication RPC in `proto/riffdb/v1/services.proto`, no replication
+capability kind, no follower mode of `riffdbd`, no applier over the authoritative tables, no promotion operation, no follower
+retention fence, and no incremental backup. The known-limitations page still says "no replication, failover, or consensus."
 
-Three facts make activation tractable without new design. There is one total
-order (ADR-0082) and commit records carry no post-images (ADR-0083), so an
-exact prefix is a valid database. Frontiers and commit tokens are already
-incarnation-bound and fail closed (ADR-0072, ADR-0086). Acknowledgement is
-already strictly after local durability (ADR-0061), so the asynchronous tier
-adds nothing to the commit hot path. ADR-0100 already aligned frames to
-published durable frontiers, which is exactly the boundary a follower may
-trust.
+Three facts make activation tractable without new design. There is one total order (ADR-0082) and commit records carry no
+post-images (ADR-0083), so an exact prefix is a valid database. Frontiers and commit tokens are already incarnation-bound and fail
+closed (ADR-0072, ADR-0086). Acknowledgement is already strictly after local durability (ADR-0061), so the asynchronous tier adds
+nothing to the commit hot path. ADR-0100 already aligned frames to published durable frontiers, which is exactly the boundary a
+follower may trust.
 
-Incremental backup falls out of the same stream. A consumer that persists
-checksummed frames to a configured sink beside periodic full backups gives
-restore-to-last-archived-sequence without a second durable format, which the
-limitations page today lists as absent.
+Incremental backup falls out of the same stream. A consumer that persists checksummed frames to a configured sink beside periodic
+full backups gives restore-to-last-archived-sequence without a second durable format, which the limitations page today lists as
+absent.
 
 ## Decision
 
 ### 1. Sequencing and freeze
 
-WP-746 through WP-750 are the next durable-core packages. Until WP-750
-closes, no new provider family, result-set algebra, or performance package is
-admitted to the alpha gate; such a proposal is a human-review trigger. This
-does not stop defect fixes, evidence closures, or documentation.
+WP-746 through WP-750 are the next durable-core packages. Until WP-750 closes, no new provider family, result-set algebra, or
+performance package is admitted to the alpha gate; such a proposal is a human-review trigger. This does not stop defect fixes,
+evidence closures, or documentation.
 
 ### 2. Follower mode is riffdbd with an applier where the writer was
 
-`riffdbd --mode follower` opens the same database format, runs the unchanged
-ADR-0019 startup validation including the validated-prefix checkpoint, and
-starts one applier where the command coordinator would start. The applier is
-the follower's sole writer (PERF-007 holds on both nodes). It applies one
-changelog frame per storage transaction, strictly in sequence order, through
-the storage-api changelog consumer ports, and advances the follower's applied
-frontier only after the frame is durable locally. Every command,
-administration, migration, maintenance, and export surface on a follower
-returns the typed `RDB-REP` follower-mode refusal; it is an application error,
-never a transport error.
+`riffdbd --mode follower` opens the same database format, runs the unchanged ADR-0019 startup validation including the
+validated-prefix checkpoint, and starts one applier where the command coordinator would start. The applier is the follower's sole
+writer (PERF-007 holds on both nodes). It applies one changelog frame per storage transaction, strictly in sequence order, through
+the storage-api changelog consumer ports, and advances the follower's applied frontier only after the frame is durable locally.
+Every command, administration, migration, maintenance, and export surface on a follower returns the typed `RDB-REP` follower-mode
+refusal; it is an application error, never a transport error.
 
 ### 3. Replication stream, capability, and handshake
 
-Replication is one server-streaming RPC on the existing public gRPC listener,
-guarded by a new `ReplicateChangelog` capability permission kind created,
-audited, and revoked like every capability. The handshake binds
-`(database id, history incarnation, leadership epoch, requested resume
-sequence)`. Frames are the existing checksummed sequence-addressed changelog
-frames; the server resumes from any acknowledged sequence it still retains
-and answers a resume below the retention watermark with the typed
-`history_pruned` outcome. A stream or acknowledgement carrying a stale epoch
-or foreign incarnation is refused with a typed outcome and closes the stream.
-The emitter reads only published snapshots and never holds the exclusive write
-gate (ADR-0100 section 2).
+Replication is one server-streaming RPC on the existing public gRPC listener, guarded by a new `ReplicateChangelog` capability
+permission kind created, audited, and revoked like every capability. The handshake binds `(database id, history incarnation,
+leadership epoch, requested resume sequence)`. Frames are the existing checksummed sequence-addressed changelog frames; the server
+resumes from any acknowledged sequence it still retains and answers a resume below the retention watermark with the typed
+`history_pruned` outcome. A stream or acknowledgement carrying a stale epoch or foreign incarnation is refused with a typed
+outcome and closes the stream. The emitter reads only published snapshots and never holds the exclusive write gate (ADR-0100
+section 2).
 
 ### 4. Follower reads use the existing freshness vocabulary
 
-A follower serves compiled, projected, and discovery reads under `Causal`,
-`Bounded`, and `Available` with its applied frontier in the role the local
-frontier plays today. `Causal` with a primary `CommitToken` waits inside the
-existing bounded register-before-read discipline until the token's sequence
-is at or below the applied frontier. A token from another lineage or a
-pre-promotion incarnation is refused, never silently satisfied. Replication
-lag is a sequence count, never a wall-clock duration, and is exported as one
-typed `replication` health component and one statistics field on both nodes.
+A follower serves compiled, projected, and discovery reads under `Causal`, `Bounded`, and `Available` with its applied frontier in
+the role the local frontier plays today. `Causal` with a primary `CommitToken` waits inside the existing bounded
+register-before-read discipline until the token's sequence is at or below the applied frontier. A token from another lineage or a
+pre-promotion incarnation is refused, never silently satisfied. Replication lag is a sequence count, never a wall-clock duration,
+and is exported as one typed `replication` health component and one statistics field on both nodes.
+
+**Follower service and audit boundary.** Follower service composition carries no command, control-plane, or service-audit writer
+executor. The follower applier remains the sole database writer. Application commands, including read-only command invocation and
+outcome resolution, capability changes, contract/query/reactive-module deployment, consumer lease or cursor mutations,
+installation/reimport operations, migration, maintenance, and every export operation return the typed follower-mode refusal before
+execution or durable audit admission. No follower refusal allocates an application or administration sequence or creates a locally
+originated authoritative record.
+
+A follower may serve ordinary compiled, projected, catalog, and discovery reads under the existing current authorization,
+redaction, bounds and freshness rules. If a standard read's current policy decision requires durable audit, the follower refuses
+it with the typed follower-mode outcome before releasing data; it never removes that obligation or reports audited success.
+Intrinsically audited administrative reads are likewise refused, except read-only Health and Statistics, which may disclose only
+their existing authorized operational results, including the follower role, applied frontier and replication lag.
+
+Follower Health/Statistics and explicit authenticated denials of follower reads use bounded redacted operational telemetry,
+without a local durable service audit append. An authorization denial remains an authorization denial and never releases protected
+data. These are explicit follower-only exceptions to SPEC §13.5; a follower supplies no durable local audit guarantee for them.
+The operator handbook documents this limitation. Applications requiring durable audit for reads or denials must use the primary.
+Primary audit behavior and all replicated audit bytes remain unchanged.
+
+A follower's telemetry is non-authoritative, is never replication or recovery evidence, and cannot satisfy a policy-required
+durable audit obligation. No new durable format, local audit allocator, NodeId, RPC or privilege bypass is added.
 
 ### 5. Promotion is explicit and incarnation-fenced
 
-Promotion is one audited administrative operation under an administrative
-capability. It requires proof that the old primary is fenced: stopped, or its
-replication lease revoked, after which the fenced primary refuses command
-admission with a typed outcome. The follower drains its received prefix,
-mints a new history incarnation at its applied head through the ADR-0072
-stamp path, increments the leadership epoch, and begins serving as primary.
-The operation's receipt records the applied sequence and the RPO as the exact
-sequence delta observed at fencing. Automatic election is out of scope.
+Promotion is one audited administrative operation under an administrative capability. It requires proof that the old primary is
+fenced: stopped, or its replication lease revoked, after which the fenced primary refuses command admission with a typed outcome.
+The follower drains its received prefix, mints a new history incarnation at its applied head through the ADR-0072 stamp path,
+increments the leadership epoch, and begins serving as primary. The operation's receipt records the applied sequence and the RPO
+as the exact sequence delta observed at fencing. Automatic election is out of scope.
 
 ### 6. Retention fence with a hold budget
 
-A registered follower's acknowledged frontier joins the ADR-0085 Amendment 3
-fencing set as the additive `FollowerLowWater` input: offline prune never
-passes it. Each registration carries a hold budget in sequences. Exhausting
-the budget degrades the `replication` health component first; the fence is
-released only by the audited follower-retire operation or by configured
-expiry, mirroring the existing retention-hold ceremony.
+A registered follower's acknowledged frontier joins the ADR-0085 Amendment 3 fencing set as the additive `FollowerLowWater` input:
+offline prune never passes it. Each registration carries a hold budget in sequences. Exhausting the budget degrades the
+`replication` health component first; the fence is released only by the audited follower-retire operation or by configured expiry,
+mirroring the existing retention-hold ceremony.
 
 ### 7. Changelog-derived incremental and remote backup
 
-A first-party archive consumer persists every validated frame, with its
-checksum and sequence range, to a configured archive sink beside periodic
-offline full backups. Restore is the existing verified full backup followed
-by exact replay of the archived suffix through the follower applier path,
-stopping at the last archived sequence or an operator-supplied earlier
-sequence. The offline backup manifest V1 is unchanged; an additive
-`archive-manifest/v1` binds database id, history incarnation, covered
-sequence range, frame digests, and the full-backup manifest digest. Recovery
-granularity is one commit sequence; there is no wall-clock point-in-time
-promise. Filesystem and object-store sinks are the v1 targets; encryption and
-retention of archives are separately configured operator policy.
+A first-party archive consumer persists every validated frame, with its checksum and sequence range, to a configured archive sink
+beside periodic offline full backups. Restore is the existing verified full backup followed by exact replay of the archived suffix
+through the follower applier path, stopping at the last archived sequence or an operator-supplied earlier sequence. The offline
+backup manifest V1 is unchanged; an additive `archive-manifest/v1` binds database id, history incarnation, covered sequence range,
+frame digests, and the full-backup manifest digest. Recovery granularity is one commit sequence; there is no wall-clock
+point-in-time promise. Filesystem and object-store sinks are the v1 targets; encryption and retention of archives are separately
+configured operator policy.
 
 ### 8. Non-goals and invariants
 
-Acknowledgement semantics, the write hot path, durable record encodings, the
-backup manifest, and every registry pin are untouched. Quorum durability,
-automatic election, cascading followers, and multi-primary remain outside
-this record, as ADR-0093 section 8 requires.
+Acknowledgement semantics, the write hot path, durable record encodings, the backup manifest, and every registry pin are
+untouched. Quorum durability, automatic election, cascading followers, and multi-primary remain outside this record, as ADR-0093
+section 8 requires.
 
 ## Options Considered
 
@@ -222,25 +211,19 @@ this record, as ADR-0093 section 8 requires.
 
 ## Compatibility
 
-Public gRPC gains one streaming RPC, one promotion operation, one follower
-registration/retire pair, and additive health/statistics fields; existing
-messages are unchanged. Durable records, the redb layout, journal frames,
-changelog V1/V2 frames, and the backup manifest V1 are unchanged. The archive
-manifest is a new additive external format registered in the ADR-0124
-topology. Contract IR, RiffQL, and generated application surfaces are
-unchanged. Follower registration and hold budgets are retained metadata
-added through the record-registry migration path.
+Public gRPC gains one streaming RPC, one promotion operation, one follower registration/retire pair, and additive
+health/statistics fields; existing messages are unchanged. Durable records, the redb layout, journal frames, changelog V1/V2
+frames, and the backup manifest V1 are unchanged. The archive manifest is a new additive external format registered in the
+ADR-0124 topology. Contract IR, RiffQL, and generated application surfaces are unchanged. Follower registration and hold budgets
+are retained metadata added through the record-registry migration path.
 
 ## Security
 
-The follower is a client holding a capability, not a trusted peer. The stream
-carries only durable bytes the primary already persisted; redaction rules for
-public responses do not apply to frames, so the capability is administrative
-and never bindable to an application role. Promotion and follower retirement
-require administrative capabilities and produce durable audit. Stale-epoch
-and foreign-incarnation refusals are fail-closed. Archive sinks receive
-ciphertext-neutral bytes; encryption at rest is operator policy and the
-manifest states whether it applied.
+The follower is a client holding a capability, not a trusted peer. The stream carries only durable bytes the primary already
+persisted; redaction rules for public responses do not apply to frames, so the capability is administrative and never bindable to
+an application role. Promotion and follower retirement require administrative capabilities and produce durable audit. Stale-epoch
+and foreign-incarnation refusals are fail-closed. Archive sinks receive ciphertext-neutral bytes; encryption at rest is operator
+policy and the manifest states whether it applied.
 
 ## Standing Design Tests
 
@@ -255,16 +238,12 @@ manifest states whether it applied.
 
 ## Testing
 
-Storage conformance extends `DeleteAwareEntityFollowerV2` to every
-authoritative table and pins prefix exactness with the structural-count and
-chain-fingerprint machinery. The process-level crash matrix gains stream-kill,
-applier-crash, and archive-sink-crash arms under `storage_recovery_matrix`.
-The deterministic simulator gains a follower cell so seeded fault schedules
-cover apply and resume. Architecture tests pin that the emitter and applier
-hold no `SharedRedb` handle and that no application role can carry the
-replication permission. The seven obligation proofs above are the named
-tests; WP-750 runs them against the app-baseline harness in a repeated kill
-loop and writes receipted evidence under `release/evidence/replication/`.
+Storage conformance extends `DeleteAwareEntityFollowerV2` to every authoritative table and pins prefix exactness with the
+structural-count and chain-fingerprint machinery. The process-level crash matrix gains stream-kill, applier-crash, and
+archive-sink-crash arms under `storage_recovery_matrix`. The deterministic simulator gains a follower cell so seeded fault
+schedules cover apply and resume. Architecture tests pin that the emitter and applier hold no `SharedRedb` handle and that no
+application role can carry the replication permission. The seven obligation proofs above are the named tests; WP-750 runs them
+against the app-baseline harness in a repeated kill loop and writes receipted evidence under `release/evidence/replication/`.
 
 ## Requirements and Work Packages
 
@@ -274,12 +253,13 @@ loop and writes receipted evidence under `release/evidence/replication/`.
 
 ## Decision Deadline
 
-Exact acceptance is required before WP-746 merges the replication RPC, the
-capability permission kind, or the handshake framing, because each is a
-public protocol boundary under ADR-0124.
+Exact acceptance is required before WP-746 merges the replication RPC, the capability permission kind, or the handshake framing,
+because each is a public protocol boundary under ADR-0124.
 
 ## Acceptance
 
-Direction approved 2026-09-01; exact text accepted 2026-09-01. The maintainer
-accepted the exact text of this record in the Claude Code session of
-2026-09-01, all seven consolidation records together.
+Direction approved 2026-09-01; exact text accepted 2026-09-01. The maintainer accepted the exact text of this record in the Claude
+Code session of 2026-09-01, all seven consolidation records together.
+
+Follower service and audit amendment accepted 2026-09-15. The maintainer accepted the exact proposed amendment in session: "I
+approve of these changes". The amendment above governs sections 2 and 4 and SPEC 13.5.
