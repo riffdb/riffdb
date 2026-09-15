@@ -1,8 +1,8 @@
 # Authoritative changelog V3 substrate
 
 WP-772 implements ADR-0186's storage substrate and ADR-0207's frozen
-compatibility boundary. Its [automated verification](WP-772-VERIFICATION.md)
-passes; closure awaits the final five-vector fixture review.
+compatibility boundary. Its [verification and fixture review](WP-772-VERIFICATION.md)
+are complete as of 2026-09-14.
 Production emitter, RPC, follower apply and bootstrap activation remain WP-746;
 archives remain WP-749. Internal values grant no application mutation, format
 selection, bootstrap installation or pruning authority. Application export is
@@ -214,7 +214,8 @@ The maintainer approved the catalog and initial V1/V2/V3 vectors, then the three
 source-hold vectors on 2026-09-14. Amendment 1 subsequently added admission,
 execution-failure, audited-failure and command-lifecycle vectors and regenerated
 `changelog-frame-v3.hex` for 33 source slots. These synthetic vectors freeze
-encoding, not application-record validity; final fixture review is batched at
-closure. V1/V2 and unrelated vectors remain byte-identical. Regenerate with
+encoding, not application-record validity. The maintainer approved all five final
+vectors in session on 2026-09-14; their exact hashes are in the verification report.
+V1/V2 and unrelated vectors remain byte-identical. Regenerate with
 `./scripts/generate-changelog-fixtures`; its `--check` runs in generated-artifact
 acceptance. Fixture review does not accept a new ADR.
