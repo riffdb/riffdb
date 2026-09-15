@@ -44,6 +44,7 @@ mod outbox_adapter;
 mod port_driver;
 mod process_graph;
 mod projection_adapter;
+mod projection_read_source;
 mod projection_worker;
 mod read_adapters;
 #[cfg(test)]

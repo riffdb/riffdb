@@ -45,10 +45,10 @@ use riffdb_service::{
     TokenizedTextProjectionPort, TokenizedTextProjectionRequest,
 };
 use riffdb_storage_api::{
-    ApplicationExportSnapshotPort, ApplicationExportSourceRecordV1,
     AuthoritativeEntityPartitionScanRequest, AuthoritativeIndexScanPage,
-    AuthoritativeIndexScanRequest, AuthoritativePointReader, AuthoritativeScanReader, EntityTarget,
-    IndexRangePrefixBuilder, IndexRangeTarget, StorageScanLimit,
+    AuthoritativeIndexScanRequest, AuthoritativePointReader, AuthoritativeScanReader,
+    CatalogRepository, EntityTarget, IndexRangePrefixBuilder, IndexRangeTarget,
+    SnapshotFenceReader, StorageScanLimit,
 };
 use riffdb_types::{
     CanonicalRecord, CanonicalValue, CapabilityId, CommitSequence,
@@ -59,7 +59,7 @@ use riffdb_types::{
 };
 
 use crate::columnar_adapter::read_application_head;
-use crate::storage::SharedRedbOperationalPorts;
+use crate::projection_read_source::ProjectionReadSource;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 const MAX_REGISTERED_EXACT_PARTITIONS: usize = 256;
@@ -643,7 +643,7 @@ impl NullableExactPredicateSlot {
 
 /// Dynamic exact providers registered only from immutable compiled named plans.
 pub(crate) struct ExactTextRuntime {
-    storage: SharedRedbOperationalPorts,
+    storage: ProjectionReadSource,
     root: PathBuf,
     predicate_root: PathBuf,
     history_incarnation: u64,
@@ -659,7 +659,7 @@ pub(crate) struct ExactTextRuntime {
 
 impl ExactTextRuntime {
     pub(crate) fn open(
-        storage: SharedRedbOperationalPorts,
+        storage: ProjectionReadSource,
         projections_root: &Path,
         history_incarnation: u64,
         initial_generation: ProjectionGeneration,
@@ -2249,29 +2249,45 @@ fn read_complete_tokenized_partition(
         .iter()
         .map(|field| field.field())
         .collect::<BTreeSet<_>>();
-    let snapshot = ApplicationExportSnapshotPort::capture_application_export_snapshot(
-        &runtime.storage,
-        program.contract().lineage(),
-    )
-    .map_err(|_| RebuildFailure::Transient)?;
-    if snapshot.binding().application_frontier() != Some(expected_head)
-        || snapshot.binding().contract_bundle_hash() != program.contract().bundle_hash()
+    let snapshot = runtime
+        .storage
+        .pin()
+        .map_err(|_| RebuildFailure::Transient)?;
+    let catalog = snapshot
+        .read_active_catalog()
+        .map_err(|_| RebuildFailure::Transient)?
+        .ok_or(RebuildFailure::Transient)?;
+    if snapshot
+        .application_frontier()
+        .map_err(|_| RebuildFailure::Transient)?
+        != Some(expected_head)
+        || catalog.lineage() != program.contract().lineage()
+        || catalog.contract_version() != program.contract().version()
+        || catalog.bundle_hash() != program.contract().bundle_hash()
     {
         return Err(RebuildFailure::Transient);
     }
+    let prefix = step
+        .internal_entity_key_schema()
+        .encode_entity_prefix(std::slice::from_ref(&registration.partition_value))
+        .map_err(|_| RebuildFailure::Integrity)?;
     let limit = StorageScanLimit::new(REBUILD_PAGE_ROWS).ok_or(RebuildFailure::Integrity)?;
-    let mut after = None::<Vec<u8>>;
+    let mut after = None;
     let mut candidates = BTreeSet::new();
     let mut rows =
         BTreeMap::<riffdb_types::EntityKey, (Vec<(FieldId, String)>, CanonicalRecord)>::new();
     loop {
-        let page = snapshot
-            .read_application_export_entity_page(step.internal_entity_id(), after.as_deref(), limit)
+        let request = AuthoritativeEntityPartitionScanRequest::new(
+            step.internal_entity_id(),
+            prefix.clone(),
+            after,
+            limit,
+        )
+        .map_err(|_| RebuildFailure::Integrity)?;
+        let page = AuthoritativeScanReader::scan_entity_partition(&snapshot, request)
             .map_err(|_| RebuildFailure::Transient)?;
         for source in page.records() {
-            let ApplicationExportSourceRecordV1::Entity(record) = source else {
-                return Err(RebuildFailure::Integrity);
-            };
+            let record = source.value();
             let values = record.fields().fields();
             if values
                 .iter()
@@ -2279,7 +2295,7 @@ fn read_complete_tokenized_partition(
                 .map(|(_, value)| value)
                 != Some(&registration.partition_value)
             {
-                continue;
+                return Err(RebuildFailure::Integrity);
             }
             let key = record.target().key().clone();
             if !candidates.insert(key.clone()) {
@@ -2309,14 +2325,10 @@ fn read_complete_tokenized_partition(
                 return Err(RebuildFailure::Integrity);
             }
         }
-        if page.exact_end() {
+        let Some(next) = page.next_after().cloned() else {
             break;
-        }
-        after = Some(
-            page.continuation()
-                .ok_or(RebuildFailure::Integrity)?
-                .to_vec(),
-        );
+        };
+        after = Some(next);
     }
     if let Some(policy) = registration.row_policy.as_deref() {
         let ordered_candidates = candidates.iter().cloned().collect::<Vec<_>>();
@@ -3431,6 +3443,30 @@ mod tests {
     }
 
     #[test]
+    // req: REP-002, REP-003
+    fn exact_provider_runtime_requires_only_snapshot_authority() {
+        let source = production_source();
+        assert!(source.contains("storage: ProjectionReadSource"));
+        for forbidden in [
+            "SharedRedbOperationalPorts",
+            "ApplicationExportSnapshotPort",
+            "read_application_export_entity_page",
+        ] {
+            assert!(!source.contains(forbidden), "provider holds {forbidden}");
+        }
+        let rebuild = source
+            .split_once("fn read_complete_tokenized_partition")
+            .expect("tokenized rebuild")
+            .1
+            .split_once("fn rebuild_nullable_predicate_slot")
+            .expect("next rebuild")
+            .0;
+        let compact = rebuild.split_whitespace().collect::<String>();
+        assert!(compact.contains("runtime.storage.pin()"));
+        assert!(rebuild.contains("scan_entity_partition(&snapshot"));
+    }
+
+    #[test]
     fn worker_is_the_only_owner_of_rebuild_scans() {
         let worker = production_source()
             .split_once("fn refresh_registered_slots")
@@ -3452,7 +3488,7 @@ mod tests {
             production_source()
                 .matches("AuthoritativeScanReader::scan_entity_partition")
                 .count(),
-            1
+            2
         );
     }
 

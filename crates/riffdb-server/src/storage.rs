@@ -178,6 +178,11 @@ impl SharedRedbOperationalPorts {
         StorageQueryExecutor::new(self.shared.clone())
     }
 
+    /// Narrows primary storage to immutable pins before entering derived workers.
+    pub(crate) fn projection_reads(&self) -> crate::projection_read_source::ProjectionReadSource {
+        crate::projection_read_source::ProjectionReadSource::new(self.shared.clone())
+    }
+
     /// True only when bounded startup proved no in-flight `Delivering` outbox
     /// entry exists. False on the complete path, and false when the bounded
     /// probe could not decide, so ignorance never reads as proof.

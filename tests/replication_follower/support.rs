@@ -106,6 +106,7 @@ certificate_chain = {certificate:?}
 private_key = {key:?}
 [maintenance]
 backup_root = {backups:?}
+projections_root = {projections:?}
 "#,
             database = self.database(name),
             capability = root.join("capability.keys"),
@@ -113,7 +114,8 @@ backup_root = {backups:?}
             endpoint = self.endpoint(name),
             certificate = root.join("tls.crt"),
             key = root.join("tls.key"),
-            backups = root.join(format!("{name}-backups"))
+            backups = root.join(format!("{name}-backups")),
+            projections = root.join(format!("{name}-projections"))
         )
     }
 
@@ -181,11 +183,16 @@ hold_id = "01010101010101010101010101010101"
     }
 
     pub(super) async fn application_client(&self) -> riffdb_client_rust::StableApplicationClient {
-        riffdb_client_rust::StableApplicationClient::connect_verified_tls(
-            &self.tls_config("primary"),
-        )
-        .await
-        .unwrap()
+        self.application_client_for("primary").await
+    }
+
+    pub(super) async fn application_client_for(
+        &self,
+        name: &str,
+    ) -> riffdb_client_rust::StableApplicationClient {
+        riffdb_client_rust::StableApplicationClient::connect_verified_tls(&self.tls_config(name))
+            .await
+            .unwrap()
     }
 
     fn tls_config(&self, name: &str) -> TlsClientConfig {

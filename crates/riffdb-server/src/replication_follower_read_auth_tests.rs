@@ -57,6 +57,10 @@ async fn follower_authentication_rechecks_published_capabilities_and_withdraws_o
     let issued = issue_capability_token(&SystemEntropy, &keys).unwrap();
     let token = issued.text().expose_secret().to_owned();
     let id = CapabilityId::from_unix_milliseconds_and_random(9, [0x9c; 10]).unwrap();
+    let projection_reads =
+        crate::projection_read_source::ProjectionReadSource::new(readers.clone());
+    let pinned_before_grant = projection_reads.pin().unwrap();
+    assert!(pinned_before_grant.read_capability(id).unwrap().is_none());
     let request = RequestId::from_unix_milliseconds_and_random(9, [0x9d; 10]).unwrap();
     let environment = Environment::new("follower-read-test").unwrap();
     let audience = Audience::new("riffdb-test").unwrap();
@@ -107,6 +111,7 @@ async fn follower_authentication_rechecks_published_capabilities_and_withdraws_o
         evidence,
         readers.clone(),
         notifier,
+        &fixture.path.with_extension("projections"),
         activator,
         graph_keys,
         audience.clone(),
@@ -179,6 +184,16 @@ async fn follower_authentication_rechecks_published_capabilities_and_withdraws_o
         "source publication alone cannot expose follower authority"
     );
     catch_up(&mut receiver, &fixture.peer, &readers).await;
+    assert!(
+        projection_reads
+            .pin()
+            .unwrap()
+            .read_capability(id)
+            .unwrap()
+            .is_some()
+    );
+    assert!(pinned_before_grant.read_capability(id).unwrap().is_none());
+    drop(pinned_before_grant);
     let principal = auth
         .authenticate(OpaqueCredential::new(&token), &context)
         .unwrap();
@@ -347,6 +362,7 @@ async fn follower_authentication_rechecks_published_capabilities_and_withdraws_o
     ));
     drop(historical);
     receiver.close().await.unwrap();
+    assert!(projection_reads.pin().is_err());
     assert!(
         lifecycle
             .admit_authenticated(ServiceOperationV1::GetActiveContract)

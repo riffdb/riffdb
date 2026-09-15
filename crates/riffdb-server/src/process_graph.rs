@@ -696,7 +696,7 @@ impl ProductionGraphBuilder {
         let vector_projection: Arc<dyn riffdb_service::VectorProjectionPort> = columnar_adapter;
         let initial_exact_generation = exact_generation_from_process(&server_generation);
         let exact_runtime = match ExactTextRuntime::open(
-            storage.clone(),
+            storage.projection_reads(),
             &projections_root,
             retained_metadata.history_incarnation(),
             initial_exact_generation,
