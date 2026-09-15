@@ -228,7 +228,10 @@ Each V2 host boundary records a maximum 4,096-process scan; enumeration overflow
 or more than 32 qualifying interferers is invalid evidence rather than a
 truncated idle-host claim. The interval also binds each endpoint's Linux process
 identity to PID and start time: an endpoint PID-set change or reuse of one PID
-with another start time makes the host observation invalid. As ADR-0146
+with another start time makes the host observation invalid. Kernel threads
+(`PF_KTHREAD`) are excluded from that identity rule under ADR-0171 Amendment 2;
+their starts and exits are recorded as `kernel_thread_events_excluded`, and they
+remain subject to the CPU and I/O interference thresholds. As ADR-0146
 specifies, the separately recomputed aggregate CPU-steal boundary covers the
 complete measured cell; endpoint inventories do not claim a continuous process
 event trace. Process-generation evidence is checked against the selected

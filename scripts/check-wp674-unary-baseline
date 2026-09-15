@@ -636,6 +636,7 @@ def verify_evidence_eligibility(
     label: str,
     *,
     host_invalid: bool,
+    riffdb_disclosures: list[str] | None = None,
 ) -> None:
     expected = {
         "eligible": not host_invalid and riffdb_stable,
@@ -649,6 +650,10 @@ def verify_evidence_eligibility(
         "missing_required_fields": [] if riffdb_stable else ["stability"],
         "non_evidentiary_window": False,
     }
+    if riffdb_disclosures is not None:
+        # ADR-0171 Amendment 2: the minimal cell publishes RiffDB's spreads as
+        # disclosure instead of re-proving the dedicated cells' rule.
+        expected["riffdb_central_three_spread_disclosed"] = sorted(riffdb_disclosures)
     strict_equal(report.get("evidence_eligibility"), expected, f"{label}.evidence_eligibility")
 
 
@@ -962,7 +967,7 @@ def verify_minimal_report(
         fail(f"{label}: minimal unary disclosures are not exact")
     result: dict[str, Any] = {}
     all_postgres_disclosures: list[str] = []
-    all_riffdb_spreads: list[float] = []
+    all_riffdb_disclosures: list[str] = []
     for scenario in sorted(SCENARIOS):
         entry = summaries[scenario]
         if not isinstance(entry, dict) or set(entry) != {
@@ -973,24 +978,25 @@ def verify_minimal_report(
             fail(f"{label}.{scenario}: minimal unary summary shape drifted")
         metrics = {"postgres": {}, "riffdb": {}, "ratios_riffdb_over_postgres": {}}
         comparator_spreads: dict[str, float] = {}
+        riffdb_spreads: dict[str, float] = {}
         for backend in ("postgres", "riffdb"):
             for statistic in ("p50_ns", "p95_ns"):
                 summary = (entry.get(backend) or {}).get(statistic)
+                # ADR-0171 Amendment 2: the minimal cell binds five positive
+                # generations for both backends; RiffDB's central-three rule is
+                # proven by each scenario's dedicated cell and disclosed here.
                 metrics[backend][statistic] = summary_value(
                     summary,
                     f"{label}.{scenario}.{backend}.{statistic}",
-                    require_stable=require_stable and backend == "riffdb",
+                    require_stable=False,
+                )
+                spread = summary_spread(
+                    summary, f"{label}.{scenario}.{backend}.{statistic}"
                 )
                 if backend == "postgres":
-                    comparator_spreads[statistic] = summary_spread(
-                        summary, f"{label}.{scenario}.{backend}.{statistic}"
-                    )
+                    comparator_spreads[statistic] = spread
                 else:
-                    all_riffdb_spreads.append(
-                        summary_spread(
-                            summary, f"{label}.{scenario}.{backend}.{statistic}"
-                        )
-                    )
+                    riffdb_spreads[statistic] = spread
             verify_selected_p50(
                 timed_rows_by_backend[
                     "postgres_minimal" if backend == "postgres" else "riffdb_public_grpc"
@@ -1007,6 +1013,13 @@ def verify_minimal_report(
         all_postgres_disclosures.extend(
             f"{scenario}.{statistic}"
             for statistic in metrics["postgres_stability_disclosure"]
+        )
+        metrics["riffdb_central_three_spread"] = riffdb_spreads
+        metrics["riffdb_stability_disclosure"] = sorted(
+            statistic for statistic, spread in riffdb_spreads.items() if spread > MAX_SPREAD
+        )
+        all_riffdb_disclosures.extend(
+            f"{scenario}.{statistic}" for statistic in metrics["riffdb_stability_disclosure"]
         )
         for statistic in ("p50", "p95"):
             ratio_summary = (entry.get("ratios_riffdb_over_postgres") or {}).get(statistic)
@@ -1031,9 +1044,10 @@ def verify_minimal_report(
     verify_evidence_eligibility(
         report,
         all_postgres_disclosures,
-        all(spread <= MAX_SPREAD for spread in all_riffdb_spreads),
+        True,
         label,
         host_invalid=host_invalid,
+        riffdb_disclosures=all_riffdb_disclosures,
     )
     return result, binaries, host_digest, hardware_digest
 
@@ -1593,6 +1607,7 @@ def fake_report(manifest: dict[str, Any], profile: str, scenario: str) -> dict[s
         },
         "process_interval": {
             "stable_identity_required": True,
+            "kernel_thread_events_excluded": 0,
             "started_processes": 0,
             "exited_processes": 0,
             "pid_reuses": 0,
@@ -1855,6 +1870,9 @@ def fake_minimal_report(manifest: dict[str, Any], profile: str) -> dict[str, Any
         "scenarios": rows,
         "unary_rep_summaries": summaries,
     }
+    # ADR-0171 Amendment 2: the minimal cell publishes RiffDB's spreads as
+    # disclosure; the harness emits the key for every minimal-cell report.
+    report["evidence_eligibility"]["riffdb_central_three_spread_disclosed"] = []
     return report
 
 
@@ -1879,6 +1897,9 @@ def fake_host_invalid_postflight(report: dict[str, Any]) -> dict[str, Any]:
         "steal_percent": round(elapsed_steal / elapsed_total * 100.0, 6),
         "maximum_steal_percent": 1.0,
     }
+    minimal_cell = "riffdb_central_three_spread_disclosed" in (
+        report.get("evidence_eligibility") or {}
+    )
     report["evidence_eligibility"] = {
         "eligible": False,
         "host_idle": False,
@@ -1891,6 +1912,8 @@ def fake_host_invalid_postflight(report: dict[str, Any]) -> dict[str, Any]:
         "missing_required_fields": [],
         "non_evidentiary_window": False,
     }
+    if minimal_cell:
+        report["evidence_eligibility"]["riffdb_central_three_spread_disclosed"] = []
     return report
 
 
@@ -2066,6 +2089,7 @@ def run_self_test(root: Path) -> None:
         },
         "process_interval": {
             "stable_identity_required": True,
+            "kernel_thread_events_excluded": 0,
             "started_processes": 0,
             "exited_processes": 0,
             "pid_reuses": 0,
@@ -2324,6 +2348,34 @@ def run_self_test(root: Path) -> None:
     ):
         fail("an unstable minimal comparator passed without disclosure")
 
+    unstable_minimal_riffdb = fake_minimal_report(manifest, "n1")
+    riffdb_entry = unstable_minimal_riffdb["comparisons"]["unary_rep_summaries"][
+        minimal_scenario
+    ]
+    riffdb_p95 = riffdb_entry["riffdb"]["p95_ns"]
+    riffdb_values = sorted(riffdb_p95["values"])
+    riffdb_values[3] = riffdb_values[1] * 1.36
+    riffdb_values[4] = max(riffdb_values[4], riffdb_values[3])
+    riffdb_p95.update({
+        "values": riffdb_values,
+        "median": riffdb_values[2],
+        "min": riffdb_values[0],
+        "max": riffdb_values[4],
+        "spread_ratio": riffdb_values[3] / riffdb_values[1],
+    })
+    unstable_minimal_riffdb["evidence_eligibility"][
+        "riffdb_central_three_spread_disclosed"
+    ] = [f"{minimal_scenario}.p95_ns"]
+    riffdb_disclosed, _, _, _ = verify_minimal_report(
+        unstable_minimal_riffdb,
+        manifest,
+        "n1",
+        "minimal_riffdb_spread",
+    )
+    if "p95_ns" not in riffdb_disclosed[minimal_scenario].get(
+        "riffdb_stability_disclosure", []
+    ):
+        fail("an unstable minimal-cell RiffDB spread passed without disclosure")
     selected_minimal = fake_minimal_report(manifest, "n1")
     selected_minimal["unary_qualification"] = fake_report(
         manifest, "n1", minimal_scenario

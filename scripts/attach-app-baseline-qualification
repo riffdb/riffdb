@@ -61,12 +61,29 @@ def attach(
                 values = sorted(value.get("values") or [])
                 return five_positive_generations(value) and values[3] / values[1] <= 1.20
 
+            # ADR-0171 Amendment 2: the complete minimal disclosure cell (every
+            # scenario in one process) binds five positive generations for both
+            # backends and publishes RiffDB's spreads as disclosure; each
+            # scenario's dedicated cell proves RiffDB's central-three rule.
+            minimal_cell = len(comparisons.get("scenarios") or []) > 1
             parity_stable = bool(unary_summaries) and all(
                 five_positive_generations((entry.get("postgres") or {}).get(statistic))
-                and central_three_stable((entry.get("riffdb") or {}).get(statistic))
+                and (
+                    five_positive_generations((entry.get("riffdb") or {}).get(statistic))
+                    if minimal_cell
+                    else central_three_stable((entry.get("riffdb") or {}).get(statistic))
+                )
                 for entry in unary_summaries.values()
                 for statistic in ("p50_ns", "p95_ns")
             )
+            if minimal_cell:
+                eligibility["riffdb_central_three_spread_disclosed"] = sorted(
+                    f"{scenario}.{statistic}"
+                    for scenario, entry in unary_summaries.items()
+                    for statistic in ("p50_ns", "p95_ns")
+                    if five_positive_generations((entry.get("riffdb") or {}).get(statistic))
+                    and not central_three_stable((entry.get("riffdb") or {}).get(statistic))
+                )
             eligibility["postgres_central_three_spread_disclosed"] = sorted(
                 f"{scenario}.{statistic}"
                 for scenario, entry in unary_summaries.items()

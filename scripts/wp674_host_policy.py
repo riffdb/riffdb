@@ -321,12 +321,18 @@ def validate_host_observation(
             "started_processes",
             "exited_processes",
             "pid_reuses",
+            "kernel_thread_events_excluded",
         },
         f"V2 {boundary} process interval",
     )
     if process_interval["stable_identity_required"] is not True:
         raise ValueError(f"V2 {boundary} PID identity rule differs")
-    for key in ("started_processes", "exited_processes", "pid_reuses"):
+    for key in (
+        "started_processes",
+        "exited_processes",
+        "pid_reuses",
+        "kernel_thread_events_excluded",
+    ):
         if nonnegative_integer(
             process_interval[key], f"V2 {boundary} process interval {key}"
         ) > MAX_SCANNED_PROCESSES:
@@ -467,20 +473,27 @@ def validate_invalid_postflight_receipt(
         or "qualification_candidate" in receipt
     ):
         raise ValueError("invalid-postflight report is not a completed unqualified cell")
+    expected_eligibility_keys = {
+        "eligible",
+        "host_idle",
+        "reason_codes",
+        "postgres_central_three_spread_disclosed",
+        "stable",
+        "correctness_clean",
+        "same_device_comparable",
+        "comparison_complete",
+        "missing_required_fields",
+        "non_evidentiary_window",
+    }
+    # ADR-0171 Amendment 2: a minimal-cell receipt also carries RiffDB's
+    # spread disclosure; it is validated below like the comparator's.
+    if isinstance(receipt.get("evidence_eligibility"), dict) and (
+        "riffdb_central_three_spread_disclosed" in receipt["evidence_eligibility"]
+    ):
+        expected_eligibility_keys.add("riffdb_central_three_spread_disclosed")
     eligibility = exact_keys(
         receipt.get("evidence_eligibility"),
-        {
-            "eligible",
-            "host_idle",
-            "reason_codes",
-            "postgres_central_three_spread_disclosed",
-            "stable",
-            "correctness_clean",
-            "same_device_comparable",
-            "comparison_complete",
-            "missing_required_fields",
-            "non_evidentiary_window",
-        },
+        expected_eligibility_keys,
         "invalid-postflight evidence eligibility",
     )
     for key in (
@@ -508,7 +521,15 @@ def validate_invalid_postflight_receipt(
         ["host_interference"],
         "invalid-postflight reason codes",
     )
-    for key in ("postgres_central_three_spread_disclosed", "missing_required_fields"):
+    for key in (
+        "postgres_central_three_spread_disclosed",
+        "missing_required_fields",
+        *(
+            ("riffdb_central_three_spread_disclosed",)
+            if "riffdb_central_three_spread_disclosed" in eligibility
+            else ()
+        ),
+    ):
         value = eligibility[key]
         if (
             not isinstance(value, list)
