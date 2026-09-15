@@ -2089,6 +2089,45 @@ mod tests {
         .expect("accepted retire receipt")
     }
 
+    // req: REP-007, AFC-007
+    #[test]
+    fn legacy_restore_receipt_refuses_archive_aware_input_identities() {
+        let receipt = accepted_restore_receipt();
+        // This is deliberately a probe, not a proposed persistent encoding.
+        // Any archive-aware identity must distinguish the archive and requested
+        // stop; legacy V1 can accept only its already frozen three-field hash.
+        let mut previous = None;
+        for (archive, stop) in [
+            (b"east".as_slice(), 7_u64),
+            (b"west".as_slice(), 7),
+            (b"west".as_slice(), 8),
+        ] {
+            let mut probe = receipt.input_hash().into_bytes().to_vec();
+            probe.extend_from_slice(archive);
+            probe.extend_from_slice(&stop.to_be_bytes());
+            let archive_hash = riffdb_types::hash_offline_maintenance_input(&probe);
+            assert_ne!(archive_hash, receipt.input_hash());
+            assert_ne!(Some(archive_hash), previous);
+            previous = Some(archive_hash);
+            assert_eq!(
+                OfflineMaintenanceReceiptV1::accepted(
+                    receipt.operation_id(),
+                    OfflineMaintenanceOperationKind::RestoreBackup,
+                    receipt.backup_name().clone(),
+                    archive_hash,
+                    receipt.replacement_confirmation(),
+                    admission(),
+                ),
+                Err(StorageValueError::IdentityMismatch),
+            );
+        }
+        assert_eq!(
+            accepted_restore_receipt(),
+            receipt,
+            "ordinary restore identity remains unchanged"
+        );
+    }
+
     #[test]
     fn checksum_artifact_identity_is_opaque_and_one_based() {
         let value = BackupIntegrityChecksumV1::new(vec![0x55; 32]).expect("checksum");
