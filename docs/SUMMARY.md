@@ -110,7 +110,7 @@
   - [WP-746 Scope Review](architecture/WP-746-SCOPE-REVIEW.md)
   - [WP-746 Follower Lifecycle Review](architecture/WP-746-FOLLOWER-LIFECYCLE-REVIEW.md)
   - [WP-746 Follower Audit Proposal](architecture/WP-746-FOLLOWER-AUDIT-REVIEW.md)
-  - [WP-747 Follower Columnar Proposal](architecture/WP-747-FOLLOWER-COLUMNAR-REVIEW.md)
+  - [WP-747 Accepted Follower Columnar Amendment](architecture/WP-747-FOLLOWER-COLUMNAR-REVIEW.md)
 - [Schema-Bound Columnar Control](architecture/COLUMNAR-CONTROL.md)
 - [Aggregate Semantic Registry](architecture/aggregate-semantic-registry-v1.md)
 - [Exact Aggregate Closure](architecture/WP-696-AGGREGATE-CLOSURE.md)

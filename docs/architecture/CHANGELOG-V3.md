@@ -505,7 +505,12 @@ during shutdown. Tokenized rebuilds scan one bounded entity partition from one
 immutable snapshot, with the exact catalog identity and application frontier
 checked before scanning. They retain the existing candidate bound and policy
 admission before constructing posting state. Columnar/vector composition and
-the complete follower freshness matrix remain open in WP-747.
+the complete follower freshness matrix remain open in WP-747. The
+[accepted follower columnar amendment](WP-747-FOLLOWER-COLUMNAR-REVIEW.md),
+recorded in `1d910c83`, permits independently validated disposable V2 views
+from completed follower authority. It permits no local authoritative control
+write or reuse of a source checksum for different local bytes. This design is
+accepted; follower columnar serving is not yet implemented.
 
 `follower_exact_providers_match_primary_after_tail_and_restart` deploys all four
 compiled provider families over TLS, checks matching results and application
