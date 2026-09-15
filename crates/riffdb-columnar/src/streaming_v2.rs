@@ -42,6 +42,48 @@ const MAX_OBSERVATION_PAYLOAD: usize = MAX_KEY_BYTES + 8 + 1 + 4 + MAX_PROJECTED
 const MAX_SCRATCH_FRAME_PAYLOAD: usize = MAX_OBSERVATION_PAYLOAD;
 const FRAME_OVERHEAD: u64 = 4 + 32;
 
+const MAX_PARTITION_LANE_ROWS: usize =
+    crate::MAX_COLUMNAR_MANIFEST_V2_SEGMENTS * crate::MAX_SEGMENT_V2_ROWS;
+
+/// File ceiling for a fresh V2 build whose snapshot and tail reader are the
+/// same immutable pin at `snapshot_frontier` (hence an empty retained suffix).
+/// Includes all partition lanes, manifests, segments, ROOT-V1, two empty tail
+/// runs and one in-progress immutable member. This is not a retained-tail bound.
+pub const V2_SNAPSHOT_BUILD_MAX_FILES: usize = crate::MAX_COLUMNAR_GENERATION_ROOT_V1_PARTITIONS
+    * (crate::MAX_COLUMNAR_MANIFEST_V2_SEGMENTS + 2)
+    + 4;
+
+/// Conservative live-byte ceiling for the fresh snapshot-only build described
+/// by [`V2_SNAPSHOT_BUILD_MAX_FILES`], including interrupted partial writes.
+/// The lane row ceiling is enforced before append, even for invalid input.
+pub const V2_SNAPSHOT_BUILD_MAX_BYTES: u64 = crate::MAX_COLUMNAR_GENERATION_ROOT_V1_PARTITIONS
+    as u64
+    * (8 + MAX_PARTITION_LANE_ROWS as u64 * (MAX_PROJECTED_ROW_PAYLOAD as u64 + FRAME_OVERHEAD)
+        + crate::MAX_COLUMNAR_MANIFEST_V2_BYTES as u64
+        + crate::MAX_COLUMNAR_MANIFEST_V2_SEGMENTS as u64 * crate::MAX_SEGMENT_V2_BYTES as u64)
+    + crate::MAX_COLUMNAR_GENERATION_ROOT_V1_BYTES as u64
+    + crate::MAX_SEGMENT_V2_BYTES as u64
+    + 16;
+
+// Count final merged rows, not pre-tail snapshot rows: a retained deletion may
+// shrink a snapshot that would otherwise exceed the final manifest capacity.
+struct PartitionLane {
+    path: PathBuf,
+    remaining: usize,
+}
+
+impl PartitionLane {
+    fn append(&mut self, row: &ProjectedRow) -> Result<(), ColumnarV2StreamingError> {
+        let remaining = self
+            .remaining
+            .checked_sub(1)
+            .ok_or(ColumnarV2StreamingError::BoundExceeded)?;
+        append_frame(&self.path, &encode_projected_row(row)?)?;
+        self.remaining = remaining;
+        Ok(())
+    }
+}
+
 /// Closed failure from bounded format-local rebuild scratch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ColumnarV2StreamingError {
@@ -530,14 +572,20 @@ impl ColumnarV2StreamingRows {
             if bytes != 8 {
                 return Err(ColumnarV2StreamingError::Invalid);
             }
-            identities.insert(organization.clone(), path.clone());
+            identities.insert(
+                organization.clone(),
+                PartitionLane {
+                    path: path.clone(),
+                    remaining: MAX_PARTITION_LANE_ROWS,
+                },
+            );
             lanes.push((organization.clone(), path));
         }
         self.visit_final_rows(snapshot, definition, stop_before_next_page, |row| {
-            let path = identities
-                .get(&row.organization)
+            let lane = identities
+                .get_mut(&row.organization)
                 .ok_or(ColumnarV2StreamingError::Invalid)?;
-            append_frame(path, &encode_projected_row(&row)?)
+            lane.append(&row)
         })?;
         Ok(lanes)
     }
@@ -1751,6 +1799,46 @@ mod tests {
         assert_eq!(MAX_RUN_PAYLOAD_BYTES, 4 * 1024 * 1024);
         assert_eq!(MERGE_FAN_IN, 8);
         const { assert!(MAX_RUN_ROWS < crate::MAX_SEGMENT_V2_ROWS) };
+        assert_eq!(MAX_PARTITION_LANE_ROWS, 4096 * 65536);
+        const { assert!(V2_SNAPSHOT_BUILD_MAX_FILES > 4096 * 4096) };
+        const { assert!(V2_SNAPSHOT_BUILD_MAX_BYTES > 4096 * 4096 * 64 * 1024 * 1024_u64) };
+    }
+
+    // req: PRJ-004, PRJ-009, REP-002
+    #[test]
+    fn partition_lane_refuses_excess_rows_before_appending_bytes() {
+        let directory = temp_directory("lane-bound");
+        let path = directory.join("partition.lane");
+        write_records(
+            &path,
+            COLLAPSED_MAGIC,
+            std::iter::empty::<Result<Vec<u8>, ColumnarV2StreamingError>>(),
+        )
+        .expect("empty lane");
+        let mut lane = PartitionLane {
+            path: path.clone(),
+            remaining: 2,
+        };
+        lane.append(&row(1, 1, 1)).expect("first row");
+        lane.append(&row(2, 1, 1)).expect("inclusive ceiling");
+        let at_limit = fs::read(&path).expect("bounded lane");
+        assert_eq!(
+            lane.append(&row(3, 1, 1)),
+            Err(ColumnarV2StreamingError::BoundExceeded)
+        );
+        assert_eq!(fs::read(&path).expect("unchanged lane"), at_limit);
+        let mut reader = open_partition_lane(&path).expect("reader");
+        assert_eq!(
+            reader.next().expect("first").expect("row").key,
+            row(1, 1, 1).key
+        );
+        assert_eq!(
+            reader.next().expect("second").expect("row").key,
+            row(2, 1, 1).key
+        );
+        assert!(reader.next().expect("exact end").is_none());
+        drop(reader);
+        fs::remove_dir_all(directory).expect("cleanup");
     }
 
     // req: PRJ-002, PRJ-004, PRJ-009

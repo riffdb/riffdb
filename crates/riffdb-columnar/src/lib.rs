@@ -136,7 +136,9 @@ pub use store::{
     encode_org_scope_key,
 };
 #[doc(hidden)]
-pub use streaming_v2::ColumnarV2StreamingError;
+pub use streaming_v2::{
+    ColumnarV2StreamingError, V2_SNAPSHOT_BUILD_MAX_BYTES, V2_SNAPSHOT_BUILD_MAX_FILES,
+};
 
 #[doc(hidden)]
 pub use hooks::{ColumnarTestBoundary, ColumnarTestController};
