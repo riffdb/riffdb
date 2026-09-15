@@ -70,9 +70,13 @@ form; `./scripts/adr-new` writes it.
 Acceptance is a human act, and it must be visible as one. A human sets
 `status: accepted`, the `accepted:` date, and, for any record accepted on or
 after 2026-09-12, an `acceptance:` reference naming who accepted it and how
-(for example `maintainer, in session`). An agent never sets `status: accepted`;
-it proposes. The commit that accepts a record touches only `adr/**`,
-`work_packages.yaml`, and `SPEC.md`, so acceptance never rides along with code.
+(for example `maintainer, in session, 2026-09-14`). The decision is the
+maintainer's; the mechanics need not be. An agent never sets `status: accepted`
+on its own initiative, but once the maintainer has said a record is accepted
+the agent makes the acceptance commit itself, quoting where and when in
+`acceptance:`, rather than asking the maintainer to edit files. The commit
+that accepts a record touches only `adr/**`, `work_packages.yaml`, and
+`SPEC.md`, so acceptance never rides along with code.
 `./scripts/check-acceptance-commits` enforces both rules on every commit in the
 range and on the working tree; `governance/tiers.yaml` holds the date and the
 allowed paths under `acceptance:`. Exact-text acceptance before merge is
@@ -158,6 +162,15 @@ in the form `Amendment N (completed by WP-NNN on <date>): <what was added and
 why>`, and lists it in `decisions_taken`. Removing or reinterpreting a member,
 or completing a set after its first durable write, is a record change and
 stops.
+
+A patch-level or security-advisory bump of a dependency that an accepted
+record already admits is likewise an implementation choice. Keep the exact
+pin, run `cargo deny check` and `cargo audit`, and record the version, the
+advisory or reason, and both results in `Decisions:` and `decisions_taken`.
+If the pinning record names the exact version, update that one token in the
+record's own commit with the same line. A new dependency, a minor or major
+change to a pinned critical dependency, a feature-set change, or any bump
+that alters a public or durable behavior still stops under AGENTS.md.
 
 ## Obligations and requirement tags
 
