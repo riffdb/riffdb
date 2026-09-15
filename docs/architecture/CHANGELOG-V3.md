@@ -587,12 +587,33 @@ The waiter observation uses a dedicated executable under `test-fixtures`; the
 normal daemon has no probe installation path and emits no test marker. WP-747
 remains open for the remaining cursor/fence, policy and failure-campaign gates.
 
+Follower columnar health remains degraded while any admitted source is cold,
+activating or failed. Health reads do not demand a build. Deterministic worker
+tests cancel with a live scratch lease and prove that the build directory is
+removed before the worker drains, without installing a view or changing source
+control. A failed source stays unavailable even after its filesystem obstacle
+is removed; only a fresh owned runtime may rebuild it.
+
+The populated TLS scenario also starts with an invalid local inventory, proves
+typed rowless failure, repairs it without clearing the failed slot, then restarts
+with corrupt abandoned build files. Startup leaves those files untouched; first
+demand discards them and derives matching scalar/vector results from authority.
+The final namespace oracle covers these failures, repairs and restarts.
+
 `follower_exact_providers_match_primary_after_tail_and_restart` deploys all four
 compiled provider families over TLS, checks matching results and application
 heads after bootstrap, a replicated write and follower restart, and excludes a
 matching row from another partition. Its namespace oracle then verifies that
 the follower still equals a complete source prefix; derived rebuilds create no
 local authoritative records.
+
+That test also compares a valid follower continuation with the primary's second
+page. A primary-process cursor cannot continue on the follower, and an issued
+follower cursor cannot continue after restart. These opaque handles retain
+ADR-0070's `RDB-CURSOR-0101` refusal and release no page. The separate
+[accepted cursor clarification](WP-747-CURSOR-ERROR-REVIEW.md) aligns WP-747's
+error-code wording with that existing accepted behavior. It changes no cursor
+bytes or safety guarantee.
 
 A supervised continuous receiver now owns the validated applier through shutdown.
 Transient network failures retry only while that same receiver retains live
