@@ -492,3 +492,30 @@ fn archive_receipt_round_trips_source_route_empty_suffix_and_terminal_evidence()
         );
     }
 }
+
+#[test]
+fn admitted_archive_stage_cannot_be_discarded_by_pre_receipt_cleanup() {
+    let root = Root::new();
+    let (mut store, _) = root.open();
+    let receipt = accepted(17);
+    store.create_or_read_archive_receipt(&receipt).unwrap();
+    let stage = root
+        .0
+        .join("backups/.maintenance/staged")
+        .join(receipt.operation_id().to_string());
+    fs::create_dir(&stage).unwrap();
+    fs::write(
+        stage.join("private-candidate"),
+        b"admitted archive candidate",
+    )
+    .unwrap();
+    assert!(
+        store
+            .discard_pre_receipt_recovery_stage(receipt.operation_id())
+            .is_err()
+    );
+    assert_eq!(
+        fs::read(stage.join("private-candidate")).unwrap(),
+        b"admitted archive candidate"
+    );
+}

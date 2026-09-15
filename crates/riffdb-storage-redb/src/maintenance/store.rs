@@ -1117,10 +1117,21 @@ impl RedbMaintenanceStorage {
         operation_id: OfflineMaintenanceOperationId,
     ) -> Result<(), StorageError> {
         self.verify_path_ownership()?;
-        match fs::symlink_metadata(self.receipt_path(operation_id)) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(io_unavailable(error)),
-            Ok(_) => return Err(invariant()),
+        let (ordinary, retirement, archive, _) = self.read_complete_inventory(false)?;
+        if ordinary
+            .receipts()
+            .iter()
+            .any(|r| r.operation_id() == operation_id)
+            || retirement
+                .receipts()
+                .iter()
+                .any(|r| r.operation_id() == operation_id)
+            || archive
+                .receipts()
+                .iter()
+                .any(|r| r.operation_id() == operation_id)
+        {
+            return Err(invariant());
         }
         remove_stage_if_present(&self.staged_directory.join(operation_id.to_string()))?;
         self.verify_path_ownership()
@@ -1202,8 +1213,8 @@ impl RedbMaintenanceStorage {
                 .collect(),
         )?;
         validate_retired_directory_inventory(&self.retired_directory, &retire_inventory)?;
-        let removed_unpublished_target_temps =
-            self.remove_unpublished_target_temps(inventory.receipts())?;
+        let removed_unpublished_target_temps = self
+            .remove_unpublished_target_temps(inventory.receipts(), archive_inventory.receipts())?;
         let mut removed_incomplete_stages = removed_unadmitted_stages;
         let mut removed_terminal_stages = 0usize;
         let mut operations = Vec::with_capacity(inventory.receipts().len());
@@ -1429,16 +1440,33 @@ impl RedbMaintenanceStorage {
     fn remove_unpublished_target_temps(
         &self,
         receipts: &[OfflineMaintenanceReceiptV1],
+        archives: &[OfflineMaintenanceReceiptV3],
     ) -> Result<usize, StorageError> {
         let mut removed = 0usize;
-        let target_name = self.database_file.file_name().ok_or_else(invariant)?;
-        for receipt in receipts {
-            if receipt.operation_kind() != OfflineMaintenanceOperationKind::RestoreBackup {
-                continue;
-            }
-            let name = super::staged::target_temporary_name(target_name, receipt.operation_id());
-            if self.database_parent_guard.remove_file_if_present(&name)? {
-                removed = removed.checked_add(1).ok_or_else(limit_exceeded)?;
+        let journal = crate::journal::journal_path(&self.database_file);
+        let marker = crate::durable_format_marker_path(&self.database_file);
+        let targets = [
+            self.database_file.file_name().ok_or_else(invariant)?,
+            journal.file_name().ok_or_else(invariant)?,
+            marker.file_name().ok_or_else(invariant)?,
+        ];
+        let operations = receipts
+            .iter()
+            .filter(|receipt| {
+                receipt.operation_kind() == OfflineMaintenanceOperationKind::RestoreBackup
+            })
+            .map(OfflineMaintenanceReceiptV1::operation_id)
+            .chain(
+                archives
+                    .iter()
+                    .map(OfflineMaintenanceReceiptV3::operation_id),
+            );
+        for operation_id in operations {
+            for target_name in targets {
+                let name = super::staged::target_temporary_name(target_name, operation_id);
+                if self.database_parent_guard.remove_file_if_present(&name)? {
+                    removed = removed.checked_add(1).ok_or_else(limit_exceeded)?;
+                }
             }
         }
         if removed != 0 {

@@ -395,3 +395,20 @@ pub trait OfflineArchiveReceiptPersistencePort {
         &mut self,
     ) -> Result<OfflineMaintenanceReceiptInventoryV3, StorageError>;
 }
+
+/// Physical archive-restore publication, before the server's final startup gate.
+/// The original backup frontier is never relabeled as the replayed frontier.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OfflineArchiveRestorePublicationV3 {
+    /// The receipt did not authorize replacing a nonempty configured target.
+    TargetNotEmpty,
+    /// Exact sealed artifacts were published; this is not operation success or readiness.
+    Published {
+        /// Unchanged original full-backup manifest.
+        backup_manifest: Box<OfflineBackupManifestV1>,
+        /// Actual application/administration frontier proven after archive replay.
+        restored_frontier: DualFrontier,
+        /// Durable receipt's new history fence used by RestoreAnchor.
+        published_history_incarnation: u64,
+    },
+}
