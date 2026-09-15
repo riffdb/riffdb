@@ -105,6 +105,7 @@
 - [Command Execution Path](architecture/COMMAND-PATH.md)
 - [Composite Read Views](architecture/COMPOSITE-READ-VIEWS.md)
 - [Authoritative Changelog V3 Substrate](architecture/CHANGELOG-V3.md)
+  - [WP-772 Verification Report](architecture/WP-772-VERIFICATION.md)
 - [Schema-Bound Columnar Control](architecture/COLUMNAR-CONTROL.md)
 - [Aggregate Semantic Registry](architecture/aggregate-semantic-registry-v1.md)
 - [Exact Aggregate Closure](architecture/WP-696-AGGREGATE-CLOSURE.md)
