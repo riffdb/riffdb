@@ -585,7 +585,7 @@ request compatibility remain intact; response readers must support V2. Frozen
 fixtures and malformed-byte tests cover both versions and exact scope checks.
 The waiter observation uses a dedicated executable under `test-fixtures`; the
 normal daemon has no probe installation path and emits no test marker. WP-747
-remains open for the remaining cursor/fence, policy and failure-campaign gates.
+remains open for the final package verification and merge checks.
 
 Follower columnar health remains degraded while any admitted source is cold,
 activating or failed. Health reads do not demand a build. Deterministic worker
@@ -614,6 +614,16 @@ ADR-0070's `RDB-CURSOR-0101` refusal and release no page. The separate
 [accepted cursor clarification](WP-747-CURSOR-ERROR-REVIEW.md) aligns WP-747's
 error-code wording with that existing accepted behavior. It changes no cursor
 bytes or safety guarantee.
+
+Command-tool and resource discovery retain the history incarnation from an
+incoming presentation fence separately from the process-neutral catalog hint.
+The shared service checks it after initial authorization and refuses a mismatch
+with `RDB-HISTORY-0101`, including when the process generation also differs.
+An equal fence can still yield `CatalogUnchanged`; a changed process generation
+at the same history incarnation still requires an ordinary freshly authorized
+page under ADR-0040. Legacy absent history remains unvalidated under ADR-0072.
+The TLS proof exercises both discovery operations and both generation cases;
+the public fields, cursor bytes and existing primary compatibility stay intact.
 
 A supervised continuous receiver now owns the validated applier through shutdown.
 Transient network failures retry only while that same receiver retains live

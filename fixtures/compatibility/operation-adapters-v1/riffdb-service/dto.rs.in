@@ -7764,6 +7764,7 @@ pub struct DiscoverCommandToolsRequest {
     page: PageRequest,
     representation: DiscoveryRepresentation,
     prior_fence: Option<DiscoveryCatalogFence>,
+    observed_history_incarnation: Option<u64>,
 }
 
 impl DiscoverCommandToolsRequest {
@@ -7774,6 +7775,7 @@ impl DiscoverCommandToolsRequest {
             page,
             representation: DiscoveryRepresentation::Full,
             prior_fence: None,
+            observed_history_incarnation: None,
         }
     }
 
@@ -7793,7 +7795,21 @@ impl DiscoverCommandToolsRequest {
             page,
             representation,
             prior_fence,
+            observed_history_incarnation: None,
         })
+    }
+
+    /// Retains the history claim separately from a process-neutral catalog fence.
+    #[must_use]
+    pub const fn with_observed_history_incarnation(mut self, observed: Option<u64>) -> Self {
+        self.observed_history_incarnation = observed;
+        self
+    }
+
+    /// History incarnation carried by the caller's presentation fence, when present.
+    #[must_use]
+    pub const fn observed_history_incarnation(&self) -> Option<u64> {
+        self.observed_history_incarnation
     }
 
     /// Returns the checked page request.
@@ -8635,6 +8651,7 @@ pub struct DiscoverResourcesRequest {
     representation: DiscoveryRepresentation,
     prior_fence: Option<DiscoveryCatalogFence>,
     kind: ResourceDiscoveryKind,
+    observed_history_incarnation: Option<u64>,
 }
 
 impl DiscoverResourcesRequest {
@@ -8645,6 +8662,7 @@ impl DiscoverResourcesRequest {
             page,
             representation: DiscoveryRepresentation::Full,
             prior_fence: None,
+            observed_history_incarnation: None,
             kind: ResourceDiscoveryKind::All,
         }
     }
@@ -8666,8 +8684,22 @@ impl DiscoverResourcesRequest {
             page,
             representation,
             prior_fence,
+            observed_history_incarnation: None,
             kind,
         })
+    }
+
+    /// Retains the history claim separately from a process-neutral catalog fence.
+    #[must_use]
+    pub const fn with_observed_history_incarnation(mut self, observed: Option<u64>) -> Self {
+        self.observed_history_incarnation = observed;
+        self
+    }
+
+    /// History incarnation carried by the caller's presentation fence, when present.
+    #[must_use]
+    pub const fn observed_history_incarnation(&self) -> Option<u64> {
+        self.observed_history_incarnation
     }
 
     /// Returns the checked page request.

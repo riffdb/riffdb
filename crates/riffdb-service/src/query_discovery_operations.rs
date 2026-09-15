@@ -1728,6 +1728,12 @@ async fn discover_command_tools(
             AuditScope::StandardRead,
         )
         .await?;
+    if let Err(failure) = crate::commit_operations::check_observed_history_incarnation(
+        &service,
+        request.observed_history_incarnation(),
+    ) {
+        return Err(finish_failure(&service, &context, &begun, failure).await);
+    }
     let (active, authorization) =
         read_current_discovery_catalog(&service, &context, &begun, OPERATION).await?;
     let operation_schemas = match OperationSchemaCatalog::accepted() {
@@ -2116,6 +2122,12 @@ async fn discover_resources(
             AuditScope::StandardRead,
         )
         .await?;
+    if let Err(failure) = crate::commit_operations::check_observed_history_incarnation(
+        &service,
+        request.observed_history_incarnation(),
+    ) {
+        return Err(finish_failure(&service, &context, &begun, failure).await);
+    }
     let (active, authorization) =
         read_current_discovery_catalog(&service, &context, &begun, OPERATION).await?;
     let operation_schemas = match OperationSchemaCatalog::accepted() {

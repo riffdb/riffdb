@@ -89,7 +89,7 @@ impl CommitApplication for RiffDbService {
     }
 }
 
-fn check_observed_history_incarnation(
+pub(crate) fn check_observed_history_incarnation(
     service: &RiffDbServiceInner,
     observed: Option<u64>,
 ) -> ServiceResult<()> {
