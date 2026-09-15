@@ -355,3 +355,48 @@ fn archive_restore_crashes_rebuild_the_private_stage_from_the_original_backup() 
         result.discard().unwrap();
     }
 }
+
+#[test]
+fn archive_restore_retries_replay_the_frozen_prefix_after_archive_advances() {
+    for empty in [false, true] {
+        let scope = crate::test_path::ScopedDirectory::new("archive-replay-frozen");
+        let (backup, original) = crate::maintenance::archive_backup_tests::backup(&scope);
+        let (repository, last) = archive(&scope, &backup);
+        let first = repository.frames().next().unwrap().unwrap().0;
+        assert_ne!(first.covered(), last);
+        let current = fs::read(scope.join("archive/CURRENT")).unwrap();
+        let stage = materialize(&scope, &backup, "stage");
+        let selection = ArchiveRestoreSelectionV3::new(
+            stage.manifest_identity().clone(),
+            original.lineage(),
+            original.tail(),
+            if empty {
+                ArchiveRestoreSuffixV3::Empty
+            } else {
+                ArchiveRestoreSuffixV3::Terminal(Box::new(first))
+            },
+        )
+        .unwrap();
+        let expected = if empty {
+            original.tail()
+        } else {
+            first.covered()
+        };
+        let stage = stage
+            .begin_selected_archive_replay(repository, selection.clone(), &AtomicBool::new(false))
+            .unwrap();
+        let applier = validated_applier(stage.staged_database_file());
+        let replayed = stage.replay(applier, &AtomicBool::new(false)).unwrap();
+        assert_eq!(replayed.history().tail(), expected);
+        assert_eq!(replayed.selection(), &selection);
+        crate::startup::RedbOfflineIntegrityScrub::from_inputs(
+            replayed.staged_database_file(),
+            inputs(),
+        )
+        .run_follower()
+        .unwrap();
+        assert_eq!(fs::read(scope.join("archive/CURRENT")).unwrap(), current);
+        assert!(!scope.join("configured.redb").exists());
+        replayed.discard().unwrap();
+    }
+}

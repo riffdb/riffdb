@@ -226,7 +226,9 @@ application history, and it is not included in backup artifacts.
 WP-749 implementation status: the external ledger also recognizes archive-only
 receipt V3. It preserves the verified archive selection across retries, shares
 the existing maintenance ownership and inventory limit, and retains an admitted
-private replay stage for archive recovery. Ordinary create/restore V1 and retire
+private replay stage for archive recovery. Private replay can stop at the receipt's
+exact selected manifest after the archive advances; an explicitly empty selected
+suffix remains empty. Ordinary create/restore V1 and retire
 V2 receipt bytes are unchanged. An unfinished V3 receipt currently refuses server
 startup; the archive recovery driver and public restore command are still being
 implemented. Recognizing a receipt does not validate or publish its replay stage.

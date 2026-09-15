@@ -22476,6 +22476,10 @@ work_packages:
       Validate the complete inventory before removing recognized temporary files;
       retain archive-owned private stages and refuse ordinary startup while V3 work
       is unfinished. The archive recovery driver remains a separate implementation step.
+    - Validate and replay a receipt-selected archive prefix against its original
+      backup identity and fence. A later CURRENT remains unchanged and never
+      extends that prefix; a selected empty suffix stays empty. Keep the replay
+      result private with its exact selection and no publication capability.
   human_review_triggers: *id0178
 
 - id: WP-750
