@@ -220,6 +220,8 @@ def main() -> None:
             "runner_sha256": args.runner_sha256,
             "riffdbd_sha256": args.riffdbd_sha256,
             "harness_sha256": args.harness_sha256,
+            # ADR-0171: the stability rule this receipt was qualified under.
+            "method": {"stability_rule_binds": "gated_backend"},
         },
     )
 

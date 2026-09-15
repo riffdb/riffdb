@@ -45,18 +45,31 @@ def read_fragment(path: Path) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--workstation", type=Path, required=True)
+    parser.add_argument("--workstation", type=Path, required=False)
     parser.add_argument("--n1", type=Path, required=True)
     parser.add_argument("--e2", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--require-both-profiles",
+        action="store_true",
+        help="ADR-0183 bank: both inventoried cloud profiles (N1 and E2) are mandatory, the "
+        "workstation column is optional, and every campaign must record the ADR-0171 "
+        "gated-backend stability rule",
+    )
     args = parser.parse_args()
+    if args.workstation is None and not args.require_both_profiles:
+        parser.error("--workstation is required unless --require-both-profiles is given")
     output = args.output.absolute()
     common: tuple[str, str, str, str] | None = None
     common_binaries: tuple[str, str] | None = None
     profiles = []
+    selected = []
+    if args.workstation is not None:
+        selected.append(("workstation", args.workstation.absolute()))
+    selected.append(("n1", args.n1.absolute()))
+    selected.append(("e2", args.e2.absolute()))
     for expected, path in (
-        ("workstation", args.workstation.absolute()),
-        ("n1", args.n1.absolute()),
+        *selected,
         ("e2", args.e2.absolute()),
     ):
         fragment = read_fragment(path)
@@ -103,6 +116,10 @@ def main() -> int:
         campaign = json.loads(
             bounded_read(campaign_path, MAX_CAMPAIGN_BYTES, "campaign identity").decode()
         )
+        if args.require_both_profiles and (
+            (campaign.get("method") or {}).get("stability_rule_binds") != "gated_backend"
+        ):
+            fail(f"{expected}: campaign stability rule is not bound to the gated backend")
         validate_campaign_identity_value(
             campaign,
             expected,
@@ -173,6 +190,8 @@ def main() -> int:
         )
     assert common is not None
     assert common_binaries is not None
+    if args.require_both_profiles and not {"n1", "e2"} <= {profile["id"] for profile in profiles}:
+        fail("--require-both-profiles: both N1 and E2 columns are mandatory")
     manifest = {
         "schema": MANIFEST_SCHEMA,
         "source_revision": common[0],
@@ -182,6 +201,7 @@ def main() -> int:
         "riffdbd_sha256": common_binaries[1],
         "governance_predecessor_sha256": common[3],
         "requirements": REQUIREMENTS,
+        "stability_rule_binds": "gated_backend",
         "profiles": profiles,
     }
     exclusive_write(

@@ -1078,7 +1078,7 @@ def validate_terminal_host_invalid_report(
 
 
 def validate_manifest(manifest: dict[str, Any]) -> None:
-    if set(manifest) != {
+    required_keys = {
         "schema",
         "source_revision",
         "cargo_lock_sha256",
@@ -1088,8 +1088,15 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         "governance_predecessor_sha256",
         "requirements",
         "profiles",
-    } or manifest.get("schema") != MANIFEST_SCHEMA:
+    }
+    # ADR-0183 banks carry the ADR-0171 rule the campaigns ran under.
+    optional_keys = {"stability_rule_binds"}
+    if not required_keys <= set(manifest) <= required_keys | optional_keys or (
+        manifest.get("schema") != MANIFEST_SCHEMA
+    ):
         fail("manifest shape or schema is invalid")
+    if "stability_rule_binds" in manifest and manifest["stability_rule_binds"] != "gated_backend":
+        fail("manifest stability rule is not bound to the gated backend")
     revision = manifest.get("source_revision")
     if not isinstance(revision, str) or REVISION.fullmatch(revision) is None:
         fail("manifest source revision is invalid")
@@ -1107,11 +1114,15 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         fail("governance predecessor receipt is absent, linked, or differs")
     exact_strings(manifest.get("requirements"), REQUIREMENTS, "manifest.requirements")
     profiles = manifest.get("profiles")
-    if not isinstance(profiles, list) or len(profiles) != len(PROFILE_CLASSES):
-        fail("manifest must contain workstation, N1, and E2")
-    observed = {p.get("id") for p in profiles if isinstance(p, dict)}
-    if observed != set(PROFILE_CLASSES):
+    # Both inventoried cloud profiles are mandatory (ADR-0142 gates them); the
+    # workstation column is optional under an ADR-0183 bank.
+    if not isinstance(profiles, list) or not profiles:
+        fail("manifest must contain N1 and E2, and may contain the workstation")
+    observed = [p.get("id") for p in profiles if isinstance(p, dict)]
+    if len(observed) != len(set(observed)) or not set(observed) <= set(PROFILE_CLASSES):
         fail("manifest profile identities are not exact")
+    if not {"n1", "e2"} <= set(observed):
+        fail("manifest must contain N1 and E2, and may contain the workstation")
 
 
 def validate_campaign_identity(
@@ -1307,7 +1318,8 @@ def verify_corpus(
     profiles = []
     runner_digests: set[str] = set()
     daemon_digests: set[str] = set()
-    for profile_id in PROFILE_CLASSES:
+    present_profiles = {profile["id"] for profile in manifest["profiles"]}
+    for profile_id in [pid for pid in PROFILE_CLASSES if pid in present_profiles]:
         manifest_profile = next(
             profile for profile in manifest["profiles"] if profile["id"] == profile_id
         )
@@ -1432,10 +1444,14 @@ def verify_against_baseline(candidate: dict[str, Any], baseline: dict[str, Any])
         fail("scenario classes or absolute ceilings drifted")
     baseline_profiles = {profile["id"]: profile for profile in baseline.get("profiles") or []}
     candidate_profiles = {profile["id"]: profile for profile in candidate.get("profiles") or []}
-    if set(baseline_profiles) != set(PROFILE_CLASSES) or set(candidate_profiles) != set(PROFILE_CLASSES):
+    if (
+        set(baseline_profiles) != set(candidate_profiles)
+        or not {"n1", "e2"} <= set(baseline_profiles)
+        or not set(baseline_profiles) <= set(PROFILE_CLASSES)
+    ):
         fail("baseline or candidate profiles are incomplete")
     regressions = []
-    for profile_id in PROFILE_CLASSES:
+    for profile_id in [pid for pid in PROFILE_CLASSES if pid in baseline_profiles]:
         if candidate_profiles[profile_id].get(
             "hardware_identity_sha256"
         ) != baseline_profiles[profile_id].get("hardware_identity_sha256"):
@@ -1927,6 +1943,7 @@ def run_self_test(root: Path) -> None:
                     "reps": REPETITIONS,
                     "comparators": ["safe-app", "minimal"],
                     "scenarios": list(SCENARIO_ORDER),
+                    "stability_rule_binds": "gated_backend",
                 },
             },
             indent=2,

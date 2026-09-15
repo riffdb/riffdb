@@ -46,6 +46,10 @@ CAMPAIGN_METHOD = {
     "reps": 5,
     "comparators": ["safe-app", "minimal"],
     "scenarios": list(SCENARIO_ORDER),
+    # ADR-0171: the central-three spread rule binds the gated backend only;
+    # the comparator's spread is disclosure. Every campaign records the rule
+    # it ran under so a receipt cannot be reinterpreted under another one.
+    "stability_rule_binds": "gated_backend",
 }
 
 
