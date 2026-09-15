@@ -445,7 +445,7 @@ target/debug/riffdb --config "$work_root/application-client.toml" \
     query run-named DocumentsInTitleWindow \
     --contract-lineage AdapterOperationalConformance --contract-version 1 \
     --module-hash "$module_hash" --parameters "$work_root/binary-interval-parameters.json" \
-    --cursor "$binary_interval_cli_cursor" \
+    --cursor="$binary_interval_cli_cursor" \
     --output json >"$work_root/binary-interval-cli-second.json"
 jq -n \
     --slurpfile first "$work_root/binary-interval-cli-first.json" \

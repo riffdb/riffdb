@@ -23813,6 +23813,11 @@ work_packages:
   closure:
     status: open
     decisions_taken:
+    - The existing CLI conformance query binds its opaque cursor using --cursor=value.
+      A returned base64url cursor may start with a hyphen; passing it as a separate
+      argument made the unchanged parser treat it as an option. A synthetic leading-hyphen
+      reproduction distinguishes parser refusal from the expected typed configuration
+      refusal. No CLI parser, cursor bytes, authorization or query semantics change.
     - The storage-api consumer inventory recognizes only the two concrete legacy changelog
       reader fakes in the original root recovery test under ADR-0207. Missing implementations,
       mere mentions and unrelated test-only traits still fail negative self-tests; the
