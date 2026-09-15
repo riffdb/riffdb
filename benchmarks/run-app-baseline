@@ -1623,6 +1623,7 @@ report["qualification_candidate"] = {
     "riffdbd_sha256": riffdbd_sha256,
     "harness_sha256": harness_sha256,
     "referee_sha256": referee_sha256,
+    "method": {"stability_rule_binds": "gated_backend"},
     "build": {
         "cargo": "cargo +1.97.0 build --locked --release",
         "package": "riffdb-server",
