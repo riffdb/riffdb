@@ -822,3 +822,21 @@ vectors in session on 2026-09-14; their exact hashes are in the verification rep
 V1/V2 and unrelated vectors remain byte-identical. Regenerate with
 `./scripts/generate-changelog-fixtures`; its `--check` runs in generated-artifact
 acceptance. Fixture review does not accept a new ADR.
+
+## Archive consumer foundation (WP-749, incomplete)
+
+The engine-neutral archive consumer validates complete V3 frames before passing
+bytes to a sink. It checks database, history and leadership identity, receipt
+ancestry, exact dual frontiers, frame-chain continuity and existing frame bounds.
+Its descriptor carries a checksum of the full stored bytes. The consumer retains
+at most one uncertain frame and advances archive-local progress only after the
+sink confirms durability. An exact retry preserves pending bytes; another
+submission while a frame is uncertain returns typed resync without skipping it.
+A reconnect resets only frame chaining at the confirmed receipt position.
+
+The consumer has no database writer, source-acknowledgement callback or command
+admission dependency. Tests cover failures before and after sink persistence,
+exact retry, overflow, reconnect, malformed frames, gaps, frontier mismatch and
+redacted diagnostics. This is an internal foundation: the concrete archive sink,
+manifest, operator configuration and offline archive restore remain unfinished.
+No archive CLI availability or wall-clock recovery promise is implied.
