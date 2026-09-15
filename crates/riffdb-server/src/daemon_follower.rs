@@ -189,6 +189,7 @@ async fn start_and_supervise(
                     reads,
                     notifier,
                     database.projections_root(),
+                    database.projections(),
                     activator,
                     keys.clone(),
                     config.audience().clone(),

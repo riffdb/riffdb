@@ -520,8 +520,18 @@ and byte limits, and independent V2 logical validation are shared. Pinned
 columnar-control inventory reads decode the complete at-most-256 set and refuse
 corruption or excess rows. Tests retain old pins across writes, compare pages
 with the primary export snapshot, check byte-bound continuation and prove that
-these reads acquire no writer admission. Follower demand, materialization, view
-installation and shutdown composition remain unfinished.
+these reads acquire no writer admission.
+
+Follower service startup now validates its complete configured scalar and
+compiler-declared vector source set before opening derived artifacts. Source
+resolution and alias checks are shared with primary registration. Each required
+replicated control must match the checked specification and history at the same
+completed pin; missing controls, mismatched targets or replay limits, duplicate
+sources, excessive inventories and frontiers beyond the applied head refuse.
+A valid source artifact failure does not certify or forbid an independently
+validated follower artifact. Admission performs no control write and opens no
+columnar artifact. Follower demand, materialization, view installation and
+shutdown composition remain unfinished.
 
 `follower_exact_providers_match_primary_after_tail_and_restart` deploys all four
 compiled provider families over TLS, checks matching results and application
