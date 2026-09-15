@@ -111,7 +111,7 @@
   - [WP-746 Follower Lifecycle Review](architecture/WP-746-FOLLOWER-LIFECYCLE-REVIEW.md)
   - [WP-746 Follower Audit Proposal](architecture/WP-746-FOLLOWER-AUDIT-REVIEW.md)
   - [WP-747 Accepted Follower Columnar Amendment](architecture/WP-747-FOLLOWER-COLUMNAR-REVIEW.md)
-  - [WP-747 V2 Canonical Vector Proposal](architecture/WP-747-V2-VECTOR-REVIEW.md)
+  - [WP-747 Accepted V2 Canonical Vector Amendment](architecture/WP-747-V2-VECTOR-REVIEW.md)
   - [WP-749 Archive Restore Receipt Proposal](architecture/WP-749-ARCHIVE-RESTORE-RECEIPT-REVIEW.md)
 - [Schema-Bound Columnar Control](architecture/COLUMNAR-CONTROL.md)
 - [Aggregate Semantic Registry](architecture/aggregate-semantic-registry-v1.md)

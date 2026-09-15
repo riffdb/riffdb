@@ -195,8 +195,13 @@ async fn follower_columnar_demand_builds_disposable_views_and_refuses_withdrawal
             .has_published()
     );
     worker.advance().unwrap();
-    assert!(runtime.observe("Document.embedding").is_err());
-    assert!(!runtime.is_healthy());
+    let vector = runtime.observe("Document.embedding").unwrap();
+    assert!(vector.has_published());
+    assert_eq!(
+        vector.published_frontier().position(),
+        FrontierPosition::BeforeFirst
+    );
+    assert!(runtime.is_healthy());
     assert!(!root.join("follower-columnar/build").exists());
     assert_eq!(
         readers

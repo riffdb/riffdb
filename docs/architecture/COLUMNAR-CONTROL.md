@@ -29,6 +29,19 @@ exact length and checksum recorded by control. Directory enumeration, a legacy
 the control update leaves an ignored orphan. A crash after it reopens the exact
 selected artifact.
 
+## Canonical vector cells in V2
+
+The [accepted canonical-vector amendment](WP-747-V2-VECTOR-REVIEW.md) stores
+checked `Vector` and `Optional<Vector>` cells losslessly in existing V2 Bytes
+lanes. Generation validation restores the vector type and checks the declared
+dimension and exact canonical bytes before comparing against authoritative
+input. Null keeps its existing validity representation. Malformed payloads,
+non-finite components, negative-zero encodings and mismatches refuse the whole
+generation. Vector byte ordering and statistics provide no pruning evidence.
+This changes no physical tag or scalar artifact bytes. Primary publication
+still requires exact durable selection; followers use the separately accepted
+disposable views without source-checksum claims or local control writes.
+
 ## V2 activation and immutable generations
 
 Each database and source activates V2 independently. A selected V1 generation

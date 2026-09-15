@@ -1,5 +1,12 @@
 //! Immutable filesystem finalization and validate-once open for V2 generations.
 
+#[cfg(test)]
+#[path = "generation_v2_vector_tests.rs"]
+mod vector_tests;
+
+#[path = "generation_v2_values.rs"]
+mod values;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -839,7 +846,7 @@ impl ValidatedColumnarV2Generation {
                 {
                     return Err(ColumnarV2GenerationError::Invalid);
                 }
-                let (segment, pruning) = SegmentV2Codec::decode_with_pruning(&bytes)
+                let (segment, mut pruning) = SegmentV2Codec::decode_with_pruning(&bytes)
                     .map_err(|_| ColumnarV2GenerationError::Invalid)?;
                 validate_segment(
                     &segment,
@@ -851,6 +858,15 @@ impl ValidatedColumnarV2Generation {
                     entry,
                 )?;
                 let rows = decode_rows(&segment, definition)?;
+                for (field, value_type) in definition
+                    .projected_fields()
+                    .iter()
+                    .zip(definition.projected_types())
+                {
+                    if values::is_vector(value_type) {
+                        pruning.exclude_field(*field);
+                    }
+                }
                 if previous_primary_key.as_ref().is_some_and(|previous| {
                     rows.keys().next().is_some_and(|first| previous >= first)
                 }) {
@@ -983,7 +999,7 @@ fn logical_type(value_type: &ValueType) -> Result<SegmentV2LogicalType, Columnar
         ValueTypeTag::I64 => Ok(SegmentV2LogicalType::I64),
         ValueTypeTag::U64 => Ok(SegmentV2LogicalType::U64),
         ValueTypeTag::String => Ok(SegmentV2LogicalType::String),
-        ValueTypeTag::Bytes => Ok(SegmentV2LogicalType::Bytes),
+        ValueTypeTag::Bytes | ValueTypeTag::Vector => Ok(SegmentV2LogicalType::Bytes),
         ValueTypeTag::Timestamp => Ok(SegmentV2LogicalType::Timestamp),
         ValueTypeTag::Date => Ok(SegmentV2LogicalType::Date),
         ValueTypeTag::Uuid => Ok(SegmentV2LogicalType::Uuid),
@@ -1002,10 +1018,9 @@ fn logical_type(value_type: &ValueType) -> Result<SegmentV2LogicalType, Columnar
             amount: DecimalSpec::new(MAX_DECIMAL_PRECISION, 2)
                 .map_err(|_| ColumnarV2GenerationError::UnsupportedDefinition)?,
         }),
-        ValueTypeTag::Optional
-        | ValueTypeTag::List
-        | ValueTypeTag::Record
-        | ValueTypeTag::Vector => Err(ColumnarV2GenerationError::UnsupportedDefinition),
+        ValueTypeTag::Optional | ValueTypeTag::List | ValueTypeTag::Record => {
+            Err(ColumnarV2GenerationError::UnsupportedDefinition)
+        }
     }
 }
 
@@ -1033,17 +1048,11 @@ fn build_segment(
         let cells = rows
             .iter()
             .map(|(_, row)| {
-                row.cells
+                let value = row
+                    .cells
                     .get(position)
-                    .cloned()
-                    .map(|value| {
-                        if value == CanonicalValue::Null {
-                            SegmentV2Cell::Null
-                        } else {
-                            SegmentV2Cell::Value(value)
-                        }
-                    })
-                    .ok_or(ColumnarV2GenerationError::LogicalMismatch)
+                    .ok_or(ColumnarV2GenerationError::LogicalMismatch)?;
+                values::lower(value, &definition.projected_types()[position])
             })
             .collect::<Result<Vec<_>, _>>()?;
         columns.push(
@@ -1108,6 +1117,14 @@ fn decode_rows(
 ) -> Result<BTreeMap<PrimaryKeyBytes, LiveRow>, ColumnarV2GenerationError> {
     let mut columns = BTreeMap::new();
     for column in segment.columns() {
+        let position = definition
+            .projected_fields()
+            .iter()
+            .position(|field| *field == column.field_id())
+            .ok_or(ColumnarV2GenerationError::Invalid)?;
+        if column.logical_type() != &logical_type(&definition.projected_types()[position])? {
+            return Err(ColumnarV2GenerationError::Invalid);
+        }
         columns.insert(column.field_id(), column);
     }
     let mut rows = BTreeMap::new();
@@ -1118,19 +1135,12 @@ fn decode_rows(
                 .get(field)
                 .and_then(|column| column.cells().get(row_index))
                 .ok_or(ColumnarV2GenerationError::Invalid)?;
-            let value = match cell {
-                SegmentV2Cell::Value(value) => value.clone(),
-                SegmentV2Cell::Null => CanonicalValue::Null,
-                SegmentV2Cell::Missing => return Err(ColumnarV2GenerationError::Invalid),
-            };
             let position = definition
                 .projected_fields()
                 .iter()
                 .position(|projected| projected == field)
                 .ok_or(ColumnarV2GenerationError::Invalid)?;
-            definition.projected_types()[position]
-                .validate_value(&value)
-                .map_err(|_| ColumnarV2GenerationError::Invalid)?;
+            let value = values::restore(cell, &definition.projected_types()[position])?;
             cells.push(value);
         }
         rows.insert(

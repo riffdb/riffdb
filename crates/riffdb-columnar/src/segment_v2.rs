@@ -417,6 +417,12 @@ struct SegmentV2PruningColumn {
 }
 
 impl SegmentV2PruningIndex {
+    // Schema-bound generation owners remove lowered vectors before installation.
+    // The physical Bytes statistics cannot establish any vector predicate.
+    pub(crate) fn exclude_field(&mut self, field: FieldId) {
+        self.columns.remove(&field);
+    }
+
     fn from_validated(
         segment: &SegmentV2,
         directory: &[DirectoryEntry],

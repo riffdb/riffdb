@@ -555,11 +555,13 @@ Source control generation numbers and checksums never identify this view.
 
 Active sources rebuild when the local applied frontier advances. Scalar reads
 report the validated local frontier. The vector adapter shares the primary's
-bounded evidence, model, row-policy and freshness checks, but V2 construction
-currently rejects vector fields. They remain rowless; the separate
-[canonical-vector proposal](WP-747-V2-VECTOR-REVIEW.md) requires acceptance before
-that encoding gap can be resolved. Failed sources remain rowless
-and degrade projection health. Shutdown closes demand and wakes waiters before
+bounded evidence, model, row-policy and freshness checks. The separately
+[accepted canonical-vector amendment](WP-747-V2-VECTOR-REVIEW.md) permits exact
+canonical vectors in existing V2 Bytes lanes. Construction now restores and
+validates each vector's type, dimension and canonical bytes before independent
+logical comparison, and excludes vector lanes from pruning evidence. Ordinary
+Bytes fields and scalar artifact bytes retain their meanings. Failed sources
+remain rowless and degrade projection health. Shutdown closes demand and wakes waiters before
 draining the worker; publication withdrawal refuses new observations even while
 an older snapshot remains alive. Restart begins cold and rebuilds on demand.
 WP-747 remains open for full dataful scalar/vector TLS parity, freshness,
