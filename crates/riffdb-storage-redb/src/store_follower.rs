@@ -276,6 +276,17 @@ impl RedbFollowerApplier {
         Ok(self.durable_history()?.tail())
     }
 
+    pub(crate) fn verify_database_file(&self, file: &std::fs::File) -> Result<(), StorageError> {
+        self.ensure_live()?;
+        self.shared
+            .follower_namespace
+            .lock()
+            .map_err(|_| storage_error(StorageErrorKind::Unavailable))?
+            .as_mut()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+            .verify_database_file(file)
+    }
+
     /// Exact durable lineage and applied history roots for startup/handshake
     /// binding. This does not grant source allocation or retention authority.
     pub fn durable_history(&self) -> Result<ChangelogHistoryStateV3, StorageError> {

@@ -20,6 +20,14 @@ use crate::error::storage_error;
 
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
 
+#[path = "archive_restore.rs"]
+mod archive;
+pub use archive::{RedbArchiveRestoreStage, RedbReplayedArchiveRestore};
+
+#[cfg(test)]
+#[path = "archive_restore_tests.rs"]
+mod archive_tests;
+
 /// Move-only private staged restore that has passed complete exact-end validation.
 pub struct RedbStagedRestore {
     operation_id: OfflineMaintenanceOperationId,

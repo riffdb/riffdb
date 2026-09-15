@@ -188,6 +188,15 @@ impl RedbArchiveRepository {
         self.head
     }
 
+    pub(in crate::maintenance) fn bound_to(
+        &self,
+        lineage: ChangelogLineageV3,
+        fence: ChangelogHistoryPointV3,
+        digest: [u8; 32],
+    ) -> bool {
+        self.lineage == lineage && self.backup_fence == fence && self.backup_digest == digest
+    }
+
     /// Streams the selected prefix in order without granting mutation or source
     /// acknowledgement authority. Construction performs no population read.
     pub fn frames(&self) -> RedbArchiveFrames<'_> {

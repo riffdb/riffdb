@@ -6,7 +6,7 @@ use riffdb_storage_api::*;
 use riffdb_types::{DatabaseId, DualFrontier};
 use std::{fs, path::Path};
 
-fn backup(
+pub(super) fn backup(
     scope: &crate::test_path::ScopedDirectory,
 ) -> (std::path::PathBuf, ChangelogHistoryStateV3) {
     backup_with_pruned_head(scope, false)
