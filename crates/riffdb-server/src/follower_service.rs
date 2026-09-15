@@ -1,5 +1,6 @@
 //! Follower service graph: immutable reads, current policy and no primary executors.
 use super::*;
+use crate::columnar_adapter::{FollowerColumnarRuntime, RunningFollowerColumnarWorker};
 use crate::port_driver::BlockingPortExecutor;
 use crate::replication_bootstrap::FollowerReadSnapshots;
 use crate::startup::FollowerStartupEvidence;
@@ -15,6 +16,7 @@ pub(crate) struct RunningFollowerService {
     notifier: ProjectionNotifier,
     hosted: Option<HostedMcpDependencies>,
     exact_worker: RunningExactTextWorker,
+    columnar_worker: RunningFollowerColumnarWorker,
 }
 impl RunningFollowerService {
     #[allow(clippy::too_many_arguments)]
@@ -58,6 +60,17 @@ impl RunningFollowerService {
         let generation = ProductionServerGenerationSource::new()
             .next_generation()
             .map_err(ProductionGraphBuildError::ServerGeneration)?;
+        let columnar_runtime = FollowerColumnarRuntime::open(
+            reads.clone(),
+            projections,
+            projections_root,
+            generation.bytes(),
+            clocks.columnar_replay(),
+        )
+        .map_err(|source| ProductionGraphBuildError::ColumnarRegistration {
+            source,
+            cleanup: None,
+        })?;
         let exact_runtime = ExactTextRuntime::open(
             crate::projection_read_source::ProjectionReadSource::new(reads.clone()),
             projections_root,
@@ -127,7 +140,11 @@ impl RunningFollowerService {
             notifier.clone(),
             &blocking,
         ));
-        let operational = Arc::new(FollowerOperationalStatus::new(reads.clone(), &blocking));
+        let operational = Arc::new(FollowerOperationalStatus::new(
+            reads.clone(),
+            columnar_runtime.clone(),
+            &blocking,
+        ));
         let diagnostics = Arc::new(ProductionObservabilityDiagnostics::new(
             runtime.clone(),
             observability.clone(),
@@ -162,6 +179,8 @@ impl RunningFollowerService {
         .with_exact_predicate(exact_runtime.clone())
         .with_long_pattern(exact_runtime.clone())
         .with_tokenized_text(exact_runtime.clone())
+        .with_columnar(columnar_runtime.clone())
+        .with_vector_projection(columnar_runtime.clone())
         .with_live_query_clock(Arc::new(clocks.administration()))
         .with_contextual_causation(
             riffdb_service::ContextualCausationTokenCodec::from_provider(capability_keys),
@@ -182,6 +201,21 @@ impl RunningFollowerService {
                     }
                 });
                 return Err(ProductionGraphBuildError::ExactTextWorker { source, cleanup });
+            }
+        };
+        let columnar_worker = match RunningFollowerColumnarWorker::start(columnar_runtime) {
+            Ok(worker) => worker,
+            Err(source) => {
+                let exact = exact_worker.shutdown().err();
+                let blocking = blocking.shutdown_and_drain().err();
+                let cleanup = (exact.is_some() || blocking.is_some()).then_some(
+                    ProductionGraphShutdownError {
+                        exact,
+                        blocking,
+                        ..ProductionGraphShutdownError::checkpoint_close_only()
+                    },
+                );
+                return Err(ProductionGraphBuildError::ColumnarWorker { source, cleanup });
             }
         };
         let service = Arc::new(activator.activate(
@@ -208,13 +242,16 @@ impl RunningFollowerService {
         if let Err(source) = installed {
             lifecycle.stop();
             let exact = exact_worker.shutdown().err();
+            let columnar = columnar_worker.shutdown().err();
             let blocking = blocking.shutdown_and_drain().err();
-            let cleanup =
-                (exact.is_some() || blocking.is_some()).then_some(ProductionGraphShutdownError {
+            let cleanup = (exact.is_some() || columnar.is_some() || blocking.is_some()).then_some(
+                ProductionGraphShutdownError {
                     exact,
+                    columnar,
                     blocking,
                     ..ProductionGraphShutdownError::checkpoint_close_only()
-                });
+                },
+            );
             return Err(ProductionGraphBuildError::Activation { source, cleanup });
         }
         Ok(Self {
@@ -224,6 +261,7 @@ impl RunningFollowerService {
             notifier,
             hosted,
             exact_worker,
+            columnar_worker,
         })
     }
     pub(crate) fn is_available(&self) -> bool {
@@ -238,6 +276,7 @@ impl RunningFollowerService {
     /// Transport admission must be closed before draining admitted requests.
     pub(crate) async fn shutdown(self) -> Result<(), riffdb_storage_api::StorageError> {
         self.lifecycle.stop();
+        self.columnar_worker.stop_admission();
         self.lifecycle
             .runtime_routing()
             .fail_authoritative_readiness(
@@ -254,11 +293,12 @@ impl RunningFollowerService {
         self.spawner.wait_for_idle().await;
         tokio::task::spawn_blocking(move || {
             let exact = self.exact_worker.shutdown().map_err(|_| unavailable());
+            let columnar = self.columnar_worker.shutdown().map_err(|_| unavailable());
             let blocking = self
                 .blocking
                 .shutdown_and_drain()
                 .map_err(|_| unavailable());
-            exact.and(blocking)
+            exact.and(columnar).and(blocking)
         })
         .await
         .map_err(|_| unavailable())?
@@ -274,7 +314,11 @@ struct FollowerOperationalStatus {
     statistics: BlockingPortExecutor<(), OperationalStatisticsSnapshot, OperationalStatusError>,
 }
 impl FollowerOperationalStatus {
-    fn new(reads: FollowerReadSnapshots, driver: &BlockingPortDriver) -> Self {
+    fn new(
+        reads: FollowerReadSnapshots,
+        columnar: Arc<FollowerColumnarRuntime>,
+        driver: &BlockingPortDriver,
+    ) -> Self {
         let source = reads.clone();
         let health = driver.executor(move |()| {
             let view = source
@@ -291,7 +335,14 @@ impl FollowerOperationalStatus {
                     HealthComponentStatus::Healthy,
                 ),
                 ComponentHealth::new(HealthComponentKind::Catalog, catalog),
-                ComponentHealth::new(HealthComponentKind::Projection, catalog),
+                ComponentHealth::new(
+                    HealthComponentKind::Projection,
+                    if columnar.is_healthy() {
+                        catalog
+                    } else {
+                        HealthComponentStatus::Degraded
+                    },
+                ),
                 ComponentHealth::replication(follower_replication_statistics(&view)?),
             ])
             .map_err(|_| OperationalStatusError::Integrity)

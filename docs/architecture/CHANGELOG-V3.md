@@ -530,8 +530,7 @@ completed pin; missing controls, mismatched targets or replay limits, duplicate
 sources, excessive inventories and frontiers beyond the applied head refuse.
 A valid source artifact failure does not certify or forbid an independently
 validated follower artifact. Admission performs no control write and opens no
-columnar artifact. Follower demand, materialization, view installation and
-shutdown composition remain unfinished.
+columnar artifact.
 
 A storage-owned disposable build helper now provides an exclusively locked
 `follower-columnar/build` area, separate from primary selection paths. A mutable
@@ -539,15 +538,32 @@ build lease allows one builder at a time. Cleanup checks cumulative file/byte
 ceilings and the fixed directory depth before deleting through retained directory
 handles. Restart discards abandoned material on the next build; it never adopts
 that material as a view. Process-exit, path-substitution, symlink and excess-size
-checks cover this helper. It is not yet wired into the follower worker.
+checks cover this helper. Snapshot-only builds use format-derived file and byte
+ceilings; final partition lanes reject rows beyond manifest capacity before
+appending bytes, including on builds that ultimately fail validation.
 
 The existing V2 validation result owns its decoded query snapshot in memory.
 A new full-streaming-build test confirms that scalar query results, partition
 isolation and the exact frontier survive removal of all build files. This allows
-the future follower worker to finish validation, release file handles and discard
-its one build area before installing the immutable snapshot. It still must bind
-process-local view identity, recheck live authority and implement demand/stop
-ownership before columnar serving is available.
+the follower worker to finish validation, release file handles and discard its
+one build area before installing the immutable snapshot. The service now owns
+one worker for scalar and vector sources. Startup/status remain cold; concurrent
+first demand coalesces into one activation and returns typed Building. The worker
+rechecks the completed catalog/control inventory, builds from one immutable pin,
+and binds the validated memory view to this process and a local view ordinal.
+Source control generation numbers and checksums never identify this view.
+
+Active sources rebuild when the local applied frontier advances. Scalar reads
+report the validated local frontier. The vector adapter shares the primary's
+bounded evidence, model, row-policy and freshness checks, but V2 construction
+currently rejects vector fields. They remain rowless; the separate
+[canonical-vector proposal](WP-747-V2-VECTOR-REVIEW.md) requires acceptance before
+that encoding gap can be resolved. Failed sources remain rowless
+and degrade projection health. Shutdown closes demand and wakes waiters before
+draining the worker; publication withdrawal refuses new observations even while
+an older snapshot remains alive. Restart begins cold and rebuilds on demand.
+WP-747 remains open for full dataful scalar/vector TLS parity, freshness,
+namespace and failure-campaign coverage.
 
 `follower_exact_providers_match_primary_after_tail_and_restart` deploys all four
 compiled provider families over TLS, checks matching results and application

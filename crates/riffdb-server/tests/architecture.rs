@@ -8,6 +8,8 @@ const LIFECYCLE_SERVICE: &str = include_str!("../src/lifecycle_service.rs");
 const LIFECYCLE: &str = include_str!("../src/lifecycle.rs");
 const COLUMNAR_ADAPTER: &str = include_str!("../src/columnar_adapter.rs");
 const COLUMNAR_WORKER: &str = include_str!("../src/columnar_worker.rs");
+const COLUMNAR_VECTOR_VIEW: &str = include_str!("../src/columnar_vector_view.rs");
+const COLUMNAR_FOLLOWER: &str = include_str!("../src/columnar_follower.rs");
 const PROCESS_GRAPH: &str = include_str!("../src/process_graph.rs");
 
 fn rust_sources(root: &std::path::Path) -> Vec<(std::path::PathBuf, String)> {
@@ -119,6 +121,7 @@ fn dedicated_production_threads_apply_the_fixed_stack_budget() {
         "exact_text_adapter.rs",
         "projection_worker.rs",
         "columnar_worker.rs",
+        "columnar_follower.rs",
     ] {
         let source = std::fs::read_to_string(root.join(owner)).expect("read thread owner");
         assert!(
@@ -141,10 +144,9 @@ fn lifecycle_wrappers_cover_the_symbolic_catalog_surface() {
 
 #[test]
 fn production_vector_adapter_admits_current_authoritative_rows_before_ranking() {
-    let execution = COLUMNAR_ADAPTER
-        .split_once("impl VectorProjectionPort for ServerColumnarProjectionPort")
-        .expect("production vector projection port")
-        .1
+    assert!(COLUMNAR_ADAPTER.contains("vector_view::execute("));
+    assert!(COLUMNAR_FOLLOWER.contains("vector_view::execute("));
+    let execution = COLUMNAR_VECTOR_VIEW
         .split_once("fn trusted_commit_lag_ms(")
         .expect("vector execution boundary")
         .0;
@@ -160,6 +162,30 @@ fn production_vector_adapter_admits_current_authoritative_rows_before_ranking() 
     assert!(evidence < admission && admission < ranking);
     assert!(execution.contains("NonZeroU16::new(500)"));
     assert!(!execution.contains("nearest_query_snapshot("));
+}
+
+// req: REP-004, PRJ-005, PRJ-009
+#[test]
+fn follower_columnar_owner_has_no_primary_authority_or_artifact_selection() {
+    for forbidden in [
+        "SharedRedbOperationalPorts",
+        "ColumnarRuntime::open(",
+        "initialize_fresh_v1",
+        "recover_expected_control",
+        "record_candidate_failure",
+        "publish_candidate",
+        "open_unchecked_artifact",
+        "servable_generation",
+        "artifact_identity",
+    ] {
+        assert!(
+            !COLUMNAR_FOLLOWER.contains(forbidden),
+            "follower acquired {forbidden}"
+        );
+    }
+    assert!(COLUMNAR_FOLLOWER.contains("RedbFollowerColumnarScratch::open("));
+    assert!(COLUMNAR_FOLLOWER.contains("ValidatedColumnarV2Generation::prepare_streaming("));
+    assert!(COLUMNAR_FOLLOWER.contains("validate_follower_columnar_controls("));
 }
 
 #[test]

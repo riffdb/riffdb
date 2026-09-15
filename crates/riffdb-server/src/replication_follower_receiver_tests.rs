@@ -19,6 +19,9 @@ use std::sync::Mutex;
 #[path = "replication_follower_read_auth_tests.rs"]
 mod read_auth;
 
+#[path = "replication_follower_columnar_tests.rs"]
+mod columnar;
+
 fn inputs() -> StartupValidationInputs {
     let key = ReadableDigestKey::v1(DigestKeyId::new(1).unwrap());
     StartupValidationInputs::new(
@@ -81,6 +84,12 @@ impl ReplicationSourcePort for FinitePeer {
     }
 }
 async fn fixture() -> (Fixture, BootstrapReceiverBuildJob) {
+    fixture_with_setup(|_| {}).await
+}
+
+async fn fixture_with_setup(
+    setup: impl FnOnce(&mut RedbOperationalPorts),
+) -> (Fixture, BootstrapReceiverBuildJob) {
     let (scope, path) =
         crate::real_storage_support::temporary_database_scope("continuous-receiver");
     let mut startup = crate::startup::open_redb_startup(
@@ -90,7 +99,8 @@ async fn fixture() -> (Fixture, BootstrapReceiverBuildJob) {
     )
     .unwrap();
     let publications = startup.take_replication_publications().unwrap();
-    let (_, _, _, _, _, ports) = startup.into_parts();
+    let (_, _, _, _, _, mut ports) = startup.into_parts();
+    setup(&mut ports);
     let ports = Arc::new(ports);
     let repository = ports
         .bootstrap_repository(&scope.path().join("source-artifacts"))
