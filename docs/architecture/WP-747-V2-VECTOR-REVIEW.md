@@ -1,6 +1,8 @@
 # WP-747 — exact canonical vectors in existing V2 byte lanes
 
-Status: proposed; requires maintainer acceptance. The follower-only amendment
+Status: accepted 2026-09-15. The maintainer approved the exact text in session:
+"Approve exact text". Standalone acceptance commit `1b3a97fc` records it in SPEC
+§4.10 and ADR-0160/0190/0192/0209. The follower-only amendment
 in [WP-747-FOLLOWER-COLUMNAR-REVIEW.md](WP-747-FOLLOWER-COLUMNAR-REVIEW.md) is already
 accepted and is not being reopened.
 
@@ -9,16 +11,15 @@ accepted and is not being reopened.
 SPEC §4.10 and accepted ADR-0178 require follower vector views. The accepted
 follower amendment requires the existing V2 builder and complete independent
 logical validation. ADR-0209 makes V2 the sole current layout for primary and
-follower columnar sources. However, `generation_v2::logical_type` rejects every
+follower columnar sources. Before this amendment, `generation_v2::logical_type` rejected every
 `ValueTypeTag::Vector` as `UnsupportedDefinition`, including an empty vector
-source. The streaming adapter reports this as `Invalid` before creating any
-V2 generation. `SegmentV2LogicalType` currently contains scalar types only.
+source. The streaming adapter reported this as `Invalid` before creating any
+V2 generation. `SegmentV2LogicalType` retains its existing scalar physical types.
 
 The real-bootstrap WP-747 lifecycle test demonstrated this refusal after scalar
 materialization succeeded. The owned scalar worker/restart test passed in the
 same run. No source control or source checksum was changed. The vector-success
-attempt is recorded in `/tmp/wp-747-runtime-green5.log`; current lifecycle tests
-retain a rowless-refusal assertion pending this amendment.
+attempt is recorded in `/tmp/wp-747-runtime-green5.log`; that pre-amendment lifecycle test retained a rowless-refusal assertion.
 
 ADR-0160 Decision §3 permits offset-plus-bytes lanes for bounded canonical values
 but explicitly says: “General-purpose compression, native-endian values,
@@ -27,7 +28,7 @@ application-supplied codecs are excluded.” Canonical vectors contain finite
 IEEE-754 binary32 components. Treating those bytes as an implicit exception would
 choose an interpretation of an accepted exclusion without human review.
 
-## Exact proposed amendment
+## Exact accepted amendment
 
 The following qualifies ADR-0160 Decision §3 and the corresponding V2 construction
 and validation requirements of ADR-0190, ADR-0192 and ADR-0209. It applies to
@@ -87,7 +88,9 @@ rules remain intact.
 
 ## Acceptance mechanics
 
-After the maintainer accepts this exact text, record their words and date in a
-standalone acceptance commit touching only SPEC.md, the affected ADRs and
-work_packages.yaml. WP-747 remains open until implementation and the required
-proofs pass. No vector lowering is implemented by this proposal.
+The maintainer's words/date and exact normative text are recorded in standalone
+acceptance commit `1b3a97fc`. The shared V2 generation builder now lowers checked
+vectors into existing Bytes lanes, restores typed cells after complete canonical
+validation, and removes vector columns from installed pruning evidence. Scalar
+bytes remain unchanged. WP-747 remains open for the complete primary/follower
+parity, freshness, restart and authoritative-namespace campaign.
