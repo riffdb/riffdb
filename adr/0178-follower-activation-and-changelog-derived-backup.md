@@ -5,6 +5,12 @@ status: accepted
 tier: guarantee
 date: "2026-09-01"
 accepted: "2026-09-01"
+acceptance: >-
+  Original exact text accepted by the maintainer in the Claude Code session of
+  2026-09-01; follower audit amendment accepted in session 2026-09-15, "I approve
+  of these changes"; exact follower columnar amendment accepted in session
+  2026-09-15, "Approve the exact amendment", referring to
+  docs/architecture/WP-747-FOLLOWER-COLUMNAR-REVIEW.md.
 requires: [ADR-0019, ADR-0050, ADR-0061, ADR-0072, ADR-0082, ADR-0083, ADR-0085,
   ADR-0086, ADR-0093, ADR-0100, ADR-0101, ADR-0104, ADR-0112, ADR-0124]
 # ADR-0085 is required at Amendments 2 and 3; ADR-0100 at Amendments 1 and 2.
@@ -13,6 +19,8 @@ amends:
     not require OpenRaft or any consensus protocol)
   - SPEC 18.5 (incremental and remote archive backup move from MVP to alpha)
   - SPEC 13.5 (follower service and audit exceptions accepted 2026-09-15)
+  - SPEC PRJ-005 through PRJ-009, ADR-0192 decisions 14–16, ADR-0195 decisions 4–6,
+    and ADR-0209 decision 7 (exact follower columnar exception accepted 2026-09-15)
   - REP-001 is unchanged
 requirements: [REP-002, REP-003, REP-004, REP-005, REP-006, REP-007, REP-008, REP-009]
 packages: [WP-746, WP-747, WP-748, WP-749, WP-750]
@@ -70,29 +78,13 @@ review_triggers:
 
 ## Context
 
-ADR-0093 was accepted on 2026-08-04 and states the problem in its own words: availability is "the biggest honest gap in the
-architecture review." A lost disk is a restore-from-backup event with data loss up to the last offline backup, and a crashed host
-is an outage for as long as the host is down. The product thesis in `docs/VISION.md` is a system of record for multi-tenant SaaS.
-A single node with offline-only backups cannot carry that thesis to a design partner, whatever else the engine does well.
+ADR-0093 was accepted on 2026-08-04 and states the problem in its own words: availability is "the biggest honest gap in the architecture review." A lost disk is a restore-from-backup event with data loss up to the last offline backup, and a crashed host is an outage for as long as the host is down. The product thesis in `docs/VISION.md` is a system of record for multi-tenant SaaS. A single node with offline-only backups cannot carry that thesis to a design partner, whatever else the engine does well.
 
-Since that acceptance, ADR-0094 through ADR-0177 landed. They are dominated by query providers, result-set algebra, and
-performance packages. The replication surface itself advanced only as far as ADR-0100: the storage API carries
-`ChangelogFrameV1`/`V2`, stream validators, the `PublishedDurableSnapshot` read capability, `ChangelogPublicationPort`, and the
-redb emitter thread that derives frames from published snapshots without touching writer-private state. The V2 rotation receipt
-and the `DeleteAwareEntityFollowerV2` conformance oracle exist. Production still installs `NoChangelogPublicationPort`
-(`crates/riffdb-storage-redb/src/store.rs`), there is no replication RPC in `proto/riffdb/v1/services.proto`, no replication
-capability kind, no follower mode of `riffdbd`, no applier over the authoritative tables, no promotion operation, no follower
-retention fence, and no incremental backup. The known-limitations page still says "no replication, failover, or consensus."
+Since that acceptance, ADR-0094 through ADR-0177 landed. They are dominated by query providers, result-set algebra, and performance packages. The replication surface itself advanced only as far as ADR-0100: the storage API carries `ChangelogFrameV1`/`V2`, stream validators, the `PublishedDurableSnapshot` read capability, `ChangelogPublicationPort`, and the redb emitter thread that derives frames from published snapshots without touching writer-private state. The V2 rotation receipt and the `DeleteAwareEntityFollowerV2` conformance oracle exist. Production still installs `NoChangelogPublicationPort` (`crates/riffdb-storage-redb/src/store.rs`), there is no replication RPC in `proto/riffdb/v1/services.proto`, no replication capability kind, no follower mode of `riffdbd`, no applier over the authoritative tables, no promotion operation, no follower retention fence, and no incremental backup. The known-limitations page still says "no replication, failover, or consensus."
 
-Three facts make activation tractable without new design. There is one total order (ADR-0082) and commit records carry no
-post-images (ADR-0083), so an exact prefix is a valid database. Frontiers and commit tokens are already incarnation-bound and fail
-closed (ADR-0072, ADR-0086). Acknowledgement is already strictly after local durability (ADR-0061), so the asynchronous tier adds
-nothing to the commit hot path. ADR-0100 already aligned frames to published durable frontiers, which is exactly the boundary a
-follower may trust.
+Three facts make activation tractable without new design. There is one total order (ADR-0082) and commit records carry no post-images (ADR-0083), so an exact prefix is a valid database. Frontiers and commit tokens are already incarnation-bound and fail closed (ADR-0072, ADR-0086). Acknowledgement is already strictly after local durability (ADR-0061), so the asynchronous tier adds nothing to the commit hot path. ADR-0100 already aligned frames to published durable frontiers, which is exactly the boundary a follower may trust.
 
-Incremental backup falls out of the same stream. A consumer that persists checksummed frames to a configured sink beside periodic
-full backups gives restore-to-last-archived-sequence without a second durable format, which the limitations page today lists as
-absent.
+Incremental backup falls out of the same stream. A consumer that persists checksummed frames to a configured sink beside periodic full backups gives restore-to-last-archived-sequence without a second durable format, which the limitations page today lists as absent.
 
 ## Decision
 
@@ -150,6 +142,11 @@ Primary audit behavior and all replicated audit bytes remain unchanged.
 
 A follower's telemetry is non-authoritative, is never replication or recovery evidence, and cannot satisfy a policy-required
 durable audit obligation. No new durable format, local audit allocator, NodeId, RPC or privilege bypass is added.
+
+**Follower columnar views.** The exact amendment under "Follower columnar views" in SPEC §4.10 is incorporated into this
+section. It permits independently validated, disposable follower V2 views under its complete admission, bounds, lifecycle,
+freshness and cleanup rules, without originating follower control/generation writes or claiming the source artifact checksum.
+It explicitly qualifies PRJ-005 through PRJ-009, ADR-0192 decisions 14–16, ADR-0195 decisions 4–6, and ADR-0209 decision 7.
 
 ### 5. Promotion is explicit and incarnation-fenced
 
@@ -263,3 +260,7 @@ Code session of 2026-09-01, all seven consolidation records together.
 
 Follower service and audit amendment accepted 2026-09-15. The maintainer accepted the exact proposed amendment in session: "I
 approve of these changes". The amendment above governs sections 2 and 4 and SPEC 13.5.
+
+Follower columnar amendment accepted 2026-09-15. The maintainer approved the exact text in
+`docs/architecture/WP-747-FOLLOWER-COLUMNAR-REVIEW.md` in session: "Approve the exact amendment".
+Its verbatim normative text is in SPEC §4.10; WP-747 owns implementation and all required proof.

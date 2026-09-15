@@ -1297,6 +1297,64 @@ amend Stage B so the asynchronous tier precedes and does not require consensus.
   lock, and binary identity before the single-node availability limitation is
   retired.
 
+### Follower columnar views (ADR-0178 amendment accepted 2026-09-15)
+
+The maintainer accepted the exact WP-747 amendment in session on 2026-09-15:
+"Approve the exact amendment". The following is the explicit follower-only
+exception to PRJ-005 through PRJ-009, ADR-0192 decisions 14–16, ADR-0195
+decisions 4–6, and ADR-0209 decision 7; their primary behavior remains intact.
+
+**Follower columnar views.** Scalar and vector columnar sources on a follower
+retain the same checked schema-bound source, definition semantics, specification,
+provider descriptors and bounds as on a primary. Admission validates the
+complete at-most-256 source set and each corresponding replicated control
+against the current completed-prefix catalog and history. A missing,
+malformed, foreign or mismatched control never authorizes a view. No follower
+action initializes, changes, repairs, acknowledges or allocates a durable
+columnar control or generation. Replicated control bytes remain exact.
+
+A follower's columnar query view is a separately validated, rebuildable local
+derivation. The source control's physical artifact selection, candidate,
+publication and physical failure state describe the source's artifacts; they
+do not select or certify a follower artifact. A source checksum must never be
+attached to different local bytes. The follower may materialize its view
+independently of source artifact readiness, using only a pinned completed
+follower snapshot and, where needed, a checked contiguous retained suffix.
+Its source, checked specification, database/history identity and exact applied
+frontier come from that immutable authority, never from an advertised source
+head, acknowledgement, file name or attempted control transition.
+
+Materialization reuses the existing bounded V2 construction, complete
+root/member validation and independent logical-equality checks. No V1 path,
+full-population shortcut around the existing resource bounds, unverified
+snapshot, partial generation, or new artifact-shipping protocol is admitted.
+Only the one server-owned worker may atomically install a completely validated
+local view and notify waiters. The installed view binds the existing process
+generation and an immutable local view identity; neither allocates replicated
+authority or substitutes for a durable control witness on a primary.
+
+Follower artifact files are disposable process-local build material beneath
+a distinct follower-owned area of the configured projections root. They use
+existing V2 formats and bounds and are never reopened as authority after
+restart, promoted into primary selection, or placed in the changelog. Rebuild
+after restart begins on demand from a new completed snapshot. Cleanup touches
+only bounded, exactly owned paths after all views and workers using them are
+drained; it never searches for an alternate generation or deletes primary
+selected files. No new persistent control store, durable identity, allocator,
+metadata key, or authoritative namespace is introduced.
+
+Cold/Activating/Active/Failed/Stopped ownership, no population work before
+demand, immediate typed Building responses, current policy and redaction,
+cancellation, worker shutdown, and all input/work/output/diagnostic limits
+retain ADR-0195's rules. Available and Bounded report the local validated
+frontier; Causal and AdmissionHead require it to satisfy the existing local
+applied-head floor and bounded register-before-read discipline. Foreign or
+pre-promotion tokens and obsolete process-bound cursors fail closed. Withdrawal
+of completed-prefix publication closes admission even while an older pin or
+local view remains alive. Local artifact failure stays rowless and typed;
+recovery may discard and rebuild local material without changing source
+control or claiming that an attempted rebuild succeeded.
+
 ### Generated public-surface adapters and the operation registry (ADR-0179)
 
 Every public operation is declared once and its transport, presentation, and
@@ -5643,6 +5701,11 @@ derived-state namespace. Within that identity, duplicate equality MUST also
 require exact `ProjectionApplyHash` equality; a mismatch fails closed.
 
 `PRJ-004` Projection state MUST be rebuildable from the authoritative commit log.
+
+The follower-only columnar-view amendment in section 4.10 explicitly qualifies
+PRJ-005 through PRJ-009 for disposable, independently validated follower V2
+views. It permits no locally originated follower control or generation write;
+the primary requirements below remain unchanged.
 
 `PRJ-005` Every scalar or vector columnar projection MUST have one schema-bound,
 lineage-scoped stable source identity. Scalar identity MUST bind the accepted physical

@@ -56,6 +56,8 @@ validation without changing or translating the retained wire record.
 
 ## Decision
 
+Follower-only amendment accepted by the maintainer in session 2026-09-15 ("Approve the exact amendment"): decision 7 is qualified by ADR-0178 §4 and the exact "Follower columnar views" text in SPEC §4.10. WP-747 owns the independently validated disposable V2 views; no local authoritative control write or source-artifact checksum claim is permitted. Primary behavior remains unchanged.
+
 1. This record amends ADR-0190 Decisions 5, 11, and 14; ADR-0192 Decisions 10 through 16 and 19;
    ADR-0200 Decisions 3 through 7; and ADR-0204 Decisions 5 and 6, OBL-0204-2 and OBL-0204-3,
    and their corresponding consequence, review, and check language only as stated below. The

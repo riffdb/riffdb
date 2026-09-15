@@ -22266,8 +22266,9 @@ work_packages:
     Causal, Bounded, and Available policies against the applied frontier, refuse foreign or
     pre-promotion tokens fail-closed, and export replication lag in sequences as typed health
     and statistics on both nodes.
-  requirements: [REP-004, REC-002]
-  required_adrs: [ADR-0070, ADR-0072, ADR-0086, ADR-0093, ADR-0164, ADR-0178, ADR-0186]
+  requirements: [REP-004, REC-002, PRJ-005, PRJ-006, PRJ-007, PRJ-008, PRJ-009]
+  required_adrs: [ADR-0070, ADR-0072, ADR-0086, ADR-0093, ADR-0164, ADR-0178, ADR-0186,
+    ADR-0192, ADR-0195, ADR-0209]
   allowed_paths: [SPEC.md, work_packages.yaml,
     adr/0178-follower-activation-and-changelog-derived-backup.md,
     crates/riffdb-types/**, crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
@@ -22288,6 +22289,12 @@ work_packages:
   - Accepted ADR-0178 follower audit boundary where authorized Health/Statistics and denied reads
     use bounded redacted telemetry; policy-obligated standard reads refuse, and primary audit
     behavior stays unchanged
+  - Exact follower columnar amendment accepted 2026-09-15, with independently validated
+    disposable V2 scalar/vector views from completed follower snapshots, complete replicated
+    control admission, demand-only owned materialization, unchanged bounds and freshness, and
+    bounded cleanup after drain; no local control/generation writes or source-checksum claims
+  - Primary-equivalent scalar/vector reads after advancement and restart, cold/demand ownership,
+    failure/cancellation and withdrawal proofs, and byte-exact authoritative namespace evidence
   - Handbook pages for follower deployment, read semantics, and health, plus CLI and generated
     client exposure of the typed follower-mode refusal
   - Test `follower_causal_read_waits_for_token_then_matches_primary` under
