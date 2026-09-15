@@ -22453,6 +22453,23 @@ work_packages:
       or influence archive sinks, and restore remains the offline destructive ceremony of ADR-0050.
     scale: Archives are append-only frame sequences; restore streams the suffix and never requires
       the whole history in memory.
+  closure:
+    status: open
+    decisions_taken:
+    - Reuse the checked backup-name grammar through a distinct ArchiveNameV1 type.
+      Bind backup, archive, closed application stop and replacement confirmation
+      under the versioned archive-input preimage in the existing maintenance hash
+      domain; LastArchived request identity excludes the moving archive head.
+    - Keep verified full-backup identity, original complete V3 fence and the exact
+      selected terminal archive manifest in one immutable selection value. A pruned
+      manifest's last retained command may trail its actual complete backup fence.
+      Earlier requested application stops retain separate actual dual-frontier evidence
+      and never claim the complete source receipt's history hash.
+    - Freeze ordinary versus source-less restore route at receipt admission. Reuse
+      the existing bounded phase history; ordinary selection requires Offline, while
+      source-less private candidates may carry fixed selection and validated replay
+      before admission. Both routes record a newer incarnation before publication;
+      selection, replay evidence and incarnation cannot change under an accepted ID.
   human_review_triggers: *id0178
 
 - id: WP-750

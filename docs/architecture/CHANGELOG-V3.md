@@ -1099,3 +1099,15 @@ so an earlier exact application stop cannot be mislabeled with the terminal
 source receipt's hash or frontier. These value checks grant no replay or
 publication authority: the offline owner still must verify the full selected
 archive, persist the receipt and complete the restore ceremony.
+
+The archive-only `OfflineMaintenanceReceiptV3` semantic state now binds that
+selection to the exact admitted request and source route. Ordinary restore
+selection cannot precede the offline phase. The accepted source-less route can
+retain a validated private candidate before admission; it still cannot record
+an incarnation or publication before the offline boundary. Selection, restored
+database/frontier and the incarnation decision are each recorded once. Failed
+updates leave the prior receipt unchanged; terminal evidence cannot be extended.
+Canonical reconstruction rejects impossible field presence and phase history,
+including failure records that omit evidence from an earlier publication.
+V3 encoding, external persistence, recovery routing and the archive RPC remain
+required before archive restore can be exposed.
