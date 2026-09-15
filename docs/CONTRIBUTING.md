@@ -163,6 +163,15 @@ why>`, and lists it in `decisions_taken`. Removing or reinterpreting a member,
 or completing a set after its first durable write, is a record change and
 stops.
 
+A patch-level or security-advisory bump of a dependency that an accepted
+record already admits is likewise an implementation choice. Keep the exact
+pin, run `cargo deny check` and `cargo audit`, and record the version, the
+advisory or reason, and both results in `Decisions:` and `decisions_taken`.
+If the pinning record names the exact version, update that one token in the
+record's own commit with the same line. A new dependency, a minor or major
+change to a pinned critical dependency, a feature-set change, or any bump
+that alters a public or durable behavior still stops under AGENTS.md.
+
 ## Obligations and requirement tags
 
 An obligation is a promise a record makes that its own change does not yet
