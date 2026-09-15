@@ -1241,6 +1241,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "riffdb-columnar"
+version = "0.1.0"
+dependencies = [
+ "riffdb-contract-ir",
+ "riffdb-policy",
+ "riffdb-storage-api",
+ "riffdb-types",
+]
+
+[[package]]
 name = "riffdb-config"
 version = "0.1.0"
 
@@ -1291,6 +1301,16 @@ dependencies = [
  "riffdb-errors",
  "riffdb-types",
  "tracing",
+]
+
+[[package]]
+name = "riffdb-policy"
+version = "0.1.0"
+dependencies = [
+ "riffdb-auth",
+ "riffdb-contract-ir",
+ "riffdb-observability",
+ "riffdb-types",
 ]
 
 [[package]]
@@ -1373,6 +1393,7 @@ dependencies = [
  "cap-std",
  "redb",
  "riffdb-catalog",
+ "riffdb-columnar",
  "riffdb-proto",
  "riffdb-storage-api",
  "riffdb-types",
@@ -1465,9 +1486,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.13"
+version = "0.103.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
+checksum = "0527518605e68109d875e248ea259b6758801cf165e4b2c2733ae3b51f12535a"
 dependencies = [
  "ring",
  "rustls-pki-types",
